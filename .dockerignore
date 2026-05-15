@@ -1,0 +1,12 @@
+**/bin
+**/obj
+**/build
+**/node_modules
+.git
+.vs
+.idea
+src/client-windows
+src/client-android
+tests
+*.md
+.claude

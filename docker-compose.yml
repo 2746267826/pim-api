@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: src/Pim.Api/Dockerfile
+    ports:
+      - "5000:5000"
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]

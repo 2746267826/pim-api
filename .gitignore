@@ -13,6 +13,11 @@ obj/
 *.swp
 *.swo
 
+## Secrets
+.env
+keys/
+ssl/
+
 ## OS
 .DS_Store
 Thumbs.db
