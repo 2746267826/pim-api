@@ -10,6 +10,7 @@ using Pim.Core.Modules;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.DTOs;
+using Pim.Module.Calendar.Search;
 using Pim.Module.Calendar.Services;
 
 namespace Pim.Module.Calendar;
@@ -27,6 +28,8 @@ public class CalendarModule : IModule
         services.AddScoped<IcsService>();
         services.AddScoped<SchedulingEngine>();
         services.AddScoped<OutlookSyncService>();
+
+        services.AddSingleton<ISearchProvider, CalendarSearchProvider>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
