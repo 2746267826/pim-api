@@ -39,7 +39,13 @@ public class IcsService
 
     public List<ParsedEvent> ImportEvents(string icsContent)
     {
+        if (string.IsNullOrWhiteSpace(icsContent))
+            return new List<ParsedEvent>();
+
         var calendar = IcalCalendar.Load(icsContent);
+        if (calendar?.Events is null)
+            return new List<ParsedEvent>();
+
         return calendar.Events.Select(e =>
         {
             var startDt = e.Start?.Value ?? DateTime.MinValue;
