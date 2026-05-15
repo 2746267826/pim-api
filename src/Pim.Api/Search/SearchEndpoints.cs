@@ -26,12 +26,15 @@ public static class SearchEndpoints
                 .Select(t => t.Trim().ToLowerInvariant()).ToHashSet();
 
             var tasks = providers
-                .Where(p => typeFilter is null || typeFilter.Count == 0 ||
-                            typeFilter.Contains(p.ModuleName.ToLowerInvariant()))
                 .Select(p => p.SearchAsync(q, maxLimit, ct));
 
             var results = await Task.WhenAll(tasks);
-            var merged = results.SelectMany(r => r)
+            var query = results.SelectMany(r => r);
+
+            if (typeFilter is not null && typeFilter.Count > 0)
+                query = query.Where(r => typeFilter.Contains(r.Type.ToLowerInvariant()));
+
+            var merged = query
                 .OrderByDescending(r => r.Title.Contains(q, StringComparison.OrdinalIgnoreCase))
                 .Take(maxLimit)
                 .ToList();

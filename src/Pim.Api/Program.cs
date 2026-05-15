@@ -28,6 +28,13 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.UseCors();
 
+// Auto-create database schema
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<Pim.Infrastructure.Data.PimDbContext>();
+    db.Database.EnsureCreated();
+}
+
 // Health check endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTimeOffset.UtcNow })).AllowAnonymous();
 
