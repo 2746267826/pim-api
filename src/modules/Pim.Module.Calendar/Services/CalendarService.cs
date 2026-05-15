@@ -1,4 +1,3 @@
-using System.Xml;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
@@ -125,7 +124,7 @@ public class CalendarService
     public async Task<List<TaskResponse>> GetTasksAsync(bool? inbox, CancellationToken ct)
     {
         var query = _db.Set<TaskEntity>()
-            .Where(t => t.Calendar == null || t.Calendar.UserId == UserId);
+            .Where(t => t.UserId == UserId);
 
         if (inbox.HasValue)
             query = query.Where(t => t.IsInbox == inbox.Value);
@@ -138,16 +137,15 @@ public class CalendarService
     {
         var task = new TaskEntity
         {
+            UserId = UserId,
             CalendarId = request.CalendarId,
             Uid = Guid.NewGuid().ToString() + "@pim",
             Title = request.Title,
             Description = request.Description,
             Priority = request.Priority,
             Due = request.Due,
-            EstimatedDuration = request.EstimatedDuration is not null
-                ? XmlConvert.ToTimeSpan(request.EstimatedDuration) : null,
-            MinimumSegment = request.MinimumSegment is not null
-                ? XmlConvert.ToTimeSpan(request.MinimumSegment) : null,
+            EstimatedDuration = ParseDuration(request.EstimatedDuration),
+            MinimumSegment = ParseDuration(request.MinimumSegment),
             IsInbox = request.CalendarId is null
         };
 
@@ -178,13 +176,21 @@ public class CalendarService
         new(e.Id, e.CalendarId, e.Uid, e.Title, e.Description,
             e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source);
 
+    private static string? FormatDuration(TimeSpan? duration) =>
+        duration is not null ? duration.Value.ToString("c") : null;
+
+    private static TimeSpan? ParseDuration(string? value)
+    {
+        if (value is null) return null;
+        if (TimeSpan.TryParse(value, out var result)) return result;
+        throw new DomainException(02009, $"Invalid duration format: {value}. Use ISO 8601 format (e.g., PT1H30M).");
+    }
+
     private static TaskResponse MapTask(TaskEntity t) =>
         new(t.Id, t.CalendarId, t.Uid, t.Title, t.Description,
             t.Priority,
-            t.EstimatedDuration is not null
-                ? XmlConvert.ToString(t.EstimatedDuration.Value) : null,
-            t.MinimumSegment is not null
-                ? XmlConvert.ToString(t.MinimumSegment.Value) : null,
+            FormatDuration(t.EstimatedDuration),
+            FormatDuration(t.MinimumSegment),
             t.DtStart, t.Due, t.Status, t.IsInbox, t.SortOrder,
             t.SubTasks.Select(MapTask).ToList());
 }

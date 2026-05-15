@@ -30,7 +30,8 @@ public class TaskEntityConfiguration : IEntityTypeConfiguration<TaskEntity>
     public void Configure(EntityTypeBuilder<TaskEntity> builder)
     {
         builder.HasQueryFilter(t => t.DeletedAt == null);
-        builder.HasIndex(t => t.CalendarId);
+        builder.HasIndex(t => t.UserId);
+        builder.HasIndex(t => new { t.UserId, t.CalendarId });
         builder.HasIndex(t => t.Status);
         builder.HasOne(t => t.Calendar)
             .WithMany(c => c.Tasks)

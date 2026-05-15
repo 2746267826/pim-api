@@ -12,6 +12,7 @@ public class JwtService : IDisposable
 {
     private readonly RSA _rsa;
     private readonly ILogger<JwtService> _logger;
+    private readonly object _rsaLock = new();
     private bool _disposed;
 
     public JwtService(IConfiguration configuration, IHostEnvironment environment, ILogger<JwtService> logger)
@@ -49,10 +50,14 @@ public class JwtService : IDisposable
         if (string.IsNullOrWhiteSpace(role))
             throw new ArgumentException("Role cannot be null or whitespace.", nameof(role));
 
-        var credentials = new SigningCredentials(
-            new RsaSecurityKey(_rsa),
-            SecurityAlgorithms.RsaSha256
-        );
+        SigningCredentials credentials;
+        lock (_rsaLock)
+        {
+            credentials = new SigningCredentials(
+                new RsaSecurityKey(_rsa),
+                SecurityAlgorithms.RsaSha256
+            );
+        }
 
         var claims = new[]
         {
@@ -83,6 +88,12 @@ public class JwtService : IDisposable
 
     public TokenValidationParameters GetValidationParameters()
     {
+        RsaSecurityKey signingKey;
+        lock (_rsaLock)
+        {
+            signingKey = new RsaSecurityKey(_rsa);
+        }
+
         return new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -91,7 +102,7 @@ public class JwtService : IDisposable
             ValidAudience = "pim-client",
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new RsaSecurityKey(_rsa),
+            IssuerSigningKey = signingKey,
             ClockSkew = TimeSpan.FromSeconds(30)
         };
     }

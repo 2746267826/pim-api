@@ -77,6 +77,7 @@ public static class AuthEndpoints
 
             if (recentFailures >= 5)
             {
+                httpContext.Response.Headers.RetryAfter = "900";
                 return Results.StatusCode(429);
             }
 

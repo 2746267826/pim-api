@@ -39,7 +39,7 @@ public class OutlookSyncService
 
             if (existing is null)
             {
-                _db.Set<EventEntity>().Add(MapOutlookEvent(outlookEvent, userId));
+                _db.Set<EventEntity>().Add(await MapOutlookEventAsync(outlookEvent, userId, ct));
             }
             else if (outlookEvent.LastModifiedDateTime > existing.UpdatedAt)
             {
@@ -163,10 +163,11 @@ public class OutlookSyncService
         return events;
     }
 
-    private EventEntity MapOutlookEvent(OutlookEventInfo oe, Guid userId)
+    private async Task<EventEntity> MapOutlookEventAsync(OutlookEventInfo oe, Guid userId, CancellationToken ct)
     {
-        var defaultCalendar = _db.Set<CalendarEntity>()
-            .FirstOrDefault(c => c.UserId == userId && c.IsDefault)!;
+        var defaultCalendar = await _db.Set<CalendarEntity>()
+            .FirstOrDefaultAsync(c => c.UserId == userId && c.IsDefault, ct)
+            ?? throw new DomainException(02008, "No default calendar found. Create a calendar first.");
 
         return new EventEntity
         {

@@ -10,8 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddPimInfrastructure(builder.Configuration);
 builder.Services.AddPimAuth();
 
-// HTTP
-builder.Services.AddHttpContextAccessor();
+// HTTP (AddHttpContextAccessor is already called in AddPimInfrastructure)
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
@@ -28,6 +27,9 @@ app.UseMiddleware<ExceptionMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseCors();
+
+// Health check endpoint
+app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTimeOffset.UtcNow })).AllowAnonymous();
 
 // Auth endpoints (before modules so they're not auth-protected)
 app.MapAuthEndpoints();

@@ -15,11 +15,9 @@ public class TikaClient
     public async Task<string> ExtractTextAsync(
         Stream fileStream, string fileName, CancellationToken ct = default)
     {
-        using var content = new MultipartFormDataContent();
-        var fileContent = new StreamContent(fileStream);
-        fileContent.Headers.ContentType =
+        using var content = new StreamContent(fileStream);
+        content.Headers.ContentType =
             new MediaTypeHeaderValue("application/octet-stream");
-        content.Add(fileContent, "file", fileName);
 
         var response = await _httpClient.PutAsync("/tika", content, ct);
         response.EnsureSuccessStatusCode();

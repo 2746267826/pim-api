@@ -8,6 +8,7 @@ namespace Pim.Module.Calendar.Entities;
 public class TaskEntity : ISoftDeletable
 {
     [Key][Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
+    [Column("user_id")] public Guid UserId { get; set; }
     [Column("calendar_id")] public Guid? CalendarId { get; set; }
     [Column("uid")][MaxLength(255)] public string Uid { get; set; } = string.Empty;
     [Column("title")][MaxLength(255)] public string Title { get; set; } = string.Empty;

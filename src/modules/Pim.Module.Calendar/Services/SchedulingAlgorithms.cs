@@ -160,7 +160,7 @@ public class GeneticScheduler : ISchedulingAlgorithm
         Dictionary<string, double> userWeights,
         CancellationToken ct)
     {
-        var rng = new Random();
+        var rng = Random.Shared;
         var freeSlots = SchedulingHelpers.ComputeFreeSlots(busySlots, searchStart, searchEnd);
         var population = new List<List<ScheduledSlot>>();
 
@@ -212,7 +212,14 @@ public class GeneticScheduler : ISchedulingAlgorithm
         List<TaskToSchedule> tasks, List<TimeSlot> freeSlots, Random rng)
     {
         var result = new List<ScheduledSlot>();
-        var shuffled = tasks.OrderBy(_ => rng.Next()).ToList();
+        var shuffled = new List<TaskToSchedule>(tasks);
+        var n = shuffled.Count;
+        while (n > 1)
+        {
+            n--;
+            var k = rng.Next(n + 1);
+            (shuffled[k], shuffled[n]) = (shuffled[n], shuffled[k]);
+        }
         var remainingSlots = freeSlots.Select(s =>
             (Start: s.Start, Remaining: s.End - s.Start)).ToList();
 
