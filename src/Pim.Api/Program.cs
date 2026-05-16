@@ -35,9 +35,9 @@ moduleRegistry.DiscoverModules(builder.Services, builder.Configuration);
 var app = builder.Build();
 
 app.UseMiddleware<ExceptionMiddleware>();
+app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
-app.UseCors();
 
 app.UseSerilogRequestLogging(options =>
 {
