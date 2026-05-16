@@ -3,8 +3,19 @@ using Pim.Api.Endpoints;
 using Pim.Api.Middleware;
 using Pim.Api.Search;
 using Pim.Infrastructure.Extensions;
+using Serilog;
+
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Debug()
+    .WriteTo.Console()
+    .WriteTo.File("/data/pim/logs/pim-api-.log",
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 30,
+        outputTemplate: "{Timestamp:yyyy-MM-ddTHH:mm:ss.fffZ} [{Level}] {Message:lj}{NewLine}{Exception}")
+    .CreateLogger();
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Host.UseSerilog();
 
 // Infrastructure
 builder.Services.AddPimInfrastructure(builder.Configuration);
@@ -27,6 +38,11 @@ app.UseMiddleware<ExceptionMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseCors();
+
+app.UseSerilogRequestLogging(options =>
+{
+    options.MessageTemplate = "{RemoteIpAddress} {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.000} ms";
+});
 
 // Serve React SPA static files from wwwroot
 app.UseDefaultFiles();

@@ -7,7 +7,7 @@ public static class PasswordHasher
         if (string.IsNullOrWhiteSpace(password))
             throw new ArgumentException("Password cannot be null or whitespace.", nameof(password));
 
-        return BCrypt.Net.BCrypt.HashPassword(password, workFactor: 12);
+        return BCrypt.Net.BCrypt.HashPassword(password, workFactor: 10);
     }
 
     public static bool Verify(string password, string hash)

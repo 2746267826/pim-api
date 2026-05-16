@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
@@ -17,6 +18,7 @@ public class JwtService : IDisposable
 
     public JwtService(IConfiguration configuration, IHostEnvironment environment, ILogger<JwtService> logger)
     {
+        var sw = Stopwatch.StartNew();
         _rsa = RSA.Create();
         _logger = logger;
 
@@ -27,11 +29,13 @@ public class JwtService : IDisposable
         }
         else if (environment.IsDevelopment())
         {
+            var keySize = _rsa.KeySize;
             _logger.LogWarning(
-                "JWT private key file not found at '{KeyPath}'. Using ephemeral in-memory RSA key. "
+                "JWT private key file not found at '{KeyPath}'. Using ephemeral in-memory RSA key ({KeySize} bits). "
                 + "All tokens will be invalidated on application restart. "
+                + "RSA init took {ElapsedMs}ms. "
                 + "Set Jwt:PrivateKeyPath in configuration for production environments.",
-                keyPath);
+                keyPath, keySize, sw.ElapsedMilliseconds);
         }
         else
         {
@@ -50,6 +54,7 @@ public class JwtService : IDisposable
         if (string.IsNullOrWhiteSpace(role))
             throw new ArgumentException("Role cannot be null or whitespace.", nameof(role));
 
+        var sw = Stopwatch.StartNew();
         SigningCredentials credentials;
         lock (_rsaLock)
         {
@@ -75,7 +80,9 @@ public class JwtService : IDisposable
             signingCredentials: credentials
         );
 
-        return new JwtSecurityTokenHandler().WriteToken(token);
+        var result = new JwtSecurityTokenHandler().WriteToken(token);
+        _logger.LogDebug("GenerateAccessToken took {ElapsedMs}ms", sw.ElapsedMilliseconds);
+        return result;
     }
 
     public string GenerateRefreshToken()

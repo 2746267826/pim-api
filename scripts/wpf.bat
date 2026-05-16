@@ -7,17 +7,8 @@ echo   PIM 平台 - 启动 WPF 客户端
 echo ============================================
 echo.
 
-REM 检查 .NET 8 SDK
-dotnet --list-sdks 2>nul | findstr "8.0." >nul
-if %errorlevel% neq 0 (
-    echo [错误] 未找到 .NET 8 SDK，请先安装 .NET 8.0 SDK
-    echo 下载地址: https://dotnet.microsoft.com/download/dotnet/8.0
-    pause
-    exit /b 1
-)
-
 REM 检查 WPF 项目
-set WPF_PROJ=src\client-windows\Pim.Client.App\Pim.Client.App.csproj
+set WPF_PROJ=..\src\client-windows\Pim.Client.App\Pim.Client.App.csproj
 if not exist "%WPF_PROJ%" (
     echo [错误] WPF 项目文件不存在: %WPF_PROJ%
     pause

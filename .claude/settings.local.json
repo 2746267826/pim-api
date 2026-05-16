@@ -27,7 +27,23 @@
       "PowerShell(dotnet sln *)",
       "PowerShell(dotnet add *)",
       "PowerShell(Get-Location *)",
-      "PowerShell(Set-Location C:\\\\Users\\\\a2746\\\\Desktop\\\\0\\\\project; $baseSha = \\(git rev-list --max-parents=0 HEAD\\); $headSha = \\(git rev-parse HEAD\\); Write-Output \"BASE: $baseSha\"; Write-Output \"HEAD: $headSha\")"
+      "PowerShell(Set-Location C:\\\\Users\\\\a2746\\\\Desktop\\\\0\\\\project; $baseSha = \\(git rev-list --max-parents=0 HEAD\\); $headSha = \\(git rev-parse HEAD\\); Write-Output \"BASE: $baseSha\"; Write-Output \"HEAD: $headSha\")",
+      "PowerShell(gh auth *)",
+      "PowerShell(gh repo *)",
+      "PowerShell(docker compose version *)",
+      "Bash(git push *)",
+      "PowerShell(Test-Path *)",
+      "Bash(export JAVA_HOME=\"C:/Program Files/Android/Android Studio/jbr\")",
+      "Bash(export PATH=\"$JAVA_HOME/bin:$PATH\")",
+      "Bash(java -version)",
+      "PowerShell(Set-Location *)",
+      "Bash(Get-Process -Name \"Pim.Client.App\" -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object Id, ProcessName)",
+      "PowerShell(Get-Process *)",
+      "Bash(git diff-tree *)",
+      "Bash(npm create *)",
+      "Bash(npm install *)",
+      "Bash(npx tsc *)"
     ]
   }
 }

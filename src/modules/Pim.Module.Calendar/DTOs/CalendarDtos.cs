@@ -35,7 +35,8 @@ public record CreateTaskRequest(
     int Priority,
     string? EstimatedDuration,
     string? MinimumSegment,
-    DateTimeOffset? Due
+    DateTimeOffset? Due,
+    DateTimeOffset? DtStart
 );
 
 public record TaskResponse(

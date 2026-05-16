@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
@@ -66,14 +67,18 @@ public static class AuthEndpoints
             PimDbContext db,
             JwtService jwt,
             HttpContext httpContext,
+            ILogger<Program> logger,
             CancellationToken ct) =>
         {
+            var totalSw = Stopwatch.StartNew();
             var ipAddress = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
             // Rate limiting check
+            var stepSw = Stopwatch.StartNew();
             var recentFailures = await db.LoginAttempts.CountAsync(
                 la => la.IpAddress == ipAddress && !la.Success &&
                       la.AttemptedAt > DateTimeOffset.UtcNow.AddMinutes(-15), ct);
+            var rateLimitMs = stepSw.ElapsedMilliseconds;
 
             if (recentFailures >= 5)
             {
@@ -81,10 +86,16 @@ public static class AuthEndpoints
                 return Results.StatusCode(429);
             }
 
+            stepSw.Restart();
             var user = await db.Users.FirstOrDefaultAsync(
                 u => u.Username == request.Username || u.Email == request.Username, ct);
+            var userLookupMs = stepSw.ElapsedMilliseconds;
 
-            if (user is null || !PasswordHasher.Verify(request.Password, user.PasswordHash))
+            stepSw.Restart();
+            var passwordValid = user is not null && PasswordHasher.Verify(request.Password, user.PasswordHash);
+            var bcryptMs = stepSw.ElapsedMilliseconds;
+
+            if (!passwordValid)
             {
                 db.LoginAttempts.Add(new LoginAttemptEntity
                 {
@@ -92,6 +103,8 @@ public static class AuthEndpoints
                     Success = false
                 });
                 await db.SaveChangesAsync(ct);
+                logger.LogInformation("Login failed for '{User}': bcrypt={BcryptMs}ms, userLookup={UserLookupMs}ms, rateLimit={RateLimitMs}ms, total={TotalMs}ms",
+                    request.Username, bcryptMs, userLookupMs, rateLimitMs, totalSw.ElapsedMilliseconds);
                 return Results.Unauthorized();
             }
 
@@ -102,7 +115,10 @@ public static class AuthEndpoints
                 Success = true
             });
 
+            stepSw.Restart();
             var accessToken = jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
+            var jwtMs = stepSw.ElapsedMilliseconds;
+
             var refreshToken = jwt.GenerateRefreshToken();
             var refreshTokenHash = Convert.ToBase64String(
                 SHA256.HashData(
@@ -114,7 +130,12 @@ public static class AuthEndpoints
                 TokenHash = refreshTokenHash,
                 ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
             });
+            stepSw.Restart();
             await db.SaveChangesAsync(ct);
+            var dbSaveMs = stepSw.ElapsedMilliseconds;
+
+            logger.LogInformation("Login succeeded for '{User}': bcrypt={BcryptMs}ms, userLookup={UserLookupMs}ms, rateLimit={RateLimitMs}ms, jwt={JwtMs}ms, dbSave={DbSaveMs}ms, total={TotalMs}ms",
+                request.Username, bcryptMs, userLookupMs, rateLimitMs, jwtMs, dbSaveMs, totalSw.ElapsedMilliseconds);
 
             return Results.Ok(ApiResponse<AuthResponse>.Ok(new AuthResponse(
                 accessToken,

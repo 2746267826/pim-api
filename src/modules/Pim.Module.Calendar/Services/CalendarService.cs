@@ -146,7 +146,8 @@ public class CalendarService
             Due = request.Due,
             EstimatedDuration = ParseDuration(request.EstimatedDuration),
             MinimumSegment = ParseDuration(request.MinimumSegment),
-            IsInbox = request.CalendarId is null
+            IsInbox = request.CalendarId is null && !request.DtStart.HasValue,
+            DtStart = request.DtStart
         };
 
         _db.Set<TaskEntity>().Add(task);
@@ -169,6 +170,16 @@ public class CalendarService
             task.SortOrder = request.NewSortOrder.Value;
 
         task.UpdatedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task DeleteTaskAsync(Guid id, CancellationToken ct)
+    {
+        var task = await _db.Set<TaskEntity>()
+            .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
+            ?? throw new DomainException(02004, "Task not found");
+
+        task.DeletedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
     }
 

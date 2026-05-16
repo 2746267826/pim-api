@@ -95,6 +95,14 @@ public class CalendarModule : IModule
             return Results.Ok(ApiResponse<string>.Ok("moved"));
         });
 
+        group.MapDelete("/tasks/{id:guid}", async (
+            Guid id,
+            [FromServices] CalendarService svc, CancellationToken ct) =>
+        {
+            await svc.DeleteTaskAsync(id, ct);
+            return Results.Ok(ApiResponse<string>.Ok("deleted"));
+        });
+
         // Scheduling
         group.MapPost("/schedule", async (
             [FromBody] ScheduleRequest req,
@@ -111,12 +119,35 @@ public class CalendarModule : IModule
         group.MapPost("/import-ics", async (
             HttpRequest request,
             [FromServices] IcsService icsService,
+            [FromServices] CalendarService calendarService,
             CancellationToken ct) =>
         {
             using var reader = new StreamReader(request.Body);
             var icsContent = await reader.ReadToEndAsync(ct);
             var parsed = icsService.ImportEvents(icsContent);
-            return Results.Ok(ApiResponse<int>.Ok(parsed.Count));
+
+            var calendars = await calendarService.GetCalendarsAsync(ct);
+            var calendarId = calendars.FirstOrDefault()?.Id
+                ?? (await calendarService.CreateCalendarAsync(
+                    new CreateCalendarRequest("默认日历", null), ct)).Id;
+
+            var imported = 0;
+            foreach (var evt in parsed)
+            {
+                try
+                {
+                    await calendarService.CreateEventAsync(
+                        new CreateEventRequest(calendarId, evt.Title, evt.Description,
+                            evt.Location, evt.Start, evt.End, evt.RRule), ct);
+                    imported++;
+                }
+                catch
+                {
+                    // skip events that fail validation
+                }
+            }
+
+            return Results.Ok(ApiResponse<int>.Ok(imported));
         });
 
         group.MapGet("/export-ics", async (
