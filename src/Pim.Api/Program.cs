@@ -28,6 +28,10 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.UseCors();
 
+// Serve React SPA static files from wwwroot
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 // Auto-create database schema
 using (var scope = app.Services.CreateScope())
 {
@@ -49,5 +53,8 @@ moduleRegistry.MapAllEndpoints(app);
 
 // Init modules
 await moduleRegistry.InitializeAllAsync(app.Services);
+
+// SPA fallback: non-API routes serve index.html (React Router handles routing)
+app.MapFallbackToFile("index.html").AllowAnonymous();
 
 app.Run();
