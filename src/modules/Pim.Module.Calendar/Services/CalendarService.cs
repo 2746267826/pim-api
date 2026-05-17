@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Common;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -56,6 +57,40 @@ public class CalendarService
                 e.Id, e.CalendarId, e.Uid, e.Title, e.Description,
                 e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source))
             .ToListAsync(ct);
+    }
+
+    public async Task<PagedResult<EventResponse>> GetEventsPagedAsync(
+        string? search, Guid? calendarId,
+        DateTimeOffset? start, DateTimeOffset? end,
+        int page = 1, int pageSize = 50,
+        CancellationToken ct = default)
+    {
+        if (_currentUser.UserId is null)
+            throw new DomainException(01002, "Not authenticated");
+
+        var query = _db.Set<EventEntity>()
+            .Where(e => e.Calendar.UserId == _currentUser.UserId.Value);
+
+        if (!string.IsNullOrEmpty(search))
+            query = query.Where(e => e.Title.Contains(search));
+        if (calendarId.HasValue)
+            query = query.Where(e => e.CalendarId == calendarId.Value);
+        if (start.HasValue)
+            query = query.Where(e => e.DtEnd >= start.Value);
+        if (end.HasValue)
+            query = query.Where(e => e.DtStart <= end.Value);
+
+        var totalCount = await query.CountAsync(ct);
+        var totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);
+
+        var items = await query
+            .OrderByDescending(e => e.DtStart)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(e => MapEvent(e))
+            .ToListAsync(ct);
+
+        return new PagedResult<EventResponse>(items, page, pageSize, totalCount, totalPages);
     }
 
     public async Task<EventResponse> CreateEventAsync(CreateEventRequest request, CancellationToken ct)

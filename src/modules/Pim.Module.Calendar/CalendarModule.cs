@@ -50,9 +50,26 @@ public class CalendarModule : IModule
 
         // Events
         group.MapGet("/events", async (
-            [FromQuery] DateTimeOffset start, [FromQuery] DateTimeOffset end,
-            [FromServices] CalendarService svc, CancellationToken ct) =>
-            Results.Ok(ApiResponse<List<EventResponse>>.Ok(await svc.GetEventsAsync(start, end, ct))));
+            [FromQuery] DateTimeOffset? start,
+            [FromQuery] DateTimeOffset? end,
+            [FromQuery] string? search,
+            [FromQuery] Guid? calendarId,
+            [FromQuery] int? page,
+            [FromQuery] int? pageSize,
+            [FromServices] CalendarService svc,
+            CancellationToken ct) =>
+        {
+            // If only start/end given (no search/calendarId/page), use old path for backward compat
+            if (search is null && calendarId is null && page is null)
+            {
+                // Old behavior: no pagination, returns List
+                var events = await svc.GetEventsAsync(start ?? DateTimeOffset.MinValue, end ?? DateTimeOffset.MaxValue, ct);
+                return Results.Ok(ApiResponse<List<EventResponse>>.Ok(events));
+            }
+
+            var result = await svc.GetEventsPagedAsync(search, calendarId, start, end, page ?? 1, pageSize ?? 50, ct);
+            return Results.Ok(ApiResponse<PagedResult<EventResponse>>.Ok(result));
+        });
 
         group.MapPost("/events", async (
             [FromBody] CreateEventRequest req,
