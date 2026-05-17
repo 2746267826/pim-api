@@ -155,6 +155,12 @@ public class CalendarModule : IModule
                 DateTimeOffset.MinValue, DateTimeOffset.MaxValue, ct);
             var existingKeys = entities.Select(e => (e.Title, e.DtStart)).ToHashSet();
 
+            // Resolve calendar once before the loop
+            var calendars = await calendarService.GetCalendarsAsync(ct);
+            var calendarId = calendars.FirstOrDefault()?.Id
+                ?? (await calendarService.CreateCalendarAsync(
+                    new CreateCalendarRequest("默认日历", null), ct)).Id;
+
             int imported = 0, skipped = 0;
             foreach (var evt in parsed)
             {
@@ -164,16 +170,17 @@ public class CalendarModule : IModule
                     continue;
                 }
 
-                var calendars = await calendarService.GetCalendarsAsync(ct);
-                var calendarId = calendars.FirstOrDefault()?.Id
-                    ?? (await calendarService.CreateCalendarAsync(
-                        new CreateCalendarRequest("默认日历", null), ct)).Id;
-
-                await calendarService.CreateEventAsync(
-                    new CreateEventRequest(calendarId, evt.Title, evt.Description,
-                        evt.Location, evt.Start, evt.End, evt.RRule), ct);
-
-                imported++;
+                try
+                {
+                    await calendarService.CreateEventAsync(
+                        new CreateEventRequest(calendarId, evt.Title, evt.Description,
+                            evt.Location, evt.Start, evt.End, evt.RRule), ct);
+                    imported++;
+                }
+                catch
+                {
+                    skipped++;
+                }
             }
 
             return Results.Ok(ApiResponse<ImportResult>.Ok(new ImportResult(imported, skipped)));
@@ -193,7 +200,12 @@ public class CalendarModule : IModule
 
             if (!string.IsNullOrEmpty(ids))
             {
-                var idSet = ids.Split(',').Select(Guid.Parse).ToHashSet();
+                var idSet = new HashSet<Guid>();
+                foreach (var part in ids.Split(','))
+                {
+                    if (Guid.TryParse(part.Trim(), out var g))
+                        idSet.Add(g);
+                }
                 entities = entities.Where(e => idSet.Contains(e.Id)).ToList();
             }
 
