@@ -36,10 +36,6 @@ public class AppCategoryEntityConfiguration : IEntityTypeConfiguration<AppCatego
     public void Configure(EntityTypeBuilder<AppCategoryEntity> builder)
     {
         builder.ToTable("pc_app_categories");
-        builder.HasKey(e => e.Id);
-        builder.Property(e => e.AppPattern).HasMaxLength(128).IsRequired();
-        builder.Property(e => e.CategoryName).HasMaxLength(64).IsRequired();
-        builder.Property(e => e.Color).HasMaxLength(7);
         builder.HasIndex(e => e.CategoryName);
         builder.HasIndex(e => e.Priority);
     }

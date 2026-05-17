@@ -366,14 +366,37 @@ public class PcTrackerService
         {
             var targetDate = start.Date;
             var daily = keystats.FirstOrDefault(x => x.SnapshotDate == targetDate);
+            var dayStart = new DateTimeOffset(targetDate, TimeSpan.Zero);
+            var dayEnd = dayStart.AddDays(1);
+
+            // Query AW window events to distribute keyPresses proportionally across hours
+            var awEvents = await _db.Set<AwEventEntity>()
+                .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd && e.EventType == "window")
+                .ToListAsync(ct);
+
             var grid = new List<List<HeatmapBucket>> { new() };
             for (int h = 0; h < 24; h++)
             {
-                var bucketStart = new DateTimeOffset(targetDate.AddHours(h), TimeSpan.Zero);
+                var bucketStart = dayStart.AddHours(h);
                 var bucketEnd = bucketStart.AddHours(1);
-                int keyCount = daily is not null ? (int)(daily.KeyPresses / 24.0) : 0;
+                var eventsInHour = awEvents.Where(e =>
+                    e.Timestamp >= bucketStart && e.Timestamp < bucketEnd).ToList();
+                var eventCount = eventsInHour.Count;
+                // Distribute keyPresses proportionally by events-per-hour; fallback to equal share
+                int keyCount;
+                if (daily is not null && daily.KeyPresses > 0)
+                {
+                    var totalAwEvents = awEvents.Count;
+                    keyCount = totalAwEvents > 0
+                        ? (int)((double)daily.KeyPresses * eventCount / totalAwEvents)
+                        : (int)(daily.KeyPresses / 24.0);
+                }
+                else
+                {
+                    keyCount = 0;
+                }
                 grid[0].Add(new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"),
-                    h, 0, 0, keyCount));
+                    h, 0, eventCount, keyCount));
             }
             return new HeatmapGridResponse(grid, dimension, maxKeyCount);
         }

@@ -109,6 +109,8 @@ CREATE TABLE IF NOT EXISTS pc_app_categories (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pc_app_categories_app_pattern ON pc_app_categories(app_pattern);
+
 INSERT INTO pc_app_categories (app_pattern, category_name, color, priority, is_builtin) VALUES
 ('Code', '编程', '#6B5EE4', 100, TRUE),
 ('Visual Studio', '编程', '#6B5EE4', 100, TRUE),
