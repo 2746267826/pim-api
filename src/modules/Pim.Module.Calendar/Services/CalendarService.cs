@@ -65,11 +65,8 @@ public class CalendarService
         int page = 1, int pageSize = 50,
         CancellationToken ct = default)
     {
-        if (_currentUser.UserId is null)
-            throw new DomainException(01002, "Not authenticated");
-
         var query = _db.Set<EventEntity>()
-            .Where(e => e.Calendar.UserId == _currentUser.UserId.Value);
+            .Where(e => e.Calendar.UserId == UserId);
 
         if (!string.IsNullOrEmpty(search))
             query = query.Where(e => e.Title.Contains(search));

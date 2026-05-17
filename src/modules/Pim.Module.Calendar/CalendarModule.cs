@@ -60,7 +60,7 @@ public class CalendarModule : IModule
             CancellationToken ct) =>
         {
             // If only start/end given (no search/calendarId/page), use old path for backward compat
-            if (search is null && calendarId is null && page is null)
+            if (search is null && calendarId is null && page is null && pageSize is null)
             {
                 // Old behavior: no pagination, returns List
                 var events = await svc.GetEventsAsync(start ?? DateTimeOffset.MinValue, end ?? DateTimeOffset.MaxValue, ct);
