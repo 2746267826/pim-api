@@ -70,3 +70,5 @@ public record ScheduledTaskSlot(
     DateTimeOffset Start,
     DateTimeOffset End
 );
+
+public record ImportResult(int Imported, int Skipped);

@@ -139,44 +139,69 @@ public class CalendarModule : IModule
             [FromServices] CalendarService calendarService,
             CancellationToken ct) =>
         {
-            using var reader = new StreamReader(request.Body);
+            if (!request.HasFormContentType)
+                return Results.BadRequest(ApiResponse<string>.Error(400, "Expected multipart/form-data"));
+
+            var form = await request.ReadFormAsync(ct);
+            var file = form.Files.GetFile("file");
+            if (file is null)
+                return Results.BadRequest(ApiResponse<string>.Error(400, "No file field"));
+
+            using var reader = new StreamReader(file.OpenReadStream());
             var icsContent = await reader.ReadToEndAsync(ct);
             var parsed = icsService.ImportEvents(icsContent);
 
-            var calendars = await calendarService.GetCalendarsAsync(ct);
-            var calendarId = calendars.FirstOrDefault()?.Id
-                ?? (await calendarService.CreateCalendarAsync(
-                    new CreateCalendarRequest("默认日历", null), ct)).Id;
+            var entities = await calendarService.GetEventEntitiesAsync(
+                DateTimeOffset.MinValue, DateTimeOffset.MaxValue, ct);
+            var existingKeys = entities.Select(e => (e.Title, e.DtStart)).ToHashSet();
 
-            var imported = 0;
+            int imported = 0, skipped = 0;
             foreach (var evt in parsed)
             {
-                try
+                if (existingKeys.Contains((evt.Title, evt.Start)))
                 {
-                    await calendarService.CreateEventAsync(
-                        new CreateEventRequest(calendarId, evt.Title, evt.Description,
-                            evt.Location, evt.Start, evt.End, evt.RRule), ct);
-                    imported++;
+                    skipped++;
+                    continue;
                 }
-                catch
-                {
-                    // skip events that fail validation
-                }
+
+                var calendars = await calendarService.GetCalendarsAsync(ct);
+                var calendarId = calendars.FirstOrDefault()?.Id
+                    ?? (await calendarService.CreateCalendarAsync(
+                        new CreateCalendarRequest("默认日历", null), ct)).Id;
+
+                await calendarService.CreateEventAsync(
+                    new CreateEventRequest(calendarId, evt.Title, evt.Description,
+                        evt.Location, evt.Start, evt.End, evt.RRule), ct);
+
+                imported++;
             }
 
-            return Results.Ok(ApiResponse<int>.Ok(imported));
+            return Results.Ok(ApiResponse<ImportResult>.Ok(new ImportResult(imported, skipped)));
         });
 
         group.MapGet("/export-ics", async (
-            [FromQuery] DateTimeOffset start,
-            [FromQuery] DateTimeOffset end,
+            [FromQuery] DateTimeOffset? start,
+            [FromQuery] DateTimeOffset? end,
+            [FromQuery] string? ids,
             [FromServices] CalendarService svc,
             [FromServices] IcsService icsService,
             CancellationToken ct) =>
         {
-            var eventEntities = await svc.GetEventEntitiesAsync(start, end, ct);
-            var icsContent = icsService.ExportEvents(eventEntities);
-            return Results.Ok(ApiResponse<string>.Ok(icsContent));
+            var entities = await svc.GetEventEntitiesAsync(
+                start ?? DateTimeOffset.MinValue,
+                end ?? DateTimeOffset.MaxValue, ct);
+
+            if (!string.IsNullOrEmpty(ids))
+            {
+                var idSet = ids.Split(',').Select(Guid.Parse).ToHashSet();
+                entities = entities.Where(e => idSet.Contains(e.Id)).ToList();
+            }
+
+            var icsContent = icsService.ExportEvents(entities);
+            return Results.File(
+                System.Text.Encoding.UTF8.GetBytes(icsContent),
+                "text/calendar",
+                "pim-events.ics");
         });
 
         // Outlook
