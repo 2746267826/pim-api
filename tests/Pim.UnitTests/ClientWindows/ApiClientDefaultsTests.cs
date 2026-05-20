@@ -1,5 +1,7 @@
 using Pim.Client.Core;
 using Pim.Client.Core.Services;
+using System.Reflection;
+using System.Text.Json.Serialization;
 using Xunit;
 
 namespace Pim.UnitTests.ClientWindows;
@@ -39,5 +41,69 @@ public class ApiClientDefaultsTests
 
         Assert.Equal(10, state.LastWindowId);
         Assert.Equal(20, state.LastAfkId);
+    }
+
+    [Fact]
+    public void KeyStatsSnapshot_MapsFormattedDistanceFieldsFromApi()
+    {
+        var type = typeof(KeyStatsCollectorService).GetNestedType("KeyStatsSnapshot", BindingFlags.NonPublic);
+
+        AssertJsonProperty(type, "FormattedMouseDistance", "formattedMouseDistance");
+        AssertJsonProperty(type, "FormattedScrollDistance", "formattedScrollDistance");
+    }
+
+    [Fact]
+    public void AwPayloads_MapSnakeCaseActivityWatchFields()
+    {
+        var infoType = typeof(AwCollectorService).GetNestedType("AwInfoPayload", BindingFlags.NonPublic);
+        var bucketType = typeof(AwCollectorService).GetNestedType("AwBucketPayload", BindingFlags.NonPublic);
+
+        AssertJsonProperty(infoType, "DeviceId", "device_id");
+        AssertJsonProperty(bucketType, "LastUpdated", "last_updated");
+    }
+
+    [Theory]
+    [InlineData(true, false, "Sample ok; legacy upload failed")]
+    [InlineData(false, true, "Sample upload failed; legacy ok")]
+    [InlineData(true, true, null)]
+    [InlineData(false, false, "Both sample and legacy uploads returned null response")]
+    public void KeyStatsCollector_BuildsPartialUploadHealthMessage(bool sampleOk, bool legacyOk, string? expected)
+    {
+        var method = typeof(KeyStatsCollectorService).GetMethod("BuildUploadHealthMessage", BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        var actual = method.Invoke(null, [sampleOk, legacyOk]);
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [InlineData(3, 3, 2, 2, null)]
+    [InlineData(3, 0, 2, 2, "Partial AW upload failure: window pending 3, afk pending 0")]
+    [InlineData(3, 3, 2, 0, "Partial AW upload failure: window pending 0, afk pending 2")]
+    [InlineData(3, 0, 2, 0, "Partial AW upload failure: window pending 3, afk pending 2")]
+    public void AwCollector_BuildsPartialUploadHealthMessage(
+        int windowFetched,
+        int windowUploaded,
+        int afkFetched,
+        int afkUploaded,
+        string? expected)
+    {
+        var method = typeof(AwCollectorService).GetMethod("BuildUploadHealthMessage", BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+        var actual = method.Invoke(null, [windowFetched, windowUploaded, afkFetched, afkUploaded]);
+
+        Assert.Equal(expected, actual);
+    }
+
+    private static void AssertJsonProperty(Type? type, string propertyName, string expectedJsonName)
+    {
+        Assert.NotNull(type);
+        var property = type.GetProperty(propertyName);
+        Assert.NotNull(property);
+        var attr = property.GetCustomAttribute<JsonPropertyNameAttribute>();
+        Assert.NotNull(attr);
+        Assert.Equal(expectedJsonName, attr.Name);
     }
 }
