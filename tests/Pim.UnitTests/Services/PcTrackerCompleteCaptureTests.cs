@@ -282,4 +282,64 @@ public class PcTrackerCompleteCaptureTests
             () => service.UploadCompleteAwEventsAsync(request, CancellationToken.None));
         Assert.Contains("Complete ActivityWatch uploads are limited to 500 events.", ex.Message);
     }
+
+    [Fact]
+    public async Task UpsertKeystatsSampleAsync_StoresRawMinuteSnapshot()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        var service = new PcTrackerService(db);
+
+        var first = new KeystatsSampleUploadRequest(
+            "DESKTOP",
+            "2026-05-20T13:05:42+08:00",
+            "2026-05-20T00:00:00+08:00",
+            10,
+            new Dictionary<string, int> { ["Space"] = 3 },
+            1,
+            2,
+            3,
+            4,
+            5,
+            123.4,
+            56.7,
+            8,
+            9,
+            "123 m",
+            "57 px",
+            new Dictionary<string, AppStatEntry>
+            {
+                ["msedge.exe"] = new("msedge.exe", "Microsoft Edge", 10, 1, 2, 0, 0, 0, 56.7)
+            });
+
+        var second = first with
+        {
+            SampledAt = "2026-05-20T13:05:59+08:00",
+            KeyPresses = 20
+        };
+
+        await service.UpsertKeystatsSampleAsync(first, CancellationToken.None);
+        await service.UpsertKeystatsSampleAsync(second, CancellationToken.None);
+
+        var saved = Assert.Single(db.Set<KeystatsSampleEntity>());
+        Assert.Equal(DateTimeOffset.Parse("2026-05-20T05:05:00+00:00"), saved.SampledAtUtc);
+        Assert.Equal(new DateTime(2026, 5, 20), saved.StatsDate);
+        Assert.Equal(480, saved.StatsTimezoneOffsetMinutes);
+        Assert.Equal(20, saved.KeyPresses);
+        Assert.Contains("Space", saved.KeyCountsJson);
+        Assert.Contains("msedge", saved.AppStatsJson);
+        Assert.Contains("\"appName\"", saved.AppStatsJson);
+        Assert.Contains("\"displayName\"", saved.AppStatsJson);
+        Assert.Contains("\"pimDeviceId\"", saved.RawJson);
+        Assert.Contains("\"sampledAt\"", saved.RawJson);
+        Assert.Contains("\"keyPresses\"", saved.RawJson);
+        Assert.Contains("\"peakKPS\"", saved.RawJson);
+        Assert.Contains("\"formattedMouseDistance\"", saved.RawJson);
+        Assert.Contains("\"appName\"", saved.RawJson);
+        Assert.Contains("\"displayName\"", saved.RawJson);
+    }
 }

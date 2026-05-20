@@ -13,6 +13,7 @@ public class PcTrackerService
     private const int BusinessDayStartHour = 4;
     private const int MaxCompleteAwEventsPerUpload = 500;
     private const string PostgreSqlUniqueViolationSqlState = "23505";
+    private static readonly JsonSerializerOptions ApiJsonSerializerOptions = new(JsonSerializerDefaults.Web);
 
     private readonly PimDbContext _db;
     private List<AppCategoryRule>? _cachedRules;
@@ -122,6 +123,79 @@ public class PcTrackerService
         }
 
         return await UploadCompleteAwEventsCoreAsync(req, ct, attempt: 0);
+    }
+
+    public async Task UpsertKeystatsSampleAsync(KeystatsSampleUploadRequest req, CancellationToken ct)
+    {
+        if (!TryParseTimestamp(req.SampledAt, out var sampledAt))
+            throw new ArgumentException($"Invalid KeyStats sampledAt timestamp: '{req.SampledAt}'.", nameof(req));
+
+        if (!TryParseLocalDateOffset(req.Date, out var statsDateOffset))
+            throw new ArgumentException($"Invalid KeyStats date timestamp: '{req.Date}'.", nameof(req));
+
+        await UpsertKeystatsSampleCoreAsync(
+            req,
+            TruncateToMinute(sampledAt),
+            statsDateOffset.Date,
+            (int)statsDateOffset.Offset.TotalMinutes,
+            ct,
+            attempt: 0);
+    }
+
+    private async Task UpsertKeystatsSampleCoreAsync(
+        KeystatsSampleUploadRequest req,
+        DateTimeOffset sampledAtUtc,
+        DateTime statsDate,
+        int statsTimezoneOffsetMinutes,
+        CancellationToken ct,
+        int attempt)
+    {
+        var existing = await _db.Set<KeystatsSampleEntity>()
+            .FirstOrDefaultAsync(x => x.PimDeviceId == req.PimDeviceId && x.SampledAtUtc == sampledAtUtc, ct);
+
+        var entity = existing ?? new KeystatsSampleEntity
+        {
+            PimDeviceId = req.PimDeviceId,
+            SampledAtUtc = sampledAtUtc,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+
+        entity.StatsDate = statsDate;
+        entity.StatsTimezoneOffsetMinutes = statsTimezoneOffsetMinutes;
+        entity.KeyPresses = req.KeyPresses;
+        entity.LeftClicks = req.LeftClicks;
+        entity.RightClicks = req.RightClicks;
+        entity.MiddleClicks = req.MiddleClicks;
+        entity.SideBackClicks = req.SideBackClicks;
+        entity.SideForwardClicks = req.SideForwardClicks;
+        entity.MouseDistance = req.MouseDistance;
+        entity.ScrollDistance = req.ScrollDistance;
+        entity.PeakKps = req.PeakKps;
+        entity.PeakCps = req.PeakCps;
+        entity.FormattedMouseDistance = req.FormattedMouseDistance;
+        entity.FormattedScrollDistance = req.FormattedScrollDistance;
+        entity.KeyCountsJson = ToJson(req.KeyPressCounts);
+        entity.AppStatsJson = ToApiJson(req.AppStats);
+        entity.RawJson = ToApiJson(req);
+
+        if (existing is null)
+            _db.Set<KeystatsSampleEntity>().Add(entity);
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (attempt == 0 && IsUniqueViolation(ex))
+        {
+            _db.ChangeTracker.Clear();
+            await UpsertKeystatsSampleCoreAsync(
+                req,
+                sampledAtUtc,
+                statsDate,
+                statsTimezoneOffsetMinutes,
+                ct,
+                attempt: 1);
+        }
     }
 
     private async Task<int> UploadCompleteAwEventsCoreAsync(CompleteAwUploadRequest req, CancellationToken ct, int attempt)
@@ -705,6 +779,28 @@ public class PcTrackerService
             out timestamp);
     }
 
+    private static DateTimeOffset TruncateToMinute(DateTimeOffset timestamp)
+    {
+        var utc = timestamp.ToUniversalTime();
+        return new DateTimeOffset(
+            utc.Year,
+            utc.Month,
+            utc.Day,
+            utc.Hour,
+            utc.Minute,
+            0,
+            TimeSpan.Zero);
+    }
+
+    private static bool TryParseLocalDateOffset(string value, out DateTimeOffset timestamp)
+    {
+        return DateTimeOffset.TryParse(
+            value,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out timestamp);
+    }
+
     private static bool IsUniqueViolation(DbUpdateException ex)
     {
         return EnumerateExceptions(ex).Any(e =>
@@ -726,6 +822,11 @@ public class PcTrackerService
     private static string ToJson(object? value)
     {
         return JsonSerializer.Serialize(value ?? new { });
+    }
+
+    private static string ToApiJson(object? value)
+    {
+        return JsonSerializer.Serialize(value ?? new { }, ApiJsonSerializerOptions);
     }
 
     private static string? GetString(Dictionary<string, object> data, string key)

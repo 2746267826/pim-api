@@ -40,6 +40,15 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<string>.Ok("ok"));
         });
 
+        writeGroup.MapPost("/keystats/samples", async (
+            [FromBody] KeystatsSampleUploadRequest req,
+            [FromServices] PcTrackerService svc,
+            CancellationToken ct) =>
+        {
+            await svc.UpsertKeystatsSampleAsync(req, ct);
+            return Results.Ok(ApiResponse<string>.Ok("ok"));
+        });
+
         writeGroup.MapPost("/aw/upload", async (
             [FromBody] AwEventsUploadRequest req,
             [FromServices] PcTrackerService svc,
