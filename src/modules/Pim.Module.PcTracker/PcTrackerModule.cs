@@ -49,6 +49,15 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<int>.Ok(count));
         });
 
+        writeGroup.MapPost("/aw/upload-complete", async (
+            [FromBody] CompleteAwUploadRequest req,
+            [FromServices] PcTrackerService svc,
+            CancellationToken ct) =>
+        {
+            var count = await svc.UploadCompleteAwEventsAsync(req, ct);
+            return Results.Ok(ApiResponse<int>.Ok(count));
+        });
+
         readGroup.MapGet("/summary", async (
             [FromQuery] string? date,
             [FromServices] PcTrackerService svc,

@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Reflection;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
@@ -8,6 +11,8 @@ namespace Pim.Module.PcTracker.Services;
 public class PcTrackerService
 {
     private const int BusinessDayStartHour = 4;
+    private const int MaxCompleteAwEventsPerUpload = 500;
+    private const string PostgreSqlUniqueViolationSqlState = "23505";
 
     private readonly PimDbContext _db;
     private List<AppCategoryRule>? _cachedRules;
@@ -105,6 +110,118 @@ public class PcTrackerService
         _db.Set<AwEventEntity>().AddRange(entities);
         await _db.SaveChangesAsync(ct);
         return entities.Count;
+    }
+
+    public async Task<int> UploadCompleteAwEventsAsync(CompleteAwUploadRequest req, CancellationToken ct)
+    {
+        if (req.Events.Count > MaxCompleteAwEventsPerUpload)
+        {
+            throw new ArgumentException(
+                $"Complete ActivityWatch uploads are limited to {MaxCompleteAwEventsPerUpload} events.",
+                nameof(req));
+        }
+
+        return await UploadCompleteAwEventsCoreAsync(req, ct, attempt: 0);
+    }
+
+    private async Task<int> UploadCompleteAwEventsCoreAsync(CompleteAwUploadRequest req, CancellationToken ct, int attempt)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var bucket = await _db.Set<AwBucketEntity>()
+            .FirstOrDefaultAsync(x => x.PimDeviceId == req.PimDeviceId && x.BucketId == req.Bucket.Id, ct);
+
+        if (bucket is null)
+        {
+            bucket = new AwBucketEntity
+            {
+                PimDeviceId = req.PimDeviceId,
+                AwDeviceId = req.AwInfo?.DeviceId,
+                BucketId = req.Bucket.Id,
+                Name = req.Bucket.Name,
+                BucketType = req.Bucket.Type,
+                Client = req.Bucket.Client,
+                Hostname = req.Bucket.Hostname,
+                CreatedAtSource = ParseOptionalOffset(req.Bucket.Created),
+                LastUpdatedSource = ParseOptionalOffset(req.Bucket.LastUpdated),
+                DataJson = ToJson(req.Bucket.Data),
+                SeenAt = now
+            };
+            _db.Set<AwBucketEntity>().Add(bucket);
+        }
+        else
+        {
+            bucket.AwDeviceId = req.AwInfo?.DeviceId;
+            bucket.Name = req.Bucket.Name;
+            bucket.BucketType = req.Bucket.Type;
+            bucket.Client = req.Bucket.Client;
+            bucket.Hostname = req.Bucket.Hostname;
+            bucket.LastUpdatedSource = ParseOptionalOffset(req.Bucket.LastUpdated);
+            bucket.DataJson = ToJson(req.Bucket.Data);
+            bucket.SeenAt = now;
+        }
+
+        var sourceIds = req.Events.Select(e => e.SourceEventId).ToList();
+        var existingRows = await _db.Set<AwEventEntity>()
+            .Where(e => e.DeviceId == req.PimDeviceId
+                && e.BucketId == req.Bucket.Id
+                && e.SourceEventId != null
+                && sourceIds.Contains(e.SourceEventId.Value))
+            .ToListAsync(ct);
+        var existing = existingRows
+            .GroupBy(e => e.SourceEventId!.Value)
+            .ToDictionary(g => g.Key, g => g.OrderBy(e => e.Id).First());
+
+        var inserted = 0;
+        foreach (var incoming in req.Events)
+        {
+            if (!TryParseTimestamp(incoming.Timestamp, out var timestamp))
+                continue;
+
+            var data = incoming.Data ?? new Dictionary<string, object>();
+            var app = GetString(data, "app");
+            var title = GetString(data, "title");
+            var status = GetString(data, "status");
+
+            if (!existing.TryGetValue(incoming.SourceEventId, out var entity))
+            {
+                entity = new AwEventEntity
+                {
+                    DeviceId = req.PimDeviceId,
+                    CreatedAt = now
+                };
+                _db.Set<AwEventEntity>().Add(entity);
+                existing[incoming.SourceEventId] = entity;
+                inserted++;
+            }
+
+            entity.AwDeviceId = req.AwInfo?.DeviceId;
+            entity.AwHostname = req.AwInfo?.Hostname;
+            entity.BucketId = req.Bucket.Id;
+            entity.BucketType = req.Bucket.Type;
+            entity.BucketClient = req.Bucket.Client;
+            entity.SourceEventId = incoming.SourceEventId;
+            entity.Timestamp = timestamp;
+            entity.Duration = incoming.Duration;
+            entity.DataJson = ToJson(data);
+            entity.EventType = req.Bucket.Type == "afkstatus" ? "afk" : "window";
+            entity.AppName = app;
+            entity.AppNameNormalized = AppNameNormalizer.Normalize(app);
+            entity.WindowTitle = title;
+            entity.AfkStatus = status;
+            entity.UpdatedAt = now;
+        }
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (attempt == 0 && IsUniqueViolation(ex))
+        {
+            _db.ChangeTracker.Clear();
+            return await UploadCompleteAwEventsCoreAsync(req, ct, attempt: 1);
+        }
+
+        return inserted;
     }
 
     public async Task<PcSummaryResponse> GetSummaryAsync(DateTime date, CancellationToken ct)
@@ -572,6 +689,53 @@ public class PcTrackerService
             appName ?? "",
             windowTitle ?? "",
             afkStatus ?? "");
+    }
+
+    private static DateTimeOffset? ParseOptionalOffset(string? value)
+    {
+        return DateTimeOffset.TryParse(value, out var parsed) ? parsed.ToUniversalTime() : null;
+    }
+
+    private static bool TryParseTimestamp(string value, out DateTimeOffset timestamp)
+    {
+        return DateTimeOffset.TryParse(
+            value,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out timestamp);
+    }
+
+    private static bool IsUniqueViolation(DbUpdateException ex)
+    {
+        return EnumerateExceptions(ex).Any(e =>
+            string.Equals(GetStringProperty(e, "SqlState"), PostgreSqlUniqueViolationSqlState, StringComparison.Ordinal)
+            || string.Equals(GetStringProperty(e, "SQLState"), PostgreSqlUniqueViolationSqlState, StringComparison.Ordinal));
+    }
+
+    private static IEnumerable<Exception> EnumerateExceptions(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+            yield return current;
+    }
+
+    private static string? GetStringProperty(Exception ex, string propertyName)
+    {
+        return ex.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public)?.GetValue(ex) as string;
+    }
+
+    private static string ToJson(object? value)
+    {
+        return JsonSerializer.Serialize(value ?? new { });
+    }
+
+    private static string? GetString(Dictionary<string, object> data, string key)
+    {
+        if (!data.TryGetValue(key, out var value) || value is null)
+            return null;
+
+        return value is JsonElement element
+            ? element.ValueKind == JsonValueKind.String ? element.GetString() : element.ToString()
+            : value.ToString();
     }
 
     private static WorkSessionItem MakeSession(DateTimeOffset start, DateTimeOffset end, Dictionary<string, int> counts)
