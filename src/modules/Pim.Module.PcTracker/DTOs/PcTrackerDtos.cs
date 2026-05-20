@@ -150,7 +150,11 @@ public record DetailQueryParams(
     string? SortBy,
     string? SortDir,
     int Page,
-    int PageSize
+    int PageSize,
+    string? Domain = null,
+    string? Title = null,
+    string? Url = null,
+    string? View = null
 );
 
 public record DetailQueryResponse(
@@ -176,7 +180,20 @@ public record PcDetailRecord(
     double? MouseDistance,
     double? ScrollDistance,
     Dictionary<string, int>? KeyCounts,
-    object? Raw
+    object? Raw,
+    string? Url = null,
+    string? Domain = null,
+    string? Path = null,
+    bool IsLocalFile = false,
+    string? BrowserAppName = null,
+    string? BrowserWindowTitle = null,
+    bool? Audible = null,
+    bool? Incognito = null,
+    int? TabCount = null,
+    int AbsorbedShortEventsCount = 0,
+    double AbsorbedDurationSeconds = 0,
+    List<long>? SourceWebEventIds = null,
+    List<long>? SourceWindowEventIds = null
 );
 
 public record TypedDetailQueryResponse(

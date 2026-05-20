@@ -464,8 +464,14 @@ public class PcTrackerService
         var rules = await GetCategoryRulesAsync(ct);
 
         var records = new List<PcDetailRecord>();
-        records.AddRange(awEvents.Select(e => ToAwDetailRecord(e, rules)));
-        records.AddRange(ToInputMinuteRecords(samples));
+        var rawMode = string.Equals(q.View, "raw", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(q.EventType, "web", StringComparison.Ordinal);
+        records.AddRange(rawMode
+            ? awEvents.Select(e => BrowserPageTimelineBuilder.ToRawAwRecord(e, rules))
+            : BrowserPageTimelineBuilder.BuildInterpretedAwRecords(awEvents, rules));
+
+        if (!rawMode)
+            records.AddRange(ToInputMinuteRecords(samples));
 
         records = ApplyCompleteDetailFilters(records, q).ToList();
         records = ApplyCompleteDetailSort(records, q).ToList();
@@ -740,6 +746,21 @@ public class PcTrackerService
                 r.RecordType == "input-minute"
                 && r.KeyCounts is not null
                 && r.KeyCounts.Keys.Any(k => ContainsIgnoreCase(k, q.KeyName)));
+        }
+
+        if (!string.IsNullOrWhiteSpace(q.Domain))
+        {
+            records = records.Where(r => ContainsIgnoreCase(r.Domain, q.Domain));
+        }
+
+        if (!string.IsNullOrWhiteSpace(q.Title))
+        {
+            records = records.Where(r => ContainsIgnoreCase(r.Title, q.Title));
+        }
+
+        if (!string.IsNullOrWhiteSpace(q.Url))
+        {
+            records = records.Where(r => ContainsIgnoreCase(r.Url, q.Url));
         }
 
         return records;

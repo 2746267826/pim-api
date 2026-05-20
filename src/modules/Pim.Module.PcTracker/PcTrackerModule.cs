@@ -122,13 +122,18 @@ public class PcTrackerModule : IModule
             [FromQuery] string? eventType,
             [FromQuery] string? sortBy,
             [FromQuery] string? sortDir,
+            [FromQuery] string? domain,
+            [FromQuery] string? title,
+            [FromQuery] string? url,
+            [FromQuery] string? view,
             [FromServices] PcTrackerService svc,
             CancellationToken ct,
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 20) =>
         {
             var q = new DetailQueryParams(dateFrom, dateTo, dimension, deviceId,
-                appName, categoryName, keyName, eventType, sortBy, sortDir, page, pageSize);
+                appName, categoryName, keyName, eventType, sortBy, sortDir, page, pageSize,
+                domain, title, url, view);
             var result = await svc.QueryCompleteDetailAsync(q, ct);
             return Results.Ok(ApiResponse<TypedDetailQueryResponse>.Ok(result));
         });

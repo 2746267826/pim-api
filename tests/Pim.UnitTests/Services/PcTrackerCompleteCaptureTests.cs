@@ -724,6 +724,444 @@ public class PcTrackerCompleteCaptureTests
         Assert.Contains("docs.activitywatch.net", saved.DataJson);
     }
 
+    [Fact]
+    public async Task QueryCompleteDetailAsync_MergesShortWebPagesIntoNextValidPage()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WebEvent(1, "2026-05-20T05:00:00+00:00", 300, "https://example.com/a", "A"),
+            WebEvent(2, "2026-05-20T05:05:00+00:00", 2, "https://example.com/b", "B"),
+            WebEvent(3, "2026-05-20T05:05:02+00:00", 3, "https://example.com/c", "C"),
+            WebEvent(4, "2026-05-20T05:05:05+00:00", 6, "https://example.com/d", "D"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        Assert.Equal(2, result.Items.Count);
+
+        var first = Assert.Single(result.Items, x => x.Title == "A");
+        Assert.Equal("web-page", first.RecordType);
+        Assert.Equal(300, first.DurationSeconds);
+
+        var second = Assert.Single(result.Items, x => x.Title == "D");
+        Assert.Equal("web-page", second.RecordType);
+        Assert.Equal("2026-05-20T05:05:00.0000000+00:00", second.Start);
+        Assert.Equal("2026-05-20T05:05:11.0000000+00:00", second.End);
+        Assert.Equal(11, second.DurationSeconds);
+
+        var json = JsonSerializer.Serialize(second, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal(2, doc.RootElement.GetProperty("absorbedShortEventsCount").GetInt32());
+        Assert.Equal(5, doc.RootElement.GetProperty("absorbedDurationSeconds").GetDouble());
+        Assert.Equal(new[] { 2L, 3L, 4L }, doc.RootElement.GetProperty("sourceWebEventIds").EnumerateArray().Select(x => x.GetInt64()).ToArray());
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_MergesTrailingShortWebPageIntoPreviousValidPage()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WebEvent(1, "2026-05-20T05:00:00+00:00", 300, "https://example.com/a", "A"),
+            WebEvent(2, "2026-05-20T05:05:00+00:00", 3, "https://example.com/b", "B"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        var page = Assert.Single(result.Items);
+        Assert.Equal("web-page", page.RecordType);
+        Assert.Equal("A", page.Title);
+        Assert.Equal("2026-05-20T05:00:00.0000000+00:00", page.Start);
+        Assert.Equal("2026-05-20T05:05:03.0000000+00:00", page.End);
+        Assert.Equal(303, page.DurationSeconds);
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_HidesBrowserWindowWhenWebPageExplainsIt()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WindowEvent("2026-05-20T05:00:00+00:00", 60, "msedge.exe", "Docs - Edge"),
+            WindowEvent("2026-05-20T05:00:00+00:00", 60, "notepad.exe", "notes.txt"),
+            WebEvent(10, "2026-05-20T05:00:05+00:00", 30, "https://docs.example.com/page", "Docs"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        Assert.DoesNotContain(result.Items, x => x.RecordType == "window" && x.AppName == "msedge.exe");
+        Assert.Contains(result.Items, x => x.RecordType == "window" && x.AppName == "notepad.exe");
+
+        var page = Assert.Single(result.Items, x => x.RecordType == "web-page");
+        var json = JsonSerializer.Serialize(page, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal("msedge.exe", doc.RootElement.GetProperty("browserAppName").GetString());
+        Assert.Equal("Docs - Edge", doc.RootElement.GetProperty("browserWindowTitle").GetString());
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_ReturnsBrowserWindowWhenNoWebPageExplainsIt()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().Add(WindowEvent("2026-05-20T05:00:00+00:00", 60, "msedge.exe", "Docs - Edge"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        var window = Assert.Single(result.Items);
+        Assert.Equal("window", window.RecordType);
+        Assert.Equal("msedge.exe", window.AppName);
+        Assert.Equal("Docs - Edge", window.Title);
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_CanReturnRawWebEvents()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().Add(WebEvent(1, "2026-05-20T05:00:00+00:00", 3, "https://example.com/raw", "Raw"));
+        db.Set<KeystatsSampleEntity>().AddRange(
+            new KeystatsSampleEntity
+            {
+                PimDeviceId = "DESKTOP",
+                SampledAtUtc = DateTimeOffset.Parse("2026-05-20T05:00:00+00:00"),
+                StatsDate = new DateTime(2026, 5, 20),
+                KeyPresses = 10,
+                KeyCountsJson = "{\"A\":10}",
+                RawJson = "{}"
+            },
+            new KeystatsSampleEntity
+            {
+                PimDeviceId = "DESKTOP",
+                SampledAtUtc = DateTimeOffset.Parse("2026-05-20T05:01:00+00:00"),
+                StatsDate = new DateTime(2026, 5, 20),
+                KeyPresses = 12,
+                KeyCountsJson = "{\"A\":12}",
+                RawJson = "{}"
+            });
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(
+            MakeDetailQuery() with { EventType = "web" },
+            CancellationToken.None);
+
+        var page = Assert.Single(result.Items);
+        Assert.Equal("web", page.RecordType);
+        Assert.Equal("Raw", page.Title);
+        Assert.Equal(3, page.DurationSeconds);
+        Assert.DoesNotContain(result.Items, x => x.RecordType == "input-minute");
+
+        var rawViewResult = await service.QueryCompleteDetailAsync(
+            MakeDetailQuery() with { View = "raw" },
+            CancellationToken.None);
+
+        var rawViewPage = Assert.Single(rawViewResult.Items);
+        Assert.Equal("web", rawViewPage.RecordType);
+        Assert.Equal("Raw", rawViewPage.Title);
+        Assert.DoesNotContain(rawViewResult.Items, x => x.RecordType == "input-minute");
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_ReturnsRawWebTabCurrentWhenStoredEventTypeIsNotWeb()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        var webBucketEvent = WebEvent(20, "2026-05-20T05:00:00+00:00", 10, "https://example.com/raw-bucket", "Raw Bucket");
+        webBucketEvent.EventType = "window";
+        db.Set<AwEventEntity>().Add(webBucketEvent);
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(
+            MakeDetailQuery() with { EventType = "web" },
+            CancellationToken.None);
+
+        var page = Assert.Single(result.Items);
+        Assert.Equal("web", page.RecordType);
+        Assert.Equal("Raw Bucket", page.Title);
+        Assert.Equal("https://example.com/raw-bucket", page.Url);
+        Assert.Equal(new[] { 20L }, page.SourceWebEventIds);
+        Assert.Null(page.SourceWindowEventIds);
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_IsolatesWebPageMergingAndBrowserWindowHidingByDevice()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WebEvent(30, "2026-05-20T05:00:00+00:00", 2, "https://desktop.example.com/short", "Desktop Short", "DESKTOP"),
+            WindowEvent("2026-05-20T05:00:01+00:00", 30, "msedge.exe", "Desktop Browser", "DESKTOP"),
+            WebEvent(31, "2026-05-20T05:00:02+00:00", 10, "https://laptop.example.com/page", "Laptop Page", "LAPTOP"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        var laptopPage = Assert.Single(result.Items, x => x.RecordType == "web-page" && x.DeviceId == "LAPTOP");
+        Assert.Equal("LAPTOP", laptopPage.DeviceId);
+        Assert.Equal("2026-05-20T05:00:02.0000000+00:00", laptopPage.Start);
+        Assert.Equal("2026-05-20T05:00:12.0000000+00:00", laptopPage.End);
+        Assert.Equal(new[] { 31L }, laptopPage.SourceWebEventIds);
+        Assert.Null(laptopPage.BrowserAppName);
+        Assert.Null(laptopPage.BrowserWindowTitle);
+
+        var desktopPage = Assert.Single(result.Items, x => x.RecordType == "web-page" && x.DeviceId == "DESKTOP");
+        Assert.Equal("2026-05-20T05:00:00.0000000+00:00", desktopPage.Start);
+        Assert.Equal("2026-05-20T05:00:02.0000000+00:00", desktopPage.End);
+        Assert.Equal(new[] { 30L }, desktopPage.SourceWebEventIds);
+        Assert.Equal("msedge.exe", desktopPage.BrowserAppName);
+        Assert.Equal("Desktop Browser", desktopPage.BrowserWindowTitle);
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_ReturnsWebPageWhenAllWebEventsAreShort()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WebEvent(40, "2026-05-20T05:00:00+00:00", 2, "https://example.com/first", "First Short"),
+            WebEvent(41, "2026-05-20T05:00:02+00:00", 3, "https://example.com/last", "Last Short"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        var page = Assert.Single(result.Items);
+        Assert.Equal("web-page", page.RecordType);
+        Assert.Equal("Last Short", page.Title);
+        Assert.Equal("https://example.com/last", page.Url);
+        Assert.Equal("2026-05-20T05:00:00.0000000+00:00", page.Start);
+        Assert.Equal("2026-05-20T05:00:05.0000000+00:00", page.End);
+        Assert.Equal(5, page.DurationSeconds);
+        Assert.Equal(2, page.AbsorbedShortEventsCount);
+        Assert.Equal(5, page.AbsorbedDurationSeconds);
+        Assert.Equal(new[] { 40L, 41L }, page.SourceWebEventIds);
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_UpdatesBrowserWindowMetadataAfterTrailingShortWebPageExtension()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        var trailingWindow = WindowEvent("2026-05-20T05:00:06+00:00", 3, "msedge.exe", "Trailing Browser");
+        trailingWindow.SourceEventId = 52;
+        db.Set<AwEventEntity>().AddRange(
+            WebEvent(50, "2026-05-20T05:00:00+00:00", 6, "https://example.com/valid", "Valid Page"),
+            WebEvent(51, "2026-05-20T05:00:06+00:00", 3, "https://example.com/trailing", "Trailing Short"),
+            trailingWindow);
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        Assert.DoesNotContain(result.Items, x => x.RecordType == "window" && x.AppName == "msedge.exe");
+
+        var page = Assert.Single(result.Items);
+        Assert.Equal("web-page", page.RecordType);
+        Assert.Equal("Valid Page", page.Title);
+        Assert.Equal("2026-05-20T05:00:00.0000000+00:00", page.Start);
+        Assert.Equal("2026-05-20T05:00:09.0000000+00:00", page.End);
+        Assert.Equal("msedge.exe", page.BrowserAppName);
+        Assert.Equal("Trailing Browser", page.BrowserWindowTitle);
+        Assert.Equal(new[] { 50L, 51L }, page.SourceWebEventIds);
+        Assert.Equal(new[] { 52L }, page.SourceWindowEventIds);
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_HidesOnlySelectedBrowserWindowWhenMultipleWindowsOverlapWebPage()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        var selectedWindow = WindowEvent("2026-05-20T05:00:00+00:00", 30, "msedge.exe", "Selected Browser");
+        selectedWindow.SourceEventId = 61;
+        var fallbackWindow = WindowEvent("2026-05-20T05:00:10+00:00", 10, "chrome.exe", "Fallback Browser");
+        fallbackWindow.SourceEventId = 62;
+        db.Set<AwEventEntity>().AddRange(
+            selectedWindow,
+            fallbackWindow,
+            WebEvent(60, "2026-05-20T05:00:00+00:00", 30, "https://example.com/overlap", "Overlap Page"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        var page = Assert.Single(result.Items, x => x.RecordType == "web-page");
+        Assert.Equal("msedge.exe", page.BrowserAppName);
+        Assert.Equal("Selected Browser", page.BrowserWindowTitle);
+        Assert.Equal(new[] { 61L }, page.SourceWindowEventIds);
+
+        Assert.DoesNotContain(result.Items, x => x.RecordType == "window" && x.Title == "Selected Browser");
+        var fallback = Assert.Single(result.Items, x => x.RecordType == "window");
+        Assert.Equal("chrome.exe", fallback.AppName);
+        Assert.Equal("Fallback Browser", fallback.Title);
+        Assert.Equal(new[] { 62L }, fallback.SourceWindowEventIds);
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_PrefersBrowserWindowMatchingWebBucketWhenOtherBrowserOverlapsLonger()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        var edgeWindow = WindowEvent("2026-05-20T05:00:00+00:00", 30, "msedge.exe", "Edge Browser");
+        edgeWindow.SourceEventId = 71;
+        var chromeWindow = WindowEvent("2026-05-20T05:00:00+00:00", 60, "chrome.exe", "Chrome Browser");
+        chromeWindow.SourceEventId = 72;
+        db.Set<AwEventEntity>().AddRange(
+            edgeWindow,
+            chromeWindow,
+            WebEvent(70, "2026-05-20T05:00:00+00:00", 60, "https://example.com/edge", "Edge Page"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        var page = Assert.Single(result.Items, x => x.RecordType == "web-page");
+        Assert.Equal("msedge.exe", page.BrowserAppName);
+        Assert.Equal("Edge Browser", page.BrowserWindowTitle);
+        Assert.Equal(new[] { 71L }, page.SourceWindowEventIds);
+
+        Assert.DoesNotContain(result.Items, x => x.RecordType == "window" && x.Title == "Edge Browser");
+        var chrome = Assert.Single(result.Items, x => x.RecordType == "window");
+        Assert.Equal("chrome.exe", chrome.AppName);
+        Assert.Equal("Chrome Browser", chrome.Title);
+        Assert.Equal(new[] { 72L }, chrome.SourceWindowEventIds);
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_UsesPrimaryPageBrowserWhenLeadingShortPageCameFromDifferentBrowser()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        var chromeWindow = WindowEvent("2026-05-20T05:00:00+00:00", 60, "chrome.exe", "Chrome Browser");
+        chromeWindow.SourceEventId = 82;
+        var edgeWindow = WindowEvent("2026-05-20T05:00:03+00:00", 30, "msedge.exe", "Edge Browser");
+        edgeWindow.SourceEventId = 83;
+        var chromeShortPage = WebEvent(80, "2026-05-20T05:00:00+00:00", 3, "https://chrome.example.com/short", "Chrome Short");
+        chromeShortPage.BucketId = "aw-watcher-web-chrome_DESKTOP";
+        chromeShortPage.BucketClient = "aw-watcher-web-chrome";
+        var edgePrimaryPage = WebEvent(81, "2026-05-20T05:00:03+00:00", 30, "https://edge.example.com/page", "Edge Page");
+        db.Set<AwEventEntity>().AddRange(
+            chromeWindow,
+            edgeWindow,
+            chromeShortPage,
+            edgePrimaryPage);
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        var page = Assert.Single(result.Items, x => x.RecordType == "web-page");
+        Assert.Equal("Edge Page", page.Title);
+        Assert.Equal("https://edge.example.com/page", page.Url);
+        Assert.Equal("msedge.exe", page.BrowserAppName);
+        Assert.Equal("Edge Browser", page.BrowserWindowTitle);
+        Assert.Equal(new[] { 83L }, page.SourceWindowEventIds);
+
+        Assert.DoesNotContain(result.Items, x => x.RecordType == "window" && x.Title == "Edge Browser");
+        var chrome = Assert.Single(result.Items, x => x.RecordType == "window");
+        Assert.Equal("chrome.exe", chrome.AppName);
+        Assert.Equal("Chrome Browser", chrome.Title);
+        Assert.Equal(new[] { 82L }, chrome.SourceWindowEventIds);
+    }
+
+    private static AwEventEntity WebEvent(long sourceId, string timestamp, double duration, string url, string title, string deviceId = "DESKTOP")
+    {
+        return new AwEventEntity
+        {
+            DeviceId = deviceId,
+            Timestamp = DateTimeOffset.Parse(timestamp),
+            Duration = duration,
+            EventType = "web",
+            BucketId = $"aw-watcher-web-edge_{deviceId}",
+            BucketType = "web.tab.current",
+            SourceEventId = sourceId,
+            WindowTitle = title,
+            DataJson = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["url"] = url,
+                ["title"] = title,
+                ["audible"] = false,
+                ["incognito"] = false,
+                ["tabCount"] = 7
+            })
+        };
+    }
+
+    private static AwEventEntity WindowEvent(string timestamp, double duration, string app, string title, string deviceId = "DESKTOP")
+    {
+        return new AwEventEntity
+        {
+            DeviceId = deviceId,
+            Timestamp = DateTimeOffset.Parse(timestamp),
+            Duration = duration,
+            EventType = "window",
+            AppName = app,
+            AppNameNormalized = AppNameNormalizer.Normalize(app),
+            WindowTitle = title,
+            DataJson = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["app"] = app,
+                ["title"] = title
+            })
+        };
+    }
+
     private static DetailQueryParams MakeDetailQuery()
     {
         return new DetailQueryParams(
