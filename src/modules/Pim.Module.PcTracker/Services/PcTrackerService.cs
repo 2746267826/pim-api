@@ -7,7 +7,10 @@ namespace Pim.Module.PcTracker.Services;
 
 public class PcTrackerService
 {
+    private const int BusinessDayStartHour = 4;
+
     private readonly PimDbContext _db;
+    private List<AppCategoryRule>? _cachedRules;
 
     public PcTrackerService(PimDbContext db)
     {
@@ -30,7 +33,7 @@ public class PcTrackerService
             _db.Set<KeystatsDailyEntity>().Remove(existing);
         }
 
-        var entity = new KeystatsDailyEntity
+        _db.Set<KeystatsDailyEntity>().Add(new KeystatsDailyEntity
         {
             DeviceId = req.DeviceId,
             SnapshotDate = snapshotDate,
@@ -61,16 +64,15 @@ public class PcTrackerService
                 SideForwardClicks = kv.Value.SideForwardClicks,
                 ScrollDistance = kv.Value.ScrollDistance
             }).ToList() ?? new()
-        };
+        });
 
-        _db.Set<KeystatsDailyEntity>().Add(entity);
         await _db.SaveChangesAsync(ct);
     }
 
     public async Task<int> UploadAwEventsAsync(AwEventsUploadRequest req, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
-        var entities = req.Events.Select(e => new AwEventEntity
+        var incoming = req.Events.Select(e => new AwEventEntity
         {
             DeviceId = req.DeviceId,
             Timestamp = DateTimeOffset.Parse(e.Timestamp),
@@ -82,6 +84,24 @@ public class PcTrackerService
             CreatedAt = now
         }).ToList();
 
+        if (incoming.Count == 0) return 0;
+
+        var minTimestamp = incoming.Min(e => e.Timestamp);
+        var maxTimestamp = incoming.Max(e => e.Timestamp);
+        var existing = await _db.Set<AwEventEntity>()
+            .Where(e => e.DeviceId == req.DeviceId && e.Timestamp >= minTimestamp && e.Timestamp <= maxTimestamp)
+            .Select(e => new { e.Timestamp, e.Duration, e.EventType, e.AppName, e.WindowTitle, e.AfkStatus })
+            .ToListAsync(ct);
+        var existingKeys = existing
+            .Select(e => MakeAwEventKey(e.Timestamp, e.Duration, e.EventType, e.AppName, e.WindowTitle, e.AfkStatus))
+            .ToHashSet();
+
+        var entities = incoming
+            .Where(e => existingKeys.Add(MakeAwEventKey(e.Timestamp, e.Duration, e.EventType, e.AppName, e.WindowTitle, e.AfkStatus)))
+            .ToList();
+
+        if (entities.Count == 0) return 0;
+
         _db.Set<AwEventEntity>().AddRange(entities);
         await _db.SaveChangesAsync(ct);
         return entities.Count;
@@ -89,96 +109,33 @@ public class PcTrackerService
 
     public async Task<PcSummaryResponse> GetSummaryAsync(DateTime date, CancellationToken ct)
     {
-        var dayStart = new DateTimeOffset(date.Date, TimeSpan.Zero);
+        var dayStart = BusinessDayStart(date);
         var dayEnd = dayStart.AddDays(1);
-
-        // Keystats
-        var keystats = await _db.Set<KeystatsDailyEntity>()
-            .Include(x => x.KeyCounts)
-            .Include(x => x.AppBreakdowns)
-            .Where(x => x.SnapshotDate == date.Date)
-            .OrderByDescending(x => x.CreatedAt)
-            .FirstOrDefaultAsync(ct);
-
-        KeystatsSummary? ks = null;
-        List<AppRankingItem> appRanking = new();
-        if (keystats is not null)
-        {
-            var totalKeys = keystats.KeyPresses;
-            ks = new KeystatsSummary(
-                keystats.SnapshotDate.ToString("yyyy-MM-dd"),
-                keystats.KeyPresses,
-                keystats.LeftClicks + keystats.RightClicks + keystats.MiddleClicks + keystats.SideBackClicks + keystats.SideForwardClicks,
-                keystats.LeftClicks, keystats.RightClicks, keystats.MiddleClicks,
-                keystats.SideBackClicks, keystats.SideForwardClicks,
-                keystats.MouseDistance, keystats.ScrollDistance,
-                keystats.PeakKps, keystats.PeakCps,
-                keystats.KeyCounts.OrderByDescending(k => k.Count).Take(10)
-                    .Select(k => new KeyCountItem(k.KeyName, k.Count, totalKeys > 0 ? (double)k.Count / totalKeys : 0)).ToList()
-            );
-
-            var maxAppKeys = keystats.AppBreakdowns.Any()
-                ? keystats.AppBreakdowns.Max(a => a.KeyPresses)
-                : 1;
-            appRanking = keystats.AppBreakdowns
-                .OrderByDescending(a => a.KeyPresses + a.LeftClicks + a.RightClicks)
-                .Select(a => new AppRankingItem(
-                    a.AppName, a.DisplayName,
-                    a.KeyPresses,
-                    a.LeftClicks + a.RightClicks + a.MiddleClicks + a.SideBackClicks + a.SideForwardClicks,
-                    a.ScrollDistance,
-                    maxAppKeys > 0 ? (double)a.KeyPresses / maxAppKeys : 0
-                )).ToList();
-        }
-
-        // Heatmap (hourly aggregation of AW events)
+        var keystats = await LatestKeystatsForDate(date, ct);
         var awEvents = await _db.Set<AwEventEntity>()
             .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd && e.EventType == "window")
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
 
-        var heatmap = Enumerable.Range(0, 24).Select(hour =>
-        {
-            var bucketStart = dayStart.AddHours(hour);
-            var bucketEnd = bucketStart.AddHours(1);
-            var inBucket = awEvents.Where(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd).ToList();
-            var activeMinutes = (int)Math.Min(60, inBucket.Sum(e => Math.Min(e.Duration, 3600)) / 60);
-            var intensity = activeMinutes switch
-            {
-                0 => 0,
-                <= 5 => 1,
-                <= 15 => 2,
-                <= 30 => 3,
-                <= 45 => 4,
-                _ => 5
-            };
-            return new HeatmapBucket(
-                bucketStart.ToString("O"), bucketEnd.ToString("O"),
-                hour, activeMinutes, inBucket.Count, intensity);
-        }).ToList();
-
-        // Timeline
+        var heatmap = BuildHourlyHeatmap(dayStart, awEvents);
         var timeline = awEvents
             .Where(e => e.AppName is not null)
-            .Select(e => new TimelineItem(
-                e.Timestamp.ToString("O"),
-                e.Timestamp.AddSeconds(e.Duration).ToString("O"),
-                e.Duration / 60,
-                e.AppName ?? "unknown",
-                e.WindowTitle
-            )).ToList();
+            .Select(ToTimelineItem)
+            .ToList();
 
-        // Work sessions (merge consecutive AW events, split by AFK > 15 min gap)
-        var sessions = BuildSessions(awEvents);
-
-        var metrics = await ComputeDerivedMetricsAsync(date, keystats, awEvents, ct);
-        var categories = await GetCategorySummariesAsync(date, ct);
-        return new PcSummaryResponse(ks, heatmap, appRanking, timeline, sessions, metrics, categories);
+        return new PcSummaryResponse(
+            BuildKeystatsSummary(keystats),
+            heatmap,
+            BuildAppRanking(keystats),
+            timeline,
+            BuildSessions(awEvents),
+            ComputeDerivedMetrics(keystats, awEvents),
+            await GetCategorySummariesAsync(date, ct));
     }
 
     public async Task<List<TimelineItem>> GetTimelineAsync(DateTime date, CancellationToken ct)
     {
-        var dayStart = new DateTimeOffset(date.Date, TimeSpan.Zero);
+        var dayStart = BusinessDayStart(date);
         var dayEnd = dayStart.AddDays(1);
 
         var events = await _db.Set<AwEventEntity>()
@@ -186,83 +143,63 @@ public class PcTrackerService
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
 
-        return events.Select(e => new TimelineItem(
-            e.Timestamp.ToString("O"),
-            e.Timestamp.AddSeconds(e.Duration).ToString("O"),
-            e.Duration / 60,
-            e.AppName ?? "unknown",
-            e.WindowTitle
-        )).ToList();
+        return events.Select(ToTimelineItem).ToList();
     }
 
     public async Task<List<HeatmapBucket>> GetHeatmapAsync(DateTime start, DateTime end, CancellationToken ct)
     {
-        var s = new DateTimeOffset(start.Date, TimeSpan.Zero);
-        var e = new DateTimeOffset(end.Date.AddDays(1), TimeSpan.Zero);
-
+        var s = BusinessDayStart(start);
+        var e = BusinessDayStart(end).AddDays(1);
         var events = await _db.Set<AwEventEntity>()
             .Where(ev => ev.Timestamp >= s && ev.Timestamp < e && ev.EventType == "window")
             .ToListAsync(ct);
 
-        var days = (end.Date - start.Date).Days + 1;
         var buckets = new List<HeatmapBucket>();
-
-        for (int d = 0; d < days; d++)
+        for (var day = start.Date; day <= end.Date; day = day.AddDays(1))
         {
-            var day = s.AddDays(d);
-            for (int h = 0; h < 24; h++)
-            {
-                var bucketStart = day.AddHours(h);
-                var bucketEnd = bucketStart.AddHours(1);
-                var inBucket = events.Where(ev => ev.Timestamp >= bucketStart && ev.Timestamp < bucketEnd).ToList();
-                var activeMinutes = (int)Math.Min(60, inBucket.Sum(ev => Math.Min(ev.Duration, 3600)) / 60);
-                var intensity = activeMinutes switch { 0 => 0, <= 5 => 1, <= 15 => 2, <= 30 => 3, <= 45 => 4, _ => 5 };
-                buckets.Add(new HeatmapBucket(
-                    bucketStart.ToString("O"), bucketEnd.ToString("O"),
-                    h, activeMinutes, inBucket.Count, intensity));
-            }
+            buckets.AddRange(BuildHourlyHeatmap(BusinessDayStart(day), events));
         }
         return buckets;
     }
 
     public async Task<List<CategorySummary>> GetCategorySummariesAsync(DateTime date, CancellationToken ct)
     {
-        var keystats = await _db.Set<KeystatsDailyEntity>()
-            .Include(x => x.AppBreakdowns)
-            .Where(x => x.SnapshotDate == date.Date)
-            .OrderByDescending(x => x.CreatedAt)
-            .FirstOrDefaultAsync(ct);
-
+        var keystats = await LatestKeystatsForDate(date, ct);
         if (keystats is null || !keystats.AppBreakdowns.Any()) return new();
 
         var rules = await GetCategoryRulesAsync(ct);
-        var categoryTotals = new Dictionary<string, (int Keys, int Clicks, string Color)>();
+        var totals = new Dictionary<string, (int Keys, int Clicks, string Color)>();
 
         foreach (var app in keystats.AppBreakdowns)
         {
-            var cat = ClassifyApp(app.AppName, rules);
-            var color = GetCategoryColor(cat, rules);
-            if (!categoryTotals.ContainsKey(cat))
-                categoryTotals[cat] = (0, 0, color);
-            var cur = categoryTotals[cat];
-            categoryTotals[cat] = (cur.Keys + app.KeyPresses,
-                cur.Clicks + app.LeftClicks + app.RightClicks + app.MiddleClicks + app.SideBackClicks + app.SideForwardClicks,
-                cur.Color);
+            var category = ClassifyApp(app.AppName, rules);
+            var color = GetCategoryColor(category, rules);
+            var current = totals.TryGetValue(category, out var existing)
+                ? existing
+                : (Keys: 0, Clicks: 0, Color: color);
+            totals[category] = (
+                current.Keys + app.KeyPresses,
+                current.Clicks + TotalClicks(app),
+                current.Color);
         }
 
-        var grandTotal = categoryTotals.Values.Sum(c => c.Keys + c.Clicks);
-        return categoryTotals
+        var grandTotal = totals.Values.Sum(x => x.Keys + x.Clicks);
+        return totals
             .OrderByDescending(kv => kv.Value.Keys + kv.Value.Clicks)
             .Take(5)
             .Select(kv => new CategorySummary(
-                kv.Key, kv.Value.Color,
+                kv.Key,
+                kv.Value.Color,
                 grandTotal > 0 ? Math.Round((double)(kv.Value.Keys + kv.Value.Clicks) / grandTotal * 100, 0) : 0,
-                kv.Value.Keys, kv.Value.Clicks
-            )).ToList();
+                kv.Value.Keys,
+                kv.Value.Clicks))
+            .ToList();
     }
 
     public async Task<DetailQueryResponse> QueryDetailAsync(DetailQueryParams q, CancellationToken ct)
     {
+        var page = Math.Max(1, q.Page);
+        var pageSize = Math.Clamp(q.PageSize, 1, 200);
         var query = _db.Set<KeystatsDailyEntity>()
             .Include(x => x.KeyCounts)
             .Include(x => x.AppBreakdowns)
@@ -274,12 +211,19 @@ public class PcTrackerService
             query = query.Where(x => x.SnapshotDate <= to.Date);
         if (!string.IsNullOrWhiteSpace(q.DeviceId))
             query = query.Where(x => x.DeviceId == q.DeviceId);
+        if (!string.IsNullOrWhiteSpace(q.AppName))
+            query = query.Where(x => x.AppBreakdowns.Any(a =>
+                a.AppName.ToLower().Contains(q.AppName.ToLower()) ||
+                a.DisplayName.ToLower().Contains(q.AppName.ToLower())));
+        if (!string.IsNullOrWhiteSpace(q.KeyName))
+            query = query.Where(x => x.KeyCounts.Any(k => k.KeyName.ToLower().Contains(q.KeyName.ToLower())));
 
         var totalCount = await query.CountAsync(ct);
+        query = ApplyDetailSort(query, q);
+
         var entities = await query
-            .OrderByDescending(x => x.SnapshotDate)
-            .Skip((q.Page - 1) * q.PageSize)
-            .Take(q.PageSize)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .ToListAsync(ct);
 
         var items = entities.Select(x => new Dictionary<string, object>
@@ -287,7 +231,7 @@ public class PcTrackerService
             ["date"] = x.SnapshotDate.ToString("yyyy-MM-dd"),
             ["deviceId"] = x.DeviceId,
             ["keyPresses"] = x.KeyPresses,
-            ["totalClicks"] = x.LeftClicks + x.RightClicks + x.MiddleClicks + x.SideBackClicks + x.SideForwardClicks,
+            ["totalClicks"] = TotalClicks(x),
             ["leftClicks"] = x.LeftClicks,
             ["rightClicks"] = x.RightClicks,
             ["middleClicks"] = x.MiddleClicks,
@@ -301,8 +245,11 @@ public class PcTrackerService
         }).ToList();
 
         return new DetailQueryResponse(
-            items, q.Page, q.PageSize, totalCount,
-            (int)Math.Ceiling((double)totalCount / q.PageSize));
+            items,
+            page,
+            pageSize,
+            totalCount,
+            (int)Math.Ceiling((double)totalCount / pageSize));
     }
 
     public async Task<List<AppCategoryRule>> GetAllCategoriesAsync(CancellationToken ct)
@@ -339,9 +286,7 @@ public class PcTrackerService
 
         await _db.SaveChangesAsync(ct);
         _cachedRules = null;
-
-        return new AppCategoryRule(entity.Id, entity.AppPattern, entity.CategoryName,
-            entity.Color, entity.Priority, entity.IsBuiltin);
+        return new AppCategoryRule(entity.Id, entity.AppPattern, entity.CategoryName, entity.Color, entity.Priority, entity.IsBuiltin);
     }
 
     public async Task<bool> DeleteCategoryAsync(Guid id, CancellationToken ct)
@@ -359,82 +304,164 @@ public class PcTrackerService
         var keystats = await _db.Set<KeystatsDailyEntity>()
             .Where(x => x.SnapshotDate >= start.Date && x.SnapshotDate <= end.Date)
             .ToListAsync(ct);
-
         var maxKeyCount = keystats.Any() ? keystats.Max(x => x.KeyPresses) : 1;
 
         if (dimension == "hour")
         {
             var targetDate = start.Date;
             var daily = keystats.FirstOrDefault(x => x.SnapshotDate == targetDate);
-            var dayStart = new DateTimeOffset(targetDate, TimeSpan.Zero);
+            var dayStart = BusinessDayStart(targetDate);
             var dayEnd = dayStart.AddDays(1);
-
-            // Query AW window events to distribute keyPresses proportionally across hours
             var awEvents = await _db.Set<AwEventEntity>()
                 .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd && e.EventType == "window")
                 .ToListAsync(ct);
 
-            var grid = new List<List<HeatmapBucket>> { new() };
-            for (int h = 0; h < 24; h++)
+            var totalAwEvents = awEvents.Count;
+            var row = Enumerable.Range(0, 24).Select(h =>
             {
                 var bucketStart = dayStart.AddHours(h);
                 var bucketEnd = bucketStart.AddHours(1);
-                var eventsInHour = awEvents.Where(e =>
-                    e.Timestamp >= bucketStart && e.Timestamp < bucketEnd).ToList();
-                var eventCount = eventsInHour.Count;
-                // Distribute keyPresses proportionally by events-per-hour; fallback to equal share
-                int keyCount;
-                if (daily is not null && daily.KeyPresses > 0)
-                {
-                    var totalAwEvents = awEvents.Count;
-                    keyCount = totalAwEvents > 0
-                        ? (int)((double)daily.KeyPresses * eventCount / totalAwEvents)
-                        : (int)(daily.KeyPresses / 24.0);
-                }
-                else
-                {
-                    keyCount = 0;
-                }
-                grid[0].Add(new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"),
-                    h, 0, eventCount, keyCount));
-            }
-            return new HeatmapGridResponse(grid, dimension, maxKeyCount);
+                var eventCount = awEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
+                var keyCount = daily is not null && daily.KeyPresses > 0
+                    ? totalAwEvents > 0 ? (int)((double)daily.KeyPresses * eventCount / totalAwEvents) : (int)(daily.KeyPresses / 24.0)
+                    : 0;
+                return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), bucketStart.Hour, 0, eventCount, keyCount);
+            }).ToList();
+
+            return new HeatmapGridResponse(new List<List<HeatmapBucket>> { row }, dimension, maxKeyCount);
         }
 
-        var days = (end.Date - start.Date).Days + 1;
-        var grid2 = new List<List<HeatmapBucket>>();
-        var row = new List<HeatmapBucket>();
-        for (int d = 0; d < days; d++)
+        var grid = new List<List<HeatmapBucket>>();
+        var rowDays = new List<HeatmapBucket>();
+        for (var day = start.Date; day <= end.Date; day = day.AddDays(1))
         {
-            var day = start.Date.AddDays(d);
             var daily = keystats.FirstOrDefault(x => x.SnapshotDate == day);
-            row.Add(new HeatmapBucket(
+            rowDays.Add(new HeatmapBucket(
                 new DateTimeOffset(day, TimeSpan.Zero).ToString("O"),
                 new DateTimeOffset(day.AddDays(1), TimeSpan.Zero).ToString("O"),
                 (int)day.DayOfWeek,
-                0, 0,
+                0,
+                0,
                 daily?.KeyPresses ?? 0));
 
-            if (row.Count == 7)
+            if (rowDays.Count == 7)
             {
-                grid2.Add(row);
-                row = new List<HeatmapBucket>();
+                grid.Add(rowDays);
+                rowDays = new List<HeatmapBucket>();
             }
         }
-        if (row.Count > 0) grid2.Add(row);
 
-        return new HeatmapGridResponse(grid2, dimension, maxKeyCount);
+        if (rowDays.Count > 0) grid.Add(rowDays);
+        return new HeatmapGridResponse(grid, dimension, maxKeyCount);
     }
 
-    private List<AppCategoryRule>? _cachedRules;
+    private async Task<KeystatsDailyEntity?> LatestKeystatsForDate(DateTime date, CancellationToken ct)
+    {
+        return await _db.Set<KeystatsDailyEntity>()
+            .Include(x => x.KeyCounts)
+            .Include(x => x.AppBreakdowns)
+            .Where(x => x.SnapshotDate == date.Date)
+            .OrderByDescending(x => x.CreatedAt)
+            .FirstOrDefaultAsync(ct);
+    }
+
+    public static DateTimeOffset GetBusinessDayStartForQuery(DateTime date)
+    {
+        var localStart = DateTime.SpecifyKind(date.Date.AddHours(BusinessDayStartHour), DateTimeKind.Local);
+        return new DateTimeOffset(localStart).ToUniversalTime();
+    }
+
+    private static DateTimeOffset BusinessDayStart(DateTime date) => GetBusinessDayStartForQuery(date);
+
+    private static IQueryable<KeystatsDailyEntity> ApplyDetailSort(
+        IQueryable<KeystatsDailyEntity> query,
+        DetailQueryParams q)
+    {
+        var ascending = q.SortDir?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true;
+        return (q.SortBy, ascending) switch
+        {
+            ("keyPresses", true) => query.OrderBy(x => x.KeyPresses),
+            ("keyPresses", false) => query.OrderByDescending(x => x.KeyPresses),
+            ("totalClicks", true) => query.OrderBy(x => x.LeftClicks + x.RightClicks + x.MiddleClicks + x.SideBackClicks + x.SideForwardClicks),
+            ("totalClicks", false) => query.OrderByDescending(x => x.LeftClicks + x.RightClicks + x.MiddleClicks + x.SideBackClicks + x.SideForwardClicks),
+            ("date", true) => query.OrderBy(x => x.SnapshotDate),
+            _ => query.OrderByDescending(x => x.SnapshotDate)
+        };
+    }
+
+    private static KeystatsSummary? BuildKeystatsSummary(KeystatsDailyEntity? keystats)
+    {
+        if (keystats is null) return null;
+        var totalKeys = keystats.KeyPresses;
+        return new KeystatsSummary(
+            keystats.SnapshotDate.ToString("yyyy-MM-dd"),
+            keystats.KeyPresses,
+            TotalClicks(keystats),
+            keystats.LeftClicks,
+            keystats.RightClicks,
+            keystats.MiddleClicks,
+            keystats.SideBackClicks,
+            keystats.SideForwardClicks,
+            keystats.MouseDistance,
+            keystats.ScrollDistance,
+            keystats.PeakKps,
+            keystats.PeakCps,
+            keystats.KeyCounts.OrderByDescending(k => k.Count).Take(10)
+                .Select(k => new KeyCountItem(k.KeyName, k.Count, totalKeys > 0 ? (double)k.Count / totalKeys : 0))
+                .ToList());
+    }
+
+    private static List<AppRankingItem> BuildAppRanking(KeystatsDailyEntity? keystats)
+    {
+        if (keystats is null) return new();
+        var maxAppKeys = keystats.AppBreakdowns.Any() ? keystats.AppBreakdowns.Max(a => a.KeyPresses) : 1;
+        return keystats.AppBreakdowns
+            .OrderByDescending(a => a.KeyPresses + a.LeftClicks + a.RightClicks)
+            .Select(a => new AppRankingItem(
+                a.AppName,
+                a.DisplayName,
+                a.KeyPresses,
+                TotalClicks(a),
+                a.ScrollDistance,
+                maxAppKeys > 0 ? (double)a.KeyPresses / maxAppKeys : 0))
+            .ToList();
+    }
+
+    private static List<HeatmapBucket> BuildHourlyHeatmap(DateTimeOffset dayStart, List<AwEventEntity> events)
+    {
+        return Enumerable.Range(0, 24).Select(hour =>
+        {
+            var bucketStart = dayStart.AddHours(hour);
+            var bucketEnd = bucketStart.AddHours(1);
+            var inBucket = events.Where(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd).ToList();
+            var activeMinutes = (int)Math.Min(60, inBucket.Sum(e => Math.Min(e.Duration, 3600)) / 60);
+            var intensity = activeMinutes switch
+            {
+                0 => 0,
+                <= 5 => 1,
+                <= 15 => 2,
+                <= 30 => 3,
+                <= 45 => 4,
+                _ => 5
+            };
+            return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), bucketStart.Hour, activeMinutes, inBucket.Count, intensity);
+        }).ToList();
+    }
+
+    private static TimelineItem ToTimelineItem(AwEventEntity e)
+    {
+        return new TimelineItem(
+            e.Timestamp.ToString("O"),
+            e.Timestamp.AddSeconds(e.Duration).ToString("O"),
+            e.Duration / 60,
+            e.AppName ?? "unknown",
+            e.WindowTitle);
+    }
 
     private async Task<List<AppCategoryRule>> GetCategoryRulesAsync(CancellationToken ct)
     {
         if (_cachedRules is not null) return _cachedRules;
-        _cachedRules = await _db.Set<AppCategoryEntity>()
-            .OrderByDescending(r => r.Priority)
-            .Select(r => new AppCategoryRule(r.Id, r.AppPattern, r.CategoryName, r.Color, r.Priority, r.IsBuiltin))
-            .ToListAsync(ct);
+        _cachedRules = await GetAllCategoriesAsync(ct);
         return _cachedRules;
     }
 
@@ -445,7 +472,7 @@ public class PcTrackerService
             if (string.Equals(appName, rule.AppPattern, StringComparison.OrdinalIgnoreCase))
                 return rule.CategoryName;
         }
-        return "其他";
+        return "Other";
     }
 
     private static string GetCategoryColor(string categoryName, List<AppCategoryRule> rules)
@@ -455,15 +482,15 @@ public class PcTrackerService
 
     private static List<WorkSessionItem> BuildSessions(List<AwEventEntity> events)
     {
-        if (events.Count == 0) return new();
+        var windowEvents = events.Where(e => e.AppName is not null).OrderBy(e => e.Timestamp).ToList();
+        if (windowEvents.Count == 0) return new();
 
         var result = new List<WorkSessionItem>();
-        var sessionStart = events[0].Timestamp;
+        var sessionStart = windowEvents[0].Timestamp;
         var sessionEnd = sessionStart;
-        var currentApp = events[0].AppName;
         var appCounts = new Dictionary<string, int>();
 
-        foreach (var ev in events.Where(e => e.AppName is not null))
+        foreach (var ev in windowEvents)
         {
             var gap = (ev.Timestamp - sessionEnd).TotalMinutes;
             if (gap > 15)
@@ -471,83 +498,51 @@ public class PcTrackerService
                 result.Add(MakeSession(sessionStart, sessionEnd, appCounts));
                 sessionStart = ev.Timestamp;
                 sessionEnd = ev.Timestamp;
-                currentApp = ev.AppName;
                 appCounts.Clear();
             }
 
             sessionEnd = ev.Timestamp.AddSeconds(ev.Duration);
-            if (ev.AppName is not null)
-            {
-                appCounts[ev.AppName] = appCounts.GetValueOrDefault(ev.AppName) + 1;
-            }
+            appCounts[ev.AppName!] = appCounts.GetValueOrDefault(ev.AppName!) + 1;
         }
         result.Add(MakeSession(sessionStart, sessionEnd, appCounts));
 
         return result.Where(s => s.DurationMinutes >= 5).ToList();
     }
 
-    private async Task<DerivedMetrics> ComputeDerivedMetricsAsync(
-        DateTime date, KeystatsDailyEntity? keystats, List<AwEventEntity> awEvents, CancellationToken ct)
+    private static DerivedMetrics ComputeDerivedMetrics(KeystatsDailyEntity? keystats, List<AwEventEntity> awEvents)
     {
         var windowEvents = awEvents.Where(e => e.EventType == "window" && e.AppName is not null).ToList();
         var afkEvents = awEvents.Where(e => e.EventType == "afk").ToList();
-
         var totalRecorded = windowEvents.Count > 0
-            ? (windowEvents.Max(e => e.Timestamp.AddSeconds(e.Duration)) -
-               windowEvents.Min(e => e.Timestamp)).TotalMinutes
+            ? (windowEvents.Max(e => e.Timestamp.AddSeconds(e.Duration)) - windowEvents.Min(e => e.Timestamp)).TotalMinutes
             : 0;
-
-        double activeInputMin = 0;
-        if (keystats is not null)
-            activeInputMin = Math.Max(1, keystats.KeyPresses / 30.0);
-
-        var idleMin = afkEvents
-            .Where(e => e.AfkStatus == "afk")
-            .Sum(e => Math.Min(e.Duration, 3600)) / 60;
-
+        var activeInputMin = keystats is not null ? Math.Max(1, keystats.KeyPresses / 30.0) : 0;
+        var idleMin = afkEvents.Where(e => e.AfkStatus == "afk").Sum(e => Math.Min(e.Duration, 3600)) / 60;
         var sessions = BuildSessions(windowEvents);
-        var sessionCount = sessions.Count;
-
-        var activeApps = windowEvents.Select(e => e.AppName).Distinct().Count();
-
         var keyPresses = keystats?.KeyPresses ?? 0;
-
-        var totalClicks = keystats is not null
-            ? keystats.LeftClicks + keystats.RightClicks + keystats.MiddleClicks +
-              keystats.SideBackClicks + keystats.SideForwardClicks
-            : 0;
+        var totalClicks = keystats is not null ? TotalClicks(keystats) : 0;
 
         var appSwitchCount = 0;
-        string? prevApp = null;
+        string? previousApp = null;
         foreach (var ev in windowEvents.OrderBy(e => e.Timestamp))
         {
-            if (ev.AppName is not null && prevApp is not null && ev.AppName != prevApp)
+            if (ev.AppName is not null && previousApp is not null && ev.AppName != previousApp)
                 appSwitchCount++;
-            prevApp = ev.AppName;
+            previousApp = ev.AppName;
         }
-
-        var switchFreq = totalRecorded > 0 ? Math.Round(appSwitchCount / totalRecorded * 10, 1) : 0;
-
-        var longestApp = windowEvents
-            .Where(e => e.AppName is not null)
-            .OrderByDescending(e => e.Duration)
-            .FirstOrDefault()?.AppName ?? "—";
-
-        var ratio = totalClicks > 0 ? Math.Round((double)keyPresses / totalClicks, 2) : 0;
 
         return new DerivedMetrics(
             FormatDuration(totalRecorded),
             FormatDuration(activeInputMin),
             FormatDuration(idleMin),
-            sessionCount,
-            activeApps,
+            sessions.Count,
+            windowEvents.Select(e => e.AppName).Distinct().Count(),
             keyPresses,
             totalClicks,
             appSwitchCount,
-            switchFreq,
-            longestApp,
-            ratio
-        );
+            totalRecorded > 0 ? Math.Round(appSwitchCount / totalRecorded * 10, 1) : 0,
+            windowEvents.OrderByDescending(e => e.Duration).FirstOrDefault()?.AppName ?? "-",
+            totalClicks > 0 ? Math.Round((double)keyPresses / totalClicks, 2) : 0);
     }
 
     private static string FormatDuration(double minutes)
@@ -562,14 +557,41 @@ public class PcTrackerService
         return $"{Math.Round(minutes)}m";
     }
 
+    private static string MakeAwEventKey(
+        DateTimeOffset timestamp,
+        double duration,
+        string eventType,
+        string? appName,
+        string? windowTitle,
+        string? afkStatus)
+    {
+        return string.Join("|",
+            timestamp.ToUniversalTime().ToString("O"),
+            Math.Round(duration, 3),
+            eventType,
+            appName ?? "",
+            windowTitle ?? "",
+            afkStatus ?? "");
+    }
+
     private static WorkSessionItem MakeSession(DateTimeOffset start, DateTimeOffset end, Dictionary<string, int> counts)
     {
         var mainApp = counts.OrderByDescending(kv => kv.Value).FirstOrDefault();
         return new WorkSessionItem(
-            start.ToString("O"), end.ToString("O"),
+            start.ToString("O"),
+            end.ToString("O"),
             Math.Round((end - start).TotalMinutes, 1),
             mainApp.Key ?? "unknown",
-            counts.Values.Sum()
-        );
+            counts.Values.Sum());
+    }
+
+    private static int TotalClicks(KeystatsDailyEntity e)
+    {
+        return e.LeftClicks + e.RightClicks + e.MiddleClicks + e.SideBackClicks + e.SideForwardClicks;
+    }
+
+    private static int TotalClicks(KeystatsAppBreakdownEntity e)
+    {
+        return e.LeftClicks + e.RightClicks + e.MiddleClicks + e.SideBackClicks + e.SideForwardClicks;
     }
 }

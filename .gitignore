@@ -1,11 +1,33 @@
 ## .NET
 bin/
 obj/
+build/
+dist/
+publish/*
+!publish/install.ps1
+!publish/install.bat
+!publish/setup-cn.bat
 *.user
 *.suo
 *.sln.docstates
 .vs/
 *.log
+
+## Frontend
+node_modules/
+dist-ssr/
+Usersa2746AppDataLocalnpm-cache/
+**/Usersa2746AppDataLocalnpm-cache/
+src/Pim.Api/wwwroot/
+
+## Local tooling and generated state
+.dotnet-appdata/
+.dotnet-home/
+.superpowers/brainstorm/
+objTestDuration/
+docker-compose.override.yml
+docs/input/日程测试/
+src/client-windows/Pim.Client.App/src/
 
 ## IDE
 .vs/

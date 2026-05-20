@@ -11,6 +11,8 @@ public class IcsService
     public string ExportEvents(IEnumerable<EventEntity> events)
     {
         var calendar = new IcalCalendar();
+        calendar.AddTimeZone(new VTimeZone("Asia/Shanghai"));
+
         foreach (var evt in events)
         {
             var calEvent = new CalendarEvent
@@ -48,15 +50,15 @@ public class IcsService
 
         return calendar.Events.Select(e =>
         {
-            var startDt = e.Start?.Value ?? DateTime.MinValue;
-            var endDt = e.End?.Value ?? DateTime.MinValue;
+            var startUtc = e.Start?.AsUtc;
+            var endUtc = e.End?.AsUtc;
             return new ParsedEvent(
                 e.Uid ?? Guid.NewGuid().ToString(),
                 e.Summary ?? "Untitled",
                 e.Description,
                 e.Location,
-                new DateTimeOffset(startDt, TimeSpan.Zero),
-                new DateTimeOffset(endDt, TimeSpan.Zero),
+                startUtc is not null ? new DateTimeOffset(startUtc.Value, TimeSpan.Zero) : DateTimeOffset.MinValue,
+                endUtc is not null ? new DateTimeOffset(endUtc.Value, TimeSpan.Zero) : DateTimeOffset.MinValue,
 #pragma warning disable CS0618
                 e.RecurrenceRules.FirstOrDefault()?.ToString()
 #pragma warning restore CS0618

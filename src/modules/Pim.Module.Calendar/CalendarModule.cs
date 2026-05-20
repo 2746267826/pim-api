@@ -26,6 +26,7 @@ public class CalendarModule : IModule
 
         services.AddScoped<CalendarService>();
         services.AddScoped<IcsService>();
+        services.AddScoped<RecurrenceService>();
         services.AddScoped<SchedulingEngine>();
         services.AddScoped<OutlookSyncService>();
 
@@ -39,14 +40,27 @@ public class CalendarModule : IModule
 
         // Calendars
         group.MapGet("/calendars", async (
+            [FromQuery] string? kind,
             [FromServices] CalendarService svc, CancellationToken ct) =>
-            Results.Ok(ApiResponse<List<CalendarResponse>>.Ok(await svc.GetCalendarsAsync(ct))));
+            Results.Ok(ApiResponse<List<CalendarResponse>>.Ok(await svc.GetCalendarsAsync(kind, ct))));
 
         group.MapPost("/calendars", async (
             [FromBody] CreateCalendarRequest req,
             [FromServices] CalendarService svc, CancellationToken ct) =>
             Results.Created($"/api/v1/calendar/calendars/{{id}}",
                 ApiResponse<CalendarResponse>.Ok(await svc.CreateCalendarAsync(req, ct))));
+
+        group.MapPut("/calendars/{id:guid}", async (
+            Guid id, [FromBody] CreateCalendarRequest req,
+            [FromServices] CalendarService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarResponse>.Ok(await svc.UpdateCalendarAsync(id, req, ct))));
+
+        group.MapDelete("/calendars/{id:guid}", async (
+            Guid id, [FromServices] CalendarService svc, CancellationToken ct) =>
+        {
+            await svc.DeleteCalendarAsync(id, ct);
+            return Results.Ok(ApiResponse<string>.Ok("deleted"));
+        });
 
         // Events
         group.MapGet("/events", async (
@@ -92,6 +106,15 @@ public class CalendarModule : IModule
             return Results.Ok(ApiResponse<string>.Ok("deleted"));
         });
 
+        group.MapPost("/events/batch-delete", async (
+            [FromBody] BatchDeleteRequest req,
+            [FromServices] CalendarService svc,
+            CancellationToken ct) =>
+        {
+            var count = await svc.DeleteEventsAsync(req.Ids, ct);
+            return Results.Ok(ApiResponse<BatchDeleteResult>.Ok(new BatchDeleteResult(count)));
+        });
+
         // Tasks
         group.MapGet("/tasks", async (
             [FromQuery] bool? inbox,
@@ -111,6 +134,11 @@ public class CalendarModule : IModule
             await svc.MoveTaskAsync(id, req, ct);
             return Results.Ok(ApiResponse<string>.Ok("moved"));
         });
+
+        group.MapPut("/tasks/{id:guid}", async (
+            Guid id, [FromBody] CreateTaskRequest req,
+            [FromServices] CalendarService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponse<TaskResponse>.Ok(await svc.UpdateTaskAsync(id, req, ct))));
 
         group.MapDelete("/tasks/{id:guid}", async (
             Guid id,
@@ -147,6 +175,11 @@ public class CalendarModule : IModule
             if (file is null)
                 return Results.BadRequest(ApiResponse<string>.Error(400, "No file field"));
 
+            var calendarIdStr = form.TryGetValue("calendarId", out var cidVal) ? cidVal.ToString() : null;
+            Guid? targetCalendarId = null;
+            if (Guid.TryParse(calendarIdStr, out var cid))
+                targetCalendarId = cid;
+
             using var reader = new StreamReader(file.OpenReadStream());
             var icsContent = await reader.ReadToEndAsync(ct);
             var parsed = icsService.ImportEvents(icsContent);
@@ -154,17 +187,17 @@ public class CalendarModule : IModule
             var entities = await calendarService.GetEventEntitiesAsync(
                 DateTimeOffset.MinValue, DateTimeOffset.MaxValue, ct);
             var existingKeys = entities.Select(e => (e.Title, e.DtStart)).ToHashSet();
+            var existingUids = entities.Select(e => e.Uid).ToHashSet();
 
-            // Resolve calendar once before the loop
-            var calendars = await calendarService.GetCalendarsAsync(ct);
-            var calendarId = calendars.FirstOrDefault()?.Id
+            var calendars = await calendarService.GetCalendarsAsync(null, ct);
+            var calendarId = targetCalendarId ?? calendars.FirstOrDefault()?.Id
                 ?? (await calendarService.CreateCalendarAsync(
-                    new CreateCalendarRequest("默认日历", null), ct)).Id;
+                    new CreateCalendarRequest("默认日历", null, Kind: "calendar"), ct)).Id;
 
             int imported = 0, skipped = 0;
             foreach (var evt in parsed)
             {
-                if (existingKeys.Contains((evt.Title, evt.Start)))
+                if (existingUids.Contains(evt.Uid) || existingKeys.Contains((evt.Title, evt.Start)))
                 {
                     skipped++;
                     continue;
@@ -174,7 +207,7 @@ public class CalendarModule : IModule
                 {
                     await calendarService.CreateEventAsync(
                         new CreateEventRequest(calendarId, evt.Title, evt.Description,
-                            evt.Location, evt.Start, evt.End, evt.RRule), ct);
+                            evt.Location, evt.Start, evt.End, evt.RRule, evt.Uid), ct);
                     imported++;
                 }
                 catch

@@ -1,6 +1,5 @@
 namespace Pim.Module.PcTracker.DTOs;
 
-// POST /api/v1/pc/keystats/upload
 public record KeystatsUploadRequest(
     string DeviceId,
     string Date,
@@ -30,7 +29,6 @@ public record AppStatEntry(
     double ScrollDistance
 );
 
-// POST /api/v1/pc/aw/upload
 public record AwEventsUploadRequest(
     string DeviceId,
     List<AwEventEntry> Events
@@ -45,7 +43,6 @@ public record AwEventEntry(
     string? AfkStatus
 );
 
-// GET /api/v1/pc/summary
 public record PcSummaryResponse(
     KeystatsSummary? Keystats,
     List<HeatmapBucket> Heatmap,
@@ -108,7 +105,6 @@ public record WorkSessionItem(
     int AppSwitchCount
 );
 
-// 衍生指标
 public record DerivedMetrics(
     string TotalRecordedDuration,
     string ActiveInputDuration,
@@ -123,7 +119,6 @@ public record DerivedMetrics(
     double KeyClickRatio
 );
 
-// 分类汇总
 public record CategorySummary(
     string CategoryName,
     string Color,
@@ -132,7 +127,6 @@ public record CategorySummary(
     int TotalClicks
 );
 
-// 应用分类规则
 public record AppCategoryRule(
     Guid Id,
     string AppPattern,
@@ -142,7 +136,6 @@ public record AppCategoryRule(
     bool IsBuiltin
 );
 
-// 详情查询参数
 public record DetailQueryParams(
     string? DateFrom,
     string? DateTo,
@@ -158,7 +151,6 @@ public record DetailQueryParams(
     int PageSize
 );
 
-// 详情查询结果
 public record DetailQueryResponse(
     List<Dictionary<string, object>> Items,
     int Page,
@@ -167,7 +159,6 @@ public record DetailQueryResponse(
     int TotalPages
 );
 
-// 分类规则保存
 public record SaveCategoryRequest(
     string AppPattern,
     string CategoryName,
@@ -175,7 +166,6 @@ public record SaveCategoryRequest(
     int Priority
 );
 
-// 热力图响应（扩展，支持多行网格）
 public record HeatmapGridResponse(
     List<List<HeatmapBucket>> Grid,
     string Dimension,

@@ -54,7 +54,12 @@ CREATE INDEX IF NOT EXISTS ix_pc_aw_events_device_id ON pc_aw_events(device_id);
 CREATE INDEX IF NOT EXISTS ix_pc_aw_events_timestamp ON pc_aw_events("timestamp");
 CREATE INDEX IF NOT EXISTS ix_pc_aw_events_event_type ON pc_aw_events(event_type);
 
--- Seed sample Keystats data
+-- Seed sample Keystats data (idempotent: delete then insert)
+DELETE FROM pc_keystats_key_counts WHERE daily_snapshot_id IN (SELECT id FROM pc_keystats_daily WHERE device_id = 'pc-dev-001' AND snapshot_date = '2026-05-16');
+DELETE FROM pc_keystats_app_breakdown WHERE daily_snapshot_id IN (SELECT id FROM pc_keystats_daily WHERE device_id = 'pc-dev-001' AND snapshot_date = '2026-05-16');
+DELETE FROM pc_aw_events WHERE device_id = 'pc-dev-001';
+DELETE FROM pc_keystats_daily WHERE device_id = 'pc-dev-001' AND snapshot_date = '2026-05-16';
+
 INSERT INTO pc_keystats_daily (device_id, snapshot_date, key_presses, left_clicks, right_clicks, middle_clicks, side_back_clicks, side_forward_clicks, mouse_distance, scroll_distance, peak_kps, peak_cps)
 VALUES ('pc-dev-001', '2026-05-16', 6421, 3250, 72, 15, 8, 3, 3243110.72, 7859, 11, 4);
 

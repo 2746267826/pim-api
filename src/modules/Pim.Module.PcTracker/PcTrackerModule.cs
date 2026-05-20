@@ -92,7 +92,6 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<List<HeatmapBucket>>.Ok(result));
         });
 
-        // GET /api/v1/pc/detail — 多功能查询
         readGroup.MapGet("/detail", async (
             [FromQuery] string? dateFrom,
             [FromQuery] string? dateTo,
@@ -115,7 +114,6 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<DetailQueryResponse>.Ok(result));
         });
 
-        // GET /api/v1/pc/categories
         readGroup.MapGet("/categories", async (
             [FromServices] PcTrackerService svc,
             CancellationToken ct) =>
@@ -124,7 +122,6 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<List<AppCategoryRule>>.Ok(list));
         });
 
-        // POST /api/v1/pc/categories
         writeGroup.MapPost("/categories", async (
             [FromBody] SaveCategoryRequest req,
             [FromServices] PcTrackerService svc,
@@ -134,7 +131,6 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<AppCategoryRule>.Ok(result));
         });
 
-        // DELETE /api/v1/pc/categories/{id}
         writeGroup.MapDelete("/categories/{id}", async (
             Guid id,
             [FromServices] PcTrackerService svc,
@@ -146,7 +142,6 @@ public class PcTrackerModule : IModule
                 : Results.NotFound(ApiResponse<string>.Error(404, "not found or builtin"));
         });
 
-        // GET /api/v1/pc/heatmap/grid — 网格化热力图
         readGroup.MapGet("/heatmap/grid", async (
             [FromQuery] string? start,
             [FromQuery] string? end,

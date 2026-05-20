@@ -11,6 +11,7 @@ public class CalendarEntity : ISoftDeletable
     [Column("user_id")] public Guid UserId { get; set; }
     [Column("name")][MaxLength(100)] public string Name { get; set; } = string.Empty;
     [Column("color")][MaxLength(7)] public string Color { get; set; } = "#3B82F6";
+    [Column("kind")][MaxLength(20)] public string Kind { get; set; } = "calendar";
     [Column("is_default")] public bool IsDefault { get; set; }
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("updated_at")] public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;

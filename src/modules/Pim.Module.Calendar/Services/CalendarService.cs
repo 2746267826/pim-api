@@ -12,51 +12,87 @@ public class CalendarService
 {
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
+    private readonly RecurrenceService _recurrence;
 
-    public CalendarService(PimDbContext db, ICurrentUserService currentUser)
+    public CalendarService(PimDbContext db, ICurrentUserService currentUser, RecurrenceService recurrence)
     {
         _db = db;
         _currentUser = currentUser;
+        _recurrence = recurrence;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "Not authenticated");
 
     // --- Calendars ---
-    public async Task<List<CalendarResponse>> GetCalendarsAsync(CancellationToken ct)
+    public async Task<List<CalendarResponse>> GetCalendarsAsync(string? kind, CancellationToken ct)
     {
-        return await _db.Set<CalendarEntity>()
-            .Where(c => c.UserId == UserId)
-            .Select(c => new CalendarResponse(c.Id, c.Name, c.Color, c.IsDefault,
+        var query = _db.Set<CalendarEntity>()
+            .Where(c => c.UserId == UserId);
+
+        if (kind is not null)
+            query = query.Where(c => c.Kind == kind);
+
+        return await query
+            .Select(c => new CalendarResponse(c.Id, c.Name, c.Color, c.Kind, c.IsDefault,
                 c.Events.Count))
             .ToListAsync(ct);
     }
 
     public async Task<CalendarResponse> CreateCalendarAsync(CreateCalendarRequest request, CancellationToken ct)
     {
+        var kind = !string.IsNullOrEmpty(request.Kind) ? request.Kind : "calendar";
         var calendar = new CalendarEntity
         {
             UserId = UserId,
             Name = request.Name,
             Color = request.Color ?? "#3B82F6",
-            IsDefault = !await _db.Set<CalendarEntity>().AnyAsync(c => c.UserId == UserId, ct)
+            Kind = kind,
+            IsDefault = !await _db.Set<CalendarEntity>().AnyAsync(c => c.UserId == UserId && c.Kind == kind, ct)
         };
         _db.Set<CalendarEntity>().Add(calendar);
         await _db.SaveChangesAsync(ct);
-        return new CalendarResponse(calendar.Id, calendar.Name, calendar.Color, calendar.IsDefault, 0);
+        return new CalendarResponse(calendar.Id, calendar.Name, calendar.Color, calendar.Kind, calendar.IsDefault, 0);
+    }
+
+    public async Task<CalendarResponse> UpdateCalendarAsync(Guid id, CreateCalendarRequest request, CancellationToken ct)
+    {
+        var cal = await _db.Set<CalendarEntity>()
+            .FirstOrDefaultAsync(c => c.Id == id && c.UserId == UserId, ct)
+            ?? throw new DomainException(02002, "Calendar not found");
+        cal.Name = request.Name;
+        if (request.Color is not null) cal.Color = request.Color;
+        cal.UpdatedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return new CalendarResponse(cal.Id, cal.Name, cal.Color, cal.Kind, cal.IsDefault, cal.Events.Count);
+    }
+
+    public async Task DeleteCalendarAsync(Guid id, CancellationToken ct)
+    {
+        var cal = await _db.Set<CalendarEntity>()
+            .FirstOrDefaultAsync(c => c.Id == id && c.UserId == UserId, ct)
+            ?? throw new DomainException(02002, "Calendar not found");
+        cal.DeletedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(ct);
     }
 
     // --- Events ---
     public async Task<List<EventResponse>> GetEventsAsync(
         DateTimeOffset start, DateTimeOffset end, CancellationToken ct)
     {
-        return await _db.Set<EventEntity>()
-            .Where(e => e.Calendar.UserId == UserId &&
-                        e.DtStart < end && e.DtEnd > start)
-            .OrderBy(e => e.DtStart)
-            .Select(e => new EventResponse(
-                e.Id, e.CalendarId, e.Uid, e.Title, e.Description,
-                e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source))
+        var minValidDate = DateTimeOffset.MinValue.AddYears(100);
+        var entities = await _db.Set<EventEntity>()
+            .Where(e => e.Calendar.UserId == UserId
+                        && e.DtStart > minValidDate
+                        && e.DtEnd > minValidDate)
+            .AsNoTracking()
             .ToListAsync(ct);
+
+        var expanded = _recurrence.ExpandEvents(entities, start, end);
+
+        return expanded
+            .OrderBy(x => x.OccurrenceStart)
+            .Select(MapExpandedEvent)
+            .ToList();
     }
 
     public async Task<PagedResult<EventResponse>> GetEventsPagedAsync(
@@ -65,27 +101,32 @@ public class CalendarService
         int page = 1, int pageSize = 50,
         CancellationToken ct = default)
     {
+        var minValidDate = DateTimeOffset.MinValue.AddYears(100);
         var query = _db.Set<EventEntity>()
-            .Where(e => e.Calendar.UserId == UserId);
+            .Where(e => e.Calendar.UserId == UserId
+                        && e.DtStart > minValidDate
+                        && e.DtEnd > minValidDate);
 
         if (!string.IsNullOrEmpty(search))
             query = query.Where(e => e.Title.Contains(search));
         if (calendarId.HasValue)
             query = query.Where(e => e.CalendarId == calendarId.Value);
-        if (start.HasValue)
-            query = query.Where(e => e.DtEnd >= start.Value);
-        if (end.HasValue)
-            query = query.Where(e => e.DtStart <= end.Value);
 
-        var totalCount = await query.CountAsync(ct);
+        var entities = await query.AsNoTracking().ToListAsync(ct);
+
+        var rangeStart = start ?? DateTimeOffset.MinValue;
+        var rangeEnd = end ?? DateTimeOffset.MaxValue;
+        var expanded = _recurrence.ExpandEvents(entities, rangeStart, rangeEnd);
+
+        var totalCount = expanded.Count;
         var totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);
 
-        var items = await query
-            .OrderByDescending(e => e.DtStart)
+        var items = expanded
+            .OrderByDescending(x => x.OccurrenceStart)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(e => MapEvent(e))
-            .ToListAsync(ct);
+            .Select(MapExpandedEvent)
+            .ToList();
 
         return new PagedResult<EventResponse>(items, page, pageSize, totalCount, totalPages);
     }
@@ -99,7 +140,7 @@ public class CalendarService
         var entity = new EventEntity
         {
             CalendarId = request.CalendarId,
-            Uid = Guid.NewGuid().ToString() + "@pim",
+            Uid = request.Uid ?? Guid.NewGuid().ToString() + "@pim",
             Title = request.Title,
             Description = request.Description,
             Location = request.Location,
@@ -135,9 +176,12 @@ public class CalendarService
     public async Task<List<EventEntity>> GetEventEntitiesAsync(
         DateTimeOffset start, DateTimeOffset end, CancellationToken ct)
     {
+        var minValidDate = DateTimeOffset.MinValue.AddYears(100);
         return await _db.Set<EventEntity>()
-            .Where(e => e.Calendar.UserId == UserId &&
-                        e.DtStart < end && e.DtEnd > start)
+            .Where(e => e.Calendar.UserId == UserId
+                        && e.DtStart > minValidDate
+                        && e.DtEnd > minValidDate
+                        && e.DtStart < end && e.DtEnd > start)
             .OrderBy(e => e.DtStart)
             .ToListAsync(ct);
     }
@@ -150,6 +194,21 @@ public class CalendarService
 
         entity.DeletedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task<int> DeleteEventsAsync(IEnumerable<Guid> ids, CancellationToken ct)
+    {
+        var entities = await _db.Set<EventEntity>()
+            .Where(e => ids.Contains(e.Id) && e.Calendar.UserId == UserId)
+            .ToListAsync(ct);
+
+        foreach (var entity in entities)
+            entity.DeletedAt = DateTimeOffset.UtcNow;
+
+        if (entities.Count > 0)
+            await _db.SaveChangesAsync(ct);
+
+        return entities.Count;
     }
 
     // --- Tasks ---
@@ -187,6 +246,32 @@ public class CalendarService
         return MapTask(task);
     }
 
+    public async Task<TaskResponse> UpdateTaskAsync(Guid id, CreateTaskRequest request, CancellationToken ct)
+    {
+        var task = await _db.Set<TaskEntity>()
+            .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
+            ?? throw new DomainException(02004, "Task not found");
+
+        task.Title = request.Title;
+        task.Description = request.Description;
+        task.Priority = request.Priority;
+        task.Due = request.Due;
+        task.EstimatedDuration = ParseDuration(request.EstimatedDuration);
+        task.MinimumSegment = ParseDuration(request.MinimumSegment);
+        task.DtStart = request.DtStart;
+        task.CalendarId = request.CalendarId;
+        if (request.Status is not null)
+        {
+            task.Status = request.Status;
+            if (request.Status == "COMPLETED")
+                task.CompletedAt = DateTimeOffset.UtcNow;
+        }
+        task.UpdatedAt = DateTimeOffset.UtcNow;
+
+        await _db.SaveChangesAsync(ct);
+        return MapTask(task);
+    }
+
     public async Task MoveTaskAsync(Guid id, MoveTaskRequest request, CancellationToken ct)
     {
         var task = await _db.Set<TaskEntity>().FindAsync(new object[] { id }, ct)
@@ -217,7 +302,14 @@ public class CalendarService
 
     private static EventResponse MapEvent(EventEntity e) =>
         new(e.Id, e.CalendarId, e.Uid, e.Title, e.Description,
-            e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source);
+            e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source, null);
+
+    private static EventResponse MapExpandedEvent(ExpandedEvent e) =>
+        new(e.OccurrenceId, e.Entity.CalendarId, e.Entity.Uid,
+            e.Entity.Title, e.Entity.Description,
+            e.Entity.Location, e.OccurrenceStart, e.OccurrenceEnd,
+            e.Entity.RRule, e.Entity.Status, e.Entity.Source,
+            e.Entity.Id);
 
     private static string? FormatDuration(TimeSpan? duration) =>
         duration is not null ? duration.Value.ToString("c") : null;
@@ -225,8 +317,8 @@ public class CalendarService
     private static TimeSpan? ParseDuration(string? value)
     {
         if (value is null) return null;
-        if (TimeSpan.TryParse(value, out var result)) return result;
-        throw new DomainException(02009, $"Invalid duration format: {value}. Use ISO 8601 format (e.g., PT1H30M).");
+        try { return System.Xml.XmlConvert.ToTimeSpan(value); }
+        catch { throw new DomainException(02009, $"Invalid duration format: {value}. Use ISO 8601 format (e.g., PT1H30M)."); }
     }
 
     private static TaskResponse MapTask(TaskEntity t) =>

@@ -21,6 +21,5 @@ RUN dotnet publish "Pim.Api.csproj" -c Release -o /app/publish
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 COPY --from=server-build /app/publish .
-RUN for i in 1 2 3; do apt-get update && apt-get install -y --fix-missing curl && break || sleep 5; done && rm -rf /var/lib/apt/lists/*
 EXPOSE 5000
 ENTRYPOINT ["dotnet", "Pim.Api.dll"]

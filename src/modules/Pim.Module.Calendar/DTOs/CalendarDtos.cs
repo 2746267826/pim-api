@@ -4,11 +4,12 @@ namespace Pim.Module.Calendar.DTOs;
 
 public record CreateCalendarRequest(
     [Required][MaxLength(100)] string Name,
-    [MaxLength(7)] string? Color
+    [MaxLength(7)] string? Color,
+    string? Kind = null
 );
 
 public record CalendarResponse(
-    Guid Id, string Name, string Color, bool IsDefault, int EventCount
+    Guid Id, string Name, string Color, string Kind, bool IsDefault, int EventCount
 );
 
 public record CreateEventRequest(
@@ -18,14 +19,16 @@ public record CreateEventRequest(
     [MaxLength(500)] string? Location,
     [Required] DateTimeOffset DtStart,
     [Required] DateTimeOffset DtEnd,
-    string? RRule
+    string? RRule,
+    string? Uid = null
 );
 
 public record EventResponse(
     Guid Id, Guid CalendarId, string Uid, string Title,
     string? Description, string? Location,
     DateTimeOffset DtStart, DateTimeOffset DtEnd,
-    string? RRule, string Status, string Source
+    string? RRule, string Status, string Source,
+    Guid? OriginalEventId = null
 );
 
 public record CreateTaskRequest(
@@ -36,7 +39,8 @@ public record CreateTaskRequest(
     string? EstimatedDuration,
     string? MinimumSegment,
     DateTimeOffset? Due,
-    DateTimeOffset? DtStart
+    DateTimeOffset? DtStart,
+    string? Status = null
 );
 
 public record TaskResponse(
@@ -72,3 +76,7 @@ public record ScheduledTaskSlot(
 );
 
 public record ImportResult(int Imported, int Skipped);
+
+public record BatchDeleteRequest(List<Guid> Ids);
+
+public record BatchDeleteResult(int DeletedCount);

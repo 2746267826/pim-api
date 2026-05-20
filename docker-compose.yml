@@ -1,21 +1,20 @@
-version: '3.8'
-
 services:
   pim-api:
     build:
       context: .
       dockerfile: src/Pim.Api/Dockerfile
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5858:5000"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/5000'"]
       interval: 15s
       timeout: 5s
       retries: 5
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5000
+      - TZ=Asia/Shanghai
       - ConnectionStrings__DefaultConnection=Host=postgres;Database=pim;Username=pim;Password=${PG_PASSWORD}
       - Minio__Endpoint=minio:9000
       - Minio__AccessKey=${MINIO_ACCESS_KEY}
@@ -71,21 +70,6 @@ services:
   tika:
     image: apache/tika:latest
     restart: unless-stopped
-    networks:
-      - pim-net
-
-  nginx:
-    image: nginx:alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./ssl:/etc/nginx/ssl:ro
-    depends_on:
-      pim-api:
-        condition: service_healthy
     networks:
       - pim-net
 
