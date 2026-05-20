@@ -303,6 +303,9 @@ public class PcTrackerService
         var dayStart = BusinessDayStart(date);
         var dayEnd = dayStart.AddDays(1);
         var keystats = await LatestKeystatsForDate(date, ct);
+        var keystatsSample = keystats is null
+            ? await LatestKeystatsSampleForDate(date, ct)
+            : null;
         var awEvents = await _db.Set<AwEventEntity>()
             .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd && e.EventType == "window")
             .OrderBy(e => e.Timestamp)
@@ -315,12 +318,12 @@ public class PcTrackerService
             .ToList();
 
         return new PcSummaryResponse(
-            BuildKeystatsSummary(keystats),
+            keystats is not null ? BuildKeystatsSummary(keystats) : BuildKeystatsSummaryFromSample(keystatsSample),
             heatmap,
-            BuildAppRanking(keystats),
+            keystats is not null ? BuildAppRanking(keystats) : BuildAppRankingFromSample(keystatsSample),
             timeline,
             BuildSessions(awEvents),
-            ComputeDerivedMetrics(keystats, awEvents),
+            ComputeDerivedMetrics(keystats, keystatsSample, awEvents),
             await GetCategorySummariesAsync(date, ct));
     }
 
@@ -594,6 +597,14 @@ public class PcTrackerService
             .FirstOrDefaultAsync(ct);
     }
 
+    private async Task<KeystatsSampleEntity?> LatestKeystatsSampleForDate(DateTime date, CancellationToken ct)
+    {
+        return await _db.Set<KeystatsSampleEntity>()
+            .Where(x => x.StatsDate == date.Date)
+            .OrderByDescending(x => x.SampledAtUtc)
+            .FirstOrDefaultAsync(ct);
+    }
+
     public static DateTimeOffset GetBusinessDayStartForQuery(DateTime date)
     {
         var localStart = DateTime.SpecifyKind(date.Date.AddHours(BusinessDayStartHour), DateTimeKind.Local);
@@ -775,6 +786,23 @@ public class PcTrackerService
         }
     }
 
+    private static List<AppStatEntry> ParseAppStats(string? appStatsJson)
+    {
+        if (string.IsNullOrWhiteSpace(appStatsJson))
+            return new List<AppStatEntry>();
+
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, AppStatEntry>>(appStatsJson, ApiJsonSerializerOptions)
+                ?.Values
+                .ToList() ?? new List<AppStatEntry>();
+        }
+        catch (JsonException)
+        {
+            return new List<AppStatEntry>();
+        }
+    }
+
     private static Dictionary<string, int> CalculateKeyCountDeltas(string? previousJson, string? currentJson)
     {
         var previous = ParseKeyCounts(previousJson);
@@ -816,11 +844,52 @@ public class PcTrackerService
                 .ToList());
     }
 
+    private static KeystatsSummary? BuildKeystatsSummaryFromSample(KeystatsSampleEntity? sample)
+    {
+        if (sample is null) return null;
+        var totalKeys = sample.KeyPresses;
+        return new KeystatsSummary(
+            sample.StatsDate.ToString("yyyy-MM-dd"),
+            sample.KeyPresses,
+            TotalClicks(sample),
+            sample.LeftClicks,
+            sample.RightClicks,
+            sample.MiddleClicks,
+            sample.SideBackClicks,
+            sample.SideForwardClicks,
+            sample.MouseDistance,
+            sample.ScrollDistance,
+            sample.PeakKps,
+            sample.PeakCps,
+            ParseKeyCounts(sample.KeyCountsJson)
+                .OrderByDescending(kv => kv.Value)
+                .Take(10)
+                .Select(kv => new KeyCountItem(kv.Key, kv.Value, totalKeys > 0 ? (double)kv.Value / totalKeys : 0))
+                .ToList());
+    }
+
     private static List<AppRankingItem> BuildAppRanking(KeystatsDailyEntity? keystats)
     {
         if (keystats is null) return new();
         var maxAppKeys = keystats.AppBreakdowns.Any() ? keystats.AppBreakdowns.Max(a => a.KeyPresses) : 1;
         return keystats.AppBreakdowns
+            .OrderByDescending(a => a.KeyPresses + a.LeftClicks + a.RightClicks)
+            .Select(a => new AppRankingItem(
+                a.AppName,
+                a.DisplayName,
+                a.KeyPresses,
+                TotalClicks(a),
+                a.ScrollDistance,
+                maxAppKeys > 0 ? (double)a.KeyPresses / maxAppKeys : 0))
+            .ToList();
+    }
+
+    private static List<AppRankingItem> BuildAppRankingFromSample(KeystatsSampleEntity? sample)
+    {
+        if (sample is null) return new();
+        var appStats = ParseAppStats(sample.AppStatsJson);
+        var maxAppKeys = appStats.Any() ? appStats.Max(a => a.KeyPresses) : 1;
+        return appStats
             .OrderByDescending(a => a.KeyPresses + a.LeftClicks + a.RightClicks)
             .Select(a => new AppRankingItem(
                 a.AppName,
@@ -914,18 +983,23 @@ public class PcTrackerService
         return result.Where(s => s.DurationMinutes >= 5).ToList();
     }
 
-    private static DerivedMetrics ComputeDerivedMetrics(KeystatsDailyEntity? keystats, List<AwEventEntity> awEvents)
+    private static DerivedMetrics ComputeDerivedMetrics(
+        KeystatsDailyEntity? keystats,
+        KeystatsSampleEntity? keystatsSample,
+        List<AwEventEntity> awEvents)
     {
         var windowEvents = awEvents.Where(e => e.EventType == "window" && e.AppName is not null).ToList();
         var afkEvents = awEvents.Where(e => e.EventType == "afk").ToList();
         var totalRecorded = windowEvents.Count > 0
             ? (windowEvents.Max(e => e.Timestamp.AddSeconds(e.Duration)) - windowEvents.Min(e => e.Timestamp)).TotalMinutes
             : 0;
-        var activeInputMin = keystats is not null ? Math.Max(1, keystats.KeyPresses / 30.0) : 0;
         var idleMin = afkEvents.Where(e => e.AfkStatus == "afk").Sum(e => Math.Min(e.Duration, 3600)) / 60;
         var sessions = BuildSessions(windowEvents);
-        var keyPresses = keystats?.KeyPresses ?? 0;
-        var totalClicks = keystats is not null ? TotalClicks(keystats) : 0;
+        var keyPresses = keystats?.KeyPresses ?? keystatsSample?.KeyPresses ?? 0;
+        var totalClicks = keystats is not null
+            ? TotalClicks(keystats)
+            : keystatsSample is not null ? TotalClicks(keystatsSample) : 0;
+        var activeInputMin = keyPresses > 0 ? Math.Max(1, keyPresses / 30.0) : 0;
 
         var appSwitchCount = 0;
         string? previousApp = null;
@@ -1069,7 +1143,17 @@ public class PcTrackerService
         return e.LeftClicks + e.RightClicks + e.MiddleClicks + e.SideBackClicks + e.SideForwardClicks;
     }
 
+    private static int TotalClicks(KeystatsSampleEntity e)
+    {
+        return e.LeftClicks + e.RightClicks + e.MiddleClicks + e.SideBackClicks + e.SideForwardClicks;
+    }
+
     private static int TotalClicks(KeystatsAppBreakdownEntity e)
+    {
+        return e.LeftClicks + e.RightClicks + e.MiddleClicks + e.SideBackClicks + e.SideForwardClicks;
+    }
+
+    private static int TotalClicks(AppStatEntry e)
     {
         return e.LeftClicks + e.RightClicks + e.MiddleClicks + e.SideBackClicks + e.SideForwardClicks;
     }

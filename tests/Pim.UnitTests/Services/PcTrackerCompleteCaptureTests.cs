@@ -345,6 +345,84 @@ public class PcTrackerCompleteCaptureTests
     }
 
     [Fact]
+    public async Task GetSummaryAsync_UsesLatestKeystatsSampleWhenDailySnapshotMissing()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<KeystatsSampleEntity>().AddRange(
+            new KeystatsSampleEntity
+            {
+                PimDeviceId = "DESKTOP",
+                SampledAtUtc = DateTimeOffset.Parse("2026-05-20T05:55:00+00:00"),
+                StatsDate = new DateTime(2026, 5, 20),
+                KeyPresses = 10,
+                LeftClicks = 1,
+                KeyCountsJson = "{\"A\":10}",
+                AppStatsJson = "{\"old.exe\":{\"appName\":\"old.exe\",\"displayName\":\"Old\",\"keyPresses\":10,\"leftClicks\":1,\"rightClicks\":0,\"middleClicks\":0,\"sideBackClicks\":0,\"sideForwardClicks\":0,\"scrollDistance\":1}}",
+                RawJson = "{}"
+            },
+            new KeystatsSampleEntity
+            {
+                PimDeviceId = "DESKTOP",
+                SampledAtUtc = DateTimeOffset.Parse("2026-05-20T05:56:00+00:00"),
+                StatsDate = new DateTime(2026, 5, 20),
+                KeyPresses = 99,
+                LeftClicks = 2,
+                RightClicks = 3,
+                MiddleClicks = 1,
+                SideBackClicks = 1,
+                MouseDistance = 123.4,
+                ScrollDistance = 56.7,
+                PeakKps = 8,
+                PeakCps = 9,
+                KeyCountsJson = "{\"A\":33,\"B\":66}",
+                AppStatsJson = "{\"msedge.exe\":{\"appName\":\"msedge.exe\",\"displayName\":\"Microsoft Edge\",\"keyPresses\":99,\"leftClicks\":2,\"rightClicks\":3,\"middleClicks\":1,\"sideBackClicks\":1,\"sideForwardClicks\":0,\"scrollDistance\":56.7}}",
+                RawJson = "{}"
+            });
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var summary = await service.GetSummaryAsync(new DateTime(2026, 5, 20), CancellationToken.None);
+
+        Assert.NotNull(summary.Keystats);
+        Assert.Equal("2026-05-20", summary.Keystats.Date);
+        Assert.Equal(99, summary.Keystats.KeyPresses);
+        Assert.Equal(7, summary.Keystats.TotalClicks);
+        Assert.Equal(123.4, summary.Keystats.MouseDistance);
+        Assert.Equal(56.7, summary.Keystats.ScrollDistance);
+        Assert.Equal(8, summary.Keystats.PeakKps);
+        Assert.Equal(9, summary.Keystats.PeakCps);
+        Assert.Collection(
+            summary.Keystats.TopKeys,
+            first =>
+            {
+                Assert.Equal("B", first.KeyName);
+                Assert.Equal(66, first.Count);
+                Assert.Equal(66.0 / 99, first.Share);
+            },
+            second =>
+            {
+                Assert.Equal("A", second.KeyName);
+                Assert.Equal(33, second.Count);
+                Assert.Equal(33.0 / 99, second.Share);
+            });
+
+        var app = Assert.Single(summary.AppRanking);
+        Assert.Equal("msedge.exe", app.AppName);
+        Assert.Equal("Microsoft Edge", app.DisplayName);
+        Assert.Equal(99, app.KeyPresses);
+        Assert.Equal(7, app.TotalClicks);
+        Assert.Equal(56.7, app.ScrollDistance);
+        Assert.Equal(1, app.Share);
+        Assert.Equal(99, summary.Metrics?.TotalKeyPresses);
+        Assert.Equal(7, summary.Metrics?.TotalClicks);
+    }
+
+    [Fact]
     public async Task QueryCompleteDetailAsync_ReturnsWindowAndInputMinuteRecords()
     {
         PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
