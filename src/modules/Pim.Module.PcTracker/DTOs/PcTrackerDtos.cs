@@ -161,6 +161,32 @@ public record DetailQueryResponse(
     int TotalPages
 );
 
+public record PcDetailRecord(
+    string RecordType,
+    string Start,
+    string? End,
+    double? DurationSeconds,
+    string DeviceId,
+    string? AppName,
+    string? DisplayName,
+    string? CategoryName,
+    string? Title,
+    int? KeyPresses,
+    int? TotalClicks,
+    double? MouseDistance,
+    double? ScrollDistance,
+    Dictionary<string, int>? KeyCounts,
+    object? Raw
+);
+
+public record TypedDetailQueryResponse(
+    List<PcDetailRecord> Items,
+    int Page,
+    int PageSize,
+    int TotalCount,
+    int TotalPages
+);
+
 public record SaveCategoryRequest(
     string AppPattern,
     string CategoryName,

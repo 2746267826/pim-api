@@ -129,8 +129,8 @@ public class PcTrackerModule : IModule
         {
             var q = new DetailQueryParams(dateFrom, dateTo, dimension, deviceId,
                 appName, categoryName, keyName, eventType, sortBy, sortDir, page, pageSize);
-            var result = await svc.QueryDetailAsync(q, ct);
-            return Results.Ok(ApiResponse<DetailQueryResponse>.Ok(result));
+            var result = await svc.QueryCompleteDetailAsync(q, ct);
+            return Results.Ok(ApiResponse<TypedDetailQueryResponse>.Ok(result));
         });
 
         readGroup.MapGet("/categories", async (

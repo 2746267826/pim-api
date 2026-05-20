@@ -443,6 +443,44 @@ public class PcTrackerService
             (int)Math.Ceiling((double)totalCount / pageSize));
     }
 
+    public async Task<TypedDetailQueryResponse> QueryCompleteDetailAsync(DetailQueryParams q, CancellationToken ct)
+    {
+        var page = Math.Max(1, q.Page);
+        var pageSize = Math.Clamp(q.PageSize, 1, 200);
+        var (start, end) = GetDetailQueryRange(q);
+
+        var awEvents = await _db.Set<AwEventEntity>()
+            .Where(e => e.Timestamp >= start && e.Timestamp < end)
+            .OrderBy(e => e.Timestamp)
+            .ToListAsync(ct);
+        var samples = await _db.Set<KeystatsSampleEntity>()
+            .Where(s => s.SampledAtUtc >= start && s.SampledAtUtc < end)
+            .OrderBy(s => s.PimDeviceId)
+            .ThenBy(s => s.SampledAtUtc)
+            .ToListAsync(ct);
+        var rules = await GetCategoryRulesAsync(ct);
+
+        var records = new List<PcDetailRecord>();
+        records.AddRange(awEvents.Select(e => ToAwDetailRecord(e, rules)));
+        records.AddRange(ToInputMinuteRecords(samples));
+
+        records = ApplyCompleteDetailFilters(records, q).ToList();
+        records = ApplyCompleteDetailSort(records, q).ToList();
+
+        var totalCount = records.Count;
+        var items = records
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToList();
+
+        return new TypedDetailQueryResponse(
+            items,
+            page,
+            pageSize,
+            totalCount,
+            (int)Math.Ceiling((double)totalCount / pageSize));
+    }
+
     public async Task<List<AppCategoryRule>> GetAllCategoriesAsync(CancellationToken ct)
     {
         return await _db.Set<AppCategoryEntity>()
@@ -578,6 +616,182 @@ public class PcTrackerService
             ("date", true) => query.OrderBy(x => x.SnapshotDate),
             _ => query.OrderByDescending(x => x.SnapshotDate)
         };
+    }
+
+    private static (DateTimeOffset Start, DateTimeOffset End) GetDetailQueryRange(DetailQueryParams q)
+    {
+        var startDate = DateTime.TryParse(q.DateFrom, out var from)
+            ? from.Date
+            : DateTime.Today;
+        var endDate = DateTime.TryParse(q.DateTo, out var to)
+            ? to.Date
+            : startDate;
+
+        return (
+            BusinessDayStart(startDate),
+            BusinessDayStart(endDate).AddDays(1));
+    }
+
+    private static PcDetailRecord ToAwDetailRecord(AwEventEntity e, List<AppCategoryRule> rules)
+    {
+        var normalizedApp = AppNameNormalizer.Normalize(e.AppNameNormalized ?? e.AppName);
+        var category = ClassifyApp(normalizedApp, rules);
+
+        return new PcDetailRecord(
+            e.EventType,
+            FormatUtc(e.Timestamp),
+            FormatUtc(e.Timestamp.AddSeconds(e.Duration)),
+            e.Duration,
+            e.DeviceId,
+            e.AppName,
+            normalizedApp,
+            category,
+            e.WindowTitle,
+            null,
+            null,
+            null,
+            null,
+            null,
+            ParseJsonObject(e.DataJson));
+    }
+
+    private static IEnumerable<PcDetailRecord> ToInputMinuteRecords(List<KeystatsSampleEntity> samples)
+    {
+        var previousByDevice = new Dictionary<string, KeystatsSampleEntity>();
+
+        foreach (var sample in samples)
+        {
+            previousByDevice.TryGetValue(sample.PimDeviceId, out var previous);
+            previousByDevice[sample.PimDeviceId] = sample;
+            if (previous is null)
+                continue;
+
+            var delta = KeystatsDeltaCalculator.Calculate(previous, sample);
+            var keyCounts = delta.IsReset
+                ? new Dictionary<string, int>()
+                : CalculateKeyCountDeltas(previous.KeyCountsJson, sample.KeyCountsJson);
+            var durationSeconds = delta.IsGap
+                ? (sample.SampledAtUtc - previous.SampledAtUtc).TotalSeconds
+                : 60;
+            yield return new PcDetailRecord(
+                "input-minute",
+                FormatUtc(delta.IsGap ? previous.SampledAtUtc : sample.SampledAtUtc),
+                FormatUtc(delta.IsGap ? sample.SampledAtUtc : sample.SampledAtUtc.AddMinutes(1)),
+                durationSeconds,
+                sample.PimDeviceId,
+                null,
+                null,
+                null,
+                null,
+                delta.KeyPresses,
+                delta.TotalClicks,
+                delta.MouseDistance,
+                delta.ScrollDistance,
+                keyCounts,
+                ParseJsonObject(sample.RawJson));
+        }
+    }
+
+    private static string FormatUtc(DateTimeOffset timestamp)
+    {
+        return timestamp.ToUniversalTime().ToString("O");
+    }
+
+    private static IEnumerable<PcDetailRecord> ApplyCompleteDetailFilters(
+        IEnumerable<PcDetailRecord> records,
+        DetailQueryParams q)
+    {
+        if (!string.IsNullOrWhiteSpace(q.EventType))
+        {
+            records = records.Where(r => string.Equals(r.RecordType, q.EventType, StringComparison.Ordinal));
+        }
+
+        if (!string.IsNullOrWhiteSpace(q.DeviceId))
+        {
+            records = records.Where(r => string.Equals(r.DeviceId, q.DeviceId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(q.AppName))
+        {
+            records = records.Where(r =>
+                ContainsIgnoreCase(r.AppName, q.AppName)
+                || ContainsIgnoreCase(r.DisplayName, q.AppName));
+        }
+
+        if (!string.IsNullOrWhiteSpace(q.CategoryName))
+        {
+            records = records.Where(r => string.Equals(r.CategoryName, q.CategoryName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(q.KeyName))
+        {
+            records = records.Where(r =>
+                r.RecordType == "input-minute"
+                && r.KeyCounts is not null
+                && r.KeyCounts.Keys.Any(k => ContainsIgnoreCase(k, q.KeyName)));
+        }
+
+        return records;
+    }
+
+    private static IEnumerable<PcDetailRecord> ApplyCompleteDetailSort(
+        IEnumerable<PcDetailRecord> records,
+        DetailQueryParams q)
+    {
+        var ascending = q.SortDir?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true;
+        return ascending
+            ? records.OrderBy(r => r.Start, StringComparer.Ordinal)
+            : records.OrderByDescending(r => r.Start, StringComparer.Ordinal);
+    }
+
+    private static object? ParseJsonObject(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<JsonElement>(json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static Dictionary<string, int> ParseKeyCounts(string? keyCountsJson)
+    {
+        if (string.IsNullOrWhiteSpace(keyCountsJson))
+            return new Dictionary<string, int>();
+
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, int>>(keyCountsJson)
+                ?? new Dictionary<string, int>();
+        }
+        catch (JsonException)
+        {
+            return new Dictionary<string, int>();
+        }
+    }
+
+    private static Dictionary<string, int> CalculateKeyCountDeltas(string? previousJson, string? currentJson)
+    {
+        var previous = ParseKeyCounts(previousJson);
+        var current = ParseKeyCounts(currentJson);
+        return current
+            .Select(kv => new KeyValuePair<string, int>(
+                kv.Key,
+                Math.Max(0, kv.Value - previous.GetValueOrDefault(kv.Key))))
+            .Where(kv => kv.Value > 0)
+            .ToDictionary(kv => kv.Key, kv => kv.Value);
+    }
+
+    private static bool ContainsIgnoreCase(string? value, string? search)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+            && !string.IsNullOrWhiteSpace(search)
+            && value.Contains(search, StringComparison.OrdinalIgnoreCase);
     }
 
     private static KeystatsSummary? BuildKeystatsSummary(KeystatsDailyEntity? keystats)

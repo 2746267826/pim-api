@@ -3,6 +3,7 @@ using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
 using Pim.Module.PcTracker.Services;
+using System.Text.Json;
 using Xunit;
 
 namespace Pim.UnitTests.Services;
@@ -341,5 +342,229 @@ public class PcTrackerCompleteCaptureTests
         Assert.Contains("\"formattedMouseDistance\"", saved.RawJson);
         Assert.Contains("\"appName\"", saved.RawJson);
         Assert.Contains("\"displayName\"", saved.RawJson);
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_ReturnsWindowAndInputMinuteRecords()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().Add(new AwEventEntity
+        {
+            DeviceId = "DESKTOP",
+            Timestamp = DateTimeOffset.Parse("2026-05-20T05:55:00+00:00"),
+            Duration = 30,
+            EventType = "window",
+            AppName = "msedge.exe",
+            AppNameNormalized = "msedge",
+            WindowTitle = "Docs",
+            DataJson = "{\"app\":\"msedge.exe\",\"title\":\"Docs\"}"
+        });
+        db.Set<KeystatsSampleEntity>().AddRange(
+            new KeystatsSampleEntity
+            {
+                PimDeviceId = "DESKTOP",
+                SampledAtUtc = DateTimeOffset.Parse("2026-05-20T05:55:00+00:00"),
+                StatsDate = new DateTime(2026, 5, 20),
+                KeyPresses = 10,
+                KeyCountsJson = "{\"A\":10}",
+                RawJson = "{\"keyPresses\":10}"
+            },
+            new KeystatsSampleEntity
+            {
+                PimDeviceId = "DESKTOP",
+                SampledAtUtc = DateTimeOffset.Parse("2026-05-20T05:56:00+00:00"),
+                StatsDate = new DateTime(2026, 5, 20),
+                KeyPresses = 15,
+                KeyCountsJson = "{\"A\":15}",
+                RawJson = "{\"keyPresses\":15}"
+            });
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(
+            new DetailQueryParams(
+                "2026-05-20",
+                "2026-05-20",
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                1,
+                20),
+            CancellationToken.None);
+
+        var window = Assert.Single(result.Items, x => x.RecordType == "window");
+        Assert.Equal("DESKTOP", window.DeviceId);
+        Assert.Equal("msedge.exe", window.AppName);
+        Assert.Equal("msedge", window.DisplayName);
+        Assert.Equal("Docs", window.Title);
+        Assert.Equal("2026-05-20T05:55:00.0000000+00:00", window.Start);
+        Assert.Equal("2026-05-20T05:55:30.0000000+00:00", window.End);
+        Assert.Equal(30, window.DurationSeconds);
+        Assert.Equal(JsonValueKind.Object, Assert.IsType<JsonElement>(window.Raw).ValueKind);
+        Assert.Contains("\"raw\":{\"app\":\"msedge.exe\",\"title\":\"Docs\"}", JsonSerializer.Serialize(window, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+
+        var inputMinute = Assert.Single(result.Items, x => x.RecordType == "input-minute");
+        Assert.Equal("DESKTOP", inputMinute.DeviceId);
+        Assert.Equal(5, inputMinute.KeyPresses);
+        Assert.Equal("2026-05-20T05:56:00.0000000+00:00", inputMinute.Start);
+        Assert.Equal("2026-05-20T05:57:00.0000000+00:00", inputMinute.End);
+        Assert.Equal(60, inputMinute.DurationSeconds);
+        Assert.Equal(JsonValueKind.Object, Assert.IsType<JsonElement>(inputMinute.Raw).ValueKind);
+        Assert.Contains("\"raw\":{\"keyPresses\":15}", JsonSerializer.Serialize(inputMinute, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_LeavesKeyCountsEmptyForResetDelta()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<KeystatsSampleEntity>().AddRange(
+            new KeystatsSampleEntity
+            {
+                PimDeviceId = "DESKTOP",
+                SampledAtUtc = DateTimeOffset.Parse("2026-05-20T05:55:00+00:00"),
+                StatsDate = new DateTime(2026, 5, 20),
+                KeyPresses = 100,
+                KeyCountsJson = "{\"A\":1}",
+                RawJson = "{}"
+            },
+            new KeystatsSampleEntity
+            {
+                PimDeviceId = "DESKTOP",
+                SampledAtUtc = DateTimeOffset.Parse("2026-05-20T05:56:00+00:00"),
+                StatsDate = new DateTime(2026, 5, 20),
+                KeyPresses = 10,
+                KeyCountsJson = "{\"A\":2}",
+                RawJson = "{}"
+            });
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        var inputMinute = Assert.Single(result.Items);
+        Assert.Equal(0, inputMinute.KeyPresses);
+        Assert.NotNull(inputMinute.KeyCounts);
+        Assert.Empty(inputMinute.KeyCounts);
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_UsesElapsedSecondsForGapDeltas()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<KeystatsSampleEntity>().AddRange(
+            new KeystatsSampleEntity
+            {
+                PimDeviceId = "DESKTOP",
+                SampledAtUtc = DateTimeOffset.Parse("2026-05-20T05:50:00+00:00"),
+                StatsDate = new DateTime(2026, 5, 20),
+                KeyPresses = 10,
+                KeyCountsJson = "{}",
+                RawJson = "{}"
+            },
+            new KeystatsSampleEntity
+            {
+                PimDeviceId = "DESKTOP",
+                SampledAtUtc = DateTimeOffset.Parse("2026-05-20T06:00:00+00:00"),
+                StatsDate = new DateTime(2026, 5, 20),
+                KeyPresses = 15,
+                KeyCountsJson = "{}",
+                RawJson = "{}"
+            });
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        var inputMinute = Assert.Single(result.Items);
+        Assert.Equal(5, inputMinute.KeyPresses);
+        Assert.Equal(600, inputMinute.DurationSeconds);
+        Assert.Equal("2026-05-20T05:50:00.0000000+00:00", inputMinute.Start);
+        Assert.Equal("2026-05-20T06:00:00.0000000+00:00", inputMinute.End);
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_NormalizesStartAndEndToUtcForSorting()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            new AwEventEntity
+            {
+                DeviceId = "DESKTOP",
+                Timestamp = DateTimeOffset.Parse("2026-05-20T13:00:00+08:00"),
+                Duration = 60,
+                EventType = "window",
+                AppName = "early.exe",
+                DataJson = "{}"
+            },
+            new AwEventEntity
+            {
+                DeviceId = "DESKTOP",
+                Timestamp = DateTimeOffset.Parse("2026-05-20T05:30:00+00:00"),
+                Duration = 60,
+                EventType = "window",
+                AppName = "late.exe",
+                DataJson = "{}"
+            });
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        Assert.Collection(
+            result.Items,
+            first =>
+            {
+                Assert.Equal("late.exe", first.AppName);
+                Assert.Equal("2026-05-20T05:30:00.0000000+00:00", first.Start);
+                Assert.Equal("2026-05-20T05:31:00.0000000+00:00", first.End);
+            },
+            second =>
+            {
+                Assert.Equal("early.exe", second.AppName);
+                Assert.Equal("2026-05-20T05:00:00.0000000+00:00", second.Start);
+                Assert.Equal("2026-05-20T05:01:00.0000000+00:00", second.End);
+            });
+    }
+
+    private static DetailQueryParams MakeDetailQuery()
+    {
+        return new DetailQueryParams(
+            "2026-05-20",
+            "2026-05-20",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            1,
+            20);
     }
 }
