@@ -277,7 +277,7 @@ public class PcTrackerService
             entity.Timestamp = timestamp;
             entity.Duration = incoming.Duration;
             entity.DataJson = ToJson(data);
-            entity.EventType = req.Bucket.Type == "afkstatus" ? "afk" : "window";
+            entity.EventType = ClassifyAwEventType(req.Bucket.Type);
             entity.AppName = app;
             entity.AppNameNormalized = AppNameNormalizer.Normalize(app);
             entity.WindowTitle = title;
@@ -1125,6 +1125,16 @@ public class PcTrackerService
         return value is JsonElement element
             ? element.ValueKind == JsonValueKind.String ? element.GetString() : element.ToString()
             : value.ToString();
+    }
+
+    private static string ClassifyAwEventType(string bucketType)
+    {
+        return bucketType switch
+        {
+            "afkstatus" => "afk",
+            "web.tab.current" => "web",
+            _ => "window"
+        };
     }
 
     private static WorkSessionItem MakeSession(DateTimeOffset start, DateTimeOffset end, Dictionary<string, int> counts)

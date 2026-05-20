@@ -680,6 +680,50 @@ public class PcTrackerCompleteCaptureTests
             });
     }
 
+    [Fact]
+    public async Task UploadCompleteAwEventsAsync_StoresWebTabCurrentAsWebEvent()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        var service = new PcTrackerService(db);
+        var request = new CompleteAwUploadRequest(
+            "DESKTOP",
+            new AwInfoDto("DESKTOP", "v0.13.2", false, "aw-device"),
+            new AwBucketDto(
+                "aw-watcher-web-edge_DESKTOP",
+                null,
+                "web.tab.current",
+                "aw-client-web",
+                "DESKTOP",
+                "2026-05-20T00:00:00+00:00",
+                "2026-05-20T05:00:00+00:00",
+                new Dictionary<string, object>()),
+            new List<CompleteAwEventEntry>
+            {
+                new(200, "2026-05-20T05:00:00+00:00", 8.0, new Dictionary<string, object>
+                {
+                    ["url"] = "https://docs.activitywatch.net/en/latest/api/rest.html",
+                    ["title"] = "REST API",
+                    ["audible"] = false,
+                    ["incognito"] = false,
+                    ["tabCount"] = 12
+                })
+            });
+
+        Assert.Equal(1, await service.UploadCompleteAwEventsAsync(request, CancellationToken.None));
+
+        var saved = Assert.Single(db.Set<AwEventEntity>());
+        Assert.Equal("web", saved.EventType);
+        Assert.Equal("web.tab.current", saved.BucketType);
+        Assert.Null(saved.AppName);
+        Assert.Equal("REST API", saved.WindowTitle);
+        Assert.Contains("docs.activitywatch.net", saved.DataJson);
+    }
+
     private static DetailQueryParams MakeDetailQuery()
     {
         return new DetailQueryParams(
