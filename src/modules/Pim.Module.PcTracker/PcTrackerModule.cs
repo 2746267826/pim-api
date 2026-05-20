@@ -22,6 +22,7 @@ public class PcTrackerModule : IModule
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
         services.AddScoped<PcTrackerService>();
+        services.AddScoped<PcTrackerSchemaInitializer>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -158,6 +159,8 @@ public class PcTrackerModule : IModule
 
     public async Task InitializeAsync(IServiceProvider serviceProvider)
     {
-        await Task.CompletedTask;
+        using var scope = serviceProvider.CreateScope();
+        var initializer = scope.ServiceProvider.GetRequiredService<PcTrackerSchemaInitializer>();
+        await initializer.InitializeAsync();
     }
 }

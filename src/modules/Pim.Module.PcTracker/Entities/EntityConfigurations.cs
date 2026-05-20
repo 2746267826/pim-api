@@ -25,9 +25,48 @@ public class AwEventEntityConfiguration : IEntityTypeConfiguration<AwEventEntity
 {
     public void Configure(EntityTypeBuilder<AwEventEntity> builder)
     {
-        builder.HasIndex(e => e.DeviceId);
-        builder.HasIndex(e => e.Timestamp);
-        builder.HasIndex(e => e.EventType);
+        builder.HasIndex(e => e.DeviceId)
+            .HasDatabaseName("ix_pc_aw_events_device_id");
+        builder.HasIndex(e => e.Timestamp)
+            .HasDatabaseName("ix_pc_aw_events_timestamp");
+        builder.HasIndex(e => e.EventType)
+            .HasDatabaseName("ix_pc_aw_events_event_type");
+        builder.HasIndex(e => e.BucketId)
+            .HasDatabaseName("ix_pc_aw_events_bucket_id");
+        builder.HasIndex(e => e.SourceEventId)
+            .HasDatabaseName("ix_pc_aw_events_source_event_id");
+        builder.HasIndex(e => e.AppNameNormalized)
+            .HasDatabaseName("ix_pc_aw_events_app_name_normalized");
+        builder.HasIndex(e => new { e.DeviceId, e.BucketId, e.SourceEventId })
+            .IsUnique()
+            .HasDatabaseName("ux_pc_aw_events_source")
+            .HasFilter("bucket_id IS NOT NULL AND source_event_id IS NOT NULL");
+    }
+}
+
+public class AwBucketEntityConfiguration : IEntityTypeConfiguration<AwBucketEntity>
+{
+    public void Configure(EntityTypeBuilder<AwBucketEntity> builder)
+    {
+        builder.HasIndex(e => new { e.PimDeviceId, e.BucketId })
+            .IsUnique()
+            .HasDatabaseName("ux_pc_aw_buckets_device_bucket");
+        builder.HasIndex(e => e.BucketType)
+            .HasDatabaseName("ix_pc_aw_buckets_type");
+        builder.HasIndex(e => e.SeenAt)
+            .HasDatabaseName("ix_pc_aw_buckets_seen_at");
+    }
+}
+
+public class KeystatsSampleEntityConfiguration : IEntityTypeConfiguration<KeystatsSampleEntity>
+{
+    public void Configure(EntityTypeBuilder<KeystatsSampleEntity> builder)
+    {
+        builder.HasIndex(e => new { e.PimDeviceId, e.SampledAtUtc })
+            .IsUnique()
+            .HasDatabaseName("ux_pc_keystats_samples_device_minute");
+        builder.HasIndex(e => e.StatsDate)
+            .HasDatabaseName("ix_pc_keystats_samples_stats_date");
     }
 }
 
