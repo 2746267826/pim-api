@@ -204,6 +204,7 @@ public record AwInfoDto(
     string? Hostname,
     string? Version,
     bool Testing,
+    [property: JsonPropertyName("device_id")]
     string? DeviceId
 );
 
@@ -214,6 +215,7 @@ public record AwBucketDto(
     string Client,
     string Hostname,
     string? Created,
+    [property: JsonPropertyName("last_updated")]
     string? LastUpdated,
     Dictionary<string, object>? Data
 );

@@ -686,8 +686,8 @@ public class PcTrackerService
                 : 60;
             yield return new PcDetailRecord(
                 "input-minute",
-                FormatUtc(delta.IsGap ? previous.SampledAtUtc : sample.SampledAtUtc),
-                FormatUtc(delta.IsGap ? sample.SampledAtUtc : sample.SampledAtUtc.AddMinutes(1)),
+                FormatUtc(previous.SampledAtUtc),
+                FormatUtc(sample.SampledAtUtc),
                 durationSeconds,
                 sample.PimDeviceId,
                 null,

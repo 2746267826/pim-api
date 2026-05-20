@@ -506,11 +506,50 @@ public class PcTrackerCompleteCaptureTests
         var inputMinute = Assert.Single(result.Items, x => x.RecordType == "input-minute");
         Assert.Equal("DESKTOP", inputMinute.DeviceId);
         Assert.Equal(5, inputMinute.KeyPresses);
-        Assert.Equal("2026-05-20T05:56:00.0000000+00:00", inputMinute.Start);
-        Assert.Equal("2026-05-20T05:57:00.0000000+00:00", inputMinute.End);
+        Assert.Equal("2026-05-20T05:55:00.0000000+00:00", inputMinute.Start);
+        Assert.Equal("2026-05-20T05:56:00.0000000+00:00", inputMinute.End);
         Assert.Equal(60, inputMinute.DurationSeconds);
         Assert.Equal(JsonValueKind.Object, Assert.IsType<JsonElement>(inputMinute.Raw).ValueKind);
         Assert.Contains("\"raw\":{\"keyPresses\":15}", JsonSerializer.Serialize(inputMinute, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    }
+
+    [Fact]
+    public void CompleteAwUploadRequest_BindsActivityWatchSnakeCaseFields()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var json = """
+            {
+              "pimDeviceId": "DESKTOP",
+              "awInfo": {
+                "hostname": "DESKTOP",
+                "version": "v0.13.2",
+                "testing": false,
+                "device_id": "aw-device"
+              },
+              "bucket": {
+                "id": "aw-watcher-window_DESKTOP",
+                "name": null,
+                "type": "currentwindow",
+                "client": "aw-watcher-window",
+                "hostname": "DESKTOP",
+                "created": "2026-05-20T00:00:00+00:00",
+                "last_updated": "2026-05-20T05:00:00+00:00",
+                "data": {}
+              },
+              "events": []
+            }
+            """;
+
+        var request = JsonSerializer.Deserialize<CompleteAwUploadRequest>(json, options);
+
+        Assert.NotNull(request);
+        Assert.Equal("aw-device", request.AwInfo?.DeviceId);
+        Assert.Equal("2026-05-20T05:00:00+00:00", request.Bucket.LastUpdated);
+
+        var serialized = JsonSerializer.Serialize(request, options);
+        using var serializedDocument = JsonDocument.Parse(serialized);
+        Assert.Equal("aw-device", serializedDocument.RootElement.GetProperty("awInfo").GetProperty("device_id").GetString());
+        Assert.Equal("2026-05-20T05:00:00+00:00", serializedDocument.RootElement.GetProperty("bucket").GetProperty("last_updated").GetString());
     }
 
     [Fact]

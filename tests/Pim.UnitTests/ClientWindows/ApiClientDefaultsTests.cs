@@ -62,6 +62,34 @@ public class ApiClientDefaultsTests
         AssertJsonProperty(bucketType, "LastUpdated", "last_updated");
     }
 
+    [Fact]
+    public void AwCollector_LiveBacklogHelpersUseUnboundedFetchAndServerCappedBatches()
+    {
+        var unboundedLimit = typeof(AwCollectorService).GetField("ActivityWatchUnboundedLimit", BindingFlags.NonPublic | BindingFlags.Static);
+        var uploadBatchSize = typeof(AwCollectorService).GetField("CompleteAwUploadBatchSize", BindingFlags.NonPublic | BindingFlags.Static);
+        var urlMethod = typeof(AwCollectorService).GetMethod("BuildEventsUrl", BindingFlags.NonPublic | BindingFlags.Static);
+        var chunkMethod = typeof(AwCollectorService).GetMethod("ChunkCompleteAwUploadEvents", BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(unboundedLimit);
+        Assert.NotNull(uploadBatchSize);
+        Assert.Equal(-1, (int)unboundedLimit.GetRawConstantValue()!);
+        Assert.Equal(500, (int)uploadBatchSize.GetRawConstantValue()!);
+
+        Assert.NotNull(urlMethod);
+        var url = Assert.IsType<string>(urlMethod.Invoke(null, ["aw-watcher-window_DESKTOP"]));
+        Assert.Equal("/api/0/buckets/aw-watcher-window_DESKTOP/events?limit=-1", url);
+
+        Assert.NotNull(chunkMethod);
+        var chunked = chunkMethod
+            .MakeGenericMethod(typeof(int))
+            .Invoke(null, [Enumerable.Range(1, 501).ToList()]);
+        var chunks = Assert.IsAssignableFrom<IEnumerable<IReadOnlyList<int>>>(chunked).ToList();
+        Assert.Collection(
+            chunks,
+            first => Assert.Equal(500, first.Count),
+            second => Assert.Single(second));
+    }
+
     [Theory]
     [InlineData(true, false, "Sample ok; legacy upload failed")]
     [InlineData(false, true, "Sample upload failed; legacy ok")]
