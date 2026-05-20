@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS pc_aw_buckets (
     hostname VARCHAR(128) NOT NULL,
     created_at_source TIMESTAMPTZ,
     last_updated_source TIMESTAMPTZ,
-    data_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    data_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
     seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_aw_buckets_device_bucket ON pc_aw_buckets (pim_device_id, bucket_id);
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS pc_aw_events (
     bucket_type VARCHAR(64),
     bucket_client VARCHAR(128),
     source_event_id BIGINT,
-    data_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    data_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
     app_name_normalized VARCHAR(256),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -52,7 +52,7 @@ ALTER TABLE pc_aw_events ADD COLUMN IF NOT EXISTS bucket_id VARCHAR(256);
 ALTER TABLE pc_aw_events ADD COLUMN IF NOT EXISTS bucket_type VARCHAR(64);
 ALTER TABLE pc_aw_events ADD COLUMN IF NOT EXISTS bucket_client VARCHAR(128);
 ALTER TABLE pc_aw_events ADD COLUMN IF NOT EXISTS source_event_id BIGINT;
-ALTER TABLE pc_aw_events ADD COLUMN IF NOT EXISTS data_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE pc_aw_events ADD COLUMN IF NOT EXISTS data_json JSONB NOT NULL DEFAULT '{{}}'::jsonb;
 ALTER TABLE pc_aw_events ADD COLUMN IF NOT EXISTS app_name_normalized VARCHAR(256);
 ALTER TABLE pc_aw_events ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 CREATE INDEX IF NOT EXISTS ix_pc_aw_events_bucket_id ON pc_aw_events (bucket_id);
@@ -77,9 +77,9 @@ CREATE TABLE IF NOT EXISTS pc_keystats_samples (
     peak_cps INT NOT NULL DEFAULT 0,
     formatted_mouse_distance VARCHAR(64),
     formatted_scroll_distance VARCHAR(64),
-    key_counts_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-    app_stats_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-    raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    key_counts_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    app_stats_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    raw_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_keystats_samples_device_minute ON pc_keystats_samples (pim_device_id, sampled_at_utc);

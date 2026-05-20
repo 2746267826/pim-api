@@ -3,6 +3,7 @@ using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
 using Pim.Module.PcTracker.Services;
+using System.Globalization;
 using System.Text.Json;
 using Xunit;
 
@@ -37,6 +38,17 @@ public class PcTrackerCompleteCaptureTests
         Assert.True(createIndex >= 0, "Schema SQL must create pc_aw_events for partial existing databases.");
         Assert.True(alterIndex >= 0, "Schema SQL must keep ALTER statements for upgrade safety.");
         Assert.True(createIndex < alterIndex, "pc_aw_events must be created before it is altered.");
+    }
+
+    [Fact]
+    public void SchemaSql_IsSafeForExecuteSqlRawFormatting()
+    {
+        var formattedSql = string.Format(
+            CultureInfo.InvariantCulture,
+            PcTrackerSchemaInitializer.SchemaSql,
+            Array.Empty<object>());
+
+        Assert.Contains("'{}'::jsonb", formattedSql);
     }
 
     [Fact]
