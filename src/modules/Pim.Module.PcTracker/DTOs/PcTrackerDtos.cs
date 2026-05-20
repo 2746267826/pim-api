@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Pim.Module.PcTracker.DTOs;
 
 public record KeystatsUploadRequest(
@@ -170,4 +172,60 @@ public record HeatmapGridResponse(
     List<List<HeatmapBucket>> Grid,
     string Dimension,
     double MaxKeyCount
+);
+
+public record AwInfoDto(
+    string? Hostname,
+    string? Version,
+    bool Testing,
+    string? DeviceId
+);
+
+public record AwBucketDto(
+    string Id,
+    string? Name,
+    string Type,
+    string Client,
+    string Hostname,
+    string? Created,
+    string? LastUpdated,
+    Dictionary<string, object>? Data
+);
+
+public record CompleteAwEventEntry(
+    long SourceEventId,
+    string Timestamp,
+    double Duration,
+    Dictionary<string, object>? Data
+);
+
+public record CompleteAwUploadRequest(
+    string PimDeviceId,
+    AwInfoDto? AwInfo,
+    AwBucketDto Bucket,
+    List<CompleteAwEventEntry> Events
+);
+
+public record KeystatsSampleUploadRequest(
+    string PimDeviceId,
+    string SampledAt,
+    string Date,
+    int KeyPresses,
+    Dictionary<string, int>? KeyPressCounts,
+    int LeftClicks,
+    int RightClicks,
+    int MiddleClicks,
+    int SideBackClicks,
+    int SideForwardClicks,
+    double MouseDistance,
+    double ScrollDistance,
+    [property: JsonPropertyName("peakKPS")]
+    int PeakKps,
+    [property: JsonPropertyName("peakCPS")]
+    int PeakCps,
+    [property: JsonPropertyName("formattedMouseDistance")]
+    string? FormattedMouseDistance,
+    [property: JsonPropertyName("formattedScrollDistance")]
+    string? FormattedScrollDistance,
+    Dictionary<string, AppStatEntry>? AppStats
 );
