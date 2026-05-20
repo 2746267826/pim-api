@@ -32,15 +32,16 @@ public class ApiClientDefaultsTests
     {
         var state = new AwCollectorCursorState();
 
-        state.RecordFetched(windowLastId: 10, afkLastId: 20);
+        state.RecordFetched("aw-watcher-window_DESKTOP", 10);
+        state.RecordFetched("aw-watcher-afk_DESKTOP", 20);
 
-        Assert.Equal(0, state.LastWindowId);
-        Assert.Equal(0, state.LastAfkId);
+        Assert.Equal(0, state.LastForBucket("aw-watcher-window_DESKTOP"));
+        Assert.Equal(0, state.LastForBucket("aw-watcher-afk_DESKTOP"));
 
         state.CommitFetched();
 
-        Assert.Equal(10, state.LastWindowId);
-        Assert.Equal(20, state.LastAfkId);
+        Assert.Equal(10, state.LastForBucket("aw-watcher-window_DESKTOP"));
+        Assert.Equal(20, state.LastForBucket("aw-watcher-afk_DESKTOP"));
     }
 
     [Fact]
@@ -107,9 +108,9 @@ public class ApiClientDefaultsTests
 
     [Theory]
     [InlineData(3, 3, 2, 2, null)]
-    [InlineData(3, 0, 2, 2, "Partial AW upload failure: window pending 3, afk pending 0")]
-    [InlineData(3, 3, 2, 0, "Partial AW upload failure: window pending 0, afk pending 2")]
-    [InlineData(3, 0, 2, 0, "Partial AW upload failure: window pending 3, afk pending 2")]
+    [InlineData(3, 0, 2, 2, "Partial AW upload failure: pending 3 events")]
+    [InlineData(3, 3, 2, 0, "Partial AW upload failure: pending 2 events")]
+    [InlineData(3, 0, 2, 0, "Partial AW upload failure: pending 5 events")]
     public void AwCollector_BuildsPartialUploadHealthMessage(
         int windowFetched,
         int windowUploaded,
@@ -120,7 +121,13 @@ public class ApiClientDefaultsTests
         var method = typeof(AwCollectorService).GetMethod("BuildUploadHealthMessage", BindingFlags.NonPublic | BindingFlags.Static);
 
         Assert.NotNull(method);
-        var actual = method.Invoke(null, [windowFetched, windowUploaded, afkFetched, afkUploaded]);
+        var outcomeType = typeof(AwCollectorService).GetNestedType("AwBucketUploadOutcome", BindingFlags.NonPublic);
+        Assert.NotNull(outcomeType);
+        var outcomes = Array.CreateInstance(outcomeType, 2);
+        outcomes.SetValue(Activator.CreateInstance(outcomeType, [windowFetched, windowUploaded, null]), 0);
+        outcomes.SetValue(Activator.CreateInstance(outcomeType, [afkFetched, afkUploaded, null]), 1);
+
+        var actual = method.Invoke(null, [outcomes]);
 
         Assert.Equal(expected, actual);
     }
