@@ -572,7 +572,7 @@ public class PcTrackerService
                 var keyCount = daily is not null && daily.KeyPresses > 0
                     ? totalAwEvents > 0 ? (int)((double)daily.KeyPresses * eventCount / totalAwEvents) : (int)(daily.KeyPresses / 24.0)
                     : 0;
-                return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), bucketStart.Hour, 0, eventCount, keyCount);
+                return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), bucketStart.ToLocalTime().Hour, 0, eventCount, keyCount);
             }).ToList();
 
             return new HeatmapGridResponse(new List<List<HeatmapBucket>> { row }, dimension, maxKeyCount);
@@ -856,6 +856,10 @@ public class PcTrackerService
     {
         if (keystats is null) return null;
         var totalKeys = keystats.KeyPresses;
+        var keyPressCounts = keystats.KeyCounts
+            .GroupBy(k => k.KeyName)
+            .ToDictionary(g => g.Key, g => g.Sum(k => k.Count));
+
         return new KeystatsSummary(
             keystats.SnapshotDate.ToString("yyyy-MM-dd"),
             keystats.KeyPresses,
@@ -869,8 +873,9 @@ public class PcTrackerService
             keystats.ScrollDistance,
             keystats.PeakKps,
             keystats.PeakCps,
-            keystats.KeyCounts.OrderByDescending(k => k.Count).Take(10)
-                .Select(k => new KeyCountItem(k.KeyName, k.Count, totalKeys > 0 ? (double)k.Count / totalKeys : 0))
+            keyPressCounts,
+            keyPressCounts.OrderByDescending(kv => kv.Value).Take(10)
+                .Select(kv => new KeyCountItem(kv.Key, kv.Value, totalKeys > 0 ? (double)kv.Value / totalKeys : 0))
                 .ToList());
     }
 
@@ -878,6 +883,8 @@ public class PcTrackerService
     {
         if (sample is null) return null;
         var totalKeys = sample.KeyPresses;
+        var keyPressCounts = ParseKeyCounts(sample.KeyCountsJson);
+
         return new KeystatsSummary(
             sample.StatsDate.ToString("yyyy-MM-dd"),
             sample.KeyPresses,
@@ -891,7 +898,8 @@ public class PcTrackerService
             sample.ScrollDistance,
             sample.PeakKps,
             sample.PeakCps,
-            ParseKeyCounts(sample.KeyCountsJson)
+            keyPressCounts,
+            keyPressCounts
                 .OrderByDescending(kv => kv.Value)
                 .Take(10)
                 .Select(kv => new KeyCountItem(kv.Key, kv.Value, totalKeys > 0 ? (double)kv.Value / totalKeys : 0))
@@ -948,7 +956,7 @@ public class PcTrackerService
                 <= 45 => 4,
                 _ => 5
             };
-            return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), bucketStart.Hour, activeMinutes, inBucket.Count, intensity);
+            return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), bucketStart.ToLocalTime().Hour, activeMinutes, inBucket.Count, intensity);
         }).ToList();
     }
 

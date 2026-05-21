@@ -133,13 +133,15 @@ public class CalendarService
 
     public async Task<EventResponse> CreateEventAsync(CreateEventRequest request, CancellationToken ct)
     {
-        var calendar = await _db.Set<CalendarEntity>()
-            .FirstOrDefaultAsync(c => c.Id == request.CalendarId && c.UserId == UserId, ct)
-            ?? throw new DomainException(02003, "Calendar not found");
+        var calendar = request.CalendarId == Guid.Empty
+            ? await GetOrCreateDefaultCalendarAsync("calendar", ct)
+            : await _db.Set<CalendarEntity>()
+                .FirstOrDefaultAsync(c => c.Id == request.CalendarId && c.UserId == UserId, ct)
+                ?? throw new DomainException(02003, "Calendar not found");
 
         var entity = new EventEntity
         {
-            CalendarId = request.CalendarId,
+            CalendarId = calendar.Id,
             Uid = request.Uid ?? Guid.NewGuid().ToString() + "@pim",
             Title = request.Title,
             Description = request.Description,
@@ -153,6 +155,30 @@ public class CalendarService
         await _db.SaveChangesAsync(ct);
 
         return MapEvent(entity);
+    }
+
+    private async Task<CalendarEntity> GetOrCreateDefaultCalendarAsync(string kind, CancellationToken ct)
+    {
+        var calendar = await _db.Set<CalendarEntity>()
+            .FirstOrDefaultAsync(c => c.UserId == UserId && c.Kind == kind && c.IsDefault, ct)
+            ?? await _db.Set<CalendarEntity>()
+                .FirstOrDefaultAsync(c => c.UserId == UserId && c.Kind == kind, ct);
+
+        if (calendar is not null)
+            return calendar;
+
+        calendar = new CalendarEntity
+        {
+            UserId = UserId,
+            Name = kind == "task" ? "默认任务" : "默认日历",
+            Kind = kind,
+            Color = "#3B82F6",
+            IsDefault = true
+        };
+
+        _db.Set<CalendarEntity>().Add(calendar);
+        await _db.SaveChangesAsync(ct);
+        return calendar;
     }
 
     public async Task<EventResponse> UpdateEventAsync(Guid id, CreateEventRequest request, CancellationToken ct)

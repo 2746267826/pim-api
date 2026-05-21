@@ -68,6 +68,7 @@ public record KeystatsSummary(
     double ScrollDistance,
     int PeakKps,
     int PeakCps,
+    Dictionary<string, int> KeyPressCounts,
     List<KeyCountItem> TopKeys
 );
 

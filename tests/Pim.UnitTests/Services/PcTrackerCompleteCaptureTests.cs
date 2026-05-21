@@ -528,6 +528,74 @@ public class PcTrackerCompleteCaptureTests
     }
 
     [Fact]
+    public async Task GetSummaryAsync_ExposesCompleteKeyPressCountsForHeatmap()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        var snapshot = new KeystatsDailyEntity
+        {
+            DeviceId = "DESKTOP",
+            SnapshotDate = new DateTime(2026, 5, 20),
+            KeyPresses = 110
+        };
+
+        for (var i = 1; i <= 11; i++)
+        {
+            snapshot.KeyCounts.Add(new KeystatsKeyCountEntity
+            {
+                KeyName = $"K{i}",
+                Count = 12 - i
+            });
+        }
+
+        db.Set<KeystatsDailyEntity>().Add(snapshot);
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var summary = await service.GetSummaryAsync(new DateTime(2026, 5, 20), CancellationToken.None);
+        var json = JsonSerializer.Serialize(summary, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        using var doc = JsonDocument.Parse(json);
+        var keyPressCounts = doc.RootElement.GetProperty("keystats").GetProperty("keyPressCounts");
+        Assert.Equal(11, keyPressCounts.EnumerateObject().Count());
+        Assert.Equal(1, keyPressCounts.GetProperty("K11").GetInt32());
+        Assert.Equal(10, doc.RootElement.GetProperty("keystats").GetProperty("topKeys").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task GetSummaryAsync_ReturnsHeatmapHoursInLocalBusinessTime()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().Add(new AwEventEntity
+        {
+            DeviceId = "DESKTOP",
+            Timestamp = DateTimeOffset.Parse("2026-05-20T05:30:00+08:00"),
+            Duration = 60,
+            EventType = "window",
+            AppName = "editor.exe",
+            DataJson = "{}"
+        });
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var summary = await service.GetSummaryAsync(new DateTime(2026, 5, 20), CancellationToken.None);
+
+        Assert.Equal(4, summary.Heatmap[0].Hour);
+        Assert.Equal(5, summary.Heatmap[1].Hour);
+        Assert.Equal(1, summary.Heatmap[1].ActiveMinutes);
+        Assert.Equal(1, summary.Heatmap[1].TotalEvents);
+    }
+
+    [Fact]
     public async Task QueryCompleteDetailAsync_ReturnsWindowAndInputMinuteRecords()
     {
         PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
