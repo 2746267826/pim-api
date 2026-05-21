@@ -16,7 +16,8 @@ public class PcTrackerService
     private static readonly JsonSerializerOptions ApiJsonSerializerOptions = new(JsonSerializerDefaults.Web);
 
     private readonly PimDbContext _db;
-    private List<AppCategoryRule>? _cachedRules;
+    private List<AppCategoryRule>? _cachedLegacyRules;
+    private List<ActivityCategoryRuleEntity>? _cachedActivityRules;
 
     public PcTrackerService(PimDbContext db)
     {
@@ -370,7 +371,7 @@ public class PcTrackerService
         var keystats = await LatestKeystatsForDate(date, ct);
         if (keystats is null || !keystats.AppBreakdowns.Any()) return new();
 
-        var rules = await GetCategoryRulesAsync(ct);
+        var rules = await GetLegacyCategoryRulesAsync(ct);
         var totals = new Dictionary<string, (int Keys, int Clicks, string Color)>();
 
         foreach (var app in keystats.AppBreakdowns)
@@ -470,7 +471,7 @@ public class PcTrackerService
             .OrderBy(s => s.PimDeviceId)
             .ThenBy(s => s.SampledAtUtc)
             .ToListAsync(ct);
-        var rules = await GetCategoryRulesAsync(ct);
+        var rules = await GetActivityCategoryRulesAsync(ct);
 
         var records = new List<PcDetailRecord>();
         var rawMode = string.Equals(q.View, "raw", StringComparison.OrdinalIgnoreCase)
@@ -532,7 +533,8 @@ public class PcTrackerService
         }
 
         await _db.SaveChangesAsync(ct);
-        _cachedRules = null;
+        _cachedLegacyRules = null;
+        _cachedActivityRules = null;
         return new AppCategoryRule(entity.Id, entity.AppPattern, entity.CategoryName, entity.Color, entity.Priority, entity.IsBuiltin);
     }
 
@@ -542,7 +544,8 @@ public class PcTrackerService
         if (entity is null || entity.IsBuiltin) return false;
         _db.Set<AppCategoryEntity>().Remove(entity);
         await _db.SaveChangesAsync(ct);
-        _cachedRules = null;
+        _cachedLegacyRules = null;
+        _cachedActivityRules = null;
         return true;
     }
 
@@ -962,7 +965,7 @@ public class PcTrackerService
 
     private async Task<List<PcDetailRecord>> BuildInterpretedAwDetailRecordsAsync(List<AwEventEntity> awEvents, CancellationToken ct)
     {
-        return BrowserPageTimelineBuilder.BuildInterpretedAwRecords(awEvents, await GetCategoryRulesAsync(ct));
+        return BrowserPageTimelineBuilder.BuildInterpretedAwRecords(awEvents, await GetActivityCategoryRulesAsync(ct));
     }
 
     private static bool IsSummaryTimelineRecord(PcDetailRecord record)
@@ -982,14 +985,30 @@ public class PcTrackerService
             record.End ?? record.Start,
             (record.DurationSeconds ?? 0) / 60,
             appName,
-            record.Title);
+            record.Title,
+            record.CategoryName ?? "其他",
+            record.CategoryColor ?? "#64748b",
+            record.ProjectTag,
+            record.ClassificationConfidence ?? 0.2,
+            record.ClassificationSource ?? "fallback",
+            record.ClassificationExplanation ?? "No rule or heuristic matched.");
     }
 
-    private async Task<List<AppCategoryRule>> GetCategoryRulesAsync(CancellationToken ct)
+    private async Task<List<AppCategoryRule>> GetLegacyCategoryRulesAsync(CancellationToken ct)
     {
-        if (_cachedRules is not null) return _cachedRules;
-        _cachedRules = await GetAllCategoriesAsync(ct);
-        return _cachedRules;
+        if (_cachedLegacyRules is not null) return _cachedLegacyRules;
+        _cachedLegacyRules = await GetAllCategoriesAsync(ct);
+        return _cachedLegacyRules;
+    }
+
+    private async Task<List<ActivityCategoryRuleEntity>> GetActivityCategoryRulesAsync(CancellationToken ct)
+    {
+        if (_cachedActivityRules is not null) return _cachedActivityRules;
+        _cachedActivityRules = await _db.Set<ActivityCategoryRuleEntity>()
+            .Where(r => r.Status == "active")
+            .OrderByDescending(r => r.Priority)
+            .ToListAsync(ct);
+        return _cachedActivityRules;
     }
 
     private static string ClassifyApp(string appName, List<AppCategoryRule> rules)

@@ -29,7 +29,7 @@ public static class BrowserPageTimelineBuilder
 
     public static List<PcDetailRecord> BuildInterpretedAwRecords(
         List<AwEventEntity> awEvents,
-        List<AppCategoryRule> rules)
+        IReadOnlyCollection<ActivityCategoryRuleEntity> rules)
     {
         var records = new List<PcDetailRecord>();
 
@@ -44,7 +44,7 @@ public static class BrowserPageTimelineBuilder
                 .OrderBy(e => e.Timestamp)
                 .ThenBy(e => e.SourceEventId ?? e.Id)
                 .ToList();
-            var webPages = BuildWebPageClusters(webEvents)
+            var webPages = BuildWebPageClusters(webEvents, rules)
                 .Select(page => page.ToDetailPage(deviceEvents))
                 .ToList();
             var explainedBrowserWindows = new HashSet<AwEventEntity>(ReferenceEqualityComparer.Instance);
@@ -69,12 +69,23 @@ public static class BrowserPageTimelineBuilder
             .ToList();
     }
 
-    public static PcDetailRecord ToRawAwRecord(AwEventEntity e, List<AppCategoryRule> rules)
+    public static PcDetailRecord ToRawAwRecord(AwEventEntity e, IReadOnlyCollection<ActivityCategoryRuleEntity> rules)
     {
         var normalizedApp = AppNameNormalizer.Normalize(e.AppNameNormalized ?? e.AppName);
-        var category = ClassifyApp(normalizedApp, rules);
         var webData = IsWebEvent(e) ? ParseWebData(e) : null;
         var recordType = IsWebEvent(e) ? "web" : e.EventType;
+        var classification = ActivityClassifier.Classify(
+            new ActivityClassificationContext(
+                recordType,
+                e.AppName,
+                normalizedApp,
+                webData?.Domain,
+                webData?.Path,
+                webData?.Title ?? e.WindowTitle,
+                e.WindowTitle,
+                webData?.IsLocalFile == true ? webData.Path : null,
+                e.BucketType),
+            rules);
 
         return new PcDetailRecord(
             recordType,
@@ -84,7 +95,7 @@ public static class BrowserPageTimelineBuilder
             e.DeviceId,
             e.AppName,
             normalizedApp,
-            category,
+            classification.CategoryName,
             webData?.Title ?? e.WindowTitle,
             null,
             null,
@@ -104,10 +115,17 @@ public static class BrowserPageTimelineBuilder
             SourceWebEventIds: IsWebEvent(e) ? SourceIds(new[] { e }) : null,
             SourceWindowEventIds: string.Equals(recordType, "window", StringComparison.Ordinal)
                 ? SourceIds(new[] { e })
-                : null);
+                : null,
+            CategoryColor: classification.CategoryColor,
+            ProjectTag: classification.ProjectTag,
+            ClassificationConfidence: classification.Confidence,
+            ClassificationSource: classification.Source,
+            ClassificationExplanation: classification.Explanation);
     }
 
-    private static List<WebPageCluster> BuildWebPageClusters(List<AwEventEntity> webEvents)
+    private static List<WebPageCluster> BuildWebPageClusters(
+        List<AwEventEntity> webEvents,
+        IReadOnlyCollection<ActivityCategoryRuleEntity> rules)
     {
         var clusters = new List<WebPageCluster>();
         var pendingShortEvents = new List<AwEventEntity>();
@@ -122,7 +140,7 @@ public static class BrowserPageTimelineBuilder
 
             var leadingShortEvents = pendingShortEvents;
             pendingShortEvents = new List<AwEventEntity>();
-            clusters.Add(new WebPageCluster(webEvent, leadingShortEvents, new List<AwEventEntity>()));
+            clusters.Add(new WebPageCluster(webEvent, leadingShortEvents, new List<AwEventEntity>(), rules));
         }
 
         if (pendingShortEvents.Count > 0 && clusters.Count > 0)
@@ -132,7 +150,7 @@ public static class BrowserPageTimelineBuilder
         }
         else if (pendingShortEvents.Count > 0)
         {
-            clusters.Add(WebPageCluster.FromShortEvents(pendingShortEvents));
+            clusters.Add(WebPageCluster.FromShortEvents(pendingShortEvents, rules));
         }
 
         return clusters;
@@ -141,11 +159,14 @@ public static class BrowserPageTimelineBuilder
     private sealed record WebPageCluster(
         AwEventEntity Primary,
         List<AwEventEntity> LeadingShortEvents,
-        List<AwEventEntity> TrailingShortEvents)
+        List<AwEventEntity> TrailingShortEvents,
+        IReadOnlyCollection<ActivityCategoryRuleEntity> Rules)
     {
-        public static WebPageCluster FromShortEvents(List<AwEventEntity> shortEvents)
+        public static WebPageCluster FromShortEvents(
+            List<AwEventEntity> shortEvents,
+            IReadOnlyCollection<ActivityCategoryRuleEntity> rules)
         {
-            return new WebPageCluster(shortEvents[^1], shortEvents, new List<AwEventEntity>());
+            return new WebPageCluster(shortEvents[^1], shortEvents, new List<AwEventEntity>(), rules);
         }
 
         public WebPageDetail ToDetailPage(List<AwEventEntity> awEvents)
@@ -181,6 +202,21 @@ public static class BrowserPageTimelineBuilder
             var absorbedShortEvents = allWebEvents
                 .Where(e => e.Duration <= ShortPageThresholdSeconds)
                 .ToList();
+            var normalizedBrowserApp = browserWindow is null
+                ? browserName
+                : AppNameNormalizer.Normalize(browserWindow.AppNameNormalized ?? browserWindow.AppName);
+            var classification = ActivityClassifier.Classify(
+                new ActivityClassificationContext(
+                    "web-page",
+                    browserWindow?.AppName,
+                    normalizedBrowserApp,
+                    data.Domain,
+                    data.Path,
+                    data.Title ?? Primary.WindowTitle,
+                    browserWindow?.WindowTitle,
+                    data.IsLocalFile ? data.Path : null,
+                    Primary.BucketType),
+                Rules);
 
             var record = new PcDetailRecord(
                 "web-page",
@@ -190,7 +226,7 @@ public static class BrowserPageTimelineBuilder
                 Primary.DeviceId,
                 null,
                 displayName,
-                null,
+                classification.CategoryName,
                 data.Title ?? Primary.WindowTitle,
                 null,
                 null,
@@ -210,7 +246,12 @@ public static class BrowserPageTimelineBuilder
                 absorbedShortEvents.Count,
                 absorbedShortEvents.Sum(e => e.Duration),
                 SourceIds(allWebEvents),
-                browserWindow is null ? null : SourceIds(new[] { browserWindow }));
+                browserWindow is null ? null : SourceIds(new[] { browserWindow }),
+                classification.CategoryColor,
+                classification.ProjectTag,
+                classification.Confidence,
+                classification.Source,
+                classification.Explanation);
             return new WebPageDetail(record, browserWindow);
         }
     }
@@ -365,17 +406,6 @@ public static class BrowserPageTimelineBuilder
     private static string FormatUtc(DateTimeOffset timestamp)
     {
         return timestamp.ToUniversalTime().ToString("O");
-    }
-
-    private static string ClassifyApp(string appName, List<AppCategoryRule> rules)
-    {
-        foreach (var rule in rules)
-        {
-            if (string.Equals(appName, rule.AppPattern, StringComparison.OrdinalIgnoreCase))
-                return rule.CategoryName;
-        }
-
-        return "Other";
     }
 
     private sealed record WebPageData(

@@ -97,7 +97,13 @@ public record TimelineItem(
     string End,
     double DurationMinutes,
     string AppName,
-    string? WindowTitle
+    string? WindowTitle,
+    string CategoryName,
+    string CategoryColor,
+    string? ProjectTag,
+    double ClassificationConfidence,
+    string ClassificationSource,
+    string ClassificationExplanation
 );
 
 public record WorkSessionItem(
@@ -194,7 +200,12 @@ public record PcDetailRecord(
     int AbsorbedShortEventsCount = 0,
     double AbsorbedDurationSeconds = 0,
     List<long>? SourceWebEventIds = null,
-    List<long>? SourceWindowEventIds = null
+    List<long>? SourceWindowEventIds = null,
+    string? CategoryColor = null,
+    string? ProjectTag = null,
+    double? ClassificationConfidence = null,
+    string? ClassificationSource = null,
+    string? ClassificationExplanation = null
 );
 
 public record TypedDetailQueryResponse(

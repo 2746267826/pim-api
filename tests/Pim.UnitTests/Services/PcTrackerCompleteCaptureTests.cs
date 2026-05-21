@@ -505,6 +505,33 @@ public class PcTrackerCompleteCaptureTests
     }
 
     [Fact]
+    public async Task GetTimelineAsync_ReturnsBackendClassificationForWebPages()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WindowEvent("2026-05-20T05:00:00+00:00", 60, "msedge.exe", "Docs - Edge"),
+            WebEvent(1, "2026-05-20T05:00:05+00:00", 10, "https://docs.activitywatch.net/en/latest/api/rest.html", "REST API"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var timeline = await service.GetTimelineAsync(new DateTime(2026, 5, 20), CancellationToken.None);
+
+        var item = Assert.Single(timeline);
+        Assert.Equal("docs.activitywatch.net", item.AppName);
+        Assert.Equal("学习", item.CategoryName);
+        Assert.Equal("#14b8a6", item.CategoryColor);
+        Assert.Equal("ActivityWatch", item.ProjectTag);
+        Assert.Equal("heuristic", item.ClassificationSource);
+        Assert.True(item.ClassificationConfidence > 0.5);
+        Assert.Contains("Documentation", item.ClassificationExplanation);
+    }
+
+    [Fact]
     public async Task GetTimelineAsync_FiltersWindowRecordsWithoutAppNameButKeepsWebPages()
     {
         PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
