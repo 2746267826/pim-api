@@ -5,19 +5,19 @@ namespace Pim.Module.PcTracker.Services;
 
 public static class ActivityClassifier
 {
-    private const string ProgrammingCategory = "\u7f02\u682b\u25bc";
+    private const string ProgrammingCategory = "\u7f16\u7a0b";
     private const string ProgrammingColor = "#6B5EE4";
-    private const string LearningCategory = "\u701b\ufe3f\u7bc4";
+    private const string LearningCategory = "\u5b66\u4e60";
     private const string LearningColor = "#14b8a6";
-    private const string TerminalCategory = "\u7f01\u5822\ue06c";
+    private const string TerminalCategory = "\u7ec8\u7aef";
     private const string TerminalColor = "#E05A7A";
     private const string CommunicationCategory = "\u6c9f\u901a";
     private const string CommunicationColor = "#F5935A";
-    private const string OfficeCategory = "\u9354\u70b2\u53d5";
+    private const string OfficeCategory = "\u529e\u516c";
     private const string OfficeColor = "#F59E0B";
-    private const string FilesCategory = "\u93c2\u56e6\u6b22";
+    private const string FilesCategory = "\u6587\u4ef6";
     private const string FilesColor = "#3B82F6";
-    private const string EntertainmentCategory = "\u6fde\u53d8\u7bb0";
+    private const string EntertainmentCategory = "\u5a31\u4e50";
     private const string EntertainmentColor = "#EC4899";
 
     public static ActivityClassificationResult Classify(
@@ -32,12 +32,12 @@ public static class ActivityClassifier
                 continue;
 
             return new ActivityClassificationResult(
-                rule.CategoryName ?? ActivityClassificationResult.Fallback().CategoryName,
+                rule.CategoryName!,
                 rule.Color,
                 rule.ProjectTag,
                 rule.Confidence,
                 "rule",
-                rule.Explanation ?? $"Matched rule {rule.RuleName}.",
+                rule.Explanation!,
                 rule.Id);
         }
 

@@ -59,7 +59,7 @@ public class ActivityClassifierTests
 
         var result = ActivityClassifier.Classify(context, []);
 
-        Assert.Equal("\u7f02\u682b\u25bc", result.CategoryName);
+        Assert.Equal("编程", result.CategoryName);
         Assert.Equal("#6B5EE4", result.CategoryColor);
         Assert.Equal("projectGPT", result.ProjectTag);
         Assert.Equal("heuristic", result.Source);
@@ -76,7 +76,7 @@ public class ActivityClassifierTests
 
         var result = ActivityClassifier.Classify(context, []);
 
-        Assert.Equal("\u701b\ufe3f\u7bc4", result.CategoryName);
+        Assert.Equal("学习", result.CategoryName);
         Assert.Equal("#14b8a6", result.CategoryColor);
         Assert.Equal("ActivityWatch", result.ProjectTag);
         Assert.Equal("heuristic", result.Source);
@@ -133,9 +133,99 @@ public class ActivityClassifierTests
         var result = ActivityClassifier.Classify(context, rules);
 
         Assert.Equal("heuristic", result.Source);
-        Assert.Equal("\u701b\ufe3f\u7bc4", result.CategoryName);
+        Assert.Equal("学习", result.CategoryName);
         Assert.Equal("ActivityWatch", result.ProjectTag);
         Assert.Null(result.SourceRuleId);
+    }
+
+    [Fact]
+    public void Classify_TerminalAppBecomesTerminal()
+    {
+        var context = CreateContext(
+            RecordType: "window",
+            AppName: "WindowsTerminal.exe",
+            AppNameNormalized: "windowsterminal",
+            BucketType: "aw-watcher-window");
+
+        var result = ActivityClassifier.Classify(context, []);
+
+        Assert.Equal("终端", result.CategoryName);
+        Assert.Equal("#E05A7A", result.CategoryColor);
+        Assert.Equal("heuristic", result.Source);
+    }
+
+    [Fact]
+    public void Classify_OfficeAppBecomesOffice()
+    {
+        var context = CreateContext(
+            RecordType: "window",
+            AppName: "EXCEL.EXE",
+            AppNameNormalized: "excel",
+            BucketType: "aw-watcher-window");
+
+        var result = ActivityClassifier.Classify(context, []);
+
+        Assert.Equal("办公", result.CategoryName);
+        Assert.Equal("#F59E0B", result.CategoryColor);
+        Assert.Equal("heuristic", result.Source);
+    }
+
+    [Fact]
+    public void Classify_FileAppBecomesFiles()
+    {
+        var context = CreateContext(
+            RecordType: "window",
+            AppName: "explorer.exe",
+            AppNameNormalized: "explorer",
+            BucketType: "aw-watcher-window");
+
+        var result = ActivityClassifier.Classify(context, []);
+
+        Assert.Equal("文件", result.CategoryName);
+        Assert.Equal("#3B82F6", result.CategoryColor);
+        Assert.Equal("heuristic", result.Source);
+    }
+
+    [Fact]
+    public void Classify_RuleResultUsesMatchedRuleValuesAsIs()
+    {
+        var ruleId = Guid.NewGuid();
+        var context = CreateContext(
+            Domain: "example.com",
+            UrlPath: "/matched",
+            Title: "Matched");
+        var rules = new[]
+        {
+            new ActivityCategoryRuleEntity
+            {
+                Id = ruleId,
+                RuleName = "Null-valued rule",
+                Status = "active",
+                CategoryName = null,
+                ProjectTag = null,
+                Color = "#abcdef",
+                Priority = 100,
+                ConditionsJson = """
+                    {
+                      "all": [
+                        { "field": "domain", "op": "equals", "value": "example.com" }
+                      ]
+                    }
+                    """,
+                Confidence = 0.61,
+                Explanation = null
+            }
+        };
+
+        var result = ActivityClassifier.Classify(context, rules);
+
+        Assert.Equal("rule", result.Source);
+        Assert.Null(result.CategoryName);
+        Assert.Equal("#abcdef", result.CategoryColor);
+        Assert.Null(result.ProjectTag);
+        Assert.Equal(0.61, result.Confidence);
+        Assert.Null(result.Explanation);
+        Assert.Equal(ruleId, result.SourceRuleId);
     }
 
     private static ActivityClassificationContext CreateContext(
