@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS pc_activity_classification_suggestions (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_suggestions_cluster_key ON pc_activity_classification_suggestions (cluster_key);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_activity_classification_suggestions_pending_cluster ON pc_activity_classification_suggestions (cluster_key) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_suggestions_status ON pc_activity_classification_suggestions (status);
 CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_suggestions_updated_at ON pc_activity_classification_suggestions (updated_at);
 INSERT INTO pc_activity_category_rules (rule_name, scope, category_name, project_tag, color, priority, source, status, conditions_json, confidence, explanation) VALUES
@@ -150,10 +151,10 @@ SELECT
     category_name,
     NULL,
     color,
-    priority,
+    priority + 1000,
     CASE WHEN is_builtin THEN 'builtin' ELSE 'user' END,
     'active',
-    jsonb_build_object('all', jsonb_build_array(jsonb_build_object('field', 'appNameNormalized', 'op', 'equals', 'value', lower(replace(app_pattern, '.exe', ''))))),
+    jsonb_build_object('all', jsonb_build_array(jsonb_build_object('field', 'appNameNormalized', 'op', 'equals', 'value', lower(regexp_replace(app_pattern, '\.exe$', '', 'i'))))),
     0.95,
     'Migrated from pc_app_categories.'
 FROM pc_app_categories

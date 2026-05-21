@@ -101,6 +101,10 @@ public class ActivityClassificationSuggestionEntityConfiguration : IEntityTypeCo
     {
         builder.ToTable("pc_activity_classification_suggestions");
         builder.HasIndex(e => e.ClusterKey).HasDatabaseName("ix_pc_activity_classification_suggestions_cluster_key");
+        builder.HasIndex(e => e.ClusterKey)
+            .IsUnique()
+            .HasDatabaseName("ux_pc_activity_classification_suggestions_pending_cluster")
+            .HasFilter("status = 'pending'");
         builder.HasIndex(e => e.Status).HasDatabaseName("ix_pc_activity_classification_suggestions_status");
         builder.HasIndex(e => e.UpdatedAt).HasDatabaseName("ix_pc_activity_classification_suggestions_updated_at");
     }
