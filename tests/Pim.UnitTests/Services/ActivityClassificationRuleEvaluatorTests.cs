@@ -1,3 +1,4 @@
+using System.Globalization;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Services;
 using Xunit;
@@ -43,5 +44,20 @@ public class ActivityClassificationRuleEvaluatorTests
         Assert.Contains(
             "regexp_replace(app_pattern, '\\.exe$', '', 'i')",
             PcTrackerSchemaInitializer.SchemaSql);
+    }
+
+    [Fact]
+    public void SchemaSql_FormatsJsonbLiteralsForExecuteSqlRaw()
+    {
+        var formattedSql = string.Format(
+            CultureInfo.InvariantCulture,
+            PcTrackerSchemaInitializer.SchemaSql,
+            Array.Empty<object>());
+
+        Assert.Contains("DEFAULT '{}'::jsonb", formattedSql);
+        Assert.Contains("DEFAULT '[]'::jsonb", formattedSql);
+        Assert.Contains("'{\"all\":[{\"field\":\"appNameNormalized\"", formattedSql);
+        Assert.DoesNotContain("{{\"all\"", formattedSql);
+        Assert.DoesNotContain("{{}}", formattedSql);
     }
 }
