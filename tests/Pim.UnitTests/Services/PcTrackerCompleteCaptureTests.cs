@@ -435,6 +435,99 @@ public class PcTrackerCompleteCaptureTests
     }
 
     [Fact]
+    public async Task GetSummaryAsync_UsesBrowserPageRecordsInTimeline()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WindowEvent("2026-05-20T05:00:00+00:00", 60, "msedge.exe", "Docs - Edge"),
+            WebEvent(1, "2026-05-20T05:00:05+00:00", 10, "https://docs.activitywatch.net/en/latest/api/rest.html", "REST API"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var summary = await service.GetSummaryAsync(new DateTime(2026, 5, 20), CancellationToken.None);
+
+        var item = Assert.Single(summary.Timeline);
+        Assert.Equal("docs.activitywatch.net", item.AppName);
+        Assert.Equal("REST API", item.WindowTitle);
+        Assert.Equal(10.0 / 60.0, item.DurationMinutes);
+    }
+
+    [Fact]
+    public async Task GetSummaryAsync_FiltersWindowRecordsWithoutAppNameButKeepsWebPages()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WindowEventWithoutApp("2026-05-20T05:00:00+00:00", 60, "Untitled"),
+            WebEvent(1, "2026-05-20T05:00:05+00:00", 10, "https://docs.activitywatch.net/en/latest/api/rest.html", "REST API"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var summary = await service.GetSummaryAsync(new DateTime(2026, 5, 20), CancellationToken.None);
+
+        var item = Assert.Single(summary.Timeline);
+        Assert.Equal("docs.activitywatch.net", item.AppName);
+        Assert.Equal("REST API", item.WindowTitle);
+        Assert.Equal(10.0 / 60.0, item.DurationMinutes);
+        Assert.Equal(0, summary.Metrics?.AppSwitchCount);
+    }
+
+    [Fact]
+    public async Task GetTimelineAsync_UsesBrowserPageRecords()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WindowEvent("2026-05-20T05:00:00+00:00", 60, "msedge.exe", "Docs - Edge"),
+            WebEvent(1, "2026-05-20T05:00:05+00:00", 10, "https://docs.activitywatch.net/en/latest/api/rest.html", "REST API"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var timeline = await service.GetTimelineAsync(new DateTime(2026, 5, 20), CancellationToken.None);
+
+        var item = Assert.Single(timeline);
+        Assert.Equal("docs.activitywatch.net", item.AppName);
+        Assert.Equal("REST API", item.WindowTitle);
+        Assert.Equal(10.0 / 60.0, item.DurationMinutes);
+    }
+
+    [Fact]
+    public async Task GetTimelineAsync_FiltersWindowRecordsWithoutAppNameButKeepsWebPages()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WindowEventWithoutApp("2026-05-20T05:00:00+00:00", 60, "Untitled"),
+            WebEvent(1, "2026-05-20T05:00:05+00:00", 10, "https://docs.activitywatch.net/en/latest/api/rest.html", "REST API"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var timeline = await service.GetTimelineAsync(new DateTime(2026, 5, 20), CancellationToken.None);
+
+        var item = Assert.Single(timeline);
+        Assert.Equal("docs.activitywatch.net", item.AppName);
+        Assert.Equal("REST API", item.WindowTitle);
+        Assert.Equal(10.0 / 60.0, item.DurationMinutes);
+    }
+
+    [Fact]
     public async Task QueryCompleteDetailAsync_ReturnsWindowAndInputMinuteRecords()
     {
         PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
@@ -1157,6 +1250,22 @@ public class PcTrackerCompleteCaptureTests
             DataJson = JsonSerializer.Serialize(new Dictionary<string, object>
             {
                 ["app"] = app,
+                ["title"] = title
+            })
+        };
+    }
+
+    private static AwEventEntity WindowEventWithoutApp(string timestamp, double duration, string title, string deviceId = "DESKTOP")
+    {
+        return new AwEventEntity
+        {
+            DeviceId = deviceId,
+            Timestamp = DateTimeOffset.Parse(timestamp),
+            Duration = duration,
+            EventType = "window",
+            WindowTitle = title,
+            DataJson = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
                 ["title"] = title
             })
         };

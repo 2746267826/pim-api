@@ -307,13 +307,19 @@ public class PcTrackerService
             ? await LatestKeystatsSampleForDate(date, ct)
             : null;
         var awEvents = await _db.Set<AwEventEntity>()
-            .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd && e.EventType == "window")
+            .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd)
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
+        var nonWebEvents = awEvents
+            .Where(e => e.EventType != "web")
+            .ToList();
+        var windowEvents = awEvents
+            .Where(e => e.EventType == "window")
+            .ToList();
 
-        var heatmap = BuildHourlyHeatmap(dayStart, awEvents);
-        var timeline = awEvents
-            .Where(e => e.AppName is not null)
+        var heatmap = BuildHourlyHeatmap(dayStart, windowEvents);
+        var timeline = (await BuildInterpretedAwDetailRecordsAsync(awEvents, ct))
+            .Where(IsSummaryTimelineRecord)
             .Select(ToTimelineItem)
             .ToList();
 
@@ -322,8 +328,8 @@ public class PcTrackerService
             heatmap,
             keystats is not null ? BuildAppRanking(keystats) : BuildAppRankingFromSample(keystatsSample),
             timeline,
-            BuildSessions(awEvents),
-            ComputeDerivedMetrics(keystats, keystatsSample, awEvents),
+            BuildSessions(windowEvents),
+            ComputeDerivedMetrics(keystats, keystatsSample, nonWebEvents),
             await GetCategorySummariesAsync(date, ct));
     }
 
@@ -333,11 +339,14 @@ public class PcTrackerService
         var dayEnd = dayStart.AddDays(1);
 
         var events = await _db.Set<AwEventEntity>()
-            .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd && e.EventType == "window" && e.AppName != null)
+            .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd)
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
 
-        return events.Select(ToTimelineItem).ToList();
+        return (await BuildInterpretedAwDetailRecordsAsync(events, ct))
+            .Where(IsSummaryTimelineRecord)
+            .Select(ToTimelineItem)
+            .ToList();
     }
 
     public async Task<List<HeatmapBucket>> GetHeatmapAsync(DateTime start, DateTime end, CancellationToken ct)
@@ -943,14 +952,29 @@ public class PcTrackerService
         }).ToList();
     }
 
-    private static TimelineItem ToTimelineItem(AwEventEntity e)
+    private async Task<List<PcDetailRecord>> BuildInterpretedAwDetailRecordsAsync(List<AwEventEntity> awEvents, CancellationToken ct)
     {
+        return BrowserPageTimelineBuilder.BuildInterpretedAwRecords(awEvents, await GetCategoryRulesAsync(ct));
+    }
+
+    private static bool IsSummaryTimelineRecord(PcDetailRecord record)
+    {
+        return record.DurationSeconds > 0
+            && (record.RecordType == "web-page" || (record.RecordType == "window" && record.AppName is not null));
+    }
+
+    private static TimelineItem ToTimelineItem(PcDetailRecord record)
+    {
+        var appName = record.RecordType == "web-page"
+            ? record.Domain ?? (record.IsLocalFile ? "文件" : record.AppName ?? "unknown")
+            : record.AppName ?? "unknown";
+
         return new TimelineItem(
-            e.Timestamp.ToString("O"),
-            e.Timestamp.AddSeconds(e.Duration).ToString("O"),
-            e.Duration / 60,
-            e.AppName ?? "unknown",
-            e.WindowTitle);
+            record.Start,
+            record.End ?? record.Start,
+            (record.DurationSeconds ?? 0) / 60,
+            appName,
+            record.Title);
     }
 
     private async Task<List<AppCategoryRule>> GetCategoryRulesAsync(CancellationToken ct)
