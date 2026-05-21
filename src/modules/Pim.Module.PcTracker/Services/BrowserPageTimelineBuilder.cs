@@ -114,7 +114,7 @@ public static class BrowserPageTimelineBuilder
 
         foreach (var webEvent in webEvents)
         {
-            if (webEvent.Duration < ShortPageThresholdSeconds)
+            if (webEvent.Duration <= ShortPageThresholdSeconds)
             {
                 pendingShortEvents.Add(webEvent);
                 continue;
@@ -179,7 +179,7 @@ public static class BrowserPageTimelineBuilder
                     .FirstOrDefault();
             var displayName = data.Domain ?? (data.IsLocalFile ? "文件" : null);
             var absorbedShortEvents = allWebEvents
-                .Where(e => e.Duration < ShortPageThresholdSeconds)
+                .Where(e => e.Duration <= ShortPageThresholdSeconds)
                 .ToList();
 
             var record = new PcDetailRecord(

@@ -856,6 +856,34 @@ public class PcTrackerCompleteCaptureTests
     }
 
     [Fact]
+    public async Task QueryCompleteDetailAsync_MergesFiveSecondWebPageIntoNextValidPage()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WebEvent(90, "2026-05-20T05:00:00+00:00", 5, "https://example.com/a", "A"),
+            WebEvent(91, "2026-05-20T05:00:05+00:00", 6, "https://example.com/b", "B"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        var page = Assert.Single(result.Items);
+        Assert.Equal("web-page", page.RecordType);
+        Assert.Equal("B", page.Title);
+        Assert.Equal("2026-05-20T05:00:00.0000000+00:00", page.Start);
+        Assert.Equal("2026-05-20T05:00:11.0000000+00:00", page.End);
+        Assert.Equal(11, page.DurationSeconds);
+        Assert.Equal(1, page.AbsorbedShortEventsCount);
+        Assert.Equal(5, page.AbsorbedDurationSeconds);
+        Assert.Equal(new[] { 90L, 91L }, page.SourceWebEventIds);
+    }
+
+    [Fact]
     public async Task QueryCompleteDetailAsync_MergesTrailingShortWebPageIntoPreviousValidPage()
     {
         PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
