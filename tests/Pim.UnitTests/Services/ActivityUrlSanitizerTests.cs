@@ -22,6 +22,22 @@ public class ActivityUrlSanitizerTests
     }
 
     [Fact]
+    public void Sanitize_RedactsDottedOpaquePathSegments()
+    {
+        var result = ActivityUrlSanitizer.Sanitize("https://example.com/callback/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhYmMifQ.signature/docs");
+
+        Assert.Equal("https://example.com/callback/[redacted]/docs", result);
+    }
+
+    [Fact]
+    public void Sanitize_PreservesNormalPathSegments()
+    {
+        var result = ActivityUrlSanitizer.Sanitize("https://example.com/en/latest/api/rest.html");
+
+        Assert.Equal("https://example.com/en/latest/api/rest.html", result);
+    }
+
+    [Fact]
     public void Sanitize_ReturnsNullForInvalidUrl()
     {
         var result = ActivityUrlSanitizer.Sanitize("not a url");

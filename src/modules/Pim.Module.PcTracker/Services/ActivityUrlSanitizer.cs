@@ -35,6 +35,6 @@ public static partial class ActivityUrlSanitizer
             && (OpaqueTokenRegex().IsMatch(decoded) || decoded.Count(char.IsDigit) >= 8);
     }
 
-    [GeneratedRegex("^[A-Za-z0-9_-]{24,}$")]
+    [GeneratedRegex("^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*$")]
     private static partial Regex OpaqueTokenRegex();
 }
