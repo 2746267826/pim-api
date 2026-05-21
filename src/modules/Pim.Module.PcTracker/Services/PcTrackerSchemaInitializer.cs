@@ -84,6 +84,84 @@ CREATE TABLE IF NOT EXISTS pc_keystats_samples (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_keystats_samples_device_minute ON pc_keystats_samples (pim_device_id, sampled_at_utc);
 CREATE INDEX IF NOT EXISTS ix_pc_keystats_samples_stats_date ON pc_keystats_samples (stats_date);
+CREATE TABLE IF NOT EXISTS pc_app_categories (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    app_pattern VARCHAR(128) NOT NULL,
+    category_name VARCHAR(64) NOT NULL,
+    color VARCHAR(7) DEFAULT '#6B5EE4',
+    priority INT DEFAULT 0,
+    is_builtin BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS pc_activity_category_rules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    rule_name VARCHAR(128) NOT NULL,
+    scope VARCHAR(16) NOT NULL DEFAULT 'activity',
+    category_name VARCHAR(64),
+    project_tag VARCHAR(128),
+    color VARCHAR(7) NOT NULL DEFAULT '#64748b',
+    priority INT NOT NULL DEFAULT 0,
+    source VARCHAR(32) NOT NULL DEFAULT 'user',
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    conditions_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    confidence DOUBLE PRECISION NOT NULL DEFAULT 1,
+    explanation TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_category_rules_status ON pc_activity_category_rules (status);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_category_rules_priority ON pc_activity_category_rules (priority);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_category_rules_category_name ON pc_activity_category_rules (category_name);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_category_rules_project_tag ON pc_activity_category_rules (project_tag);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_activity_category_rules_rule_name ON pc_activity_category_rules (rule_name);
+CREATE TABLE IF NOT EXISTS pc_activity_classification_suggestions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    cluster_key VARCHAR(256) NOT NULL,
+    sample_count INT NOT NULL DEFAULT 0,
+    total_duration_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+    sample_records_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    sanitized_context_json JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    current_category VARCHAR(64),
+    suggested_category VARCHAR(64),
+    suggested_project_tag VARCHAR(128),
+    suggested_rules_json JSONB,
+    user_feedback TEXT,
+    llm_response_json JSONB,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_suggestions_cluster_key ON pc_activity_classification_suggestions (cluster_key);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_suggestions_status ON pc_activity_classification_suggestions (status);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_suggestions_updated_at ON pc_activity_classification_suggestions (updated_at);
+INSERT INTO pc_activity_category_rules (rule_name, scope, category_name, project_tag, color, priority, source, status, conditions_json, confidence, explanation) VALUES
+('Builtin: VS Code', 'activity', '编程', NULL, '#6B5EE4', 300, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"equals","value":"code"}}]}}'::jsonb, 0.9, 'Builtin app rule.'),
+('Builtin: Rider', 'activity', '编程', NULL, '#6B5EE4', 300, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"equals","value":"rider"}}]}}'::jsonb, 0.9, 'Builtin app rule.'),
+('Builtin: Terminal', 'activity', '终端', NULL, '#E05A7A', 300, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"containsAny","value":["windowsterminal","terminal","powershell","cmd"]}}]}}'::jsonb, 0.85, 'Builtin terminal rule.'),
+('Builtin: Chat apps', 'activity', '沟通', NULL, '#F5935A', 300, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"containsAny","value":["wechat","dingtalk","qq","telegram","slack","discord","teams"]}}]}}'::jsonb, 0.85, 'Builtin communication rule.'),
+('Builtin: Office apps', 'activity', '办公', NULL, '#F59E0B', 300, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"containsAny","value":["winword","excel","powerpnt","notion","obsidian","typora"]}}]}}'::jsonb, 0.85, 'Builtin office rule.'),
+('Builtin: File managers', 'activity', '文件', NULL, '#3B82F6', 300, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"containsAny","value":["explorer","everything","totalcommander"]}}]}}'::jsonb, 0.85, 'Builtin file rule.'),
+('Builtin: Browser apps', 'activity', '浏览', NULL, '#0EA8A0', 100, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"containsAny","value":["msedge","chrome","firefox","brave","opera"]}}]}}'::jsonb, 0.6, 'Low-priority browser fallback rule.')
+ON CONFLICT DO NOTHING;
+INSERT INTO pc_activity_category_rules (rule_name, scope, category_name, project_tag, color, priority, source, status, conditions_json, confidence, explanation)
+SELECT
+    'Migrated app rule: ' || app_pattern,
+    'activity',
+    category_name,
+    NULL,
+    color,
+    priority,
+    CASE WHEN is_builtin THEN 'builtin' ELSE 'user' END,
+    'active',
+    jsonb_build_object('all', jsonb_build_array(jsonb_build_object('field', 'appNameNormalized', 'op', 'equals', 'value', lower(replace(app_pattern, '.exe', ''))))),
+    0.95,
+    'Migrated from pc_app_categories.'
+FROM pc_app_categories
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM pc_activity_category_rules r
+    WHERE r.rule_name = 'Migrated app rule: ' || pc_app_categories.app_pattern
+);
 """;
 
     private readonly PimDbContext _db;

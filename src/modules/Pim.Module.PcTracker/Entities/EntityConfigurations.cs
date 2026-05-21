@@ -79,3 +79,29 @@ public class AppCategoryEntityConfiguration : IEntityTypeConfiguration<AppCatego
         builder.HasIndex(e => e.Priority);
     }
 }
+
+public class ActivityCategoryRuleEntityConfiguration : IEntityTypeConfiguration<ActivityCategoryRuleEntity>
+{
+    public void Configure(EntityTypeBuilder<ActivityCategoryRuleEntity> builder)
+    {
+        builder.ToTable("pc_activity_category_rules");
+        builder.HasIndex(e => e.RuleName)
+            .IsUnique()
+            .HasDatabaseName("ux_pc_activity_category_rules_rule_name");
+        builder.HasIndex(e => e.Status).HasDatabaseName("ix_pc_activity_category_rules_status");
+        builder.HasIndex(e => e.Priority).HasDatabaseName("ix_pc_activity_category_rules_priority");
+        builder.HasIndex(e => e.CategoryName).HasDatabaseName("ix_pc_activity_category_rules_category_name");
+        builder.HasIndex(e => e.ProjectTag).HasDatabaseName("ix_pc_activity_category_rules_project_tag");
+    }
+}
+
+public class ActivityClassificationSuggestionEntityConfiguration : IEntityTypeConfiguration<ActivityClassificationSuggestionEntity>
+{
+    public void Configure(EntityTypeBuilder<ActivityClassificationSuggestionEntity> builder)
+    {
+        builder.ToTable("pc_activity_classification_suggestions");
+        builder.HasIndex(e => e.ClusterKey).HasDatabaseName("ix_pc_activity_classification_suggestions_cluster_key");
+        builder.HasIndex(e => e.Status).HasDatabaseName("ix_pc_activity_classification_suggestions_status");
+        builder.HasIndex(e => e.UpdatedAt).HasDatabaseName("ix_pc_activity_classification_suggestions_updated_at");
+    }
+}
