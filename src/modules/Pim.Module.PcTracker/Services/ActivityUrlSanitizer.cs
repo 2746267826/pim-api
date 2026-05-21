@@ -32,9 +32,25 @@ public static partial class ActivityUrlSanitizer
     {
         var decoded = Uri.UnescapeDataString(segment);
         return decoded.Length >= 24
-            && (OpaqueTokenRegex().IsMatch(decoded) || decoded.Count(char.IsDigit) >= 8);
+            && (DottedTokenRegex().IsMatch(decoded) || LooksLikeNonDottedToken(decoded));
     }
 
-    [GeneratedRegex("^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*$")]
-    private static partial Regex OpaqueTokenRegex();
+    private static bool LooksLikeNonDottedToken(string segment)
+    {
+        if (!NonDottedTokenRegex().IsMatch(segment))
+            return false;
+
+        var digitCount = segment.Count(char.IsDigit);
+        var hasUpper = segment.Any(char.IsUpper);
+        var hasLower = segment.Any(char.IsLower);
+        return digitCount >= 8
+            || (digitCount > 0 && hasUpper && hasLower)
+            || (segment.Contains('_') && hasUpper && hasLower);
+    }
+
+    [GeneratedRegex("^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+){2,}$")]
+    private static partial Regex DottedTokenRegex();
+
+    [GeneratedRegex("^[A-Za-z0-9_-]+$")]
+    private static partial Regex NonDottedTokenRegex();
 }

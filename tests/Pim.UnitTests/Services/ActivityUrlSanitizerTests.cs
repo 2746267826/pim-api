@@ -38,6 +38,14 @@ public class ActivityUrlSanitizerTests
     }
 
     [Fact]
+    public void Sanitize_PreservesLongNormalPathSlugs()
+    {
+        var result = ActivityUrlSanitizer.Sanitize("https://example.com/docs/release-notes-for-product-v2/rest.html");
+
+        Assert.Equal("https://example.com/docs/release-notes-for-product-v2/rest.html", result);
+    }
+
+    [Fact]
     public void Sanitize_ReturnsNullForInvalidUrl()
     {
         var result = ActivityUrlSanitizer.Sanitize("not a url");
