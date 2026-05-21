@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Services;
 using Xunit;
@@ -7,6 +8,149 @@ namespace Pim.UnitTests.Services;
 
 public class ActivityClassificationRuleEvaluatorTests
 {
+    [Fact]
+    public void Matches_ReturnsTrueForWebPageDomainSuffixAndTitleContainsAny()
+    {
+        var context = new ActivityClassificationContext(
+            RecordType: "web-page",
+            AppName: "Firefox",
+            AppNameNormalized: "firefox",
+            Domain: "docs.activitywatch.net",
+            UrlPath: "/en/latest/api/rest.html",
+            Title: "REST API - ActivityWatch",
+            WindowTitle: "REST API - ActivityWatch - Firefox",
+            FilePath: null,
+            BucketType: "web.tab.current");
+        const string conditionsJson = """
+            {
+              "all": [
+                { "field": "domain", "op": "domainSuffix", "value": "activitywatch.net" },
+                { "field": "title", "op": "containsAny", "value": [ "REST API", "ActivityWatch" ] }
+              ]
+            }
+            """;
+
+        var matches = ActivityClassificationRuleEvaluator.Matches(conditionsJson, context);
+
+        Assert.True(matches);
+    }
+
+    [Fact]
+    public void Matches_ReturnsFalseWhenOneAllConditionFails()
+    {
+        var context = new ActivityClassificationContext(
+            RecordType: "web-page",
+            AppName: "Firefox",
+            AppNameNormalized: "firefox",
+            Domain: "docs.activitywatch.net",
+            UrlPath: "/en/latest/api/rest.html",
+            Title: "REST API - ActivityWatch",
+            WindowTitle: "REST API - ActivityWatch - Firefox",
+            FilePath: null,
+            BucketType: "web.tab.current");
+        const string conditionsJson = """
+            {
+              "all": [
+                { "field": "domain", "op": "domainSuffix", "value": "activitywatch.net" },
+                { "field": "title", "op": "containsAny", "value": [ "GitHub", "calendar" ] }
+              ]
+            }
+            """;
+
+        var matches = ActivityClassificationRuleEvaluator.Matches(conditionsJson, context);
+
+        Assert.False(matches);
+    }
+
+    [Theory]
+    [InlineData("recordType", "equals", "WEB-PAGE")]
+    [InlineData("appName", "contains", "fox")]
+    [InlineData("appNameNormalized", "startsWith", "fire")]
+    [InlineData("domain", "endsWith", "WATCH.NET")]
+    [InlineData("urlPath", "pathPrefix", "en/latest/api")]
+    [InlineData("title", "regex", "rest api\\s+-\\s+activitywatch")]
+    [InlineData("windowTitle", "contains", "Firefox")]
+    [InlineData("filePath", "endsWith", "notes.txt")]
+    [InlineData("bucketType", "equals", "WEB.TAB.CURRENT")]
+    public void Matches_SupportsStringOperators(string field, string op, string value)
+    {
+        var context = new ActivityClassificationContext(
+            RecordType: "web-page",
+            AppName: "Firefox",
+            AppNameNormalized: "firefox",
+            Domain: "docs.activitywatch.net",
+            UrlPath: "/en/latest/api/rest.html",
+            Title: "REST API - ActivityWatch",
+            WindowTitle: "REST API - ActivityWatch - Firefox",
+            FilePath: @"C:\Users\tester\notes.txt",
+            BucketType: "web.tab.current");
+        var conditionsJson = JsonSerializer.Serialize(new
+        {
+            all = new[]
+            {
+                new { field, op, value }
+            }
+        });
+
+        var matches = ActivityClassificationRuleEvaluator.Matches(conditionsJson, context);
+
+        Assert.True(matches);
+    }
+
+    [Fact]
+    public void Matches_DomainSuffixRequiresDomainBoundary()
+    {
+        var context = new ActivityClassificationContext(
+            RecordType: "web-page",
+            AppName: "Firefox",
+            AppNameNormalized: "firefox",
+            Domain: "notactivitywatch.net",
+            UrlPath: "/en/latest/api/rest.html",
+            Title: "REST API - ActivityWatch",
+            WindowTitle: "REST API - ActivityWatch - Firefox",
+            FilePath: null,
+            BucketType: "web.tab.current");
+        const string conditionsJson = """
+            {
+              "all": [
+                { "field": "domain", "op": "domainSuffix", "value": "activitywatch.net" }
+              ]
+            }
+            """;
+
+        var matches = ActivityClassificationRuleEvaluator.Matches(conditionsJson, context);
+
+        Assert.False(matches);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("{")]
+    [InlineData("{}")]
+    [InlineData("""{ "all": [] }""")]
+    [InlineData("""{ "all": "invalid" }""")]
+    [InlineData("""{ "all": [{ "field": "title", "op": "unsupported", "value": "ActivityWatch" }] }""")]
+    [InlineData("""{ "all": [{ "field": "unknown", "op": "equals", "value": "ActivityWatch" }] }""")]
+    [InlineData("""{ "all": [{ "field": "title", "op": "regex", "value": "[" }] }""")]
+    public void Matches_ReturnsFalseForMalformedOrUnsupportedConditions(string? conditionsJson)
+    {
+        var context = new ActivityClassificationContext(
+            RecordType: "web-page",
+            AppName: "Firefox",
+            AppNameNormalized: "firefox",
+            Domain: "docs.activitywatch.net",
+            UrlPath: "/en/latest/api/rest.html",
+            Title: "REST API - ActivityWatch",
+            WindowTitle: "REST API - ActivityWatch - Firefox",
+            FilePath: null,
+            BucketType: "web.tab.current");
+
+        var matches = ActivityClassificationRuleEvaluator.Matches(conditionsJson, context);
+
+        Assert.False(matches);
+    }
+
     [Fact]
     public void ActivityClassificationResult_HasFallbackDefaults()
     {
