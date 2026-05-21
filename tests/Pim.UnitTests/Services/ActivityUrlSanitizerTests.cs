@@ -68,4 +68,23 @@ public class ActivityUrlSanitizerTests
 
         Assert.Null(result);
     }
+
+    [Theory]
+    [InlineData("file:///C:/Users/a/secret.txt")]
+    [InlineData("data:text/plain,secret")]
+    [InlineData("javascript:alert(1)")]
+    public void Sanitize_ReturnsNullForNonWebUrls(string url)
+    {
+        var result = ActivityUrlSanitizer.Sanitize(url);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void Sanitize_RedactsPercentEncodedOpaquePathSegments()
+    {
+        var result = ActivityUrlSanitizer.Sanitize("https://example.com/session/eyJhbGciOiJIUzI1NiJ9%2EeyJzdWIiOiJhYmMifQ%2Esignature/docs");
+
+        Assert.Equal("https://example.com/session/[redacted]/docs", result);
+    }
 }

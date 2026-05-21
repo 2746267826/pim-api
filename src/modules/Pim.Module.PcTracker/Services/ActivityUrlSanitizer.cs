@@ -12,6 +12,9 @@ public static partial class ActivityUrlSanitizer
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
             return null;
 
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            return null;
+
         var builder = new UriBuilder(uri)
         {
             UserName = string.Empty,
