@@ -5,6 +5,8 @@ namespace Pim.Module.PcTracker.Services;
 
 public static class ActivityClassifier
 {
+    private const int DeferredRulePriorityThreshold = 100;
+    private const double DeferredRuleConfidenceThreshold = 0.65;
     private const string ProgrammingCategory = "\u7f16\u7a0b";
     private const string ProgrammingColor = "#6B5EE4";
     private const string LearningCategory = "\u5b66\u4e60";
@@ -24,40 +26,60 @@ public static class ActivityClassifier
         ActivityClassificationContext context,
         IReadOnlyCollection<ActivityCategoryRuleEntity> rules)
     {
-        foreach (var rule in (rules ?? Array.Empty<ActivityCategoryRuleEntity>())
+        var activeRules = (rules ?? Array.Empty<ActivityCategoryRuleEntity>())
             .Where(rule => string.Equals(rule.Status, "active", StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(rule => rule.Priority))
+            .OrderByDescending(rule => rule.Priority)
+            .ToArray();
+
+        if (TryClassifyWithRules(context, activeRules.Where(rule => !IsDeferredFallbackRule(rule)), out var result))
+            return result;
+
+        var heuristicResult = ClassifyWithHeuristics(context);
+        if (heuristicResult is not null)
+            return heuristicResult;
+
+        return TryClassifyWithRules(context, activeRules.Where(IsDeferredFallbackRule), out result)
+            ? result
+            : ActivityClassificationResult.Fallback();
+    }
+
+    private static bool TryClassifyWithRules(
+        ActivityClassificationContext context,
+        IEnumerable<ActivityCategoryRuleEntity> rules,
+        out ActivityClassificationResult result)
+    {
+        foreach (var rule in rules)
         {
             if (!ActivityClassificationRuleEvaluator.Matches(rule.ConditionsJson, context))
                 continue;
 
-            return new ActivityClassificationResult(
-                rule.CategoryName!,
+            result = new ActivityClassificationResult(
+                string.IsNullOrWhiteSpace(rule.CategoryName)
+                    ? ActivityClassificationResult.Fallback().CategoryName
+                    : rule.CategoryName,
                 rule.Color,
                 rule.ProjectTag,
                 rule.Confidence,
                 "rule",
-                rule.Explanation!,
+                rule.Explanation ?? string.Empty,
                 rule.Id);
+            return true;
         }
 
-        return ClassifyWithHeuristics(context) ?? ActivityClassificationResult.Fallback();
+        result = ActivityClassificationResult.Fallback();
+        return false;
+    }
+
+    private static bool IsDeferredFallbackRule(ActivityCategoryRuleEntity rule)
+    {
+        return string.Equals(rule.Source, "builtin", StringComparison.OrdinalIgnoreCase)
+            && rule.Priority <= DeferredRulePriorityThreshold
+            && rule.Confidence <= DeferredRuleConfidenceThreshold;
     }
 
     private static ActivityClassificationResult? ClassifyWithHeuristics(ActivityClassificationContext context)
     {
         var domain = NormalizeDomain(context.Domain);
-        if (IsCodeHostingDomain(domain))
-        {
-            return Programming(
-                DeriveRepositoryProjectTag(context.UrlPath),
-                0.82,
-                "Code hosting activity.");
-        }
-
-        if (IsLocalhost(domain))
-            return Programming(null, 0.8, "Local development activity.");
-
         if (IsDocumentationSignal(domain, context.UrlPath, context.Title, context.WindowTitle))
         {
             return new ActivityClassificationResult(
@@ -68,6 +90,17 @@ public static class ActivityClassifier
                 "heuristic",
                 "Documentation or API activity.");
         }
+
+        if (IsCodeHostingDomain(domain))
+        {
+            return Programming(
+                DeriveRepositoryProjectTag(context.UrlPath),
+                0.82,
+                "Code hosting activity.");
+        }
+
+        if (IsLocalhost(domain))
+            return Programming(null, 0.8, "Local development activity.");
 
         var title = JoinForSearch(context.Title, context.WindowTitle);
         if (ContainsAny(title, MeetingTitleSignals))

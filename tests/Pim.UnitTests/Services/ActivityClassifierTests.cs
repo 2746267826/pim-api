@@ -187,7 +187,7 @@ public class ActivityClassifierTests
     }
 
     [Fact]
-    public void Classify_RuleResultUsesMatchedRuleValuesAsIs()
+    public void Classify_RuleWithBlankCategoryUsesFallbackCategoryAndNeutralExplanation()
     {
         var ruleId = Guid.NewGuid();
         var context = CreateContext(
@@ -199,9 +199,9 @@ public class ActivityClassifierTests
             new ActivityCategoryRuleEntity
             {
                 Id = ruleId,
-                RuleName = "Null-valued rule",
+                RuleName = "Blank category rule",
                 Status = "active",
-                CategoryName = null,
+                CategoryName = " ",
                 ProjectTag = null,
                 Color = "#abcdef",
                 Priority = 100,
@@ -220,12 +220,68 @@ public class ActivityClassifierTests
         var result = ActivityClassifier.Classify(context, rules);
 
         Assert.Equal("rule", result.Source);
-        Assert.Null(result.CategoryName);
+        Assert.Equal(ActivityClassificationResult.Fallback().CategoryName, result.CategoryName);
         Assert.Equal("#abcdef", result.CategoryColor);
         Assert.Null(result.ProjectTag);
         Assert.Equal(0.61, result.Confidence);
-        Assert.Null(result.Explanation);
+        Assert.Equal(string.Empty, result.Explanation);
         Assert.Equal(ruleId, result.SourceRuleId);
+    }
+
+    [Fact]
+    public void Classify_LowConfidenceBuiltinBrowserRuleDoesNotBeatDocsHeuristic()
+    {
+        var context = CreateContext(
+            AppName: "Firefox",
+            AppNameNormalized: "firefox",
+            Domain: "docs.activitywatch.net",
+            UrlPath: "/en/latest/api/rest.html",
+            Title: "REST API - ActivityWatch");
+        var rules = new[]
+        {
+            new ActivityCategoryRuleEntity
+            {
+                Id = Guid.NewGuid(),
+                RuleName = "Builtin: Browser apps",
+                Status = "active",
+                CategoryName = "浏览",
+                Color = "#0EA8A0",
+                Priority = 100,
+                Source = "builtin",
+                ConditionsJson = """
+                    {
+                      "all": [
+                        { "field": "appNameNormalized", "op": "containsAny", "value": [ "msedge", "firefox" ] }
+                      ]
+                    }
+                    """,
+                Confidence = 0.6,
+                Explanation = "Low-priority browser fallback rule."
+            }
+        };
+
+        var result = ActivityClassifier.Classify(context, rules);
+
+        Assert.Equal("heuristic", result.Source);
+        Assert.Equal("学习", result.CategoryName);
+        Assert.Equal("ActivityWatch", result.ProjectTag);
+        Assert.Null(result.SourceRuleId);
+    }
+
+    [Fact]
+    public void Classify_DocsGithubBecomesLearning()
+    {
+        var context = CreateContext(
+            Domain: "docs.github.com",
+            UrlPath: "/en/rest/pulls/pulls",
+            Title: "REST API endpoints for pull requests - GitHub Docs");
+
+        var result = ActivityClassifier.Classify(context, []);
+
+        Assert.Equal("学习", result.CategoryName);
+        Assert.Equal("#14b8a6", result.CategoryColor);
+        Assert.Equal("heuristic", result.Source);
+        Assert.Null(result.ProjectTag);
     }
 
     private static ActivityClassificationContext CreateContext(
