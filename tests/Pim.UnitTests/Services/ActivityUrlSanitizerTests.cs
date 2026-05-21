@@ -46,6 +46,22 @@ public class ActivityUrlSanitizerTests
     }
 
     [Fact]
+    public void Sanitize_ReturnsNullForNullUrl()
+    {
+        var result = ActivityUrlSanitizer.Sanitize(null);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void Sanitize_ReturnsNullForBlankUrl()
+    {
+        var result = ActivityUrlSanitizer.Sanitize("   ");
+
+        Assert.Null(result);
+    }
+
+    [Fact]
     public void Sanitize_ReturnsNullForInvalidUrl()
     {
         var result = ActivityUrlSanitizer.Sanitize("not a url");
