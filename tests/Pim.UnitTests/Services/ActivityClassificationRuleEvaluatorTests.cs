@@ -124,6 +124,34 @@ public class ActivityClassificationRuleEvaluatorTests
     }
 
     [Theory]
+    [InlineData("/docs?tab=api")]
+    [InlineData("/docs#section")]
+    public void Matches_PathPrefixIgnoresQueryAndFragmentBoundaries(string urlPath)
+    {
+        var context = new ActivityClassificationContext(
+            RecordType: "web-page",
+            AppName: "Firefox",
+            AppNameNormalized: "firefox",
+            Domain: "docs.activitywatch.net",
+            UrlPath: urlPath,
+            Title: "REST API - ActivityWatch",
+            WindowTitle: "REST API - ActivityWatch - Firefox",
+            FilePath: null,
+            BucketType: "web.tab.current");
+        const string conditionsJson = """
+            {
+              "all": [
+                { "field": "urlPath", "op": "pathPrefix", "value": "/docs" }
+              ]
+            }
+            """;
+
+        var matches = ActivityClassificationRuleEvaluator.Matches(conditionsJson, context);
+
+        Assert.True(matches);
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("{")]

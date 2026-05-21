@@ -190,6 +190,13 @@ public static class ActivityClassificationRuleEvaluator
         if (trimmed.Length == 0)
             return string.Empty;
 
+        var boundaryIndex = trimmed.IndexOfAny(['?', '#']);
+        if (boundaryIndex >= 0)
+            trimmed = trimmed[..boundaryIndex];
+
+        if (trimmed.Length == 0)
+            return string.Empty;
+
         var withLeadingSlash = trimmed.StartsWith("/", StringComparison.Ordinal)
             ? trimmed
             : "/" + trimmed;
