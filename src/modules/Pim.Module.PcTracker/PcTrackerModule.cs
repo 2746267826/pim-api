@@ -228,6 +228,10 @@ public class PcTrackerModule : IModule
             {
                 return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
             }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
+            }
         });
 
         writeGroup.MapPost("/classification/suggestions/{id:guid}/reject", async (
@@ -243,6 +247,10 @@ public class PcTrackerModule : IModule
             catch (KeyNotFoundException)
             {
                 return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
             }
         });
 
