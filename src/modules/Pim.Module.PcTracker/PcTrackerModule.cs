@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Globalization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -22,6 +23,7 @@ public class PcTrackerModule : IModule
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
         services.AddScoped<PcTrackerService>();
+        services.AddScoped<ActivitySuggestionService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
     }
 
@@ -174,6 +176,34 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<List<ActivityClassificationRuleDto>>.Ok(rules));
         });
 
+        readGroup.MapGet("/classification/suggestions", async (
+            [FromQuery] string? date,
+            [FromServices] PcTrackerService pcTrackerService,
+            [FromServices] ActivitySuggestionService suggestionService,
+            CancellationToken ct) =>
+        {
+            var d = date is not null ? DateTime.Parse(date) : DateTime.Today;
+            var q = new DetailQueryParams(
+                d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                1,
+                500);
+            var detail = await pcTrackerService.QueryCompleteDetailAsync(q, ct);
+            var records = detail.Items
+                .Where(NeedsClassificationSuggestion)
+                .ToList();
+            var suggestions = await suggestionService.BuildSuggestionsAsync(records, ct);
+            return Results.Ok(ApiResponse<List<ActivityClassificationSuggestionDto>>.Ok(suggestions));
+        });
+
         writeGroup.MapPost("/classification/rules", async (
             [FromBody] SaveActivityClassificationRuleRequest req,
             [FromServices] PcTrackerService svc,
@@ -181,6 +211,39 @@ public class PcTrackerModule : IModule
         {
             var rule = await svc.SaveActivityClassificationRuleAsync(req, ct);
             return Results.Ok(ApiResponse<ActivityClassificationRuleDto>.Ok(rule));
+        });
+
+        writeGroup.MapPost("/classification/suggestions/{id:guid}/accept", async (
+            Guid id,
+            [FromBody] AcceptActivityClassificationSuggestionRequest req,
+            [FromServices] ActivitySuggestionService suggestionService,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var rule = await suggestionService.AcceptSuggestionAsync(id, req, ct);
+                return Results.Ok(ApiResponse<ActivityClassificationRuleDto>.Ok(rule));
+            }
+            catch (KeyNotFoundException)
+            {
+                return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
+            }
+        });
+
+        writeGroup.MapPost("/classification/suggestions/{id:guid}/reject", async (
+            Guid id,
+            [FromServices] ActivitySuggestionService suggestionService,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                await suggestionService.RejectSuggestionAsync(id, ct);
+                return Results.Ok(ApiResponse<string>.Ok("rejected"));
+            }
+            catch (KeyNotFoundException)
+            {
+                return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
+            }
         });
 
         writeGroup.MapPost("/classification/recompute", () =>
@@ -207,5 +270,11 @@ public class PcTrackerModule : IModule
         using var scope = serviceProvider.CreateScope();
         var initializer = scope.ServiceProvider.GetRequiredService<PcTrackerSchemaInitializer>();
         await initializer.InitializeAsync();
+    }
+
+    private static bool NeedsClassificationSuggestion(PcDetailRecord record)
+    {
+        return string.Equals(record.ClassificationSource, "fallback", StringComparison.OrdinalIgnoreCase)
+            || (record.ClassificationConfidence is not null && record.ClassificationConfidence < 0.5);
     }
 }
