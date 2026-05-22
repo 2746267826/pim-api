@@ -555,6 +555,32 @@ public class PcTrackerCompleteCaptureTests
     }
 
     [Fact]
+    public async Task GetTimelineAsync_ReturnsNonOverlappingItems()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WindowEvent("2026-05-20T05:00:00+00:00", 600, "Codex.exe", "Codex"),
+            WindowEvent("2026-05-20T05:05:00+00:00", 120, "WindowsTerminal.exe", "Terminal"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var timeline = await service.GetTimelineAsync(new DateTime(2026, 5, 20), CancellationToken.None);
+
+        Assert.Equal(2, timeline.Count);
+        Assert.Equal("2026-05-20T05:00:00.0000000+00:00", timeline[0].Start);
+        Assert.Equal("2026-05-20T05:05:00.0000000+00:00", timeline[0].End);
+        Assert.Equal(5, timeline[0].DurationMinutes);
+        Assert.Equal("2026-05-20T05:05:00.0000000+00:00", timeline[1].Start);
+        Assert.Equal("2026-05-20T05:07:00.0000000+00:00", timeline[1].End);
+        Assert.Equal(2, timeline[1].DurationMinutes);
+    }
+
+    [Fact]
     public async Task GetSummaryAsync_ExposesCompleteKeyPressCountsForHeatmap()
     {
         PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);

@@ -323,6 +323,7 @@ public class PcTrackerService
             .Where(IsSummaryTimelineRecord)
             .Select(ToTimelineItem)
             .ToList();
+        timeline = NormalizeTimelineItems(timeline).ToList();
 
         return new PcSummaryResponse(
             keystats is not null ? BuildKeystatsSummary(keystats) : BuildKeystatsSummaryFromSample(keystatsSample),
@@ -344,10 +345,11 @@ public class PcTrackerService
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
 
-        return (await BuildInterpretedAwDetailRecordsAsync(events, ct))
+        var timeline = (await BuildInterpretedAwDetailRecordsAsync(events, ct))
             .Where(IsSummaryTimelineRecord)
             .Select(ToTimelineItem)
             .ToList();
+        return NormalizeTimelineItems(timeline).ToList();
     }
 
     public async Task<List<HeatmapBucket>> GetHeatmapAsync(DateTime start, DateTime end, CancellationToken ct)
@@ -763,6 +765,11 @@ public class PcTrackerService
         return timestamp.ToUniversalTime().ToString("O");
     }
 
+    private static DateTimeOffset ParseRecordTime(string value)
+    {
+        return DateTimeOffset.Parse(value).ToUniversalTime();
+    }
+
     private static IEnumerable<PcDetailRecord> ApplyCompleteDetailFilters(
         IEnumerable<PcDetailRecord> records,
         DetailQueryParams q)
@@ -1029,6 +1036,45 @@ public class PcTrackerService
             record.ClassificationConfidence ?? 0.2,
             record.ClassificationSource ?? "fallback",
             record.ClassificationExplanation ?? "No rule or heuristic matched.");
+    }
+
+    private static IEnumerable<TimelineItem> NormalizeTimelineItems(IEnumerable<TimelineItem> items)
+    {
+        var normalized = new List<TimelineItem>();
+
+        foreach (var item in items
+                     .OrderBy(i => ParseRecordTime(i.Start))
+                     .ThenBy(i => ParseRecordTime(i.End)))
+        {
+            var start = ParseRecordTime(item.Start);
+            var end = ParseRecordTime(item.End);
+            if (end <= start)
+                continue;
+
+            if (normalized.Count > 0)
+            {
+                var previous = normalized[^1];
+                var previousStart = ParseRecordTime(previous.Start);
+                var previousEnd = ParseRecordTime(previous.End);
+                if (start < previousEnd)
+                {
+                    var trimmedPrevious = previous with
+                    {
+                        End = FormatUtc(start),
+                        DurationMinutes = Math.Max(0, (start - previousStart).TotalMinutes)
+                    };
+
+                    if (trimmedPrevious.DurationMinutes > 0)
+                        normalized[^1] = trimmedPrevious;
+                    else
+                        normalized.RemoveAt(normalized.Count - 1);
+                }
+            }
+
+            normalized.Add(item with { DurationMinutes = (end - start).TotalMinutes });
+        }
+
+        return normalized;
     }
 
     private async Task<List<AppCategoryRule>> GetLegacyCategoryRulesAsync(CancellationToken ct)
