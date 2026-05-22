@@ -66,6 +66,7 @@ public class ActivitySuggestionService
     public async Task<List<ActivityClassificationSuggestionDto>> GetSuggestionsAsync(CancellationToken ct)
     {
         return await _db.Set<ActivityClassificationSuggestionEntity>()
+            .Where(s => s.Status == PendingStatus)
             .OrderByDescending(s => s.TotalDurationSeconds)
             .Select(s => ToSuggestionDto(s))
             .ToListAsync(ct);
@@ -79,6 +80,8 @@ public class ActivitySuggestionService
         var suggestion = await _db.Set<ActivityClassificationSuggestionEntity>()
             .FirstOrDefaultAsync(s => s.Id == id, ct)
             ?? throw new KeyNotFoundException($"Activity classification suggestion '{id}' was not found.");
+        EnsurePending(suggestion);
+
         var now = DateTimeOffset.UtcNow;
         var rule = new ActivityCategoryRuleEntity
         {
@@ -110,10 +113,20 @@ public class ActivitySuggestionService
         var suggestion = await _db.Set<ActivityClassificationSuggestionEntity>()
             .FirstOrDefaultAsync(s => s.Id == id, ct)
             ?? throw new KeyNotFoundException($"Activity classification suggestion '{id}' was not found.");
+        EnsurePending(suggestion);
 
         suggestion.Status = "rejected";
         suggestion.UpdatedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
+    }
+
+    private static void EnsurePending(ActivityClassificationSuggestionEntity suggestion)
+    {
+        if (string.Equals(suggestion.Status, PendingStatus, StringComparison.Ordinal))
+            return;
+
+        throw new InvalidOperationException(
+            $"Activity classification suggestion '{suggestion.Id}' must be pending before it can be changed. Current status is '{suggestion.Status}'.");
     }
 
     private static bool NeedsSuggestion(PcDetailRecord record)
