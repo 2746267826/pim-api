@@ -34,11 +34,17 @@ public class ActivitySuggestionService
         {
             var groupRecords = group.Select(x => x.Record).ToList();
             var clusterKey = group.Key;
-            var entity = await _db.Set<ActivityClassificationSuggestionEntity>()
-                .FirstOrDefaultAsync(s => s.ClusterKey == clusterKey, ct);
+            var existingSuggestions = await _db.Set<ActivityClassificationSuggestionEntity>()
+                .Where(s => s.ClusterKey == clusterKey)
+                .ToListAsync(ct);
+            var entity = existingSuggestions
+                .FirstOrDefault(s => string.Equals(s.Status, PendingStatus, StringComparison.Ordinal));
 
             if (entity is null)
             {
+                if (existingSuggestions.Count > 0)
+                    continue;
+
                 entity = new ActivityClassificationSuggestionEntity
                 {
                     Id = Guid.NewGuid(),
@@ -47,10 +53,6 @@ public class ActivitySuggestionService
                     CreatedAt = now
                 };
                 _db.Set<ActivityClassificationSuggestionEntity>().Add(entity);
-            }
-            else if (!string.Equals(entity.Status, PendingStatus, StringComparison.Ordinal))
-            {
-                continue;
             }
 
             entity.SampleCount = groupRecords.Count;

@@ -97,6 +97,43 @@ public class ActivitySuggestionServiceTests
     }
 
     [Fact]
+    public async Task BuildSuggestionsAsync_UpdatesPendingSuggestionWhenHistoricalRowExists()
+    {
+        using var db = CreateDbContext();
+        var pendingId = Guid.NewGuid();
+        db.Set<ActivityClassificationSuggestionEntity>().AddRange(
+            NewSuggestion("web:unknown.example.com", "rejected", 90),
+            NewSuggestion(pendingId, "web:unknown.example.com", "pending", 5));
+        await db.SaveChangesAsync();
+        var service = new ActivitySuggestionService(db);
+        var records = new[]
+        {
+            NewWebRecord(
+                durationSeconds: 120,
+                url: "https://unknown.example.com/path",
+                classificationSource: "fallback"),
+            NewWebRecord(
+                durationSeconds: 60,
+                url: "https://unknown.example.com/other",
+                classificationSource: "fallback")
+        };
+
+        var suggestions = await service.BuildSuggestionsAsync(records, CancellationToken.None);
+
+        var returnedSuggestion = Assert.Single(suggestions);
+        Assert.Equal(pendingId, returnedSuggestion.Id);
+        Assert.Equal("web:unknown.example.com", returnedSuggestion.ClusterKey);
+        Assert.Equal(2, returnedSuggestion.SampleCount);
+        Assert.Equal(180, returnedSuggestion.TotalDurationSeconds);
+        Assert.Equal(2, await db.Set<ActivityClassificationSuggestionEntity>().CountAsync());
+        var pendingSuggestion = await db.Set<ActivityClassificationSuggestionEntity>()
+            .SingleAsync(s => s.Id == pendingId);
+        Assert.Equal("pending", pendingSuggestion.Status);
+        Assert.Equal(2, pendingSuggestion.SampleCount);
+        Assert.Equal(180, pendingSuggestion.TotalDurationSeconds);
+    }
+
+    [Fact]
     public async Task AcceptSuggestionAsync_CreatesActiveRuleAndMarksAccepted()
     {
         using var db = CreateDbContext();
