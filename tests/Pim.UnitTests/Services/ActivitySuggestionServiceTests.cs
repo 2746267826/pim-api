@@ -67,6 +67,36 @@ public class ActivitySuggestionServiceTests
     }
 
     [Fact]
+    public async Task BuildSuggestionsAsync_RejectedSuggestionSuppressesRecreation()
+    {
+        using var db = CreateDbContext();
+        db.Set<ActivityClassificationSuggestionEntity>().Add(
+            NewSuggestion("web:unknown.example.com", "rejected", 90));
+        await db.SaveChangesAsync();
+        var service = new ActivitySuggestionService(db);
+        var records = new[]
+        {
+            NewWebRecord(
+                durationSeconds: 120,
+                url: "https://unknown.example.com/path",
+                classificationSource: "fallback"),
+            NewWebRecord(
+                durationSeconds: 60,
+                url: "https://unknown.example.com/other",
+                classificationSource: "fallback")
+        };
+
+        var suggestions = await service.BuildSuggestionsAsync(records, CancellationToken.None);
+
+        Assert.Empty(suggestions);
+        var suggestion = await db.Set<ActivityClassificationSuggestionEntity>().SingleAsync();
+        Assert.Equal("web:unknown.example.com", suggestion.ClusterKey);
+        Assert.Equal("rejected", suggestion.Status);
+        Assert.Equal(1, suggestion.SampleCount);
+        Assert.Equal(90, suggestion.TotalDurationSeconds);
+    }
+
+    [Fact]
     public async Task AcceptSuggestionAsync_CreatesActiveRuleAndMarksAccepted()
     {
         using var db = CreateDbContext();

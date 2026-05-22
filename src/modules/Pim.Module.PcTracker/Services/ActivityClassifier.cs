@@ -28,6 +28,7 @@ public static class ActivityClassifier
     {
         var activeRules = (rules ?? Array.Empty<ActivityCategoryRuleEntity>())
             .Where(rule => string.Equals(rule.Status, "active", StringComparison.OrdinalIgnoreCase))
+            .Where(CanClassifyActivity)
             .OrderByDescending(rule => rule.Priority)
             .ToArray();
 
@@ -75,6 +76,15 @@ public static class ActivityClassifier
         return string.Equals(rule.Source, "builtin", StringComparison.OrdinalIgnoreCase)
             && rule.Priority <= DeferredRulePriorityThreshold
             && rule.Confidence <= DeferredRuleConfidenceThreshold;
+    }
+
+    private static bool CanClassifyActivity(ActivityCategoryRuleEntity rule)
+    {
+        if (string.IsNullOrWhiteSpace(rule.Scope))
+            return true;
+
+        return string.Equals(rule.Scope, "activity", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(rule.Scope, "both", StringComparison.OrdinalIgnoreCase);
     }
 
     private static ActivityClassificationResult? ClassifyWithHeuristics(ActivityClassificationContext context)

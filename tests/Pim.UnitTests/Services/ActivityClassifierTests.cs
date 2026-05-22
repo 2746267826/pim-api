@@ -308,6 +308,45 @@ public class ActivityClassifierTests
     }
 
     [Fact]
+    public void Classify_ProjectScopeRuleDoesNotBlockActivityHeuristic()
+    {
+        var context = CreateContext(
+            Domain: "docs.activitywatch.net",
+            UrlPath: "/en/latest/api/rest.html",
+            Title: "REST API - ActivityWatch");
+        var rules = new[]
+        {
+            new ActivityCategoryRuleEntity
+            {
+                Id = Guid.NewGuid(),
+                RuleName = "ActivityWatch project tag",
+                Scope = "project",
+                Status = "active",
+                CategoryName = null,
+                ProjectTag = "ActivityWatch",
+                Color = "#abcdef",
+                Priority = 1000,
+                ConditionsJson = """
+                    {
+                      "all": [
+                        { "field": "domain", "op": "domainSuffix", "value": "docs.activitywatch.net" }
+                      ]
+                    }
+                    """,
+                Confidence = 0.99,
+                Explanation = "Project-only rule should not classify activity."
+            }
+        };
+
+        var result = ActivityClassifier.Classify(context, rules);
+
+        Assert.Equal("heuristic", result.Source);
+        Assert.Equal("\u5b66\u4e60", result.CategoryName);
+        Assert.Equal("ActivityWatch", result.ProjectTag);
+        Assert.Null(result.SourceRuleId);
+    }
+
+    [Fact]
     public void Classify_DocsGithubBecomesLearning()
     {
         var context = CreateContext(
