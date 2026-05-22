@@ -1,3 +1,5 @@
+using Microsoft.EntityFrameworkCore;
+using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
 using Pim.Module.PcTracker.Services;
@@ -7,6 +9,43 @@ namespace Pim.UnitTests.Services;
 
 public class ActivityClassifierTests
 {
+    [Fact]
+    public async Task SaveActivityClassificationRuleAsync_PersistsAndListsRule()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(ActivityCategoryRuleEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        using var db = new PimDbContext(options);
+        var service = new PcTrackerService(db);
+
+        await service.SaveActivityClassificationRuleAsync(
+            new SaveActivityClassificationRuleRequest(
+                "ActivityWatch docs",
+                "both",
+                "学习",
+                "ActivityWatch",
+                "#14b8a6",
+                500,
+                """
+                {
+                  "all": [
+                    { "field": "domain", "op": "domainSuffix", "value": "docs.activitywatch.net" }
+                  ]
+                }
+                """,
+                0.95,
+                "User confirmed docs."),
+            CancellationToken.None);
+
+        var rules = await service.GetActivityClassificationRulesAsync(CancellationToken.None);
+
+        var rule = Assert.Single(rules);
+        Assert.Equal("ActivityWatch docs", rule.RuleName);
+        Assert.Equal("学习", rule.CategoryName);
+        Assert.Equal("ActivityWatch", rule.ProjectTag);
+    }
+
     [Fact]
     public void Classify_UserRuleBeatsHeuristic()
     {

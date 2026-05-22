@@ -166,6 +166,28 @@ public class PcTrackerModule : IModule
                 : Results.NotFound(ApiResponse<string>.Error(404, "not found or builtin"));
         });
 
+        readGroup.MapGet("/classification/rules", async (
+            [FromServices] PcTrackerService svc,
+            CancellationToken ct) =>
+        {
+            var rules = await svc.GetActivityClassificationRulesAsync(ct);
+            return Results.Ok(ApiResponse<List<ActivityClassificationRuleDto>>.Ok(rules));
+        });
+
+        writeGroup.MapPost("/classification/rules", async (
+            [FromBody] SaveActivityClassificationRuleRequest req,
+            [FromServices] PcTrackerService svc,
+            CancellationToken ct) =>
+        {
+            var rule = await svc.SaveActivityClassificationRuleAsync(req, ct);
+            return Results.Ok(ApiResponse<ActivityClassificationRuleDto>.Ok(rule));
+        });
+
+        writeGroup.MapPost("/classification/recompute", () =>
+        {
+            return Results.Ok(ApiResponse<string>.Ok("classification is computed on query in this version"));
+        });
+
         readGroup.MapGet("/heatmap/grid", async (
             [FromQuery] string? start,
             [FromQuery] string? end,

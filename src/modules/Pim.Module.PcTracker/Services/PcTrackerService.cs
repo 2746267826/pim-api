@@ -508,6 +508,43 @@ public class PcTrackerService
             .ToListAsync(ct);
     }
 
+    public async Task<List<ActivityClassificationRuleDto>> GetActivityClassificationRulesAsync(CancellationToken ct)
+    {
+        return await _db.Set<ActivityCategoryRuleEntity>()
+            .OrderByDescending(r => r.Priority)
+            .Select(r => ToActivityClassificationRuleDto(r))
+            .ToListAsync(ct);
+    }
+
+    public async Task<ActivityClassificationRuleDto> SaveActivityClassificationRuleAsync(
+        SaveActivityClassificationRuleRequest req,
+        CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var entity = new ActivityCategoryRuleEntity
+        {
+            Id = Guid.NewGuid(),
+            RuleName = req.RuleName,
+            Scope = req.Scope,
+            CategoryName = req.CategoryName,
+            ProjectTag = req.ProjectTag,
+            Color = req.Color,
+            Priority = req.Priority,
+            Source = "user",
+            Status = "active",
+            ConditionsJson = req.ConditionsJson,
+            Confidence = req.Confidence,
+            Explanation = req.Explanation,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        _db.Set<ActivityCategoryRuleEntity>().Add(entity);
+        await _db.SaveChangesAsync(ct);
+        _cachedActivityRules = null;
+        return ToActivityClassificationRuleDto(entity);
+    }
+
     public async Task<AppCategoryRule> SaveCategoryAsync(SaveCategoryRequest req, CancellationToken ct)
     {
         var entity = await _db.Set<AppCategoryEntity>()
@@ -1009,6 +1046,23 @@ public class PcTrackerService
             .OrderByDescending(r => r.Priority)
             .ToListAsync(ct);
         return _cachedActivityRules;
+    }
+
+    private static ActivityClassificationRuleDto ToActivityClassificationRuleDto(ActivityCategoryRuleEntity rule)
+    {
+        return new ActivityClassificationRuleDto(
+            rule.Id,
+            rule.RuleName,
+            rule.Scope,
+            rule.CategoryName,
+            rule.ProjectTag,
+            rule.Color,
+            rule.Priority,
+            rule.Source,
+            rule.Status,
+            rule.ConditionsJson,
+            rule.Confidence,
+            rule.Explanation);
     }
 
     private static string ClassifyApp(string appName, List<AppCategoryRule> rules)
