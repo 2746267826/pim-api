@@ -7,6 +7,7 @@ namespace Pim.Module.PcTracker.Services;
 public static class BrowserPageTimelineBuilder
 {
     private const double ShortPageThresholdSeconds = 5;
+    private const double MaxShortPageMergeGapSeconds = 30;
 
     private static readonly HashSet<string> BrowserAppNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -46,6 +47,8 @@ public static class BrowserPageTimelineBuilder
                 .ToList();
             var webPages = BuildWebPageClusters(webEvents, rules)
                 .Select(page => page.ToDetailPage(deviceEvents))
+                .Where(page => page is not null)
+                .Select(page => page!)
                 .ToList();
             var explainedBrowserWindows = new HashSet<AwEventEntity>(ReferenceEqualityComparer.Instance);
 
@@ -134,19 +137,33 @@ public static class BrowserPageTimelineBuilder
         {
             if (webEvent.Duration <= ShortPageThresholdSeconds)
             {
+                if (pendingShortEvents.Count > 0
+                    && !IsNearEnoughToMerge(EventEnd(pendingShortEvents[^1]), webEvent.Timestamp))
+                {
+                    AttachTrailingShortEvents(clusters, pendingShortEvents);
+                    pendingShortEvents = new List<AwEventEntity>();
+                }
+
                 pendingShortEvents.Add(webEvent);
                 continue;
             }
 
-            var leadingShortEvents = pendingShortEvents;
+            var leadingShortEvents = TakeAdjacentShortSuffix(pendingShortEvents, webEvent.Timestamp);
+            if (leadingShortEvents.Count != pendingShortEvents.Count)
+            {
+                var leadingSet = new HashSet<AwEventEntity>(leadingShortEvents, ReferenceEqualityComparer.Instance);
+                AttachTrailingShortEvents(
+                    clusters,
+                    pendingShortEvents.Where(e => !leadingSet.Contains(e)).ToList());
+            }
+
             pendingShortEvents = new List<AwEventEntity>();
             clusters.Add(new WebPageCluster(webEvent, leadingShortEvents, new List<AwEventEntity>(), rules));
         }
 
         if (pendingShortEvents.Count > 0 && clusters.Count > 0)
         {
-            var previous = clusters[^1];
-            clusters[^1] = previous with { TrailingShortEvents = pendingShortEvents };
+            AttachTrailingShortEvents(clusters, pendingShortEvents);
         }
         else if (pendingShortEvents.Count > 0)
         {
@@ -154,6 +171,64 @@ public static class BrowserPageTimelineBuilder
         }
 
         return clusters;
+    }
+
+    private static void AttachTrailingShortEvents(List<WebPageCluster> clusters, List<AwEventEntity> shortEvents)
+    {
+        if (clusters.Count == 0 || shortEvents.Count == 0)
+            return;
+
+        var previous = clusters[^1];
+        if (!IsNearEnoughToMerge(ClusterEnd(previous), shortEvents[0].Timestamp))
+            return;
+
+        clusters[^1] = previous with
+        {
+            TrailingShortEvents = previous.TrailingShortEvents
+                .Concat(shortEvents)
+                .DistinctBy(e => e)
+                .OrderBy(e => e.Timestamp)
+                .ThenBy(e => e.SourceEventId ?? e.Id)
+                .ToList()
+        };
+    }
+
+    private static List<AwEventEntity> TakeAdjacentShortSuffix(List<AwEventEntity> shortEvents, DateTimeOffset nextStart)
+    {
+        var adjacent = new List<AwEventEntity>();
+        var cursor = nextStart;
+
+        for (var i = shortEvents.Count - 1; i >= 0; i--)
+        {
+            var shortEvent = shortEvents[i];
+            if (!IsNearEnoughToMerge(EventEnd(shortEvent), cursor))
+                break;
+
+            adjacent.Add(shortEvent);
+            cursor = shortEvent.Timestamp;
+        }
+
+        adjacent.Reverse();
+        return adjacent;
+    }
+
+    private static DateTimeOffset ClusterEnd(WebPageCluster cluster)
+    {
+        return cluster.LeadingShortEvents
+            .Concat(new[] { cluster.Primary })
+            .Concat(cluster.TrailingShortEvents)
+            .Max(EventEnd);
+    }
+
+    private static DateTimeOffset EventEnd(AwEventEntity e)
+    {
+        return e.Timestamp.AddSeconds(e.Duration);
+    }
+
+    private static bool IsNearEnoughToMerge(DateTimeOffset previousEnd, DateTimeOffset nextStart)
+    {
+        return nextStart <= previousEnd
+            || (nextStart - previousEnd).TotalSeconds <= MaxShortPageMergeGapSeconds;
     }
 
     private sealed record WebPageCluster(
@@ -169,7 +244,7 @@ public static class BrowserPageTimelineBuilder
             return new WebPageCluster(shortEvents[^1], shortEvents, new List<AwEventEntity>(), rules);
         }
 
-        public WebPageDetail ToDetailPage(List<AwEventEntity> awEvents)
+        public WebPageDetail? ToDetailPage(List<AwEventEntity> awEvents)
         {
             var allWebEvents = LeadingShortEvents
                 .Concat(new[] { Primary })
@@ -199,6 +274,9 @@ public static class BrowserPageTimelineBuilder
                     .ThenBy(e => e.Timestamp)
                     .FirstOrDefault();
             var displayName = data.Domain ?? (data.IsLocalFile ? "文件" : null);
+            if (browserWindow is null && HasCompetingWindowOwnership(awEvents, start, end))
+                return null;
+
             var absorbedShortEvents = allWebEvents
                 .Where(e => e.Duration <= ShortPageThresholdSeconds)
                 .ToList();
@@ -271,6 +349,15 @@ public static class BrowserPageTimelineBuilder
 
         var normalized = AppNameNormalizer.Normalize(e.AppNameNormalized ?? e.AppName);
         return BrowserAppNames.Contains(normalized);
+    }
+
+    private static bool HasCompetingWindowOwnership(IEnumerable<AwEventEntity> awEvents, DateTimeOffset start, DateTimeOffset end)
+    {
+        return awEvents.Any(e =>
+            string.Equals(e.EventType, "window", StringComparison.Ordinal)
+            && !string.IsNullOrWhiteSpace(e.AppName)
+            && !IsBrowserWindowEvent(e)
+            && OverlapSeconds(start, end, e.Timestamp, e.Timestamp.AddSeconds(e.Duration)) > 0);
     }
 
     private static string? InferBrowserName(IEnumerable<AwEventEntity> webEvents)

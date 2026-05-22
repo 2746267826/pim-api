@@ -979,6 +979,37 @@ public class PcTrackerCompleteCaptureTests
     }
 
     [Fact]
+    public async Task QueryCompleteDetailAsync_DoesNotMergeShortWebPagesAcrossLongGaps()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        var browserWindow = WindowEvent("2026-05-20T09:08:16+00:00", 3, "msedge.exe", "New Tab - Edge");
+        browserWindow.SourceEventId = 103;
+        db.Set<AwEventEntity>().AddRange(
+            WebEvent(100, "2026-05-20T05:34:35+00:00", 0, "https://aicat.sumnece.com/dashboard", "Cat.ai"),
+            WindowEvent("2026-05-20T05:34:36+00:00", 6, "Codex.exe", "Codex"),
+            WebEvent(101, "2026-05-20T09:08:15+00:00", 0, "https://aicat.sumnece.com/dashboard", "Cat.ai"),
+            WebEvent(102, "2026-05-20T09:08:15+00:00", 6, "edge://newtab/", "New Tab"),
+            browserWindow);
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        var page = Assert.Single(result.Items, x => x.RecordType == "web-page");
+        Assert.Equal("New Tab", page.Title);
+        Assert.Equal("2026-05-20T09:08:15.0000000+00:00", page.Start);
+        Assert.Equal("2026-05-20T09:08:21.0000000+00:00", page.End);
+        Assert.Equal(6, page.DurationSeconds);
+        Assert.Equal(new[] { 101L, 102L }, page.SourceWebEventIds);
+        Assert.Contains(result.Items, x => x.RecordType == "window" && x.AppName == "Codex.exe");
+    }
+
+    [Fact]
     public async Task QueryCompleteDetailAsync_MergesTrailingShortWebPageIntoPreviousValidPage()
     {
         PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
@@ -1029,6 +1060,29 @@ public class PcTrackerCompleteCaptureTests
         using var doc = JsonDocument.Parse(json);
         Assert.Equal("msedge.exe", doc.RootElement.GetProperty("browserAppName").GetString());
         Assert.Equal("Docs - Edge", doc.RootElement.GetProperty("browserWindowTitle").GetString());
+    }
+
+    [Fact]
+    public async Task QueryCompleteDetailAsync_DropsWebPageWhenAnotherAppWindowOwnsTheInterval()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+        db.Set<AwEventEntity>().AddRange(
+            WindowEvent("2026-05-20T05:00:00+00:00", 300, "explorer.exe", "Program Manager"),
+            WebEvent(110, "2026-05-20T05:01:00+00:00", 60, "https://aicat.sumnece.com/dashboard", "Cat.ai"));
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerService(db);
+        var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
+
+        Assert.DoesNotContain(result.Items, x => x.RecordType == "web-page");
+        var window = Assert.Single(result.Items);
+        Assert.Equal("window", window.RecordType);
+        Assert.Equal("explorer.exe", window.AppName);
     }
 
     [Fact]
