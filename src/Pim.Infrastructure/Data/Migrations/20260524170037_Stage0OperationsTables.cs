@@ -26,10 +26,10 @@ namespace Pim.Infrastructure.Data.Migrations
                     ip_address = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
                     user_agent = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: true),
                     correlation_id = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true),
-                    metadata_json = table.Column<string>(type: "jsonb", nullable: false),
+                    metadata_json = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "{}"),
                     error_code = table.Column<int>(type: "integer", nullable: true),
                     error_message = table.Column<string>(type: "text", nullable: true),
-                    created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+                    created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false, defaultValueSql: "now()")
                 },
                 constraints: table =>
                 {
@@ -42,18 +42,18 @@ namespace Pim.Infrastructure.Data.Migrations
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false),
                     device_id = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: false),
-                    daemon_kind = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
+                    daemon_kind = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false, defaultValue: "windows"),
                     version = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
                     server_url = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: false),
                     last_successful_upload_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     last_attempted_upload_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     last_error = table.Column<string>(type: "text", nullable: true),
-                    upload_queue_count = table.Column<int>(type: "integer", nullable: false),
-                    activity_watch_state = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
-                    key_stats_state = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
+                    upload_queue_count = table.Column<int>(type: "integer", nullable: true),
+                    activity_watch_state = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false, defaultValue: "Unknown"),
+                    key_stats_state = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false, defaultValue: "Unknown"),
                     collection_paused = table.Column<bool>(type: "boolean", nullable: false),
-                    status_json = table.Column<string>(type: "jsonb", nullable: false),
-                    received_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+                    status_json = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "{}"),
+                    received_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false, defaultValueSql: "now()")
                 },
                 constraints: table =>
                 {
@@ -70,11 +70,11 @@ namespace Pim.Infrastructure.Data.Migrations
                     summary = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: false),
                     risk_level = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
                     source = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
-                    payload_json = table.Column<string>(type: "jsonb", nullable: false),
-                    preview_json = table.Column<string>(type: "jsonb", nullable: false),
-                    status = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
+                    payload_json = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "{}"),
+                    preview_json = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "{}"),
+                    status = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false, defaultValue: "Pending"),
                     expires_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
-                    created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false, defaultValueSql: "now()"),
                     confirmed_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     rejected_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     executed_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),

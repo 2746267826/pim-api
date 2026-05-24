@@ -47,8 +47,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("correlation_id");
 
                     b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
 
                     b.Property<int?>("ErrorCode")
                         .HasColumnType("integer")
@@ -65,7 +67,9 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.Property<string>("MetadataJson")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
                         .HasColumnName("metadata_json");
 
                     b.Property<string>("ResourceId")
@@ -124,8 +128,10 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.Property<string>("ActivityWatchState")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Unknown")
                         .HasColumnName("activity_watch_state");
 
                     b.Property<bool>("CollectionPaused")
@@ -134,8 +140,10 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.Property<string>("DaemonKind")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("windows")
                         .HasColumnName("daemon_kind");
 
                     b.Property<string>("DeviceId")
@@ -146,8 +154,10 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.Property<string>("KeyStatsState")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Unknown")
                         .HasColumnName("key_stats_state");
 
                     b.Property<DateTimeOffset?>("LastAttemptedUploadAt")
@@ -163,8 +173,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("last_successful_upload_at");
 
                     b.Property<DateTimeOffset>("ReceivedAt")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("received_at");
+                        .HasColumnName("received_at")
+                        .HasDefaultValueSql("now()");
 
                     b.Property<string>("ServerUrl")
                         .IsRequired()
@@ -174,10 +186,12 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.Property<string>("StatusJson")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
                         .HasColumnName("status_json");
 
-                    b.Property<int>("UploadQueueCount")
+                    b.Property<int?>("UploadQueueCount")
                         .HasColumnType("integer")
                         .HasColumnName("upload_queue_count");
 
@@ -248,8 +262,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("correlation_id");
 
                     b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
 
                     b.Property<DateTimeOffset?>("ExecutedAt")
                         .HasColumnType("timestamp with time zone")
@@ -267,12 +283,16 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.Property<string>("PayloadJson")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
                         .HasColumnName("payload_json");
 
                     b.Property<string>("PreviewJson")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
                         .HasColumnName("preview_json");
 
                     b.Property<DateTimeOffset?>("RejectedAt")
@@ -301,8 +321,10 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.Property<string>("Status")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Pending")
                         .HasColumnName("status");
 
                     b.Property<string>("Summary")

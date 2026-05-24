@@ -9,6 +9,35 @@ namespace Pim.UnitTests.Operations;
 public class Stage0PersistenceTests
 {
     [Fact]
+    public void PimDbContext_ConfiguresStage0PersistenceMetadata()
+    {
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        using var db = new PimDbContext(options);
+
+        var auditLog = db.Model.FindEntityType(typeof(AuditLogEntity))!;
+        Assert.Equal("{}", auditLog.FindProperty(nameof(AuditLogEntity.MetadataJson))!.GetDefaultValue());
+        Assert.Equal("now()", auditLog.FindProperty(nameof(AuditLogEntity.CreatedAt))!.GetDefaultValueSql());
+
+        var operationConfirmation = db.Model.FindEntityType(typeof(OperationConfirmationEntity))!;
+        Assert.Equal("{}", operationConfirmation.FindProperty(nameof(OperationConfirmationEntity.PayloadJson))!.GetDefaultValue());
+        Assert.Equal("{}", operationConfirmation.FindProperty(nameof(OperationConfirmationEntity.PreviewJson))!.GetDefaultValue());
+        Assert.Equal(OperationConfirmationStatus.Pending.ToString(), operationConfirmation.FindProperty(nameof(OperationConfirmationEntity.Status))!.GetDefaultValue());
+        Assert.Equal("now()", operationConfirmation.FindProperty(nameof(OperationConfirmationEntity.CreatedAt))!.GetDefaultValueSql());
+
+        var daemonHeartbeat = db.Model.FindEntityType(typeof(DaemonHeartbeatEntity))!;
+        Assert.Equal(32, daemonHeartbeat.FindProperty(nameof(DaemonHeartbeatEntity.DaemonKind))!.GetMaxLength());
+        Assert.True(daemonHeartbeat.FindProperty(nameof(DaemonHeartbeatEntity.UploadQueueCount))!.IsNullable);
+        Assert.Equal("windows", daemonHeartbeat.FindProperty(nameof(DaemonHeartbeatEntity.DaemonKind))!.GetDefaultValue());
+        Assert.Equal(DaemonSourceState.Unknown.ToString(), daemonHeartbeat.FindProperty(nameof(DaemonHeartbeatEntity.ActivityWatchState))!.GetDefaultValue());
+        Assert.Equal(DaemonSourceState.Unknown.ToString(), daemonHeartbeat.FindProperty(nameof(DaemonHeartbeatEntity.KeyStatsState))!.GetDefaultValue());
+        Assert.Equal("{}", daemonHeartbeat.FindProperty(nameof(DaemonHeartbeatEntity.StatusJson))!.GetDefaultValue());
+        Assert.Equal("now()", daemonHeartbeat.FindProperty(nameof(DaemonHeartbeatEntity.ReceivedAt))!.GetDefaultValueSql());
+    }
+
+    [Fact]
     public async Task PimDbContext_SavesStage0Entities()
     {
         var options = new DbContextOptionsBuilder<PimDbContext>()

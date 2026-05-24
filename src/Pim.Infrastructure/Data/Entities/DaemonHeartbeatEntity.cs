@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using Pim.Core.Operations;
 
 namespace Pim.Infrastructure.Data.Entities;
 
@@ -15,8 +16,8 @@ public sealed class DaemonHeartbeatEntity
     public string DeviceId { get; set; } = string.Empty;
 
     [Column("daemon_kind")]
-    [MaxLength(64)]
-    public string DaemonKind { get; set; } = string.Empty;
+    [MaxLength(32)]
+    public string DaemonKind { get; set; } = "windows";
 
     [Column("version")]
     [MaxLength(64)]
@@ -36,15 +37,15 @@ public sealed class DaemonHeartbeatEntity
     public string? LastError { get; set; }
 
     [Column("upload_queue_count")]
-    public int UploadQueueCount { get; set; }
+    public int? UploadQueueCount { get; set; }
 
     [Column("activity_watch_state")]
     [MaxLength(32)]
-    public string ActivityWatchState { get; set; } = string.Empty;
+    public string ActivityWatchState { get; set; } = DaemonSourceState.Unknown.ToString();
 
     [Column("key_stats_state")]
     [MaxLength(32)]
-    public string KeyStatsState { get; set; } = string.Empty;
+    public string KeyStatsState { get; set; } = DaemonSourceState.Unknown.ToString();
 
     [Column("collection_paused")]
     public bool CollectionPaused { get; set; }

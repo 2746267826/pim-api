@@ -1,6 +1,7 @@
 using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Data;
+using Pim.Core.Operations;
 using Pim.Infrastructure.Data.Entities;
 
 namespace Pim.Infrastructure.Data;
@@ -45,6 +46,8 @@ public class PimDbContext : DbContext
 
         modelBuilder.Entity<AuditLogEntity>(e =>
         {
+            e.Property(a => a.MetadataJson).HasDefaultValue("{}");
+            e.Property(a => a.CreatedAt).HasDefaultValueSql("now()");
             e.HasIndex(a => a.UserId);
             e.HasIndex(a => a.Action);
             e.HasIndex(a => a.ResourceType);
@@ -54,6 +57,10 @@ public class PimDbContext : DbContext
 
         modelBuilder.Entity<OperationConfirmationEntity>(e =>
         {
+            e.Property(o => o.PayloadJson).HasDefaultValue("{}");
+            e.Property(o => o.PreviewJson).HasDefaultValue("{}");
+            e.Property(o => o.Status).HasDefaultValue(OperationConfirmationStatus.Pending.ToString());
+            e.Property(o => o.CreatedAt).HasDefaultValueSql("now()");
             e.HasIndex(o => o.RequestedByUserId);
             e.HasIndex(o => o.OperationType);
             e.HasIndex(o => o.Status);
@@ -62,6 +69,11 @@ public class PimDbContext : DbContext
 
         modelBuilder.Entity<DaemonHeartbeatEntity>(e =>
         {
+            e.Property(d => d.DaemonKind).HasDefaultValue("windows");
+            e.Property(d => d.ActivityWatchState).HasDefaultValue(DaemonSourceState.Unknown.ToString());
+            e.Property(d => d.KeyStatsState).HasDefaultValue(DaemonSourceState.Unknown.ToString());
+            e.Property(d => d.StatusJson).HasDefaultValue("{}");
+            e.Property(d => d.ReceivedAt).HasDefaultValueSql("now()");
             e.HasIndex(d => new { d.DeviceId, d.DaemonKind }).IsUnique();
             e.HasIndex(d => d.ReceivedAt);
         });

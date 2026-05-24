@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using Pim.Core.Operations;
 
 namespace Pim.Infrastructure.Data.Entities;
 
@@ -37,7 +38,7 @@ public sealed class OperationConfirmationEntity
 
     [Column("status")]
     [MaxLength(32)]
-    public string Status { get; set; } = string.Empty;
+    public string Status { get; set; } = OperationConfirmationStatus.Pending.ToString();
 
     [Column("expires_at")]
     public DateTimeOffset ExpiresAt { get; set; }
