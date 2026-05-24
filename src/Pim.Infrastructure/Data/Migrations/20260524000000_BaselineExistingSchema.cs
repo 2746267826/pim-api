@@ -54,7 +54,7 @@ namespace Pim.Infrastructure.Data.Migrations
                 name: "pc_activity_category_rules",
                 columns: table => new
                 {
-                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "gen_random_uuid()"),
                     rule_name = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: false),
                     scope = table.Column<string>(type: "character varying(16)", maxLength: 16, nullable: false),
                     category_name = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
@@ -78,7 +78,7 @@ namespace Pim.Infrastructure.Data.Migrations
                 name: "pc_activity_classification_suggestions",
                 columns: table => new
                 {
-                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "gen_random_uuid()"),
                     cluster_key = table.Column<string>(type: "character varying(256)", maxLength: 256, nullable: false),
                     sample_count = table.Column<int>(type: "integer", nullable: false),
                     total_duration_seconds = table.Column<double>(type: "double precision", nullable: false),
@@ -103,7 +103,7 @@ namespace Pim.Infrastructure.Data.Migrations
                 name: "pc_app_categories",
                 columns: table => new
                 {
-                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "gen_random_uuid()"),
                     app_pattern = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: false),
                     category_name = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
                     color = table.Column<string>(type: "character varying(7)", maxLength: 7, nullable: false),

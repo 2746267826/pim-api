@@ -551,6 +551,7 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()")
                         .HasColumnName("id");
 
                     b.Property<string>("CategoryName")
@@ -644,6 +645,7 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()")
                         .HasColumnName("id");
 
                     b.Property<string>("ClusterKey")
@@ -732,6 +734,7 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
+                        .HasDefaultValueSql("gen_random_uuid()")
                         .HasColumnName("id");
 
                     b.Property<string>("AppPattern")

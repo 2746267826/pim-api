@@ -31,14 +31,14 @@ public sealed class PimMigrationAdoptionService
 
         _logger.LogWarning("Adopting existing database schema as EF migration baseline {MigrationId}", BaselineMigrationId);
 
-        await _db.Database.ExecuteSqlRawAsync("""
+        await _db.Database.ExecuteSqlRawAsync($"""
 CREATE TABLE IF NOT EXISTS "__EFMigrationsHistory" (
     "MigrationId" character varying(150) NOT NULL,
     "ProductVersion" character varying(32) NOT NULL,
     CONSTRAINT "PK___EFMigrationsHistory" PRIMARY KEY ("MigrationId")
 );
 INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-VALUES ('20260524000000_BaselineExistingSchema', '8.0.11')
+VALUES ('{BaselineMigrationId}', '8.0.11')
 ON CONFLICT ("MigrationId") DO NOTHING;
 """, ct);
     }

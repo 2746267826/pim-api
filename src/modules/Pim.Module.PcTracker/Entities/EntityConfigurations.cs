@@ -75,6 +75,7 @@ public class AppCategoryEntityConfiguration : IEntityTypeConfiguration<AppCatego
     public void Configure(EntityTypeBuilder<AppCategoryEntity> builder)
     {
         builder.ToTable("pc_app_categories");
+        builder.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
         builder.HasIndex(e => e.CategoryName);
         builder.HasIndex(e => e.Priority);
     }
@@ -85,6 +86,7 @@ public class ActivityCategoryRuleEntityConfiguration : IEntityTypeConfiguration<
     public void Configure(EntityTypeBuilder<ActivityCategoryRuleEntity> builder)
     {
         builder.ToTable("pc_activity_category_rules");
+        builder.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
         builder.HasIndex(e => e.RuleName)
             .IsUnique()
             .HasDatabaseName("ux_pc_activity_category_rules_rule_name");
@@ -100,6 +102,7 @@ public class ActivityClassificationSuggestionEntityConfiguration : IEntityTypeCo
     public void Configure(EntityTypeBuilder<ActivityClassificationSuggestionEntity> builder)
     {
         builder.ToTable("pc_activity_classification_suggestions");
+        builder.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
         builder.HasIndex(e => e.ClusterKey).HasDatabaseName("ix_pc_activity_classification_suggestions_cluster_key");
         builder.HasIndex(e => e.ClusterKey)
             .IsUnique()
