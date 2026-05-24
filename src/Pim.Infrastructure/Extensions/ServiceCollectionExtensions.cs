@@ -18,6 +18,7 @@ public static class ServiceCollectionExtensions
             options.UseNpgsql(
                 configuration.GetConnectionString("DefaultConnection"),
                 npgsql => npgsql.EnableRetryOnFailure(3)));
+        services.AddScoped<PimMigrationAdoptionService>();
 
         // Auth
         services.AddSingleton<JwtService>();

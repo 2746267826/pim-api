@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Pim.Api;
 using Pim.Api.Endpoints;
 using Pim.Api.Middleware;
@@ -48,11 +49,14 @@ app.UseSerilogRequestLogging(options =>
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-// Auto-create database schema
+// Apply database migrations. Existing EnsureCreated databases are adopted before Migrate().
 using (var scope = app.Services.CreateScope())
 {
+    var adoption = scope.ServiceProvider.GetRequiredService<Pim.Infrastructure.Data.PimMigrationAdoptionService>();
+    await adoption.AdoptExistingSchemaAsync();
+
     var db = scope.ServiceProvider.GetRequiredService<Pim.Infrastructure.Data.PimDbContext>();
-    db.Database.EnsureCreated();
+    await db.Database.MigrateAsync();
 }
 
 // Health check endpoint
