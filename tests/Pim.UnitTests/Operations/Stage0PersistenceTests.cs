@@ -25,6 +25,7 @@ public class Stage0PersistenceTests
         Assert.Equal("{}", operationConfirmation.FindProperty(nameof(OperationConfirmationEntity.PayloadJson))!.GetDefaultValue());
         Assert.Equal("{}", operationConfirmation.FindProperty(nameof(OperationConfirmationEntity.PreviewJson))!.GetDefaultValue());
         Assert.Equal(OperationConfirmationStatus.Pending.ToString(), operationConfirmation.FindProperty(nameof(OperationConfirmationEntity.Status))!.GetDefaultValue());
+        Assert.Null(operationConfirmation.FindProperty(nameof(OperationConfirmationEntity.Summary))!.GetMaxLength());
         Assert.Equal("now()", operationConfirmation.FindProperty(nameof(OperationConfirmationEntity.CreatedAt))!.GetDefaultValueSql());
 
         var daemonHeartbeat = db.Model.FindEntityType(typeof(DaemonHeartbeatEntity))!;

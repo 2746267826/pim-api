@@ -67,7 +67,7 @@ namespace Pim.Infrastructure.Data.Migrations
                     id = table.Column<Guid>(type: "uuid", nullable: false),
                     requested_by_user_id = table.Column<Guid>(type: "uuid", nullable: true),
                     operation_type = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: false),
-                    summary = table.Column<string>(type: "character varying(512)", maxLength: 512, nullable: false),
+                    summary = table.Column<string>(type: "text", nullable: false),
                     risk_level = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
                     source = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
                     payload_json = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "{}"),

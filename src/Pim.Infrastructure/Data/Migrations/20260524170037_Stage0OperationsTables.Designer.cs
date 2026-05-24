@@ -332,8 +332,7 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.Property<string>("Summary")
                         .IsRequired()
-                        .HasMaxLength(512)
-                        .HasColumnType("character varying(512)")
+                        .HasColumnType("text")
                         .HasColumnName("summary");
 
                     b.HasKey("Id");

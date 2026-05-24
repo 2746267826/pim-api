@@ -19,7 +19,6 @@ public sealed class OperationConfirmationEntity
     public string OperationType { get; set; } = string.Empty;
 
     [Column("summary")]
-    [MaxLength(512)]
     public string Summary { get; set; } = string.Empty;
 
     [Column("risk_level")]
