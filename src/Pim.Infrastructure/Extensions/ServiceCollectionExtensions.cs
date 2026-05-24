@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Operations;
 using Pim.Infrastructure.Storage;
 using Pim.Infrastructure.TextExtraction;
 
@@ -19,6 +21,8 @@ public static class ServiceCollectionExtensions
                 configuration.GetConnectionString("DefaultConnection"),
                 npgsql => npgsql.EnableRetryOnFailure(3)));
         services.AddScoped<PimMigrationAdoptionService>();
+        services.AddScoped<IAuditLogService, AuditLogService>();
+        services.AddScoped<IOperationConfirmationService, OperationConfirmationService>();
 
         // Auth
         services.AddSingleton<JwtService>();
