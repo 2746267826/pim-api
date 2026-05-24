@@ -23,6 +23,7 @@ src/Pim.Api/wwwroot/
 ## Local tooling and generated state
 .dotnet-appdata/
 .dotnet-home/
+.worktrees/
 .superpowers/brainstorm/
 objTestDuration/
 docker-compose.override.yml
