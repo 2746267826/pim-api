@@ -19,6 +19,9 @@ public class PimDbContext : DbContext
     public DbSet<UserEntity> Users => Set<UserEntity>();
     public DbSet<RefreshTokenEntity> RefreshTokens => Set<RefreshTokenEntity>();
     public DbSet<LoginAttemptEntity> LoginAttempts => Set<LoginAttemptEntity>();
+    public DbSet<AuditLogEntity> AuditLogs => Set<AuditLogEntity>();
+    public DbSet<OperationConfirmationEntity> OperationConfirmations => Set<OperationConfirmationEntity>();
+    public DbSet<DaemonHeartbeatEntity> DaemonHeartbeats => Set<DaemonHeartbeatEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -38,6 +41,29 @@ public class PimDbContext : DbContext
         modelBuilder.Entity<LoginAttemptEntity>(e =>
         {
             e.HasIndex(l => new { l.IpAddress, l.AttemptedAt });
+        });
+
+        modelBuilder.Entity<AuditLogEntity>(e =>
+        {
+            e.HasIndex(a => a.UserId);
+            e.HasIndex(a => a.Action);
+            e.HasIndex(a => a.ResourceType);
+            e.HasIndex(a => a.CorrelationId);
+            e.HasIndex(a => a.CreatedAt);
+        });
+
+        modelBuilder.Entity<OperationConfirmationEntity>(e =>
+        {
+            e.HasIndex(o => o.RequestedByUserId);
+            e.HasIndex(o => o.OperationType);
+            e.HasIndex(o => o.Status);
+            e.HasIndex(o => o.ExpiresAt);
+        });
+
+        modelBuilder.Entity<DaemonHeartbeatEntity>(e =>
+        {
+            e.HasIndex(d => new { d.DeviceId, d.DaemonKind }).IsUnique();
+            e.HasIndex(d => d.ReceivedAt);
         });
 
         foreach (var assembly in _moduleAssemblies)
