@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
@@ -19,6 +20,9 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         CreateOperationConfirmationRequest request,
         CancellationToken ct = default)
     {
+        ValidateJson(request.PayloadJson, 3006, "PayloadJson must be valid JSON");
+        ValidateJson(request.PreviewJson, 3007, "PreviewJson must be valid JSON");
+
         var entity = new OperationConfirmationEntity
         {
             RequestedByUserId = request.RequestedByUserId,
@@ -42,13 +46,18 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
 
     public async Task<OperationConfirmationDto?> GetAsync(Guid id, CancellationToken ct = default)
     {
-        var entity = await _db.OperationConfirmations.FindAsync([id], ct);
+        var entity = await _db.OperationConfirmations
+            .AsNoTracking()
+            .SingleOrDefaultAsync(c => c.Id == id, ct);
         return entity is null ? null : Map(entity);
     }
 
     public async Task<IReadOnlyList<OperationConfirmationDto>> ListPendingAsync(CancellationToken ct = default)
     {
+        await ExpireOldAsync(DateTimeOffset.UtcNow, ct);
+
         var pending = await _db.OperationConfirmations
+            .AsNoTracking()
             .Where(c => c.Status == OperationConfirmationStatus.Pending.ToString())
             .OrderBy(c => c.ExpiresAt)
             .ToListAsync(ct);
@@ -59,6 +68,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
     public async Task<OperationConfirmationDto> ConfirmAsync(Guid id, Guid? userId, CancellationToken ct = default)
     {
         var entity = await LoadPendingAsync(id, ct);
+        EnsureUserCanAct(entity, userId);
 
         entity.Status = OperationConfirmationStatus.Confirmed.ToString();
         entity.ConfirmedAt = DateTimeOffset.UtcNow;
@@ -70,6 +80,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
     public async Task<OperationConfirmationDto> RejectAsync(Guid id, Guid? userId, CancellationToken ct = default)
     {
         var entity = await LoadPendingAsync(id, ct);
+        EnsureUserCanAct(entity, userId);
 
         entity.Status = OperationConfirmationStatus.Rejected.ToString();
         entity.RejectedAt = DateTimeOffset.UtcNow;
@@ -94,6 +105,8 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         {
             throw new DomainException(3002, "Only confirmed operations can be executed");
         }
+
+        ValidateJson(resultJson, 3008, "ResultJson must be valid JSON");
 
         entity.Status = OperationConfirmationStatus.Executed.ToString();
         entity.ExecutedAt = DateTimeOffset.UtcNow;
@@ -142,6 +155,26 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         }
 
         return entity;
+    }
+
+    private static void EnsureUserCanAct(OperationConfirmationEntity entity, Guid? userId)
+    {
+        if (entity.RequestedByUserId is { } requestedByUserId && requestedByUserId != userId)
+        {
+            throw new DomainException(3005, "Confirmation is not assigned to this user");
+        }
+    }
+
+    private static void ValidateJson(string json, int errorCode, string message)
+    {
+        try
+        {
+            using var _ = JsonDocument.Parse(json);
+        }
+        catch (JsonException)
+        {
+            throw new DomainException(errorCode, message);
+        }
     }
 
     private static OperationConfirmationDto Map(OperationConfirmationEntity entity)
