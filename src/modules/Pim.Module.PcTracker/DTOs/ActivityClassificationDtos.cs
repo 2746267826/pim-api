@@ -63,3 +63,10 @@ public record AcceptActivityClassificationSuggestionRequest(
     string ConditionsJson,
     double Confidence,
     string? Explanation);
+
+public record ActivityClassificationSettingsDto(
+    int RecommendedMinimumClassificationDurationMinutes,
+    IReadOnlyList<int> SupportedRecommendedMinimumDurations);
+
+public record SaveActivityClassificationSettingsRequest(
+    int RecommendedMinimumClassificationDurationMinutes);

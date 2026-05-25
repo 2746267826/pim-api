@@ -17,15 +17,21 @@ public class PcTrackerService
 
     private readonly PimDbContext _db;
     private readonly ActivityClassificationSnapshotService _classificationSnapshots;
+    private readonly ActivityClassificationSettingsService _classificationSettings;
+    private readonly ActivityTimelineSmoothingService _timelineSmoothing;
     private List<AppCategoryRule>? _cachedLegacyRules;
     private List<ActivityCategoryRuleEntity>? _cachedActivityRules;
 
     public PcTrackerService(
         PimDbContext db,
-        ActivityClassificationSnapshotService classificationSnapshots)
+        ActivityClassificationSnapshotService classificationSnapshots,
+        ActivityClassificationSettingsService classificationSettings,
+        ActivityTimelineSmoothingService timelineSmoothing)
     {
         _db = db;
         _classificationSnapshots = classificationSnapshots;
+        _classificationSettings = classificationSettings;
+        _timelineSmoothing = timelineSmoothing;
     }
 
     public async Task UpsertKeystatsAsync(KeystatsUploadRequest req, CancellationToken ct)
@@ -328,6 +334,10 @@ public class PcTrackerService
             .Select(ToTimelineItem)
             .ToList();
         timeline = NormalizeTimelineItems(timeline).ToList();
+        var settings = await _classificationSettings.GetSettingsAsync(ct);
+        timeline = _timelineSmoothing.Smooth(
+            timeline,
+            settings.RecommendedMinimumClassificationDurationMinutes).ToList();
 
         return new PcSummaryResponse(
             keystats is not null ? BuildKeystatsSummary(keystats) : BuildKeystatsSummaryFromSample(keystatsSample),
@@ -353,7 +363,11 @@ public class PcTrackerService
             .Where(IsSummaryTimelineRecord)
             .Select(ToTimelineItem)
             .ToList();
-        return NormalizeTimelineItems(timeline).ToList();
+        timeline = NormalizeTimelineItems(timeline).ToList();
+        var settings = await _classificationSettings.GetSettingsAsync(ct);
+        return _timelineSmoothing.Smooth(
+            timeline,
+            settings.RecommendedMinimumClassificationDurationMinutes).ToList();
     }
 
     public async Task<List<HeatmapBucket>> GetHeatmapAsync(DateTime start, DateTime end, CancellationToken ct)

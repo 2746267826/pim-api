@@ -26,6 +26,8 @@ public class PcTrackerModule : IModule
         services.AddScoped<PcTrackerQualityService>();
         services.AddScoped<ActivitySuggestionService>();
         services.AddScoped<ActivityClassificationSnapshotService>();
+        services.AddScoped<ActivityClassificationSettingsService>();
+        services.AddScoped<ActivityTimelineSmoothingService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
     }
 
@@ -221,6 +223,14 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<List<ActivityClassificationSuggestionDto>>.Ok(suggestions));
         });
 
+        readGroup.MapGet("/classification/settings", async (
+            [FromServices] ActivityClassificationSettingsService settingsService,
+            CancellationToken ct) =>
+        {
+            var settings = await settingsService.GetSettingsAsync(ct);
+            return Results.Ok(ApiResponse<ActivityClassificationSettingsDto>.Ok(settings));
+        });
+
         writeGroup.MapPost("/classification/rules", async (
             [FromBody] SaveActivityClassificationRuleRequest req,
             [FromServices] PcTrackerService svc,
@@ -228,6 +238,17 @@ public class PcTrackerModule : IModule
         {
             var rule = await svc.SaveActivityClassificationRuleAsync(req, ct);
             return Results.Ok(ApiResponse<ActivityClassificationRuleDto>.Ok(rule));
+        });
+
+        writeGroup.MapPut("/classification/settings", async (
+            [FromBody] SaveActivityClassificationSettingsRequest req,
+            [FromServices] ActivityClassificationSettingsService settingsService,
+            CancellationToken ct) =>
+        {
+            var settings = await settingsService.SaveSettingsAsync(
+                req.RecommendedMinimumClassificationDurationMinutes,
+                ct);
+            return Results.Ok(ApiResponse<ActivityClassificationSettingsDto>.Ok(settings));
         });
 
         writeGroup.MapPost("/classification/suggestions/{id:guid}/accept", async (
