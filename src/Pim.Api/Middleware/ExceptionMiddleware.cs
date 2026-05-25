@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Pim.Api.Infrastructure;
 using Pim.Core.Common;
 using Pim.Core.Exceptions;
 
@@ -30,7 +31,8 @@ public class ExceptionMiddleware
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unhandled exception");
+            var correlationId = context.Items[CorrelationIdMiddleware.HeaderName]?.ToString();
+            _logger.LogError(ex, "Unhandled exception with correlation id {CorrelationId}", correlationId);
             context.Response.StatusCode = StatusCodes.Status500InternalServerError;
             context.Response.ContentType = "application/json";
             var response = ApiResponse<string>.Error(01001, "Internal server error");

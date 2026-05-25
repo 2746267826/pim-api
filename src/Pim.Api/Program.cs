@@ -8,14 +8,16 @@ using Pim.Api.Search;
 using Pim.Infrastructure.Extensions;
 using Pim.Infrastructure.Operations;
 using Serilog;
+using Serilog.Formatting.Compact;
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Debug()
-    .WriteTo.Console()
-    .WriteTo.File("/data/pim/logs/pim-api-.log",
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("Service", "pim-api")
+    .WriteTo.Console(new CompactJsonFormatter())
+    .WriteTo.File(new CompactJsonFormatter(), "/data/pim/logs/pim-api-.jsonl",
         rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 30,
-        outputTemplate: "{Timestamp:yyyy-MM-ddTHH:mm:ss.fffZ} [{Level}] {Message:lj}{NewLine}{Exception}")
+        retainedFileCountLimit: 30)
     .CreateLogger();
 
 var builder = WebApplication.CreateBuilder(args);
@@ -38,6 +40,7 @@ moduleRegistry.DiscoverModules(builder.Services, builder.Configuration);
 
 var app = builder.Build();
 
+app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseMiddleware<ExceptionMiddleware>();
 app.UseCors();
 app.UseAuthentication();
