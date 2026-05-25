@@ -108,6 +108,31 @@ public class SystemStatusServiceTests
         Assert.Equal("有警告", summary.Label);
     }
 
+    [Fact]
+    public async Task GetDetailAsync_ReturnsDegradedComponents_WhenDatabaseQueriesFail()
+    {
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        var db = new PimDbContext(options);
+        var service = new SystemStatusService(db, new FakeBackgroundJobStatusService());
+        await db.DisposeAsync();
+
+        var detail = await service.GetDetailAsync();
+
+        Assert.Equal(PimHealthStatus.Critical, detail.Summary.Status);
+
+        var database = Assert.Single(detail.Components, c => c.Key == "database");
+        Assert.Equal(PimHealthStatus.Critical, database.Status);
+        Assert.Equal("Database is unavailable.", database.Message);
+
+        var daemon = Assert.Single(detail.Components, c => c.Key == "windows-daemon");
+        Assert.Equal(PimHealthStatus.Critical, daemon.Status);
+        Assert.Equal("Windows daemon heartbeat status is unavailable.", daemon.Message);
+        Assert.Contains("error", daemon.Details.Keys);
+    }
+
     private sealed class FakeBackgroundJobStatusService : IBackgroundJobStatusService
     {
         public Task<BackgroundJobSummaryDto> GetSummaryAsync(CancellationToken ct = default)

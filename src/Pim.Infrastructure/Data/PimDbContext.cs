@@ -1,5 +1,6 @@
 using System.Reflection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Pim.Core.Data;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Data.Entities;
@@ -9,10 +10,32 @@ namespace Pim.Infrastructure.Data;
 public class PimDbContext : DbContext
 {
     private static readonly List<Assembly> _moduleAssemblies = new();
+    private static readonly object _moduleAssembliesLock = new();
 
     public static void RegisterModuleAssembly(Assembly assembly)
     {
-        _moduleAssemblies.Add(assembly);
+        lock (_moduleAssembliesLock)
+        {
+            if (!_moduleAssemblies.Any(a => a.FullName == assembly.FullName))
+            {
+                _moduleAssemblies.Add(assembly);
+            }
+        }
+    }
+
+    internal static string ModuleAssemblySignature
+    {
+        get
+        {
+            lock (_moduleAssembliesLock)
+            {
+                return string.Join(
+                    "|",
+                    _moduleAssemblies
+                        .Select(a => a.FullName)
+                        .OrderBy(n => n, StringComparer.Ordinal));
+            }
+        }
     }
 
     public PimDbContext(DbContextOptions<PimDbContext> options) : base(options) { }
@@ -78,9 +101,20 @@ public class PimDbContext : DbContext
             e.HasIndex(d => d.ReceivedAt);
         });
 
-        foreach (var assembly in _moduleAssemblies)
+        Assembly[] moduleAssemblies;
+        lock (_moduleAssembliesLock)
+        {
+            moduleAssemblies = _moduleAssemblies.ToArray();
+        }
+
+        foreach (var assembly in moduleAssemblies)
         {
             modelBuilder.ApplyConfigurationsFromAssembly(assembly);
         }
+    }
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        optionsBuilder.ReplaceService<IModelCacheKeyFactory, PimDbContextModelCacheKeyFactory>();
     }
 }

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 
 namespace Pim.Infrastructure.Operations;
 
@@ -97,11 +98,29 @@ public sealed class SystemStatusService : ISystemStatusService
 
     private async Task<StatusComponentDto> BuildWindowsDaemonComponentAsync(DateTimeOffset checkedAt, CancellationToken ct)
     {
-        var heartbeat = await _db.DaemonHeartbeats
-            .AsNoTracking()
-            .Where(d => d.DaemonKind == "windows")
-            .OrderByDescending(d => d.ReceivedAt)
-            .FirstOrDefaultAsync(ct);
+        DaemonHeartbeatEntity? heartbeat;
+        try
+        {
+            heartbeat = await _db.DaemonHeartbeats
+                .AsNoTracking()
+                .Where(d => d.DaemonKind == "windows")
+                .OrderByDescending(d => d.ReceivedAt)
+                .FirstOrDefaultAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            return new StatusComponentDto(
+                "windows-daemon",
+                "Windows daemon",
+                StatusComponentKind.Daemon,
+                PimHealthStatus.Critical,
+                "Windows daemon heartbeat status is unavailable.",
+                checkedAt,
+                new Dictionary<string, string>
+                {
+                    ["error"] = ex.Message
+                });
+        }
 
         if (heartbeat is null)
         {
