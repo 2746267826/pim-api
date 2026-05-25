@@ -83,10 +83,17 @@ moduleRegistry.MapAllEndpoints(app);
 
 // Init modules
 await moduleRegistry.InitializeAllAsync(app.Services);
-RecurringJob.AddOrUpdate<Stage0DiagnosticJob>(
-    "stage0-diagnostic",
-    job => job.RunAsync(),
-    Cron.Hourly);
+try
+{
+    RecurringJob.AddOrUpdate<Stage0DiagnosticJob>(
+        "stage0-diagnostic",
+        job => job.RunAsync(),
+        Cron.Hourly);
+}
+catch (Exception ex)
+{
+    Log.Warning(ex, "Failed to register Hangfire diagnostic recurring job.");
+}
 
 // SPA fallback: non-API routes serve index.html (React Router handles routing)
 app.MapFallbackToFile("index.html").AllowAnonymous();

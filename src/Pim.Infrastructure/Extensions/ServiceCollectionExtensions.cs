@@ -31,6 +31,7 @@ public static class ServiceCollectionExtensions
             config.UsePostgreSqlStorage(options =>
                 options.UseNpgsqlConnection(configuration.GetConnectionString("DefaultConnection"))));
         services.AddHangfireServer();
+        services.AddScoped<IHangfireMonitoringClient, HangfireMonitoringClient>();
         services.AddScoped<IBackgroundJobStatusService, HangfireJobStatusService>();
         services.AddScoped<Stage0DiagnosticJob>();
 
