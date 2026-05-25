@@ -120,6 +120,30 @@ public class PcTrackerQualityServiceTests
     }
 
     [Fact]
+    public async Task GetQualityAsync_ReturnsWarning_WhenAfkEventsAreMissing()
+    {
+        await using var db = CreateDbContext();
+        AddRecentWindowsDaemon(db);
+        AddBucket(db, "aw-watcher-window_DESKTOP", "currentwindow");
+        AddBucket(db, "aw-watcher-afk_DESKTOP", "afkstatus");
+        AddBucket(db, "aw-watcher-web-chrome_DESKTOP", "web.tab.current");
+        AddWindowEvent(db);
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:10:00+00:00"), keys: 10);
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:11:00+00:00"), keys: 12);
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerQualityService(db);
+        var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
+
+        Assert.Equal(PimHealthStatus.Warning, result.OverallStatus);
+        var issue = Assert.Single(result.Issues, i => i.Code == "missing-aw-afk-events");
+        Assert.Equal(PimHealthStatus.Warning, issue.Severity);
+        Assert.Equal("aw-events", issue.ComponentKey);
+        var events = Assert.Single(result.Components, c => c.Key == "aw-events");
+        Assert.Equal(PimHealthStatus.Warning, events.Status);
+    }
+
+    [Fact]
     public async Task GetQualityAsync_ReturnsWarning_ForKeyStatsGapAndReset()
     {
         await using var db = CreateDbContext();

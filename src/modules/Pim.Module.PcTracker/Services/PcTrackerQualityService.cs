@@ -174,6 +174,16 @@ public sealed class PcTrackerQualityService
                     "Confirm the window watcher is running."));
             }
 
+            if (!events.Any(IsAfkEvent))
+            {
+                componentIssues.Add(new PcQualityIssueDto(
+                    "missing-aw-afk-events",
+                    PimHealthStatus.Warning,
+                    "aw-events",
+                    "No ActivityWatch AFK events were captured for the selected range.",
+                    "Confirm the AFK watcher is running."));
+            }
+
             var missingSourceIds = events.Count(e => e.SourceEventId is null);
             if (missingSourceIds > 0)
             {
@@ -201,7 +211,8 @@ public sealed class PcTrackerQualityService
         var details = new Dictionary<string, string>
         {
             ["eventCount"] = events.Count.ToString(),
-            ["windowEventCount"] = events.Count(IsWindowEvent).ToString()
+            ["windowEventCount"] = events.Count(IsWindowEvent).ToString(),
+            ["afkEventCount"] = events.Count(IsAfkEvent).ToString()
         };
 
         return BuildComponent("aw-events", "ActivityWatch events", componentIssues, details);
@@ -407,6 +418,10 @@ public sealed class PcTrackerQualityService
     private static bool IsWindowEvent(AwEventEntity e)
         => string.Equals(e.EventType, "window", StringComparison.OrdinalIgnoreCase)
             || string.Equals(e.BucketType, "currentwindow", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAfkEvent(AwEventEntity e)
+        => string.Equals(e.EventType, "afk", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(e.BucketType, "afkstatus", StringComparison.OrdinalIgnoreCase);
 
     private static PimHealthStatus MajoritySeverity(int count, int total)
         => count > total / 2 ? PimHealthStatus.Critical : PimHealthStatus.Warning;
