@@ -20,10 +20,11 @@ public class ActivitySuggestionService
 
     public async Task<List<ActivityClassificationSuggestionDto>> BuildSuggestionsAsync(
         IReadOnlyCollection<PcDetailRecord> records,
+        int recommendedMinimumMinutes,
         CancellationToken ct)
     {
         var candidates = records
-            .Where(NeedsSuggestion)
+            .Where(record => NeedsSuggestion(record, recommendedMinimumMinutes))
             .Select(record => new { Record = record, ClusterKey = GetClusterKey(record) })
             .Where(x => x.ClusterKey is not null)
             .GroupBy(x => x.ClusterKey!, StringComparer.OrdinalIgnoreCase)
@@ -76,6 +77,31 @@ public class ActivitySuggestionService
             .OrderByDescending(s => s.TotalDurationSeconds)
             .Select(s => ToSuggestionDto(s))
             .ToListAsync(ct);
+    }
+
+    public async Task<List<string>> GetRecentProjectTagsAsync(CancellationToken ct)
+    {
+        var ruleTags = await _db.Set<ActivityCategoryRuleEntity>()
+            .Where(r => r.ProjectTag != null && r.ProjectTag != "")
+            .OrderByDescending(r => r.UpdatedAt)
+            .Select(r => r.ProjectTag!)
+            .Take(20)
+            .ToListAsync(ct);
+
+        var snapshotTags = await _db.Set<ActivityClassificationEntity>()
+            .Where(s => s.ProjectTag != null && s.ProjectTag != "")
+            .OrderByDescending(s => s.ClassifiedAt)
+            .Select(s => s.ProjectTag!)
+            .Take(20)
+            .ToListAsync(ct);
+
+        return ruleTags
+            .Concat(snapshotTags)
+            .Where(tag => !string.IsNullOrWhiteSpace(tag))
+            .Select(tag => tag.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(20)
+            .ToList();
     }
 
     public async Task<ActivityClassificationRuleDto> AcceptSuggestionAsync(
@@ -135,8 +161,12 @@ public class ActivitySuggestionService
             $"Activity classification suggestion '{suggestion.Id}' must be pending before it can be changed. Current status is '{suggestion.Status}'.");
     }
 
-    private static bool NeedsSuggestion(PcDetailRecord record)
+    private static bool NeedsSuggestion(PcDetailRecord record, int recommendedMinimumMinutes)
     {
+        var minimumDurationSeconds = recommendedMinimumMinutes * 60;
+        if ((record.DurationSeconds ?? 0) < minimumDurationSeconds)
+            return false;
+
         return string.Equals(record.ClassificationSource, "fallback", StringComparison.OrdinalIgnoreCase)
             || (record.ClassificationConfidence is not null && record.ClassificationConfidence < 0.5);
     }

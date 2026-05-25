@@ -135,6 +135,53 @@ CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_suggestions_cluster_key
 CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_activity_classification_suggestions_pending_cluster ON pc_activity_classification_suggestions (cluster_key) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_suggestions_status ON pc_activity_classification_suggestions (status);
 CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_suggestions_updated_at ON pc_activity_classification_suggestions (updated_at);
+CREATE TABLE IF NOT EXISTS pc_activity_classifications (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    record_key VARCHAR(256) NOT NULL,
+    record_type VARCHAR(32) NOT NULL,
+    device_id VARCHAR(128) NOT NULL,
+    source_event_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    started_at TIMESTAMPTZ NOT NULL,
+    ended_at TIMESTAMPTZ NOT NULL,
+    category_name VARCHAR(64) NOT NULL DEFAULT '其他',
+    category_color VARCHAR(7) NOT NULL DEFAULT '#64748b',
+    project_tag VARCHAR(128),
+    confidence DOUBLE PRECISION NOT NULL DEFAULT 0.2,
+    source VARCHAR(32) NOT NULL DEFAULT 'fallback',
+    source_rule_id UUID,
+    explanation TEXT NOT NULL DEFAULT 'No rule or heuristic matched.',
+    classifier_version VARCHAR(32) NOT NULL DEFAULT 'local-v1',
+    classified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    audit_id UUID
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_activity_classifications_record_key
+    ON pc_activity_classifications (record_key);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classifications_started_at
+    ON pc_activity_classifications (started_at);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classifications_device_id
+    ON pc_activity_classifications (device_id);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classifications_category_name
+    ON pc_activity_classifications (category_name);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classifications_project_tag
+    ON pc_activity_classifications (project_tag);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classifications_source_rule_id
+    ON pc_activity_classifications (source_rule_id);
+
+CREATE TABLE IF NOT EXISTS pc_activity_classification_settings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    settings_key VARCHAR(64) NOT NULL DEFAULT 'default',
+    recommended_minimum_classification_duration_minutes INT NOT NULL DEFAULT 5,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_activity_classification_settings_key
+    ON pc_activity_classification_settings (settings_key);
+INSERT INTO pc_activity_classification_settings (
+    settings_key,
+    recommended_minimum_classification_duration_minutes
+)
+VALUES ('default', 5)
+ON CONFLICT (settings_key) DO NOTHING;
 INSERT INTO pc_activity_category_rules (rule_name, scope, category_name, project_tag, color, priority, source, status, conditions_json, confidence, explanation) VALUES
 ('Builtin: VS Code', 'activity', '编程', NULL, '#6B5EE4', 300, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"equals","value":"code"}}]}}'::jsonb, 0.9, 'Builtin app rule.'),
 ('Builtin: Rider', 'activity', '编程', NULL, '#6B5EE4', 300, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"equals","value":"rider"}}]}}'::jsonb, 0.9, 'Builtin app rule.'),

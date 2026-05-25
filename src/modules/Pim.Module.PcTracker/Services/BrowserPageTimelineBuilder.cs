@@ -123,7 +123,8 @@ public static class BrowserPageTimelineBuilder
             ProjectTag: classification.ProjectTag,
             ClassificationConfidence: classification.Confidence,
             ClassificationSource: classification.Source,
-            ClassificationExplanation: classification.Explanation);
+            ClassificationExplanation: classification.Explanation,
+            BucketType: e.BucketType);
     }
 
     private static List<WebPageCluster> BuildWebPageClusters(
@@ -329,7 +330,8 @@ public static class BrowserPageTimelineBuilder
                 classification.ProjectTag,
                 classification.Confidence,
                 classification.Source,
-                classification.Explanation);
+                classification.Explanation,
+                Primary.BucketType);
             return new WebPageDetail(record, browserWindow);
         }
     }

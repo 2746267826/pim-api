@@ -16,12 +16,22 @@ public class PcTrackerService
     private static readonly JsonSerializerOptions ApiJsonSerializerOptions = new(JsonSerializerDefaults.Web);
 
     private readonly PimDbContext _db;
+    private readonly ActivityClassificationSnapshotService _classificationSnapshots;
+    private readonly ActivityClassificationSettingsService _classificationSettings;
+    private readonly ActivityTimelineSmoothingService _timelineSmoothing;
     private List<AppCategoryRule>? _cachedLegacyRules;
     private List<ActivityCategoryRuleEntity>? _cachedActivityRules;
 
-    public PcTrackerService(PimDbContext db)
+    public PcTrackerService(
+        PimDbContext db,
+        ActivityClassificationSnapshotService classificationSnapshots,
+        ActivityClassificationSettingsService classificationSettings,
+        ActivityTimelineSmoothingService timelineSmoothing)
     {
         _db = db;
+        _classificationSnapshots = classificationSnapshots;
+        _classificationSettings = classificationSettings;
+        _timelineSmoothing = timelineSmoothing;
     }
 
     public async Task UpsertKeystatsAsync(KeystatsUploadRequest req, CancellationToken ct)
@@ -324,6 +334,10 @@ public class PcTrackerService
             .Select(ToTimelineItem)
             .ToList();
         timeline = NormalizeTimelineItems(timeline).ToList();
+        var settings = await _classificationSettings.GetSettingsAsync(ct);
+        timeline = _timelineSmoothing.Smooth(
+            timeline,
+            settings.RecommendedMinimumClassificationDurationMinutes).ToList();
 
         return new PcSummaryResponse(
             keystats is not null ? BuildKeystatsSummary(keystats) : BuildKeystatsSummaryFromSample(keystatsSample),
@@ -349,7 +363,11 @@ public class PcTrackerService
             .Where(IsSummaryTimelineRecord)
             .Select(ToTimelineItem)
             .ToList();
-        return NormalizeTimelineItems(timeline).ToList();
+        timeline = NormalizeTimelineItems(timeline).ToList();
+        var settings = await _classificationSettings.GetSettingsAsync(ct);
+        return _timelineSmoothing.Smooth(
+            timeline,
+            settings.RecommendedMinimumClassificationDurationMinutes).ToList();
     }
 
     public async Task<List<HeatmapBucket>> GetHeatmapAsync(DateTime start, DateTime end, CancellationToken ct)
@@ -485,6 +503,12 @@ public class PcTrackerService
         if (!rawMode)
             records.AddRange(ToInputMinuteRecords(samples));
 
+        records = ApplyPreClassificationCompleteDetailFilters(records, q).ToList();
+        records = await _classificationSnapshots.EnsureClassificationsAsync(
+            records,
+            rules,
+            auditId: null,
+            ct);
         records = ApplyCompleteDetailFilters(records, q).ToList();
         records = ApplyCompleteDetailSort(records, q).ToList();
 
@@ -822,6 +846,18 @@ public class PcTrackerService
         return records;
     }
 
+    private static IEnumerable<PcDetailRecord> ApplyPreClassificationCompleteDetailFilters(
+        IEnumerable<PcDetailRecord> records,
+        DetailQueryParams q)
+    {
+        if (!string.IsNullOrWhiteSpace(q.EventType))
+        {
+            records = records.Where(r => string.Equals(r.RecordType, q.EventType, StringComparison.Ordinal));
+        }
+
+        return records;
+    }
+
     private static IEnumerable<PcDetailRecord> ApplyCompleteDetailSort(
         IEnumerable<PcDetailRecord> records,
         DetailQueryParams q)
@@ -1009,7 +1045,13 @@ public class PcTrackerService
 
     private async Task<List<PcDetailRecord>> BuildInterpretedAwDetailRecordsAsync(List<AwEventEntity> awEvents, CancellationToken ct)
     {
-        return BrowserPageTimelineBuilder.BuildInterpretedAwRecords(awEvents, await GetActivityCategoryRulesAsync(ct));
+        var rules = await GetActivityCategoryRulesAsync(ct);
+        var records = BrowserPageTimelineBuilder.BuildInterpretedAwRecords(awEvents, rules);
+        return await _classificationSnapshots.EnsureClassificationsAsync(
+            records,
+            rules,
+            auditId: null,
+            ct);
     }
 
     private static bool IsSummaryTimelineRecord(PcDetailRecord record)

@@ -63,3 +63,32 @@ public record AcceptActivityClassificationSuggestionRequest(
     string ConditionsJson,
     double Confidence,
     string? Explanation);
+
+public record ActivityClassificationSettingsDto(
+    int RecommendedMinimumClassificationDurationMinutes,
+    IReadOnlyList<int> SupportedRecommendedMinimumDurations);
+
+public record SaveActivityClassificationSettingsRequest(
+    int RecommendedMinimumClassificationDurationMinutes);
+
+public record ActivityClassificationApplyRangeRequest(
+    string Mode,
+    string? DateFrom,
+    string? DateTo);
+
+public record ActivityClassificationPreviewRequest(
+    SaveActivityClassificationRuleRequest Rule,
+    ActivityClassificationApplyRangeRequest Range);
+
+public record ActivityClassificationPreviewDto(
+    int AffectedRecordCount,
+    double AffectedDurationSeconds,
+    IReadOnlyDictionary<string, int> CurrentCategoryCounts,
+    IReadOnlyDictionary<string, int> NewCategoryCounts,
+    IReadOnlyList<PcDetailRecord> Samples,
+    bool RequiresConfirmation,
+    string Summary);
+
+public record ApplyActivityClassificationRuleRequest(
+    SaveActivityClassificationRuleRequest Rule,
+    ActivityClassificationApplyRangeRequest Range);

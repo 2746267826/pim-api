@@ -205,7 +205,8 @@ public record PcDetailRecord(
     string? ProjectTag = null,
     double? ClassificationConfidence = null,
     string? ClassificationSource = null,
-    string? ClassificationExplanation = null
+    string? ClassificationExplanation = null,
+    string? BucketType = null
 );
 
 public record TypedDetailQueryResponse(

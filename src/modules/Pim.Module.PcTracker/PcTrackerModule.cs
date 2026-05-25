@@ -25,6 +25,10 @@ public class PcTrackerModule : IModule
         services.AddScoped<PcTrackerService>();
         services.AddScoped<PcTrackerQualityService>();
         services.AddScoped<ActivitySuggestionService>();
+        services.AddScoped<ActivityClassificationSnapshotService>();
+        services.AddScoped<ActivityClassificationRecomputeService>();
+        services.AddScoped<ActivityClassificationSettingsService>();
+        services.AddScoped<ActivityTimelineSmoothingService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
     }
 
@@ -196,6 +200,7 @@ public class PcTrackerModule : IModule
             [FromQuery] string? date,
             [FromServices] PcTrackerService pcTrackerService,
             [FromServices] ActivitySuggestionService suggestionService,
+            [FromServices] ActivityClassificationSettingsService settingsService,
             CancellationToken ct) =>
         {
             var d = date is not null ? DateTime.Parse(date) : DateTime.Today;
@@ -216,8 +221,28 @@ public class PcTrackerModule : IModule
             var records = detail.Items
                 .Where(NeedsClassificationSuggestion)
                 .ToList();
-            var suggestions = await suggestionService.BuildSuggestionsAsync(records, ct);
+            var settings = await settingsService.GetSettingsAsync(ct);
+            var suggestions = await suggestionService.BuildSuggestionsAsync(
+                records,
+                settings.RecommendedMinimumClassificationDurationMinutes,
+                ct);
             return Results.Ok(ApiResponse<List<ActivityClassificationSuggestionDto>>.Ok(suggestions));
+        });
+
+        readGroup.MapGet("/classification/project-tags/recent", async (
+            [FromServices] ActivitySuggestionService suggestionService,
+            CancellationToken ct) =>
+        {
+            var tags = await suggestionService.GetRecentProjectTagsAsync(ct);
+            return Results.Ok(ApiResponse<List<string>>.Ok(tags));
+        });
+
+        readGroup.MapGet("/classification/settings", async (
+            [FromServices] ActivityClassificationSettingsService settingsService,
+            CancellationToken ct) =>
+        {
+            var settings = await settingsService.GetSettingsAsync(ct);
+            return Results.Ok(ApiResponse<ActivityClassificationSettingsDto>.Ok(settings));
         });
 
         writeGroup.MapPost("/classification/rules", async (
@@ -227,6 +252,35 @@ public class PcTrackerModule : IModule
         {
             var rule = await svc.SaveActivityClassificationRuleAsync(req, ct);
             return Results.Ok(ApiResponse<ActivityClassificationRuleDto>.Ok(rule));
+        });
+
+        writeGroup.MapPost("/classification/rules/preview", async (
+            [FromBody] ActivityClassificationPreviewRequest req,
+            [FromServices] ActivityClassificationRecomputeService svc,
+            CancellationToken ct) =>
+        {
+            var preview = await svc.PreviewRuleAsync(req.Rule, req.Range, ct);
+            return Results.Ok(ApiResponse<ActivityClassificationPreviewDto>.Ok(preview));
+        });
+
+        writeGroup.MapPost("/classification/rules/apply", async (
+            [FromBody] ApplyActivityClassificationRuleRequest req,
+            [FromServices] ActivityClassificationRecomputeService svc,
+            CancellationToken ct) =>
+        {
+            var preview = await svc.ApplyRuleAsync(req.Rule, req.Range, ct);
+            return Results.Ok(ApiResponse<ActivityClassificationPreviewDto>.Ok(preview));
+        });
+
+        writeGroup.MapPut("/classification/settings", async (
+            [FromBody] SaveActivityClassificationSettingsRequest req,
+            [FromServices] ActivityClassificationSettingsService settingsService,
+            CancellationToken ct) =>
+        {
+            var settings = await settingsService.SaveSettingsAsync(
+                req.RecommendedMinimumClassificationDurationMinutes,
+                ct);
+            return Results.Ok(ApiResponse<ActivityClassificationSettingsDto>.Ok(settings));
         });
 
         writeGroup.MapPost("/classification/suggestions/{id:guid}/accept", async (
