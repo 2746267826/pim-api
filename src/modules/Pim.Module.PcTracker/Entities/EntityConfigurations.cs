@@ -112,3 +112,49 @@ public class ActivityClassificationSuggestionEntityConfiguration : IEntityTypeCo
         builder.HasIndex(e => e.UpdatedAt).HasDatabaseName("ix_pc_activity_classification_suggestions_updated_at");
     }
 }
+
+public class ActivityClassificationEntityConfiguration : IEntityTypeConfiguration<ActivityClassificationEntity>
+{
+    public void Configure(EntityTypeBuilder<ActivityClassificationEntity> builder)
+    {
+        builder.ToTable("pc_activity_classifications");
+        builder.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(e => e.SourceEventIdsJson).HasDefaultValueSql("'[]'::jsonb");
+        builder.Property(e => e.CategoryName).HasDefaultValue("其他");
+        builder.Property(e => e.CategoryColor).HasDefaultValue("#64748b");
+        builder.Property(e => e.Confidence).HasDefaultValue(0.2);
+        builder.Property(e => e.Source).HasDefaultValue("fallback");
+        builder.Property(e => e.Explanation).HasDefaultValue("No rule or heuristic matched.");
+        builder.Property(e => e.ClassifierVersion).HasDefaultValue("local-v1");
+        builder.Property(e => e.ClassifiedAt).HasDefaultValueSql("NOW()");
+        builder.HasIndex(e => e.RecordKey)
+            .IsUnique()
+            .HasDatabaseName("ux_pc_activity_classifications_record_key");
+        builder.HasIndex(e => e.StartedAt)
+            .HasDatabaseName("ix_pc_activity_classifications_started_at");
+        builder.HasIndex(e => e.DeviceId)
+            .HasDatabaseName("ix_pc_activity_classifications_device_id");
+        builder.HasIndex(e => e.CategoryName)
+            .HasDatabaseName("ix_pc_activity_classifications_category_name");
+        builder.HasIndex(e => e.ProjectTag)
+            .HasDatabaseName("ix_pc_activity_classifications_project_tag");
+        builder.HasIndex(e => e.SourceRuleId)
+            .HasDatabaseName("ix_pc_activity_classifications_source_rule_id");
+    }
+}
+
+public class ActivityClassificationSettingsEntityConfiguration : IEntityTypeConfiguration<ActivityClassificationSettingsEntity>
+{
+    public void Configure(EntityTypeBuilder<ActivityClassificationSettingsEntity> builder)
+    {
+        builder.ToTable("pc_activity_classification_settings");
+        builder.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(e => e.SettingsKey).HasDefaultValue("default");
+        builder.Property(e => e.RecommendedMinimumClassificationDurationMinutes).HasDefaultValue(5);
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
+        builder.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
+        builder.HasIndex(e => e.SettingsKey)
+            .IsUnique()
+            .HasDatabaseName("ux_pc_activity_classification_settings_key");
+    }
+}
