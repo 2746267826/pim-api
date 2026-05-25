@@ -1,9 +1,12 @@
+using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using Pim.Api;
 using Pim.Api.Endpoints;
+using Pim.Api.Infrastructure;
 using Pim.Api.Middleware;
 using Pim.Api.Search;
 using Pim.Infrastructure.Extensions;
+using Pim.Infrastructure.Operations;
 using Serilog;
 
 Log.Logger = new LoggerConfiguration()
@@ -39,6 +42,10 @@ app.UseMiddleware<ExceptionMiddleware>();
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseHangfireDashboard("/hangfire", new DashboardOptions
+{
+    Authorization = new[] { new HangfireAuthorizationFilter() }
+});
 
 app.UseSerilogRequestLogging(options =>
 {
@@ -76,6 +83,10 @@ moduleRegistry.MapAllEndpoints(app);
 
 // Init modules
 await moduleRegistry.InitializeAllAsync(app.Services);
+RecurringJob.AddOrUpdate<Stage0DiagnosticJob>(
+    "stage0-diagnostic",
+    job => job.RunAsync(),
+    Cron.Hourly);
 
 // SPA fallback: non-API routes serve index.html (React Router handles routing)
 app.MapFallbackToFile("index.html").AllowAnonymous();
