@@ -25,6 +25,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<PcTrackerService>();
         services.AddScoped<PcTrackerQualityService>();
         services.AddScoped<ActivitySuggestionService>();
+        services.AddScoped<ActivityClassificationSnapshotService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
     }
 
