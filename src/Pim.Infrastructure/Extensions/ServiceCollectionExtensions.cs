@@ -23,6 +23,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<PimMigrationAdoptionService>();
         services.AddScoped<IAuditLogService, AuditLogService>();
         services.AddScoped<IOperationConfirmationService, OperationConfirmationService>();
+        services.AddScoped<IDaemonHeartbeatService, DaemonHeartbeatService>();
+        services.AddScoped<ISystemStatusService, SystemStatusService>();
+        services.AddScoped<IBackgroundJobStatusService, NoopBackgroundJobStatusService>();
 
         // Auth
         services.AddSingleton<JwtService>();
