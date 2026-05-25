@@ -5,6 +5,7 @@ using Pim.Api.Endpoints;
 using Pim.Api.Infrastructure;
 using Pim.Api.Middleware;
 using Pim.Api.Search;
+using Pim.Api.Today;
 using Pim.Infrastructure.Extensions;
 using Pim.Infrastructure.Operations;
 using Serilog;
@@ -37,6 +38,7 @@ builder.Services.AddCors(options =>
 // Module discovery
 var moduleRegistry = new ModuleRegistry();
 moduleRegistry.DiscoverModules(builder.Services, builder.Configuration);
+builder.Services.AddScoped<TodaySectionService>();
 
 var app = builder.Build();
 
@@ -79,6 +81,7 @@ app.MapSearchEndpoints();
 app.MapStatusEndpoints();
 app.MapDaemonEndpoints();
 app.MapOperationsEndpoints();
+app.MapTodayEndpoints();
 
 // Module endpoints
 moduleRegistry.MapAllEndpoints(app);

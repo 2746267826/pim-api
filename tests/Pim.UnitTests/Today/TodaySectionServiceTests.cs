@@ -1,12 +1,33 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.AspNetCore.Http.HttpResults;
+using Pim.Api.Endpoints;
 using Pim.Api.Today;
 using Pim.Core.Today;
+using Pim.Core.Common;
 using Xunit;
 
 namespace Pim.UnitTests.Today;
 
 public class TodaySectionServiceTests
 {
+    [Fact]
+    public void TodayEndpointPaths_AreStable()
+    {
+        Assert.Equal("/api/v1/today/sections", TodayEndpointPaths.Sections);
+        Assert.Equal("/api/v1/today/sections/calendar.schedule", TodayEndpointPaths.Section("calendar.schedule"));
+        Assert.Equal("/api/v1/today/sections/pc.activity%3Fdebug%3D1", TodayEndpointPaths.Section("pc.activity?debug=1"));
+    }
+
+    [Fact]
+    public void ToInvalidDateResult_ReturnsBadRequest()
+    {
+        var result = Assert.IsType<BadRequest<ApiResponse<string>>>(TodayEndpoints.ToInvalidDateResult());
+
+        Assert.NotNull(result.Value);
+        Assert.Equal(400, result.Value.Code);
+        Assert.Equal("Invalid Today date. Expected YYYY-MM-DD or a parseable date/time value.", result.Value.Message);
+    }
+
     [Fact]
     public async Task GetRegistryAsync_ReturnsProviderMetadataWithoutUiFields()
     {

@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.Extensions.Logging;
+using Pim.Api.Endpoints;
 using Pim.Core.Today;
 
 namespace Pim.Api.Today;
@@ -34,7 +35,7 @@ public sealed class TodaySectionService
                 [
                     new TodayLinkDto(
                         TodayLinkRels.Self,
-                        $"/api/v1/today/sections/{Uri.EscapeDataString(provider.SectionId)}?date={formattedDate}")
+                        $"{TodayEndpointPaths.Section(provider.SectionId)}?date={formattedDate}")
                 ]))
             .ToArray();
 
