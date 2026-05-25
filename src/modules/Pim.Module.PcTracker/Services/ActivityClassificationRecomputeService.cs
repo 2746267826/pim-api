@@ -161,26 +161,13 @@ public class ActivityClassificationRecomputeService
     private static (DateTimeOffset Start, DateTimeOffset End) ParseRange(ActivityClassificationApplyRangeRequest range)
     {
         var mode = range.Mode?.Trim().ToLowerInvariant();
-        if (mode == "all")
-        {
-            var start = string.IsNullOrWhiteSpace(range.DateFrom)
-                ? new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero)
-                : TryParseDate(range.DateFrom, nameof(range.DateFrom));
-            var end = string.IsNullOrWhiteSpace(range.DateTo)
-                ? new DateTimeOffset(2100, 1, 1, 0, 0, 0, TimeSpan.Zero)
-                : TryParseDate(range.DateTo, nameof(range.DateTo)).AddDays(1);
-            if (end <= start)
-                throw new ArgumentException("DateTo must be on or after DateFrom.");
-
-            return (start, end);
-        }
-
         if (mode == "today")
         {
-            var date = string.IsNullOrWhiteSpace(range.DateFrom)
-                ? DateTimeOffset.UtcNow.Date
-                : TryParseDate(range.DateFrom, nameof(range.DateFrom)).Date;
-            var start = new DateTimeOffset(date, TimeSpan.Zero);
+            if (string.IsNullOrWhiteSpace(range.DateFrom) || !string.Equals(range.DateFrom, range.DateTo, StringComparison.Ordinal))
+                throw new ArgumentException("Today mode requires explicit matching DateFrom and DateTo.");
+
+            var date = TryParseDate(range.DateFrom, nameof(range.DateFrom));
+            var start = PcTrackerService.GetBusinessDayStartForQuery(date);
             return (start, start.AddDays(1));
         }
 
@@ -189,8 +176,10 @@ public class ActivityClassificationRecomputeService
             if (string.IsNullOrWhiteSpace(range.DateFrom) || string.IsNullOrWhiteSpace(range.DateTo))
                 throw new ArgumentException("Range mode requires DateFrom and DateTo.");
 
-            var rangeStart = TryParseDate(range.DateFrom, nameof(range.DateFrom));
-            var rangeEnd = TryParseDate(range.DateTo, nameof(range.DateTo)).AddDays(1);
+            var rangeStartDate = TryParseDate(range.DateFrom, nameof(range.DateFrom));
+            var rangeEndDate = TryParseDate(range.DateTo, nameof(range.DateTo));
+            var rangeStart = PcTrackerService.GetBusinessDayStartForQuery(rangeStartDate);
+            var rangeEnd = PcTrackerService.GetBusinessDayStartForQuery(rangeEndDate).AddDays(1);
             if (rangeEnd <= rangeStart)
                 throw new ArgumentException("DateTo must be on or after DateFrom.");
 
@@ -200,12 +189,12 @@ public class ActivityClassificationRecomputeService
         throw new ArgumentException($"Unknown range mode '{range.Mode}'.");
     }
 
-    private static DateTimeOffset TryParseDate(string? value, string fieldName)
+    private static DateTime TryParseDate(string? value, string fieldName)
     {
         if (!DateTime.TryParse(value, out var parsed))
             throw new ArgumentException($"{fieldName} must be a valid date.");
 
-        return new DateTimeOffset(parsed.Date, TimeSpan.Zero);
+        return parsed.Date;
     }
 
     private async Task<Dictionary<string, ActivityClassificationEntity>> LoadProtectedSnapshotsAsync(

@@ -249,7 +249,37 @@ public class ActivityClassificationRecomputeServiceTests
         Assert.Equal("\u7f16\u7a0b", snapshot.CategoryName);
     }
 
+    [Fact]
+    public async Task PreviewRuleAsync_UsesPcBusinessDayRange()
+    {
+        await using var db = CreateDb();
+        var businessStart = PcTrackerService.GetBusinessDayStartForQuery(new DateTime(2026, 5, 25));
+        var businessEnd = businessStart.AddDays(1);
+        db.Set<AwEventEntity>().AddRange(
+            WindowEvent(businessStart.AddMinutes(-1), 60, "Code.exe", "Previous day"),
+            WindowEvent(businessStart, 60, "Code.exe", "Business start"),
+            WindowEvent(businessEnd.AddMinutes(-1), 60, "Code.exe", "Business end"),
+            WindowEvent(businessEnd, 60, "Code.exe", "Next day"));
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var preview = await service.PreviewRuleAsync(
+            CodeRuleRequest(),
+            new ActivityClassificationApplyRangeRequest("range", "2026-05-25", "2026-05-25"),
+            CancellationToken.None);
+
+        Assert.Equal(2, preview.AffectedRecordCount);
+        Assert.Collection(
+            preview.Samples,
+            sample => Assert.Equal("Business start", sample.Title),
+            sample => Assert.Equal("Business end", sample.Title));
+    }
+
     [Theory]
+    [InlineData("today", null, null)]
+    [InlineData("today", "2026-05-25", null)]
+    [InlineData("all", null, null)]
+    [InlineData("all", "2026-05-25", "2026-05-25")]
     [InlineData("weekly", "2026-05-25", "2026-05-25")]
     [InlineData("range", "not-a-date", "2026-05-25")]
     [InlineData("range", "2026-05-26", "2026-05-25")]
@@ -394,6 +424,9 @@ public class ActivityClassificationRecomputeServiceTests
                 ["tabCount"] = 3
             })
         };
+
+    private static AwEventEntity WindowEvent(DateTimeOffset timestamp, double duration, string appName, string title) =>
+        WindowEvent(timestamp.ToUniversalTime().ToString("O"), duration, appName, title);
 
     private static PcDetailRecord WindowRecord(AwEventEntity entity) =>
         new(
