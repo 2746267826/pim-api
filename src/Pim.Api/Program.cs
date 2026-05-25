@@ -6,6 +6,7 @@ using Pim.Api.Infrastructure;
 using Pim.Api.Middleware;
 using Pim.Api.Search;
 using Pim.Api.Today;
+using Pim.Core.Today;
 using Pim.Infrastructure.Extensions;
 using Pim.Infrastructure.Operations;
 using Serilog;
@@ -39,6 +40,12 @@ builder.Services.AddCors(options =>
 var moduleRegistry = new ModuleRegistry();
 moduleRegistry.DiscoverModules(builder.Services, builder.Configuration);
 builder.Services.AddScoped<TodaySectionService>();
+builder.Services.AddScoped<ITodaySectionProvider, CalendarScheduleTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, CalendarTasksTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, PcActivityTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, PcQualityTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, OperationsHealthTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, ClassificationSuggestionsTodaySectionProvider>();
 
 var app = builder.Build();
 
