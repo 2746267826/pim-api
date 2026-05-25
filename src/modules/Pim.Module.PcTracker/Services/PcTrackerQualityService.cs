@@ -178,7 +178,7 @@ public sealed class PcTrackerQualityService
             if (missingSourceIds > 0)
             {
                 componentIssues.Add(new PcQualityIssueDto(
-                    "missing-aw-source-event-id",
+                    "aw-events-missing-source-id",
                     MajoritySeverity(missingSourceIds, events.Count),
                     "aw-events",
                     "Some ActivityWatch events are missing source event ids.",
@@ -189,7 +189,7 @@ public sealed class PcTrackerQualityService
             if (invalidJson > 0)
             {
                 componentIssues.Add(new PcQualityIssueDto(
-                    "invalid-aw-data-json",
+                    "aw-events-invalid-data-json",
                     MajoritySeverity(invalidJson, events.Count),
                     "aw-events",
                     "Some ActivityWatch events have missing or invalid data_json.",
@@ -309,7 +309,7 @@ public sealed class PcTrackerQualityService
         if (age >= TimeSpan.FromMinutes(60))
         {
             componentIssues.Add(new PcQualityIssueDto(
-                "stale-daemon-heartbeat",
+                "stale-windows-daemon-heartbeat",
                 PimHealthStatus.Critical,
                 "daemon-upload",
                 "Windows daemon heartbeat is stale.",

@@ -119,6 +119,92 @@ public class PcTrackerQualityServiceTests
         Assert.Equal(PimHealthStatus.Warning, timeline.Status);
     }
 
+    [Fact]
+    public async Task GetQualityAsync_ReturnsWarning_ForKeyStatsGapAndReset()
+    {
+        await using var db = CreateDbContext();
+        AddRecentWindowsDaemon(db);
+        AddBucket(db, "aw-watcher-window_DESKTOP", "currentwindow");
+        AddBucket(db, "aw-watcher-afk_DESKTOP", "afkstatus");
+        AddBucket(db, "aw-watcher-web-chrome_DESKTOP", "web.tab.current");
+        AddWindowEvent(db);
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T05:00:00+00:00"), keys: 20);
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T05:04:00+00:00"), keys: 30);
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T05:05:00+00:00"), keys: 10);
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerQualityService(db);
+        var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
+
+        Assert.Equal(PimHealthStatus.Warning, result.OverallStatus);
+        Assert.Contains(result.Issues, i => i.Code == "keystats-sample-gap");
+        Assert.Contains(result.Issues, i => i.Code == "keystats-counter-reset");
+    }
+
+    [Fact]
+    public async Task GetQualityAsync_ReturnsCompletenessIssue_ForLegacyAwRows()
+    {
+        await using var db = CreateDbContext();
+        AddRecentWindowsDaemon(db);
+        AddBucket(db, "aw-watcher-window_DESKTOP", "currentwindow");
+        AddBucket(db, "aw-watcher-afk_DESKTOP", "afkstatus");
+        AddBucket(db, "aw-watcher-web-chrome_DESKTOP", "web.tab.current");
+        AddWindowEvent(db, sourceEventId: null, dataJson: "");
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:10:00+00:00"), keys: 10);
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:11:00+00:00"), keys: 12);
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerQualityService(db);
+        var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
+
+        Assert.Contains(result.Issues, i => i.Code == "aw-events-missing-source-id");
+        Assert.Contains(result.Issues, i => i.Code == "aw-events-invalid-data-json");
+    }
+
+    [Fact]
+    public async Task GetQualityAsync_ReturnsCritical_WhenDaemonHeartbeatIsStale()
+    {
+        await using var db = CreateDbContext();
+        AddRecentWindowsDaemon(db, DateTimeOffset.UtcNow.AddHours(-2));
+        AddBucket(db, "aw-watcher-window_DESKTOP", "currentwindow");
+        AddBucket(db, "aw-watcher-afk_DESKTOP", "afkstatus");
+        AddBucket(db, "aw-watcher-web-chrome_DESKTOP", "web.tab.current");
+        AddWindowEvent(db);
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:10:00+00:00"), keys: 10);
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:11:00+00:00"), keys: 12);
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerQualityService(db);
+        var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
+
+        Assert.Equal(PimHealthStatus.Critical, result.OverallStatus);
+        Assert.Contains(result.Issues, i => i.Code == "stale-windows-daemon-heartbeat");
+    }
+
+    [Fact]
+    public async Task GetQualityAsync_ReturnsHealthy_WhenFactsAreComplete()
+    {
+        await using var db = CreateDbContext();
+        AddRecentWindowsDaemon(db);
+        AddBucket(db, "aw-watcher-window_DESKTOP", "currentwindow");
+        AddBucket(db, "aw-watcher-afk_DESKTOP", "afkstatus");
+        AddBucket(db, "aw-watcher-web-chrome_DESKTOP", "web.tab.current");
+        AddWindowEvent(db);
+        AddAfkEvent(db);
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:10:00+00:00"), keys: 10);
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:11:00+00:00"), keys: 12);
+        await db.SaveChangesAsync();
+
+        var service = new PcTrackerQualityService(db);
+        var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
+
+        Assert.Equal(PimHealthStatus.Healthy, result.OverallStatus);
+        Assert.Empty(result.Issues);
+        Assert.Empty(result.NextSteps);
+        var timeline = Assert.Single(result.Components, c => c.Key == "interpreted-timeline");
+        Assert.Equal(PimHealthStatus.Healthy, timeline.Status);
+    }
+
     private static PimDbContext CreateDbContext()
     {
         PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
@@ -130,21 +216,23 @@ public class PcTrackerQualityServiceTests
         return new PimDbContext(options);
     }
 
-    private static void AddRecentWindowsDaemon(PimDbContext db)
+    private static void AddRecentWindowsDaemon(PimDbContext db, DateTimeOffset? receivedAt = null)
     {
+        var heartbeatAt = receivedAt ?? DateTimeOffset.UtcNow.AddMinutes(-1);
+
         db.DaemonHeartbeats.Add(new DaemonHeartbeatEntity
         {
             DeviceId = "DESKTOP",
             DaemonKind = "windows",
             Version = "1.0.0",
             ServerUrl = "http://127.0.0.1:5858",
-            LastSuccessfulUploadAt = DateTimeOffset.UtcNow.AddMinutes(-1),
-            LastAttemptedUploadAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+            LastSuccessfulUploadAt = heartbeatAt,
+            LastAttemptedUploadAt = heartbeatAt,
             UploadQueueCount = 0,
             ActivityWatchState = DaemonSourceState.Available.ToString(),
             KeyStatsState = DaemonSourceState.Available.ToString(),
             StatusJson = "{}",
-            ReceivedAt = DateTimeOffset.UtcNow.AddMinutes(-1)
+            ReceivedAt = heartbeatAt
         });
     }
 
@@ -158,11 +246,11 @@ public class PcTrackerQualityServiceTests
             BucketType = bucketType,
             Client = "aw-client",
             Hostname = "DESKTOP",
-            SeenAt = seenAt ?? DateTimeOffset.Parse("2026-05-20T06:10:00+00:00")
+            SeenAt = seenAt ?? DateTimeOffset.UtcNow.AddMinutes(-1)
         });
     }
 
-    private static void AddWindowEvent(PimDbContext db)
+    private static void AddWindowEvent(PimDbContext db, int? sourceEventId = 100, string dataJson = "{\"app\":\"Code\"}")
     {
         db.Set<AwEventEntity>().Add(new AwEventEntity
         {
@@ -174,8 +262,25 @@ public class PcTrackerQualityServiceTests
             WindowTitle = "Project",
             BucketType = "currentwindow",
             BucketId = "aw-watcher-window_DESKTOP",
-            SourceEventId = 100,
-            DataJson = "{\"app\":\"Code\"}"
+            SourceEventId = sourceEventId,
+            DataJson = dataJson
+        });
+    }
+
+    private static void AddAfkEvent(PimDbContext db)
+    {
+        db.Set<AwEventEntity>().Add(new AwEventEntity
+        {
+            DeviceId = "DESKTOP",
+            Timestamp = DateTimeOffset.Parse("2026-05-20T06:11:00+00:00"),
+            Duration = 60,
+            EventType = "afk",
+            AppName = null,
+            WindowTitle = null,
+            BucketType = "afkstatus",
+            BucketId = "aw-watcher-afk_DESKTOP",
+            SourceEventId = 101,
+            DataJson = "{\"status\":\"not-afk\"}"
         });
     }
 
