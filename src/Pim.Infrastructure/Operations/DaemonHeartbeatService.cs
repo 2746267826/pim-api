@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
@@ -18,12 +20,14 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         DaemonHeartbeatRequest request,
         CancellationToken ct = default)
     {
+        var statusJson = NormalizeStatusJson(request.StatusJson);
         var entity = await _db.DaemonHeartbeats
             .SingleOrDefaultAsync(d =>
                 d.DeviceId == request.DeviceId
                 && d.DaemonKind == request.DaemonKind,
                 ct);
 
+        var isNew = entity is null;
         if (entity is null)
         {
             entity = new DaemonHeartbeatEntity
@@ -34,19 +38,30 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
             _db.DaemonHeartbeats.Add(entity);
         }
 
-        entity.Version = request.Version;
-        entity.ServerUrl = request.ServerUrl;
-        entity.LastSuccessfulUploadAt = request.LastSuccessfulUploadAt;
-        entity.LastAttemptedUploadAt = request.LastAttemptedUploadAt;
-        entity.LastError = request.LastError;
-        entity.UploadQueueCount = request.UploadQueueCount;
-        entity.ActivityWatchState = request.ActivityWatchState.ToString();
-        entity.KeyStatsState = request.KeyStatsState.ToString();
-        entity.CollectionPaused = request.CollectionPaused;
-        entity.StatusJson = string.IsNullOrWhiteSpace(request.StatusJson) ? "{}" : request.StatusJson;
-        entity.ReceivedAt = DateTimeOffset.UtcNow;
+        Apply(request, statusJson, entity);
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException) when (isNew)
+        {
+            _db.ChangeTracker.Clear();
+            entity = await _db.DaemonHeartbeats
+                .SingleOrDefaultAsync(d =>
+                    d.DeviceId == request.DeviceId
+                    && d.DaemonKind == request.DaemonKind,
+                    ct);
+
+            if (entity is null)
+            {
+                throw;
+            }
+
+            Apply(request, statusJson, entity);
+            await _db.SaveChangesAsync(ct);
+        }
+
         return Map(entity);
     }
 
@@ -83,10 +98,51 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
             entity.LastAttemptedUploadAt,
             entity.LastError,
             entity.UploadQueueCount,
-            Enum.Parse<DaemonSourceState>(entity.ActivityWatchState),
-            Enum.Parse<DaemonSourceState>(entity.KeyStatsState),
+            ParseSourceState(entity.ActivityWatchState),
+            ParseSourceState(entity.KeyStatsState),
             entity.CollectionPaused,
             entity.StatusJson,
             entity.ReceivedAt);
     }
+
+    private static void Apply(
+        DaemonHeartbeatRequest request,
+        string statusJson,
+        DaemonHeartbeatEntity entity)
+    {
+        entity.Version = request.Version;
+        entity.ServerUrl = request.ServerUrl;
+        entity.LastSuccessfulUploadAt = request.LastSuccessfulUploadAt;
+        entity.LastAttemptedUploadAt = request.LastAttemptedUploadAt;
+        entity.LastError = request.LastError;
+        entity.UploadQueueCount = request.UploadQueueCount;
+        entity.ActivityWatchState = request.ActivityWatchState.ToString();
+        entity.KeyStatsState = request.KeyStatsState.ToString();
+        entity.CollectionPaused = request.CollectionPaused;
+        entity.StatusJson = statusJson;
+        entity.ReceivedAt = DateTimeOffset.UtcNow;
+    }
+
+    private static string NormalizeStatusJson(string statusJson)
+    {
+        if (string.IsNullOrWhiteSpace(statusJson))
+        {
+            return "{}";
+        }
+
+        try
+        {
+            using var _ = JsonDocument.Parse(statusJson);
+            return statusJson;
+        }
+        catch (JsonException)
+        {
+            throw new DomainException(3010, "StatusJson must be valid JSON");
+        }
+    }
+
+    private static DaemonSourceState ParseSourceState(string value)
+        => Enum.TryParse<DaemonSourceState>(value, ignoreCase: true, out var state)
+            ? state
+            : DaemonSourceState.Unknown;
 }

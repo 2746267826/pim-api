@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -25,7 +26,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IOperationConfirmationService, OperationConfirmationService>();
         services.AddScoped<IDaemonHeartbeatService, DaemonHeartbeatService>();
         services.AddScoped<ISystemStatusService, SystemStatusService>();
-        services.AddScoped<IBackgroundJobStatusService, NoopBackgroundJobStatusService>();
+        services.TryAddScoped<IBackgroundJobStatusService, NoopBackgroundJobStatusService>();
 
         // Auth
         services.AddSingleton<JwtService>();

@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Operations;
 using Xunit;
 
@@ -51,5 +53,62 @@ public class DaemonHeartbeatServiceTests
         Assert.Equal(1, await db.DaemonHeartbeats.CountAsync());
         Assert.Equal("1.0.1", latest!.Version);
         Assert.Equal(DaemonSourceState.Unavailable, latest.KeyStatsState);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_RejectsInvalidStatusJson()
+    {
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        await using var db = new PimDbContext(options);
+        var service = new DaemonHeartbeatService(db);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => service.UpsertAsync(new DaemonHeartbeatRequest(
+                "pc-main",
+                "windows",
+                "1.0.0",
+                "http://127.0.0.1:5858",
+                null,
+                null,
+                null,
+                0,
+                DaemonSourceState.Available,
+                DaemonSourceState.Available,
+                false,
+                "{invalid")));
+
+        Assert.Equal(3010, error.ErrorCode);
+        Assert.Equal(0, await db.DaemonHeartbeats.CountAsync());
+    }
+
+    [Fact]
+    public async Task GetLatestWindowsAsync_ToleratesMalformedPersistedSourceStates()
+    {
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        await using var db = new PimDbContext(options);
+        db.DaemonHeartbeats.Add(new DaemonHeartbeatEntity
+        {
+            DeviceId = "pc-main",
+            DaemonKind = "windows",
+            Version = "1.0.0",
+            ServerUrl = "http://127.0.0.1:5858",
+            ActivityWatchState = "available",
+            KeyStatsState = "not-real",
+            StatusJson = "{}",
+            ReceivedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+
+        var service = new DaemonHeartbeatService(db);
+        var latest = await service.GetLatestWindowsAsync();
+
+        Assert.Equal(DaemonSourceState.Available, latest!.ActivityWatchState);
+        Assert.Equal(DaemonSourceState.Unknown, latest.KeyStatsState);
     }
 }

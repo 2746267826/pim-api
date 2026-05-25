@@ -43,7 +43,10 @@ public sealed class SystemStatusService : ISystemStatusService
         components.Add(await BuildWindowsDaemonComponentAsync(checkedAt, ct));
         components.Add(await BuildBackgroundJobsComponentAsync(ct));
 
-        var status = components.Max(c => c.Status);
+        var status = components
+            .OrderByDescending(c => GetSeverityRank(c.Status))
+            .First()
+            .Status;
         var summary = new SystemStatusSummaryDto(
             status,
             GetLabel(status),
@@ -170,6 +173,16 @@ public sealed class SystemStatusService : ISystemStatusService
             PimHealthStatus.Warning => "有警告",
             PimHealthStatus.Critical => "故障",
             _ => "未知"
+        };
+
+    private static int GetSeverityRank(PimHealthStatus status)
+        => status switch
+        {
+            PimHealthStatus.Healthy => 0,
+            PimHealthStatus.Unknown => 1,
+            PimHealthStatus.Warning => 2,
+            PimHealthStatus.Critical => 3,
+            _ => 1
         };
 
     private static string GetMessage(PimHealthStatus status)
