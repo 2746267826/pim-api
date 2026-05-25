@@ -26,6 +26,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<PcTrackerQualityService>();
         services.AddScoped<ActivitySuggestionService>();
         services.AddScoped<ActivityClassificationSnapshotService>();
+        services.AddScoped<ActivityClassificationRecomputeService>();
         services.AddScoped<ActivityClassificationSettingsService>();
         services.AddScoped<ActivityTimelineSmoothingService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
@@ -238,6 +239,24 @@ public class PcTrackerModule : IModule
         {
             var rule = await svc.SaveActivityClassificationRuleAsync(req, ct);
             return Results.Ok(ApiResponse<ActivityClassificationRuleDto>.Ok(rule));
+        });
+
+        writeGroup.MapPost("/classification/rules/preview", async (
+            [FromBody] ActivityClassificationPreviewRequest req,
+            [FromServices] ActivityClassificationRecomputeService svc,
+            CancellationToken ct) =>
+        {
+            var preview = await svc.PreviewRuleAsync(req.Rule, req.Range, ct);
+            return Results.Ok(ApiResponse<ActivityClassificationPreviewDto>.Ok(preview));
+        });
+
+        writeGroup.MapPost("/classification/rules/apply", async (
+            [FromBody] ApplyActivityClassificationRuleRequest req,
+            [FromServices] ActivityClassificationRecomputeService svc,
+            CancellationToken ct) =>
+        {
+            var preview = await svc.ApplyRuleAsync(req.Rule, req.Range, ct);
+            return Results.Ok(ApiResponse<ActivityClassificationPreviewDto>.Ok(preview));
         });
 
         writeGroup.MapPut("/classification/settings", async (

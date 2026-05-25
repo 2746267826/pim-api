@@ -137,6 +137,34 @@ public class ActivityClassificationSnapshotServiceTests
         Assert.Equal(manualAuditId, persisted.AuditId);
     }
 
+    [Fact]
+    public async Task EnsureClassificationsAsync_UsesBucketTypeInRuleContext()
+    {
+        using var db = CreateDb();
+        var service = new ActivityClassificationSnapshotService(db);
+        var record = NewStableWebRecord("msedge.exe") with
+        {
+            BucketType = "web.tab.current"
+        };
+
+        var classified = await service.EnsureClassificationsAsync(
+            [record],
+            [
+                NewRule(
+                    "Web bucket is learning",
+                    "\u5b66\u4e60",
+                    conditionsJson: """
+                        {"all":[{"field":"bucketType","op":"equals","value":"web.tab.current"}]}
+                        """)
+            ],
+            null,
+            CancellationToken.None);
+
+        Assert.Equal("\u5b66\u4e60", Assert.Single(classified).CategoryName);
+        var snapshot = await db.Set<ActivityClassificationEntity>().SingleAsync();
+        Assert.Equal("\u5b66\u4e60", snapshot.CategoryName);
+    }
+
     [Theory]
     [InlineData(0.0)]
     [InlineData(-1.0)]

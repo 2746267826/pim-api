@@ -112,7 +112,7 @@ public class ActivityClassificationSnapshotService
             record.Title,
             record.BrowserWindowTitle ?? record.Title,
             record.IsLocalFile ? record.Path : null,
-            null);
+            record.BucketType);
     }
 
     private static void ApplySnapshot(
