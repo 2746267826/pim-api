@@ -33,6 +33,7 @@ public interface IOperationConfirmationService
     Task<OperationConfirmationDto> CreateAsync(CreateOperationConfirmationRequest request, CancellationToken ct = default);
     Task<OperationConfirmationDto?> GetAsync(Guid id, CancellationToken ct = default);
     Task<IReadOnlyList<OperationConfirmationDto>> ListPendingAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<OperationConfirmationDto>> ListPendingForUserAsync(Guid? userId, CancellationToken ct = default);
     Task<OperationConfirmationDto> ConfirmAsync(Guid id, Guid? userId, CancellationToken ct = default);
     Task<OperationConfirmationDto> RejectAsync(Guid id, Guid? userId, CancellationToken ct = default);
     Task<OperationConfirmationDto> MarkExecutedAsync(Guid id, string resultJson, CancellationToken ct = default);

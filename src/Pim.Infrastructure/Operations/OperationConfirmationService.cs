@@ -65,6 +65,23 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         return pending.Select(Map).ToList();
     }
 
+    public async Task<IReadOnlyList<OperationConfirmationDto>> ListPendingForUserAsync(
+        Guid? userId,
+        CancellationToken ct = default)
+    {
+        await ExpireOldAsync(DateTimeOffset.UtcNow, ct);
+
+        var pending = await _db.OperationConfirmations
+            .AsNoTracking()
+            .Where(c =>
+                c.Status == OperationConfirmationStatus.Pending.ToString()
+                && (c.RequestedByUserId == null || c.RequestedByUserId == userId))
+            .OrderBy(c => c.ExpiresAt)
+            .ToListAsync(ct);
+
+        return pending.Select(Map).ToList();
+    }
+
     public async Task<OperationConfirmationDto> ConfirmAsync(Guid id, Guid? userId, CancellationToken ct = default)
     {
         var entity = await LoadPendingAsync(id, ct);

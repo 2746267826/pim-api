@@ -160,6 +160,106 @@ public class AuditAndConfirmationServiceTests
     }
 
     [Fact]
+    public async Task OperationConfirmationService_ListsPendingForUserWithoutOtherUsersConfirmations()
+    {
+        await using var db = CreateDb();
+        var service = new OperationConfirmationService(db);
+        var ownerId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var otherUserId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+
+        var owner = await service.CreateAsync(new CreateOperationConfirmationRequest(
+            ownerId,
+            "outlook.write",
+            "Write owner event",
+            OperationRiskLevel.High,
+            "web",
+            "{}",
+            "{}",
+            DateTimeOffset.UtcNow.AddMinutes(20),
+            "corr-user-list-owner"));
+        var system = await service.CreateAsync(new CreateOperationConfirmationRequest(
+            null,
+            "file.move",
+            "Move system files",
+            OperationRiskLevel.High,
+            "job",
+            "{}",
+            "{}",
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            "corr-user-list-system"));
+        await service.CreateAsync(new CreateOperationConfirmationRequest(
+            otherUserId,
+            "outlook.delete",
+            "Delete other event",
+            OperationRiskLevel.High,
+            "web",
+            "{}",
+            "{}",
+            DateTimeOffset.UtcNow.AddMinutes(5),
+            "corr-user-list-other"));
+
+        var pending = await service.ListPendingForUserAsync(ownerId);
+
+        Assert.Equal(new[] { system.Id, owner.Id }, pending.Select(c => c.Id));
+    }
+
+    [Fact]
+    public async Task OperationConfirmationService_ListsOnlySystemPendingRecordsWithoutUser()
+    {
+        await using var db = CreateDb();
+        var service = new OperationConfirmationService(db);
+        var ownerId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+
+        await service.CreateAsync(new CreateOperationConfirmationRequest(
+            ownerId,
+            "outlook.write",
+            "Write owner event",
+            OperationRiskLevel.High,
+            "web",
+            "{}",
+            "{}",
+            DateTimeOffset.UtcNow.AddMinutes(5),
+            "corr-system-list-owner"));
+        var system = await service.CreateAsync(new CreateOperationConfirmationRequest(
+            null,
+            "file.move",
+            "Move system files",
+            OperationRiskLevel.High,
+            "job",
+            "{}",
+            "{}",
+            DateTimeOffset.UtcNow.AddMinutes(10),
+            "corr-system-list-system"));
+
+        var pending = await service.ListPendingForUserAsync(null);
+
+        Assert.Single(pending);
+        Assert.Equal(system.Id, pending[0].Id);
+    }
+
+    [Fact]
+    public async Task OperationConfirmationService_AllowsAuthenticatedUserToRejectSystemConfirmation()
+    {
+        await using var db = CreateDb();
+        var service = new OperationConfirmationService(db);
+
+        var created = await service.CreateAsync(new CreateOperationConfirmationRequest(
+            null,
+            "file.move",
+            "Move files",
+            OperationRiskLevel.High,
+            "job",
+            "{}",
+            "{}",
+            DateTimeOffset.UtcNow.AddMinutes(30),
+            "corr-7b"));
+
+        var rejected = await service.RejectAsync(created.Id, Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"));
+
+        Assert.Equal(OperationConfirmationStatus.Rejected, rejected.Status);
+    }
+
+    [Fact]
     public async Task OperationConfirmationService_AllowsGlobalConfirmationWithoutUser()
     {
         await using var db = CreateDb();
