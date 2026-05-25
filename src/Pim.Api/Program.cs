@@ -67,6 +67,9 @@ app.MapAuthEndpoints();
 
 // Search endpoint (uses ISearchProvider from modules)
 app.MapSearchEndpoints();
+app.MapStatusEndpoints();
+app.MapDaemonEndpoints();
+app.MapOperationsEndpoints();
 
 // Module endpoints
 moduleRegistry.MapAllEndpoints(app);
