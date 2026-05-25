@@ -26,7 +26,7 @@ public class ActivitySuggestionServiceTests
                 classificationSource: "fallback")
         };
 
-        var suggestions = await service.BuildSuggestionsAsync(records, CancellationToken.None);
+        var suggestions = await service.BuildSuggestionsAsync(records, recommendedMinimumMinutes: 1, CancellationToken.None);
 
         var suggestion = Assert.Single(suggestions);
         Assert.Equal("web:unknown.example.com", suggestion.ClusterKey);
@@ -36,6 +36,28 @@ public class ActivitySuggestionServiceTests
         AssertNoSensitiveUrlMaterial(suggestion.SampleRecordsJson);
         Assert.Contains("[redacted]", suggestion.SanitizedContextJson);
         Assert.Contains("[redacted]", suggestion.SampleRecordsJson);
+    }
+
+    [Fact]
+    public async Task BuildSuggestionsAsync_IgnoresTinyFallbackRecordsBelowRecommendedDuration()
+    {
+        using var db = CreateDbContext();
+        var service = new ActivitySuggestionService(db);
+        var records = new[]
+        {
+            NewWebRecord(
+                durationSeconds: 30,
+                url: "https://unknown.example.com/path",
+                classificationSource: "fallback"),
+            NewWebRecord(
+                durationSeconds: 20,
+                url: "https://unknown.example.com/other",
+                classificationSource: "fallback")
+        };
+
+        var suggestions = await service.BuildSuggestionsAsync(records, recommendedMinimumMinutes: 5, CancellationToken.None);
+
+        Assert.Empty(suggestions);
     }
 
     [Fact]
@@ -86,7 +108,7 @@ public class ActivitySuggestionServiceTests
                 classificationSource: "fallback")
         };
 
-        var suggestions = await service.BuildSuggestionsAsync(records, CancellationToken.None);
+        var suggestions = await service.BuildSuggestionsAsync(records, recommendedMinimumMinutes: 1, CancellationToken.None);
 
         Assert.Empty(suggestions);
         var suggestion = await db.Set<ActivityClassificationSuggestionEntity>().SingleAsync();
@@ -118,7 +140,7 @@ public class ActivitySuggestionServiceTests
                 classificationSource: "fallback")
         };
 
-        var suggestions = await service.BuildSuggestionsAsync(records, CancellationToken.None);
+        var suggestions = await service.BuildSuggestionsAsync(records, recommendedMinimumMinutes: 1, CancellationToken.None);
 
         var returnedSuggestion = Assert.Single(suggestions);
         Assert.Equal(pendingId, returnedSuggestion.Id);
@@ -131,6 +153,38 @@ public class ActivitySuggestionServiceTests
         Assert.Equal("pending", pendingSuggestion.Status);
         Assert.Equal(2, pendingSuggestion.SampleCount);
         Assert.Equal(180, pendingSuggestion.TotalDurationSeconds);
+    }
+
+    [Fact]
+    public async Task GetRecentProjectTagsAsync_ReturnsTagsFromRulesAndSnapshots()
+    {
+        using var db = CreateDbContext();
+        db.Set<ActivityCategoryRuleEntity>().Add(new ActivityCategoryRuleEntity
+        {
+            Id = Guid.NewGuid(),
+            RuleName = "PIM rule",
+            ProjectTag = "PIM",
+            Status = "active",
+            UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-1)
+        });
+        db.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity
+        {
+            Id = Guid.NewGuid(),
+            RecordKey = "snapshot-1",
+            RecordType = "web-page",
+            DeviceId = "device-1",
+            StartedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
+            EndedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
+            ProjectTag = "projectGPT",
+            ClassifiedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+        var service = new ActivitySuggestionService(db);
+
+        var tags = await service.GetRecentProjectTagsAsync(CancellationToken.None);
+
+        Assert.Contains("PIM", tags);
+        Assert.Contains("projectGPT", tags);
     }
 
     [Fact]

@@ -200,6 +200,7 @@ public class PcTrackerModule : IModule
             [FromQuery] string? date,
             [FromServices] PcTrackerService pcTrackerService,
             [FromServices] ActivitySuggestionService suggestionService,
+            [FromServices] ActivityClassificationSettingsService settingsService,
             CancellationToken ct) =>
         {
             var d = date is not null ? DateTime.Parse(date) : DateTime.Today;
@@ -220,8 +221,20 @@ public class PcTrackerModule : IModule
             var records = detail.Items
                 .Where(NeedsClassificationSuggestion)
                 .ToList();
-            var suggestions = await suggestionService.BuildSuggestionsAsync(records, ct);
+            var settings = await settingsService.GetSettingsAsync(ct);
+            var suggestions = await suggestionService.BuildSuggestionsAsync(
+                records,
+                settings.RecommendedMinimumClassificationDurationMinutes,
+                ct);
             return Results.Ok(ApiResponse<List<ActivityClassificationSuggestionDto>>.Ok(suggestions));
+        });
+
+        readGroup.MapGet("/classification/project-tags/recent", async (
+            [FromServices] ActivitySuggestionService suggestionService,
+            CancellationToken ct) =>
+        {
+            var tags = await suggestionService.GetRecentProjectTagsAsync(ct);
+            return Results.Ok(ApiResponse<List<string>>.Ok(tags));
         });
 
         readGroup.MapGet("/classification/settings", async (
