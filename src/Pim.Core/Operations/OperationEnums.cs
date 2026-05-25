@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Pim.Core.Operations;
 
 public enum PimHealthStatus
@@ -53,6 +55,7 @@ public enum OperationRiskLevel
     High
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum DaemonSourceState
 {
     Unknown,
