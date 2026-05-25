@@ -41,6 +41,10 @@ moduleRegistry.DiscoverModules(builder.Services, builder.Configuration);
 var app = builder.Build();
 
 app.UseMiddleware<CorrelationIdMiddleware>();
+app.UseSerilogRequestLogging(options =>
+{
+    options.MessageTemplate = "{RemoteIpAddress} {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.000} ms";
+});
 app.UseMiddleware<ExceptionMiddleware>();
 app.UseCors();
 app.UseAuthentication();
@@ -48,11 +52,6 @@ app.UseAuthorization();
 app.UseHangfireDashboard("/hangfire", new DashboardOptions
 {
     Authorization = new[] { new HangfireAuthorizationFilter() }
-});
-
-app.UseSerilogRequestLogging(options =>
-{
-    options.MessageTemplate = "{RemoteIpAddress} {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.000} ms";
 });
 
 // Serve React SPA static files from wwwroot

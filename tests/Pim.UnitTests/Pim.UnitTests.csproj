@@ -25,6 +25,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Pim.Infrastructure\Pim.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Pim.Api\Pim.Api.csproj" />
     <ProjectReference Include="..\..\src\modules\Pim.Module.Calendar\Pim.Module.Calendar.csproj" />
     <ProjectReference Include="..\..\src\modules\Pim.Module.PcTracker\Pim.Module.PcTracker.csproj" />
     <ProjectReference Include="..\..\src\client-windows\Pim.Client.Core\Pim.Client.Core.csproj" />
