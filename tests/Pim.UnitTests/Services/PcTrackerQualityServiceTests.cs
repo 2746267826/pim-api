@@ -205,6 +205,25 @@ public class PcTrackerQualityServiceTests
         Assert.Equal(PimHealthStatus.Healthy, timeline.Status);
     }
 
+    [Fact]
+    public void PcTrackerModule_ExposesQualityEndpointInSource()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "..",
+            "..",
+            "..",
+            "..",
+            "..",
+            "src",
+            "modules",
+            "Pim.Module.PcTracker",
+            "PcTrackerModule.cs"));
+
+        Assert.Contains("MapGet(\"/quality\"", source);
+        Assert.Contains("PcTrackerQualityService", source);
+    }
+
     private static PimDbContext CreateDbContext()
     {
         PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);

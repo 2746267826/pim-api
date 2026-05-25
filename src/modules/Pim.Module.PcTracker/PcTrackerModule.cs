@@ -23,6 +23,7 @@ public class PcTrackerModule : IModule
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
         services.AddScoped<PcTrackerService>();
+        services.AddScoped<PcTrackerQualityService>();
         services.AddScoped<ActivitySuggestionService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
     }
@@ -138,6 +139,21 @@ public class PcTrackerModule : IModule
                 domain, title, url, view);
             var result = await svc.QueryCompleteDetailAsync(q, ct);
             return Results.Ok(ApiResponse<TypedDetailQueryResponse>.Ok(result));
+        });
+
+        readGroup.MapGet("/quality", async (
+            [FromQuery] string? date,
+            [FromQuery] string? dateFrom,
+            [FromQuery] string? dateTo,
+            [FromServices] PcTrackerQualityService svc,
+            CancellationToken ct) =>
+        {
+            var result = await svc.GetQualityAsync(
+                TryParseDate(date),
+                TryParseDate(dateFrom),
+                TryParseDate(dateTo),
+                ct);
+            return Results.Ok(ApiResponse<PcQualityResponse>.Ok(result));
         });
 
         readGroup.MapGet("/categories", async (
@@ -278,6 +294,13 @@ public class PcTrackerModule : IModule
         using var scope = serviceProvider.CreateScope();
         var initializer = scope.ServiceProvider.GetRequiredService<PcTrackerSchemaInitializer>();
         await initializer.InitializeAsync();
+    }
+
+    private static DateTime? TryParseDate(string? value)
+    {
+        return DateTime.TryParse(value, out var parsed)
+            ? parsed.Date
+            : null;
     }
 
     private static bool NeedsClassificationSuggestion(PcDetailRecord record)
