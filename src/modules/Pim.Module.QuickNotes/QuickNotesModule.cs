@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Core.Modules;
 using Pim.Infrastructure.Data;
+using Pim.Module.QuickNotes.Services;
 
 namespace Pim.Module.QuickNotes;
 
@@ -15,6 +16,7 @@ public class QuickNotesModule : IModule
     public void RegisterServices(IServiceCollection services, IConfiguration configuration)
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
+        services.AddScoped<QuickNoteService>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
