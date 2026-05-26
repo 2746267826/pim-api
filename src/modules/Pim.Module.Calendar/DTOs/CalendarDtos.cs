@@ -35,6 +35,7 @@ public record EventResponse(
     string? TimeZoneId = null,
     string? SourceTimeZoneId = null,
     string? SourceUid = null,
+    string? SourceIcsComponent = null,
     string ExternalMetadataJson = "{}",
     string? RecurrenceId = null,
     string ExDatesJson = "[]",

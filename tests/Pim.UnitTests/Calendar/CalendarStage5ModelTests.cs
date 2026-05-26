@@ -1,6 +1,9 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.Entities;
+using Pim.Module.Calendar.Services;
 using Xunit;
 
 namespace Pim.UnitTests.Calendar;
@@ -117,11 +120,57 @@ public class CalendarStage5ModelTests
         Assert.Equal(new DateTimeOffset(2026, 5, 26, 11, 0, 0, TimeSpan.Zero), deletedTask.PlannedEnd);
     }
 
+    [Fact]
+    public async Task GetEventsAsync_ReturnsSourceIcsComponent()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
+        await using var db = CreateDb();
+        var userId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var calendar = new CalendarEntity
+        {
+            UserId = userId,
+            Name = "Outlook",
+            Kind = "calendar",
+            IsDefault = true
+        };
+        var evt = new EventEntity
+        {
+            CalendarId = calendar.Id,
+            Calendar = calendar,
+            Uid = "source-ics@pim",
+            Title = "Mapped event",
+            DtStart = new DateTimeOffset(2026, 5, 26, 9, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 5, 26, 10, 0, 0, TimeSpan.Zero),
+            SourceIcsComponent = "BEGIN:VEVENT\r\nUID:source-ics@pim\r\nEND:VEVENT"
+        };
+        db.Set<CalendarEntity>().Add(calendar);
+        db.Set<EventEntity>().Add(evt);
+        await db.SaveChangesAsync();
+        var service = new CalendarService(
+            db,
+            new FixedCurrentUserService(userId),
+            new RecurrenceService(NullLogger<RecurrenceService>.Instance));
+
+        var events = await service.GetEventsAsync(
+            new DateTimeOffset(2026, 5, 26, 0, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 5, 27, 0, 0, 0, TimeSpan.Zero),
+            CancellationToken.None);
+
+        var response = Assert.Single(events);
+        Assert.Contains("BEGIN:VEVENT", response.SourceIcsComponent);
+    }
+
     private static PimDbContext CreateDb()
     {
         var options = new DbContextOptionsBuilder<PimDbContext>()
             .UseInMemoryDatabase($"calendar-stage5-model-{Guid.NewGuid()}")
             .Options;
         return new PimDbContext(options);
+    }
+
+    private sealed class FixedCurrentUserService(Guid userId) : ICurrentUserService
+    {
+        public Guid? UserId { get; } = userId;
+        public string? Role => "user";
     }
 }
