@@ -29,6 +29,7 @@ public class CalendarModule : IModule
         services.AddScoped<RecurrenceService>();
         services.AddScoped<SchedulingEngine>();
         services.AddScoped<OutlookSyncService>();
+        services.AddScoped<CalendarAuditWriter>();
 
         services.AddSingleton<ISearchProvider, CalendarSearchProvider>();
     }

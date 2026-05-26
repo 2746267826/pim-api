@@ -119,3 +119,102 @@ public record ImportResult(int Imported, int Skipped);
 public record BatchDeleteRequest(List<Guid> Ids);
 
 public record BatchDeleteResult(int DeletedCount);
+
+public record CalendarOperationSample(
+    Guid Id,
+    string Type,
+    string Title,
+    DateTimeOffset? Start,
+    DateTimeOffset? End,
+    string? BookName
+);
+
+public record CalendarDeletePreviewResponse(
+    string TargetType,
+    Guid TargetId,
+    string Title,
+    string OperationKind,
+    int AffectedCount,
+    IReadOnlyList<CalendarOperationSample> Samples,
+    string Summary,
+    bool RequiresStrictConfirmation
+);
+
+public record CalendarOperationResult(
+    string Operation,
+    Guid OperationId,
+    int AffectedCount,
+    IReadOnlyList<Guid> AffectedIds,
+    IReadOnlyList<CalendarOperationSample> Samples,
+    string Message
+);
+
+public record CalendarRestoreConflict(
+    Guid DeletedId,
+    string DeletedType,
+    Guid ActiveId,
+    string ActiveType,
+    string Reason,
+    string Title
+);
+
+public record CalendarRestorePreviewResponse(
+    string TargetType,
+    Guid TargetId,
+    string Title,
+    int RestoreCount,
+    IReadOnlyList<CalendarOperationSample> Samples,
+    IReadOnlyList<CalendarRestoreConflict> Conflicts,
+    bool CanRestoreWithoutConflict
+);
+
+public record CalendarRestoreRequest(bool RestoreAsCopy = false);
+
+public record CalendarRecycleBinItem(
+    Guid Id,
+    string Type,
+    string Title,
+    DateTimeOffset DeletedAt,
+    string? BookName,
+    DateTimeOffset? Start,
+    DateTimeOffset? End,
+    string Source,
+    Guid? DeletedByOperationId,
+    string? DeletedByOperationKind
+);
+
+public record CalendarRecycleBinDetail(
+    CalendarRecycleBinItem Item,
+    string? Description,
+    string MetadataJson,
+    IReadOnlyList<CalendarOperationSample> ChildSamples
+);
+
+public record BatchIdsRequest(IReadOnlyList<Guid> Ids);
+
+public record BatchTaskUpdateRequest(
+    IReadOnlyList<Guid> Ids,
+    string? Status,
+    int? Priority,
+    Guid? CalendarId
+);
+
+public record PlanTaskRequest(
+    DateTimeOffset PlannedStart,
+    DateTimeOffset? PlannedEnd,
+    string? EstimatedDuration
+);
+
+public record ImportSkippedItem(
+    string Reason,
+    string Title,
+    DateTimeOffset? Start,
+    string? Uid
+);
+
+public record ImportReport(
+    int Imported,
+    int Skipped,
+    IReadOnlyDictionary<string, int> SkippedReasons,
+    IReadOnlyList<ImportSkippedItem> Samples
+);
