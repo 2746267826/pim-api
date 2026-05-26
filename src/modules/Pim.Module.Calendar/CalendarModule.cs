@@ -30,6 +30,7 @@ public class CalendarModule : IModule
         services.AddScoped<SchedulingEngine>();
         services.AddScoped<OutlookSyncService>();
         services.AddScoped<CalendarAuditWriter>();
+        services.AddScoped<CalendarDeleteService>();
 
         services.AddSingleton<ISearchProvider, CalendarSearchProvider>();
     }
@@ -56,12 +57,13 @@ public class CalendarModule : IModule
             [FromServices] CalendarService svc, CancellationToken ct) =>
             Results.Ok(ApiResponse<CalendarResponse>.Ok(await svc.UpdateCalendarAsync(id, req, ct))));
 
+        group.MapPost("/calendars/{id:guid}/delete-preview", async (
+            Guid id, [FromServices] CalendarDeleteService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarDeletePreviewResponse>.Ok(await svc.PreviewCalendarDeleteAsync(id, ct))));
+
         group.MapDelete("/calendars/{id:guid}", async (
-            Guid id, [FromServices] CalendarService svc, CancellationToken ct) =>
-        {
-            await svc.DeleteCalendarAsync(id, ct);
-            return Results.Ok(ApiResponse<string>.Ok("deleted"));
-        });
+            Guid id, [FromServices] CalendarDeleteService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.DeleteCalendarAsync(id, ct))));
 
         // Events
         group.MapGet("/events", async (
@@ -101,20 +103,14 @@ public class CalendarModule : IModule
             Results.Ok(ApiResponse<EventResponse>.Ok(await svc.UpdateEventAsync(id, req, ct))));
 
         group.MapDelete("/events/{id:guid}", async (
-            Guid id, [FromServices] CalendarService svc, CancellationToken ct) =>
-        {
-            await svc.DeleteEventAsync(id, ct);
-            return Results.Ok(ApiResponse<string>.Ok("deleted"));
-        });
+            Guid id, [FromServices] CalendarDeleteService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.DeleteEventAsync(id, ct))));
 
         group.MapPost("/events/batch-delete", async (
-            [FromBody] BatchDeleteRequest req,
-            [FromServices] CalendarService svc,
+            [FromBody] BatchIdsRequest req,
+            [FromServices] CalendarDeleteService svc,
             CancellationToken ct) =>
-        {
-            var count = await svc.DeleteEventsAsync(req.Ids, ct);
-            return Results.Ok(ApiResponse<BatchDeleteResult>.Ok(new BatchDeleteResult(count)));
-        });
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.BatchDeleteEventsAsync(req.Ids, ct))));
 
         // Tasks
         group.MapGet("/tasks", async (
@@ -143,11 +139,14 @@ public class CalendarModule : IModule
 
         group.MapDelete("/tasks/{id:guid}", async (
             Guid id,
-            [FromServices] CalendarService svc, CancellationToken ct) =>
-        {
-            await svc.DeleteTaskAsync(id, ct);
-            return Results.Ok(ApiResponse<string>.Ok("deleted"));
-        });
+            [FromServices] CalendarDeleteService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.DeleteTaskAsync(id, ct))));
+
+        group.MapPost("/tasks/batch-delete", async (
+            [FromBody] BatchIdsRequest req,
+            [FromServices] CalendarDeleteService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.BatchDeleteTasksAsync(req.Ids, ct))));
 
         // Scheduling
         group.MapPost("/schedule", async (
