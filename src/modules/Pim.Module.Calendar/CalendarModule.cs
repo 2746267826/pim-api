@@ -95,7 +95,7 @@ public class CalendarModule : IModule
         });
 
         group.MapPut("/events/{id:guid}", async (
-            Guid id, [FromBody] CreateEventRequest req,
+            Guid id, [FromBody] UpdateEventRequest req,
             [FromServices] CalendarService svc, CancellationToken ct) =>
             Results.Ok(ApiResponse<EventResponse>.Ok(await svc.UpdateEventAsync(id, req, ct))));
 
@@ -136,7 +136,7 @@ public class CalendarModule : IModule
         });
 
         group.MapPut("/tasks/{id:guid}", async (
-            Guid id, [FromBody] CreateTaskRequest req,
+            Guid id, [FromBody] UpdateTaskRequest req,
             [FromServices] CalendarService svc, CancellationToken ct) =>
             Results.Ok(ApiResponse<TaskResponse>.Ok(await svc.UpdateTaskAsync(id, req, ct))));
 

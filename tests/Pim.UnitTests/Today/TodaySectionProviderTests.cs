@@ -78,7 +78,7 @@ public class TodaySectionProviderTests
             CancellationToken.None);
         await calendarService.UpdateTaskAsync(
             createdTask.Id,
-            new CreateTaskRequest(
+            new UpdateTaskRequest(
                 createdTask.CalendarId,
                 createdTask.Title,
                 createdTask.Description,

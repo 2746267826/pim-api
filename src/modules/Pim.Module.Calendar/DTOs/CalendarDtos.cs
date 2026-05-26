@@ -25,6 +25,19 @@ public record CreateEventRequest(
     string? TimeZoneId = null
 );
 
+public record UpdateEventRequest(
+    [Required] Guid CalendarId,
+    [Required][MaxLength(255)] string Title,
+    string? Description,
+    [MaxLength(500)] string? Location,
+    [Required] DateTimeOffset DtStart,
+    [Required] DateTimeOffset DtEnd,
+    string? RRule,
+    string? Uid = null,
+    bool? IsAllDay = null,
+    string? TimeZoneId = null
+);
+
 public record EventResponse(
     Guid Id, Guid CalendarId, string Uid, string Title,
     string? Description, string? Location,
@@ -35,7 +48,6 @@ public record EventResponse(
     string? TimeZoneId = null,
     string? SourceTimeZoneId = null,
     string? SourceUid = null,
-    string? SourceIcsComponent = null,
     string ExternalMetadataJson = "{}",
     string? RecurrenceId = null,
     string ExDatesJson = "[]",
@@ -43,6 +55,19 @@ public record EventResponse(
 );
 
 public record CreateTaskRequest(
+    Guid? CalendarId,
+    [Required][MaxLength(255)] string Title,
+    string? Description,
+    int Priority,
+    string? EstimatedDuration,
+    string? MinimumSegment,
+    DateTimeOffset? Due,
+    DateTimeOffset? DtStart,
+    string? Status = null,
+    DateTimeOffset? PlannedEnd = null
+);
+
+public record UpdateTaskRequest(
     Guid? CalendarId,
     [Required][MaxLength(255)] string Title,
     string? Description,

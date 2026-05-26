@@ -183,7 +183,7 @@ public class CalendarService
         return calendar;
     }
 
-    public async Task<EventResponse> UpdateEventAsync(Guid id, CreateEventRequest request, CancellationToken ct)
+    public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, CancellationToken ct)
     {
         var entity = await _db.Set<EventEntity>()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
@@ -195,8 +195,10 @@ public class CalendarService
         entity.DtStart = request.DtStart;
         entity.DtEnd = request.DtEnd;
         entity.RRule = request.RRule;
-        entity.IsAllDay = request.IsAllDay;
-        entity.TimeZoneId = request.TimeZoneId;
+        if (request.IsAllDay.HasValue)
+            entity.IsAllDay = request.IsAllDay.Value;
+        if (request.TimeZoneId is not null)
+            entity.TimeZoneId = request.TimeZoneId;
         entity.UpdatedAt = DateTimeOffset.UtcNow;
 
         await _db.SaveChangesAsync(ct);
@@ -277,7 +279,7 @@ public class CalendarService
         return MapTask(task);
     }
 
-    public async Task<TaskResponse> UpdateTaskAsync(Guid id, CreateTaskRequest request, CancellationToken ct)
+    public async Task<TaskResponse> UpdateTaskAsync(Guid id, UpdateTaskRequest request, CancellationToken ct)
     {
         var task = await _db.Set<TaskEntity>()
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
@@ -290,7 +292,8 @@ public class CalendarService
         task.EstimatedDuration = ParseDuration(request.EstimatedDuration);
         task.MinimumSegment = ParseDuration(request.MinimumSegment);
         task.DtStart = request.DtStart;
-        task.PlannedEnd = request.PlannedEnd;
+        if (request.PlannedEnd.HasValue)
+            task.PlannedEnd = request.PlannedEnd;
         task.CalendarId = request.CalendarId;
         if (request.Status is not null)
         {
@@ -341,8 +344,8 @@ public class CalendarService
         new(e.Id, e.CalendarId, e.Uid, e.Title, e.Description,
             e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source, null,
             e.IsAllDay, e.TimeZoneId, e.SourceTimeZoneId, e.SourceUid,
-            e.SourceIcsComponent, e.ExternalMetadataJson, e.RecurrenceId,
-            e.ExDatesJson, e.RecurrenceMetadataJson);
+            e.ExternalMetadataJson, e.RecurrenceId, e.ExDatesJson,
+            e.RecurrenceMetadataJson);
 
     private static EventResponse MapExpandedEvent(ExpandedEvent e) =>
         new(e.OccurrenceId, e.Entity.CalendarId, e.Entity.Uid,
@@ -351,8 +354,7 @@ public class CalendarService
             e.Entity.RRule, e.Entity.Status, e.Entity.Source,
             e.Entity.Id, e.Entity.IsAllDay, e.Entity.TimeZoneId,
             e.Entity.SourceTimeZoneId, e.Entity.SourceUid,
-            e.Entity.SourceIcsComponent, e.Entity.ExternalMetadataJson,
-            e.Entity.RecurrenceId, e.Entity.ExDatesJson,
+            e.Entity.ExternalMetadataJson, e.Entity.RecurrenceId, e.Entity.ExDatesJson,
             e.Entity.RecurrenceMetadataJson);
 
     private static string? FormatDuration(TimeSpan? duration) =>
