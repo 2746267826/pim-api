@@ -103,7 +103,20 @@ public class QuickNotesModule : IModule
             if (!request.HasFormContentType)
                 return Results.BadRequest(ApiResponse<string>.Error(400, "Expected multipart/form-data"));
 
-            var form = await request.ReadFormAsync(ct);
+            IFormCollection form;
+            try
+            {
+                form = await request.ReadFormAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is InvalidDataException or BadHttpRequestException or IOException)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, "Invalid multipart/form-data"));
+            }
+
             var file = form.Files.GetFile("file");
             if (file is null)
                 return Results.BadRequest(ApiResponse<string>.Error(400, "No file field"));
