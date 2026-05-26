@@ -1,49 +1,61 @@
-using System.ComponentModel.DataAnnotations;
+using Pim.Core.Common;
 
 namespace Pim.Module.QuickNotes.DTOs;
 
-public record CreateQuickNoteRequest(
-    [Required] string ContentMarkdown,
-    string? Source = null,
-    string? MetadataJson = null,
-    List<Guid>? AttachmentIds = null
-);
+public sealed record QuickNoteListItemDto(
+    Guid Id,
+    string ContentPreview,
+    string Status,
+    string Source,
+    int AttachmentCount,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? ArchivedAt);
 
-public record UpdateQuickNoteRequest(
-    [Required] string ContentMarkdown,
-    string? Status = null,
-    string? MetadataJson = null
-);
+public sealed record QuickNoteAttachmentDto(
+    Guid Id,
+    string FileName,
+    string ContentType,
+    long SizeBytes,
+    string DownloadUrl,
+    string? PreviewUrl,
+    DateTimeOffset CreatedAt);
 
-public record QuickNoteResponse(
+public sealed record QuickNoteDetailDto(
     Guid Id,
     string ContentMarkdown,
     string Status,
     string Source,
+    IReadOnlyList<QuickNoteAttachmentDto> Attachments,
     string MetadataJson,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? ArchivedAt,
-    List<QuickNoteAttachmentResponse> Attachments
-);
+    DateTimeOffset? ArchivedAt);
 
-public record QuickNoteAttachmentResponse(
+public sealed record CreateQuickNoteRequest(
+    string ContentMarkdown,
+    string? Source,
+    IReadOnlyList<Guid>? AttachmentIds);
+
+public sealed record UpdateQuickNoteRequest(
+    string ContentMarkdown,
+    string? Status,
+    IReadOnlyList<Guid>? AttachmentIds);
+
+public sealed record RestoreQuickNoteRequest(string Status);
+
+public sealed record QuickNoteAttachmentUploadDto(
     Guid Id,
-    Guid? QuickNoteId,
-    string StorageProvider,
-    string ObjectKey,
     string FileName,
     string ContentType,
     long SizeBytes,
-    string? ContentHash,
-    string MetadataJson,
-    DateTimeOffset CreatedAt
-);
+    string DownloadUrl,
+    string? PreviewUrl);
 
-public record QuickNoteUploadRequest(
-    [Required] string FileName,
-    [Required] string ContentType,
-    long SizeBytes,
-    string? ContentHash = null,
-    string? MetadataJson = null
-);
+public sealed record QuickNoteListQuery(
+    string? Status,
+    string? Search,
+    int Page,
+    int PageSize);
+
+public sealed record QuickNoteListResponse(PagedResult<QuickNoteListItemDto> Result);
