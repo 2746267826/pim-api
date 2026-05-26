@@ -31,6 +31,7 @@ public class CalendarModule : IModule
         services.AddScoped<OutlookSyncService>();
         services.AddScoped<CalendarAuditWriter>();
         services.AddScoped<CalendarDeleteService>();
+        services.AddScoped<CalendarRecycleBinService>();
 
         services.AddSingleton<ISearchProvider, CalendarSearchProvider>();
     }
@@ -64,6 +65,10 @@ public class CalendarModule : IModule
         group.MapDelete("/calendars/{id:guid}", async (
             Guid id, [FromServices] CalendarDeleteService svc, CancellationToken ct) =>
             Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.DeleteCalendarAsync(id, ct))));
+
+        group.MapPost("/calendars/{id:guid}/restore", async (
+            Guid id, [FromServices] CalendarRecycleBinService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.RestoreAsync("calendar", id, new CalendarRestoreRequest(), ct))));
 
         // Events
         group.MapGet("/events", async (
@@ -106,6 +111,13 @@ public class CalendarModule : IModule
             Guid id, [FromServices] CalendarDeleteService svc, CancellationToken ct) =>
             Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.DeleteEventAsync(id, ct))));
 
+        group.MapPost("/events/{id:guid}/restore", async (
+            Guid id,
+            [FromBody] CalendarRestoreRequest req,
+            [FromServices] CalendarRecycleBinService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.RestoreAsync("event", id, req, ct))));
+
         group.MapPost("/events/batch-delete", async (
             [FromBody] BatchIdsRequest req,
             [FromServices] CalendarDeleteService svc,
@@ -142,11 +154,46 @@ public class CalendarModule : IModule
             [FromServices] CalendarDeleteService svc, CancellationToken ct) =>
             Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.DeleteTaskAsync(id, ct))));
 
+        group.MapPost("/tasks/{id:guid}/restore", async (
+            Guid id,
+            [FromBody] CalendarRestoreRequest req,
+            [FromServices] CalendarRecycleBinService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.RestoreAsync("task", id, req, ct))));
+
         group.MapPost("/tasks/batch-delete", async (
             [FromBody] BatchIdsRequest req,
             [FromServices] CalendarDeleteService svc,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.BatchDeleteTasksAsync(req.Ids, ct))));
+
+        // Recycle bin
+        group.MapGet("/recycle-bin", async (
+            [FromQuery] string? type,
+            [FromQuery] string? search,
+            [FromQuery] DateTimeOffset? deletedFrom,
+            [FromQuery] DateTimeOffset? deletedTo,
+            [FromQuery] int? page,
+            [FromQuery] int? pageSize,
+            [FromServices] CalendarRecycleBinService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<PagedResult<CalendarRecycleBinItem>>.Ok(
+                await svc.ListAsync(type, search, deletedFrom, deletedTo, page ?? 1, pageSize ?? 50, ct))));
+
+        group.MapPost("/recycle-bin/{type}/{id:guid}/restore-preview", async (
+            string type,
+            Guid id,
+            [FromServices] CalendarRecycleBinService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarRestorePreviewResponse>.Ok(await svc.PreviewRestoreAsync(type, id, ct))));
+
+        group.MapPost("/recycle-bin/{type}/{id:guid}/restore", async (
+            string type,
+            Guid id,
+            [FromBody] CalendarRestoreRequest req,
+            [FromServices] CalendarRecycleBinService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.RestoreAsync(type, id, req, ct))));
 
         // Scheduling
         group.MapPost("/schedule", async (
