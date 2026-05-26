@@ -97,7 +97,6 @@ public sealed class QuickNoteAttachmentService(
             return Array.Empty<QuickNoteAttachmentEntity>();
 
         var attachments = await db.Set<QuickNoteAttachmentEntity>()
-            .IgnoreQueryFilters()
             .Where(a => ids.Contains(a.Id) && a.UserId == userId)
             .ToListAsync(ct);
 

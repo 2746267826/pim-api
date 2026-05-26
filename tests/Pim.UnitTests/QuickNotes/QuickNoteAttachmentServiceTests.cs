@@ -80,6 +80,61 @@ public class QuickNoteAttachmentServiceTests
     }
 
     [Fact]
+    public async Task CreateAsync_RejectsDeletedAttachment()
+    {
+        await using var db = CreateDb();
+        var storage = new FakeObjectStorage();
+        var attachments = CreateAttachmentService(db, UserId, storage);
+        await using var content = new MemoryStream(Encoding.UTF8.GetBytes("image-bytes"));
+        var uploaded = await attachments.UploadAsync(content, "deleted.png", "image/png", content.Length);
+        await attachments.DeleteAsync(uploaded.Id);
+        var notes = CreateNoteService(db, UserId, attachments);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => notes.CreateAsync(new CreateQuickNoteRequest("deleted", "web-page", [uploaded.Id])));
+
+        Assert.Equal(4005, error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_RejectsRebindingDeletedAttachmentFromMarkdownOrExplicitId()
+    {
+        await using var db = CreateDb();
+        var storage = new FakeObjectStorage();
+        var attachments = CreateAttachmentService(db, UserId, storage);
+        var notes = CreateNoteService(db, UserId, attachments);
+        await using var content = new MemoryStream(Encoding.UTF8.GetBytes("image-bytes"));
+        var uploaded = await attachments.UploadAsync(content, "removed.png", "image/png", content.Length);
+        var created = await notes.CreateAsync(new CreateQuickNoteRequest("with attachment", "web-page", [uploaded.Id]));
+
+        await notes.UpdateAsync(created.Id, new UpdateQuickNoteRequest("without attachment", null, []));
+
+        var deletedAt = await db.Set<QuickNoteAttachmentEntity>()
+            .IgnoreQueryFilters()
+            .Where(a => a.Id == uploaded.Id)
+            .Select(a => a.DeletedAt)
+            .SingleAsync();
+        Assert.NotNull(deletedAt);
+
+        var markdownError = await Assert.ThrowsAsync<DomainException>(
+            () => notes.UpdateAsync(
+                created.Id,
+                new UpdateQuickNoteRequest($"again ![removed]({uploaded.DownloadUrl})", null, null)));
+        var explicitError = await Assert.ThrowsAsync<DomainException>(
+            () => notes.UpdateAsync(
+                created.Id,
+                new UpdateQuickNoteRequest("again", null, [uploaded.Id])));
+
+        Assert.Equal(4005, markdownError.ErrorCode);
+        Assert.Equal(4005, explicitError.ErrorCode);
+        Assert.Equal(deletedAt, await db.Set<QuickNoteAttachmentEntity>()
+            .IgnoreQueryFilters()
+            .Where(a => a.Id == uploaded.Id)
+            .Select(a => a.DeletedAt)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task DownloadAsync_RejectsOtherUsersAttachment()
     {
         await using var db = CreateDb();
@@ -88,6 +143,21 @@ public class QuickNoteAttachmentServiceTests
         await using var content = new MemoryStream(Encoding.UTF8.GetBytes("image-bytes"));
         var uploaded = await otherAttachments.UploadAsync(content, "private.png", "image/png", content.Length);
         var attachments = CreateAttachmentService(db, UserId, storage);
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => attachments.DownloadAsync(uploaded.Id));
+
+        Assert.Equal(4006, error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task DownloadAsync_RejectsDeletedAttachment()
+    {
+        await using var db = CreateDb();
+        var storage = new FakeObjectStorage();
+        var attachments = CreateAttachmentService(db, UserId, storage);
+        await using var content = new MemoryStream(Encoding.UTF8.GetBytes("image-bytes"));
+        var uploaded = await attachments.UploadAsync(content, "deleted.png", "image/png", content.Length);
+        await attachments.DeleteAsync(uploaded.Id);
 
         var error = await Assert.ThrowsAsync<DomainException>(() => attachments.DownloadAsync(uploaded.Id));
 

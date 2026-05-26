@@ -162,7 +162,6 @@ public class QuickNoteService
         foreach (var attachment in bindableAttachments)
         {
             attachment.QuickNoteId = note.Id;
-            attachment.DeletedAt = null;
             if (!note.Attachments.Any(existing => existing.Id == attachment.Id))
                 note.Attachments.Add(attachment);
         }
