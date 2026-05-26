@@ -31,6 +31,7 @@ public class CalendarTaskPlanningTests
         Assert.False(planned.IsInbox);
         Assert.Equal(new DateTimeOffset(2026, 5, 26, 9, 0, 0, TimeSpan.Zero), planned.DtStart);
         Assert.Equal(new DateTimeOffset(2026, 5, 26, 10, 30, 0, TimeSpan.Zero), planned.PlannedEnd);
+        Assert.Equal("01:30:00", planned.EstimatedDuration);
         Assert.Empty(await db.Set<EventEntity>().ToListAsync());
     }
 
