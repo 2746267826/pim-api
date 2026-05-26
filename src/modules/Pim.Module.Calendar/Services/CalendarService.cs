@@ -256,6 +256,64 @@ public class CalendarService
         return tasks.Select(MapTask).ToList();
     }
 
+    public async Task<PagedResult<TaskResponse>> GetTasksPagedAsync(
+        bool? inbox,
+        string? search,
+        Guid? calendarId,
+        string? status,
+        int? priority,
+        DateTimeOffset? plannedFrom,
+        DateTimeOffset? plannedTo,
+        DateTimeOffset? dueFrom,
+        DateTimeOffset? dueTo,
+        int page = 1,
+        int pageSize = 50,
+        CancellationToken ct = default)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        var query = _db.Set<TaskEntity>()
+            .Where(t => t.UserId == UserId);
+
+        if (inbox.HasValue)
+            query = query.Where(t => t.IsInbox == inbox.Value);
+        if (!string.IsNullOrWhiteSpace(search))
+            query = query.Where(t => t.Title.Contains(search));
+        if (calendarId.HasValue)
+            query = query.Where(t => t.CalendarId == calendarId.Value);
+        if (!string.IsNullOrWhiteSpace(status))
+            query = query.Where(t => t.Status == status);
+        if (priority.HasValue)
+            query = query.Where(t => t.Priority == priority.Value);
+        if (plannedFrom.HasValue)
+            query = query.Where(t => t.DtStart >= plannedFrom.Value);
+        if (plannedTo.HasValue)
+            query = query.Where(t => t.DtStart <= plannedTo.Value);
+        if (dueFrom.HasValue)
+            query = query.Where(t => t.Due >= dueFrom.Value);
+        if (dueTo.HasValue)
+            query = query.Where(t => t.Due <= dueTo.Value);
+
+        var totalCount = await query.CountAsync(ct);
+        var totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);
+        var tasks = await query
+            .OrderBy(t => t.Status == "COMPLETED")
+            .ThenBy(t => t.Due == null)
+            .ThenBy(t => t.Due)
+            .ThenBy(t => t.SortOrder)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(ct);
+
+        return new PagedResult<TaskResponse>(
+            tasks.Select(MapTask).ToList(),
+            page,
+            pageSize,
+            totalCount,
+            totalPages);
+    }
+
     public async Task<TaskResponse> CreateTaskAsync(CreateTaskRequest request, CancellationToken ct)
     {
         var task = new TaskEntity
@@ -305,6 +363,87 @@ public class CalendarService
 
         await _db.SaveChangesAsync(ct);
         return MapTask(task);
+    }
+
+    public async Task<TaskResponse> PlanTaskAsync(Guid id, PlanTaskRequest request, CancellationToken ct = default)
+    {
+        var task = await _db.Set<TaskEntity>()
+            .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
+            ?? throw new DomainException(02004, "Task not found");
+
+        task.DtStart = request.PlannedStart;
+        task.PlannedEnd = request.PlannedEnd;
+        task.EstimatedDuration = ParseDuration(request.EstimatedDuration);
+        task.IsInbox = false;
+        task.UpdatedAt = DateTimeOffset.UtcNow;
+
+        await _db.SaveChangesAsync(ct);
+        return MapTask(task);
+    }
+
+    public async Task<CalendarOperationResult> BatchUpdateTasksAsync(
+        BatchTaskUpdateRequest request,
+        CancellationToken ct = default)
+    {
+        var ids = request.Ids?
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList() ?? new List<Guid>();
+        var operationId = Guid.NewGuid();
+
+        if (ids.Count == 0)
+        {
+            return new CalendarOperationResult(
+                "calendar.tasks.batch_update",
+                operationId,
+                0,
+                Array.Empty<Guid>(),
+                Array.Empty<CalendarOperationSample>(),
+                "Updated tasks");
+        }
+
+        var tasks = await _db.Set<TaskEntity>()
+            .Include(t => t.Calendar)
+            .Where(t => t.UserId == UserId && ids.Contains(t.Id))
+            .ToListAsync(ct);
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var task in tasks)
+        {
+            if (request.Status is not null)
+            {
+                task.Status = request.Status;
+                task.CompletedAt = request.Status == "COMPLETED" ? now : null;
+            }
+
+            if (request.Priority.HasValue)
+                task.Priority = request.Priority.Value;
+
+            if (request.CalendarId.HasValue)
+            {
+                task.CalendarId = request.CalendarId.Value;
+                task.IsInbox = false;
+            }
+
+            task.UpdatedAt = now;
+        }
+
+        if (tasks.Count > 0)
+            await _db.SaveChangesAsync(ct);
+
+        return new CalendarOperationResult(
+            "calendar.tasks.batch_update",
+            operationId,
+            tasks.Count,
+            tasks.Select(t => t.Id).ToList(),
+            tasks.Take(5).Select(t => new CalendarOperationSample(
+                t.Id,
+                "task",
+                t.Title,
+                t.DtStart,
+                t.PlannedEnd,
+                t.Calendar?.Name)).ToList(),
+            "Updated tasks");
     }
 
     public async Task MoveTaskAsync(Guid id, MoveTaskRequest request, CancellationToken ct)

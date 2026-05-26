@@ -127,8 +127,41 @@ public class CalendarModule : IModule
         // Tasks
         group.MapGet("/tasks", async (
             [FromQuery] bool? inbox,
-            [FromServices] CalendarService svc, CancellationToken ct) =>
-            Results.Ok(ApiResponse<List<TaskResponse>>.Ok(await svc.GetTasksAsync(inbox, ct))));
+            [FromQuery] string? search,
+            [FromQuery] Guid? calendarId,
+            [FromQuery] string? status,
+            [FromQuery] int? priority,
+            [FromQuery] DateTimeOffset? plannedFrom,
+            [FromQuery] DateTimeOffset? plannedTo,
+            [FromQuery] DateTimeOffset? dueFrom,
+            [FromQuery] DateTimeOffset? dueTo,
+            [FromQuery] int? page,
+            [FromQuery] int? pageSize,
+            [FromServices] CalendarService svc,
+            CancellationToken ct) =>
+        {
+            if (search is null && calendarId is null && status is null && priority is null
+                && plannedFrom is null && plannedTo is null && dueFrom is null && dueTo is null
+                && page is null && pageSize is null)
+            {
+                return Results.Ok(ApiResponse<List<TaskResponse>>.Ok(await svc.GetTasksAsync(inbox, ct)));
+            }
+
+            var result = await svc.GetTasksPagedAsync(
+                inbox,
+                search,
+                calendarId,
+                status,
+                priority,
+                plannedFrom,
+                plannedTo,
+                dueFrom,
+                dueTo,
+                page ?? 1,
+                pageSize ?? 50,
+                ct);
+            return Results.Ok(ApiResponse<PagedResult<TaskResponse>>.Ok(result));
+        });
 
         group.MapPost("/tasks", async (
             [FromBody] CreateTaskRequest req,
@@ -143,6 +176,13 @@ public class CalendarModule : IModule
             await svc.MoveTaskAsync(id, req, ct);
             return Results.Ok(ApiResponse<string>.Ok("moved"));
         });
+
+        group.MapPost("/tasks/{id:guid}/plan", async (
+            Guid id,
+            [FromBody] PlanTaskRequest req,
+            [FromServices] CalendarService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<TaskResponse>.Ok(await svc.PlanTaskAsync(id, req, ct))));
 
         group.MapPut("/tasks/{id:guid}", async (
             Guid id, [FromBody] UpdateTaskRequest req,
@@ -166,6 +206,12 @@ public class CalendarModule : IModule
             [FromServices] CalendarDeleteService svc,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.BatchDeleteTasksAsync(req.Ids, ct))));
+
+        group.MapPost("/tasks/batch-update", async (
+            [FromBody] BatchTaskUpdateRequest req,
+            [FromServices] CalendarService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.BatchUpdateTasksAsync(req, ct))));
 
         // Recycle bin
         group.MapGet("/recycle-bin", async (
