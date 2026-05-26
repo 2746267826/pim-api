@@ -36,4 +36,47 @@ public class QuickNoteMarkdownReferenceTests
         var single = Assert.Single(ids);
         Assert.Equal(id, single);
     }
+
+    [Fact]
+    public void ExtractAttachmentIds_IgnoresExternalAbsoluteUrlsWithLocalAttachmentPath()
+    {
+        var externalId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var localId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var markdown = $"""
+        [external](https://example.com/api/v1/quick-notes/attachments/{externalId}/download)
+        [local](/api/v1/quick-notes/attachments/{localId}/download)
+        """;
+
+        var ids = QuickNoteMarkdownReferences.ExtractAttachmentIds(markdown);
+
+        var single = Assert.Single(ids);
+        Assert.Equal(localId, single);
+    }
+
+    [Fact]
+    public void ExtractAttachmentIds_IgnoresUrlsWithDownloadSuffixes()
+    {
+        var invalidId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var localId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var markdown = $"""
+        [invalid](/api/v1/quick-notes/attachments/{invalidId}/download-extra)
+        [local](/api/v1/quick-notes/attachments/{localId}/download)
+        """;
+
+        var ids = QuickNoteMarkdownReferences.ExtractAttachmentIds(markdown);
+
+        var single = Assert.Single(ids);
+        Assert.Equal(localId, single);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ExtractAttachmentIds_ReturnsEmptyForBlankMarkdown(string? markdown)
+    {
+        var ids = QuickNoteMarkdownReferences.ExtractAttachmentIds(markdown);
+
+        Assert.Empty(ids);
+    }
 }

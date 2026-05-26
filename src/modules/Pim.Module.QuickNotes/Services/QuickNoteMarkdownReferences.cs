@@ -23,6 +23,6 @@ public static partial class QuickNoteMarkdownReferences
         return ids;
     }
 
-    [GeneratedRegex(@"/api/v1/quick-notes/attachments/(?<id>[0-9a-fA-F-]{36})/download", RegexOptions.Compiled)]
+    [GeneratedRegex(@"(?:^|[\s(])(?<url>/api/v1/quick-notes/attachments/(?<id>[0-9a-fA-F-]{36})/download)(?=$|[\s)])", RegexOptions.Compiled)]
     private static partial Regex AttachmentUrlRegex();
 }
