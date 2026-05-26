@@ -20,7 +20,9 @@ public record CreateEventRequest(
     [Required] DateTimeOffset DtStart,
     [Required] DateTimeOffset DtEnd,
     string? RRule,
-    string? Uid = null
+    string? Uid = null,
+    bool IsAllDay = false,
+    string? TimeZoneId = null
 );
 
 public record EventResponse(
@@ -28,7 +30,15 @@ public record EventResponse(
     string? Description, string? Location,
     DateTimeOffset DtStart, DateTimeOffset DtEnd,
     string? RRule, string Status, string Source,
-    Guid? OriginalEventId = null
+    Guid? OriginalEventId = null,
+    bool IsAllDay = false,
+    string? TimeZoneId = null,
+    string? SourceTimeZoneId = null,
+    string? SourceUid = null,
+    string ExternalMetadataJson = "{}",
+    string? RecurrenceId = null,
+    string ExDatesJson = "[]",
+    string RecurrenceMetadataJson = "{}"
 );
 
 public record CreateTaskRequest(
@@ -40,7 +50,8 @@ public record CreateTaskRequest(
     string? MinimumSegment,
     DateTimeOffset? Due,
     DateTimeOffset? DtStart,
-    string? Status = null
+    string? Status = null,
+    DateTimeOffset? PlannedEnd = null
 );
 
 public record TaskResponse(
@@ -49,13 +60,15 @@ public record TaskResponse(
     string? EstimatedDuration, string? MinimumSegment,
     DateTimeOffset? DtStart, DateTimeOffset? Due,
     string Status, bool IsInbox, int SortOrder,
-    List<TaskResponse> SubTasks
+    List<TaskResponse> SubTasks,
+    DateTimeOffset? PlannedEnd = null
 );
 
 public record MoveTaskRequest(
     DateTimeOffset? ScheduledStart,
     TimeSpan? Duration,
-    int? NewSortOrder
+    int? NewSortOrder,
+    DateTimeOffset? PlannedEnd = null
 );
 
 public record ScheduleRequest(

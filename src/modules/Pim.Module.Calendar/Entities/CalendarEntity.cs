@@ -16,6 +16,8 @@ public class CalendarEntity : ISoftDeletable
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("updated_at")] public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("deleted_at")] public DateTimeOffset? DeletedAt { get; set; }
+    [Column("deleted_by_operation_id")] public Guid? DeletedByOperationId { get; set; }
+    [Column("deleted_by_operation_kind")][MaxLength(64)] public string? DeletedByOperationKind { get; set; }
 
     public ICollection<EventEntity> Events { get; set; } = new List<EventEntity>();
     public ICollection<TaskEntity> Tasks { get; set; } = new List<TaskEntity>();

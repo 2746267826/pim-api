@@ -148,7 +148,9 @@ public class CalendarService
             Location = request.Location,
             DtStart = request.DtStart,
             DtEnd = request.DtEnd,
-            RRule = request.RRule
+            RRule = request.RRule,
+            IsAllDay = request.IsAllDay,
+            TimeZoneId = request.TimeZoneId
         };
 
         _db.Set<EventEntity>().Add(entity);
@@ -193,6 +195,8 @@ public class CalendarService
         entity.DtStart = request.DtStart;
         entity.DtEnd = request.DtEnd;
         entity.RRule = request.RRule;
+        entity.IsAllDay = request.IsAllDay;
+        entity.TimeZoneId = request.TimeZoneId;
         entity.UpdatedAt = DateTimeOffset.UtcNow;
 
         await _db.SaveChangesAsync(ct);
@@ -264,7 +268,8 @@ public class CalendarService
             EstimatedDuration = ParseDuration(request.EstimatedDuration),
             MinimumSegment = ParseDuration(request.MinimumSegment),
             IsInbox = request.CalendarId is null && !request.DtStart.HasValue,
-            DtStart = request.DtStart
+            DtStart = request.DtStart,
+            PlannedEnd = request.PlannedEnd
         };
 
         _db.Set<TaskEntity>().Add(task);
@@ -285,6 +290,7 @@ public class CalendarService
         task.EstimatedDuration = ParseDuration(request.EstimatedDuration);
         task.MinimumSegment = ParseDuration(request.MinimumSegment);
         task.DtStart = request.DtStart;
+        task.PlannedEnd = request.PlannedEnd;
         task.CalendarId = request.CalendarId;
         if (request.Status is not null)
         {
@@ -312,6 +318,11 @@ public class CalendarService
         if (request.NewSortOrder.HasValue)
             task.SortOrder = request.NewSortOrder.Value;
 
+        if (request.PlannedEnd.HasValue)
+            task.PlannedEnd = request.PlannedEnd;
+        else if (request.Duration.HasValue && request.ScheduledStart.HasValue)
+            task.PlannedEnd = request.ScheduledStart.Value.Add(request.Duration.Value);
+
         task.UpdatedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
     }
@@ -328,14 +339,20 @@ public class CalendarService
 
     private static EventResponse MapEvent(EventEntity e) =>
         new(e.Id, e.CalendarId, e.Uid, e.Title, e.Description,
-            e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source, null);
+            e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source, null,
+            e.IsAllDay, e.TimeZoneId, e.SourceTimeZoneId, e.SourceUid,
+            e.ExternalMetadataJson, e.RecurrenceId, e.ExDatesJson,
+            e.RecurrenceMetadataJson);
 
     private static EventResponse MapExpandedEvent(ExpandedEvent e) =>
         new(e.OccurrenceId, e.Entity.CalendarId, e.Entity.Uid,
             e.Entity.Title, e.Entity.Description,
             e.Entity.Location, e.OccurrenceStart, e.OccurrenceEnd,
             e.Entity.RRule, e.Entity.Status, e.Entity.Source,
-            e.Entity.Id);
+            e.Entity.Id, e.Entity.IsAllDay, e.Entity.TimeZoneId,
+            e.Entity.SourceTimeZoneId, e.Entity.SourceUid,
+            e.Entity.ExternalMetadataJson, e.Entity.RecurrenceId,
+            e.Entity.ExDatesJson, e.Entity.RecurrenceMetadataJson);
 
     private static string? FormatDuration(TimeSpan? duration) =>
         duration is not null ? duration.Value.ToString("c") : null;
@@ -353,5 +370,5 @@ public class CalendarService
             FormatDuration(t.EstimatedDuration),
             FormatDuration(t.MinimumSegment),
             t.DtStart, t.Due, t.Status, t.IsInbox, t.SortOrder,
-            t.SubTasks.Select(MapTask).ToList());
+            t.SubTasks.Select(MapTask).ToList(), t.PlannedEnd);
 }

@@ -17,6 +17,9 @@ public class TaskEntity : ISoftDeletable
     [Column("estimated_duration")] public TimeSpan? EstimatedDuration { get; set; }
     [Column("minimum_segment")] public TimeSpan? MinimumSegment { get; set; }
     [Column("dtstart")] public DateTimeOffset? DtStart { get; set; }
+    [Column("planned_end")] public DateTimeOffset? PlannedEnd { get; set; }
+    [Column("deleted_by_operation_id")] public Guid? DeletedByOperationId { get; set; }
+    [Column("deleted_by_operation_kind")][MaxLength(64)] public string? DeletedByOperationKind { get; set; }
     [Column("due")] public DateTimeOffset? Due { get; set; }
     [Column("completed_at")] public DateTimeOffset? CompletedAt { get; set; }
     [Column("status")][MaxLength(20)] public string Status { get; set; } = "NEEDS-ACTION";

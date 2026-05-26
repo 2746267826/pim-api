@@ -9,6 +9,8 @@ public class CalendarEntityConfiguration : IEntityTypeConfiguration<CalendarEnti
     {
         builder.HasQueryFilter(c => c.DeletedAt == null);
         builder.HasIndex(c => c.UserId);
+        builder.HasIndex(c => new { c.UserId, c.DeletedAt });
+        builder.HasIndex(c => c.DeletedByOperationId);
     }
 }
 
@@ -17,8 +19,14 @@ public class EventEntityConfiguration : IEntityTypeConfiguration<EventEntity>
     public void Configure(EntityTypeBuilder<EventEntity> builder)
     {
         builder.HasQueryFilter(e => e.DeletedAt == null);
+        builder.Property(e => e.ExternalMetadataJson).HasDefaultValue("{}");
+        builder.Property(e => e.ExDatesJson).HasDefaultValue("[]");
+        builder.Property(e => e.RecurrenceMetadataJson).HasDefaultValue("{}");
         builder.HasIndex(e => e.CalendarId);
         builder.HasIndex(e => e.Uid);
+        builder.HasIndex(e => e.SourceUid);
+        builder.HasIndex(e => new { e.DeletedAt, e.DtStart });
+        builder.HasIndex(e => e.DeletedByOperationId);
         builder.HasOne(e => e.Calendar)
             .WithMany(c => c.Events)
             .HasForeignKey(e => e.CalendarId);
@@ -33,6 +41,9 @@ public class TaskEntityConfiguration : IEntityTypeConfiguration<TaskEntity>
         builder.HasIndex(t => t.UserId);
         builder.HasIndex(t => new { t.UserId, t.CalendarId });
         builder.HasIndex(t => t.Status);
+        builder.HasIndex(t => new { t.UserId, t.DeletedAt });
+        builder.HasIndex(t => new { t.UserId, t.DtStart, t.PlannedEnd });
+        builder.HasIndex(t => t.DeletedByOperationId);
         builder.HasOne(t => t.Calendar)
             .WithMany(c => c.Tasks)
             .HasForeignKey(t => t.CalendarId);
