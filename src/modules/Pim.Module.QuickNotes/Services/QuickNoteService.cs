@@ -17,12 +17,18 @@ public class QuickNoteService
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly IAuditLogService _auditLog;
+    private readonly QuickNoteAttachmentService _attachments;
 
-    public QuickNoteService(PimDbContext db, ICurrentUserService currentUser, IAuditLogService auditLog)
+    public QuickNoteService(
+        PimDbContext db,
+        ICurrentUserService currentUser,
+        IAuditLogService auditLog,
+        QuickNoteAttachmentService attachments)
     {
         _db = db;
         _currentUser = currentUser;
         _auditLog = auditLog;
+        _attachments = attachments;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(1002, "Not authenticated");
@@ -99,6 +105,8 @@ public class QuickNoteService
     {
         var userId = UserId;
         var now = DateTimeOffset.UtcNow;
+        var attachmentIds = MergeAttachmentIds(request.AttachmentIds, request.ContentMarkdown);
+        var bindableAttachments = await _attachments.LoadBindableAttachmentsAsync(attachmentIds, null, ct);
         var note = new QuickNoteEntity
         {
             UserId = userId,
@@ -110,6 +118,13 @@ public class QuickNoteService
         };
 
         _db.Set<QuickNoteEntity>().Add(note);
+
+        foreach (var attachment in bindableAttachments)
+        {
+            attachment.QuickNoteId = note.Id;
+            note.Attachments.Add(attachment);
+        }
+
         await _db.SaveChangesAsync(ct);
 
         await RecordAuditAsync("quick_notes.create", note.Id, userId, ct);
@@ -135,6 +150,22 @@ public class QuickNoteService
 
         note.ContentMarkdown = request.ContentMarkdown ?? string.Empty;
         note.UpdatedAt = DateTimeOffset.UtcNow;
+
+        var attachmentIds = MergeAttachmentIds(request.AttachmentIds, request.ContentMarkdown);
+        var bindableAttachments = await _attachments.LoadBindableAttachmentsAsync(attachmentIds, note.Id, ct);
+        var attachmentIdSet = attachmentIds.ToHashSet();
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var attachment in note.Attachments.Where(attachment => !attachmentIdSet.Contains(attachment.Id)))
+            attachment.DeletedAt = now;
+
+        foreach (var attachment in bindableAttachments)
+        {
+            attachment.QuickNoteId = note.Id;
+            attachment.DeletedAt = null;
+            if (!note.Attachments.Any(existing => existing.Id == attachment.Id))
+                note.Attachments.Add(attachment);
+        }
 
         await _db.SaveChangesAsync(ct);
         await RecordAuditAsync("quick_notes.update", note.Id, userId, ct);
@@ -256,6 +287,29 @@ public class QuickNoteService
             .Trim();
 
         return preview.Length <= 140 ? preview : preview[..140];
+    }
+
+    private static IReadOnlyList<Guid> MergeAttachmentIds(IReadOnlyList<Guid>? explicitIds, string? markdown)
+    {
+        var merged = new List<Guid>();
+        var seen = new HashSet<Guid>();
+
+        if (explicitIds is not null)
+        {
+            foreach (var id in explicitIds)
+            {
+                if (seen.Add(id))
+                    merged.Add(id);
+            }
+        }
+
+        foreach (var id in QuickNoteMarkdownReferences.ExtractAttachmentIds(markdown))
+        {
+            if (seen.Add(id))
+                merged.Add(id);
+        }
+
+        return merged;
     }
 
     private static QuickNoteDetailDto MapDetail(QuickNoteEntity note)

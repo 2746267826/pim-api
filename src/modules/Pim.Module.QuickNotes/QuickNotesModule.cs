@@ -16,6 +16,8 @@ public class QuickNotesModule : IModule
     public void RegisterServices(IServiceCollection services, IConfiguration configuration)
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
+        services.AddScoped<IQuickNoteObjectStorage, MinioQuickNoteObjectStorage>();
+        services.AddScoped<QuickNoteAttachmentService>();
         services.AddScoped<QuickNoteService>();
     }
 

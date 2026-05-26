@@ -118,11 +118,32 @@ public class QuickNoteServiceTests
     }
 
     private static QuickNoteService CreateService(PimDbContext db, Guid userId)
-        => new(db, new FixedCurrentUserService(userId), new AuditLogService(db));
+    {
+        var currentUser = new FixedCurrentUserService(userId);
+        var attachments = new QuickNoteAttachmentService(db, currentUser, new FakeObjectStorage());
+        return new QuickNoteService(db, currentUser, new AuditLogService(db), attachments);
+    }
 
     private sealed class FixedCurrentUserService(Guid userId) : ICurrentUserService
     {
         public Guid? UserId { get; } = userId;
         public string? Role => "user";
+    }
+
+    private sealed class FakeObjectStorage : IQuickNoteObjectStorage
+    {
+        public Task<string> StoreAsync(
+            string objectKey,
+            Stream content,
+            string contentType,
+            long sizeBytes,
+            CancellationToken ct = default)
+            => Task.FromResult(objectKey);
+
+        public Task<Stream> OpenReadAsync(string objectKey, CancellationToken ct = default)
+            => Task.FromResult<Stream>(new MemoryStream());
+
+        public Task DeleteAsync(string objectKey, CancellationToken ct = default)
+            => Task.CompletedTask;
     }
 }
