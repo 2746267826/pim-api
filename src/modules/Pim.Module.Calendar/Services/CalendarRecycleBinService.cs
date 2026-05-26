@@ -138,6 +138,9 @@ public sealed class CalendarRecycleBinService
         CancellationToken ct = default)
     {
         var normalizedType = NormalizeType(type);
+        if (request.RestoreAsCopy && normalizedType is "calendar" or "task-book")
+            throw new DomainException(02022, "restore-as-copy is only supported for events/tasks.");
+
         var preview = await BuildPreviewAsync(normalizedType, id, ct);
         if (preview.Conflicts.Count > 0 && !request.RestoreAsCopy)
             throw new DomainException(02020, "Restore has conflicts");
@@ -234,6 +237,8 @@ public sealed class CalendarRecycleBinService
         CancellationToken ct)
     {
         var evt = await LoadDeletedEventAsync(id, ct);
+        EnsureParentBookActive(evt.Calendar);
+
         if (restoreAsCopy)
         {
             evt.Uid = $"{Guid.NewGuid()}@pim";
@@ -259,6 +264,9 @@ public sealed class CalendarRecycleBinService
         CancellationToken ct)
     {
         var task = await LoadDeletedTaskAsync(id, ct);
+        if (task.Calendar is not null)
+            EnsureParentBookActive(task.Calendar);
+
         if (restoreAsCopy)
             task.Uid = $"{Guid.NewGuid()}@pim";
 
@@ -529,6 +537,12 @@ public sealed class CalendarRecycleBinService
         if (deleted.SourceUid != null && active.SourceUid == deleted.SourceUid)
             return "same-source-uid";
         return "same-title-time";
+    }
+
+    private static void EnsureParentBookActive(CalendarEntity calendar)
+    {
+        if (calendar.DeletedAt is not null)
+            throw new DomainException(02023, "Restore the parent book first.");
     }
 
     private static IReadOnlyDictionary<string, string> Metadata(Guid operationId, string targetType, int affectedCount)

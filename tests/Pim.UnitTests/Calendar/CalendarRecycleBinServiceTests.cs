@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Operations;
@@ -99,6 +100,72 @@ public class CalendarRecycleBinServiceTests
         Assert.Null(restoredChild.DeletedAt);
         Assert.NotNull(stillDeletedChild.DeletedAt);
         Assert.Equal(earlierOperationId, stillDeletedChild.DeletedByOperationId);
+    }
+
+    [Fact]
+    public async Task RestoreCalendarAsCopy_ThrowsDomainError()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "Work", "calendar", deletedAt: DateTimeOffset.UtcNow.AddHours(-1));
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => service.RestoreAsync("calendar", calendar.Id, new CalendarRestoreRequest(RestoreAsCopy: true)));
+
+        Assert.Contains("restore-as-copy is only supported for events/tasks", error.Message);
+    }
+
+    [Fact]
+    public async Task RestoreTaskBookAsCopy_ThrowsDomainError()
+    {
+        await using var db = CreateDb();
+        var taskBook = SeedCalendar(db, "Tasks", "task", deletedAt: DateTimeOffset.UtcNow.AddHours(-1));
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => service.RestoreAsync("task-book", taskBook.Id, new CalendarRestoreRequest(RestoreAsCopy: true)));
+
+        Assert.Contains("restore-as-copy is only supported for events/tasks", error.Message);
+    }
+
+    [Fact]
+    public async Task RestoreEvent_WhenParentCalendarDeleted_ThrowsDomainError()
+    {
+        await using var db = CreateDb();
+        var operationId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var calendar = SeedCalendar(db, "Work", "calendar", deletedAt: DateTimeOffset.UtcNow.AddHours(-1), operationId: operationId);
+        var evt = SeedEvent(db, calendar, "Deleted with book", deletedAt: DateTimeOffset.UtcNow.AddHours(-1), operationId: operationId);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var normalError = await Assert.ThrowsAsync<DomainException>(
+            () => service.RestoreAsync("event", evt.Id, new CalendarRestoreRequest()));
+        var copyError = await Assert.ThrowsAsync<DomainException>(
+            () => service.RestoreAsync("event", evt.Id, new CalendarRestoreRequest(RestoreAsCopy: true)));
+
+        Assert.Contains("Restore the parent book first", normalError.Message);
+        Assert.Contains("Restore the parent book first", copyError.Message);
+    }
+
+    [Fact]
+    public async Task RestoreTask_WhenParentTaskBookDeleted_ThrowsDomainError()
+    {
+        await using var db = CreateDb();
+        var operationId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var taskBook = SeedCalendar(db, "Tasks", "task", deletedAt: DateTimeOffset.UtcNow.AddHours(-1), operationId: operationId);
+        var task = SeedTask(db, "Deleted with book", taskBook, deletedAt: DateTimeOffset.UtcNow.AddHours(-1), operationId: operationId);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var normalError = await Assert.ThrowsAsync<DomainException>(
+            () => service.RestoreAsync("task", task.Id, new CalendarRestoreRequest()));
+        var copyError = await Assert.ThrowsAsync<DomainException>(
+            () => service.RestoreAsync("task", task.Id, new CalendarRestoreRequest(RestoreAsCopy: true)));
+
+        Assert.Contains("Restore the parent book first", normalError.Message);
+        Assert.Contains("Restore the parent book first", copyError.Message);
     }
 
     private static PimDbContext CreateDb()

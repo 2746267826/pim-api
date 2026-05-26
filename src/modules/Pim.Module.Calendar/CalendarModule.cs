@@ -113,10 +113,10 @@ public class CalendarModule : IModule
 
         group.MapPost("/events/{id:guid}/restore", async (
             Guid id,
-            [FromBody] CalendarRestoreRequest req,
+            [FromBody] CalendarRestoreRequest? req,
             [FromServices] CalendarRecycleBinService svc,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.RestoreAsync("event", id, req, ct))));
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.RestoreAsync("event", id, req ?? new CalendarRestoreRequest(), ct))));
 
         group.MapPost("/events/batch-delete", async (
             [FromBody] BatchIdsRequest req,
@@ -156,10 +156,10 @@ public class CalendarModule : IModule
 
         group.MapPost("/tasks/{id:guid}/restore", async (
             Guid id,
-            [FromBody] CalendarRestoreRequest req,
+            [FromBody] CalendarRestoreRequest? req,
             [FromServices] CalendarRecycleBinService svc,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.RestoreAsync("task", id, req, ct))));
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.RestoreAsync("task", id, req ?? new CalendarRestoreRequest(), ct))));
 
         group.MapPost("/tasks/batch-delete", async (
             [FromBody] BatchIdsRequest req,
@@ -190,10 +190,10 @@ public class CalendarModule : IModule
         group.MapPost("/recycle-bin/{type}/{id:guid}/restore", async (
             string type,
             Guid id,
-            [FromBody] CalendarRestoreRequest req,
+            [FromBody] CalendarRestoreRequest? req,
             [FromServices] CalendarRecycleBinService svc,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.RestoreAsync(type, id, req, ct))));
+            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.RestoreAsync(type, id, req ?? new CalendarRestoreRequest(), ct))));
 
         // Scheduling
         group.MapPost("/schedule", async (
