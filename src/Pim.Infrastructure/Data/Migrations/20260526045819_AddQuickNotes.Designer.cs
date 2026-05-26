@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Pim.Infrastructure.Data;
@@ -11,9 +12,11 @@ using Pim.Infrastructure.Data;
 namespace Pim.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(PimDbContext))]
-    partial class PimDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260526045819_AddQuickNotes")]
+    partial class AddQuickNotes
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -941,6 +944,22 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("audit_id");
 
+                    b.Property<string>("CategoryColor")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(7)
+                        .HasColumnType("character varying(7)")
+                        .HasDefaultValue("#64748b")
+                        .HasColumnName("category_color");
+
+                    b.Property<string>("CategoryName")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasDefaultValue("其他")
+                        .HasColumnName("category_name");
+
                     b.Property<DateTimeOffset>("ClassifiedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -952,30 +971,14 @@ namespace Pim.Infrastructure.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
-                        .HasColumnName("classifier_version")
-                        .HasDefaultValue("local-v1");
-
-                    b.Property<string>("CategoryColor")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(7)
-                        .HasColumnType("character varying(7)")
-                        .HasColumnName("category_color")
-                        .HasDefaultValue("#64748b");
-
-                    b.Property<string>("CategoryName")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("category_name")
-                        .HasDefaultValue("其他");
+                        .HasDefaultValue("local-v1")
+                        .HasColumnName("classifier_version");
 
                     b.Property<double>("Confidence")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("double precision")
-                        .HasColumnName("confidence")
-                        .HasDefaultValue(0.2);
+                        .HasDefaultValue(0.20000000000000001)
+                        .HasColumnName("confidence");
 
                     b.Property<string>("DeviceId")
                         .IsRequired()
@@ -991,8 +994,8 @@ namespace Pim.Infrastructure.Data.Migrations
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasColumnType("text")
-                        .HasColumnName("explanation")
-                        .HasDefaultValue("No rule or heuristic matched.");
+                        .HasDefaultValue("No rule or heuristic matched.")
+                        .HasColumnName("explanation");
 
                     b.Property<string>("ProjectTag")
                         .HasMaxLength(128)
@@ -1016,8 +1019,8 @@ namespace Pim.Infrastructure.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
-                        .HasColumnName("source")
-                        .HasDefaultValue("fallback");
+                        .HasDefaultValue("fallback")
+                        .HasColumnName("source");
 
                     b.Property<string>("SourceEventIdsJson")
                         .IsRequired()
@@ -1075,16 +1078,16 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Property<int>("RecommendedMinimumClassificationDurationMinutes")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("integer")
-                        .HasColumnName("recommended_minimum_classification_duration_minutes")
-                        .HasDefaultValue(5);
+                        .HasDefaultValue(5)
+                        .HasColumnName("recommended_minimum_classification_duration_minutes");
 
                     b.Property<string>("SettingsKey")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
-                        .HasColumnName("settings_key")
-                        .HasDefaultValue("default");
+                        .HasDefaultValue("default")
+                        .HasColumnName("settings_key");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .ValueGeneratedOnAdd()
