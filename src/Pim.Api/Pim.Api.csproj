@@ -5,6 +5,7 @@
     <ProjectReference Include="..\Pim.Infrastructure\Pim.Infrastructure.csproj" />
     <ProjectReference Include="..\modules\Pim.Module.Calendar\Pim.Module.Calendar.csproj" />
     <ProjectReference Include="..\modules\Pim.Module.PcTracker\Pim.Module.PcTracker.csproj" />
+    <ProjectReference Include="..\modules\Pim.Module.QuickNotes\Pim.Module.QuickNotes.csproj" />
   </ItemGroup>
 
   <ItemGroup>
