@@ -118,15 +118,22 @@ public sealed class CalendarDeleteService
         return Result("calendar.events.delete", operationId, new[] { evt }, "Deleted event.");
     }
 
-    public async Task<CalendarOperationResult> BatchDeleteEventsAsync(IEnumerable<Guid> ids, CancellationToken ct = default)
+    public async Task<CalendarOperationResult> BatchDeleteEventsAsync(IEnumerable<Guid>? ids, CancellationToken ct = default)
     {
-        var idSet = ids.Distinct().ToList();
+        var idSet = NormalizeIds(ids);
+        var operationId = Guid.NewGuid();
+        var operation = "calendar.events.batch_delete";
+        if (idSet.Count == 0)
+            return EmptyResult(operation, operationId, "No events deleted.");
+
         var events = await _db.Set<EventEntity>()
             .Include(e => e.Calendar)
             .Where(e => idSet.Contains(e.Id) && e.Calendar.UserId == UserId)
             .OrderBy(e => e.DtStart)
             .ToListAsync(ct);
-        var operationId = Guid.NewGuid();
+        if (events.Count == 0)
+            return EmptyResult(operation, operationId, "No events deleted.");
+
         var deletedAt = DateTimeOffset.UtcNow;
         var operationKind = "batch-event";
 
@@ -138,13 +145,13 @@ public sealed class CalendarDeleteService
 
         await _audit.RecordSuccessAsync(
             UserId,
-            "calendar.events.batch_delete",
+            operation,
             "calendar_event",
             operationId,
             Metadata(operationId, operationKind, null, events.Count),
             ct);
 
-        return Result("calendar.events.batch_delete", operationId, events, "Deleted events.");
+        return Result(operation, operationId, events, "Deleted events.");
     }
 
     public async Task<CalendarOperationResult> DeleteTaskAsync(Guid taskId, CancellationToken ct = default)
@@ -167,15 +174,22 @@ public sealed class CalendarDeleteService
         return Result("calendar.tasks.delete", operationId, new[] { task }, "Deleted task.");
     }
 
-    public async Task<CalendarOperationResult> BatchDeleteTasksAsync(IEnumerable<Guid> ids, CancellationToken ct = default)
+    public async Task<CalendarOperationResult> BatchDeleteTasksAsync(IEnumerable<Guid>? ids, CancellationToken ct = default)
     {
-        var idSet = ids.Distinct().ToList();
+        var idSet = NormalizeIds(ids);
+        var operationId = Guid.NewGuid();
+        var operation = "calendar.tasks.batch_delete";
+        if (idSet.Count == 0)
+            return EmptyResult(operation, operationId, "No tasks deleted.");
+
         var tasks = await _db.Set<TaskEntity>()
             .Include(t => t.Calendar)
             .Where(t => idSet.Contains(t.Id) && t.UserId == UserId)
             .OrderBy(t => t.Title)
             .ToListAsync(ct);
-        var operationId = Guid.NewGuid();
+        if (tasks.Count == 0)
+            return EmptyResult(operation, operationId, "No tasks deleted.");
+
         var deletedAt = DateTimeOffset.UtcNow;
         var operationKind = "batch-task";
 
@@ -187,13 +201,13 @@ public sealed class CalendarDeleteService
 
         await _audit.RecordSuccessAsync(
             UserId,
-            "calendar.tasks.batch_delete",
+            operation,
             "calendar_task",
             operationId,
             Metadata(operationId, operationKind, null, tasks.Count),
             ct);
 
-        return Result("calendar.tasks.batch_delete", operationId, tasks, "Deleted tasks.");
+        return Result(operation, operationId, tasks, "Deleted tasks.");
     }
 
     private async Task<CalendarEntity> LoadCalendarAsync(Guid calendarId, CancellationToken ct)
@@ -316,6 +330,12 @@ public sealed class CalendarDeleteService
                 t.PlannedEnd,
                 t.Calendar?.Name)).ToList(),
             message);
+
+    private static CalendarOperationResult EmptyResult(string operation, Guid operationId, string message)
+        => new(operation, operationId, 0, Array.Empty<Guid>(), Array.Empty<CalendarOperationSample>(), message);
+
+    private static IReadOnlyList<Guid> NormalizeIds(IEnumerable<Guid>? ids)
+        => ids?.Where(id => id != Guid.Empty).Distinct().ToList() ?? new List<Guid>();
 
     private static IReadOnlyDictionary<string, string> Metadata(
         Guid operationId,

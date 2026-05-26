@@ -79,6 +79,71 @@ public class CalendarDeleteServiceTests
         Assert.All(deleted, task => Assert.Equal("batch-task", task.DeletedByOperationKind));
     }
 
+    [Fact]
+    public async Task BatchDeleteEventsAsync_EmptyIdsReturnsZeroWithoutAudit()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        var result = await service.BatchDeleteEventsAsync(Array.Empty<Guid>());
+
+        Assert.Equal(0, result.AffectedCount);
+        Assert.Empty(result.AffectedIds);
+        Assert.Empty(result.Samples);
+        Assert.Empty(await db.AuditLogs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task BatchDeleteEventsAsync_NullIdsReturnsZeroWithoutAudit()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        var result = await service.BatchDeleteEventsAsync(null!);
+
+        Assert.Equal(0, result.AffectedCount);
+        Assert.Empty(result.AffectedIds);
+        Assert.Empty(result.Samples);
+        Assert.Empty(await db.AuditLogs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task BatchDeleteTasksAsync_UnknownIdsReturnsZeroWithoutAudit()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        var result = await service.BatchDeleteTasksAsync(new[] { Guid.NewGuid() });
+
+        Assert.Equal(0, result.AffectedCount);
+        Assert.Empty(result.AffectedIds);
+        Assert.Empty(result.Samples);
+        Assert.Empty(await db.AuditLogs.ToListAsync());
+    }
+
+    [Fact]
+    public async Task BatchDeleteTasksAsync_AlreadyDeletedTaskReturnsZeroWithoutRetaggingOrAudit()
+    {
+        await using var db = CreateDb();
+        var task = SeedTask(db, "Earlier task");
+        var originalOperationId = Guid.Parse("99999999-9999-9999-9999-999999999999");
+        task.DeletedAt = DateTimeOffset.UtcNow.AddDays(-1);
+        task.DeletedByOperationId = originalOperationId;
+        task.DeletedByOperationKind = "single-task";
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var result = await service.BatchDeleteTasksAsync(new[] { task.Id });
+
+        Assert.Equal(0, result.AffectedCount);
+        Assert.Empty(result.AffectedIds);
+        Assert.Empty(result.Samples);
+        var untouched = await db.Set<TaskEntity>().IgnoreQueryFilters().SingleAsync(t => t.Id == task.Id);
+        Assert.Equal(originalOperationId, untouched.DeletedByOperationId);
+        Assert.Equal("single-task", untouched.DeletedByOperationKind);
+        Assert.Empty(await db.AuditLogs.ToListAsync());
+    }
+
     private static PimDbContext CreateDb()
     {
         PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
