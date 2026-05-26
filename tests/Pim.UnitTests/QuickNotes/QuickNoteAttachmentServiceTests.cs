@@ -63,6 +63,50 @@ public class QuickNoteAttachmentServiceTests
     }
 
     [Fact]
+    public async Task CreateAsync_BindsExplicitTemporaryAttachmentIdWithoutMarkdownReference()
+    {
+        await using var db = CreateDb();
+        var storage = new FakeObjectStorage();
+        var attachments = CreateAttachmentService(db, UserId, storage);
+        var notes = CreateNoteService(db, UserId, attachments);
+        await using var content = new MemoryStream(Encoding.UTF8.GetBytes("image-bytes"));
+        var uploaded = await attachments.UploadAsync(content, "upload.png", "image/png", content.Length);
+
+        var created = await notes.CreateAsync(new CreateQuickNoteRequest("draft with upload", "web-page", [uploaded.Id]));
+
+        var attachment = Assert.Single(created.Attachments);
+        Assert.Equal(uploaded.Id, attachment.Id);
+        Assert.Equal(created.Id, await db.Set<QuickNoteAttachmentEntity>()
+            .Where(a => a.Id == uploaded.Id)
+            .Select(a => a.QuickNoteId)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task UpdateAsync_WithNullAttachmentIdsRemovesAttachmentsNoLongerReferencedByMarkdown()
+    {
+        await using var db = CreateDb();
+        var storage = new FakeObjectStorage();
+        var attachments = CreateAttachmentService(db, UserId, storage);
+        var notes = CreateNoteService(db, UserId, attachments);
+        await using var content = new MemoryStream(Encoding.UTF8.GetBytes("image-bytes"));
+        var uploaded = await attachments.UploadAsync(content, "inline.png", "image/png", content.Length);
+        var created = await notes.CreateAsync(new CreateQuickNoteRequest(
+            $"before ![inline]({uploaded.DownloadUrl})",
+            "web-page",
+            [uploaded.Id]));
+
+        var updated = await notes.UpdateAsync(created.Id, new UpdateQuickNoteRequest("after without attachment", null, null));
+
+        Assert.Empty(updated.Attachments);
+        var stored = await db.Set<QuickNoteAttachmentEntity>()
+            .IgnoreQueryFilters()
+            .SingleAsync(a => a.Id == uploaded.Id);
+        Assert.Equal(created.Id, stored.QuickNoteId);
+        Assert.NotNull(stored.DeletedAt);
+    }
+
+    [Fact]
     public async Task CreateAsync_RejectsAttachmentOwnedByAnotherUser()
     {
         await using var db = CreateDb();

@@ -24,7 +24,7 @@ public class ExceptionMiddleware
         }
         catch (DomainException ex)
         {
-            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            context.Response.StatusCode = ResolveDomainStatusCode(ex.ErrorCode);
             context.Response.ContentType = "application/json";
             var response = ApiResponse<string>.Error(ex.ErrorCode, ex.Message);
             await context.Response.WriteAsync(JsonSerializer.Serialize(response));
@@ -39,4 +39,9 @@ public class ExceptionMiddleware
             await context.Response.WriteAsync(JsonSerializer.Serialize(response));
         }
     }
+
+    private static int ResolveDomainStatusCode(int errorCode)
+        => errorCode is 4004 or 4006
+            ? StatusCodes.Status404NotFound
+            : StatusCodes.Status400BadRequest;
 }
