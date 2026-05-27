@@ -3,7 +3,9 @@ using Hangfire.PostgreSql;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Pim.Core.Ai;
 using Pim.Core.Operations;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Operations;
@@ -27,6 +29,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IOperationConfirmationService, OperationConfirmationService>();
         services.AddScoped<IDaemonHeartbeatService, DaemonHeartbeatService>();
         services.AddScoped<ISystemStatusService, SystemStatusService>();
+        services.Configure<AiOptions>(configuration.GetSection("Ai"));
+        services.AddScoped<IAiGateway, AiGateway>();
+        services.AddScoped<IAiRequestLogWriter, AiRequestLogWriter>();
+        services.AddSingleton<IAiSchemaRegistry, AiSchemaRegistry>();
+        services.AddSingleton<IAiChatClientFactory, AiChatClientFactory>();
         services.AddHangfire(config =>
             config.UsePostgreSqlStorage(options =>
                 options.UseNpgsqlConnection(configuration.GetConnectionString("DefaultConnection"))));
