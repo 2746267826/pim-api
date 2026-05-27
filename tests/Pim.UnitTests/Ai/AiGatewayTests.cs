@@ -115,6 +115,23 @@ public class AiGatewayTests
     }
 
     [Fact]
+    public async Task CompleteAsync_PropagatesCallerCancellationAndDoesNotLogAttempt()
+    {
+        var fakeClient = new FakeChatClient([FakeChatClientStep.WaitUntilCanceled()]);
+        var logWriter = new FailingAiRequestLogWriter();
+        var gateway = CreateGateway(fakeClient, logWriter, enabled: true, timeoutSeconds: 30);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var exception = await Record.ExceptionAsync(() =>
+            gateway.CompleteAsync(BasicRequest(schemaName: null, schemaVersion: null, maxAttempts: 2), cts.Token));
+
+        Assert.IsAssignableFrom<OperationCanceledException>(exception);
+        Assert.Equal(1, fakeClient.CallCount);
+        Assert.Equal(0, logWriter.WriteCount);
+    }
+
+    [Fact]
     public async Task CompleteAsync_LogsFailed_WhenProviderFactoryThrows()
     {
         await using var db = CreateDb();
@@ -339,6 +356,37 @@ public class AiGatewayTests
             new AiRequestLogWriter(db));
     }
 
+    private static AiGateway CreateGateway(
+        FakeChatClient fakeClient,
+        IAiRequestLogWriter logWriter,
+        bool enabled,
+        IAiSchemaRegistry? registry = null,
+        int timeoutSeconds = 30,
+        int maxAttemptsPerRequest = 2,
+        bool saveFullPrompts = true,
+        bool saveFullResponses = true)
+    {
+        var options = Options.Create(new AiOptions
+        {
+            Enabled = enabled,
+            Provider = "litellm",
+            BaseUrl = "http://litellm:4000",
+            ApiKey = "sk-pim",
+            DefaultModel = "pim-default",
+            TimeoutSeconds = timeoutSeconds,
+            MaxOutputTokensPerRequest = 1000,
+            MaxAttemptsPerRequest = maxAttemptsPerRequest,
+            SaveFullPrompts = saveFullPrompts,
+            SaveFullResponses = saveFullResponses
+        });
+
+        return new AiGateway(
+            options,
+            new FixedAiChatClientFactory(fakeClient),
+            registry ?? new AiSchemaRegistry(),
+            logWriter);
+    }
+
     private sealed class FixedAiChatClientFactory(IChatClient client) : IAiChatClientFactory
     {
         public IChatClient Create(string model) => client;
@@ -347,6 +395,17 @@ public class AiGatewayTests
     private sealed class ThrowingAiChatClientFactory(Exception exception) : IAiChatClientFactory
     {
         public IChatClient Create(string model) => throw exception;
+    }
+
+    private sealed class FailingAiRequestLogWriter : IAiRequestLogWriter
+    {
+        public int WriteCount { get; private set; }
+
+        public Task<Guid> WriteAsync(AiRequestLogWriteModel model, CancellationToken ct = default)
+        {
+            WriteCount++;
+            throw new InvalidOperationException("Caller cancellation should not be logged as an AI attempt.");
+        }
     }
 }
 

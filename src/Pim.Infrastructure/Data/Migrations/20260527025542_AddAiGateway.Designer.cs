@@ -2250,4 +2250,3 @@ namespace Pim.Infrastructure.Data.Migrations
         }
     }
 }
-
