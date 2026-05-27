@@ -208,6 +208,127 @@ public class OutlookIcsServiceTests
         Assert.Equal("fallback-target@example.com", evt.SourceUid);
     }
 
+    [Fact]
+    public async Task ImportOutlookIcsAsync_SkipsDuplicateEventsInSameBatch()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
+        await using var db = CreateDb();
+        var userId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var service = CreateService(db, userId);
+        var ics = """
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        BEGIN:VEVENT
+        UID:batch-duplicate@example.com
+        SUMMARY:Batch duplicate
+        DTSTART:20260607T010000Z
+        DTEND:20260607T020000Z
+        END:VEVENT
+        BEGIN:VEVENT
+        UID:batch-duplicate@example.com
+        SUMMARY:Batch duplicate
+        DTSTART:20260607T010000Z
+        DTEND:20260607T020000Z
+        END:VEVENT
+        END:VCALENDAR
+        """;
+
+        var report = await service.ImportOutlookIcsAsync(ics, null, new OutlookIcsService(), CancellationToken.None);
+
+        Assert.Equal(1, report.Imported);
+        Assert.Equal(1, report.Skipped);
+        Assert.Equal(1, report.SkippedReasons["duplicate_uid"]);
+        var sample = Assert.Single(report.Samples);
+        Assert.Equal("duplicate_uid", sample.Reason);
+        Assert.Equal("batch-duplicate@example.com", sample.Uid);
+        Assert.Equal(1, await db.Set<EventEntity>().CountAsync());
+    }
+
+    [Fact]
+    public async Task ImportOutlookIcsAsync_ReturnsParseErrorReportForMalformedIcs()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
+        await using var db = CreateDb();
+        var userId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var service = CreateService(db, userId);
+        var malformed = """
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        BEGIN:VEVENT
+        UID:malformed@example.com
+        DTSTART:not-a-date
+        END:VEVENT
+        END:VCALENDAR
+        """;
+
+        var report = await service.ImportOutlookIcsAsync(malformed, null, new OutlookIcsService(), CancellationToken.None);
+
+        Assert.Equal(0, report.Imported);
+        Assert.Equal(1, report.Skipped);
+        Assert.Equal(1, report.SkippedReasons["parse_error"]);
+        var sample = Assert.Single(report.Samples);
+        Assert.Equal("parse_error", sample.Reason);
+        Assert.Empty(await db.Set<EventEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task ImportOutlookIcsAsync_SkipsEventsMissingStartOrEnd()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
+        await using var db = CreateDb();
+        var userId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var service = CreateService(db, userId);
+        var ics = """
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        BEGIN:VEVENT
+        UID:missing-dates@example.com
+        SUMMARY:Missing dates
+        END:VEVENT
+        END:VCALENDAR
+        """;
+
+        var report = await service.ImportOutlookIcsAsync(ics, null, new OutlookIcsService(), CancellationToken.None);
+
+        Assert.Equal(0, report.Imported);
+        Assert.Equal(1, report.Skipped);
+        Assert.Equal(1, report.SkippedReasons["invalid_date"]);
+        var sample = Assert.Single(report.Samples);
+        Assert.Equal("invalid_date", sample.Reason);
+        Assert.Equal("missing-dates@example.com", sample.Uid);
+        Assert.Empty(await db.Set<EventEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task ImportOutlookIcsAsync_TruncatesOverlongFieldsBeforePersisting()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
+        await using var db = CreateDb();
+        var userId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var service = CreateService(db, userId);
+        var longSummary = new string('A', 300);
+        var ics = $"""
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        BEGIN:VEVENT
+        UID:overlong-fields@example.com
+        SUMMARY:{longSummary}
+        DTSTART:20260608T010000Z
+        DTEND:20260608T020000Z
+        END:VEVENT
+        END:VCALENDAR
+        """;
+
+        var report = await service.ImportOutlookIcsAsync(ics, null, new OutlookIcsService(), CancellationToken.None);
+
+        Assert.Equal(1, report.Imported);
+        Assert.Equal(0, report.Skipped);
+        var evt = await db.Set<EventEntity>().SingleAsync();
+        Assert.Equal(255, evt.Title.Length);
+        Assert.Equal(longSummary[..255], evt.Title);
+        Assert.Contains(longSummary, evt.SourceIcsComponent);
+    }
+
     private static PimDbContext CreateDb()
     {
         var options = new DbContextOptionsBuilder<PimDbContext>()

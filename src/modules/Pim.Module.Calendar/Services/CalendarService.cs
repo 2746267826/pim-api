@@ -166,6 +166,18 @@ public class CalendarService
         CancellationToken ct = default)
     {
         var parsed = outlookIcs.Parse(icsContent);
+        if (parsed.ErrorReason is not null)
+        {
+            return new ImportReport(
+                0,
+                1,
+                new Dictionary<string, int> { [parsed.ErrorReason] = 1 },
+                new List<ImportSkippedItem>
+                {
+                    new(parsed.ErrorReason, "Outlook ICS import", null, null)
+                });
+        }
+
         CalendarEntity? calendar = null;
         if (targetCalendarId.HasValue)
         {
@@ -179,40 +191,60 @@ public class CalendarService
         var skipped = 0;
         var reasonCounts = new Dictionary<string, int>();
         var samples = new List<ImportSkippedItem>();
+        var acceptedEvents = new List<OutlookIcsParsedEvent>();
+
+        void AddSkipped(string reason, OutlookIcsParsedEvent item)
+        {
+            skipped++;
+            reasonCounts[reason] = reasonCounts.GetValueOrDefault(reason) + 1;
+            if (samples.Count < 10)
+                samples.Add(new ImportSkippedItem(reason, item.Title, item.Start, item.Uid));
+        }
 
         foreach (var item in parsed.Events)
         {
+            if (item.InvalidReason is not null)
+            {
+                AddSkipped(item.InvalidReason, item);
+                continue;
+            }
+
+            if (item.Start == DateTimeOffset.MinValue || item.End == DateTimeOffset.MinValue)
+            {
+                AddSkipped("invalid_date", item);
+                continue;
+            }
+
             var duplicateReason = await FindActiveDuplicateReasonAsync(item, ct);
+            duplicateReason ??= FindAcceptedDuplicateReason(item, acceptedEvents);
             if (duplicateReason is not null)
             {
-                skipped++;
-                reasonCounts[duplicateReason] = reasonCounts.GetValueOrDefault(duplicateReason) + 1;
-                if (samples.Count < 10)
-                    samples.Add(new ImportSkippedItem(duplicateReason, item.Title, item.Start, item.Uid));
+                AddSkipped(duplicateReason, item);
                 continue;
             }
 
             _db.Set<EventEntity>().Add(new EventEntity
             {
                 CalendarId = calendar.Id,
-                Uid = item.Uid,
-                SourceUid = item.Uid,
-                Title = item.Title,
+                Uid = Truncate(item.Uid, 255) ?? string.Empty,
+                SourceUid = Truncate(item.Uid, 255),
+                Title = Truncate(item.Title, 255) ?? string.Empty,
                 Description = item.Description,
-                Location = item.Location,
+                Location = Truncate(item.Location, 500),
                 DtStart = item.Start,
                 DtEnd = item.End,
                 RRule = item.RRule,
                 IsAllDay = item.IsAllDay,
-                TimeZoneId = item.SourceTimeZoneId,
-                SourceTimeZoneId = item.SourceTimeZoneId,
+                TimeZoneId = Truncate(item.SourceTimeZoneId, 100),
+                SourceTimeZoneId = Truncate(item.SourceTimeZoneId, 100),
                 Source = "outlook-ics",
                 SourceIcsComponent = item.SourceIcsComponent,
                 ExternalMetadataJson = item.ExternalMetadataJson,
-                RecurrenceId = item.RecurrenceId,
+                RecurrenceId = Truncate(item.RecurrenceId, 255),
                 ExDatesJson = item.ExDatesJson,
                 RecurrenceMetadataJson = item.RecurrenceMetadataJson
             });
+            acceptedEvents.Add(item);
             imported++;
         }
 
@@ -239,6 +271,20 @@ public class CalendarService
 
         return null;
     }
+
+    private static string? FindAcceptedDuplicateReason(OutlookIcsParsedEvent item, IReadOnlyList<OutlookIcsParsedEvent> acceptedEvents)
+    {
+        if (acceptedEvents.Any(e => e.Uid == item.Uid))
+            return "duplicate_uid";
+
+        if (acceptedEvents.Any(e => e.Title == item.Title && e.Start == item.Start && e.End == item.End))
+            return "duplicate_title_time";
+
+        return null;
+    }
+
+    private static string? Truncate(string? value, int maxLength) =>
+        value is not null && value.Length > maxLength ? value[..maxLength] : value;
 
     private async Task<CalendarEntity> GetOrCreateDefaultCalendarAsync(string kind, CancellationToken ct)
     {

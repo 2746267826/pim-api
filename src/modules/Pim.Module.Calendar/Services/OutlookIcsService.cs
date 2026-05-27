@@ -13,7 +13,16 @@ public sealed class OutlookIcsService
         if (string.IsNullOrWhiteSpace(icsContent))
             return new OutlookIcsParseResult(Array.Empty<OutlookIcsParsedEvent>());
 
-        var calendar = IcalCalendar.Load(icsContent);
+        IcalCalendar? calendar;
+        try
+        {
+            calendar = IcalCalendar.Load(icsContent);
+        }
+        catch
+        {
+            return new OutlookIcsParseResult(Array.Empty<OutlookIcsParsedEvent>(), "parse_error");
+        }
+
         if (calendar?.Events is null)
             return new OutlookIcsParseResult(Array.Empty<OutlookIcsParsedEvent>());
 
@@ -23,6 +32,9 @@ public sealed class OutlookIcsService
             var raw = index < rawComponents.Count ? rawComponents[index] : string.Empty;
             var startUtc = e.Start?.AsUtc;
             var endUtc = e.End?.AsUtc;
+            var invalidReason = HasRawDateProperty(raw) && (startUtc is null || endUtc is null)
+                ? "parse_error"
+                : null;
             var sourceTimeZoneId = GetSourceTimeZoneId(e);
             var recurrenceId = GetRawPropertyValues(raw, "RECURRENCE-ID").FirstOrDefault()
                 ?? GetPropertyValue(e, "RECURRENCE-ID");
@@ -52,7 +64,8 @@ public sealed class OutlookIcsService
                 JsonSerializer.Serialize(BuildMetadata(calendar.Method, e, raw), JsonOptions),
                 recurrenceId,
                 JsonSerializer.Serialize(exDates, JsonOptions),
-                JsonSerializer.Serialize(recurrenceMetadata, JsonOptions));
+                JsonSerializer.Serialize(recurrenceMetadata, JsonOptions),
+                invalidReason);
         }).ToList();
 
         return new OutlookIcsParseResult(events);
@@ -141,6 +154,10 @@ public sealed class OutlookIcsService
     private static string? GetPropertyValue(CalendarEvent e, string name) =>
         e.Properties.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))?.Value?.ToString();
 
+    private static bool HasRawDateProperty(string rawComponent) =>
+        GetRawPropertyValues(rawComponent, "DTSTART").Any() ||
+        GetRawPropertyValues(rawComponent, "DTEND").Any();
+
     private static IEnumerable<string> GetPropertyValues(CalendarEvent e, string name) =>
         e.Properties
             .Where(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
@@ -208,7 +225,7 @@ public sealed class OutlookIcsService
     }
 }
 
-public sealed record OutlookIcsParseResult(IReadOnlyList<OutlookIcsParsedEvent> Events);
+public sealed record OutlookIcsParseResult(IReadOnlyList<OutlookIcsParsedEvent> Events, string? ErrorReason = null);
 
 public sealed record OutlookIcsParsedEvent(
     string Uid,
@@ -224,5 +241,6 @@ public sealed record OutlookIcsParsedEvent(
     string ExternalMetadataJson,
     string? RecurrenceId,
     string ExDatesJson,
-    string RecurrenceMetadataJson
+    string RecurrenceMetadataJson,
+    string? InvalidReason = null
 );
