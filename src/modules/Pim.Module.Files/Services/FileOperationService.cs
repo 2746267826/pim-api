@@ -127,6 +127,100 @@ public sealed class FileOperationService(
         await RecordAuditAsync("files.delete_to_trash", item.Id, ct);
     }
 
+    public async Task<FileItemDto> UploadAsync(
+        Guid providerId,
+        string destinationPath,
+        Stream content,
+        string contentType,
+        CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var normalizedDestinationPath = NormalizePath(destinationPath);
+        if (!PathHasFileName(normalizedDestinationPath))
+            throw new DomainException(5301, "Destination path must include a file or folder name");
+
+        var connection = await providerBindings.GetConnectionAsync(providerId, ct);
+        var provider = await db.Set<FileProviderEntity>()
+            .FirstOrDefaultAsync(entity => entity.Id == providerId && entity.UserId == userId, ct)
+            ?? throw new DomainException(5104, "File provider not found");
+
+        var providerItem = await adapter.UploadAsync(connection, normalizedDestinationPath, content, contentType, ct);
+        var now = DateTimeOffset.UtcNow;
+        var item = await db.Set<FileItemEntity>()
+            .Include(candidate => candidate.Versions)
+            .Include(candidate => candidate.IndexJobs)
+            .FirstOrDefaultAsync(candidate =>
+                candidate.ProviderId == provider.Id
+                && candidate.ExternalFileId == providerItem.ExternalFileId,
+                ct);
+        var isNewItem = item is null;
+
+        if (item is null)
+        {
+            item = new FileItemEntity
+            {
+                ProviderId = provider.Id,
+                ExternalFileId = providerItem.ExternalFileId,
+                CreatedAt = now
+            };
+            db.Set<FileItemEntity>().Add(item);
+        }
+
+        ApplyProviderItem(item, providerItem, now, preserveExternalFileId: false);
+        if (item.ItemType == "file")
+        {
+            if (isNewItem)
+                await db.SaveChangesAsync(ct);
+
+            await UpsertCurrentVersionAsync(item, providerItem, now, ct);
+        }
+
+        provider.UpdatedAt = now;
+        await db.SaveChangesAsync(ct);
+        await RecordAuditAsync("files.upload", item.Id, ct);
+
+        return MapFileItem(item);
+    }
+
+    public async Task<ProviderDownload> DownloadAsync(Guid id, CancellationToken ct = default)
+    {
+        var item = await LoadItemAsync(id, ct);
+        if (item.ItemType == "folder")
+            throw new DomainException(5303, "Folders cannot be downloaded through this endpoint");
+
+        var connection = await providerBindings.GetConnectionAsync(item.ProviderId, ct);
+        return await adapter.DownloadAsync(connection, NormalizePath(item.Path), ct);
+    }
+
+    public async Task<IReadOnlyList<ProviderTrashItem>> ListTrashAsync(CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var providerIds = await db.Set<FileProviderEntity>()
+            .AsNoTracking()
+            .Where(provider => provider.UserId == userId)
+            .OrderBy(provider => provider.CreatedAt)
+            .ThenBy(provider => provider.Id)
+            .Select(provider => provider.Id)
+            .ToListAsync(ct);
+        var trashItems = new List<ProviderTrashItem>();
+
+        foreach (var providerId in providerIds)
+        {
+            var connection = await providerBindings.GetConnectionAsync(providerId, ct);
+            trashItems.AddRange(await adapter.ListTrashAsync(connection, ct));
+        }
+
+        return trashItems;
+    }
+
+    public async Task RestoreTrashAsync(Guid providerId, string trashId, CancellationToken ct = default)
+    {
+        var connection = await providerBindings.GetConnectionAsync(providerId, ct);
+
+        await adapter.RestoreTrashAsync(connection, trashId, ct);
+        await RecordAuditAsync("files.trash_restore", "file_provider", providerId, ct);
+    }
+
     public async Task<IReadOnlyList<FileItemDto>> SyncProviderAsync(
         Guid providerId,
         CancellationToken ct = default)
@@ -260,6 +354,59 @@ public sealed class FileOperationService(
             .ToListAsync(ct);
     }
 
+    public async Task<ProviderDownload> DownloadVersionAsync(
+        Guid id,
+        Guid versionId,
+        CancellationToken ct = default)
+    {
+        var item = await LoadItemAsync(id, ct);
+        var version = await LoadVersionAsync(item.Id, versionId, ct);
+        var connection = await providerBindings.GetConnectionAsync(item.ProviderId, ct);
+
+        return await adapter.DownloadVersionAsync(
+            connection,
+            item.ExternalFileId,
+            version.ExternalVersionId,
+            item.Name,
+            ct);
+    }
+
+    public async Task RestoreVersionAsync(
+        Guid id,
+        Guid versionId,
+        CancellationToken ct = default)
+    {
+        var item = await LoadItemAsync(id, ct);
+        var version = await LoadVersionAsync(item.Id, versionId, ct);
+        var connection = await providerBindings.GetConnectionAsync(item.ProviderId, ct);
+
+        await adapter.RestoreVersionAsync(connection, item.ExternalFileId, version.ExternalVersionId, ct);
+
+        var versions = await db.Set<FileVersionEntity>()
+            .Where(candidate => candidate.FileItemId == item.Id)
+            .ToListAsync(ct);
+        var currentRowsToUnset = versions
+            .Where(candidate => candidate.Id != version.Id && candidate.IsCurrent)
+            .ToList();
+        foreach (var currentVersion in currentRowsToUnset)
+            currentVersion.IsCurrent = false;
+
+        if (currentRowsToUnset.Count > 0 && !version.IsCurrent)
+            await db.SaveChangesAsync(ct);
+
+        var now = DateTimeOffset.UtcNow;
+        version.IsCurrent = true;
+        version.SyncedAt = now;
+        item.CurrentVersionId = version.Id;
+        item.Etag = version.Etag;
+        item.Size = version.Size;
+        item.ModifiedAt = version.ModifiedAt;
+        item.SyncedAt = now;
+
+        await db.SaveChangesAsync(ct);
+        await RecordAuditAsync("files.version_restore", item.Id, ct);
+    }
+
     public async Task<VersionRestorePreviewDto> RestoreVersionPreviewAsync(
         Guid id,
         Guid versionId,
@@ -283,6 +430,18 @@ public sealed class FileOperationService(
             FormatVersionLabel(version),
             RequiresConfirmation: true,
             $"Restoring {FormatVersionLabel(version)} will replace the current contents of {item.Name}.");
+    }
+
+    public async Task<FileOpenLinkDto> BuildOpenLinkAsync(
+        Guid id,
+        string? mode,
+        CancellationToken ct = default)
+    {
+        var item = await LoadItemAsync(id, ct);
+        var connection = await providerBindings.GetConnectionAsync(item.ProviderId, ct);
+        var link = adapter.BuildOpenLink(connection, NormalizePath(item.Path), mode ?? "view", item.ExternalFileId);
+
+        return new FileOpenLinkDto(link.Url, link.Mode);
     }
 
     public async Task<IReadOnlyList<FileSuggestionDto>> ListSuggestionsAsync(CancellationToken ct = default)
@@ -352,6 +511,11 @@ public sealed class FileOperationService(
                 ct)
             ?? throw new DomainException(5305, "File suggestion not found");
     }
+
+    private async Task<FileVersionEntity> LoadVersionAsync(Guid fileItemId, Guid versionId, CancellationToken ct)
+        => await db.Set<FileVersionEntity>()
+            .FirstOrDefaultAsync(version => version.Id == versionId && version.FileItemId == fileItemId, ct)
+            ?? throw new DomainException(5304, "File version not found");
 
     private static void ApplyProviderItem(
         FileItemEntity item,
@@ -470,13 +634,16 @@ public sealed class FileOperationService(
     }
 
     private async Task RecordAuditAsync(string action, Guid fileId, CancellationToken ct)
+        => await RecordAuditAsync(action, ResourceType, fileId, ct);
+
+    private async Task RecordAuditAsync(string action, string resourceType, Guid resourceId, CancellationToken ct)
     {
         await auditLog.RecordAsync(new CreateAuditLogRequest(
             UserId,
             AuditActorType.User,
             action,
-            ResourceType,
-            fileId.ToString(),
+            resourceType,
+            resourceId.ToString(),
             AuditSource,
             AuditResult.Success,
             null,
@@ -556,6 +723,9 @@ public sealed class FileOperationService(
         var relativePath = normalizedPath[prefix.Length..];
         return relativePath.Length > 0 && !relativePath.Contains('/', StringComparison.Ordinal);
     }
+
+    private static bool PathHasFileName(string path)
+        => NormalizePath(path).Trim('/').Split('/').LastOrDefault() is { Length: > 0 };
 
     private static string NormalizePath(string? path)
     {

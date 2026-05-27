@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Pim.Infrastructure.Auth;
+using Pim.Core.Exceptions;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Operations;
@@ -284,6 +285,167 @@ public class FileOperationServiceTests
     }
 
     [Fact]
+    public async Task UploadAsync_CallsAdapterUpsertsItemCurrentVersionAndRecordsAudit()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var provider = await SeedProviderAsync(db);
+        adapter.UploadResult = ProviderItem("uploaded-file", "/Uploads/report.txt", "report.txt", etag: "etag-upload");
+        var service = CreateService(db, adapter);
+        await using var content = new MemoryStream("hello"u8.ToArray());
+
+        var uploaded = await service.UploadAsync(provider.Id, "/Uploads/report.txt", content, "text/plain");
+
+        Assert.Equal("uploaded-file", uploaded.ExternalFileId);
+        Assert.Equal("/Uploads/report.txt", uploaded.Path);
+        Assert.NotNull(uploaded.CurrentVersionId);
+        Assert.Equal(1, adapter.UploadCallCount);
+        Assert.Equal("/Uploads/report.txt", adapter.LastUploadDestinationPath);
+        Assert.Equal("text/plain", adapter.LastUploadContentType);
+        Assert.Equal("hello", adapter.LastUploadContent);
+
+        var saved = await db.Set<FileItemEntity>()
+            .Include(item => item.Versions)
+            .SingleAsync(item => item.ProviderId == provider.Id && item.ExternalFileId == "uploaded-file");
+        Assert.Equal(uploaded.Id, saved.Id);
+        Assert.Equal("etag-upload", saved.Etag);
+        var current = Assert.Single(saved.Versions.Where(version => version.IsCurrent));
+        Assert.Equal("current:etag-upload", current.ExternalVersionId);
+        Assert.Equal(current.Id, saved.CurrentVersionId);
+        await AssertAuditAsync(db, "files.upload", saved.Id);
+    }
+
+    [Fact]
+    public async Task UploadAsync_WhenProviderReturnsExistingExternalIdUpdatesItemAndCurrentVersion()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var provider = await SeedProviderAsync(db);
+        var existing = await SeedItemAsync(
+            db,
+            provider,
+            externalFileId: "uploaded-file",
+            path: "/Uploads/old-report.txt",
+            name: "old-report.txt",
+            etag: "etag-old");
+        var oldVersion = await SeedVersionAsync(db, existing, "current:etag-old", "etag-old", isCurrent: true);
+        existing.CurrentVersionId = oldVersion.Id;
+        await db.SaveChangesAsync();
+        adapter.UploadResult = ProviderItem("uploaded-file", "/Uploads/report.txt", "report.txt", etag: "etag-new");
+        var service = CreateService(db, adapter);
+        await using var content = new MemoryStream("new"u8.ToArray());
+
+        var uploaded = await service.UploadAsync(provider.Id, "/Uploads/report.txt", content, "text/plain");
+
+        Assert.Equal(existing.Id, uploaded.Id);
+        Assert.Equal("etag-new", uploaded.Etag);
+
+        var saved = await db.Set<FileItemEntity>()
+            .Include(item => item.Versions)
+            .SingleAsync(item => item.Id == existing.Id);
+        Assert.Equal("/Uploads/report.txt", saved.Path);
+        Assert.Equal("report.txt", saved.Name);
+        Assert.Equal("etag-new", saved.Etag);
+        Assert.False(saved.IsDeleted);
+        var current = Assert.Single(saved.Versions.Where(version => version.IsCurrent));
+        Assert.Equal("current:etag-new", current.ExternalVersionId);
+        Assert.Equal(current.Id, saved.CurrentVersionId);
+        Assert.False(saved.Versions.Single(version => version.Id == oldVersion.Id).IsCurrent);
+    }
+
+    [Fact]
+    public async Task UploadAsync_WhenDestinationHasNoFileNameThrows()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var provider = await SeedProviderAsync(db);
+        var service = CreateService(db, adapter);
+        await using var content = new MemoryStream("hello"u8.ToArray());
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.UploadAsync(provider.Id, "/", content, "text/plain"));
+
+        Assert.Equal(5301, ex.ErrorCode);
+        Assert.Equal(0, adapter.UploadCallCount);
+    }
+
+    [Fact]
+    public async Task DownloadAsync_WhenFolderThrowsDomainException()
+    {
+        await using var db = CreateDb();
+        var provider = await SeedProviderAsync(db);
+        var folder = await SeedItemAsync(db, provider, "folder-1", "/Reports", "Reports", itemType: "folder");
+        var service = CreateService(db, new FakeFileProviderAdapter());
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() => service.DownloadAsync(folder.Id));
+
+        Assert.Equal(5303, ex.ErrorCode);
+        Assert.Equal("Folders cannot be downloaded through this endpoint", ex.Message);
+    }
+
+    [Fact]
+    public async Task DownloadAsync_WhenFileCallsAdapterWithItemPath()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var provider = await SeedProviderAsync(db);
+        var item = await SeedItemAsync(db, provider, "file-1", "/Reports/report.txt", "report.txt");
+        adapter.DownloadResult = new ProviderDownload(new MemoryStream("download"u8.ToArray()), "text/plain", "report.txt");
+        var service = CreateService(db, adapter);
+
+        var download = await service.DownloadAsync(item.Id);
+
+        Assert.Equal(1, adapter.DownloadCallCount);
+        Assert.Equal("/Reports/report.txt", adapter.LastDownloadPath);
+        Assert.Equal("text/plain", download.ContentType);
+        Assert.Equal("report.txt", download.FileName);
+    }
+
+    [Fact]
+    public async Task ListTrashAsync_AggregatesCurrentUserProviderTrashInProviderOrder()
+    {
+        await using var db = CreateDb();
+        var firstProvider = await SeedProviderAsync(db);
+        var otherUserProvider = await SeedProviderAsync(db, Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"));
+        var secondProvider = await SeedProviderAsync(db);
+        var adapter = new FakeFileProviderAdapter();
+        adapter.TrashByProvider[firstProvider.Id] =
+        [
+            new ProviderTrashItem("trash-1", "/Reports/old.txt", "old.txt", "file", 10, DateTimeOffset.UtcNow)
+        ];
+        adapter.TrashByProvider[otherUserProvider.Id] =
+        [
+            new ProviderTrashItem("trash-other", "/private.txt", "private.txt", "file", 10, DateTimeOffset.UtcNow)
+        ];
+        adapter.TrashByProvider[secondProvider.Id] =
+        [
+            new ProviderTrashItem("trash-2", "/Reports/new.txt", "new.txt", "file", 20, DateTimeOffset.UtcNow)
+        ];
+        var service = CreateService(db, adapter);
+
+        var trash = await service.ListTrashAsync();
+
+        Assert.Equal(new[] { "trash-1", "trash-2" }, trash.Select(item => item.TrashId).ToArray());
+        Assert.Equal(new[] { firstProvider.Id, secondProvider.Id }, adapter.ListTrashProviderIds);
+    }
+
+    [Fact]
+    public async Task RestoreTrashAsync_CallsAdapterForCurrentUserProviderAndAuditsProviderId()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var provider = await SeedProviderAsync(db);
+        var service = CreateService(db, adapter);
+
+        await service.RestoreTrashAsync(provider.Id, "trash-1");
+
+        Assert.Equal(1, adapter.RestoreTrashCallCount);
+        Assert.Equal(provider.Id, adapter.LastRestoreTrashProviderId);
+        Assert.Equal("trash-1", adapter.LastRestoreTrashId);
+        await AssertAuditAsync(db, "files.trash_restore", provider.Id, "file_provider");
+    }
+
+    [Fact]
     public async Task ListVersionsAsync_StoresHistoricalVersionsWithoutCreatingIndexJobs()
     {
         await using var db = CreateDb();
@@ -302,6 +464,58 @@ public class FileOperationServiceTests
         Assert.Equal(new[] { "1700001000", "1700000000" }, versions.Select(version => version.ExternalVersionId).ToArray());
         Assert.Equal(2, await db.Set<FileVersionEntity>().CountAsync(version => version.FileItemId == item.Id));
         Assert.Empty(await db.Set<FileIndexJobEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task DownloadVersionAsync_CallsAdapterWithItemAndVersionExternalIds()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var provider = await SeedProviderAsync(db);
+        var item = await SeedItemAsync(db, provider, "file-1", "/Reports/report.txt", "report.txt");
+        var version = await SeedVersionAsync(db, item, "1700000000", "etag-old", isCurrent: false);
+        adapter.DownloadVersionResult = new ProviderDownload(new MemoryStream("old"u8.ToArray()), "text/plain", "report.txt");
+        var service = CreateService(db, adapter);
+
+        var download = await service.DownloadVersionAsync(item.Id, version.Id);
+
+        Assert.Equal(1, adapter.DownloadVersionCallCount);
+        Assert.Equal("file-1", adapter.LastDownloadVersionExternalFileId);
+        Assert.Equal("1700000000", adapter.LastDownloadVersionExternalVersionId);
+        Assert.Equal("report.txt", adapter.LastDownloadVersionFileName);
+        Assert.Equal("text/plain", download.ContentType);
+    }
+
+    [Fact]
+    public async Task RestoreVersionAsync_CallsAdapterMarksRestoredVersionCurrentAndAudits()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var provider = await SeedProviderAsync(db);
+        var item = await SeedItemAsync(db, provider, "file-1", "/Reports/report.txt", "report.txt", etag: "etag-current");
+        var current = await SeedVersionAsync(db, item, "current:etag-current", "etag-current", isCurrent: true);
+        var history = await SeedVersionAsync(db, item, "1700000000", "etag-old", isCurrent: false);
+        item.CurrentVersionId = current.Id;
+        await db.SaveChangesAsync();
+        var service = CreateService(db, adapter);
+
+        await service.RestoreVersionAsync(item.Id, history.Id);
+
+        Assert.Equal(1, adapter.RestoreVersionCallCount);
+        Assert.Equal("file-1", adapter.LastRestoreVersionExternalFileId);
+        Assert.Equal("1700000000", adapter.LastRestoreVersionExternalVersionId);
+
+        var versions = await db.Set<FileVersionEntity>()
+            .Where(version => version.FileItemId == item.Id)
+            .ToListAsync();
+        Assert.False(versions.Single(version => version.Id == current.Id).IsCurrent);
+        Assert.True(versions.Single(version => version.Id == history.Id).IsCurrent);
+
+        var savedItem = await db.Set<FileItemEntity>().SingleAsync(saved => saved.Id == item.Id);
+        Assert.Equal(history.Id, savedItem.CurrentVersionId);
+        Assert.Equal(history.ModifiedAt, savedItem.ModifiedAt);
+        Assert.True(savedItem.SyncedAt >= savedItem.ModifiedAt);
+        await AssertAuditAsync(db, "files.version_restore", item.Id);
     }
 
     [Fact]
@@ -344,6 +558,24 @@ public class FileOperationServiceTests
         Assert.True(preview.RequiresConfirmation);
         Assert.Contains("etag-current", preview.CurrentVersionLabel, StringComparison.Ordinal);
         Assert.Contains("etag-old", preview.RestoreVersionLabel, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BuildOpenLinkAsync_PassesExternalFileIdToAdapter()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var provider = await SeedProviderAsync(db);
+        var item = await SeedItemAsync(db, provider, "file-1", "/Reports/report.txt", "report.txt");
+        var service = CreateService(db, adapter);
+
+        var link = await service.BuildOpenLinkAsync(item.Id, null);
+
+        Assert.Equal("view", link.Mode);
+        Assert.Contains("openfile=file-1", link.Url, StringComparison.Ordinal);
+        Assert.Equal("/Reports/report.txt", adapter.LastOpenLinkPath);
+        Assert.Equal("view", adapter.LastOpenLinkMode);
+        Assert.Equal("file-1", adapter.LastOpenLinkExternalFileId);
     }
 
     [Fact]
@@ -471,13 +703,41 @@ public class FileOperationServiceTests
             "RGDNVW",
             DateTimeOffset.UtcNow);
 
-    private static async Task AssertAuditAsync(PimDbContext db, string action, Guid fileItemId)
+    private static async Task<FileVersionEntity> SeedVersionAsync(
+        PimDbContext db,
+        FileItemEntity item,
+        string externalVersionId,
+        string? etag,
+        bool isCurrent)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var version = new FileVersionEntity
+        {
+            FileItemId = item.Id,
+            ExternalVersionId = externalVersionId,
+            Etag = etag,
+            Size = 90,
+            Source = externalVersionId.StartsWith("current:", StringComparison.Ordinal) ? "current" : "history",
+            IsCurrent = isCurrent,
+            ModifiedAt = now,
+            SyncedAt = now
+        };
+        db.Set<FileVersionEntity>().Add(version);
+        await db.SaveChangesAsync();
+        return version;
+    }
+
+    private static async Task AssertAuditAsync(
+        PimDbContext db,
+        string action,
+        Guid resourceId,
+        string resourceType = "file")
     {
         var audit = await db.Set<AuditLogEntity>()
-            .SingleOrDefaultAsync(log => log.Action == action && log.ResourceId == fileItemId.ToString());
+            .SingleOrDefaultAsync(log => log.Action == action && log.ResourceId == resourceId.ToString());
         Assert.NotNull(audit);
         Assert.Equal(UserId, audit.UserId);
-        Assert.Equal("file", audit.ResourceType);
+        Assert.Equal(resourceType, audit.ResourceType);
         Assert.Equal("files", audit.Source);
         Assert.Equal("Success", audit.Result);
     }
@@ -502,17 +762,40 @@ public class FileOperationServiceTests
     {
         public IReadOnlyList<ProviderFileItem> FolderItems { get; set; } = [];
         public IReadOnlyList<ProviderFileVersion> Versions { get; set; } = [];
+        public Dictionary<Guid, IReadOnlyList<ProviderTrashItem>> TrashByProvider { get; } = new();
+        public List<Guid> ListTrashProviderIds { get; } = [];
+        public ProviderFileItem? UploadResult { get; set; }
+        public ProviderDownload? DownloadResult { get; set; }
+        public ProviderDownload? DownloadVersionResult { get; set; }
         public ProviderFileItem? MoveResult { get; set; }
         public ProviderFileItem? RenameResult { get; set; }
+        public int UploadCallCount { get; private set; }
+        public int DownloadCallCount { get; private set; }
         public int MoveCallCount { get; private set; }
         public int RenameCallCount { get; private set; }
         public int DeleteCallCount { get; private set; }
+        public int RestoreTrashCallCount { get; private set; }
+        public int DownloadVersionCallCount { get; private set; }
         public int RestoreVersionCallCount { get; private set; }
+        public string? LastUploadDestinationPath { get; private set; }
+        public string? LastUploadContentType { get; private set; }
+        public string? LastUploadContent { get; private set; }
+        public string? LastDownloadPath { get; private set; }
         public string? LastMoveSourcePath { get; private set; }
         public string? LastMoveDestinationPath { get; private set; }
         public string? LastRenameSourcePath { get; private set; }
         public string? LastRenameName { get; private set; }
         public string? LastDeletePath { get; private set; }
+        public Guid? LastRestoreTrashProviderId { get; private set; }
+        public string? LastRestoreTrashId { get; private set; }
+        public string? LastDownloadVersionExternalFileId { get; private set; }
+        public string? LastDownloadVersionExternalVersionId { get; private set; }
+        public string? LastDownloadVersionFileName { get; private set; }
+        public string? LastRestoreVersionExternalFileId { get; private set; }
+        public string? LastRestoreVersionExternalVersionId { get; private set; }
+        public string? LastOpenLinkPath { get; private set; }
+        public string? LastOpenLinkMode { get; private set; }
+        public string? LastOpenLinkExternalFileId { get; private set; }
 
         public Task<FileProviderTestResult> TestConnectionAsync(
             FileProviderConnection connection,
@@ -537,13 +820,29 @@ public class FileOperationServiceTests
             Stream content,
             string contentType,
             CancellationToken ct = default)
-            => throw new NotSupportedException();
+        {
+            UploadCallCount++;
+            LastUploadDestinationPath = destinationPath;
+            LastUploadContentType = contentType;
+            using var reader = new StreamReader(
+                content,
+                System.Text.Encoding.UTF8,
+                detectEncodingFromByteOrderMarks: true,
+                bufferSize: 1024,
+                leaveOpen: true);
+            LastUploadContent = reader.ReadToEnd();
+            return Task.FromResult(UploadResult ?? ProviderItem("uploaded-file", destinationPath, Path.GetFileName(destinationPath)));
+        }
 
         public Task<ProviderDownload> DownloadAsync(
             FileProviderConnection connection,
             string path,
             CancellationToken ct = default)
-            => throw new NotSupportedException();
+        {
+            DownloadCallCount++;
+            LastDownloadPath = path;
+            return Task.FromResult(DownloadResult ?? new ProviderDownload(new MemoryStream(), "application/octet-stream", Path.GetFileName(path)));
+        }
 
         public Task<ProviderFileItem> MoveAsync(
             FileProviderConnection connection,
@@ -585,13 +884,21 @@ public class FileOperationServiceTests
         public Task<IReadOnlyList<ProviderTrashItem>> ListTrashAsync(
             FileProviderConnection connection,
             CancellationToken ct = default)
-            => throw new NotSupportedException();
+        {
+            ListTrashProviderIds.Add(connection.ProviderId);
+            return Task.FromResult(TrashByProvider.GetValueOrDefault(connection.ProviderId) ?? []);
+        }
 
         public Task RestoreTrashAsync(
             FileProviderConnection connection,
             string trashId,
             CancellationToken ct = default)
-            => throw new NotSupportedException();
+        {
+            RestoreTrashCallCount++;
+            LastRestoreTrashProviderId = connection.ProviderId;
+            LastRestoreTrashId = trashId;
+            return Task.CompletedTask;
+        }
 
         public Task<IReadOnlyList<ProviderFileVersion>> ListVersionsAsync(
             FileProviderConnection connection,
@@ -605,7 +912,13 @@ public class FileOperationServiceTests
             string externalVersionId,
             string fileName,
             CancellationToken ct = default)
-            => throw new NotSupportedException();
+        {
+            DownloadVersionCallCount++;
+            LastDownloadVersionExternalFileId = externalFileId;
+            LastDownloadVersionExternalVersionId = externalVersionId;
+            LastDownloadVersionFileName = fileName;
+            return Task.FromResult(DownloadVersionResult ?? new ProviderDownload(new MemoryStream(), "application/octet-stream", fileName));
+        }
 
         public Task RestoreVersionAsync(
             FileProviderConnection connection,
@@ -614,6 +927,8 @@ public class FileOperationServiceTests
             CancellationToken ct = default)
         {
             RestoreVersionCallCount++;
+            LastRestoreVersionExternalFileId = externalFileId;
+            LastRestoreVersionExternalVersionId = externalVersionId;
             return Task.CompletedTask;
         }
 
@@ -622,6 +937,15 @@ public class FileOperationServiceTests
             string path,
             string mode,
             string? externalFileId = null)
-            => new($"https://cloud.example.test/apps/files/files?dir=/&mode={mode}", mode);
+        {
+            LastOpenLinkPath = path;
+            LastOpenLinkMode = mode;
+            LastOpenLinkExternalFileId = externalFileId;
+            var url = $"https://cloud.example.test/apps/files/files?dir=/&mode={Uri.EscapeDataString(mode)}";
+            if (!string.IsNullOrWhiteSpace(externalFileId))
+                url = $"{url}&openfile={Uri.EscapeDataString(externalFileId)}";
+
+            return new ProviderOpenLink(url, mode);
+        }
     }
 }
