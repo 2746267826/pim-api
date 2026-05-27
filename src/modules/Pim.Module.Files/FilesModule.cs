@@ -25,7 +25,12 @@ public sealed class FilesModule : IModule
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
         services.AddScoped<FileProviderBindingService>();
         services.AddScoped<FileOperationService>();
+        services.AddScoped<FileIndexingService>();
+        services.AddSingleton<IFileEmbeddingService, HashingFileEmbeddingService>();
+        services.AddScoped<IFileTextExtractionService, TikaFileTextExtractionService>();
         services.AddHttpClient<NextcloudFileProviderAdapter>();
+        services.AddHttpClient<QdrantFileVectorStore>();
+        services.AddScoped<IFileVectorStore>(sp => sp.GetRequiredService<QdrantFileVectorStore>());
         services.AddScoped<IFileProviderAdapter>(sp => sp.GetRequiredService<NextcloudFileProviderAdapter>());
     }
 
@@ -63,8 +68,8 @@ public sealed class FilesModule : IModule
         group.MapGet("/items/{id:guid}/versions/{versionId:guid}/download", DownloadVersionAsync);
         group.MapPost("/items/{id:guid}/versions/{versionId:guid}/restore-preview", PreviewVersionRestoreAsync);
         group.MapPost("/items/{id:guid}/versions/{versionId:guid}/restore", RestoreVersionAsync);
-        group.MapPost("/items/{id:guid}/index", NotImplemented);
-        group.MapGet("/search", NotImplemented);
+        group.MapPost("/items/{id:guid}/index", IndexItemAsync);
+        group.MapGet("/search", SearchAsync);
         group.MapGet("/suggestions", ListSuggestionsAsync);
         group.MapPost("/suggestions/{id:guid}/dismiss", DismissSuggestionAsync);
         group.MapPost("/suggestions/{id:guid}/accept", AcceptSuggestionAsync);
@@ -202,6 +207,19 @@ public sealed class FilesModule : IModule
         await service.RestoreVersionAsync(id, versionId, ct);
         return Results.Ok(ApiResponse<string>.Ok("restored"));
     }
+
+    private static async Task<IResult> IndexItemAsync(
+        Guid id,
+        [FromServices] FileIndexingService service,
+        CancellationToken ct)
+        => Results.Ok(ApiResponse<FileIndexJobDto>.Ok(await service.IndexCurrentVersionAsync(id, ct)));
+
+    private static async Task<IResult> SearchAsync(
+        [FromQuery] string? q,
+        [FromQuery] string? mode,
+        [FromServices] FileIndexingService service,
+        CancellationToken ct)
+        => Results.Ok(ApiResponse<FileSearchResultDto>.Ok(await service.SearchAsync(new FileSearchQuery(q, mode), ct)));
 
     private static async Task<IResult> ListSuggestionsAsync(
         [FromServices] FileOperationService service,

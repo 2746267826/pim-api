@@ -106,7 +106,7 @@ public class FileEndpointPathTests
     }
 
     [Fact]
-    public void MapEndpoints_Task5RoutesUseNamedOperationHandlers()
+    public void MapEndpoints_FileOperationRoutesUseNamedHandlers()
     {
         var builder = WebApplication.CreateBuilder();
         builder.Services.AddAuthorization();
@@ -136,6 +136,8 @@ public class FileEndpointPathTests
             ("GET", "/api/v1/files/items/{id:guid}/versions/{versionId:guid}/download", "DownloadVersionAsync"),
             ("POST", "/api/v1/files/items/{id:guid}/versions/{versionId:guid}/restore-preview", "PreviewVersionRestoreAsync"),
             ("POST", "/api/v1/files/items/{id:guid}/versions/{versionId:guid}/restore", "RestoreVersionAsync"),
+            ("POST", "/api/v1/files/items/{id:guid}/index", "IndexItemAsync"),
+            ("GET", "/api/v1/files/search", "SearchAsync"),
             ("GET", "/api/v1/files/suggestions", "ListSuggestionsAsync"),
             ("POST", "/api/v1/files/suggestions/{id:guid}/dismiss", "DismissSuggestionAsync"),
             ("POST", "/api/v1/files/suggestions/{id:guid}/accept", "AcceptSuggestionAsync"),
@@ -149,37 +151,6 @@ public class FileEndpointPathTests
 
             Assert.Equal(typeof(FilesModule), handler.DeclaringType);
             Assert.Equal(expected.Handler, handler.Name);
-        }
-    }
-
-    [Fact]
-    public void MapEndpoints_Task6RoutesRemainNotImplemented()
-    {
-        var builder = WebApplication.CreateBuilder();
-        builder.Services.AddAuthorization();
-        using var app = builder.Build();
-
-        new FilesModule().MapEndpoints(app);
-
-        var routeEndpoints = ((IEndpointRouteBuilder)app)
-            .DataSources
-            .SelectMany(dataSource => dataSource.Endpoints)
-            .OfType<RouteEndpoint>()
-            .ToList();
-
-        var task6Routes = new (string Method, string Route)[]
-        {
-            ("POST", "/api/v1/files/items/{id:guid}/index"),
-            ("GET", "/api/v1/files/search")
-        };
-
-        foreach (var route in task6Routes)
-        {
-            var endpoint = FindEndpoint(routeEndpoints, route.Method, route.Route);
-            var handler = endpoint.Metadata.OfType<MethodInfo>().Single();
-
-            Assert.Equal(typeof(FilesModule), handler.DeclaringType);
-            Assert.Equal("NotImplemented", handler.Name);
         }
     }
 
