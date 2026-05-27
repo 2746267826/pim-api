@@ -36,6 +36,18 @@ public class AiEndpointPathTests
         Assert.Null(status);
     }
 
+    [Theory]
+    [InlineData("1")]
+    [InlineData("999")]
+    [InlineData("Failed, Blocked")]
+    public void TryParseStatus_RejectsNumericAndCombinedStatusValues(string value)
+    {
+        var parsed = AiEndpoints.TryParseStatus(value, out var status);
+
+        Assert.False(parsed);
+        Assert.Null(status);
+    }
+
     [Fact]
     public async Task MapAiEndpoints_RegistersExpectedAuthorizedRoutes()
     {

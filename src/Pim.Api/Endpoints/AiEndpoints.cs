@@ -80,18 +80,14 @@ public static class AiEndpoints
             return true;
         }
 
-        if (Enum.TryParse<AiRequestStatus>(value, ignoreCase: true, out var parsed))
-        {
-            status = parsed;
-            return true;
-        }
-
         status = value.Trim().ToLowerInvariant() switch
         {
             "succeeded" => AiRequestStatus.Succeeded,
             "failed" => AiRequestStatus.Failed,
             "blocked" => AiRequestStatus.Blocked,
+            "timedout" => AiRequestStatus.TimedOut,
             "timed_out" => AiRequestStatus.TimedOut,
+            "failedvalidation" => AiRequestStatus.FailedValidation,
             "failed_validation" => AiRequestStatus.FailedValidation,
             _ => null
         };
