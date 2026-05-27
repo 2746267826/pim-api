@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using OpenAI;
@@ -12,37 +11,52 @@ public interface IAiChatClientFactory
     IChatClient Create(string model);
 }
 
-public sealed class AiChatClientFactory(IOptions<AiOptions> options) : IAiChatClientFactory, IDisposable
+public class AiChatClientFactory(IOptions<AiOptions> options) : IAiChatClientFactory, IDisposable
 {
-    private readonly ConcurrentDictionary<string, IChatClient> _clients = new(StringComparer.Ordinal);
+    private readonly object _lock = new();
+    private readonly Dictionary<string, IChatClient> _clients = new(StringComparer.Ordinal);
     private bool _disposed;
 
     public IChatClient Create(string model)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        return _clients.GetOrAdd(model, CreateClient);
+        lock (_lock)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            if (_clients.TryGetValue(model, out var client))
+            {
+                return client;
+            }
+
+            client = CreateClientCore(model);
+            _clients.Add(model, client);
+            return client;
+        }
     }
 
     public void Dispose()
     {
-        if (_disposed)
+        lock (_lock)
         {
-            return;
-        }
-
-        _disposed = true;
-        foreach (var client in _clients.Values)
-        {
-            if (client is IDisposable disposable)
+            if (_disposed)
             {
-                disposable.Dispose();
+                return;
             }
-        }
 
-        _clients.Clear();
+            _disposed = true;
+            foreach (var client in _clients.Values)
+            {
+                if (client is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                }
+            }
+
+            _clients.Clear();
+        }
     }
 
-    private IChatClient CreateClient(string model)
+    protected virtual IChatClient CreateClientCore(string model)
     {
         var ai = options.Value;
         var chatClient = new ChatClient(

@@ -171,6 +171,31 @@ public class AiGatewayTests
         }
     }
 
+    [Fact]
+    public void AiChatClientFactory_DisposesCachedClientsAndRejectsCreateAfterDispose()
+    {
+        var factory = new CountingAiChatClientFactory();
+        var client = factory.Create("pim-default");
+
+        factory.Dispose();
+
+        var disposable = Assert.IsType<DisposableFakeChatClient>(client);
+        Assert.True(disposable.IsDisposed);
+        Assert.Throws<ObjectDisposedException>(() => factory.Create("pim-default"));
+    }
+
+    [Fact]
+    public async Task AiChatClientFactory_ConcurrentCreateForSameModelCreatesOneClient()
+    {
+        var factory = new CountingAiChatClientFactory(delayCreation: true);
+
+        var clients = await Task.WhenAll(Enumerable.Range(0, 20)
+            .Select(_ => Task.Run(() => factory.Create("pim-default"))));
+
+        Assert.Equal(1, factory.CreateCount);
+        Assert.All(clients, client => Assert.Same(clients[0], client));
+    }
+
     private static AiGatewayRequest BasicRequest(string? schemaName = "quick-note-conversion", string? schemaVersion = "1", int maxAttempts = 1)
         => new(
             Module: "quick-notes",
@@ -254,6 +279,29 @@ public class AiGatewayTests
     }
 }
 
+internal sealed class CountingAiChatClientFactory(bool delayCreation = false)
+    : AiChatClientFactory(Options.Create(new AiOptions
+    {
+        BaseUrl = "http://litellm:4000",
+        ApiKey = "sk-pim"
+    }))
+{
+    private int _createCount;
+
+    public int CreateCount => _createCount;
+
+    protected override IChatClient CreateClientCore(string model)
+    {
+        Interlocked.Increment(ref _createCount);
+        if (delayCreation)
+        {
+            Thread.Sleep(50);
+        }
+
+        return new DisposableFakeChatClient();
+    }
+}
+
 internal sealed class FakeChatClient : IChatClient
 {
     private readonly Queue<string> _responses;
@@ -316,4 +364,34 @@ internal sealed class FakeChatClient : IChatClient
 
     public object? GetService(Type serviceType, object? serviceKey = null) => null;
     public void Dispose() { }
+}
+
+internal sealed class DisposableFakeChatClient : IChatClient, IDisposable
+{
+    public bool IsDisposed { get; private set; }
+
+    public Task<ChatResponse> GetResponseAsync(
+        IEnumerable<ChatMessage> messages,
+        ChatOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, string.Empty)));
+
+    public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+        IEnumerable<ChatMessage> messages,
+        ChatOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => EmptyStreamingResponse();
+
+    public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+    public void Dispose()
+    {
+        IsDisposed = true;
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> EmptyStreamingResponse()
+    {
+        await Task.CompletedTask;
+        yield break;
+    }
 }
