@@ -36,7 +36,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IHangfireMonitoringClient, HangfireMonitoringClient>();
         services.AddScoped<IBackgroundJobStatusService, HangfireJobStatusService>();
         services.AddScoped<Stage0DiagnosticJob>();
+        var dataProtectionKeysPath = configuration["DataProtection:KeysPath"]
+            ?? "/data/keys/data-protection";
+        Directory.CreateDirectory(dataProtectionKeysPath);
         services.AddDataProtection()
+            .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath))
             .SetApplicationName("Pim");
         services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
 

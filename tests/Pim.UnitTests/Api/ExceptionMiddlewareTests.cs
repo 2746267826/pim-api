@@ -13,6 +13,7 @@ public class ExceptionMiddlewareTests
     [Theory]
     [InlineData(4004)]
     [InlineData(4006)]
+    [InlineData(5104)]
     public async Task InvokeAsync_MapsQuickNoteNotFoundDomainErrorsTo404(int errorCode)
     {
         var context = new DefaultHttpContext();

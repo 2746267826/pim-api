@@ -97,7 +97,7 @@ public sealed class FileProviderBindingService
 
         await _db.SaveChangesAsync(ct);
 
-        return new FileProviderTestDto(result.Success, provider.Status, result.ErrorMessage);
+        return new FileProviderTestDto(result.Success, result.Status, result.ErrorMessage);
     }
 
     public async Task<FileProviderConnection> GetConnectionAsync(Guid providerId, CancellationToken ct = default)
@@ -146,13 +146,31 @@ public sealed class FileProviderBindingService
 
     private static string NormalizeHttpUrl(string? value, string label)
     {
-        var normalized = NormalizeRequired(value, label).TrimEnd('/');
+        var normalized = NormalizeRequired(value, label);
         if (!Uri.TryCreate(normalized, UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
             throw new DomainException(5101, $"{label} must be an absolute HTTP or HTTPS URL");
         }
 
-        return normalized;
+        if (!string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Query)
+            || !string.IsNullOrEmpty(uri.Fragment))
+        {
+            throw new DomainException(5101, $"{label} must be an absolute HTTP or HTTPS URL");
+        }
+
+        var path = uri.AbsolutePath == "/"
+            ? string.Empty
+            : uri.AbsolutePath.TrimEnd('/');
+        var builder = new UriBuilder(uri.Scheme.ToLowerInvariant(), uri.Host.ToLowerInvariant())
+        {
+            Path = path
+        };
+
+        if (!uri.IsDefaultPort)
+            builder.Port = uri.Port;
+
+        return builder.Uri.ToString().TrimEnd('/');
     }
 }

@@ -52,6 +52,43 @@ public class FileProviderBindingServiceTests
         Assert.Equal(5101, error.ErrorCode);
     }
 
+    [Theory]
+    [InlineData("https://user:token@cloud.example.test/")]
+    [InlineData("https://cloud.example.test/?x=secret")]
+    public async Task BindNextcloudAsync_RejectsUnsafeBaseUrlParts(string baseUrl)
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db, new FakeSecretProtector(), new FakeFileProviderAdapter());
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => service.BindNextcloudAsync(
+            new BindNextcloudProviderRequest(baseUrl, null, "alice", "app-password")));
+
+        Assert.Equal(5101, error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task BindNextcloudAsync_CanonicalizesEquivalentBaseUrlsForUpsert()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db, new FakeSecretProtector(), new FakeFileProviderAdapter());
+
+        var first = await service.BindNextcloudAsync(new BindNextcloudProviderRequest(
+            "HTTPS://Cloud.Example.Test:443/",
+            null,
+            "alice",
+            "first-password"));
+        var second = await service.BindNextcloudAsync(new BindNextcloudProviderRequest(
+            "https://cloud.example.test",
+            null,
+            "alice",
+            "second-password"));
+
+        Assert.Equal(first.Id, second.Id);
+        Assert.Equal("https://cloud.example.test", second.BaseUrl);
+        var provider = await db.Set<FileProviderEntity>().SingleAsync();
+        Assert.Equal("protected:second-password", provider.AppPasswordSecret);
+    }
+
     [Fact]
     public async Task TestProviderAsync_UsesUnprotectedSecret()
     {
@@ -67,10 +104,13 @@ public class FileProviderBindingServiceTests
         var result = await service.TestProviderAsync(provider.Id);
 
         Assert.True(result.Success);
-        Assert.Equal("connected", result.Status);
+        Assert.Equal("ok", result.Status);
         Assert.Null(result.ErrorMessage);
         Assert.NotNull(adapter.LastConnection);
         Assert.Equal("app-password", adapter.LastConnection.AppPassword);
+
+        var providerEntity = await db.Set<FileProviderEntity>().SingleAsync();
+        Assert.Equal("connected", providerEntity.Status);
     }
 
     private static PimDbContext CreateDb()
