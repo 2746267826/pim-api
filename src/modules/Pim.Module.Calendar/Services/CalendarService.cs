@@ -403,6 +403,17 @@ public class CalendarService
                 "No tasks updated");
         }
 
+        if (request.Status is null && !request.Priority.HasValue && !request.CalendarId.HasValue)
+        {
+            return new CalendarOperationResult(
+                "calendar.tasks.batch_update",
+                operationId,
+                0,
+                Array.Empty<Guid>(),
+                Array.Empty<CalendarOperationSample>(),
+                "No tasks updated");
+        }
+
         CalendarEntity? targetCalendar = null;
         if (request.CalendarId.HasValue)
         {

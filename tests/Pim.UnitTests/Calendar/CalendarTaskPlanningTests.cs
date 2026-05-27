@@ -170,6 +170,32 @@ public class CalendarTaskPlanningTests
         Assert.Equal("No tasks updated", result.Message);
     }
 
+    [Fact]
+    public async Task BatchUpdateTasksAsync_ReturnsNoTasksUpdatedWhenNoMutationFields()
+    {
+        await using var db = CreateDb();
+        var updatedAt = new DateTimeOffset(2026, 5, 26, 8, 0, 0, TimeSpan.Zero);
+        var task = new TaskEntity
+        {
+            UserId = UserId,
+            Uid = "a@pim",
+            Title = "A",
+            UpdatedAt = updatedAt
+        };
+        db.Set<TaskEntity>().Add(task);
+        await db.SaveChangesAsync();
+        var service = CreateCalendarService(db);
+
+        var result = await service.BatchUpdateTasksAsync(
+            new BatchTaskUpdateRequest(new[] { task.Id }, null, null, null));
+
+        Assert.Equal(0, result.AffectedCount);
+        Assert.Empty(result.AffectedIds);
+        Assert.Empty(result.Samples);
+        Assert.Equal("No tasks updated", result.Message);
+        Assert.Equal(updatedAt, (await db.Set<TaskEntity>().SingleAsync(t => t.Id == task.Id)).UpdatedAt);
+    }
+
     private static PimDbContext CreateDb()
     {
         PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
