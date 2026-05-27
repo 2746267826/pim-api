@@ -37,4 +37,40 @@ public class AiSchemaValidatorTests
         Assert.Null(result.ParsedOutputJson);
         Assert.Contains(result.Errors, error => error.Contains("title"));
     }
+
+    [Fact]
+    public void Validate_FormattedValidOutput_ReturnsCompactParsedJson()
+    {
+        const string responseText = """
+            {
+              "title": "Inbox"
+            }
+            """;
+
+        var result = AiSchemaValidator.Validate(responseText, SchemaJson);
+
+        Assert.True(result.IsValid);
+        Assert.Equal("""{"title":"Inbox"}""", result.ParsedOutputJson);
+        Assert.Empty(result.Errors);
+    }
+
+    [Fact]
+    public void Validate_InvalidResponseJson_ReturnsInvalidJsonError()
+    {
+        var result = AiSchemaValidator.Validate("""{"title":""", SchemaJson);
+
+        Assert.False(result.IsValid);
+        Assert.Null(result.ParsedOutputJson);
+        Assert.Contains(result.Errors, error => error.StartsWith("Invalid JSON:"));
+    }
+
+    [Fact]
+    public void Validate_InvalidSchemaJson_ReturnsInvalidSchemaError()
+    {
+        var result = AiSchemaValidator.Validate("""{"title":"Inbox"}""", """{"type":""");
+
+        Assert.False(result.IsValid);
+        Assert.Null(result.ParsedOutputJson);
+        Assert.Contains(result.Errors, error => error.StartsWith("Invalid schema:"));
+    }
 }

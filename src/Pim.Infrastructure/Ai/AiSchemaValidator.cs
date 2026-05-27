@@ -12,17 +12,41 @@ public static class AiSchemaValidator
 {
     public static AiSchemaValidationResult Validate(string responseText, string schemaJson)
     {
+        JsonDocument document;
+
         try
         {
-            using var document = JsonDocument.Parse(responseText);
-            var schema = JsonSchema.FromText(schemaJson);
+            document = JsonDocument.Parse(responseText);
+        }
+        catch (JsonException ex)
+        {
+            return new AiSchemaValidationResult(false, null, [$"Invalid JSON: {ex.Message}"]);
+        }
+
+        JsonSchema schema;
+
+        try
+        {
+            schema = JsonSchema.FromText(schemaJson);
+        }
+        catch (JsonSchemaException ex)
+        {
+            return new AiSchemaValidationResult(false, null, [$"Invalid schema: {ex.Message}"]);
+        }
+        catch (JsonException ex)
+        {
+            return new AiSchemaValidationResult(false, null, [$"Invalid schema: {ex.Message}"]);
+        }
+
+        using (document)
+        {
             var results = schema.Evaluate(
                 document.RootElement,
                 new EvaluationOptions { OutputFormat = OutputFormat.List });
 
             if (results.IsValid)
             {
-                return new AiSchemaValidationResult(true, document.RootElement.GetRawText(), []);
+                return new AiSchemaValidationResult(true, JsonSerializer.Serialize(document.RootElement), []);
             }
 
             var errors = CollectErrors(results)
@@ -33,14 +57,6 @@ public static class AiSchemaValidator
                 false,
                 null,
                 errors.Length == 0 ? ["JSON did not match schema."] : errors);
-        }
-        catch (JsonException ex)
-        {
-            return new AiSchemaValidationResult(false, null, [$"Invalid JSON: {ex.Message}"]);
-        }
-        catch (JsonSchemaException ex)
-        {
-            return new AiSchemaValidationResult(false, null, [$"Invalid schema: {ex.Message}"]);
         }
     }
 
