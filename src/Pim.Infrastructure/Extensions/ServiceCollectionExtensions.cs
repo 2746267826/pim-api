@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Pim.Core.Ai;
+using Pim.Infrastructure.Ai;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -36,6 +38,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IHangfireMonitoringClient, HangfireMonitoringClient>();
         services.AddScoped<IBackgroundJobStatusService, HangfireJobStatusService>();
         services.AddScoped<Stage0DiagnosticJob>();
+        services.AddSingleton<IAiSchemaRegistry, InMemoryAiSchemaRegistry>();
+        services.AddScoped<IAiGateway, DisabledAiGateway>();
         var dataProtectionKeysPath = configuration["DataProtection:KeysPath"]
             ?? "/data/keys/data-protection";
         Directory.CreateDirectory(dataProtectionKeysPath);

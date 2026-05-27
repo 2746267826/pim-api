@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Core.Common;
+using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Modules;
 using Pim.Infrastructure.Data;
@@ -26,6 +27,7 @@ public sealed class FilesModule : IModule
         services.AddScoped<FileProviderBindingService>();
         services.AddScoped<FileOperationService>();
         services.AddScoped<FileIndexingService>();
+        services.AddScoped<FileAiService>();
         services.AddSingleton<IFileEmbeddingService, HashingFileEmbeddingService>();
         services.AddScoped<IFileTextExtractionService, TikaFileTextExtractionService>();
         services.AddHttpClient<NextcloudFileProviderAdapter>();
@@ -76,7 +78,14 @@ public sealed class FilesModule : IModule
         group.MapGet("/items/{id:guid}/open-link", BuildOpenLinkAsync);
     }
 
-    public Task InitializeAsync(IServiceProvider serviceProvider) => Task.CompletedTask;
+    public Task InitializeAsync(IServiceProvider serviceProvider)
+    {
+        var registry = serviceProvider.GetService<IAiSchemaRegistry>();
+        if (registry is not null)
+            FileAiService.RegisterSchemas(registry);
+
+        return Task.CompletedTask;
+    }
 
     private static async Task<IResult> SyncProviderAsync(
         Guid id,
