@@ -15,7 +15,7 @@ public sealed class AiGateway(
     {
         var ai = options.Value;
         var model = request.Model ?? ai.DefaultModel;
-        var maxAttempts = Math.Min(request.EffectiveMaxAttempts, ai.MaxAttemptsPerRequest);
+        var maxAttempts = Math.Max(1, Math.Min(request.EffectiveMaxAttempts, ai.MaxAttemptsPerRequest));
         var correlationId = Guid.NewGuid().ToString("N");
 
         if (!ai.Enabled)
@@ -294,13 +294,14 @@ public sealed class AiGateway(
         string? errorCode,
         string? errorMessage)
     {
+        var ai = options.Value;
         return new AiRequestLogWriteModel(
             UserId: null,
             request.Module,
             request.Purpose,
             request.SourceObjectType,
             request.SourceObjectId,
-            options.Value.Provider,
+            ai.Provider,
             model,
             LiteLlmRequestId: null,
             correlationId,
@@ -309,11 +310,11 @@ public sealed class AiGateway(
             maxAttempts,
             started,
             finished,
-            messagesJson,
+            PersistMessagesJson(messagesJson, ai),
             payloadJson,
-            rawJson,
-            responseText,
-            parsedJson,
+            PersistResponseRawJson(rawJson, ai),
+            PersistResponseText(responseText, ai),
+            PersistParsedJson(parsedJson, ai),
             schema?.Name,
             schema?.Version,
             schema?.JsonSchema,
@@ -346,13 +347,14 @@ public sealed class AiGateway(
         CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
+        var ai = options.Value;
         return await logWriter.WriteAsync(new AiRequestLogWriteModel(
             null,
             request.Module,
             request.Purpose,
             request.SourceObjectType,
             request.SourceObjectId,
-            options.Value.Provider,
+            ai.Provider,
             model,
             null,
             correlationId,
@@ -361,11 +363,11 @@ public sealed class AiGateway(
             maxAttempts,
             now,
             now,
-            messagesJson,
+            PersistMessagesJson(messagesJson, ai),
             payloadJson,
-            rawJson,
-            responseText,
-            parsedJson,
+            PersistResponseRawJson(rawJson, ai),
+            PersistResponseText(responseText, ai),
+            PersistParsedJson(parsedJson, ai),
             schema?.Name,
             schema?.Version,
             schema?.JsonSchema,
@@ -378,6 +380,26 @@ public sealed class AiGateway(
             errorCode,
             errorMessage,
             JsonSerializer.Serialize(request.Metadata ?? new Dictionary<string, string>())), ct);
+    }
+
+    private static string PersistMessagesJson(string messagesJson, AiOptions ai)
+    {
+        return ai.SaveFullPrompts ? messagesJson : "[]";
+    }
+
+    private static string PersistResponseRawJson(string rawJson, AiOptions ai)
+    {
+        return ai.SaveFullResponses ? rawJson : "{}";
+    }
+
+    private static string? PersistResponseText(string? responseText, AiOptions ai)
+    {
+        return ai.SaveFullResponses ? responseText : null;
+    }
+
+    private static string? PersistParsedJson(string? parsedJson, AiOptions ai)
+    {
+        return ai.SaveFullResponses ? parsedJson : null;
     }
 
     private sealed record ProviderCallResult(AiRequestStatus Status, ChatResponse? Response, string? ErrorMessage)

@@ -98,6 +98,79 @@ public class AiGatewayTests
         Assert.Contains("provider misconfigured", log.ErrorMessage);
     }
 
+    [Fact]
+    public async Task CompleteAsync_ClampsConfiguredMaxAttemptsToAtLeastOne()
+    {
+        await using var db = CreateDb();
+        var fakeClient = new FakeChatClient("plain answer");
+        var gateway = CreateGateway(
+            db,
+            fakeClient,
+            enabled: true,
+            maxAttemptsPerRequest: 0);
+
+        var result = await gateway.CompleteAsync(BasicRequest(schemaName: null, schemaVersion: null));
+
+        Assert.Equal(AiRequestStatus.Succeeded, result.Status);
+        Assert.Equal(1, fakeClient.CallCount);
+        var log = await db.AiRequestLogs.SingleAsync();
+        Assert.Equal("succeeded", log.Status);
+        Assert.Equal(1, log.AttemptNumber);
+        Assert.Equal(1, log.MaxAttempts);
+    }
+
+    [Fact]
+    public async Task CompleteAsync_HonorsPromptAndResponsePersistenceSwitches()
+    {
+        await using var db = CreateDb();
+        var fakeClient = new FakeChatClient("""{"title":"Secret response"}""");
+        var registry = new AiSchemaRegistry();
+        registry.Register(new AiSchemaDefinition(
+            "quick-note-conversion",
+            "1",
+            """{"type":"object","required":["title"],"properties":{"title":{"type":"string"}}}""",
+            "Quick note conversion"));
+        var gateway = CreateGateway(
+            db,
+            fakeClient,
+            enabled: true,
+            registry: registry,
+            saveFullPrompts: false,
+            saveFullResponses: false);
+
+        var result = await gateway.CompleteAsync(BasicRequest());
+
+        Assert.Equal(AiRequestStatus.Succeeded, result.Status);
+        Assert.Equal("""{"title":"Secret response"}""", result.ResponseText);
+        Assert.Equal("""{"title":"Secret response"}""", result.ParsedOutputJson);
+        var log = await db.AiRequestLogs.SingleAsync();
+        Assert.Equal("[]", log.RequestMessagesJson);
+        Assert.DoesNotContain("convert this note", log.RequestPayloadJson);
+        Assert.Equal("{}", log.ResponseRawJson);
+        Assert.Null(log.ResponseText);
+        Assert.Null(log.ParsedOutputJson);
+    }
+
+    [Fact]
+    public void AiChatClientFactory_CachesClientByModel()
+    {
+        var factory = new AiChatClientFactory(Options.Create(new AiOptions
+        {
+            BaseUrl = "http://litellm:4000",
+            ApiKey = "sk-pim"
+        }));
+
+        using (factory)
+        {
+            var first = factory.Create("pim-default");
+            var second = factory.Create("pim-default");
+            var other = factory.Create("other-model");
+
+            Assert.Same(first, second);
+            Assert.NotSame(first, other);
+        }
+    }
+
     private static AiGatewayRequest BasicRequest(string? schemaName = "quick-note-conversion", string? schemaVersion = "1", int maxAttempts = 1)
         => new(
             Module: "quick-notes",
@@ -125,15 +198,29 @@ public class AiGatewayTests
         FakeChatClient fakeClient,
         bool enabled,
         IAiSchemaRegistry? registry = null,
-        int timeoutSeconds = 30)
-        => CreateGateway(db, new FixedAiChatClientFactory(fakeClient), enabled, registry, timeoutSeconds);
+        int timeoutSeconds = 30,
+        int maxAttemptsPerRequest = 2,
+        bool saveFullPrompts = true,
+        bool saveFullResponses = true)
+        => CreateGateway(
+            db,
+            new FixedAiChatClientFactory(fakeClient),
+            enabled,
+            registry,
+            timeoutSeconds,
+            maxAttemptsPerRequest,
+            saveFullPrompts,
+            saveFullResponses);
 
     private static AiGateway CreateGateway(
         PimDbContext db,
         IAiChatClientFactory factory,
         bool enabled,
         IAiSchemaRegistry? registry = null,
-        int timeoutSeconds = 30)
+        int timeoutSeconds = 30,
+        int maxAttemptsPerRequest = 2,
+        bool saveFullPrompts = true,
+        bool saveFullResponses = true)
     {
         var options = Options.Create(new AiOptions
         {
@@ -144,9 +231,9 @@ public class AiGatewayTests
             DefaultModel = "pim-default",
             TimeoutSeconds = timeoutSeconds,
             MaxOutputTokensPerRequest = 1000,
-            MaxAttemptsPerRequest = 2,
-            SaveFullPrompts = true,
-            SaveFullResponses = true
+            MaxAttemptsPerRequest = maxAttemptsPerRequest,
+            SaveFullPrompts = saveFullPrompts,
+            SaveFullResponses = saveFullResponses
         });
 
         return new AiGateway(
