@@ -36,6 +36,8 @@ public class AiSchemaValidatorTests
         Assert.False(result.IsValid);
         Assert.Null(result.ParsedOutputJson);
         Assert.Contains(result.Errors, error => error.Contains("title"));
+        Assert.DoesNotContain(result.Errors, error => error.StartsWith(":"));
+        Assert.Contains(result.Errors, error => error.Contains("$"));
     }
 
     [Fact]

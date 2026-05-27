@@ -70,7 +70,11 @@ public static class AiSchemaValidator
         {
             throw new InvalidSchemaException(ex.Message, ex);
         }
-        catch (Exception ex)
+        catch (ArgumentException ex)
+        {
+            throw new InvalidSchemaException(ex.Message, ex);
+        }
+        catch (NotSupportedException ex)
         {
             throw new InvalidSchemaException(ex.Message, ex);
         }
@@ -82,7 +86,7 @@ public static class AiSchemaValidator
         {
             foreach (var error in results.Errors)
             {
-                yield return $"{results.InstanceLocation}: {error.Key} {error.Value}";
+                yield return $"{FormatInstanceLocation(results)}: {error.Key} {error.Value}";
             }
         }
 
@@ -98,6 +102,12 @@ public static class AiSchemaValidator
                 yield return error;
             }
         }
+    }
+
+    private static string FormatInstanceLocation(EvaluationResults results)
+    {
+        var location = results.InstanceLocation.ToString();
+        return string.IsNullOrWhiteSpace(location) ? "$" : location;
     }
 
     private sealed class InvalidSchemaException(string message, Exception innerException)
