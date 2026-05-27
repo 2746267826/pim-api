@@ -12,37 +12,11 @@ public static class AiSchemaValidator
 {
     public static AiSchemaValidationResult Validate(string responseText, string schemaJson)
     {
-        JsonDocument document;
-
         try
         {
-            document = JsonDocument.Parse(responseText);
-        }
-        catch (JsonException ex)
-        {
-            return new AiSchemaValidationResult(false, null, [$"Invalid JSON: {ex.Message}"]);
-        }
-
-        JsonSchema schema;
-
-        try
-        {
-            schema = JsonSchema.FromText(schemaJson);
-        }
-        catch (JsonSchemaException ex)
-        {
-            return new AiSchemaValidationResult(false, null, [$"Invalid schema: {ex.Message}"]);
-        }
-        catch (JsonException ex)
-        {
-            return new AiSchemaValidationResult(false, null, [$"Invalid schema: {ex.Message}"]);
-        }
-
-        using (document)
-        {
-            var results = schema.Evaluate(
-                document.RootElement,
-                new EvaluationOptions { OutputFormat = OutputFormat.List });
+            using var document = JsonDocument.Parse(responseText);
+            var schema = ParseSchema(schemaJson);
+            var results = EvaluateSchema(schema, document.RootElement);
 
             if (results.IsValid)
             {
@@ -57,6 +31,48 @@ public static class AiSchemaValidator
                 false,
                 null,
                 errors.Length == 0 ? ["JSON did not match schema."] : errors);
+        }
+        catch (JsonException ex)
+        {
+            return new AiSchemaValidationResult(false, null, [$"Invalid JSON: {ex.Message}"]);
+        }
+        catch (InvalidSchemaException ex)
+        {
+            return new AiSchemaValidationResult(false, null, [$"Invalid schema: {ex.Message}"]);
+        }
+    }
+
+    private static JsonSchema ParseSchema(string schemaJson)
+    {
+        try
+        {
+            return JsonSchema.FromText(schemaJson);
+        }
+        catch (JsonSchemaException ex)
+        {
+            throw new InvalidSchemaException(ex.Message, ex);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidSchemaException(ex.Message, ex);
+        }
+    }
+
+    private static EvaluationResults EvaluateSchema(JsonSchema schema, JsonElement response)
+    {
+        try
+        {
+            return schema.Evaluate(
+                response,
+                new EvaluationOptions { OutputFormat = OutputFormat.List });
+        }
+        catch (JsonSchemaException ex)
+        {
+            throw new InvalidSchemaException(ex.Message, ex);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidSchemaException(ex.Message, ex);
         }
     }
 
@@ -83,4 +99,7 @@ public static class AiSchemaValidator
             }
         }
     }
+
+    private sealed class InvalidSchemaException(string message, Exception innerException)
+        : Exception(message, innerException);
 }

@@ -73,4 +73,14 @@ public class AiSchemaValidatorTests
         Assert.Null(result.ParsedOutputJson);
         Assert.Contains(result.Errors, error => error.StartsWith("Invalid schema:"));
     }
+
+    [Fact]
+    public void Validate_UnresolvableSchemaReference_ReturnsInvalidSchemaError()
+    {
+        var result = AiSchemaValidator.Validate("""{"title":"Inbox"}""", """{"$ref":"#/definitions/missing"}""");
+
+        Assert.False(result.IsValid);
+        Assert.Null(result.ParsedOutputJson);
+        Assert.Contains(result.Errors, error => error.StartsWith("Invalid schema:"));
+    }
 }

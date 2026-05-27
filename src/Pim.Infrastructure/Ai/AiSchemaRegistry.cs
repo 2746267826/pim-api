@@ -1,10 +1,11 @@
+using System.Collections.Concurrent;
 using Pim.Core.Ai;
 
 namespace Pim.Infrastructure.Ai;
 
 public sealed class AiSchemaRegistry : IAiSchemaRegistry
 {
-    private readonly Dictionary<(string Name, string Version), AiSchemaDefinition> _schemas = new();
+    private readonly ConcurrentDictionary<(string Name, string Version), AiSchemaDefinition> _schemas = new();
 
     public void Register(AiSchemaDefinition schema)
     {
