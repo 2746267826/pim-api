@@ -72,6 +72,26 @@ public class AiRedactorTests
     }
 
     [Fact]
+    public void RedactJson_PreservesKnownNonSecretTokenCountFields()
+    {
+        var json = """
+        {
+          "max_tokens": 100,
+          "prompt_tokens": 7,
+          "completion_tokens": 9,
+          "api_key": "plain-secret"
+        }
+        """;
+
+        var redacted = AiRedactor.RedactJson(json);
+
+        Assert.Contains("\"max_tokens\":100", redacted);
+        Assert.Contains("\"prompt_tokens\":7", redacted);
+        Assert.Contains("\"completion_tokens\":9", redacted);
+        Assert.DoesNotContain("plain-secret", redacted);
+    }
+
+    [Fact]
     public void RedactJson_InvalidJson_ReturnsParseableJsonWithRedactedRawText()
     {
         var redacted = AiRedactor.RedactJson("not json sk-task3-canary-1234567890");
@@ -113,5 +133,23 @@ public class AiRedactorTests
         Assert.DoesNotContain("plain-access-token", redacted);
         Assert.Contains("safe=value", redacted);
         Assert.Contains("[REDACTED]", redacted);
+    }
+
+    [Fact]
+    public void RedactPlainText_RemovesSensitiveKeyValueFragmentsAfterPlainLabels()
+    {
+        var text = """
+        error: password: hunter2
+        LiteLLM error: client_secret=plain-secret
+        provider said api_key=plain-secret
+        """;
+
+        var redacted = AiRedactor.RedactPlainText(text);
+
+        Assert.DoesNotContain("hunter2", redacted);
+        Assert.DoesNotContain("plain-secret", redacted);
+        Assert.Contains("error: password: [REDACTED]", redacted);
+        Assert.Contains("LiteLLM error: client_secret=[REDACTED]", redacted);
+        Assert.Contains("provider said api_key=[REDACTED]", redacted);
     }
 }

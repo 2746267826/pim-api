@@ -30,6 +30,14 @@ public static partial class AiRedactor
         "litellm_virtual_key"
     };
 
+    private static readonly HashSet<string> NonSecretKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "max_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens"
+    };
+
     public static string RedactJson(string? json)
     {
         if (string.IsNullOrWhiteSpace(json))
@@ -69,7 +77,10 @@ public static partial class AiRedactor
                 return match.Value;
             }
 
-            return match.Groups["prefix"].Value + "[REDACTED]" + match.Groups["quote"].Value;
+            return match.Groups["boundary"].Value
+                + match.Groups["prefix"].Value
+                + "[REDACTED]"
+                + match.Groups["quote"].Value;
         });
 
         return TokenLikeValueRegex().Replace(redacted, "[REDACTED]");
@@ -115,6 +126,11 @@ public static partial class AiRedactor
 
     private static bool IsSensitiveKey(string key)
     {
+        if (NonSecretKeys.Contains(key))
+        {
+            return false;
+        }
+
         if (SensitiveKeys.Contains(key))
         {
             return true;
@@ -148,6 +164,6 @@ public static partial class AiRedactor
     [GeneratedRegex(@"(?i)(bearer\s+[a-z0-9._\-+/=]+|sk-[a-z0-9_\-]{8,}|eyJ[a-z0-9_\-]+\.[a-z0-9_\-]+\.[a-z0-9_\-]+)")]
     private static partial Regex TokenLikeValueRegex();
 
-    [GeneratedRegex(@"(?i)(?<prefix>[""']?(?<key>[a-z0-9_.\-\s]+)[""']?\s*(?:=|:)\s*(?<quote>[""']?))(?<value>[^\s,""'}]+)(?<endquote>[""']?)")]
+    [GeneratedRegex(@"(?i)(?<boundary>^|[\s,{[(])(?<prefix>[""']?(?<key>[a-z0-9_.\-]*(?:api[_\-.]?key|token|secret|password|authorization|private[_\-.]?key)[a-z0-9_.\-]*)[""']?\s*(?:=|:)\s*(?<quote>[""']?))(?<value>[^\s,""'}]+)(?<endquote>[""']?)")]
     private static partial Regex SensitiveKeyValueRegex();
 }
