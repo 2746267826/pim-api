@@ -111,7 +111,17 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
         CancellationToken ct = default)
     {
         var filter = new AiRequestLogFilter(from, to, null, null, null, null, null, null, null);
-        var logs = await ApplyFilter(db.AiRequestLogs.AsNoTracking(), filter).ToListAsync(ct);
+        var logs = await ApplyFilter(db.AiRequestLogs.AsNoTracking(), filter)
+            .Select(l => new AiUsageSummaryRow(
+                l.Module,
+                l.Purpose,
+                l.Model,
+                l.Status,
+                l.PromptTokens,
+                l.CompletionTokens,
+                l.TotalTokens,
+                l.EstimatedCost))
+            .ToListAsync(ct);
 
         return new AiUsageSummaryDto(
             logs.Count,
@@ -179,9 +189,19 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
         return query;
     }
 
+    private sealed record AiUsageSummaryRow(
+        string Module,
+        string Purpose,
+        string Model,
+        string Status,
+        int? PromptTokens,
+        int? CompletionTokens,
+        int? TotalTokens,
+        decimal? EstimatedCost);
+
     private static IReadOnlyList<AiUsageGroupDto> Group(
-        IEnumerable<AiRequestLogEntity> logs,
-        Func<AiRequestLogEntity, string> keySelector)
+        IEnumerable<AiUsageSummaryRow> logs,
+        Func<AiUsageSummaryRow, string> keySelector)
         => logs.GroupBy(keySelector)
             .OrderByDescending(g => g.Count())
             .Select(g => new AiUsageGroupDto(
@@ -196,6 +216,8 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
             .ToList();
 
     private static bool IsSuccess(AiRequestLogEntity log) => log.Status == "succeeded";
+
+    private static bool IsSuccess(AiUsageSummaryRow log) => log.Status == "succeeded";
 
     private static string ToStorageStatus(AiRequestStatus status) => status switch
     {

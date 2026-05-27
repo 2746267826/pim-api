@@ -1,3 +1,4 @@
+using System.Net;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
@@ -47,6 +48,47 @@ public class AiUsageServiceTests
         Assert.Contains(summary.ByStatus, group => group.GroupKey == "failed" && group.FailureCount == 1);
     }
 
+    [Fact]
+    public async Task CheckAsync_WhenAiDisabled_DoesNotCallProviderAndStoresDisabledStatus()
+    {
+        await using var db = CreateDb();
+        db.AiProviderSettings.Add(new AiProviderSettingEntity
+        {
+            Provider = "litellm",
+            Status = "error",
+            LastError = "previous failure"
+        });
+        await db.SaveChangesAsync();
+        var handler = new StubHttpMessageHandler(_ => throw new InvalidOperationException("HTTP should not be called"));
+        var service = CreateHealthService(db, enabled: false, handler);
+
+        await service.CheckAsync();
+
+        var settings = await db.AiProviderSettings.SingleAsync(s => s.Provider == "litellm");
+        Assert.Equal("disabled", settings.Status);
+        Assert.Null(settings.LastError);
+        Assert.Equal(0, handler.RequestCount);
+    }
+
+    [Fact]
+    public async Task CheckAsync_WhenDefaultModelIsMissing_StoresHealthError()
+    {
+        await using var db = CreateDb();
+        var handler = new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"object":"list","data":[{"id":"other-model"}]}""")
+        });
+        var service = CreateHealthService(db, enabled: true, handler);
+
+        await service.CheckAsync();
+
+        var settings = await db.AiProviderSettings.SingleAsync(s => s.Provider == "litellm");
+        Assert.Equal("error", settings.Status);
+        Assert.Contains("default model", settings.LastError, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("pim-default", settings.LastError, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-key", settings.LastError, StringComparison.Ordinal);
+    }
+
     private static PimDbContext CreateDb()
     {
         var options = new DbContextOptionsBuilder<PimDbContext>()
@@ -63,6 +105,22 @@ public class AiUsageServiceTests
             BaseUrl = "http://litellm:4000",
             DefaultModel = "pim-default"
         }));
+
+    private static AiProviderHealthService CreateHealthService(
+        PimDbContext db,
+        bool enabled,
+        StubHttpMessageHandler handler)
+        => new(
+            db,
+            Options.Create(new AiOptions
+            {
+                Enabled = enabled,
+                Provider = "litellm",
+                BaseUrl = "http://litellm:4000",
+                ApiKey = "secret-key",
+                DefaultModel = "pim-default"
+            }),
+            new StubHttpClientFactory(handler));
 
     private static AiRequestLogEntity MakeLog(string module, string status, int totalTokens) => new()
     {
@@ -92,4 +150,20 @@ public class AiUsageServiceTests
         OutputHash = "output",
         MetadataJson = "{}"
     };
+
+    private sealed class StubHttpClientFactory(StubHttpMessageHandler handler) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
+    }
+
+    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> send) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(send(request));
+        }
+    }
 }
