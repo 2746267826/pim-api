@@ -80,6 +80,41 @@ public class AiGatewayTests
     }
 
     [Fact]
+    public async Task CompleteAsync_RetriesTimeoutAndLogsEachAttempt_WhenRetrySucceeds()
+    {
+        await using var db = CreateDb();
+        var fakeClient = new FakeChatClient(
+            [
+                FakeChatClientStep.WaitUntilCanceled(),
+                FakeChatClientStep.Respond("plain answer")
+            ]);
+        var gateway = CreateGateway(db, fakeClient, enabled: true, timeoutSeconds: 1);
+
+        var result = await gateway.CompleteAsync(BasicRequest(schemaName: null, schemaVersion: null, maxAttempts: 2));
+
+        Assert.Equal(AiRequestStatus.Succeeded, result.Status);
+        Assert.Equal("plain answer", result.ResponseText);
+        Assert.Equal(2, fakeClient.CallCount);
+        var logs = await db.AiRequestLogs.OrderBy(log => log.AttemptNumber).ToListAsync();
+        Assert.Collection(
+            logs,
+            log =>
+            {
+                Assert.Equal("timed_out", log.Status);
+                Assert.Equal(1, log.AttemptNumber);
+                Assert.Equal(2, log.MaxAttempts);
+                Assert.Equal("timed_out", log.ErrorCode);
+            },
+            log =>
+            {
+                Assert.Equal("succeeded", log.Status);
+                Assert.Equal(2, log.AttemptNumber);
+                Assert.Equal(2, log.MaxAttempts);
+                Assert.Null(log.ErrorCode);
+            });
+    }
+
+    [Fact]
     public async Task CompleteAsync_LogsFailed_WhenProviderFactoryThrows()
     {
         await using var db = CreateDb();
@@ -96,6 +131,42 @@ public class AiGatewayTests
         Assert.Equal("failed", log.Status);
         Assert.Equal("provider_unavailable", log.ErrorCode);
         Assert.Contains("provider misconfigured", log.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task CompleteAsync_RetriesProviderFailureAndLogsEachAttempt_WhenRetrySucceeds()
+    {
+        await using var db = CreateDb();
+        var fakeClient = new FakeChatClient(
+            [
+                FakeChatClientStep.Throw(new InvalidOperationException("provider hiccup")),
+                FakeChatClientStep.Respond("plain answer")
+            ]);
+        var gateway = CreateGateway(db, fakeClient, enabled: true);
+
+        var result = await gateway.CompleteAsync(BasicRequest(schemaName: null, schemaVersion: null, maxAttempts: 2));
+
+        Assert.Equal(AiRequestStatus.Succeeded, result.Status);
+        Assert.Equal("plain answer", result.ResponseText);
+        Assert.Equal(2, fakeClient.CallCount);
+        var logs = await db.AiRequestLogs.OrderBy(log => log.AttemptNumber).ToListAsync();
+        Assert.Collection(
+            logs,
+            log =>
+            {
+                Assert.Equal("failed", log.Status);
+                Assert.Equal(1, log.AttemptNumber);
+                Assert.Equal(2, log.MaxAttempts);
+                Assert.Equal("provider_unavailable", log.ErrorCode);
+                Assert.Contains("provider hiccup", log.ErrorMessage);
+            },
+            log =>
+            {
+                Assert.Equal("succeeded", log.Status);
+                Assert.Equal(2, log.AttemptNumber);
+                Assert.Equal(2, log.MaxAttempts);
+                Assert.Null(log.ErrorCode);
+            });
     }
 
     [Fact]
@@ -304,22 +375,35 @@ internal sealed class CountingAiChatClientFactory(bool delayCreation = false)
 
 internal sealed class FakeChatClient : IChatClient
 {
-    private readonly Queue<string> _responses;
+    private readonly Queue<FakeChatClientStep> _steps;
     private readonly int? _promptTokens;
     private readonly int? _completionTokens;
-    private readonly bool _waitForCancellation;
 
     public FakeChatClient(string response, int? promptTokens = null, int? completionTokens = null, bool waitForCancellation = false)
-        : this([response], promptTokens, completionTokens, waitForCancellation)
+        : this(
+            waitForCancellation
+                ? [FakeChatClientStep.WaitUntilCanceled()]
+                : [FakeChatClientStep.Respond(response)],
+            promptTokens,
+            completionTokens)
     {
     }
 
     public FakeChatClient(IEnumerable<string> responses, int? promptTokens = null, int? completionTokens = null, bool waitForCancellation = false)
+        : this(
+            waitForCancellation
+                ? responses.Select(_ => FakeChatClientStep.WaitUntilCanceled())
+                : responses.Select(FakeChatClientStep.Respond),
+            promptTokens,
+            completionTokens)
     {
-        _responses = new Queue<string>(responses);
+    }
+
+    public FakeChatClient(IEnumerable<FakeChatClientStep> steps, int? promptTokens = null, int? completionTokens = null)
+    {
+        _steps = new Queue<FakeChatClientStep>(steps);
         _promptTokens = promptTokens;
         _completionTokens = completionTokens;
-        _waitForCancellation = waitForCancellation;
     }
 
     public int CallCount { get; private set; }
@@ -332,12 +416,18 @@ internal sealed class FakeChatClient : IChatClient
     {
         CallCount++;
         Requests.Add(messages.ToList());
-        if (_waitForCancellation && cancellationToken.CanBeCanceled)
+        var step = _steps.Count > 0 ? _steps.Dequeue() : FakeChatClientStep.Respond(string.Empty);
+        if (step.Exception is not null)
+        {
+            throw step.Exception;
+        }
+
+        if (step.WaitForCancellation && cancellationToken.CanBeCanceled)
         {
             await Task.Delay(TimeSpan.FromMinutes(5), cancellationToken);
         }
 
-        var response = _responses.Count > 0 ? _responses.Dequeue() : string.Empty;
+        var response = step.Response ?? string.Empty;
         var chatResponse = new ChatResponse(new ChatMessage(ChatRole.Assistant, response))
         {
             Usage = new UsageDetails
@@ -364,6 +454,15 @@ internal sealed class FakeChatClient : IChatClient
 
     public object? GetService(Type serviceType, object? serviceKey = null) => null;
     public void Dispose() { }
+}
+
+internal sealed record FakeChatClientStep(string? Response, bool WaitForCancellation, Exception? Exception)
+{
+    public static FakeChatClientStep Respond(string response) => new(response, false, null);
+
+    public static FakeChatClientStep WaitUntilCanceled() => new(null, true, null);
+
+    public static FakeChatClientStep Throw(Exception exception) => new(null, false, exception);
 }
 
 internal sealed class DisposableFakeChatClient : IChatClient, IDisposable

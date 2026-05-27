@@ -67,6 +67,11 @@ public sealed class AiGateway(
                     "timed_out",
                     call.ErrorMessage,
                     ct);
+                if (attempt < maxAttempts)
+                {
+                    continue;
+                }
+
                 return new AiResult(AiRequestStatus.TimedOut, null, null, [], new AiTokenUsage(null, null, null, null, null), lastLogId, "AI request timed out.");
             }
 
@@ -88,6 +93,11 @@ public sealed class AiGateway(
                     "provider_unavailable",
                     call.ErrorMessage,
                     ct);
+                if (attempt < maxAttempts)
+                {
+                    continue;
+                }
+
                 return new AiResult(AiRequestStatus.Failed, null, null, [], new AiTokenUsage(null, null, null, null, null), lastLogId, "AI provider is unavailable.");
             }
 

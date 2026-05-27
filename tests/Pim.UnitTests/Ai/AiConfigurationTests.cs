@@ -55,11 +55,16 @@ public class AiConfigurationTests
     }
 
     [Fact]
-    public void EnvExample_UsesSameVirtualAndMasterLiteLlmKey()
+    public void EnvExample_SeparatesVirtualAndMasterLiteLlmKeys()
     {
+        var envExample = File.ReadAllText(Path.Combine("..", "..", "..", "..", "..", ".env.example"));
         var variables = ReadEnvExample();
 
-        Assert.Equal(variables["LITELLM_MASTER_KEY"], variables["PIM_LITELLM_VIRTUAL_KEY"]);
+        Assert.Equal("sk-change-me-virtual", variables["PIM_LITELLM_VIRTUAL_KEY"]);
+        Assert.Equal("sk-change-me-master", variables["LITELLM_MASTER_KEY"]);
+        Assert.NotEqual(variables["LITELLM_MASTER_KEY"], variables["PIM_LITELLM_VIRTUAL_KEY"]);
+        Assert.Contains("Create PIM_LITELLM_VIRTUAL_KEY with LITELLM_MASTER_KEY", envExample);
+        Assert.Contains("Do not give LITELLM_MASTER_KEY to PIM", envExample);
     }
 
     private static JsonDocument ReadApiAppsettings(string fileName)

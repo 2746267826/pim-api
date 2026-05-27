@@ -49,7 +49,7 @@ public class AiEndpointPathTests
     }
 
     [Fact]
-    public async Task MapAiEndpoints_RegistersExpectedAuthorizedRoutes()
+    public async Task MapAiEndpoints_RegistersExpectedAdminAuthorizedRoutes()
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -79,11 +79,23 @@ public class AiEndpointPathTests
         {
             var endpoints = routes[expected].ToList();
             Assert.True(endpoints.Count > 0, $"Missing route: {expected}");
-            Assert.All(endpoints, endpoint => Assert.NotNull(endpoint.Metadata.GetMetadata<IAuthorizeData>()));
+            Assert.All(endpoints, endpoint =>
+            {
+                var authorizeData = endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>();
+                Assert.NotEmpty(authorizeData);
+                Assert.Contains(authorizeData, RequiresAdminRole);
+            });
         }
     }
 
     private static string NormalizeRoute(string route) => route.Length > 1 ? route.TrimEnd('/') : route;
+
+    private static bool RequiresAdminRole(IAuthorizeData authorizeData)
+    {
+        return authorizeData.Roles?
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(role => string.Equals(role, "admin", StringComparison.OrdinalIgnoreCase)) == true;
+    }
 
     private sealed class FakeAiGateway : IAiGateway
     {
