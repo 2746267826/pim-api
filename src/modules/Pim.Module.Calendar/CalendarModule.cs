@@ -39,7 +39,7 @@ public class CalendarModule : IModule
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
     {
-        var group = endpoints.MapGroup("/api/v1/calendar")
+        var group = endpoints.MapGroup(CalendarEndpointPaths.Root)
             .RequireAuthorization();
 
         // Calendars
@@ -326,4 +326,19 @@ public class CalendarModule : IModule
     {
         await Task.CompletedTask;
     }
+}
+
+public static class CalendarEndpointPaths
+{
+    public const string Root = "/api/v1/calendar";
+    public const string RecycleBin = "/api/v1/calendar/recycle-bin";
+    public const string EventBatchDelete = "/api/v1/calendar/events/batch-delete";
+    public const string TaskBatchUpdate = "/api/v1/calendar/tasks/batch-update";
+    public const string TaskBatchDelete = "/api/v1/calendar/tasks/batch-delete";
+    public const string ImportIcs = "/api/v1/calendar/import-ics";
+    public const string ExportIcs = "/api/v1/calendar/export-ics";
+
+    public static string TaskPlan(string id) => $"{Root}/tasks/{id}/plan";
+    public static string RecycleRestorePreview(string type, string id) => $"{RecycleBin}/{type}/{id}/restore-preview";
+    public static string RecycleRestore(string type, string id) => $"{RecycleBin}/{type}/{id}/restore";
 }
