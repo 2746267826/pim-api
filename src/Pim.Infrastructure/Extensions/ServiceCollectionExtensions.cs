@@ -1,5 +1,6 @@
 using Hangfire;
 using Hangfire.PostgreSql;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -9,6 +10,7 @@ using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Operations;
+using Pim.Infrastructure.Secrets;
 using Pim.Infrastructure.Storage;
 using Pim.Infrastructure.TextExtraction;
 
@@ -44,6 +46,13 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IHangfireMonitoringClient, HangfireMonitoringClient>();
         services.AddScoped<IBackgroundJobStatusService, HangfireJobStatusService>();
         services.AddScoped<Stage0DiagnosticJob>();
+        var dataProtectionKeysPath = configuration["DataProtection:KeysPath"]
+            ?? "/data/keys/data-protection";
+        Directory.CreateDirectory(dataProtectionKeysPath);
+        services.AddDataProtection()
+            .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath))
+            .SetApplicationName("Pim");
+        services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
 
         // Auth
         services.AddSingleton<JwtService>();

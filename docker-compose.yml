@@ -32,6 +32,13 @@ services:
       - Ai__MaxAttemptsPerRequest=2
       - Ai__SaveFullPrompts=true
       - Ai__SaveFullResponses=true
+      - Nextcloud__PublicBaseUrl=${NEXTCLOUD_PUBLIC_BASE_URL}
+      - Nextcloud__InternalBaseUrl=http://nextcloud
+      - OnlyOffice__PublicUrl=${ONLYOFFICE_PUBLIC_URL}
+      - OnlyOffice__JwtSecret=${ONLYOFFICE_JWT_SECRET}
+      - Qdrant__BaseUrl=http://qdrant:6333
+      - Qdrant__Url=http://qdrant:6333
+      - Qdrant__Collection=pim_file_chunks
     volumes:
       - pim_data:/data
       - ./keys:/data/keys:ro
@@ -41,6 +48,8 @@ services:
       minio:
         condition: service_healthy
       litellm:
+        condition: service_started
+      qdrant:
         condition: service_started
     networks:
       - pim-net
@@ -104,10 +113,82 @@ services:
     networks:
       - pim-net
 
+  nextcloud-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
+      POSTGRES_DB: nextcloud
+    volumes:
+      - nextcloud_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nextcloud"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pim-net
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - pim-net
+
+  nextcloud:
+    image: nextcloud:apache
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:80"
+    environment:
+      POSTGRES_HOST: nextcloud-db
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
+      POSTGRES_DB: nextcloud
+      REDIS_HOST: redis
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+      OVERWRITEPROTOCOL: http
+      OVERWRITEHOST: 127.0.0.1:8080
+    volumes:
+      - nextcloud_data:/var/www/html
+    depends_on:
+      nextcloud-db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - pim-net
+
+  onlyoffice:
+    image: onlyoffice/documentserver
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8082:80"
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
+    networks:
+      - pim-net
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - pim-net
+
 volumes:
   pg_data:
   minio_data:
   pim_data:
+  nextcloud_data:
+  nextcloud_db_data:
+  qdrant_data:
 
 networks:
   pim-net:

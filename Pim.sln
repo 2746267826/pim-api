@@ -23,6 +23,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pim.Module.Stats", "src\mod
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pim.Module.QuickNotes", "src\modules\Pim.Module.QuickNotes\Pim.Module.QuickNotes.csproj", "{6ECC497D-58EB-4D0D-B102-92DB769991BE}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pim.Module.Files", "src\modules\Pim.Module.Files\Pim.Module.Files.csproj", "{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -117,6 +119,18 @@ Global
 		{6ECC497D-58EB-4D0D-B102-92DB769991BE}.Release|x64.Build.0 = Release|Any CPU
 		{6ECC497D-58EB-4D0D-B102-92DB769991BE}.Release|x86.ActiveCfg = Release|Any CPU
 		{6ECC497D-58EB-4D0D-B102-92DB769991BE}.Release|x86.Build.0 = Release|Any CPU
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}.Debug|x64.Build.0 = Debug|Any CPU
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}.Debug|x86.Build.0 = Debug|Any CPU
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}.Release|x64.ActiveCfg = Release|Any CPU
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}.Release|x64.Build.0 = Release|Any CPU
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}.Release|x86.ActiveCfg = Release|Any CPU
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -130,5 +144,6 @@ Global
 		{0494EF16-B2FD-4D24-982B-4CDC4238F0A5} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{6378D14E-01D7-4E30-A189-5398C8A70E38} = {EC447DCF-ABFA-6E24-52A5-D7FD48A5C558}
 		{6ECC497D-58EB-4D0D-B102-92DB769991BE} = {EC447DCF-ABFA-6E24-52A5-D7FD48A5C558}
+		{EA0D42B5-7EB1-4D23-8CCF-E6183CEF2E70} = {EC447DCF-ABFA-6E24-52A5-D7FD48A5C558}
 	EndGlobalSection
 EndGlobal

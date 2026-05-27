@@ -41,7 +41,7 @@ public class ExceptionMiddleware
     }
 
     private static int ResolveDomainStatusCode(int errorCode)
-        => errorCode is 4004 or 4006
+        => errorCode is 4004 or 4006 or 5104 or 5300 or 5304 or 5305
             ? StatusCodes.Status404NotFound
             : StatusCodes.Status400BadRequest;
 }

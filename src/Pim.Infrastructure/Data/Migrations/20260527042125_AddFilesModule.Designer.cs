@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Pim.Infrastructure.Data;
@@ -11,9 +12,11 @@ using Pim.Infrastructure.Data;
 namespace Pim.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(PimDbContext))]
-    partial class PimDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260527042125_AddFilesModule")]
+    partial class AddFilesModule
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -21,291 +24,6 @@ namespace Pim.Infrastructure.Data.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
-
-            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiProviderSettingEntity", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<string>("BaseUrl")
-                        .IsRequired()
-                        .HasMaxLength(512)
-                        .HasColumnType("character varying(512)")
-                        .HasColumnName("base_url");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at")
-                        .HasDefaultValueSql("now()");
-
-                    b.Property<string>("DefaultModel")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("default_model");
-
-                    b.Property<string>("LastError")
-                        .HasColumnType("text")
-                        .HasColumnName("last_error");
-
-                    b.Property<DateTimeOffset?>("LastHealthCheckAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("last_health_check_at");
-
-                    b.Property<string>("Provider")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasDefaultValue("litellm")
-                        .HasColumnName("provider");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasDefaultValue("disabled")
-                        .HasColumnName("status");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at")
-                        .HasDefaultValueSql("now()");
-
-                    b.Property<byte[]>("VirtualKeySecretEncrypted")
-                        .IsRequired()
-                        .HasColumnType("bytea")
-                        .HasColumnName("virtual_key_secret");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Provider")
-                        .IsUnique();
-
-                    b.HasIndex("Status");
-
-                    b.ToTable("ai_provider_settings");
-                });
-
-            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiRequestLogEntity", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<int>("AttemptNumber")
-                        .HasColumnType("integer")
-                        .HasColumnName("attempt_number");
-
-                    b.Property<int?>("CompletionTokens")
-                        .HasColumnType("integer")
-                        .HasColumnName("completion_tokens");
-
-                    b.Property<string>("CorrelationId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("correlation_id");
-
-                    b.Property<string>("Currency")
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
-                        .HasColumnName("currency");
-
-                    b.Property<long?>("DurationMs")
-                        .HasColumnType("bigint")
-                        .HasColumnName("duration_ms");
-
-                    b.Property<string>("ErrorCode")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("error_code");
-
-                    b.Property<string>("ErrorMessage")
-                        .HasColumnType("text")
-                        .HasColumnName("error_message");
-
-                    b.Property<decimal?>("EstimatedCost")
-                        .HasPrecision(18, 8)
-                        .HasColumnType("numeric(18,8)")
-                        .HasColumnName("estimated_cost");
-
-                    b.Property<DateTimeOffset?>("FinishedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("finished_at");
-
-                    b.Property<int>("InputChars")
-                        .HasColumnType("integer")
-                        .HasColumnName("input_chars");
-
-                    b.Property<string>("InputHash")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("input_hash");
-
-                    b.Property<string>("LiteLlmRequestId")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("litellm_request_id");
-
-                    b.Property<int>("MaxAttempts")
-                        .HasColumnType("integer")
-                        .HasColumnName("max_attempts");
-
-                    b.Property<string>("MetadataJson")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasDefaultValue("{}")
-                        .HasColumnName("metadata_json");
-
-                    b.Property<string>("Model")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("model");
-
-                    b.Property<string>("Module")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("module");
-
-                    b.Property<int>("OutputChars")
-                        .HasColumnType("integer")
-                        .HasColumnName("output_chars");
-
-                    b.Property<string>("OutputHash")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("output_hash");
-
-                    b.Property<string>("ParsedOutputJson")
-                        .HasColumnType("jsonb")
-                        .HasColumnName("parsed_output_json");
-
-                    b.Property<int?>("PromptTokens")
-                        .HasColumnType("integer")
-                        .HasColumnName("prompt_tokens");
-
-                    b.Property<string>("Provider")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasDefaultValue("litellm")
-                        .HasColumnName("provider");
-
-                    b.Property<string>("Purpose")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("purpose");
-
-                    b.Property<string>("RequestMessagesJson")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasDefaultValue("[]")
-                        .HasColumnName("request_messages_json");
-
-                    b.Property<string>("RequestPayloadJson")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasDefaultValue("{}")
-                        .HasColumnName("request_payload_json");
-
-                    b.Property<string>("ResponseRawJson")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasDefaultValue("{}")
-                        .HasColumnName("response_raw_json");
-
-                    b.Property<string>("ResponseText")
-                        .HasColumnType("text")
-                        .HasColumnName("response_text");
-
-                    b.Property<string>("SchemaJsonSnapshot")
-                        .HasColumnType("jsonb")
-                        .HasColumnName("schema_json_snapshot");
-
-                    b.Property<string>("SchemaName")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("schema_name");
-
-                    b.Property<string>("SchemaValidationErrorsJson")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasDefaultValue("[]")
-                        .HasColumnName("schema_validation_errors_json");
-
-                    b.Property<string>("SchemaVersion")
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasColumnName("schema_version");
-
-                    b.Property<string>("SourceObjectId")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)")
-                        .HasColumnName("source_object_id");
-
-                    b.Property<string>("SourceObjectType")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)")
-                        .HasColumnName("source_object_type");
-
-                    b.Property<DateTimeOffset>("StartedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("started_at");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasColumnName("status");
-
-                    b.Property<int?>("TotalTokens")
-                        .HasColumnType("integer")
-                        .HasColumnName("total_tokens");
-
-                    b.Property<Guid?>("UserId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("user_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CorrelationId");
-
-                    b.HasIndex("Model");
-
-                    b.HasIndex("Module");
-
-                    b.HasIndex("Purpose");
-
-                    b.HasIndex("StartedAt");
-
-                    b.HasIndex("Status");
-
-                    b.HasIndex("UserId");
-
-                    b.HasIndex("SourceObjectType", "SourceObjectId");
-
-                    b.ToTable("ai_request_logs");
-                });
 
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AuditLogEntity", b =>
                 {
@@ -752,15 +470,6 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at");
 
-                    b.Property<Guid?>("DeletedByOperationId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("deleted_by_operation_id");
-
-                    b.Property<string>("DeletedByOperationKind")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("deleted_by_operation_kind");
-
                     b.Property<bool>("IsDefault")
                         .HasColumnType("boolean")
                         .HasColumnName("is_default");
@@ -787,11 +496,7 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("DeletedByOperationId");
-
                     b.HasIndex("UserId");
-
-                    b.HasIndex("UserId", "DeletedAt");
 
                     b.ToTable("calendars");
                 });
@@ -815,15 +520,6 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at");
 
-                    b.Property<Guid?>("DeletedByOperationId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("deleted_by_operation_id");
-
-                    b.Property<string>("DeletedByOperationKind")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("deleted_by_operation_kind");
-
                     b.Property<string>("Description")
                         .HasColumnType("text")
                         .HasColumnName("description");
@@ -839,24 +535,6 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Property<DateTimeOffset>("DtStart")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("dtstart");
-
-                    b.Property<string>("ExDatesJson")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasDefaultValue("[]")
-                        .HasColumnName("exdates_json");
-
-                    b.Property<string>("ExternalMetadataJson")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasDefaultValue("{}")
-                        .HasColumnName("external_metadata_json");
-
-                    b.Property<bool>("IsAllDay")
-                        .HasColumnType("boolean")
-                        .HasColumnName("is_all_day");
 
                     b.Property<string>("Location")
                         .HasMaxLength(500)
@@ -877,18 +555,6 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("text")
                         .HasColumnName("rrule");
 
-                    b.Property<string>("RecurrenceId")
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)")
-                        .HasColumnName("recurrence_id");
-
-                    b.Property<string>("RecurrenceMetadataJson")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("jsonb")
-                        .HasDefaultValue("{}")
-                        .HasColumnName("recurrence_metadata_json");
-
                     b.Property<Guid?>("SchedulePlanId")
                         .HasColumnType("uuid")
                         .HasColumnName("schedule_plan_id");
@@ -899,30 +565,11 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(20)")
                         .HasColumnName("source");
 
-                    b.Property<string>("SourceIcsComponent")
-                        .HasColumnType("text")
-                        .HasColumnName("source_ics_component");
-
-                    b.Property<string>("SourceTimeZoneId")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("source_time_zone_id");
-
-                    b.Property<string>("SourceUid")
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)")
-                        .HasColumnName("source_uid");
-
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("status");
-
-                    b.Property<string>("TimeZoneId")
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("time_zone_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
@@ -944,13 +591,7 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasIndex("CalendarId");
 
-                    b.HasIndex("DeletedByOperationId");
-
-                    b.HasIndex("SourceUid");
-
                     b.HasIndex("Uid");
-
-                    b.HasIndex("DeletedAt", "DtStart");
 
                     b.ToTable("events");
                 });
@@ -1112,15 +753,6 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at");
 
-                    b.Property<Guid?>("DeletedByOperationId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("deleted_by_operation_id");
-
-                    b.Property<string>("DeletedByOperationKind")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("deleted_by_operation_kind");
-
                     b.Property<string>("Description")
                         .HasColumnType("text")
                         .HasColumnName("description");
@@ -1152,10 +784,6 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Property<int>("PercentComplete")
                         .HasColumnType("integer")
                         .HasColumnName("percent_complete");
-
-                    b.Property<DateTimeOffset?>("PlannedEnd")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("planned_end");
 
                     b.Property<int>("Priority")
                         .HasColumnType("integer")
@@ -1199,8 +827,6 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasIndex("CalendarId");
 
-                    b.HasIndex("DeletedByOperationId");
-
                     b.HasIndex("ParentTaskId");
 
                     b.HasIndex("Status");
@@ -1208,10 +834,6 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("UserId");
 
                     b.HasIndex("UserId", "CalendarId");
-
-                    b.HasIndex("UserId", "DeletedAt");
-
-                    b.HasIndex("UserId", "DtStart", "PlannedEnd");
 
                     b.ToTable("tasks");
                 });
