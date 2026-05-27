@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.DTOs;
@@ -33,6 +34,31 @@ public class CalendarTaskPlanningTests
         Assert.Equal(new DateTimeOffset(2026, 5, 26, 10, 30, 0, TimeSpan.Zero), planned.PlannedEnd);
         Assert.Equal("01:30:00", planned.EstimatedDuration);
         Assert.Empty(await db.Set<EventEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task PlanTaskAsync_PreservesExistingEstimatedDurationWhenOmitted()
+    {
+        await using var db = CreateDb();
+        var task = new TaskEntity
+        {
+            UserId = UserId,
+            Uid = "task@pim",
+            Title = "Write plan",
+            IsInbox = true,
+            EstimatedDuration = TimeSpan.FromHours(2)
+        };
+        db.Set<TaskEntity>().Add(task);
+        await db.SaveChangesAsync();
+        var service = CreateCalendarService(db);
+
+        var planned = await service.PlanTaskAsync(task.Id, new PlanTaskRequest(
+            new DateTimeOffset(2026, 5, 26, 9, 0, 0, TimeSpan.Zero),
+            null,
+            null));
+
+        Assert.Equal("02:00:00", planned.EstimatedDuration);
+        Assert.Equal(TimeSpan.FromHours(2), (await db.Set<TaskEntity>().SingleAsync(t => t.Id == task.Id)).EstimatedDuration);
     }
 
     [Fact]
@@ -78,6 +104,70 @@ public class CalendarTaskPlanningTests
         Assert.Equal(1, result.AffectedCount);
         Assert.Equal("COMPLETED", (await db.Set<TaskEntity>().SingleAsync(t => t.Id == a.Id)).Status);
         Assert.Equal("NEEDS-ACTION", (await db.Set<TaskEntity>().SingleAsync(t => t.Id == b.Id)).Status);
+    }
+
+    [Fact]
+    public async Task BatchUpdateTasksAsync_RejectsAnotherUsersCalendar()
+    {
+        await using var db = CreateDb();
+        var task = new TaskEntity { UserId = UserId, Uid = "a@pim", Title = "A", IsInbox = true };
+        var otherUsersCalendar = new CalendarEntity
+        {
+            UserId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            Name = "Other user's tasks",
+            Kind = "task"
+        };
+        db.Set<TaskEntity>().Add(task);
+        db.Set<CalendarEntity>().Add(otherUsersCalendar);
+        await db.SaveChangesAsync();
+        var service = CreateCalendarService(db);
+
+        var exception = await Assert.ThrowsAsync<DomainException>(() =>
+            service.BatchUpdateTasksAsync(new BatchTaskUpdateRequest(new[] { task.Id }, null, null, otherUsersCalendar.Id)));
+
+        Assert.Equal(02003, exception.ErrorCode);
+        Assert.Equal("Calendar not found", exception.Message);
+        var stored = await db.Set<TaskEntity>().SingleAsync(t => t.Id == task.Id);
+        Assert.Null(stored.CalendarId);
+        Assert.True(stored.IsInbox);
+    }
+
+    [Fact]
+    public async Task BatchUpdateTasksAsync_AssignsCurrentUsersCalendarAndClearsInbox()
+    {
+        await using var db = CreateDb();
+        var task = new TaskEntity { UserId = UserId, Uid = "a@pim", Title = "A", IsInbox = true };
+        var calendar = new CalendarEntity
+        {
+            UserId = UserId,
+            Name = "Planning",
+            Kind = "task"
+        };
+        db.Set<TaskEntity>().Add(task);
+        db.Set<CalendarEntity>().Add(calendar);
+        await db.SaveChangesAsync();
+        var service = CreateCalendarService(db);
+
+        var result = await service.BatchUpdateTasksAsync(new BatchTaskUpdateRequest(new[] { task.Id }, null, null, calendar.Id));
+
+        Assert.Equal(1, result.AffectedCount);
+        var stored = await db.Set<TaskEntity>().SingleAsync(t => t.Id == task.Id);
+        Assert.Equal(calendar.Id, stored.CalendarId);
+        Assert.False(stored.IsInbox);
+        Assert.Equal("Planning", Assert.Single(result.Samples).BookName);
+    }
+
+    [Fact]
+    public async Task BatchUpdateTasksAsync_ReturnsNoTasksUpdatedWhenNoTasksMatch()
+    {
+        await using var db = CreateDb();
+        var service = CreateCalendarService(db);
+
+        var result = await service.BatchUpdateTasksAsync(
+            new BatchTaskUpdateRequest(new[] { Guid.NewGuid() }, "COMPLETED", null, null));
+
+        Assert.Equal(0, result.AffectedCount);
+        Assert.Equal("No tasks updated", result.Message);
     }
 
     private static PimDbContext CreateDb()

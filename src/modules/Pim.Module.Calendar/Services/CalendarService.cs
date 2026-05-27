@@ -373,7 +373,8 @@ public class CalendarService
 
         task.DtStart = request.PlannedStart;
         task.PlannedEnd = request.PlannedEnd;
-        task.EstimatedDuration = ParseDuration(request.EstimatedDuration);
+        if (request.EstimatedDuration is not null)
+            task.EstimatedDuration = ParseDuration(request.EstimatedDuration);
         task.IsInbox = false;
         task.UpdatedAt = DateTimeOffset.UtcNow;
 
@@ -399,7 +400,15 @@ public class CalendarService
                 0,
                 Array.Empty<Guid>(),
                 Array.Empty<CalendarOperationSample>(),
-                "Updated tasks");
+                "No tasks updated");
+        }
+
+        CalendarEntity? targetCalendar = null;
+        if (request.CalendarId.HasValue)
+        {
+            targetCalendar = await _db.Set<CalendarEntity>()
+                .FirstOrDefaultAsync(c => c.Id == request.CalendarId.Value && c.UserId == UserId, ct)
+                ?? throw new DomainException(02003, "Calendar not found");
         }
 
         var tasks = await _db.Set<TaskEntity>()
@@ -421,7 +430,8 @@ public class CalendarService
 
             if (request.CalendarId.HasValue)
             {
-                task.CalendarId = request.CalendarId.Value;
+                task.CalendarId = targetCalendar!.Id;
+                task.Calendar = targetCalendar;
                 task.IsInbox = false;
             }
 
@@ -430,6 +440,17 @@ public class CalendarService
 
         if (tasks.Count > 0)
             await _db.SaveChangesAsync(ct);
+
+        if (tasks.Count == 0)
+        {
+            return new CalendarOperationResult(
+                "calendar.tasks.batch_update",
+                operationId,
+                0,
+                Array.Empty<Guid>(),
+                Array.Empty<CalendarOperationSample>(),
+                "No tasks updated");
+        }
 
         return new CalendarOperationResult(
             "calendar.tasks.batch_update",
