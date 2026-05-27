@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using Pim.Core.Exceptions;
 using Pim.Module.Files.Providers;
 using Xunit;
 
@@ -25,6 +26,18 @@ public class NextcloudFileProviderAdapterTests
         Assert.Equal("1", request.Headers["Depth"].Single());
         AssertBasicAuth(request.Authorization, "alice", "app-password");
         Assert.Contains("<d:propfind", request.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ListFolderAsync_ReturnsChildrenWithoutRequestedFolderSelfEntry()
+    {
+        var handler = new CapturingHandler(MultistatusForReports());
+        var adapter = CreateAdapter(handler);
+
+        var item = Assert.Single(await adapter.ListFolderAsync(CreateConnection(), "/Reports"));
+
+        Assert.Equal("/Reports/report.docx", item.Path);
+        Assert.Equal("10", item.ParentExternalFileId);
     }
 
     [Fact]
@@ -56,6 +69,23 @@ public class NextcloudFileProviderAdapterTests
         Assert.Equal("report.docx", download.FileName);
         using var reader = new StreamReader(download.Content);
         Assert.Equal("document", await reader.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task DownloadAsync_DisposingReturnedStreamDisposesResponseContent()
+    {
+        var content = new TrackingContent(new TrackingStream(Encoding.UTF8.GetBytes("document")));
+        var handler = new CapturingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = content
+        });
+        var adapter = CreateAdapter(handler);
+
+        var download = await adapter.DownloadAsync(CreateConnection(), "/Reports/report.docx");
+
+        Assert.False(content.Disposed);
+        await download.Content.DisposeAsync();
+        Assert.True(content.Disposed);
     }
 
     [Fact]
@@ -104,6 +134,94 @@ public class NextcloudFileProviderAdapterTests
         Assert.Equal("http://nextcloud/remote.php/dav/files/alice/Archive/report.docx", move.Headers["Destination"].Single());
         Assert.Equal("F", move.Headers["Overwrite"].Single());
         AssertBasicAuth(move.Authorization, "alice", "app-password");
+    }
+
+    [Theory]
+    [InlineData("..")]
+    [InlineData("/Reports/../secret.txt")]
+    [InlineData("/Reports/./report.docx")]
+    [InlineData("Reports\\..\\secret.txt")]
+    public async Task FilePathOperations_RejectDangerousPathsWithoutSendingRequests(string path)
+    {
+        var handler = new CapturingHandler(string.Empty);
+        var adapter = CreateAdapter(handler);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => adapter.DownloadAsync(CreateConnection(), path));
+
+        Assert.Equal(5202, error.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("nested/report.docx")]
+    [InlineData("nested\\report.docx")]
+    public async Task RenameAsync_RejectsUnsafeNamesWithoutSendingRequests(string name)
+    {
+        var handler = new CapturingHandler(string.Empty);
+        var adapter = CreateAdapter(handler);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => adapter.RenameAsync(CreateConnection(), "/Reports/report.docx", name));
+
+        Assert.Equal(5202, error.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task RestoreTrashAsync_RejectsDangerousTrashIdsWithoutSendingRequests()
+    {
+        var handler = new CapturingHandler(string.Empty);
+        var adapter = CreateAdapter(handler);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => adapter.RestoreTrashAsync(CreateConnection(), "../report.docx.d1684580000"));
+
+        Assert.Equal(5202, error.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task RestoreTrashAsync_RejectsEmptyTrashIdsWithoutSendingRequests()
+    {
+        var handler = new CapturingHandler(string.Empty);
+        var adapter = CreateAdapter(handler);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => adapter.RestoreTrashAsync(CreateConnection(), " "));
+
+        Assert.Equal(5202, error.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task RestoreVersionAsync_RejectsDangerousVersionIdsWithoutSendingRequests()
+    {
+        var handler = new CapturingHandler(string.Empty);
+        var adapter = CreateAdapter(handler);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => adapter.RestoreVersionAsync(CreateConnection(), "11", "../1684580000"));
+
+        Assert.Equal(5202, error.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task ListVersionsAsync_RejectsDangerousExternalFileIdsWithoutSendingRequests()
+    {
+        var handler = new CapturingHandler(string.Empty);
+        var adapter = CreateAdapter(handler);
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => adapter.ListVersionsAsync(CreateConnection(), "../11"));
+
+        Assert.Equal(5202, error.ErrorCode);
+        Assert.Empty(handler.Requests);
     }
 
     [Fact]
@@ -191,6 +309,28 @@ public class NextcloudFileProviderAdapterTests
 
         Assert.Equal("edit", link.Mode);
         Assert.Equal("https://cloud.example.test/apps/files/files?dir=%2FReports&mode=edit", link.Url);
+    }
+
+    [Fact]
+    public void BuildOpenLink_IncludesOpenFileWhenExternalFileIdIsProvided()
+    {
+        var adapter = CreateAdapter(new CapturingHandler(string.Empty));
+
+        var link = adapter.BuildOpenLink(CreateConnection(), "/Reports/report.docx", "view", "11");
+
+        Assert.Equal("view", link.Mode);
+        Assert.Equal("https://cloud.example.test/apps/files/files?dir=%2FReports&mode=view&openfile=11", link.Url);
+    }
+
+    [Fact]
+    public void BuildOpenLink_RejectsDangerousPaths()
+    {
+        var adapter = CreateAdapter(new CapturingHandler(string.Empty));
+
+        var error = Assert.Throws<DomainException>(
+            () => adapter.BuildOpenLink(CreateConnection(), "/Reports/../secret.txt", "view"));
+
+        Assert.Equal(5202, error.ErrorCode);
     }
 
     private static NextcloudFileProviderAdapter CreateAdapter(CapturingHandler handler)
@@ -315,4 +455,49 @@ public class NextcloudFileProviderAdapterTests
         AuthenticationHeaderValue? Authorization,
         string? ContentType,
         string Body);
+
+    private sealed class TrackingContent : HttpContent
+    {
+        private readonly TrackingStream _stream;
+
+        public TrackingContent(TrackingStream stream)
+        {
+            _stream = stream;
+        }
+
+        public bool Disposed { get; private set; }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+            => _stream.CopyToAsync(stream);
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = _stream.Length;
+            return true;
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync()
+            => Task.FromResult<Stream>(_stream);
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                Disposed = true;
+
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class TrackingStream : MemoryStream
+    {
+        public TrackingStream(byte[] buffer)
+            : base(buffer)
+        {
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+        }
+    }
 }

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using Pim.Core.Exceptions;
 
 namespace Pim.Module.Files.Providers;
 
@@ -44,7 +45,10 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
         await EnsureSuccessAsync(response, ct);
 
         var xml = await response.Content.ReadAsStringAsync(ct);
-        return NextcloudDavXmlParser.ParseItems(xml, FilesHrefPrefix(connection), path);
+        var requestedPath = NormalizePath(path);
+        return NextcloudDavXmlParser.ParseItems(xml, FilesHrefPrefix(connection), path)
+            .Where(item => !string.Equals(item.Path, requestedPath, StringComparison.OrdinalIgnoreCase))
+            .ToList();
     }
 
     public async Task<ProviderFileItem> GetMetadataAsync(
@@ -89,7 +93,7 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
 
         var stream = await response.Content.ReadAsStreamAsync(ct);
         return new ProviderDownload(
-            stream,
+            new ResponseDisposingStream(stream, response),
             response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream",
             FileNameFromResponse(response, path));
     }
@@ -116,6 +120,7 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
         string name,
         CancellationToken ct = default)
     {
+        ValidateRenameName(name);
         var destinationPath = CombinePath(ParentPath(sourcePath), name);
         return MoveAsync(connection, sourcePath, destinationPath, ct);
     }
@@ -148,7 +153,7 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
         string trashId,
         CancellationToken ct = default)
     {
-        var sourceUrl = $"{TrashRoot(connection)}/trash{EscapePath(trashId)}";
+        var sourceUrl = $"{TrashRoot(connection)}/trash{EscapeSinglePathSegment(trashId, "trash id")}";
         var destinationUrl = $"{TrashRoot(connection)}/restore";
         using var request = CreateMoveRequest(connection, sourceUrl, destinationUrl);
         using var response = await _httpClient.SendAsync(request, ct);
@@ -176,13 +181,13 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
         string fileName,
         CancellationToken ct = default)
     {
-        var versionUrl = $"{VersionsFolderUrl(connection, externalFileId)}{EscapePath(externalVersionId)}";
+        var versionUrl = $"{VersionsFolderUrl(connection, externalFileId)}{EscapeSinglePathSegment(externalVersionId, "version id")}";
         using var request = CreateRequest(HttpMethod.Get, versionUrl, connection);
         var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         await EnsureSuccessAsync(response, ct);
 
         return new ProviderDownload(
-            await response.Content.ReadAsStreamAsync(ct),
+            new ResponseDisposingStream(await response.Content.ReadAsStreamAsync(ct), response),
             response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream",
             fileName);
     }
@@ -193,7 +198,7 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
         string externalVersionId,
         CancellationToken ct = default)
     {
-        var versionUrl = $"{VersionsFolderUrl(connection, externalFileId)}{EscapePath(externalVersionId)}";
+        var versionUrl = $"{VersionsFolderUrl(connection, externalFileId)}{EscapeSinglePathSegment(externalVersionId, "version id")}";
         var destinationUrl = $"{VersionsRoot(connection)}/restore";
         using var request = CreateMoveRequest(connection, versionUrl, destinationUrl);
         using var response = await _httpClient.SendAsync(request, ct);
@@ -203,10 +208,14 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
     public ProviderOpenLink BuildOpenLink(
         FileProviderConnection connection,
         string path,
-        string mode)
+        string mode,
+        string? externalFileId = null)
     {
         var parentPath = ParentPath(path);
         var url = $"{connection.BaseUrl.TrimEnd('/')}/apps/files/files?dir={Uri.EscapeDataString(parentPath)}&mode={Uri.EscapeDataString(mode)}";
+        if (!string.IsNullOrWhiteSpace(externalFileId))
+            url = $"{url}&openfile={Uri.EscapeDataString(ValidateSinglePathSegment(externalFileId, "external file id"))}";
+
         return new ProviderOpenLink(url, mode);
     }
 
@@ -274,7 +283,7 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
         => $"{DavRoot(connection)}/versions/{Uri.EscapeDataString(connection.Username)}";
 
     private static string VersionsFolderUrl(FileProviderConnection connection, string externalFileId)
-        => $"{VersionsRoot(connection)}/versions/{Uri.EscapeDataString(externalFileId)}";
+        => $"{VersionsRoot(connection)}/versions/{Uri.EscapeDataString(ValidateSinglePathSegment(externalFileId, "external file id"))}";
 
     private static string FilesHrefPrefix(FileProviderConnection connection)
         => $"/remote.php/dav/files/{connection.Username}";
@@ -283,23 +292,58 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
         => $"/remote.php/dav/trashbin/{connection.Username}/trash";
 
     private static string VersionsHrefPrefix(FileProviderConnection connection, string externalFileId)
-        => $"/remote.php/dav/versions/{connection.Username}/versions/{externalFileId}";
+        => $"/remote.php/dav/versions/{connection.Username}/versions/{ValidateSinglePathSegment(externalFileId, "external file id")}";
 
     private static string EscapePath(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || path == "/")
             return string.Empty;
 
-        var trimmed = path.Trim('/');
+        var trimmed = path.Replace('\\', '/').Trim('/');
         return "/" + string.Join(
             "/",
             trimmed.Split('/', StringSplitOptions.RemoveEmptyEntries)
-                .Select(Uri.EscapeDataString));
+                .Select(segment => Uri.EscapeDataString(ValidatePathSegment(segment, "Nextcloud path"))));
+    }
+
+    private static string EscapeSinglePathSegment(string segment, string label)
+        => $"/{Uri.EscapeDataString(ValidateSinglePathSegment(segment, label))}";
+
+    private static string ValidateSinglePathSegment(string segment, string label)
+    {
+        var safeSegment = ValidatePathSegment(segment, label);
+        if (safeSegment.Contains('/', StringComparison.Ordinal)
+            || safeSegment.Contains('\\', StringComparison.Ordinal))
+        {
+            throw new DomainException(5202, $"{label} contains an unsafe path segment");
+        }
+
+        return safeSegment;
+    }
+
+    private static string ValidatePathSegment(string segment, string label)
+    {
+        if (string.IsNullOrWhiteSpace(segment) || segment is "." or "..")
+            throw new DomainException(5202, $"{label} contains an unsafe path segment");
+
+        return segment;
+    }
+
+    private static void ValidateRenameName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)
+            || name is "." or ".."
+            || name.Contains('/', StringComparison.Ordinal)
+            || name.Contains('\\', StringComparison.Ordinal))
+        {
+            throw new DomainException(5202, "Nextcloud rename target is not a safe file name");
+        }
     }
 
     private static string ParentPath(string path)
     {
         var normalized = NormalizePath(path);
+        _ = EscapePath(normalized);
         if (normalized == "/")
             return "/";
 
@@ -352,4 +396,72 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
           </d:prop>
         </d:propfind>
         """;
+
+    private sealed class ResponseDisposingStream : Stream
+    {
+        private readonly Stream _inner;
+        private readonly HttpResponseMessage _response;
+
+        public ResponseDisposingStream(Stream inner, HttpResponseMessage response)
+        {
+            _inner = inner;
+            _response = response;
+        }
+
+        public override bool CanRead => _inner.CanRead;
+        public override bool CanSeek => _inner.CanSeek;
+        public override bool CanWrite => _inner.CanWrite;
+        public override long Length => _inner.Length;
+
+        public override long Position
+        {
+            get => _inner.Position;
+            set => _inner.Position = value;
+        }
+
+        public override void Flush()
+            => _inner.Flush();
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => _inner.Read(buffer, offset, count);
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => _inner.Seek(offset, origin);
+
+        public override void SetLength(long value)
+            => _inner.SetLength(value);
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => _inner.Write(buffer, offset, count);
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+            => await _inner.ReadAsync(buffer, cancellationToken);
+
+        public override async Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken)
+            => await _inner.ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
+
+        public override async ValueTask DisposeAsync()
+        {
+            await _inner.DisposeAsync();
+            _response.Dispose();
+            await base.DisposeAsync();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _inner.Dispose();
+                _response.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
 }

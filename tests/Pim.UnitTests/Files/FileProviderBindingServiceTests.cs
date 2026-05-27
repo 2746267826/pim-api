@@ -237,7 +237,8 @@ public class FileProviderBindingServiceTests
         public ProviderOpenLink BuildOpenLink(
             FileProviderConnection connection,
             string path,
-            string mode)
+            string mode,
+            string? externalFileId = null)
             => throw new NotSupportedException();
     }
 }

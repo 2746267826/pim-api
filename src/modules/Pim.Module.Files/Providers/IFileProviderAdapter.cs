@@ -23,5 +23,5 @@ public interface IFileProviderAdapter
     Task<IReadOnlyList<ProviderFileVersion>> ListVersionsAsync(FileProviderConnection connection, string externalFileId, CancellationToken ct = default);
     Task<ProviderDownload> DownloadVersionAsync(FileProviderConnection connection, string externalFileId, string externalVersionId, string fileName, CancellationToken ct = default);
     Task RestoreVersionAsync(FileProviderConnection connection, string externalFileId, string externalVersionId, CancellationToken ct = default);
-    ProviderOpenLink BuildOpenLink(FileProviderConnection connection, string path, string mode);
+    ProviderOpenLink BuildOpenLink(FileProviderConnection connection, string path, string mode, string? externalFileId = null);
 }

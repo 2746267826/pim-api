@@ -85,4 +85,31 @@ public class NextcloudDavXmlParserTests
         Assert.Equal(5201, error.ErrorCode);
         Assert.Equal("Nextcloud response did not include a file id", error.Message);
     }
+
+    [Fact]
+    public void ParseItems_UsesSuccessfulPropstatWhenErrorPropstatAppearsFirst()
+    {
+        var xml = """
+        <?xml version="1.0"?>
+        <d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+          <d:response>
+            <d:href>/remote.php/dav/files/alice/Reports/report.docx</d:href>
+            <d:propstat>
+              <d:prop><d:getcontentlength /></d:prop>
+              <d:status>HTTP/1.1 404 Not Found</d:status>
+            </d:propstat>
+            <d:propstat>
+              <d:prop><d:resourcetype /><oc:fileid>11</oc:fileid><d:getetag>&quot;file-etag&quot;</d:getetag><d:getcontentlength>123</d:getcontentlength><d:getlastmodified>Wed, 20 May 2026 10:01:00 GMT</d:getlastmodified></d:prop>
+              <d:status>HTTP/1.1 200 OK</d:status>
+            </d:propstat>
+          </d:response>
+        </d:multistatus>
+        """;
+
+        var item = Assert.Single(NextcloudDavXmlParser.ParseItems(xml, "/remote.php/dav/files/alice", "/Reports"));
+
+        Assert.Equal("11", item.ExternalFileId);
+        Assert.Equal(123, item.Size);
+        Assert.Equal("\"file-etag\"", item.Etag);
+    }
 }

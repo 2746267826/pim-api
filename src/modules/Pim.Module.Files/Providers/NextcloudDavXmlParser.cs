@@ -111,12 +111,32 @@ public static class NextcloudDavXmlParser
             .Descendants(Dav + "response")
             .Select(response => (
                 Href: ElementValue(response, Dav + "href") ?? string.Empty,
-                Prop: response
-                    .Elements(Dav + "propstat")
-                    .Elements(Dav + "prop")
-                    .FirstOrDefault()))
+                Prop: SelectPropstat(response)?.Element(Dav + "prop")))
             .Where(response => !string.IsNullOrWhiteSpace(response.Href) && response.Prop is not null)
             .Select(response => (response.Href, response.Prop!));
+    }
+
+    private static XElement? SelectPropstat(XElement response)
+    {
+        var propstats = response.Elements(Dav + "propstat").ToList();
+        return propstats.FirstOrDefault(IsSuccessfulPropstat)
+            ?? propstats.FirstOrDefault(propstat => ElementValue(propstat, Dav + "status") is null)
+            ?? propstats.FirstOrDefault();
+    }
+
+    private static bool IsSuccessfulPropstat(XElement propstat)
+    {
+        var status = ElementValue(propstat, Dav + "status");
+        if (status is null)
+            return false;
+
+        if (status.Contains(" 200 ", StringComparison.Ordinal))
+            return true;
+
+        var parts = status.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Any(part => part.Length == 3
+            && part[0] == '2'
+            && int.TryParse(part, NumberStyles.Integer, CultureInfo.InvariantCulture, out _));
     }
 
     private static string DecodeHref(string href)
