@@ -89,6 +89,7 @@ app.MapStatusEndpoints();
 app.MapDaemonEndpoints();
 app.MapOperationsEndpoints();
 app.MapTodayEndpoints();
+app.MapAiEndpoints();
 
 // Module endpoints
 moduleRegistry.MapAllEndpoints(app);

@@ -22,6 +22,16 @@ services:
       - Kopia__RepositoryPath=/data/kopia-repo
       - Kopia__Password=${KOPIA_PASSWORD}
       - Tika__BaseUrl=http://tika:9998
+      - Ai__Enabled=${AI_ENABLED:-false}
+      - Ai__Provider=litellm
+      - Ai__BaseUrl=http://litellm:4000
+      - Ai__ApiKey=${PIM_LITELLM_VIRTUAL_KEY}
+      - Ai__DefaultModel=${PIM_AI_DEFAULT_MODEL:-pim-default}
+      - Ai__TimeoutSeconds=30
+      - Ai__MaxOutputTokensPerRequest=1000
+      - Ai__MaxAttemptsPerRequest=2
+      - Ai__SaveFullPrompts=true
+      - Ai__SaveFullResponses=true
     volumes:
       - pim_data:/data
       - ./keys:/data/keys:ro
@@ -30,6 +40,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      litellm:
+        condition: service_started
     networks:
       - pim-net
 
@@ -70,6 +82,25 @@ services:
   tika:
     image: apache/tika:latest
     restart: unless-stopped
+    networks:
+      - pim-net
+
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-latest
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      - DATABASE_URL=postgresql://pim:${PG_PASSWORD}@postgres:5432/pim
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - LITELLM_SALT_KEY=${LITELLM_SALT_KEY}
+      - LITELLM_UPSTREAM_MODEL=${LITELLM_UPSTREAM_MODEL}
+      - LITELLM_UPSTREAM_API_KEY=${LITELLM_UPSTREAM_API_KEY}
+      - LITELLM_UPSTREAM_API_BASE=${LITELLM_UPSTREAM_API_BASE}
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - pim-net
 

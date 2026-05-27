@@ -1,0 +1,10 @@
+model_list:
+  - model_name: pim-default
+    litellm_params:
+      model: os.environ/LITELLM_UPSTREAM_MODEL
+      api_key: os.environ/LITELLM_UPSTREAM_API_KEY
+      api_base: os.environ/LITELLM_UPSTREAM_API_BASE
+
+litellm_settings:
+  json_logs: true
+  request_timeout: 60

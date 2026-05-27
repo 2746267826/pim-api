@@ -46,6 +46,34 @@ public class PimDbContext : DbContext
     public DbSet<AuditLogEntity> AuditLogs => Set<AuditLogEntity>();
     public DbSet<OperationConfirmationEntity> OperationConfirmations => Set<OperationConfirmationEntity>();
     public DbSet<DaemonHeartbeatEntity> DaemonHeartbeats => Set<DaemonHeartbeatEntity>();
+    public DbSet<AiProviderSettingEntity> AiProviderSettings => Set<AiProviderSettingEntity>();
+    public DbSet<AiRequestLogEntity> AiRequestLogs => Set<AiRequestLogEntity>();
+
+    public override int SaveChanges()
+    {
+        RefreshAiProviderSettingUpdatedAt();
+        return base.SaveChanges();
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        RefreshAiProviderSettingUpdatedAt();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        RefreshAiProviderSettingUpdatedAt();
+        return base.SaveChangesAsync(cancellationToken);
+    }
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess,
+        CancellationToken cancellationToken = default)
+    {
+        RefreshAiProviderSettingUpdatedAt();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -101,6 +129,35 @@ public class PimDbContext : DbContext
             e.HasIndex(d => d.ReceivedAt);
         });
 
+        modelBuilder.Entity<AiProviderSettingEntity>(e =>
+        {
+            e.Property(a => a.Provider).HasDefaultValue("litellm");
+            e.Property(a => a.Status).HasDefaultValue("disabled");
+            e.Property(a => a.CreatedAt).HasDefaultValueSql("now()");
+            e.Property(a => a.UpdatedAt).HasDefaultValueSql("now()");
+            e.HasIndex(a => a.Provider).IsUnique();
+            e.HasIndex(a => a.Status);
+        });
+
+        modelBuilder.Entity<AiRequestLogEntity>(e =>
+        {
+            e.Property(a => a.Provider).HasDefaultValue("litellm");
+            e.Property(a => a.RequestMessagesJson).HasDefaultValue("[]");
+            e.Property(a => a.RequestPayloadJson).HasDefaultValue("{}");
+            e.Property(a => a.ResponseRawJson).HasDefaultValue("{}");
+            e.Property(a => a.SchemaValidationErrorsJson).HasDefaultValue("[]");
+            e.Property(a => a.MetadataJson).HasDefaultValue("{}");
+            e.Property(a => a.EstimatedCost).HasPrecision(18, 8);
+            e.HasIndex(a => a.UserId);
+            e.HasIndex(a => a.Module);
+            e.HasIndex(a => a.Purpose);
+            e.HasIndex(a => a.Model);
+            e.HasIndex(a => a.Status);
+            e.HasIndex(a => a.StartedAt);
+            e.HasIndex(a => new { a.SourceObjectType, a.SourceObjectId });
+            e.HasIndex(a => a.CorrelationId);
+        });
+
         Assembly[] moduleAssemblies;
         lock (_moduleAssembliesLock)
         {
@@ -116,5 +173,17 @@ public class PimDbContext : DbContext
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         optionsBuilder.ReplaceService<IModelCacheKeyFactory, PimDbContextModelCacheKeyFactory>();
+    }
+
+    private void RefreshAiProviderSettingUpdatedAt()
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var entry in ChangeTracker.Entries<AiProviderSettingEntity>())
+        {
+            if (entry.State == EntityState.Modified)
+            {
+                entry.Entity.UpdatedAt = now;
+            }
+        }
     }
 }
