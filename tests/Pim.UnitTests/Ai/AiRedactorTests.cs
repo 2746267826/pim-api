@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Pim.Infrastructure.Ai;
 using Xunit;
 
@@ -25,6 +26,46 @@ public class AiRedactorTests
         Assert.DoesNotContain("refresh-secret", redacted);
         Assert.DoesNotContain("app-secret", redacted);
         Assert.Contains("keep-me", redacted);
+        Assert.Contains("[REDACTED]", redacted);
+    }
+
+    [Fact]
+    public void RedactJson_RemovesExpandedCredentialFields()
+    {
+        var json = """
+        {
+          "client_secret": "plain-client-secret",
+          "x-api-key": "plain-api-key",
+          "safe": "keep-me"
+        }
+        """;
+
+        var redacted = AiRedactor.RedactJson(json);
+
+        Assert.DoesNotContain("plain-client-secret", redacted);
+        Assert.DoesNotContain("plain-api-key", redacted);
+        Assert.Contains("keep-me", redacted);
+        Assert.Contains("[REDACTED]", redacted);
+    }
+
+    [Fact]
+    public void RedactJson_InvalidJson_ReturnsParseableJsonWithRedactedRawText()
+    {
+        var redacted = AiRedactor.RedactJson("not json sk-task3-canary-1234567890");
+
+        using var document = JsonDocument.Parse(redacted);
+        Assert.Equal(JsonValueKind.Object, document.RootElement.ValueKind);
+        Assert.True(document.RootElement.TryGetProperty("raw", out _));
+        Assert.DoesNotContain("sk-task3-canary-1234567890", redacted);
+    }
+
+    [Fact]
+    public void RedactPlainText_RemovesTokenLikeValues()
+    {
+        var redacted = AiRedactor.RedactPlainText("error Bearer abc+/def== sk-task3-canary-1234567890");
+
+        Assert.DoesNotContain("abc+/def==", redacted);
+        Assert.DoesNotContain("sk-task3-canary-1234567890", redacted);
         Assert.Contains("[REDACTED]", redacted);
     }
 }

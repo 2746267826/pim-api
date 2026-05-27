@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using Pim.Core.Ai;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
@@ -53,7 +52,11 @@ public sealed class AiRequestLogWriter(PimDbContext db) : IAiRequestLogWriter
         var redactedPayload = AiRedactor.RedactJson(model.RequestPayloadJson);
         var redactedResponseRaw = AiRedactor.RedactJson(model.ResponseRawJson);
         var redactedMetadata = AiRedactor.RedactJson(model.MetadataJson);
-        var redactedResponseText = RedactPlainText(model.ResponseText);
+        var redactedResponseText = AiRedactor.RedactPlainText(model.ResponseText);
+        var redactedParsedOutput = model.ParsedOutputJson is null ? null : AiRedactor.RedactJson(model.ParsedOutputJson);
+        var redactedSchemaSnapshot = model.SchemaJsonSnapshot is null ? null : AiRedactor.RedactJson(model.SchemaJsonSnapshot);
+        var redactedSchemaValidationErrors = AiRedactor.RedactJson(model.SchemaValidationErrorsJson);
+        var redactedErrorMessage = AiRedactor.RedactPlainText(model.ErrorMessage);
         var input = redactedMessages + redactedPayload;
         var output = (redactedResponseText ?? string.Empty) + redactedResponseRaw;
 
@@ -78,11 +81,11 @@ public sealed class AiRequestLogWriter(PimDbContext db) : IAiRequestLogWriter
             RequestPayloadJson = redactedPayload,
             ResponseRawJson = redactedResponseRaw,
             ResponseText = redactedResponseText,
-            ParsedOutputJson = model.ParsedOutputJson,
+            ParsedOutputJson = redactedParsedOutput,
             SchemaName = model.SchemaName,
             SchemaVersion = model.SchemaVersion,
-            SchemaJsonSnapshot = model.SchemaJsonSnapshot,
-            SchemaValidationErrorsJson = model.SchemaValidationErrorsJson,
+            SchemaJsonSnapshot = redactedSchemaSnapshot,
+            SchemaValidationErrorsJson = redactedSchemaValidationErrors,
             PromptTokens = model.PromptTokens,
             CompletionTokens = model.CompletionTokens,
             TotalTokens = model.TotalTokens,
@@ -93,24 +96,13 @@ public sealed class AiRequestLogWriter(PimDbContext db) : IAiRequestLogWriter
             InputHash = Sha256(input),
             OutputHash = Sha256(output),
             ErrorCode = model.ErrorCode,
-            ErrorMessage = model.ErrorMessage,
+            ErrorMessage = redactedErrorMessage,
             MetadataJson = redactedMetadata
         };
 
         db.AiRequestLogs.Add(entity);
         await db.SaveChangesAsync(ct);
         return entity.Id;
-    }
-
-    private static string? RedactPlainText(string? value)
-    {
-        if (value is null)
-        {
-            return null;
-        }
-
-        var redactedJsonString = AiRedactor.RedactJson(JsonSerializer.Serialize(value));
-        return JsonSerializer.Deserialize<string>(redactedJsonString);
     }
 
     private static string ToStorageStatus(AiRequestStatus status) => status switch

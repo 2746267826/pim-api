@@ -13,8 +13,16 @@ public static partial class AiRedactor
         "apikey",
         "access_token",
         "refresh_token",
+        "id_token",
+        "token",
         "jwt",
         "password",
+        "secret",
+        "client_secret",
+        "clientSecret",
+        "secret_key",
+        "private_key",
+        "x-api-key",
         "app_password",
         "nextcloud_app_password",
         "virtual_key",
@@ -42,8 +50,13 @@ public static partial class AiRedactor
         }
         catch (JsonException)
         {
-            return TokenLikeValueRegex().Replace(json, "[REDACTED]");
+            return JsonSerializer.Serialize(new { raw = RedactPlainText(json) ?? string.Empty });
         }
+    }
+
+    public static string? RedactPlainText(string? text)
+    {
+        return text is null ? null : TokenLikeValueRegex().Replace(text, "[REDACTED]");
     }
 
     private static void WriteRedacted(JsonElement element, Utf8JsonWriter writer, string? propertyName)
@@ -76,7 +89,7 @@ public static partial class AiRedactor
                 writer.WriteEndArray();
                 break;
             case JsonValueKind.String:
-                writer.WriteStringValue(TokenLikeValueRegex().Replace(element.GetString() ?? string.Empty, "[REDACTED]"));
+                writer.WriteStringValue(RedactPlainText(element.GetString()) ?? string.Empty);
                 break;
             default:
                 element.WriteTo(writer);
@@ -84,6 +97,6 @@ public static partial class AiRedactor
         }
     }
 
-    [GeneratedRegex(@"(?i)(bearer\s+[a-z0-9._\-]+|sk-[a-z0-9_\-]{8,}|eyJ[a-z0-9_\-]+\.[a-z0-9_\-]+\.[a-z0-9_\-]+)")]
+    [GeneratedRegex(@"(?i)(bearer\s+[a-z0-9._\-+/=]+|sk-[a-z0-9_\-]{8,}|eyJ[a-z0-9_\-]+\.[a-z0-9_\-]+\.[a-z0-9_\-]+)")]
     private static partial Regex TokenLikeValueRegex();
 }
