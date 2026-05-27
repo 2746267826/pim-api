@@ -71,6 +71,67 @@ public class FileOperationServiceTests
     }
 
     [Fact]
+    public async Task SyncProviderAsync_DoesNotDeleteNestedItemsDuringShallowRootSync()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var provider = await SeedProviderAsync(db);
+        await SeedItemAsync(db, provider, "reports-folder", "/Reports", "Reports", itemType: "folder");
+        var nested = await SeedItemAsync(db, provider, "nested-file", "/Reports/nested.txt", "nested.txt");
+        var service = CreateService(db, adapter);
+        adapter.FolderItems = [ProviderItem("reports-folder", "/Reports", "Reports", itemType: "folder")];
+
+        await service.SyncProviderAsync(provider.Id);
+
+        var savedNested = await db.Set<FileItemEntity>().SingleAsync(item => item.Id == nested.Id);
+        Assert.False(savedNested.IsDeleted);
+        Assert.Null(savedNested.DeletedAt);
+    }
+
+    [Fact]
+    public async Task SyncProviderAsync_EtagChangeCreatesNewCurrentVersionWithoutMutatingOldVersionIdentity()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var provider = await SeedProviderAsync(db);
+        var item = await SeedItemAsync(db, provider, "file-1", "/report.txt", "report.txt", etag: "etag-old");
+        var oldVersion = new FileVersionEntity
+        {
+            FileItemId = item.Id,
+            ExternalVersionId = "current:etag-old",
+            Etag = "etag-old",
+            Size = 100,
+            Source = "current",
+            IsCurrent = true,
+            ModifiedAt = DateTimeOffset.UtcNow.AddDays(-1),
+            SyncedAt = DateTimeOffset.UtcNow.AddDays(-1)
+        };
+        db.Set<FileVersionEntity>().Add(oldVersion);
+        item.CurrentVersionId = oldVersion.Id;
+        await db.SaveChangesAsync();
+        var service = CreateService(db, adapter);
+        adapter.FolderItems = [ProviderItem("file-1", "/report.txt", "report.txt", etag: "etag-new")];
+
+        await service.SyncProviderAsync(provider.Id);
+
+        var versions = await db.Set<FileVersionEntity>()
+            .Where(version => version.FileItemId == item.Id)
+            .OrderBy(version => version.ExternalVersionId)
+            .ToListAsync();
+        Assert.Equal(2, versions.Count);
+
+        var savedOldVersion = versions.Single(version => version.ExternalVersionId == "current:etag-old");
+        var newVersion = versions.Single(version => version.ExternalVersionId == "current:etag-new");
+        Assert.Equal(oldVersion.Id, savedOldVersion.Id);
+        Assert.False(savedOldVersion.IsCurrent);
+        Assert.True(newVersion.IsCurrent);
+        Assert.NotEqual(oldVersion.Id, newVersion.Id);
+
+        var savedItem = await db.Set<FileItemEntity>().SingleAsync(saved => saved.Id == item.Id);
+        Assert.Equal(newVersion.Id, savedItem.CurrentVersionId);
+    }
+
+    [Fact]
     public async Task ListItemsAsync_RootReturnsOnlyNonDeletedDirectChildren()
     {
         await using var db = CreateDb();
@@ -86,6 +147,27 @@ public class FileOperationServiceTests
         Assert.Equal(2, result.TotalCount);
         Assert.Equal(new[] { "Reports", "root.txt" }, result.Items.Select(item => item.Name).ToArray());
         Assert.All(result.Items, item => Assert.False(item.IsDeleted));
+    }
+
+    [Fact]
+    public async Task ListItemsAsync_MapsLatestIndexJobStatus()
+    {
+        await using var db = CreateDb();
+        var provider = await SeedProviderAsync(db);
+        var item = await SeedItemAsync(db, provider, "root-file", "/root.txt", "root.txt");
+        db.Set<FileIndexJobEntity>().Add(new FileIndexJobEntity
+        {
+            FileItemId = item.Id,
+            Status = "completed",
+            Stage = "content",
+            FinishedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+        var service = CreateService(db, new FakeFileProviderAdapter());
+
+        var result = await service.ListItemsAsync(new FileListQuery("/"));
+
+        Assert.Equal("completed", Assert.Single(result.Items).IndexStatus);
     }
 
     [Fact]
@@ -111,6 +193,26 @@ public class FileOperationServiceTests
         Assert.Equal("/Archive/report.txt", saved.Path);
         Assert.Equal("etag-2", saved.Etag);
         await AssertAuditAsync(db, "files.move", item.Id);
+    }
+
+    [Fact]
+    public async Task MoveAsync_WhenFolderMovesUpdatesDescendantPaths()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var provider = await SeedProviderAsync(db);
+        var folder = await SeedItemAsync(db, provider, "folder-1", "/Reports", "Reports", itemType: "folder");
+        var child = await SeedItemAsync(db, provider, "child-1", "/Reports/nested.txt", "nested.txt");
+        var grandchild = await SeedItemAsync(db, provider, "grandchild-1", "/Reports/Q1/deep.txt", "deep.txt");
+        adapter.MoveResult = ProviderItem("folder-1", "/Archive/Reports", "Reports", itemType: "folder");
+        var service = CreateService(db, adapter);
+
+        await service.MoveAsync(folder.Id, new MoveFileRequest("/Archive/Reports"));
+
+        var savedChild = await db.Set<FileItemEntity>().SingleAsync(item => item.Id == child.Id);
+        var savedGrandchild = await db.Set<FileItemEntity>().SingleAsync(item => item.Id == grandchild.Id);
+        Assert.Equal("/Archive/Reports/nested.txt", savedChild.Path);
+        Assert.Equal("/Archive/Reports/Q1/deep.txt", savedGrandchild.Path);
     }
 
     [Fact]
@@ -156,6 +258,29 @@ public class FileOperationServiceTests
         Assert.True(saved.IsDeleted);
         Assert.NotNull(saved.DeletedAt);
         await AssertAuditAsync(db, "files.delete_to_trash", item.Id);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WhenFolderDeletedMarksDescendantsDeleted()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var provider = await SeedProviderAsync(db);
+        var folder = await SeedItemAsync(db, provider, "folder-1", "/Reports", "Reports", itemType: "folder");
+        var child = await SeedItemAsync(db, provider, "child-1", "/Reports/nested.txt", "nested.txt");
+        var grandchild = await SeedItemAsync(db, provider, "grandchild-1", "/Reports/Q1/deep.txt", "deep.txt");
+        var service = CreateService(db, adapter);
+
+        await service.DeleteAsync(folder.Id);
+
+        var savedChildren = await db.Set<FileItemEntity>()
+            .Where(item => item.Id == child.Id || item.Id == grandchild.Id)
+            .ToListAsync();
+        Assert.All(savedChildren, item =>
+        {
+            Assert.True(item.IsDeleted);
+            Assert.NotNull(item.DeletedAt);
+        });
     }
 
     [Fact]

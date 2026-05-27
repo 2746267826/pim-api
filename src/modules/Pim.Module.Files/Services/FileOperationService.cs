@@ -32,6 +32,7 @@ public sealed class FileOperationService(
 
         var candidates = await db.Set<FileItemEntity>()
             .AsNoTracking()
+            .Include(item => item.IndexJobs)
             .Where(item =>
                 item.Provider != null
                 && item.Provider.UserId == userId
@@ -67,6 +68,7 @@ public sealed class FileOperationService(
         CancellationToken ct = default)
     {
         var item = await LoadItemAsync(id, ct);
+        var oldPath = NormalizePath(item.Path);
         var connection = await providerBindings.GetConnectionAsync(item.ProviderId, ct);
         var destinationPath = NormalizePath(request.DestinationPath);
         if (destinationPath == "/")
@@ -75,6 +77,7 @@ public sealed class FileOperationService(
         var providerItem = await adapter.MoveAsync(connection, NormalizePath(item.Path), destinationPath, ct);
         var now = DateTimeOffset.UtcNow;
         ApplyProviderItem(item, providerItem, now, preserveExternalFileId: true);
+        await UpdateDescendantPathsAsync(item, oldPath, NormalizePath(item.Path), now, ct);
         if (item.ItemType == "file")
             await UpsertCurrentVersionAsync(item, providerItem, now, ct);
 
@@ -90,12 +93,14 @@ public sealed class FileOperationService(
         CancellationToken ct = default)
     {
         var item = await LoadItemAsync(id, ct);
+        var oldPath = NormalizePath(item.Path);
         var name = NormalizeRenameName(request.Name);
         var connection = await providerBindings.GetConnectionAsync(item.ProviderId, ct);
 
         var providerItem = await adapter.RenameAsync(connection, NormalizePath(item.Path), name, ct);
         var now = DateTimeOffset.UtcNow;
         ApplyProviderItem(item, providerItem, now, preserveExternalFileId: true);
+        await UpdateDescendantPathsAsync(item, oldPath, NormalizePath(item.Path), now, ct);
         if (item.ItemType == "file")
             await UpsertCurrentVersionAsync(item, providerItem, now, ct);
 
@@ -116,6 +121,7 @@ public sealed class FileOperationService(
         item.IsDeleted = true;
         item.DeletedAt = now;
         item.SyncedAt = now;
+        await MarkDescendantsDeletedAsync(item, now, ct);
 
         await db.SaveChangesAsync(ct);
         await RecordAuditAsync("files.delete_to_trash", item.Id, ct);
@@ -164,7 +170,9 @@ public sealed class FileOperationService(
             syncedItems.Add(item);
         }
 
-        foreach (var missingItem in existingItems.Where(item => !seenExternalIds.Contains(item.ExternalFileId)))
+        foreach (var missingItem in existingItems.Where(item =>
+            IsDirectChildPath(item.Path, "/")
+            && !seenExternalIds.Contains(item.ExternalFileId)))
         {
             if (!missingItem.IsDeleted)
             {
@@ -379,9 +387,7 @@ public sealed class FileOperationService(
         var versions = await db.Set<FileVersionEntity>()
             .Where(version => version.FileItemId == item.Id)
             .ToListAsync(ct);
-        var currentVersion = versions.FirstOrDefault(version => version.ExternalVersionId == currentExternalVersionId)
-            ?? versions.FirstOrDefault(version => version.IsCurrent)
-            ?? versions.FirstOrDefault(version => version.Source == "current");
+        var currentVersion = versions.FirstOrDefault(version => version.ExternalVersionId == currentExternalVersionId);
 
         if (currentVersion is null)
         {
@@ -391,10 +397,17 @@ public sealed class FileOperationService(
                 ExternalVersionId = currentExternalVersionId
             };
             db.Set<FileVersionEntity>().Add(currentVersion);
+            versions.Add(currentVersion);
         }
 
-        foreach (var version in versions.Where(version => version.Id != currentVersion.Id))
+        var currentRowsToUnset = versions
+            .Where(version => version.Id != currentVersion.Id && version.IsCurrent)
+            .ToList();
+        foreach (var version in currentRowsToUnset)
             version.IsCurrent = false;
+
+        if (currentRowsToUnset.Count > 0 && !currentVersion.IsCurrent)
+            await db.SaveChangesAsync(ct);
 
         currentVersion.ExternalVersionId = currentExternalVersionId;
         currentVersion.Etag = providerItem.Etag;
@@ -404,6 +417,56 @@ public sealed class FileOperationService(
         currentVersion.IsCurrent = true;
         currentVersion.SyncedAt = now;
         item.CurrentVersionId = currentVersion.Id;
+    }
+
+    private async Task UpdateDescendantPathsAsync(
+        FileItemEntity item,
+        string oldPath,
+        string newPath,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        if (item.ItemType != "folder" || string.Equals(oldPath, newPath, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var oldPrefix = $"{oldPath}/";
+        var newPrefix = $"{newPath}/";
+        var candidates = await db.Set<FileItemEntity>()
+            .Where(descendant =>
+                descendant.ProviderId == item.ProviderId
+                && descendant.Id != item.Id)
+            .ToListAsync(ct);
+
+        foreach (var descendant in candidates.Where(descendant =>
+            descendant.Path.StartsWith(oldPrefix, StringComparison.OrdinalIgnoreCase)))
+        {
+            descendant.Path = $"{newPrefix}{descendant.Path[oldPrefix.Length..]}";
+            descendant.SyncedAt = now;
+        }
+    }
+
+    private async Task MarkDescendantsDeletedAsync(
+        FileItemEntity item,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        if (item.ItemType != "folder")
+            return;
+
+        var pathPrefix = $"{NormalizePath(item.Path)}/";
+        var candidates = await db.Set<FileItemEntity>()
+            .Where(descendant =>
+                descendant.ProviderId == item.ProviderId
+                && descendant.Id != item.Id)
+            .ToListAsync(ct);
+
+        foreach (var descendant in candidates.Where(descendant =>
+            descendant.Path.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase)))
+        {
+            descendant.IsDeleted = true;
+            descendant.DeletedAt = now;
+            descendant.SyncedAt = now;
+        }
     }
 
     private async Task RecordAuditAsync(string action, Guid fileId, CancellationToken ct)
@@ -532,7 +595,7 @@ public sealed class FileOperationService(
     }
 
     private static string NormalizeVersionSource(string source)
-        => string.IsNullOrWhiteSpace(source) ? "history" : source.Trim();
+        => string.IsNullOrWhiteSpace(source) || source is "nextcloud" ? "history" : source.Trim();
 
     private static string BuildCurrentVersionExternalId(FileItemEntity item, ProviderFileItem providerItem)
         => $"current:{(string.IsNullOrWhiteSpace(providerItem.Etag) ? item.ExternalFileId : providerItem.Etag)}";
