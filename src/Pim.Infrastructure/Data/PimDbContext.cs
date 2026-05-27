@@ -46,6 +46,8 @@ public class PimDbContext : DbContext
     public DbSet<AuditLogEntity> AuditLogs => Set<AuditLogEntity>();
     public DbSet<OperationConfirmationEntity> OperationConfirmations => Set<OperationConfirmationEntity>();
     public DbSet<DaemonHeartbeatEntity> DaemonHeartbeats => Set<DaemonHeartbeatEntity>();
+    public DbSet<AiProviderSettingEntity> AiProviderSettings => Set<AiProviderSettingEntity>();
+    public DbSet<AiRequestLogEntity> AiRequestLogs => Set<AiRequestLogEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -99,6 +101,34 @@ public class PimDbContext : DbContext
             e.Property(d => d.ReceivedAt).HasDefaultValueSql("now()");
             e.HasIndex(d => new { d.DeviceId, d.DaemonKind }).IsUnique();
             e.HasIndex(d => d.ReceivedAt);
+        });
+
+        modelBuilder.Entity<AiProviderSettingEntity>(e =>
+        {
+            e.Property(a => a.Provider).HasDefaultValue("litellm");
+            e.Property(a => a.Status).HasDefaultValue("disabled");
+            e.Property(a => a.CreatedAt).HasDefaultValueSql("now()");
+            e.Property(a => a.UpdatedAt).HasDefaultValueSql("now()");
+            e.HasIndex(a => a.Provider).IsUnique();
+            e.HasIndex(a => a.Status);
+        });
+
+        modelBuilder.Entity<AiRequestLogEntity>(e =>
+        {
+            e.Property(a => a.Provider).HasDefaultValue("litellm");
+            e.Property(a => a.RequestMessagesJson).HasDefaultValue("[]");
+            e.Property(a => a.RequestPayloadJson).HasDefaultValue("{}");
+            e.Property(a => a.ResponseRawJson).HasDefaultValue("{}");
+            e.Property(a => a.SchemaValidationErrorsJson).HasDefaultValue("[]");
+            e.Property(a => a.MetadataJson).HasDefaultValue("{}");
+            e.HasIndex(a => a.UserId);
+            e.HasIndex(a => a.Module);
+            e.HasIndex(a => a.Purpose);
+            e.HasIndex(a => a.Model);
+            e.HasIndex(a => a.Status);
+            e.HasIndex(a => a.StartedAt);
+            e.HasIndex(a => new { a.SourceObjectType, a.SourceObjectId });
+            e.HasIndex(a => a.CorrelationId);
         });
 
         Assembly[] moduleAssemblies;
