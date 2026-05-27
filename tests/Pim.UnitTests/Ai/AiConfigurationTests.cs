@@ -54,6 +54,14 @@ public class AiConfigurationTests
         Assert.Contains("- pim-net", litellm);
     }
 
+    [Fact]
+    public void EnvExample_UsesSameVirtualAndMasterLiteLlmKey()
+    {
+        var variables = ReadEnvExample();
+
+        Assert.Equal(variables["LITELLM_MASTER_KEY"], variables["PIM_LITELLM_VIRTUAL_KEY"]);
+    }
+
     private static JsonDocument ReadApiAppsettings(string fileName)
     {
         return JsonDocument.Parse(File.ReadAllText(Path.Combine("..", "..", "..", "..", "..", "src", "Pim.Api", fileName)));
@@ -88,5 +96,13 @@ public class AiConfigurationTests
         return nextServiceStart < 0
             ? compose[serviceStart..]
             : compose[serviceStart..nextServiceStart];
+    }
+
+    private static Dictionary<string, string> ReadEnvExample()
+    {
+        return File.ReadAllLines(Path.Combine("..", "..", "..", "..", "..", ".env.example"))
+            .Where(line => !string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith('#'))
+            .Select(line => line.Split('=', 2))
+            .ToDictionary(parts => parts[0], parts => parts[1]);
     }
 }
