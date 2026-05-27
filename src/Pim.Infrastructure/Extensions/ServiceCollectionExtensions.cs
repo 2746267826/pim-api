@@ -31,9 +31,12 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISystemStatusService, SystemStatusService>();
         services.Configure<AiOptions>(configuration.GetSection("Ai"));
         services.AddScoped<IAiGateway, AiGateway>();
+        services.AddScoped<IAiUsageService, AiUsageService>();
+        services.AddScoped<IAiProviderHealthService, AiProviderHealthService>();
         services.AddScoped<IAiRequestLogWriter, AiRequestLogWriter>();
         services.AddSingleton<IAiSchemaRegistry, AiSchemaRegistry>();
         services.AddSingleton<IAiChatClientFactory, AiChatClientFactory>();
+        services.AddHttpClient("litellm-health");
         services.AddHangfire(config =>
             config.UsePostgreSqlStorage(options =>
                 options.UseNpgsqlConnection(configuration.GetConnectionString("DefaultConnection"))));
