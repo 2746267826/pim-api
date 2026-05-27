@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Pim.Core.Ai;
 
 public enum AiMessageRole
@@ -7,6 +9,7 @@ public enum AiMessageRole
     Assistant
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum AiRequestStatus
 {
     Succeeded,

@@ -13,6 +13,29 @@ namespace Pim.UnitTests.Ai;
 
 public class AiEndpointPathTests
 {
+    [Theory]
+    [InlineData("FailedValidation", AiRequestStatus.FailedValidation)]
+    [InlineData("failed_validation", AiRequestStatus.FailedValidation)]
+    [InlineData("TimedOut", AiRequestStatus.TimedOut)]
+    [InlineData("timed_out", AiRequestStatus.TimedOut)]
+    [InlineData("succeeded", AiRequestStatus.Succeeded)]
+    public void TryParseStatus_AcceptsPublicStatusValues(string value, AiRequestStatus expected)
+    {
+        var parsed = AiEndpoints.TryParseStatus(value, out var status);
+
+        Assert.True(parsed);
+        Assert.Equal(expected, status);
+    }
+
+    [Fact]
+    public void TryParseStatus_RejectsInvalidStatus()
+    {
+        var parsed = AiEndpoints.TryParseStatus("nope", out var status);
+
+        Assert.False(parsed);
+        Assert.Null(status);
+    }
+
     [Fact]
     public async Task MapAiEndpoints_RegistersExpectedAuthorizedRoutes()
     {

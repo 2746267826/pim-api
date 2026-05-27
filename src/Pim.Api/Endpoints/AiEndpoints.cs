@@ -38,14 +38,19 @@ public static class AiEndpoints
             string? sourceObjectType,
             string? sourceObjectId,
             string? model,
-            AiRequestStatus? status,
+            string? status,
             Guid? userId,
             int? page,
             int? pageSize,
             IAiUsageService usage,
             CancellationToken ct) =>
         {
-            var filter = new AiRequestLogFilter(from, to, module, purpose, sourceObjectType, sourceObjectId, model, status, userId, page ?? 1, pageSize ?? 50);
+            if (!TryParseStatus(status, out var parsedStatus))
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, "Invalid AI request status."));
+            }
+
+            var filter = new AiRequestLogFilter(from, to, module, purpose, sourceObjectType, sourceObjectId, model, parsedStatus, userId, page ?? 1, pageSize ?? 50);
             return Results.Ok(ApiResponse<PagedResult<AiRequestLogListItemDto>>.Ok(await usage.ListRequestsAsync(filter, ct)));
         });
 
@@ -65,5 +70,32 @@ public static class AiEndpoints
             await health.CheckAsync(ct);
             return Results.Ok(ApiResponse<AiStatusDto>.Ok(await usage.GetStatusAsync(ct)));
         });
+    }
+
+    public static bool TryParseStatus(string? value, out AiRequestStatus? status)
+    {
+        status = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        if (Enum.TryParse<AiRequestStatus>(value, ignoreCase: true, out var parsed))
+        {
+            status = parsed;
+            return true;
+        }
+
+        status = value.Trim().ToLowerInvariant() switch
+        {
+            "succeeded" => AiRequestStatus.Succeeded,
+            "failed" => AiRequestStatus.Failed,
+            "blocked" => AiRequestStatus.Blocked,
+            "timed_out" => AiRequestStatus.TimedOut,
+            "failed_validation" => AiRequestStatus.FailedValidation,
+            _ => null
+        };
+
+        return status is not null;
     }
 }

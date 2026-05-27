@@ -1,4 +1,5 @@
 using Pim.Core.Ai;
+using System.Text.Json;
 using Xunit;
 
 namespace Pim.UnitTests.Ai;
@@ -37,5 +38,23 @@ public class AiContractTests
         Assert.Equal(logId, result.LogId);
         Assert.Contains("AI response did not match the required format", result.UserFacingError);
         Assert.Equal(["$.title is required"], result.SchemaValidationErrors);
+    }
+
+    [Fact]
+    public void AiResult_SerializesStatusAsString()
+    {
+        var result = new AiResult(
+            AiRequestStatus.FailedValidation,
+            ResponseText: null,
+            ParsedOutputJson: null,
+            SchemaValidationErrors: [],
+            Usage: new AiTokenUsage(null, null, null, null, null),
+            LogId: null,
+            UserFacingError: null);
+
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("\"status\":\"FailedValidation\"", json);
+        Assert.DoesNotContain("\"status\":4", json);
     }
 }
