@@ -22,18 +22,17 @@ public class FileEndpointPathTests
     }
 
     [Fact]
-    public async Task MapEndpoints_RegistersAuthorizedRoutes()
+    public void MapEndpoints_RegistersAuthorizedRoutes()
     {
         var builder = WebApplication.CreateBuilder();
         builder.Services.AddAuthorization();
         using var app = builder.Build();
 
         new FilesModule().MapEndpoints(app);
-        await app.StartAsync();
 
-        var routeEndpoints = app.Services
-            .GetRequiredService<EndpointDataSource>()
-            .Endpoints
+        var routeEndpoints = ((IEndpointRouteBuilder)app)
+            .DataSources
+            .SelectMany(dataSource => dataSource.Endpoints)
             .OfType<RouteEndpoint>()
             .ToList();
 
