@@ -77,9 +77,9 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("updated_at")
                         .HasDefaultValueSql("now()");
 
-                    b.Property<string>("VirtualKeySecret")
+                    b.Property<byte[]>("VirtualKeySecretEncrypted")
                         .IsRequired()
-                        .HasColumnType("text")
+                        .HasColumnType("bytea")
                         .HasColumnName("virtual_key_secret");
 
                     b.HasKey("Id");
@@ -132,7 +132,8 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("error_message");
 
                     b.Property<decimal?>("EstimatedCost")
-                        .HasColumnType("numeric")
+                        .HasPrecision(18, 8)
+                        .HasColumnType("numeric(18,8)")
                         .HasColumnName("estimated_cost");
 
                     b.Property<DateTimeOffset?>("FinishedAt")

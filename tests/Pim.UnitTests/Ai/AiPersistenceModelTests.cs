@@ -71,7 +71,7 @@ public class AiPersistenceModelTests
         {
             Provider = "litellm",
             BaseUrl = "http://litellm:4000",
-            VirtualKeySecret = "encrypted-secret",
+            VirtualKeySecretEncrypted = [1, 2, 3, 4],
             DefaultModel = "pim-default",
             Status = "enabled"
         });
@@ -80,5 +80,38 @@ public class AiPersistenceModelTests
         var saved = await db.AiProviderSettings.SingleAsync();
         Assert.Equal("litellm", saved.Provider);
         Assert.Equal("http://litellm:4000", saved.BaseUrl);
+        Assert.Equal([1, 2, 3, 4], saved.VirtualKeySecretEncrypted);
+        Assert.Null(typeof(AiProviderSettingEntity).GetProperty("VirtualKeySecret"));
+    }
+
+    [Fact]
+    public async Task AiProviderSettings_UpdateRefreshesUpdatedAt()
+    {
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        await using var db = new PimDbContext(options);
+        var originalUpdatedAt = DateTimeOffset.UtcNow.AddDays(-1);
+
+        db.AiProviderSettings.Add(new AiProviderSettingEntity
+        {
+            Provider = "litellm",
+            BaseUrl = "http://litellm:4000",
+            VirtualKeySecretEncrypted = [1, 2, 3, 4],
+            DefaultModel = "pim-default",
+            Status = "enabled",
+            UpdatedAt = originalUpdatedAt
+        });
+        await db.SaveChangesAsync();
+
+        var saved = await db.AiProviderSettings.SingleAsync();
+        saved.Status = "error";
+        saved.LastError = "health check failed";
+        saved.UpdatedAt = originalUpdatedAt;
+
+        await db.SaveChangesAsync();
+
+        Assert.True(saved.UpdatedAt > originalUpdatedAt);
     }
 }

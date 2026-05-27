@@ -19,7 +19,7 @@ public sealed class AiProviderSettingEntity
     public string BaseUrl { get; set; } = string.Empty;
 
     [Column("virtual_key_secret")]
-    public string VirtualKeySecret { get; set; } = string.Empty;
+    public byte[] VirtualKeySecretEncrypted { get; set; } = Array.Empty<byte>();
 
     [Column("default_model")]
     [MaxLength(128)]

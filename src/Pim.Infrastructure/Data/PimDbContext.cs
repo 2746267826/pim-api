@@ -49,6 +49,32 @@ public class PimDbContext : DbContext
     public DbSet<AiProviderSettingEntity> AiProviderSettings => Set<AiProviderSettingEntity>();
     public DbSet<AiRequestLogEntity> AiRequestLogs => Set<AiRequestLogEntity>();
 
+    public override int SaveChanges()
+    {
+        RefreshAiProviderSettingUpdatedAt();
+        return base.SaveChanges();
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        RefreshAiProviderSettingUpdatedAt();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        RefreshAiProviderSettingUpdatedAt();
+        return base.SaveChangesAsync(cancellationToken);
+    }
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess,
+        CancellationToken cancellationToken = default)
+    {
+        RefreshAiProviderSettingUpdatedAt();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<UserEntity>(e =>
@@ -121,6 +147,7 @@ public class PimDbContext : DbContext
             e.Property(a => a.ResponseRawJson).HasDefaultValue("{}");
             e.Property(a => a.SchemaValidationErrorsJson).HasDefaultValue("[]");
             e.Property(a => a.MetadataJson).HasDefaultValue("{}");
+            e.Property(a => a.EstimatedCost).HasPrecision(18, 8);
             e.HasIndex(a => a.UserId);
             e.HasIndex(a => a.Module);
             e.HasIndex(a => a.Purpose);
@@ -146,5 +173,17 @@ public class PimDbContext : DbContext
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         optionsBuilder.ReplaceService<IModelCacheKeyFactory, PimDbContextModelCacheKeyFactory>();
+    }
+
+    private void RefreshAiProviderSettingUpdatedAt()
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var entry in ChangeTracker.Entries<AiProviderSettingEntity>())
+        {
+            if (entry.State == EntityState.Modified)
+            {
+                entry.Entity.UpdatedAt = now;
+            }
+        }
     }
 }
