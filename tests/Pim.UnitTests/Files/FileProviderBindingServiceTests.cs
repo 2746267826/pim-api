@@ -155,5 +155,89 @@ public class FileProviderBindingServiceTests
             LastConnection = connection;
             return Task.FromResult(new FileProviderTestResult(true, "ok", null));
         }
+
+        public Task<IReadOnlyList<ProviderFileItem>> ListFolderAsync(
+            FileProviderConnection connection,
+            string path,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<ProviderFileItem> GetMetadataAsync(
+            FileProviderConnection connection,
+            string path,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<ProviderFileItem> UploadAsync(
+            FileProviderConnection connection,
+            string destinationPath,
+            Stream content,
+            string contentType,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<ProviderDownload> DownloadAsync(
+            FileProviderConnection connection,
+            string path,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<ProviderFileItem> MoveAsync(
+            FileProviderConnection connection,
+            string sourcePath,
+            string destinationPath,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<ProviderFileItem> RenameAsync(
+            FileProviderConnection connection,
+            string sourcePath,
+            string name,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task DeleteToTrashAsync(
+            FileProviderConnection connection,
+            string path,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<ProviderTrashItem>> ListTrashAsync(
+            FileProviderConnection connection,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task RestoreTrashAsync(
+            FileProviderConnection connection,
+            string trashId,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<IReadOnlyList<ProviderFileVersion>> ListVersionsAsync(
+            FileProviderConnection connection,
+            string externalFileId,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<ProviderDownload> DownloadVersionAsync(
+            FileProviderConnection connection,
+            string externalFileId,
+            string externalVersionId,
+            string fileName,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task RestoreVersionAsync(
+            FileProviderConnection connection,
+            string externalFileId,
+            string externalVersionId,
+            CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public ProviderOpenLink BuildOpenLink(
+            FileProviderConnection connection,
+            string path,
+            string mode)
+            => throw new NotSupportedException();
     }
 }
