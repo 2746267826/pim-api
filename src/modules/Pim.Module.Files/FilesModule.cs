@@ -23,6 +23,7 @@ public sealed class FilesModule : IModule
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
         services.AddScoped<FileProviderBindingService>();
+        services.AddScoped<FileOperationService>();
         services.AddHttpClient<NextcloudFileProviderAdapter>();
         services.AddScoped<IFileProviderAdapter>(sp => sp.GetRequiredService<NextcloudFileProviderAdapter>());
     }
