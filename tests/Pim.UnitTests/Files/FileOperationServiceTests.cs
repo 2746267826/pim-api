@@ -402,6 +402,25 @@ public class FileOperationServiceTests
     }
 
     [Fact]
+    public async Task GetItemAsync_WhenItemIsDeletedThrowsNotFound()
+    {
+        await using var db = CreateDb();
+        var provider = await SeedProviderAsync(db);
+        var item = await SeedItemAsync(
+            db,
+            provider,
+            "deleted-file",
+            "/Reports/deleted.txt",
+            "deleted.txt",
+            isDeleted: true);
+        var service = CreateService(db, new FakeFileProviderAdapter());
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() => service.GetItemAsync(item.Id));
+
+        Assert.Equal(5300, ex.ErrorCode);
+    }
+
+    [Fact]
     public async Task ListTrashAsync_AggregatesCurrentUserProviderTrashInProviderOrder()
     {
         await using var db = CreateDb();

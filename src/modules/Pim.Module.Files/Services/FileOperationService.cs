@@ -492,7 +492,8 @@ public sealed class FileOperationService(
             .FirstOrDefaultAsync(item =>
                 item.Id == id
                 && item.Provider != null
-                && item.Provider.UserId == userId,
+                && item.Provider.UserId == userId
+                && !item.IsDeleted,
                 ct)
             ?? throw new DomainException(5300, "File item not found");
     }
