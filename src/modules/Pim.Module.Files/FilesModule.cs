@@ -9,6 +9,8 @@ using Pim.Core.Common;
 using Pim.Core.Modules;
 using Pim.Infrastructure.Data;
 using Pim.Module.Files.DTOs;
+using Pim.Module.Files.Providers;
+using Pim.Module.Files.Services;
 
 namespace Pim.Module.Files;
 
@@ -20,15 +22,31 @@ public sealed class FilesModule : IModule
     public void RegisterServices(IServiceCollection services, IConfiguration configuration)
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
+        services.AddScoped<FileProviderBindingService>();
+        services.AddHttpClient<NextcloudFileProviderAdapter>();
+        services.AddScoped<IFileProviderAdapter>(sp => sp.GetRequiredService<NextcloudFileProviderAdapter>());
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup(FileEndpointPaths.Root).RequireAuthorization();
 
-        group.MapGet("/providers", () => NotImplemented());
-        group.MapPost("/providers/nextcloud", ([FromBody] BindNextcloudProviderRequest request) => NotImplemented());
-        group.MapPost("/providers/{id:guid}/test", (Guid id) => NotImplemented());
+        group.MapGet("/providers", async (
+            [FromServices] FileProviderBindingService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<FileProviderDto>>.Ok(await service.ListProvidersAsync(ct))));
+
+        group.MapPost("/providers/nextcloud", async (
+            [FromBody] BindNextcloudProviderRequest request,
+            [FromServices] FileProviderBindingService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<FileProviderDto>.Ok(await service.BindNextcloudAsync(request, ct))));
+
+        group.MapPost("/providers/{id:guid}/test", async (
+            Guid id,
+            [FromServices] FileProviderBindingService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<FileProviderTestDto>.Ok(await service.TestProviderAsync(id, ct))));
         group.MapPost("/providers/{id:guid}/sync", (Guid id) => NotImplemented());
         group.MapGet("/items", ([FromQuery] string? path) => NotImplemented());
         group.MapGet("/items/{id:guid}", (Guid id) => NotImplemented());

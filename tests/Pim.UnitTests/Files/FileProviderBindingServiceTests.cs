@@ -1,0 +1,119 @@
+using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
+using Pim.Infrastructure.Auth;
+using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Secrets;
+using Pim.Module.Files.DTOs;
+using Pim.Module.Files.Entities;
+using Pim.Module.Files.Providers;
+using Pim.Module.Files.Services;
+using Xunit;
+
+namespace Pim.UnitTests.Files;
+
+public class FileProviderBindingServiceTests
+{
+    private static readonly Guid UserId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+
+    [Fact]
+    public async Task BindNextcloudAsync_ProtectsAppPasswordAndDoesNotReturnIt()
+    {
+        await using var db = CreateDb();
+        var protector = new FakeSecretProtector();
+        var adapter = new FakeFileProviderAdapter();
+        var service = CreateService(db, protector, adapter);
+
+        var dto = await service.BindNextcloudAsync(new BindNextcloudProviderRequest(
+            "https://cloud.example.test/",
+            "http://nextcloud/",
+            "alice",
+            "app-password"));
+
+        Assert.Equal("nextcloud", dto.Provider);
+        Assert.Equal("https://cloud.example.test", dto.BaseUrl);
+        Assert.Equal("http://nextcloud", dto.InternalBaseUrl);
+        Assert.Equal("alice", dto.Username);
+        Assert.Equal("pending", dto.Status);
+
+        var provider = await db.Set<FileProviderEntity>().SingleAsync();
+        Assert.Equal("protected:app-password", provider.AppPasswordSecret);
+        Assert.DoesNotContain("app-password", dto.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BindNextcloudAsync_RejectsNonHttpBaseUrl()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db, new FakeSecretProtector(), new FakeFileProviderAdapter());
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => service.BindNextcloudAsync(
+            new BindNextcloudProviderRequest("ftp://cloud.example.test", null, "alice", "app-password")));
+
+        Assert.Equal(5101, error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task TestProviderAsync_UsesUnprotectedSecret()
+    {
+        await using var db = CreateDb();
+        var adapter = new FakeFileProviderAdapter();
+        var service = CreateService(db, new FakeSecretProtector(), adapter);
+        var provider = await service.BindNextcloudAsync(new BindNextcloudProviderRequest(
+            "https://cloud.example.test/",
+            null,
+            "alice",
+            "app-password"));
+
+        var result = await service.TestProviderAsync(provider.Id);
+
+        Assert.True(result.Success);
+        Assert.Equal("connected", result.Status);
+        Assert.Null(result.ErrorMessage);
+        Assert.NotNull(adapter.LastConnection);
+        Assert.Equal("app-password", adapter.LastConnection.AppPassword);
+    }
+
+    private static PimDbContext CreateDb()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(FileProviderEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase($"file-provider-binding-{Guid.NewGuid()}")
+            .Options;
+        return new PimDbContext(options);
+    }
+
+    private static FileProviderBindingService CreateService(
+        PimDbContext db,
+        ISecretProtector protector,
+        IFileProviderAdapter adapter)
+        => new(db, new FixedCurrentUserService(UserId), protector, adapter);
+
+    private sealed class FixedCurrentUserService(Guid userId) : ICurrentUserService
+    {
+        public Guid? UserId { get; } = userId;
+        public string? Role => "user";
+    }
+
+    private sealed class FakeSecretProtector : ISecretProtector
+    {
+        public string Protect(string value) => $"protected:{value}";
+
+        public string Unprotect(string protectedValue)
+            => protectedValue.StartsWith("protected:", StringComparison.Ordinal)
+                ? protectedValue["protected:".Length..]
+                : protectedValue;
+    }
+
+    private sealed class FakeFileProviderAdapter : IFileProviderAdapter
+    {
+        public FileProviderConnection? LastConnection { get; private set; }
+
+        public Task<FileProviderTestResult> TestConnectionAsync(
+            FileProviderConnection connection,
+            CancellationToken ct = default)
+        {
+            LastConnection = connection;
+            return Task.FromResult(new FileProviderTestResult(true, "ok", null));
+        }
+    }
+}
