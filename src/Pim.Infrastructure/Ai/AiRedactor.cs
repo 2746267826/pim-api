@@ -56,12 +56,28 @@ public static partial class AiRedactor
 
     public static string? RedactPlainText(string? text)
     {
-        return text is null ? null : TokenLikeValueRegex().Replace(text, "[REDACTED]");
+        if (text is null)
+        {
+            return null;
+        }
+
+        var redacted = SensitiveKeyValueRegex().Replace(text, match =>
+        {
+            var key = match.Groups["key"].Value;
+            if (!IsSensitiveKey(key))
+            {
+                return match.Value;
+            }
+
+            return match.Groups["prefix"].Value + "[REDACTED]" + match.Groups["quote"].Value;
+        });
+
+        return TokenLikeValueRegex().Replace(redacted, "[REDACTED]");
     }
 
     private static void WriteRedacted(JsonElement element, Utf8JsonWriter writer, string? propertyName)
     {
-        if (propertyName is not null && SensitiveKeys.Contains(propertyName))
+        if (propertyName is not null && IsSensitiveKey(propertyName))
         {
             writer.WriteStringValue("[REDACTED]");
             return;
@@ -97,6 +113,41 @@ public static partial class AiRedactor
         }
     }
 
+    private static bool IsSensitiveKey(string key)
+    {
+        if (SensitiveKeys.Contains(key))
+        {
+            return true;
+        }
+
+        var normalized = NormalizeKey(key);
+        return normalized.Contains("apikey", StringComparison.Ordinal)
+            || normalized.Contains("token", StringComparison.Ordinal)
+            || normalized.Contains("secret", StringComparison.Ordinal)
+            || normalized.Contains("password", StringComparison.Ordinal)
+            || normalized.Contains("authorization", StringComparison.Ordinal)
+            || normalized.Contains("privatekey", StringComparison.Ordinal);
+    }
+
+    private static string NormalizeKey(string key)
+    {
+        var builder = new StringBuilder(key.Length);
+        foreach (var c in key)
+        {
+            if (c is '_' or '-' or '.' || char.IsWhiteSpace(c))
+            {
+                continue;
+            }
+
+            builder.Append(char.ToLowerInvariant(c));
+        }
+
+        return builder.ToString();
+    }
+
     [GeneratedRegex(@"(?i)(bearer\s+[a-z0-9._\-+/=]+|sk-[a-z0-9_\-]{8,}|eyJ[a-z0-9_\-]+\.[a-z0-9_\-]+\.[a-z0-9_\-]+)")]
     private static partial Regex TokenLikeValueRegex();
+
+    [GeneratedRegex(@"(?i)(?<prefix>[""']?(?<key>[a-z0-9_.\-\s]+)[""']?\s*(?:=|:)\s*(?<quote>[""']?))(?<value>[^\s,""'}]+)(?<endquote>[""']?)")]
+    private static partial Regex SensitiveKeyValueRegex();
 }

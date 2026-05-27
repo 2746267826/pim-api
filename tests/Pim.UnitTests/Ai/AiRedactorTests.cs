@@ -49,6 +49,29 @@ public class AiRedactorTests
     }
 
     [Fact]
+    public void RedactJson_RemovesNormalizedSensitiveKeyVariants()
+    {
+        var json = """
+        {
+          "openai_api_key": "plain-openai-key",
+          "privateKey": "plain-private-key",
+          "accessToken": "plain-access-token",
+          "proxy_authorization": "plain-proxy-auth",
+          "safe": "keep-me"
+        }
+        """;
+
+        var redacted = AiRedactor.RedactJson(json);
+
+        Assert.DoesNotContain("plain-openai-key", redacted);
+        Assert.DoesNotContain("plain-private-key", redacted);
+        Assert.DoesNotContain("plain-access-token", redacted);
+        Assert.DoesNotContain("plain-proxy-auth", redacted);
+        Assert.Contains("keep-me", redacted);
+        Assert.Contains("[REDACTED]", redacted);
+    }
+
+    [Fact]
     public void RedactJson_InvalidJson_ReturnsParseableJsonWithRedactedRawText()
     {
         var redacted = AiRedactor.RedactJson("not json sk-task3-canary-1234567890");
@@ -66,6 +89,29 @@ public class AiRedactorTests
 
         Assert.DoesNotContain("abc+/def==", redacted);
         Assert.DoesNotContain("sk-task3-canary-1234567890", redacted);
+        Assert.Contains("[REDACTED]", redacted);
+    }
+
+    [Fact]
+    public void RedactPlainText_RemovesSensitiveKeyValueFragments()
+    {
+        var text = """
+        api_key=plain-api-secret
+        password: hunter2
+        client_secret=plain-client-secret
+        "refreshToken":"plain-refresh-token"
+        'accessToken':'plain-access-token'
+        safe=value
+        """;
+
+        var redacted = AiRedactor.RedactPlainText(text);
+
+        Assert.DoesNotContain("plain-api-secret", redacted);
+        Assert.DoesNotContain("hunter2", redacted);
+        Assert.DoesNotContain("plain-client-secret", redacted);
+        Assert.DoesNotContain("plain-refresh-token", redacted);
+        Assert.DoesNotContain("plain-access-token", redacted);
+        Assert.Contains("safe=value", redacted);
         Assert.Contains("[REDACTED]", redacted);
     }
 }

@@ -377,6 +377,56 @@ public class AiRequestLogWriterTests
         Assert.Contains("[REDACTED]", saved.ResponseText);
     }
 
+    [Fact]
+    public async Task WriteAsync_RedactsPlainTextKeyValueSecrets()
+    {
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        await using var db = new PimDbContext(options);
+        var writer = new AiRequestLogWriter(db);
+
+        var id = await writer.WriteAsync(new AiRequestLogWriteModel(
+            UserId: null,
+            Module: "quick-notes",
+            Purpose: "quick-notes.convert",
+            SourceObjectType: "quick_note",
+            SourceObjectId: "note-4",
+            Provider: "litellm",
+            Model: "pim-default",
+            LiteLlmRequestId: null,
+            CorrelationId: "corr-7",
+            Status: AiRequestStatus.Failed,
+            AttemptNumber: 1,
+            MaxAttempts: 1,
+            StartedAt: DateTimeOffset.Parse("2026-05-27T06:00:00Z"),
+            FinishedAt: DateTimeOffset.Parse("2026-05-27T06:00:00.001Z"),
+            RequestMessagesJson: "[]",
+            RequestPayloadJson: "{}",
+            ResponseRawJson: "{}",
+            ResponseText: "password: hunter2",
+            ParsedOutputJson: null,
+            SchemaName: null,
+            SchemaVersion: null,
+            SchemaJsonSnapshot: null,
+            SchemaValidationErrorsJson: "[]",
+            PromptTokens: null,
+            CompletionTokens: null,
+            TotalTokens: null,
+            EstimatedCost: null,
+            Currency: null,
+            ErrorCode: "provider_unavailable",
+            ErrorMessage: "client_secret=plain-secret",
+            MetadataJson: "{}"), CancellationToken.None);
+
+        var saved = await db.AiRequestLogs.SingleAsync(l => l.Id == id);
+        Assert.DoesNotContain("hunter2", saved.ResponseText);
+        Assert.DoesNotContain("plain-secret", saved.ErrorMessage);
+        Assert.Contains("[REDACTED]", saved.ResponseText);
+        Assert.Contains("[REDACTED]", saved.ErrorMessage);
+    }
+
     private static string Sha256(string value)
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
