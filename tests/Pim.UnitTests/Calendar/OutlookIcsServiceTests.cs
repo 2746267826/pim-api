@@ -177,6 +177,37 @@ public class OutlookIcsServiceTests
         Assert.Equal(3, await db.Set<EventEntity>().IgnoreQueryFilters().CountAsync());
     }
 
+    [Fact]
+    public async Task ImportOutlookIcsAsync_FallsBackToDefaultCalendarWhenTargetMissing()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
+        await using var db = CreateDb();
+        var userId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var service = CreateService(db, userId);
+        var ics = """
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        BEGIN:VEVENT
+        UID:fallback-target@example.com
+        SUMMARY:Fallback target
+        DTSTART:20260606T010000Z
+        DTEND:20260606T020000Z
+        END:VEVENT
+        END:VCALENDAR
+        """;
+
+        var report = await service.ImportOutlookIcsAsync(ics, Guid.NewGuid(), new OutlookIcsService(), CancellationToken.None);
+
+        Assert.Equal(1, report.Imported);
+        Assert.Equal(0, report.Skipped);
+        var calendar = await db.Set<CalendarEntity>().SingleAsync();
+        Assert.True(calendar.IsDefault);
+        Assert.Equal("calendar", calendar.Kind);
+        var evt = await db.Set<EventEntity>().SingleAsync();
+        Assert.Equal(calendar.Id, evt.CalendarId);
+        Assert.Equal("fallback-target@example.com", evt.SourceUid);
+    }
+
     private static PimDbContext CreateDb()
     {
         var options = new DbContextOptionsBuilder<PimDbContext>()

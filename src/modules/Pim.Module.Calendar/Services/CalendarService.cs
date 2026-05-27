@@ -166,11 +166,14 @@ public class CalendarService
         CancellationToken ct = default)
     {
         var parsed = outlookIcs.Parse(icsContent);
-        var calendar = targetCalendarId.HasValue
-            ? await _db.Set<CalendarEntity>()
-                .FirstOrDefaultAsync(c => c.Id == targetCalendarId.Value && c.UserId == UserId, ct)
-                ?? throw new DomainException(02003, "Calendar not found")
-            : await GetOrCreateDefaultCalendarAsync("calendar", ct);
+        CalendarEntity? calendar = null;
+        if (targetCalendarId.HasValue)
+        {
+            calendar = await _db.Set<CalendarEntity>()
+                .FirstOrDefaultAsync(c => c.Id == targetCalendarId.Value && c.UserId == UserId, ct);
+        }
+
+        calendar ??= await GetOrCreateDefaultCalendarAsync("calendar", ct);
 
         var imported = 0;
         var skipped = 0;
