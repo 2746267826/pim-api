@@ -898,8 +898,6 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasIndex("AiRequestLogId");
 
-                    b.HasIndex("VersionId");
-
                     b.HasIndex("FileItemId", "VersionId")
                         .IsUnique();
 
@@ -951,9 +949,9 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("QdrantPointId");
-
-                    b.HasIndex("VersionId");
+                    b.HasIndex("QdrantPointId")
+                        .IsUnique()
+                        .HasFilter("qdrant_point_id IS NOT NULL");
 
                     b.HasIndex("FileItemId", "VersionId", "ChunkIndex")
                         .IsUnique();
@@ -1010,9 +1008,9 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("VersionId");
-
                     b.HasIndex("FileItemId", "Status");
+
+                    b.HasIndex("FileItemId", "VersionId");
 
                     b.HasIndex("Status", "Stage");
 
@@ -1022,7 +1020,6 @@ namespace Pim.Infrastructure.Data.Migrations
             modelBuilder.Entity("Pim.Module.Files.Entities.FileItemEntity", b =>
                 {
                     b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
@@ -1119,6 +1116,8 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasDefaultValueSql("now()");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("Id", "CurrentVersionId");
 
                     b.HasIndex("ProviderId", "ExternalFileId")
                         .IsUnique();
@@ -1223,7 +1222,8 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("ai_request_log_id");
 
                     b.Property<decimal>("Confidence")
-                        .HasColumnType("numeric")
+                        .HasPrecision(5, 4)
+                        .HasColumnType("numeric(5,4)")
                         .HasColumnName("confidence");
 
                     b.Property<DateTimeOffset>("CreatedAt")
@@ -1282,7 +1282,10 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasIndex("FileItemId", "Status");
 
-                    b.ToTable("file_suggestions", (string)null);
+                    b.ToTable("file_suggestions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_file_suggestions_confidence_range", "confidence >= 0 AND confidence <= 1");
+                        });
                 });
 
             modelBuilder.Entity("Pim.Module.Files.Entities.FileVersionEntity", b =>
@@ -1338,7 +1341,9 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("FileItemId", "ExternalVersionId")
                         .IsUnique();
 
-                    b.HasIndex("FileItemId", "IsCurrent");
+                    b.HasIndex("FileItemId", "IsCurrent")
+                        .IsUnique()
+                        .HasFilter("is_current = true");
 
                     b.ToTable("file_versions", (string)null);
                 });
@@ -2421,7 +2426,8 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasOne("Pim.Module.Files.Entities.FileVersionEntity", "Version")
                         .WithMany()
-                        .HasForeignKey("VersionId")
+                        .HasForeignKey("FileItemId", "VersionId")
+                        .HasPrincipalKey("FileItemId", "Id")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
@@ -2440,7 +2446,8 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasOne("Pim.Module.Files.Entities.FileVersionEntity", "Version")
                         .WithMany()
-                        .HasForeignKey("VersionId")
+                        .HasForeignKey("FileItemId", "VersionId")
+                        .HasPrincipalKey("FileItemId", "Id")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
@@ -2459,8 +2466,9 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasOne("Pim.Module.Files.Entities.FileVersionEntity", "Version")
                         .WithMany()
-                        .HasForeignKey("VersionId")
-                        .OnDelete(DeleteBehavior.SetNull);
+                        .HasForeignKey("FileItemId", "VersionId")
+                        .HasPrincipalKey("FileItemId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("FileItem");
 
@@ -2474,6 +2482,12 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasForeignKey("ProviderId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.HasOne("Pim.Module.Files.Entities.FileVersionEntity", null)
+                        .WithMany()
+                        .HasForeignKey("Id", "CurrentVersionId")
+                        .HasPrincipalKey("FileItemId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Provider");
                 });

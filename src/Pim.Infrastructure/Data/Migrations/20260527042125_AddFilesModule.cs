@@ -34,6 +34,65 @@ namespace Pim.Infrastructure.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "file_ai_results",
+                columns: table => new
+                {
+                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    file_item_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    version_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    summary = table.Column<string>(type: "text", nullable: false),
+                    tags_json = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "[]"),
+                    language = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: true),
+                    sensitivity = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: true),
+                    generated_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false, defaultValueSql: "now()"),
+                    model = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
+                    ai_request_log_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    evidence_chunk_ids_json = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "[]")
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_file_ai_results", x => x.id);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "file_chunks",
+                columns: table => new
+                {
+                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    file_item_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    version_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    chunk_index = table.Column<int>(type: "integer", nullable: false),
+                    text = table.Column<string>(type: "text", nullable: false),
+                    text_hash = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: false),
+                    start_offset = table.Column<int>(type: "integer", nullable: false),
+                    end_offset = table.Column<int>(type: "integer", nullable: false),
+                    qdrant_point_id = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_file_chunks", x => x.id);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "file_index_jobs",
+                columns: table => new
+                {
+                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    file_item_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    version_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    status = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false, defaultValue: "pending"),
+                    stage = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false, defaultValue: "metadata"),
+                    attempt_count = table.Column<int>(type: "integer", nullable: false),
+                    last_error = table.Column<string>(type: "text", nullable: true),
+                    started_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    finished_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_file_index_jobs", x => x.id);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "file_items",
                 columns: table => new
                 {
@@ -77,7 +136,7 @@ namespace Pim.Infrastructure.Data.Migrations
                     suggestion_type = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
                     title = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: false),
                     reason = table.Column<string>(type: "text", nullable: false),
-                    confidence = table.Column<decimal>(type: "numeric", nullable: false),
+                    confidence = table.Column<decimal>(type: "numeric(5,4)", precision: 5, scale: 4, nullable: false),
                     payload_json = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "{}"),
                     status = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false, defaultValue: "pending"),
                     ai_request_log_id = table.Column<Guid>(type: "uuid", nullable: true),
@@ -87,6 +146,7 @@ namespace Pim.Infrastructure.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_file_suggestions", x => x.id);
+                    table.CheckConstraint("CK_file_suggestions_confidence_range", "confidence >= 0 AND confidence <= 1");
                     table.ForeignKey(
                         name: "FK_file_suggestions_file_items_file_item_id",
                         column: x => x.file_item_id,
@@ -112,107 +172,13 @@ namespace Pim.Infrastructure.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_file_versions", x => x.id);
+                    table.UniqueConstraint("AK_file_versions_file_item_id_id", x => new { x.file_item_id, x.id });
                     table.ForeignKey(
                         name: "FK_file_versions_file_items_file_item_id",
                         column: x => x.file_item_id,
                         principalTable: "file_items",
                         principalColumn: "id",
                         onDelete: ReferentialAction.Cascade);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "file_ai_results",
-                columns: table => new
-                {
-                    id = table.Column<Guid>(type: "uuid", nullable: false),
-                    file_item_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    version_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    summary = table.Column<string>(type: "text", nullable: false),
-                    tags_json = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "[]"),
-                    language = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: true),
-                    sensitivity = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: true),
-                    generated_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false, defaultValueSql: "now()"),
-                    model = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
-                    ai_request_log_id = table.Column<Guid>(type: "uuid", nullable: true),
-                    evidence_chunk_ids_json = table.Column<string>(type: "jsonb", nullable: false, defaultValue: "[]")
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_file_ai_results", x => x.id);
-                    table.ForeignKey(
-                        name: "FK_file_ai_results_file_items_file_item_id",
-                        column: x => x.file_item_id,
-                        principalTable: "file_items",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
-                    table.ForeignKey(
-                        name: "FK_file_ai_results_file_versions_version_id",
-                        column: x => x.version_id,
-                        principalTable: "file_versions",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "file_chunks",
-                columns: table => new
-                {
-                    id = table.Column<Guid>(type: "uuid", nullable: false),
-                    file_item_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    version_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    chunk_index = table.Column<int>(type: "integer", nullable: false),
-                    text = table.Column<string>(type: "text", nullable: false),
-                    text_hash = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: false),
-                    start_offset = table.Column<int>(type: "integer", nullable: false),
-                    end_offset = table.Column<int>(type: "integer", nullable: false),
-                    qdrant_point_id = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_file_chunks", x => x.id);
-                    table.ForeignKey(
-                        name: "FK_file_chunks_file_items_file_item_id",
-                        column: x => x.file_item_id,
-                        principalTable: "file_items",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
-                    table.ForeignKey(
-                        name: "FK_file_chunks_file_versions_version_id",
-                        column: x => x.version_id,
-                        principalTable: "file_versions",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "file_index_jobs",
-                columns: table => new
-                {
-                    id = table.Column<Guid>(type: "uuid", nullable: false),
-                    file_item_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    version_id = table.Column<Guid>(type: "uuid", nullable: true),
-                    status = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false, defaultValue: "pending"),
-                    stage = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false, defaultValue: "metadata"),
-                    attempt_count = table.Column<int>(type: "integer", nullable: false),
-                    last_error = table.Column<string>(type: "text", nullable: true),
-                    started_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
-                    finished_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_file_index_jobs", x => x.id);
-                    table.ForeignKey(
-                        name: "FK_file_index_jobs_file_items_file_item_id",
-                        column: x => x.file_item_id,
-                        principalTable: "file_items",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
-                    table.ForeignKey(
-                        name: "FK_file_index_jobs_file_versions_version_id",
-                        column: x => x.version_id,
-                        principalTable: "file_versions",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.SetNull);
                 });
 
             migrationBuilder.CreateIndex(
@@ -227,11 +193,6 @@ namespace Pim.Infrastructure.Data.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_file_ai_results_version_id",
-                table: "file_ai_results",
-                column: "version_id");
-
-            migrationBuilder.CreateIndex(
                 name: "IX_file_chunks_file_item_id_version_id_chunk_index",
                 table: "file_chunks",
                 columns: new[] { "file_item_id", "version_id", "chunk_index" },
@@ -240,12 +201,9 @@ namespace Pim.Infrastructure.Data.Migrations
             migrationBuilder.CreateIndex(
                 name: "IX_file_chunks_qdrant_point_id",
                 table: "file_chunks",
-                column: "qdrant_point_id");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_file_chunks_version_id",
-                table: "file_chunks",
-                column: "version_id");
+                column: "qdrant_point_id",
+                unique: true,
+                filter: "qdrant_point_id IS NOT NULL");
 
             migrationBuilder.CreateIndex(
                 name: "IX_file_index_jobs_file_item_id_status",
@@ -253,14 +211,19 @@ namespace Pim.Infrastructure.Data.Migrations
                 columns: new[] { "file_item_id", "status" });
 
             migrationBuilder.CreateIndex(
+                name: "IX_file_index_jobs_file_item_id_version_id",
+                table: "file_index_jobs",
+                columns: new[] { "file_item_id", "version_id" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_file_index_jobs_status_stage",
                 table: "file_index_jobs",
                 columns: new[] { "status", "stage" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_file_index_jobs_version_id",
-                table: "file_index_jobs",
-                column: "version_id");
+                name: "IX_file_items_id_current_version_id",
+                table: "file_items",
+                columns: new[] { "id", "current_version_id" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_file_items_provider_id_external_file_id",
@@ -318,12 +281,74 @@ namespace Pim.Infrastructure.Data.Migrations
             migrationBuilder.CreateIndex(
                 name: "IX_file_versions_file_item_id_is_current",
                 table: "file_versions",
-                columns: new[] { "file_item_id", "is_current" });
+                columns: new[] { "file_item_id", "is_current" },
+                unique: true,
+                filter: "is_current = true");
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_file_ai_results_file_items_file_item_id",
+                table: "file_ai_results",
+                column: "file_item_id",
+                principalTable: "file_items",
+                principalColumn: "id",
+                onDelete: ReferentialAction.Cascade);
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_file_ai_results_file_versions_file_item_id_version_id",
+                table: "file_ai_results",
+                columns: new[] { "file_item_id", "version_id" },
+                principalTable: "file_versions",
+                principalColumns: new[] { "file_item_id", "id" },
+                onDelete: ReferentialAction.Cascade);
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_file_chunks_file_items_file_item_id",
+                table: "file_chunks",
+                column: "file_item_id",
+                principalTable: "file_items",
+                principalColumn: "id",
+                onDelete: ReferentialAction.Cascade);
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_file_chunks_file_versions_file_item_id_version_id",
+                table: "file_chunks",
+                columns: new[] { "file_item_id", "version_id" },
+                principalTable: "file_versions",
+                principalColumns: new[] { "file_item_id", "id" },
+                onDelete: ReferentialAction.Cascade);
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_file_index_jobs_file_items_file_item_id",
+                table: "file_index_jobs",
+                column: "file_item_id",
+                principalTable: "file_items",
+                principalColumn: "id",
+                onDelete: ReferentialAction.Cascade);
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_file_index_jobs_file_versions_file_item_id_version_id",
+                table: "file_index_jobs",
+                columns: new[] { "file_item_id", "version_id" },
+                principalTable: "file_versions",
+                principalColumns: new[] { "file_item_id", "id" },
+                onDelete: ReferentialAction.Restrict);
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_file_items_file_versions_id_current_version_id",
+                table: "file_items",
+                columns: new[] { "id", "current_version_id" },
+                principalTable: "file_versions",
+                principalColumns: new[] { "file_item_id", "id" },
+                onDelete: ReferentialAction.Restrict);
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropForeignKey(
+                name: "FK_file_versions_file_items_file_item_id",
+                table: "file_versions");
+
             migrationBuilder.DropTable(
                 name: "file_ai_results");
 
@@ -337,13 +362,13 @@ namespace Pim.Infrastructure.Data.Migrations
                 name: "file_suggestions");
 
             migrationBuilder.DropTable(
-                name: "file_versions");
-
-            migrationBuilder.DropTable(
                 name: "file_items");
 
             migrationBuilder.DropTable(
                 name: "file_providers");
+
+            migrationBuilder.DropTable(
+                name: "file_versions");
         }
     }
 }
