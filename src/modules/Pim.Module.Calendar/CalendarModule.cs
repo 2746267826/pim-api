@@ -26,6 +26,7 @@ public class CalendarModule : IModule
 
         services.AddScoped<CalendarService>();
         services.AddScoped<IcsService>();
+        services.AddScoped<OutlookIcsService>();
         services.AddScoped<RecurrenceService>();
         services.AddScoped<SchedulingEngine>();
         services.AddScoped<OutlookSyncService>();
@@ -256,7 +257,7 @@ public class CalendarModule : IModule
         // ICS
         group.MapPost("/import-ics", async (
             HttpRequest request,
-            [FromServices] IcsService icsService,
+            [FromServices] OutlookIcsService outlookIcsService,
             [FromServices] CalendarService calendarService,
             CancellationToken ct) =>
         {
@@ -275,41 +276,9 @@ public class CalendarModule : IModule
 
             using var reader = new StreamReader(file.OpenReadStream());
             var icsContent = await reader.ReadToEndAsync(ct);
-            var parsed = icsService.ImportEvents(icsContent);
+            var report = await calendarService.ImportOutlookIcsAsync(icsContent, targetCalendarId, outlookIcsService, ct);
 
-            var entities = await calendarService.GetEventEntitiesAsync(
-                DateTimeOffset.MinValue, DateTimeOffset.MaxValue, ct);
-            var existingKeys = entities.Select(e => (e.Title, e.DtStart)).ToHashSet();
-            var existingUids = entities.Select(e => e.Uid).ToHashSet();
-
-            var calendars = await calendarService.GetCalendarsAsync(null, ct);
-            var calendarId = targetCalendarId ?? calendars.FirstOrDefault()?.Id
-                ?? (await calendarService.CreateCalendarAsync(
-                    new CreateCalendarRequest("默认日历", null, Kind: "calendar"), ct)).Id;
-
-            int imported = 0, skipped = 0;
-            foreach (var evt in parsed)
-            {
-                if (existingUids.Contains(evt.Uid) || existingKeys.Contains((evt.Title, evt.Start)))
-                {
-                    skipped++;
-                    continue;
-                }
-
-                try
-                {
-                    await calendarService.CreateEventAsync(
-                        new CreateEventRequest(calendarId, evt.Title, evt.Description,
-                            evt.Location, evt.Start, evt.End, evt.RRule, evt.Uid), ct);
-                    imported++;
-                }
-                catch
-                {
-                    skipped++;
-                }
-            }
-
-            return Results.Ok(ApiResponse<ImportResult>.Ok(new ImportResult(imported, skipped)));
+            return Results.Ok(ApiResponse<ImportReport>.Ok(report));
         });
 
         group.MapGet("/export-ics", async (

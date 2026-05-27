@@ -159,6 +159,84 @@ public class CalendarService
         return MapEvent(entity);
     }
 
+    public async Task<ImportReport> ImportOutlookIcsAsync(
+        string icsContent,
+        Guid? targetCalendarId,
+        OutlookIcsService outlookIcs,
+        CancellationToken ct = default)
+    {
+        var parsed = outlookIcs.Parse(icsContent);
+        var calendar = targetCalendarId.HasValue
+            ? await _db.Set<CalendarEntity>()
+                .FirstOrDefaultAsync(c => c.Id == targetCalendarId.Value && c.UserId == UserId, ct)
+                ?? throw new DomainException(02003, "Calendar not found")
+            : await GetOrCreateDefaultCalendarAsync("calendar", ct);
+
+        var imported = 0;
+        var skipped = 0;
+        var reasonCounts = new Dictionary<string, int>();
+        var samples = new List<ImportSkippedItem>();
+
+        foreach (var item in parsed.Events)
+        {
+            var duplicateReason = await FindActiveDuplicateReasonAsync(item, ct);
+            if (duplicateReason is not null)
+            {
+                skipped++;
+                reasonCounts[duplicateReason] = reasonCounts.GetValueOrDefault(duplicateReason) + 1;
+                if (samples.Count < 10)
+                    samples.Add(new ImportSkippedItem(duplicateReason, item.Title, item.Start, item.Uid));
+                continue;
+            }
+
+            _db.Set<EventEntity>().Add(new EventEntity
+            {
+                CalendarId = calendar.Id,
+                Uid = item.Uid,
+                SourceUid = item.Uid,
+                Title = item.Title,
+                Description = item.Description,
+                Location = item.Location,
+                DtStart = item.Start,
+                DtEnd = item.End,
+                RRule = item.RRule,
+                IsAllDay = item.IsAllDay,
+                TimeZoneId = item.SourceTimeZoneId,
+                SourceTimeZoneId = item.SourceTimeZoneId,
+                Source = "outlook-ics",
+                SourceIcsComponent = item.SourceIcsComponent,
+                ExternalMetadataJson = item.ExternalMetadataJson,
+                RecurrenceId = item.RecurrenceId,
+                ExDatesJson = item.ExDatesJson,
+                RecurrenceMetadataJson = item.RecurrenceMetadataJson
+            });
+            imported++;
+        }
+
+        if (imported > 0)
+            await _db.SaveChangesAsync(ct);
+
+        return new ImportReport(imported, skipped, reasonCounts, samples);
+    }
+
+    private async Task<string?> FindActiveDuplicateReasonAsync(OutlookIcsParsedEvent item, CancellationToken ct)
+    {
+        if (await _db.Set<EventEntity>().AnyAsync(e => e.Calendar.UserId == UserId && e.Uid == item.Uid, ct))
+            return "duplicate_uid";
+
+        if (await _db.Set<EventEntity>().AnyAsync(e => e.Calendar.UserId == UserId && e.SourceUid == item.Uid, ct))
+            return "duplicate_source_uid";
+
+        if (await _db.Set<EventEntity>().AnyAsync(e =>
+                e.Calendar.UserId == UserId &&
+                e.Title == item.Title &&
+                e.DtStart == item.Start &&
+                e.DtEnd == item.End, ct))
+            return "duplicate_title_time";
+
+        return null;
+    }
+
     private async Task<CalendarEntity> GetOrCreateDefaultCalendarAsync(string kind, CancellationToken ct)
     {
         var calendar = await _db.Set<CalendarEntity>()
