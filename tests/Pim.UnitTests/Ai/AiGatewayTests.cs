@@ -63,6 +63,41 @@ public class AiGatewayTests
         Assert.Equal(2, await db.AiRequestLogs.CountAsync());
     }
 
+    [Fact]
+    public async Task CompleteAsync_UsesConfiguredTimeoutAndLogsTimedOut()
+    {
+        await using var db = CreateDb();
+        var fakeClient = new FakeChatClient("late answer", waitForCancellation: true);
+        var gateway = CreateGateway(db, fakeClient, enabled: true, timeoutSeconds: 1);
+
+        var result = await gateway.CompleteAsync(BasicRequest(schemaName: null, schemaVersion: null));
+
+        Assert.Equal(AiRequestStatus.TimedOut, result.Status);
+        Assert.Equal("AI request timed out.", result.UserFacingError);
+        var log = await db.AiRequestLogs.SingleAsync();
+        Assert.Equal("timed_out", log.Status);
+        Assert.Equal("timed_out", log.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CompleteAsync_LogsFailed_WhenProviderFactoryThrows()
+    {
+        await using var db = CreateDb();
+        var gateway = CreateGateway(
+            db,
+            new ThrowingAiChatClientFactory(new InvalidOperationException("provider misconfigured")),
+            enabled: true);
+
+        var result = await gateway.CompleteAsync(BasicRequest(schemaName: null, schemaVersion: null));
+
+        Assert.Equal(AiRequestStatus.Failed, result.Status);
+        Assert.Equal("AI provider is unavailable.", result.UserFacingError);
+        var log = await db.AiRequestLogs.SingleAsync();
+        Assert.Equal("failed", log.Status);
+        Assert.Equal("provider_unavailable", log.ErrorCode);
+        Assert.Contains("provider misconfigured", log.ErrorMessage);
+    }
+
     private static AiGatewayRequest BasicRequest(string? schemaName = "quick-note-conversion", string? schemaVersion = "1", int maxAttempts = 1)
         => new(
             Module: "quick-notes",
@@ -85,7 +120,20 @@ public class AiGatewayTests
         return new PimDbContext(options);
     }
 
-    private static AiGateway CreateGateway(PimDbContext db, FakeChatClient fakeClient, bool enabled, IAiSchemaRegistry? registry = null)
+    private static AiGateway CreateGateway(
+        PimDbContext db,
+        FakeChatClient fakeClient,
+        bool enabled,
+        IAiSchemaRegistry? registry = null,
+        int timeoutSeconds = 30)
+        => CreateGateway(db, new FixedAiChatClientFactory(fakeClient), enabled, registry, timeoutSeconds);
+
+    private static AiGateway CreateGateway(
+        PimDbContext db,
+        IAiChatClientFactory factory,
+        bool enabled,
+        IAiSchemaRegistry? registry = null,
+        int timeoutSeconds = 30)
     {
         var options = Options.Create(new AiOptions
         {
@@ -94,7 +142,7 @@ public class AiGatewayTests
             BaseUrl = "http://litellm:4000",
             ApiKey = "sk-pim",
             DefaultModel = "pim-default",
-            TimeoutSeconds = 30,
+            TimeoutSeconds = timeoutSeconds,
             MaxOutputTokensPerRequest = 1000,
             MaxAttemptsPerRequest = 2,
             SaveFullPrompts = true,
@@ -103,7 +151,7 @@ public class AiGatewayTests
 
         return new AiGateway(
             options,
-            new FixedAiChatClientFactory(fakeClient),
+            factory,
             registry ?? new AiSchemaRegistry(),
             new AiRequestLogWriter(db));
     }
@@ -112,6 +160,11 @@ public class AiGatewayTests
     {
         public IChatClient Create(string model) => client;
     }
+
+    private sealed class ThrowingAiChatClientFactory(Exception exception) : IAiChatClientFactory
+    {
+        public IChatClient Create(string model) => throw exception;
+    }
 }
 
 internal sealed class FakeChatClient : IChatClient
@@ -119,29 +172,36 @@ internal sealed class FakeChatClient : IChatClient
     private readonly Queue<string> _responses;
     private readonly int? _promptTokens;
     private readonly int? _completionTokens;
+    private readonly bool _waitForCancellation;
 
-    public FakeChatClient(string response, int? promptTokens = null, int? completionTokens = null)
-        : this([response], promptTokens, completionTokens)
+    public FakeChatClient(string response, int? promptTokens = null, int? completionTokens = null, bool waitForCancellation = false)
+        : this([response], promptTokens, completionTokens, waitForCancellation)
     {
     }
 
-    public FakeChatClient(IEnumerable<string> responses, int? promptTokens = null, int? completionTokens = null)
+    public FakeChatClient(IEnumerable<string> responses, int? promptTokens = null, int? completionTokens = null, bool waitForCancellation = false)
     {
         _responses = new Queue<string>(responses);
         _promptTokens = promptTokens;
         _completionTokens = completionTokens;
+        _waitForCancellation = waitForCancellation;
     }
 
     public int CallCount { get; private set; }
     public List<IList<ChatMessage>> Requests { get; } = [];
 
-    public Task<ChatResponse> GetResponseAsync(
+    public async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         CallCount++;
         Requests.Add(messages.ToList());
+        if (_waitForCancellation && cancellationToken.CanBeCanceled)
+        {
+            await Task.Delay(TimeSpan.FromMinutes(5), cancellationToken);
+        }
+
         var response = _responses.Count > 0 ? _responses.Dequeue() : string.Empty;
         var chatResponse = new ChatResponse(new ChatMessage(ChatRole.Assistant, response))
         {
@@ -152,7 +212,7 @@ internal sealed class FakeChatClient : IChatClient
                 TotalTokenCount = _promptTokens + _completionTokens
             }
         };
-        return Task.FromResult(chatResponse);
+        return chatResponse;
     }
 
     public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(

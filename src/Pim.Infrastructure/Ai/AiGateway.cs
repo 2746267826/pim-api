@@ -47,60 +47,68 @@ public sealed class AiGateway(
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             var started = DateTimeOffset.UtcNow;
-            try
+            var maxOutputTokens = request.MaxOutputTokens ?? ai.MaxOutputTokensPerRequest;
+            var call = await CallProviderAsync(model, currentMessages, maxOutputTokens, ai.TimeoutSeconds, ct);
+            if (call.Status is AiRequestStatus.TimedOut)
             {
-                var maxOutputTokens = request.MaxOutputTokens ?? ai.MaxOutputTokensPerRequest;
-                var client = chatClientFactory.Create(model);
-                var response = await client.GetResponseAsync(currentMessages, new ChatOptions
+                lastLogId = await WriteLogAsync(
+                    request,
+                    model,
+                    correlationId,
+                    AiRequestStatus.TimedOut,
+                    attempt,
+                    maxAttempts,
+                    JsonSerializer.Serialize(currentMessages),
+                    JsonSerializer.Serialize(new { model, maxOutputTokens, attempt }),
+                    "{}",
+                    null,
+                    null,
+                    schema,
+                    "timed_out",
+                    call.ErrorMessage,
+                    ct);
+                return new AiResult(AiRequestStatus.TimedOut, null, null, [], new AiTokenUsage(null, null, null, null, null), lastLogId, "AI request timed out.");
+            }
+
+            if (call.Status is AiRequestStatus.Failed)
+            {
+                lastLogId = await WriteLogAsync(
+                    request,
+                    model,
+                    correlationId,
+                    AiRequestStatus.Failed,
+                    attempt,
+                    maxAttempts,
+                    JsonSerializer.Serialize(currentMessages),
+                    JsonSerializer.Serialize(new { model, maxOutputTokens, attempt }),
+                    "{}",
+                    null,
+                    null,
+                    schema,
+                    "provider_unavailable",
+                    call.ErrorMessage,
+                    ct);
+                return new AiResult(AiRequestStatus.Failed, null, null, [], new AiTokenUsage(null, null, null, null, null), lastLogId, "AI provider is unavailable.");
+            }
+
+            var response = call.Response ?? throw new InvalidOperationException("AI provider call completed without a response.");
+            var finished = DateTimeOffset.UtcNow;
+            var text = response.Text ?? string.Empty;
+            var usage = ExtractUsage(response);
+            var rawJson = JsonSerializer.Serialize(response);
+            var payloadJson = JsonSerializer.Serialize(new { model, maxOutputTokens, attempt });
+
+            if (schema is not null)
+            {
+                var validation = AiSchemaValidator.Validate(text, schema.JsonSchema);
+                if (!validation.IsValid)
                 {
-                    MaxOutputTokens = maxOutputTokens
-                }, ct);
-                var finished = DateTimeOffset.UtcNow;
-                var text = response.Text ?? string.Empty;
-                var usage = ExtractUsage(response);
-                var rawJson = JsonSerializer.Serialize(response);
-                var payloadJson = JsonSerializer.Serialize(new { model, maxOutputTokens, attempt });
-
-                if (schema is not null)
-                {
-                    var validation = AiSchemaValidator.Validate(text, schema.JsonSchema);
-                    if (!validation.IsValid)
-                    {
-                        lastValidationErrors = validation.Errors;
-                        lastLogId = await logWriter.WriteAsync(CreateLogModel(
-                            request,
-                            model,
-                            correlationId,
-                            AiRequestStatus.FailedValidation,
-                            attempt,
-                            maxAttempts,
-                            started,
-                            finished,
-                            JsonSerializer.Serialize(currentMessages),
-                            payloadJson,
-                            rawJson,
-                            text,
-                            null,
-                            schema,
-                            validation.Errors,
-                            usage,
-                            "schema_validation_failed",
-                            "AI response failed schema validation."), ct);
-
-                        if (attempt < maxAttempts)
-                        {
-                            currentMessages = CreateRepairMessages(text, validation.Errors, schema.JsonSchema);
-                            continue;
-                        }
-
-                        return AiResult.FailedValidation(lastLogId, validation.Errors);
-                    }
-
+                    lastValidationErrors = validation.Errors;
                     lastLogId = await logWriter.WriteAsync(CreateLogModel(
                         request,
                         model,
                         correlationId,
-                        AiRequestStatus.Succeeded,
+                        AiRequestStatus.FailedValidation,
                         attempt,
                         maxAttempts,
                         started,
@@ -109,13 +117,20 @@ public sealed class AiGateway(
                         payloadJson,
                         rawJson,
                         text,
-                        validation.ParsedOutputJson,
-                        schema,
-                        [],
-                        usage,
                         null,
-                        null), ct);
-                    return new AiResult(AiRequestStatus.Succeeded, text, validation.ParsedOutputJson, [], usage, lastLogId, null);
+                        schema,
+                        validation.Errors,
+                        usage,
+                        "schema_validation_failed",
+                        "AI response failed schema validation."), ct);
+
+                    if (attempt < maxAttempts)
+                    {
+                        currentMessages = CreateRepairMessages(text, validation.Errors, schema.JsonSchema);
+                        continue;
+                    }
+
+                    return AiResult.FailedValidation(lastLogId, validation.Errors);
                 }
 
                 lastLogId = await logWriter.WriteAsync(CreateLogModel(
@@ -131,58 +146,35 @@ public sealed class AiGateway(
                     payloadJson,
                     rawJson,
                     text,
-                    null,
-                    null,
+                    validation.ParsedOutputJson,
+                    schema,
                     [],
                     usage,
                     null,
                     null), ct);
-                return new AiResult(AiRequestStatus.Succeeded, text, null, [], usage, lastLogId, null);
+                return new AiResult(AiRequestStatus.Succeeded, text, validation.ParsedOutputJson, [], usage, lastLogId, null);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (TimeoutException ex)
-            {
-                lastLogId = await WriteLogAsync(
-                    request,
-                    model,
-                    correlationId,
-                    AiRequestStatus.TimedOut,
-                    attempt,
-                    maxAttempts,
-                    JsonSerializer.Serialize(currentMessages),
-                    "{}",
-                    "{}",
-                    null,
-                    null,
-                    schema,
-                    "timed_out",
-                    ex.Message,
-                    ct);
-                return new AiResult(AiRequestStatus.TimedOut, null, null, [], new AiTokenUsage(null, null, null, null, null), lastLogId, "AI request timed out.");
-            }
-            catch (Exception ex) when (IsProviderException(ex))
-            {
-                lastLogId = await WriteLogAsync(
-                    request,
-                    model,
-                    correlationId,
-                    AiRequestStatus.Failed,
-                    attempt,
-                    maxAttempts,
-                    JsonSerializer.Serialize(currentMessages),
-                    "{}",
-                    "{}",
-                    null,
-                    null,
-                    schema,
-                    "provider_unavailable",
-                    ex.Message,
-                    ct);
-                return new AiResult(AiRequestStatus.Failed, null, null, [], new AiTokenUsage(null, null, null, null, null), lastLogId, "AI provider is unavailable.");
-            }
+
+            lastLogId = await logWriter.WriteAsync(CreateLogModel(
+                request,
+                model,
+                correlationId,
+                AiRequestStatus.Succeeded,
+                attempt,
+                maxAttempts,
+                started,
+                finished,
+                JsonSerializer.Serialize(currentMessages),
+                payloadJson,
+                rawJson,
+                text,
+                null,
+                null,
+                [],
+                usage,
+                null,
+                null), ct);
+            return new AiResult(AiRequestStatus.Succeeded, text, null, [], usage, lastLogId, null);
         }
 
         return AiResult.FailedValidation(lastLogId, lastValidationErrors);
@@ -242,6 +234,44 @@ public sealed class AiGateway(
         }
 
         return value > int.MaxValue ? int.MaxValue : (int)value;
+    }
+
+    private async Task<ProviderCallResult> CallProviderAsync(
+        string model,
+        IReadOnlyList<ChatMessage> messages,
+        int maxOutputTokens,
+        int timeoutSeconds,
+        CancellationToken ct)
+    {
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(1, timeoutSeconds)));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+        try
+        {
+            var client = chatClientFactory.Create(model);
+            var response = await client.GetResponseAsync(messages, new ChatOptions
+            {
+                MaxOutputTokens = maxOutputTokens
+            }, linkedCts.Token);
+
+            return ProviderCallResult.Succeeded(response);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException ex) when (timeoutCts.IsCancellationRequested)
+        {
+            return ProviderCallResult.TimedOut(ex.Message);
+        }
+        catch (TimeoutException ex)
+        {
+            return ProviderCallResult.TimedOut(ex.Message);
+        }
+        catch (Exception ex)
+        {
+            return ProviderCallResult.Failed(ex.Message);
+        }
     }
 
     private AiRequestLogWriteModel CreateLogModel(
@@ -350,11 +380,10 @@ public sealed class AiGateway(
             JsonSerializer.Serialize(request.Metadata ?? new Dictionary<string, string>())), ct);
     }
 
-    private static bool IsProviderException(Exception ex)
+    private sealed record ProviderCallResult(AiRequestStatus Status, ChatResponse? Response, string? ErrorMessage)
     {
-        return ex is HttpRequestException
-            or System.ClientModel.ClientResultException
-            or IOException
-            or TaskCanceledException;
+        public static ProviderCallResult Succeeded(ChatResponse response) => new(AiRequestStatus.Succeeded, response, null);
+        public static ProviderCallResult TimedOut(string? errorMessage) => new(AiRequestStatus.TimedOut, null, errorMessage);
+        public static ProviderCallResult Failed(string? errorMessage) => new(AiRequestStatus.Failed, null, errorMessage);
     }
 }
