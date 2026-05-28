@@ -83,7 +83,7 @@ public class NextcloudDavXmlParserTests
             () => NextcloudDavXmlParser.ParseItems(xml, "/remote.php/dav/files/alice", "/Reports"));
 
         Assert.Equal(5201, error.ErrorCode);
-        Assert.Equal("Nextcloud response did not include a file id", error.Message);
+        Assert.Equal("Nextcloud 响应未包含文件 ID", error.Message);
     }
 
     [Fact]

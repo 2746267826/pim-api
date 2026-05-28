@@ -34,9 +34,9 @@ public sealed class AiGateway(
                 null,
                 null,
                 "disabled",
-                "AI is disabled.",
+                "AI 已禁用。",
                 ct);
-            return new AiResult(AiRequestStatus.Blocked, null, null, [], new AiTokenUsage(null, null, null, null, null), logId, "AI is disabled.");
+            return new AiResult(AiRequestStatus.Blocked, null, null, [], new AiTokenUsage(null, null, null, null, null), logId, "AI 已禁用。");
         }
 
         var schema = ResolveSchema(request);
@@ -72,7 +72,7 @@ public sealed class AiGateway(
                     continue;
                 }
 
-                return new AiResult(AiRequestStatus.TimedOut, null, null, [], new AiTokenUsage(null, null, null, null, null), lastLogId, "AI request timed out.");
+                return new AiResult(AiRequestStatus.TimedOut, null, null, [], new AiTokenUsage(null, null, null, null, null), lastLogId, "AI 请求超时。");
             }
 
             if (call.Status is AiRequestStatus.Failed)
@@ -98,10 +98,10 @@ public sealed class AiGateway(
                     continue;
                 }
 
-                return new AiResult(AiRequestStatus.Failed, null, null, [], new AiTokenUsage(null, null, null, null, null), lastLogId, "AI provider is unavailable.");
+                return new AiResult(AiRequestStatus.Failed, null, null, [], new AiTokenUsage(null, null, null, null, null), lastLogId, "AI 服务商不可用。");
             }
 
-            var response = call.Response ?? throw new InvalidOperationException("AI provider call completed without a response.");
+            var response = call.Response ?? throw new InvalidOperationException("AI 服务商调用完成但没有返回响应。");
             var finished = DateTimeOffset.UtcNow;
             var text = response.Text ?? string.Empty;
             var usage = ExtractUsage(response);
@@ -132,7 +132,7 @@ public sealed class AiGateway(
                         validation.Errors,
                         usage,
                         "schema_validation_failed",
-                        "AI response failed schema validation."), ct);
+                        "AI 响应未通过结构校验。"), ct);
 
                     if (attempt < maxAttempts)
                     {

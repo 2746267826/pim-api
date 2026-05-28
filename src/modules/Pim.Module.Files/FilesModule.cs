@@ -112,18 +112,18 @@ public sealed class FilesModule : IModule
         CancellationToken ct)
     {
         if (!request.HasFormContentType)
-            throw new DomainException(5306, "Multipart form data is required");
+            throw new DomainException(5306, "需要 multipart 表单数据");
 
         var form = await request.ReadFormAsync(ct);
         if (!Guid.TryParse(form["providerId"].FirstOrDefault(), out var providerId))
-            throw new DomainException(5307, "Provider id is required");
+            throw new DomainException(5307, "需要文件来源 ID");
 
         var path = form["path"].FirstOrDefault();
         if (string.IsNullOrWhiteSpace(path))
-            throw new DomainException(5308, "Upload path is required");
+            throw new DomainException(5308, "需要上传路径");
 
         var file = form.Files.GetFile("file")
-            ?? throw new DomainException(5309, "Upload file is required");
+            ?? throw new DomainException(5309, "需要上传文件");
         var contentType = string.IsNullOrWhiteSpace(file.ContentType)
             ? "application/octet-stream"
             : file.ContentType;
@@ -162,7 +162,7 @@ public sealed class FilesModule : IModule
         CancellationToken ct)
     {
         await service.DeleteAsync(id, ct);
-        return Results.Ok(ApiResponse<string>.Ok("deleted"));
+        return Results.Ok(ApiResponse<string>.Ok("已删除"));
     }
 
     private static async Task<IResult> ListTrashAsync(
@@ -177,10 +177,10 @@ public sealed class FilesModule : IModule
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(trashId))
-            throw new DomainException(5310, "Trash id is required");
+            throw new DomainException(5310, "需要回收站 ID");
 
         await service.RestoreTrashAsync(id, trashId, ct);
-        return Results.Ok(ApiResponse<string>.Ok("restored"));
+        return Results.Ok(ApiResponse<string>.Ok("已恢复"));
     }
 
     private static async Task<IResult> ListVersionsAsync(
@@ -214,7 +214,7 @@ public sealed class FilesModule : IModule
         CancellationToken ct)
     {
         await service.RestoreVersionAsync(id, versionId, ct);
-        return Results.Ok(ApiResponse<string>.Ok("restored"));
+        return Results.Ok(ApiResponse<string>.Ok("已恢复"));
     }
 
     private static async Task<IResult> IndexItemAsync(
@@ -255,7 +255,7 @@ public sealed class FilesModule : IModule
         => Results.Ok(ApiResponse<FileOpenLinkDto>.Ok(await service.BuildOpenLinkAsync(id, mode, ct)));
 
     private static IResult NotImplemented()
-        => Results.Json(ApiResponse<string>.Error(501, "Files module endpoint is not implemented yet"), statusCode: 501);
+        => Results.Json(ApiResponse<string>.Error(501, "文件模块端点尚未实现"), statusCode: 501);
 }
 
 public static class FileEndpointPaths

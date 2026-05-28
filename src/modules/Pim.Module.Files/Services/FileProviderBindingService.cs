@@ -28,7 +28,7 @@ public sealed class FileProviderBindingService
         _adapter = adapter;
     }
 
-    private Guid UserId => _currentUser.UserId ?? throw new DomainException(1002, "Not authenticated");
+    private Guid UserId => _currentUser.UserId ?? throw new DomainException(1002, "未登录");
 
     public async Task<IReadOnlyList<FileProviderDto>> ListProvidersAsync(CancellationToken ct = default)
     {
@@ -48,12 +48,12 @@ public sealed class FileProviderBindingService
         CancellationToken ct = default)
     {
         var userId = UserId;
-        var baseUrl = NormalizeHttpUrl(request.BaseUrl, "Nextcloud base URL");
+        var baseUrl = NormalizeHttpUrl(request.BaseUrl, "Nextcloud 外部访问地址");
         var internalBaseUrl = string.IsNullOrWhiteSpace(request.InternalBaseUrl)
             ? null
-            : NormalizeHttpUrl(request.InternalBaseUrl, "Nextcloud internal base URL");
-        var username = NormalizeRequired(request.Username, "Nextcloud username");
-        var appPassword = NormalizeRequired(request.AppPassword, "Nextcloud app password");
+            : NormalizeHttpUrl(request.InternalBaseUrl, "Nextcloud 内部访问地址");
+        var username = NormalizeRequired(request.Username, "Nextcloud 用户名");
+        var appPassword = NormalizeRequired(request.AppPassword, "Nextcloud 应用密码");
         var now = DateTimeOffset.UtcNow;
 
         var provider = await _db.Set<FileProviderEntity>()
@@ -111,7 +111,7 @@ public sealed class FileProviderBindingService
         var userId = UserId;
         return await _db.Set<FileProviderEntity>()
             .FirstOrDefaultAsync(provider => provider.Id == providerId && provider.UserId == userId, ct)
-            ?? throw new DomainException(5104, "File provider not found");
+            ?? throw new DomainException(5104, "文件来源不存在");
     }
 
     private FileProviderConnection ToConnection(FileProviderEntity provider)
@@ -139,7 +139,7 @@ public sealed class FileProviderBindingService
     {
         var normalized = value?.Trim();
         if (string.IsNullOrWhiteSpace(normalized))
-            throw new DomainException(5100, $"{label} is required");
+            throw new DomainException(5100, $"需要填写{label}");
 
         return normalized;
     }
@@ -150,14 +150,14 @@ public sealed class FileProviderBindingService
         if (!Uri.TryCreate(normalized, UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
-            throw new DomainException(5101, $"{label} must be an absolute HTTP or HTTPS URL");
+            throw new DomainException(5101, $"{label}必须是绝对 HTTP 或 HTTPS 地址");
         }
 
         if (!string.IsNullOrEmpty(uri.UserInfo)
             || !string.IsNullOrEmpty(uri.Query)
             || !string.IsNullOrEmpty(uri.Fragment))
         {
-            throw new DomainException(5101, $"{label} must be an absolute HTTP or HTTPS URL");
+            throw new DomainException(5101, $"{label}必须是绝对 HTTP 或 HTTPS 地址");
         }
 
         var path = uri.AbsolutePath == "/"

@@ -35,7 +35,7 @@ public class ExceptionMiddleware
             _logger.LogError(ex, "Unhandled exception with correlation id {CorrelationId}", correlationId);
             context.Response.StatusCode = StatusCodes.Status500InternalServerError;
             context.Response.ContentType = "application/json";
-            var response = ApiResponse<string>.Error(01001, "Internal server error");
+            var response = ApiResponse<string>.Error(01001, "内部服务器错误");
             await context.Response.WriteAsync(JsonSerializer.Serialize(response));
         }
     }

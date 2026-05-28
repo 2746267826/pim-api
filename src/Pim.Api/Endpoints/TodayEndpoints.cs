@@ -40,7 +40,7 @@ public static class TodayEndpoints
             {
                 var result = await today.GetSectionAsync(sectionId, date, ct);
                 return result is null
-                    ? Results.NotFound(ApiResponse<string>.Error(404, "Today section not found."))
+                    ? Results.NotFound(ApiResponse<string>.Error(404, "今日模块不存在。"))
                     : Results.Ok(ApiResponse<TodaySectionDto>.Ok(result));
             });
         });

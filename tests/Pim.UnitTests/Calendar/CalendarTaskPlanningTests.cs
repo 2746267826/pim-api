@@ -37,6 +37,27 @@ public class CalendarTaskPlanningTests
     }
 
     [Fact]
+    public async Task PlanTaskAsync_NormalizesOffsetPlannedRangeToUtc()
+    {
+        await using var db = CreateDb();
+        var task = new TaskEntity { UserId = UserId, Uid = "offset-task@pim", Title = "Drag task", IsInbox = true };
+        db.Set<TaskEntity>().Add(task);
+        await db.SaveChangesAsync();
+        var service = CreateCalendarService(db);
+
+        var planned = await service.PlanTaskAsync(task.Id, new PlanTaskRequest(
+            new DateTimeOffset(2026, 5, 28, 9, 0, 0, TimeSpan.FromHours(8)),
+            new DateTimeOffset(2026, 5, 28, 10, 0, 0, TimeSpan.FromHours(8)),
+            null));
+
+        Assert.Equal(new DateTimeOffset(2026, 5, 28, 1, 0, 0, TimeSpan.Zero), planned.DtStart);
+        Assert.Equal(new DateTimeOffset(2026, 5, 28, 2, 0, 0, TimeSpan.Zero), planned.PlannedEnd);
+        var stored = await db.Set<TaskEntity>().SingleAsync(t => t.Id == task.Id);
+        Assert.Equal(TimeSpan.Zero, stored.DtStart!.Value.Offset);
+        Assert.Equal(TimeSpan.Zero, stored.PlannedEnd!.Value.Offset);
+    }
+
+    [Fact]
     public async Task PlanTaskAsync_PreservesExistingEstimatedDurationWhenOmitted()
     {
         await using var db = CreateDb();
@@ -126,7 +147,7 @@ public class CalendarTaskPlanningTests
             service.BatchUpdateTasksAsync(new BatchTaskUpdateRequest(new[] { task.Id }, null, null, otherUsersCalendar.Id)));
 
         Assert.Equal(02003, exception.ErrorCode);
-        Assert.Equal("Calendar not found", exception.Message);
+        Assert.Equal("日历不存在", exception.Message);
         var stored = await db.Set<TaskEntity>().SingleAsync(t => t.Id == task.Id);
         Assert.Null(stored.CalendarId);
         Assert.True(stored.IsInbox);
@@ -167,7 +188,7 @@ public class CalendarTaskPlanningTests
             new BatchTaskUpdateRequest(new[] { Guid.NewGuid() }, "COMPLETED", null, null));
 
         Assert.Equal(0, result.AffectedCount);
-        Assert.Equal("No tasks updated", result.Message);
+        Assert.Equal("没有更新任务", result.Message);
     }
 
     [Fact]
@@ -192,7 +213,7 @@ public class CalendarTaskPlanningTests
         Assert.Equal(0, result.AffectedCount);
         Assert.Empty(result.AffectedIds);
         Assert.Empty(result.Samples);
-        Assert.Equal("No tasks updated", result.Message);
+        Assert.Equal("没有更新任务", result.Message);
         Assert.Equal(updatedAt, (await db.Set<TaskEntity>().SingleAsync(t => t.Id == task.Id)).UpdatedAt);
     }
 

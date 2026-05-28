@@ -92,7 +92,7 @@ public class QuickNotesModule : IModule
             CancellationToken ct) =>
         {
             await service.DeleteAsync(id, ct);
-            return Results.Ok(ApiResponse<string>.Ok("deleted"));
+            return Results.Ok(ApiResponse<string>.Ok("已删除"));
         });
 
         group.MapPost("/attachments", async (
@@ -101,7 +101,7 @@ public class QuickNotesModule : IModule
             CancellationToken ct) =>
         {
             if (!request.HasFormContentType)
-                return Results.BadRequest(ApiResponse<string>.Error(400, "Expected multipart/form-data"));
+                return Results.BadRequest(ApiResponse<string>.Error(400, "需要 multipart/form-data 请求"));
 
             IFormCollection form;
             try
@@ -114,12 +114,12 @@ public class QuickNotesModule : IModule
             }
             catch (Exception ex) when (ex is InvalidDataException or BadHttpRequestException or IOException)
             {
-                return Results.BadRequest(ApiResponse<string>.Error(400, "Invalid multipart/form-data"));
+                return Results.BadRequest(ApiResponse<string>.Error(400, "multipart/form-data 请求无效"));
             }
 
             var file = form.Files.GetFile("file");
             if (file is null)
-                return Results.BadRequest(ApiResponse<string>.Error(400, "No file field"));
+                return Results.BadRequest(ApiResponse<string>.Error(400, "缺少 file 文件字段"));
 
             await using var stream = file.OpenReadStream();
             var result = await service.UploadAsync(stream, file.FileName, file.ContentType, file.Length, ct);
@@ -141,7 +141,7 @@ public class QuickNotesModule : IModule
             CancellationToken ct) =>
         {
             await service.DeleteAsync(id, ct);
-            return Results.Ok(ApiResponse<string>.Ok("deleted"));
+            return Results.Ok(ApiResponse<string>.Ok("已删除"));
         });
     }
 

@@ -23,10 +23,10 @@ public static class AuthEndpoints
             CancellationToken ct) =>
         {
             if (await db.Users.AnyAsync(u => u.Username == request.Username, ct))
-                return Results.Conflict(ApiResponse<string>.Error(01003, "Username already exists"));
+                return Results.Conflict(ApiResponse<string>.Error(01003, "用户名已存在"));
 
             if (await db.Users.AnyAsync(u => u.Email == request.Email, ct))
-                return Results.Conflict(ApiResponse<string>.Error(01004, "Email already exists"));
+                return Results.Conflict(ApiResponse<string>.Error(01004, "邮箱已存在"));
 
             var user = new UserEntity
             {

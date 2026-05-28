@@ -27,7 +27,7 @@ public class HangfireJobStatusServiceTests
         Assert.Equal(5, summary.Enqueued);
         Assert.Equal(3, summary.Scheduled);
         Assert.Equal(0, summary.Failed);
-        Assert.Equal("Background jobs are healthy.", summary.Message);
+        Assert.Equal("后台任务正常。", summary.Message);
     }
 
     [Fact]
@@ -42,7 +42,7 @@ public class HangfireJobStatusServiceTests
         Assert.Equal(1, summary.Enqueued);
         Assert.Equal(2, summary.Scheduled);
         Assert.Equal(4, summary.Failed);
-        Assert.Equal("Some background jobs have failed.", summary.Message);
+        Assert.Equal("部分后台任务执行失败。", summary.Message);
     }
 
     [Fact]
@@ -57,7 +57,7 @@ public class HangfireJobStatusServiceTests
         Assert.Equal(0, summary.Enqueued);
         Assert.Equal(0, summary.Scheduled);
         Assert.Equal(0, summary.Failed);
-        Assert.Equal("Background job status is unavailable.", summary.Message);
+        Assert.Equal("后台任务状态不可用。", summary.Message);
     }
 
     private sealed class FakeHangfireMonitoringClient : IHangfireMonitoringClient

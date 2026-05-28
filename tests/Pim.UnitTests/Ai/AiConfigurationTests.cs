@@ -26,6 +26,7 @@ public class AiConfigurationTests
     {
         var compose = File.ReadAllText(Path.Combine("..", "..", "..", "..", "..", "docker-compose.yml")).ReplaceLineEndings("\n");
         var pimApi = ExtractService(compose, "pim-api");
+        var litellmDbInit = ExtractService(compose, "litellm-db-init");
         var litellm = ExtractService(compose, "litellm");
 
         Assert.Contains("litellm:", compose);
@@ -44,14 +45,20 @@ public class AiConfigurationTests
         Assert.Contains("docker.litellm.ai/berriai/litellm:main-latest", litellm);
         Assert.Contains("command: [\"--config\", \"/app/config.yaml\", \"--port\", \"4000\"]", litellm);
         Assert.Contains("./litellm-config.yaml:/app/config.yaml:ro", litellm);
-        Assert.Contains("DATABASE_URL=postgresql://pim:${PG_PASSWORD}@postgres:5432/pim", litellm);
+        Assert.Contains("DATABASE_URL=postgresql://pim:${PG_PASSWORD}@postgres:5432/litellm", litellm);
         Assert.Contains("LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}", litellm);
         Assert.Contains("LITELLM_SALT_KEY=${LITELLM_SALT_KEY}", litellm);
         Assert.Contains("LITELLM_UPSTREAM_MODEL=${LITELLM_UPSTREAM_MODEL}", litellm);
         Assert.Contains("LITELLM_UPSTREAM_API_KEY=${LITELLM_UPSTREAM_API_KEY}", litellm);
         Assert.Contains("LITELLM_UPSTREAM_API_BASE=${LITELLM_UPSTREAM_API_BASE}", litellm);
+        Assert.Contains("litellm-db-init:\n        condition: service_completed_successfully", litellm);
         Assert.Contains("postgres:\n        condition: service_healthy", litellm);
         Assert.Contains("- pim-net", litellm);
+
+        Assert.Contains("image: postgres:16-alpine", litellmDbInit);
+        Assert.Contains("PGPASSWORD=${PG_PASSWORD}", litellmDbInit);
+        Assert.Contains("CREATE DATABASE litellm", litellmDbInit);
+        Assert.Contains("- pim-net", litellmDbInit);
     }
 
     [Fact]

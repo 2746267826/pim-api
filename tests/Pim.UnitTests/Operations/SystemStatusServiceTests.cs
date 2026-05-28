@@ -22,6 +22,7 @@ public class SystemStatusServiceTests
 
         Assert.Equal(PimHealthStatus.Unknown, summary.Status);
         Assert.Equal("未知", summary.Label);
+        Assert.Equal("系统状态未知。", summary.Message);
     }
 
     [Fact]
@@ -50,6 +51,7 @@ public class SystemStatusServiceTests
 
         Assert.Equal(PimHealthStatus.Unknown, summary.Status);
         Assert.Equal("未知", summary.Label);
+        Assert.Equal("系统状态未知。", summary.Message);
     }
 
     [Fact]
@@ -78,6 +80,7 @@ public class SystemStatusServiceTests
 
         Assert.Equal(PimHealthStatus.Warning, summary.Status);
         Assert.Equal("有警告", summary.Label);
+        Assert.Equal("部分系统需要关注。", summary.Message);
     }
 
     [Fact]
@@ -106,6 +109,7 @@ public class SystemStatusServiceTests
 
         Assert.Equal(PimHealthStatus.Warning, summary.Status);
         Assert.Equal("有警告", summary.Label);
+        Assert.Equal("部分系统需要关注。", summary.Message);
     }
 
     [Fact]
@@ -122,20 +126,21 @@ public class SystemStatusServiceTests
         var detail = await service.GetDetailAsync();
 
         Assert.Equal(PimHealthStatus.Critical, detail.Summary.Status);
+        Assert.Equal("一个或多个系统正在故障。", detail.Summary.Message);
 
         var database = Assert.Single(detail.Components, c => c.Key == "database");
         Assert.Equal(PimHealthStatus.Critical, database.Status);
-        Assert.Equal("Database is unavailable.", database.Message);
+        Assert.Equal("数据库不可用。", database.Message);
 
         var daemon = Assert.Single(detail.Components, c => c.Key == "windows-daemon");
         Assert.Equal(PimHealthStatus.Critical, daemon.Status);
-        Assert.Equal("Windows daemon heartbeat status is unavailable.", daemon.Message);
+        Assert.Equal("Windows 守护程序心跳状态不可用。", daemon.Message);
         Assert.Contains("error", daemon.Details.Keys);
     }
 
     private sealed class FakeBackgroundJobStatusService : IBackgroundJobStatusService
     {
         public Task<BackgroundJobSummaryDto> GetSummaryAsync(CancellationToken ct = default)
-            => Task.FromResult(new BackgroundJobSummaryDto(PimHealthStatus.Healthy, 0, 0, 0, 0, DateTimeOffset.UtcNow, "Background jobs healthy."));
+            => Task.FromResult(new BackgroundJobSummaryDto(PimHealthStatus.Healthy, 0, 0, 0, 0, DateTimeOffset.UtcNow, "后台任务正常。"));
     }
 }

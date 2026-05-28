@@ -38,7 +38,7 @@ public class ExceptionMiddlewareTests
         var context = new DefaultHttpContext();
         context.Response.Body = new MemoryStream();
         var middleware = new ExceptionMiddleware(
-            _ => throw new DomainException(4003, "Invalid quick note status"),
+            _ => throw new DomainException(4003, "快速记录状态无效"),
             NullLogger<ExceptionMiddleware>.Instance);
 
         await middleware.InvokeAsync(context);

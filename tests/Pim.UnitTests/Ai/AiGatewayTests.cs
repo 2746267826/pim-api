@@ -21,7 +21,7 @@ public class AiGatewayTests
 
         Assert.Equal(AiRequestStatus.Blocked, result.Status);
         Assert.Equal(0, fakeClient.CallCount);
-        Assert.Contains("AI is disabled", result.UserFacingError);
+        Assert.Contains("AI 已禁用", result.UserFacingError);
         Assert.Equal("blocked", (await db.AiRequestLogs.SingleAsync()).Status);
     }
 
@@ -73,7 +73,7 @@ public class AiGatewayTests
         var result = await gateway.CompleteAsync(BasicRequest(schemaName: null, schemaVersion: null));
 
         Assert.Equal(AiRequestStatus.TimedOut, result.Status);
-        Assert.Equal("AI request timed out.", result.UserFacingError);
+        Assert.Equal("AI 请求超时。", result.UserFacingError);
         var log = await db.AiRequestLogs.SingleAsync();
         Assert.Equal("timed_out", log.Status);
         Assert.Equal("timed_out", log.ErrorCode);
@@ -143,7 +143,7 @@ public class AiGatewayTests
         var result = await gateway.CompleteAsync(BasicRequest(schemaName: null, schemaVersion: null));
 
         Assert.Equal(AiRequestStatus.Failed, result.Status);
-        Assert.Equal("AI provider is unavailable.", result.UserFacingError);
+        Assert.Equal("AI 服务商不可用。", result.UserFacingError);
         var log = await db.AiRequestLogs.SingleAsync();
         Assert.Equal("failed", log.Status);
         Assert.Equal("provider_unavailable", log.ErrorCode);

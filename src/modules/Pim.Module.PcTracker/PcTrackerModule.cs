@@ -44,7 +44,7 @@ public class PcTrackerModule : IModule
             CancellationToken ct) =>
         {
             await svc.UpsertKeystatsAsync(req, ct);
-            return Results.Ok(ApiResponse<string>.Ok("ok"));
+            return Results.Ok(ApiResponse<string>.Ok("已接收"));
         });
 
         writeGroup.MapPost("/keystats/samples", async (
@@ -53,7 +53,7 @@ public class PcTrackerModule : IModule
             CancellationToken ct) =>
         {
             await svc.UpsertKeystatsSampleAsync(req, ct);
-            return Results.Ok(ApiResponse<string>.Ok("ok"));
+            return Results.Ok(ApiResponse<string>.Ok("已接收"));
         });
 
         writeGroup.MapPost("/aw/upload", async (
@@ -184,8 +184,8 @@ public class PcTrackerModule : IModule
         {
             var ok = await svc.DeleteCategoryAsync(id, ct);
             return ok
-                ? Results.Ok(ApiResponse<string>.Ok("deleted"))
-                : Results.NotFound(ApiResponse<string>.Error(404, "not found or builtin"));
+                ? Results.Ok(ApiResponse<string>.Ok("已删除"))
+                : Results.NotFound(ApiResponse<string>.Error(404, "不存在或为内置项"));
         });
 
         readGroup.MapGet("/classification/rules", async (
@@ -296,7 +296,7 @@ public class PcTrackerModule : IModule
             }
             catch (KeyNotFoundException)
             {
-                return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
+                return Results.NotFound(ApiResponse<string>.Error(404, "不存在"));
             }
             catch (InvalidOperationException ex)
             {
@@ -312,11 +312,11 @@ public class PcTrackerModule : IModule
             try
             {
                 await suggestionService.RejectSuggestionAsync(id, ct);
-                return Results.Ok(ApiResponse<string>.Ok("rejected"));
+                return Results.Ok(ApiResponse<string>.Ok("已拒绝"));
             }
             catch (KeyNotFoundException)
             {
-                return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
+                return Results.NotFound(ApiResponse<string>.Error(404, "不存在"));
             }
             catch (InvalidOperationException ex)
             {
@@ -326,7 +326,7 @@ public class PcTrackerModule : IModule
 
         writeGroup.MapPost("/classification/recompute", () =>
         {
-            return Results.Ok(ApiResponse<string>.Ok("classification is computed on query in this version"));
+            return Results.Ok(ApiResponse<string>.Ok("当前版本会在查询时计算分类"));
         });
 
         readGroup.MapGet("/heatmap/grid", async (

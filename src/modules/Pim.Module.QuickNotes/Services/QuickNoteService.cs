@@ -31,7 +31,7 @@ public class QuickNoteService
         _attachments = attachments;
     }
 
-    private Guid UserId => _currentUser.UserId ?? throw new DomainException(1002, "Not authenticated");
+    private Guid UserId => _currentUser.UserId ?? throw new DomainException(1002, "未登录");
 
     public async Task<PagedResult<QuickNoteListItemDto>> ListAsync(
         QuickNoteListQuery query,
@@ -244,7 +244,7 @@ public class QuickNoteService
         return await _db.Set<QuickNoteEntity>()
             .Include(note => note.Attachments)
             .FirstOrDefaultAsync(note => note.Id == id && note.UserId == userId, ct)
-            ?? throw new DomainException(4004, "Quick note not found");
+            ?? throw new DomainException(4004, "快速记录不存在");
     }
 
     private async Task RecordAuditAsync(string action, Guid noteId, Guid userId, CancellationToken ct)
@@ -268,7 +268,7 @@ public class QuickNoteService
     private static void ValidateStatus(string status)
     {
         if (!QuickNoteStatuses.IsValid(status))
-            throw new DomainException(4003, "Invalid quick note status");
+            throw new DomainException(4003, "快速记录状态无效");
     }
 
     private static string NormalizeSource(string? source)

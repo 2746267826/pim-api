@@ -42,7 +42,7 @@ public static class NextcloudDavXmlParser
         var path = NormalizePath(RemovePrefix(DecodeHref(href), hrefPrefix));
         var fileId = ElementValue(prop, OwnCloud + "fileid");
         if (string.IsNullOrWhiteSpace(fileId))
-            throw new DomainException(5201, "Nextcloud response did not include a file id");
+            throw new DomainException(5201, "Nextcloud 响应未包含文件 ID");
 
         var resourcetype = prop.Element(Dav + "resourcetype");
         var itemType = resourcetype?.Element(Dav + "collection") is null ? "file" : "folder";

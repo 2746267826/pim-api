@@ -49,7 +49,7 @@ public static class AiEndpoints
         {
             if (!TryParseStatus(status, out var parsedStatus))
             {
-                return Results.BadRequest(ApiResponse<string>.Error(400, "Invalid AI request status."));
+                return Results.BadRequest(ApiResponse<string>.Error(400, "AI 请求状态无效。"));
             }
 
             var filter = new AiRequestLogFilter(from, to, module, purpose, sourceObjectType, sourceObjectId, model, parsedStatus, userId, page ?? 1, pageSize ?? 50);
@@ -60,7 +60,7 @@ public static class AiEndpoints
         {
             var detail = await usage.GetRequestDetailAsync(id, ct);
             return detail is null
-                ? Results.NotFound(ApiResponse<string>.Error(404, "AI request log not found."))
+                ? Results.NotFound(ApiResponse<string>.Error(404, "AI 请求日志不存在。"))
                 : Results.Ok(ApiResponse<AiRequestLogDetailDto>.Ok(detail));
         });
 

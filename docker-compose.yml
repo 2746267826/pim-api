@@ -21,6 +21,7 @@ services:
       - Minio__SecretKey=${MINIO_SECRET_KEY}
       - Kopia__RepositoryPath=/data/kopia-repo
       - Kopia__Password=${KOPIA_PASSWORD}
+      - DataProtection__KeysPath=/data/data-protection
       - Tika__BaseUrl=http://tika:9998
       - Ai__Enabled=${AI_ENABLED:-false}
       - Ai__Provider=litellm
@@ -99,7 +100,7 @@ services:
     restart: unless-stopped
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
-      - DATABASE_URL=postgresql://pim:${PG_PASSWORD}@postgres:5432/pim
+      - DATABASE_URL=postgresql://pim:${PG_PASSWORD}@postgres:5432/litellm
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - LITELLM_SALT_KEY=${LITELLM_SALT_KEY}
       - LITELLM_UPSTREAM_MODEL=${LITELLM_UPSTREAM_MODEL}
@@ -107,6 +108,25 @@ services:
       - LITELLM_UPSTREAM_API_BASE=${LITELLM_UPSTREAM_API_BASE}
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm-db-init:
+        condition: service_completed_successfully
+    networks:
+      - pim-net
+
+  litellm-db-init:
+    image: postgres:16-alpine
+    restart: "no"
+    environment:
+      - PGPASSWORD=${PG_PASSWORD}
+    command: >
+      sh -c "psql -h postgres -U pim -d postgres -v ON_ERROR_STOP=1 -tc
+      \"SELECT 1 FROM pg_database WHERE datname = 'litellm'\"
+      | grep -q 1
+      || psql -h postgres -U pim -d postgres -v ON_ERROR_STOP=1 -c
+      \"CREATE DATABASE litellm\""
     depends_on:
       postgres:
         condition: service_healthy

@@ -175,7 +175,7 @@ public class CalendarModule : IModule
             [FromServices] CalendarService svc, CancellationToken ct) =>
         {
             await svc.MoveTaskAsync(id, req, ct);
-            return Results.Ok(ApiResponse<string>.Ok("moved"));
+            return Results.Ok(ApiResponse<string>.Ok("已移动"));
         });
 
         group.MapPost("/tasks/{id:guid}/plan", async (
@@ -262,12 +262,12 @@ public class CalendarModule : IModule
             CancellationToken ct) =>
         {
             if (!request.HasFormContentType)
-                return Results.BadRequest(ApiResponse<string>.Error(400, "Expected multipart/form-data"));
+                return Results.BadRequest(ApiResponse<string>.Error(400, "需要 multipart/form-data"));
 
             var form = await request.ReadFormAsync(ct);
             var file = form.Files.GetFile("file");
             if (file is null)
-                return Results.BadRequest(ApiResponse<string>.Error(400, "No file field"));
+                return Results.BadRequest(ApiResponse<string>.Error(400, "缺少文件字段"));
 
             var calendarIdStr = form.TryGetValue("calendarId", out var cidVal) ? cidVal.ToString() : null;
             Guid? targetCalendarId = null;
@@ -318,7 +318,7 @@ public class CalendarModule : IModule
             CancellationToken ct) =>
         {
             await outlookSvc.SyncAsync(currentUser.UserId!.Value, ct);
-            return Results.Ok(ApiResponse<string>.Ok("synced"));
+            return Results.Ok(ApiResponse<string>.Ok("已同步"));
         });
     }
 

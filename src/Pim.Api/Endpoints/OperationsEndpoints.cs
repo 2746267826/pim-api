@@ -43,6 +43,6 @@ public static class OperationsEndpoints
 
     private static Guid RequireCurrentUserId(ICurrentUserService currentUser)
     {
-        return currentUser.UserId ?? throw new DomainException(01002, "Not authenticated");
+        return currentUser.UserId ?? throw new DomainException(01002, "未登录");
     }
 }

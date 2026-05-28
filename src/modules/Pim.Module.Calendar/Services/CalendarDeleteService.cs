@@ -20,7 +20,7 @@ public sealed class CalendarDeleteService
         _audit = audit;
     }
 
-    private Guid UserId => _currentUser.UserId ?? throw new DomainException(1002, "Not authenticated");
+    private Guid UserId => _currentUser.UserId ?? throw new DomainException(1002, "未登录");
 
     public async Task<CalendarDeletePreviewResponse> PreviewCalendarDeleteAsync(Guid calendarId, CancellationToken ct = default)
     {
@@ -36,7 +36,7 @@ public sealed class CalendarDeleteService
             operationKind,
             affectedCount,
             samples,
-            $"Delete {calendar.Name} and {affectedCount} active {(calendar.Kind == "task" ? "task" : "event")}{(affectedCount == 1 ? string.Empty : "s")}.",
+            $"删除 {calendar.Name} 及 {affectedCount} 个活跃{(calendar.Kind == "task" ? "任务" : "日程")}。",
             true);
     }
 
@@ -95,7 +95,7 @@ public sealed class CalendarDeleteService
             affectedIds.Count,
             affectedIds,
             childSamples,
-            $"Deleted {calendar.Name}.");
+            $"已删除 {calendar.Name}。");
     }
 
     public async Task<CalendarOperationResult> DeleteEventAsync(Guid eventId, CancellationToken ct = default)
@@ -115,7 +115,7 @@ public sealed class CalendarDeleteService
             Metadata(operationId, operationKind, evt.Title, 1),
             ct);
 
-        return Result("calendar.events.delete", operationId, new[] { evt }, "Deleted event.");
+        return Result("calendar.events.delete", operationId, new[] { evt }, "已删除日程。");
     }
 
     public async Task<CalendarOperationResult> BatchDeleteEventsAsync(IEnumerable<Guid>? ids, CancellationToken ct = default)
@@ -124,7 +124,7 @@ public sealed class CalendarDeleteService
         var operationId = Guid.NewGuid();
         var operation = "calendar.events.batch_delete";
         if (idSet.Count == 0)
-            return EmptyResult(operation, operationId, "No events deleted.");
+            return EmptyResult(operation, operationId, "没有删除日程。");
 
         var events = await _db.Set<EventEntity>()
             .Include(e => e.Calendar)
@@ -132,7 +132,7 @@ public sealed class CalendarDeleteService
             .OrderBy(e => e.DtStart)
             .ToListAsync(ct);
         if (events.Count == 0)
-            return EmptyResult(operation, operationId, "No events deleted.");
+            return EmptyResult(operation, operationId, "没有删除日程。");
 
         var deletedAt = DateTimeOffset.UtcNow;
         var operationKind = "batch-event";
@@ -151,7 +151,7 @@ public sealed class CalendarDeleteService
             Metadata(operationId, operationKind, null, events.Count),
             ct);
 
-        return Result(operation, operationId, events, "Deleted events.");
+        return Result(operation, operationId, events, "已删除日程。");
     }
 
     public async Task<CalendarOperationResult> DeleteTaskAsync(Guid taskId, CancellationToken ct = default)
@@ -171,7 +171,7 @@ public sealed class CalendarDeleteService
             Metadata(operationId, operationKind, task.Title, 1),
             ct);
 
-        return Result("calendar.tasks.delete", operationId, new[] { task }, "Deleted task.");
+        return Result("calendar.tasks.delete", operationId, new[] { task }, "已删除任务。");
     }
 
     public async Task<CalendarOperationResult> BatchDeleteTasksAsync(IEnumerable<Guid>? ids, CancellationToken ct = default)
@@ -180,7 +180,7 @@ public sealed class CalendarDeleteService
         var operationId = Guid.NewGuid();
         var operation = "calendar.tasks.batch_delete";
         if (idSet.Count == 0)
-            return EmptyResult(operation, operationId, "No tasks deleted.");
+            return EmptyResult(operation, operationId, "没有删除任务。");
 
         var tasks = await _db.Set<TaskEntity>()
             .Include(t => t.Calendar)
@@ -188,7 +188,7 @@ public sealed class CalendarDeleteService
             .OrderBy(t => t.Title)
             .ToListAsync(ct);
         if (tasks.Count == 0)
-            return EmptyResult(operation, operationId, "No tasks deleted.");
+            return EmptyResult(operation, operationId, "没有删除任务。");
 
         var deletedAt = DateTimeOffset.UtcNow;
         var operationKind = "batch-task";
@@ -207,25 +207,25 @@ public sealed class CalendarDeleteService
             Metadata(operationId, operationKind, null, tasks.Count),
             ct);
 
-        return Result(operation, operationId, tasks, "Deleted tasks.");
+        return Result(operation, operationId, tasks, "已删除任务。");
     }
 
     private async Task<CalendarEntity> LoadCalendarAsync(Guid calendarId, CancellationToken ct)
         => await _db.Set<CalendarEntity>()
             .FirstOrDefaultAsync(c => c.Id == calendarId && c.UserId == UserId, ct)
-            ?? throw new DomainException(02002, "Calendar not found");
+            ?? throw new DomainException(02002, "日历不存在");
 
     private async Task<EventEntity> LoadEventAsync(Guid eventId, CancellationToken ct)
         => await _db.Set<EventEntity>()
             .Include(e => e.Calendar)
             .FirstOrDefaultAsync(e => e.Id == eventId && e.Calendar.UserId == UserId, ct)
-            ?? throw new DomainException(02001, "Event not found");
+            ?? throw new DomainException(02001, "日程不存在");
 
     private async Task<TaskEntity> LoadTaskAsync(Guid taskId, CancellationToken ct)
         => await _db.Set<TaskEntity>()
             .Include(t => t.Calendar)
             .FirstOrDefaultAsync(t => t.Id == taskId && t.UserId == UserId, ct)
-            ?? throw new DomainException(02004, "Task not found");
+            ?? throw new DomainException(02004, "任务不存在");
 
     private async Task<int> CountCalendarChildrenAsync(CalendarEntity calendar, CancellationToken ct)
     {

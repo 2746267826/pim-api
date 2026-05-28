@@ -21,7 +21,7 @@ public sealed class CalendarRecycleBinService
         _audit = audit;
     }
 
-    private Guid UserId => _currentUser.UserId ?? throw new DomainException(1002, "Not authenticated");
+    private Guid UserId => _currentUser.UserId ?? throw new DomainException(1002, "未登录");
 
     public async Task<PagedResult<CalendarRecycleBinItem>> ListAsync(
         string? type,
@@ -139,11 +139,11 @@ public sealed class CalendarRecycleBinService
     {
         var normalizedType = NormalizeType(type);
         if (request.RestoreAsCopy && normalizedType is "calendar" or "task-book")
-            throw new DomainException(02022, "restore-as-copy is only supported for events/tasks.");
+            throw new DomainException(02022, "仅日程和任务支持恢复为副本。");
 
         var preview = await BuildPreviewAsync(normalizedType, id, ct);
         if (preview.Conflicts.Count > 0 && !request.RestoreAsCopy)
-            throw new DomainException(02020, "Restore has conflicts");
+            throw new DomainException(02020, "恢复存在冲突");
 
         var operationId = Guid.NewGuid();
         var operation = request.RestoreAsCopy
@@ -156,7 +156,7 @@ public sealed class CalendarRecycleBinService
             "event" => await RestoreEventAsync(id, request.RestoreAsCopy, operation, operationId, now, ct),
             "task" => await RestoreTaskAsync(id, request.RestoreAsCopy, operation, operationId, now, ct),
             "calendar" or "task-book" => await RestoreCalendarAsync(normalizedType, id, operation, operationId, now, ct),
-            _ => throw new DomainException(02021, "Unsupported recycle bin type")
+            _ => throw new DomainException(02021, "不支持的回收站类型")
         };
 
         await _db.SaveChangesAsync(ct);
@@ -178,7 +178,7 @@ public sealed class CalendarRecycleBinService
             "event" => await BuildEventPreviewAsync(id, ct),
             "task" => await BuildTaskPreviewAsync(id, ct),
             "calendar" or "task-book" => await BuildCalendarPreviewAsync(type, id, ct),
-            _ => throw new DomainException(02021, "Unsupported recycle bin type")
+            _ => throw new DomainException(02021, "不支持的回收站类型")
         };
     }
 
@@ -346,26 +346,26 @@ public sealed class CalendarRecycleBinService
             .IgnoreQueryFilters()
             .Include(e => e.Calendar)
             .FirstOrDefaultAsync(e => e.Id == id && e.DeletedAt != null && e.Calendar.UserId == UserId, ct)
-            ?? throw new DomainException(02001, "Event not found");
+            ?? throw new DomainException(02001, "日程不存在");
 
     private async Task<TaskEntity> LoadDeletedTaskAsync(Guid id, CancellationToken ct)
         => await _db.Set<TaskEntity>()
             .IgnoreQueryFilters()
             .Include(t => t.Calendar)
             .FirstOrDefaultAsync(t => t.Id == id && t.DeletedAt != null && t.UserId == UserId, ct)
-            ?? throw new DomainException(02004, "Task not found");
+            ?? throw new DomainException(02004, "任务不存在");
 
     private async Task<CalendarEntity> LoadDeletedCalendarAsync(string type, Guid id, CancellationToken ct)
     {
         var calendar = await _db.Set<CalendarEntity>()
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(c => c.Id == id && c.DeletedAt != null && c.UserId == UserId, ct)
-            ?? throw new DomainException(02002, "Calendar not found");
+            ?? throw new DomainException(02002, "日历不存在");
 
         if (type == "task-book" && calendar.Kind != "task")
-            throw new DomainException(02002, "Calendar not found");
+            throw new DomainException(02002, "日历不存在");
         if (type == "calendar" && calendar.Kind == "task")
-            throw new DomainException(02002, "Calendar not found");
+            throw new DomainException(02002, "日历不存在");
 
         return calendar;
     }
@@ -496,7 +496,7 @@ public sealed class CalendarRecycleBinService
             "task-book" => "task-book",
             "event" => "event",
             "task" => "task",
-            _ => throw new DomainException(02021, "Unsupported recycle bin type")
+            _ => throw new DomainException(02021, "不支持的回收站类型")
         };
     }
 
@@ -542,7 +542,7 @@ public sealed class CalendarRecycleBinService
     private static void EnsureParentBookActive(CalendarEntity calendar)
     {
         if (calendar.DeletedAt is not null)
-            throw new DomainException(02023, "Restore the parent book first.");
+            throw new DomainException(02023, "请先恢复所属本。");
     }
 
     private static IReadOnlyDictionary<string, string> Metadata(Guid operationId, string targetType, int affectedCount)

@@ -20,7 +20,7 @@ public sealed class FileOperationService(
     private const string ResourceType = "file";
     private const string AuditSource = "files";
 
-    private Guid UserId => currentUser.UserId ?? throw new DomainException(1002, "Not authenticated");
+    private Guid UserId => currentUser.UserId ?? throw new DomainException(1002, "未登录");
 
     public async Task<PagedResult<FileItemDto>> ListItemsAsync(
         FileListQuery query,
@@ -72,7 +72,7 @@ public sealed class FileOperationService(
         var connection = await providerBindings.GetConnectionAsync(item.ProviderId, ct);
         var destinationPath = NormalizePath(request.DestinationPath);
         if (destinationPath == "/")
-            throw new DomainException(5301, "Destination path must include a file or folder name");
+            throw new DomainException(5301, "目标路径必须包含文件或文件夹名称");
 
         var providerItem = await adapter.MoveAsync(connection, NormalizePath(item.Path), destinationPath, ct);
         var now = DateTimeOffset.UtcNow;
@@ -137,12 +137,12 @@ public sealed class FileOperationService(
         var userId = UserId;
         var normalizedDestinationPath = NormalizePath(destinationPath);
         if (!PathHasFileName(normalizedDestinationPath))
-            throw new DomainException(5301, "Destination path must include a file or folder name");
+            throw new DomainException(5301, "目标路径必须包含文件或文件夹名称");
 
         var connection = await providerBindings.GetConnectionAsync(providerId, ct);
         var provider = await db.Set<FileProviderEntity>()
             .FirstOrDefaultAsync(entity => entity.Id == providerId && entity.UserId == userId, ct)
-            ?? throw new DomainException(5104, "File provider not found");
+            ?? throw new DomainException(5104, "文件来源不存在");
 
         var providerItem = await adapter.UploadAsync(connection, normalizedDestinationPath, content, contentType, ct);
         var now = DateTimeOffset.UtcNow;
@@ -186,7 +186,7 @@ public sealed class FileOperationService(
     {
         var item = await LoadItemAsync(id, ct);
         if (item.ItemType == "folder")
-            throw new DomainException(5303, "Folders cannot be downloaded through this endpoint");
+            throw new DomainException(5303, "文件夹不能通过此接口下载");
 
         var connection = await providerBindings.GetConnectionAsync(item.ProviderId, ct);
         return await adapter.DownloadAsync(connection, NormalizePath(item.Path), ct);
@@ -229,7 +229,7 @@ public sealed class FileOperationService(
         var connection = await providerBindings.GetConnectionAsync(providerId, ct);
         var provider = await db.Set<FileProviderEntity>()
             .FirstOrDefaultAsync(entity => entity.Id == providerId && entity.UserId == userId, ct)
-            ?? throw new DomainException(5104, "File provider not found");
+            ?? throw new DomainException(5104, "文件来源不存在");
         var providerItems = await adapter.ListFolderAsync(connection, "/", ct);
         var now = DateTimeOffset.UtcNow;
 
@@ -416,7 +416,7 @@ public sealed class FileOperationService(
         var version = await db.Set<FileVersionEntity>()
             .AsNoTracking()
             .FirstOrDefaultAsync(candidate => candidate.Id == versionId && candidate.FileItemId == item.Id, ct)
-            ?? throw new DomainException(5304, "File version not found");
+            ?? throw new DomainException(5304, "文件版本不存在");
         var currentVersion = item.CurrentVersionId is null
             ? null
             : await db.Set<FileVersionEntity>()
@@ -429,7 +429,7 @@ public sealed class FileOperationService(
             FormatVersionLabel(currentVersion),
             FormatVersionLabel(version),
             RequiresConfirmation: true,
-            $"Restoring {FormatVersionLabel(version)} will replace the current contents of {item.Name}.");
+            $"恢复 {FormatVersionLabel(version)} 将替换 {item.Name} 的当前内容。");
     }
 
     public async Task<FileOpenLinkDto> BuildOpenLinkAsync(
@@ -495,7 +495,7 @@ public sealed class FileOperationService(
                 && item.Provider.UserId == userId
                 && !item.IsDeleted,
                 ct)
-            ?? throw new DomainException(5300, "File item not found");
+            ?? throw new DomainException(5300, "文件不存在");
     }
 
     private async Task<FileSuggestionEntity> LoadSuggestionAsync(Guid id, CancellationToken ct)
@@ -510,13 +510,13 @@ public sealed class FileOperationService(
                 && suggestion.FileItem.Provider != null
                 && suggestion.FileItem.Provider.UserId == userId,
                 ct)
-            ?? throw new DomainException(5305, "File suggestion not found");
+            ?? throw new DomainException(5305, "文件建议不存在");
     }
 
     private async Task<FileVersionEntity> LoadVersionAsync(Guid fileItemId, Guid versionId, CancellationToken ct)
         => await db.Set<FileVersionEntity>()
             .FirstOrDefaultAsync(version => version.Id == versionId && version.FileItemId == fileItemId, ct)
-            ?? throw new DomainException(5304, "File version not found");
+            ?? throw new DomainException(5304, "文件版本不存在");
 
     private static void ApplyProviderItem(
         FileItemEntity item,
@@ -759,7 +759,7 @@ public sealed class FileOperationService(
             || normalized.Contains('/', StringComparison.Ordinal)
             || normalized.Contains('\\', StringComparison.Ordinal))
         {
-            throw new DomainException(5302, "Rename target is not a safe file name");
+            throw new DomainException(5302, "重命名目标不是安全的文件名");
         }
 
         return normalized;

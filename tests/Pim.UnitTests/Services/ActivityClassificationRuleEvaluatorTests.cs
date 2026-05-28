@@ -200,6 +200,26 @@ public class ActivityClassificationRuleEvaluatorTests
     }
 
     [Fact]
+    public void SchemaSql_SetsActivityRuleTimestampDefaultsBeforeSeedingEfMigratedTables()
+    {
+        var normalizedSql = PcTrackerSchemaInitializer.SchemaSql.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var createdAtDefaultIndex = normalizedSql.IndexOf(
+            "ALTER TABLE pc_activity_category_rules ALTER COLUMN created_at SET DEFAULT NOW();",
+            StringComparison.Ordinal);
+        var updatedAtDefaultIndex = normalizedSql.IndexOf(
+            "ALTER TABLE pc_activity_category_rules ALTER COLUMN updated_at SET DEFAULT NOW();",
+            StringComparison.Ordinal);
+        var seedIndex = normalizedSql.IndexOf(
+            "INSERT INTO pc_activity_category_rules",
+            StringComparison.Ordinal);
+
+        Assert.True(createdAtDefaultIndex >= 0);
+        Assert.True(updatedAtDefaultIndex >= 0);
+        Assert.True(seedIndex > createdAtDefaultIndex);
+        Assert.True(seedIndex > updatedAtDefaultIndex);
+    }
+
+    [Fact]
     public void SchemaSql_EnforcesUniquePendingSuggestionClusters()
     {
         Assert.Contains(

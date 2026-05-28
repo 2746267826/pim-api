@@ -99,6 +99,7 @@ public class FileIndexingServiceTests
             Assert.Equal(item.Id, chunk.FileItemId);
             Assert.Equal(item.CurrentVersionId, chunk.VersionId);
             Assert.NotNull(chunk.QdrantPointId);
+            Assert.True(Guid.TryParse(chunk.QdrantPointId, out _));
         });
         Assert.Equal(chunks.Count, vectorStore.UpsertedVectors.Count);
         Assert.All(vectorStore.UpsertedVectors, vector =>

@@ -303,7 +303,7 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
         return "/" + string.Join(
             "/",
             trimmed.Split('/', StringSplitOptions.RemoveEmptyEntries)
-                .Select(segment => Uri.EscapeDataString(ValidatePathSegment(segment, "Nextcloud path"))));
+                .Select(segment => Uri.EscapeDataString(ValidatePathSegment(segment, "Nextcloud 路径"))));
     }
 
     private static string EscapeSinglePathSegment(string segment, string label)
@@ -315,7 +315,7 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
         if (safeSegment.Contains('/', StringComparison.Ordinal)
             || safeSegment.Contains('\\', StringComparison.Ordinal))
         {
-            throw new DomainException(5202, $"{label} contains an unsafe path segment");
+            throw new DomainException(5202, $"{label}包含不安全的路径片段");
         }
 
         return safeSegment;
@@ -324,7 +324,7 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
     private static string ValidatePathSegment(string segment, string label)
     {
         if (string.IsNullOrWhiteSpace(segment) || segment is "." or "..")
-            throw new DomainException(5202, $"{label} contains an unsafe path segment");
+            throw new DomainException(5202, $"{label}包含不安全的路径片段");
 
         return segment;
     }
@@ -336,7 +336,7 @@ public sealed class NextcloudFileProviderAdapter : IFileProviderAdapter
             || name.Contains('/', StringComparison.Ordinal)
             || name.Contains('\\', StringComparison.Ordinal))
         {
-            throw new DomainException(5202, "Nextcloud rename target is not a safe file name");
+            throw new DomainException(5202, "Nextcloud 重命名目标不是安全的文件名");
         }
     }
 

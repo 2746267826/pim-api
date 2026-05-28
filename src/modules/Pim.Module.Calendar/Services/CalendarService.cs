@@ -21,7 +21,7 @@ public class CalendarService
         _recurrence = recurrence;
     }
 
-    private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "Not authenticated");
+    private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "未登录");
 
     // --- Calendars ---
     public async Task<List<CalendarResponse>> GetCalendarsAsync(string? kind, CancellationToken ct)
@@ -58,7 +58,7 @@ public class CalendarService
     {
         var cal = await _db.Set<CalendarEntity>()
             .FirstOrDefaultAsync(c => c.Id == id && c.UserId == UserId, ct)
-            ?? throw new DomainException(02002, "Calendar not found");
+            ?? throw new DomainException(02002, "日历不存在");
         cal.Name = request.Name;
         if (request.Color is not null) cal.Color = request.Color;
         cal.UpdatedAt = DateTimeOffset.UtcNow;
@@ -70,7 +70,7 @@ public class CalendarService
     {
         var cal = await _db.Set<CalendarEntity>()
             .FirstOrDefaultAsync(c => c.Id == id && c.UserId == UserId, ct)
-            ?? throw new DomainException(02002, "Calendar not found");
+            ?? throw new DomainException(02002, "日历不存在");
         cal.DeletedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
     }
@@ -137,7 +137,7 @@ public class CalendarService
             ? await GetOrCreateDefaultCalendarAsync("calendar", ct)
             : await _db.Set<CalendarEntity>()
                 .FirstOrDefaultAsync(c => c.Id == request.CalendarId && c.UserId == UserId, ct)
-                ?? throw new DomainException(02003, "Calendar not found");
+                ?? throw new DomainException(02003, "日历不存在");
 
         var entity = new EventEntity
         {
@@ -314,7 +314,7 @@ public class CalendarService
     {
         var entity = await _db.Set<EventEntity>()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
-            ?? throw new DomainException(02001, "Event not found");
+            ?? throw new DomainException(02001, "日程不存在");
 
         entity.Title = request.Title;
         entity.Description = request.Description;
@@ -349,7 +349,7 @@ public class CalendarService
     {
         var entity = await _db.Set<EventEntity>()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
-            ?? throw new DomainException(02001, "Event not found");
+            ?? throw new DomainException(02001, "日程不存在");
 
         entity.DeletedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
@@ -468,7 +468,7 @@ public class CalendarService
     {
         var task = await _db.Set<TaskEntity>()
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
-            ?? throw new DomainException(02004, "Task not found");
+            ?? throw new DomainException(02004, "任务不存在");
 
         task.Title = request.Title;
         task.Description = request.Description;
@@ -496,10 +496,10 @@ public class CalendarService
     {
         var task = await _db.Set<TaskEntity>()
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
-            ?? throw new DomainException(02004, "Task not found");
+            ?? throw new DomainException(02004, "任务不存在");
 
-        task.DtStart = request.PlannedStart;
-        task.PlannedEnd = request.PlannedEnd;
+        task.DtStart = request.PlannedStart.ToUniversalTime();
+        task.PlannedEnd = request.PlannedEnd?.ToUniversalTime();
         if (request.EstimatedDuration is not null)
             task.EstimatedDuration = ParseDuration(request.EstimatedDuration);
         task.IsInbox = false;
@@ -527,7 +527,7 @@ public class CalendarService
                 0,
                 Array.Empty<Guid>(),
                 Array.Empty<CalendarOperationSample>(),
-                "No tasks updated");
+                "没有更新任务");
         }
 
         if (request.Status is null && !request.Priority.HasValue && !request.CalendarId.HasValue)
@@ -538,7 +538,7 @@ public class CalendarService
                 0,
                 Array.Empty<Guid>(),
                 Array.Empty<CalendarOperationSample>(),
-                "No tasks updated");
+                "没有更新任务");
         }
 
         CalendarEntity? targetCalendar = null;
@@ -546,7 +546,7 @@ public class CalendarService
         {
             targetCalendar = await _db.Set<CalendarEntity>()
                 .FirstOrDefaultAsync(c => c.Id == request.CalendarId.Value && c.UserId == UserId, ct)
-                ?? throw new DomainException(02003, "Calendar not found");
+                ?? throw new DomainException(02003, "日历不存在");
         }
 
         var tasks = await _db.Set<TaskEntity>()
@@ -587,7 +587,7 @@ public class CalendarService
                 0,
                 Array.Empty<Guid>(),
                 Array.Empty<CalendarOperationSample>(),
-                "No tasks updated");
+                "没有更新任务");
         }
 
         return new CalendarOperationResult(
@@ -602,13 +602,13 @@ public class CalendarService
                 t.DtStart,
                 t.PlannedEnd,
                 t.Calendar?.Name)).ToList(),
-            "Updated tasks");
+            "已更新任务");
     }
 
     public async Task MoveTaskAsync(Guid id, MoveTaskRequest request, CancellationToken ct)
     {
         var task = await _db.Set<TaskEntity>().FindAsync(new object[] { id }, ct)
-            ?? throw new DomainException(02004, "Task not found");
+            ?? throw new DomainException(02004, "任务不存在");
 
         if (request.ScheduledStart.HasValue)
         {
@@ -632,7 +632,7 @@ public class CalendarService
     {
         var task = await _db.Set<TaskEntity>()
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
-            ?? throw new DomainException(02004, "Task not found");
+            ?? throw new DomainException(02004, "任务不存在");
 
         task.DeletedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
@@ -662,7 +662,7 @@ public class CalendarService
     {
         if (value is null) return null;
         try { return System.Xml.XmlConvert.ToTimeSpan(value); }
-        catch { throw new DomainException(02009, $"Invalid duration format: {value}. Use ISO 8601 format (e.g., PT1H30M)."); }
+        catch { throw new DomainException(02009, $"时长格式无效：{value}。请使用 ISO 8601 格式，例如 PT1H30M。"); }
     }
 
     private static TaskResponse MapTask(TaskEntity t) =>

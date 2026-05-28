@@ -12,7 +12,7 @@ public sealed class QuickNoteAttachmentService(
     ICurrentUserService currentUser,
     IQuickNoteObjectStorage storage)
 {
-    private Guid UserId => currentUser.UserId ?? throw new DomainException(1002, "Not authenticated");
+    private Guid UserId => currentUser.UserId ?? throw new DomainException(1002, "未登录");
 
     public async Task<QuickNoteAttachmentUploadDto> UploadAsync(
         Stream content,
@@ -23,15 +23,15 @@ public sealed class QuickNoteAttachmentService(
     {
         var userId = UserId;
         if (string.IsNullOrWhiteSpace(fileName))
-            throw new DomainException(4007, "Attachment file name is required");
+            throw new DomainException(4007, "附件文件名不能为空");
 
         if (sizeBytes < 0)
-            throw new DomainException(4008, "Attachment size cannot be negative");
+            throw new DomainException(4008, "附件大小不能为负数");
 
         var id = Guid.NewGuid();
         var safeName = Path.GetFileName(fileName);
         if (string.IsNullOrWhiteSpace(safeName))
-            throw new DomainException(4007, "Attachment file name is required");
+            throw new DomainException(4007, "附件文件名不能为空");
 
         var normalizedContentType = string.IsNullOrWhiteSpace(contentType)
             ? "application/octet-stream"
@@ -66,7 +66,7 @@ public sealed class QuickNoteAttachmentService(
         var attachment = await db.Set<QuickNoteAttachmentEntity>()
             .AsNoTracking()
             .FirstOrDefaultAsync(a => a.Id == id && a.UserId == userId, ct)
-            ?? throw new DomainException(4006, "Attachment not found");
+            ?? throw new DomainException(4006, "附件不存在");
 
         var content = await storage.OpenReadAsync(attachment.ObjectKey, ct);
         return (content, attachment.ContentType, attachment.FileName);
@@ -77,7 +77,7 @@ public sealed class QuickNoteAttachmentService(
         var userId = UserId;
         var attachment = await db.Set<QuickNoteAttachmentEntity>()
             .FirstOrDefaultAsync(a => a.Id == id && a.UserId == userId, ct)
-            ?? throw new DomainException(4006, "Attachment not found");
+            ?? throw new DomainException(4006, "附件不存在");
 
         attachment.DeletedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
@@ -101,12 +101,12 @@ public sealed class QuickNoteAttachmentService(
             .ToListAsync(ct);
 
         if (attachments.Count != ids.Count)
-            throw new DomainException(4005, "Attachment cannot be bound to this quick note");
+            throw new DomainException(4005, "附件不能绑定到这条快速记录");
 
         foreach (var attachment in attachments)
         {
             if (attachment.QuickNoteId.HasValue && attachment.QuickNoteId != targetNoteId)
-                throw new DomainException(4005, "Attachment cannot be bound to this quick note");
+                throw new DomainException(4005, "附件不能绑定到这条快速记录");
         }
 
         return ids

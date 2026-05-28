@@ -18,7 +18,7 @@ public sealed class FileAiService(
     public const string SuggestionsSchemaName = "files.organization_suggestions.v1";
     private const string SchemaVersion = "1";
 
-    private Guid UserId => currentUser.UserId ?? throw new DomainException(1002, "Not authenticated");
+    private Guid UserId => currentUser.UserId ?? throw new DomainException(1002, "未登录");
 
     public async Task<FileAiResultDto?> GenerateSummaryAndTagsAsync(
         Guid fileItemId,
@@ -198,9 +198,9 @@ public sealed class FileAiService(
                 && file.Provider.UserId == UserId
                 && !file.IsDeleted,
                 ct)
-            ?? throw new DomainException(5300, "File item not found");
+            ?? throw new DomainException(5300, "文件不存在");
         if (item.CurrentVersionId is null)
-            throw new DomainException(5304, "File version not found");
+            throw new DomainException(5304, "文件版本不存在");
 
         var version = await db.Set<FileVersionEntity>()
             .FirstOrDefaultAsync(candidate =>
@@ -209,7 +209,7 @@ public sealed class FileAiService(
                 && candidate.Source == "current"
                 && candidate.IsCurrent,
                 ct)
-            ?? throw new DomainException(5304, "File version not found");
+            ?? throw new DomainException(5304, "文件版本不存在");
         var chunks = await db.Set<FileChunkEntity>()
             .AsNoTracking()
             .Where(chunk => chunk.FileItemId == item.Id && chunk.VersionId == version.Id)
@@ -218,7 +218,7 @@ public sealed class FileAiService(
             .ToListAsync(ct);
 
         if (chunks.Count == 0)
-            throw new DomainException(5311, "File has no indexed evidence chunks");
+            throw new DomainException(5311, "文件还没有可用的索引证据片段");
 
         return new FileAiContext(item, version, chunks);
     }

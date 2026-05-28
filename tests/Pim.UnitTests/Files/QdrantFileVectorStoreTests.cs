@@ -34,6 +34,19 @@ public class QdrantFileVectorStoreTests
     }
 
     [Fact]
+    public async Task EnsureCollectionAsync_WhenCollectionAlreadyExistsTreatsConflictAsReady()
+    {
+        var handler = new CapturingHandler("""{"status":"error","result":null}""", HttpStatusCode.Conflict);
+        var store = CreateStore(handler);
+
+        await store.EnsureCollectionAsync();
+
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("PUT", request.Method);
+        Assert.Equal("http://qdrant.test/collections/file_chunks", request.Url);
+    }
+
+    [Fact]
     public async Task UpsertChunksAsync_SendsVectorPointPayload()
     {
         var handler = new CapturingHandler(OkBody());
@@ -171,10 +184,12 @@ public class QdrantFileVectorStoreTests
     private sealed class CapturingHandler : HttpMessageHandler
     {
         private readonly string _responseBody;
+        private readonly HttpStatusCode _statusCode;
 
-        public CapturingHandler(string responseBody)
+        public CapturingHandler(string responseBody, HttpStatusCode statusCode = HttpStatusCode.OK)
         {
             _responseBody = responseBody;
+            _statusCode = statusCode;
         }
 
         public List<CapturedRequest> Requests { get; } = [];
@@ -192,7 +207,7 @@ public class QdrantFileVectorStoreTests
                 request.RequestUri?.ToString() ?? string.Empty,
                 body));
 
-            return new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(_statusCode)
             {
                 Content = new StringContent(_responseBody, Encoding.UTF8, "application/json")
             };

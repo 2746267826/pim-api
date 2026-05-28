@@ -20,8 +20,8 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         CreateOperationConfirmationRequest request,
         CancellationToken ct = default)
     {
-        ValidateJson(request.PayloadJson, 3006, "PayloadJson must be valid JSON");
-        ValidateJson(request.PreviewJson, 3007, "PreviewJson must be valid JSON");
+        ValidateJson(request.PayloadJson, 3006, "PayloadJson 必须是有效 JSON");
+        ValidateJson(request.PreviewJson, 3007, "PreviewJson 必须是有效 JSON");
 
         var entity = new OperationConfirmationEntity
         {
@@ -115,15 +115,15 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
 
         if (entity is null)
         {
-            throw new DomainException(3001, "Confirmation not found");
+            throw new DomainException(3001, "确认记录不存在");
         }
 
         if (entity.Status != OperationConfirmationStatus.Confirmed.ToString())
         {
-            throw new DomainException(3002, "Only confirmed operations can be executed");
+            throw new DomainException(3002, "只能执行已确认的操作");
         }
 
-        ValidateJson(resultJson, 3008, "ResultJson must be valid JSON");
+        ValidateJson(resultJson, 3008, "ResultJson 必须是有效 JSON");
 
         entity.Status = OperationConfirmationStatus.Executed.ToString();
         entity.ExecutedAt = DateTimeOffset.UtcNow;
@@ -156,19 +156,19 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
 
         if (entity is null)
         {
-            throw new DomainException(3001, "Confirmation not found");
+            throw new DomainException(3001, "确认记录不存在");
         }
 
         if (entity.Status != OperationConfirmationStatus.Pending.ToString())
         {
-            throw new DomainException(3003, "Confirmation is not pending");
+            throw new DomainException(3003, "确认记录不在待确认状态");
         }
 
         if (entity.ExpiresAt <= DateTimeOffset.UtcNow)
         {
             entity.Status = OperationConfirmationStatus.Expired.ToString();
             await _db.SaveChangesAsync(ct);
-            throw new DomainException(3004, "Confirmation has expired");
+            throw new DomainException(3004, "确认记录已过期");
         }
 
         return entity;
@@ -178,7 +178,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
     {
         if (entity.RequestedByUserId is { } requestedByUserId && requestedByUserId != userId)
         {
-            throw new DomainException(3005, "Confirmation is not assigned to this user");
+            throw new DomainException(3005, "此确认记录未分配给当前用户");
         }
     }
 

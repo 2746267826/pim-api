@@ -113,7 +113,7 @@ public class CalendarRecycleBinServiceTests
         var error = await Assert.ThrowsAsync<DomainException>(
             () => service.RestoreAsync("calendar", calendar.Id, new CalendarRestoreRequest(RestoreAsCopy: true)));
 
-        Assert.Contains("restore-as-copy is only supported for events/tasks", error.Message);
+        Assert.Contains("仅日程和任务支持恢复为副本", error.Message);
     }
 
     [Fact]
@@ -127,7 +127,7 @@ public class CalendarRecycleBinServiceTests
         var error = await Assert.ThrowsAsync<DomainException>(
             () => service.RestoreAsync("task-book", taskBook.Id, new CalendarRestoreRequest(RestoreAsCopy: true)));
 
-        Assert.Contains("restore-as-copy is only supported for events/tasks", error.Message);
+        Assert.Contains("仅日程和任务支持恢复为副本", error.Message);
     }
 
     [Fact]
@@ -145,8 +145,8 @@ public class CalendarRecycleBinServiceTests
         var copyError = await Assert.ThrowsAsync<DomainException>(
             () => service.RestoreAsync("event", evt.Id, new CalendarRestoreRequest(RestoreAsCopy: true)));
 
-        Assert.Contains("Restore the parent book first", normalError.Message);
-        Assert.Contains("Restore the parent book first", copyError.Message);
+        Assert.Contains("请先恢复所属本", normalError.Message);
+        Assert.Contains("请先恢复所属本", copyError.Message);
     }
 
     [Fact]
@@ -164,8 +164,8 @@ public class CalendarRecycleBinServiceTests
         var copyError = await Assert.ThrowsAsync<DomainException>(
             () => service.RestoreAsync("task", task.Id, new CalendarRestoreRequest(RestoreAsCopy: true)));
 
-        Assert.Contains("Restore the parent book first", normalError.Message);
-        Assert.Contains("Restore the parent book first", copyError.Message);
+        Assert.Contains("请先恢复所属本", normalError.Message);
+        Assert.Contains("请先恢复所属本", copyError.Message);
     }
 
     private static PimDbContext CreateDb()

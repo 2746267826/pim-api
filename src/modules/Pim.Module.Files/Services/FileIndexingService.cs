@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
@@ -38,7 +40,7 @@ public sealed class FileIndexingService(
         "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     };
 
-    private Guid UserId => currentUser.UserId ?? throw new DomainException(1002, "Not authenticated");
+    private Guid UserId => currentUser.UserId ?? throw new DomainException(1002, "未登录");
 
     public async Task<FileIndexJobDto> IndexCurrentVersionAsync(
         Guid fileItemId,
@@ -52,14 +54,14 @@ public sealed class FileIndexingService(
         await db.SaveChangesAsync(ct);
 
         if (item.ItemType == "folder")
-            return await SkipJobAsync(job, "metadata", "Folders cannot be indexed", ct);
+            return await SkipJobAsync(job, "metadata", "文件夹不能建立索引", ct);
 
         var version = await LoadCurrentVersionAsync(item, ct);
         job.VersionId = version.Id;
         await db.SaveChangesAsync(ct);
 
         if (string.IsNullOrWhiteSpace(item.MimeType) || !SupportedMimeTypes.Contains(item.MimeType))
-            return await SkipJobAsync(job, "mime_type", $"Unsupported MIME type: {item.MimeType ?? "unknown"}", ct);
+            return await SkipJobAsync(job, "mime_type", $"不支持的 MIME 类型：{item.MimeType ?? "未知"}", ct);
 
         try
         {
@@ -72,7 +74,7 @@ public sealed class FileIndexingService(
             await using var content = download.Content;
             var text = await textExtraction.ExtractTextAsync(content, download.FileName, ct);
             if (string.IsNullOrWhiteSpace(text))
-                return await SkipJobAsync(job, "extract", "No text extracted", ct);
+                return await SkipJobAsync(job, "extract", "未提取到文本", ct);
 
             job.Stage = "chunk";
             await db.SaveChangesAsync(ct);
@@ -237,7 +239,7 @@ public sealed class FileIndexingService(
                 && item.Provider.UserId == UserId
                 && !item.IsDeleted,
                 ct)
-            ?? throw new DomainException(5300, "File item not found");
+            ?? throw new DomainException(5300, "文件不存在");
     }
 
     private async Task<FileVersionEntity> LoadCurrentVersionAsync(
@@ -245,7 +247,7 @@ public sealed class FileIndexingService(
         CancellationToken ct)
     {
         if (item.CurrentVersionId is null)
-            throw new DomainException(5304, "File version not found");
+            throw new DomainException(5304, "文件版本不存在");
 
         return await db.Set<FileVersionEntity>()
             .FirstOrDefaultAsync(version =>
@@ -254,7 +256,7 @@ public sealed class FileIndexingService(
                 && version.Source == "current"
                 && version.IsCurrent,
                 ct)
-            ?? throw new DomainException(5304, "File version not found");
+            ?? throw new DomainException(5304, "文件版本不存在");
     }
 
     private static FileIndexJobEntity CreateJob(FileItemEntity item, Guid? versionId)
@@ -286,7 +288,11 @@ public sealed class FileIndexingService(
     }
 
     private static string BuildPointId(Guid fileItemId, Guid versionId, int chunkIndex)
-        => $"{fileItemId:N}-{versionId:N}-{chunkIndex}";
+    {
+        var input = $"{fileItemId:N}:{versionId:N}:{chunkIndex}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return new Guid(hash[..16]).ToString();
+    }
 
     private static FileIndexJobDto MapJob(FileIndexJobEntity job)
         => new(job.Id, job.FileItemId, job.VersionId, job.Status, job.Stage, job.AttemptCount, job.LastError);

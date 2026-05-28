@@ -27,6 +27,8 @@ public class PcTrackerQualityServiceTests
         Assert.Equal(PimHealthStatus.Critical, result.OverallStatus);
         var issue = Assert.Single(result.Issues, i => i.Code == "missing-aw-window-bucket");
         Assert.Equal(PimHealthStatus.Critical, issue.Severity);
+        Assert.Equal("缺少 ActivityWatch 窗口数据桶。", issue.Message);
+        Assert.Equal("启动或重新连接 ActivityWatch 窗口监视器。", issue.NextStep);
         var buckets = Assert.Single(result.Components, c => c.Key == "aw-buckets");
         Assert.Equal(PimHealthStatus.Critical, buckets.Status);
     }
@@ -223,6 +225,7 @@ public class PcTrackerQualityServiceTests
         var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
 
         Assert.Equal(PimHealthStatus.Healthy, result.OverallStatus);
+        Assert.Equal("所选范围内的 PC 事实数据完整。", result.Message);
         Assert.Empty(result.Issues);
         Assert.Empty(result.NextSteps);
         var timeline = Assert.Single(result.Components, c => c.Key == "interpreted-timeline");

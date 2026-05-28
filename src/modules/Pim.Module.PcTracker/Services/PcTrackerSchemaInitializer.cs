@@ -114,6 +114,8 @@ CREATE INDEX IF NOT EXISTS ix_pc_activity_category_rules_priority ON pc_activity
 CREATE INDEX IF NOT EXISTS ix_pc_activity_category_rules_category_name ON pc_activity_category_rules (category_name);
 CREATE INDEX IF NOT EXISTS ix_pc_activity_category_rules_project_tag ON pc_activity_category_rules (project_tag);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_activity_category_rules_rule_name ON pc_activity_category_rules (rule_name);
+ALTER TABLE pc_activity_category_rules ALTER COLUMN created_at SET DEFAULT NOW();
+ALTER TABLE pc_activity_category_rules ALTER COLUMN updated_at SET DEFAULT NOW();
 CREATE TABLE IF NOT EXISTS pc_activity_classification_suggestions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     cluster_key VARCHAR(256) NOT NULL,

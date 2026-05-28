@@ -51,7 +51,7 @@ public sealed class HangfireJobStatusService : IBackgroundJobStatusService
                 snapshot.Scheduled,
                 snapshot.Failed,
                 DateTimeOffset.UtcNow,
-                snapshot.Failed > 0 ? "Some background jobs have failed." : "Background jobs are healthy."));
+                snapshot.Failed > 0 ? "部分后台任务执行失败。" : "后台任务正常。"));
         }
         catch
         {
@@ -62,7 +62,7 @@ public sealed class HangfireJobStatusService : IBackgroundJobStatusService
                 0,
                 0,
                 DateTimeOffset.UtcNow,
-                "Background job status is unavailable."));
+                "后台任务状态不可用。"));
         }
     }
 

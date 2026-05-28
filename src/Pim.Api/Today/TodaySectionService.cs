@@ -79,7 +79,7 @@ public sealed class TodaySectionService
                 [],
                 new TodaySectionErrorDto(
                     "section_unavailable",
-                    "This Today section is temporarily unavailable."));
+                    "此今日模块暂时不可用。"));
         }
     }
 
@@ -109,7 +109,7 @@ public sealed class TodaySectionService
             return BuildQuery(dateTime, HasExplicitTime(date));
         }
 
-        throw new FormatException("Invalid Today date. Expected YYYY-MM-DD or a parseable date/time value.");
+        throw new FormatException("今日日期无效。请使用 YYYY-MM-DD 或可解析的日期时间值。");
     }
 
     private static TodayQuery BuildQuery(DateTime dateTime, bool hasExplicitTime)

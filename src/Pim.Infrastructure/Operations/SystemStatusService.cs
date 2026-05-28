@@ -35,7 +35,7 @@ public sealed class SystemStatusService : ISystemStatusService
                 "API",
                 StatusComponentKind.Api,
                 PimHealthStatus.Healthy,
-                "API process is running.",
+                "API 进程正在运行。",
                 checkedAt,
                 new Dictionary<string, string>())
         };
@@ -73,10 +73,10 @@ public sealed class SystemStatusService : ISystemStatusService
 
             return new StatusComponentDto(
                 "database",
-                "Database",
+                "数据库",
                 StatusComponentKind.Database,
                 PimHealthStatus.Healthy,
-                "Database is reachable.",
+                "数据库可访问。",
                 checkedAt,
                 new Dictionary<string, string>());
         }
@@ -84,10 +84,10 @@ public sealed class SystemStatusService : ISystemStatusService
         {
             return new StatusComponentDto(
                 "database",
-                "Database",
+                "数据库",
                 StatusComponentKind.Database,
                 PimHealthStatus.Critical,
-                "Database is unavailable.",
+                "数据库不可用。",
                 checkedAt,
                 new Dictionary<string, string>
                 {
@@ -111,10 +111,10 @@ public sealed class SystemStatusService : ISystemStatusService
         {
             return new StatusComponentDto(
                 "windows-daemon",
-                "Windows daemon",
+                "Windows 守护程序",
                 StatusComponentKind.Daemon,
                 PimHealthStatus.Critical,
-                "Windows daemon heartbeat status is unavailable.",
+                "Windows 守护程序心跳状态不可用。",
                 checkedAt,
                 new Dictionary<string, string>
                 {
@@ -126,10 +126,10 @@ public sealed class SystemStatusService : ISystemStatusService
         {
             return new StatusComponentDto(
                 "windows-daemon",
-                "Windows daemon",
+                "Windows 守护程序",
                 StatusComponentKind.Daemon,
                 PimHealthStatus.Unknown,
-                "Windows daemon heartbeat has not been received.",
+                "尚未收到 Windows 守护程序心跳。",
                 checkedAt,
                 new Dictionary<string, string>());
         }
@@ -143,14 +143,14 @@ public sealed class SystemStatusService : ISystemStatusService
 
         var message = status switch
         {
-            PimHealthStatus.Critical => "Windows daemon heartbeat is stale.",
-            PimHealthStatus.Warning => "Windows daemon heartbeat is old.",
-            _ => "Windows daemon heartbeat is recent."
+            PimHealthStatus.Critical => "Windows 守护程序心跳已过期。",
+            PimHealthStatus.Warning => "Windows 守护程序心跳偏旧。",
+            _ => "Windows 守护程序心跳正常。"
         };
 
         return new StatusComponentDto(
             "windows-daemon",
-            "Windows daemon",
+            "Windows 守护程序",
             StatusComponentKind.Daemon,
             status,
             message,
@@ -171,7 +171,7 @@ public sealed class SystemStatusService : ISystemStatusService
 
         return new StatusComponentDto(
             "background-jobs",
-            "Background jobs",
+            "后台任务",
             StatusComponentKind.BackgroundJobs,
             summary.Status,
             summary.Message,
@@ -207,9 +207,9 @@ public sealed class SystemStatusService : ISystemStatusService
     private static string GetMessage(PimHealthStatus status)
         => status switch
         {
-            PimHealthStatus.Healthy => "All checked systems are healthy.",
-            PimHealthStatus.Warning => "Some systems need attention.",
-            PimHealthStatus.Critical => "One or more systems are failing.",
-            _ => "System status is unknown."
+            PimHealthStatus.Healthy => "所有已检查系统均正常。",
+            PimHealthStatus.Warning => "部分系统需要关注。",
+            PimHealthStatus.Critical => "一个或多个系统正在故障。",
+            _ => "系统状态未知。"
         };
 }

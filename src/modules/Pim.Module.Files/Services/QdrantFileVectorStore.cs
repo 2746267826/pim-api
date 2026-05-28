@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Configuration;
@@ -34,8 +35,9 @@ public sealed class QdrantFileVectorStore(
     private readonly Uri _baseUri = new((configuration["Qdrant:BaseUrl"] ?? "http://qdrant:6333").TrimEnd('/') + "/");
     private readonly string _collection = configuration["Qdrant:Collection"] ?? "file_chunks";
 
-    public Task EnsureCollectionAsync(CancellationToken ct = default)
-        => SendAsync(
+    public async Task EnsureCollectionAsync(CancellationToken ct = default)
+    {
+        await SendAsync(
             HttpMethod.Put,
             CollectionPath(),
             new
@@ -46,7 +48,9 @@ public sealed class QdrantFileVectorStore(
                     distance = "Cosine"
                 }
             },
-            ct);
+            ct,
+            HttpStatusCode.Conflict);
+    }
 
     public async Task UpsertChunksAsync(IReadOnlyList<FileChunkVector> vectors, CancellationToken ct = default)
     {
@@ -133,7 +137,8 @@ public sealed class QdrantFileVectorStore(
         HttpMethod method,
         string path,
         object body,
-        CancellationToken ct)
+        CancellationToken ct,
+        params HttpStatusCode[] acceptedStatusCodes)
     {
         var request = new HttpRequestMessage(method, path)
         {
@@ -141,7 +146,9 @@ public sealed class QdrantFileVectorStore(
         };
         request.RequestUri = new Uri(_baseUri, path.TrimStart('/'));
         var response = await httpClient.SendAsync(request, ct);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode && !acceptedStatusCodes.Contains(response.StatusCode))
+            response.EnsureSuccessStatusCode();
+
         return response;
     }
 

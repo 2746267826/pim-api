@@ -380,7 +380,7 @@ public class FileOperationServiceTests
         var ex = await Assert.ThrowsAsync<DomainException>(() => service.DownloadAsync(folder.Id));
 
         Assert.Equal(5303, ex.ErrorCode);
-        Assert.Equal("Folders cannot be downloaded through this endpoint", ex.Message);
+        Assert.Equal("文件夹不能通过此接口下载", ex.Message);
     }
 
     [Fact]

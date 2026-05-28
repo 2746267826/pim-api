@@ -104,8 +104,8 @@ public sealed class PcTrackerQualityService
                 "missing-aw-window-bucket",
                 PimHealthStatus.Critical,
                 "aw-buckets",
-                "ActivityWatch window bucket is missing.",
-                "Start or reconnect the ActivityWatch window watcher."));
+                "缺少 ActivityWatch 窗口数据桶。",
+                "启动或重新连接 ActivityWatch 窗口监视器。"));
         }
 
         if (!HasBucketType(buckets, "afkstatus"))
@@ -114,8 +114,8 @@ public sealed class PcTrackerQualityService
                 "missing-aw-afk-bucket",
                 PimHealthStatus.Warning,
                 "aw-buckets",
-                "ActivityWatch AFK bucket is missing.",
-                "Start or reconnect the ActivityWatch AFK watcher."));
+                "缺少 ActivityWatch AFK 数据桶。",
+                "启动或重新连接 ActivityWatch AFK 监视器。"));
         }
 
         if (!HasBucketType(buckets, "web.tab.current"))
@@ -124,8 +124,8 @@ public sealed class PcTrackerQualityService
                 "missing-aw-web-bucket",
                 PimHealthStatus.Warning,
                 "aw-buckets",
-                "ActivityWatch web bucket is missing.",
-                "Install or reconnect the browser ActivityWatch extension."));
+                "缺少 ActivityWatch 网页数据桶。",
+                "安装或重新连接浏览器 ActivityWatch 扩展。"));
         }
 
         var staleBuckets = buckets.Count(b => checkedAt - b.SeenAt > StaleBucketAge);
@@ -135,8 +135,8 @@ public sealed class PcTrackerQualityService
                 "stale-aw-bucket",
                 PimHealthStatus.Warning,
                 "aw-buckets",
-                "One or more ActivityWatch buckets have not been seen recently.",
-                "Restart ActivityWatch watchers and confirm uploads resume."));
+                "一个或多个 ActivityWatch 数据桶近期没有更新。",
+                "重启 ActivityWatch 监视器，并确认上传已恢复。"));
         }
 
         issues.AddRange(componentIssues);
@@ -146,7 +146,7 @@ public sealed class PcTrackerQualityService
             ["staleBucketCount"] = staleBuckets.ToString()
         };
 
-        return BuildComponent("aw-buckets", "ActivityWatch buckets", componentIssues, details);
+        return BuildComponent("aw-buckets", "ActivityWatch 数据桶", componentIssues, details);
     }
 
     private static PcQualityComponentDto CheckEvents(IReadOnlyCollection<AwEventEntity> events, List<PcQualityIssueDto> issues)
@@ -159,8 +159,8 @@ public sealed class PcTrackerQualityService
                 "missing-aw-events",
                 PimHealthStatus.Warning,
                 "aw-events",
-                "No ActivityWatch events were captured for the selected range.",
-                "Confirm ActivityWatch data is being uploaded."));
+                "所选范围内没有采集到 ActivityWatch 事件。",
+                "确认 ActivityWatch 数据正在上传。"));
         }
         else
         {
@@ -170,8 +170,8 @@ public sealed class PcTrackerQualityService
                     "missing-aw-window-events",
                     PimHealthStatus.Warning,
                     "aw-events",
-                    "No ActivityWatch window events were captured for the selected range.",
-                    "Confirm the window watcher is running."));
+                    "所选范围内没有采集到 ActivityWatch 窗口事件。",
+                    "确认窗口监视器正在运行。"));
             }
 
             if (!events.Any(IsAfkEvent))
@@ -180,8 +180,8 @@ public sealed class PcTrackerQualityService
                     "missing-aw-afk-events",
                     PimHealthStatus.Warning,
                     "aw-events",
-                    "No ActivityWatch AFK events were captured for the selected range.",
-                    "Confirm the AFK watcher is running."));
+                    "所选范围内没有采集到 ActivityWatch AFK 事件。",
+                    "确认 AFK 监视器正在运行。"));
             }
 
             var missingSourceIds = events.Count(e => e.SourceEventId is null);
@@ -191,8 +191,8 @@ public sealed class PcTrackerQualityService
                     "aw-events-missing-source-id",
                     MajoritySeverity(missingSourceIds, events.Count),
                     "aw-events",
-                    "Some ActivityWatch events are missing source event ids.",
-                    "Re-upload ActivityWatch events from the daemon."));
+                    "部分 ActivityWatch 事件缺少来源事件 ID。",
+                    "从守护程序重新上传 ActivityWatch 事件。"));
             }
 
             var invalidJson = events.Count(e => string.IsNullOrWhiteSpace(e.DataJson) || !IsValidJson(e.DataJson));
@@ -202,8 +202,8 @@ public sealed class PcTrackerQualityService
                     "aw-events-invalid-data-json",
                     MajoritySeverity(invalidJson, events.Count),
                     "aw-events",
-                    "Some ActivityWatch events have missing or invalid data_json.",
-                    "Check daemon serialization and re-upload affected events."));
+                    "部分 ActivityWatch 事件缺少或包含无效 data_json。",
+                    "检查守护程序序列化逻辑，并重新上传受影响事件。"));
             }
         }
 
@@ -215,7 +215,7 @@ public sealed class PcTrackerQualityService
             ["afkEventCount"] = events.Count(IsAfkEvent).ToString()
         };
 
-        return BuildComponent("aw-events", "ActivityWatch events", componentIssues, details);
+        return BuildComponent("aw-events", "ActivityWatch 事件", componentIssues, details);
     }
 
     private static PcQualityComponentDto CheckKeystats(
@@ -232,8 +232,8 @@ public sealed class PcTrackerQualityService
                 "missing-keystats-samples",
                 PimHealthStatus.Critical,
                 "keystats-samples",
-                "No KeyStats samples were captured for the selected range.",
-                "Start KeyStats collection and confirm daemon uploads."));
+                "所选范围内没有采集到 KeyStats 样本。",
+                "启动 KeyStats 采集，并确认守护程序正在上传。"));
         }
         else
         {
@@ -263,8 +263,8 @@ public sealed class PcTrackerQualityService
                     "keystats-sample-gap",
                     PimHealthStatus.Warning,
                     "keystats-samples",
-                    "KeyStats samples contain collection gaps.",
-                    "Keep the Windows daemon running continuously."));
+                    "KeyStats 样本存在采集间断。",
+                    "保持 Windows 守护程序持续运行。"));
             }
 
             if (resets > 0)
@@ -273,8 +273,8 @@ public sealed class PcTrackerQualityService
                     "keystats-counter-reset",
                     PimHealthStatus.Warning,
                     "keystats-samples",
-                    "KeyStats counters reset within the selected range.",
-                    "Check whether KeyStats or the daemon restarted."));
+                    "所选范围内 KeyStats 计数器发生重置。",
+                    "检查 KeyStats 或守护程序是否重启过。"));
             }
         }
 
@@ -286,7 +286,7 @@ public sealed class PcTrackerQualityService
             ["resetCount"] = resets.ToString()
         };
 
-        return BuildComponent("keystats-samples", "KeyStats samples", componentIssues, details);
+        return BuildComponent("keystats-samples", "KeyStats 样本", componentIssues, details);
     }
 
     private static PcQualityComponentDto CheckDaemon(
@@ -304,10 +304,10 @@ public sealed class PcTrackerQualityService
                 "missing-windows-daemon-heartbeat",
                 PimHealthStatus.Unknown,
                 "daemon-upload",
-                "Windows daemon heartbeat has not been received.",
-                "Start and log in to the Windows daemon."));
+                "尚未收到 Windows 守护程序心跳。",
+                "启动并登录 Windows 守护程序。"));
             issues.AddRange(componentIssues);
-            return BuildComponent("daemon-upload", "Windows daemon upload", componentIssues, details);
+            return BuildComponent("daemon-upload", "Windows 守护程序上传", componentIssues, details);
         }
 
         var age = checkedAt - heartbeat.ReceivedAt;
@@ -323,8 +323,8 @@ public sealed class PcTrackerQualityService
                 "stale-windows-daemon-heartbeat",
                 PimHealthStatus.Critical,
                 "daemon-upload",
-                "Windows daemon heartbeat is stale.",
-                "Restart the Windows daemon and verify it can reach the API."));
+                "Windows 守护程序心跳已过期。",
+                "重启 Windows 守护程序，并确认它能访问 API。"));
         }
         else if (age >= TimeSpan.FromMinutes(10))
         {
@@ -332,8 +332,8 @@ public sealed class PcTrackerQualityService
                 "old-daemon-heartbeat",
                 PimHealthStatus.Warning,
                 "daemon-upload",
-                "Windows daemon heartbeat is old.",
-                "Check whether the Windows daemon is still running."));
+                "Windows 守护程序心跳偏旧。",
+                "检查 Windows 守护程序是否仍在运行。"));
         }
 
         if (!string.IsNullOrWhiteSpace(heartbeat.LastError))
@@ -342,8 +342,8 @@ public sealed class PcTrackerQualityService
                 "daemon-last-error",
                 PimHealthStatus.Warning,
                 "daemon-upload",
-                "Windows daemon reported a recent error.",
-                "Open daemon diagnostics and resolve the last error."));
+                "Windows 守护程序最近报告过错误。",
+                "打开守护程序诊断信息并处理最后一次错误。"));
         }
 
         if (heartbeat.UploadQueueCount.GetValueOrDefault() > 0)
@@ -352,8 +352,8 @@ public sealed class PcTrackerQualityService
                 "daemon-upload-queue",
                 PimHealthStatus.Warning,
                 "daemon-upload",
-                "Windows daemon has queued uploads.",
-                "Verify the API is reachable from the Windows daemon."));
+                "Windows 守护程序存在待上传队列。",
+                "确认 Windows 守护程序可以访问 API。"));
         }
 
         if (IsSourceUnavailable(heartbeat.ActivityWatchState) || IsSourceUnavailable(heartbeat.KeyStatsState))
@@ -362,12 +362,12 @@ public sealed class PcTrackerQualityService
                 "daemon-source-unavailable",
                 PimHealthStatus.Warning,
                 "daemon-upload",
-                "Windows daemon reported a collection source unavailable.",
-                "Start unavailable collection sources on the PC."));
+                "Windows 守护程序报告采集来源不可用。",
+                "在这台 PC 上启动不可用的采集来源。"));
         }
 
         issues.AddRange(componentIssues);
-        return BuildComponent("daemon-upload", "Windows daemon upload", componentIssues, details);
+        return BuildComponent("daemon-upload", "Windows 守护程序上传", componentIssues, details);
     }
 
     private static PcQualityComponentDto CheckTimeline(
@@ -388,8 +388,8 @@ public sealed class PcTrackerQualityService
                 "timeline-inputs-incomplete",
                 PimHealthStatus.Warning,
                 "interpreted-timeline",
-                "Interpreted timeline inputs are incomplete for the selected range.",
-                "Resolve ActivityWatch and KeyStats collection issues first."));
+                "所选范围内用于解释时间线的输入不完整。",
+                "先处理 ActivityWatch 和 KeyStats 采集问题。"));
         }
         else if (!hasKeystatsDeltaPair)
         {
@@ -397,8 +397,8 @@ public sealed class PcTrackerQualityService
                 "keystats-insufficient-samples",
                 PimHealthStatus.Warning,
                 "interpreted-timeline",
-                "KeyStats has too few samples to build input timeline deltas.",
-                "Collect at least two KeyStats samples from the same device."));
+                "KeyStats 样本过少，无法构建输入时间线增量。",
+                "从同一设备至少采集两个 KeyStats 样本。"));
         }
 
         issues.AddRange(componentIssues);
@@ -409,7 +409,7 @@ public sealed class PcTrackerQualityService
             ["hasKeystatsDeltaPair"] = hasKeystatsDeltaPair.ToString()
         };
 
-        return BuildComponent("interpreted-timeline", "Interpreted timeline", componentIssues, details);
+        return BuildComponent("interpreted-timeline", "解释时间线", componentIssues, details);
     }
 
     private static bool HasBucketType(IEnumerable<AwBucketEntity> buckets, string bucketType)
@@ -458,10 +458,10 @@ public sealed class PcTrackerQualityService
     private static string ComponentMessage(PimHealthStatus status)
         => status switch
         {
-            PimHealthStatus.Healthy => "Component looks healthy.",
-            PimHealthStatus.Warning => "Component has collection quality warnings.",
-            PimHealthStatus.Critical => "Component has critical collection quality issues.",
-            _ => "Component quality is unknown."
+            PimHealthStatus.Healthy => "组件状态正常。",
+            PimHealthStatus.Warning => "组件存在采集质量警告。",
+            PimHealthStatus.Critical => "组件存在严重采集质量问题。",
+            _ => "组件质量状态未知。"
         };
 
     private static string GetLabel(PimHealthStatus status)
@@ -476,10 +476,10 @@ public sealed class PcTrackerQualityService
     private static string GetMessage(PimHealthStatus status)
         => status switch
         {
-            PimHealthStatus.Healthy => "PC facts look complete for the selected range.",
-            PimHealthStatus.Warning => "PC facts are usable, but some collection quality issues need attention.",
-            PimHealthStatus.Critical => "PC facts are not reliable enough for the selected range.",
-            _ => "PC facts quality cannot be fully determined yet."
+            PimHealthStatus.Healthy => "所选范围内的 PC 事实数据完整。",
+            PimHealthStatus.Warning => "PC 事实数据可用，但部分采集质量问题需要关注。",
+            PimHealthStatus.Critical => "所选范围内的 PC 事实数据可靠性不足。",
+            _ => "暂时无法完整判断 PC 事实数据质量。"
         };
 
     private static int GetSeverityRank(PimHealthStatus status)

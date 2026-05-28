@@ -44,7 +44,7 @@ public sealed record AiResult(
             SchemaValidationErrors: errors,
             Usage: new AiTokenUsage(null, null, null, null, null),
             LogId: logId,
-            UserFacingError: "AI response did not match the required format. No suggestion was produced.");
+            UserFacingError: "AI 响应不符合要求的格式，未生成建议。");
 }
 
 public sealed record AiSchemaDefinition(

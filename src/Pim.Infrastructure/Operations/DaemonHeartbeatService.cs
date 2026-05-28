@@ -137,7 +137,7 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         }
         catch (JsonException)
         {
-            throw new DomainException(3010, "StatusJson must be valid JSON");
+            throw new DomainException(3010, "StatusJson 必须是有效 JSON");
         }
     }
 

@@ -106,7 +106,7 @@ public class TodaySectionServiceTests
         Assert.Equal(TodaySectionStatuses.Unavailable, section.Status);
         Assert.NotNull(section.Error);
         Assert.Equal("section_unavailable", section.Error.Code);
-        Assert.Equal("This Today section is temporarily unavailable.", section.Error.Message);
+        Assert.Equal("此今日模块暂时不可用。", section.Error.Message);
         Assert.DoesNotContain("boom", section.Error.Message);
     }
 

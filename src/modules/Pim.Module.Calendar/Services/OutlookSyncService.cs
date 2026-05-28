@@ -25,7 +25,7 @@ public class OutlookSyncService
     {
         var connection = await _db.Set<OutlookConnectionEntity>()
             .FirstOrDefaultAsync(c => c.UserId == userId, ct)
-            ?? throw new DomainException(02005, "Outlook not connected");
+            ?? throw new DomainException(02005, "Outlook 未连接");
 
         var client = CreateGraphClient(connection);
         var events = await FetchOutlookEventsAsync(client, ct);
@@ -55,7 +55,7 @@ public class OutlookSyncService
     {
         var connection = await _db.Set<OutlookConnectionEntity>()
             .FirstOrDefaultAsync(c => c.UserId == userId, ct)
-            ?? throw new DomainException(02005, "Outlook not connected");
+            ?? throw new DomainException(02005, "Outlook 未连接");
 
         var client = CreateGraphClient(connection);
 
@@ -81,14 +81,14 @@ public class OutlookSyncService
     {
         var connection = await _db.Set<OutlookConnectionEntity>()
             .FirstOrDefaultAsync(c => c.UserId == userId, ct)
-            ?? throw new DomainException(02005, "Outlook not connected");
+            ?? throw new DomainException(02005, "Outlook 未连接");
 
         // Create pending confirmation for write operation
         _db.Set<PendingConfirmationEntity>().Add(new PendingConfirmationEntity
         {
             UserId = userId,
             Type = "outlook_write",
-            Summary = $"Write event '{evt.Title}' to Outlook?",
+            Summary = $"将日程“{evt.Title}”写入 Outlook？",
             Payload = JsonSerializer.Serialize(new { eventId = evt.Id, action = "write_to_outlook" })
         });
 
@@ -99,10 +99,10 @@ public class OutlookSyncService
     {
         var confirmation = await _db.Set<PendingConfirmationEntity>()
             .FindAsync(new object[] { confirmationId }, ct)
-            ?? throw new DomainException(02006, "Confirmation not found");
+            ?? throw new DomainException(02006, "操作确认不存在");
 
         if (confirmation.Status != "confirmed")
-            throw new DomainException(02007, "Confirmation not yet confirmed");
+            throw new DomainException(02007, "操作尚未确认");
 
         var payload = JsonSerializer.Deserialize<JsonElement>(confirmation.Payload);
         var eventId = payload.GetProperty("eventId").GetGuid();
@@ -167,7 +167,7 @@ public class OutlookSyncService
     {
         var defaultCalendar = await _db.Set<CalendarEntity>()
             .FirstOrDefaultAsync(c => c.UserId == userId && c.IsDefault, ct)
-            ?? throw new DomainException(02008, "No default calendar found. Create a calendar first.");
+            ?? throw new DomainException(02008, "未找到默认日历，请先创建日历。");
 
         return new EventEntity
         {

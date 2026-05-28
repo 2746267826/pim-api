@@ -36,7 +36,7 @@ public class AiContractTests
 
         Assert.Equal(AiRequestStatus.FailedValidation, result.Status);
         Assert.Equal(logId, result.LogId);
-        Assert.Contains("AI response did not match the required format", result.UserFacingError);
+        Assert.Contains("AI 响应不符合要求的格式", result.UserFacingError);
         Assert.Equal(["$.title is required"], result.SchemaValidationErrors);
     }
 
