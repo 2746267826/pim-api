@@ -1,0 +1,48 @@
+name: Build Windows Client
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'src/client-windows/**'
+      - 'src/Pim.Core/**'
+      - 'src/Pim.Infrastructure/**'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src/client-windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+
+      - name: Restore
+        run: dotnet restore Pim.Client.Windows.slnx
+
+      - name: Build
+        run: dotnet build Pim.Client.Windows.slnx -c Release --no-restore
+
+      - name: Publish
+        run: |
+          dotnet publish Pim.Client.App/Pim.Client.App.csproj `
+            -c Release `
+            -o publish/ `
+            --no-build `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pim-windows-client
+          path: src/client-windows/publish/
+          compression-level: 6
