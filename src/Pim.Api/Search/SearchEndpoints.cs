@@ -34,14 +34,16 @@ public static class SearchEndpoints
             if (typeFilter is not null && typeFilter.Count > 0)
                 query = query.Where(r => typeFilter.Contains(r.Type.ToLowerInvariant()));
 
-            var merged = query
+            var sorted = query
                 .OrderByDescending(r => r.Title.Contains(q, StringComparison.OrdinalIgnoreCase))
-                .Take(maxLimit)
                 .ToList();
 
+            var totalCount = sorted.Count;
+            var merged = sorted.Take(maxLimit).ToList();
+
             return Results.Ok(ApiResponse<PagedResult<SearchResult>>.Ok(
-                new PagedResult<SearchResult>(merged, 1, maxLimit, merged.Count,
-                    (int)Math.Ceiling(merged.Count / (double)maxLimit))));
+                new PagedResult<SearchResult>(merged, 1, maxLimit, totalCount,
+                    (int)Math.Ceiling(totalCount / (double)maxLimit))));
         });
     }
 }
