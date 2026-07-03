@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
@@ -60,7 +61,7 @@ public class PcTrackerCompleteCaptureTests
             .Options;
 
         using var db = new PimDbContext(options);
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
 
         var bucket = new AwBucketDto(
             "aw-watcher-window_DESKTOP",
@@ -116,7 +117,7 @@ public class PcTrackerCompleteCaptureTests
             .Options;
 
         using var db = new PimDbContext(options);
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
 
         var request = new CompleteAwUploadRequest(
             "DESKTOP",
@@ -183,7 +184,7 @@ public class PcTrackerCompleteCaptureTests
             });
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var request = new CompleteAwUploadRequest(
             "DESKTOP",
             new AwInfoDto("DESKTOP", "v0.13.2", false, "aw-device"),
@@ -225,7 +226,7 @@ public class PcTrackerCompleteCaptureTests
             .Options;
 
         using var db = new PimDbContext(options);
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var request = new CompleteAwUploadRequest(
             "DESKTOP",
             new AwInfoDto("DESKTOP", "v0.13.2", false, "aw-device"),
@@ -269,7 +270,7 @@ public class PcTrackerCompleteCaptureTests
             .Options;
 
         using var db = new PimDbContext(options);
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var events = Enumerable.Range(0, 501)
             .Select(i => new CompleteAwEventEntry(
                 i,
@@ -305,7 +306,7 @@ public class PcTrackerCompleteCaptureTests
             .Options;
 
         using var db = new PimDbContext(options);
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
 
         var first = new KeystatsSampleUploadRequest(
             "DESKTOP",
@@ -397,7 +398,7 @@ public class PcTrackerCompleteCaptureTests
             });
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var summary = await service.GetSummaryAsync(new DateTime(2026, 5, 20), CancellationToken.None);
 
         Assert.NotNull(summary.Keystats);
@@ -448,7 +449,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(1, "2026-05-20T05:00:05+00:00", 10, "https://docs.activitywatch.net/en/latest/api/rest.html", "REST API"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var summary = await service.GetSummaryAsync(new DateTime(2026, 5, 20), CancellationToken.None);
 
         var item = Assert.Single(summary.Timeline);
@@ -471,7 +472,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(1, "2026-05-20T05:00:05+00:00", 10, "https://docs.activitywatch.net/en/latest/api/rest.html", "REST API"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var summary = await service.GetSummaryAsync(new DateTime(2026, 5, 20), CancellationToken.None);
 
         var item = Assert.Single(summary.Timeline);
@@ -495,7 +496,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(1, "2026-05-20T05:00:05+00:00", 10, "https://docs.activitywatch.net/en/latest/api/rest.html", "REST API"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var timeline = await service.GetTimelineAsync(new DateTime(2026, 5, 20), CancellationToken.None);
 
         var item = Assert.Single(timeline);
@@ -518,7 +519,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(1, "2026-05-20T05:00:05+00:00", 10, "https://docs.activitywatch.net/en/latest/api/rest.html", "REST API"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var timeline = await service.GetTimelineAsync(new DateTime(2026, 5, 20), CancellationToken.None);
 
         var item = Assert.Single(timeline);
@@ -544,7 +545,7 @@ public class PcTrackerCompleteCaptureTests
         db.Set<AwEventEntity>().Add(WindowEvent("2026-05-20T05:00:00+00:00", 600, "Code", "project"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var timeline = await service.GetTimelineAsync(new DateTime(2026, 5, 20), CancellationToken.None);
 
         var item = Assert.Single(timeline);
@@ -567,7 +568,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(1, "2026-05-20T05:00:05+00:00", 10, "https://docs.activitywatch.net/en/latest/api/rest.html", "REST API"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var timeline = await service.GetTimelineAsync(new DateTime(2026, 5, 20), CancellationToken.None);
 
         var item = Assert.Single(timeline);
@@ -590,7 +591,7 @@ public class PcTrackerCompleteCaptureTests
             WindowEvent("2026-05-20T05:05:00+00:00", 120, "WindowsTerminal.exe", "Terminal"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var timeline = await service.GetTimelineAsync(new DateTime(2026, 5, 20), CancellationToken.None);
 
         Assert.Equal(2, timeline.Count);
@@ -630,7 +631,7 @@ public class PcTrackerCompleteCaptureTests
         db.Set<KeystatsDailyEntity>().Add(snapshot);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var summary = await service.GetSummaryAsync(new DateTime(2026, 5, 20), CancellationToken.None);
         var json = JsonSerializer.Serialize(summary, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
@@ -661,7 +662,7 @@ public class PcTrackerCompleteCaptureTests
         });
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var summary = await service.GetSummaryAsync(new DateTime(2026, 5, 20), CancellationToken.None);
 
         Assert.Equal(4, summary.Heatmap[0].Hour);
@@ -711,7 +712,7 @@ public class PcTrackerCompleteCaptureTests
             });
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(
             new DetailQueryParams(
                 "2026-05-20",
@@ -784,7 +785,7 @@ public class PcTrackerCompleteCaptureTests
             CreatedAt = DateTimeOffset.UtcNow
         });
         await db.SaveChangesAsync();
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
 
         var result = await service.QueryCompleteDetailAsync(new DetailQueryParams(
             "2026-05-25",
@@ -846,7 +847,7 @@ public class PcTrackerCompleteCaptureTests
             ClassifiedAt = DateTimeOffset.Parse("2026-05-25T09:00:00Z")
         });
         await db.SaveChangesAsync();
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
 
         var result = await service.QueryCompleteDetailAsync(new DetailQueryParams(
             "2026-05-25",
@@ -939,7 +940,7 @@ public class PcTrackerCompleteCaptureTests
             });
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         var inputMinute = Assert.Single(result.Items);
@@ -978,7 +979,7 @@ public class PcTrackerCompleteCaptureTests
             });
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         var inputMinute = Assert.Single(result.Items);
@@ -1018,7 +1019,7 @@ public class PcTrackerCompleteCaptureTests
             });
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         Assert.Collection(
@@ -1046,7 +1047,7 @@ public class PcTrackerCompleteCaptureTests
             .Options;
 
         using var db = new PimDbContext(options);
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var request = new CompleteAwUploadRequest(
             "DESKTOP",
             new AwInfoDto("DESKTOP", "v0.13.2", false, "aw-device"),
@@ -1097,7 +1098,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(4, "2026-05-20T05:05:05+00:00", 6, "https://example.com/d", "D"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         Assert.Equal(2, result.Items.Count);
@@ -1133,7 +1134,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(91, "2026-05-20T05:00:05+00:00", 6, "https://example.com/b", "B"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         var page = Assert.Single(result.Items);
@@ -1166,7 +1167,7 @@ public class PcTrackerCompleteCaptureTests
             browserWindow);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         var page = Assert.Single(result.Items, x => x.RecordType == "web-page");
@@ -1192,7 +1193,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(2, "2026-05-20T05:05:00+00:00", 3, "https://example.com/b", "B"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         var page = Assert.Single(result.Items);
@@ -1218,7 +1219,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(10, "2026-05-20T05:00:05+00:00", 30, "https://docs.example.com/page", "Docs"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         Assert.DoesNotContain(result.Items, x => x.RecordType == "window" && x.AppName == "msedge.exe");
@@ -1245,7 +1246,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(110, "2026-05-20T05:01:00+00:00", 60, "https://aicat.sumnece.com/dashboard", "Cat.ai"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         Assert.DoesNotContain(result.Items, x => x.RecordType == "web-page");
@@ -1266,7 +1267,7 @@ public class PcTrackerCompleteCaptureTests
         db.Set<AwEventEntity>().Add(WindowEvent("2026-05-20T05:00:00+00:00", 60, "msedge.exe", "Docs - Edge"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         var window = Assert.Single(result.Items);
@@ -1306,7 +1307,7 @@ public class PcTrackerCompleteCaptureTests
             });
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(
             MakeDetailQuery() with { EventType = "web" },
             CancellationToken.None);
@@ -1341,7 +1342,7 @@ public class PcTrackerCompleteCaptureTests
         db.Set<AwEventEntity>().Add(webBucketEvent);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(
             MakeDetailQuery() with { EventType = "web" },
             CancellationToken.None);
@@ -1368,7 +1369,7 @@ public class PcTrackerCompleteCaptureTests
             WindowEvent("2026-05-20T05:00:00+00:00", 60, "Code", "project"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(
             MakeDetailQuery() with { EventType = "web" },
             CancellationToken.None);
@@ -1395,7 +1396,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(31, "2026-05-20T05:00:02+00:00", 10, "https://laptop.example.com/page", "Laptop Page", "LAPTOP"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         var laptopPage = Assert.Single(result.Items, x => x.RecordType == "web-page" && x.DeviceId == "LAPTOP");
@@ -1428,7 +1429,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(41, "2026-05-20T05:00:02+00:00", 3, "https://example.com/last", "Last Short"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         var page = Assert.Single(result.Items);
@@ -1460,7 +1461,7 @@ public class PcTrackerCompleteCaptureTests
             trailingWindow);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         Assert.DoesNotContain(result.Items, x => x.RecordType == "window" && x.AppName == "msedge.exe");
@@ -1495,7 +1496,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(60, "2026-05-20T05:00:00+00:00", 30, "https://example.com/overlap", "Overlap Page"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         var page = Assert.Single(result.Items, x => x.RecordType == "web-page");
@@ -1529,7 +1530,7 @@ public class PcTrackerCompleteCaptureTests
             WebEvent(70, "2026-05-20T05:00:00+00:00", 60, "https://example.com/edge", "Edge Page"));
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         var page = Assert.Single(result.Items, x => x.RecordType == "web-page");
@@ -1568,7 +1569,7 @@ public class PcTrackerCompleteCaptureTests
             edgePrimaryPage);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var result = await service.QueryCompleteDetailAsync(MakeDetailQuery(), CancellationToken.None);
 
         var page = Assert.Single(result.Items, x => x.RecordType == "web-page");

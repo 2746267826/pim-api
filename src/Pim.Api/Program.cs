@@ -38,7 +38,15 @@ builder.Services.AddCors(options =>
 
 // Module discovery
 var moduleRegistry = new ModuleRegistry();
-moduleRegistry.DiscoverModules(builder.Services, builder.Configuration);
+try
+{
+    moduleRegistry.DiscoverModules(builder.Services, builder.Configuration);
+}
+catch (Exception ex)
+{
+    Log.Warning(ex, "Module discovery failed; continuing with discovered modules only.");
+}
+
 builder.Services.AddScoped<TodaySectionService>();
 builder.Services.AddScoped<ITodaySectionProvider, CalendarScheduleTodaySectionProvider>();
 builder.Services.AddScoped<ITodaySectionProvider, CalendarTasksTodaySectionProvider>();
@@ -68,13 +76,20 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 
 // Apply database migrations. Existing EnsureCreated databases are adopted before Migrate().
-using (var scope = app.Services.CreateScope())
+try
 {
-    var adoption = scope.ServiceProvider.GetRequiredService<Pim.Infrastructure.Data.PimMigrationAdoptionService>();
-    await adoption.AdoptExistingSchemaAsync();
+    using (var scope = app.Services.CreateScope())
+    {
+        var adoption = scope.ServiceProvider.GetRequiredService<Pim.Infrastructure.Data.PimMigrationAdoptionService>();
+        await adoption.AdoptExistingSchemaAsync();
 
-    var db = scope.ServiceProvider.GetRequiredService<Pim.Infrastructure.Data.PimDbContext>();
-    await db.Database.MigrateAsync();
+        var db = scope.ServiceProvider.GetRequiredService<Pim.Infrastructure.Data.PimDbContext>();
+        await db.Database.MigrateAsync();
+    }
+}
+catch (Exception ex)
+{
+    Log.Warning(ex, "Database migration failed; the API will start but database-dependent endpoints may not work.");
 }
 
 // Health check endpoint

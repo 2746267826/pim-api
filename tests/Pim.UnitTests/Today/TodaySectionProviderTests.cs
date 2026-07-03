@@ -211,7 +211,7 @@ public class TodaySectionProviderTests
     private static PcTrackerService CreatePcTrackerService(PimDbContext db)
         => new(
             db,
-            new ActivityClassificationSnapshotService(db),
+            new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance),
             new ActivityClassificationSettingsService(db),
             new ActivityTimelineSmoothingService());
 

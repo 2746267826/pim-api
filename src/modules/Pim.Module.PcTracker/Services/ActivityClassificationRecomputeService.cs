@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
 using Pim.Infrastructure.Auth;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Data;
@@ -18,17 +19,20 @@ public class ActivityClassificationRecomputeService
     private readonly ActivityClassificationSnapshotService _snapshots;
     private readonly IAuditLogService _auditLog;
     private readonly ICurrentUserService _currentUser;
+    private readonly ILogger<ActivityClassificationRecomputeService> _logger;
 
     public ActivityClassificationRecomputeService(
         PimDbContext db,
         ActivityClassificationSnapshotService snapshots,
         IAuditLogService auditLog,
-        ICurrentUserService currentUser)
+        ICurrentUserService currentUser,
+        ILogger<ActivityClassificationRecomputeService> logger)
     {
         _db = db;
         _snapshots = snapshots;
         _auditLog = auditLog;
         _currentUser = currentUser;
+        _logger = logger;
     }
 
     public async Task<ActivityClassificationPreviewDto> PreviewRuleAsync(
@@ -218,7 +222,7 @@ public class ActivityClassificationRecomputeService
             .ToDictionary(snapshot => snapshot.RecordKey, StringComparer.Ordinal);
     }
 
-    private static ActivityClassificationResult ClassifyForPreview(
+    private ActivityClassificationResult ClassifyForPreview(
         PcDetailRecord record,
         IReadOnlyCollection<ActivityCategoryRuleEntity> rules,
         IReadOnlyDictionary<string, ActivityClassificationEntity> protectedSnapshots)
@@ -226,7 +230,7 @@ public class ActivityClassificationRecomputeService
         var recordKey = ActivityClassificationRecordKey.FromRecord(record);
         return protectedSnapshots.TryGetValue(recordKey, out var snapshot)
             ? ToClassificationResult(snapshot)
-            : ActivityClassifier.Classify(ToContext(record), rules);
+            : ActivityClassifier.Classify(ToContext(record), rules, _logger);
     }
 
     private async Task EnsureUniqueRuleNameAsync(string ruleName, CancellationToken ct)

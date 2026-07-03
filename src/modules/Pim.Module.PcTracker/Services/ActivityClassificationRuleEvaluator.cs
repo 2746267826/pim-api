@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Logging;
 
 namespace Pim.Module.PcTracker.Services;
 
@@ -18,7 +19,7 @@ public static class ActivityClassificationRuleEvaluator
 {
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(100);
 
-    public static bool Matches(string? conditionsJson, ActivityClassificationContext context)
+    public static bool Matches(string? conditionsJson, ActivityClassificationContext context, ILogger? logger = null)
     {
         if (string.IsNullOrWhiteSpace(conditionsJson) || context is null)
             return false;
@@ -42,20 +43,24 @@ public static class ActivityClassificationRuleEvaluator
 
             return true;
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
+            logger?.LogWarning(ex, "Rule conditions JSON parse failed: {Conditions}", conditionsJson);
             return false;
         }
-        catch (ArgumentException)
+        catch (ArgumentException ex)
         {
+            logger?.LogWarning(ex, "Rule conditions argument error: {Conditions}", conditionsJson);
             return false;
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException ex)
         {
+            logger?.LogWarning(ex, "Rule conditions operation error: {Conditions}", conditionsJson);
             return false;
         }
-        catch (RegexMatchTimeoutException)
+        catch (RegexMatchTimeoutException ex)
         {
+            logger?.LogWarning(ex, "Rule regex match timed out: {Conditions}", conditionsJson);
             return false;
         }
     }

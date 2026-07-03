@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
@@ -10,10 +11,12 @@ public class ActivityClassificationSnapshotService
     public const string ClassifierVersion = "local-v1";
 
     private readonly PimDbContext _db;
+    private readonly ILogger<ActivityClassificationSnapshotService> _logger;
 
-    public ActivityClassificationSnapshotService(PimDbContext db)
+    public ActivityClassificationSnapshotService(PimDbContext db, ILogger<ActivityClassificationSnapshotService> logger)
     {
         _db = db;
+        _logger = logger;
     }
 
     public async Task<List<PcDetailRecord>> EnsureClassificationsAsync(
@@ -46,7 +49,7 @@ public class ActivityClassificationSnapshotService
         foreach (var keyedRecord in keyedRecords)
         {
             var record = keyedRecord.Record;
-            var classification = ActivityClassifier.Classify(ToContext(record), rules);
+            var classification = ActivityClassifier.Classify(ToContext(record), rules, _logger);
 
             if (!snapshots.TryGetValue(keyedRecord.RecordKey, out var snapshot)
                 && !newSnapshots.TryGetValue(keyedRecord.RecordKey, out snapshot))

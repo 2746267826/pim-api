@@ -1,5 +1,6 @@
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
+using Microsoft.Extensions.Logging;
 
 namespace Pim.Module.PcTracker.Services;
 
@@ -24,7 +25,8 @@ public static class ActivityClassifier
 
     public static ActivityClassificationResult Classify(
         ActivityClassificationContext context,
-        IReadOnlyCollection<ActivityCategoryRuleEntity> rules)
+        IReadOnlyCollection<ActivityCategoryRuleEntity> rules,
+        ILogger? logger = null)
     {
         var activeRules = (rules ?? Array.Empty<ActivityCategoryRuleEntity>())
             .Where(rule => string.Equals(rule.Status, "active", StringComparison.OrdinalIgnoreCase))
@@ -32,14 +34,14 @@ public static class ActivityClassifier
             .OrderByDescending(rule => rule.Priority)
             .ToArray();
 
-        if (TryClassifyWithRules(context, activeRules.Where(rule => !IsDeferredFallbackRule(rule)), out var result))
+        if (TryClassifyWithRules(context, activeRules.Where(rule => !IsDeferredFallbackRule(rule)), out var result, logger))
             return result;
 
         var heuristicResult = ClassifyWithHeuristics(context);
         if (heuristicResult is not null)
             return heuristicResult;
 
-        return TryClassifyWithRules(context, activeRules.Where(IsDeferredFallbackRule), out result)
+        return TryClassifyWithRules(context, activeRules.Where(IsDeferredFallbackRule), out result, logger)
             ? result
             : ActivityClassificationResult.Fallback();
     }
@@ -47,11 +49,12 @@ public static class ActivityClassifier
     private static bool TryClassifyWithRules(
         ActivityClassificationContext context,
         IEnumerable<ActivityCategoryRuleEntity> rules,
-        out ActivityClassificationResult result)
+        out ActivityClassificationResult result,
+        ILogger? logger = null)
     {
         foreach (var rule in rules)
         {
-            if (!ActivityClassificationRuleEvaluator.Matches(rule.ConditionsJson, context))
+            if (!ActivityClassificationRuleEvaluator.Matches(rule.ConditionsJson, context, logger))
                 continue;
 
             result = new ActivityClassificationResult(

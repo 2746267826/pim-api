@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
@@ -17,7 +18,7 @@ public class ActivityClassifierTests
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         using var db = new PimDbContext(options);
-        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
+        var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
 
         await service.SaveActivityClassificationRuleAsync(
             new SaveActivityClassificationRuleRequest(

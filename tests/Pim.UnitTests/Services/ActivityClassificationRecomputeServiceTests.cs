@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Operations;
@@ -346,9 +347,10 @@ public class ActivityClassificationRecomputeServiceTests
     private static ActivityClassificationRecomputeService CreateService(PimDbContext db) =>
         new(
             db,
-            new ActivityClassificationSnapshotService(db),
+            new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance),
             new AuditLogService(db),
-            new FixedCurrentUserService(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")));
+            new FixedCurrentUserService(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
+            NullLogger<ActivityClassificationRecomputeService>.Instance);
 
     private static SaveActivityClassificationRuleRequest CodeRuleRequest(int priority = 1000) =>
         new(

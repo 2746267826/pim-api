@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
@@ -13,7 +14,7 @@ public class ActivityClassificationSnapshotServiceTests
     public async Task EnsureClassificationsAsync_CreatesDeterministicSnapshotWithoutChangingRecord()
     {
         using var db = CreateDb();
-        var service = new ActivityClassificationSnapshotService(db);
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
         var record = NewRecord("Code.exe", "ActivityClassificationSnapshotService.cs");
         var rules = new[]
         {
@@ -40,7 +41,7 @@ public class ActivityClassificationSnapshotServiceTests
     public async Task EnsureClassificationsAsync_UpdatesExistingSnapshotForSameRecordKey()
     {
         using var db = CreateDb();
-        var service = new ActivityClassificationSnapshotService(db);
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
         var record = NewRecord("Code.exe", "ActivityClassificationSnapshotService.cs");
 
         await service.EnsureClassificationsAsync(
@@ -69,7 +70,7 @@ public class ActivityClassificationSnapshotServiceTests
     public async Task EnsureClassificationsAsync_ReturnsPerRecordClassificationsForDuplicateKeys()
     {
         using var db = CreateDb();
-        var service = new ActivityClassificationSnapshotService(db);
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
         var codeRecord = NewStableWebRecord("Code.exe");
         var excelRecord = NewStableWebRecord("Excel.exe");
 
@@ -97,7 +98,7 @@ public class ActivityClassificationSnapshotServiceTests
     public async Task EnsureClassificationsAsync_PreservesExistingManualSnapshot()
     {
         using var db = CreateDb();
-        var service = new ActivityClassificationSnapshotService(db);
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
         var record = NewRecord("Code.exe", "ActivityClassificationSnapshotService.cs");
         var manualAuditId = Guid.NewGuid();
         var snapshot = new ActivityClassificationEntity
@@ -141,7 +142,7 @@ public class ActivityClassificationSnapshotServiceTests
     public async Task EnsureClassificationsAsync_UsesBucketTypeInRuleContext()
     {
         using var db = CreateDb();
-        var service = new ActivityClassificationSnapshotService(db);
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
         var record = NewStableWebRecord("msedge.exe") with
         {
             BucketType = "web.tab.current"
@@ -172,7 +173,7 @@ public class ActivityClassificationSnapshotServiceTests
     public async Task EnsureClassificationsAsync_ReturnsInvalidDurationRecordsUnchangedWithoutPersistence(double? durationSeconds)
     {
         using var db = CreateDb();
-        var service = new ActivityClassificationSnapshotService(db);
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
         var record = NewRecord("Code.exe", "ActivityClassificationSnapshotService.cs") with
         {
             DurationSeconds = durationSeconds
@@ -192,7 +193,7 @@ public class ActivityClassificationSnapshotServiceTests
     public async Task EnsureClassificationsAsync_ReturnsInvalidTimestampRecordsUnchangedWithoutPersistence()
     {
         using var db = CreateDb();
-        var service = new ActivityClassificationSnapshotService(db);
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
         var record = NewRecord("Code.exe", "ActivityClassificationSnapshotService.cs") with
         {
             Start = "not-a-date"
