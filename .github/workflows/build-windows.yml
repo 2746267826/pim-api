@@ -7,6 +7,8 @@ on:
       - 'src/client-windows/**'
       - 'src/Pim.Core/**'
       - 'src/Pim.Infrastructure/**'
+      - 'src/modules/**'
+      - 'src/Directory.Build.props'
       - '.github/workflows/build-windows.yml'
   workflow_dispatch:
 
@@ -19,10 +21,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0'
+
+      - name: Generate version string
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(git describe --tags --always --match "v*" 2>/dev/null || echo "0.0.0")
+          DISPLAY=$(echo "$VERSION" | sed 's/^v//' | sed 's/-[0-9]*-g\([0-9a-f]\{7\}\)$/\(\1\)/' | sed 's/-g\([0-9a-f]\{7\}\)$/\(\1\)/')
+          echo "value=$DISPLAY" >> "$GITHUB_OUTPUT"
+          echo "version=$DISPLAY"
 
       - name: Publish (restore + build + publish in one step)
         run: |
@@ -32,7 +45,12 @@ jobs:
             -r win-x64 `
             --self-contained true `
             -p:PublishSingleFile=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:GitHash=${{ steps.version.outputs.value }}
+
+      - name: Write version file for reference
+        shell: bash
+        run: echo "${{ steps.version.outputs.value }}" > publish/VERSION
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

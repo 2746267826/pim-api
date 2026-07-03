@@ -17,6 +17,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-java@v4
         with:
@@ -24,6 +26,17 @@ jobs:
           java-version: '17'
 
       - uses: gradle/actions/setup-gradle@v3
+
+      - name: Generate version string
+        id: version
+        run: |
+          VERSION=$(git describe --tags --always --match "v*" 2>/dev/null || echo "0.0.0")
+          DISPLAY=$(echo "$VERSION" | sed 's/^v//' | sed 's/-[0-9]*-g\([0-9a-f]\{7\}\)$/\(\1\)/' | sed 's/-g\([0-9a-f]\{7\}\)$/\(\1\)/')
+          COMMIT_COUNT=$(git rev-list --count HEAD 2>/dev/null || echo 1)
+          echo "value=$DISPLAY" >> "$GITHUB_OUTPUT"
+          echo "version=$DISPLAY"
+          echo "VERSION_DISPLAY=$DISPLAY" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$COMMIT_COUNT" >> "$GITHUB_ENV"
 
       - name: Generate gradlew wrapper (Gradle 8.5)
         run: |

@@ -95,6 +95,16 @@ catch (Exception ex)
 // Health check endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTimeOffset.UtcNow })).AllowAnonymous();
 
+// Version endpoint — reads AssemblyInformationalVersion at runtime
+app.MapGet("/api/version", () =>
+{
+    var version = typeof(Program).Assembly
+        .GetCustomAttributes(false)
+        .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+        .FirstOrDefault()?.InformationalVersion ?? "0.0.0(unknown)";
+    return Results.Ok(new { version });
+}).AllowAnonymous();
+
 // Auth endpoints (before modules so they're not auth-protected)
 app.MapAuthEndpoints();
 
