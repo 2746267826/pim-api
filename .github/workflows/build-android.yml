@@ -23,13 +23,17 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+      - uses: gradle/actions/setup-gradle@v3
 
-      - name: Generate gradlew wrapper script
+      - name: Generate gradlew wrapper (Gradle 8.5)
         run: |
+          # Generate wrapper from temp dir to avoid loading project plugins with Gradle 9
+          cd /tmp
           gradle wrapper --gradle-version 8.5
-          chmod +x gradlew
+          # Copy wrapper files into the project
+          cp gradlew gradlew.bat "$OLDPWD/"
+          cp -r gradle/wrapper "$OLDPWD/gradle/"
+          chmod +x "$OLDPWD/gradlew"
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -42,7 +46,7 @@ jobs:
             ${{ runner.os }}-gradle-
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
