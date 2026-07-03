@@ -158,7 +158,7 @@ public class ActivitySuggestionService
             Scope = req.Scope,
             CategoryName = req.CategoryName,
             ProjectTag = req.ProjectTag,
-            Color = req.Color,
+            Color = string.IsNullOrEmpty(req.Color) ? "#64748b" : req.Color,
             Priority = req.Priority,
             Source = "user",
             Status = "active",
