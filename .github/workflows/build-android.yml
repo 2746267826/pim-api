@@ -27,13 +27,17 @@ jobs:
 
       - name: Generate gradlew wrapper (Gradle 8.5)
         run: |
-          # Generate wrapper from temp dir to avoid loading project plugins with Gradle 9
-          cd /tmp
+          # Generate wrapper from temp dir (with minimal settings.gradle to placate Gradle 9)
+          TMPDIR=$(mktemp -d)
+          cd "$TMPDIR"
+          touch settings.gradle
           gradle wrapper --gradle-version 8.5
           # Copy wrapper files into the project
           cp gradlew gradlew.bat "$OLDPWD/"
-          cp -r gradle/wrapper "$OLDPWD/gradle/"
+          mkdir -p "$OLDPWD/gradle/wrapper"
+          cp gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties "$OLDPWD/gradle/wrapper/"
           chmod +x "$OLDPWD/gradlew"
+          rm -rf "$TMPDIR"
 
       - name: Cache Gradle
         uses: actions/cache@v4
