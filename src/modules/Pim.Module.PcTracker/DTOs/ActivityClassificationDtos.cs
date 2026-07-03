@@ -51,7 +51,10 @@ public record ActivityClassificationSuggestionDto(
     string? SuggestedRulesJson,
     string? UserFeedback,
     string? LlmResponseJson,
-    string Status);
+    string Status,
+    string? AppDisplayName = null,
+    string? AppIcon = null,
+    string? RecognitionSource = null);
 
 public record AcceptActivityClassificationSuggestionRequest(
     string RuleName,
@@ -92,3 +95,25 @@ public record ActivityClassificationPreviewDto(
 public record ApplyActivityClassificationRuleRequest(
     SaveActivityClassificationRuleRequest Rule,
     ActivityClassificationApplyRangeRequest Range);
+
+// App Knowledge Base
+
+public record AppSignatureDto(
+    Guid Id,
+    string ProcessName,
+    string DisplayName,
+    string? CategoryPath,
+    string? Productivity,
+    string? Description,
+    string Source,
+    double Confidence,
+    string? Icon,
+    DateTimeOffset? LastSeenAt,
+    DateTimeOffset CreatedAt);
+
+public record SaveAppSignatureRequest(
+    string ProcessName,
+    string DisplayName,
+    string? CategoryPath,
+    string? Productivity,
+    string? Description);

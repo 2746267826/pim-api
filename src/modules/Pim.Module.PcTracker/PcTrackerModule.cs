@@ -30,6 +30,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<ActivityClassificationSettingsService>();
         services.AddScoped<ActivityTimelineSmoothingService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
+        services.AddScoped<AppSignatureService>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -340,6 +341,58 @@ public class PcTrackerModule : IModule
             var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
             var result = await svc.GetHeatmapGridAsync(s, e, dimension, ct);
             return Results.Ok(ApiResponse<HeatmapGridResponse>.Ok(result));
+        });
+
+        // App Knowledge Base endpoints
+        var kbRead = endpoints.MapGroup("/api/v1/pc/app-signatures").AllowAnonymous();
+        var kbWrite = endpoints.MapGroup("/api/v1/pc/app-signatures").RequireAuthorization();
+
+        kbRead.MapGet("/", async (
+            [FromQuery] string? search,
+            [FromServices] AppSignatureService svc,
+            CancellationToken ct) =>
+        {
+            var list = await svc.GetAllAsync(search, ct);
+            return Results.Ok(ApiResponse<List<AppSignatureDto>>.Ok(list));
+        });
+
+        kbRead.MapGet("/count", async (
+            [FromServices] AppSignatureService svc,
+            CancellationToken ct) =>
+        {
+            var count = await svc.GetCountAsync(ct);
+            return Results.Ok(ApiResponse<int>.Ok(count));
+        });
+
+        kbRead.MapGet("/lookup/{processName}", async (
+            string processName,
+            [FromServices] AppSignatureService svc,
+            CancellationToken ct) =>
+        {
+            var result = await svc.LookupByProcessNameAsync(processName, ct);
+            if (result is null)
+                return Results.NotFound(ApiResponse<string>.Error(404, "未找到"));
+            return Results.Ok(ApiResponse<AppSignatureDto>.Ok(result));
+        });
+
+        kbWrite.MapPost("/", async (
+            [FromBody] SaveAppSignatureRequest req,
+            [FromServices] AppSignatureService svc,
+            CancellationToken ct) =>
+        {
+            var result = await svc.SaveAsync(req, ct);
+            return Results.Ok(ApiResponse<AppSignatureDto>.Ok(result));
+        });
+
+        kbWrite.MapDelete("/{id:guid}", async (
+            Guid id,
+            [FromServices] AppSignatureService svc,
+            CancellationToken ct) =>
+        {
+            var ok = await svc.DeleteAsync(id, ct);
+            return ok
+                ? Results.Ok(ApiResponse<string>.Ok("已删除"))
+                : Results.BadRequest(ApiResponse<string>.Error(400, "内置项不可删除或不存在"));
         });
     }
 

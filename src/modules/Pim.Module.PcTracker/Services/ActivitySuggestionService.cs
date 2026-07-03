@@ -12,10 +12,12 @@ public class ActivitySuggestionService
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly PimDbContext _db;
+    private readonly AppSignatureService _appSignatures;
 
-    public ActivitySuggestionService(PimDbContext db)
+    public ActivitySuggestionService(PimDbContext db, AppSignatureService appSignatures)
     {
         _db = db;
+        _appSignatures = appSignatures;
     }
 
     public async Task<List<ActivityClassificationSuggestionDto>> BuildSuggestionsAsync(
@@ -72,11 +74,45 @@ public class ActivitySuggestionService
 
     public async Task<List<ActivityClassificationSuggestionDto>> GetSuggestionsAsync(CancellationToken ct)
     {
-        return await _db.Set<ActivityClassificationSuggestionEntity>()
+        var entities = await _db.Set<ActivityClassificationSuggestionEntity>()
             .Where(s => s.Status == PendingStatus)
             .OrderByDescending(s => s.TotalDurationSeconds)
-            .Select(s => ToSuggestionDto(s))
             .ToListAsync(ct);
+
+        var result = new List<ActivityClassificationSuggestionDto>(entities.Count);
+        foreach (var entity in entities)
+        {
+            var dto = ToSuggestionDto(entity);
+
+            // Enrich with app signature info
+            var appName = ExtractAppName(entity.ClusterKey);
+            if (appName is not null)
+            {
+                var sig = await _appSignatures.LookupByProcessNameAsync(appName, ct);
+                if (sig is not null)
+                {
+                    dto = dto with
+                    {
+                        AppDisplayName = sig.DisplayName,
+                        AppIcon = sig.Icon,
+                        RecognitionSource = sig.Source
+                    };
+                }
+            }
+
+            result.Add(dto);
+        }
+
+        return result;
+    }
+
+    private static string? ExtractAppName(string? clusterKey)
+    {
+        if (string.IsNullOrWhiteSpace(clusterKey))
+            return null;
+        if (clusterKey.StartsWith("app:", StringComparison.OrdinalIgnoreCase))
+            return clusterKey[4..];
+        return null;
     }
 
     public async Task<List<string>> GetRecentProjectTagsAsync(CancellationToken ct)

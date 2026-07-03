@@ -158,3 +158,26 @@ public class ActivityClassificationSettingsEntityConfiguration : IEntityTypeConf
             .HasDatabaseName("ux_pc_activity_classification_settings_key");
     }
 }
+
+public class AppSignatureEntityConfiguration : IEntityTypeConfiguration<AppSignatureEntity>
+{
+    public void Configure(EntityTypeBuilder<AppSignatureEntity> builder)
+    {
+        builder.ToTable("pc_app_signatures");
+        builder.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(e => e.ProcessName).HasMaxLength(256).IsRequired();
+        builder.Property(e => e.DisplayName).HasMaxLength(256).IsRequired();
+        builder.Property(e => e.CategoryPath).HasMaxLength(256);
+        builder.Property(e => e.Productivity).HasMaxLength(32).HasDefaultValue("neutral");
+        builder.Property(e => e.Source).HasMaxLength(32).HasDefaultValue("builtin");
+        builder.Property(e => e.Icon).HasMaxLength(16);
+        builder.Property(e => e.SearchKeywords).HasMaxLength(512);
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
+        builder.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
+        builder.HasIndex(e => e.ProcessName)
+            .IsUnique()
+            .HasDatabaseName("ux_pc_app_signatures_process_name");
+        builder.HasIndex(e => e.DisplayName)
+            .HasDatabaseName("ix_pc_app_signatures_display_name");
+    }
+}
