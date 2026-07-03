@@ -24,7 +24,7 @@ public class QuickNoteAttachmentServiceTests
         var service = CreateAttachmentService(db, UserId, storage);
         await using var content = new MemoryStream(Encoding.UTF8.GetBytes("image-bytes"));
 
-        var uploaded = await service.UploadAsync(content, @"C:\tmp\capture.png", "image/png", content.Length);
+        var uploaded = await service.UploadAsync(content, "/tmp/capture.png", "image/png", content.Length);
 
         Assert.Equal("capture.png", uploaded.FileName);
         Assert.Equal("image/png", uploaded.ContentType);
