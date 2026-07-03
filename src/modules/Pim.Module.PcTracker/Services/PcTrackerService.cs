@@ -386,6 +386,21 @@ public class PcTrackerService
         return buckets;
     }
 
+    public async Task<List<KeystatsSummary>> GetKeystatsRangeAsync(DateTime start, DateTime end, CancellationToken ct)
+    {
+        var entities = await _db.Set<KeystatsDailyEntity>()
+            .Include(x => x.KeyCounts)
+            .Include(x => x.AppBreakdowns)
+            .Where(x => x.SnapshotDate >= start.Date && x.SnapshotDate <= end.Date)
+            .OrderBy(x => x.SnapshotDate)
+            .ToListAsync(ct);
+
+        return entities
+            .Select(e => BuildKeystatsSummary(e)!)
+            .Where(s => s is not null)
+            .ToList()!;
+    }
+
     public async Task<List<CategorySummary>> GetCategorySummariesAsync(DateTime date, CancellationToken ct)
     {
         var keystats = await LatestKeystatsForDate(date, ct);

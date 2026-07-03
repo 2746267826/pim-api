@@ -107,15 +107,15 @@ public class PcTrackerModule : IModule
         });
 
         readGroup.MapGet("/keystats/range", async (
-            [FromQuery] string start,
-            [FromQuery] string end,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
             [FromServices] PcTrackerService svc,
             CancellationToken ct) =>
         {
-            var s = DateTime.Parse(start);
-            var e = DateTime.Parse(end);
-            var result = await svc.GetHeatmapAsync(s, e, ct);
-            return Results.Ok(ApiResponse<List<HeatmapBucket>>.Ok(result));
+            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-7);
+            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
+            var result = await svc.GetKeystatsRangeAsync(s, e, ct);
+            return Results.Ok(ApiResponse<List<KeystatsSummary>>.Ok(result));
         });
 
         readGroup.MapGet("/detail", async (
