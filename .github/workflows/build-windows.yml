@@ -25,10 +25,10 @@ jobs:
           dotnet-version: '8.0'
 
       - name: Restore
-        run: dotnet restore Pim.Client.Windows.slnx
+        run: dotnet restore Pim.Client.Windows.slnx -r win-x64
 
       - name: Build
-        run: dotnet build Pim.Client.Windows.slnx -c Release --no-restore
+        run: dotnet build Pim.Client.Windows.slnx -c Release --no-restore -r win-x64
 
       - name: Publish
         run: |
@@ -36,6 +36,7 @@ jobs:
             -c Release `
             -o publish/ `
             --no-build `
+            -r win-x64 `
             --self-contained true `
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true
