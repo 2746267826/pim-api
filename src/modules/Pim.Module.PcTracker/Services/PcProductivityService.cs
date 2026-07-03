@@ -16,7 +16,9 @@ public class PcProductivityService
 
     public async Task<ProductivityDashboardDto> GetDashboardAsync(DateTime? date, CancellationToken ct)
     {
-        var targetDate = date?.Date ?? DateTime.UtcNow.Date;
+        var targetDate = (date ?? DateTime.UtcNow).Date;
+        if (targetDate.Kind != DateTimeKind.Utc)
+            targetDate = DateTime.SpecifyKind(targetDate, DateTimeKind.Utc);
         var weekStart = targetDate.AddDays(-(int)targetDate.DayOfWeek);
 
         var classifications = await _db.Set<ActivityClassificationEntity>()
@@ -68,9 +70,11 @@ public class PcProductivityService
 
     public async Task<List<DailyProductivityDto>> GetRangeAsync(DateTime start, DateTime end, CancellationToken ct)
     {
+        var utcStart = start.Kind != DateTimeKind.Utc ? DateTime.SpecifyKind(start, DateTimeKind.Utc) : start;
+        var utcEnd = end.Kind != DateTimeKind.Utc ? DateTime.SpecifyKind(end, DateTimeKind.Utc) : end;
         var classifications = await _db.Set<ActivityClassificationEntity>()
-            .Where(c => c.StartedAt >= new DateTimeOffset(start, TimeSpan.Zero)
-                     && c.StartedAt < new DateTimeOffset(end.AddDays(1), TimeSpan.Zero))
+            .Where(c => c.StartedAt >= new DateTimeOffset(utcStart, TimeSpan.Zero)
+                     && c.StartedAt < new DateTimeOffset(utcEnd.AddDays(1), TimeSpan.Zero))
             .ToListAsync(ct);
 
         return classifications
@@ -97,7 +101,7 @@ public class PcProductivityService
 
     public async Task<List<TimelineV2Item>> GetTimelineV2Async(DateTime date, CancellationToken ct)
     {
-        var dayStart = date.Date;
+        var dayStart = date.Kind != DateTimeKind.Utc ? DateTime.SpecifyKind(date.Date, DateTimeKind.Utc) : date.Date;
         var dayEnd = dayStart.AddDays(1);
 
         var items = await _db.Set<ActivityClassificationEntity>()
