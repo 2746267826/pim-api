@@ -32,25 +32,38 @@ public class AppSignatureService
 
     public async Task<AppSignatureDto?> LookupByProcessNameAsync(string processName, CancellationToken ct)
     {
-        // Try exact match first, then wildcard
+        var normalizedName = processName.ToLowerInvariant();
+
+        // Try exact match (case-insensitive via normalized)
         var entity = await _db.Set<AppSignatureEntity>()
-            .FirstOrDefaultAsync(x => x.ProcessName == processName, ct);
+            .FirstOrDefaultAsync(x => x.ProcessName.ToLower() == normalizedName, ct);
+
+        if (entity is null && !normalizedName.EndsWith(".exe"))
+        {
+            // If normalized name (stripped .exe) didn't match, try with .exe suffix
+            entity = await _db.Set<AppSignatureEntity>()
+                .FirstOrDefaultAsync(x => x.ProcessName.ToLower() == normalizedName + ".exe", ct);
+        }
 
         if (entity is null)
         {
             // Try glob pattern match (e.g. MobaXterm*.exe)
             var all = await _db.Set<AppSignatureEntity>().ToListAsync(ct);
-            entity = all.FirstOrDefault(sig =>
+            foreach (var candidateName in new[] { normalizedName, normalizedName + ".exe" })
             {
-                var pattern = sig.ProcessName;
-                if (!pattern.Contains('*') && !pattern.Contains('?'))
-                    return false;
-                var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
-                    .Replace("\\*", ".*")
-                    .Replace("\\?", ".") + "$";
-                return System.Text.RegularExpressions.Regex.IsMatch(processName, regex,
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            });
+                entity = all.FirstOrDefault(sig =>
+                {
+                    var pattern = sig.ProcessName;
+                    if (!pattern.Contains('*') && !pattern.Contains('?'))
+                        return false;
+                    var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+                        .Replace("\\*", ".*")
+                        .Replace("\\?", ".") + "$";
+                    return System.Text.RegularExpressions.Regex.IsMatch(candidateName, regex,
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                });
+                if (entity is not null) break;
+            }
         }
 
         if (entity is not null)

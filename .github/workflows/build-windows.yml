@@ -7,7 +7,6 @@ on:
       - 'src/client-windows/**'
       - 'src/Pim.Core/**'
       - 'src/Pim.Infrastructure/**'
-      - 'src/modules/**'
       - 'src/Directory.Build.props'
       - '.github/workflows/build-windows.yml'
   workflow_dispatch:

@@ -238,6 +238,7 @@ INSERT INTO pc_app_signatures (process_name, display_name, category_path, produc
 ('wezterm.exe', 'WezTerm', '工作·编程', 'productive', '跨平台终端模拟器', 'builtin', '🖥️', 0.99),
 ('floaterm.exe', 'Floaterm', '工作·编程', 'productive', '浮动终端', 'builtin', '🖥️', 0.99),
 ('MobaXterm*.exe', 'MobaXterm', '工作·运维', 'productive', '增强型终端/远程桌面/SSH 客户端', 'builtin', '🖥️', 0.99),
+('MobaXterm*', 'MobaXterm SSH客户端', '工作·运维', 'productive', NULL, 'builtin', '🖥️', 0.95),
 ('putty.exe', 'PuTTY', '工作·运维', 'productive', 'SSH/Telnet 客户端', 'builtin', '🔌', 0.99),
 ('winscp.exe', 'WinSCP', '工作·运维', 'productive', 'SFTP/FTP 客户端', 'builtin', '📁', 0.99),
 ('FileZilla.exe', 'FileZilla', '工作·运维', 'productive', 'FTP 客户端', 'builtin', '📁', 0.99),

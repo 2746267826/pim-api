@@ -164,16 +164,19 @@ public class AppSignatureEntityConfiguration : IEntityTypeConfiguration<AppSigna
     public void Configure(EntityTypeBuilder<AppSignatureEntity> builder)
     {
         builder.ToTable("pc_app_signatures");
-        builder.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
-        builder.Property(e => e.ProcessName).HasMaxLength(256).IsRequired();
-        builder.Property(e => e.DisplayName).HasMaxLength(256).IsRequired();
-        builder.Property(e => e.CategoryPath).HasMaxLength(256);
-        builder.Property(e => e.Productivity).HasMaxLength(32).HasDefaultValue("neutral");
-        builder.Property(e => e.Source).HasMaxLength(32).HasDefaultValue("builtin");
-        builder.Property(e => e.Icon).HasMaxLength(16);
-        builder.Property(e => e.SearchKeywords).HasMaxLength(512);
-        builder.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
-        builder.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
+        builder.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(e => e.ProcessName).HasColumnName("process_name").HasMaxLength(256).IsRequired();
+        builder.Property(e => e.DisplayName).HasColumnName("display_name").HasMaxLength(256).IsRequired();
+        builder.Property(e => e.CategoryPath).HasColumnName("category_path").HasMaxLength(256);
+        builder.Property(e => e.Productivity).HasColumnName("productivity").HasMaxLength(32).HasDefaultValue("neutral");
+        builder.Property(e => e.Description).HasColumnName("description");
+        builder.Property(e => e.Source).HasColumnName("source").HasMaxLength(32).HasDefaultValue("builtin");
+        builder.Property(e => e.Confidence).HasColumnName("confidence").HasDefaultValue(1.0);
+        builder.Property(e => e.Icon).HasColumnName("icon").HasMaxLength(16);
+        builder.Property(e => e.SearchKeywords).HasColumnName("search_keywords").HasMaxLength(512);
+        builder.Property(e => e.LastSeenAt).HasColumnName("last_seen_at");
+        builder.Property(e => e.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()");
+        builder.Property(e => e.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("NOW()");
         builder.HasIndex(e => e.ProcessName)
             .IsUnique()
             .HasDatabaseName("ux_pc_app_signatures_process_name");
