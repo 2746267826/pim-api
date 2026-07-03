@@ -31,7 +31,7 @@ jobs:
           TMPDIR=$(mktemp -d)
           cd "$TMPDIR"
           touch settings.gradle
-          gradle wrapper --gradle-version 8.5
+          gradle wrapper --gradle-version 8.6
           # Copy wrapper files into the project
           cp gradlew gradlew.bat "$OLDPWD/"
           mkdir -p "$OLDPWD/gradle/wrapper"
