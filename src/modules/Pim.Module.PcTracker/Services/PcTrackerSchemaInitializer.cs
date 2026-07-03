@@ -427,6 +427,23 @@ WHERE NOT EXISTS (
     FROM pc_activity_category_rules r
     WHERE r.rule_name = 'Migrated app rule: ' || pc_app_categories.app_pattern
 );
+
+-- Phase 2: pc_categories (hierarchical classification tree)
+CREATE TABLE IF NOT EXISTS pc_categories (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    parent_id UUID REFERENCES pc_categories(id) ON DELETE RESTRICT,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT '#64748b',
+    icon TEXT,
+    productivity TEXT NOT NULL DEFAULT 'neutral',
+    sort_order INT NOT NULL DEFAULT 0,
+    is_builtin BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_pc_categories_parent_id ON pc_categories (parent_id);
+CREATE INDEX IF NOT EXISTS ix_pc_categories_name ON pc_categories (name);
+CREATE INDEX IF NOT EXISTS ix_pc_categories_sort_order ON pc_categories (sort_order);
 """;
 
     private readonly PimDbContext _db;

@@ -31,6 +31,8 @@ public class PcTrackerModule : IModule
         services.AddScoped<ActivityTimelineSmoothingService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
         services.AddScoped<AppSignatureService>();
+        services.AddScoped<PcCategoryService>();
+        services.AddScoped<PcProductivityService>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -393,6 +395,106 @@ public class PcTrackerModule : IModule
             return ok
                 ? Results.Ok(ApiResponse<string>.Ok("已删除"))
                 : Results.BadRequest(ApiResponse<string>.Error(400, "内置项不可删除或不存在"));
+        });
+
+        // === Phase 2: 分类树 ===
+        var catRead = endpoints.MapGroup("/api/v1/pc/categories").AllowAnonymous();
+        var catWrite = endpoints.MapGroup("/api/v1/pc/categories").RequireAuthorization();
+
+        catRead.MapGet("/", async (
+            [FromServices] PcCategoryService svc,
+            CancellationToken ct) =>
+        {
+            var tree = await svc.GetTreeAsync(ct);
+            return Results.Ok(ApiResponse<List<CategoryTreeNode>>.Ok(tree));
+        });
+
+        catRead.MapGet("/tree", async (
+            [FromServices] PcCategoryService svc,
+            CancellationToken ct) =>
+        {
+            var tree = await svc.GetTreeAsync(ct);
+            return Results.Ok(ApiResponse<List<CategoryTreeNode>>.Ok(tree));
+        });
+
+        catWrite.MapPost("/", async (
+            [FromBody] CategorySaveRequest req,
+            [FromServices] PcCategoryService svc,
+            CancellationToken ct) =>
+        {
+            var result = await svc.SaveAsync(req, ct);
+            return Results.Ok(ApiResponse<CategoryTreeNode>.Ok(result));
+        });
+
+        catWrite.MapDelete("/{id:guid}", async (
+            Guid id,
+            [FromServices] PcCategoryService svc,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var ok = await svc.DeleteAsync(id, ct);
+                return ok
+                    ? Results.Ok(ApiResponse<string>.Ok("已删除"))
+                    : Results.BadRequest(ApiResponse<string>.Error(400, "内置项不可删除或不存在"));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
+            }
+        });
+
+        catWrite.MapPut("/reorder", async (
+            [FromBody] ReorderCategoriesRequest req,
+            [FromServices] PcCategoryService svc,
+            CancellationToken ct) =>
+        {
+            await svc.ReorderAsync(req, ct);
+            return Results.Ok(ApiResponse<string>.Ok("排序已更新"));
+        });
+
+        catWrite.MapPost("/seed", async (
+            [FromServices] PcCategoryService svc,
+            CancellationToken ct) =>
+        {
+            await svc.SeedDefaultsAsync(ct);
+            return Results.Ok(ApiResponse<string>.Ok("种子数据已初始化"));
+        });
+
+        // === Phase 2: Productivity ===
+        var prodRead = endpoints.MapGroup("/api/v1/pc/productivity").AllowAnonymous();
+
+        prodRead.MapGet("/dashboard", async (
+            [FromQuery] string? date,
+            [FromServices] PcProductivityService svc,
+            CancellationToken ct) =>
+        {
+            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
+            var result = await svc.GetDashboardAsync(d, ct);
+            return Results.Ok(ApiResponse<ProductivityDashboardDto>.Ok(result));
+        });
+
+        prodRead.MapGet("/range", async (
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromServices] PcProductivityService svc,
+            CancellationToken ct) =>
+        {
+            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-7);
+            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
+            var result = await svc.GetRangeAsync(s, e, ct);
+            return Results.Ok(ApiResponse<List<DailyProductivityDto>>.Ok(result));
+        });
+
+        // === Phase 2: 时间线 v2 ===
+        readGroup.MapGet("/timeline/v2", async (
+            [FromQuery] string? date,
+            [FromServices] PcProductivityService svc,
+            CancellationToken ct) =>
+        {
+            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
+            var result = await svc.GetTimelineV2Async(d, ct);
+            return Results.Ok(ApiResponse<List<TimelineV2Item>>.Ok(result));
         });
     }
 

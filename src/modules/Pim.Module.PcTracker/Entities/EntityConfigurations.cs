@@ -159,6 +159,31 @@ public class ActivityClassificationSettingsEntityConfiguration : IEntityTypeConf
     }
 }
 
+public class PcCategoryEntityConfiguration : IEntityTypeConfiguration<PcCategoryEntity>
+{
+    public void Configure(EntityTypeBuilder<PcCategoryEntity> builder)
+    {
+        builder.ToTable("pc_categories");
+        builder.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(e => e.ParentId).HasColumnName("parent_id");
+        builder.Property(e => e.Name).HasColumnName("name").HasMaxLength(64).IsRequired();
+        builder.Property(e => e.Color).HasColumnName("color").HasMaxLength(7).HasDefaultValue("#64748b");
+        builder.Property(e => e.Icon).HasColumnName("icon").HasMaxLength(32);
+        builder.Property(e => e.Productivity).HasColumnName("productivity").HasMaxLength(16).HasDefaultValue("neutral");
+        builder.Property(e => e.SortOrder).HasColumnName("sort_order").HasDefaultValue(0);
+        builder.Property(e => e.IsBuiltin).HasColumnName("is_builtin").HasDefaultValue(false);
+        builder.Property(e => e.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()");
+        builder.Property(e => e.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("NOW()");
+        builder.HasOne(e => e.Parent)
+            .WithMany(e => e.Children)
+            .HasForeignKey(e => e.ParentId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(e => e.ParentId).HasDatabaseName("ix_pc_categories_parent_id");
+        builder.HasIndex(e => e.Name).HasDatabaseName("ix_pc_categories_name");
+        builder.HasIndex(e => e.SortOrder).HasDatabaseName("ix_pc_categories_sort_order");
+    }
+}
+
 public class AppSignatureEntityConfiguration : IEntityTypeConfiguration<AppSignatureEntity>
 {
     public void Configure(EntityTypeBuilder<AppSignatureEntity> builder)
