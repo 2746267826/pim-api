@@ -59,11 +59,15 @@ public static class ServiceCollectionExtensions
         services.AddHttpContextAccessor();
         services.AddScoped<ICurrentUserService, CurrentUserService>();
 
-        // Storage
-        services.AddSingleton(sp => new MinioStorage(
-            configuration["Minio:Endpoint"]!,
-            configuration["Minio:AccessKey"]!,
-            configuration["Minio:SecretKey"]!));
+        // Storage (optional — skip if MinIO is not configured)
+        var minioEndpoint = configuration["Minio:Endpoint"];
+        if (!string.IsNullOrWhiteSpace(minioEndpoint))
+        {
+            services.AddSingleton(sp => new MinioStorage(
+                minioEndpoint,
+                configuration["Minio:AccessKey"]!,
+                configuration["Minio:SecretKey"]!));
+        }
 
         services.AddSingleton(sp => new KopiaService(
             configuration["Kopia:RepositoryPath"]!,

@@ -79,7 +79,7 @@ public class PcTrackerModule : IModule
             [FromServices] PcTrackerService svc,
             CancellationToken ct) =>
         {
-            var d = date is not null ? DateTime.Parse(date) : DateTime.Today;
+            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
             var result = await svc.GetSummaryAsync(d, ct);
             return Results.Ok(ApiResponse<PcSummaryResponse>.Ok(result));
         });
@@ -89,7 +89,7 @@ public class PcTrackerModule : IModule
             [FromServices] PcTrackerService svc,
             CancellationToken ct) =>
         {
-            var d = date is not null ? DateTime.Parse(date) : DateTime.Today;
+            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
             var result = await svc.GetTimelineAsync(d, ct);
             return Results.Ok(ApiResponse<List<TimelineItem>>.Ok(result));
         });
@@ -100,8 +100,8 @@ public class PcTrackerModule : IModule
             [FromServices] PcTrackerService svc,
             CancellationToken ct) =>
         {
-            var s = start is not null ? DateTime.Parse(start) : DateTime.Today.AddDays(-7);
-            var e = end is not null ? DateTime.Parse(end) : DateTime.Today;
+            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-7);
+            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
             var result = await svc.GetHeatmapAsync(s, e, ct);
             return Results.Ok(ApiResponse<List<HeatmapBucket>>.Ok(result));
         });
@@ -203,7 +203,7 @@ public class PcTrackerModule : IModule
             [FromServices] ActivityClassificationSettingsService settingsService,
             CancellationToken ct) =>
         {
-            var d = date is not null ? DateTime.Parse(date) : DateTime.Today;
+            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
             var q = new DetailQueryParams(
                 d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -336,8 +336,8 @@ public class PcTrackerModule : IModule
             CancellationToken ct,
             [FromQuery] string dimension = "day") =>
         {
-            var s = start is not null ? DateTime.Parse(start) : DateTime.Today.AddDays(-30);
-            var e = end is not null ? DateTime.Parse(end) : DateTime.Today;
+            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-30);
+            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
             var result = await svc.GetHeatmapGridAsync(s, e, dimension, ct);
             return Results.Ok(ApiResponse<HeatmapGridResponse>.Ok(result));
         });
