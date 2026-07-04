@@ -47,6 +47,37 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:GitHash=${{ steps.version.outputs.value }}
 
+      - name: Build and include KeyStats
+        shell: pwsh
+        run: |
+          # Clone KeyStats repo
+          git clone --depth 1 https://github.com/2746267826/keyStats.git .keyStats-tmp
+          if (-not (Test-Path ".keyStats-tmp/KeyStats.Windows/KeyStats/KeyStats.csproj")) {
+            Write-Warning "KeyStats source not found; skipping build"
+            Remove-Item -Recurse -Force .keyStats-tmp -ErrorAction SilentlyContinue
+            return
+          }
+
+          # Restore NuGet packages and build
+          cd .keyStats-tmp/KeyStats.Windows/KeyStats
+          dotnet restore -p:TargetFramework=net48
+          dotnet build -c Release -p:TargetFramework=net48 --no-restore
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "KeyStats build failed"
+            exit 1
+          }
+
+          # Copy KeyStats.exe and config to publish directory
+          $publishDir = "$pwd/../../../../src/client-windows/publish"
+          Copy-Item "bin/Release/net48/KeyStats.exe" "$publishDir/KeyStats.exe" -Force
+          if (Test-Path "bin/Release/net48/KeyStats.exe.config") {
+            Copy-Item "bin/Release/net48/KeyStats.exe.config" "$publishDir/KeyStats.exe.config" -Force
+          }
+
+          Write-Host "KeyStats built and copied to publish directory"
+          cd ../../../..
+          Remove-Item -Recurse -Force .keyStats-tmp -ErrorAction SilentlyContinue
+
       - name: Write version file for reference
         shell: bash
         run: echo "${{ steps.version.outputs.value }}" > publish/VERSION
