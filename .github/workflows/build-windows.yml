@@ -68,14 +68,15 @@ jobs:
           }
 
           # Copy KeyStats.exe and config to publish directory
-          $publishDir = "$pwd/../../../../src/client-windows/publish"
+          # From .keyStats-tmp/KeyStats.Windows/KeyStats/ -> ../../../ = client-windows/ (defaults.working-directory)
+          $publishDir = "$pwd/../../../publish"
           Copy-Item "bin/Release/net48/KeyStats.exe" "$publishDir/KeyStats.exe" -Force
           if (Test-Path "bin/Release/net48/KeyStats.exe.config") {
             Copy-Item "bin/Release/net48/KeyStats.exe.config" "$publishDir/KeyStats.exe.config" -Force
           }
 
           Write-Host "KeyStats built and copied to publish directory"
-          cd ../../../..
+          cd ../../..
           Remove-Item -Recurse -Force .keyStats-tmp -ErrorAction SilentlyContinue
 
       - name: Write version file for reference
