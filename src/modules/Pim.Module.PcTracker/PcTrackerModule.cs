@@ -29,6 +29,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<ActivityClassificationRecomputeService>();
         services.AddScoped<ActivityClassificationSettingsService>();
         services.AddScoped<ActivityTimelineSmoothingService>();
+        services.AddScoped<ActivityClassificationRuleService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
         services.AddScoped<AppSignatureService>();
         services.AddScoped<PcCategoryService>();
@@ -193,10 +194,10 @@ public class PcTrackerModule : IModule
         });
 
         readGroup.MapGet("/classification/rules", async (
-            [FromServices] PcTrackerService svc,
+            [FromServices] ActivityClassificationRuleService svc,
             CancellationToken ct) =>
         {
-            var rules = await svc.GetActivityClassificationRulesAsync(ct);
+            var rules = await svc.ListAsync(ct);
             return Results.Ok(ApiResponse<List<ActivityClassificationRuleDto>>.Ok(rules));
         });
 
@@ -251,10 +252,10 @@ public class PcTrackerModule : IModule
 
         writeGroup.MapPost("/classification/rules", async (
             [FromBody] SaveActivityClassificationRuleRequest req,
-            [FromServices] PcTrackerService svc,
+            [FromServices] ActivityClassificationRuleService svc,
             CancellationToken ct) =>
         {
-            var rule = await svc.SaveActivityClassificationRuleAsync(req, ct);
+            var rule = await svc.SaveAsync(req, ct);
             return Results.Ok(ApiResponse<ActivityClassificationRuleDto>.Ok(rule));
         });
 

@@ -341,13 +341,20 @@ public class ActivityClassificationRecomputeServiceTests
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
 
-        return new PimDbContext(options);
+        var db = new PimDbContext(options);
+        db.Set<PcCategoryEntity>().AddRange(
+            new PcCategoryEntity { Id = Guid.NewGuid(), Name = "\u7f16\u7a0b", Color = "#6B5EE4" },
+            new PcCategoryEntity { Id = Guid.NewGuid(), Name = "\u529e\u516c", Color = "#F59E0B" },
+            new PcCategoryEntity { Id = Guid.NewGuid(), Name = "\u6df1\u5ea6\u5de5\u4f5c", Color = "#123456" });
+        db.SaveChanges();
+        return db;
     }
 
     private static ActivityClassificationRecomputeService CreateService(PimDbContext db) =>
         new(
             db,
             new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance),
+            new ActivityClassificationRuleService(db),
             new AuditLogService(db),
             new FixedCurrentUserService(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
             NullLogger<ActivityClassificationRecomputeService>.Instance);

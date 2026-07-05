@@ -6,7 +6,6 @@ using Pim.Core.Operations;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
-using System.Text.RegularExpressions;
 
 namespace Pim.Module.PcTracker.Services;
 
@@ -17,6 +16,7 @@ public class ActivityClassificationRecomputeService
 
     private readonly PimDbContext _db;
     private readonly ActivityClassificationSnapshotService _snapshots;
+    private readonly ActivityClassificationRuleService _rules;
     private readonly IAuditLogService _auditLog;
     private readonly ICurrentUserService _currentUser;
     private readonly ILogger<ActivityClassificationRecomputeService> _logger;
@@ -24,12 +24,14 @@ public class ActivityClassificationRecomputeService
     public ActivityClassificationRecomputeService(
         PimDbContext db,
         ActivityClassificationSnapshotService snapshots,
+        ActivityClassificationRuleService rules,
         IAuditLogService auditLog,
         ICurrentUserService currentUser,
         ILogger<ActivityClassificationRecomputeService> logger)
     {
         _db = db;
         _snapshots = snapshots;
+        _rules = rules;
         _auditLog = auditLog;
         _currentUser = currentUser;
         _logger = logger;
@@ -40,10 +42,10 @@ public class ActivityClassificationRecomputeService
         ActivityClassificationApplyRangeRequest range,
         CancellationToken ct)
     {
-        ValidateRuleRequest(ruleRequest);
-        var existingRules = await LoadActiveRulesAsync(ct);
+        await _rules.ValidateAsync(ruleRequest, ensureUniqueRuleName: false, ct);
+        var existingRules = await _rules.LoadActiveAsync(ct);
         var records = await LoadActivityRecordsAsync(range, existingRules, ct);
-        var candidateRule = ToRule(ruleRequest);
+        var candidateRule = ActivityClassificationRuleService.ToEntity(ruleRequest);
         var afterRules = OrderRules(existingRules.Append(candidateRule)).ToList();
         var protectedSnapshots = await LoadProtectedSnapshotsAsync(records, ct);
         var affected = records
@@ -81,11 +83,10 @@ public class ActivityClassificationRecomputeService
         ActivityClassificationApplyRangeRequest range,
         CancellationToken ct)
     {
-        ValidateRuleRequest(ruleRequest);
-        await EnsureUniqueRuleNameAsync(ruleRequest.RuleName, ct);
+        await _rules.ValidateAsync(ruleRequest, ensureUniqueRuleName: true, ct);
 
         var preview = await PreviewRuleAsync(ruleRequest, range, ct);
-        var rule = ToRule(ruleRequest);
+        var rule = ActivityClassificationRuleService.ToEntity(ruleRequest);
 
         await using var transaction = await BeginTransactionIfSupportedAsync(ct);
         try
@@ -117,7 +118,7 @@ public class ActivityClassificationRecomputeService
                 null,
                 null), ct);
 
-            var rules = await LoadActiveRulesAsync(ct);
+            var rules = await _rules.LoadActiveAsync(ct);
             var records = await LoadActivityRecordsAsync(range, rules, ct);
             await _snapshots.EnsureClassificationsAsync(records, rules, audit.Id, ct);
 
@@ -137,13 +138,7 @@ public class ActivityClassificationRecomputeService
 
     public async Task<List<ActivityCategoryRuleEntity>> LoadActiveRulesAsync(CancellationToken ct)
     {
-        return await _db.Set<ActivityCategoryRuleEntity>()
-            .Where(rule => rule.Status == "active")
-            .OrderByDescending(rule => rule.Priority)
-            .ThenByDescending(rule => rule.CreatedAt)
-            .ThenBy(rule => rule.RuleName)
-            .ThenBy(rule => rule.Id)
-            .ToListAsync(ct);
+        return await _rules.LoadActiveAsync(ct);
     }
 
     private async Task<List<PcDetailRecord>> LoadActivityRecordsAsync(
@@ -233,105 +228,6 @@ public class ActivityClassificationRecomputeService
             : ActivityClassifier.Classify(ToContext(record), rules, _logger);
     }
 
-    private async Task EnsureUniqueRuleNameAsync(string ruleName, CancellationToken ct)
-    {
-        var exists = await _db.Set<ActivityCategoryRuleEntity>()
-            .AnyAsync(rule => rule.RuleName == ruleName, ct);
-
-        if (exists)
-            throw new InvalidOperationException($"Activity classification rule '{ruleName}' already exists.");
-    }
-
-    private static void ValidateRuleRequest(SaveActivityClassificationRuleRequest request)
-    {
-        if (string.IsNullOrWhiteSpace(request.RuleName))
-            throw new ArgumentException("RuleName is required.");
-
-        ValidateConditionsJson(request.ConditionsJson);
-    }
-
-    private static void ValidateConditionsJson(string? conditionsJson)
-    {
-        if (string.IsNullOrWhiteSpace(conditionsJson))
-            throw new ArgumentException("ConditionsJson is required.");
-
-        try
-        {
-            using var document = System.Text.Json.JsonDocument.Parse(conditionsJson);
-            var root = document.RootElement;
-            if (root.ValueKind != System.Text.Json.JsonValueKind.Object
-                || !root.TryGetProperty("all", out var allConditions)
-                || allConditions.ValueKind != System.Text.Json.JsonValueKind.Array
-                || allConditions.GetArrayLength() == 0)
-                throw new ArgumentException("ConditionsJson must contain a non-empty all array.");
-
-            foreach (var condition in allConditions.EnumerateArray())
-            {
-                if (condition.ValueKind != System.Text.Json.JsonValueKind.Object
-                    || !TryGetStringProperty(condition, "field", out var field)
-                    || !TryGetStringProperty(condition, "op", out var op)
-                    || !condition.TryGetProperty("value", out _))
-                    throw new ArgumentException("Each condition must include field, op, and value.");
-
-                if (!AllowedConditionFields.Contains(field) || !AllowedConditionOps.Contains(op))
-                    throw new ArgumentException("ConditionsJson contains an unsupported condition.");
-
-                ValidateConditionValue(op, condition.GetProperty("value"));
-            }
-        }
-        catch (System.Text.Json.JsonException ex)
-        {
-            throw new ArgumentException("ConditionsJson must be valid JSON.", ex);
-        }
-        catch (RegexParseException ex)
-        {
-            throw new ArgumentException("Regex condition value must be a valid regular expression.", ex);
-        }
-        catch (ArgumentException)
-        {
-            throw;
-        }
-    }
-
-    private static void ValidateConditionValue(string op, System.Text.Json.JsonElement value)
-    {
-        if (op == "containsAny")
-        {
-            if (value.ValueKind != System.Text.Json.JsonValueKind.Array || value.GetArrayLength() == 0)
-                throw new ArgumentException("containsAny requires a non-empty string array value.");
-
-            foreach (var item in value.EnumerateArray())
-            {
-                if (item.ValueKind != System.Text.Json.JsonValueKind.String
-                    || string.IsNullOrWhiteSpace(item.GetString()))
-                    throw new ArgumentException("containsAny requires non-empty string values.");
-            }
-
-            return;
-        }
-
-        if (value.ValueKind != System.Text.Json.JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString()))
-            throw new ArgumentException($"{op} requires a non-empty string value.");
-
-        if (op == "regex")
-            _ = new Regex(value.GetString()!, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeout);
-    }
-
-    private static bool TryGetStringProperty(
-        System.Text.Json.JsonElement element,
-        string propertyName,
-        out string value)
-    {
-        value = string.Empty;
-        if (!element.TryGetProperty(propertyName, out var property)
-            || property.ValueKind != System.Text.Json.JsonValueKind.String
-            || string.IsNullOrWhiteSpace(property.GetString()))
-            return false;
-
-        value = property.GetString()!;
-        return true;
-    }
-
     private async Task<IDbContextTransaction?> BeginTransactionIfSupportedAsync(CancellationToken ct)
     {
         return _db.Database.ProviderName == "Microsoft.EntityFrameworkCore.InMemory"
@@ -362,28 +258,6 @@ public class ActivityClassificationRecomputeService
             snapshot.Source,
             snapshot.Explanation,
             snapshot.SourceRuleId);
-
-    private static ActivityCategoryRuleEntity ToRule(SaveActivityClassificationRuleRequest request)
-    {
-        var now = DateTimeOffset.UtcNow;
-        return new ActivityCategoryRuleEntity
-        {
-            Id = Guid.NewGuid(),
-            RuleName = request.RuleName,
-            Scope = request.Scope,
-            CategoryName = request.CategoryName,
-            ProjectTag = request.ProjectTag,
-            Color = request.Color,
-            Priority = request.Priority,
-            Source = "user",
-            Status = "active",
-            ConditionsJson = request.ConditionsJson,
-            Confidence = request.Confidence,
-            Explanation = request.Explanation,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-    }
 
     private static ActivityClassificationContext ToContext(PcDetailRecord record)
     {
@@ -434,30 +308,4 @@ public class ActivityClassificationRecomputeService
         ActivityClassificationResult CurrentClassification,
         ActivityClassificationResult AfterClassification);
 
-    private static readonly HashSet<string> AllowedConditionFields = new(StringComparer.Ordinal)
-    {
-        "recordType",
-        "appName",
-        "appNameNormalized",
-        "domain",
-        "urlPath",
-        "title",
-        "windowTitle",
-        "filePath",
-        "bucketType"
-    };
-
-    private static readonly HashSet<string> AllowedConditionOps = new(StringComparer.Ordinal)
-    {
-        "equals",
-        "contains",
-        "containsAny",
-        "startsWith",
-        "endsWith",
-        "domainSuffix",
-        "pathPrefix",
-        "regex"
-    };
-
-    private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(100);
 }

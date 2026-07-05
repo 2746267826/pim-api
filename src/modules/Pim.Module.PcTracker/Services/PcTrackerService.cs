@@ -19,6 +19,7 @@ public class PcTrackerService
     private readonly ActivityClassificationSnapshotService _classificationSnapshots;
     private readonly ActivityClassificationSettingsService _classificationSettings;
     private readonly ActivityTimelineSmoothingService _timelineSmoothing;
+    private readonly ActivityClassificationRuleService _classificationRules;
     private List<AppCategoryRule>? _cachedLegacyRules;
     private List<ActivityCategoryRuleEntity>? _cachedActivityRules;
 
@@ -26,12 +27,14 @@ public class PcTrackerService
         PimDbContext db,
         ActivityClassificationSnapshotService classificationSnapshots,
         ActivityClassificationSettingsService classificationSettings,
-        ActivityTimelineSmoothingService timelineSmoothing)
+        ActivityTimelineSmoothingService timelineSmoothing,
+        ActivityClassificationRuleService? classificationRules = null)
     {
         _db = db;
         _classificationSnapshots = classificationSnapshots;
         _classificationSettings = classificationSettings;
         _timelineSmoothing = timelineSmoothing;
+        _classificationRules = classificationRules ?? new ActivityClassificationRuleService(db);
     }
 
     public async Task UpsertKeystatsAsync(KeystatsUploadRequest req, CancellationToken ct)
@@ -551,39 +554,16 @@ public class PcTrackerService
 
     public async Task<List<ActivityClassificationRuleDto>> GetActivityClassificationRulesAsync(CancellationToken ct)
     {
-        return await _db.Set<ActivityCategoryRuleEntity>()
-            .OrderByDescending(r => r.Priority)
-            .Select(r => ToActivityClassificationRuleDto(r))
-            .ToListAsync(ct);
+        return await _classificationRules.ListAsync(ct);
     }
 
     public async Task<ActivityClassificationRuleDto> SaveActivityClassificationRuleAsync(
         SaveActivityClassificationRuleRequest req,
         CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow;
-        var entity = new ActivityCategoryRuleEntity
-        {
-            Id = Guid.NewGuid(),
-            RuleName = req.RuleName,
-            Scope = req.Scope,
-            CategoryName = req.CategoryName,
-            ProjectTag = req.ProjectTag,
-            Color = req.Color,
-            Priority = req.Priority,
-            Source = "user",
-            Status = "active",
-            ConditionsJson = req.ConditionsJson,
-            Confidence = req.Confidence,
-            Explanation = req.Explanation,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-
-        _db.Set<ActivityCategoryRuleEntity>().Add(entity);
-        await _db.SaveChangesAsync(ct);
+        var rule = await _classificationRules.SaveAsync(req, ct);
         _cachedActivityRules = null;
-        return ToActivityClassificationRuleDto(entity);
+        return rule;
     }
 
     public async Task<AppCategoryRule> SaveCategoryAsync(SaveCategoryRequest req, CancellationToken ct)
@@ -1151,10 +1131,7 @@ public class PcTrackerService
     private async Task<List<ActivityCategoryRuleEntity>> GetActivityCategoryRulesAsync(CancellationToken ct)
     {
         if (_cachedActivityRules is not null) return _cachedActivityRules;
-        _cachedActivityRules = await _db.Set<ActivityCategoryRuleEntity>()
-            .Where(r => r.Status == "active")
-            .OrderByDescending(r => r.Priority)
-            .ToListAsync(ct);
+        _cachedActivityRules = await _classificationRules.LoadActiveAsync(ct);
         return _cachedActivityRules;
     }
 

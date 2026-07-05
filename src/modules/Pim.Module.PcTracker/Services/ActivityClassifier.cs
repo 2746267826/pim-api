@@ -87,7 +87,8 @@ public static class ActivityClassifier
             return true;
 
         return string.Equals(rule.Scope, "activity", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(rule.Scope, "both", StringComparison.OrdinalIgnoreCase);
+            || string.Equals(rule.Scope, "both", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(rule.Scope, "app", StringComparison.OrdinalIgnoreCase);
     }
 
     private static ActivityClassificationResult? ClassifyWithHeuristics(ActivityClassificationContext context)

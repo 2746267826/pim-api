@@ -18,6 +18,8 @@ public class ActivityClassifierTests
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         using var db = new PimDbContext(options);
+        db.Set<PcCategoryEntity>().Add(new PcCategoryEntity { Id = Guid.NewGuid(), Name = "\u5b66\u4e60", Color = "#14b8a6" });
+        await db.SaveChangesAsync();
         var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
 
         await service.SaveActivityClassificationRuleAsync(
@@ -345,6 +347,36 @@ public class ActivityClassifierTests
         Assert.Equal("\u5b66\u4e60", result.CategoryName);
         Assert.Equal("ActivityWatch", result.ProjectTag);
         Assert.Null(result.SourceRuleId);
+    }
+
+    [Fact]
+    public void Classify_AppScopeRuleClassifiesActivityForCompatibility()
+    {
+        var context = CreateContext(
+            RecordType: "window",
+            AppName: "Code.exe",
+            AppNameNormalized: "code",
+            Title: "Program.cs",
+            BucketType: "aw-watcher-window");
+        var rule = new ActivityCategoryRuleEntity
+        {
+            Id = Guid.NewGuid(),
+            RuleName = "Code app scope",
+            Scope = "app",
+            Status = "active",
+            CategoryName = "Programming",
+            Color = "#2563eb",
+            Priority = 1000,
+            Source = "user",
+            ConditionsJson = """{"all":[{"field":"appNameNormalized","op":"equals","value":"code"}]}""",
+            Confidence = 0.95,
+            Explanation = "App scope compatibility."
+        };
+
+        var result = ActivityClassifier.Classify(context, [rule]);
+
+        Assert.Equal("Programming", result.CategoryName);
+        Assert.Equal("rule", result.Source);
     }
 
     [Fact]
