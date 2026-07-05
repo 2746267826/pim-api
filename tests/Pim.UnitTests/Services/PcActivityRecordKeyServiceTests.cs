@@ -70,6 +70,53 @@ public class PcActivityRecordKeyServiceTests
             PcActivityRecordKeyService.Build(second).RecordKey);
     }
 
+    [Fact]
+    public void Build_FallbackStillDistinguishesSourceEventIdsWhenBucketIsMissing()
+    {
+        var first = NewRecord() with
+        {
+            SourceBucketIds = null,
+            SourceWindowEventIds = [41]
+        };
+        var second = first with
+        {
+            SourceWindowEventIds = [42]
+        };
+
+        var firstResult = PcActivityRecordKeyService.Build(first);
+        var secondResult = PcActivityRecordKeyService.Build(second);
+
+        Assert.NotEqual(firstResult.RecordKey, secondResult.RecordKey);
+        Assert.Equal("pc-fallback-v1", firstResult.KeyVersion);
+        Assert.Equal("low", firstResult.Stability);
+        Assert.Equal("[41]", firstResult.SourceEventIdsJson);
+        Assert.Equal("[]", firstResult.SourceBucketIdsJson);
+    }
+
+    [Fact]
+    public void Build_WebPageFallbackUsesInterpretedPageIdentityNotBrowserShell()
+    {
+        var first = NewRecord() with
+        {
+            RecordType = "web-page",
+            AppName = null,
+            Domain = "example.com",
+            Path = "/docs",
+            Title = "Same page",
+            BrowserAppName = "msedge.exe",
+            BrowserWindowTitle = "Edge shell"
+        };
+        var second = first with
+        {
+            BrowserAppName = "chrome.exe",
+            BrowserWindowTitle = "Chrome shell"
+        };
+
+        Assert.Equal(
+            PcActivityRecordKeyService.Build(first).RecordKey,
+            PcActivityRecordKeyService.Build(second).RecordKey);
+    }
+
     private static PcDetailRecord NewRecord() =>
         new(
             "window",

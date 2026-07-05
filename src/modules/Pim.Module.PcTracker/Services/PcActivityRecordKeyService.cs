@@ -45,6 +45,7 @@ public sealed class PcActivityRecordKeyService
             record.DeviceId ?? string.Empty,
             record.Start ?? string.Empty,
             record.End ?? record.Start ?? string.Empty,
+            string.Join('-', sourceIds),
             record.AppName ?? string.Empty,
             record.Domain ?? string.Empty,
             record.Path ?? string.Empty,
