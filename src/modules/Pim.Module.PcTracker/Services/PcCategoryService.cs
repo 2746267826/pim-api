@@ -125,9 +125,6 @@ public class PcCategoryService
 
     public async Task SeedDefaultsAsync(CancellationToken ct)
     {
-        if (await _db.Set<PcCategoryEntity>().AnyAsync(ct))
-            return;
-
         var categories = new List<PcCategoryEntity>
         {
             // Root: 娱乐
@@ -148,6 +145,8 @@ public class PcCategoryService
             new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000015"), Name = "会议", Color = "#8B5CF6", Icon = "📞", Productivity = "productive", SortOrder = 2, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
             new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000016"), Name = "设计", Color = "#EC4899", Productivity = "productive", SortOrder = 3, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
             new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000017"), Name = "运维", Color = "#06B6D4", Productivity = "productive", SortOrder = 4, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
+            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000018"), Name = "终端", Color = "#E05A7A", Icon = "⌨️", Productivity = "productive", SortOrder = 5, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
+            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000019"), Name = "办公", Color = "#F59E0B", Icon = "📊", Productivity = "productive", SortOrder = 6, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
 
             // Root: 学习
             new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000020"), Name = "学习", Color = "#A855F7", Icon = "📚", Productivity = "productive", SortOrder = 30, IsBuiltin = true },
@@ -159,12 +158,52 @@ public class PcCategoryService
             new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000030"), Name = "沟通", Color = "#3B82F6", Icon = "💬", Productivity = "productive", SortOrder = 40, IsBuiltin = true },
             new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000031"), Name = "即时消息", Color = "#6366F1", Productivity = "neutral", SortOrder = 0, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000030") },
             new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000032"), Name = "邮件", Color = "#2563EB", Productivity = "productive", SortOrder = 1, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000030") },
+            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000033"), Name = "文件", Color = "#3B82F6", Icon = "📁", Productivity = "neutral", SortOrder = 7, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
+            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000034"), Name = "浏览", Color = "#0EA8A0", Icon = "🌐", Productivity = "neutral", SortOrder = 8, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
 
             // Root: 其他
             new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000099"), Name = "其他", Color = "#64748b", Icon = "📋", Productivity = "neutral", SortOrder = 99, IsBuiltin = true }
         };
 
-        _db.Set<PcCategoryEntity>().AddRange(categories);
+        var existingCategories = await _db.Set<PcCategoryEntity>()
+            .Select(category => new { category.Id, category.Name })
+            .ToListAsync(ct);
+        var existingIdSet = existingCategories
+            .Select(category => category.Id)
+            .ToHashSet();
+        var existingByName = existingCategories
+            .GroupBy(category => category.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().Id, StringComparer.OrdinalIgnoreCase);
+        var resolvedIds = new Dictionary<Guid, Guid>();
+        var missing = new List<PcCategoryEntity>();
+
+        foreach (var category in categories)
+        {
+            if (existingIdSet.Contains(category.Id))
+            {
+                resolvedIds[category.Id] = category.Id;
+                continue;
+            }
+
+            if (existingByName.TryGetValue(category.Name, out var existingId))
+            {
+                resolvedIds[category.Id] = existingId;
+                continue;
+            }
+
+            if (category.ParentId is Guid parentId && resolvedIds.TryGetValue(parentId, out var resolvedParentId))
+                category.ParentId = resolvedParentId;
+
+            missing.Add(category);
+            existingIdSet.Add(category.Id);
+            existingByName[category.Name] = category.Id;
+            resolvedIds[category.Id] = category.Id;
+        }
+
+        if (missing.Count == 0)
+            return;
+
+        _db.Set<PcCategoryEntity>().AddRange(missing);
         await _db.SaveChangesAsync(ct);
     }
 

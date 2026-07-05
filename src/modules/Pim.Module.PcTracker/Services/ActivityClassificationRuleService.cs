@@ -57,12 +57,13 @@ public sealed class ActivityClassificationRuleService
         if (string.IsNullOrWhiteSpace(request.RuleName))
             throw new ArgumentException("RuleName is required.", nameof(request));
 
+        var ruleName = request.RuleName.Trim();
         _ = NormalizeScope(request.Scope);
         ValidateConditionsJson(request.ConditionsJson);
 
         if (ensureUniqueRuleName
-            && await _db.Set<ActivityCategoryRuleEntity>().AnyAsync(rule => rule.RuleName == request.RuleName, ct))
-            throw new InvalidOperationException($"Activity classification rule '{request.RuleName}' already exists.");
+            && await _db.Set<ActivityCategoryRuleEntity>().AnyAsync(rule => rule.RuleName == ruleName, ct))
+            throw new InvalidOperationException($"Activity classification rule '{ruleName}' already exists.");
 
         if (!string.IsNullOrWhiteSpace(request.CategoryName))
         {

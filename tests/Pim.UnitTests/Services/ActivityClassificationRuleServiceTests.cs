@@ -56,6 +56,27 @@ public class ActivityClassificationRuleServiceTests
             service.SaveAsync(NewRule(), CancellationToken.None));
     }
 
+    [Fact]
+    public async Task SaveAsync_RejectsDuplicateRuleNameAfterTrimming()
+    {
+        await using var db = CreateDb();
+        db.Set<PcCategoryEntity>().Add(new PcCategoryEntity { Id = Guid.NewGuid(), Name = "Programming", Color = "#2563eb" });
+        db.Set<ActivityCategoryRuleEntity>().Add(new ActivityCategoryRuleEntity
+        {
+            Id = Guid.NewGuid(),
+            RuleName = "Code windows",
+            Scope = "activity",
+            CategoryName = "Programming",
+            Status = "active",
+            ConditionsJson = """{"all":[{"field":"appNameNormalized","op":"equals","value":"code"}]}"""
+        });
+        await db.SaveChangesAsync();
+        var service = new ActivityClassificationRuleService(db);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.SaveAsync(NewRule() with { RuleName = " Code windows " }, CancellationToken.None));
+    }
+
     private static SaveActivityClassificationRuleRequest NewRule() =>
         new(
             "Code windows",

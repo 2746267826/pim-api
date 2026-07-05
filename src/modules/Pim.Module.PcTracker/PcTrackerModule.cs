@@ -255,8 +255,19 @@ public class PcTrackerModule : IModule
             [FromServices] ActivityClassificationRuleService svc,
             CancellationToken ct) =>
         {
-            var rule = await svc.SaveAsync(req, ct);
-            return Results.Ok(ApiResponse<ActivityClassificationRuleDto>.Ok(rule));
+            try
+            {
+                var rule = await svc.SaveAsync(req, ct);
+                return Results.Ok(ApiResponse<ActivityClassificationRuleDto>.Ok(rule));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
+            }
         });
 
         writeGroup.MapPost("/classification/rules/preview", async (
@@ -264,8 +275,15 @@ public class PcTrackerModule : IModule
             [FromServices] ActivityClassificationRecomputeService svc,
             CancellationToken ct) =>
         {
-            var preview = await svc.PreviewRuleAsync(req.Rule, req.Range, ct);
-            return Results.Ok(ApiResponse<ActivityClassificationPreviewDto>.Ok(preview));
+            try
+            {
+                var preview = await svc.PreviewRuleAsync(req.Rule, req.Range, ct);
+                return Results.Ok(ApiResponse<ActivityClassificationPreviewDto>.Ok(preview));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
         });
 
         writeGroup.MapPost("/classification/rules/apply", async (
@@ -273,8 +291,19 @@ public class PcTrackerModule : IModule
             [FromServices] ActivityClassificationRecomputeService svc,
             CancellationToken ct) =>
         {
-            var preview = await svc.ApplyRuleAsync(req.Rule, req.Range, ct);
-            return Results.Ok(ApiResponse<ActivityClassificationPreviewDto>.Ok(preview));
+            try
+            {
+                var preview = await svc.ApplyRuleAsync(req.Rule, req.Range, ct);
+                return Results.Ok(ApiResponse<ActivityClassificationPreviewDto>.Ok(preview));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
+            }
         });
 
         writeGroup.MapPut("/classification/settings", async (
@@ -505,6 +534,9 @@ public class PcTrackerModule : IModule
         using var scope = serviceProvider.CreateScope();
         var initializer = scope.ServiceProvider.GetRequiredService<PcTrackerSchemaInitializer>();
         await initializer.InitializeAsync();
+
+        var categories = scope.ServiceProvider.GetRequiredService<PcCategoryService>();
+        await categories.SeedDefaultsAsync(CancellationToken.None);
     }
 
     private static DateTime? TryParseDate(string? value)
