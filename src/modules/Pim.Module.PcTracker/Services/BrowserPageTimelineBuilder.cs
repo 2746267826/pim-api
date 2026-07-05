@@ -124,7 +124,10 @@ public static class BrowserPageTimelineBuilder
             ClassificationConfidence: classification.Confidence,
             ClassificationSource: classification.Source,
             ClassificationExplanation: classification.Explanation,
-            BucketType: e.BucketType);
+            BucketType: e.BucketType,
+            SourceBucketIds: SourceBucketIds(new[] { e }),
+            SourceType: e.SourceEventId is null || string.IsNullOrWhiteSpace(e.BucketId) ? "fallback" : "aw",
+            InterpretationVersion: "interpreted-aw-v1");
     }
 
     private static List<WebPageCluster> BuildWebPageClusters(
@@ -331,7 +334,10 @@ public static class BrowserPageTimelineBuilder
                 classification.Confidence,
                 classification.Source,
                 classification.Explanation,
-                Primary.BucketType);
+                Primary.BucketType,
+                SourceBucketIds: SourceBucketIds(browserWindow is null ? allWebEvents : allWebEvents.Append(browserWindow)),
+                SourceType: "aw",
+                InterpretationVersion: "interpreted-aw-v1");
             return new WebPageDetail(record, browserWindow);
         }
     }
@@ -484,6 +490,17 @@ public static class BrowserPageTimelineBuilder
             .Select(e => e.SourceEventId)
             .Where(id => id.HasValue)
             .Select(id => id!.Value)
+            .ToList();
+    }
+
+    private static List<string> SourceBucketIds(IEnumerable<AwEventEntity> events)
+    {
+        return events
+            .Select(e => e.BucketId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id!)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
             .ToList();
     }
 

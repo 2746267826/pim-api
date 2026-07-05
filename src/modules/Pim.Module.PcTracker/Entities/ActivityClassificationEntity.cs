@@ -25,6 +25,25 @@ public class ActivityClassificationEntity
     [Column("source_event_ids", TypeName = "jsonb")]
     public string SourceEventIdsJson { get; set; } = "[]";
 
+    [Column("record_key_version")]
+    [MaxLength(32)]
+    public string RecordKeyVersion { get; set; } = "pc-fallback-v1";
+
+    [Column("record_key_stability")]
+    [MaxLength(16)]
+    public string RecordKeyStability { get; set; } = "low";
+
+    [Column("source_type")]
+    [MaxLength(32)]
+    public string SourceType { get; set; } = "fallback";
+
+    [Column("source_bucket_ids", TypeName = "jsonb")]
+    public string SourceBucketIdsJson { get; set; } = "[]";
+
+    [Column("interpretation_version")]
+    [MaxLength(32)]
+    public string InterpretationVersion { get; set; } = "interpreted-aw-v1";
+
     [Column("started_at")]
     public DateTimeOffset StartedAt { get; set; }
 

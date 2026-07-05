@@ -126,9 +126,15 @@ public class ActivityClassificationSnapshotService
         DateTimeOffset classifiedAt)
     {
         var record = keyedRecord.Record;
+        var key = PcActivityRecordKeyService.Build(record);
         snapshot.RecordType = record.RecordType;
         snapshot.DeviceId = record.DeviceId;
-        snapshot.SourceEventIdsJson = ActivityClassificationRecordKey.SourceEventIdsJson(record);
+        snapshot.SourceEventIdsJson = key.SourceEventIdsJson;
+        snapshot.RecordKeyVersion = key.KeyVersion;
+        snapshot.RecordKeyStability = key.Stability;
+        snapshot.SourceType = key.SourceType;
+        snapshot.SourceBucketIdsJson = key.SourceBucketIdsJson;
+        snapshot.InterpretationVersion = record.InterpretationVersion ?? "interpreted-aw-v1";
         snapshot.StartedAt = keyedRecord.StartedAt;
         snapshot.EndedAt = keyedRecord.EndedAt;
         snapshot.CategoryName = classification.CategoryName;

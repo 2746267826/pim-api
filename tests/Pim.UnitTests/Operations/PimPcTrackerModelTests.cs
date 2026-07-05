@@ -13,6 +13,7 @@ public class PimPcTrackerModelTests
         typeof(ActivityCategoryRuleEntity),
         typeof(ActivityClassificationSuggestionEntity),
         typeof(ActivityClassificationEntity),
+        typeof(ActivityClassificationAuditEntity),
         typeof(ActivityClassificationSettingsEntity)
     };
 
@@ -48,6 +49,35 @@ public class PimPcTrackerModelTests
         Assert.Equal("No rule or heuristic matched.", entity.FindProperty(nameof(ActivityClassificationEntity.Explanation))!.GetDefaultValue());
         Assert.Equal("local-v1", entity.FindProperty(nameof(ActivityClassificationEntity.ClassifierVersion))!.GetDefaultValue());
         Assert.Equal("NOW()", entity.FindProperty(nameof(ActivityClassificationEntity.ClassifiedAt))!.GetDefaultValueSql());
+        Assert.Equal("pc-fallback-v1", entity.FindProperty(nameof(ActivityClassificationEntity.RecordKeyVersion))!.GetDefaultValue());
+        Assert.Equal("low", entity.FindProperty(nameof(ActivityClassificationEntity.RecordKeyStability))!.GetDefaultValue());
+        Assert.Equal("fallback", entity.FindProperty(nameof(ActivityClassificationEntity.SourceType))!.GetDefaultValue());
+        Assert.Equal("'[]'::jsonb", entity.FindProperty(nameof(ActivityClassificationEntity.SourceBucketIdsJson))!.GetDefaultValueSql());
+        Assert.Equal("interpreted-aw-v1", entity.FindProperty(nameof(ActivityClassificationEntity.InterpretationVersion))!.GetDefaultValue());
+        Assert.Contains(entity.GetIndexes(), index =>
+            index.GetDatabaseName() == "ix_pc_activity_classifications_record_key_version");
+        Assert.Contains(entity.GetIndexes(), index =>
+            index.GetDatabaseName() == "ix_pc_activity_classifications_source_type");
+    }
+
+    [Fact]
+    public void PimDbContext_ConfiguresActivityClassificationAuditModel()
+    {
+        using var db = CreateDbContext();
+
+        var entity = db.Model.FindEntityType(typeof(ActivityClassificationAuditEntity));
+
+        Assert.NotNull(entity);
+        Assert.Equal("pc_activity_classification_audits", entity!.GetTableName());
+        Assert.Equal("gen_random_uuid()", entity.FindProperty(nameof(ActivityClassificationAuditEntity.Id))!.GetDefaultValueSql());
+        Assert.Equal("'[]'::jsonb", entity.FindProperty(nameof(ActivityClassificationAuditEntity.AffectedRecordKeysJson))!.GetDefaultValueSql());
+        Assert.Equal("NOW()", entity.FindProperty(nameof(ActivityClassificationAuditEntity.CreatedAt))!.GetDefaultValueSql());
+        Assert.Contains(entity.GetIndexes(), index =>
+            index.GetDatabaseName() == "ix_pc_activity_classification_audits_rule_id");
+        Assert.Contains(entity.GetIndexes(), index =>
+            index.GetDatabaseName() == "ix_pc_activity_classification_audits_suggestion_id");
+        Assert.Contains(entity.GetIndexes(), index =>
+            index.GetDatabaseName() == "ix_pc_activity_classification_audits_created_at");
     }
 
     [Fact]

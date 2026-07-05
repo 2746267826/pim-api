@@ -120,6 +120,11 @@ public class ActivityClassificationEntityConfiguration : IEntityTypeConfiguratio
         builder.ToTable("pc_activity_classifications");
         builder.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
         builder.Property(e => e.SourceEventIdsJson).HasDefaultValueSql("'[]'::jsonb");
+        builder.Property(e => e.RecordKeyVersion).HasDefaultValue("pc-fallback-v1");
+        builder.Property(e => e.RecordKeyStability).HasDefaultValue("low");
+        builder.Property(e => e.SourceType).HasDefaultValue("fallback");
+        builder.Property(e => e.SourceBucketIdsJson).HasDefaultValueSql("'[]'::jsonb");
+        builder.Property(e => e.InterpretationVersion).HasDefaultValue("interpreted-aw-v1");
         builder.Property(e => e.CategoryName).HasDefaultValue("其他");
         builder.Property(e => e.CategoryColor).HasDefaultValue("#64748b");
         builder.Property(e => e.Confidence).HasDefaultValue(0.2);
@@ -140,6 +145,24 @@ public class ActivityClassificationEntityConfiguration : IEntityTypeConfiguratio
             .HasDatabaseName("ix_pc_activity_classifications_project_tag");
         builder.HasIndex(e => e.SourceRuleId)
             .HasDatabaseName("ix_pc_activity_classifications_source_rule_id");
+        builder.HasIndex(e => e.RecordKeyVersion)
+            .HasDatabaseName("ix_pc_activity_classifications_record_key_version");
+        builder.HasIndex(e => e.SourceType)
+            .HasDatabaseName("ix_pc_activity_classifications_source_type");
+    }
+}
+
+public class ActivityClassificationAuditEntityConfiguration : IEntityTypeConfiguration<ActivityClassificationAuditEntity>
+{
+    public void Configure(EntityTypeBuilder<ActivityClassificationAuditEntity> builder)
+    {
+        builder.ToTable("pc_activity_classification_audits");
+        builder.Property(e => e.Id).HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(e => e.AffectedRecordKeysJson).HasDefaultValueSql("'[]'::jsonb");
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
+        builder.HasIndex(e => e.RuleId).HasDatabaseName("ix_pc_activity_classification_audits_rule_id");
+        builder.HasIndex(e => e.SuggestionId).HasDatabaseName("ix_pc_activity_classification_audits_suggestion_id");
+        builder.HasIndex(e => e.CreatedAt).HasDatabaseName("ix_pc_activity_classification_audits_created_at");
     }
 }
 

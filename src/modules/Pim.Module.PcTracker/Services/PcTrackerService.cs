@@ -759,7 +759,10 @@ public class PcTrackerService
             null,
             null,
             null,
-            ParseJsonObject(e.DataJson));
+            ParseJsonObject(e.DataJson),
+            SourceBucketIds: string.IsNullOrWhiteSpace(e.BucketId) ? null : [e.BucketId],
+            SourceType: e.SourceEventId is null || string.IsNullOrWhiteSpace(e.BucketId) ? "fallback" : "aw",
+            InterpretationVersion: "raw-aw-v1");
     }
 
     private static IEnumerable<PcDetailRecord> ToInputMinuteRecords(List<KeystatsSampleEntity> samples)

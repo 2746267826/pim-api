@@ -38,6 +38,32 @@ public class ActivityClassificationSnapshotServiceTests
     }
 
     [Fact]
+    public async Task EnsureClassificationsAsync_PersistsKeyVersionSourceBucketsAndStability()
+    {
+        using var db = CreateDb();
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
+        var record = NewRecord("Code.exe", "Program.cs") with
+        {
+            SourceBucketIds = ["aw-watcher-window_device-1"],
+            SourceWindowEventIds = [123],
+            InterpretationVersion = "interpreted-aw-v1"
+        };
+
+        await service.EnsureClassificationsAsync(
+            [record],
+            [NewRule("Code is programming", "Programming")],
+            null,
+            CancellationToken.None);
+
+        var snapshot = await db.Set<ActivityClassificationEntity>().SingleAsync();
+        Assert.Equal("pc-aw-v1", snapshot.RecordKeyVersion);
+        Assert.Equal("stable", snapshot.RecordKeyStability);
+        Assert.Equal("aw", snapshot.SourceType);
+        Assert.Equal("[\"aw-watcher-window_device-1\"]", snapshot.SourceBucketIdsJson);
+        Assert.Equal("interpreted-aw-v1", snapshot.InterpretationVersion);
+    }
+
+    [Fact]
     public async Task EnsureClassificationsAsync_UpdatesExistingSnapshotForSameRecordKey()
     {
         using var db = CreateDb();

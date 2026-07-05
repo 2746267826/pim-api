@@ -143,6 +143,11 @@ CREATE TABLE IF NOT EXISTS pc_activity_classifications (
     record_type VARCHAR(32) NOT NULL,
     device_id VARCHAR(128) NOT NULL,
     source_event_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    record_key_version VARCHAR(32) NOT NULL DEFAULT 'pc-fallback-v1',
+    record_key_stability VARCHAR(16) NOT NULL DEFAULT 'low',
+    source_type VARCHAR(32) NOT NULL DEFAULT 'fallback',
+    source_bucket_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    interpretation_version VARCHAR(32) NOT NULL DEFAULT 'interpreted-aw-v1',
     started_at TIMESTAMPTZ NOT NULL,
     ended_at TIMESTAMPTZ NOT NULL,
     category_name VARCHAR(64) NOT NULL DEFAULT '其他',
@@ -168,6 +173,36 @@ CREATE INDEX IF NOT EXISTS ix_pc_activity_classifications_project_tag
     ON pc_activity_classifications (project_tag);
 CREATE INDEX IF NOT EXISTS ix_pc_activity_classifications_source_rule_id
     ON pc_activity_classifications (source_rule_id);
+ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS record_key_version VARCHAR(32) NOT NULL DEFAULT 'pc-fallback-v1';
+ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS record_key_stability VARCHAR(16) NOT NULL DEFAULT 'low';
+ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS source_type VARCHAR(32) NOT NULL DEFAULT 'fallback';
+ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS source_bucket_ids JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS interpretation_version VARCHAR(32) NOT NULL DEFAULT 'interpreted-aw-v1';
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classifications_record_key_version
+    ON pc_activity_classifications (record_key_version);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classifications_source_type
+    ON pc_activity_classifications (source_type);
+
+CREATE TABLE IF NOT EXISTS pc_activity_classification_audits (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    operation VARCHAR(64) NOT NULL,
+    rule_id UUID,
+    suggestion_id UUID,
+    range_mode VARCHAR(16) NOT NULL,
+    date_from VARCHAR(16),
+    date_to VARCHAR(16),
+    affected_record_count INT NOT NULL DEFAULT 0,
+    affected_duration_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+    affected_record_keys JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_by_user_id UUID,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_audits_rule_id
+    ON pc_activity_classification_audits (rule_id);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_audits_suggestion_id
+    ON pc_activity_classification_audits (suggestion_id);
+CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_audits_created_at
+    ON pc_activity_classification_audits (created_at);
 
 CREATE TABLE IF NOT EXISTS pc_activity_classification_settings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
