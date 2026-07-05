@@ -206,7 +206,13 @@ public record PcDetailRecord(
     double? ClassificationConfidence = null,
     string? ClassificationSource = null,
     string? ClassificationExplanation = null,
-    string? BucketType = null
+    string? BucketType = null,
+    string? RecordKey = null,
+    string? RecordKeyVersion = null,
+    string? RecordKeyStability = null,
+    List<string>? SourceBucketIds = null,
+    string? SourceType = null,
+    string? InterpretationVersion = null
 );
 
 public record TypedDetailQueryResponse(

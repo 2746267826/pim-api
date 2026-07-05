@@ -33,6 +33,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<AppSignatureService>();
         services.AddScoped<PcCategoryService>();
         services.AddScoped<PcProductivityService>();
+        services.AddScoped<PcActivityRecordKeyService>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
