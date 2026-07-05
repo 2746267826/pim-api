@@ -28,7 +28,20 @@ public class ActivityClassificationRecomputeServiceTests
 
         Assert.Equal(1, preview.AffectedRecordCount);
         Assert.Equal(600, preview.AffectedDurationSeconds);
+        Assert.Contains("\u672c\u6b21\u4f1a\u5f71\u54cd 1 \u6761\u8bb0\u5f55", preview.Summary);
+        Assert.Contains("\u81ea\u5b9a\u4e49\u8303\u56f4", preview.Summary);
         Assert.Equal(0, await db.Set<ActivityCategoryRuleEntity>().CountAsync());
+    }
+
+    [Fact]
+    public void ApplyOperations_RunManualTransactionsThroughExecutionStrategy()
+    {
+        var source = File.ReadAllText(FindRepositoryFile(
+            Path.Combine("src", "modules", "Pim.Module.PcTracker", "Services", "ActivityClassificationRecomputeService.cs")));
+
+        Assert.Contains("CreateExecutionStrategy", source);
+        Assert.Contains("ExecuteAsync", source);
+        Assert.DoesNotContain("await using var transaction = await BeginTransactionIfSupportedAsync(ct);", source);
     }
 
     [Fact]
@@ -480,6 +493,21 @@ public class ActivityClassificationRecomputeServiceTests
             new PcCategoryEntity { Id = Guid.NewGuid(), Name = "\u6df1\u5ea6\u5de5\u4f5c", Color = "#123456" });
         db.SaveChanges();
         return db;
+    }
+
+    private static string FindRepositoryFile(string relativePath)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            var candidate = Path.Combine(directory.FullName, relativePath);
+            if (File.Exists(candidate))
+                return candidate;
+
+            directory = directory.Parent;
+        }
+
+        throw new FileNotFoundException($"Could not find repository file '{relativePath}'.");
     }
 
     private static ActivityClassificationRecomputeService CreateService(PimDbContext db) =>

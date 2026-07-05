@@ -129,8 +129,7 @@ public class ActivityClassificationRecomputeService
         var records = await LoadActivityRecordsAsync(range, rules, ct);
         var duration = records.Sum(record => record.DurationSeconds ?? 0);
 
-        await using var transaction = await BeginTransactionIfSupportedAsync(ct);
-        try
+        return await ExecuteInTransactionAsync(async token =>
         {
             var audit = CreatePcAudit(
                 "range.recompute",
@@ -141,26 +140,16 @@ public class ActivityClassificationRecomputeService
                 ruleId: null,
                 suggestionId: null);
             _db.Set<ActivityClassificationAuditEntity>().Add(audit);
-            await _db.SaveChangesAsync(ct);
+            await _db.SaveChangesAsync(token);
 
-            await _snapshots.EnsureClassificationsAsync(records, rules, audit.Id, ct);
-
-            if (transaction is not null)
-                await transaction.CommitAsync(ct);
+            await _snapshots.EnsureClassificationsAsync(records, rules, audit.Id, token);
 
             return new ActivityClassificationRecomputeDto(
                 records.Count,
                 duration,
                 audit.Id,
-                $"Recomputed {records.Count} records for {range.Mode}.");
-        }
-        catch
-        {
-            if (transaction is not null)
-                await transaction.RollbackAsync(ct);
-
-            throw;
-        }
+                $"\u5df2\u91cd\u7b97 {records.Count} \u6761\u8bb0\u5f55\uff0c\u8303\u56f4\uff1a{FormatRangeMode(range.Mode)}\u3002");
+        }, ct);
     }
 
     private async Task<ApplyRuleCoreResult> ApplyRuleCoreAsync(
@@ -171,14 +160,13 @@ public class ActivityClassificationRecomputeService
         CancellationToken ct)
     {
         await _rules.ValidateAsync(ruleRequest, ensureUniqueRuleName: true, ct);
-        var rule = ActivityClassificationRuleService.ToEntity(ruleRequest);
 
-        await using var transaction = await BeginTransactionIfSupportedAsync(ct);
-        try
+        return await ExecuteInTransactionAsync(async token =>
         {
+            var rule = ActivityClassificationRuleService.ToEntity(ruleRequest);
             string? suggestionStatus = null;
             if (suggestionId is Guid id)
-                suggestionStatus = await MarkSuggestionAcceptedAsync(id, ct);
+                suggestionStatus = await MarkSuggestionAcceptedAsync(id, token);
 
             _db.Set<ActivityCategoryRuleEntity>().Add(rule);
 
@@ -205,10 +193,10 @@ public class ActivityClassificationRecomputeService
                     ["initiatedBy"] = "web"
                 },
                 null,
-                null), ct);
+                null), token);
 
-            var rules = await _rules.LoadActiveAsync(ct);
-            var records = await LoadActivityRecordsAsync(range, rules, ct);
+            var rules = await _rules.LoadActiveAsync(token);
+            var records = await LoadActivityRecordsAsync(range, rules, token);
             var pcAudit = CreatePcAudit(
                 "rule.apply",
                 range,
@@ -218,21 +206,11 @@ public class ActivityClassificationRecomputeService
                 rule.Id,
                 suggestionId);
             _db.Set<ActivityClassificationAuditEntity>().Add(pcAudit);
-            await _snapshots.EnsureClassificationsAsync(records, rules, pcAudit.Id, ct);
-            await _db.SaveChangesAsync(ct);
-
-            if (transaction is not null)
-                await transaction.CommitAsync(ct);
+            await _snapshots.EnsureClassificationsAsync(records, rules, pcAudit.Id, token);
+            await _db.SaveChangesAsync(token);
 
             return new ApplyRuleCoreResult(rule, preview, pcAudit.Id, suggestionStatus);
-        }
-        catch
-        {
-            if (transaction is not null)
-                await transaction.RollbackAsync(ct);
-
-            throw;
-        }
+        }, ct);
     }
 
     public async Task<List<ActivityCategoryRuleEntity>> LoadActiveRulesAsync(CancellationToken ct)
@@ -388,11 +366,29 @@ public class ActivityClassificationRecomputeService
             : ActivityClassifier.Classify(ToContext(record), rules, _logger);
     }
 
-    private async Task<IDbContextTransaction?> BeginTransactionIfSupportedAsync(CancellationToken ct)
+    private async Task<T> ExecuteInTransactionAsync<T>(
+        Func<CancellationToken, Task<T>> operation,
+        CancellationToken ct)
     {
-        return _db.Database.ProviderName == "Microsoft.EntityFrameworkCore.InMemory"
-            ? null
-            : await _db.Database.BeginTransactionAsync(ct);
+        if (_db.Database.ProviderName == "Microsoft.EntityFrameworkCore.InMemory")
+            return await operation(ct);
+
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+            try
+            {
+                var result = await operation(ct);
+                await transaction.CommitAsync(ct);
+                return result;
+            }
+            catch
+            {
+                await transaction.RollbackAsync(ct);
+                throw;
+            }
+        });
     }
 
     private static IEnumerable<ActivityCategoryRuleEntity> OrderRules(IEnumerable<ActivityCategoryRuleEntity> rules) =>
@@ -461,7 +457,14 @@ public class ActivityClassificationRecomputeService
         int affectedRecordCount,
         double affectedDurationSeconds,
         ActivityClassificationApplyRangeRequest range) =>
-        $"Affected {affectedRecordCount} records ({affectedDurationSeconds:R}s) for {range.Mode}.";
+        $"\u672c\u6b21\u4f1a\u5f71\u54cd {affectedRecordCount} \u6761\u8bb0\u5f55\uff08{affectedDurationSeconds:R} \u79d2\uff09\uff0c\u8303\u56f4\uff1a{FormatRangeMode(range.Mode)}\u3002";
+
+    private static string FormatRangeMode(string? mode) =>
+        string.Equals(mode, "today", StringComparison.OrdinalIgnoreCase)
+            ? "\u4eca\u5929"
+            : string.Equals(mode, "range", StringComparison.OrdinalIgnoreCase)
+                ? "\u81ea\u5b9a\u4e49\u8303\u56f4"
+                : mode ?? "\u672a\u77e5";
 
     private sealed record PreviewRecord(
         PcDetailRecord Record,
