@@ -13,7 +13,7 @@ public class ActivitySuggestionServiceTests
     public async Task BuildSuggestionsAsync_GroupsFallbackWebRecordsByDomain()
     {
         using var db = CreateDbContext();
-        var service = new ActivitySuggestionService(db);
+        var service = CreateService(db);
         var records = new[]
         {
             NewWebRecord(
@@ -42,7 +42,7 @@ public class ActivitySuggestionServiceTests
     public async Task BuildSuggestionsAsync_IgnoresTinyFallbackRecordsBelowRecommendedDuration()
     {
         using var db = CreateDbContext();
-        var service = new ActivitySuggestionService(db);
+        var service = CreateService(db);
         var records = new[]
         {
             NewWebRecord(
@@ -70,7 +70,7 @@ public class ActivitySuggestionServiceTests
             NewSuggestion("web:rejected.example.com", "rejected", 900),
             NewSuggestion("web:long.example.com", "pending", 20));
         await db.SaveChangesAsync();
-        var service = new ActivitySuggestionService(db);
+        var service = CreateService(db);
 
         var suggestions = await service.GetSuggestionsAsync(CancellationToken.None);
 
@@ -95,7 +95,7 @@ public class ActivitySuggestionServiceTests
         db.Set<ActivityClassificationSuggestionEntity>().Add(
             NewSuggestion("web:unknown.example.com", "rejected", 90));
         await db.SaveChangesAsync();
-        var service = new ActivitySuggestionService(db);
+        var service = CreateService(db);
         var records = new[]
         {
             NewWebRecord(
@@ -127,7 +127,7 @@ public class ActivitySuggestionServiceTests
             NewSuggestion("web:unknown.example.com", "rejected", 90),
             NewSuggestion(pendingId, "web:unknown.example.com", "pending", 5));
         await db.SaveChangesAsync();
-        var service = new ActivitySuggestionService(db);
+        var service = CreateService(db);
         var records = new[]
         {
             NewWebRecord(
@@ -179,7 +179,7 @@ public class ActivitySuggestionServiceTests
             ClassifiedAt = DateTimeOffset.UtcNow
         });
         await db.SaveChangesAsync();
-        var service = new ActivitySuggestionService(db);
+        var service = CreateService(db);
 
         var tags = await service.GetRecentProjectTagsAsync(CancellationToken.None);
 
@@ -198,7 +198,7 @@ public class ActivitySuggestionServiceTests
             "pending",
             90));
         await db.SaveChangesAsync();
-        var service = new ActivitySuggestionService(db);
+        var service = CreateService(db);
 
         var rule = await service.AcceptSuggestionAsync(suggestionId, NewAcceptRequest(), CancellationToken.None);
 
@@ -223,7 +223,7 @@ public class ActivitySuggestionServiceTests
             "pending",
             90));
         await db.SaveChangesAsync();
-        var service = new ActivitySuggestionService(db);
+        var service = CreateService(db);
         var request = NewAcceptRequest();
         await service.AcceptSuggestionAsync(suggestionId, request, CancellationToken.None);
 
@@ -247,7 +247,7 @@ public class ActivitySuggestionServiceTests
             "pending",
             45));
         await db.SaveChangesAsync();
-        var service = new ActivitySuggestionService(db);
+        var service = CreateService(db);
 
         await service.RejectSuggestionAsync(suggestionId, CancellationToken.None);
 
@@ -267,7 +267,7 @@ public class ActivitySuggestionServiceTests
             "pending",
             90));
         await db.SaveChangesAsync();
-        var service = new ActivitySuggestionService(db);
+        var service = CreateService(db);
         await service.AcceptSuggestionAsync(suggestionId, NewAcceptRequest(), CancellationToken.None);
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -290,7 +290,7 @@ public class ActivitySuggestionServiceTests
             "rejected",
             90));
         await db.SaveChangesAsync();
-        var service = new ActivitySuggestionService(db);
+        var service = CreateService(db);
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.AcceptSuggestionAsync(suggestionId, NewAcceptRequest(), CancellationToken.None));
@@ -310,6 +310,9 @@ public class ActivitySuggestionServiceTests
 
         return new PimDbContext(options);
     }
+
+    private static ActivitySuggestionService CreateService(PimDbContext db) =>
+        new(db, new AppSignatureService(db));
 
     private static ActivityClassificationSuggestionEntity NewSuggestion(
         string clusterKey,

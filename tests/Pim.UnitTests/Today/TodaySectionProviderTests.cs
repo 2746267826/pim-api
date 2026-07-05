@@ -169,7 +169,8 @@ public class TodaySectionProviderTests
             Status = "pending"
         });
         await db.SaveChangesAsync();
-        var provider = new ClassificationSuggestionsTodaySectionProvider(new ActivitySuggestionService(db));
+        var provider = new ClassificationSuggestionsTodaySectionProvider(
+            new ActivitySuggestionService(db, new AppSignatureService(db)));
 
         var section = await provider.BuildAsync(Query(), CancellationToken.None);
 
