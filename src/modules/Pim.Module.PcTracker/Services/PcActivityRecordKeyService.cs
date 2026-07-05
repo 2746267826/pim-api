@@ -46,6 +46,7 @@ public sealed class PcActivityRecordKeyService
             record.Start ?? string.Empty,
             record.End ?? record.Start ?? string.Empty,
             string.Join('-', sourceIds),
+            string.Join('|', bucketIds),
             record.AppName ?? string.Empty,
             record.Domain ?? string.Empty,
             record.Path ?? string.Empty,

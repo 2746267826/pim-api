@@ -760,6 +760,10 @@ public class PcTrackerService
             null,
             null,
             ParseJsonObject(e.DataJson),
+            SourceWebEventIds: string.Equals(e.EventType, "web", StringComparison.Ordinal)
+                && e.SourceEventId is long webSourceId ? [webSourceId] : null,
+            SourceWindowEventIds: string.Equals(e.EventType, "window", StringComparison.Ordinal)
+                && e.SourceEventId is long windowSourceId ? [windowSourceId] : null,
             SourceBucketIds: string.IsNullOrWhiteSpace(e.BucketId) ? null : [e.BucketId],
             SourceType: e.SourceEventId is null || string.IsNullOrWhiteSpace(e.BucketId) ? "fallback" : "aw",
             InterpretationVersion: "raw-aw-v1");

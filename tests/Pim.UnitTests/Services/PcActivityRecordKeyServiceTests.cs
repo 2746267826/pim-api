@@ -94,6 +94,29 @@ public class PcActivityRecordKeyServiceTests
     }
 
     [Fact]
+    public void Build_FallbackStillDistinguishesSourceBucketIdsWhenEventIdIsMissing()
+    {
+        var first = NewRecord() with
+        {
+            SourceBucketIds = ["aw-watcher-window_device-1"],
+            SourceWindowEventIds = null
+        };
+        var second = first with
+        {
+            SourceBucketIds = ["aw-watcher-window_device-2"]
+        };
+
+        var firstResult = PcActivityRecordKeyService.Build(first);
+        var secondResult = PcActivityRecordKeyService.Build(second);
+
+        Assert.NotEqual(firstResult.RecordKey, secondResult.RecordKey);
+        Assert.Equal("pc-fallback-v1", firstResult.KeyVersion);
+        Assert.Equal("low", firstResult.Stability);
+        Assert.Equal("[]", firstResult.SourceEventIdsJson);
+        Assert.Equal("[\"aw-watcher-window_device-1\"]", firstResult.SourceBucketIdsJson);
+    }
+
+    [Fact]
     public void Build_WebPageFallbackUsesInterpretedPageIdentityNotBrowserShell()
     {
         var first = NewRecord() with

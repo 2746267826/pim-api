@@ -62,6 +62,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_app_signatures_process_name
     ON pc_app_signatures (process_name);
 CREATE INDEX IF NOT EXISTS ix_pc_app_signatures_display_name
     ON pc_app_signatures (display_name);
+ALTER TABLE pc_app_signatures ALTER COLUMN source SET DEFAULT 'builtin';
+UPDATE pc_app_signatures SET source = 'builtin' WHERE source IS NULL;
+ALTER TABLE pc_app_signatures ALTER COLUMN source SET NOT NULL;
+ALTER TABLE pc_app_signatures ALTER COLUMN confidence SET DEFAULT 1;
+UPDATE pc_app_signatures SET confidence = 1 WHERE confidence IS NULL;
+ALTER TABLE pc_app_signatures ALTER COLUMN confidence SET NOT NULL;
 
 CREATE TABLE IF NOT EXISTS pc_categories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -81,6 +87,10 @@ CREATE INDEX IF NOT EXISTS ix_pc_categories_parent_id
     ON pc_categories (parent_id);
 CREATE INDEX IF NOT EXISTS ix_pc_categories_sort_order
     ON pc_categories (sort_order);
+ALTER TABLE pc_categories ALTER COLUMN name TYPE VARCHAR(64) USING LEFT(name, 64);
+ALTER TABLE pc_categories ALTER COLUMN color TYPE VARCHAR(7) USING LEFT(color, 7);
+ALTER TABLE pc_categories ALTER COLUMN icon TYPE VARCHAR(32) USING LEFT(icon, 32);
+ALTER TABLE pc_categories ALTER COLUMN productivity TYPE VARCHAR(16) USING LEFT(productivity, 16);
 """);
         }
 
@@ -89,8 +99,6 @@ CREATE INDEX IF NOT EXISTS ix_pc_categories_sort_order
         {
             migrationBuilder.Sql("""
 DROP TABLE IF EXISTS pc_activity_classification_audits;
-DROP TABLE IF EXISTS pc_app_signatures;
-DROP TABLE IF EXISTS pc_categories;
 DROP INDEX IF EXISTS ix_pc_activity_classifications_record_key_version;
 DROP INDEX IF EXISTS ix_pc_activity_classifications_source_type;
 ALTER TABLE pc_activity_classifications DROP COLUMN IF EXISTS interpretation_version;

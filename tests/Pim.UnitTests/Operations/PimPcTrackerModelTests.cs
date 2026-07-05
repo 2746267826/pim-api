@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.Entities;
+using Pim.Module.PcTracker.Services;
 using Xunit;
 
 namespace Pim.UnitTests.Operations;
@@ -96,6 +97,17 @@ public class PimPcTrackerModelTests
         Assert.Equal(5, entity.FindProperty(nameof(ActivityClassificationSettingsEntity.RecommendedMinimumClassificationDurationMinutes))!.GetDefaultValue());
         Assert.Equal("NOW()", entity.FindProperty(nameof(ActivityClassificationSettingsEntity.CreatedAt))!.GetDefaultValueSql());
         Assert.Equal("NOW()", entity.FindProperty(nameof(ActivityClassificationSettingsEntity.UpdatedAt))!.GetDefaultValueSql());
+    }
+
+    [Fact]
+    public void PcTrackerSchemaInitializer_AlignsInitializerOwnedTablesWithEfModel()
+    {
+        Assert.Contains("source VARCHAR(32) NOT NULL DEFAULT 'builtin'", PcTrackerSchemaInitializer.SchemaSql);
+        Assert.Contains("confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0", PcTrackerSchemaInitializer.SchemaSql);
+        Assert.Contains("name VARCHAR(64) NOT NULL", PcTrackerSchemaInitializer.SchemaSql);
+        Assert.Contains("color VARCHAR(7) NOT NULL DEFAULT '#64748b'", PcTrackerSchemaInitializer.SchemaSql);
+        Assert.Contains("icon VARCHAR(32)", PcTrackerSchemaInitializer.SchemaSql);
+        Assert.Contains("productivity VARCHAR(16) NOT NULL DEFAULT 'neutral'", PcTrackerSchemaInitializer.SchemaSql);
     }
 
     private static PimDbContext CreateDbContext()
