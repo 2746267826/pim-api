@@ -63,6 +63,8 @@ public class ActivityClassificationSnapshotService
                 newSnapshots[keyedRecord.RecordKey] = snapshot;
             }
 
+            ApplySourceMetadata(snapshot, keyedRecord);
+
             if (IsProtectedSnapshot(snapshot))
             {
                 classifiedRecords[record] = ToClassificationResult(snapshot);
@@ -125,6 +127,23 @@ public class ActivityClassificationSnapshotService
         Guid? auditId,
         DateTimeOffset classifiedAt)
     {
+        ApplySourceMetadata(snapshot, keyedRecord);
+        snapshot.CategoryName = classification.CategoryName;
+        snapshot.CategoryColor = classification.CategoryColor;
+        snapshot.ProjectTag = classification.ProjectTag;
+        snapshot.Confidence = classification.Confidence;
+        snapshot.Source = classification.Source;
+        snapshot.SourceRuleId = classification.SourceRuleId;
+        snapshot.Explanation = classification.Explanation;
+        snapshot.ClassifierVersion = ClassifierVersion;
+        snapshot.ClassifiedAt = classifiedAt;
+        snapshot.AuditId = auditId;
+    }
+
+    private static void ApplySourceMetadata(
+        ActivityClassificationEntity snapshot,
+        KeyedRecord keyedRecord)
+    {
         var record = keyedRecord.Record;
         var key = PcActivityRecordKeyService.Build(record);
         snapshot.RecordType = record.RecordType;
@@ -137,16 +156,6 @@ public class ActivityClassificationSnapshotService
         snapshot.InterpretationVersion = record.InterpretationVersion ?? "interpreted-aw-v1";
         snapshot.StartedAt = keyedRecord.StartedAt;
         snapshot.EndedAt = keyedRecord.EndedAt;
-        snapshot.CategoryName = classification.CategoryName;
-        snapshot.CategoryColor = classification.CategoryColor;
-        snapshot.ProjectTag = classification.ProjectTag;
-        snapshot.Confidence = classification.Confidence;
-        snapshot.Source = classification.Source;
-        snapshot.SourceRuleId = classification.SourceRuleId;
-        snapshot.Explanation = classification.Explanation;
-        snapshot.ClassifierVersion = ClassifierVersion;
-        snapshot.ClassifiedAt = classifiedAt;
-        snapshot.AuditId = auditId;
     }
 
     private static bool IsProtectedSnapshot(ActivityClassificationEntity snapshot) =>

@@ -165,6 +165,58 @@ public class ActivityClassificationSnapshotServiceTests
     }
 
     [Fact]
+    public async Task EnsureClassificationsAsync_UpdatesSourceMetadataForProtectedManualSnapshot()
+    {
+        using var db = CreateDb();
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
+        var record = NewRecord("Code.exe", "Program.cs") with
+        {
+            SourceBucketIds = ["aw-watcher-window_device-1"],
+            SourceWindowEventIds = [123],
+            InterpretationVersion = "interpreted-aw-v1"
+        };
+        db.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity
+        {
+            Id = Guid.NewGuid(),
+            RecordKey = ActivityClassificationRecordKey.FromRecord(record),
+            RecordType = record.RecordType,
+            DeviceId = record.DeviceId,
+            SourceEventIdsJson = "[]",
+            RecordKeyVersion = "pc-fallback-v1",
+            RecordKeyStability = "low",
+            SourceType = "fallback",
+            SourceBucketIdsJson = "[]",
+            InterpretationVersion = "unknown",
+            StartedAt = DateTimeOffset.Parse(record.Start),
+            EndedAt = DateTimeOffset.Parse(record.End!),
+            CategoryName = "Deep Work",
+            CategoryColor = "#123456",
+            Confidence = 1,
+            Source = "manual",
+            Explanation = "Manual correction.",
+            ClassifierVersion = ActivityClassificationSnapshotService.ClassifierVersion,
+            ClassifiedAt = DateTimeOffset.Parse("2026-05-25T09:00:00Z")
+        });
+        await db.SaveChangesAsync();
+
+        await service.EnsureClassificationsAsync(
+            [record],
+            [NewRule("Code is programming", "Programming")],
+            null,
+            CancellationToken.None);
+
+        var persisted = await db.Set<ActivityClassificationEntity>().SingleAsync();
+        Assert.Equal("Deep Work", persisted.CategoryName);
+        Assert.Equal("manual", persisted.Source);
+        Assert.Equal("[123]", persisted.SourceEventIdsJson);
+        Assert.Equal("pc-aw-v1", persisted.RecordKeyVersion);
+        Assert.Equal("stable", persisted.RecordKeyStability);
+        Assert.Equal("aw", persisted.SourceType);
+        Assert.Equal("[\"aw-watcher-window_device-1\"]", persisted.SourceBucketIdsJson);
+        Assert.Equal("interpreted-aw-v1", persisted.InterpretationVersion);
+    }
+
+    [Fact]
     public async Task EnsureClassificationsAsync_UsesBucketTypeInRuleContext()
     {
         using var db = CreateDb();
