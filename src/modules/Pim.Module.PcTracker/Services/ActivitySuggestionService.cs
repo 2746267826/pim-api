@@ -150,30 +150,8 @@ public class ActivitySuggestionService
             ?? throw new KeyNotFoundException($"Activity classification suggestion '{id}' was not found.");
         EnsurePending(suggestion);
 
-        var now = DateTimeOffset.UtcNow;
-        var rule = new ActivityCategoryRuleEntity
-        {
-            Id = Guid.NewGuid(),
-            RuleName = req.RuleName,
-            Scope = req.Scope,
-            CategoryName = req.CategoryName,
-            ProjectTag = req.ProjectTag,
-            Color = string.IsNullOrEmpty(req.Color) ? "#64748b" : req.Color,
-            Priority = req.Priority,
-            Source = "user",
-            Status = "active",
-            ConditionsJson = req.ConditionsJson,
-            Confidence = req.Confidence,
-            Explanation = req.Explanation,
-            CreatedAt = now,
-            UpdatedAt = now
-        };
-
-        suggestion.Status = "accepted";
-        suggestion.UpdatedAt = now;
-        _db.Set<ActivityCategoryRuleEntity>().Add(rule);
-        await _db.SaveChangesAsync(ct);
-        return ToRuleDto(rule);
+        throw new InvalidOperationException(
+            "Direct suggestion acceptance is disabled. Use the preview/apply classification flow.");
     }
 
     public async Task RejectSuggestionAsync(Guid id, CancellationToken ct)

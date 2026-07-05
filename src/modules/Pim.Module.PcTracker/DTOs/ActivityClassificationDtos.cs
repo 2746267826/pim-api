@@ -96,6 +96,26 @@ public record ApplyActivityClassificationRuleRequest(
     SaveActivityClassificationRuleRequest Rule,
     ActivityClassificationApplyRangeRequest Range);
 
+public record SuggestionClassificationPreviewRequest(
+    string? CategoryName,
+    string? ProjectTag,
+    ActivityClassificationApplyRangeRequest Range);
+
+public record SuggestionClassificationApplyRequest(
+    string? CategoryName,
+    string? ProjectTag,
+    ActivityClassificationApplyRangeRequest Range);
+
+public record ActivityClassificationSuggestionPreviewDto(
+    SaveActivityClassificationRuleRequest Rule,
+    ActivityClassificationPreviewDto Preview);
+
+public record ActivityClassificationSuggestionApplyDto(
+    ActivityClassificationRuleDto Rule,
+    ActivityClassificationPreviewDto Preview,
+    Guid AuditId,
+    string SuggestionStatus);
+
 // App Knowledge Base
 
 public record AppSignatureDto(

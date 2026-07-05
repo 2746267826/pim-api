@@ -30,6 +30,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<ActivityClassificationSettingsService>();
         services.AddScoped<ActivityTimelineSmoothingService>();
         services.AddScoped<ActivityClassificationRuleService>();
+        services.AddScoped<ClassificationRuleDraftService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
         services.AddScoped<AppSignatureService>();
         services.AddScoped<PcCategoryService>();
@@ -315,6 +316,58 @@ public class PcTrackerModule : IModule
                 req.RecommendedMinimumClassificationDurationMinutes,
                 ct);
             return Results.Ok(ApiResponse<ActivityClassificationSettingsDto>.Ok(settings));
+        });
+
+        writeGroup.MapPost("/classification/suggestions/{id:guid}/preview", async (
+            Guid id,
+            [FromBody] SuggestionClassificationPreviewRequest req,
+            [FromServices] ActivityClassificationRecomputeService recompute,
+            [FromServices] ClassificationRuleDraftService drafts,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var preview = await recompute.PreviewSuggestionAsync(id, req, drafts, ct);
+                return Results.Ok(ApiResponse<ActivityClassificationSuggestionPreviewDto>.Ok(preview));
+            }
+            catch (KeyNotFoundException)
+            {
+                return Results.NotFound(ApiResponse<string>.Error(404, "Suggestion not found."));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
+            }
+        });
+
+        writeGroup.MapPost("/classification/suggestions/{id:guid}/apply", async (
+            Guid id,
+            [FromBody] SuggestionClassificationApplyRequest req,
+            [FromServices] ActivityClassificationRecomputeService recompute,
+            [FromServices] ClassificationRuleDraftService drafts,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var result = await recompute.ApplySuggestionAsync(id, req, drafts, ct);
+                return Results.Ok(ApiResponse<ActivityClassificationSuggestionApplyDto>.Ok(result));
+            }
+            catch (KeyNotFoundException)
+            {
+                return Results.NotFound(ApiResponse<string>.Error(404, "Suggestion not found."));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
+            }
         });
 
         writeGroup.MapPost("/classification/suggestions/{id:guid}/accept", async (

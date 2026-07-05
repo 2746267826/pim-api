@@ -188,7 +188,7 @@ public class ActivitySuggestionServiceTests
     }
 
     [Fact]
-    public async Task AcceptSuggestionAsync_CreatesActiveRuleAndMarksAccepted()
+    public async Task AcceptSuggestionAsync_RejectsDirectAcceptWithoutCreatingRule()
     {
         using var db = CreateDbContext();
         var suggestionId = Guid.NewGuid();
@@ -200,20 +200,17 @@ public class ActivitySuggestionServiceTests
         await db.SaveChangesAsync();
         var service = CreateService(db);
 
-        var rule = await service.AcceptSuggestionAsync(suggestionId, NewAcceptRequest(), CancellationToken.None);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AcceptSuggestionAsync(suggestionId, NewAcceptRequest(), CancellationToken.None));
 
-        Assert.Equal("学习", rule.CategoryName);
-        Assert.Equal("active", rule.Status);
-        Assert.Equal("user", rule.Source);
-        var acceptedSuggestion = await db.Set<ActivityClassificationSuggestionEntity>().SingleAsync();
-        Assert.Equal("accepted", acceptedSuggestion.Status);
-        var entity = await db.Set<ActivityCategoryRuleEntity>().SingleAsync();
-        Assert.Equal(rule.Id, entity.Id);
-        Assert.Equal("学习", entity.CategoryName);
+        Assert.Contains("preview/apply", ex.Message);
+        var suggestion = await db.Set<ActivityClassificationSuggestionEntity>().SingleAsync();
+        Assert.Equal("pending", suggestion.Status);
+        Assert.Empty(await db.Set<ActivityCategoryRuleEntity>().ToListAsync());
     }
 
     [Fact]
-    public async Task AcceptSuggestionAsync_ThrowsForRepeatedAcceptWithoutCreatingDuplicateRule()
+    public async Task AcceptSuggestionAsync_RepeatedDirectAcceptDoesNotCreateDuplicateRule()
     {
         using var db = CreateDbContext();
         var suggestionId = Guid.NewGuid();
@@ -225,15 +222,17 @@ public class ActivitySuggestionServiceTests
         await db.SaveChangesAsync();
         var service = CreateService(db);
         var request = NewAcceptRequest();
-        await service.AcceptSuggestionAsync(suggestionId, request, CancellationToken.None);
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var directEx = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.AcceptSuggestionAsync(suggestionId, request, CancellationToken.None));
+        var secondDirectEx = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.AcceptSuggestionAsync(suggestionId, request, CancellationToken.None));
 
-        Assert.Contains("pending", ex.Message);
-        Assert.Equal(1, await db.Set<ActivityCategoryRuleEntity>().CountAsync());
-        var suggestion = await db.Set<ActivityClassificationSuggestionEntity>().SingleAsync();
-        Assert.Equal("accepted", suggestion.Status);
+        Assert.Contains("preview/apply", directEx.Message);
+        Assert.Contains("preview/apply", secondDirectEx.Message);
+        Assert.Equal(0, await db.Set<ActivityCategoryRuleEntity>().CountAsync());
+        var pendingSuggestion = await db.Set<ActivityClassificationSuggestionEntity>().SingleAsync();
+        Assert.Equal("pending", pendingSuggestion.Status);
     }
 
     [Fact]
@@ -264,11 +263,10 @@ public class ActivitySuggestionServiceTests
         db.Set<ActivityClassificationSuggestionEntity>().Add(NewSuggestion(
             suggestionId,
             "web:learn.example.com",
-            "pending",
+            "accepted",
             90));
         await db.SaveChangesAsync();
         var service = CreateService(db);
-        await service.AcceptSuggestionAsync(suggestionId, NewAcceptRequest(), CancellationToken.None);
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.RejectSuggestionAsync(suggestionId, CancellationToken.None));
@@ -276,7 +274,7 @@ public class ActivitySuggestionServiceTests
         Assert.Contains("pending", ex.Message);
         var suggestion = await db.Set<ActivityClassificationSuggestionEntity>().SingleAsync();
         Assert.Equal("accepted", suggestion.Status);
-        Assert.Equal(1, await db.Set<ActivityCategoryRuleEntity>().CountAsync());
+        Assert.Equal(0, await db.Set<ActivityCategoryRuleEntity>().CountAsync());
     }
 
     [Fact]

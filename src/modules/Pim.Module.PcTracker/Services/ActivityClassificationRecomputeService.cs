@@ -83,16 +83,61 @@ public class ActivityClassificationRecomputeService
         ActivityClassificationApplyRangeRequest range,
         CancellationToken ct)
     {
-        await _rules.ValidateAsync(ruleRequest, ensureUniqueRuleName: true, ct);
-
         var preview = await PreviewRuleAsync(ruleRequest, range, ct);
+        var result = await ApplyRuleCoreAsync(ruleRequest, range, preview, suggestionId: null, ct);
+        return result.Preview;
+    }
+
+    public async Task<ActivityClassificationSuggestionPreviewDto> PreviewSuggestionAsync(
+        Guid suggestionId,
+        SuggestionClassificationPreviewRequest request,
+        ClassificationRuleDraftService drafts,
+        CancellationToken ct)
+    {
+        var rule = await drafts.BuildSuggestionDraftAsync(suggestionId, request, ct);
+        var preview = await PreviewRuleAsync(rule, request.Range, ct);
+        return new ActivityClassificationSuggestionPreviewDto(rule, preview);
+    }
+
+    public async Task<ActivityClassificationSuggestionApplyDto> ApplySuggestionAsync(
+        Guid suggestionId,
+        SuggestionClassificationApplyRequest request,
+        ClassificationRuleDraftService drafts,
+        CancellationToken ct)
+    {
+        var previewRequest = new SuggestionClassificationPreviewRequest(
+            request.CategoryName,
+            request.ProjectTag,
+            request.Range);
+        var rule = await drafts.BuildSuggestionDraftAsync(suggestionId, previewRequest, ct);
+        var preview = await PreviewRuleAsync(rule, request.Range, ct);
+        var result = await ApplyRuleCoreAsync(rule, request.Range, preview, suggestionId, ct);
+
+        return new ActivityClassificationSuggestionApplyDto(
+            ActivityClassificationRuleService.ToDto(result.Rule),
+            result.Preview,
+            result.AuditId,
+            result.SuggestionStatus ?? "accepted");
+    }
+
+    private async Task<ApplyRuleCoreResult> ApplyRuleCoreAsync(
+        SaveActivityClassificationRuleRequest ruleRequest,
+        ActivityClassificationApplyRangeRequest range,
+        ActivityClassificationPreviewDto preview,
+        Guid? suggestionId,
+        CancellationToken ct)
+    {
+        await _rules.ValidateAsync(ruleRequest, ensureUniqueRuleName: true, ct);
         var rule = ActivityClassificationRuleService.ToEntity(ruleRequest);
 
         await using var transaction = await BeginTransactionIfSupportedAsync(ct);
         try
         {
+            string? suggestionStatus = null;
+            if (suggestionId is Guid id)
+                suggestionStatus = await MarkSuggestionAcceptedAsync(id, ct);
+
             _db.Set<ActivityCategoryRuleEntity>().Add(rule);
-            await _db.SaveChangesAsync(ct);
 
             var audit = await _auditLog.RecordAsync(new CreateAuditLogRequest(
                 _currentUser.UserId,
@@ -108,6 +153,7 @@ public class ActivityClassificationRecomputeService
                 new Dictionary<string, string>
                 {
                     ["ruleId"] = rule.Id.ToString(),
+                    ["suggestionId"] = suggestionId?.ToString() ?? string.Empty,
                     ["rangeMode"] = range.Mode,
                     ["dateFrom"] = range.DateFrom ?? string.Empty,
                     ["dateTo"] = range.DateTo ?? string.Empty,
@@ -121,9 +167,12 @@ public class ActivityClassificationRecomputeService
             var rules = await _rules.LoadActiveAsync(ct);
             var records = await LoadActivityRecordsAsync(range, rules, ct);
             await _snapshots.EnsureClassificationsAsync(records, rules, audit.Id, ct);
+            await _db.SaveChangesAsync(ct);
 
             if (transaction is not null)
                 await transaction.CommitAsync(ct);
+
+            return new ApplyRuleCoreResult(rule, preview, audit.Id, suggestionStatus);
         }
         catch
         {
@@ -132,13 +181,45 @@ public class ActivityClassificationRecomputeService
 
             throw;
         }
-
-        return preview;
     }
 
     public async Task<List<ActivityCategoryRuleEntity>> LoadActiveRulesAsync(CancellationToken ct)
     {
         return await _rules.LoadActiveAsync(ct);
+    }
+
+    private async Task<string> MarkSuggestionAcceptedAsync(Guid suggestionId, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (_db.Database.ProviderName == "Microsoft.EntityFrameworkCore.InMemory")
+        {
+            var suggestion = await _db.Set<ActivityClassificationSuggestionEntity>()
+                .FirstOrDefaultAsync(item => item.Id == suggestionId, ct)
+                ?? throw new KeyNotFoundException($"Activity classification suggestion '{suggestionId}' was not found.");
+
+            if (!string.Equals(suggestion.Status, "pending", StringComparison.Ordinal))
+                throw new InvalidOperationException($"Suggestion '{suggestionId}' must be pending before apply.");
+
+            suggestion.Status = "accepted";
+            suggestion.UpdatedAt = now;
+            return suggestion.Status;
+        }
+
+        var updated = await _db.Set<ActivityClassificationSuggestionEntity>()
+            .Where(item => item.Id == suggestionId && item.Status == "pending")
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(item => item.Status, "accepted")
+                .SetProperty(item => item.UpdatedAt, now), ct);
+
+        if (updated == 1)
+            return "accepted";
+
+        var exists = await _db.Set<ActivityClassificationSuggestionEntity>()
+            .AnyAsync(item => item.Id == suggestionId, ct);
+        if (!exists)
+            throw new KeyNotFoundException($"Activity classification suggestion '{suggestionId}' was not found.");
+
+        throw new InvalidOperationException($"Suggestion '{suggestionId}' must be pending before apply.");
     }
 
     private async Task<List<PcDetailRecord>> LoadActivityRecordsAsync(
@@ -308,4 +389,9 @@ public class ActivityClassificationRecomputeService
         ActivityClassificationResult CurrentClassification,
         ActivityClassificationResult AfterClassification);
 
+    private sealed record ApplyRuleCoreResult(
+        ActivityCategoryRuleEntity Rule,
+        ActivityClassificationPreviewDto Preview,
+        Guid AuditId,
+        string? SuggestionStatus);
 }

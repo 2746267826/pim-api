@@ -309,6 +309,111 @@ public class ActivityClassificationRecomputeServiceTests
             CancellationToken.None));
     }
 
+    [Fact]
+    public async Task PreviewSuggestionAsync_ReturnsPreviewWithoutSavingRuleOrChangingSuggestion()
+    {
+        await using var db = CreateDb();
+        db.Set<PcCategoryEntity>().Add(new PcCategoryEntity { Id = Guid.NewGuid(), Name = "Programming", Color = "#2563eb" });
+        db.Set<ActivityClassificationSuggestionEntity>().Add(new ActivityClassificationSuggestionEntity
+        {
+            Id = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            ClusterKey = "app:code",
+            Status = "pending",
+            SampleCount = 1,
+            TotalDurationSeconds = 600
+        });
+        db.Set<AwEventEntity>().Add(WindowEvent("2026-05-25T08:00:00Z", 600, "Code.exe", "Program.cs"));
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+        var drafts = new ClassificationRuleDraftService(db);
+
+        var result = await service.PreviewSuggestionAsync(
+            Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            new SuggestionClassificationPreviewRequest(
+                "Programming",
+                null,
+                new ActivityClassificationApplyRangeRequest("range", "2026-05-25", "2026-05-25")),
+            drafts,
+            CancellationToken.None);
+
+        Assert.Equal("Programming", result.Rule.CategoryName);
+        Assert.Equal(1, result.Preview.AffectedRecordCount);
+        Assert.Equal(0, await db.Set<ActivityCategoryRuleEntity>().CountAsync());
+        Assert.Equal("pending", await db.Set<ActivityClassificationSuggestionEntity>()
+            .Where(item => item.Id == Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"))
+            .Select(item => item.Status)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task ApplySuggestionAsync_SavesRuleRecomputesAndMarksSuggestionAccepted()
+    {
+        await using var db = CreateDb();
+        db.Set<PcCategoryEntity>().Add(new PcCategoryEntity { Id = Guid.NewGuid(), Name = "Programming", Color = "#2563eb" });
+        db.Set<ActivityClassificationSuggestionEntity>().Add(new ActivityClassificationSuggestionEntity
+        {
+            Id = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            ClusterKey = "app:code",
+            Status = "pending",
+            SampleCount = 1,
+            TotalDurationSeconds = 600
+        });
+        db.Set<AwEventEntity>().Add(WindowEvent("2026-05-25T08:00:00Z", 600, "Code.exe", "Program.cs"));
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+        var drafts = new ClassificationRuleDraftService(db);
+
+        var result = await service.ApplySuggestionAsync(
+            Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            new SuggestionClassificationApplyRequest(
+                "Programming",
+                null,
+                new ActivityClassificationApplyRangeRequest("range", "2026-05-25", "2026-05-25")),
+            drafts,
+            CancellationToken.None);
+
+        Assert.Equal("accepted", result.SuggestionStatus);
+        Assert.Equal("Programming", result.Rule.CategoryName);
+        Assert.Equal(1, await db.Set<ActivityClassificationEntity>().CountAsync());
+    }
+
+    [Fact]
+    public async Task ApplySuggestionAsync_RejectsSecondApplyWithoutCreatingDuplicateRule()
+    {
+        await using var db = CreateDb();
+        db.Set<PcCategoryEntity>().Add(new PcCategoryEntity { Id = Guid.NewGuid(), Name = "Programming", Color = "#2563eb" });
+        db.Set<ActivityClassificationSuggestionEntity>().Add(new ActivityClassificationSuggestionEntity
+        {
+            Id = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+            ClusterKey = "app:code",
+            Status = "pending",
+            SampleCount = 1,
+            TotalDurationSeconds = 600
+        });
+        db.Set<AwEventEntity>().Add(WindowEvent("2026-05-25T08:00:00Z", 600, "Code.exe", "Program.cs"));
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+        var drafts = new ClassificationRuleDraftService(db);
+        var request = new SuggestionClassificationApplyRequest(
+            "Programming",
+            null,
+            new ActivityClassificationApplyRangeRequest("range", "2026-05-25", "2026-05-25"));
+
+        await service.ApplySuggestionAsync(
+            Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+            request,
+            drafts,
+            CancellationToken.None);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => service.ApplySuggestionAsync(
+            Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+            request,
+            drafts,
+            CancellationToken.None));
+
+        Assert.Contains("pending", ex.Message);
+        Assert.Equal(1, await db.Set<ActivityCategoryRuleEntity>().CountAsync());
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("{invalid")]
