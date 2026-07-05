@@ -36,6 +36,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<PcCategoryService>();
         services.AddScoped<PcProductivityService>();
         services.AddScoped<PcActivityRecordKeyService>();
+        services.AddScoped<PcActivityAnalysisService>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -249,6 +250,28 @@ public class PcTrackerModule : IModule
         {
             var settings = await settingsService.GetSettingsAsync(ct);
             return Results.Ok(ApiResponse<ActivityClassificationSettingsDto>.Ok(settings));
+        });
+
+        readGroup.MapGet("/activity-analysis", async (
+            [FromQuery] string? date,
+            [FromQuery] int? blockMinutes,
+            [FromServices] PcActivityAnalysisService svc,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
+                var result = await svc.GetDailyAnalysisAsync(d, blockMinutes ?? 60, ct);
+                return Results.Ok(ApiResponse<PcActivityAnalysisResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
         });
 
         writeGroup.MapPost("/classification/rules", async (

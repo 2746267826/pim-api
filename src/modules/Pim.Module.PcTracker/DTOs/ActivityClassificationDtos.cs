@@ -125,6 +125,31 @@ public record ActivityClassificationRecomputeDto(
     Guid AuditId,
     string Summary);
 
+public record PcActivityAnalysisResponse(
+    string Date,
+    int BlockMinutes,
+    IReadOnlyList<PcActivityAnalysisBlockDto> Blocks);
+
+public record PcActivityAnalysisBlockDto(
+    string Start,
+    string End,
+    int IntensityScore,
+    double ActiveDurationSeconds,
+    int PendingClassificationCount,
+    int ContextSwitchCount,
+    int CategoryChangeCount,
+    IReadOnlyList<PcActivityAnalysisCategoryDto> Categories,
+    IReadOnlyList<PcActivityAnalysisAppDto> Apps);
+
+public record PcActivityAnalysisCategoryDto(
+    string CategoryName,
+    string Color,
+    double DurationSeconds);
+
+public record PcActivityAnalysisAppDto(
+    string AppName,
+    double DurationSeconds);
+
 // App Knowledge Base
 
 public record AppSignatureDto(
