@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 using Pim.Infrastructure.Auth;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Data;
@@ -120,6 +121,48 @@ public class ActivityClassificationRecomputeService
             result.SuggestionStatus ?? "accepted");
     }
 
+    public async Task<ActivityClassificationRecomputeDto> RecomputeAsync(
+        ActivityClassificationApplyRangeRequest range,
+        CancellationToken ct)
+    {
+        var rules = await _rules.LoadActiveAsync(ct);
+        var records = await LoadActivityRecordsAsync(range, rules, ct);
+        var duration = records.Sum(record => record.DurationSeconds ?? 0);
+
+        await using var transaction = await BeginTransactionIfSupportedAsync(ct);
+        try
+        {
+            var audit = CreatePcAudit(
+                "range.recompute",
+                range,
+                records,
+                records.Count,
+                duration,
+                ruleId: null,
+                suggestionId: null);
+            _db.Set<ActivityClassificationAuditEntity>().Add(audit);
+            await _db.SaveChangesAsync(ct);
+
+            await _snapshots.EnsureClassificationsAsync(records, rules, audit.Id, ct);
+
+            if (transaction is not null)
+                await transaction.CommitAsync(ct);
+
+            return new ActivityClassificationRecomputeDto(
+                records.Count,
+                duration,
+                audit.Id,
+                $"Recomputed {records.Count} records for {range.Mode}.");
+        }
+        catch
+        {
+            if (transaction is not null)
+                await transaction.RollbackAsync(ct);
+
+            throw;
+        }
+    }
+
     private async Task<ApplyRuleCoreResult> ApplyRuleCoreAsync(
         SaveActivityClassificationRuleRequest ruleRequest,
         ActivityClassificationApplyRangeRequest range,
@@ -166,13 +209,22 @@ public class ActivityClassificationRecomputeService
 
             var rules = await _rules.LoadActiveAsync(ct);
             var records = await LoadActivityRecordsAsync(range, rules, ct);
-            await _snapshots.EnsureClassificationsAsync(records, rules, audit.Id, ct);
+            var pcAudit = CreatePcAudit(
+                "rule.apply",
+                range,
+                records,
+                preview.AffectedRecordCount,
+                preview.AffectedDurationSeconds,
+                rule.Id,
+                suggestionId);
+            _db.Set<ActivityClassificationAuditEntity>().Add(pcAudit);
+            await _snapshots.EnsureClassificationsAsync(records, rules, pcAudit.Id, ct);
             await _db.SaveChangesAsync(ct);
 
             if (transaction is not null)
                 await transaction.CommitAsync(ct);
 
-            return new ApplyRuleCoreResult(rule, preview, audit.Id, suggestionStatus);
+            return new ApplyRuleCoreResult(rule, preview, pcAudit.Id, suggestionStatus);
         }
         catch
         {
@@ -237,6 +289,33 @@ public class ActivityClassificationRecomputeService
 
         return BrowserPageTimelineBuilder.BuildInterpretedAwRecords(events, rules);
     }
+
+    private ActivityClassificationAuditEntity CreatePcAudit(
+        string operation,
+        ActivityClassificationApplyRangeRequest range,
+        IReadOnlyCollection<PcDetailRecord> records,
+        int affectedRecordCount,
+        double affectedDurationSeconds,
+        Guid? ruleId,
+        Guid? suggestionId) =>
+        new()
+        {
+            Id = Guid.NewGuid(),
+            Operation = operation,
+            RuleId = ruleId,
+            SuggestionId = suggestionId,
+            RangeMode = range.Mode,
+            DateFrom = range.DateFrom,
+            DateTo = range.DateTo,
+            AffectedRecordCount = affectedRecordCount,
+            AffectedDurationSeconds = affectedDurationSeconds,
+            AffectedRecordKeysJson = JsonSerializer.Serialize(records
+                .Select(ActivityClassificationRecordKey.FromRecord)
+                .Distinct(StringComparer.Ordinal)
+                .ToList()),
+            CreatedByUserId = _currentUser.UserId,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
 
     private static (DateTimeOffset Start, DateTimeOffset End) ParseRange(ActivityClassificationApplyRangeRequest range)
     {

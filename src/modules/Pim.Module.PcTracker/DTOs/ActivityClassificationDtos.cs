@@ -116,6 +116,15 @@ public record ActivityClassificationSuggestionApplyDto(
     Guid AuditId,
     string SuggestionStatus);
 
+public record ActivityClassificationRecomputeRequest(
+    ActivityClassificationApplyRangeRequest Range);
+
+public record ActivityClassificationRecomputeDto(
+    int RecomputedRecordCount,
+    double RecomputedDurationSeconds,
+    Guid AuditId,
+    string Summary);
+
 // App Knowledge Base
 
 public record AppSignatureDto(

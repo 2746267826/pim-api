@@ -53,6 +53,10 @@ public class ActivityClassificationRecomputeServiceTests
         Assert.Equal("pc.classification.rule.apply", audit.Action);
         Assert.Equal("User", audit.ActorType);
         Assert.Equal(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), audit.UserId);
+        var pcAudit = await db.Set<ActivityClassificationAuditEntity>().SingleAsync();
+        Assert.Equal("rule.apply", pcAudit.Operation);
+        Assert.Equal(1, pcAudit.AffectedRecordCount);
+        Assert.Equal(600, pcAudit.AffectedDurationSeconds);
     }
 
     [Fact]
@@ -307,6 +311,29 @@ public class ActivityClassificationRecomputeServiceTests
             CodeRuleRequest(),
             new ActivityClassificationApplyRangeRequest("range", "2026-05-25", "2026-05-25"),
             CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RecomputeAsync_RecomputesExistingRangeWithoutCreatingRule()
+    {
+        await using var db = CreateDb();
+        db.Set<ActivityCategoryRuleEntity>().Add(CodeRule("Programming", 1000));
+        db.Set<AwEventEntity>().Add(WindowEvent("2026-05-25T08:00:00Z", 600, "Code.exe", "Program.cs"));
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var result = await service.RecomputeAsync(
+            new ActivityClassificationApplyRangeRequest("range", "2026-05-25", "2026-05-25"),
+            CancellationToken.None);
+
+        Assert.Equal(1, result.RecomputedRecordCount);
+        Assert.Equal(600, result.RecomputedDurationSeconds);
+        Assert.NotEqual(Guid.Empty, result.AuditId);
+        Assert.Equal(1, await db.Set<ActivityCategoryRuleEntity>().CountAsync());
+        Assert.Equal(1, await db.Set<ActivityClassificationEntity>().CountAsync());
+        var audit = await db.Set<ActivityClassificationAuditEntity>().SingleAsync();
+        Assert.Equal("range.recompute", audit.Operation);
+        Assert.Equal(result.AuditId, audit.Id);
     }
 
     [Fact]

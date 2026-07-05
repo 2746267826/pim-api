@@ -411,9 +411,20 @@ public class PcTrackerModule : IModule
             }
         });
 
-        writeGroup.MapPost("/classification/recompute", () =>
+        writeGroup.MapPost("/classification/recompute", async (
+            [FromBody] ActivityClassificationRecomputeRequest req,
+            [FromServices] ActivityClassificationRecomputeService svc,
+            CancellationToken ct) =>
         {
-            return Results.Ok(ApiResponse<string>.Ok("当前版本会在查询时计算分类"));
+            try
+            {
+                var result = await svc.RecomputeAsync(req.Range, ct);
+                return Results.Ok(ApiResponse<ActivityClassificationRecomputeDto>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
         });
 
         readGroup.MapGet("/heatmap/grid", async (
