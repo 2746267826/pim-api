@@ -37,7 +37,9 @@ public sealed class MobileLocationServiceTests
             () => service.SubmitAsync(Request(50.01), CancellationToken.None));
 
         Assert.Equal(6202, error.ErrorCode);
-        Assert.Equal(0, await db.Set<MobileLocationPointEntity>().CountAsync());
+        var rejected = Assert.Single(await db.Set<MobileLocationPointEntity>().ToListAsync());
+        Assert.Equal("rejected", rejected.Quality);
+        Assert.Equal(50.01m, rejected.HorizontalAccuracyMeters);
     }
 
     [Fact]

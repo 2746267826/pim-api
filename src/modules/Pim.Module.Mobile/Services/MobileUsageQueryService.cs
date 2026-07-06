@@ -40,6 +40,7 @@ public sealed class MobileUsageQueryService
         var sessionCounts = await SessionCounts(userId, query, ct);
         var launchCounts = await LaunchCounts(userId, query, ct);
         var batches = await SyncBatches(userId, query, ct);
+        var locationPoints = await LocationPoints(userId, query, ct);
 
         var totalMs = summaryRows.Sum(s => s.TotalTimeVisibleMs);
         var fallbackMs = summaryRows
@@ -89,8 +90,14 @@ public sealed class MobileUsageQueryService
                 b.Status,
                 b.AcceptedCount,
                 0,
-                0,
-                b.FailedCount,
+                locationPoints.Count(p => p.DeviceId == b.DeviceId
+                    && p.RecordedAtUtc >= b.WindowStartUtc
+                    && p.RecordedAtUtc < b.WindowEndUtc
+                    && !string.Equals(p.Quality, "rejected", StringComparison.OrdinalIgnoreCase)),
+                locationPoints.Count(p => p.DeviceId == b.DeviceId
+                    && p.RecordedAtUtc >= b.WindowStartUtc
+                    && p.RecordedAtUtc < b.WindowEndUtc
+                    && string.Equals(p.Quality, "rejected", StringComparison.OrdinalIgnoreCase)),
                 b.ErrorJson is "{}" or "" ? null : b.ErrorJson))
             .ToList();
 
@@ -228,9 +235,11 @@ public sealed class MobileUsageQueryService
         if (query.RangeEndUtc is not null)
             sessions = sessions.Where(s => s.StartUtc < query.RangeEndUtc);
 
-        return await sessions
-            .GroupBy(s => s.PackageName)
-            .ToDictionaryAsync(group => group.Key, group => group.Count(), ct);
+        return (await sessions
+                .Select(s => s.PackageName)
+                .ToListAsync(ct))
+            .GroupBy(packageName => packageName)
+            .ToDictionary(group => group.Key, group => group.Count());
     }
 
     private async Task<Dictionary<string, int>> LaunchCounts(Guid userId, MobileSummaryQuery query, CancellationToken ct)
@@ -245,9 +254,11 @@ public sealed class MobileUsageQueryService
         if (query.RangeEndUtc is not null)
             events = events.Where(e => e.EventTimestampUtc < query.RangeEndUtc);
 
-        return await events
-            .GroupBy(e => e.PackageName)
-            .ToDictionaryAsync(group => group.Key, group => group.Count(), ct);
+        return (await events
+                .Select(e => e.PackageName)
+                .ToListAsync(ct))
+            .GroupBy(packageName => packageName)
+            .ToDictionary(group => group.Key, group => group.Count());
     }
 
     private async Task<List<MobileSyncBatchEntity>> SyncBatches(Guid userId, MobileSummaryQuery query, CancellationToken ct)
@@ -263,6 +274,21 @@ public sealed class MobileUsageQueryService
             batches = batches.Where(b => b.WindowStartUtc < query.RangeEndUtc);
 
         return await batches.ToListAsync(ct);
+    }
+
+    private async Task<List<MobileLocationPointEntity>> LocationPoints(Guid userId, MobileSummaryQuery query, CancellationToken ct)
+    {
+        var points = _db.Set<MobileLocationPointEntity>()
+            .AsNoTracking()
+            .Where(p => p.UserId == userId);
+        if (!string.IsNullOrWhiteSpace(query.DeviceId))
+            points = points.Where(p => p.DeviceId == query.DeviceId);
+        if (query.RangeStartUtc is not null)
+            points = points.Where(p => p.RecordedAtUtc >= query.RangeStartUtc);
+        if (query.RangeEndUtc is not null)
+            points = points.Where(p => p.RecordedAtUtc < query.RangeEndUtc);
+
+        return await points.ToListAsync(ct);
     }
 
     private static bool IsFallbackSource(string sourceKind)

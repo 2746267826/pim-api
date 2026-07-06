@@ -117,14 +117,20 @@ public sealed class MobileModule : IModule
         });
 
         group.MapGet("/quality", async (
+            [FromQuery] string? date,
+            [FromQuery] string? deviceId,
             [FromQuery] DateTimeOffset? rangeStartUtc,
             [FromQuery] DateTimeOffset? rangeEndUtc,
             [FromServices] MobileQualityService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileQualityResponse>.Ok(await service.GetQualityAsync(
-                rangeStartUtc,
-                rangeEndUtc,
-                ct))));
+        {
+            var query = BuildSummaryQuery(deviceId, date, rangeStartUtc, rangeEndUtc);
+            return Results.Ok(ApiResponse<MobileQualityResponse>.Ok(await service.GetQualityAsync(
+                query.RangeStartUtc,
+                query.RangeEndUtc,
+                ct,
+                query.DeviceId)));
+        });
     }
 
     public Task InitializeAsync(IServiceProvider serviceProvider) => Task.CompletedTask;

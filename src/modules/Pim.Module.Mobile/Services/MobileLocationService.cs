@@ -26,10 +26,22 @@ public sealed class MobileLocationService
         if (request.Latitude is < -90 or > 90 || request.Longitude is < -180 or > 180)
             throw new DomainException(6201, "Invalid mobile location coordinates.");
 
-        if (request.HorizontalAccuracyMeters > MaxUsableAccuracyMeters)
-            throw new DomainException(6202, "Mobile location accuracy is not usable.");
-
         var userId = MobileUserContext.RequireUserId(_currentUser);
+        if (request.HorizontalAccuracyMeters > MaxUsableAccuracyMeters)
+        {
+            await SavePointAsync(userId, request, "rejected", ct);
+            throw new DomainException(6202, "Mobile location accuracy is not usable.");
+        }
+
+        return Map(await SavePointAsync(userId, request, "usable", ct));
+    }
+
+    private async Task<MobileLocationPointEntity> SavePointAsync(
+        Guid userId,
+        MobileLocationPointRequest request,
+        string quality,
+        CancellationToken ct)
+    {
         var entity = new MobileLocationPointEntity
         {
             UserId = userId,
@@ -48,13 +60,13 @@ public sealed class MobileLocationService
             BearingAccuracyDegrees = DecimalOrNull(request.BearingAccuracyDegrees),
             IsMock = request.IsMock,
             RawJson = JsonOrDefault(request.RawJson),
-            Quality = "usable",
+            Quality = quality,
             CreatedAt = _timeProvider.GetUtcNow()
         };
 
         _db.Set<MobileLocationPointEntity>().Add(entity);
         await _db.SaveChangesAsync(ct);
-        return Map(entity);
+        return entity;
     }
 
     public async Task<IReadOnlyList<MobileLocationPointDto>> GetHistoryAsync(
