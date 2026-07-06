@@ -8,9 +8,10 @@ public class PcTrackerServiceTests
     [Fact]
     public void BusinessDayStart_ReturnsUtcOffsetForPostgresTimestamptzQueries()
     {
-        var start = PcTrackerService.GetBusinessDayStartForQuery(new DateTime(2026, 5, 20));
+        var date = new DateTime(2026, 5, 20);
+        var start = PcTrackerService.GetBusinessDayStartForQuery(date);
 
         Assert.Equal(TimeSpan.Zero, start.Offset);
-        Assert.Equal(new DateTimeOffset(2026, 5, 19, 20, 0, 0, TimeSpan.Zero), start);
+        Assert.Equal(date.Date.AddHours(4), start.ToLocalTime().DateTime);
     }
 }

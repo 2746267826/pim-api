@@ -646,6 +646,8 @@ public class PcTrackerCompleteCaptureTests
     public async Task GetSummaryAsync_ReturnsHeatmapHoursInLocalBusinessTime()
     {
         PimDbContext.RegisterModuleAssembly(typeof(AwEventEntity).Assembly);
+        var date = new DateTime(2026, 5, 20);
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(date);
         var options = new DbContextOptionsBuilder<PimDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
@@ -654,7 +656,7 @@ public class PcTrackerCompleteCaptureTests
         db.Set<AwEventEntity>().Add(new AwEventEntity
         {
             DeviceId = "DESKTOP",
-            Timestamp = DateTimeOffset.Parse("2026-05-20T05:30:00+08:00"),
+            Timestamp = dayStart.AddHours(1.5),
             Duration = 60,
             EventType = "window",
             AppName = "editor.exe",
@@ -663,10 +665,10 @@ public class PcTrackerCompleteCaptureTests
         await db.SaveChangesAsync();
 
         var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
-        var summary = await service.GetSummaryAsync(new DateTime(2026, 5, 20), CancellationToken.None);
+        var summary = await service.GetSummaryAsync(date, CancellationToken.None);
 
-        Assert.Equal(4, summary.Heatmap[0].Hour);
-        Assert.Equal(5, summary.Heatmap[1].Hour);
+        Assert.Equal(dayStart.ToLocalTime().Hour, summary.Heatmap[0].Hour);
+        Assert.Equal(dayStart.AddHours(1).ToLocalTime().Hour, summary.Heatmap[1].Hour);
         Assert.Equal(1, summary.Heatmap[1].ActiveMinutes);
         Assert.Equal(1, summary.Heatmap[1].TotalEvents);
     }
