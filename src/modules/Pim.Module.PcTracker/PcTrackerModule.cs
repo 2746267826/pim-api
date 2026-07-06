@@ -34,6 +34,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<PcTrackerSchemaInitializer>();
         services.AddScoped<AppSignatureService>();
         services.AddScoped<AppKnowledgeContextService>();
+        services.AddScoped<AppKnowledgeSuggestionService>();
         services.AddScoped<PcCategoryService>();
         services.AddScoped<PcProductivityService>();
         services.AddScoped<PcActivityRecordKeyService>();
@@ -511,6 +512,84 @@ public class PcTrackerModule : IModule
             return ok
                 ? Results.Ok(ApiResponse<string>.Ok("Deleted."))
                 : Results.NotFound(ApiResponse<string>.Error(404, "Context not found."));
+        });
+
+        appKnowledgeWrite.MapPost("/suggestions/{id:guid}/preview", async (
+            Guid id,
+            [FromBody] SuggestionClassificationPreviewRequest req,
+            [FromServices] ActivityClassificationRecomputeService recompute,
+            [FromServices] ClassificationRuleDraftService drafts,
+            [FromServices] AppKnowledgeSuggestionService appKnowledge,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var classificationPreview = await recompute.PreviewSuggestionAsync(id, req, drafts, ct);
+                var result = await appKnowledge.BuildRecommendedContextAsync(
+                    id,
+                    req,
+                    classificationPreview.Preview,
+                    ct);
+                return Results.Ok(ApiResponse<AppKnowledgeSuggestionPreviewDto>.Ok(result));
+            }
+            catch (KeyNotFoundException)
+            {
+                return Results.NotFound(ApiResponse<string>.Error(404, "Suggestion not found."));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
+            }
+        });
+
+        appKnowledgeWrite.MapPost("/suggestions/{id:guid}/apply", async (
+            Guid id,
+            [FromBody] SuggestionClassificationApplyRequest req,
+            [FromServices] ActivityClassificationRecomputeService recompute,
+            [FromServices] ClassificationRuleDraftService drafts,
+            [FromServices] AppKnowledgeSuggestionService appKnowledge,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var previewRequest = new SuggestionClassificationPreviewRequest(
+                    req.CategoryName,
+                    req.ProjectTag,
+                    req.Range);
+                var classificationPreview = await recompute.PreviewSuggestionAsync(id, previewRequest, drafts, ct);
+                var knowledgePreview = await appKnowledge.BuildRecommendedContextAsync(
+                    id,
+                    previewRequest,
+                    classificationPreview.Preview,
+                    ct);
+                var savedContext = await appKnowledge.SaveRecommendedContextAsync(knowledgePreview, ct);
+                var applied = await recompute.ApplySuggestionAsync(id, req, drafts, ct);
+                var result = new AppKnowledgeSuggestionApplyDto(
+                    id,
+                    savedContext,
+                    applied.Preview,
+                    applied.AuditId,
+                    applied.SuggestionStatus,
+                    $"Saved to App Knowledge: {savedContext.ScopeSummary}. Recomputed {applied.Preview.AffectedRecordCount} records.");
+
+                return Results.Ok(ApiResponse<AppKnowledgeSuggestionApplyDto>.Ok(result));
+            }
+            catch (KeyNotFoundException)
+            {
+                return Results.NotFound(ApiResponse<string>.Error(404, "Suggestion not found."));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
+            }
         });
 
         var kbRead = endpoints.MapGroup("/api/v1/pc/app-signatures").AllowAnonymous();
