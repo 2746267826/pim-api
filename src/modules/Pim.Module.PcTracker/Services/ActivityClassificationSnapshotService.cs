@@ -23,7 +23,8 @@ public class ActivityClassificationSnapshotService
         IReadOnlyCollection<PcDetailRecord> records,
         IReadOnlyCollection<ActivityCategoryRuleEntity> rules,
         Guid? auditId,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool saveChanges = true)
     {
         if (records.Count == 0)
             return [];
@@ -75,7 +76,7 @@ public class ActivityClassificationSnapshotService
             classifiedRecords[record] = classification;
         }
 
-        if (keyedRecords.Count > 0)
+        if (saveChanges && keyedRecords.Count > 0)
             await _db.SaveChangesAsync(ct);
 
         return records

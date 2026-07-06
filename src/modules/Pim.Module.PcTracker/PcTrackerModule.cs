@@ -566,17 +566,24 @@ public class PcTrackerModule : IModule
                     previewRequest,
                     classificationPreview.Preview,
                     ct);
-                var applied = await recompute.ApplySuggestionAsync(id, req, drafts, ct);
-                var appliedKnowledgePreview = knowledgePreview with
-                {
-                    Preview = applied.Preview,
-                    RecommendedContext = knowledgePreview.RecommendedContext with
+                var (applied, savedContext) = await recompute.ApplySuggestionWithSideEffectAsync(
+                    id,
+                    req,
+                    drafts,
+                    async (appliedSuggestion, token) =>
                     {
-                        AffectedRecordCount = applied.Preview.AffectedRecordCount,
-                        AffectedDurationSeconds = applied.Preview.AffectedDurationSeconds
-                    }
-                };
-                var savedContext = await appKnowledge.SaveRecommendedContextAsync(appliedKnowledgePreview, ct);
+                        var appliedKnowledgePreview = knowledgePreview with
+                        {
+                            Preview = appliedSuggestion.Preview,
+                            RecommendedContext = knowledgePreview.RecommendedContext with
+                            {
+                                AffectedRecordCount = appliedSuggestion.Preview.AffectedRecordCount,
+                                AffectedDurationSeconds = appliedSuggestion.Preview.AffectedDurationSeconds
+                            }
+                        };
+                        return await appKnowledge.SaveRecommendedContextAsync(appliedKnowledgePreview, token);
+                    },
+                    ct);
                 var result = new AppKnowledgeSuggestionApplyDto(
                     id,
                     savedContext,

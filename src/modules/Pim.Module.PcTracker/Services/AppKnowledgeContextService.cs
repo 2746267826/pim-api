@@ -138,19 +138,16 @@ public sealed class AppKnowledgeContextService
         var appName = processName;
         if (appId is not null)
         {
-            var displayName = await _db.Set<AppSignatureEntity>()
-                .Where(item => item.Id == appId.Value)
-                .Select(item => item.DisplayName)
-                .FirstOrDefaultAsync(ct);
+            var app = await _db.Set<AppSignatureEntity>().FindAsync(new object[] { appId.Value }, ct);
 
-            if (displayName is null)
+            if (app is null)
             {
                 throw new ArgumentException("AppId was not found.", nameof(appId));
             }
 
-            appName = string.IsNullOrWhiteSpace(displayName)
+            appName = string.IsNullOrWhiteSpace(app.DisplayName)
                 ? processName
-                : displayName.Trim();
+                : app.DisplayName.Trim();
         }
 
         return $"{appName} - {ToPatternLabel(patternType)}: {patternValue}";

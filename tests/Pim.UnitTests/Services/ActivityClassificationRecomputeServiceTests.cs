@@ -2,7 +2,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
-using Pim.Infrastructure.Operations;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
 using Pim.Module.PcTracker.Services;
@@ -515,7 +514,6 @@ public class ActivityClassificationRecomputeServiceTests
             db,
             new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance),
             new ActivityClassificationRuleService(db),
-            new AuditLogService(db),
             new FixedCurrentUserService(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
             NullLogger<ActivityClassificationRecomputeService>.Instance);
 

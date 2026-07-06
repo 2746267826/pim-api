@@ -106,8 +106,9 @@ public sealed class AppKnowledgeSuggestionService
         CancellationToken ct)
     {
         var context = suggestionPreview.RecommendedContext;
+        var appId = context.AppId ?? await EnsureAppSignatureForContextAsync(context, ct);
         var saved = await _contexts.SaveAsync(new SaveAppKnowledgeContextRequest(
-            context.AppId,
+            appId,
             context.ProcessName,
             context.PatternType,
             context.PatternValue,
@@ -116,8 +117,8 @@ public sealed class AppKnowledgeSuggestionService
             context.Confidence,
             context.Enabled), ct);
 
-        var entity = await _db.Set<AppKnowledgeContextEntity>()
-            .FirstAsync(item => item.Id == saved.Id, ct);
+        var entity = await _db.Set<AppKnowledgeContextEntity>().FindAsync(new object[] { saved.Id }, ct)
+            ?? throw new KeyNotFoundException($"App Knowledge context '{saved.Id}' was not found after save.");
         entity.Source = SuggestionSource;
         entity.SourceSuggestionId = suggestionPreview.SuggestionId;
         entity.AffectedRecordCount = suggestionPreview.Preview.AffectedRecordCount;
@@ -126,6 +127,54 @@ public sealed class AppKnowledgeSuggestionService
         await _db.SaveChangesAsync(ct);
 
         return AppKnowledgeContextService.ToDto(entity);
+    }
+
+    private async Task<Guid?> EnsureAppSignatureForContextAsync(
+        AppKnowledgeContextDto context,
+        CancellationToken ct)
+    {
+        var processName = TrimToNull(context.ProcessName);
+        if (processName is null)
+            return null;
+
+        var existing = await _appSignatures.FindByProcessNameAsync(processName, ct);
+        if (existing is not null)
+            return existing.Id;
+
+        if (_db.ChangeTracker.Entries().Any(entry =>
+            entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
+        {
+            throw new InvalidOperationException("Learned app signatures must be created before staging other App Knowledge apply writes.");
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var app = new AppSignatureEntity
+        {
+            Id = Guid.NewGuid(),
+            ProcessName = processName,
+            DisplayName = processName,
+            Source = "learned",
+            Confidence = 0.6,
+            SearchKeywords = processName,
+            LastSeenAt = now,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        _db.Set<AppSignatureEntity>().Add(app);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+            return app.Id;
+        }
+        catch (DbUpdateException)
+        {
+            _db.Entry(app).State = EntityState.Detached;
+            var raced = await _appSignatures.FindByProcessNameAsync(processName, ct);
+            if (raced is not null)
+                return raced.Id;
+
+            throw;
+        }
     }
 
     private static (string PatternType, string PatternValue) BuildRecommendedPattern(

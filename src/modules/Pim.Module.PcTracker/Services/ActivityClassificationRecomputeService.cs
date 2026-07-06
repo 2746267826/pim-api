@@ -5,6 +5,7 @@ using System.Text.Json;
 using Pim.Infrastructure.Auth;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
 
@@ -18,7 +19,6 @@ public class ActivityClassificationRecomputeService
     private readonly PimDbContext _db;
     private readonly ActivityClassificationSnapshotService _snapshots;
     private readonly ActivityClassificationRuleService _rules;
-    private readonly IAuditLogService _auditLog;
     private readonly ICurrentUserService _currentUser;
     private readonly ILogger<ActivityClassificationRecomputeService> _logger;
 
@@ -26,14 +26,12 @@ public class ActivityClassificationRecomputeService
         PimDbContext db,
         ActivityClassificationSnapshotService snapshots,
         ActivityClassificationRuleService rules,
-        IAuditLogService auditLog,
         ICurrentUserService currentUser,
         ILogger<ActivityClassificationRecomputeService> logger)
     {
         _db = db;
         _snapshots = snapshots;
         _rules = rules;
-        _auditLog = auditLog;
         _currentUser = currentUser;
         _logger = logger;
     }
@@ -85,7 +83,7 @@ public class ActivityClassificationRecomputeService
         CancellationToken ct)
     {
         var preview = await PreviewRuleAsync(ruleRequest, range, ct);
-        var result = await ApplyRuleCoreAsync(ruleRequest, range, preview, suggestionId: null, ct);
+        var result = await ApplyRuleCoreAsync(ruleRequest, range, preview, suggestionId: null, afterApply: null, ct);
         return result.Preview;
     }
 
@@ -112,13 +110,40 @@ public class ActivityClassificationRecomputeService
             request.Range);
         var rule = await drafts.BuildSuggestionDraftAsync(suggestionId, previewRequest, ct);
         var preview = await PreviewRuleAsync(rule, request.Range, ct);
-        var result = await ApplyRuleCoreAsync(rule, request.Range, preview, suggestionId, ct);
+        var result = await ApplyRuleCoreAsync(rule, request.Range, preview, suggestionId, afterApply: null, ct);
 
-        return new ActivityClassificationSuggestionApplyDto(
-            ActivityClassificationRuleService.ToDto(result.Rule),
-            result.Preview,
-            result.AuditId,
-            result.SuggestionStatus ?? "accepted");
+        return ToSuggestionApplyDto(result);
+    }
+
+    public async Task<(ActivityClassificationSuggestionApplyDto Applied, TSideEffect SideEffect)> ApplySuggestionWithSideEffectAsync<TSideEffect>(
+        Guid suggestionId,
+        SuggestionClassificationApplyRequest request,
+        ClassificationRuleDraftService drafts,
+        Func<ActivityClassificationSuggestionApplyDto, CancellationToken, Task<TSideEffect>> afterApply,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(afterApply);
+
+        var previewRequest = new SuggestionClassificationPreviewRequest(
+            request.CategoryName,
+            request.ProjectTag,
+            request.Range);
+        var rule = await drafts.BuildSuggestionDraftAsync(suggestionId, previewRequest, ct);
+        var preview = await PreviewRuleAsync(rule, request.Range, ct);
+        TSideEffect? sideEffect = default;
+        var result = await ApplyRuleCoreAsync(
+            rule,
+            request.Range,
+            preview,
+            suggestionId,
+            async (coreResult, token) =>
+            {
+                var applied = ToSuggestionApplyDto(coreResult);
+                sideEffect = await afterApply(applied, token);
+            },
+            ct);
+
+        return (ToSuggestionApplyDto(result), sideEffect!);
     }
 
     public async Task<ActivityClassificationRecomputeDto> RecomputeAsync(
@@ -157,6 +182,7 @@ public class ActivityClassificationRecomputeService
         ActivityClassificationApplyRangeRequest range,
         ActivityClassificationPreviewDto preview,
         Guid? suggestionId,
+        Func<ApplyRuleCoreResult, CancellationToken, Task>? afterApply,
         CancellationToken ct)
     {
         await _rules.ValidateAsync(ruleRequest, ensureUniqueRuleName: true, ct);
@@ -164,13 +190,18 @@ public class ActivityClassificationRecomputeService
         return await ExecuteInTransactionAsync(async token =>
         {
             var rule = ActivityClassificationRuleService.ToEntity(ruleRequest);
+            var pcAuditId = Guid.NewGuid();
+            var plannedResult = new ApplyRuleCoreResult(rule, preview, pcAuditId, "accepted");
+            if (afterApply is not null)
+                await afterApply(plannedResult, token);
+
             string? suggestionStatus = null;
             if (suggestionId is Guid id)
                 suggestionStatus = await MarkSuggestionAcceptedAsync(id, token);
 
             _db.Set<ActivityCategoryRuleEntity>().Add(rule);
 
-            var audit = await _auditLog.RecordAsync(new CreateAuditLogRequest(
+            AddAuditLog(new CreateAuditLogRequest(
                 _currentUser.UserId,
                 _currentUser.UserId is null ? AuditActorType.System : AuditActorType.User,
                 "pc.classification.rule.apply",
@@ -193,9 +224,9 @@ public class ActivityClassificationRecomputeService
                     ["initiatedBy"] = "web"
                 },
                 null,
-                null), token);
+                null));
 
-            var rules = await _rules.LoadActiveAsync(token);
+            var rules = OrderRules((await _rules.LoadActiveAsync(token)).Append(rule)).ToList();
             var records = await LoadActivityRecordsAsync(range, rules, token);
             var pcAudit = CreatePcAudit(
                 "rule.apply",
@@ -204,12 +235,16 @@ public class ActivityClassificationRecomputeService
                 preview.AffectedRecordCount,
                 preview.AffectedDurationSeconds,
                 rule.Id,
-                suggestionId);
+                suggestionId,
+                pcAuditId);
             _db.Set<ActivityClassificationAuditEntity>().Add(pcAudit);
-            await _snapshots.EnsureClassificationsAsync(records, rules, pcAudit.Id, token);
+            await _snapshots.EnsureClassificationsAsync(records, rules, pcAudit.Id, token, saveChanges: false);
+
+            var result = new ApplyRuleCoreResult(rule, preview, pcAudit.Id, suggestionStatus);
+
             await _db.SaveChangesAsync(token);
 
-            return new ApplyRuleCoreResult(rule, preview, pcAudit.Id, suggestionStatus);
+            return result;
         }, ct);
     }
 
@@ -275,10 +310,11 @@ public class ActivityClassificationRecomputeService
         int affectedRecordCount,
         double affectedDurationSeconds,
         Guid? ruleId,
-        Guid? suggestionId) =>
+        Guid? suggestionId,
+        Guid? auditId = null) =>
         new()
         {
-            Id = Guid.NewGuid(),
+            Id = auditId ?? Guid.NewGuid(),
             Operation = operation,
             RuleId = ruleId,
             SuggestionId = suggestionId,
@@ -294,6 +330,27 @@ public class ActivityClassificationRecomputeService
             CreatedByUserId = _currentUser.UserId,
             CreatedAt = DateTimeOffset.UtcNow
         };
+
+    private void AddAuditLog(CreateAuditLogRequest request)
+    {
+        _db.AuditLogs.Add(new AuditLogEntity
+        {
+            UserId = request.UserId,
+            ActorType = request.ActorType.ToString(),
+            Action = request.Action,
+            ResourceType = request.ResourceType,
+            ResourceId = request.ResourceId,
+            Source = request.Source,
+            Result = request.Result.ToString(),
+            IpAddress = request.IpAddress,
+            UserAgent = request.UserAgent,
+            CorrelationId = request.CorrelationId,
+            MetadataJson = JsonSerializer.Serialize(request.Metadata ?? new Dictionary<string, string>()),
+            ErrorCode = request.ErrorCode,
+            ErrorMessage = request.ErrorMessage,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+    }
 
     private static (DateTimeOffset Start, DateTimeOffset End) ParseRange(ActivityClassificationApplyRangeRequest range)
     {
@@ -465,6 +522,13 @@ public class ActivityClassificationRecomputeService
             : string.Equals(mode, "range", StringComparison.OrdinalIgnoreCase)
                 ? "\u81ea\u5b9a\u4e49\u8303\u56f4"
                 : mode ?? "\u672a\u77e5";
+
+    private static ActivityClassificationSuggestionApplyDto ToSuggestionApplyDto(ApplyRuleCoreResult result) =>
+        new(
+            ActivityClassificationRuleService.ToDto(result.Rule),
+            result.Preview,
+            result.AuditId,
+            result.SuggestionStatus ?? "accepted");
 
     private sealed record PreviewRecord(
         PcDetailRecord Record,

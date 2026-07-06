@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -225,6 +226,176 @@ public class AppKnowledgeSuggestionServiceTests
     }
 
     [Fact]
+    public async Task SaveRecommendedContextAsync_CreatesSignatureForUnmatchedProcessSoContextIsVisible()
+    {
+        var databaseName = $"app-knowledge-visible-{Guid.NewGuid()}";
+        await using var db = CreateDb(databaseName);
+        var suggestionId = Guid.Parse("66666666-6666-6666-6666-666666666666");
+        db.Set<ActivityClassificationSuggestionEntity>().Add(new ActivityClassificationSuggestionEntity
+        {
+            Id = suggestionId,
+            ClusterKey = "app:ObscureTool.exe",
+            SampleCount = 2,
+            TotalDurationSeconds = 900,
+            SampleRecordsJson = "[]",
+            SanitizedContextJson = """{"apps":["ObscureTool.exe"],"domains":["private.example.com"]}""",
+            SuggestedCategory = "Research",
+            Status = "pending",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+        var preview = await service.BuildRecommendedContextAsync(
+            suggestionId,
+            new SuggestionClassificationPreviewRequest(
+                "Research",
+                null,
+                new ActivityClassificationApplyRangeRequest("range", "2026-07-06", "2026-07-06")),
+            NewPreview(affectedRecordCount: 2, affectedDurationSeconds: 900),
+            CancellationToken.None);
+        Assert.Null(preview.RecommendedContext.AppId);
+
+        var saved = await service.SaveRecommendedContextAsync(preview, CancellationToken.None);
+
+        Assert.NotNull(saved.AppId);
+        var savedAppId = saved.AppId!.Value;
+        var app = await db.Set<AppSignatureEntity>().SingleAsync();
+        Assert.Equal(savedAppId, app.Id);
+        Assert.Equal("ObscureTool.exe", app.ProcessName);
+        Assert.Equal("ObscureTool.exe", app.DisplayName);
+        Assert.Equal("learned", app.Source);
+
+        await using var refreshedDb = CreateDb(databaseName);
+        var apps = await new AppSignatureService(refreshedDb).GetKnowledgeAppsAsync("ObscureTool", CancellationToken.None);
+        var visibleApp = Assert.Single(apps);
+        Assert.Equal(savedAppId, visibleApp.Id);
+        Assert.Equal(1, visibleApp.ContextCount);
+
+        var contexts = await new AppKnowledgeContextService(refreshedDb).GetByAppAsync(savedAppId, CancellationToken.None);
+        var context = Assert.Single(contexts);
+        Assert.Equal(saved.Id, context.Id);
+        Assert.Equal("private.example.com", context.PatternValue);
+    }
+
+    [Fact]
+    public async Task SaveRecommendedContextAsync_WhenLearnedAppInsertRaces_ReusesExistingSignature()
+    {
+        await using var db = CreateDbWithAppSignatureInsertRace();
+        var suggestionId = Guid.Parse("88888888-8888-8888-8888-888888888888");
+        db.Set<ActivityClassificationSuggestionEntity>().Add(new ActivityClassificationSuggestionEntity
+        {
+            Id = suggestionId,
+            ClusterKey = "app:StagedTool.exe",
+            SampleCount = 3,
+            TotalDurationSeconds = 1200,
+            SampleRecordsJson = "[]",
+            SanitizedContextJson = """{"apps":["StagedTool.exe"],"domains":["staged.example.com"]}""",
+            SuggestedCategory = "Research",
+            Status = "pending",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+        var preview = await service.BuildRecommendedContextAsync(
+            suggestionId,
+            new SuggestionClassificationPreviewRequest(
+                "Research",
+                null,
+                new ActivityClassificationApplyRangeRequest("range", "2026-07-06", "2026-07-06")),
+            NewPreview(affectedRecordCount: 3, affectedDurationSeconds: 1200),
+            CancellationToken.None);
+
+        var saved = await service.SaveRecommendedContextAsync(preview, CancellationToken.None);
+
+        var app = Assert.Single(db.Set<AppSignatureEntity>());
+        Assert.Equal(app.Id, saved.AppId);
+        Assert.Equal("StagedTool.exe", app.ProcessName);
+        Assert.Equal("staged.example.com", Assert.Single(db.Set<AppKnowledgeContextEntity>()).PatternValue);
+    }
+
+    [Fact]
+    public async Task ApplySuggestionWithSideEffectAsync_WhenAppKnowledgeSaveFails_DoesNotPersistApply()
+    {
+        var databaseName = $"app-knowledge-side-effect-{Guid.NewGuid()}";
+        var suggestionId = Guid.Parse("77777777-7777-7777-7777-777777777777");
+        await using (var db = CreateDbWithContextSaveFailure(databaseName))
+        {
+            db.Set<PcCategoryEntity>().Add(new PcCategoryEntity
+            {
+                Id = Guid.NewGuid(),
+                Name = "Programming",
+                Color = "#2563eb"
+            });
+            db.Set<ActivityClassificationSuggestionEntity>().Add(new ActivityClassificationSuggestionEntity
+            {
+                Id = suggestionId,
+                ClusterKey = "app:code",
+                SampleCount = 1,
+                TotalDurationSeconds = 600,
+                SampleRecordsJson = "[]",
+                SanitizedContextJson = """{"apps":["Code.exe"],"titles":["Program.cs"]}""",
+                SuggestedCategory = "Programming",
+                Status = "pending",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            });
+            db.Set<AwEventEntity>().Add(WindowEvent("2026-05-25T08:00:00Z", 600, "Code.exe", "Program.cs"));
+            await db.SaveChangesAsync();
+
+            var service = CreateRecomputeService(db);
+            var appKnowledge = CreateService(db);
+            var drafts = new ClassificationRuleDraftService(db);
+            var request = new SuggestionClassificationApplyRequest(
+                "Programming",
+                "PIM",
+                new ActivityClassificationApplyRangeRequest("range", "2026-05-25", "2026-05-25"));
+            var previewRequest = new SuggestionClassificationPreviewRequest(
+                request.CategoryName,
+                request.ProjectTag,
+                request.Range);
+            var knowledgePreview = await appKnowledge.BuildRecommendedContextAsync(
+                suggestionId,
+                previewRequest,
+                NewPreview(affectedRecordCount: 1, affectedDurationSeconds: 600),
+                CancellationToken.None);
+
+            var ex = await Assert.ThrowsAsync<DbUpdateException>(() =>
+                service.ApplySuggestionWithSideEffectAsync<AppKnowledgeContextDto>(
+                    suggestionId,
+                    request,
+                    drafts,
+                    (applied, token) =>
+                    {
+                        var appliedKnowledgePreview = knowledgePreview with
+                        {
+                            Preview = applied.Preview,
+                            RecommendedContext = knowledgePreview.RecommendedContext with
+                            {
+                                AffectedRecordCount = applied.Preview.AffectedRecordCount,
+                                AffectedDurationSeconds = applied.Preview.AffectedDurationSeconds
+                            }
+                        };
+                        return appKnowledge.SaveRecommendedContextAsync(appliedKnowledgePreview, token);
+                    },
+                    CancellationToken.None));
+            Assert.Contains("Simulated App Knowledge context save failure", ex.Message);
+        }
+
+        await using var verifyDb = CreateDb(databaseName);
+        Assert.Equal("pending", await verifyDb.Set<ActivityClassificationSuggestionEntity>()
+            .Where(item => item.Id == suggestionId)
+            .Select(item => item.Status)
+            .SingleAsync());
+        Assert.Equal(0, await verifyDb.Set<ActivityCategoryRuleEntity>().CountAsync());
+        Assert.Equal(0, await verifyDb.Set<ActivityClassificationEntity>().CountAsync());
+        Assert.Equal(0, await verifyDb.Set<ActivityClassificationAuditEntity>().CountAsync());
+        Assert.Equal(0, await verifyDb.AuditLogs.CountAsync());
+        Assert.Equal(0, await verifyDb.Set<AppKnowledgeContextEntity>().CountAsync());
+    }
+
+    [Fact]
     public async Task ApplyEndpoint_DuplicateRuleFailureDoesNotPersistAppKnowledgeContext()
     {
         var databaseName = $"app-knowledge-apply-{Guid.NewGuid()}";
@@ -311,6 +482,14 @@ public class AppKnowledgeSuggestionServiceTests
     private static AppKnowledgeSuggestionService CreateService(PimDbContext db) =>
         new(db, new AppKnowledgeContextService(db), new AppSignatureService(db));
 
+    private static ActivityClassificationRecomputeService CreateRecomputeService(PimDbContext db) =>
+        new(
+            db,
+            new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance),
+            new ActivityClassificationRuleService(db),
+            new FixedCurrentUserService(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
+            NullLogger<ActivityClassificationRecomputeService>.Instance);
+
     private static ActivityClassificationPreviewDto NewPreview(int affectedRecordCount, double affectedDurationSeconds) =>
         new(
             affectedRecordCount,
@@ -334,12 +513,33 @@ public class AppKnowledgeSuggestionServiceTests
         };
 
     private static PimDbContext CreateDb()
+        => CreateDb(Guid.NewGuid().ToString());
+
+    private static PimDbContext CreateDb(string databaseName)
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AppKnowledgeContextEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(databaseName)
+            .Options;
+        return new PimDbContext(options);
+    }
+
+    private static PimDbContext CreateDbWithAppSignatureInsertRace()
     {
         PimDbContext.RegisterModuleAssembly(typeof(AppKnowledgeContextEntity).Assembly);
         var options = new DbContextOptionsBuilder<PimDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
-        return new PimDbContext(options);
+        return new AppSignatureInsertRacePimDbContext(options);
+    }
+
+    private static PimDbContext CreateDbWithContextSaveFailure(string databaseName)
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AppKnowledgeContextEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(databaseName)
+            .Options;
+        return new ContextSaveFailurePimDbContext(options);
     }
 
     private static WebApplication BuildEndpointApp(string databaseName)
@@ -431,5 +631,73 @@ public class AppKnowledgeSuggestionServiceTests
     private sealed class BodyDetectionFeature : IHttpRequestBodyDetectionFeature
     {
         public bool CanHaveBody => true;
+    }
+
+    private sealed class AppSignatureInsertRacePimDbContext : PimDbContext
+    {
+        private readonly DbContextOptions<PimDbContext> _options;
+        private bool _hasThrown;
+
+        public AppSignatureInsertRacePimDbContext(DbContextOptions<PimDbContext> options)
+            : base(options)
+        {
+            _options = options;
+        }
+
+        public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        {
+            var pendingApp = ChangeTracker.Entries<AppSignatureEntity>()
+                .SingleOrDefault(entry => entry.State == EntityState.Added);
+
+            if (!_hasThrown && pendingApp is not null)
+            {
+                _hasThrown = true;
+                var attempted = pendingApp.Entity;
+                var now = DateTimeOffset.UtcNow;
+
+                await using var competingDb = new PimDbContext(_options);
+                competingDb.Set<AppSignatureEntity>().Add(new AppSignatureEntity
+                {
+                    Id = Guid.NewGuid(),
+                    ProcessName = attempted.ProcessName,
+                    DisplayName = attempted.DisplayName,
+                    Source = "learned",
+                    Confidence = 0.6,
+                    SearchKeywords = attempted.ProcessName,
+                    LastSeenAt = now,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                });
+                await competingDb.SaveChangesAsync(cancellationToken);
+
+                throw new DbUpdateException("Simulated app signature insert race.");
+            }
+
+            return await base.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    private sealed class ContextSaveFailurePimDbContext : PimDbContext
+    {
+        private bool _hasThrown;
+
+        public ContextSaveFailurePimDbContext(DbContextOptions<PimDbContext> options)
+            : base(options)
+        {
+        }
+
+        public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        {
+            var pendingContext = ChangeTracker.Entries<AppKnowledgeContextEntity>()
+                .SingleOrDefault(entry => entry.State == EntityState.Added);
+
+            if (!_hasThrown && pendingContext is not null)
+            {
+                _hasThrown = true;
+                throw new DbUpdateException("Simulated App Knowledge context save failure.");
+            }
+
+            return base.SaveChangesAsync(cancellationToken);
+        }
     }
 }
