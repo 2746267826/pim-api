@@ -31,6 +31,7 @@
     <ProjectReference Include="..\..\src\client-windows\Pim.Client.Core\Pim.Client.Core.csproj" />
     <ProjectReference Include="..\..\src\modules\Pim.Module.QuickNotes\Pim.Module.QuickNotes.csproj" />
     <ProjectReference Include="..\..\src\modules\Pim.Module.Files\Pim.Module.Files.csproj" />
+    <ProjectReference Include="..\..\src\modules\Pim.Module.Mobile\Pim.Module.Mobile.csproj" />
   </ItemGroup>
 
 </Project>

@@ -85,6 +85,55 @@ public class DaemonHeartbeatServiceTests
     }
 
     [Fact]
+    public async Task UpsertAsync_KeepsAndroidAndWindowsHeartbeatsIndependentForSameDevice()
+    {
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        await using var db = new PimDbContext(options);
+        var service = new DaemonHeartbeatService(db);
+
+        await service.UpsertAsync(new DaemonHeartbeatRequest(
+            "shared-device",
+            "windows",
+            "win-1.0.0",
+            "http://127.0.0.1:5858",
+            null,
+            null,
+            null,
+            0,
+            DaemonSourceState.Available,
+            DaemonSourceState.Available,
+            false,
+            "{\"platform\":\"windows\"}"));
+
+        await service.UpsertAsync(new DaemonHeartbeatRequest(
+            "shared-device",
+            "android",
+            "android-1.0.0",
+            "http://127.0.0.1:5858",
+            null,
+            null,
+            null,
+            3,
+            DaemonSourceState.Unknown,
+            DaemonSourceState.Unknown,
+            false,
+            "{\"platform\":\"android\"}"));
+
+        var rows = await db.DaemonHeartbeats
+            .OrderBy(heartbeat => heartbeat.DaemonKind)
+            .ToListAsync();
+        var latestWindows = await service.GetLatestWindowsAsync();
+
+        Assert.Equal(2, rows.Count);
+        Assert.Contains(rows, row => row.DeviceId == "shared-device" && row.DaemonKind == "android");
+        Assert.Contains(rows, row => row.DeviceId == "shared-device" && row.DaemonKind == "windows");
+        Assert.Equal("win-1.0.0", latestWindows!.Version);
+    }
+
+    [Fact]
     public async Task GetLatestWindowsAsync_ToleratesMalformedPersistedSourceStates()
     {
         var options = new DbContextOptionsBuilder<PimDbContext>()

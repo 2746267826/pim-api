@@ -1,0 +1,34 @@
+name: Build API
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'src/Pim.Api/**'
+      - 'src/Pim.Core/**'
+      - 'src/Pim.Infrastructure/**'
+      - 'src/modules/**'
+      - 'tests/Pim.UnitTests/**'
+      - 'Pim.sln'
+      - '.github/workflows/build-api.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore Pim.sln
+
+      - name: Test
+        run: dotnet test Pim.sln --configuration Release --no-restore
+
+      - name: Build API
+        run: dotnet build src/Pim.Api/Pim.Api.csproj --configuration Release --no-restore

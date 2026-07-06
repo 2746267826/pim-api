@@ -7,6 +7,7 @@
     <ProjectReference Include="..\modules\Pim.Module.PcTracker\Pim.Module.PcTracker.csproj" />
     <ProjectReference Include="..\modules\Pim.Module.QuickNotes\Pim.Module.QuickNotes.csproj" />
     <ProjectReference Include="..\modules\Pim.Module.Files\Pim.Module.Files.csproj" />
+    <ProjectReference Include="..\modules\Pim.Module.Mobile\Pim.Module.Mobile.csproj" />
   </ItemGroup>
 
   <ItemGroup>
