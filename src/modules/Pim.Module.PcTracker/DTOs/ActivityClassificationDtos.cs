@@ -171,3 +171,59 @@ public record SaveAppSignatureRequest(
     string? CategoryPath,
     string? Productivity,
     string? Description);
+
+public record AppKnowledgeAppDto(
+    Guid Id,
+    string ProcessName,
+    string DisplayName,
+    string? CategoryPath,
+    string? Productivity,
+    string? Description,
+    string Source,
+    double Confidence,
+    string? Icon,
+    DateTimeOffset? LastSeenAt,
+    DateTimeOffset CreatedAt,
+    int ContextCount,
+    int PendingContextCount,
+    double RecentAffectedDurationSeconds);
+
+public record AppKnowledgeContextDto(
+    Guid Id,
+    Guid? AppId,
+    string ProcessName,
+    string PatternType,
+    string PatternValue,
+    string? TargetCategoryName,
+    string? ProjectTag,
+    string ScopeSummary,
+    string Source,
+    double Confidence,
+    bool Enabled,
+    int AffectedRecordCount,
+    double AffectedDurationSeconds,
+    DateTimeOffset? LastMatchedAt);
+
+public record SaveAppKnowledgeContextRequest(
+    Guid? AppId,
+    string ProcessName,
+    string PatternType,
+    string PatternValue,
+    string? TargetCategoryName,
+    string? ProjectTag,
+    double? Confidence,
+    bool? Enabled);
+
+public record AppKnowledgeSuggestionPreviewDto(
+    Guid SuggestionId,
+    AppKnowledgeContextDto RecommendedContext,
+    IReadOnlyList<AppKnowledgeContextDto> Alternatives,
+    ActivityClassificationPreviewDto Preview);
+
+public record AppKnowledgeSuggestionApplyDto(
+    Guid SuggestionId,
+    AppKnowledgeContextDto SavedContext,
+    ActivityClassificationPreviewDto Preview,
+    Guid AuditId,
+    string SuggestionStatus,
+    string Message);

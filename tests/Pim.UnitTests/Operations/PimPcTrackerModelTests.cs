@@ -100,6 +100,25 @@ public class PimPcTrackerModelTests
     }
 
     [Fact]
+    public void AppKnowledgeContextEntity_HasExpectedTableAndIndexes()
+    {
+        using var db = CreateDbContext();
+        var entity = db.Model.FindEntityType(typeof(AppKnowledgeContextEntity));
+
+        Assert.NotNull(entity);
+        Assert.Equal("pc_app_knowledge_contexts", entity!.GetTableName());
+        Assert.Contains(entity.GetIndexes(), index =>
+            index.GetDatabaseName() == "ix_pc_app_knowledge_contexts_app_pattern" &&
+            index.Properties.Select(property => property.Name).SequenceEqual([
+                nameof(AppKnowledgeContextEntity.ProcessName),
+                nameof(AppKnowledgeContextEntity.PatternType),
+                nameof(AppKnowledgeContextEntity.PatternValue)
+            ]));
+        Assert.Contains(entity.GetIndexes(), index =>
+            index.GetDatabaseName() == "ix_pc_app_knowledge_contexts_category");
+    }
+
+    [Fact]
     public void PcTrackerSchemaInitializer_AlignsInitializerOwnedTablesWithEfModel()
     {
         Assert.Contains("source VARCHAR(32) NOT NULL DEFAULT 'builtin'", PcTrackerSchemaInitializer.SchemaSql);

@@ -239,6 +239,34 @@ CREATE TABLE IF NOT EXISTS pc_app_signatures (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_app_signatures_process_name ON pc_app_signatures (process_name);
 CREATE INDEX IF NOT EXISTS ix_pc_app_signatures_display_name ON pc_app_signatures (display_name);
 
+CREATE TABLE IF NOT EXISTS pc_app_knowledge_contexts (
+    id uuid PRIMARY KEY,
+    app_signature_id uuid NULL REFERENCES pc_app_signatures(id) ON DELETE SET NULL,
+    process_name varchar(256) NOT NULL,
+    pattern_type varchar(64) NOT NULL,
+    pattern_value varchar(512) NOT NULL,
+    target_category_name varchar(256) NULL,
+    project_tag varchar(256) NULL,
+    scope_summary varchar(512) NOT NULL,
+    source varchar(64) NOT NULL,
+    confidence double precision NOT NULL,
+    enabled boolean NOT NULL,
+    affected_record_count integer NOT NULL DEFAULT 0,
+    affected_duration_seconds double precision NOT NULL DEFAULT 0,
+    last_matched_at timestamptz NULL,
+    source_rule_id uuid NULL,
+    source_suggestion_id uuid NULL,
+    created_at timestamptz NOT NULL,
+    updated_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_pc_app_knowledge_contexts_app_pattern
+    ON pc_app_knowledge_contexts(process_name, pattern_type, pattern_value);
+CREATE INDEX IF NOT EXISTS ix_pc_app_knowledge_contexts_category
+    ON pc_app_knowledge_contexts(target_category_name);
+CREATE INDEX IF NOT EXISTS ix_pc_app_knowledge_contexts_source_suggestion
+    ON pc_app_knowledge_contexts(source_suggestion_id);
+
 -- Seed app signatures (200+ common applications)
 INSERT INTO pc_app_signatures (process_name, display_name, category_path, productivity, description, source, icon, confidence) VALUES
 -- Development / Programming

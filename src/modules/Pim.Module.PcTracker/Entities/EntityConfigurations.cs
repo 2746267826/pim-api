@@ -232,3 +232,40 @@ public class AppSignatureEntityConfiguration : IEntityTypeConfiguration<AppSigna
             .HasDatabaseName("ix_pc_app_signatures_display_name");
     }
 }
+
+public class AppKnowledgeContextEntityConfiguration : IEntityTypeConfiguration<AppKnowledgeContextEntity>
+{
+    public void Configure(EntityTypeBuilder<AppKnowledgeContextEntity> builder)
+    {
+        builder.ToTable("pc_app_knowledge_contexts");
+        builder.HasKey(item => item.Id);
+        builder.Property(item => item.Id).HasColumnName("id");
+        builder.Property(item => item.AppSignatureId).HasColumnName("app_signature_id");
+        builder.Property(item => item.ProcessName).HasColumnName("process_name").HasMaxLength(256).IsRequired();
+        builder.Property(item => item.PatternType).HasColumnName("pattern_type").HasMaxLength(64).IsRequired();
+        builder.Property(item => item.PatternValue).HasColumnName("pattern_value").HasMaxLength(512).IsRequired();
+        builder.Property(item => item.TargetCategoryName).HasColumnName("target_category_name").HasMaxLength(256);
+        builder.Property(item => item.ProjectTag).HasColumnName("project_tag").HasMaxLength(256);
+        builder.Property(item => item.ScopeSummary).HasColumnName("scope_summary").HasMaxLength(512).IsRequired();
+        builder.Property(item => item.Source).HasColumnName("source").HasMaxLength(64).IsRequired();
+        builder.Property(item => item.Confidence).HasColumnName("confidence");
+        builder.Property(item => item.Enabled).HasColumnName("enabled");
+        builder.Property(item => item.AffectedRecordCount).HasColumnName("affected_record_count").HasDefaultValue(0);
+        builder.Property(item => item.AffectedDurationSeconds).HasColumnName("affected_duration_seconds").HasDefaultValue(0);
+        builder.Property(item => item.LastMatchedAt).HasColumnName("last_matched_at");
+        builder.Property(item => item.SourceRuleId).HasColumnName("source_rule_id");
+        builder.Property(item => item.SourceSuggestionId).HasColumnName("source_suggestion_id");
+        builder.Property(item => item.CreatedAt).HasColumnName("created_at");
+        builder.Property(item => item.UpdatedAt).HasColumnName("updated_at");
+        builder.HasIndex(item => new { item.ProcessName, item.PatternType, item.PatternValue })
+            .HasDatabaseName("ix_pc_app_knowledge_contexts_app_pattern");
+        builder.HasIndex(item => item.TargetCategoryName)
+            .HasDatabaseName("ix_pc_app_knowledge_contexts_category");
+        builder.HasIndex(item => item.SourceSuggestionId)
+            .HasDatabaseName("ix_pc_app_knowledge_contexts_source_suggestion");
+        builder.HasOne(item => item.AppSignature)
+            .WithMany()
+            .HasForeignKey(item => item.AppSignatureId)
+            .OnDelete(DeleteBehavior.SetNull);
+    }
+}
