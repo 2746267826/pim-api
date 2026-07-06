@@ -203,7 +203,7 @@ public class ActivitySuggestionServiceTests
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.AcceptSuggestionAsync(suggestionId, NewAcceptRequest(), CancellationToken.None));
 
-        Assert.Contains("preview/apply", ex.Message);
+        Assert.Contains("预览/应用", ex.Message);
         var suggestion = await db.Set<ActivityClassificationSuggestionEntity>().SingleAsync();
         Assert.Equal("pending", suggestion.Status);
         Assert.Empty(await db.Set<ActivityCategoryRuleEntity>().ToListAsync());
@@ -228,8 +228,8 @@ public class ActivitySuggestionServiceTests
         var secondDirectEx = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.AcceptSuggestionAsync(suggestionId, request, CancellationToken.None));
 
-        Assert.Contains("preview/apply", directEx.Message);
-        Assert.Contains("preview/apply", secondDirectEx.Message);
+        Assert.Contains("预览/应用", directEx.Message);
+        Assert.Contains("预览/应用", secondDirectEx.Message);
         Assert.Equal(0, await db.Set<ActivityCategoryRuleEntity>().CountAsync());
         var pendingSuggestion = await db.Set<ActivityClassificationSuggestionEntity>().SingleAsync();
         Assert.Equal("pending", pendingSuggestion.Status);
@@ -271,7 +271,7 @@ public class ActivitySuggestionServiceTests
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.RejectSuggestionAsync(suggestionId, CancellationToken.None));
 
-        Assert.Contains("pending", ex.Message);
+        Assert.Contains("待处理状态", ex.Message);
         var suggestion = await db.Set<ActivityClassificationSuggestionEntity>().SingleAsync();
         Assert.Equal("accepted", suggestion.Status);
         Assert.Equal(0, await db.Set<ActivityCategoryRuleEntity>().CountAsync());
@@ -293,7 +293,7 @@ public class ActivitySuggestionServiceTests
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.AcceptSuggestionAsync(suggestionId, NewAcceptRequest(), CancellationToken.None));
 
-        Assert.Contains("pending", ex.Message);
+        Assert.Contains("待处理状态", ex.Message);
         Assert.Empty(await db.Set<ActivityCategoryRuleEntity>().ToListAsync());
         var suggestion = await db.Set<ActivityClassificationSuggestionEntity>().SingleAsync();
         Assert.Equal("rejected", suggestion.Status);

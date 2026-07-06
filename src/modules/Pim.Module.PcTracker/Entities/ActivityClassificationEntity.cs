@@ -73,7 +73,7 @@ public class ActivityClassificationEntity
     public Guid? SourceRuleId { get; set; }
 
     [Column("explanation")]
-    public string Explanation { get; set; } = "No rule or heuristic matched.";
+    public string Explanation { get; set; } = "没有匹配到规则或启发式分类。";
 
     [Column("classifier_version")]
     [MaxLength(32)]

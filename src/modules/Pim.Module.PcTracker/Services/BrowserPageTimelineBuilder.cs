@@ -506,7 +506,7 @@ public static class BrowserPageTimelineBuilder
 
     private static DateTimeOffset ParseRecordTime(string? value)
     {
-        return DateTimeOffset.Parse(value ?? throw new InvalidOperationException("Record timestamp is required."));
+        return DateTimeOffset.Parse(value ?? throw new InvalidOperationException("记录时间戳不能为空。"));
     }
 
     private static string FormatUtc(DateTimeOffset timestamp)

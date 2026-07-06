@@ -47,7 +47,7 @@ public class PimPcTrackerModelTests
         Assert.Equal("#64748b", entity.FindProperty(nameof(ActivityClassificationEntity.CategoryColor))!.GetDefaultValue());
         Assert.Equal(0.2, entity.FindProperty(nameof(ActivityClassificationEntity.Confidence))!.GetDefaultValue());
         Assert.Equal("fallback", entity.FindProperty(nameof(ActivityClassificationEntity.Source))!.GetDefaultValue());
-        Assert.Equal("No rule or heuristic matched.", entity.FindProperty(nameof(ActivityClassificationEntity.Explanation))!.GetDefaultValue());
+        Assert.Equal("没有匹配到规则或启发式分类。", entity.FindProperty(nameof(ActivityClassificationEntity.Explanation))!.GetDefaultValue());
         Assert.Equal("local-v1", entity.FindProperty(nameof(ActivityClassificationEntity.ClassifierVersion))!.GetDefaultValue());
         Assert.Equal("NOW()", entity.FindProperty(nameof(ActivityClassificationEntity.ClassifiedAt))!.GetDefaultValueSql());
         Assert.Equal("pc-fallback-v1", entity.FindProperty(nameof(ActivityClassificationEntity.RecordKeyVersion))!.GetDefaultValue());

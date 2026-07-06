@@ -25,10 +25,10 @@ public sealed class ClassificationRuleDraftService
     {
         var suggestion = await _db.Set<ActivityClassificationSuggestionEntity>()
             .FirstOrDefaultAsync(item => item.Id == suggestionId, ct)
-            ?? throw new KeyNotFoundException($"Activity classification suggestion '{suggestionId}' was not found.");
+            ?? throw new KeyNotFoundException($"未找到活动分类建议：{suggestionId}。");
 
         if (!string.Equals(suggestion.Status, "pending", StringComparison.Ordinal))
-            throw new InvalidOperationException($"Suggestion '{suggestionId}' must be pending before preview or apply.");
+            throw new InvalidOperationException($"分类建议 {suggestionId} 必须处于待处理状态后才能预览或应用。");
 
         var condition = BuildCondition(suggestion.ClusterKey);
         var category = request.CategoryName ?? suggestion.SuggestedCategory ?? suggestion.CurrentCategory;
@@ -46,25 +46,25 @@ public sealed class ClassificationRuleDraftService
             900,
             JsonSerializer.Serialize(new { all = new[] { condition } }),
             0.95,
-            $"Created from suggestion {suggestion.Id}.");
+            $"由分类建议 {suggestion.Id} 创建。");
     }
 
     private static object BuildCondition(string clusterKey)
     {
         var separator = clusterKey.IndexOf(':');
         if (separator <= 0 || separator == clusterKey.Length - 1)
-            throw new ArgumentException($"Unsupported suggestion cluster key '{clusterKey}'.");
+            throw new ArgumentException($"不支持的建议聚类键：{clusterKey}。");
 
         var kind = clusterKey[..separator].Trim().ToLowerInvariant();
         var value = clusterKey[(separator + 1)..].Trim();
         if (string.IsNullOrWhiteSpace(value))
-            throw new ArgumentException($"Unsupported suggestion cluster key '{clusterKey}'.");
+            throw new ArgumentException($"不支持的建议聚类键：{clusterKey}。");
 
         return kind switch
         {
             "web" => new { field = "domain", op = "domainSuffix", value },
             "app" => new { field = "appNameNormalized", op = "equals", value },
-            _ => throw new ArgumentException($"Unsupported suggestion cluster key '{clusterKey}'.")
+            _ => throw new ArgumentException($"不支持的建议聚类键：{clusterKey}。")
         };
     }
 

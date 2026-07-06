@@ -1079,7 +1079,7 @@ public class PcTrackerService
             record.ProjectTag,
             record.ClassificationConfidence ?? 0.2,
             record.ClassificationSource ?? "fallback",
-            record.ClassificationExplanation ?? "No rule or heuristic matched.");
+            record.ClassificationExplanation ?? "没有匹配到规则或启发式分类。");
     }
 
     private static IEnumerable<TimelineItem> NormalizeTimelineItems(IEnumerable<TimelineItem> items)

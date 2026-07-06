@@ -55,7 +55,7 @@ public sealed class ActivityClassificationRuleService
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(request.RuleName))
-            throw new ArgumentException("RuleName is required.", nameof(request));
+            throw new ArgumentException("规则名称不能为空。", nameof(request));
 
         var ruleName = request.RuleName.Trim();
         _ = NormalizeScope(request.Scope);
@@ -63,7 +63,7 @@ public sealed class ActivityClassificationRuleService
 
         if (ensureUniqueRuleName
             && await _db.Set<ActivityCategoryRuleEntity>().AnyAsync(rule => rule.RuleName == ruleName, ct))
-            throw new InvalidOperationException($"Activity classification rule '{ruleName}' already exists.");
+            throw new InvalidOperationException($"活动分类规则「{ruleName}」已存在。");
 
         if (!string.IsNullOrWhiteSpace(request.CategoryName))
         {
@@ -71,7 +71,7 @@ public sealed class ActivityClassificationRuleService
             var exists = await _db.Set<PcCategoryEntity>()
                 .AnyAsync(category => category.Name == categoryName, ct);
             if (!exists)
-                throw new ArgumentException($"CategoryName '{categoryName}' does not exist.", nameof(request));
+                throw new ArgumentException($"分类「{categoryName}」不存在。", nameof(request));
         }
     }
 
@@ -85,7 +85,7 @@ public sealed class ActivityClassificationRuleService
             "activity" => "activity",
             "both" => "both",
             "project" => "project",
-            _ => throw new ArgumentException($"Unsupported classification rule scope '{scope}'.")
+            _ => throw new ArgumentException($"不支持的分类规则范围：{scope}。")
         };
     }
 
@@ -129,7 +129,7 @@ public sealed class ActivityClassificationRuleService
     private static void ValidateConditionsJson(string? conditionsJson)
     {
         if (string.IsNullOrWhiteSpace(conditionsJson))
-            throw new ArgumentException("ConditionsJson is required.");
+            throw new ArgumentException("条件 JSON 不能为空。");
 
         try
         {
@@ -139,18 +139,18 @@ public sealed class ActivityClassificationRuleService
                 || !root.TryGetProperty("all", out var allConditions)
                 || allConditions.ValueKind != JsonValueKind.Array
                 || allConditions.GetArrayLength() == 0)
-                throw new ArgumentException("ConditionsJson must contain a non-empty all array.");
+                throw new ArgumentException("条件 JSON 必须包含非空的 all 数组。");
 
             foreach (var condition in allConditions.EnumerateArray())
                 ValidateCondition(condition);
         }
         catch (JsonException ex)
         {
-            throw new ArgumentException("ConditionsJson must be valid JSON.", ex);
+            throw new ArgumentException("条件 JSON 必须是有效 JSON。", ex);
         }
         catch (RegexParseException ex)
         {
-            throw new ArgumentException("Regex condition value must be a valid regular expression.", ex);
+            throw new ArgumentException("正则条件值必须是有效的正则表达式。", ex);
         }
     }
 
@@ -160,10 +160,10 @@ public sealed class ActivityClassificationRuleService
             || !TryGetStringProperty(condition, "field", out var field)
             || !TryGetStringProperty(condition, "op", out var op)
             || !condition.TryGetProperty("value", out var value))
-            throw new ArgumentException("Each condition must include field, op, and value.");
+            throw new ArgumentException("每个条件都必须包含 field、op 和 value。");
 
         if (!AllowedConditionFields.Contains(field) || !AllowedConditionOps.Contains(op))
-            throw new ArgumentException("ConditionsJson contains an unsupported condition.");
+            throw new ArgumentException("条件 JSON 包含不支持的条件。");
 
         ValidateConditionValue(op, value);
     }
@@ -173,19 +173,19 @@ public sealed class ActivityClassificationRuleService
         if (op == "containsAny")
         {
             if (value.ValueKind != JsonValueKind.Array || value.GetArrayLength() == 0)
-                throw new ArgumentException("containsAny requires a non-empty string array value.");
+                throw new ArgumentException("containsAny 需要非空字符串数组。");
 
             foreach (var item in value.EnumerateArray())
             {
                 if (item.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(item.GetString()))
-                    throw new ArgumentException("containsAny requires non-empty string values.");
+                    throw new ArgumentException("containsAny 的字符串值不能为空。");
             }
 
             return;
         }
 
         if (value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString()))
-            throw new ArgumentException($"{op} requires a non-empty string value.");
+            throw new ArgumentException($"{op} 需要非空字符串值。");
 
         if (op == "regex")
             _ = new Regex(value.GetString()!, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeout);

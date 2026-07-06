@@ -32,7 +32,7 @@ public sealed class AppKnowledgeSuggestionService
     {
         var suggestion = await _db.Set<ActivityClassificationSuggestionEntity>()
             .FirstOrDefaultAsync(item => item.Id == suggestionId, ct)
-            ?? throw new KeyNotFoundException($"Activity classification suggestion '{suggestionId}' was not found.");
+            ?? throw new KeyNotFoundException($"未找到活动分类建议：{suggestionId}。");
 
         var context = SanitizedSuggestionContext.Parse(suggestion.SanitizedContextJson);
         var domainCandidates = context.Domains.Count > 0
@@ -118,7 +118,7 @@ public sealed class AppKnowledgeSuggestionService
             context.Enabled), ct);
 
         var entity = await _db.Set<AppKnowledgeContextEntity>().FindAsync(new object[] { saved.Id }, ct)
-            ?? throw new KeyNotFoundException($"App Knowledge context '{saved.Id}' was not found after save.");
+            ?? throw new KeyNotFoundException($"保存后未找到 App 知识上下文：{saved.Id}。");
         entity.Source = SuggestionSource;
         entity.SourceSuggestionId = suggestionPreview.SuggestionId;
         entity.AffectedRecordCount = suggestionPreview.Preview.AffectedRecordCount;
@@ -144,7 +144,7 @@ public sealed class AppKnowledgeSuggestionService
         if (_db.ChangeTracker.Entries().Any(entry =>
             entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
         {
-            throw new InvalidOperationException("Learned app signatures must be created before staging other App Knowledge apply writes.");
+            throw new InvalidOperationException("必须先创建学习到的 App 签名，才能暂存其他 App 知识库写入。");
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -260,7 +260,7 @@ public sealed class AppKnowledgeSuggestionService
             normalizedPatternValue,
             targetCategory,
             projectTag,
-            $"{appLabel} - {ToPatternLabel(normalizedPatternType)}: {normalizedPatternValue}",
+            $"{appLabel} · {ToPatternLabel(normalizedPatternType)}：{normalizedPatternValue}",
             SuggestionSource,
             0.9,
             true,
@@ -310,7 +310,7 @@ public sealed class AppKnowledgeSuggestionService
             new Dictionary<string, int>(),
             Array.Empty<PcDetailRecord>(),
             suggestion.SampleCount > 0,
-            $"App Knowledge suggestion impact estimate: {suggestion.SampleCount} records, {suggestion.TotalDurationSeconds:R} seconds.");
+            $"App 知识库建议影响估算：{suggestion.SampleCount} 条记录，{suggestion.TotalDurationSeconds:R} 秒。");
 
     private static List<AppKnowledgeContextDto> Deduplicate(IEnumerable<AppKnowledgeContextDto> contexts) =>
         contexts
@@ -334,9 +334,11 @@ public sealed class AppKnowledgeSuggestionService
 
     private static string ToPatternLabel(string patternType) => patternType switch
     {
-        "app-default" => "app default",
-        "url-path" => "URL path",
-        "source-family" => "source family",
+        "app-default" => "App 默认",
+        "domain" => "域名",
+        "title" => "窗口标题",
+        "url-path" => "网址路径",
+        "source-family" => "来源类型",
         _ => patternType
     };
 

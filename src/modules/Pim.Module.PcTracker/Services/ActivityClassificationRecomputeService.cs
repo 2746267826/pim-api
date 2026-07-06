@@ -260,10 +260,10 @@ public class ActivityClassificationRecomputeService
         {
             var suggestion = await _db.Set<ActivityClassificationSuggestionEntity>()
                 .FirstOrDefaultAsync(item => item.Id == suggestionId, ct)
-                ?? throw new KeyNotFoundException($"Activity classification suggestion '{suggestionId}' was not found.");
+                ?? throw new KeyNotFoundException($"未找到活动分类建议：{suggestionId}。");
 
             if (!string.Equals(suggestion.Status, "pending", StringComparison.Ordinal))
-                throw new InvalidOperationException($"Suggestion '{suggestionId}' must be pending before apply.");
+                throw new InvalidOperationException($"分类建议 {suggestionId} 必须处于待处理状态后才能应用。");
 
             suggestion.Status = "accepted";
             suggestion.UpdatedAt = now;
@@ -282,9 +282,9 @@ public class ActivityClassificationRecomputeService
         var exists = await _db.Set<ActivityClassificationSuggestionEntity>()
             .AnyAsync(item => item.Id == suggestionId, ct);
         if (!exists)
-            throw new KeyNotFoundException($"Activity classification suggestion '{suggestionId}' was not found.");
+            throw new KeyNotFoundException($"未找到活动分类建议：{suggestionId}。");
 
-        throw new InvalidOperationException($"Suggestion '{suggestionId}' must be pending before apply.");
+        throw new InvalidOperationException($"分类建议 {suggestionId} 必须处于待处理状态后才能应用。");
     }
 
     private async Task<List<PcDetailRecord>> LoadActivityRecordsAsync(
@@ -358,7 +358,7 @@ public class ActivityClassificationRecomputeService
         if (mode == "today")
         {
             if (string.IsNullOrWhiteSpace(range.DateFrom) || !string.Equals(range.DateFrom, range.DateTo, StringComparison.Ordinal))
-                throw new ArgumentException("Today mode requires explicit matching DateFrom and DateTo.");
+                throw new ArgumentException("今天模式需要 DateFrom 和 DateTo 明确且相同。");
 
             var date = TryParseDate(range.DateFrom, nameof(range.DateFrom));
             var start = PcTrackerService.GetBusinessDayStartForQuery(date);
@@ -368,25 +368,25 @@ public class ActivityClassificationRecomputeService
         if (mode == "range")
         {
             if (string.IsNullOrWhiteSpace(range.DateFrom) || string.IsNullOrWhiteSpace(range.DateTo))
-                throw new ArgumentException("Range mode requires DateFrom and DateTo.");
+                throw new ArgumentException("日期范围模式需要 DateFrom 和 DateTo。");
 
             var rangeStartDate = TryParseDate(range.DateFrom, nameof(range.DateFrom));
             var rangeEndDate = TryParseDate(range.DateTo, nameof(range.DateTo));
             var rangeStart = PcTrackerService.GetBusinessDayStartForQuery(rangeStartDate);
             var rangeEnd = PcTrackerService.GetBusinessDayStartForQuery(rangeEndDate).AddDays(1);
             if (rangeEnd <= rangeStart)
-                throw new ArgumentException("DateTo must be on or after DateFrom.");
+                throw new ArgumentException("DateTo 必须晚于或等于 DateFrom。");
 
             return (rangeStart, rangeEnd);
         }
 
-        throw new ArgumentException($"Unknown range mode '{range.Mode}'.");
+        throw new ArgumentException($"未知的范围模式：{range.Mode}。");
     }
 
     private static DateTime TryParseDate(string? value, string fieldName)
     {
         if (!DateTime.TryParse(value, out var parsed))
-            throw new ArgumentException($"{fieldName} must be a valid date.");
+            throw new ArgumentException($"{fieldName} 必须是有效日期。");
 
         return parsed.Date;
     }

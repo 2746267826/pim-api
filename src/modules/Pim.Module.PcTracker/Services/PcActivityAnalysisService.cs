@@ -18,7 +18,7 @@ public sealed class PcActivityAnalysisService
         CancellationToken ct)
     {
         if (blockMinutes is < 15 or > 240)
-            throw new ArgumentException("blockMinutes must be between 15 and 240.");
+            throw new ArgumentException("时间块分钟数必须在 15 到 240 之间。");
 
         var dateText = date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var detail = await _tracker.QueryCompleteDetailAsync(

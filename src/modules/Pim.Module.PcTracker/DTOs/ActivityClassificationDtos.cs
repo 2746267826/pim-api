@@ -10,7 +10,7 @@ public record ActivityClassificationResult(
     Guid? SourceRuleId = null)
 {
     public static ActivityClassificationResult Fallback() =>
-        new("其他", "#64748b", null, 0.2, "fallback", "No rule or heuristic matched.");
+        new("其他", "#64748b", null, 0.2, "fallback", "没有匹配到规则或启发式分类。");
 }
 
 public record ActivityClassificationRuleDto(

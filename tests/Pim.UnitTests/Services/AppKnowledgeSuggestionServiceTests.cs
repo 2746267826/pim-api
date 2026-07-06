@@ -69,6 +69,7 @@ public class AppKnowledgeSuggestionServiceTests
         Assert.Equal("msedge.exe", result.RecommendedContext.ProcessName);
         Assert.Equal("domain", result.RecommendedContext.PatternType);
         Assert.Equal("github.com", result.RecommendedContext.PatternValue);
+        Assert.Equal("Microsoft Edge · 域名：github.com", result.RecommendedContext.ScopeSummary);
         Assert.Equal("Engineering", result.RecommendedContext.TargetCategoryName);
         Assert.Equal("Task 8", result.RecommendedContext.ProjectTag);
         Assert.Equal("app-knowledge-suggestion", result.RecommendedContext.Source);
@@ -124,6 +125,8 @@ public class AppKnowledgeSuggestionServiceTests
         Assert.Equal("PIM", result.RecommendedContext.ProjectTag);
         Assert.Equal(2, result.Preview.AffectedRecordCount);
         Assert.Equal(600, result.Preview.AffectedDurationSeconds);
+        Assert.Contains("App 知识库建议影响估算", result.Preview.Summary);
+        Assert.DoesNotContain("App Knowledge suggestion impact estimate", result.Preview.Summary);
         Assert.Contains(result.Alternatives, item =>
             item.PatternType == "app-default" && item.PatternValue == "Code.exe");
     }
@@ -468,7 +471,7 @@ public class AppKnowledgeSuggestionServiceTests
             });
 
         Assert.Equal(StatusCodes.Status409Conflict, response.StatusCode);
-        Assert.Contains("already exists", response.Body);
+        Assert.Contains("已存在", response.Body);
 
         await using var verifyScope = app.Services.CreateAsyncScope();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<PimDbContext>();
@@ -498,7 +501,7 @@ public class AppKnowledgeSuggestionServiceTests
             new Dictionary<string, int> { ["Engineering"] = affectedRecordCount },
             Array.Empty<PcDetailRecord>(),
             affectedRecordCount > 0,
-            $"Would affect {affectedRecordCount} records.");
+            $"将影响 {affectedRecordCount} 条记录。");
 
     private static AppSignatureEntity NewApp(string processName, string displayName) =>
         new()

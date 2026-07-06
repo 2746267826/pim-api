@@ -129,7 +129,7 @@ public class ActivityClassificationEntityConfiguration : IEntityTypeConfiguratio
         builder.Property(e => e.CategoryColor).HasDefaultValue("#64748b");
         builder.Property(e => e.Confidence).HasDefaultValue(0.2);
         builder.Property(e => e.Source).HasDefaultValue("fallback");
-        builder.Property(e => e.Explanation).HasDefaultValue("No rule or heuristic matched.");
+        builder.Property(e => e.Explanation).HasDefaultValue("没有匹配到规则或启发式分类。");
         builder.Property(e => e.ClassifierVersion).HasDefaultValue("local-v1");
         builder.Property(e => e.ClassifiedAt).HasDefaultValueSql("NOW()");
         builder.HasIndex(e => e.RecordKey)

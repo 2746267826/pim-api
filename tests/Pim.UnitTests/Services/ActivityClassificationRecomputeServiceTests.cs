@@ -449,7 +449,7 @@ public class ActivityClassificationRecomputeServiceTests
             drafts,
             CancellationToken.None));
 
-        Assert.Contains("pending", ex.Message);
+        Assert.Contains("待处理状态", ex.Message);
         Assert.Equal(1, await db.Set<ActivityCategoryRuleEntity>().CountAsync());
     }
 

@@ -43,7 +43,7 @@ public class ActivityClassificationSettingsService
         {
             _db.ChangeTracker.Clear();
             entity = await GetSettingsEntityAsync(ct)
-                ?? throw new InvalidOperationException("Settings save conflict occurred but no default settings row exists.");
+                ?? throw new InvalidOperationException("保存设置时发生冲突，且默认设置行不存在。");
             entity.RecommendedMinimumClassificationDurationMinutes = ClampToSupportedPreset(requestedMinutes);
             entity.UpdatedAt = DateTimeOffset.UtcNow;
             await _db.SaveChangesAsync(ct);

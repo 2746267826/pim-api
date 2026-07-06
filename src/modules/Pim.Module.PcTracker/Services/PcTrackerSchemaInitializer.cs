@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS pc_activity_classifications (
     confidence DOUBLE PRECISION NOT NULL DEFAULT 0.2,
     source VARCHAR(32) NOT NULL DEFAULT 'fallback',
     source_rule_id UUID,
-    explanation TEXT NOT NULL DEFAULT 'No rule or heuristic matched.',
+    explanation TEXT NOT NULL DEFAULT '没有匹配到规则或启发式分类。',
     classifier_version VARCHAR(32) NOT NULL DEFAULT 'local-v1',
     classified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     audit_id UUID

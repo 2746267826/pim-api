@@ -147,18 +147,18 @@ public class ActivitySuggestionService
     {
         var suggestion = await _db.Set<ActivityClassificationSuggestionEntity>()
             .FirstOrDefaultAsync(s => s.Id == id, ct)
-            ?? throw new KeyNotFoundException($"Activity classification suggestion '{id}' was not found.");
+            ?? throw new KeyNotFoundException($"未找到活动分类建议：{id}。");
         EnsurePending(suggestion);
 
         throw new InvalidOperationException(
-            "Direct suggestion acceptance is disabled. Use the preview/apply classification flow.");
+            "已禁用直接接受建议，请使用预览/应用分类流程。");
     }
 
     public async Task RejectSuggestionAsync(Guid id, CancellationToken ct)
     {
         var suggestion = await _db.Set<ActivityClassificationSuggestionEntity>()
             .FirstOrDefaultAsync(s => s.Id == id, ct)
-            ?? throw new KeyNotFoundException($"Activity classification suggestion '{id}' was not found.");
+            ?? throw new KeyNotFoundException($"未找到活动分类建议：{id}。");
         EnsurePending(suggestion);
 
         suggestion.Status = "rejected";
@@ -172,7 +172,7 @@ public class ActivitySuggestionService
             return;
 
         throw new InvalidOperationException(
-            $"Activity classification suggestion '{suggestion.Id}' must be pending before it can be changed. Current status is '{suggestion.Status}'.");
+            $"活动分类建议 {suggestion.Id} 必须处于待处理状态后才能修改。当前状态：{suggestion.Status}。");
     }
 
     private static bool NeedsSuggestion(PcDetailRecord record, int recommendedMinimumMinutes)

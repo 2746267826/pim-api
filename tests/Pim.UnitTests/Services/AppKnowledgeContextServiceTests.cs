@@ -43,7 +43,7 @@ public class AppKnowledgeContextServiceTests
         Assert.Equal("docs.example.com", result.PatternValue);
         Assert.Equal("Research", result.TargetCategoryName);
         Assert.Equal("PIM", result.ProjectTag);
-        Assert.Equal("Google Chrome - domain: docs.example.com", result.ScopeSummary);
+        Assert.Equal("Google Chrome · 域名：docs.example.com", result.ScopeSummary);
         Assert.Equal("user-confirmed", result.Source);
         Assert.Equal(1.0, result.Confidence);
         Assert.True(result.Enabled);
@@ -205,7 +205,7 @@ public class AppKnowledgeContextServiceTests
             ProcessName = processName,
             PatternType = "domain",
             PatternValue = patternValue,
-            ScopeSummary = $"{processName} - domain: {patternValue}",
+            ScopeSummary = $"{processName} · 域名：{patternValue}",
             Source = "user-confirmed",
             Confidence = 1.0,
             Enabled = true,

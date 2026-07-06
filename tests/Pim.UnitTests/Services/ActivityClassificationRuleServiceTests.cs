@@ -32,7 +32,7 @@ public class ActivityClassificationRuleServiceTests
         var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
             service.SaveAsync(NewRule() with { CategoryName = "Missing" }, CancellationToken.None));
 
-        Assert.Contains("CategoryName", ex.Message);
+        Assert.Contains("分类「Missing」不存在", ex.Message);
     }
 
     [Fact]

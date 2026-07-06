@@ -44,12 +44,12 @@ public sealed class AppKnowledgeContextService
 
         if (!AllowedPatternTypes.Contains(patternType))
         {
-            throw new ArgumentException($"PatternType must be one of: {string.Join(", ", AllowedPatternTypes)}.", nameof(req.PatternType));
+            throw new ArgumentException($"模式类型必须是以下之一：{string.Join(", ", AllowedPatternTypes)}。", nameof(req.PatternType));
         }
 
         if (confidence is < 0 or > 1)
         {
-            throw new ArgumentException("Confidence must be between 0 and 1.", nameof(req.Confidence));
+            throw new ArgumentException("置信度必须在 0 到 1 之间。", nameof(req.Confidence));
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -142,7 +142,7 @@ public sealed class AppKnowledgeContextService
 
             if (app is null)
             {
-                throw new ArgumentException("AppId was not found.", nameof(appId));
+                throw new ArgumentException("未找到指定的 App。", nameof(appId));
             }
 
             appName = string.IsNullOrWhiteSpace(app.DisplayName)
@@ -150,14 +150,16 @@ public sealed class AppKnowledgeContextService
                 : app.DisplayName.Trim();
         }
 
-        return $"{appName} - {ToPatternLabel(patternType)}: {patternValue}";
+        return $"{appName} · {ToPatternLabel(patternType)}：{patternValue}";
     }
 
     private static string ToPatternLabel(string patternType) => patternType switch
     {
-        "app-default" => "app default",
-        "url-path" => "URL path",
-        "source-family" => "source family",
+        "app-default" => "App 默认",
+        "domain" => "域名",
+        "title" => "窗口标题",
+        "url-path" => "网址路径",
+        "source-family" => "来源类型",
         _ => patternType
     };
 

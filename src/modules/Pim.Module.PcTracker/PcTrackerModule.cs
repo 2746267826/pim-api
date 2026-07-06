@@ -357,7 +357,7 @@ public class PcTrackerModule : IModule
             }
             catch (KeyNotFoundException)
             {
-                return Results.NotFound(ApiResponse<string>.Error(404, "Suggestion not found."));
+                return Results.NotFound(ApiResponse<string>.Error(404, "未找到分类建议。"));
             }
             catch (ArgumentException ex)
             {
@@ -383,7 +383,7 @@ public class PcTrackerModule : IModule
             }
             catch (KeyNotFoundException)
             {
-                return Results.NotFound(ApiResponse<string>.Error(404, "Suggestion not found."));
+                return Results.NotFound(ApiResponse<string>.Error(404, "未找到分类建议。"));
             }
             catch (ArgumentException ex)
             {
@@ -510,8 +510,8 @@ public class PcTrackerModule : IModule
         {
             var ok = await svc.DeleteAsync(id, ct);
             return ok
-                ? Results.Ok(ApiResponse<string>.Ok("Deleted."))
-                : Results.NotFound(ApiResponse<string>.Error(404, "Context not found."));
+                ? Results.Ok(ApiResponse<string>.Ok("已删除。"))
+                : Results.NotFound(ApiResponse<string>.Error(404, "未找到上下文知识。"));
         });
 
         appKnowledgeWrite.MapPost("/suggestions/{id:guid}/preview", async (
@@ -534,7 +534,7 @@ public class PcTrackerModule : IModule
             }
             catch (KeyNotFoundException)
             {
-                return Results.NotFound(ApiResponse<string>.Error(404, "Suggestion not found."));
+                return Results.NotFound(ApiResponse<string>.Error(404, "未找到分类建议。"));
             }
             catch (ArgumentException ex)
             {
@@ -590,13 +590,13 @@ public class PcTrackerModule : IModule
                     applied.Preview,
                     applied.AuditId,
                     applied.SuggestionStatus,
-                    $"Saved to App Knowledge: {savedContext.ScopeSummary}. Recomputed {applied.Preview.AffectedRecordCount} records.");
+                    $"已写入 App 知识库：{savedContext.ScopeSummary}。已重算 {applied.Preview.AffectedRecordCount} 条记录。");
 
                 return Results.Ok(ApiResponse<AppKnowledgeSuggestionApplyDto>.Ok(result));
             }
             catch (KeyNotFoundException)
             {
-                return Results.NotFound(ApiResponse<string>.Error(404, "Suggestion not found."));
+                return Results.NotFound(ApiResponse<string>.Error(404, "未找到分类建议。"));
             }
             catch (ArgumentException ex)
             {
