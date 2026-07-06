@@ -260,7 +260,7 @@ CREATE TABLE IF NOT EXISTS pc_app_knowledge_contexts (
     updated_at timestamptz NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS ix_pc_app_knowledge_contexts_app_pattern
+CREATE UNIQUE INDEX IF NOT EXISTS ix_pc_app_knowledge_contexts_app_pattern
     ON pc_app_knowledge_contexts(process_name, pattern_type, pattern_value);
 CREATE INDEX IF NOT EXISTS ix_pc_app_knowledge_contexts_app_signature_id
     ON pc_app_knowledge_contexts(app_signature_id);

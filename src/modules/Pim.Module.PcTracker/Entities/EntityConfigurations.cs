@@ -258,6 +258,7 @@ public class AppKnowledgeContextEntityConfiguration : IEntityTypeConfiguration<A
         builder.Property(item => item.CreatedAt).HasColumnName("created_at");
         builder.Property(item => item.UpdatedAt).HasColumnName("updated_at");
         builder.HasIndex(item => new { item.ProcessName, item.PatternType, item.PatternValue })
+            .IsUnique()
             .HasDatabaseName("ix_pc_app_knowledge_contexts_app_pattern");
         builder.HasIndex(item => item.TargetCategoryName)
             .HasDatabaseName("ix_pc_app_knowledge_contexts_category");

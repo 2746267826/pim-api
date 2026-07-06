@@ -2359,6 +2359,7 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasDatabaseName("ix_pc_app_knowledge_contexts_category");
 
                     b.HasIndex("ProcessName", "PatternType", "PatternValue")
+                        .IsUnique()
                         .HasDatabaseName("ix_pc_app_knowledge_contexts_app_pattern");
 
                     b.ToTable("pc_app_knowledge_contexts", (string)null);

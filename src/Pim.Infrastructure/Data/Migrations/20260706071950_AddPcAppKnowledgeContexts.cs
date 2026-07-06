@@ -48,7 +48,8 @@ namespace Pim.Infrastructure.Data.Migrations
             migrationBuilder.CreateIndex(
                 name: "ix_pc_app_knowledge_contexts_app_pattern",
                 table: "pc_app_knowledge_contexts",
-                columns: new[] { "process_name", "pattern_type", "pattern_value" });
+                columns: new[] { "process_name", "pattern_type", "pattern_value" },
+                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "ix_pc_app_knowledge_contexts_app_signature_id",

@@ -109,6 +109,7 @@ public class PimPcTrackerModelTests
         Assert.Equal("pc_app_knowledge_contexts", entity!.GetTableName());
         Assert.Contains(entity.GetIndexes(), index =>
             index.GetDatabaseName() == "ix_pc_app_knowledge_contexts_app_pattern" &&
+            index.IsUnique &&
             index.Properties.Select(property => property.Name).SequenceEqual([
                 nameof(AppKnowledgeContextEntity.ProcessName),
                 nameof(AppKnowledgeContextEntity.PatternType),

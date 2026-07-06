@@ -40,10 +40,16 @@ public sealed class AppKnowledgeContextService
         var processName = RequireTrimmed(req.ProcessName, nameof(req.ProcessName));
         var patternType = RequireTrimmed(req.PatternType, nameof(req.PatternType)).ToLowerInvariant();
         var patternValue = RequireTrimmed(req.PatternValue, nameof(req.PatternValue));
+        var confidence = req.Confidence ?? 1.0;
 
         if (!AllowedPatternTypes.Contains(patternType))
         {
             throw new ArgumentException($"PatternType must be one of: {string.Join(", ", AllowedPatternTypes)}.", nameof(req.PatternType));
+        }
+
+        if (confidence is < 0 or > 1)
+        {
+            throw new ArgumentException("Confidence must be between 0 and 1.", nameof(req.Confidence));
         }
 
         var now = DateTimeOffset.UtcNow;
@@ -52,6 +58,7 @@ public sealed class AppKnowledgeContextService
             item.ProcessName == processName &&
             item.PatternType == patternType &&
             item.PatternValue == patternValue, ct);
+        var isInsert = entity is null;
 
         if (entity is null)
         {
@@ -65,19 +72,30 @@ public sealed class AppKnowledgeContextService
             contexts.Add(entity);
         }
 
-        entity.AppSignatureId = req.AppId;
-        entity.ProcessName = processName;
-        entity.PatternType = patternType;
-        entity.PatternValue = patternValue;
-        entity.TargetCategoryName = TrimToNull(req.TargetCategoryName);
-        entity.ProjectTag = TrimToNull(req.ProjectTag);
-        entity.ScopeSummary = await BuildScopeSummaryAsync(req.AppId, processName, patternType, patternValue, ct);
-        entity.Source = "user-confirmed";
-        entity.Confidence = req.Confidence ?? 1.0;
-        entity.Enabled = req.Enabled ?? true;
-        entity.UpdatedAt = now;
+        var scopeSummary = await BuildScopeSummaryAsync(req.AppId, processName, patternType, patternValue, ct);
+        ApplyRequest(entity, req, processName, patternType, patternValue, scopeSummary, confidence, now);
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException) when (isInsert)
+        {
+            _db.Entry(entity).State = EntityState.Detached;
+            entity = await contexts.FirstOrDefaultAsync(item =>
+                item.ProcessName == processName &&
+                item.PatternType == patternType &&
+                item.PatternValue == patternValue, ct);
+
+            if (entity is null)
+            {
+                throw;
+            }
+
+            ApplyRequest(entity, req, processName, patternType, patternValue, scopeSummary, confidence, now);
+            await _db.SaveChangesAsync(ct);
+        }
+
         return ToDto(entity);
     }
 
@@ -145,6 +163,29 @@ public sealed class AppKnowledgeContextService
         "source-family" => "source family",
         _ => patternType
     };
+
+    private static void ApplyRequest(
+        AppKnowledgeContextEntity entity,
+        SaveAppKnowledgeContextRequest req,
+        string processName,
+        string patternType,
+        string patternValue,
+        string scopeSummary,
+        double confidence,
+        DateTimeOffset updatedAt)
+    {
+        entity.AppSignatureId = req.AppId;
+        entity.ProcessName = processName;
+        entity.PatternType = patternType;
+        entity.PatternValue = patternValue;
+        entity.TargetCategoryName = TrimToNull(req.TargetCategoryName);
+        entity.ProjectTag = TrimToNull(req.ProjectTag);
+        entity.ScopeSummary = scopeSummary;
+        entity.Source = "user-confirmed";
+        entity.Confidence = confidence;
+        entity.Enabled = req.Enabled ?? true;
+        entity.UpdatedAt = updatedAt;
+    }
 
     private static string RequireTrimmed(string? value, string name)
     {

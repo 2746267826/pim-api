@@ -88,6 +88,57 @@ public class AppKnowledgeContextServiceTests
     }
 
     [Fact]
+    public async Task SaveAsync_WhenInsertHitsUniqueRace_UpdatesExistingAppPattern()
+    {
+        await using var db = CreateDbWithInsertRace();
+        var service = new AppKnowledgeContextService(db);
+
+        var result = await service.SaveAsync(new SaveAppKnowledgeContextRequest(
+            null,
+            " chrome.exe ",
+            " domain ",
+            " docs.example.com ",
+            "Documentation",
+            "Client A",
+            0.7,
+            false), CancellationToken.None);
+
+        Assert.Equal("Documentation", result.TargetCategoryName);
+        Assert.Equal("Client A", result.ProjectTag);
+        Assert.Equal(0.7, result.Confidence);
+        Assert.False(result.Enabled);
+
+        var entity = Assert.Single(db.Set<AppKnowledgeContextEntity>());
+        Assert.Equal(entity.Id, result.Id);
+        Assert.Equal("chrome.exe", entity.ProcessName);
+        Assert.Equal("domain", entity.PatternType);
+        Assert.Equal("docs.example.com", entity.PatternValue);
+        Assert.Equal("Documentation", entity.TargetCategoryName);
+        Assert.Equal("Client A", entity.ProjectTag);
+    }
+
+    [Theory]
+    [InlineData(-0.01)]
+    [InlineData(1.01)]
+    public async Task SaveAsync_RejectsConfidenceOutsideUnitInterval(double confidence)
+    {
+        await using var db = CreateDb();
+        var service = new AppKnowledgeContextService(db);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => service.SaveAsync(new SaveAppKnowledgeContextRequest(
+            null,
+            "chrome.exe",
+            "domain",
+            "docs.example.com",
+            "Research",
+            null,
+            confidence,
+            null), CancellationToken.None));
+
+        Assert.Equal("Confidence", ex.ParamName);
+    }
+
+    [Fact]
     public async Task GetByAppAsync_ReturnsOnlyContextsForOneApp()
     {
         await using var db = CreateDb();
@@ -170,5 +221,61 @@ public class AppKnowledgeContextServiceTests
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         return new PimDbContext(options);
+    }
+
+    private static PimDbContext CreateDbWithInsertRace()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(AppKnowledgeContextEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        return new InsertRacePimDbContext(options);
+    }
+
+    private sealed class InsertRacePimDbContext : PimDbContext
+    {
+        private readonly DbContextOptions<PimDbContext> _options;
+        private bool _hasThrown;
+
+        public InsertRacePimDbContext(DbContextOptions<PimDbContext> options)
+            : base(options)
+        {
+            _options = options;
+        }
+
+        public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        {
+            var pendingContext = ChangeTracker.Entries<AppKnowledgeContextEntity>()
+                .SingleOrDefault(entry => entry.State == EntityState.Added);
+
+            if (!_hasThrown && pendingContext is not null)
+            {
+                _hasThrown = true;
+                var attempted = pendingContext.Entity;
+                var now = DateTimeOffset.UtcNow;
+
+                await using var competingDb = new PimDbContext(_options);
+                competingDb.Set<AppKnowledgeContextEntity>().Add(new AppKnowledgeContextEntity
+                {
+                    Id = Guid.NewGuid(),
+                    AppSignatureId = attempted.AppSignatureId,
+                    ProcessName = attempted.ProcessName,
+                    PatternType = attempted.PatternType,
+                    PatternValue = attempted.PatternValue,
+                    TargetCategoryName = "Existing",
+                    ScopeSummary = "existing context",
+                    Source = "user-confirmed",
+                    Confidence = 0.4,
+                    Enabled = true,
+                    CreatedAt = now.AddMinutes(-1),
+                    UpdatedAt = now.AddMinutes(-1)
+                });
+                await competingDb.SaveChangesAsync(cancellationToken);
+
+                throw new DbUpdateException("Simulated unique app-pattern insert race.");
+            }
+
+            return await base.SaveChangesAsync(cancellationToken);
+        }
     }
 }
