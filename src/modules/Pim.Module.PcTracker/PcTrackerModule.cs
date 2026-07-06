@@ -33,6 +33,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<ClassificationRuleDraftService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
         services.AddScoped<AppSignatureService>();
+        services.AddScoped<AppKnowledgeContextService>();
         services.AddScoped<PcCategoryService>();
         services.AddScoped<PcProductivityService>();
         services.AddScoped<PcActivityRecordKeyService>();
@@ -464,6 +465,54 @@ public class PcTrackerModule : IModule
         });
 
         // App Knowledge Base endpoints
+        var appKnowledgeRead = endpoints.MapGroup("/api/v1/pc/app-knowledge").AllowAnonymous();
+        var appKnowledgeWrite = endpoints.MapGroup("/api/v1/pc/app-knowledge").RequireAuthorization();
+
+        appKnowledgeRead.MapGet("/apps", async (
+            [FromQuery] string? search,
+            [FromServices] AppSignatureService svc,
+            CancellationToken ct) =>
+        {
+            var list = await svc.GetKnowledgeAppsAsync(search, ct);
+            return Results.Ok(ApiResponse<List<AppKnowledgeAppDto>>.Ok(list));
+        });
+
+        appKnowledgeRead.MapGet("/apps/{appId:guid}/contexts", async (
+            Guid appId,
+            [FromServices] AppKnowledgeContextService svc,
+            CancellationToken ct) =>
+        {
+            var list = await svc.GetByAppAsync(appId, ct);
+            return Results.Ok(ApiResponse<List<AppKnowledgeContextDto>>.Ok(list));
+        });
+
+        appKnowledgeWrite.MapPost("/contexts", async (
+            [FromBody] SaveAppKnowledgeContextRequest req,
+            [FromServices] AppKnowledgeContextService svc,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var result = await svc.SaveAsync(req, ct);
+                return Results.Ok(ApiResponse<AppKnowledgeContextDto>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        appKnowledgeWrite.MapDelete("/contexts/{id:guid}", async (
+            Guid id,
+            [FromServices] AppKnowledgeContextService svc,
+            CancellationToken ct) =>
+        {
+            var ok = await svc.DeleteAsync(id, ct);
+            return ok
+                ? Results.Ok(ApiResponse<string>.Ok("Deleted."))
+                : Results.NotFound(ApiResponse<string>.Error(404, "Context not found."));
+        });
+
         var kbRead = endpoints.MapGroup("/api/v1/pc/app-signatures").AllowAnonymous();
         var kbWrite = endpoints.MapGroup("/api/v1/pc/app-signatures").RequireAuthorization();
 

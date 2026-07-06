@@ -30,6 +30,56 @@ public class AppSignatureService
             .ToListAsync(ct);
     }
 
+    public async Task<List<AppKnowledgeAppDto>> GetKnowledgeAppsAsync(string? search, CancellationToken ct)
+    {
+        var query = _db.Set<AppSignatureEntity>().AsQueryable();
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var s = search.Trim().ToLowerInvariant();
+            query = query.Where(x => x.ProcessName.ToLower().Contains(s)
+                                  || x.DisplayName.ToLower().Contains(s)
+                                  || (x.SearchKeywords != null && x.SearchKeywords.ToLower().Contains(s)));
+        }
+
+        var apps = await query
+            .OrderByDescending(x => x.LastSeenAt)
+            .ThenBy(x => x.ProcessName)
+            .ToListAsync(ct);
+
+        var appIds = apps.Select(x => x.Id).ToList();
+        var contextStats = await _db.Set<AppKnowledgeContextEntity>()
+            .Where(x => x.AppSignatureId.HasValue && appIds.Contains(x.AppSignatureId.Value))
+            .GroupBy(x => x.AppSignatureId!.Value)
+            .Select(x => new
+            {
+                AppId = x.Key,
+                ContextCount = x.Count(),
+                RecentAffectedDurationSeconds = x.Sum(item => item.AffectedDurationSeconds)
+            })
+            .ToListAsync(ct);
+        var statsByAppId = contextStats.ToDictionary(x => x.AppId);
+
+        return apps.Select(app =>
+        {
+            statsByAppId.TryGetValue(app.Id, out var stats);
+            return new AppKnowledgeAppDto(
+                app.Id,
+                app.ProcessName,
+                app.DisplayName,
+                app.CategoryPath,
+                app.Productivity,
+                app.Description,
+                app.Source,
+                app.Confidence,
+                app.Icon,
+                app.LastSeenAt,
+                app.CreatedAt,
+                stats?.ContextCount ?? 0,
+                0,
+                stats?.RecentAffectedDurationSeconds ?? 0);
+        }).ToList();
+    }
+
     public async Task<AppSignatureDto?> LookupByProcessNameAsync(string processName, CancellationToken ct)
     {
         var normalizedName = processName.ToLowerInvariant();
