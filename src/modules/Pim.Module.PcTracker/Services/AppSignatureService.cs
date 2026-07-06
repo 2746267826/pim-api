@@ -82,39 +82,7 @@ public class AppSignatureService
 
     public async Task<AppSignatureDto?> LookupByProcessNameAsync(string processName, CancellationToken ct)
     {
-        var normalizedName = processName.ToLowerInvariant();
-
-        // Try exact match (case-insensitive via normalized)
-        var entity = await _db.Set<AppSignatureEntity>()
-            .FirstOrDefaultAsync(x => x.ProcessName.ToLower() == normalizedName, ct);
-
-        if (entity is null && !normalizedName.EndsWith(".exe"))
-        {
-            // If normalized name (stripped .exe) didn't match, try with .exe suffix
-            entity = await _db.Set<AppSignatureEntity>()
-                .FirstOrDefaultAsync(x => x.ProcessName.ToLower() == normalizedName + ".exe", ct);
-        }
-
-        if (entity is null)
-        {
-            // Try glob pattern match (e.g. MobaXterm*.exe)
-            var all = await _db.Set<AppSignatureEntity>().ToListAsync(ct);
-            foreach (var candidateName in new[] { normalizedName, normalizedName + ".exe" })
-            {
-                entity = all.FirstOrDefault(sig =>
-                {
-                    var pattern = sig.ProcessName;
-                    if (!pattern.Contains('*') && !pattern.Contains('?'))
-                        return false;
-                    var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
-                        .Replace("\\*", ".*")
-                        .Replace("\\?", ".") + "$";
-                    return System.Text.RegularExpressions.Regex.IsMatch(candidateName, regex,
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                });
-                if (entity is not null) break;
-            }
-        }
+        var entity = await FindMatchingEntityByProcessNameAsync(processName, ct);
 
         if (entity is not null)
         {
@@ -122,6 +90,12 @@ public class AppSignatureService
             await _db.SaveChangesAsync(ct);
         }
 
+        return entity is not null ? ToDto(entity) : null;
+    }
+
+    public async Task<AppSignatureDto?> FindByProcessNameAsync(string processName, CancellationToken ct)
+    {
+        var entity = await FindMatchingEntityByProcessNameAsync(processName, ct);
         return entity is not null ? ToDto(entity) : null;
     }
 
@@ -175,7 +149,46 @@ public class AppSignatureService
         return await _db.Set<AppSignatureEntity>().CountAsync(ct);
     }
 
-    private static AppSignatureDto ToDto(AppSignatureEntity e) => new(
+    private async Task<AppSignatureEntity?> FindMatchingEntityByProcessNameAsync(string processName, CancellationToken ct)
+    {
+        var normalizedName = processName.ToLowerInvariant();
+
+        // Try exact match (case-insensitive via normalized)
+        var entity = await _db.Set<AppSignatureEntity>()
+            .FirstOrDefaultAsync(x => x.ProcessName.ToLower() == normalizedName, ct);
+
+        if (entity is null && !normalizedName.EndsWith(".exe"))
+        {
+            // If normalized name (stripped .exe) didn't match, try with .exe suffix
+            entity = await _db.Set<AppSignatureEntity>()
+                .FirstOrDefaultAsync(x => x.ProcessName.ToLower() == normalizedName + ".exe", ct);
+        }
+
+        if (entity is null)
+        {
+            // Try glob pattern match (e.g. MobaXterm*.exe)
+            var all = await _db.Set<AppSignatureEntity>().ToListAsync(ct);
+            foreach (var candidateName in new[] { normalizedName, normalizedName + ".exe" })
+            {
+                entity = all.FirstOrDefault(sig =>
+                {
+                    var pattern = sig.ProcessName;
+                    if (!pattern.Contains('*') && !pattern.Contains('?'))
+                        return false;
+                    var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+                        .Replace("\\*", ".*")
+                        .Replace("\\?", ".") + "$";
+                    return System.Text.RegularExpressions.Regex.IsMatch(candidateName, regex,
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                });
+                if (entity is not null) break;
+            }
+        }
+
+        return entity;
+    }
+
+    internal static AppSignatureDto ToDto(AppSignatureEntity e) => new(
         e.Id, e.ProcessName, e.DisplayName, e.CategoryPath,
         e.Productivity, e.Description, e.Source, e.Confidence,
         e.Icon, e.LastSeenAt, e.CreatedAt);

@@ -1,5 +1,15 @@
+using System.Text;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Pim.Core.Operations;
+using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Operations;
+using Pim.Module.PcTracker;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
 using Pim.Module.PcTracker.Services;
@@ -118,6 +128,55 @@ public class AppKnowledgeSuggestionServiceTests
     }
 
     [Fact]
+    public async Task BuildRecommendedContextAsync_ResolvesWildcardAppSignatureWithoutUpdatingLastSeen()
+    {
+        await using var db = CreateDb();
+        var suggestionId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        var originalLastSeen = DateTimeOffset.Parse("2026-01-02T03:04:05Z");
+        var app = NewApp("MobaXterm*.exe", "MobaXterm");
+        app.LastSeenAt = originalLastSeen;
+        db.Set<AppSignatureEntity>().Add(app);
+        db.Set<ActivityClassificationSuggestionEntity>().Add(new ActivityClassificationSuggestionEntity
+        {
+            Id = suggestionId,
+            ClusterKey = "app:MobaXterm_Personal_23.6",
+            SampleCount = 3,
+            TotalDurationSeconds = 1500,
+            SampleRecordsJson = "[]",
+            SanitizedContextJson = """
+            {
+              "apps": ["MobaXterm_Personal_23.6"],
+              "titles": ["SSH session"]
+            }
+            """,
+            SuggestedCategory = "Development",
+            Status = "pending",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var result = await service.BuildRecommendedContextAsync(
+            suggestionId,
+            new SuggestionClassificationPreviewRequest(
+                null,
+                null,
+                new ActivityClassificationApplyRangeRequest("range", "2026-07-06", "2026-07-06")),
+            NewPreview(affectedRecordCount: 3, affectedDurationSeconds: 1500),
+            CancellationToken.None);
+
+        Assert.Equal(app.Id, result.RecommendedContext.AppId);
+        Assert.Equal("MobaXterm*.exe", result.RecommendedContext.ProcessName);
+        Assert.Equal("title", result.RecommendedContext.PatternType);
+        Assert.Equal("SSH session", result.RecommendedContext.PatternValue);
+        Assert.Equal(originalLastSeen, await db.Set<AppSignatureEntity>()
+            .Where(item => item.Id == app.Id)
+            .Select(item => item.LastSeenAt)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task SaveRecommendedContextAsync_PersistsSourceSuggestionAndPreviewImpact()
     {
         await using var db = CreateDb();
@@ -165,8 +224,92 @@ public class AppKnowledgeSuggestionServiceTests
         Assert.Equal(2400, entity.AffectedDurationSeconds);
     }
 
+    [Fact]
+    public async Task ApplyEndpoint_DuplicateRuleFailureDoesNotPersistAppKnowledgeContext()
+    {
+        var databaseName = $"app-knowledge-apply-{Guid.NewGuid()}";
+        await using var app = BuildEndpointApp(databaseName);
+        var suggestionId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            db.Set<PcCategoryEntity>().Add(new PcCategoryEntity
+            {
+                Id = Guid.NewGuid(),
+                Name = "Programming",
+                Color = "#2563eb"
+            });
+            db.Set<ActivityClassificationSuggestionEntity>().Add(new ActivityClassificationSuggestionEntity
+            {
+                Id = suggestionId,
+                ClusterKey = "app:code",
+                SampleCount = 1,
+                TotalDurationSeconds = 600,
+                SampleRecordsJson = "[]",
+                SanitizedContextJson = """{"apps":["Code.exe"],"titles":["Program.cs"]}""",
+                SuggestedCategory = "Programming",
+                Status = "pending",
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+            db.Set<ActivityCategoryRuleEntity>().Add(new ActivityCategoryRuleEntity
+            {
+                Id = Guid.NewGuid(),
+                RuleName = $"Suggestion: app:code {suggestionId:N}",
+                Scope = "activity",
+                CategoryName = "Programming",
+                Color = "#2563eb",
+                Priority = 900,
+                Source = "user",
+                Status = "inactive",
+                ConditionsJson = """
+                {"all":[{"field":"appNameNormalized","op":"equals","value":"not-code"}]}
+                """,
+                Confidence = 0.95,
+                Explanation = "Existing duplicate rule name.",
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+            db.Set<AwEventEntity>().Add(WindowEvent("2026-05-25T08:00:00Z", 600, "Code.exe", "Program.cs"));
+            await db.SaveChangesAsync();
+        }
+
+        var response = await InvokeEndpointAsync(
+            app,
+            "POST",
+            "/api/v1/pc/app-knowledge/suggestions/{id:guid}/apply",
+            context =>
+            {
+                context.Request.RouteValues["id"] = suggestionId.ToString();
+                SetJsonBody(context, """
+                {
+                  "categoryName": "Programming",
+                  "projectTag": "PIM",
+                  "range": {
+                    "mode": "range",
+                    "dateFrom": "2026-05-25",
+                    "dateTo": "2026-05-25"
+                  }
+                }
+                """);
+            });
+
+        Assert.Equal(StatusCodes.Status409Conflict, response.StatusCode);
+        Assert.Contains("already exists", response.Body);
+
+        await using var verifyScope = app.Services.CreateAsyncScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<PimDbContext>();
+        Assert.Equal(0, await verifyDb.Set<AppKnowledgeContextEntity>().CountAsync());
+        Assert.Equal("pending", await verifyDb.Set<ActivityClassificationSuggestionEntity>()
+            .Where(item => item.Id == suggestionId)
+            .Select(item => item.Status)
+            .SingleAsync());
+    }
+
     private static AppKnowledgeSuggestionService CreateService(PimDbContext db) =>
-        new(db, new AppKnowledgeContextService(db));
+        new(db, new AppKnowledgeContextService(db), new AppSignatureService(db));
 
     private static ActivityClassificationPreviewDto NewPreview(int affectedRecordCount, double affectedDurationSeconds) =>
         new(
@@ -197,5 +340,96 @@ public class AppKnowledgeSuggestionServiceTests
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         return new PimDbContext(options);
+    }
+
+    private static WebApplication BuildEndpointApp(string databaseName)
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Services.AddAuthorization();
+        builder.Services.AddDbContext<PimDbContext>(options =>
+            options.UseInMemoryDatabase(databaseName));
+        builder.Services.AddScoped<ICurrentUserService>(_ =>
+            new FixedCurrentUserService(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")));
+        builder.Services.AddScoped<IAuditLogService, AuditLogService>();
+
+        var module = new PcTrackerModule();
+        module.RegisterServices(builder.Services, builder.Configuration);
+
+        var app = builder.Build();
+        module.MapEndpoints(app);
+        return app;
+    }
+
+    private static async Task<(int StatusCode, string Body)> InvokeEndpointAsync(
+        WebApplication app,
+        string method,
+        string route,
+        Action<DefaultHttpContext> configure)
+    {
+        var routeEndpoints = ((IEndpointRouteBuilder)app)
+            .DataSources
+            .SelectMany(dataSource => dataSource.Endpoints)
+            .OfType<RouteEndpoint>()
+            .ToList();
+        var endpoint = routeEndpoints.Single(endpoint =>
+            NormalizeRoute(endpoint.RoutePattern.RawText ?? string.Empty) == route
+            && endpoint.Metadata
+                .GetMetadata<IHttpMethodMetadata>()?
+                .HttpMethods
+                .Contains(method) is true);
+        Assert.NotNull(endpoint.RequestDelegate);
+
+        using var requestScope = app.Services.CreateScope();
+        var context = new DefaultHttpContext
+        {
+            RequestServices = requestScope.ServiceProvider
+        };
+        context.SetEndpoint(endpoint);
+        context.Request.Method = method;
+        context.Response.Body = new MemoryStream();
+        context.Features.Set<IHttpRequestBodyDetectionFeature>(new BodyDetectionFeature());
+
+        configure(context);
+        await endpoint.RequestDelegate(context);
+
+        context.Response.Body.Position = 0;
+        var responseBody = await new StreamReader(context.Response.Body).ReadToEndAsync();
+        return (context.Response.StatusCode, responseBody);
+    }
+
+    private static string NormalizeRoute(string route)
+        => route.Length > 1 ? route.TrimEnd('/') : route;
+
+    private static void SetJsonBody(DefaultHttpContext context, string json)
+    {
+        var bytes = Encoding.UTF8.GetBytes(json);
+        context.Request.ContentType = "application/json";
+        context.Request.ContentLength = bytes.Length;
+        context.Request.Body = new MemoryStream(bytes);
+    }
+
+    private static AwEventEntity WindowEvent(string timestamp, double duration, string appName, string title) =>
+        new()
+        {
+            Id = Random.Shared.NextInt64(1, long.MaxValue),
+            DeviceId = "device-1",
+            Timestamp = DateTimeOffset.Parse(timestamp),
+            Duration = duration,
+            EventType = "window",
+            AppName = appName,
+            AppNameNormalized = AppNameNormalizer.Normalize(appName),
+            WindowTitle = title,
+            DataJson = "{}"
+        };
+
+    private sealed class FixedCurrentUserService(Guid userId) : ICurrentUserService
+    {
+        public Guid? UserId { get; } = userId;
+        public string? Role => "User";
+    }
+
+    private sealed class BodyDetectionFeature : IHttpRequestBodyDetectionFeature
+    {
+        public bool CanHaveBody => true;
     }
 }

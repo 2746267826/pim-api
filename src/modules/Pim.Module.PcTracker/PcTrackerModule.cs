@@ -566,8 +566,17 @@ public class PcTrackerModule : IModule
                     previewRequest,
                     classificationPreview.Preview,
                     ct);
-                var savedContext = await appKnowledge.SaveRecommendedContextAsync(knowledgePreview, ct);
                 var applied = await recompute.ApplySuggestionAsync(id, req, drafts, ct);
+                var appliedKnowledgePreview = knowledgePreview with
+                {
+                    Preview = applied.Preview,
+                    RecommendedContext = knowledgePreview.RecommendedContext with
+                    {
+                        AffectedRecordCount = applied.Preview.AffectedRecordCount,
+                        AffectedDurationSeconds = applied.Preview.AffectedDurationSeconds
+                    }
+                };
+                var savedContext = await appKnowledge.SaveRecommendedContextAsync(appliedKnowledgePreview, ct);
                 var result = new AppKnowledgeSuggestionApplyDto(
                     id,
                     savedContext,

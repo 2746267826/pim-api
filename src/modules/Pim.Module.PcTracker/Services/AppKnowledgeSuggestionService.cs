@@ -12,11 +12,16 @@ public sealed class AppKnowledgeSuggestionService
 
     private readonly PimDbContext _db;
     private readonly AppKnowledgeContextService _contexts;
+    private readonly AppSignatureService _appSignatures;
 
-    public AppKnowledgeSuggestionService(PimDbContext db, AppKnowledgeContextService contexts)
+    public AppKnowledgeSuggestionService(
+        PimDbContext db,
+        AppKnowledgeContextService contexts,
+        AppSignatureService appSignatures)
     {
         _db = db;
         _contexts = contexts;
+        _appSignatures = appSignatures;
     }
 
     public async Task<AppKnowledgeSuggestionPreviewDto> BuildRecommendedContextAsync(
@@ -137,7 +142,7 @@ public sealed class AppKnowledgeSuggestionService
         return ("app-default", processName);
     }
 
-    private async Task<AppSignatureEntity?> FindAppSignatureAsync(
+    private async Task<AppSignatureDto?> FindAppSignatureAsync(
         string processName,
         IReadOnlyList<string> appCandidates,
         CancellationToken ct)
@@ -153,16 +158,25 @@ public sealed class AppKnowledgeSuggestionService
         if (candidates.Count == 0)
             return null;
 
+        foreach (var candidate in candidates)
+        {
+            var app = await _appSignatures.FindByProcessNameAsync(candidate, ct);
+            if (app is not null)
+                return app;
+        }
+
         var normalizedCandidates = candidates
             .Select(value => value.ToLowerInvariant())
             .ToList();
 
-        return await _db.Set<AppSignatureEntity>()
-            .Where(item =>
-                normalizedCandidates.Contains(item.ProcessName.ToLower()) ||
-                normalizedCandidates.Contains(item.DisplayName.ToLower()))
+        var displayNameMatch = await _db.Set<AppSignatureEntity>()
+            .Where(item => normalizedCandidates.Contains(item.DisplayName.ToLower()))
             .OrderBy(item => item.ProcessName)
             .FirstOrDefaultAsync(ct);
+
+        return displayNameMatch is not null
+            ? AppSignatureService.ToDto(displayNameMatch)
+            : null;
     }
 
     private static IEnumerable<string> AddExeVariant(string value)
@@ -174,7 +188,7 @@ public sealed class AppKnowledgeSuggestionService
 
     private static AppKnowledgeContextDto BuildContextDto(
         ActivityClassificationSuggestionEntity suggestion,
-        AppSignatureEntity? app,
+        AppSignatureDto? app,
         string processName,
         string patternType,
         string patternValue,
