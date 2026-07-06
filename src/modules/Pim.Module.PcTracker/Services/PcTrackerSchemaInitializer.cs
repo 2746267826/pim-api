@@ -262,6 +262,8 @@ CREATE TABLE IF NOT EXISTS pc_app_knowledge_contexts (
 
 CREATE INDEX IF NOT EXISTS ix_pc_app_knowledge_contexts_app_pattern
     ON pc_app_knowledge_contexts(process_name, pattern_type, pattern_value);
+CREATE INDEX IF NOT EXISTS ix_pc_app_knowledge_contexts_app_signature_id
+    ON pc_app_knowledge_contexts(app_signature_id);
 CREATE INDEX IF NOT EXISTS ix_pc_app_knowledge_contexts_category
     ON pc_app_knowledge_contexts(target_category_name);
 CREATE INDEX IF NOT EXISTS ix_pc_app_knowledge_contexts_source_suggestion

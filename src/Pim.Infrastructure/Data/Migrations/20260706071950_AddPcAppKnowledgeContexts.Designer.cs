@@ -2349,7 +2349,8 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("AppSignatureId");
+                    b.HasIndex("AppSignatureId")
+                        .HasDatabaseName("ix_pc_app_knowledge_contexts_app_signature_id");
 
                     b.HasIndex("SourceSuggestionId")
                         .HasDatabaseName("ix_pc_app_knowledge_contexts_source_suggestion");

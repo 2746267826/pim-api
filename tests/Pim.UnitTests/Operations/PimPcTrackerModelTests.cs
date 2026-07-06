@@ -116,6 +116,28 @@ public class PimPcTrackerModelTests
             ]));
         Assert.Contains(entity.GetIndexes(), index =>
             index.GetDatabaseName() == "ix_pc_app_knowledge_contexts_category");
+        Assert.Contains(entity.GetIndexes(), index =>
+            index.GetDatabaseName() == "ix_pc_app_knowledge_contexts_source_suggestion" &&
+            index.Properties.Select(property => property.Name).SequenceEqual([
+                nameof(AppKnowledgeContextEntity.SourceSuggestionId)
+            ]));
+        Assert.Contains(entity.GetIndexes(), index =>
+            index.GetDatabaseName() == "ix_pc_app_knowledge_contexts_app_signature_id" &&
+            index.Properties.Select(property => property.Name).SequenceEqual([
+                nameof(AppKnowledgeContextEntity.AppSignatureId)
+            ]));
+
+        var appSignatureId = entity.FindProperty(nameof(AppKnowledgeContextEntity.AppSignatureId));
+        Assert.NotNull(appSignatureId);
+        Assert.True(appSignatureId!.IsNullable);
+
+        var appSignatureForeignKey = Assert.Single(entity.GetForeignKeys(), foreignKey =>
+            foreignKey.PrincipalEntityType.ClrType == typeof(AppSignatureEntity) &&
+            foreignKey.Properties.Select(property => property.Name).SequenceEqual([
+                nameof(AppKnowledgeContextEntity.AppSignatureId)
+            ]));
+        Assert.False(appSignatureForeignKey.IsRequired);
+        Assert.Equal(DeleteBehavior.SetNull, appSignatureForeignKey.DeleteBehavior);
     }
 
     [Fact]
@@ -127,6 +149,9 @@ public class PimPcTrackerModelTests
         Assert.Contains("color VARCHAR(7) NOT NULL DEFAULT '#64748b'", PcTrackerSchemaInitializer.SchemaSql);
         Assert.Contains("icon VARCHAR(32)", PcTrackerSchemaInitializer.SchemaSql);
         Assert.Contains("productivity VARCHAR(16) NOT NULL DEFAULT 'neutral'", PcTrackerSchemaInitializer.SchemaSql);
+        Assert.Contains(
+            "CREATE INDEX IF NOT EXISTS ix_pc_app_knowledge_contexts_app_signature_id",
+            PcTrackerSchemaInitializer.SchemaSql);
     }
 
     private static PimDbContext CreateDbContext()

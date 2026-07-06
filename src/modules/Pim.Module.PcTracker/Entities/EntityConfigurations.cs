@@ -261,6 +261,8 @@ public class AppKnowledgeContextEntityConfiguration : IEntityTypeConfiguration<A
             .HasDatabaseName("ix_pc_app_knowledge_contexts_app_pattern");
         builder.HasIndex(item => item.TargetCategoryName)
             .HasDatabaseName("ix_pc_app_knowledge_contexts_category");
+        builder.HasIndex(item => item.AppSignatureId)
+            .HasDatabaseName("ix_pc_app_knowledge_contexts_app_signature_id");
         builder.HasIndex(item => item.SourceSuggestionId)
             .HasDatabaseName("ix_pc_app_knowledge_contexts_source_suggestion");
         builder.HasOne(item => item.AppSignature)
