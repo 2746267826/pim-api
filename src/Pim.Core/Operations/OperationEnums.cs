@@ -50,9 +50,14 @@ public enum OperationConfirmationStatus
 
 public enum OperationRiskLevel
 {
-    Low,
-    Medium,
-    High
+    Low = 0,
+    Medium = 1,
+    High = 2,
+    L0AutomaticArtifact = 10,
+    L1LowRiskAction = 11,
+    L2PimFactChange = 12,
+    L3ExternalSourceOrWriteback = 13,
+    L4BatchOrDestructiveGovernance = 14
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]

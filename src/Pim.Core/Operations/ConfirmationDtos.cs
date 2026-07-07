@@ -26,7 +26,12 @@ public sealed record OperationConfirmationDto(
     DateTimeOffset? ConfirmedAt,
     DateTimeOffset? ExecutedAt,
     string? ResultJson,
-    string? CorrelationId);
+    string? CorrelationId,
+    IReadOnlyList<string>? ChangedFields = null,
+    IReadOnlyList<string>? AllowedActions = null,
+    string? ObjectType = null,
+    Guid? ObjectId = null,
+    bool RequiresSecondLevelConfirmation = false);
 
 public interface IOperationConfirmationService
 {

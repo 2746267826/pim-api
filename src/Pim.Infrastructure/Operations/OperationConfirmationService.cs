@@ -201,7 +201,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             entity.RequestedByUserId,
             entity.OperationType,
             entity.Summary,
-            Enum.Parse<OperationRiskLevel>(entity.RiskLevel),
+            ParseRiskLevel(entity.RiskLevel),
             entity.Source,
             entity.PayloadJson,
             entity.PreviewJson,
@@ -212,5 +212,12 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             entity.ExecutedAt,
             entity.ResultJson,
             entity.CorrelationId);
+    }
+
+    private static OperationRiskLevel ParseRiskLevel(string value)
+    {
+        return Enum.TryParse<OperationRiskLevel>(value, out var parsed)
+            ? parsed
+            : OperationRiskLevel.Medium;
     }
 }
