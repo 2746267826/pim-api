@@ -31,6 +31,9 @@ public class PlanningModelService
         if (endsAt <= startsAt)
             throw new DomainException(02024, "Segment end must be after start");
 
+        ValidateShortRequired(request.Status, "Segment status");
+        ValidateShortRequired(request.Source, "Segment source");
+
         var task = await GetTaskAsync(taskId, userId, ct);
         var now = DateTimeOffset.UtcNow;
         var segment = new TaskExecutionSegmentEntity
@@ -101,6 +104,12 @@ public class PlanningModelService
         => await _db.Set<TaskEntity>()
             .FirstOrDefaultAsync(t => t.Id == taskId && t.UserId == userId, ct)
             ?? throw new DomainException(02004, "Task does not exist");
+
+    private static void ValidateShortRequired(string? value, string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 40)
+            throw new DomainException(02026, $"{fieldName} must be 1-40 characters");
+    }
 
     private static TaskExecutionSegmentResponse MapSegment(TaskExecutionSegmentEntity segment, string taskTitle)
         => new(

@@ -208,8 +208,8 @@ public record PlanTaskRequest(
 public record CreateTaskExecutionSegmentRequest(
     DateTimeOffset StartsAt,
     DateTimeOffset EndsAt,
-    string Status,
-    string Source,
+    [Required][MaxLength(40)] string Status,
+    [Required][MaxLength(40)] string Source,
     string? PlanningReason
 );
 

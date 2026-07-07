@@ -36,6 +36,32 @@ public class TaskExecutionSegmentServiceTests
         Assert.Empty(await db.Set<TaskExecutionSegmentEntity>().IgnoreQueryFilters().ToListAsync());
     }
 
+    [Theory]
+    [InlineData("", "manual")]
+    [InlineData("planned", "")]
+    [InlineData("this-status-name-is-longer-than-forty-characters", "manual")]
+    [InlineData("planned", "this-source-name-is-longer-than-forty-characters")]
+    public async Task CreateSegmentAsync_RejectsInvalidStatusOrSource(string status, string source)
+    {
+        await using var db = CreateDb();
+        var task = SeedTask(db, UserId, "Validate segment metadata");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateSegmentAsync(
+                task.Id,
+                new CreateTaskExecutionSegmentRequest(
+                    new DateTimeOffset(2026, 6, 1, 9, 0, 0, TimeSpan.Zero),
+                    new DateTimeOffset(2026, 6, 1, 10, 0, 0, TimeSpan.Zero),
+                    status,
+                    source,
+                    null)));
+
+        Assert.Equal(02026, error.ErrorCode);
+        Assert.Empty(await db.Set<TaskExecutionSegmentEntity>().IgnoreQueryFilters().ToListAsync());
+    }
+
     [Fact]
     public async Task CreateSegmentAsync_KeepsTaskIdentityAndReturnsSegmentMetadata()
     {
