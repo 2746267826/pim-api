@@ -55,7 +55,7 @@ jobs:
           fi
           SIGNING_DIR="$RUNNER_TEMP/android-signing"
           mkdir -p "$SIGNING_DIR"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$SIGNING_DIR/pim-ci-upload.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '\r\n[:space:]' | base64 --decode > "$SIGNING_DIR/pim-ci-upload.jks"
           echo "ANDROID_KEYSTORE_FILE=$SIGNING_DIR/pim-ci-upload.jks" >> "$GITHUB_ENV"
 
       - name: Generate gradlew wrapper (Gradle 8.5)
