@@ -89,6 +89,26 @@ public class OutlookConnectionEntityConfiguration : IEntityTypeConfiguration<Out
 {
     public void Configure(EntityTypeBuilder<OutlookConnectionEntity> builder)
     {
+        builder.Property(o => o.Provider).HasDefaultValue("outlook");
+        builder.Property(o => o.TenantId).HasDefaultValue("common");
+        builder.Property(o => o.Scopes).HasDefaultValue("Calendars.ReadWrite offline_access User.Read openid profile");
+        builder.Property(o => o.Status).HasDefaultValue("not-connected");
+        builder.Property(o => o.TokenHealth).HasDefaultValue("missing");
         builder.HasIndex(o => o.UserId).IsUnique();
+    }
+}
+
+public class OutlookSyncBatchEntityConfiguration : IEntityTypeConfiguration<OutlookSyncBatchEntity>
+{
+    public void Configure(EntityTypeBuilder<OutlookSyncBatchEntity> builder)
+    {
+        builder.Property(o => o.Provider).HasDefaultValue("outlook");
+        builder.Property(o => o.Status).HasDefaultValue("running");
+        builder.Property(o => o.StepsJson).HasDefaultValue("[]");
+        builder.Property(o => o.ErrorsJson).HasDefaultValue("[]");
+        builder.Property(o => o.StartedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(o => o.UserId);
+        builder.HasIndex(o => new { o.UserId, o.StartedAt });
+        builder.HasIndex(o => new { o.UserId, o.Provider, o.StartedAt });
     }
 }

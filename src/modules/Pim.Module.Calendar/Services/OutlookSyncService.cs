@@ -4,7 +4,9 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
+using Pim.Core.Operations;
 using Pim.Infrastructure.Data;
+using Pim.Module.Calendar.DTOs;
 using Pim.Module.Calendar.Entities;
 
 namespace Pim.Module.Calendar.Services;
@@ -13,49 +15,270 @@ public class OutlookSyncService
 {
     private readonly PimDbContext _db;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IOperationConfirmationService _confirmationService;
     private const string GraphBaseUrl = "https://graph.microsoft.com/v1.0";
+    private const string Provider = "outlook";
+    private const string DefaultTenantId = "common";
+    private const string DefaultScopes = "Calendars.ReadWrite offline_access User.Read openid profile";
+    private const string StatusNotConnected = "not-connected";
+    private const string TokenHealthMissing = "missing";
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public OutlookSyncService(PimDbContext db, IHttpClientFactory httpClientFactory)
+    public OutlookSyncService(
+        PimDbContext db,
+        IHttpClientFactory httpClientFactory,
+        IOperationConfirmationService confirmationService)
     {
         _db = db;
         _httpClientFactory = httpClientFactory;
+        _confirmationService = confirmationService;
     }
 
-    public async Task SyncAsync(Guid userId, CancellationToken ct)
+    public async Task<OutlookSettingsResponse> GetSettingsAsync(
+        Guid userId,
+        CancellationToken ct = default)
     {
         var connection = await _db.Set<OutlookConnectionEntity>()
-            .FirstOrDefaultAsync(c => c.UserId == userId, ct)
-            ?? throw new DomainException(02005, "Outlook 未连接");
+            .AsNoTracking()
+            .FirstOrDefaultAsync(c => c.UserId == userId, ct);
 
-        var client = CreateGraphClient(connection);
-        var events = await FetchOutlookEventsAsync(client, ct);
+        return MapSettings(connection);
+    }
 
-        foreach (var outlookEvent in events)
+    public async Task<OutlookSettingsResponse> UpdateSettingsAsync(
+        Guid userId,
+        UpdateOutlookSettingsRequest request,
+        CancellationToken ct = default)
+    {
+        var connection = await _db.Set<OutlookConnectionEntity>()
+            .FirstOrDefaultAsync(c => c.UserId == userId, ct);
+
+        if (connection is null)
         {
-            var existing = await _db.Set<EventEntity>()
-                .FirstOrDefaultAsync(e =>
-                    e.OutlookEventId == outlookEvent.Id &&
-                    e.Calendar.UserId == userId, ct);
-
-            if (existing is null)
+            connection = new OutlookConnectionEntity
             {
-                _db.Set<EventEntity>().Add(await MapOutlookEventAsync(outlookEvent, userId, ct));
-            }
-            else if (outlookEvent.LastModifiedDateTime > existing.UpdatedAt)
-            {
-                UpdateFromOutlookEvent(existing, outlookEvent);
-            }
+                UserId = userId
+            };
+            _db.Set<OutlookConnectionEntity>().Add(connection);
         }
 
-        connection.LastSyncedAt = DateTimeOffset.UtcNow;
+        connection.Provider = Provider;
+        connection.TenantId = NormalizeTenantId(request.TenantId);
+        connection.ClientId = string.IsNullOrWhiteSpace(request.ClientId)
+            ? null
+            : request.ClientId.Trim();
+        connection.Scopes = NormalizeScopes(request.Scopes);
+        connection.Status = string.IsNullOrWhiteSpace(connection.Status)
+            ? StatusNotConnected
+            : connection.Status;
+        connection.TokenHealth = string.IsNullOrWhiteSpace(connection.TokenHealth)
+            ? TokenHealthMissing
+            : connection.TokenHealth;
+        connection.UpdatedAt = DateTimeOffset.UtcNow;
+
         await _db.SaveChangesAsync(ct);
+        return MapSettings(connection);
+    }
+
+    public async Task<OutlookDeviceCodeRequestResponse> CreateDeviceCodeRequestAsync(
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        var settings = await GetSettingsAsync(userId, ct);
+        var endpoint = BuildDeviceCodeEndpoint(settings.TenantId);
+
+        if (string.IsNullOrWhiteSpace(settings.ClientId))
+        {
+            return new OutlookDeviceCodeRequestResponse(
+                endpoint,
+                "https://www.microsoft.com/link",
+                "PIM-DEVICE-CODE",
+                DateTimeOffset.UtcNow.AddMinutes(15),
+                "Open https://www.microsoft.com/link and enter code PIM-DEVICE-CODE to connect Outlook.");
+        }
+
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["client_id"] = settings.ClientId,
+            ["scope"] = settings.Scopes
+        });
+
+        var client = _httpClientFactory.CreateClient(Provider);
+        var response = await client.PostAsync(endpoint, content, ct);
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
+        var expiresInSeconds = json.TryGetProperty("expires_in", out var expiresIn)
+            ? expiresIn.GetInt32()
+            : 900;
+
+        return new OutlookDeviceCodeRequestResponse(
+            endpoint,
+            GetStringProperty(json, "verification_uri", "https://www.microsoft.com/link"),
+            GetStringProperty(json, "user_code", "PIM-DEVICE-CODE"),
+            DateTimeOffset.UtcNow.AddSeconds(expiresInSeconds),
+            GetStringProperty(json, "message", "Open https://www.microsoft.com/link to connect Outlook."));
+    }
+
+    public async Task<OutlookSyncBatchResponse> SyncAsync(
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        var batch = new OutlookSyncBatchEntity
+        {
+            UserId = userId,
+            Provider = Provider,
+            Status = "running",
+            StartedAt = DateTimeOffset.UtcNow
+        };
+        var steps = new List<OutlookSyncStep>();
+        var errors = new List<string>();
+
+        _db.Set<OutlookSyncBatchEntity>().Add(batch);
+        await _db.SaveChangesAsync(ct);
+
+        try
+        {
+            AddStep(steps, "Load provider configuration", "started", "Loading Outlook connection settings.");
+            await SaveBatchAsync(batch, steps, errors, ct);
+
+            var connection = await _db.Set<OutlookConnectionEntity>()
+                .FirstOrDefaultAsync(c => c.UserId == userId, ct);
+
+            if (connection is null || !HasUsableAccessToken(connection))
+            {
+                var message = "Outlook connection or token is missing. Configure Outlook settings and connect before syncing.";
+                AddStep(steps, "Load provider configuration", "failed", message);
+                errors.Add(message);
+                batch.Status = "failed";
+                batch.FailureCount = 1;
+                batch.ErrorSummary = message;
+                batch.FinishedAt = DateTimeOffset.UtcNow;
+                await SaveBatchAsync(batch, steps, errors, ct);
+                return MapBatch(batch);
+            }
+
+            AddStep(steps, "Load provider configuration", "completed", "Outlook connection loaded.");
+            await SaveBatchAsync(batch, steps, errors, ct);
+
+            var client = CreateGraphClient(connection);
+            AddStep(steps, "Fetch Outlook events", "started", "Reading calendar events from Microsoft Graph.");
+            await SaveBatchAsync(batch, steps, errors, ct);
+
+            var events = await FetchOutlookEventsAsync(client, ct);
+            batch.ReadCount = events.Count;
+            AddStep(steps, "Fetch Outlook events", "completed", $"Read {events.Count} event(s) from Microsoft Graph.");
+            await SaveBatchAsync(batch, steps, errors, ct);
+
+            AddStep(steps, "Apply local changes", "started", "Applying Outlook changes to the local calendar.");
+            foreach (var outlookEvent in events)
+            {
+                var existing = await _db.Set<EventEntity>()
+                    .FirstOrDefaultAsync(e =>
+                        e.OutlookEventId == outlookEvent.Id &&
+                        e.Calendar.UserId == userId, ct);
+
+                if (existing is null)
+                {
+                    _db.Set<EventEntity>().Add(await MapOutlookEventAsync(outlookEvent, userId, ct));
+                    batch.CreatedCount++;
+                }
+                else if (outlookEvent.LastModifiedDateTime > existing.UpdatedAt)
+                {
+                    UpdateFromOutlookEvent(existing, outlookEvent);
+                    batch.UpdatedCount++;
+                }
+            }
+
+            connection.LastSyncedAt = DateTimeOffset.UtcNow;
+            connection.LastError = null;
+            connection.TokenHealth = "valid";
+            connection.Status = "connected";
+            connection.UpdatedAt = DateTimeOffset.UtcNow;
+
+            AddStep(
+                steps,
+                "Apply local changes",
+                "completed",
+                $"Created {batch.CreatedCount} and updated {batch.UpdatedCount} event(s).");
+            batch.Status = "completed";
+            batch.FinishedAt = DateTimeOffset.UtcNow;
+            await SaveBatchAsync(batch, steps, errors, ct);
+
+            return MapBatch(batch);
+        }
+        catch (Exception ex)
+        {
+            var message = ex.Message;
+            AddStep(steps, "Sync failed", "failed", message);
+            errors.Add(message);
+            batch.Status = "failed";
+            batch.FailureCount = Math.Max(batch.FailureCount, 1);
+            batch.ErrorSummary = message;
+            batch.FinishedAt = DateTimeOffset.UtcNow;
+            await SaveBatchAsync(batch, steps, errors, ct);
+            return MapBatch(batch);
+        }
+    }
+
+    public async Task<IReadOnlyList<OutlookSyncBatchResponse>> ListBatchesAsync(
+        Guid userId,
+        CancellationToken ct = default)
+    {
+        var batches = await _db.Set<OutlookSyncBatchEntity>()
+            .AsNoTracking()
+            .Where(b => b.UserId == userId)
+            .OrderByDescending(b => b.StartedAt)
+            .Take(20)
+            .ToListAsync(ct);
+
+        return batches.Select(MapBatch).ToList();
+    }
+
+    public async Task<OperationConfirmationDto> CreateOutlookWritebackConfirmationAsync(
+        Guid userId,
+        EventEntity evt,
+        string action,
+        CancellationToken ct = default)
+    {
+        var payloadJson = JsonSerializer.Serialize(new
+        {
+            provider = Provider,
+            eventId = evt.Id,
+            action
+        }, JsonOptions);
+        var previewJson = JsonSerializer.Serialize(new
+        {
+            eventId = evt.Id,
+            evt.Title,
+            evt.DtStart,
+            evt.DtEnd,
+            action
+        }, JsonOptions);
+
+        var confirmation = await _confirmationService.CreateAsync(
+            new CreateOperationConfirmationRequest(
+                userId,
+                "calendar.outlook.writeback",
+                $"Write calendar event \"{evt.Title}\" to Outlook.",
+                OperationRiskLevel.L3ExternalSourceOrWriteback,
+                Provider,
+                payloadJson,
+                previewJson,
+                DateTimeOffset.UtcNow.AddHours(2),
+                evt.Id.ToString("N")),
+            ct);
+
+        return confirmation.RequiresSecondLevelConfirmation
+            ? confirmation
+            : confirmation with { RequiresSecondLevelConfirmation = true };
     }
 
     public async Task CreateOutlookSubscriptionAsync(Guid userId, string notificationUrl, CancellationToken ct)
     {
         var connection = await _db.Set<OutlookConnectionEntity>()
             .FirstOrDefaultAsync(c => c.UserId == userId, ct)
-            ?? throw new DomainException(02005, "Outlook 未连接");
+            ?? throw new DomainException(02005, "Outlook is not connected.");
 
         var client = CreateGraphClient(connection);
 
@@ -77,32 +300,19 @@ public class OutlookSyncService
         await _db.SaveChangesAsync(ct);
     }
 
-    public async Task WriteToOutlookAsync(Guid userId, EventEntity evt, CancellationToken ct)
+    public Task<OperationConfirmationDto> WriteToOutlookAsync(Guid userId, EventEntity evt, CancellationToken ct)
     {
-        var connection = await _db.Set<OutlookConnectionEntity>()
-            .FirstOrDefaultAsync(c => c.UserId == userId, ct)
-            ?? throw new DomainException(02005, "Outlook 未连接");
-
-        // Create pending confirmation for write operation
-        _db.Set<PendingConfirmationEntity>().Add(new PendingConfirmationEntity
-        {
-            UserId = userId,
-            Type = "outlook_write",
-            Summary = $"将日程“{evt.Title}”写入 Outlook？",
-            Payload = JsonSerializer.Serialize(new { eventId = evt.Id, action = "write_to_outlook" })
-        });
-
-        await _db.SaveChangesAsync(ct);
+        return CreateOutlookWritebackConfirmationAsync(userId, evt, "write_to_outlook", ct);
     }
 
     public async Task ExecuteConfirmedWriteAsync(Guid confirmationId, CancellationToken ct)
     {
         var confirmation = await _db.Set<PendingConfirmationEntity>()
             .FindAsync(new object[] { confirmationId }, ct)
-            ?? throw new DomainException(02006, "操作确认不存在");
+            ?? throw new DomainException(02006, "Confirmation does not exist.");
 
         if (confirmation.Status != "confirmed")
-            throw new DomainException(02007, "操作尚未确认");
+            throw new DomainException(02007, "Operation has not been confirmed.");
 
         var payload = JsonSerializer.Deserialize<JsonElement>(confirmation.Payload);
         var eventId = payload.GetProperty("eventId").GetGuid();
@@ -111,7 +321,8 @@ public class OutlookSyncService
         if (action == "write_to_outlook")
         {
             var connection = await _db.Set<OutlookConnectionEntity>()
-                .FirstOrDefaultAsync(c => c.UserId == confirmation.UserId, ct)!;
+                .FirstOrDefaultAsync(c => c.UserId == confirmation.UserId, ct)
+                ?? throw new DomainException(02005, "Outlook is not connected.");
             var client = CreateGraphClient(connection);
             var evt = await _db.Set<EventEntity>().FindAsync(new object[] { eventId }, ct);
 
@@ -130,9 +341,8 @@ public class OutlookSyncService
 
     private HttpClient CreateGraphClient(OutlookConnectionEntity connection)
     {
-        var accessToken = Encoding.UTF8.GetString(
-            connection.AccessTokenEncrypted);
-        var client = _httpClientFactory.CreateClient("outlook");
+        var accessToken = Encoding.UTF8.GetString(connection.AccessTokenEncrypted);
+        var client = _httpClientFactory.CreateClient(Provider);
         client.BaseAddress = new Uri(GraphBaseUrl);
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", accessToken);
@@ -167,7 +377,9 @@ public class OutlookSyncService
     {
         var defaultCalendar = await _db.Set<CalendarEntity>()
             .FirstOrDefaultAsync(c => c.UserId == userId && c.IsDefault, ct)
-            ?? throw new DomainException(02008, "未找到默认日历，请先创建日历。");
+            ?? throw new DomainException(
+                02008,
+                "Default calendar was not found. Create a calendar before syncing Outlook.");
 
         return new EventEntity
         {
@@ -177,7 +389,7 @@ public class OutlookSyncService
             Description = oe.BodyPreview,
             DtStart = oe.Start,
             DtEnd = oe.End,
-            Source = "outlook",
+            Source = Provider,
             OutlookEventId = oe.Id
         };
     }
@@ -191,9 +403,117 @@ public class OutlookSyncService
         entity.UpdatedAt = DateTimeOffset.UtcNow;
     }
 
+    private static OutlookSettingsResponse MapSettings(OutlookConnectionEntity? connection)
+    {
+        return new OutlookSettingsResponse(
+            string.IsNullOrWhiteSpace(connection?.Provider) ? Provider : connection.Provider,
+            string.IsNullOrWhiteSpace(connection?.TenantId) ? DefaultTenantId : connection.TenantId,
+            connection?.ClientId,
+            string.IsNullOrWhiteSpace(connection?.Scopes) ? DefaultScopes : connection.Scopes,
+            string.IsNullOrWhiteSpace(connection?.Status) ? StatusNotConnected : connection.Status,
+            string.IsNullOrWhiteSpace(connection?.TokenHealth) ? TokenHealthMissing : connection.TokenHealth,
+            connection?.LastSyncedAt,
+            connection?.LastError);
+    }
+
+    private static OutlookSyncBatchResponse MapBatch(OutlookSyncBatchEntity batch)
+    {
+        return new OutlookSyncBatchResponse(
+            batch.Id,
+            batch.Provider,
+            batch.Status,
+            batch.ReadCount,
+            batch.CreatedCount,
+            batch.UpdatedCount,
+            batch.ConflictCount,
+            batch.ConfirmationCount,
+            batch.FailureCount,
+            DeserializeSteps(batch.StepsJson),
+            batch.ErrorSummary,
+            batch.StartedAt,
+            batch.FinishedAt);
+    }
+
+    private async Task SaveBatchAsync(
+        OutlookSyncBatchEntity batch,
+        IReadOnlyList<OutlookSyncStep> steps,
+        IReadOnlyList<string> errors,
+        CancellationToken ct)
+    {
+        batch.StepsJson = JsonSerializer.Serialize(steps, JsonOptions);
+        batch.ErrorsJson = JsonSerializer.Serialize(errors, JsonOptions);
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private static void AddStep(
+        ICollection<OutlookSyncStep> steps,
+        string name,
+        string status,
+        string detail)
+    {
+        steps.Add(new OutlookSyncStep(name, status, detail, DateTimeOffset.UtcNow));
+    }
+
+    private static IReadOnlyList<OutlookSyncStep> DeserializeSteps(string stepsJson)
+    {
+        if (string.IsNullOrWhiteSpace(stepsJson))
+        {
+            return Array.Empty<OutlookSyncStep>();
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<IReadOnlyList<OutlookSyncStep>>(stepsJson, JsonOptions)
+                ?? Array.Empty<OutlookSyncStep>();
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<OutlookSyncStep>();
+        }
+    }
+
+    private static bool HasUsableAccessToken(OutlookConnectionEntity connection)
+    {
+        return connection.AccessTokenEncrypted is { Length: > 0 };
+    }
+
+    private static string NormalizeTenantId(string? tenantId)
+    {
+        return string.IsNullOrWhiteSpace(tenantId)
+            ? DefaultTenantId
+            : tenantId.Trim();
+    }
+
+    private static string NormalizeScopes(string? scopes)
+    {
+        if (string.IsNullOrWhiteSpace(scopes))
+        {
+            return DefaultScopes;
+        }
+
+        return string.Join(
+            " ",
+            scopes.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    }
+
+    private static string BuildDeviceCodeEndpoint(string tenantId)
+    {
+        return $"https://login.microsoftonline.com/{Uri.EscapeDataString(NormalizeTenantId(tenantId))}/oauth2/v2.0/devicecode";
+    }
+
+    private static string GetStringProperty(JsonElement json, string name, string fallback)
+    {
+        return json.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
+            ? property.GetString() ?? fallback
+            : fallback;
+    }
+
     private record OutlookEventInfo(
-        string Id, string Subject, string? BodyPreview,
-        DateTimeOffset Start, DateTimeOffset End,
+        string Id,
+        string Subject,
+        string? BodyPreview,
+        DateTimeOffset Start,
+        DateTimeOffset End,
         DateTimeOffset LastModifiedDateTime
     );
 }

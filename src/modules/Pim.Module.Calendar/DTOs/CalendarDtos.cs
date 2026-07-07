@@ -292,3 +292,51 @@ public record ImportReport(
     IReadOnlyDictionary<string, int> SkippedReasons,
     IReadOnlyList<ImportSkippedItem> Samples
 );
+
+public record OutlookSettingsResponse(
+    string Provider,
+    string TenantId,
+    string? ClientId,
+    string Scopes,
+    string Status,
+    string TokenHealth,
+    DateTimeOffset? LastSyncedAt,
+    string? LastError
+);
+
+public record UpdateOutlookSettingsRequest(
+    string TenantId,
+    string? ClientId,
+    string Scopes
+);
+
+public record OutlookDeviceCodeRequestResponse(
+    string Endpoint,
+    string VerificationUri,
+    string UserCode,
+    DateTimeOffset ExpiresAt,
+    string Message
+);
+
+public record OutlookSyncStep(
+    string Name,
+    string Status,
+    string Detail,
+    DateTimeOffset At
+);
+
+public record OutlookSyncBatchResponse(
+    Guid Id,
+    string Provider,
+    string Status,
+    int ReadCount,
+    int CreatedCount,
+    int UpdatedCount,
+    int ConflictCount,
+    int ConfirmationCount,
+    int FailureCount,
+    IReadOnlyList<OutlookSyncStep> Steps,
+    string? ErrorSummary,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? FinishedAt
+);

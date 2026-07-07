@@ -366,13 +366,42 @@ public class CalendarModule : IModule
         });
 
         // Outlook
+        group.MapGet("/outlook/settings", async (
+            [FromServices] OutlookSyncService outlookSvc,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<OutlookSettingsResponse>.Ok(
+                await outlookSvc.GetSettingsAsync(currentUser.UserId!.Value, ct))));
+
+        group.MapPut("/outlook/settings", async (
+            [FromBody] UpdateOutlookSettingsRequest req,
+            [FromServices] OutlookSyncService outlookSvc,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<OutlookSettingsResponse>.Ok(
+                await outlookSvc.UpdateSettingsAsync(currentUser.UserId!.Value, req, ct))));
+
+        group.MapPost("/outlook/device-code", async (
+            [FromServices] OutlookSyncService outlookSvc,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<OutlookDeviceCodeRequestResponse>.Ok(
+                await outlookSvc.CreateDeviceCodeRequestAsync(currentUser.UserId!.Value, ct))));
+
+        group.MapGet("/outlook/sync/batches", async (
+            [FromServices] OutlookSyncService outlookSvc,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<OutlookSyncBatchResponse>>.Ok(
+                await outlookSvc.ListBatchesAsync(currentUser.UserId!.Value, ct))));
+
         group.MapPost("/outlook/sync", async (
             [FromServices] OutlookSyncService outlookSvc,
             [FromServices] ICurrentUserService currentUser,
             CancellationToken ct) =>
         {
-            await outlookSvc.SyncAsync(currentUser.UserId!.Value, ct);
-            return Results.Ok(ApiResponse<string>.Ok("已同步"));
+            var result = await outlookSvc.SyncAsync(currentUser.UserId!.Value, ct);
+            return Results.Ok(ApiResponse<OutlookSyncBatchResponse>.Ok(result));
         });
     }
 
@@ -393,6 +422,10 @@ public static class CalendarEndpointPaths
     public const string ExportIcs = "/api/v1/calendar/export-ics";
     public const string CalendarLayers = "/api/v1/calendar/layers";
     public const string DataCenterQuery = "/api/v1/calendar/data-center/query";
+    public const string OutlookSettings = "/api/v1/calendar/outlook/settings";
+    public const string OutlookDeviceCode = "/api/v1/calendar/outlook/device-code";
+    public const string OutlookSync = "/api/v1/calendar/outlook/sync";
+    public const string OutlookSyncBatches = "/api/v1/calendar/outlook/sync/batches";
 
     public static string TaskPlan(string id) => $"{Root}/tasks/{id}/plan";
     public static string RecycleRestorePreview(string type, string id) => $"{RecycleBin}/{type}/{id}/restore-preview";
