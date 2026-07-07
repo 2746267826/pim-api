@@ -49,6 +49,17 @@ public class CalendarWorkbenchQueryTests
     {
         await using var db = CreateDb();
         var seed = SeedWorkbench(db);
+        db.OperationConfirmations.Add(new OperationConfirmationEntity
+        {
+            RequestedByUserId = UserId,
+            OperationType = "calendar.expired",
+            Summary = "Expired stale confirmation",
+            RiskLevel = OperationRiskLevel.L2PimFactChange.ToString(),
+            Source = "calendar",
+            Status = OperationConfirmationStatus.Pending.ToString(),
+            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+            CreatedAt = DateTimeOffset.UtcNow.AddHours(-2)
+        });
         await db.SaveChangesAsync();
         var service = new DataCenterQueryService(db, new FixedCurrentUserService(UserId));
 
@@ -57,8 +68,8 @@ public class CalendarWorkbenchQueryTests
         Assert.Contains(searchResult.Items, item => item.ObjectId == seed.ActiveSegmentId);
 
         var objectTypeResult = await service.QueryAsync(new DataCenterQueryRequest(null, "confirmation", null, false, 1, 50));
-        var confirmation = Assert.Single(objectTypeResult.Items);
-        Assert.Equal(seed.ConfirmationId, confirmation.ObjectId);
+        Assert.Contains(objectTypeResult.Items, item => item.ObjectId == seed.ConfirmationId);
+        Assert.Contains(objectTypeResult.Items, item => item.Summary == "Expired stale confirmation");
 
         var sourceResult = await service.QueryAsync(new DataCenterQueryRequest(null, null, "outlook-ics", false, 1, 50));
         var outlookItem = Assert.Single(sourceResult.Items);
@@ -190,7 +201,7 @@ public class CalendarWorkbenchQueryTests
             RiskLevel = OperationRiskLevel.L4BatchOrDestructiveGovernance.ToString(),
             Source = "outlook-graph",
             Status = OperationConfirmationStatus.Pending.ToString(),
-            ExpiresAt = new DateTimeOffset(2026, 5, 27, 0, 0, 0, TimeSpan.Zero),
+            ExpiresAt = DateTimeOffset.UtcNow.AddHours(2),
             CreatedAt = new DateTimeOffset(2026, 5, 26, 8, 0, 0, TimeSpan.Zero)
         };
 

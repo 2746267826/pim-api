@@ -189,9 +189,11 @@ public sealed class DataCenterQueryService
 
         if (request.PendingOnly)
         {
+            var now = DateTimeOffset.UtcNow;
             filtered = filtered.Where(i =>
                 string.Equals(i.ObjectType, "confirmation", StringComparison.OrdinalIgnoreCase)
-                && PendingStatuses.Contains(i.Status));
+                && PendingStatuses.Contains(i.Status)
+                && (!i.EndsAt.HasValue || i.EndsAt.Value > now));
         }
 
         return filtered;
