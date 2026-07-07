@@ -205,6 +205,26 @@ public record PlanTaskRequest(
     string? EstimatedDuration
 );
 
+public record CreateTaskExecutionSegmentRequest(
+    DateTimeOffset StartsAt,
+    DateTimeOffset EndsAt,
+    string Status,
+    string Source,
+    string? PlanningReason
+);
+
+public record TaskExecutionSegmentResponse(
+    Guid Id,
+    Guid TaskId,
+    string TaskTitle,
+    DateTimeOffset StartsAt,
+    DateTimeOffset EndsAt,
+    string Status,
+    string Source,
+    string? PlanningReason,
+    Guid? ConfirmationId
+);
+
 public record ImportSkippedItem(
     string Reason,
     string Title,

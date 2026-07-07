@@ -53,6 +53,21 @@ public class TaskEntityConfiguration : IEntityTypeConfiguration<TaskEntity>
     }
 }
 
+public class TaskExecutionSegmentEntityConfiguration : IEntityTypeConfiguration<TaskExecutionSegmentEntity>
+{
+    public void Configure(EntityTypeBuilder<TaskExecutionSegmentEntity> builder)
+    {
+        builder.HasQueryFilter(s => s.DeletedAt == null);
+        builder.HasIndex(s => s.UserId);
+        builder.HasIndex(s => s.TaskId);
+        builder.HasIndex(s => new { s.UserId, s.TaskId, s.StartsAt });
+        builder.HasIndex(s => s.ConfirmationId);
+        builder.HasOne(s => s.Task)
+            .WithMany()
+            .HasForeignKey(s => s.TaskId);
+    }
+}
+
 public class PendingConfirmationEntityConfiguration : IEntityTypeConfiguration<PendingConfirmationEntity>
 {
     public void Configure(EntityTypeBuilder<PendingConfirmationEntity> builder)

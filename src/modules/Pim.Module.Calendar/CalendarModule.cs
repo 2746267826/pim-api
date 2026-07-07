@@ -33,6 +33,7 @@ public class CalendarModule : IModule
         services.AddScoped<CalendarAuditWriter>();
         services.AddScoped<CalendarDeleteService>();
         services.AddScoped<CalendarRecycleBinService>();
+        services.AddScoped<PlanningModelService>();
 
         services.AddSingleton<ISearchProvider, CalendarSearchProvider>();
     }
@@ -184,6 +185,34 @@ public class CalendarModule : IModule
             [FromServices] CalendarService svc,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<TaskResponse>.Ok(await svc.PlanTaskAsync(id, req, ct))));
+
+        group.MapGet("/tasks/{id:guid}/segments", async (
+            Guid id,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<TaskExecutionSegmentResponse>>.Ok(
+                await svc.ListSegmentsAsync(id, ct))));
+
+        group.MapPost("/tasks/{id:guid}/segments", async (
+            Guid id,
+            [FromBody] CreateTaskExecutionSegmentRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+        {
+            var result = await svc.CreateSegmentAsync(id, req, ct);
+            return Results.Created($"/api/v1/calendar/tasks/{id}/segments/{result.Id}",
+                ApiResponse<TaskExecutionSegmentResponse>.Ok(result));
+        });
+
+        group.MapDelete("/tasks/{taskId:guid}/segments/{segmentId:guid}", async (
+            Guid taskId,
+            Guid segmentId,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+        {
+            await svc.DeleteSegmentAsync(taskId, segmentId, ct);
+            return Results.Ok(ApiResponse<string>.Ok("deleted"));
+        });
 
         group.MapPut("/tasks/{id:guid}", async (
             Guid id, [FromBody] UpdateTaskRequest req,
