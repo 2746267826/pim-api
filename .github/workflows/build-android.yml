@@ -37,6 +37,8 @@ jobs:
           echo "version=$DISPLAY"
           echo "VERSION_DISPLAY=$DISPLAY" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$COMMIT_COUNT" >> "$GITHUB_ENV"
+          echo "CI_APP_VERSION=$DISPLAY" >> "$GITHUB_ENV"
+          echo "CI_VERSION_CODE=$COMMIT_COUNT" >> "$GITHUB_ENV"
 
       - name: Generate gradlew wrapper (Gradle 8.5)
         run: |
