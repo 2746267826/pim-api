@@ -9,6 +9,19 @@ namespace Pim.Module.Calendar.Services;
 
 public class PlanningModelService
 {
+    private static readonly HashSet<string> DefaultLayers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "events",
+        "task-segments"
+    };
+
+    private static readonly HashSet<string> OutlookSources = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "outlook",
+        "outlook-graph",
+        "outlook-ics"
+    };
+
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
 
@@ -19,6 +32,80 @@ public class PlanningModelService
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "Login required");
+
+    public async Task<CalendarLayerResponse> GetCalendarLayersAsync(
+        CalendarLayerQuery query,
+        CancellationToken ct = default)
+    {
+        var userId = UserId;
+        if (query.End <= query.Start)
+            throw new DomainException(02027, "Layer end must be after start");
+
+        var requestedLayers = NormalizeLayers(query.Layers);
+        var items = new List<CalendarLayerItem>();
+
+        if (requestedLayers.Contains("events"))
+        {
+            var events = await _db.Set<EventEntity>()
+                .AsNoTracking()
+                .Include(e => e.Calendar)
+                .Where(e => e.Calendar.UserId == userId
+                    && e.DtStart < query.End
+                    && e.DtEnd > query.Start)
+                .ToListAsync(ct);
+
+            items.AddRange(events
+                .Where(e => !query.OutlookOnly || IsOutlookSource(e.Source))
+                .Select(e => new CalendarLayerItem(
+                    $"event:{e.Id}",
+                    "events",
+                    "event",
+                    e.Id,
+                    e.Title,
+                    e.DtStart,
+                    e.DtEnd,
+                    e.Source,
+                    e.Status,
+                    e.Calendar.Color,
+                    false)));
+        }
+
+        if (requestedLayers.Contains("task-segments"))
+        {
+            var segments = await _db.Set<TaskExecutionSegmentEntity>()
+                .AsNoTracking()
+                .Include(s => s.Task)
+                .Where(s => s.UserId == userId
+                    && s.StartsAt < query.End
+                    && s.EndsAt > query.Start)
+                .ToListAsync(ct);
+
+            items.AddRange(segments
+                .Where(s => !query.OutlookOnly || IsOutlookSource(s.Source))
+                .Select(s => new CalendarLayerItem(
+                    $"task-segment:{s.Id}",
+                    "task-segments",
+                    "task-segment",
+                    s.Id,
+                    s.Task.Title,
+                    s.StartsAt,
+                    s.EndsAt,
+                    s.Source,
+                    s.Status,
+                    "#22C55E",
+                    s.ConfirmationId.HasValue)));
+        }
+
+        return new CalendarLayerResponse(
+            query.Start,
+            query.End,
+            items
+                .OrderBy(i => i.StartsAt)
+                .ThenBy(i => i.Layer)
+                .ThenBy(i => i.Title)
+                .ThenBy(i => i.ObjectId)
+                .ToList());
+    }
 
     public async Task<TaskExecutionSegmentResponse> CreateSegmentAsync(
         Guid taskId,
@@ -110,6 +197,21 @@ public class PlanningModelService
         if (string.IsNullOrWhiteSpace(value) || value.Length > 40)
             throw new DomainException(02026, $"{fieldName} must be 1-40 characters");
     }
+
+    private static HashSet<string> NormalizeLayers(IReadOnlyList<string>? layers)
+    {
+        var normalized = layers?
+            .SelectMany(layer => layer.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Where(layer => !string.IsNullOrWhiteSpace(layer))
+            .Select(layer => layer.ToLowerInvariant())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return normalized is { Count: > 0 }
+            ? normalized
+            : new HashSet<string>(DefaultLayers, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsOutlookSource(string source) => OutlookSources.Contains(source);
 
     private static TaskExecutionSegmentResponse MapSegment(TaskExecutionSegmentEntity segment, string taskTitle)
         => new(

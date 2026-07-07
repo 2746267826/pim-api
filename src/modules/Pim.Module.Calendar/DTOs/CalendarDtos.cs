@@ -225,6 +225,60 @@ public record TaskExecutionSegmentResponse(
     Guid? ConfirmationId
 );
 
+public record CalendarLayerQuery(
+    DateTimeOffset Start,
+    DateTimeOffset End,
+    IReadOnlyList<string>? Layers,
+    bool OutlookOnly = false
+);
+
+public record CalendarLayerItem(
+    string Id,
+    string Layer,
+    string ObjectType,
+    Guid ObjectId,
+    string Title,
+    DateTimeOffset StartsAt,
+    DateTimeOffset EndsAt,
+    string Source,
+    string Status,
+    string Color,
+    bool RequiresConfirmation
+);
+
+public record CalendarLayerResponse(
+    DateTimeOffset Start,
+    DateTimeOffset End,
+    IReadOnlyList<CalendarLayerItem> Items
+);
+
+public record DataCenterQueryRequest(
+    string? Search,
+    string? ObjectType,
+    string? Source,
+    bool PendingOnly,
+    int Page = 1,
+    int PageSize = 50
+);
+
+public record DataCenterItem(
+    string ObjectType,
+    Guid ObjectId,
+    string Title,
+    string Source,
+    string Status,
+    DateTimeOffset? StartsAt,
+    DateTimeOffset? EndsAt,
+    string Summary
+);
+
+public record DataCenterQueryResponse(
+    IReadOnlyList<DataCenterItem> Items,
+    int Page,
+    int PageSize,
+    int TotalCount
+);
+
 public record ImportSkippedItem(
     string Reason,
     string Title,

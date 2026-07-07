@@ -34,6 +34,7 @@ public class CalendarModule : IModule
         services.AddScoped<CalendarDeleteService>();
         services.AddScoped<CalendarRecycleBinService>();
         services.AddScoped<PlanningModelService>();
+        services.AddScoped<DataCenterQueryService>();
 
         services.AddSingleton<ISearchProvider, CalendarSearchProvider>();
     }
@@ -42,6 +43,30 @@ public class CalendarModule : IModule
     {
         var group = endpoints.MapGroup(CalendarEndpointPaths.Root)
             .RequireAuthorization();
+
+        // Workbench queries
+        group.MapGet("/layers", async (
+            [FromQuery] DateTimeOffset start,
+            [FromQuery] DateTimeOffset end,
+            [FromQuery] string? layers,
+            [FromQuery] bool? outlookOnly,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+        {
+            var requestedLayers = string.IsNullOrWhiteSpace(layers)
+                ? null
+                : layers.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var result = await svc.GetCalendarLayersAsync(
+                new CalendarLayerQuery(start, end, requestedLayers, outlookOnly ?? false),
+                ct);
+            return Results.Ok(ApiResponse<CalendarLayerResponse>.Ok(result));
+        });
+
+        group.MapPost("/data-center/query", async (
+            [FromBody] DataCenterQueryRequest req,
+            [FromServices] DataCenterQueryService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<DataCenterQueryResponse>.Ok(await svc.QueryAsync(req, ct))));
 
         // Calendars
         group.MapGet("/calendars", async (
@@ -366,6 +391,8 @@ public static class CalendarEndpointPaths
     public const string TaskBatchDelete = "/api/v1/calendar/tasks/batch-delete";
     public const string ImportIcs = "/api/v1/calendar/import-ics";
     public const string ExportIcs = "/api/v1/calendar/export-ics";
+    public const string CalendarLayers = "/api/v1/calendar/layers";
+    public const string DataCenterQuery = "/api/v1/calendar/data-center/query";
 
     public static string TaskPlan(string id) => $"{Root}/tasks/{id}/plan";
     public static string RecycleRestorePreview(string type, string id) => $"{RecycleBin}/{type}/{id}/restore-preview";
