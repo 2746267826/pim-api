@@ -37,7 +37,15 @@ public sealed class MobileUsageIngestService
                 && b.BatchId == request.BatchId, ct);
 
         if (existingBatch is not null)
+        {
+            await _sessionInterpreter.RebuildSessionsAsync(
+                userId,
+                request.DeviceId,
+                existingBatch.WindowStartUtc,
+                existingBatch.WindowEndUtc,
+                ct);
             return new MobileUsageIngestResult(existingBatch.BatchId, existingBatch.AcceptedCount, existingBatch.FailedCount);
+        }
 
         var now = _timeProvider.GetUtcNow();
         var batch = new MobileSyncBatchEntity
@@ -47,7 +55,7 @@ public sealed class MobileUsageIngestService
             BatchId = request.BatchId,
             WindowStartUtc = request.WindowStartUtc,
             WindowEndUtc = request.WindowEndUtc,
-            AcceptedCount = request.Events.Count,
+            AcceptedCount = 0,
             FailedCount = 0,
             Status = "completed",
             CreatedAt = now,
@@ -58,8 +66,8 @@ public sealed class MobileUsageIngestService
         foreach (var app in request.Apps)
             await UpsertAppAsync(userId, request.DeviceId, app, now, ct);
 
-        foreach (var usageEvent in request.Events)
-            await AddEventIfMissingAsync(userId, request, usageEvent, now, ct);
+        var eventCounts = await AddEventsIfMissingAsync(userId, request, now, ct);
+        batch.AcceptedCount = eventCounts.Accepted;
 
         foreach (var summary in request.Summaries)
             await UpsertSummaryAsync(userId, request.DeviceId, summary, now, ct);
@@ -72,7 +80,12 @@ public sealed class MobileUsageIngestService
             request.WindowEndUtc,
             ct);
 
-        return new MobileUsageIngestResult(batch.BatchId, batch.AcceptedCount, batch.FailedCount);
+        return new MobileUsageIngestResult(
+            batch.BatchId,
+            eventCounts.Accepted,
+            eventCounts.Skipped,
+            0,
+            batch.FailedCount);
     }
 
     private async Task UpsertAppAsync(
@@ -111,39 +124,74 @@ public sealed class MobileUsageIngestService
         entity.UpdatedAt = now;
     }
 
-    private async Task AddEventIfMissingAsync(
+    private async Task<EventIngestCounts> AddEventsIfMissingAsync(
         Guid userId,
         MobileUsageEventsUploadRequest request,
-        MobileUsageEventDto usageEvent,
         DateTimeOffset now,
         CancellationToken ct)
     {
-        var exists = await _db.Set<MobileUsageEventEntity>()
-            .AnyAsync(e => e.UserId == userId
+        if (request.Events.Count == 0)
+            return new EventIngestCounts(0, 0);
+
+        var firstEventAt = request.Events.Min(e => e.EventTimestampUtc);
+        var lastEventAt = request.Events.Max(e => e.EventTimestampUtc);
+        var packageNames = request.Events
+            .Select(e => e.PackageName)
+            .Where(packageName => !string.IsNullOrWhiteSpace(packageName))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        var existingQuery = _db.Set<MobileUsageEventEntity>()
+            .AsNoTracking()
+            .Where(e => e.UserId == userId
                 && e.DeviceId == request.DeviceId
-                && e.PackageName == usageEvent.PackageName
-                && e.EventType == usageEvent.EventType
-                && e.EventTimestampUtc == usageEvent.EventTimestampUtc
-                && e.ClassName == usageEvent.ClassName, ct);
+                && e.EventTimestampUtc >= firstEventAt
+                && e.EventTimestampUtc <= lastEventAt);
+        if (packageNames.Length > 0)
+            existingQuery = existingQuery.Where(e => packageNames.Contains(e.PackageName));
 
-        if (exists)
-            return;
+        var knownKeys = (await existingQuery
+                .Select(e => new
+                {
+                    e.PackageName,
+                    e.EventType,
+                    e.EventTimestampUtc,
+                    e.ClassName
+                })
+                .ToListAsync(ct))
+            .Select(e => new EventKey(e.PackageName, e.EventType, e.EventTimestampUtc, NormalizeClassName(e.ClassName)))
+            .ToHashSet();
 
-        _db.Set<MobileUsageEventEntity>().Add(new MobileUsageEventEntity
+        var accepted = 0;
+        var skipped = 0;
+        foreach (var usageEvent in request.Events)
         {
-            UserId = userId,
-            DeviceId = request.DeviceId,
-            PackageName = usageEvent.PackageName,
-            EventType = usageEvent.EventType,
-            EventTimestampUtc = usageEvent.EventTimestampUtc,
-            ClassName = usageEvent.ClassName,
-            SourceWindowStartUtc = request.WindowStartUtc,
-            SourceWindowEndUtc = request.WindowEndUtc,
-            CollectedAtUtc = usageEvent.CollectedAtUtc,
-            RawJson = JsonOrDefault(usageEvent.RawJson),
-            QualityFlagsJson = "[]",
-            CreatedAt = now
-        });
+            var key = EventKey.From(usageEvent);
+            if (!knownKeys.Add(key))
+            {
+                skipped++;
+                continue;
+            }
+
+            _db.Set<MobileUsageEventEntity>().Add(new MobileUsageEventEntity
+            {
+                UserId = userId,
+                DeviceId = request.DeviceId,
+                PackageName = usageEvent.PackageName,
+                EventType = usageEvent.EventType,
+                EventTimestampUtc = usageEvent.EventTimestampUtc,
+                ClassName = NormalizeClassName(usageEvent.ClassName),
+                SourceWindowStartUtc = request.WindowStartUtc,
+                SourceWindowEndUtc = request.WindowEndUtc,
+                CollectedAtUtc = usageEvent.CollectedAtUtc,
+                RawJson = JsonOrDefault(usageEvent.RawJson),
+                QualityFlagsJson = "[]",
+                CreatedAt = now
+            });
+            accepted++;
+        }
+
+        return new EventIngestCounts(accepted, skipped);
     }
 
     private async Task UpsertSummaryAsync(
@@ -185,4 +233,23 @@ public sealed class MobileUsageIngestService
 
     private static string JsonOrDefault(string? value)
         => string.IsNullOrWhiteSpace(value) ? "{}" : value;
+
+    private static string NormalizeClassName(string? value)
+        => value ?? string.Empty;
+
+    private sealed record EventKey(
+        string PackageName,
+        string EventType,
+        DateTimeOffset EventTimestampUtc,
+        string ClassName)
+    {
+        public static EventKey From(MobileUsageEventDto usageEvent)
+            => new(
+                usageEvent.PackageName,
+                usageEvent.EventType,
+                usageEvent.EventTimestampUtc,
+                NormalizeClassName(usageEvent.ClassName));
+    }
+
+    private sealed record EventIngestCounts(int Accepted, int Skipped);
 }
