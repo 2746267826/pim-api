@@ -137,7 +137,7 @@ public sealed class MobileUsageQueryService
 
         var summaries = _db.Set<MobileUsageSummaryEntity>()
             .AsNoTracking()
-            .Where(s => s.UserId == userId && IsFallbackSource(s.SourceKind));
+            .Where(s => s.UserId == userId);
         if (!string.IsNullOrWhiteSpace(query.DeviceId))
             summaries = summaries.Where(s => s.DeviceId == query.DeviceId);
         if (query.RangeStartUtc is not null)
@@ -145,7 +145,7 @@ public sealed class MobileUsageQueryService
         if (query.RangeEndUtc is not null)
             summaries = summaries.Where(s => s.WindowStartUtc < query.RangeEndUtc);
 
-        var fallbackRows = await summaries
+        var fallbackRows = await WhereFallbackSummaries(summaries)
             .OrderBy(s => s.WindowStartUtc)
             .Take(500)
             .ToListAsync(ct);
@@ -222,6 +222,12 @@ public sealed class MobileUsageQueryService
             .Select(group => group.OrderByDescending(app => app.UpdatedAt).First())
             .ToDictionaryAsync(app => app.PackageName, ct);
     }
+
+    public static IQueryable<MobileUsageSummaryEntity> WhereFallbackSummaries(
+        IQueryable<MobileUsageSummaryEntity> summaries)
+        => summaries.Where(s =>
+            s.SourceKind.ToLower().Contains("fallback")
+            || s.SourceKind.ToLower().Contains("summary"));
 
     private async Task<Dictionary<string, int>> SessionCounts(Guid userId, MobileSummaryQuery query, CancellationToken ct)
     {

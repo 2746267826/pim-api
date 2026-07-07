@@ -9,9 +9,12 @@ internal static class MobileTestHelpers
 {
     public static readonly Guid UserId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
 
+    public static void RegisterMobileModule()
+        => new MobileModule().RegisterServices(new ServiceCollection(), new ConfigurationBuilder().Build());
+
     public static PimDbContext CreateDb()
     {
-        new MobileModule().RegisterServices(new ServiceCollection(), new ConfigurationBuilder().Build());
+        RegisterMobileModule();
         var options = new DbContextOptionsBuilder<PimDbContext>()
             .UseInMemoryDatabase($"mobile-{Guid.NewGuid()}")
             .Options;

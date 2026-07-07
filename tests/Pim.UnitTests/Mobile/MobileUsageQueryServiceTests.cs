@@ -1,6 +1,8 @@
 using Pim.Module.Mobile.DTOs;
 using Pim.Module.Mobile.Entities;
 using Pim.Module.Mobile.Services;
+using Microsoft.EntityFrameworkCore;
+using Pim.Infrastructure.Data;
 using Xunit;
 
 namespace Pim.UnitTests.Mobile;
@@ -44,6 +46,23 @@ public sealed class MobileUsageQueryServiceTests
         var batch = Assert.Single(summary.SyncBatches);
         Assert.Equal(1, batch.AcceptedLocationCount);
         Assert.Equal(1, batch.RejectedLocationCount);
+    }
+
+    [Fact]
+    public void WhereFallbackSummaries_BuildsRelationalQueryWithoutClientMethod()
+    {
+        MobileTestHelpers.RegisterMobileModule();
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseNpgsql("Host=localhost;Database=pim_translation_tests")
+            .Options;
+        using var db = new PimDbContext(options);
+
+        var sql = MobileUsageQueryService
+            .WhereFallbackSummaries(db.Set<MobileUsageSummaryEntity>().AsNoTracking())
+            .ToQueryString();
+
+        Assert.Contains("fallback", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("summary", sql, StringComparison.OrdinalIgnoreCase);
     }
 
     private static MobileLocationPointEntity Location(DateTimeOffset recordedAt, string quality, decimal accuracy)
