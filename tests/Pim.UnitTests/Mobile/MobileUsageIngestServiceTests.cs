@@ -208,6 +208,59 @@ public sealed class MobileUsageIngestServiceTests
         Assert.Equal(request.Events[1].EventTimestampUtc, session.EndUtc);
     }
 
+    [Fact]
+    public async Task IngestAsync_MarksAffectedAnalyticsStaleWhenServiceIsAvailable()
+    {
+        var now = DateTimeOffset.Parse("2026-07-06T12:00:00Z");
+        await using var db = MobileTestHelpers.CreateDb();
+        var staleService = new MobileAppCatalogOverrideService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            MobileTestHelpers.Time(now));
+        var service = new MobileUsageIngestService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            new MobileSessionInterpreter(db),
+            MobileTestHelpers.Time(now),
+            staleService);
+        var request = UploadRequest("batch-stale", "Messages");
+        db.Set<MobileUsageAggregateEntity>().Add(new MobileUsageAggregateEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = request.DeviceId,
+            Granularity = "hour",
+            BucketStartUtc = request.WindowStartUtc,
+            BucketEndUtc = request.WindowEndUtc,
+            PackageName = "com.example.messages",
+            DisplayName = "Messages",
+            LifeCategory = MobileLifeCategories.Social,
+            ForegroundSeconds = 60,
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        db.Set<MobileTimelineBlockEntity>().Add(new MobileTimelineBlockEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = request.DeviceId,
+            StartUtc = request.WindowStartUtc,
+            EndUtc = request.WindowEndUtc,
+            LocalDate = "2026-07-06",
+            LifeCategory = MobileLifeCategories.Social,
+            ForegroundSeconds = 60,
+            SessionCount = 1,
+            AppCount = 1,
+            TopAppsJson = "[{\"packageName\":\"com.example.messages\",\"displayName\":\"Messages\",\"foregroundSeconds\":60}]",
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await db.SaveChangesAsync();
+
+        await service.IngestAsync(request, CancellationToken.None);
+
+        Assert.True(await db.Set<MobileUsageAggregateEntity>().AnyAsync(row => row.IsStale));
+        Assert.True(await db.Set<MobileTimelineBlockEntity>().AnyAsync(row => row.IsStale));
+    }
+
     private static MobileUsageEventsUploadRequest UploadRequest(
         string batchId,
         string appName,

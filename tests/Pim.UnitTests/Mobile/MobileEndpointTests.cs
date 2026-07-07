@@ -34,6 +34,17 @@ public sealed class MobileEndpointTests
         Assert.Contains("/api/v1/mobile/timeline", paths);
         Assert.Contains("/api/v1/mobile/location/history", paths);
         Assert.Contains("/api/v1/mobile/quality", paths);
+        Assert.Contains("/api/v1/mobile/analytics/overview", paths);
+        Assert.Contains("/api/v1/mobile/analytics/heatmap", paths);
+        Assert.Contains("/api/v1/mobile/analytics/charts", paths);
+        Assert.Contains("/api/v1/mobile/analytics/timeline-blocks", paths);
+        Assert.Contains("/api/v1/mobile/analytics/timeline-blocks/{blockId}/sessions", paths);
+        Assert.Contains("/api/v1/mobile/analytics/sessions/{sessionId}/events", paths);
+        Assert.Contains("/api/v1/mobile/analytics/goals", paths);
+        Assert.Contains("/api/v1/mobile/apps/catalog-overrides", paths);
+        Assert.Contains("/api/v1/mobile/apps/catalog-overrides/{packageName}", paths);
+        Assert.Contains("/api/v1/mobile/apps/category-rules", paths);
+        Assert.Contains("/api/v1/mobile/apps/category-rules/{ruleId}", paths);
         Assert.All(endpoints, endpoint => Assert.Contains(
             endpoint.Metadata,
             metadata => metadata is IAuthorizeData));

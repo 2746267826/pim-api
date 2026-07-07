@@ -12,17 +12,20 @@ public sealed class MobileUsageIngestService
     private readonly ICurrentUserService _currentUser;
     private readonly MobileSessionInterpreter _sessionInterpreter;
     private readonly TimeProvider _timeProvider;
+    private readonly MobileAppCatalogOverrideService? _catalogOverrideService;
 
     public MobileUsageIngestService(
         PimDbContext db,
         ICurrentUserService currentUser,
         MobileSessionInterpreter sessionInterpreter,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        MobileAppCatalogOverrideService? catalogOverrideService = null)
     {
         _db = db;
         _currentUser = currentUser;
         _sessionInterpreter = sessionInterpreter;
         _timeProvider = timeProvider;
+        _catalogOverrideService = catalogOverrideService;
     }
 
     public async Task<MobileUsageIngestResult> IngestAsync(
@@ -41,6 +44,11 @@ public sealed class MobileUsageIngestService
             await _sessionInterpreter.RebuildSessionsAsync(
                 userId,
                 request.DeviceId,
+                existingBatch.WindowStartUtc,
+                existingBatch.WindowEndUtc,
+                ct);
+            await MarkAffectedAnalyticsStaleAsync(
+                request,
                 existingBatch.WindowStartUtc,
                 existingBatch.WindowEndUtc,
                 ct);
@@ -76,6 +84,11 @@ public sealed class MobileUsageIngestService
         await _sessionInterpreter.RebuildSessionsAsync(
             userId,
             request.DeviceId,
+            request.WindowStartUtc,
+            request.WindowEndUtc,
+            ct);
+        await MarkAffectedAnalyticsStaleAsync(
+            request,
             request.WindowStartUtc,
             request.WindowEndUtc,
             ct);
@@ -233,6 +246,27 @@ public sealed class MobileUsageIngestService
 
     private static string JsonOrDefault(string? value)
         => string.IsNullOrWhiteSpace(value) ? "{}" : value;
+
+    private async Task MarkAffectedAnalyticsStaleAsync(
+        MobileUsageEventsUploadRequest request,
+        DateTimeOffset rangeStartUtc,
+        DateTimeOffset rangeEndUtc,
+        CancellationToken ct)
+    {
+        if (_catalogOverrideService is null)
+            return;
+
+        var packageNames = request.Events
+            .Select(e => e.PackageName)
+            .Concat(request.Summaries.Select(s => s.PackageName))
+            .Concat(request.Apps.Select(a => a.PackageName))
+            .Where(packageName => !string.IsNullOrWhiteSpace(packageName))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var packageName in packageNames)
+            await _catalogOverrideService.MarkAnalyticsStaleAsync(packageName, rangeStartUtc, rangeEndUtc, ct);
+    }
 
     private static string NormalizeClassName(string? value)
         => value ?? string.Empty;

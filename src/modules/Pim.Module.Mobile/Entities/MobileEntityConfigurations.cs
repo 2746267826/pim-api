@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Pim.Module.Mobile.DTOs;
 
 namespace Pim.Module.Mobile.Entities;
 
@@ -108,5 +109,102 @@ public sealed class MobileSyncBatchEntityConfiguration : IEntityTypeConfiguratio
         builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
         builder.HasIndex(e => new { e.UserId, e.DeviceId, e.BatchId }).IsUnique();
         builder.HasIndex(e => new { e.UserId, e.DeviceId, e.CreatedAt });
+    }
+}
+
+public sealed class MobileAppCatalogOverrideEntityConfiguration : IEntityTypeConfiguration<MobileAppCatalogOverrideEntity>
+{
+    public void Configure(EntityTypeBuilder<MobileAppCatalogOverrideEntity> builder)
+    {
+        builder.Property(e => e.LifeCategory).HasDefaultValue(MobileLifeCategories.Uncategorized);
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        builder.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(e => new { e.UserId, e.PackageName }).IsUnique();
+        builder.HasIndex(e => new { e.UserId, e.LifeCategory });
+        builder.HasIndex(e => new { e.UserId, e.IsSystemNoise });
+    }
+}
+
+public sealed class MobileAppCategoryRuleEntityConfiguration : IEntityTypeConfiguration<MobileAppCategoryRuleEntity>
+{
+    public void Configure(EntityTypeBuilder<MobileAppCategoryRuleEntity> builder)
+    {
+        builder.Property(e => e.RuleType).HasDefaultValue("package-exact");
+        builder.Property(e => e.LifeCategory).HasDefaultValue(MobileLifeCategories.Uncategorized);
+        builder.Property(e => e.Priority).HasDefaultValue(100);
+        builder.Property(e => e.IsEnabled).HasDefaultValue(true);
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        builder.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(e => new { e.UserId, e.RuleType, e.Pattern }).IsUnique();
+        builder.HasIndex(e => new { e.UserId, e.IsEnabled, e.Priority });
+        builder.HasIndex(e => new { e.UserId, e.LifeCategory });
+    }
+}
+
+public sealed class MobileUsageAggregateEntityConfiguration : IEntityTypeConfiguration<MobileUsageAggregateEntity>
+{
+    public void Configure(EntityTypeBuilder<MobileUsageAggregateEntity> builder)
+    {
+        builder.Property(e => e.DeviceId).HasDefaultValue(string.Empty);
+        builder.Property(e => e.Granularity).HasDefaultValue("hour");
+        builder.Property(e => e.Timezone).HasDefaultValue(MobileAnalyticsDefaults.DefaultTimezone);
+        builder.Property(e => e.PackageName).HasDefaultValue(string.Empty);
+        builder.Property(e => e.DisplayName).HasDefaultValue(string.Empty);
+        builder.Property(e => e.LifeCategory).HasDefaultValue(MobileLifeCategories.Uncategorized);
+        builder.Property(e => e.Source).HasDefaultValue("events");
+        builder.Property(e => e.QualityFlagsJson).HasDefaultValue("[]");
+        builder.Property(e => e.GeneratedAt).HasDefaultValueSql("now()");
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        builder.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(e => new
+        {
+            e.UserId,
+            e.DeviceId,
+            e.Granularity,
+            e.BucketStartUtc,
+            e.BucketEndUtc,
+            e.PackageName,
+            e.LifeCategory
+        }).IsUnique();
+        builder.HasIndex(e => new { e.UserId, e.DeviceId, e.BucketStartUtc });
+        builder.HasIndex(e => new { e.UserId, e.LifeCategory, e.BucketStartUtc });
+        builder.HasIndex(e => new { e.UserId, e.PackageName, e.BucketStartUtc });
+        builder.HasIndex(e => new { e.UserId, e.IsStale });
+    }
+}
+
+public sealed class MobileTimelineBlockEntityConfiguration : IEntityTypeConfiguration<MobileTimelineBlockEntity>
+{
+    public void Configure(EntityTypeBuilder<MobileTimelineBlockEntity> builder)
+    {
+        builder.Property(e => e.Timezone).HasDefaultValue(MobileAnalyticsDefaults.DefaultTimezone);
+        builder.Property(e => e.LifeCategory).HasDefaultValue(MobileLifeCategories.Uncategorized);
+        builder.Property(e => e.TopAppsJson).HasDefaultValue("[]");
+        builder.Property(e => e.SourceMixJson).HasDefaultValue("{}");
+        builder.Property(e => e.QualityFlagsJson).HasDefaultValue("[]");
+        builder.Property(e => e.GeneratedAt).HasDefaultValueSql("now()");
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        builder.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(e => new { e.UserId, e.DeviceId, e.StartUtc });
+        builder.HasIndex(e => new { e.UserId, e.LifeCategory, e.StartUtc });
+        builder.HasIndex(e => new { e.UserId, e.LocalDate });
+        builder.HasIndex(e => new { e.UserId, e.IsStale });
+    }
+}
+
+public sealed class MobileUsageGoalEntityConfiguration : IEntityTypeConfiguration<MobileUsageGoalEntity>
+{
+    public void Configure(EntityTypeBuilder<MobileUsageGoalEntity> builder)
+    {
+        builder.Property(e => e.Scope).HasDefaultValue("total-daily");
+        builder.Property(e => e.Label).HasDefaultValue("每日手机总时长");
+        builder.Property(e => e.Timezone).HasDefaultValue(MobileAnalyticsDefaults.DefaultTimezone);
+        builder.Property(e => e.IsEnabled).HasDefaultValue(true);
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        builder.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(e => new { e.UserId, e.Scope, e.PackageName, e.LifeCategory }).IsUnique();
+        builder.HasIndex(e => new { e.UserId, e.IsEnabled });
+        builder.HasIndex(e => new { e.UserId, e.LifeCategory });
+        builder.HasIndex(e => new { e.UserId, e.PackageName });
     }
 }
