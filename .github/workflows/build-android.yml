@@ -30,15 +30,33 @@ jobs:
       - name: Generate version string
         id: version
         run: |
-          VERSION=$(git describe --tags --always --match "v*" 2>/dev/null || echo "0.0.0")
-          DISPLAY=$(echo "$VERSION" | sed 's/^v//' | sed 's/-[0-9]*-g\([0-9a-f]\{7\}\)$/\(\1\)/' | sed 's/-g\([0-9a-f]\{7\}\)$/\(\1\)/')
-          COMMIT_COUNT=$(git rev-list --count HEAD 2>/dev/null || echo 1)
-          echo "value=$DISPLAY" >> "$GITHUB_OUTPUT"
-          echo "version=$DISPLAY"
-          echo "VERSION_DISPLAY=$DISPLAY" >> "$GITHUB_ENV"
-          echo "VERSION_CODE=$COMMIT_COUNT" >> "$GITHUB_ENV"
-          echo "CI_APP_VERSION=$DISPLAY" >> "$GITHUB_ENV"
-          echo "CI_VERSION_CODE=$COMMIT_COUNT" >> "$GITHUB_ENV"
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          BUILD_NUMBER=${GITHUB_RUN_NUMBER:-1}
+          VERSION_CODE=$((100000 + BUILD_NUMBER))
+          VERSION_NAME="0.1.${BUILD_NUMBER}+${SHORT_SHA}"
+          VERSION_FILE="0.1.${BUILD_NUMBER}-${SHORT_SHA}"
+          ARTIFACT_NAME="pim-android-v${VERSION_FILE}-vc${VERSION_CODE}"
+          echo "value=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "artifact=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION_NAME"
+          echo "VERSION_DISPLAY=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "VERSION_FILE=$VERSION_FILE" >> "$GITHUB_ENV"
+          echo "CI_APP_VERSION=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "CI_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+
+      - name: Decode Android signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 secret is not set."
+            exit 1
+          fi
+          SIGNING_DIR="$RUNNER_TEMP/android-signing"
+          mkdir -p "$SIGNING_DIR"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$SIGNING_DIR/pim-ci-upload.jks"
+          echo "ANDROID_KEYSTORE_FILE=$SIGNING_DIR/pim-ci-upload.jks" >> "$GITHUB_ENV"
 
       - name: Generate gradlew wrapper (Gradle 8.5)
         run: |
@@ -64,11 +82,27 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon
+      - name: Build signed release APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          for name in ANDROID_KEYSTORE_FILE ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not set."
+              exit 1
+            fi
+          done
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Stage APK
+        run: |
+          mkdir -p build/artifacts
+          cp app/build/outputs/apk/release/app-release.apk "build/artifacts/pim-android-v${VERSION_FILE}-vc${VERSION_CODE}.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: pim-android-apk
-          path: src/client-android/app/build/outputs/apk/debug/*.apk
+          name: ${{ steps.version.outputs.artifact }}
+          path: src/client-android/build/artifacts/*.apk

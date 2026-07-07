@@ -40,6 +40,8 @@ src/client-windows/Pim.Client.App/src/
 .env
 keys/
 ssl/
+*.jks
+*.keystore
 
 ## OS
 .DS_Store
