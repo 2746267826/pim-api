@@ -185,8 +185,11 @@ public class OutlookSyncService
                 }
                 else if (outlookEvent.LastModifiedDateTime > existing.UpdatedAt)
                 {
-                    UpdateFromOutlookEvent(existing, outlookEvent);
-                    batch.UpdatedCount++;
+                    var confirmation = await CreateOutlookCoreDiffConfirmationAsync(userId, existing, outlookEvent, ct);
+                    if (confirmation is not null)
+                    {
+                        batch.ConfirmationCount++;
+                    }
                 }
             }
 
@@ -200,7 +203,7 @@ public class OutlookSyncService
                 steps,
                 "Apply local changes",
                 "completed",
-                $"Created {batch.CreatedCount} and updated {batch.UpdatedCount} event(s).");
+                $"Created {batch.CreatedCount}, updated {batch.UpdatedCount}, and queued {batch.ConfirmationCount} confirmation(s).");
             batch.Status = "completed";
             batch.FinishedAt = DateTimeOffset.UtcNow;
             await SaveBatchAsync(batch, steps, errors, ct);
@@ -266,12 +269,15 @@ public class OutlookSyncService
                 payloadJson,
                 previewJson,
                 DateTimeOffset.UtcNow.AddHours(2),
-                evt.Id.ToString("N")),
+                evt.Id.ToString("N"),
+                ["title", "dtStart", "dtEnd"],
+                ["review", "write_to_outlook", "skip"],
+                "event",
+                evt.Id,
+                true),
             ct);
 
-        return confirmation.RequiresSecondLevelConfirmation
-            ? confirmation
-            : confirmation with { RequiresSecondLevelConfirmation = true };
+        return confirmation;
     }
 
     public async Task CreateOutlookSubscriptionAsync(Guid userId, string notificationUrl, CancellationToken ct)
@@ -307,21 +313,22 @@ public class OutlookSyncService
 
     public async Task ExecuteConfirmedWriteAsync(Guid confirmationId, CancellationToken ct)
     {
-        var confirmation = await _db.Set<PendingConfirmationEntity>()
-            .FindAsync(new object[] { confirmationId }, ct)
+        var confirmation = await _confirmationService.GetAsync(confirmationId, ct)
             ?? throw new DomainException(02006, "Confirmation does not exist.");
 
-        if (confirmation.Status != "confirmed")
+        if (confirmation.Status != OperationConfirmationStatus.Confirmed)
             throw new DomainException(02007, "Operation has not been confirmed.");
 
-        var payload = JsonSerializer.Deserialize<JsonElement>(confirmation.Payload);
+        var payload = JsonSerializer.Deserialize<JsonElement>(confirmation.PayloadJson);
         var eventId = payload.GetProperty("eventId").GetGuid();
         var action = payload.GetProperty("action").GetString();
 
         if (action == "write_to_outlook")
         {
+            var userId = confirmation.RequestedByUserId
+                ?? throw new DomainException(02005, "Outlook confirmation is not assigned to a user.");
             var connection = await _db.Set<OutlookConnectionEntity>()
-                .FirstOrDefaultAsync(c => c.UserId == confirmation.UserId, ct)
+                .FirstOrDefaultAsync(c => c.UserId == userId, ct)
                 ?? throw new DomainException(02005, "Outlook is not connected.");
             var client = CreateGraphClient(connection);
             var evt = await _db.Set<EventEntity>().FindAsync(new object[] { eventId }, ct);
@@ -336,6 +343,10 @@ public class OutlookSyncService
 
             var response = await client.PostAsJsonAsync("/me/events", outlookEvent, ct);
             response.EnsureSuccessStatusCode();
+            await _confirmationService.MarkExecutedAsync(
+                confirmationId,
+                JsonSerializer.Serialize(new { status = "written", provider = Provider }, JsonOptions),
+                ct);
         }
     }
 
@@ -394,13 +405,71 @@ public class OutlookSyncService
         };
     }
 
-    private void UpdateFromOutlookEvent(EventEntity entity, OutlookEventInfo oe)
+    private async Task<OperationConfirmationDto?> CreateOutlookCoreDiffConfirmationAsync(
+        Guid userId,
+        EventEntity entity,
+        OutlookEventInfo outlookEvent,
+        CancellationToken ct)
     {
-        entity.Title = oe.Subject;
-        entity.Description = oe.BodyPreview;
-        entity.DtStart = oe.Start;
-        entity.DtEnd = oe.End;
-        entity.UpdatedAt = DateTimeOffset.UtcNow;
+        var changedFields = new List<string>();
+        if (!string.Equals(entity.Title, outlookEvent.Subject, StringComparison.Ordinal))
+            changedFields.Add("title");
+        if (!string.Equals(entity.Description ?? string.Empty, outlookEvent.BodyPreview ?? string.Empty, StringComparison.Ordinal))
+            changedFields.Add("description");
+        if (entity.DtStart != outlookEvent.Start)
+            changedFields.Add("dtStart");
+        if (entity.DtEnd != outlookEvent.End)
+            changedFields.Add("dtEnd");
+
+        if (changedFields.Count == 0)
+        {
+            return null;
+        }
+
+        var payloadJson = JsonSerializer.Serialize(new
+        {
+            provider = Provider,
+            action = "outlook_core_diff",
+            eventId = entity.Id,
+            graphEventId = outlookEvent.Id
+        }, JsonOptions);
+        var previewJson = JsonSerializer.Serialize(new
+        {
+            eventId = entity.Id,
+            graphEventId = outlookEvent.Id,
+            before = new
+            {
+                entity.Title,
+                entity.Description,
+                entity.DtStart,
+                entity.DtEnd
+            },
+            after = new
+            {
+                title = outlookEvent.Subject,
+                description = outlookEvent.BodyPreview,
+                dtStart = outlookEvent.Start,
+                dtEnd = outlookEvent.End
+            }
+        }, JsonOptions);
+
+        return await _confirmationService.CreateAsync(
+            new CreateOperationConfirmationRequest(
+                userId,
+                "calendar.outlook.core_diff",
+                $"Review Outlook changes for \"{entity.Title}\".",
+                OperationRiskLevel.L3ExternalSourceOrWriteback,
+                Provider,
+                payloadJson,
+                previewJson,
+                DateTimeOffset.UtcNow.AddHours(2),
+                entity.Id.ToString("N"),
+                changedFields,
+                ["keep_pim", "keep_outlook", "merge_by_field", "skip"],
+                "event",
+                entity.Id,
+                true),
+            ct);
     }
 
     private static OutlookSettingsResponse MapSettings(OutlookConnectionEntity? connection)

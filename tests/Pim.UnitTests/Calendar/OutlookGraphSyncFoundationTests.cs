@@ -97,13 +97,83 @@ public class OutlookGraphSyncFoundationTests
         Assert.Empty(await db.Set<PendingConfirmationEntity>().ToListAsync());
     }
 
+    [Fact]
+    public async Task SyncAsync_CreatesL3ConfirmationForOutlookCoreDiffWithoutMutatingEvent()
+    {
+        await using var db = CreateDb();
+        var calendar = new CalendarEntity
+        {
+            UserId = UserId,
+            Name = "Outlook",
+            IsDefault = true
+        };
+        var evt = new EventEntity
+        {
+            Calendar = calendar,
+            CalendarId = calendar.Id,
+            Uid = "existing@outlook",
+            OutlookEventId = "graph-1",
+            Title = "Original title",
+            Description = "Original preview",
+            DtStart = new DateTimeOffset(2026, 7, 8, 9, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 7, 8, 10, 0, 0, TimeSpan.Zero),
+            UpdatedAt = new DateTimeOffset(2026, 7, 8, 0, 0, 0, TimeSpan.Zero),
+            Source = "outlook"
+        };
+        db.Set<CalendarEntity>().Add(calendar);
+        db.Set<EventEntity>().Add(evt);
+        db.Set<OutlookConnectionEntity>().Add(new OutlookConnectionEntity
+        {
+            UserId = UserId,
+            AccessTokenEncrypted = "token"u8.ToArray(),
+            Status = "connected",
+            TokenHealth = "valid"
+        });
+        await db.SaveChangesAsync();
+
+        var confirmationService = new CapturingConfirmationService();
+        var service = CreateService(
+            db,
+            confirmationService,
+            """
+            {
+              "value": [
+                {
+                  "id": "graph-1",
+                  "subject": "Changed by Outlook",
+                  "bodyPreview": "Changed preview",
+                  "start": { "dateTime": "2026-07-08T11:00:00Z" },
+                  "end": { "dateTime": "2026-07-08T12:00:00Z" },
+                  "lastModifiedDateTime": "2026-07-08T01:00:00Z"
+                }
+              ]
+            }
+            """);
+
+        var batch = await service.SyncAsync(UserId);
+
+        var stored = await db.Set<EventEntity>().SingleAsync(e => e.Id == evt.Id);
+        Assert.Equal("Original title", stored.Title);
+        Assert.Equal(new DateTimeOffset(2026, 7, 8, 9, 0, 0, TimeSpan.Zero), stored.DtStart);
+        Assert.Equal(1, batch.ConfirmationCount);
+        Assert.Equal(0, batch.UpdatedCount);
+        Assert.NotNull(confirmationService.LastRequest);
+        Assert.Equal(OperationRiskLevel.L3ExternalSourceOrWriteback, confirmationService.LastRequest.RiskLevel);
+        Assert.Contains("title", confirmationService.LastRequest.ChangedFields ?? []);
+        Assert.Contains("dtStart", confirmationService.LastRequest.ChangedFields ?? []);
+        Assert.Equal("event", confirmationService.LastRequest.ObjectType);
+        Assert.Equal(evt.Id, confirmationService.LastRequest.ObjectId);
+        Assert.True(confirmationService.LastRequest.RequiresSecondLevelConfirmation);
+    }
+
     private static OutlookSyncService CreateService(
         PimDbContext db,
-        IOperationConfirmationService? confirmationService = null)
+        IOperationConfirmationService? confirmationService = null,
+        string graphEventsJson = """{"value":[]}""")
     {
         return new OutlookSyncService(
             db,
-            new StubHttpClientFactory(),
+            new StubHttpClientFactory(graphEventsJson),
             confirmationService ?? new CapturingConfirmationService());
     }
 
@@ -116,18 +186,18 @@ public class OutlookGraphSyncFoundationTests
         return new PimDbContext(options);
     }
 
-    private sealed class StubHttpClientFactory : IHttpClientFactory
+    private sealed class StubHttpClientFactory(string graphEventsJson) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name)
         {
-            return new HttpClient(new StubMessageHandler())
+            return new HttpClient(new StubMessageHandler(graphEventsJson))
             {
                 BaseAddress = new Uri("https://graph.microsoft.com/v1.0")
             };
         }
     }
 
-    private sealed class StubMessageHandler : HttpMessageHandler
+    private sealed class StubMessageHandler(string graphEventsJson) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -135,7 +205,7 @@ public class OutlookGraphSyncFoundationTests
         {
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent("""{"value":[]}""")
+                Content = new StringContent(graphEventsJson)
             });
         }
     }
@@ -164,7 +234,12 @@ public class OutlookGraphSyncFoundationTests
                 null,
                 null,
                 null,
-                request.CorrelationId));
+                request.CorrelationId,
+                request.ChangedFields,
+                request.AllowedActions,
+                request.ObjectType,
+                request.ObjectId,
+                request.RequiresSecondLevelConfirmation));
         }
 
         public Task<OperationConfirmationDto?> GetAsync(Guid id, CancellationToken ct = default) =>

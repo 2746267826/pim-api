@@ -79,6 +79,40 @@ public class ScheduleWorkbenchConfirmationContractTests
         Assert.Equal(OperationRiskLevel.Medium, dto.RiskLevel);
     }
 
+    [Fact]
+    public async Task ConfirmationServicePersistsDiffMetadataForPendingViews()
+    {
+        await using var db = CreateDb();
+        var service = new OperationConfirmationService(db);
+        var objectId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+
+        var created = await service.CreateAsync(new CreateOperationConfirmationRequest(
+            userId,
+            "calendar.outlook.writeback",
+            "Write Outlook event",
+            OperationRiskLevel.L3ExternalSourceOrWriteback,
+            "outlook",
+            "{}",
+            "{}",
+            DateTimeOffset.UtcNow.AddHours(2),
+            "corr",
+            ["title", "dtStart"],
+            ["keep_pim", "keep_outlook"],
+            "event",
+            objectId,
+            true));
+
+        var listed = Assert.Single(await service.ListPendingForUserAsync(userId));
+
+        Assert.Equal(created.Id, listed.Id);
+        Assert.Contains("title", listed.ChangedFields ?? []);
+        Assert.Contains("keep_outlook", listed.AllowedActions ?? []);
+        Assert.Equal("event", listed.ObjectType);
+        Assert.Equal(objectId, listed.ObjectId);
+        Assert.True(listed.RequiresSecondLevelConfirmation);
+    }
+
     private static PimDbContext CreateDb()
     {
         var options = new DbContextOptionsBuilder<PimDbContext>()

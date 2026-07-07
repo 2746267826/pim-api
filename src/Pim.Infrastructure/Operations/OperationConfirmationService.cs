@@ -20,8 +20,10 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         CreateOperationConfirmationRequest request,
         CancellationToken ct = default)
     {
-        ValidateJson(request.PayloadJson, 3006, "PayloadJson 必须是有效 JSON");
-        ValidateJson(request.PreviewJson, 3007, "PreviewJson 必须是有效 JSON");
+        ValidateJson(request.PayloadJson, 3006, "PayloadJson must be valid JSON");
+        ValidateJson(request.PreviewJson, 3007, "PreviewJson must be valid JSON");
+        var previewJson = BuildPreviewJson(request);
+        ValidateJson(previewJson, 3007, "PreviewJson must be valid JSON");
 
         var entity = new OperationConfirmationEntity
         {
@@ -31,7 +33,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             RiskLevel = request.RiskLevel.ToString(),
             Source = request.Source,
             PayloadJson = request.PayloadJson,
-            PreviewJson = request.PreviewJson,
+            PreviewJson = previewJson,
             Status = OperationConfirmationStatus.Pending.ToString(),
             ExpiresAt = request.ExpiresAt,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -115,15 +117,15 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
 
         if (entity is null)
         {
-            throw new DomainException(3001, "确认记录不存在");
+            throw new DomainException(3001, "Confirmation record does not exist.");
         }
 
         if (entity.Status != OperationConfirmationStatus.Confirmed.ToString())
         {
-            throw new DomainException(3002, "只能执行已确认的操作");
+            throw new DomainException(3002, "Only confirmed operations can be executed.");
         }
 
-        ValidateJson(resultJson, 3008, "ResultJson 必须是有效 JSON");
+        ValidateJson(resultJson, 3008, "ResultJson must be valid JSON");
 
         entity.Status = OperationConfirmationStatus.Executed.ToString();
         entity.ExecutedAt = DateTimeOffset.UtcNow;
@@ -156,19 +158,19 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
 
         if (entity is null)
         {
-            throw new DomainException(3001, "确认记录不存在");
+            throw new DomainException(3001, "Confirmation record does not exist.");
         }
 
         if (entity.Status != OperationConfirmationStatus.Pending.ToString())
         {
-            throw new DomainException(3003, "确认记录不在待确认状态");
+            throw new DomainException(3003, "Confirmation record is not pending.");
         }
 
         if (entity.ExpiresAt <= DateTimeOffset.UtcNow)
         {
             entity.Status = OperationConfirmationStatus.Expired.ToString();
             await _db.SaveChangesAsync(ct);
-            throw new DomainException(3004, "确认记录已过期");
+            throw new DomainException(3004, "Confirmation record has expired.");
         }
 
         return entity;
@@ -178,7 +180,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
     {
         if (entity.RequestedByUserId is { } requestedByUserId && requestedByUserId != userId)
         {
-            throw new DomainException(3005, "此确认记录未分配给当前用户");
+            throw new DomainException(3005, "Confirmation record is not assigned to the current user.");
         }
     }
 
@@ -194,8 +196,98 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         }
     }
 
+    private static string BuildPreviewJson(CreateOperationConfirmationRequest request)
+    {
+        using var document = JsonDocument.Parse(request.PreviewJson);
+        var preview = JsonSerializer.Deserialize<Dictionary<string, object?>>(document.RootElement.GetRawText())
+            ?? new Dictionary<string, object?>();
+
+        preview["_meta"] = new
+        {
+            changedFields = request.ChangedFields ?? Array.Empty<string>(),
+            allowedActions = request.AllowedActions ?? Array.Empty<string>(),
+            objectType = request.ObjectType,
+            objectId = request.ObjectId,
+            requiresSecondLevelConfirmation = request.RequiresSecondLevelConfirmation
+        };
+
+        return JsonSerializer.Serialize(preview);
+    }
+
+    private static ConfirmationMetadata ExtractMetadata(string previewJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(previewJson);
+            if (!document.RootElement.TryGetProperty("_meta", out var meta)
+                || meta.ValueKind != JsonValueKind.Object)
+            {
+                return ConfirmationMetadata.Empty;
+            }
+
+            return new ConfirmationMetadata(
+                ReadStringArray(meta, "changedFields"),
+                ReadStringArray(meta, "allowedActions"),
+                ReadString(meta, "objectType"),
+                ReadGuid(meta, "objectId"),
+                ReadBool(meta, "requiresSecondLevelConfirmation"));
+        }
+        catch (JsonException)
+        {
+            return ConfirmationMetadata.Empty;
+        }
+    }
+
+    private static IReadOnlyList<string> ReadStringArray(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property)
+            || property.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<string>();
+        }
+
+        return property.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => item.GetString())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .ToArray();
+    }
+
+    private static string? ReadString(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : null;
+    }
+
+    private static Guid? ReadGuid(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var property))
+        {
+            return null;
+        }
+
+        if (property.ValueKind == JsonValueKind.String
+            && Guid.TryParse(property.GetString(), out var guid))
+        {
+            return guid;
+        }
+
+        return null;
+    }
+
+    private static bool ReadBool(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var property)
+            && property.ValueKind is JsonValueKind.True or JsonValueKind.False
+            && property.GetBoolean();
+    }
+
     private static OperationConfirmationDto Map(OperationConfirmationEntity entity)
     {
+        var metadata = ExtractMetadata(entity.PreviewJson);
         return new OperationConfirmationDto(
             entity.Id,
             entity.RequestedByUserId,
@@ -211,7 +303,12 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             entity.ConfirmedAt,
             entity.ExecutedAt,
             entity.ResultJson,
-            entity.CorrelationId);
+            entity.CorrelationId,
+            metadata.ChangedFields,
+            metadata.AllowedActions,
+            metadata.ObjectType,
+            metadata.ObjectId,
+            metadata.RequiresSecondLevelConfirmation);
     }
 
     private static OperationRiskLevel ParseRiskLevel(string value)
@@ -219,5 +316,20 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         return Enum.TryParse<OperationRiskLevel>(value, out var parsed)
             ? parsed
             : OperationRiskLevel.Medium;
+    }
+
+    private sealed record ConfirmationMetadata(
+        IReadOnlyList<string> ChangedFields,
+        IReadOnlyList<string> AllowedActions,
+        string? ObjectType,
+        Guid? ObjectId,
+        bool RequiresSecondLevelConfirmation)
+    {
+        public static ConfirmationMetadata Empty { get; } = new(
+            Array.Empty<string>(),
+            Array.Empty<string>(),
+            null,
+            null,
+            false);
     }
 }

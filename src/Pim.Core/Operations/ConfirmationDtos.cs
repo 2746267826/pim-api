@@ -9,7 +9,12 @@ public sealed record CreateOperationConfirmationRequest(
     string PayloadJson,
     string PreviewJson,
     DateTimeOffset ExpiresAt,
-    string? CorrelationId);
+    string? CorrelationId,
+    IReadOnlyList<string>? ChangedFields = null,
+    IReadOnlyList<string>? AllowedActions = null,
+    string? ObjectType = null,
+    Guid? ObjectId = null,
+    bool RequiresSecondLevelConfirmation = false);
 
 public sealed record OperationConfirmationDto(
     Guid Id,
