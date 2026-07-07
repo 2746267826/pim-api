@@ -53,7 +53,7 @@ public sealed class MobileLocationAggregationService
             usablePoints.Count,
             rejectedCount,
             Math.Max(0, activeSpanSeconds),
-            Math.Round(TotalDistanceMeters(usablePoints), 1),
+            Math.Round(TotalDistanceMetersByDevice(usablePoints), 1),
             CountStaySegments(usablePoints),
             LongestStaySeconds(usablePoints),
             Math.Round(AverageAccuracyMeters(usablePoints), 1),
@@ -169,7 +169,7 @@ public sealed class MobileLocationAggregationService
             {
                 if (current.Count > 0 && point.RecordedAtUtc - current[^1].RecordedAtUtc > TrackGapThreshold)
                 {
-                    tracks.Add(BuildTrack(current, context, tracks.Count));
+                    tracks.Add(BuildTrack(current, context));
                     current = [];
                 }
 
@@ -177,7 +177,7 @@ public sealed class MobileLocationAggregationService
             }
 
             if (current.Count > 0)
-                tracks.Add(BuildTrack(current, context, tracks.Count));
+                tracks.Add(BuildTrack(current, context));
         }
 
         return tracks;
@@ -185,35 +185,74 @@ public sealed class MobileLocationAggregationService
 
     private static MobileLocationTrackDto BuildTrack(
         List<MobileLocationPointEntity> points,
-        MobileLocationQueryContext context,
-        int trackIndex)
+        MobileLocationQueryContext context)
     {
         var first = points[0];
         var last = points[^1];
-        var trackId = $"{first.DeviceId}:{first.RecordedAtUtc.UtcTicks}:{trackIndex}";
-        var segment = BuildSegment(points, context, trackId, 0);
+        var trackId = StableId("track", first.Id, last.Id);
+        var segments = BuildSegments(points, context, trackId);
         var bounds = Bounds(points);
-        var flags = segment.QualityFlags.ToList();
+        var flags = segments.SelectMany(segment => segment.QualityFlags).Distinct(StringComparer.Ordinal).ToList();
 
         return new MobileLocationTrackDto(
             trackId,
             first.DeviceId,
             first.RecordedAtUtc,
             last.RecordedAtUtc,
-            segment.DistanceMeters,
+            Math.Round(TotalDistanceMeters(points), 1),
             DurationSeconds(first.RecordedAtUtc, last.RecordedAtUtc),
             points.Count,
-            1,
+            segments.Count,
             bounds,
             flags,
-            [segment]);
+            segments);
+    }
+
+    private static IReadOnlyList<MobileLocationSegmentDto> BuildSegments(
+        List<MobileLocationPointEntity> points,
+        MobileLocationQueryContext context,
+        string trackId)
+    {
+        if (points.Count <= 2)
+            return [BuildSegment(points, context, trackId)];
+
+        var segments = new List<MobileLocationSegmentDto>();
+        var index = 0;
+        while (index < points.Count - 1)
+        {
+            var stayEnd = FindStayEnd(points, index);
+            if (stayEnd > index)
+            {
+                segments.Add(BuildSegment(points.GetRange(index, stayEnd - index + 1), context, trackId));
+                if (stayEnd >= points.Count - 1)
+                    return segments;
+
+                index = stayEnd;
+                continue;
+            }
+
+            var nextStayStart = FindNextStayStart(points, index + 1);
+            if (nextStayStart > index)
+            {
+                segments.Add(BuildSegment(points.GetRange(index, nextStayStart - index + 1), context, trackId));
+                index = nextStayStart;
+                continue;
+            }
+
+            segments.Add(BuildSegment(points.GetRange(index, points.Count - index), context, trackId));
+            return segments;
+        }
+
+        if (segments.Count == 0)
+            segments.Add(BuildSegment(points, context, trackId));
+
+        return segments;
     }
 
     private static MobileLocationSegmentDto BuildSegment(
         List<MobileLocationPointEntity> points,
         MobileLocationQueryContext context,
-        string trackId,
-        int segmentIndex)
+        string trackId)
     {
         var first = points[0];
         var last = points[^1];
@@ -224,7 +263,7 @@ public sealed class MobileLocationAggregationService
         var quality = qualityFlags.Count == 0 ? "usable" : "review";
 
         return new MobileLocationSegmentDto(
-            $"{trackId}:s{segmentIndex}",
+            StableId("segment", first.Id, last.Id),
             trackId,
             first.DeviceId,
             kind,
@@ -242,6 +281,37 @@ public sealed class MobileLocationAggregationService
             qualityFlags,
             Bounds(points),
             points.Select(MapPathPoint).ToList());
+    }
+
+    private static int FindStayEnd(IReadOnlyList<MobileLocationPointEntity> points, int start)
+    {
+        var stayEnd = -1;
+        for (var end = start + 1; end < points.Count; end++)
+        {
+            var candidate = points.Skip(start).Take(end - start + 1).ToList();
+            if (DurationSeconds(candidate[0].RecordedAtUtc, candidate[^1].RecordedAtUtc) >= StayDurationThreshold.TotalSeconds
+                && MaxRadiusMeters(candidate) <= StayRadiusThresholdMeters)
+            {
+                stayEnd = end;
+                continue;
+            }
+
+            if (stayEnd > start)
+                break;
+        }
+
+        return stayEnd;
+    }
+
+    private static int FindNextStayStart(IReadOnlyList<MobileLocationPointEntity> points, int start)
+    {
+        for (var index = start; index < points.Count - 1; index++)
+        {
+            if (FindStayEnd(points, index) > index)
+                return index;
+        }
+
+        return -1;
     }
 
     private static string SegmentKind(
@@ -387,6 +457,14 @@ public sealed class MobileLocationAggregationService
             distance += DistanceMeters(points[index - 1], points[index]);
         return distance;
     }
+
+    private static double TotalDistanceMetersByDevice(IReadOnlyList<MobileLocationPointEntity> points)
+        => points
+            .GroupBy(point => point.DeviceId)
+            .Sum(group => TotalDistanceMeters(group.OrderBy(point => point.RecordedAtUtc).ThenBy(point => point.Id).ToList()));
+
+    private static string StableId(string prefix, Guid firstPointId, Guid lastPointId)
+        => $"{prefix}_{firstPointId:N}_{lastPointId:N}";
 
     private static double DistanceMeters(MobileLocationPointEntity from, MobileLocationPointEntity to)
     {
