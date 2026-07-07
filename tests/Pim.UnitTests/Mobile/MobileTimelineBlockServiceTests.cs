@@ -20,13 +20,13 @@ public sealed class MobileTimelineBlockServiceTests
         var wechatSessionId = Guid.Parse("10000000-0000-0000-0000-000000000002");
 
         db.Set<MobileAppCatalogEntity>().AddRange(
-            Catalog("com.tencent.mobileqq", "QQ", "社交沟通"),
-            Catalog("com.tencent.mm", "微信", "社交沟通"),
+            Catalog("com.tencent.mobileqq", "QQ", "社交通讯"),
+            Catalog("com.tencent.mm", "微信", "社交通讯"),
             Catalog("com.android.systemui", "系统界面", "工具/系统", isSystemApp: true),
             Catalog("com.reader.news", "每日阅读", "阅读/资讯"));
         db.Set<MobileAppCatalogOverrideEntity>().AddRange(
-            Override("com.tencent.mobileqq", "社交沟通"),
-            Override("com.tencent.mm", "社交沟通"),
+            Override("com.tencent.mobileqq", "社交通讯"),
+            Override("com.tencent.mm", "社交通讯"),
             Override("com.android.systemui", "工具/系统", isSystemNoise: true),
             Override("com.reader.news", "阅读/资讯"));
         db.Set<MobileUsageSessionEntity>().AddRange(
@@ -50,7 +50,7 @@ public sealed class MobileTimelineBlockServiceTests
         Assert.Equal(2, page.Items.Count);
 
         var social = page.Items[0];
-        Assert.Equal("社交沟通", social.LifeCategory);
+        Assert.Equal("社交通讯", social.LifeCategory);
         Assert.Equal(DateTimeOffset.Parse("2026-07-07T10:00:00Z"), social.StartUtc);
         Assert.Equal(DateTimeOffset.Parse("2026-07-07T10:10:00Z"), social.EndUtc);
         Assert.Equal("2026-07-07 18:00", social.LocalStart);
@@ -90,8 +90,8 @@ public sealed class MobileTimelineBlockServiceTests
     public async Task GetBlocksAsync_CursorPaginatesDescendingAndClampsPageSize()
     {
         await using var db = MobileTestHelpers.CreateDb();
-        db.Set<MobileAppCatalogEntity>().Add(Catalog("com.tencent.mobileqq", "QQ", "社交沟通"));
-        db.Set<MobileAppCatalogOverrideEntity>().Add(Override("com.tencent.mobileqq", "社交沟通"));
+        db.Set<MobileAppCatalogEntity>().Add(Catalog("com.tencent.mobileqq", "QQ", "社交通讯"));
+        db.Set<MobileAppCatalogOverrideEntity>().Add(Override("com.tencent.mobileqq", "社交通讯"));
 
         for (var i = 0; i < 205; i++)
         {
@@ -139,10 +139,10 @@ public sealed class MobileTimelineBlockServiceTests
     {
         await using var db = MobileTestHelpers.CreateDb();
         db.Set<MobileAppCatalogEntity>().AddRange(
-            Catalog("com.tencent.mobileqq", "QQ", "社交沟通"),
+            Catalog("com.tencent.mobileqq", "QQ", "社交通讯"),
             Catalog("com.android.systemui", "系统界面", "工具/系统", isSystemApp: true));
         db.Set<MobileAppCatalogOverrideEntity>().AddRange(
-            Override("com.tencent.mobileqq", "社交沟通"),
+            Override("com.tencent.mobileqq", "社交通讯"),
             Override("com.android.systemui", "工具/系统", isSystemNoise: true));
         db.Set<MobileUsageSessionEntity>().AddRange(
             Session(Guid.Parse("30000000-0000-0000-0000-000000000001"), "com.tencent.mobileqq", DateTimeOffset.Parse("2026-07-07T10:00:00Z"), 300),
@@ -189,8 +189,8 @@ public sealed class MobileTimelineBlockServiceTests
     public async Task GetBlocksAsync_ProratesPartiallyOverlappingFallbackSummaries()
     {
         await using var db = MobileTestHelpers.CreateDb();
-        db.Set<MobileAppCatalogEntity>().Add(Catalog("com.tencent.mobileqq", "QQ", "社交沟通"));
-        db.Set<MobileAppCatalogOverrideEntity>().Add(Override("com.tencent.mobileqq", "社交沟通"));
+        db.Set<MobileAppCatalogEntity>().Add(Catalog("com.tencent.mobileqq", "QQ", "社交通讯"));
+        db.Set<MobileAppCatalogOverrideEntity>().Add(Override("com.tencent.mobileqq", "社交通讯"));
         db.Set<MobileUsageSummaryEntity>().Add(Summary(
             "com.tencent.mobileqq",
             DateTimeOffset.Parse("2026-07-07T09:00:00Z"),
@@ -218,11 +218,11 @@ public sealed class MobileTimelineBlockServiceTests
         var otherSessionId = Guid.Parse("40000000-0000-0000-0000-000000000002");
 
         db.Set<MobileAppCatalogEntity>().AddRange(
-            Catalog("com.tencent.mobileqq", "QQ", "社交沟通"),
-            Catalog("com.tencent.mm", "微信", "社交沟通"));
+            Catalog("com.tencent.mobileqq", "QQ", "社交通讯"),
+            Catalog("com.tencent.mm", "微信", "社交通讯"));
         db.Set<MobileAppCatalogOverrideEntity>().AddRange(
-            Override("com.tencent.mobileqq", "社交沟通"),
-            Override("com.tencent.mm", "社交沟通"));
+            Override("com.tencent.mobileqq", "社交通讯"),
+            Override("com.tencent.mm", "社交通讯"));
         db.Set<MobileUsageSessionEntity>().AddRange(
             Session(sessionId, "com.tencent.mobileqq", DateTimeOffset.Parse("2026-07-07T10:00:00Z"), 300, "[\"前台事件\"]"),
             Session(otherSessionId, "com.tencent.mm", DateTimeOffset.Parse("2026-07-07T10:06:00Z"), 240));
@@ -244,7 +244,7 @@ public sealed class MobileTimelineBlockServiceTests
             {
                 Assert.Equal(sessionId.ToString("N"), session.Id);
                 Assert.Equal("QQ", session.DisplayName);
-                Assert.Equal("社交沟通", session.LifeCategory);
+                Assert.Equal("社交通讯", session.LifeCategory);
                 Assert.Equal("events", session.Source);
                 Assert.Contains("前台事件", session.QualityFlags);
             },
