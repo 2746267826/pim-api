@@ -1,7 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using Pim.Module.Mobile;
+using Pim.Module.Mobile.Services;
 using Xunit;
 
 namespace Pim.UnitTests.Mobile;
@@ -33,6 +36,10 @@ public sealed class MobileEndpointTests
         Assert.Contains("/api/v1/mobile/summary", paths);
         Assert.Contains("/api/v1/mobile/timeline", paths);
         Assert.Contains("/api/v1/mobile/location/history", paths);
+        Assert.Contains("/api/v1/mobile/location/analytics/overview", paths);
+        Assert.Contains("/api/v1/mobile/location/analytics/tracks", paths);
+        Assert.Contains("/api/v1/mobile/location/analytics/segments/{segmentId}", paths);
+        Assert.Contains("/api/v1/mobile/location/analytics/segments/{segmentId}/points", paths);
         Assert.Contains("/api/v1/mobile/quality", paths);
         Assert.Contains("/api/v1/mobile/analytics/overview", paths);
         Assert.Contains("/api/v1/mobile/analytics/heatmap", paths);
@@ -48,5 +55,20 @@ public sealed class MobileEndpointTests
         Assert.All(endpoints, endpoint => Assert.Contains(
             endpoint.Metadata,
             metadata => metadata is IAuthorizeData));
+    }
+
+    [Fact]
+    public void MobileServices_RegisterLocationAnalyticsServices()
+    {
+        var services = new ServiceCollection();
+
+        new MobileModule().RegisterServices(services, new ConfigurationBuilder().Build());
+
+        Assert.Contains(services, descriptor =>
+            descriptor.ServiceType == typeof(MobileLocationQueryService)
+            && descriptor.Lifetime == ServiceLifetime.Scoped);
+        Assert.Contains(services, descriptor =>
+            descriptor.ServiceType == typeof(MobileLocationAggregationService)
+            && descriptor.Lifetime == ServiceLifetime.Scoped);
     }
 }

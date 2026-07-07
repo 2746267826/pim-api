@@ -29,6 +29,8 @@ public sealed class MobileModule : IModule
         services.AddScoped<MobileUsageIngestService>();
         services.AddScoped<MobileSessionInterpreter>();
         services.AddScoped<MobileLocationService>();
+        services.AddScoped<MobileLocationQueryService>();
+        services.AddScoped<MobileLocationAggregationService>();
         services.AddScoped<MobileUsageQueryService>();
         services.AddScoped<MobileQualityService>();
         services.AddScoped<MobileAnalyticsQueryService>();
@@ -121,6 +123,37 @@ public sealed class MobileModule : IModule
                 effectiveMaxAccuracy,
                 points)));
         });
+
+        group.MapGet("/location/analytics/overview", async (
+            [AsParameters] MobileLocationEndpointQuery query,
+            [FromServices] MobileLocationAggregationService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileLocationAnalyticsOverviewResponse>.Ok(await service.GetOverviewAsync(query.ToRequest(), ct))));
+
+        group.MapGet("/location/analytics/tracks", async (
+            [AsParameters] MobileLocationEndpointQuery query,
+            [FromServices] MobileLocationAggregationService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<MobileLocationTrackDto>>.Ok(await service.GetTracksAsync(query.ToRequest(), ct))));
+
+        group.MapGet("/location/analytics/segments/{segmentId}", async (
+            [FromRoute] string segmentId,
+            [AsParameters] MobileLocationEndpointQuery query,
+            [FromServices] MobileLocationAggregationService service,
+            CancellationToken ct) =>
+        {
+            var segment = await service.GetSegmentAsync(segmentId, query.ToRequest(), ct);
+            return segment is null
+                ? Results.NotFound(ApiResponse<string>.Error(404, "Location segment not found."))
+                : Results.Ok(ApiResponse<MobileLocationSegmentDto>.Ok(segment));
+        });
+
+        group.MapGet("/location/analytics/segments/{segmentId}/points", async (
+            [FromRoute] string segmentId,
+            [AsParameters] MobileLocationEndpointQuery query,
+            [FromServices] MobileLocationAggregationService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileLocationSegmentPointPageDto>.Ok(await service.GetSegmentPointsAsync(segmentId, query.ToRequest(), ct))));
 
         group.MapGet("/quality", async (
             [FromQuery] string? date,
@@ -300,6 +333,28 @@ public sealed record MobileAnalyticsEndpointQuery(
             IncludeSystemNoise,
             MinDurationSeconds,
             Granularity,
+            Cursor,
+            PageSize);
+}
+
+public sealed record MobileLocationEndpointQuery(
+    DateTimeOffset? RangeStartUtc,
+    DateTimeOffset? RangeEndUtc,
+    string? Timezone,
+    string? DeviceId,
+    double? MaxAccuracyMeters,
+    bool? IncludeRejected,
+    string? Cursor,
+    int? PageSize)
+{
+    public MobileLocationQueryRequest ToRequest()
+        => new(
+            RangeStartUtc,
+            RangeEndUtc,
+            Timezone,
+            DeviceId,
+            MaxAccuracyMeters,
+            IncludeRejected,
             Cursor,
             PageSize);
 }

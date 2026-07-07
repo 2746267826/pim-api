@@ -96,4 +96,34 @@ public sealed class MobileWebContractTests
         Assert.Contains("\"horizontalAccuracyMeters\":9.4", json);
         Assert.Contains("\"sourceKind\":\"manual\"", json);
     }
+
+    [Fact]
+    public void LocationAnalyticsOverviewResponse_SerializesWorkbenchFieldsExpectedByWeb()
+    {
+        var response = ApiResponse<MobileLocationAnalyticsOverviewResponse>.Ok(new MobileLocationAnalyticsOverviewResponse(
+            new MobileAnalyticsRangeDto(
+                DateTimeOffset.Parse("2026-07-01T16:00:00Z"),
+                DateTimeOffset.Parse("2026-07-08T16:00:00Z"),
+                "Asia/Shanghai",
+                "2026-07-02",
+                "2026-07-08"),
+            DateTimeOffset.Parse("2026-07-08T00:12:00Z"),
+            428,
+            391,
+            37,
+            583200,
+            84600,
+            12,
+            12000,
+            18,
+            2,
+            ["low-accuracy-cluster"]));
+
+        var json = JsonSerializer.Serialize(response, JsonOptions);
+
+        Assert.Contains("\"pointCount\":428", json);
+        Assert.Contains("\"usablePointCount\":391", json);
+        Assert.Contains("\"distanceMeters\":84600", json);
+        Assert.Contains("\"qualityFlags\":[\"low-accuracy-cluster\"]", json);
+    }
 }
