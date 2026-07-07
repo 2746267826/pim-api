@@ -20,6 +20,23 @@ public static class OperationsEndpoints
             return Results.Ok(ApiResponse<IReadOnlyList<OperationConfirmationDto>>.Ok(result));
         });
 
+        group.MapGet("/confirmations/{id:guid}", async (
+            Guid id,
+            IOperationConfirmationService confirmations,
+            ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var result = await confirmations.GetAsync(id, ct)
+                ?? throw new DomainException(3001, "Confirmation record does not exist.");
+            var userId = RequireCurrentUserId(currentUser);
+            if (result.RequestedByUserId is { } requestedByUserId && requestedByUserId != userId)
+            {
+                throw new DomainException(3005, "Confirmation record is not assigned to the current user.");
+            }
+
+            return Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(result));
+        });
+
         group.MapPost("/confirmations/{id:guid}/confirm", async (
             Guid id,
             IOperationConfirmationService confirmations,
