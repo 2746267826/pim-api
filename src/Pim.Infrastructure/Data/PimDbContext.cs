@@ -3,7 +3,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Pim.Core.Data;
 using Pim.Core.Operations;
+using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Data.Entities;
+using Pim.Infrastructure.Endpoints;
 
 namespace Pim.Infrastructure.Data;
 
@@ -44,8 +46,11 @@ public class PimDbContext : DbContext
     public DbSet<RefreshTokenEntity> RefreshTokens => Set<RefreshTokenEntity>();
     public DbSet<LoginAttemptEntity> LoginAttempts => Set<LoginAttemptEntity>();
     public DbSet<AuditLogEntity> AuditLogs => Set<AuditLogEntity>();
+    public DbSet<AuditVersionEntity> AuditVersions => Set<AuditVersionEntity>();
     public DbSet<OperationConfirmationEntity> OperationConfirmations => Set<OperationConfirmationEntity>();
     public DbSet<DaemonHeartbeatEntity> DaemonHeartbeats => Set<DaemonHeartbeatEntity>();
+    public DbSet<EndpointStatusEntity> EndpointStatuses => Set<EndpointStatusEntity>();
+    public DbSet<EndpointNotificationActionEntity> EndpointNotificationActions => Set<EndpointNotificationActionEntity>();
     public DbSet<AiProviderSettingEntity> AiProviderSettings => Set<AiProviderSettingEntity>();
     public DbSet<AiRequestLogEntity> AiRequestLogs => Set<AiRequestLogEntity>();
 
@@ -106,6 +111,16 @@ public class PimDbContext : DbContext
             e.HasIndex(a => a.CreatedAt);
         });
 
+        modelBuilder.Entity<AuditVersionEntity>(e =>
+        {
+            e.Property(a => a.BeforeJson).HasDefaultValue("{}");
+            e.Property(a => a.AfterJson).HasDefaultValue("{}");
+            e.Property(a => a.ChangedFieldsJson).HasDefaultValue("[]");
+            e.Property(a => a.CreatedAt).HasDefaultValueSql("now()");
+            e.HasIndex(a => new { a.ObjectType, a.ObjectId, a.CreatedAt });
+            e.HasIndex(a => a.ConfirmationId);
+        });
+
         modelBuilder.Entity<OperationConfirmationEntity>(e =>
         {
             e.Property(o => o.PayloadJson).HasDefaultValue("{}");
@@ -127,6 +142,25 @@ public class PimDbContext : DbContext
             e.Property(d => d.ReceivedAt).HasDefaultValueSql("now()");
             e.HasIndex(d => new { d.DeviceId, d.DaemonKind }).IsUnique();
             e.HasIndex(d => d.ReceivedAt);
+        });
+
+        modelBuilder.Entity<EndpointStatusEntity>(e =>
+        {
+            e.Property(s => s.Platform).HasDefaultValue("windows");
+            e.Property(s => s.UploadStatus).HasDefaultValue("Unknown");
+            e.Property(s => s.CreatedAt).HasDefaultValueSql("now()");
+            e.Property(s => s.UpdatedAt).HasDefaultValueSql("now()");
+            e.HasIndex(s => new { s.UserId, s.DeviceId }).IsUnique();
+            e.HasIndex(s => s.LastHeartbeatAt);
+        });
+
+        modelBuilder.Entity<EndpointNotificationActionEntity>(e =>
+        {
+            e.Property(a => a.CreatedAt).HasDefaultValueSql("now()");
+            e.HasIndex(a => a.UserId);
+            e.HasIndex(a => a.DeviceId);
+            e.HasIndex(a => a.CreatedAt);
+            e.HasIndex(a => a.ConfirmationId);
         });
 
         modelBuilder.Entity<AiProviderSettingEntity>(e =>

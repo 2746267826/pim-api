@@ -85,15 +85,50 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
     }
 
     public async Task<OperationConfirmationDto> ConfirmAsync(Guid id, Guid? userId, CancellationToken ct = default)
+        => await ConfirmWithModeAsync(id, userId, ConfirmationMode.Basic, ct);
+
+    public async Task<OperationConfirmationDto> ConfirmSecondLevelAsync(
+        Guid id,
+        Guid? userId,
+        CancellationToken ct = default)
+        => await ConfirmWithModeAsync(id, userId, ConfirmationMode.SecondLevel, ct);
+
+    public async Task<OperationConfirmationDto> ConfirmStrictAsync(
+        Guid id,
+        Guid? userId,
+        CancellationToken ct = default)
+        => await ConfirmWithModeAsync(id, userId, ConfirmationMode.Strict, ct);
+
+    private async Task<OperationConfirmationDto> ConfirmWithModeAsync(
+        Guid id,
+        Guid? userId,
+        ConfirmationMode mode,
+        CancellationToken ct)
     {
         var entity = await LoadPendingAsync(id, ct);
         EnsureUserCanAct(entity, userId);
+        EnsureConfirmationMode(entity, mode);
 
         entity.Status = OperationConfirmationStatus.Confirmed.ToString();
         entity.ConfirmedAt = DateTimeOffset.UtcNow;
 
         await _db.SaveChangesAsync(ct);
         return Map(entity);
+    }
+
+    private static void EnsureConfirmationMode(OperationConfirmationEntity entity, ConfirmationMode mode)
+    {
+        var metadata = ExtractMetadata(entity.PreviewJson);
+
+        if (metadata.RequiresStrictConfirmation && mode != ConfirmationMode.Strict)
+        {
+            throw new DomainException(3009, "Strict confirmation is required for this operation.");
+        }
+
+        if (metadata.RequiresSecondLevelConfirmation && mode == ConfirmationMode.Basic)
+        {
+            throw new DomainException(3010, "Second-level confirmation is required for this operation.");
+        }
     }
 
     public async Task<OperationConfirmationDto> RejectAsync(Guid id, Guid? userId, CancellationToken ct = default)
@@ -208,7 +243,14 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             allowedActions = request.AllowedActions ?? Array.Empty<string>(),
             objectType = request.ObjectType,
             objectId = request.ObjectId,
-            requiresSecondLevelConfirmation = request.RequiresSecondLevelConfirmation
+            requiresSecondLevelConfirmation = request.RequiresSecondLevelConfirmation,
+            beforeJson = request.BeforeJson,
+            afterJson = request.AfterJson,
+            requiresStrictConfirmation = request.RequiresStrictConfirmation,
+            auditBatchId = request.AuditBatchId,
+            aiRecommendation = request.AiRecommendation,
+            externalEffect = request.ExternalEffect,
+            recoveryPath = request.RecoveryPath
         };
 
         return JsonSerializer.Serialize(preview);
@@ -230,7 +272,14 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
                 ReadStringArray(meta, "allowedActions"),
                 ReadString(meta, "objectType"),
                 ReadGuid(meta, "objectId"),
-                ReadBool(meta, "requiresSecondLevelConfirmation"));
+                ReadBool(meta, "requiresSecondLevelConfirmation"),
+                ReadString(meta, "beforeJson"),
+                ReadString(meta, "afterJson"),
+                ReadBool(meta, "requiresStrictConfirmation"),
+                ReadGuid(meta, "auditBatchId"),
+                ReadString(meta, "aiRecommendation"),
+                ReadString(meta, "externalEffect"),
+                ReadString(meta, "recoveryPath"));
         }
         catch (JsonException)
         {
@@ -308,7 +357,14 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             metadata.AllowedActions,
             metadata.ObjectType,
             metadata.ObjectId,
-            metadata.RequiresSecondLevelConfirmation);
+            metadata.RequiresSecondLevelConfirmation,
+            metadata.BeforeJson,
+            metadata.AfterJson,
+            metadata.RequiresStrictConfirmation,
+            metadata.AuditBatchId,
+            metadata.AiRecommendation,
+            metadata.ExternalEffect,
+            metadata.RecoveryPath);
     }
 
     private static OperationRiskLevel ParseRiskLevel(string value)
@@ -323,13 +379,34 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         IReadOnlyList<string> AllowedActions,
         string? ObjectType,
         Guid? ObjectId,
-        bool RequiresSecondLevelConfirmation)
+        bool RequiresSecondLevelConfirmation,
+        string? BeforeJson,
+        string? AfterJson,
+        bool RequiresStrictConfirmation,
+        Guid? AuditBatchId,
+        string? AiRecommendation,
+        string? ExternalEffect,
+        string? RecoveryPath)
     {
         public static ConfirmationMetadata Empty { get; } = new(
             Array.Empty<string>(),
             Array.Empty<string>(),
             null,
             null,
-            false);
+            false,
+            null,
+            null,
+            false,
+            null,
+            null,
+            null,
+            null);
+    }
+
+    private enum ConfirmationMode
+    {
+        Basic,
+        SecondLevel,
+        Strict
     }
 }

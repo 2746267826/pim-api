@@ -225,6 +225,56 @@ public record TaskExecutionSegmentResponse(
     Guid? ConfirmationId
 );
 
+public record CreateDomainProjectRequest(
+    [Required][MaxLength(255)] string Name,
+    string? Description,
+    [MaxLength(40)] string? Status = null
+);
+
+public record CreateTaskBookRequest(
+    Guid? DomainProjectId,
+    [Required][MaxLength(255)] string Name,
+    [MaxLength(40)] string? Kind = null,
+    [MaxLength(40)] string? Status = null
+);
+
+public record AddTaskChecklistItemRequest(
+    [Required][MaxLength(255)] string Title,
+    int? SortOrder = null
+);
+
+public record CreateHabitRequest(
+    [Required][MaxLength(255)] string Title,
+    string? Description,
+    [MaxLength(40)] string? Cadence = null,
+    [MaxLength(40)] string? Source = null,
+    [MaxLength(40)] string? Status = null,
+    string? RuleJson = null
+);
+
+public record CreateHabitOccurrenceRequest(
+    DateTimeOffset StartsAt,
+    DateTimeOffset EndsAt,
+    [MaxLength(40)] string? Status = null,
+    [MaxLength(40)] string? Source = null
+);
+
+public record CreateAvailabilityWindowRequest(
+    [Required][MaxLength(255)] string Title,
+    DateTimeOffset StartsAt,
+    DateTimeOffset EndsAt,
+    [MaxLength(40)] string? Kind = null,
+    [MaxLength(40)] string? Source = null
+);
+
+public record CreateAiPlanningPlaceholderRequest(
+    [Required][MaxLength(255)] string Title,
+    DateTimeOffset StartsAt,
+    DateTimeOffset EndsAt,
+    [Required] string Reason,
+    [MaxLength(40)] string? Source = null
+);
+
 public record CalendarLayerQuery(
     DateTimeOffset Start,
     DateTimeOffset End,
@@ -279,6 +329,40 @@ public record DataCenterQueryResponse(
     int TotalCount
 );
 
+public record DataCenterObjectRef(
+    string ObjectType,
+    Guid ObjectId
+);
+
+public record DataCenterBatchOperationRequest(
+    string Action,
+    IReadOnlyList<DataCenterObjectRef> Objects,
+    string? Reason = null
+);
+
+public record DataCenterBatchPreviewResponse(
+    string RiskLevel,
+    bool RequiresStrictConfirmation,
+    string Summary,
+    IReadOnlyList<string> AffectedObjectTypes,
+    int AffectedCount
+);
+
+public record DataCenterBatchExecutionResponse(
+    Guid ConfirmationId,
+    string Status,
+    int AffectedCount
+);
+
+public record DataCenterExecuteBatchRequest(
+    Guid ConfirmationId
+);
+
+public record DataCenterRestoreRequest(
+    Guid AuditVersionId,
+    string? Reason = null
+);
+
 public record ImportSkippedItem(
     string Reason,
     string Title,
@@ -315,7 +399,12 @@ public record OutlookDeviceCodeRequestResponse(
     string VerificationUri,
     string UserCode,
     DateTimeOffset ExpiresAt,
-    string Message
+    string Message,
+    string? DeviceCode = null
+);
+
+public record OutlookDeviceCodePollRequest(
+    [Required] string DeviceCode
 );
 
 public record OutlookSyncStep(
@@ -339,4 +428,108 @@ public record OutlookSyncBatchResponse(
     string? ErrorSummary,
     DateTimeOffset StartedAt,
     DateTimeOffset? FinishedAt
+);
+
+public record ConflictResolutionRequest(
+    string Action,
+    string? MergedFieldsJson,
+    string? Reason
+);
+
+public record OutlookStopSyncExecuteRequest(
+    Guid ConfirmationId
+);
+
+public record SyncConflictDetailDto(
+    Guid Id,
+    string Provider,
+    string ObjectType,
+    Guid ObjectId,
+    string? GraphEventId,
+    string ConflictKind,
+    string Status,
+    string PimSnapshotJson,
+    string ExternalSnapshotJson,
+    Guid? ResolvedConfirmationId
+);
+
+public record CreateReminderRequest(
+    string RelatedObjectType,
+    Guid RelatedObjectId,
+    string Title,
+    string Body,
+    string TriggerReason,
+    string RiskLevel,
+    IReadOnlyList<string> Channels,
+    string? DoNotDisturbStart,
+    string? DoNotDisturbEnd,
+    DateTimeOffset ScheduledAt
+);
+
+public record ReminderResponse(
+    Guid Id,
+    string RelatedObjectType,
+    Guid RelatedObjectId,
+    string Title,
+    string Body,
+    string TriggerReason,
+    string RiskLevel,
+    IReadOnlyList<string> Channels,
+    string? DoNotDisturbStart,
+    string? DoNotDisturbEnd,
+    DateTimeOffset ScheduledAt,
+    string Status
+);
+
+public record ReminderActionResponse(
+    string Kind,
+    string Status,
+    string? DetailUrl
+);
+
+public record ReminderNotificationPayloadDto(
+    Guid ReminderId,
+    string Title,
+    string Body,
+    string RiskLevel,
+    string RelatedObjectType,
+    Guid RelatedObjectId,
+    string DetailUrl,
+    IReadOnlyList<string> Actions
+);
+
+public record ReminderDeliveryDto(
+    Guid Id,
+    Guid ReminderId,
+    string Channel,
+    string Status,
+    string PayloadJson,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? RespondedAt
+);
+
+public record GenerateReportRequest(
+    string Kind,
+    DateOnly Date,
+    Guid? ProjectId
+);
+
+public record ReportArtifactDto(
+    Guid Id,
+    string Kind,
+    Guid? ProjectId,
+    string RiskLevel,
+    string ContentMarkdown,
+    string MetricsJson,
+    DateTimeOffset GeneratedAt,
+    string Status
+);
+
+public record ReportSuggestionDto(
+    Guid Id,
+    Guid ReportId,
+    string Action,
+    string Summary,
+    string Status,
+    Guid? ConfirmationId
 );

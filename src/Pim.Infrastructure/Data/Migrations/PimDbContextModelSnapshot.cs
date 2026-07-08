@@ -22,6 +22,75 @@ namespace Pim.Infrastructure.Data.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Pim.Infrastructure.Audit.AuditVersionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Actor")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("actor");
+
+                    b.Property<string>("AfterJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("after_json");
+
+                    b.Property<string>("BeforeJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("before_json");
+
+                    b.Property<string>("ChangedFieldsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("changed_fields_json");
+
+                    b.Property<Guid?>("ConfirmationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("confirmation_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<Guid>("ObjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("object_id");
+
+                    b.Property<string>("ObjectType")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("object_type");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("source");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConfirmationId");
+
+                    b.HasIndex("ObjectType", "ObjectId", "CreatedAt");
+
+                    b.ToTable("audit_versions");
+                });
+
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiProviderSettingEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -731,6 +800,284 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.ToTable("users");
                 });
 
+            modelBuilder.Entity("Pim.Infrastructure.Endpoints.EndpointNotificationActionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("action");
+
+                    b.Property<string>("ConfirmationId")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("confirmation_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("DetailUrl")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("detail_url");
+
+                    b.Property<string>("DeviceId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("device_id");
+
+                    b.Property<string>("Message")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("message");
+
+                    b.Property<string>("RelatedObjectId")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("related_object_id");
+
+                    b.Property<string>("RelatedObjectType")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("related_object_type");
+
+                    b.Property<string>("Result")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("result");
+
+                    b.Property<string>("RiskLevel")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("risk_level");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConfirmationId");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("DeviceId");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("endpoint_notification_actions");
+                });
+
+            modelBuilder.Entity("Pim.Infrastructure.Endpoints.EndpointStatusEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AppVersion")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("app_version");
+
+                    b.Property<int>("CollectionCacheCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("collection_cache_count");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("DeviceId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("device_id");
+
+                    b.Property<DateTimeOffset?>("LastHeartbeatAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_heartbeat_at");
+
+                    b.Property<int>("OnlineOnlyBlockedCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("online_only_blocked_count");
+
+                    b.Property<string>("Platform")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasDefaultValue("windows")
+                        .HasColumnName("platform");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("UploadStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasDefaultValue("Unknown")
+                        .HasColumnName("upload_status");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LastHeartbeatAt");
+
+                    b.HasIndex("UserId", "DeviceId")
+                        .IsUnique();
+
+                    b.ToTable("endpoint_statuses");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.AiPlanningPlaceholderEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("ConfirmationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("confirmation_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
+
+                    b.Property<DateTimeOffset>("EndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ends_at");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("source");
+
+                    b.Property<DateTimeOffset>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConfirmationId");
+
+                    b.HasIndex("UserId", "Status");
+
+                    b.HasIndex("UserId", "StartsAt", "EndsAt");
+
+                    b.ToTable("ai_planning_placeholders");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.AvailabilityWindowEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
+
+                    b.Property<DateTimeOffset>("EndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ends_at");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("source");
+
+                    b.Property<DateTimeOffset>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "Kind");
+
+                    b.HasIndex("UserId", "StartsAt", "EndsAt");
+
+                    b.ToTable("availability_windows");
+                });
+
             modelBuilder.Entity("Pim.Module.Calendar.Entities.CalendarEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -794,6 +1141,55 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("UserId", "DeletedAt");
 
                     b.ToTable("calendars");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.DomainProjectEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "Name")
+                        .IsUnique();
+
+                    b.HasIndex("UserId", "Status");
+
+                    b.ToTable("domain_projects");
                 });
 
             modelBuilder.Entity("Pim.Module.Calendar.Entities.EventEntity", b =>
@@ -867,6 +1263,16 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)")
                         .HasColumnName("organizer");
+
+                    b.Property<string>("OutlookChangeKey")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("outlook_change_key");
+
+                    b.Property<string>("OutlookEtag")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("outlook_etag");
 
                     b.Property<string>("OutlookEventId")
                         .HasMaxLength(255)
@@ -946,6 +1352,10 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasIndex("DeletedByOperationId");
 
+                    b.HasIndex("OutlookChangeKey");
+
+                    b.HasIndex("OutlookEventId");
+
                     b.HasIndex("SourceUid");
 
                     b.HasIndex("Uid");
@@ -953,6 +1363,135 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("DeletedAt", "DtStart");
 
                     b.ToTable("events");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.HabitOccurrenceEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("ConfirmationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("confirmation_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
+
+                    b.Property<DateTimeOffset>("EndsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ends_at");
+
+                    b.Property<Guid>("HabitRoutineId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("habit_routine_id");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("source");
+
+                    b.Property<DateTimeOffset>("StartsAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("starts_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConfirmationId");
+
+                    b.HasIndex("HabitRoutineId");
+
+                    b.HasIndex("UserId", "StartsAt", "EndsAt");
+
+                    b.ToTable("habit_occurrences");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.HabitRoutineEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Cadence")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("cadence");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<string>("RuleJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("rule_json");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("source");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "Cadence");
+
+                    b.HasIndex("UserId", "Status");
+
+                    b.ToTable("habit_routines");
                 });
 
             modelBuilder.Entity("Pim.Module.Calendar.Entities.OutlookConnectionEntity", b =>
@@ -966,6 +1505,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .IsRequired()
                         .HasColumnType("bytea")
                         .HasColumnName("access_token_encrypted");
+
+                    b.Property<DateTimeOffset?>("AccessTokenExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("access_token_expires_at");
 
                     b.Property<string>("ClientId")
                         .HasMaxLength(255)
@@ -1197,6 +1740,317 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.ToTable("pending_confirmations");
                 });
 
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.ReminderDeliveryEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("action");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("channel");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("payload_json");
+
+                    b.Property<Guid>("ReminderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reminder_id");
+
+                    b.Property<DateTimeOffset?>("RespondedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("responded_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasDefaultValue("Created")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ReminderId");
+
+                    b.HasIndex("UserId", "CreatedAt");
+
+                    b.ToTable("reminder_deliveries");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.ReminderEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("body");
+
+                    b.Property<string>("ChannelsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("channels_json");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
+
+                    b.Property<string>("DoNotDisturbEnd")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("dnd_end");
+
+                    b.Property<string>("DoNotDisturbStart")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("dnd_start");
+
+                    b.Property<Guid>("RelatedObjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("related_object_id");
+
+                    b.Property<string>("RelatedObjectType")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("related_object_type");
+
+                    b.Property<string>("RiskLevel")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("risk_level");
+
+                    b.Property<DateTimeOffset>("ScheduledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("scheduled_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasDefaultValue("Open")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("title");
+
+                    b.Property<string>("TriggerReason")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("trigger_reason");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RelatedObjectType", "RelatedObjectId");
+
+                    b.HasIndex("UserId", "Status", "ScheduledAt");
+
+                    b.ToTable("reminders");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.ReportArtifactEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ContentMarkdown")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("content_markdown");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
+
+                    b.Property<DateTimeOffset>("GeneratedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("generated_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("InputsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("inputs_json");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("MetricsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("metrics_json");
+
+                    b.Property<Guid?>("ProjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("project_id");
+
+                    b.Property<string>("RiskLevel")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasDefaultValue("L0AutomaticArtifact")
+                        .HasColumnName("risk_level");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasDefaultValue("Active")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "ProjectId");
+
+                    b.HasIndex("UserId", "Kind", "GeneratedAt");
+
+                    b.ToTable("report_artifacts");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.ReportSuggestionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("action");
+
+                    b.Property<string>("ChangedFieldsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("changed_fields_json");
+
+                    b.Property<Guid?>("ConfirmationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("confirmation_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("payload_json");
+
+                    b.Property<Guid>("ReportId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("report_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasDefaultValue("Open")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("summary");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConfirmationId");
+
+                    b.HasIndex("ReportId");
+
+                    b.HasIndex("UserId", "Status");
+
+                    b.ToTable("report_suggestions");
+                });
+
             modelBuilder.Entity("Pim.Module.Calendar.Entities.SchedulingFeedbackEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1230,6 +2084,203 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("scheduling_feedback");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.SyncConflictEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ConflictKind")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("conflict_kind");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("now()");
+
+                    b.Property<string>("ExternalSnapshotJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("external_snapshot_json");
+
+                    b.Property<string>("GraphEventId")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("graph_event_id");
+
+                    b.Property<Guid>("ObjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("object_id");
+
+                    b.Property<string>("ObjectType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasDefaultValue("event")
+                        .HasColumnName("object_type");
+
+                    b.Property<string>("PimSnapshotJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("pim_snapshot_json");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasDefaultValue("outlook")
+                        .HasColumnName("provider");
+
+                    b.Property<Guid?>("ResolvedConfirmationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("resolved_confirmation_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasDefaultValue("open")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GraphEventId");
+
+                    b.HasIndex("ResolvedConfirmationId");
+
+                    b.HasIndex("ObjectType", "ObjectId");
+
+                    b.HasIndex("UserId", "Provider", "Status");
+
+                    b.ToTable("sync_conflicts");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.TaskBookEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
+
+                    b.Property<Guid?>("DomainProjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("domain_project_id");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DomainProjectId");
+
+                    b.HasIndex("UserId", "Status");
+
+                    b.HasIndex("UserId", "Name", "DomainProjectId");
+
+                    b.ToTable("task_books");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.TaskChecklistItemEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset?>("DeletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at");
+
+                    b.Property<bool>("IsDone")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_done");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.Property<Guid>("TaskId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("task_id");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("TaskId", "SortOrder");
+
+                    b.ToTable("task_checklist_items");
                 });
 
             modelBuilder.Entity("Pim.Module.Calendar.Entities.TaskEntity", b =>
@@ -1268,6 +2319,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("text")
                         .HasColumnName("description");
 
+                    b.Property<Guid?>("DomainProjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("domain_project_id");
+
                     b.Property<DateTimeOffset?>("DtStart")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("dtstart");
@@ -1304,6 +2359,11 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("priority");
 
+                    b.Property<string>("ReviewOutcome")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("review_outcome");
+
                     b.Property<Guid?>("SchedulePlanId")
                         .HasColumnType("uuid")
                         .HasColumnName("schedule_plan_id");
@@ -1312,11 +2372,26 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("sort_order");
 
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("source");
+
+                    b.Property<string>("StateReason")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("state_reason");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("status");
+
+                    b.Property<Guid?>("TaskBookId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("task_book_id");
 
                     b.Property<string>("Title")
                         .IsRequired()
@@ -1344,15 +2419,23 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasIndex("DeletedByOperationId");
 
+                    b.HasIndex("DomainProjectId");
+
                     b.HasIndex("ParentTaskId");
 
                     b.HasIndex("Status");
+
+                    b.HasIndex("TaskBookId");
 
                     b.HasIndex("UserId");
 
                     b.HasIndex("UserId", "CalendarId");
 
                     b.HasIndex("UserId", "DeletedAt");
+
+                    b.HasIndex("UserId", "DomainProjectId");
+
+                    b.HasIndex("UserId", "TaskBookId");
 
                     b.HasIndex("UserId", "DtStart", "PlannedEnd");
 
@@ -4469,19 +5552,84 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Navigation("Calendar");
                 });
 
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.HabitOccurrenceEntity", b =>
+                {
+                    b.HasOne("Pim.Module.Calendar.Entities.HabitRoutineEntity", "HabitRoutine")
+                        .WithMany("Occurrences")
+                        .HasForeignKey("HabitRoutineId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("HabitRoutine");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.ReminderDeliveryEntity", b =>
+                {
+                    b.HasOne("Pim.Module.Calendar.Entities.ReminderEntity", "Reminder")
+                        .WithMany("Deliveries")
+                        .HasForeignKey("ReminderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Reminder");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.ReportSuggestionEntity", b =>
+                {
+                    b.HasOne("Pim.Module.Calendar.Entities.ReportArtifactEntity", "Report")
+                        .WithMany("Suggestions")
+                        .HasForeignKey("ReportId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Report");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.TaskBookEntity", b =>
+                {
+                    b.HasOne("Pim.Module.Calendar.Entities.DomainProjectEntity", "DomainProject")
+                        .WithMany("TaskBooks")
+                        .HasForeignKey("DomainProjectId");
+
+                    b.Navigation("DomainProject");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.TaskChecklistItemEntity", b =>
+                {
+                    b.HasOne("Pim.Module.Calendar.Entities.TaskEntity", "Task")
+                        .WithMany("ChecklistItems")
+                        .HasForeignKey("TaskId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Task");
+                });
+
             modelBuilder.Entity("Pim.Module.Calendar.Entities.TaskEntity", b =>
                 {
                     b.HasOne("Pim.Module.Calendar.Entities.CalendarEntity", "Calendar")
                         .WithMany("Tasks")
                         .HasForeignKey("CalendarId");
 
+                    b.HasOne("Pim.Module.Calendar.Entities.DomainProjectEntity", "DomainProject")
+                        .WithMany("Tasks")
+                        .HasForeignKey("DomainProjectId");
+
                     b.HasOne("Pim.Module.Calendar.Entities.TaskEntity", "ParentTask")
                         .WithMany("SubTasks")
                         .HasForeignKey("ParentTaskId");
 
+                    b.HasOne("Pim.Module.Calendar.Entities.TaskBookEntity", "TaskBook")
+                        .WithMany("Tasks")
+                        .HasForeignKey("TaskBookId");
+
                     b.Navigation("Calendar");
 
+                    b.Navigation("DomainProject");
+
                     b.Navigation("ParentTask");
+
+                    b.Navigation("TaskBook");
                 });
 
             modelBuilder.Entity("Pim.Module.Calendar.Entities.TaskExecutionSegmentEntity", b =>
@@ -4652,8 +5800,37 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Navigation("Tasks");
                 });
 
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.DomainProjectEntity", b =>
+                {
+                    b.Navigation("TaskBooks");
+
+                    b.Navigation("Tasks");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.HabitRoutineEntity", b =>
+                {
+                    b.Navigation("Occurrences");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.ReminderEntity", b =>
+                {
+                    b.Navigation("Deliveries");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.ReportArtifactEntity", b =>
+                {
+                    b.Navigation("Suggestions");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.TaskBookEntity", b =>
+                {
+                    b.Navigation("Tasks");
+                });
+
             modelBuilder.Entity("Pim.Module.Calendar.Entities.TaskEntity", b =>
                 {
+                    b.Navigation("ChecklistItems");
+
                     b.Navigation("SubTasks");
                 });
 

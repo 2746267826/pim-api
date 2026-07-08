@@ -2,6 +2,7 @@ using Pim.Core.Common;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
+using Pim.Infrastructure.Audit;
 
 namespace Pim.Api.Endpoints;
 
@@ -47,6 +48,26 @@ public static class OperationsEndpoints
             return Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(result));
         });
 
+        group.MapPost("/confirmations/{id:guid}/confirm-second-level", async (
+            Guid id,
+            IOperationConfirmationService confirmations,
+            ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var result = await confirmations.ConfirmSecondLevelAsync(id, RequireCurrentUserId(currentUser), ct);
+            return Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(result));
+        });
+
+        group.MapPost("/confirmations/{id:guid}/confirm-strict", async (
+            Guid id,
+            IOperationConfirmationService confirmations,
+            ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var result = await confirmations.ConfirmStrictAsync(id, RequireCurrentUserId(currentUser), ct);
+            return Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(result));
+        });
+
         group.MapPost("/confirmations/{id:guid}/reject", async (
             Guid id,
             IOperationConfirmationService confirmations,
@@ -55,6 +76,44 @@ public static class OperationsEndpoints
         {
             var result = await confirmations.RejectAsync(id, RequireCurrentUserId(currentUser), ct);
             return Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(result));
+        });
+
+        group.MapGet("/audit/{objectType}/{objectId:guid}", async (
+            string objectType,
+            Guid objectId,
+            AuditVersionService audit,
+            ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            _ = RequireCurrentUserId(currentUser);
+            var result = await audit.GetTimelineAsync(objectType, objectId, ct);
+            return Results.Ok(ApiResponse<object>.Ok(result));
+        });
+
+        group.MapPost("/audit/{auditVersionId:guid}/restore-preview", async (
+            Guid auditVersionId,
+            AuditVersionService audit,
+            ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            _ = RequireCurrentUserId(currentUser);
+            var result = await audit.PreviewRestoreAsync(auditVersionId, ct);
+            return Results.Ok(ApiResponse<object>.Ok(result));
+        });
+
+        group.MapGet("/audit/export", async (
+            DateTimeOffset? start,
+            DateTimeOffset? end,
+            AuditVersionService audit,
+            ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            _ = RequireCurrentUserId(currentUser);
+            var result = await audit.ExportAsync(
+                start ?? DateTimeOffset.MinValue,
+                end ?? DateTimeOffset.MaxValue,
+                ct);
+            return Results.Ok(ApiResponse<object>.Ok(result));
         });
     }
 

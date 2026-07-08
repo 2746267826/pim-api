@@ -2,6 +2,11 @@ name: Build Android APK
 
 on:
   push:
+    branches: [master, codex/schedule-task-complete-system]
+    paths:
+      - 'src/client-android/**'
+      - '.github/workflows/build-android.yml'
+  pull_request:
     branches: [master]
     paths:
       - 'src/client-android/**'
@@ -23,7 +28,12 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
       - uses: gradle/actions/setup-gradle@v3
 
@@ -45,26 +55,13 @@ jobs:
           echo "CI_APP_VERSION=$VERSION_NAME" >> "$GITHUB_ENV"
           echo "CI_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
 
-      - name: Decode Android signing key
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ]; then
-            echo "::error::ANDROID_KEYSTORE_BASE64 secret is not set."
-            exit 1
-          fi
-          SIGNING_DIR="$RUNNER_TEMP/android-signing"
-          mkdir -p "$SIGNING_DIR"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '\r\n[:space:]' | base64 --decode > "$SIGNING_DIR/pim-ci-upload.jks"
-          echo "ANDROID_KEYSTORE_FILE=$SIGNING_DIR/pim-ci-upload.jks" >> "$GITHUB_ENV"
-
-      - name: Generate gradlew wrapper (Gradle 8.5)
+      - name: Generate gradlew wrapper
         run: |
           # Generate wrapper from temp dir (with minimal settings.gradle to placate Gradle 9)
           TMPDIR=$(mktemp -d)
           cd "$TMPDIR"
           touch settings.gradle
-          gradle wrapper --gradle-version 8.6
+          gradle wrapper --gradle-version 8.14
           # Copy wrapper files into the project
           cp gradlew gradlew.bat "$OLDPWD/"
           mkdir -p "$OLDPWD/gradle/wrapper"
@@ -82,24 +79,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Build signed release APK
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          for name in ANDROID_KEYSTORE_FILE ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::$name is not set."
-              exit 1
-            fi
-          done
-          ./gradlew assembleRelease --no-daemon
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Assemble debug
+        run: ./gradlew :app:assembleDebug --no-daemon
 
       - name: Stage APK
         run: |
           mkdir -p build/artifacts
-          cp app/build/outputs/apk/release/app-release.apk "build/artifacts/pim-android-v${VERSION_FILE}-vc${VERSION_CODE}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "build/artifacts/pim-android-v${VERSION_FILE}-vc${VERSION_CODE}-debug.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

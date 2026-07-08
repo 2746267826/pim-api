@@ -156,6 +156,7 @@ public class OutlookGraphSyncFoundationTests
         Assert.Equal("Original title", stored.Title);
         Assert.Equal(new DateTimeOffset(2026, 7, 8, 9, 0, 0, TimeSpan.Zero), stored.DtStart);
         Assert.Equal(1, batch.ConfirmationCount);
+        Assert.Equal(1, batch.ConflictCount);
         Assert.Equal(0, batch.UpdatedCount);
         Assert.NotNull(confirmationService.LastRequest);
         Assert.Equal(OperationRiskLevel.L3ExternalSourceOrWriteback, confirmationService.LastRequest.RiskLevel);
@@ -164,6 +165,15 @@ public class OutlookGraphSyncFoundationTests
         Assert.Equal("event", confirmationService.LastRequest.ObjectType);
         Assert.Equal(evt.Id, confirmationService.LastRequest.ObjectId);
         Assert.True(confirmationService.LastRequest.RequiresSecondLevelConfirmation);
+        var conflict = await db.Set<SyncConflictEntity>().SingleAsync(c => c.ObjectId == evt.Id);
+        Assert.Equal("outlook", conflict.Provider);
+        Assert.Equal("event", conflict.ObjectType);
+        Assert.Equal("graph-1", conflict.GraphEventId);
+        Assert.Equal("core-diff", conflict.ConflictKind);
+        Assert.Equal("pending-confirmation", conflict.Status);
+        Assert.Equal(confirmationService.LastConfirmation?.Id, conflict.ResolvedConfirmationId);
+        Assert.Contains("Original title", conflict.PimSnapshotJson);
+        Assert.Contains("Changed by Outlook", conflict.ExternalSnapshotJson);
     }
 
     private static OutlookSyncService CreateService(
@@ -213,13 +223,14 @@ public class OutlookGraphSyncFoundationTests
     private sealed class CapturingConfirmationService : IOperationConfirmationService
     {
         public CreateOperationConfirmationRequest? LastRequest { get; private set; }
+        public OperationConfirmationDto? LastConfirmation { get; private set; }
 
         public Task<OperationConfirmationDto> CreateAsync(
             CreateOperationConfirmationRequest request,
             CancellationToken ct = default)
         {
             LastRequest = request;
-            return Task.FromResult(new OperationConfirmationDto(
+            LastConfirmation = new OperationConfirmationDto(
                 Guid.NewGuid(),
                 request.RequestedByUserId,
                 request.OperationType,
@@ -239,7 +250,8 @@ public class OutlookGraphSyncFoundationTests
                 request.AllowedActions,
                 request.ObjectType,
                 request.ObjectId,
-                request.RequiresSecondLevelConfirmation));
+                request.RequiresSecondLevelConfirmation);
+            return Task.FromResult(LastConfirmation);
         }
 
         public Task<OperationConfirmationDto?> GetAsync(Guid id, CancellationToken ct = default) =>
@@ -254,6 +266,18 @@ public class OutlookGraphSyncFoundationTests
             throw new NotSupportedException();
 
         public Task<OperationConfirmationDto> ConfirmAsync(
+            Guid id,
+            Guid? userId,
+            CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<OperationConfirmationDto> ConfirmSecondLevelAsync(
+            Guid id,
+            Guid? userId,
+            CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task<OperationConfirmationDto> ConfirmStrictAsync(
             Guid id,
             Guid? userId,
             CancellationToken ct = default) =>

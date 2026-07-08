@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
+using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.DTOs;
@@ -49,7 +50,7 @@ public sealed class DataCenterQueryService
             e.Status,
             e.DtStart,
             e.DtEnd,
-            FirstText(e.Description, e.Location, e.Calendar.Name))));
+            BuildEventSummary(e))));
 
         var tasks = await _db.Set<TaskEntity>()
             .AsNoTracking()
@@ -80,6 +81,176 @@ public sealed class DataCenterQueryService
             s.StartsAt,
             s.EndsAt,
             FirstText(s.PlanningReason, s.Task.Description))));
+
+        var habits = await _db.Set<HabitRoutineEntity>()
+            .AsNoTracking()
+            .Where(h => h.UserId == userId)
+            .ToListAsync(ct);
+        items.AddRange(habits.Select(h => new DataCenterItem(
+            "habit",
+            h.Id,
+            h.Title,
+            h.Source,
+            h.Status,
+            h.CreatedAt,
+            h.UpdatedAt,
+            FirstText(h.Description, h.Cadence, h.RuleJson))));
+
+        var habitOccurrences = await _db.Set<HabitOccurrenceEntity>()
+            .AsNoTracking()
+            .Include(o => o.HabitRoutine)
+            .Where(o => o.UserId == userId)
+            .ToListAsync(ct);
+        items.AddRange(habitOccurrences.Select(o => new DataCenterItem(
+            "habit-occurrence",
+            o.Id,
+            o.HabitRoutine.Title,
+            o.Source,
+            o.Status,
+            o.StartsAt,
+            o.EndsAt,
+            $"Habit occurrence for {o.HabitRoutine.Cadence} routine")));
+
+        var availability = await _db.Set<AvailabilityWindowEntity>()
+            .AsNoTracking()
+            .Where(a => a.UserId == userId)
+            .ToListAsync(ct);
+        items.AddRange(availability.Select(a => new DataCenterItem(
+            "availability",
+            a.Id,
+            a.Title,
+            a.Source,
+            a.Kind,
+            a.StartsAt,
+            a.EndsAt,
+            "Availability window")));
+
+        var placeholders = await _db.Set<AiPlanningPlaceholderEntity>()
+            .AsNoTracking()
+            .Where(p => p.UserId == userId)
+            .ToListAsync(ct);
+        items.AddRange(placeholders.Select(p => new DataCenterItem(
+            "ai-placeholder",
+            p.Id,
+            p.Title,
+            p.Source,
+            p.Status,
+            p.StartsAt,
+            p.EndsAt,
+            p.Reason)));
+
+        var reminders = await _db.Set<ReminderEntity>()
+            .AsNoTracking()
+            .Where(r => r.UserId == userId)
+            .ToListAsync(ct);
+        items.AddRange(reminders.Select(r => new DataCenterItem(
+            "reminder",
+            r.Id,
+            r.Title,
+            "reminder",
+            r.Status,
+            r.ScheduledAt,
+            null,
+            FirstText(r.TriggerReason, r.Body, r.RiskLevel))));
+
+        var reminderDeliveries = await _db.Set<ReminderDeliveryEntity>()
+            .AsNoTracking()
+            .Include(d => d.Reminder)
+            .Where(d => d.UserId == userId)
+            .ToListAsync(ct);
+        items.AddRange(reminderDeliveries.Select(d => new DataCenterItem(
+            "reminder-delivery",
+            d.Id,
+            d.Reminder.Title,
+            d.Channel,
+            d.Status,
+            d.CreatedAt,
+            d.RespondedAt,
+            FirstText(d.Action, d.PayloadJson))));
+
+        var reports = await _db.Set<ReportArtifactEntity>()
+            .AsNoTracking()
+            .Where(r => r.UserId == userId)
+            .ToListAsync(ct);
+        items.AddRange(reports.Select(r => new DataCenterItem(
+            "report",
+            r.Id,
+            $"{r.Kind} report",
+            "report",
+            r.Status,
+            r.GeneratedAt,
+            null,
+            FirstText(r.ContentMarkdown, r.MetricsJson))));
+
+        var reportSuggestions = await _db.Set<ReportSuggestionEntity>()
+            .AsNoTracking()
+            .Include(s => s.Report)
+            .Where(s => s.UserId == userId)
+            .ToListAsync(ct);
+        items.AddRange(reportSuggestions.Select(s => new DataCenterItem(
+            "report-suggestion",
+            s.Id,
+            s.Action,
+            "report",
+            s.Status,
+            s.CreatedAt,
+            s.UpdatedAt,
+            FirstText(s.Summary, s.PayloadJson))));
+
+        var outlookConnections = await _db.Set<OutlookConnectionEntity>()
+            .AsNoTracking()
+            .Where(c => c.UserId == userId)
+            .ToListAsync(ct);
+        items.AddRange(outlookConnections.Select(c => new DataCenterItem(
+            "sync-connection",
+            c.Id,
+            c.Provider,
+            c.Provider,
+            c.Status,
+            c.LastSyncedAt ?? c.CreatedAt,
+            c.AccessTokenExpiresAt,
+            FirstText(c.TokenHealth, c.LastError, c.DeltaLink))));
+
+        var syncBatches = await _db.Set<OutlookSyncBatchEntity>()
+            .AsNoTracking()
+            .Where(b => b.UserId == userId)
+            .ToListAsync(ct);
+        items.AddRange(syncBatches.Select(b => new DataCenterItem(
+            "sync-batch",
+            b.Id,
+            $"{b.Provider} sync batch",
+            b.Provider,
+            b.Status,
+            b.StartedAt,
+            b.FinishedAt,
+            $"read={b.ReadCount}; created={b.CreatedCount}; updated={b.UpdatedCount}; conflicts={b.ConflictCount}; failures={b.FailureCount}")));
+
+        var syncConflicts = await _db.Set<SyncConflictEntity>()
+            .AsNoTracking()
+            .Where(c => c.UserId == userId)
+            .ToListAsync(ct);
+        items.AddRange(syncConflicts.Select(c => new DataCenterItem(
+            "sync-conflict",
+            c.Id,
+            c.ConflictKind,
+            c.Provider,
+            c.Status,
+            c.CreatedAt,
+            c.UpdatedAt,
+            FirstText($"GraphEventId={c.GraphEventId ?? "unknown"}", c.PimSnapshotJson, c.ExternalSnapshotJson))));
+
+        var auditVersions = await _db.Set<AuditVersionEntity>()
+            .AsNoTracking()
+            .ToListAsync(ct);
+        items.AddRange(auditVersions.Select(v => new DataCenterItem(
+            "audit-version",
+            v.Id,
+            $"{v.ObjectType} audit version",
+            v.Source,
+            "recorded",
+            v.CreatedAt,
+            null,
+            FirstText(v.ChangedFieldsJson, v.AfterJson, v.BeforeJson))));
 
         var confirmations = await _db.OperationConfirmations
             .AsNoTracking()
@@ -124,7 +295,7 @@ public sealed class DataCenterQueryService
             "deleted",
             e.DtStart,
             e.DtEnd,
-            FirstText(e.Description, e.Location, $"Deleted at {e.DeletedAt:O}"))));
+            FirstText(BuildEventSummary(e), $"Deleted at {e.DeletedAt:O}"))));
 
         var deletedTasks = await _db.Set<TaskEntity>()
             .IgnoreQueryFilters()
@@ -204,4 +375,25 @@ public sealed class DataCenterQueryService
 
     private static string FirstText(params string?[] values)
         => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
+
+    private static string BuildEventSummary(EventEntity e)
+    {
+        var parts = new List<string>();
+        Add(e.Description);
+        Add(e.Location);
+        Add(e.Calendar.Name);
+        if (e.Source.StartsWith("outlook", StringComparison.OrdinalIgnoreCase))
+        {
+            Add($"GraphEventId={e.OutlookEventId ?? "unknown"}");
+            Add($"ChangeKey={e.OutlookChangeKey ?? "unknown"}");
+        }
+
+        return string.Join(" | ", parts);
+
+        void Add(string? value)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                parts.Add(value);
+        }
+    }
 }

@@ -16,6 +16,7 @@ public class OutlookConnectionEntity
     [Column("token_health")][MaxLength(40)] public string TokenHealth { get; set; } = "missing";
     [Column("access_token_encrypted")] public byte[] AccessTokenEncrypted { get; set; } = Array.Empty<byte>();
     [Column("refresh_token_encrypted")] public byte[]? RefreshTokenEncrypted { get; set; }
+    [Column("access_token_expires_at")] public DateTimeOffset? AccessTokenExpiresAt { get; set; }
     [Column("subscription_id")][MaxLength(255)] public string? SubscriptionId { get; set; }
     [Column("subscription_expires_at")] public DateTimeOffset? SubscriptionExpiresAt { get; set; }
     [Column("delta_link")] public string? DeltaLink { get; set; }

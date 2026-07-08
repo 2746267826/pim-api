@@ -3,13 +3,17 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Pim.Core.Audit;
 using Pim.Core.Common;
 using Pim.Core.Modules;
+using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.DTOs;
+using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Search;
 using Pim.Module.Calendar.Services;
 
@@ -30,11 +34,18 @@ public class CalendarModule : IModule
         services.AddScoped<RecurrenceService>();
         services.AddScoped<SchedulingEngine>();
         services.AddScoped<OutlookSyncService>();
+        services.AddScoped<OutlookTokenService>();
+        services.AddScoped<IMicrosoftGraphClient, MicrosoftGraphDeviceCodeClient>();
+        services.AddHttpClient("outlook");
+        services.AddScoped<OutlookConflictService>();
         services.AddScoped<CalendarAuditWriter>();
         services.AddScoped<CalendarDeleteService>();
         services.AddScoped<CalendarRecycleBinService>();
         services.AddScoped<PlanningModelService>();
         services.AddScoped<DataCenterQueryService>();
+        services.AddScoped<DataCenterGovernanceService>();
+        services.AddScoped<ReminderService>();
+        services.AddScoped<ReportService>();
 
         services.AddSingleton<ISearchProvider, CalendarSearchProvider>();
     }
@@ -67,6 +78,203 @@ public class CalendarModule : IModule
             [FromServices] DataCenterQueryService svc,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<DataCenterQueryResponse>.Ok(await svc.QueryAsync(req, ct))));
+
+        group.MapPost("/data-center/batch/preview", async (
+            [FromBody] DataCenterBatchOperationRequest req,
+            [FromServices] DataCenterGovernanceService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<DataCenterBatchPreviewResponse>.Ok(
+                await svc.PreviewBatchOperationAsync(req, ct))));
+
+        group.MapPost("/data-center/batch/request-confirmation", async (
+            [FromBody] DataCenterBatchOperationRequest req,
+            [FromServices] DataCenterGovernanceService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(
+                await svc.RequestBatchConfirmationAsync(req, ct))));
+
+        group.MapPost("/data-center/batch/execute", async (
+            [FromBody] DataCenterExecuteBatchRequest req,
+            [FromServices] DataCenterGovernanceService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<DataCenterBatchExecutionResponse>.Ok(
+                await svc.ExecuteConfirmedBatchAsync(req.ConfirmationId, ct))));
+
+        group.MapGet("/data-center/audit/export", async (
+            [FromQuery] DateTimeOffset? start,
+            [FromQuery] DateTimeOffset? end,
+            [FromServices] DataCenterGovernanceService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<AuditExportResponse>.Ok(
+                await svc.ExportAuditAsync(
+                    start ?? DateTimeOffset.MinValue,
+                    end ?? DateTimeOffset.MaxValue,
+                    ct))));
+
+        group.MapPost("/data-center/restore/preview", async (
+            [FromBody] DataCenterRestoreRequest req,
+            [FromServices] DataCenterGovernanceService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<RestorePreviewResponse>.Ok(
+                await svc.PreviewRestoreAsync(req, ct))));
+
+        group.MapPost("/data-center/restore/request-confirmation", async (
+            [FromBody] DataCenterRestoreRequest req,
+            [FromServices] DataCenterGovernanceService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(
+                await svc.RequestRestoreConfirmationAsync(req, ct))));
+
+        group.MapGet("/projects", async (
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ListProjectsAsync(ct))));
+
+        group.MapPost("/projects", async (
+            [FromBody] CreateDomainProjectRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created("/api/v1/calendar/projects",
+                ApiResponse<object>.Ok(await svc.CreateProjectAsync(req, ct))));
+
+        group.MapGet("/task-books", async (
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ListTaskBooksAsync(ct))));
+
+        group.MapPost("/task-books", async (
+            [FromBody] CreateTaskBookRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created("/api/v1/calendar/task-books",
+                ApiResponse<object>.Ok(await svc.CreateTaskBookAsync(req, ct))));
+
+        group.MapPost("/tasks/{id:guid}/checklist", async (
+            Guid id,
+            [FromBody] AddTaskChecklistItemRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created($"/api/v1/calendar/tasks/{id}/checklist",
+                ApiResponse<object>.Ok(await svc.AddChecklistItemAsync(id, req, ct))));
+
+        group.MapGet("/habits", async (
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ListHabitsAsync(ct))));
+
+        group.MapPost("/habits", async (
+            [FromBody] CreateHabitRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created("/api/v1/calendar/habits",
+                ApiResponse<object>.Ok(await svc.CreateHabitAsync(req, ct))));
+
+        group.MapPost("/habits/{id:guid}/occurrences", async (
+            Guid id,
+            [FromBody] CreateHabitOccurrenceRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created($"/api/v1/calendar/habits/{id}/occurrences",
+                ApiResponse<object>.Ok(await svc.CreateHabitOccurrenceAsync(id, req, ct))));
+
+        group.MapGet("/availability", async (
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ListAvailabilityAsync(ct))));
+
+        group.MapPost("/availability", async (
+            [FromBody] CreateAvailabilityWindowRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created("/api/v1/calendar/availability",
+                ApiResponse<object>.Ok(await svc.CreateAvailabilityWindowAsync(req, ct))));
+
+        group.MapPost("/ai-placeholders", async (
+            [FromBody] CreateAiPlanningPlaceholderRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created("/api/v1/calendar/ai-placeholders",
+                ApiResponse<object>.Ok(await svc.CreateAiPlaceholderAsync(req, ct))));
+
+        group.MapPost("/ai-placeholders/{id:guid}/confirm", async (
+            Guid id,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ConfirmAiPlaceholderAsync(id, ct))));
+
+        group.MapGet("/reminders", async (
+            [FromServices] ReminderService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ListAsync(ct))));
+
+        group.MapPost("/reminders", async (
+            [FromBody] CreateReminderRequest req,
+            [FromServices] ReminderService svc,
+            CancellationToken ct) =>
+            Results.Created("/api/v1/calendar/reminders",
+                ApiResponse<object>.Ok(await svc.CreateAsync(req, ct))));
+
+        group.MapPost("/reminders/{id:guid}/snooze", async (
+            Guid id,
+            [FromQuery] DateTimeOffset? scheduledAt,
+            [FromServices] ReminderService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.SnoozeAsync(
+                id,
+                scheduledAt ?? DateTimeOffset.UtcNow.AddMinutes(15),
+                ct))));
+
+        group.MapPost("/reminders/{id:guid}/dismiss", async (
+            Guid id,
+            [FromServices] ReminderService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.DismissAsync(id, ct))));
+
+        group.MapPost("/reminders/{id:guid}/actions/{action}", async (
+            Guid id,
+            string action,
+            [FromServices] ReminderService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.HandleActionAsync(id, action, ct))));
+
+        group.MapGet("/reminders/delivery-log", async (
+            [FromServices] ReminderService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.GetDeliveryLogAsync(ct))));
+
+        group.MapGet("/reports", async (
+            [FromServices] ReportService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<ReportArtifactDto>>.Ok(await svc.ListAsync(ct))));
+
+        group.MapPost("/reports/generate", async (
+            [FromBody] GenerateReportRequest req,
+            [FromServices] ReportService svc,
+            CancellationToken ct) =>
+        {
+            var report = await svc.GenerateAsync(req, ct);
+            return Results.Created($"/api/v1/calendar/reports/{report.Id}",
+                ApiResponse<ReportArtifactDto>.Ok(report));
+        });
+
+        group.MapGet("/reports/{id:guid}", async (
+            Guid id,
+            [FromServices] ReportService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<ReportArtifactDto>.Ok(await svc.GetAsync(id, ct))));
+
+        group.MapPost("/reports/{id:guid}/archive", async (
+            Guid id,
+            [FromServices] ReportService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<ReportArtifactDto>.Ok(await svc.ArchiveAsync(id, ct))));
+
+        group.MapPost("/reports/suggestions/{id:guid}/request-action", async (
+            Guid id,
+            [FromServices] ReportService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(
+                await svc.RequestSuggestionActionAsync(id, ct))));
 
         // Calendars
         group.MapGet("/calendars", async (
@@ -388,6 +596,14 @@ public class CalendarModule : IModule
             Results.Ok(ApiResponse<OutlookDeviceCodeRequestResponse>.Ok(
                 await outlookSvc.CreateDeviceCodeRequestAsync(currentUser.UserId!.Value, ct))));
 
+        group.MapPost("/outlook/device-code/poll", async (
+            [FromBody] OutlookDeviceCodePollRequest req,
+            [FromServices] OutlookSyncService outlookSvc,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<OutlookSettingsResponse>.Ok(
+                await outlookSvc.PollDeviceCodeAsync(currentUser.UserId!.Value, req.DeviceCode, ct))));
+
         group.MapGet("/outlook/sync/batches", async (
             [FromServices] OutlookSyncService outlookSvc,
             [FromServices] ICurrentUserService currentUser,
@@ -402,6 +618,107 @@ public class CalendarModule : IModule
         {
             var result = await outlookSvc.SyncAsync(currentUser.UserId!.Value, ct);
             return Results.Ok(ApiResponse<OutlookSyncBatchResponse>.Ok(result));
+        });
+
+        group.MapGet("/outlook/events", async (
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var items = await db.Set<EventEntity>()
+                .AsNoTracking()
+                .Include(e => e.Calendar)
+                .Where(e => e.Calendar.UserId == userId && e.Source.StartsWith("outlook"))
+                .OrderBy(e => e.DtStart)
+                .ToListAsync(ct);
+            return Results.Ok(ApiResponse<object>.Ok(items.Select(e => new
+            {
+                e.Id,
+                e.Title,
+                e.OutlookEventId,
+                e.OutlookChangeKey,
+                e.Source,
+                e.DtStart,
+                e.DtEnd
+            }).ToList()));
+        });
+
+        group.MapPost("/outlook/events/batch-tag", async (
+            [FromBody] BatchIdsRequest req,
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var events = await db.Set<EventEntity>()
+                .Include(e => e.Calendar)
+                .Where(e => req.Ids.Contains(e.Id) && e.Calendar.UserId == userId)
+                .ToListAsync(ct);
+            foreach (var evt in events)
+            {
+                evt.Source = "outlook";
+                evt.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(ApiResponse<object>.Ok(new { affectedCount = events.Count }));
+        });
+
+        group.MapPost("/outlook/events/{id:guid}/pause-sync", async (
+            Guid id,
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var evt = await db.Set<EventEntity>()
+                .Include(e => e.Calendar)
+                .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == userId, ct);
+            if (evt is null)
+                return Results.NotFound(ApiResponse<string>.Error(404, "Event does not exist."));
+
+            evt.Source = "outlook-paused";
+            evt.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(ApiResponse<object>.Ok(new { evt.Id, evt.Source }));
+        });
+
+        group.MapPost("/outlook/events/{id:guid}/stop-sync-preview", async (
+            Guid id,
+            [FromServices] OutlookConflictService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.RequestStopSyncPreviewAsync(id, ct))));
+
+        group.MapPost("/outlook/events/{id:guid}/stop-sync", async (
+            Guid id,
+            [FromBody] OutlookStopSyncExecuteRequest req,
+            [FromServices] OutlookConflictService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ExecuteStopSyncAsync(id, req.ConfirmationId, ct))));
+
+        group.MapGet("/outlook/events/{id:guid}/history", async (
+            Guid id,
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var evt = await db.Set<EventEntity>()
+                .AsNoTracking()
+                .Include(e => e.Calendar)
+                .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == userId, ct);
+            if (evt is null)
+                return Results.NotFound(ApiResponse<string>.Error(404, "Event does not exist."));
+
+            return Results.Ok(ApiResponse<object>.Ok(new
+            {
+                evt.Id,
+                evt.OutlookEventId,
+                evt.OutlookChangeKey,
+                evt.OutlookEtag,
+                evt.SourceIcsComponent
+            }));
         });
     }
 
@@ -422,10 +739,20 @@ public static class CalendarEndpointPaths
     public const string ExportIcs = "/api/v1/calendar/export-ics";
     public const string CalendarLayers = "/api/v1/calendar/layers";
     public const string DataCenterQuery = "/api/v1/calendar/data-center/query";
+    public const string DataCenterBatchPreview = "/api/v1/calendar/data-center/batch/preview";
+    public const string DataCenterBatchRequestConfirmation = "/api/v1/calendar/data-center/batch/request-confirmation";
+    public const string DataCenterBatchExecute = "/api/v1/calendar/data-center/batch/execute";
+    public const string DataCenterAuditExport = "/api/v1/calendar/data-center/audit/export";
+    public const string DataCenterRestorePreview = "/api/v1/calendar/data-center/restore/preview";
+    public const string DataCenterRestoreRequestConfirmation = "/api/v1/calendar/data-center/restore/request-confirmation";
     public const string OutlookSettings = "/api/v1/calendar/outlook/settings";
     public const string OutlookDeviceCode = "/api/v1/calendar/outlook/device-code";
+    public const string OutlookDeviceCodePoll = "/api/v1/calendar/outlook/device-code/poll";
     public const string OutlookSync = "/api/v1/calendar/outlook/sync";
     public const string OutlookSyncBatches = "/api/v1/calendar/outlook/sync/batches";
+    public const string Reports = "/api/v1/calendar/reports";
+    public const string GenerateReport = "/api/v1/calendar/reports/generate";
+    public const string RequestReportSuggestionAction = "/api/v1/calendar/reports/suggestions/{id}/request-action";
 
     public static string TaskPlan(string id) => $"{Root}/tasks/{id}/plan";
     public static string RecycleRestorePreview(string type, string id) => $"{RecycleBin}/{type}/{id}/restore-preview";

@@ -26,6 +26,8 @@ public class EventEntity : ISoftDeletable
     [Column("time_zone_id")][MaxLength(100)] public string? TimeZoneId { get; set; }
     [Column("source_time_zone_id")][MaxLength(100)] public string? SourceTimeZoneId { get; set; }
     [Column("source_uid")][MaxLength(255)] public string? SourceUid { get; set; }
+    [Column("outlook_change_key")][MaxLength(255)] public string? OutlookChangeKey { get; set; }
+    [Column("outlook_etag")][MaxLength(255)] public string? OutlookEtag { get; set; }
     [Column("source_ics_component")] public string? SourceIcsComponent { get; set; }
     [Column("external_metadata_json", TypeName = "jsonb")] public string ExternalMetadataJson { get; set; } = "{}";
     [Column("recurrence_id")][MaxLength(255)] public string? RecurrenceId { get; set; }

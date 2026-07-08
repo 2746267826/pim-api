@@ -2,6 +2,16 @@ name: Build API
 
 on:
   push:
+    branches: [master, codex/schedule-task-complete-system]
+    paths:
+      - 'src/Pim.Api/**'
+      - 'src/Pim.Core/**'
+      - 'src/Pim.Infrastructure/**'
+      - 'src/modules/**'
+      - 'tests/Pim.UnitTests/**'
+      - 'Pim.sln'
+      - '.github/workflows/build-api.yml'
+  pull_request:
     branches: [master]
     paths:
       - 'src/Pim.Api/**'
