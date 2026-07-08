@@ -1,6 +1,7 @@
 using Pim.Core.Operations;
 using Pim.Core.Today;
 using Pim.Infrastructure.Auth;
+using Pim.Infrastructure.Endpoints;
 using Pim.Module.Calendar.DTOs;
 using Pim.Module.Calendar.Services;
 using Pim.Module.PcTracker.DTOs;
@@ -23,6 +24,11 @@ public sealed record TodayLayerCountData(int Count, IReadOnlyList<CalendarLayerI
 public sealed record PendingConfirmationTodayData(int PendingCount, IReadOnlyList<OperationConfirmationDto> Items);
 
 public sealed record TodayPlaceholderData(string Kind, int Count);
+
+public sealed record EndpointStatusTodayData(
+    int EndpointCount,
+    int OnlineOnlyBlockedCount,
+    IReadOnlyList<Pim.Core.Endpoints.EndpointStatusDto> Items);
 
 public sealed record ReportsAvailableTodayData(
     int AvailableCount,
@@ -263,19 +269,32 @@ public sealed class ReportsAvailableTodaySectionProvider(ReportService reportSer
     }
 }
 
-public sealed class EndpointsStatusTodaySectionProvider : ITodaySectionProvider
+public sealed class EndpointsStatusTodaySectionProvider(EndpointStatusService endpointStatus) : ITodaySectionProvider
 {
     public string SectionId => "endpoints.status";
 
     public string Kind => "endpoints.status";
 
-    public Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
-        => Task.FromResult(TodaySectionProviderResult.Build(
+    public async Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
+    {
+        var endpoints = await endpointStatus.ListAsync(ct);
+        var blocked = endpoints.Sum(endpoint => endpoint.OnlineOnlyBlockedCount);
+        var hasWarning = blocked > 0
+            || endpoints.Any(endpoint =>
+                string.Equals(endpoint.UploadStatus, "Warning", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(endpoint.UploadStatus, "Critical", StringComparison.OrdinalIgnoreCase));
+
+        return TodaySectionProviderResult.Build(
             SectionId,
             Kind,
-            TodaySectionStatuses.Empty,
-            new TodayPlaceholderData(Kind, 0),
-            TodaySectionProviderResult.Details("/endpoint-shell")));
+            endpoints.Count == 0
+                ? TodaySectionStatuses.Empty
+                : hasWarning
+                    ? TodaySectionStatuses.Warning
+                    : TodaySectionStatuses.Normal,
+            new EndpointStatusTodayData(endpoints.Count, blocked, endpoints),
+            TodaySectionProviderResult.Details("/endpoint-shell"));
+    }
 }
 
 public sealed class PcActivityTodaySectionProvider(PcTrackerService pcTrackerService) : ITodaySectionProvider

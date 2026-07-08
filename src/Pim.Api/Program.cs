@@ -120,6 +120,7 @@ app.MapAuthEndpoints();
 app.MapSearchEndpoints();
 app.MapStatusEndpoints();
 app.MapDaemonEndpoints();
+app.MapEndpointEndpoints();
 app.MapOperationsEndpoints();
 app.MapTodayEndpoints();
 app.MapAiEndpoints();

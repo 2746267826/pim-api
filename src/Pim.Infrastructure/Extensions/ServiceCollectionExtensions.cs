@@ -10,6 +10,7 @@ using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Endpoints;
 using Pim.Infrastructure.Operations;
 using Pim.Infrastructure.Secrets;
 using Pim.Infrastructure.Storage;
@@ -32,6 +33,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<AuditVersionService>();
         services.AddScoped<IOperationConfirmationService, OperationConfirmationService>();
         services.AddScoped<IDaemonHeartbeatService, DaemonHeartbeatService>();
+        services.AddSingleton<EndpointStatusService>();
         services.AddScoped<ISystemStatusService, SystemStatusService>();
         services.Configure<AiOptions>(configuration.GetSection("Ai"));
         services.AddScoped<IAiGateway, AiGateway>();
