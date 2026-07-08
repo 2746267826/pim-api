@@ -91,7 +91,7 @@ public sealed class AuditVersionService
             .ToListAsync(ct);
 
         return new AuditExportResponse(
-            $"audit-export-{start:yyyyMMdd}-{end:yyyyMMdd}.json",
+            "audit-export.json",
             "application/json",
             JsonSerializer.Serialize(items));
     }

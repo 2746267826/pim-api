@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Pim.Core.Audit;
 using Pim.Core.Common;
 using Pim.Core.Modules;
 using Pim.Core.Operations;
@@ -42,6 +43,7 @@ public class CalendarModule : IModule
         services.AddScoped<CalendarRecycleBinService>();
         services.AddScoped<PlanningModelService>();
         services.AddScoped<DataCenterQueryService>();
+        services.AddScoped<DataCenterGovernanceService>();
         services.AddScoped<ReminderService>();
         services.AddScoped<ReportService>();
 
@@ -76,6 +78,52 @@ public class CalendarModule : IModule
             [FromServices] DataCenterQueryService svc,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<DataCenterQueryResponse>.Ok(await svc.QueryAsync(req, ct))));
+
+        group.MapPost("/data-center/batch/preview", async (
+            [FromBody] DataCenterBatchOperationRequest req,
+            [FromServices] DataCenterGovernanceService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<DataCenterBatchPreviewResponse>.Ok(
+                await svc.PreviewBatchOperationAsync(req, ct))));
+
+        group.MapPost("/data-center/batch/request-confirmation", async (
+            [FromBody] DataCenterBatchOperationRequest req,
+            [FromServices] DataCenterGovernanceService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(
+                await svc.RequestBatchConfirmationAsync(req, ct))));
+
+        group.MapPost("/data-center/batch/execute", async (
+            [FromBody] DataCenterExecuteBatchRequest req,
+            [FromServices] DataCenterGovernanceService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<DataCenterBatchExecutionResponse>.Ok(
+                await svc.ExecuteConfirmedBatchAsync(req.ConfirmationId, ct))));
+
+        group.MapGet("/data-center/audit/export", async (
+            [FromQuery] DateTimeOffset? start,
+            [FromQuery] DateTimeOffset? end,
+            [FromServices] DataCenterGovernanceService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<AuditExportResponse>.Ok(
+                await svc.ExportAuditAsync(
+                    start ?? DateTimeOffset.MinValue,
+                    end ?? DateTimeOffset.MaxValue,
+                    ct))));
+
+        group.MapPost("/data-center/restore/preview", async (
+            [FromBody] DataCenterRestoreRequest req,
+            [FromServices] DataCenterGovernanceService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<RestorePreviewResponse>.Ok(
+                await svc.PreviewRestoreAsync(req, ct))));
+
+        group.MapPost("/data-center/restore/request-confirmation", async (
+            [FromBody] DataCenterRestoreRequest req,
+            [FromServices] DataCenterGovernanceService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(
+                await svc.RequestRestoreConfirmationAsync(req, ct))));
 
         group.MapGet("/projects", async (
             [FromServices] PlanningModelService svc,
@@ -682,6 +730,12 @@ public static class CalendarEndpointPaths
     public const string ExportIcs = "/api/v1/calendar/export-ics";
     public const string CalendarLayers = "/api/v1/calendar/layers";
     public const string DataCenterQuery = "/api/v1/calendar/data-center/query";
+    public const string DataCenterBatchPreview = "/api/v1/calendar/data-center/batch/preview";
+    public const string DataCenterBatchRequestConfirmation = "/api/v1/calendar/data-center/batch/request-confirmation";
+    public const string DataCenterBatchExecute = "/api/v1/calendar/data-center/batch/execute";
+    public const string DataCenterAuditExport = "/api/v1/calendar/data-center/audit/export";
+    public const string DataCenterRestorePreview = "/api/v1/calendar/data-center/restore/preview";
+    public const string DataCenterRestoreRequestConfirmation = "/api/v1/calendar/data-center/restore/request-confirmation";
     public const string OutlookSettings = "/api/v1/calendar/outlook/settings";
     public const string OutlookDeviceCode = "/api/v1/calendar/outlook/device-code";
     public const string OutlookSync = "/api/v1/calendar/outlook/sync";

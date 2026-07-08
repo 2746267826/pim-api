@@ -329,6 +329,40 @@ public record DataCenterQueryResponse(
     int TotalCount
 );
 
+public record DataCenterObjectRef(
+    string ObjectType,
+    Guid ObjectId
+);
+
+public record DataCenterBatchOperationRequest(
+    string Action,
+    IReadOnlyList<DataCenterObjectRef> Objects,
+    string? Reason = null
+);
+
+public record DataCenterBatchPreviewResponse(
+    string RiskLevel,
+    bool RequiresStrictConfirmation,
+    string Summary,
+    IReadOnlyList<string> AffectedObjectTypes,
+    int AffectedCount
+);
+
+public record DataCenterBatchExecutionResponse(
+    Guid ConfirmationId,
+    string Status,
+    int AffectedCount
+);
+
+public record DataCenterExecuteBatchRequest(
+    Guid ConfirmationId
+);
+
+public record DataCenterRestoreRequest(
+    Guid AuditVersionId,
+    string? Reason = null
+);
+
 public record ImportSkippedItem(
     string Reason,
     string Title,
