@@ -12,7 +12,7 @@ public static class MobileAnalyticsDefaults
 
 public static class MobileLifeCategories
 {
-    public const string Social = "社交沟通";
+    public const string Social = "社交通讯";
     public const string ShortVideoEntertainment = "短视频/娱乐";
     public const string Game = "游戏";
     public const string MusicAudio = "音乐/音频";

@@ -52,6 +52,6 @@ public sealed class MobileAnalyticsQueryServiceTests
         Assert.Equal("15m", query.Granularity);
         Assert.Equal("cursor", query.Cursor);
         Assert.Equal("phone-main", query.DeviceId);
-        Assert.Equal("社交沟通", query.LifeCategory);
+        Assert.Equal("社交通讯", query.LifeCategory);
     }
 }

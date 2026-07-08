@@ -25,7 +25,7 @@ public sealed class MobileAnalyticsContractTests
 
         string[] expectedCategories =
         [
-            "社交沟通",
+            "社交通讯",
             "短视频/娱乐",
             "游戏",
             "音乐/音频",
@@ -62,7 +62,7 @@ public sealed class MobileAnalyticsContractTests
 
         Assert.Equal("com.tencent.mobileqq", entity.PackageName);
         Assert.Equal("QQ", entity.DisplayNameOverride);
-        Assert.Equal("社交沟通", entity.LifeCategory);
+        Assert.Equal("社交通讯", entity.LifeCategory);
     }
 
     [Fact]
