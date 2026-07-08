@@ -95,6 +95,46 @@ public sealed class MobileLocationServiceTests
         Assert.Equal(rawJson, point.RawJson);
     }
 
+    [Fact]
+    public async Task GetHistoryAsync_ExcludesRejectedAndNonStrictAccuracyPoints()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = new MobileLocationService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-06T12:00:00Z")));
+
+        var accepted = await service.SubmitAsync(Request(49.9), CancellationToken.None);
+        await Assert.ThrowsAsync<DomainException>(() => service.SubmitAsync(Request(50), CancellationToken.None));
+        db.Set<MobileLocationPointEntity>().Add(new MobileLocationPointEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = "android-main",
+            RecordedAtUtc = DateTimeOffset.Parse("2026-07-06T11:59:00Z"),
+            Latitude = 31.230416m,
+            Longitude = 121.473701m,
+            HorizontalAccuracyMeters = 50m,
+            Provider = "gps",
+            Source = "manual",
+            RawJson = "{}",
+            Quality = "usable",
+            CreatedAt = DateTimeOffset.Parse("2026-07-06T12:00:00Z")
+        });
+        await db.SaveChangesAsync();
+
+        var history = await service.GetHistoryAsync(
+            "android-main",
+            DateTimeOffset.Parse("2026-07-06T11:00:00Z"),
+            DateTimeOffset.Parse("2026-07-06T12:30:00Z"),
+            50,
+            CancellationToken.None);
+
+        var point = Assert.Single(history);
+        Assert.Equal(accepted.Id, point.Id);
+        Assert.Equal("usable", point.Quality);
+        Assert.True(point.HorizontalAccuracyMeters < 50);
+    }
+
     private static MobileLocationPointRequest Request(double accuracy) => new(
         "android-main",
         DateTimeOffset.Parse("2026-07-06T11:58:00Z"),

@@ -87,7 +87,9 @@ public sealed class MobileLocationService
             query = query.Where(p => p.RecordedAtUtc >= rangeStartUtc);
         if (rangeEndUtc is not null)
             query = query.Where(p => p.RecordedAtUtc < rangeEndUtc);
-        query = query.Where(p => p.HorizontalAccuracyMeters <= Decimal(maxAccuracyMeters));
+        query = query.Where(p =>
+            p.HorizontalAccuracyMeters < Decimal(maxAccuracyMeters)
+            && p.Quality != "rejected");
 
         return await query
             .OrderByDescending(p => p.RecordedAtUtc)
