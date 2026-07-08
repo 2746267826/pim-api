@@ -365,7 +365,8 @@ public record OutlookDeviceCodeRequestResponse(
     string VerificationUri,
     string UserCode,
     DateTimeOffset ExpiresAt,
-    string Message
+    string Message,
+    string? DeviceCode = null
 );
 
 public record OutlookSyncStep(

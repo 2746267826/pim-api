@@ -30,6 +30,9 @@ public class CalendarModule : IModule
         services.AddScoped<RecurrenceService>();
         services.AddScoped<SchedulingEngine>();
         services.AddScoped<OutlookSyncService>();
+        services.AddScoped<OutlookTokenService>();
+        services.AddScoped<IMicrosoftGraphClient, MicrosoftGraphDeviceCodeClient>();
+        services.AddHttpClient("outlook");
         services.AddScoped<CalendarAuditWriter>();
         services.AddScoped<CalendarDeleteService>();
         services.AddScoped<CalendarRecycleBinService>();

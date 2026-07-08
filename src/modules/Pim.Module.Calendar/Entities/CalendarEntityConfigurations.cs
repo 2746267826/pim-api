@@ -25,6 +25,8 @@ public class EventEntityConfiguration : IEntityTypeConfiguration<EventEntity>
         builder.HasIndex(e => e.CalendarId);
         builder.HasIndex(e => e.Uid);
         builder.HasIndex(e => e.SourceUid);
+        builder.HasIndex(e => e.OutlookEventId);
+        builder.HasIndex(e => e.OutlookChangeKey);
         builder.HasIndex(e => new { e.DeletedAt, e.DtStart });
         builder.HasIndex(e => e.DeletedByOperationId);
         builder.HasOne(e => e.Calendar)
