@@ -197,6 +197,8 @@ public class CalendarService
         {
             skipped++;
             reasonCounts[reason] = reasonCounts.GetValueOrDefault(reason) + 1;
+            if (reason.StartsWith("duplicate", StringComparison.OrdinalIgnoreCase))
+                reasonCounts["duplicate"] = reasonCounts.GetValueOrDefault("duplicate") + 1;
             if (samples.Count < 10)
                 samples.Add(new ImportSkippedItem(reason, item.Title, item.Start, item.Uid));
         }

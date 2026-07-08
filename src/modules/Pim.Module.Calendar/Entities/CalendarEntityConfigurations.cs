@@ -204,3 +204,20 @@ public class OutlookSyncBatchEntityConfiguration : IEntityTypeConfiguration<Outl
         builder.HasIndex(o => new { o.UserId, o.Provider, o.StartedAt });
     }
 }
+
+public class SyncConflictEntityConfiguration : IEntityTypeConfiguration<SyncConflictEntity>
+{
+    public void Configure(EntityTypeBuilder<SyncConflictEntity> builder)
+    {
+        builder.Property(c => c.Provider).HasDefaultValue("outlook");
+        builder.Property(c => c.ObjectType).HasDefaultValue("event");
+        builder.Property(c => c.Status).HasDefaultValue("open");
+        builder.Property(c => c.PimSnapshotJson).HasDefaultValue("{}");
+        builder.Property(c => c.ExternalSnapshotJson).HasDefaultValue("{}");
+        builder.Property(c => c.CreatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(c => new { c.UserId, c.Provider, c.Status });
+        builder.HasIndex(c => new { c.ObjectType, c.ObjectId });
+        builder.HasIndex(c => c.GraphEventId);
+        builder.HasIndex(c => c.ResolvedConfirmationId);
+    }
+}

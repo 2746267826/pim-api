@@ -49,7 +49,7 @@ public sealed class DataCenterQueryService
             e.Status,
             e.DtStart,
             e.DtEnd,
-            FirstText(e.Description, e.Location, e.Calendar.Name))));
+            BuildEventSummary(e))));
 
         var tasks = await _db.Set<TaskEntity>()
             .AsNoTracking()
@@ -124,7 +124,7 @@ public sealed class DataCenterQueryService
             "deleted",
             e.DtStart,
             e.DtEnd,
-            FirstText(e.Description, e.Location, $"Deleted at {e.DeletedAt:O}"))));
+            FirstText(BuildEventSummary(e), $"Deleted at {e.DeletedAt:O}"))));
 
         var deletedTasks = await _db.Set<TaskEntity>()
             .IgnoreQueryFilters()
@@ -204,4 +204,25 @@ public sealed class DataCenterQueryService
 
     private static string FirstText(params string?[] values)
         => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
+
+    private static string BuildEventSummary(EventEntity e)
+    {
+        var parts = new List<string>();
+        Add(e.Description);
+        Add(e.Location);
+        Add(e.Calendar.Name);
+        if (e.Source.StartsWith("outlook", StringComparison.OrdinalIgnoreCase))
+        {
+            Add($"GraphEventId={e.OutlookEventId ?? "unknown"}");
+            Add($"ChangeKey={e.OutlookChangeKey ?? "unknown"}");
+        }
+
+        return string.Join(" | ", parts);
+
+        void Add(string? value)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                parts.Add(value);
+        }
+    }
 }

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Core.Common;
@@ -10,6 +11,7 @@ using Pim.Core.Modules;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.DTOs;
+using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Search;
 using Pim.Module.Calendar.Services;
 
@@ -33,6 +35,7 @@ public class CalendarModule : IModule
         services.AddScoped<OutlookTokenService>();
         services.AddScoped<IMicrosoftGraphClient, MicrosoftGraphDeviceCodeClient>();
         services.AddHttpClient("outlook");
+        services.AddScoped<OutlookConflictService>();
         services.AddScoped<CalendarAuditWriter>();
         services.AddScoped<CalendarDeleteService>();
         services.AddScoped<CalendarRecycleBinService>();
@@ -482,6 +485,106 @@ public class CalendarModule : IModule
         {
             var result = await outlookSvc.SyncAsync(currentUser.UserId!.Value, ct);
             return Results.Ok(ApiResponse<OutlookSyncBatchResponse>.Ok(result));
+        });
+
+        group.MapGet("/outlook/events", async (
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var items = await db.Set<EventEntity>()
+                .AsNoTracking()
+                .Include(e => e.Calendar)
+                .Where(e => e.Calendar.UserId == userId && e.Source.StartsWith("outlook"))
+                .OrderBy(e => e.DtStart)
+                .ToListAsync(ct);
+            return Results.Ok(ApiResponse<object>.Ok(items.Select(e => new
+            {
+                e.Id,
+                e.Title,
+                e.OutlookEventId,
+                e.OutlookChangeKey,
+                e.Source,
+                e.DtStart,
+                e.DtEnd
+            }).ToList()));
+        });
+
+        group.MapPost("/outlook/events/batch-tag", async (
+            [FromBody] BatchIdsRequest req,
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var events = await db.Set<EventEntity>()
+                .Include(e => e.Calendar)
+                .Where(e => req.Ids.Contains(e.Id) && e.Calendar.UserId == userId)
+                .ToListAsync(ct);
+            foreach (var evt in events)
+            {
+                evt.Source = "outlook";
+                evt.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(ApiResponse<object>.Ok(new { affectedCount = events.Count }));
+        });
+
+        group.MapPost("/outlook/events/{id:guid}/pause-sync", async (
+            Guid id,
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var evt = await db.Set<EventEntity>()
+                .Include(e => e.Calendar)
+                .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == userId, ct);
+            if (evt is null)
+                return Results.NotFound(ApiResponse<string>.Error(404, "Event does not exist."));
+
+            evt.Source = "outlook-paused";
+            evt.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(ApiResponse<object>.Ok(new { evt.Id, evt.Source }));
+        });
+
+        group.MapPost("/outlook/events/{id:guid}/stop-sync-preview", async (
+            Guid id,
+            [FromServices] OutlookConflictService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.RequestStopSyncPreviewAsync(id, ct))));
+
+        group.MapPost("/outlook/events/{id:guid}/stop-sync", async (
+            Guid id,
+            [FromServices] OutlookConflictService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.RequestStopSyncPreviewAsync(id, ct))));
+
+        group.MapGet("/outlook/events/{id:guid}/history", async (
+            Guid id,
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var evt = await db.Set<EventEntity>()
+                .AsNoTracking()
+                .Include(e => e.Calendar)
+                .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == userId, ct);
+            if (evt is null)
+                return Results.NotFound(ApiResponse<string>.Error(404, "Event does not exist."));
+
+            return Results.Ok(ApiResponse<object>.Ok(new
+            {
+                evt.Id,
+                evt.OutlookEventId,
+                evt.OutlookChangeKey,
+                evt.OutlookEtag,
+                evt.SourceIcsComponent
+            }));
         });
     }
 

@@ -391,3 +391,22 @@ public record OutlookSyncBatchResponse(
     DateTimeOffset StartedAt,
     DateTimeOffset? FinishedAt
 );
+
+public record ConflictResolutionRequest(
+    string Action,
+    string? MergedFieldsJson,
+    string? Reason
+);
+
+public record SyncConflictDetailDto(
+    Guid Id,
+    string Provider,
+    string ObjectType,
+    Guid ObjectId,
+    string? GraphEventId,
+    string ConflictKind,
+    string Status,
+    string PimSnapshotJson,
+    string ExternalSnapshotJson,
+    Guid? ResolvedConfirmationId
+);
