@@ -2,7 +2,7 @@ name: Build API
 
 on:
   push:
-    branches: [master]
+    branches: [master, codex/schedule-task-complete-system]
     paths:
       - 'src/Pim.Api/**'
       - 'src/Pim.Core/**'

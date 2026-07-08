@@ -2,7 +2,7 @@ name: Build Windows Client
 
 on:
   push:
-    branches: [master]
+    branches: [master, codex/schedule-task-complete-system]
     paths:
       - 'src/client-windows/**'
       - 'src/Pim.Core/**'
@@ -26,6 +26,12 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0'
+
+      - name: Windows companion tests
+        run: |
+          dotnet test ../../tests/Pim.UnitTests/Pim.UnitTests.csproj `
+            --configuration Release `
+            --filter "FullyQualifiedName~WindowsCompanionShellTests|FullyQualifiedName~WindowsNotificationActionRouterTests|FullyQualifiedName~ApiClientDefaultsTests"
 
       - name: Generate version string
         id: version

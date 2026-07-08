@@ -2,7 +2,7 @@ name: Build Web Client
 
 on:
   push:
-    branches: [master]
+    branches: [master, codex/schedule-task-complete-system]
     paths:
       - 'src/client-web/**'
       - '.github/workflows/build-web.yml'
@@ -41,6 +41,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Schedule workbench tests
+        run: npm run test:schedule-workbench-complete
 
       - name: Build
         run: npm run build
