@@ -40,6 +40,8 @@ public class TaskEntityConfiguration : IEntityTypeConfiguration<TaskEntity>
         builder.HasQueryFilter(t => t.DeletedAt == null);
         builder.HasIndex(t => t.UserId);
         builder.HasIndex(t => new { t.UserId, t.CalendarId });
+        builder.HasIndex(t => new { t.UserId, t.DomainProjectId });
+        builder.HasIndex(t => new { t.UserId, t.TaskBookId });
         builder.HasIndex(t => t.Status);
         builder.HasIndex(t => new { t.UserId, t.DeletedAt });
         builder.HasIndex(t => new { t.UserId, t.DtStart, t.PlannedEnd });
@@ -47,9 +49,97 @@ public class TaskEntityConfiguration : IEntityTypeConfiguration<TaskEntity>
         builder.HasOne(t => t.Calendar)
             .WithMany(c => c.Tasks)
             .HasForeignKey(t => t.CalendarId);
+        builder.HasOne(t => t.DomainProject)
+            .WithMany(p => p.Tasks)
+            .HasForeignKey(t => t.DomainProjectId);
+        builder.HasOne(t => t.TaskBook)
+            .WithMany(b => b.Tasks)
+            .HasForeignKey(t => t.TaskBookId);
         builder.HasOne(t => t.ParentTask)
             .WithMany(t => t.SubTasks)
             .HasForeignKey(t => t.ParentTaskId);
+    }
+}
+
+public class DomainProjectEntityConfiguration : IEntityTypeConfiguration<DomainProjectEntity>
+{
+    public void Configure(EntityTypeBuilder<DomainProjectEntity> builder)
+    {
+        builder.HasQueryFilter(p => p.DeletedAt == null);
+        builder.HasIndex(p => new { p.UserId, p.Name }).IsUnique();
+        builder.HasIndex(p => new { p.UserId, p.Status });
+    }
+}
+
+public class TaskBookEntityConfiguration : IEntityTypeConfiguration<TaskBookEntity>
+{
+    public void Configure(EntityTypeBuilder<TaskBookEntity> builder)
+    {
+        builder.HasQueryFilter(b => b.DeletedAt == null);
+        builder.HasIndex(b => new { b.UserId, b.Name, b.DomainProjectId });
+        builder.HasIndex(b => new { b.UserId, b.Status });
+        builder.HasOne(b => b.DomainProject)
+            .WithMany(p => p.TaskBooks)
+            .HasForeignKey(b => b.DomainProjectId);
+    }
+}
+
+public class TaskChecklistItemEntityConfiguration : IEntityTypeConfiguration<TaskChecklistItemEntity>
+{
+    public void Configure(EntityTypeBuilder<TaskChecklistItemEntity> builder)
+    {
+        builder.HasQueryFilter(i => i.DeletedAt == null);
+        builder.HasIndex(i => i.UserId);
+        builder.HasIndex(i => new { i.TaskId, i.SortOrder });
+        builder.HasOne(i => i.Task)
+            .WithMany(t => t.ChecklistItems)
+            .HasForeignKey(i => i.TaskId);
+    }
+}
+
+public class HabitRoutineEntityConfiguration : IEntityTypeConfiguration<HabitRoutineEntity>
+{
+    public void Configure(EntityTypeBuilder<HabitRoutineEntity> builder)
+    {
+        builder.HasQueryFilter(h => h.DeletedAt == null);
+        builder.Property(h => h.RuleJson).HasDefaultValue("{}");
+        builder.HasIndex(h => new { h.UserId, h.Status });
+        builder.HasIndex(h => new { h.UserId, h.Cadence });
+    }
+}
+
+public class HabitOccurrenceEntityConfiguration : IEntityTypeConfiguration<HabitOccurrenceEntity>
+{
+    public void Configure(EntityTypeBuilder<HabitOccurrenceEntity> builder)
+    {
+        builder.HasQueryFilter(o => o.DeletedAt == null);
+        builder.HasIndex(o => o.HabitRoutineId);
+        builder.HasIndex(o => new { o.UserId, o.StartsAt, o.EndsAt });
+        builder.HasIndex(o => o.ConfirmationId);
+        builder.HasOne(o => o.HabitRoutine)
+            .WithMany(h => h.Occurrences)
+            .HasForeignKey(o => o.HabitRoutineId);
+    }
+}
+
+public class AvailabilityWindowEntityConfiguration : IEntityTypeConfiguration<AvailabilityWindowEntity>
+{
+    public void Configure(EntityTypeBuilder<AvailabilityWindowEntity> builder)
+    {
+        builder.HasQueryFilter(a => a.DeletedAt == null);
+        builder.HasIndex(a => new { a.UserId, a.StartsAt, a.EndsAt });
+        builder.HasIndex(a => new { a.UserId, a.Kind });
+    }
+}
+
+public class AiPlanningPlaceholderEntityConfiguration : IEntityTypeConfiguration<AiPlanningPlaceholderEntity>
+{
+    public void Configure(EntityTypeBuilder<AiPlanningPlaceholderEntity> builder)
+    {
+        builder.HasQueryFilter(p => p.DeletedAt == null);
+        builder.HasIndex(p => new { p.UserId, p.StartsAt, p.EndsAt });
+        builder.HasIndex(p => p.ConfirmationId);
+        builder.HasIndex(p => new { p.UserId, p.Status });
     }
 }
 
