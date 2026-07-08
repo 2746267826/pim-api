@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Pim.Core.Data;
 using Pim.Core.Operations;
+using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Data.Entities;
 
 namespace Pim.Infrastructure.Data;
@@ -44,6 +45,7 @@ public class PimDbContext : DbContext
     public DbSet<RefreshTokenEntity> RefreshTokens => Set<RefreshTokenEntity>();
     public DbSet<LoginAttemptEntity> LoginAttempts => Set<LoginAttemptEntity>();
     public DbSet<AuditLogEntity> AuditLogs => Set<AuditLogEntity>();
+    public DbSet<AuditVersionEntity> AuditVersions => Set<AuditVersionEntity>();
     public DbSet<OperationConfirmationEntity> OperationConfirmations => Set<OperationConfirmationEntity>();
     public DbSet<DaemonHeartbeatEntity> DaemonHeartbeats => Set<DaemonHeartbeatEntity>();
     public DbSet<AiProviderSettingEntity> AiProviderSettings => Set<AiProviderSettingEntity>();
@@ -104,6 +106,16 @@ public class PimDbContext : DbContext
             e.HasIndex(a => a.ResourceType);
             e.HasIndex(a => a.CorrelationId);
             e.HasIndex(a => a.CreatedAt);
+        });
+
+        modelBuilder.Entity<AuditVersionEntity>(e =>
+        {
+            e.Property(a => a.BeforeJson).HasDefaultValue("{}");
+            e.Property(a => a.AfterJson).HasDefaultValue("{}");
+            e.Property(a => a.ChangedFieldsJson).HasDefaultValue("[]");
+            e.Property(a => a.CreatedAt).HasDefaultValueSql("now()");
+            e.HasIndex(a => new { a.ObjectType, a.ObjectId, a.CreatedAt });
+            e.HasIndex(a => a.ConfirmationId);
         });
 
         modelBuilder.Entity<OperationConfirmationEntity>(e =>

@@ -14,7 +14,14 @@ public sealed record CreateOperationConfirmationRequest(
     IReadOnlyList<string>? AllowedActions = null,
     string? ObjectType = null,
     Guid? ObjectId = null,
-    bool RequiresSecondLevelConfirmation = false);
+    bool RequiresSecondLevelConfirmation = false,
+    string? BeforeJson = null,
+    string? AfterJson = null,
+    bool RequiresStrictConfirmation = false,
+    Guid? AuditBatchId = null,
+    string? AiRecommendation = null,
+    string? ExternalEffect = null,
+    string? RecoveryPath = null);
 
 public sealed record OperationConfirmationDto(
     Guid Id,
@@ -36,7 +43,14 @@ public sealed record OperationConfirmationDto(
     IReadOnlyList<string>? AllowedActions = null,
     string? ObjectType = null,
     Guid? ObjectId = null,
-    bool RequiresSecondLevelConfirmation = false);
+    bool RequiresSecondLevelConfirmation = false,
+    string? BeforeJson = null,
+    string? AfterJson = null,
+    bool RequiresStrictConfirmation = false,
+    Guid? AuditBatchId = null,
+    string? AiRecommendation = null,
+    string? ExternalEffect = null,
+    string? RecoveryPath = null);
 
 public interface IOperationConfirmationService
 {

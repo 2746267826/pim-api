@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Pim.Core.Ai;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Ai;
+using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Operations;
@@ -28,6 +29,7 @@ public static class ServiceCollectionExtensions
                 npgsql => npgsql.EnableRetryOnFailure(3)));
         services.AddScoped<PimMigrationAdoptionService>();
         services.AddScoped<IAuditLogService, AuditLogService>();
+        services.AddScoped<AuditVersionService>();
         services.AddScoped<IOperationConfirmationService, OperationConfirmationService>();
         services.AddScoped<IDaemonHeartbeatService, DaemonHeartbeatService>();
         services.AddScoped<ISystemStatusService, SystemStatusService>();
