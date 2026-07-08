@@ -10,7 +10,7 @@ namespace Pim.UnitTests.Mobile;
 public sealed class MobileLocationServiceTests
 {
     [Fact]
-    public async Task SubmitAsync_AcceptsFiftyMeterAccuracyAsUsable()
+    public async Task SubmitAsync_AcceptsAccuracyUnderFiftyMetersAsUsable()
     {
         await using var db = MobileTestHelpers.CreateDb();
         var service = new MobileLocationService(
@@ -18,10 +18,25 @@ public sealed class MobileLocationServiceTests
             MobileTestHelpers.CurrentUser(),
             MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-06T12:00:00Z")));
 
-        var point = await service.SubmitAsync(Request(50), CancellationToken.None);
+        var point = await service.SubmitAsync(Request(49.9), CancellationToken.None);
 
         Assert.Equal("usable", point.Quality);
         Assert.Equal(1, await db.Set<MobileLocationPointEntity>().CountAsync());
+    }
+
+    [Fact]
+    public async Task SubmitAsync_RejectsFiftyMeterAccuracy()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = new MobileLocationService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-06T12:00:00Z")));
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => service.SubmitAsync(Request(50), CancellationToken.None));
+
+        Assert.Equal(6202, error.ErrorCode);
     }
 
     [Fact]
@@ -56,6 +71,28 @@ public sealed class MobileLocationServiceTests
             () => service.SubmitAsync(request, CancellationToken.None));
 
         Assert.Equal(6201, error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task SubmitAsync_AcceptsNullAltitudeWithQualityFlagInRawJson()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = new MobileLocationService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-06T12:00:00Z")));
+        const string rawJson = "{\"qualityFlags\":[\"altitude-missing-timeout\"]}";
+
+        var point = await service.SubmitAsync(
+            Request(18) with
+            {
+                AltitudeMeters = null,
+                RawJson = rawJson
+            },
+            CancellationToken.None);
+
+        Assert.Null(point.AltitudeMeters);
+        Assert.Equal(rawJson, point.RawJson);
     }
 
     private static MobileLocationPointRequest Request(double accuracy) => new(

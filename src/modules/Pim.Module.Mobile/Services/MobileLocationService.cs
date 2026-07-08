@@ -27,7 +27,7 @@ public sealed class MobileLocationService
             throw new DomainException(6201, "Invalid mobile location coordinates.");
 
         var userId = MobileUserContext.RequireUserId(_currentUser);
-        if (request.HorizontalAccuracyMeters > MaxUsableAccuracyMeters)
+        if (request.HorizontalAccuracyMeters >= MaxUsableAccuracyMeters)
         {
             await SavePointAsync(userId, request, "rejected", ct);
             throw new DomainException(6202, "Mobile location accuracy is not usable.");
