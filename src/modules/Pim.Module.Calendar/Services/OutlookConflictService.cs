@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
+using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.DTOs;
@@ -11,6 +12,7 @@ namespace Pim.Module.Calendar.Services;
 
 public sealed class OutlookConflictService
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly string[] ConflictActions =
     [
         "keep_pim",
@@ -115,6 +117,71 @@ public sealed class OutlookConflictService
             confirmationId,
             JsonSerializer.Serialize(new { status = "resolved", provider = "outlook" }),
             ct);
+    }
+
+    public async Task<object> ExecuteStopSyncAsync(
+        Guid eventId,
+        Guid confirmationId,
+        CancellationToken ct = default)
+    {
+        var confirmation = await _confirmations.GetAsync(confirmationId, ct)
+            ?? throw new DomainException(02006, "Confirmation does not exist.");
+        if (confirmation.Status != OperationConfirmationStatus.Confirmed)
+            throw new DomainException(02007, "Operation has not been confirmed.");
+        if (!confirmation.RequiresStrictConfirmation)
+            throw new DomainException(02043, "Strict confirmation metadata is required for stop-sync execution.");
+        if (confirmation.RequestedByUserId.HasValue && confirmation.RequestedByUserId.Value != UserId)
+            throw new DomainException(02041, "Confirmation belongs to a different user.");
+
+        using var payload = JsonDocument.Parse(confirmation.PayloadJson);
+        var root = payload.RootElement;
+        var action = root.GetProperty("action").GetString();
+        var payloadEventId = root.GetProperty("objectId").GetGuid();
+        if (action != "stop_sync" || payloadEventId != eventId)
+            throw new DomainException(02042, "Confirmation does not match this stop-sync operation.");
+
+        var evt = await _db.Set<EventEntity>()
+            .Include(e => e.Calendar)
+            .FirstOrDefaultAsync(e => e.Id == eventId && e.Calendar.UserId == UserId, ct)
+            ?? throw new DomainException(02001, "Event does not exist.");
+        var before = new
+        {
+            evt.Source,
+            evt.OutlookEventId,
+            evt.OutlookChangeKey,
+            evt.OutlookEtag,
+            evt.UpdatedAt
+        };
+
+        evt.Source = "manual";
+        evt.OutlookEventId = null;
+        evt.OutlookChangeKey = null;
+        evt.OutlookEtag = null;
+        evt.UpdatedAt = DateTimeOffset.UtcNow;
+
+        await new AuditVersionService(_db).RecordAsync(
+            "event",
+            evt.Id,
+            before,
+            new
+            {
+                evt.Source,
+                evt.OutlookEventId,
+                evt.OutlookChangeKey,
+                evt.OutlookEtag,
+                evt.UpdatedAt
+            },
+            ["source", "outlookEventId", "outlookChangeKey", "outlookEtag", "updatedAt"],
+            confirmationId,
+            "outlook",
+            ct);
+
+        await _confirmations.MarkExecutedAsync(
+            confirmationId,
+            JsonSerializer.Serialize(new { status = "stopped-sync", provider = "outlook", eventId }, JsonOptions),
+            ct);
+
+        return new { evt.Id, evt.Source };
     }
 
     private async Task<OperationConfirmationDto> CreateConfirmationAsync(

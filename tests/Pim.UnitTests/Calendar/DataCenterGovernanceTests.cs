@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Auth;
@@ -58,6 +59,72 @@ public class DataCenterGovernanceTests
             CancellationToken.None);
 
         Assert.Contains("audit-export.json", export.FileName);
+    }
+
+    [Fact]
+    public async Task ExecuteConfirmedArchiveBatchSoftDeletesTaskAndRecordsAuditVersion()
+    {
+        await using var db = CreateDb();
+        var task = new TaskEntity
+        {
+            UserId = UserId,
+            Uid = "archive-task@pim",
+            Title = "Archive from data center"
+        };
+        db.Set<TaskEntity>().Add(task);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var confirmation = await service.RequestBatchConfirmationAsync(
+            new DataCenterBatchOperationRequest(
+                "archive",
+                [new DataCenterObjectRef("task", task.Id)],
+                "cleanup"),
+            CancellationToken.None);
+        await new OperationConfirmationService(db).ConfirmStrictAsync(confirmation.Id, UserId);
+
+        var result = await service.ExecuteConfirmedBatchAsync(confirmation.Id, CancellationToken.None);
+
+        var archivedTask = await db.Set<TaskEntity>()
+            .IgnoreQueryFilters()
+            .SingleAsync(t => t.Id == task.Id);
+        var audit = await db.AuditVersions.SingleAsync(v => v.ObjectType == "task" && v.ObjectId == task.Id);
+        Assert.Equal(1, result.AffectedCount);
+        Assert.NotNull(archivedTask.DeletedAt);
+        Assert.Equal(confirmation.Id, archivedTask.DeletedByOperationId);
+        Assert.Equal("data-center.batch.archive", archivedTask.DeletedByOperationKind);
+        Assert.Equal(confirmation.Id, audit.ConfirmationId);
+        Assert.Contains("deletedAt", audit.ChangedFieldsJson);
+    }
+
+    [Fact]
+    public async Task ExecuteBatchRejectsNonStrictConfirmation()
+    {
+        await using var db = CreateDb();
+        var task = new TaskEntity
+        {
+            UserId = UserId,
+            Uid = "non-strict-archive@pim",
+            Title = "Do not archive without strict metadata"
+        };
+        db.Set<TaskEntity>().Add(task);
+        await db.SaveChangesAsync();
+        var confirmations = new OperationConfirmationService(db);
+        var service = CreateService(db);
+        var confirmation = await confirmations.CreateAsync(new CreateOperationConfirmationRequest(
+            UserId,
+            "data-center.batch.archive",
+            "Archive selected objects",
+            OperationRiskLevel.L4BatchOrDestructiveGovernance,
+            "data-center",
+            $$"""{"action":"archive","objects":[{"objectType":"task","objectId":"{{task.Id}}"}],"reason":"cleanup"}""",
+            "{}",
+            DateTimeOffset.UtcNow.AddHours(1),
+            "data-center-batch-non-strict"));
+        await confirmations.ConfirmAsync(confirmation.Id, UserId);
+
+        await Assert.ThrowsAsync<DomainException>(() =>
+            service.ExecuteConfirmedBatchAsync(confirmation.Id, CancellationToken.None));
     }
 
     private static DataCenterGovernanceService CreateService(PimDbContext db)

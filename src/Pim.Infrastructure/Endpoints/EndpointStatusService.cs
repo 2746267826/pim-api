@@ -1,5 +1,8 @@
-using System.Collections.Concurrent;
+using Microsoft.EntityFrameworkCore;
 using Pim.Core.Endpoints;
+using Pim.Core.Exceptions;
+using Pim.Infrastructure.Auth;
+using Pim.Infrastructure.Data;
 
 namespace Pim.Infrastructure.Endpoints;
 
@@ -19,50 +22,69 @@ public sealed class EndpointStatusService
         "location-sample"
     };
 
-    private readonly ConcurrentDictionary<string, EndpointState> _states = new(StringComparer.OrdinalIgnoreCase);
+    private readonly PimDbContext _db;
+    private readonly ICurrentUserService _currentUser;
+
+    public EndpointStatusService(PimDbContext db, ICurrentUserService currentUser)
+    {
+        _db = db;
+        _currentUser = currentUser;
+    }
+
+    private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "Login required");
 
     public bool CanCacheOffline(string operationKind)
         => OfflineCacheableKinds.Contains((operationKind ?? string.Empty).Trim());
 
-    public Task<IReadOnlyList<EndpointStatusDto>> ListAsync(CancellationToken ct = default)
+    public async Task<IReadOnlyList<EndpointStatusDto>> ListAsync(CancellationToken ct = default)
     {
-        IReadOnlyList<EndpointStatusDto> result = _states.Values
+        var userId = UserId;
+        var states = await _db.EndpointStatuses
+            .AsNoTracking()
+            .Where(endpoint => endpoint.UserId == userId)
+            .ToListAsync(ct);
+
+        return states
             .OrderByDescending(endpoint => endpoint.LastHeartbeatAt ?? DateTimeOffset.MinValue)
             .ThenBy(endpoint => endpoint.DeviceId, StringComparer.OrdinalIgnoreCase)
             .Select(MapStatus)
             .ToList();
-
-        return Task.FromResult(result);
     }
 
-    public Task<EndpointStatusDto> UpsertHeartbeatAsync(
+    public async Task<EndpointStatusDto> UpsertHeartbeatAsync(
         string deviceId,
         EndpointHeartbeatRequest request,
         CancellationToken ct = default)
     {
         var normalizedDeviceId = NormalizeDeviceId(deviceId);
         var now = DateTimeOffset.UtcNow;
+        var userId = UserId;
 
-        var state = _states.AddOrUpdate(
-            normalizedDeviceId,
-            _ => EndpointState.FromHeartbeat(normalizedDeviceId, request, now),
-            (_, existing) =>
+        var state = await _db.EndpointStatuses
+            .FirstOrDefaultAsync(endpoint =>
+                endpoint.UserId == userId && endpoint.DeviceId == normalizedDeviceId, ct);
+        if (state is null)
+        {
+            state = new EndpointStatusEntity
             {
-                existing.ApplyHeartbeat(request, now);
-                return existing;
-            });
+                UserId = userId,
+                DeviceId = normalizedDeviceId,
+                CreatedAt = now
+            };
+            _db.EndpointStatuses.Add(state);
+        }
 
-        return Task.FromResult(MapStatus(state));
+        ApplyHeartbeat(state, request, now);
+        await _db.SaveChangesAsync(ct);
+        return MapStatus(state);
     }
 
-    public Task<EndpointCollectionQualityDto> GetCollectionQualityAsync(
+    public async Task<EndpointCollectionQualityDto> GetCollectionQualityAsync(
         string deviceId,
         CancellationToken ct = default)
     {
         var normalizedDeviceId = NormalizeDeviceId(deviceId);
-        var state = _states.GetOrAdd(
-            normalizedDeviceId,
-            id => EndpointState.CreateUnknown(id, InferPlatform(id)));
+        var state = await GetOrCreateStateAsync(normalizedDeviceId, InferPlatform(normalizedDeviceId), ct);
 
         var issueCount = 0;
         if (!string.Equals(state.UploadStatus, "Healthy", StringComparison.OrdinalIgnoreCase)
@@ -76,45 +98,103 @@ public sealed class EndpointStatusService
             issueCount++;
         }
 
-        return Task.FromResult(new EndpointCollectionQualityDto(
+        return new EndpointCollectionQualityDto(
             state.DeviceId,
             state.Platform,
             state.UploadStatus,
             issueCount,
-            DateTimeOffset.UtcNow));
+            DateTimeOffset.UtcNow);
     }
 
-    public Task<EndpointNotificationActionResponse> HandleNotificationActionAsync(
+    public async Task<EndpointNotificationActionResponse> HandleNotificationActionAsync(
         string deviceId,
         EndpointNotificationActionRequest request,
         CancellationToken ct = default)
     {
         var normalizedDeviceId = NormalizeDeviceId(deviceId);
-        var state = _states.GetOrAdd(
-            normalizedDeviceId,
-            id => EndpointState.CreateUnknown(id, InferPlatform(id)));
+        var state = await GetOrCreateStateAsync(normalizedDeviceId, InferPlatform(normalizedDeviceId), ct);
 
         if (string.IsNullOrWhiteSpace(request.Action))
         {
-            return Task.FromResult(new EndpointNotificationActionResponse(
+            var rejected = new EndpointNotificationActionResponse(
                 "Rejected",
                 null,
-                "Notification action is required."));
+                "Notification action is required.");
+            await RecordNotificationActionAsync(state, request, rejected, ct);
+            return rejected;
         }
 
+        EndpointNotificationActionResponse response;
         if (CanExecuteDirectly(request.RiskLevel))
         {
-            return Task.FromResult(new EndpointNotificationActionResponse(
+            response = new EndpointNotificationActionResponse(
                 "Executed",
                 null,
-                "Low-risk notification action executed online."));
+                "Low-risk notification action executed online.");
+        }
+        else
+        {
+            state.OnlineOnlyBlockedCount++;
+            state.UpdatedAt = DateTimeOffset.UtcNow;
+            response = new EndpointNotificationActionResponse(
+                "OpenDetailRequired",
+                BuildDetailUrl(request),
+                "High-risk notification action requires the Web confirmation detail.");
         }
 
-        state.OnlineOnlyBlockedCount++;
-        return Task.FromResult(new EndpointNotificationActionResponse(
-            "OpenDetailRequired",
-            BuildDetailUrl(request),
-            "High-risk notification action requires the Web confirmation detail."));
+        await RecordNotificationActionAsync(state, request, response, ct);
+        return response;
+    }
+
+    private async Task<EndpointStatusEntity> GetOrCreateStateAsync(
+        string deviceId,
+        string platform,
+        CancellationToken ct)
+    {
+        var userId = UserId;
+        var state = await _db.EndpointStatuses
+            .FirstOrDefaultAsync(endpoint => endpoint.UserId == userId && endpoint.DeviceId == deviceId, ct);
+        if (state is not null)
+        {
+            return state;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        state = new EndpointStatusEntity
+        {
+            UserId = userId,
+            DeviceId = deviceId,
+            Platform = platform,
+            UploadStatus = "Unknown",
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        _db.EndpointStatuses.Add(state);
+        await _db.SaveChangesAsync(ct);
+        return state;
+    }
+
+    private async Task RecordNotificationActionAsync(
+        EndpointStatusEntity state,
+        EndpointNotificationActionRequest request,
+        EndpointNotificationActionResponse response,
+        CancellationToken ct)
+    {
+        _db.EndpointNotificationActions.Add(new EndpointNotificationActionEntity
+        {
+            UserId = state.UserId,
+            DeviceId = state.DeviceId,
+            Action = (request.Action ?? string.Empty).Trim(),
+            RiskLevel = (request.RiskLevel ?? string.Empty).Trim(),
+            Result = response.Result,
+            DetailUrl = response.DetailUrl,
+            Message = response.Message,
+            ConfirmationId = request.ConfirmationId,
+            RelatedObjectType = request.RelatedObjectType,
+            RelatedObjectId = request.RelatedObjectId,
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+        await _db.SaveChangesAsync(ct);
     }
 
     private static bool CanExecuteDirectly(string riskLevel)
@@ -138,7 +218,7 @@ public sealed class EndpointStatusService
         return "/confirmations";
     }
 
-    private static EndpointStatusDto MapStatus(EndpointState state)
+    private static EndpointStatusDto MapStatus(EndpointStatusEntity state)
         => new(
             state.DeviceId,
             state.Platform,
@@ -169,57 +249,19 @@ public sealed class EndpointStatusService
             ? "android"
             : "windows";
 
-    private sealed class EndpointState
+    private static void ApplyHeartbeat(
+        EndpointStatusEntity state,
+        EndpointHeartbeatRequest request,
+        DateTimeOffset now)
     {
-        private EndpointState(
-            string deviceId,
-            string platform,
-            string? appVersion,
-            string uploadStatus,
-            int collectionCacheCount,
-            DateTimeOffset? lastHeartbeatAt)
-        {
-            DeviceId = deviceId;
-            Platform = platform;
-            AppVersion = appVersion;
-            UploadStatus = uploadStatus;
-            CollectionCacheCount = collectionCacheCount;
-            LastHeartbeatAt = lastHeartbeatAt;
-        }
-
-        public string DeviceId { get; }
-        public string Platform { get; private set; }
-        public string? AppVersion { get; private set; }
-        public string UploadStatus { get; private set; }
-        public int CollectionCacheCount { get; private set; }
-        public int OnlineOnlyBlockedCount { get; set; }
-        public DateTimeOffset? LastHeartbeatAt { get; private set; }
-
-        public static EndpointState CreateUnknown(string deviceId, string platform)
-            => new(deviceId, platform, null, "Unknown", 0, null);
-
-        public static EndpointState FromHeartbeat(
-            string deviceId,
-            EndpointHeartbeatRequest request,
-            DateTimeOffset now)
-            => new(
-                deviceId,
-                NormalizePlatform(request.Platform),
-                request.AppVersion,
-                NormalizeUploadStatus(request.UploadStatus),
-                Math.Max(0, request.CollectionCacheCount ?? 0),
-                now);
-
-        public void ApplyHeartbeat(EndpointHeartbeatRequest request, DateTimeOffset now)
-        {
-            Platform = NormalizePlatform(request.Platform);
-            AppVersion = request.AppVersion;
-            UploadStatus = NormalizeUploadStatus(request.UploadStatus);
-            CollectionCacheCount = Math.Max(0, request.CollectionCacheCount ?? 0);
-            LastHeartbeatAt = now;
-        }
-
-        private static string NormalizeUploadStatus(string? uploadStatus)
-            => string.IsNullOrWhiteSpace(uploadStatus) ? "Unknown" : uploadStatus.Trim();
+        state.Platform = NormalizePlatform(request.Platform);
+        state.AppVersion = request.AppVersion;
+        state.UploadStatus = NormalizeUploadStatus(request.UploadStatus);
+        state.CollectionCacheCount = Math.Max(0, request.CollectionCacheCount ?? 0);
+        state.LastHeartbeatAt = now;
+        state.UpdatedAt = now;
     }
+
+    private static string NormalizeUploadStatus(string? uploadStatus)
+        => string.IsNullOrWhiteSpace(uploadStatus) ? "Unknown" : uploadStatus.Trim();
 }

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -54,6 +55,68 @@ public class OutlookSourceGovernanceTests
 
         Assert.Equal(OperationRiskLevel.L4BatchOrDestructiveGovernance, stopSyncPreview.RiskLevel);
         Assert.True(stopSyncPreview.RequiresStrictConfirmation);
+    }
+
+    [Fact]
+    public async Task ExecuteConfirmedStopSyncDetachesOutlookEventAndRecordsAudit()
+    {
+        await using var db = CreateDb();
+        var calendar = new CalendarEntity { UserId = UserId, Name = "Default", IsDefault = true };
+        var evt = Event(calendar, "outlook-1", "Outlook", "outlook");
+        db.Set<CalendarEntity>().Add(calendar);
+        db.Set<EventEntity>().Add(evt);
+        await db.SaveChangesAsync();
+        var confirmations = new OperationConfirmationService(db);
+        var service = new OutlookConflictService(
+            db,
+            new FixedCurrentUserService(UserId),
+            confirmations);
+        var confirmation = await service.RequestStopSyncPreviewAsync(evt.Id, CancellationToken.None);
+        await confirmations.ConfirmStrictAsync(confirmation.Id, UserId);
+
+        await service.ExecuteStopSyncAsync(evt.Id, confirmation.Id, CancellationToken.None);
+
+        var stored = await db.Set<EventEntity>().SingleAsync(e => e.Id == evt.Id);
+        var audit = await db.AuditVersions.SingleAsync(v => v.ObjectType == "event" && v.ObjectId == evt.Id);
+        var executed = await confirmations.GetAsync(confirmation.Id);
+        Assert.Equal("manual", stored.Source);
+        Assert.Null(stored.OutlookEventId);
+        Assert.Null(stored.OutlookChangeKey);
+        Assert.Equal(confirmation.Id, audit.ConfirmationId);
+        Assert.Contains("outlookEventId", audit.ChangedFieldsJson);
+        Assert.Equal(OperationConfirmationStatus.Executed, executed?.Status);
+    }
+
+    [Fact]
+    public async Task ExecuteStopSyncRejectsNonStrictConfirmation()
+    {
+        await using var db = CreateDb();
+        var calendar = new CalendarEntity { UserId = UserId, Name = "Default", IsDefault = true };
+        var evt = Event(calendar, "outlook-1", "Outlook", "outlook");
+        db.Set<CalendarEntity>().Add(calendar);
+        db.Set<EventEntity>().Add(evt);
+        await db.SaveChangesAsync();
+        var confirmations = new OperationConfirmationService(db);
+        var service = new OutlookConflictService(
+            db,
+            new FixedCurrentUserService(UserId),
+            confirmations);
+        var confirmation = await confirmations.CreateAsync(new CreateOperationConfirmationRequest(
+            UserId,
+            "calendar.outlook.stop_sync",
+            "Stop syncing Outlook event",
+            OperationRiskLevel.L4BatchOrDestructiveGovernance,
+            "outlook",
+            $$"""{"action":"stop_sync","objectId":"{{evt.Id}}"}""",
+            "{}",
+            DateTimeOffset.UtcNow.AddHours(1),
+            $"outlook-stop-sync-{evt.Id}",
+            ObjectType: "event",
+            ObjectId: evt.Id));
+        await confirmations.ConfirmAsync(confirmation.Id, UserId);
+
+        await Assert.ThrowsAsync<DomainException>(() =>
+            service.ExecuteStopSyncAsync(evt.Id, confirmation.Id, CancellationToken.None));
     }
 
     [Fact]

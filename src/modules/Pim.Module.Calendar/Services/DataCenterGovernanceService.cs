@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Pim.Core.Audit;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
@@ -6,12 +7,14 @@ using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.DTOs;
+using Pim.Module.Calendar.Entities;
 
 namespace Pim.Module.Calendar.Services;
 
 public sealed class DataCenterGovernanceService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly IOperationConfirmationService _confirmations;
     private readonly AuditVersionService _auditVersions;
@@ -22,7 +25,7 @@ public sealed class DataCenterGovernanceService
         IOperationConfirmationService confirmations,
         AuditVersionService auditVersions)
     {
-        _ = db;
+        _db = db;
         _currentUser = currentUser;
         _confirmations = confirmations;
         _auditVersions = auditVersions;
@@ -95,7 +98,9 @@ public sealed class DataCenterGovernanceService
     {
         var confirmation = await _confirmations.GetAsync(confirmationId, ct)
             ?? throw new DomainException(02046, "Batch confirmation does not exist.");
-        var affectedCount = CountObjectsFromPayload(confirmation.PayloadJson);
+        EnsureCanExecute(confirmation);
+        var request = ReadBatchRequest(confirmation.PayloadJson);
+        var affectedCount = await ExecuteBatchActionAsync(confirmation, request, ct);
         var executed = await _confirmations.MarkExecutedAsync(
             confirmationId,
             JsonSerializer.Serialize(new { status = "executed", affectedCount }, JsonOptions),
@@ -166,16 +171,176 @@ public sealed class DataCenterGovernanceService
         return normalized;
     }
 
-    private static int CountObjectsFromPayload(string payloadJson)
+    private async Task<int> ExecuteBatchActionAsync(
+        OperationConfirmationDto confirmation,
+        DataCenterBatchOperationRequest request,
+        CancellationToken ct)
+    {
+        var action = request.Action.Trim();
+        if (!string.Equals(action, "archive", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainException(02049, $"Unsupported data center batch action '{request.Action}'.");
+        }
+
+        var affectedCount = 0;
+        var deletedAt = DateTimeOffset.UtcNow;
+        var operationKind = $"data-center.batch.{action.ToLowerInvariant()}";
+
+        foreach (var obj in NormalizeObjects(request.Objects))
+        {
+            affectedCount += await ArchiveObjectAsync(obj, confirmation.Id, operationKind, deletedAt, ct);
+        }
+
+        return affectedCount;
+    }
+
+    private async Task<int> ArchiveObjectAsync(
+        DataCenterObjectRef obj,
+        Guid confirmationId,
+        string operationKind,
+        DateTimeOffset archivedAt,
+        CancellationToken ct)
+    {
+        var objectType = obj.ObjectType.Trim();
+        if (string.Equals(objectType, "task", StringComparison.OrdinalIgnoreCase))
+        {
+            var task = await _db.Set<TaskEntity>()
+                .FirstOrDefaultAsync(t => t.Id == obj.ObjectId && t.UserId == UserId, ct);
+            if (task is null)
+                return 0;
+
+            var before = new
+            {
+                task.DeletedAt,
+                task.DeletedByOperationId,
+                task.DeletedByOperationKind,
+                task.UpdatedAt
+            };
+            task.DeletedAt = archivedAt;
+            task.DeletedByOperationId = confirmationId;
+            task.DeletedByOperationKind = operationKind;
+            task.UpdatedAt = archivedAt;
+            await _auditVersions.RecordAsync(
+                "task",
+                task.Id,
+                before,
+                new
+                {
+                    task.DeletedAt,
+                    task.DeletedByOperationId,
+                    task.DeletedByOperationKind,
+                    task.UpdatedAt
+                },
+                ["deletedAt", "deletedByOperationId", "deletedByOperationKind", "updatedAt"],
+                confirmationId,
+                "data-center",
+                ct);
+            return 1;
+        }
+
+        if (string.Equals(objectType, "event", StringComparison.OrdinalIgnoreCase))
+        {
+            var evt = await _db.Set<EventEntity>()
+                .Include(e => e.Calendar)
+                .FirstOrDefaultAsync(e => e.Id == obj.ObjectId && e.Calendar.UserId == UserId, ct);
+            if (evt is null)
+                return 0;
+
+            var before = new
+            {
+                evt.DeletedAt,
+                evt.DeletedByOperationId,
+                evt.DeletedByOperationKind,
+                evt.UpdatedAt
+            };
+            evt.DeletedAt = archivedAt;
+            evt.DeletedByOperationId = confirmationId;
+            evt.DeletedByOperationKind = operationKind;
+            evt.UpdatedAt = archivedAt;
+            await _auditVersions.RecordAsync(
+                "event",
+                evt.Id,
+                before,
+                new
+                {
+                    evt.DeletedAt,
+                    evt.DeletedByOperationId,
+                    evt.DeletedByOperationKind,
+                    evt.UpdatedAt
+                },
+                ["deletedAt", "deletedByOperationId", "deletedByOperationKind", "updatedAt"],
+                confirmationId,
+                "data-center",
+                ct);
+            return 1;
+        }
+
+        if (string.Equals(objectType, "report", StringComparison.OrdinalIgnoreCase))
+        {
+            var report = await _db.Set<ReportArtifactEntity>()
+                .FirstOrDefaultAsync(r => r.Id == obj.ObjectId && r.UserId == UserId, ct);
+            if (report is null)
+                return 0;
+
+            var before = new
+            {
+                report.Status,
+                report.UpdatedAt
+            };
+            report.Status = "Archived";
+            report.UpdatedAt = archivedAt;
+            await _auditVersions.RecordAsync(
+                "report",
+                report.Id,
+                before,
+                new
+                {
+                    report.Status,
+                    report.UpdatedAt
+                },
+                ["status", "updatedAt"],
+                confirmationId,
+                "data-center",
+                ct);
+            return 1;
+        }
+
+        throw new DomainException(02050, $"Unsupported data center archive object type '{obj.ObjectType}'.");
+    }
+
+    private void EnsureCanExecute(OperationConfirmationDto confirmation)
+    {
+        if (confirmation.RequestedByUserId.HasValue && confirmation.RequestedByUserId.Value != UserId)
+        {
+            throw new DomainException(02051, "Batch confirmation belongs to a different user.");
+        }
+
+        if (confirmation.Status != OperationConfirmationStatus.Confirmed)
+        {
+            throw new DomainException(02052, "Batch confirmation must be strictly confirmed before execution.");
+        }
+
+        if (!confirmation.RequiresStrictConfirmation)
+        {
+            throw new DomainException(02055, "Batch confirmation is missing strict confirmation metadata.");
+        }
+    }
+
+    private static DataCenterBatchOperationRequest ReadBatchRequest(string payloadJson)
     {
         try
         {
             var request = JsonSerializer.Deserialize<DataCenterBatchOperationRequest>(payloadJson, JsonOptions);
-            return request?.Objects?.Count ?? 0;
+            if (request is null)
+            {
+                throw new DomainException(02053, "Batch operation payload is empty.");
+            }
+
+            return request;
         }
         catch (JsonException)
         {
-            return 0;
+            throw new DomainException(02054, "Batch operation payload is invalid.");
         }
     }
 }

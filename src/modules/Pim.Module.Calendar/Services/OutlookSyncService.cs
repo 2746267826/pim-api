@@ -229,6 +229,7 @@ public class OutlookSyncService
                         if (confirmation is not null)
                         {
                             batch.ConfirmationCount++;
+                            batch.ConflictCount++;
                         }
                         else
                         {
@@ -518,6 +519,23 @@ public class OutlookSyncService
             return null;
         }
 
+        var pimSnapshotJson = JsonSerializer.Serialize(new
+        {
+            entity.Title,
+            entity.Description,
+            entity.Location,
+            entity.DtStart,
+            entity.DtEnd
+        }, JsonOptions);
+        var externalSnapshotJson = JsonSerializer.Serialize(new
+        {
+            title = outlookEvent.Subject,
+            description = outlookEvent.BodyPreview,
+            location = outlookEvent.Location,
+            dtStart = startsAt,
+            dtEnd = endsAt,
+            changeKey = outlookEvent.ChangeKey
+        }, JsonOptions);
         var payloadJson = JsonSerializer.Serialize(new
         {
             provider = Provider,
@@ -529,26 +547,11 @@ public class OutlookSyncService
         {
             eventId = entity.Id,
             graphEventId = outlookEvent.Id,
-            before = new
-            {
-                entity.Title,
-                entity.Description,
-                entity.Location,
-                entity.DtStart,
-                entity.DtEnd
-            },
-            after = new
-            {
-                title = outlookEvent.Subject,
-                description = outlookEvent.BodyPreview,
-                location = outlookEvent.Location,
-                dtStart = startsAt,
-                dtEnd = endsAt,
-                changeKey = outlookEvent.ChangeKey
-            }
+            before = JsonSerializer.Deserialize<JsonElement>(pimSnapshotJson, JsonOptions),
+            after = JsonSerializer.Deserialize<JsonElement>(externalSnapshotJson, JsonOptions)
         }, JsonOptions);
 
-        return await _confirmationService.CreateAsync(
+        var confirmation = await _confirmationService.CreateAsync(
             new CreateOperationConfirmationRequest(
                 userId,
                 "calendar.outlook.core_diff",
@@ -563,8 +566,64 @@ public class OutlookSyncService
                 ["keep_pim", "keep_outlook", "merge_by_field", "skip"],
                 "event",
                 entity.Id,
-                true),
+                true,
+                BeforeJson: pimSnapshotJson,
+                AfterJson: externalSnapshotJson,
+                ExternalEffect: string.IsNullOrWhiteSpace(outlookEvent.Id) ? null : $"GraphEventId={outlookEvent.Id}",
+                RecoveryPath: "Review the Outlook conflict queue before applying external changes."),
             ct);
+
+        await UpsertCoreDiffConflictAsync(
+            userId,
+            entity.Id,
+            outlookEvent.Id,
+            pimSnapshotJson,
+            externalSnapshotJson,
+            confirmation.Id,
+            ct);
+
+        return confirmation;
+    }
+
+    private async Task UpsertCoreDiffConflictAsync(
+        Guid userId,
+        Guid eventId,
+        string? graphEventId,
+        string pimSnapshotJson,
+        string externalSnapshotJson,
+        Guid confirmationId,
+        CancellationToken ct)
+    {
+        var conflict = await _db.Set<SyncConflictEntity>()
+            .FirstOrDefaultAsync(c =>
+                c.UserId == userId
+                && c.Provider == Provider
+                && c.ObjectType == "event"
+                && c.ObjectId == eventId
+                && c.GraphEventId == graphEventId
+                && c.ConflictKind == "core-diff"
+                && c.Status != "resolved", ct);
+
+        if (conflict is null)
+        {
+            conflict = new SyncConflictEntity
+            {
+                UserId = userId,
+                Provider = Provider,
+                ObjectType = "event",
+                ObjectId = eventId,
+                GraphEventId = graphEventId,
+                ConflictKind = "core-diff",
+                CreatedAt = DateTimeOffset.UtcNow
+            };
+            _db.Set<SyncConflictEntity>().Add(conflict);
+        }
+
+        conflict.Status = "pending-confirmation";
+        conflict.PimSnapshotJson = pimSnapshotJson;
+        conflict.ExternalSnapshotJson = externalSnapshotJson;
+        conflict.ResolvedConfirmationId = confirmationId;
+        conflict.UpdatedAt = DateTimeOffset.UtcNow;
     }
 
     private IMicrosoftGraphClient GraphClient

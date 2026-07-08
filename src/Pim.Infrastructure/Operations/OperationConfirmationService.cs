@@ -85,15 +85,50 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
     }
 
     public async Task<OperationConfirmationDto> ConfirmAsync(Guid id, Guid? userId, CancellationToken ct = default)
+        => await ConfirmWithModeAsync(id, userId, ConfirmationMode.Basic, ct);
+
+    public async Task<OperationConfirmationDto> ConfirmSecondLevelAsync(
+        Guid id,
+        Guid? userId,
+        CancellationToken ct = default)
+        => await ConfirmWithModeAsync(id, userId, ConfirmationMode.SecondLevel, ct);
+
+    public async Task<OperationConfirmationDto> ConfirmStrictAsync(
+        Guid id,
+        Guid? userId,
+        CancellationToken ct = default)
+        => await ConfirmWithModeAsync(id, userId, ConfirmationMode.Strict, ct);
+
+    private async Task<OperationConfirmationDto> ConfirmWithModeAsync(
+        Guid id,
+        Guid? userId,
+        ConfirmationMode mode,
+        CancellationToken ct)
     {
         var entity = await LoadPendingAsync(id, ct);
         EnsureUserCanAct(entity, userId);
+        EnsureConfirmationMode(entity, mode);
 
         entity.Status = OperationConfirmationStatus.Confirmed.ToString();
         entity.ConfirmedAt = DateTimeOffset.UtcNow;
 
         await _db.SaveChangesAsync(ct);
         return Map(entity);
+    }
+
+    private static void EnsureConfirmationMode(OperationConfirmationEntity entity, ConfirmationMode mode)
+    {
+        var metadata = ExtractMetadata(entity.PreviewJson);
+
+        if (metadata.RequiresStrictConfirmation && mode != ConfirmationMode.Strict)
+        {
+            throw new DomainException(3009, "Strict confirmation is required for this operation.");
+        }
+
+        if (metadata.RequiresSecondLevelConfirmation && mode == ConfirmationMode.Basic)
+        {
+            throw new DomainException(3010, "Second-level confirmation is required for this operation.");
+        }
     }
 
     public async Task<OperationConfirmationDto> RejectAsync(Guid id, Guid? userId, CancellationToken ct = default)
@@ -366,5 +401,12 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             null,
             null,
             null);
+    }
+
+    private enum ConfirmationMode
+    {
+        Basic,
+        SecondLevel,
+        Strict
     }
 }

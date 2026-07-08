@@ -54,7 +54,7 @@ public static class OperationsEndpoints
             ICurrentUserService currentUser,
             CancellationToken ct) =>
         {
-            var result = await confirmations.ConfirmAsync(id, RequireCurrentUserId(currentUser), ct);
+            var result = await confirmations.ConfirmSecondLevelAsync(id, RequireCurrentUserId(currentUser), ct);
             return Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(result));
         });
 
@@ -64,7 +64,7 @@ public static class OperationsEndpoints
             ICurrentUserService currentUser,
             CancellationToken ct) =>
         {
-            var result = await confirmations.ConfirmAsync(id, RequireCurrentUserId(currentUser), ct);
+            var result = await confirmations.ConfirmStrictAsync(id, RequireCurrentUserId(currentUser), ct);
             return Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(result));
         });
 

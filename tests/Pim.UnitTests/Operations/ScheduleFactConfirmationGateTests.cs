@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Operations;
@@ -77,6 +78,49 @@ public class ScheduleFactConfirmationGateTests
         Assert.True(confirmation.RequiresSecondLevelConfirmation);
         Assert.Contains("location", confirmation.ChangedFields ?? []);
         Assert.Equal("May write back to Microsoft Graph.", confirmation.ExternalEffect);
+    }
+
+    [Fact]
+    public async Task BasicConfirmCannotBypassSecondLevelOrStrictConfirmation()
+    {
+        await using var db = TestDb.Create();
+        var service = new OperationConfirmationService(db);
+        var userId = Guid.NewGuid();
+
+        var secondLevel = await service.CreateAsync(new CreateOperationConfirmationRequest(
+            userId,
+            "outlook.event.location-change",
+            "Outlook changed meeting location",
+            OperationRiskLevel.L3ExternalSourceOrWriteback,
+            "outlook",
+            "{}",
+            "{}",
+            DateTimeOffset.UtcNow.AddHours(1),
+            "outlook-2",
+            RequiresSecondLevelConfirmation: true));
+
+        var strict = await service.CreateAsync(new CreateOperationConfirmationRequest(
+            userId,
+            "calendar.batch-delete",
+            "Delete selected schedule objects",
+            OperationRiskLevel.L4BatchOrDestructiveGovernance,
+            "data-center",
+            "{}",
+            "{}",
+            DateTimeOffset.UtcNow.AddHours(1),
+            "batch-2",
+            RequiresSecondLevelConfirmation: true,
+            RequiresStrictConfirmation: true));
+
+        await Assert.ThrowsAsync<DomainException>(() => service.ConfirmAsync(secondLevel.Id, userId));
+        await Assert.ThrowsAsync<DomainException>(() => service.ConfirmAsync(strict.Id, userId));
+        await Assert.ThrowsAsync<DomainException>(() => service.ConfirmSecondLevelAsync(strict.Id, userId));
+
+        var confirmedSecondLevel = await service.ConfirmSecondLevelAsync(secondLevel.Id, userId);
+        var confirmedStrict = await service.ConfirmStrictAsync(strict.Id, userId);
+
+        Assert.Equal(OperationConfirmationStatus.Confirmed, confirmedSecondLevel.Status);
+        Assert.Equal(OperationConfirmationStatus.Confirmed, confirmedStrict.Status);
     }
 
     private static class TestDb

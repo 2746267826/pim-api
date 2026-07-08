@@ -64,7 +64,7 @@ public class OutlookGraphWritebackTests
             UserId,
             evt,
             "write_to_outlook");
-        await confirmationService.ConfirmAsync(confirmation.Id, UserId);
+        await confirmationService.ConfirmSecondLevelAsync(confirmation.Id, UserId);
 
         await service.ExecuteConfirmedWriteAsync(confirmation.Id);
 

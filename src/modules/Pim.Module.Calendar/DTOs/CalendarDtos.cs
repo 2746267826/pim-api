@@ -403,6 +403,10 @@ public record OutlookDeviceCodeRequestResponse(
     string? DeviceCode = null
 );
 
+public record OutlookDeviceCodePollRequest(
+    [Required] string DeviceCode
+);
+
 public record OutlookSyncStep(
     string Name,
     string Status,
@@ -430,6 +434,10 @@ public record ConflictResolutionRequest(
     string Action,
     string? MergedFieldsJson,
     string? Reason
+);
+
+public record OutlookStopSyncExecuteRequest(
+    Guid ConfirmationId
 );
 
 public record SyncConflictDetailDto(

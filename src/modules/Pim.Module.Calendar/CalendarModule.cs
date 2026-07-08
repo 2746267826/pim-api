@@ -596,6 +596,14 @@ public class CalendarModule : IModule
             Results.Ok(ApiResponse<OutlookDeviceCodeRequestResponse>.Ok(
                 await outlookSvc.CreateDeviceCodeRequestAsync(currentUser.UserId!.Value, ct))));
 
+        group.MapPost("/outlook/device-code/poll", async (
+            [FromBody] OutlookDeviceCodePollRequest req,
+            [FromServices] OutlookSyncService outlookSvc,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<OutlookSettingsResponse>.Ok(
+                await outlookSvc.PollDeviceCodeAsync(currentUser.UserId!.Value, req.DeviceCode, ct))));
+
         group.MapGet("/outlook/sync/batches", async (
             [FromServices] OutlookSyncService outlookSvc,
             [FromServices] ICurrentUserService currentUser,
@@ -684,9 +692,10 @@ public class CalendarModule : IModule
 
         group.MapPost("/outlook/events/{id:guid}/stop-sync", async (
             Guid id,
+            [FromBody] OutlookStopSyncExecuteRequest req,
             [FromServices] OutlookConflictService svc,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<object>.Ok(await svc.RequestStopSyncPreviewAsync(id, ct))));
+            Results.Ok(ApiResponse<object>.Ok(await svc.ExecuteStopSyncAsync(id, req.ConfirmationId, ct))));
 
         group.MapGet("/outlook/events/{id:guid}/history", async (
             Guid id,
@@ -738,6 +747,7 @@ public static class CalendarEndpointPaths
     public const string DataCenterRestoreRequestConfirmation = "/api/v1/calendar/data-center/restore/request-confirmation";
     public const string OutlookSettings = "/api/v1/calendar/outlook/settings";
     public const string OutlookDeviceCode = "/api/v1/calendar/outlook/device-code";
+    public const string OutlookDeviceCodePoll = "/api/v1/calendar/outlook/device-code/poll";
     public const string OutlookSync = "/api/v1/calendar/outlook/sync";
     public const string OutlookSyncBatches = "/api/v1/calendar/outlook/sync/batches";
     public const string Reports = "/api/v1/calendar/reports";

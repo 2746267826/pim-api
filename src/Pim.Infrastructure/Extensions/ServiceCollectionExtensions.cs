@@ -33,7 +33,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<AuditVersionService>();
         services.AddScoped<IOperationConfirmationService, OperationConfirmationService>();
         services.AddScoped<IDaemonHeartbeatService, DaemonHeartbeatService>();
-        services.AddSingleton<EndpointStatusService>();
+        services.AddScoped<EndpointStatusService>();
         services.AddScoped<ISystemStatusService, SystemStatusService>();
         services.Configure<AiOptions>(configuration.GetSection("Ai"));
         services.AddScoped<IAiGateway, AiGateway>();
