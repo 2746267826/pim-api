@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Core.Common;
 using Pim.Core.Modules;
+using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.DTOs;
@@ -42,6 +43,7 @@ public class CalendarModule : IModule
         services.AddScoped<PlanningModelService>();
         services.AddScoped<DataCenterQueryService>();
         services.AddScoped<ReminderService>();
+        services.AddScoped<ReportService>();
 
         services.AddSingleton<ISearchProvider, CalendarSearchProvider>();
     }
@@ -191,6 +193,40 @@ public class CalendarModule : IModule
             [FromServices] ReminderService svc,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<object>.Ok(await svc.GetDeliveryLogAsync(ct))));
+
+        group.MapGet("/reports", async (
+            [FromServices] ReportService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<ReportArtifactDto>>.Ok(await svc.ListAsync(ct))));
+
+        group.MapPost("/reports/generate", async (
+            [FromBody] GenerateReportRequest req,
+            [FromServices] ReportService svc,
+            CancellationToken ct) =>
+        {
+            var report = await svc.GenerateAsync(req, ct);
+            return Results.Created($"/api/v1/calendar/reports/{report.Id}",
+                ApiResponse<ReportArtifactDto>.Ok(report));
+        });
+
+        group.MapGet("/reports/{id:guid}", async (
+            Guid id,
+            [FromServices] ReportService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<ReportArtifactDto>.Ok(await svc.GetAsync(id, ct))));
+
+        group.MapPost("/reports/{id:guid}/archive", async (
+            Guid id,
+            [FromServices] ReportService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<ReportArtifactDto>.Ok(await svc.ArchiveAsync(id, ct))));
+
+        group.MapPost("/reports/suggestions/{id:guid}/request-action", async (
+            Guid id,
+            [FromServices] ReportService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(
+                await svc.RequestSuggestionActionAsync(id, ct))));
 
         // Calendars
         group.MapGet("/calendars", async (
@@ -650,6 +686,9 @@ public static class CalendarEndpointPaths
     public const string OutlookDeviceCode = "/api/v1/calendar/outlook/device-code";
     public const string OutlookSync = "/api/v1/calendar/outlook/sync";
     public const string OutlookSyncBatches = "/api/v1/calendar/outlook/sync/batches";
+    public const string Reports = "/api/v1/calendar/reports";
+    public const string GenerateReport = "/api/v1/calendar/reports/generate";
+    public const string RequestReportSuggestionAction = "/api/v1/calendar/reports/suggestions/{id}/request-action";
 
     public static string TaskPlan(string id) => $"{Root}/tasks/{id}/plan";
     public static string RecycleRestorePreview(string type, string id) => $"{RecycleBin}/{type}/{id}/restore-preview";

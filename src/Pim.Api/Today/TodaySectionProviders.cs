@@ -24,6 +24,10 @@ public sealed record PendingConfirmationTodayData(int PendingCount, IReadOnlyLis
 
 public sealed record TodayPlaceholderData(string Kind, int Count);
 
+public sealed record ReportsAvailableTodayData(
+    int AvailableCount,
+    IReadOnlyList<ReportArtifactDto> Reports);
+
 public sealed record PcActivityTodayData(PcSummaryResponse Summary);
 
 public sealed record PcQualityTodayData(PcQualityResponse Quality, int IssueCount);
@@ -235,19 +239,28 @@ public sealed class RemindersQueueTodaySectionProvider(ReminderService reminderS
     }
 }
 
-public sealed class ReportsAvailableTodaySectionProvider : ITodaySectionProvider
+public sealed class ReportsAvailableTodaySectionProvider(ReportService reportService) : ITodaySectionProvider
 {
     public string SectionId => "reports.available";
 
     public string Kind => "reports.available";
 
-    public Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
-        => Task.FromResult(TodaySectionProviderResult.Build(
+    public async Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
+    {
+        var reports = await reportService.ListAsync(ct);
+        var available = reports
+            .Where(r => string.Equals(r.Status, "Active", StringComparison.OrdinalIgnoreCase))
+            .Where(r => DateOnly.FromDateTime(r.GeneratedAt.ToLocalTime().Date) == query.Date)
+            .Take(5)
+            .ToList();
+
+        return TodaySectionProviderResult.Build(
             SectionId,
             Kind,
-            TodaySectionStatuses.Empty,
-            new TodayPlaceholderData(Kind, 0),
-            TodaySectionProviderResult.Details("/reports")));
+            available.Count == 0 ? TodaySectionStatuses.Empty : TodaySectionStatuses.Normal,
+            new ReportsAvailableTodayData(available.Count, available),
+            TodaySectionProviderResult.Details("/reports"));
+    }
 }
 
 public sealed class EndpointsStatusTodaySectionProvider : ITodaySectionProvider

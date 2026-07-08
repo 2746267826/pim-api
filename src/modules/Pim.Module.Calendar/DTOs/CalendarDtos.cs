@@ -465,3 +465,29 @@ public record ReminderDeliveryDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset? RespondedAt
 );
+
+public record GenerateReportRequest(
+    string Kind,
+    DateOnly Date,
+    Guid? ProjectId
+);
+
+public record ReportArtifactDto(
+    Guid Id,
+    string Kind,
+    Guid? ProjectId,
+    string RiskLevel,
+    string ContentMarkdown,
+    string MetricsJson,
+    DateTimeOffset GeneratedAt,
+    string Status
+);
+
+public record ReportSuggestionDto(
+    Guid Id,
+    Guid ReportId,
+    string Action,
+    string Summary,
+    string Status,
+    Guid? ConfirmationId
+);

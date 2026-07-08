@@ -249,3 +249,34 @@ public class ReminderDeliveryEntityConfiguration : IEntityTypeConfiguration<Remi
             .HasForeignKey(d => d.ReminderId);
     }
 }
+
+public class ReportArtifactEntityConfiguration : IEntityTypeConfiguration<ReportArtifactEntity>
+{
+    public void Configure(EntityTypeBuilder<ReportArtifactEntity> builder)
+    {
+        builder.HasQueryFilter(r => r.DeletedAt == null);
+        builder.Property(r => r.RiskLevel).HasDefaultValue("L0AutomaticArtifact");
+        builder.Property(r => r.InputsJson).HasDefaultValue("{}");
+        builder.Property(r => r.MetricsJson).HasDefaultValue("{}");
+        builder.Property(r => r.Status).HasDefaultValue("Active");
+        builder.Property(r => r.GeneratedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(r => new { r.UserId, r.Kind, r.GeneratedAt });
+        builder.HasIndex(r => new { r.UserId, r.ProjectId });
+    }
+}
+
+public class ReportSuggestionEntityConfiguration : IEntityTypeConfiguration<ReportSuggestionEntity>
+{
+    public void Configure(EntityTypeBuilder<ReportSuggestionEntity> builder)
+    {
+        builder.Property(s => s.ChangedFieldsJson).HasDefaultValue("[]");
+        builder.Property(s => s.PayloadJson).HasDefaultValue("{}");
+        builder.Property(s => s.Status).HasDefaultValue("Open");
+        builder.Property(s => s.CreatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(s => new { s.UserId, s.Status });
+        builder.HasIndex(s => s.ConfirmationId);
+        builder.HasOne(s => s.Report)
+            .WithMany(r => r.Suggestions)
+            .HasForeignKey(s => s.ReportId);
+    }
+}
