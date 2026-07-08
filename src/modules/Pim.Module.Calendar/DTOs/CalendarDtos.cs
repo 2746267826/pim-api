@@ -225,6 +225,56 @@ public record TaskExecutionSegmentResponse(
     Guid? ConfirmationId
 );
 
+public record CreateDomainProjectRequest(
+    [Required][MaxLength(255)] string Name,
+    string? Description,
+    [MaxLength(40)] string? Status = null
+);
+
+public record CreateTaskBookRequest(
+    Guid? DomainProjectId,
+    [Required][MaxLength(255)] string Name,
+    [MaxLength(40)] string? Kind = null,
+    [MaxLength(40)] string? Status = null
+);
+
+public record AddTaskChecklistItemRequest(
+    [Required][MaxLength(255)] string Title,
+    int? SortOrder = null
+);
+
+public record CreateHabitRequest(
+    [Required][MaxLength(255)] string Title,
+    string? Description,
+    [MaxLength(40)] string? Cadence = null,
+    [MaxLength(40)] string? Source = null,
+    [MaxLength(40)] string? Status = null,
+    string? RuleJson = null
+);
+
+public record CreateHabitOccurrenceRequest(
+    DateTimeOffset StartsAt,
+    DateTimeOffset EndsAt,
+    [MaxLength(40)] string? Status = null,
+    [MaxLength(40)] string? Source = null
+);
+
+public record CreateAvailabilityWindowRequest(
+    [Required][MaxLength(255)] string Title,
+    DateTimeOffset StartsAt,
+    DateTimeOffset EndsAt,
+    [MaxLength(40)] string? Kind = null,
+    [MaxLength(40)] string? Source = null
+);
+
+public record CreateAiPlanningPlaceholderRequest(
+    [Required][MaxLength(255)] string Title,
+    DateTimeOffset StartsAt,
+    DateTimeOffset EndsAt,
+    [Required] string Reason,
+    [MaxLength(40)] string? Source = null
+);
+
 public record CalendarLayerQuery(
     DateTimeOffset Start,
     DateTimeOffset End,

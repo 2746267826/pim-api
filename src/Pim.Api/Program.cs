@@ -50,6 +50,14 @@ catch (Exception ex)
 builder.Services.AddScoped<TodaySectionService>();
 builder.Services.AddScoped<ITodaySectionProvider, CalendarScheduleTodaySectionProvider>();
 builder.Services.AddScoped<ITodaySectionProvider, CalendarTasksTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, CalendarHabitsTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, CalendarAvailabilityTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, CalendarAiPlaceholdersTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, OperationsConfirmationsTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, OutlookSyncTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, RemindersQueueTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, ReportsAvailableTodaySectionProvider>();
+builder.Services.AddScoped<ITodaySectionProvider, EndpointsStatusTodaySectionProvider>();
 builder.Services.AddScoped<ITodaySectionProvider, PcActivityTodaySectionProvider>();
 builder.Services.AddScoped<ITodaySectionProvider, PcQualityTodaySectionProvider>();
 builder.Services.AddScoped<ITodaySectionProvider, OperationsHealthTodaySectionProvider>();

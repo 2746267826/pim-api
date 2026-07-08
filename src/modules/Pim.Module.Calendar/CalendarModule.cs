@@ -68,6 +68,83 @@ public class CalendarModule : IModule
             CancellationToken ct) =>
             Results.Ok(ApiResponse<DataCenterQueryResponse>.Ok(await svc.QueryAsync(req, ct))));
 
+        group.MapGet("/projects", async (
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ListProjectsAsync(ct))));
+
+        group.MapPost("/projects", async (
+            [FromBody] CreateDomainProjectRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created("/api/v1/calendar/projects",
+                ApiResponse<object>.Ok(await svc.CreateProjectAsync(req, ct))));
+
+        group.MapGet("/task-books", async (
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ListTaskBooksAsync(ct))));
+
+        group.MapPost("/task-books", async (
+            [FromBody] CreateTaskBookRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created("/api/v1/calendar/task-books",
+                ApiResponse<object>.Ok(await svc.CreateTaskBookAsync(req, ct))));
+
+        group.MapPost("/tasks/{id:guid}/checklist", async (
+            Guid id,
+            [FromBody] AddTaskChecklistItemRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created($"/api/v1/calendar/tasks/{id}/checklist",
+                ApiResponse<object>.Ok(await svc.AddChecklistItemAsync(id, req, ct))));
+
+        group.MapGet("/habits", async (
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ListHabitsAsync(ct))));
+
+        group.MapPost("/habits", async (
+            [FromBody] CreateHabitRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created("/api/v1/calendar/habits",
+                ApiResponse<object>.Ok(await svc.CreateHabitAsync(req, ct))));
+
+        group.MapPost("/habits/{id:guid}/occurrences", async (
+            Guid id,
+            [FromBody] CreateHabitOccurrenceRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created($"/api/v1/calendar/habits/{id}/occurrences",
+                ApiResponse<object>.Ok(await svc.CreateHabitOccurrenceAsync(id, req, ct))));
+
+        group.MapGet("/availability", async (
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ListAvailabilityAsync(ct))));
+
+        group.MapPost("/availability", async (
+            [FromBody] CreateAvailabilityWindowRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created("/api/v1/calendar/availability",
+                ApiResponse<object>.Ok(await svc.CreateAvailabilityWindowAsync(req, ct))));
+
+        group.MapPost("/ai-placeholders", async (
+            [FromBody] CreateAiPlanningPlaceholderRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Created("/api/v1/calendar/ai-placeholders",
+                ApiResponse<object>.Ok(await svc.CreateAiPlaceholderAsync(req, ct))));
+
+        group.MapPost("/ai-placeholders/{id:guid}/confirm", async (
+            Guid id,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ConfirmAiPlaceholderAsync(id, ct))));
+
         // Calendars
         group.MapGet("/calendars", async (
             [FromQuery] string? kind,

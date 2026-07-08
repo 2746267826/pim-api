@@ -1,5 +1,6 @@
 using Pim.Core.Operations;
 using Pim.Core.Today;
+using Pim.Infrastructure.Auth;
 using Pim.Module.Calendar.DTOs;
 using Pim.Module.Calendar.Services;
 using Pim.Module.PcTracker.DTOs;
@@ -16,6 +17,12 @@ public sealed record CalendarTasksTodayData(
     IReadOnlyList<TaskResponse> DueTodayTasks,
     IReadOnlyList<TaskResponse> OverdueTasks,
     IReadOnlyList<TaskResponse> UnscheduledTasks);
+
+public sealed record TodayLayerCountData(int Count, IReadOnlyList<CalendarLayerItem> Items);
+
+public sealed record PendingConfirmationTodayData(int PendingCount, IReadOnlyList<OperationConfirmationDto> Items);
+
+public sealed record TodayPlaceholderData(string Kind, int Count);
 
 public sealed record PcActivityTodayData(PcSummaryResponse Summary);
 
@@ -103,6 +110,152 @@ public sealed class CalendarTasksTodaySectionProvider(CalendarService calendarSe
             new CalendarTasksTodayData(incomplete.Count, dueTodayTasks, overdueTasks, unscheduledTasks),
             TodaySectionProviderResult.Details("/tasks", "/calendar"));
     }
+}
+
+public sealed class CalendarHabitsTodaySectionProvider(PlanningModelService planningService) : ITodaySectionProvider
+{
+    public string SectionId => "calendar.habits";
+
+    public string Kind => "calendar.habits";
+
+    public async Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
+    {
+        var layers = await planningService.GetCalendarLayersAsync(LayerQuery(query, "habits"), ct);
+        return TodaySectionProviderResult.Build(
+            SectionId,
+            Kind,
+            layers.Items.Count == 0 ? TodaySectionStatuses.Empty : TodaySectionStatuses.Normal,
+            new TodayLayerCountData(layers.Items.Count, layers.Items),
+            TodaySectionProviderResult.Details("/habits", "/calendar"));
+    }
+
+    internal static CalendarLayerQuery LayerQuery(TodayQuery query, string layer)
+    {
+        var start = query.Date.ToDateTime(TimeOnly.MinValue);
+        var offset = TimeZoneInfo.Local.GetUtcOffset(start);
+        var from = new DateTimeOffset(start, offset);
+        return new CalendarLayerQuery(from, from.AddDays(1), [layer]);
+    }
+}
+
+public sealed class CalendarAvailabilityTodaySectionProvider(PlanningModelService planningService) : ITodaySectionProvider
+{
+    public string SectionId => "calendar.availability";
+
+    public string Kind => "calendar.availability";
+
+    public async Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
+    {
+        var layers = await planningService.GetCalendarLayersAsync(
+            CalendarHabitsTodaySectionProvider.LayerQuery(query, "availability"),
+            ct);
+        return TodaySectionProviderResult.Build(
+            SectionId,
+            Kind,
+            layers.Items.Count == 0 ? TodaySectionStatuses.Empty : TodaySectionStatuses.Normal,
+            new TodayLayerCountData(layers.Items.Count, layers.Items),
+            TodaySectionProviderResult.Details("/calendar"));
+    }
+}
+
+public sealed class CalendarAiPlaceholdersTodaySectionProvider(PlanningModelService planningService) : ITodaySectionProvider
+{
+    public string SectionId => "calendar.ai_placeholders";
+
+    public string Kind => "calendar.ai_placeholders";
+
+    public async Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
+    {
+        var layers = await planningService.GetCalendarLayersAsync(
+            CalendarHabitsTodaySectionProvider.LayerQuery(query, "ai-placeholders"),
+            ct);
+        return TodaySectionProviderResult.Build(
+            SectionId,
+            Kind,
+            layers.Items.Count == 0 ? TodaySectionStatuses.Empty : TodaySectionStatuses.Warning,
+            new TodayLayerCountData(layers.Items.Count, layers.Items),
+            TodaySectionProviderResult.Details("/calendar", "/confirmations"));
+    }
+}
+
+public sealed class OperationsConfirmationsTodaySectionProvider(
+    IOperationConfirmationService confirmations,
+    ICurrentUserService currentUser) : ITodaySectionProvider
+{
+    public string SectionId => "operations.confirmations";
+
+    public string Kind => "operations.confirmations";
+
+    public async Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
+    {
+        var pending = await confirmations.ListPendingForUserAsync(currentUser.UserId, ct);
+        return TodaySectionProviderResult.Build(
+            SectionId,
+            Kind,
+            pending.Count == 0 ? TodaySectionStatuses.Empty : TodaySectionStatuses.Warning,
+            new PendingConfirmationTodayData(pending.Count, pending),
+            TodaySectionProviderResult.Details("/confirmations"));
+    }
+}
+
+public sealed class OutlookSyncTodaySectionProvider : ITodaySectionProvider
+{
+    public string SectionId => "sync.outlook";
+
+    public string Kind => "sync.outlook";
+
+    public Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
+        => Task.FromResult(TodaySectionProviderResult.Build(
+            SectionId,
+            Kind,
+            TodaySectionStatuses.Empty,
+            new TodayPlaceholderData(Kind, 0),
+            TodaySectionProviderResult.Details("/sync")));
+}
+
+public sealed class RemindersQueueTodaySectionProvider : ITodaySectionProvider
+{
+    public string SectionId => "reminders.queue";
+
+    public string Kind => "reminders.queue";
+
+    public Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
+        => Task.FromResult(TodaySectionProviderResult.Build(
+            SectionId,
+            Kind,
+            TodaySectionStatuses.Empty,
+            new TodayPlaceholderData(Kind, 0),
+            TodaySectionProviderResult.Details("/reminders")));
+}
+
+public sealed class ReportsAvailableTodaySectionProvider : ITodaySectionProvider
+{
+    public string SectionId => "reports.available";
+
+    public string Kind => "reports.available";
+
+    public Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
+        => Task.FromResult(TodaySectionProviderResult.Build(
+            SectionId,
+            Kind,
+            TodaySectionStatuses.Empty,
+            new TodayPlaceholderData(Kind, 0),
+            TodaySectionProviderResult.Details("/reports")));
+}
+
+public sealed class EndpointsStatusTodaySectionProvider : ITodaySectionProvider
+{
+    public string SectionId => "endpoints.status";
+
+    public string Kind => "endpoints.status";
+
+    public Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
+        => Task.FromResult(TodaySectionProviderResult.Build(
+            SectionId,
+            Kind,
+            TodaySectionStatuses.Empty,
+            new TodayPlaceholderData(Kind, 0),
+            TodaySectionProviderResult.Details("/endpoint-shell")));
 }
 
 public sealed class PcActivityTodaySectionProvider(PcTrackerService pcTrackerService) : ITodaySectionProvider
