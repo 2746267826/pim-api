@@ -11,6 +11,16 @@ on:
       - 'tests/Pim.UnitTests/**'
       - 'Pim.sln'
       - '.github/workflows/build-api.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'src/Pim.Api/**'
+      - 'src/Pim.Core/**'
+      - 'src/Pim.Infrastructure/**'
+      - 'src/modules/**'
+      - 'tests/Pim.UnitTests/**'
+      - 'Pim.sln'
+      - '.github/workflows/build-api.yml'
   workflow_dispatch:
 
 jobs:

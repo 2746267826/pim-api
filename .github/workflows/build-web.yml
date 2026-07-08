@@ -6,6 +6,11 @@ on:
     paths:
       - 'src/client-web/**'
       - '.github/workflows/build-web.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'src/client-web/**'
+      - '.github/workflows/build-web.yml'
   workflow_dispatch:
 
 env:

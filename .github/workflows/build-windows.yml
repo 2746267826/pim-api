@@ -9,6 +9,14 @@ on:
       - 'src/Pim.Infrastructure/**'
       - 'src/Directory.Build.props'
       - '.github/workflows/build-windows.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'src/client-windows/**'
+      - 'src/Pim.Core/**'
+      - 'src/Pim.Infrastructure/**'
+      - 'src/Directory.Build.props'
+      - '.github/workflows/build-windows.yml'
   workflow_dispatch:
 
 jobs:

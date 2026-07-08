@@ -6,6 +6,11 @@ on:
     paths:
       - 'src/client-android/**'
       - '.github/workflows/build-android.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'src/client-android/**'
+      - '.github/workflows/build-android.yml'
   workflow_dispatch:
 
 jobs:
