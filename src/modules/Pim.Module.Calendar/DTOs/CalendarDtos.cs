@@ -410,3 +410,58 @@ public record SyncConflictDetailDto(
     string ExternalSnapshotJson,
     Guid? ResolvedConfirmationId
 );
+
+public record CreateReminderRequest(
+    string RelatedObjectType,
+    Guid RelatedObjectId,
+    string Title,
+    string Body,
+    string TriggerReason,
+    string RiskLevel,
+    IReadOnlyList<string> Channels,
+    string? DoNotDisturbStart,
+    string? DoNotDisturbEnd,
+    DateTimeOffset ScheduledAt
+);
+
+public record ReminderResponse(
+    Guid Id,
+    string RelatedObjectType,
+    Guid RelatedObjectId,
+    string Title,
+    string Body,
+    string TriggerReason,
+    string RiskLevel,
+    IReadOnlyList<string> Channels,
+    string? DoNotDisturbStart,
+    string? DoNotDisturbEnd,
+    DateTimeOffset ScheduledAt,
+    string Status
+);
+
+public record ReminderActionResponse(
+    string Kind,
+    string Status,
+    string? DetailUrl
+);
+
+public record ReminderNotificationPayloadDto(
+    Guid ReminderId,
+    string Title,
+    string Body,
+    string RiskLevel,
+    string RelatedObjectType,
+    Guid RelatedObjectId,
+    string DetailUrl,
+    IReadOnlyList<string> Actions
+);
+
+public record ReminderDeliveryDto(
+    Guid Id,
+    Guid ReminderId,
+    string Channel,
+    string Status,
+    string PayloadJson,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? RespondedAt
+);

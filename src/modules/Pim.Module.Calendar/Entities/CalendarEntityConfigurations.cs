@@ -221,3 +221,31 @@ public class SyncConflictEntityConfiguration : IEntityTypeConfiguration<SyncConf
         builder.HasIndex(c => c.ResolvedConfirmationId);
     }
 }
+
+public class ReminderEntityConfiguration : IEntityTypeConfiguration<ReminderEntity>
+{
+    public void Configure(EntityTypeBuilder<ReminderEntity> builder)
+    {
+        builder.HasQueryFilter(r => r.DeletedAt == null);
+        builder.Property(r => r.ChannelsJson).HasDefaultValue("[]");
+        builder.Property(r => r.Status).HasDefaultValue("Open");
+        builder.Property(r => r.CreatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(r => new { r.UserId, r.Status, r.ScheduledAt });
+        builder.HasIndex(r => new { r.RelatedObjectType, r.RelatedObjectId });
+    }
+}
+
+public class ReminderDeliveryEntityConfiguration : IEntityTypeConfiguration<ReminderDeliveryEntity>
+{
+    public void Configure(EntityTypeBuilder<ReminderDeliveryEntity> builder)
+    {
+        builder.Property(d => d.PayloadJson).HasDefaultValue("{}");
+        builder.Property(d => d.Status).HasDefaultValue("Created");
+        builder.Property(d => d.CreatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(d => new { d.UserId, d.CreatedAt });
+        builder.HasIndex(d => d.ReminderId);
+        builder.HasOne(d => d.Reminder)
+            .WithMany(r => r.Deliveries)
+            .HasForeignKey(d => d.ReminderId);
+    }
+}

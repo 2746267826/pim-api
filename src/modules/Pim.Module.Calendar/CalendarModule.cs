@@ -41,6 +41,7 @@ public class CalendarModule : IModule
         services.AddScoped<CalendarRecycleBinService>();
         services.AddScoped<PlanningModelService>();
         services.AddScoped<DataCenterQueryService>();
+        services.AddScoped<ReminderService>();
 
         services.AddSingleton<ISearchProvider, CalendarSearchProvider>();
     }
@@ -150,6 +151,46 @@ public class CalendarModule : IModule
             [FromServices] PlanningModelService svc,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<object>.Ok(await svc.ConfirmAiPlaceholderAsync(id, ct))));
+
+        group.MapGet("/reminders", async (
+            [FromServices] ReminderService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ListAsync(ct))));
+
+        group.MapPost("/reminders", async (
+            [FromBody] CreateReminderRequest req,
+            [FromServices] ReminderService svc,
+            CancellationToken ct) =>
+            Results.Created("/api/v1/calendar/reminders",
+                ApiResponse<object>.Ok(await svc.CreateAsync(req, ct))));
+
+        group.MapPost("/reminders/{id:guid}/snooze", async (
+            Guid id,
+            [FromQuery] DateTimeOffset? scheduledAt,
+            [FromServices] ReminderService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.SnoozeAsync(
+                id,
+                scheduledAt ?? DateTimeOffset.UtcNow.AddMinutes(15),
+                ct))));
+
+        group.MapPost("/reminders/{id:guid}/dismiss", async (
+            Guid id,
+            [FromServices] ReminderService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.DismissAsync(id, ct))));
+
+        group.MapPost("/reminders/{id:guid}/actions/{action}", async (
+            Guid id,
+            string action,
+            [FromServices] ReminderService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.HandleActionAsync(id, action, ct))));
+
+        group.MapGet("/reminders/delivery-log", async (
+            [FromServices] ReminderService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.GetDeliveryLogAsync(ct))));
 
         // Calendars
         group.MapGet("/calendars", async (

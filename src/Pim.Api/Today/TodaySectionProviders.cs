@@ -213,19 +213,26 @@ public sealed class OutlookSyncTodaySectionProvider : ITodaySectionProvider
             TodaySectionProviderResult.Details("/sync")));
 }
 
-public sealed class RemindersQueueTodaySectionProvider : ITodaySectionProvider
+public sealed class RemindersQueueTodaySectionProvider(ReminderService reminderService) : ITodaySectionProvider
 {
     public string SectionId => "reminders.queue";
 
     public string Kind => "reminders.queue";
 
-    public Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
-        => Task.FromResult(TodaySectionProviderResult.Build(
+    public async Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
+    {
+        var reminders = await reminderService.ListAsync(ct);
+        var open = reminders
+            .Where(r => r.Status is "Open" or "Snoozed")
+            .Where(r => r.ScheduledAt <= DateTimeOffset.UtcNow.AddDays(1))
+            .ToList();
+        return TodaySectionProviderResult.Build(
             SectionId,
             Kind,
-            TodaySectionStatuses.Empty,
-            new TodayPlaceholderData(Kind, 0),
-            TodaySectionProviderResult.Details("/reminders")));
+            open.Count == 0 ? TodaySectionStatuses.Empty : TodaySectionStatuses.Warning,
+            new TodayPlaceholderData(Kind, open.Count),
+            TodaySectionProviderResult.Details("/reminders"));
+    }
 }
 
 public sealed class ReportsAvailableTodaySectionProvider : ITodaySectionProvider
