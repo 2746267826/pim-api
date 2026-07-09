@@ -45,15 +45,17 @@ public sealed class MobileUsageAggregationService
         var totalSeconds = rows.Sum(row => row.ForegroundSeconds);
         var qualityTotalSeconds = qualityRows.Sum(row => row.ForegroundSeconds);
         var localDayCount = Math.Max(1, CountLocalDays(context.Range));
-        var byLocalDay = rows
-            .GroupBy(row => LocalDate(row.StartUtc, timeZoneInfo))
-            .Select(group => new { Date = group.Key, Seconds = group.Sum(row => row.ForegroundSeconds) })
+        var dayBuckets = SplitRowsIntoBuckets(rows, timeZoneInfo, TimeSpan.FromDays(1), "day");
+        var hourBuckets = SplitRowsIntoBuckets(rows, timeZoneInfo, TimeSpan.FromHours(1), "hour");
+        var byLocalDay = dayBuckets
+            .GroupBy(row => row.LocalDate)
+            .Select(group => new { Date = group.Key, Seconds = group.Sum(row => row.BucketSeconds) })
             .OrderByDescending(item => item.Seconds)
             .ThenBy(item => item.Date, StringComparer.Ordinal)
             .ToList();
-        var byHour = rows
-            .GroupBy(row => TimeZoneInfo.ConvertTime(row.StartUtc, timeZoneInfo).Hour)
-            .Select(group => new { Hour = group.Key, Seconds = group.Sum(row => row.ForegroundSeconds) })
+        var byHour = hourBuckets
+            .GroupBy(row => row.LocalHour)
+            .Select(group => new { Hour = group.Key, Seconds = group.Sum(row => row.BucketSeconds) })
             .OrderByDescending(item => item.Seconds)
             .ThenBy(item => item.Hour)
             .ToList();
@@ -114,34 +116,22 @@ public sealed class MobileUsageAggregationService
             _ => TimeSpan.FromHours(1)
         };
 
-        return (await LoadRowsAsync(context, ct))
-            .GroupBy(row =>
+        return SplitRowsIntoBuckets(await LoadRowsAsync(context, ct), timeZoneInfo, bucketSize, context.Granularity)
+            .GroupBy(row => new
             {
-                var local = TimeZoneInfo.ConvertTime(row.StartUtc, timeZoneInfo);
-                var minute = bucketSize.TotalMinutes >= 60
-                    ? 0
-                    : (local.Minute / (int)bucketSize.TotalMinutes) * (int)bucketSize.TotalMinutes;
-                var localBucket = new DateTime(local.Year, local.Month, local.Day, context.Granularity == "day" ? 0 : local.Hour, minute, 0);
-                var startUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(localBucket, DateTimeKind.Unspecified), timeZoneInfo);
-                var endUtc = bucketSize == TimeSpan.FromDays(1)
-                    ? startUtc.AddDays(1)
-                    : startUtc.Add(bucketSize);
-                return new
-                {
-                    StartUtc = new DateTimeOffset(startUtc, TimeSpan.Zero),
-                    EndUtc = new DateTimeOffset(endUtc, TimeSpan.Zero),
-                    LocalDate = localBucket.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                    LocalHour = localBucket.Hour,
-                    row.LifeCategory
-                };
+                row.BucketStartUtc,
+                row.BucketEndUtc,
+                row.LocalDate,
+                row.LocalHour,
+                row.LifeCategory
             })
             .Select(group => new MobileHeatmapBucketDto(
-                group.Key.StartUtc,
-                group.Key.EndUtc,
+                group.Key.BucketStartUtc,
+                group.Key.BucketEndUtc,
                 group.Key.LocalDate,
                 group.Key.LocalHour,
                 group.Key.LifeCategory,
-                group.Sum(row => row.ForegroundSeconds),
+                group.Sum(row => row.BucketSeconds),
                 group.SelectMany(row => row.QualityFlags).Distinct(StringComparer.Ordinal).ToList()))
             .OrderBy(bucket => bucket.BucketStartUtc)
             .ThenBy(bucket => bucket.LifeCategory, StringComparer.Ordinal)
@@ -156,6 +146,8 @@ public sealed class MobileUsageAggregationService
         var timeZoneInfo = _queryService.ResolveTimezone(context.Range.Timezone);
         var rows = await LoadRowsAsync(context, ct);
         var totalSeconds = rows.Sum(row => row.ForegroundSeconds);
+        var dayBuckets = SplitRowsIntoBuckets(rows, timeZoneInfo, TimeSpan.FromDays(1), "day");
+        var hourBuckets = SplitRowsIntoBuckets(rows, timeZoneInfo, TimeSpan.FromHours(1), "hour");
 
         var categoryShare = rows
             .GroupBy(row => row.LifeCategory)
@@ -186,19 +178,19 @@ public sealed class MobileUsageAggregationService
             .ThenBy(point => point.Label, StringComparer.Ordinal)
             .Take(10)
             .ToList();
-        var dailyTrend = rows
-            .GroupBy(row => LocalDate(row.StartUtc, timeZoneInfo))
-            .Select(group => ChartPoint(group.Key, group.Key, group.Sum(row => row.ForegroundSeconds), totalSeconds, null, null, group.Key, null))
+        var dailyTrend = dayBuckets
+            .GroupBy(row => row.LocalDate)
+            .Select(group => ChartPoint(group.Key, group.Key, group.Sum(row => row.BucketSeconds), totalSeconds, null, null, group.Key, null))
             .OrderBy(point => point.Key, StringComparer.Ordinal)
             .ToList();
-        var hourDistribution = rows
-            .GroupBy(row => TimeZoneInfo.ConvertTime(row.StartUtc, timeZoneInfo).Hour)
-            .Select(group => ChartPoint(group.Key.ToString("00", CultureInfo.InvariantCulture), $"{group.Key:00}:00", group.Sum(row => row.ForegroundSeconds), totalSeconds, null, null, null, group.Key))
+        var hourDistribution = hourBuckets
+            .GroupBy(row => row.LocalHour)
+            .Select(group => ChartPoint(group.Key.ToString("00", CultureInfo.InvariantCulture), $"{group.Key:00}:00", group.Sum(row => row.BucketSeconds), totalSeconds, null, null, null, group.Key))
             .OrderBy(point => point.LocalHour)
             .ToList();
-        var categoryTrend = rows
-            .GroupBy(row => new { Date = LocalDate(row.StartUtc, timeZoneInfo), row.LifeCategory })
-            .Select(group => ChartPoint($"{group.Key.Date}:{group.Key.LifeCategory}", group.Key.LifeCategory, group.Sum(row => row.ForegroundSeconds), totalSeconds, group.Key.LifeCategory, null, group.Key.Date, null))
+        var categoryTrend = dayBuckets
+            .GroupBy(row => new { Date = row.LocalDate, row.LifeCategory })
+            .Select(group => ChartPoint($"{group.Key.Date}:{group.Key.LifeCategory}", group.Key.LifeCategory, group.Sum(row => row.BucketSeconds), totalSeconds, group.Key.LifeCategory, null, group.Key.Date, null))
             .OrderBy(point => point.LocalDate, StringComparer.Ordinal)
             .ThenBy(point => point.Label, StringComparer.Ordinal)
             .ToList();
@@ -309,6 +301,105 @@ public sealed class MobileUsageAggregationService
         }
 
         return rows;
+    }
+
+    private static IReadOnlyList<UsageBucketRow> SplitRowsIntoBuckets(
+        IReadOnlyList<UsageRow> rows,
+        TimeZoneInfo timeZoneInfo,
+        TimeSpan bucketSize,
+        string granularity)
+        => rows.SelectMany(row => SplitRowIntoBuckets(row, timeZoneInfo, bucketSize, granularity)).ToList();
+
+    private static IEnumerable<UsageBucketRow> SplitRowIntoBuckets(
+        UsageRow row,
+        TimeZoneInfo timeZoneInfo,
+        TimeSpan bucketSize,
+        string granularity)
+    {
+        if (row.ForegroundSeconds <= 0 || row.EndUtc <= row.StartUtc)
+            yield break;
+
+        var localBucket = FloorLocalBucket(TimeZoneInfo.ConvertTime(row.StartUtc, timeZoneInfo), bucketSize, granularity);
+        var segments = new List<(DateTimeOffset StartUtc, DateTimeOffset EndUtc, string LocalDate, int LocalHour, double OverlapMs)>();
+
+        while (true)
+        {
+            var bucketStartUtc = LocalBucketUtc(localBucket, timeZoneInfo);
+            if (bucketStartUtc >= row.EndUtc)
+                break;
+
+            var nextLocalBucket = NextLocalBucket(localBucket, bucketSize, granularity);
+            var bucketEndUtc = LocalBucketUtc(nextLocalBucket, timeZoneInfo);
+            if (bucketEndUtc > row.StartUtc)
+            {
+                var overlapStart = Max(row.StartUtc, bucketStartUtc);
+                var overlapEnd = Min(row.EndUtc, bucketEndUtc);
+                if (overlapEnd > overlapStart)
+                {
+                    segments.Add((
+                        bucketStartUtc,
+                        bucketEndUtc,
+                        localBucket.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                        granularity == "day" ? 0 : localBucket.Hour,
+                        (overlapEnd - overlapStart).TotalMilliseconds));
+                }
+            }
+
+            localBucket = nextLocalBucket;
+        }
+
+        if (segments.Count == 0)
+            yield break;
+
+        var totalOverlapMs = segments.Sum(segment => segment.OverlapMs);
+        if (totalOverlapMs <= 0)
+            yield break;
+
+        long allocated = 0;
+        for (var i = 0; i < segments.Count; i++)
+        {
+            var segment = segments[i];
+            var seconds = i == segments.Count - 1
+                ? row.ForegroundSeconds - allocated
+                : Math.Max(0, Convert.ToInt64(Math.Floor(row.ForegroundSeconds * (segment.OverlapMs / totalOverlapMs))));
+            allocated += seconds;
+            if (seconds <= 0)
+                continue;
+
+            yield return new UsageBucketRow(
+                row.DeviceId,
+                row.PackageName,
+                row.DisplayName,
+                row.LifeCategory,
+                segment.StartUtc,
+                segment.EndUtc,
+                segment.LocalDate,
+                segment.LocalHour,
+                seconds,
+                row.Source,
+                row.IsSystemNoise,
+                row.IsStale,
+                row.QualityFlags);
+        }
+    }
+
+    private static DateTime FloorLocalBucket(DateTimeOffset local, TimeSpan bucketSize, string granularity)
+    {
+        if (granularity == "day")
+            return new DateTime(local.Year, local.Month, local.Day, 0, 0, 0);
+
+        var bucketMinutes = bucketSize.TotalMinutes >= 60 ? 60 : (int)bucketSize.TotalMinutes;
+        var minute = bucketMinutes >= 60 ? 0 : (local.Minute / bucketMinutes) * bucketMinutes;
+        return new DateTime(local.Year, local.Month, local.Day, local.Hour, minute, 0);
+    }
+
+    private static DateTime NextLocalBucket(DateTime localBucket, TimeSpan bucketSize, string granularity)
+        => granularity == "day" ? localBucket.AddDays(1) : localBucket.Add(bucketSize);
+
+    private static DateTimeOffset LocalBucketUtc(DateTime localBucket, TimeZoneInfo timeZoneInfo)
+    {
+        var utc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(localBucket, DateTimeKind.Unspecified), timeZoneInfo);
+        return new DateTimeOffset(utc, TimeSpan.Zero);
     }
 
     private async Task<IReadOnlyDictionary<string, Classification>> LoadClassificationsAsync(
@@ -574,6 +665,21 @@ public sealed class MobileUsageAggregationService
         DateTimeOffset StartUtc,
         DateTimeOffset EndUtc,
         long ForegroundSeconds,
+        string Source,
+        bool IsSystemNoise,
+        bool IsStale,
+        IReadOnlyList<string> QualityFlags);
+
+    private sealed record UsageBucketRow(
+        string DeviceId,
+        string PackageName,
+        string DisplayName,
+        string LifeCategory,
+        DateTimeOffset BucketStartUtc,
+        DateTimeOffset BucketEndUtc,
+        string LocalDate,
+        int LocalHour,
+        long BucketSeconds,
         string Source,
         bool IsSystemNoise,
         bool IsStale,

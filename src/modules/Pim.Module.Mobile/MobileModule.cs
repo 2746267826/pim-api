@@ -319,6 +319,7 @@ public sealed record MobileAnalyticsEndpointQuery(
     int? MinDurationSeconds,
     string? Granularity,
     string? Cursor,
+    int? Page,
     int? PageSize)
 {
     public MobileAnalyticsQueryRequest ToRequest()
@@ -334,6 +335,7 @@ public sealed record MobileAnalyticsEndpointQuery(
             MinDurationSeconds,
             Granularity,
             Cursor,
+            Page,
             PageSize);
 }
 

@@ -69,6 +69,7 @@ public sealed record MobileAnalyticsQueryRequest(
     int? MinDurationSeconds = null,
     string? Granularity = null,
     string? Cursor = null,
+    int? Page = null,
     int? PageSize = null);
 
 public sealed record MobileAnalyticsQueryContext(
@@ -81,6 +82,7 @@ public sealed record MobileAnalyticsQueryContext(
     int MinDurationSeconds,
     string Granularity,
     string? Cursor,
+    int Page,
     int PageSize);
 
 public sealed record MobileAnalyticsQualitySummaryDto(
@@ -179,7 +181,11 @@ public sealed record MobileTimelineBlockDto(
 public sealed record MobileTimelineBlockPageDto(
     IReadOnlyList<MobileTimelineBlockDto> Items,
     string? NextCursor,
-    bool HasMore);
+    bool HasMore,
+    int Page,
+    int PageSize,
+    int TotalCount,
+    int TotalPages);
 
 public sealed record MobileTimelineBlockSessionDto(
     string Id,

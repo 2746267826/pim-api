@@ -135,6 +135,36 @@ public sealed class MobileTimelineBlockServiceTests
     }
 
     [Fact]
+    public async Task GetBlocksAsync_PageNumberPaginatesDescendingAndReturnsTotals()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        db.Set<MobileAppCatalogEntity>().Add(Catalog("com.tencent.mobileqq", "QQ", "社交通讯"));
+        db.Set<MobileAppCatalogOverrideEntity>().Add(Override("com.tencent.mobileqq", "社交通讯"));
+
+        for (var i = 0; i < 5; i++)
+        {
+            db.Set<MobileUsageSessionEntity>().Add(Session(
+                Guid.Parse($"21000000-0000-0000-0000-{i + 1:000000000000}"),
+                "com.tencent.mobileqq",
+                DateTimeOffset.Parse("2026-07-07T00:00:00Z").AddHours(i),
+                300));
+        }
+
+        await db.SaveChangesAsync();
+
+        var page = await Service(db).GetBlocksAsync(Query(page: 2, pageSize: 2), CancellationToken.None);
+
+        Assert.Equal(2, page.Page);
+        Assert.Equal(2, page.PageSize);
+        Assert.Equal(5, page.TotalCount);
+        Assert.Equal(3, page.TotalPages);
+        Assert.True(page.HasMore);
+        Assert.Equal(2, page.Items.Count);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-07T02:00:00Z"), page.Items[0].StartUtc);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-07T01:00:00Z"), page.Items[1].StartUtc);
+    }
+
+    [Fact]
     public async Task GetBlocksAsync_AppliesPackageCategorySourceAndNoiseOptions()
     {
         await using var db = MobileTestHelpers.CreateDb();
@@ -288,6 +318,7 @@ public sealed class MobileTimelineBlockServiceTests
         bool? includeSystemNoise = null,
         int? minDurationSeconds = null,
         string? cursor = null,
+        int? page = null,
         int? pageSize = null)
         => new(
             start ?? RangeStart,
@@ -301,6 +332,7 @@ public sealed class MobileTimelineBlockServiceTests
             minDurationSeconds,
             null,
             cursor,
+            page,
             pageSize);
 
     private static MobileAppCatalogEntity Catalog(

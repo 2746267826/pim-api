@@ -42,6 +42,7 @@ public sealed class MobileAnalyticsQueryService
             : request.Granularity;
         var pageSize = request.PageSize.GetValueOrDefault(MobileAnalyticsDefaults.DefaultPageSize);
         pageSize = Math.Clamp(pageSize, 1, MobileAnalyticsDefaults.MaxPageSize);
+        var page = Math.Max(1, request.Page.GetValueOrDefault(1));
         var minDurationSeconds = request.MinDurationSeconds.GetValueOrDefault(
             MobileAnalyticsDefaults.DefaultShortEventThresholdSeconds);
         minDurationSeconds = Math.Max(0, minDurationSeconds);
@@ -61,6 +62,7 @@ public sealed class MobileAnalyticsQueryService
             minDurationSeconds,
             granularity,
             NormalizeString(request.Cursor),
+            page,
             pageSize);
     }
 

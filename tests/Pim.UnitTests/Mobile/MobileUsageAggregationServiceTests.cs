@@ -98,6 +98,38 @@ public sealed class MobileUsageAggregationServiceTests
     }
 
     [Fact]
+    public async Task GetHeatmapAsync_DistributesFallbackSummaryAcrossHourlyBuckets()
+    {
+        var now = DateTimeOffset.Parse("2026-07-08T10:00:00Z");
+        await using var db = MobileTestHelpers.CreateDb();
+        db.Set<MobileUsageSummaryEntity>().Add(SeedSummary(
+            "com.tencent.mobileqq",
+            DateTimeOffset.Parse("2026-07-06T00:00:00Z"),
+            DateTimeOffset.Parse("2026-07-06T02:00:00Z"),
+            7200));
+        await db.SaveChangesAsync();
+
+        var service = CreateService(db, now);
+        var heatmap = await service.GetHeatmapAsync(new MobileAnalyticsQueryRequest(
+            DateTimeOffset.Parse("2026-07-06T00:00:00Z"),
+            DateTimeOffset.Parse("2026-07-06T02:00:00Z")), CancellationToken.None);
+
+        Assert.Collection(
+            heatmap.OrderBy(bucket => bucket.BucketStartUtc),
+            bucket =>
+            {
+                Assert.Equal(8, bucket.LocalHour);
+                Assert.Equal(3600, bucket.ForegroundSeconds);
+            },
+            bucket =>
+            {
+                Assert.Equal(9, bucket.LocalHour);
+                Assert.Equal(3600, bucket.ForegroundSeconds);
+            });
+        Assert.All(heatmap, bucket => Assert.True(bucket.ForegroundSeconds <= 3600));
+    }
+
+    [Fact]
     public async Task GetOverviewAsync_ReportsHiddenNoiseAndMissingMetadataQualityFlags()
     {
         var now = DateTimeOffset.Parse("2026-07-08T10:00:00Z");
