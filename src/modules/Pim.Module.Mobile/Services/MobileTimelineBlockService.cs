@@ -36,18 +36,32 @@ public sealed class MobileTimelineBlockService
         CancellationToken ct = default)
     {
         var context = Normalize(request);
-        var blocks = await BuildBlocksAsync(context, ct);
-        var ordered = ApplyCursor(
-                blocks
-                    .OrderByDescending(block => block.StartUtc)
-                    .ThenBy(block => block.Id, StringComparer.Ordinal)
-                    .ToList(),
-                context.Cursor)
+        var ordered = (await BuildBlocksAsync(context, ct))
+            .OrderByDescending(block => block.StartUtc)
+            .ThenBy(block => block.Id, StringComparer.Ordinal)
             .ToList();
+        var totalCount = ordered.Count;
+        var totalPages = totalCount == 0
+            ? 0
+            : (int)Math.Ceiling(totalCount / (double)context.PageSize);
+        List<ComputedBlock> pageItems;
+        bool hasMore;
 
-        var pageRows = ordered.Take(context.PageSize + 1).ToList();
-        var hasMore = pageRows.Count > context.PageSize;
-        var pageItems = pageRows.Take(context.PageSize).ToList();
+        if (!string.IsNullOrWhiteSpace(context.Cursor))
+        {
+            var cursorRows = ApplyCursor(ordered, context.Cursor).Take(context.PageSize + 1).ToList();
+            hasMore = cursorRows.Count > context.PageSize;
+            pageItems = cursorRows.Take(context.PageSize).ToList();
+        }
+        else
+        {
+            pageItems = ordered
+                .Skip((context.Page - 1) * context.PageSize)
+                .Take(context.PageSize)
+                .ToList();
+            hasMore = context.Page < totalPages;
+        }
+
         var nextCursor = hasMore && pageItems.Count > 0
             ? EncodePayload(new PageCursor(pageItems[^1].StartUtc, pageItems[^1].Id))
             : null;
@@ -55,7 +69,11 @@ public sealed class MobileTimelineBlockService
         return new MobileTimelineBlockPageDto(
             pageItems.Select(block => block.Dto).ToList(),
             nextCursor,
-            hasMore);
+            hasMore,
+            context.Page,
+            context.PageSize,
+            totalCount,
+            totalPages);
     }
 
     public async Task<IReadOnlyList<MobileTimelineBlockSessionDto>> GetSessionsForBlockAsync(
