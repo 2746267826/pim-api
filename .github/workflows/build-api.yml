@@ -23,16 +23,36 @@ on:
       - '.github/workflows/build-api.yml'
   workflow_dispatch:
 
+env:
+  DOTNET_VERSION: '8.0.x'
+
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Generate version string
+        id: version
+        run: |
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          BUILD_NUMBER=${GITHUB_RUN_NUMBER:-1}
+          VERSION_CODE=$((100000 + BUILD_NUMBER))
+          VERSION_NAME="0.1.${BUILD_NUMBER}+${SHORT_SHA}"
+          VERSION_FILE="0.1.${BUILD_NUMBER}-${SHORT_SHA}"
+          ARTIFACT_NAME="pim-api-v${VERSION_FILE}"
+          echo "value=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "artifact=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION_NAME"
+          echo "VERSION_DISPLAY=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
 
       - name: Restore
         run: dotnet restore Pim.sln
@@ -40,5 +60,23 @@ jobs:
       - name: Test
         run: dotnet test Pim.sln --configuration Release --no-restore
 
-      - name: Build API
-        run: dotnet build src/Pim.Api/Pim.Api.csproj --configuration Release --no-restore
+      - name: Publish API (linux-x64, framework-dependent)
+        run: |
+          dotnet publish src/Pim.Api/Pim.Api.csproj \
+            --configuration Release \
+            --no-restore \
+            --runtime linux-x64 \
+            -o publish/
+
+      - name: Stage publish output
+        run: |
+          mkdir -p build/artifacts
+          cd publish
+          tar czf "../build/artifacts/${{ steps.version.outputs.artifact }}.tar.gz" .
+          echo "Artifact size: $(du -sh ../build/artifacts/${{ steps.version.outputs.artifact }}.tar.gz | cut -f1)"
+
+      - name: Upload API artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact }}
+          path: build/artifacts/*.tar.gz
