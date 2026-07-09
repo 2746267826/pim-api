@@ -98,9 +98,9 @@ jobs:
               exit 1
             fi
           done
-          ./gradlew :app:testDebugUnitTest --no-daemon &
+          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace &
           PID1=$!
-          ./gradlew assembleRelease --no-daemon &
+          ./gradlew assembleRelease --no-daemon --stacktrace &
           PID2=$!
           STATUS=0
           wait $PID1 || STATUS=$?
