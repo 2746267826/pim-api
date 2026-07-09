@@ -32,8 +32,11 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      - name: Install Android SDK packages (if missing)
+        run: |
+          if [ ! -d "$ANDROID_HOME/platforms/android-34" ]; then
+            sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          fi
 
       - uses: gradle/actions/setup-gradle@v3
 
@@ -69,21 +72,17 @@ jobs:
           chmod +x "$OLDPWD/gradlew"
           rm -rf "$TMPDIR"
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
 
-      - name: Unit tests
-        run: ./gradlew :app:testDebugUnitTest --no-daemon
-
-      - name: Assemble debug
-        run: ./gradlew :app:assembleDebug --no-daemon
+      - name: Unit tests & assemble (parallel)
+        run: |
+          ./gradlew :app:testDebugUnitTest --no-daemon &
+          PID1=$!
+          ./gradlew :app:assembleDebug --no-daemon &
+          PID2=$!
+          STATUS=0
+          wait $PID1 || STATUS=$?
+          wait $PID2 || STATUS=$?
+          exit $STATUS
 
       - name: Stage APK
         run: |
