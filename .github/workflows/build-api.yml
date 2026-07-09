@@ -55,7 +55,7 @@ jobs:
           echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
 
       - name: Restore
-        run: dotnet restore Pim.sln
+        run: dotnet restore Pim.sln --runtime linux-x64
 
       - name: Test
         run: dotnet test Pim.sln --configuration Release --no-restore
