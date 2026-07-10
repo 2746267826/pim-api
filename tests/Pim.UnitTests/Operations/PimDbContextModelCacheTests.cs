@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Pim.Infrastructure.Data;
+using Pim.Module.Calendar.Entities;
 using Xunit;
 
 namespace Pim.UnitTests.Operations;
@@ -18,6 +19,19 @@ public class PimDbContextModelCacheTests
             .Single();
 
         Assert.Equal("20260710000000_MicrosoftCalendarSync", attribute.Id);
+    }
+
+    [Fact]
+    public void MicrosoftCalendarSyncMigration_TargetModelContainsMicrosoftSyncEntities()
+    {
+        var migration = new Pim.Infrastructure.Data.Migrations.MicrosoftCalendarSync();
+
+        var targetModel = migration.TargetModel;
+
+        Assert.NotNull(targetModel);
+        Assert.NotNull(targetModel.FindEntityType(typeof(OutlookAuthorizationSessionEntity)));
+        Assert.NotNull(targetModel.FindEntityType(typeof(OutlookCalendarBindingEntity)));
+        Assert.NotNull(targetModel.FindEntityType(typeof(OutlookOperationExecutionEntity)));
     }
 
     [Fact]

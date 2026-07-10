@@ -1,12 +1,8 @@
-using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
-using Pim.Infrastructure.Data;
 
 namespace Pim.Infrastructure.Data.Migrations;
 
-[DbContext(typeof(PimDbContext))]
-[Migration("20260710000000_MicrosoftCalendarSync")]
-public sealed class MicrosoftCalendarSync : Migration
+public partial class MicrosoftCalendarSync : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)
     {
