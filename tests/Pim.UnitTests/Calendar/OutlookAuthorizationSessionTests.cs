@@ -115,6 +115,28 @@ public sealed class OutlookAuthorizationSessionTests
     }
 
     [Fact]
+    public async Task Runner_FailureFinalizationStaysRunningUntilSessionIsTerminal()
+    {
+        var interceptor = new FailSessionStatusSavesInterceptor("failed", 12);
+        await using var provider = Services(
+                new FailingMsalClient(new InvalidOperationException(RawFailure)),
+                interceptor)
+            .BuildServiceProvider();
+        var ids = await SeedAsync(provider);
+        var runner = provider.GetRequiredService<OutlookAuthorizationSessionRunner>();
+
+        await runner.StartAsync(ids.SessionId, ids.UserId, CancellationToken.None);
+        await runner.WaitForCompletionAsync(ids.SessionId, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        var stored = await ReadAsync(provider, ids);
+        Assert.Equal(12, interceptor.FailureCount);
+        Assert.Equal("failed", stored.Session.Status);
+        Assert.Equal("authorization-failed", stored.Session.ErrorCode);
+        Assert.Equal(0, await CountActiveSessionsAsync(provider, ids.ConnectionId));
+    }
+
+    [Fact]
     public async Task Runner_PreservesTerminalDatabaseWinnerOverLateSuccess()
     {
         ServiceProvider? provider = null;
@@ -168,6 +190,31 @@ public sealed class OutlookAuthorizationSessionTests
     }
 
     [Fact]
+    public async Task Runner_CancelStillCancelsMsalWhenCanceledWritesConflict()
+    {
+        var msal = new BlockingMsalClient();
+        var interceptor = new FailSessionStatusSavesInterceptor("canceled", 7);
+        await using var provider = Services(msal, interceptor).BuildServiceProvider();
+        var ids = await SeedAsync(provider);
+        var runner = provider.GetRequiredService<OutlookAuthorizationSessionRunner>();
+        await runner.StartAsync(ids.SessionId, ids.UserId, CancellationToken.None);
+
+        var exception = await Record.ExceptionAsync(() =>
+            runner.CancelAsync(ids.SessionId, ids.UserId, CancellationToken.None));
+
+        Assert.Null(exception);
+        await msal.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await runner.WaitForCompletionAsync(ids.SessionId, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+        var stored = await ReadAsync(provider, ids);
+        Assert.Equal(7, interceptor.FailureCount);
+        Assert.Equal("canceled", stored.Session.Status);
+        Assert.Null(stored.Session.UserCode);
+        Assert.Null(stored.Session.ExpiresAt);
+        Assert.Equal(0, await CountActiveSessionsAsync(provider, ids.ConnectionId));
+    }
+
+    [Fact]
     public async Task Runner_DoubleStartInvokesAdapterOnce()
     {
         var msal = new BlockingMsalClient();
@@ -182,6 +229,29 @@ public sealed class OutlookAuthorizationSessionTests
         Assert.Equal(1, msal.CallCount);
         await runner.CancelAsync(ids.SessionId, ids.UserId, CancellationToken.None);
         await runner.WaitForCompletionAsync(ids.SessionId, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Runner_FastConcurrentAndSequentialStartsInvokeAdapterOnce()
+    {
+        var msal = new FastCompletingMsalClient();
+        var interceptor = new StaleValidationWindowInterceptor();
+        await using var provider = Services(msal, interceptor).BuildServiceProvider();
+        var ids = await SeedAsync(provider);
+        var runner = provider.GetRequiredService<OutlookAuthorizationSessionRunner>();
+
+        var starts = Enumerable.Range(0, 2)
+            .Select(_ => Task.Run(() => Record.ExceptionAsync(() =>
+                runner.StartAsync(ids.SessionId, ids.UserId, CancellationToken.None))))
+            .ToArray();
+        var exceptions = await Task.WhenAll(starts).WaitAsync(TimeSpan.FromSeconds(5));
+        await runner.WaitForCompletionAsync(ids.SessionId, CancellationToken.None);
+
+        Assert.Single(exceptions, exception => exception is null);
+        Assert.Single(exceptions, exception => exception is InvalidOperationException);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            runner.StartAsync(ids.SessionId, ids.UserId, CancellationToken.None));
+        Assert.Equal(1, msal.CallCount);
     }
 
     [Fact]
@@ -221,6 +291,25 @@ public sealed class OutlookAuthorizationSessionTests
         var stored = await ReadAsync(provider, ids);
         Assert.Equal("connected", stored.Session.Status);
         Assert.False(msal.InternalCancellationObserved);
+    }
+
+    [Fact]
+    public async Task Runner_ReadyTimeoutReturnsSnapshotWithoutCancelingBackgroundFlow()
+    {
+        var msal = new NoPromptBlockingMsalClient();
+        await using var provider = Services(msal, readyTimeout: TimeSpan.FromMilliseconds(50))
+            .BuildServiceProvider();
+        var ids = await SeedAsync(provider);
+        var runner = provider.GetRequiredService<OutlookAuthorizationSessionRunner>();
+
+        var snapshot = await runner.StartAsync(ids.SessionId, ids.UserId, CancellationToken.None);
+
+        Assert.Equal("starting", snapshot.Status);
+        await msal.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.False(msal.CancellationObserved.Task.IsCompleted);
+        await runner.CancelAsync(ids.SessionId, ids.UserId, CancellationToken.None);
+        await runner.WaitForCompletionAsync(ids.SessionId, CancellationToken.None);
+        await msal.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
     }
 
     [Theory]
@@ -337,6 +426,34 @@ public sealed class OutlookAuthorizationSessionTests
     }
 
     [Fact]
+    public async Task Runner_DisposeWaitsForInFlightStartRegistrationAndRejectsLaterStarts()
+    {
+        var msal = new BlockingMsalClient();
+        var interceptor = new BlockingSessionMaterializationInterceptor();
+        await using var provider = Services(msal, interceptor).BuildServiceProvider();
+        var ids = await SeedAsync(provider);
+        var runner = provider.GetRequiredService<OutlookAuthorizationSessionRunner>();
+        var start = Task.Run(() =>
+            runner.StartAsync(ids.SessionId, ids.UserId, CancellationToken.None));
+        await interceptor.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var dispose = runner.DisposeAsync().AsTask();
+        await Task.Delay(50);
+        var disposedBeforeValidationReleased = dispose.IsCompleted;
+        interceptor.Release.Set();
+        var startException = await Record.ExceptionAsync(async () => await start);
+        await dispose.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(disposedBeforeValidationReleased);
+        Assert.Null(startException);
+        await msal.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var rejected = await Task.WhenAll(Enumerable.Range(0, 32).Select(_ =>
+            Record.ExceptionAsync(() =>
+                runner.StartAsync(ids.SessionId, ids.UserId, CancellationToken.None))));
+        Assert.All(rejected, exception => Assert.IsType<ObjectDisposedException>(exception));
+    }
+
+    [Fact]
     public async Task CalendarModule_InitializeCleansInterruptedSessions()
     {
         await using var provider = Services(new PromptingMsalClient()).BuildServiceProvider();
@@ -420,7 +537,8 @@ public sealed class OutlookAuthorizationSessionTests
 
     private static ServiceCollection Services(
         IMsalPublicClientAdapter msal,
-        SaveChangesInterceptor? interceptor = null)
+        IInterceptor? interceptor = null,
+        TimeSpan? readyTimeout = null)
     {
         PimDbContext.RegisterModuleAssembly(typeof(OutlookConnectionEntity).Assembly);
         var databaseName = $"outlook-auth-session-{Guid.NewGuid()}";
@@ -433,7 +551,12 @@ public sealed class OutlookAuthorizationSessionTests
         });
         services.AddScoped<IMsalPublicClientAdapter>(_ => msal);
         services.AddSingleton<OutlookTokenCacheLock>();
-        services.AddSingleton<OutlookAuthorizationSessionRunner>();
+        services.AddSingleton(serviceProvider => readyTimeout.HasValue
+            ? new OutlookAuthorizationSessionRunner(
+                serviceProvider.GetRequiredService<IServiceScopeFactory>(),
+                readyTimeout.Value)
+            : new OutlookAuthorizationSessionRunner(
+                serviceProvider.GetRequiredService<IServiceScopeFactory>()));
         return services;
     }
 
@@ -561,6 +684,34 @@ public sealed class OutlookAuthorizationSessionTests
         }
     }
 
+    private sealed class NoPromptBlockingMsalClient : PromptingMsalClient
+    {
+        public TaskCompletionSource Entered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource CancellationObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task<MsalAuthenticationResult> AcquireTokenWithDeviceCodeAsync(
+            OutlookAuthContext context,
+            Func<OutlookDeviceCodePrompt, Task> onPrompt,
+            CancellationToken ct)
+        {
+            CallCount++;
+            Entered.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                CancellationObserved.TrySetResult();
+                throw;
+            }
+
+            throw new InvalidOperationException("Unreachable.");
+        }
+    }
+
     private sealed class FailingMsalClient(Exception exception) : PromptingMsalClient
     {
         public override async Task<MsalAuthenticationResult> AcquireTokenWithDeviceCodeAsync(
@@ -571,6 +722,18 @@ public sealed class OutlookAuthorizationSessionTests
             CallCount++;
             await onPrompt(Prompt());
             throw exception;
+        }
+    }
+
+    private sealed class FastCompletingMsalClient : PromptingMsalClient
+    {
+        public override Task<MsalAuthenticationResult> AcquireTokenWithDeviceCodeAsync(
+            OutlookAuthContext context,
+            Func<OutlookDeviceCodePrompt, Task> onPrompt,
+            CancellationToken ct)
+        {
+            CallCount++;
+            return Task.FromResult(Result);
         }
     }
 
@@ -595,6 +758,87 @@ public sealed class OutlookAuthorizationSessionTests
             }
 
             return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    private sealed class FailSessionStatusSavesInterceptor : SaveChangesInterceptor
+    {
+        private readonly string _status;
+        private int _remaining;
+
+        public FailSessionStatusSavesInterceptor(string status, int failures)
+        {
+            _status = status;
+            _remaining = failures;
+        }
+
+        public int FailureCount { get; private set; }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            var matches = eventData.Context?.ChangeTracker
+                .Entries<OutlookAuthorizationSessionEntity>()
+                .Any(entry => entry.State == EntityState.Modified && entry.Entity.Status == _status) == true;
+            if (matches && Interlocked.Decrement(ref _remaining) >= 0)
+            {
+                FailureCount++;
+                throw new DbUpdateConcurrencyException("Simulated terminal session conflict.");
+            }
+
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    private sealed class BlockingSessionMaterializationInterceptor : IMaterializationInterceptor
+    {
+        private int _blocked;
+
+        public TaskCompletionSource Entered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ManualResetEventSlim Release { get; } = new(false);
+
+        public object InitializedInstance(
+            MaterializationInterceptionData materializationData,
+            object entity)
+        {
+            if (entity is OutlookAuthorizationSessionEntity
+                && Interlocked.Exchange(ref _blocked, 1) == 0)
+            {
+                Entered.TrySetResult();
+                if (!Release.Wait(TimeSpan.FromSeconds(5)))
+                    throw new TimeoutException("Authorization validation was not released.");
+            }
+
+            return entity;
+        }
+    }
+
+    private sealed class StaleValidationWindowInterceptor : IMaterializationInterceptor
+    {
+        private readonly ManualResetEventSlim _secondValidation = new(false);
+        private int _sessionMaterializations;
+
+        public object InitializedInstance(
+            MaterializationInterceptionData materializationData,
+            object entity)
+        {
+            if (entity is not OutlookAuthorizationSessionEntity) return entity;
+
+            var ordinal = Interlocked.Increment(ref _sessionMaterializations);
+            if (ordinal == 1)
+            {
+                _secondValidation.Wait(TimeSpan.FromSeconds(2));
+            }
+            else if (ordinal == 2)
+            {
+                _secondValidation.Set();
+                Thread.Sleep(400);
+            }
+
+            return entity;
         }
     }
 

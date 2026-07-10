@@ -10,18 +10,31 @@ namespace Pim.Module.Calendar.Services;
 public sealed class OutlookAuthorizationSessionRunner : IAsyncDisposable
 {
     private const int FinalizationAttempts = 5;
+    private static readonly TimeSpan DefaultReadyTimeout = TimeSpan.FromSeconds(30);
     private const string ServiceRestartedMessage =
         "PIM 服务重启中断了 Microsoft 授权，请重新请求设备代码。";
     private const string StateConflictMessage =
         "Microsoft 授权状态更新冲突，请重新请求设备代码。";
 
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly TimeSpan _readyTimeout;
     private readonly ConcurrentDictionary<Guid, RunningSession> _running = new();
+    private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private int _disposeStarted;
 
     public OutlookAuthorizationSessionRunner(IServiceScopeFactory scopeFactory)
+        : this(scopeFactory, DefaultReadyTimeout)
+    {
+    }
+
+    internal OutlookAuthorizationSessionRunner(
+        IServiceScopeFactory scopeFactory,
+        TimeSpan readyTimeout)
     {
         _scopeFactory = scopeFactory;
+        _readyTimeout = readyTimeout > TimeSpan.Zero
+            ? readyTimeout
+            : throw new ArgumentOutOfRangeException(nameof(readyTimeout));
     }
 
     public async Task<OutlookAuthorizationSessionEntity> StartAsync(
@@ -29,26 +42,51 @@ public sealed class OutlookAuthorizationSessionRunner : IAsyncDisposable
         Guid userId,
         CancellationToken requestToken)
     {
-        ThrowIfDisposed();
-        var context = await ValidateStartAsync(sessionId, userId, requestToken);
-        ThrowIfDisposed();
-
-        var running = new RunningSession();
-        if (!_running.TryAdd(sessionId, running))
+        AuthorizationContext context;
+        RunningSession running;
+        await _lifecycleGate.WaitAsync(requestToken);
+        try
         {
-            running.DisposeCancellation();
-            throw new InvalidOperationException("This Microsoft authorization session is already running.");
+            if (_disposeStarted != 0)
+                throw new ObjectDisposedException(nameof(OutlookAuthorizationSessionRunner));
+
+            context = await ValidateStartAsync(sessionId, userId, requestToken);
+            if (_running.ContainsKey(sessionId))
+                throw new InvalidOperationException("This Microsoft authorization session is already running.");
+
+            running = new RunningSession();
+            if (!_running.TryAdd(sessionId, running))
+            {
+                running.DisposeCancellation();
+                throw new InvalidOperationException("This Microsoft authorization session is already running.");
+            }
+        }
+        finally
+        {
+            _lifecycleGate.Release();
         }
 
         _ = ExecuteRegisteredAsync(context, running);
-        return await running.Ready.Task.WaitAsync(requestToken);
+        try
+        {
+            return await running.Ready.Task.WaitAsync(_readyTimeout, requestToken);
+        }
+        catch (TimeoutException)
+        {
+            return await ReadSessionAsync(sessionId, userId, requestToken);
+        }
     }
 
     public async Task CancelAsync(Guid sessionId, Guid userId, CancellationToken ct)
     {
-        var session = await CancelSessionAsync(sessionId, userId, ct);
-        if (session.Status == "canceled" && _running.TryGetValue(sessionId, out var running))
+        await ReadSessionAsync(sessionId, userId, ct);
+        if (_running.TryGetValue(sessionId, out var running))
+        {
             running.TryCancel(CancellationReason.ApiCancel);
+            return;
+        }
+
+        await FinalizeFailureAsync(sessionId, userId, "canceled", null, null);
     }
 
     public async Task WaitForCompletionAsync(Guid sessionId, CancellationToken ct)
@@ -96,8 +134,18 @@ public sealed class OutlookAuthorizationSessionRunner : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        Interlocked.Exchange(ref _disposeStarted, 1);
-        var running = _running.Values.ToArray();
+        RunningSession[] running;
+        await _lifecycleGate.WaitAsync();
+        try
+        {
+            _disposeStarted = 1;
+            running = _running.Values.ToArray();
+        }
+        finally
+        {
+            _lifecycleGate.Release();
+        }
+
         foreach (var item in running) item.TryCancel(CancellationReason.HostDispose);
         await Task.WhenAll(running.Select(item => item.Completion.Task));
     }
@@ -147,12 +195,20 @@ public sealed class OutlookAuthorizationSessionRunner : IAsyncDisposable
         }
         finally
         {
-            running.Completion.TrySetResult();
-            if (((ICollection<KeyValuePair<Guid, RunningSession>>)_running)
-                .Remove(new KeyValuePair<Guid, RunningSession>(context.SessionId, running)))
+            await _lifecycleGate.WaitAsync();
+            try
             {
-                running.DisposeCancellation();
+                if (((ICollection<KeyValuePair<Guid, RunningSession>>)_running)
+                    .Remove(new KeyValuePair<Guid, RunningSession>(context.SessionId, running)))
+                {
+                    running.DisposeCancellation();
+                }
             }
+            finally
+            {
+                _lifecycleGate.Release();
+            }
+            running.Completion.TrySetResult();
         }
     }
 
@@ -189,14 +245,25 @@ public sealed class OutlookAuthorizationSessionRunner : IAsyncDisposable
         }
         catch (OperationCanceledException) when (running.Cancellation.IsCancellationRequested)
         {
-            var completed = running.Reason == CancellationReason.HostDispose
-                ? await FinalizeFailureAsync(
+            var completed = running.Reason switch
+            {
+                CancellationReason.HostDispose => await FinalizeFailureAsync(
                     context.SessionId,
                     context.UserId,
                     "failed",
                     "service-restarted",
-                    ServiceRestartedMessage)
-                : await ReadSessionAsync(context.SessionId, context.UserId, CancellationToken.None);
+                    ServiceRestartedMessage),
+                CancellationReason.ApiCancel => await FinalizeFailureAsync(
+                    context.SessionId,
+                    context.UserId,
+                    "canceled",
+                    null,
+                    null),
+                _ => await ReadSessionAsync(
+                    context.SessionId,
+                    context.UserId,
+                    CancellationToken.None)
+            };
             running.Ready.TrySetResult(completed);
         }
         catch (Exception exception)
@@ -318,10 +385,10 @@ public sealed class OutlookAuthorizationSessionRunner : IAsyncDisposable
         Guid sessionId,
         Guid userId,
         string status,
-        string errorCode,
-        string errorMessage)
+        string? errorCode,
+        string? errorMessage)
     {
-        for (var attempt = 0; attempt < FinalizationAttempts * 2; attempt++)
+        while (true)
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
@@ -341,36 +408,6 @@ public sealed class OutlookAuthorizationSessionRunner : IAsyncDisposable
             {
             }
         }
-
-        return await ReadSessionAsync(sessionId, userId, CancellationToken.None);
-    }
-
-    private async Task<OutlookAuthorizationSessionEntity> CancelSessionAsync(
-        Guid sessionId,
-        Guid userId,
-        CancellationToken ct)
-    {
-        for (var attempt = 0; attempt < FinalizationAttempts; attempt++)
-        {
-            await using var scope = _scopeFactory.CreateAsyncScope();
-            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
-            var session = await db.Set<OutlookAuthorizationSessionEntity>()
-                .SingleOrDefaultAsync(item => item.Id == sessionId && item.UserId == userId, ct)
-                ?? throw new InvalidOperationException("Microsoft authorization session was not found.");
-            if (!IsActive(session.Status)) return Clone(session);
-
-            MarkTerminal(session, "canceled", null, null, DateTimeOffset.UtcNow);
-            try
-            {
-                await db.SaveChangesAsync(ct);
-                return Clone(session);
-            }
-            catch (DbUpdateConcurrencyException) when (attempt + 1 < FinalizationAttempts)
-            {
-            }
-        }
-
-        return await ReadSessionAsync(sessionId, userId, ct);
     }
 
     private async Task<OutlookAuthorizationSessionEntity> ReadSessionAsync(
@@ -445,12 +482,6 @@ public sealed class OutlookAuthorizationSessionRunner : IAsyncDisposable
         "cache-corrupted" => "本地授权缓存无法解析，需要重新连接 Microsoft 账号。",
         _ => "Microsoft 授权未完成，请检查配置和网络后重试。"
     };
-
-    private void ThrowIfDisposed()
-    {
-        if (Volatile.Read(ref _disposeStarted) != 0)
-            throw new ObjectDisposedException(nameof(OutlookAuthorizationSessionRunner));
-    }
 
     private static OutlookAuthorizationSessionEntity Clone(
         OutlookAuthorizationSessionEntity source) => new()
