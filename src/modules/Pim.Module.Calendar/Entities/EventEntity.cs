@@ -21,6 +21,17 @@ public class EventEntity : ISoftDeletable
     [Column("organizer")][MaxLength(255)] public string? Organizer { get; set; }
     [Column("source")][MaxLength(20)] public string Source { get; set; } = "manual";
     [Column("outlook_event_id")][MaxLength(255)] public string? OutlookEventId { get; set; }
+    [Column("outlook_connection_id")] public Guid? OutlookConnectionId { get; set; }
+    [Column("outlook_calendar_binding_id")] public Guid? OutlookCalendarBindingId { get; set; }
+    [Column("outlook_series_master_id"), MaxLength(512)] public string? OutlookSeriesMasterId { get; set; }
+    [Column("outlook_event_type"), MaxLength(32)] public string? OutlookEventType { get; set; }
+    [Column("original_start_time_zone"), MaxLength(128)] public string? OriginalStartTimeZone { get; set; }
+    [Column("original_end_time_zone"), MaxLength(128)] public string? OriginalEndTimeZone { get; set; }
+    [Column("all_day_start_date")] public DateOnly? AllDayStartDate { get; set; }
+    [Column("all_day_end_date_exclusive")] public DateOnly? AllDayEndDateExclusive { get; set; }
+    [Column("graph_recurrence_json", TypeName = "jsonb")] public string GraphRecurrenceJson { get; set; } = "{}";
+    [Column("last_seen_sync_generation")] public Guid? LastSeenSyncGeneration { get; set; }
+    [Column("outlook_sync_state"), MaxLength(32)] public string? OutlookSyncState { get; set; }
     [Column("schedule_plan_id")] public Guid? SchedulePlanId { get; set; }
     [Column("is_all_day")] public bool IsAllDay { get; set; }
     [Column("time_zone_id")][MaxLength(100)] public string? TimeZoneId { get; set; }
