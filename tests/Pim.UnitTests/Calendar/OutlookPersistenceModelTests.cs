@@ -10,22 +10,27 @@ public sealed class OutlookPersistenceModelTests
     [Fact]
     public void MicrosoftSyncModel_HasPerCalendarAndDurableExecutionConstraints()
     {
-        PimDbContext.RegisterModuleAssembly(typeof(OutlookConnectionEntity).Assembly);
-        var options = new DbContextOptionsBuilder<PimDbContext>()
-            .UseInMemoryDatabase($"outlook-model-{Guid.NewGuid()}")
-            .Options;
-        using var db = new PimDbContext(options);
+        using var db = CreateDb();
 
         var connection = db.Model.FindEntityType(typeof(OutlookConnectionEntity))!;
         Assert.NotNull(connection.FindProperty(nameof(OutlookConnectionEntity.MsalCacheEncrypted)));
         Assert.NotNull(connection.FindProperty(nameof(OutlookConnectionEntity.HomeAccountId)));
         Assert.True(connection.FindIndex(connection.FindProperty(nameof(OutlookConnectionEntity.UserId))!)!.IsUnique);
+        Assert.True(connection.FindProperty(nameof(OutlookConnectionEntity.Version))!.IsConcurrencyToken);
 
         var binding = db.Model.FindEntityType(typeof(OutlookCalendarBindingEntity))!;
         Assert.True(binding.GetIndexes().Single(index =>
             index.Properties.Select(property => property.Name).SequenceEqual([
                 nameof(OutlookCalendarBindingEntity.ConnectionId),
                 nameof(OutlookCalendarBindingEntity.GraphCalendarId)])).IsUnique);
+        Assert.Equal(
+            DeleteBehavior.Cascade,
+            Assert.Single(binding.GetForeignKeys(), foreignKey =>
+                foreignKey.PrincipalEntityType.ClrType == typeof(OutlookConnectionEntity)).DeleteBehavior);
+        Assert.Equal(
+            DeleteBehavior.Restrict,
+            Assert.Single(binding.GetForeignKeys(), foreignKey =>
+                foreignKey.PrincipalEntityType.ClrType == typeof(CalendarEntity)).DeleteBehavior);
 
         var execution = db.Model.FindEntityType(typeof(OutlookOperationExecutionEntity))!;
         Assert.True(execution.GetIndexes().Single(index =>
@@ -41,5 +46,49 @@ public sealed class OutlookPersistenceModelTests
             index.Properties.Select(property => property.Name).SequenceEqual([
                 nameof(EventEntity.OutlookCalendarBindingId),
                 nameof(EventEntity.OutlookEventId)])).IsUnique);
+    }
+
+    [Fact]
+    public void MicrosoftSyncModel_OutlookEventRelationshipsUseSetNull()
+    {
+        using var db = CreateDb();
+        var outlookEvent = db.Model.FindEntityType(typeof(EventEntity))!;
+
+        var bindingForeignKey = Assert.Single(outlookEvent.GetForeignKeys(), foreignKey =>
+            foreignKey.PrincipalEntityType.ClrType == typeof(OutlookCalendarBindingEntity) &&
+            foreignKey.Properties.Select(property => property.Name).SequenceEqual([
+                nameof(EventEntity.OutlookCalendarBindingId)]));
+        Assert.Equal(DeleteBehavior.SetNull, bindingForeignKey.DeleteBehavior);
+
+        var connectionForeignKey = Assert.Single(outlookEvent.GetForeignKeys(), foreignKey =>
+            foreignKey.PrincipalEntityType.ClrType == typeof(OutlookConnectionEntity) &&
+            foreignKey.Properties.Select(property => property.Name).SequenceEqual([
+                nameof(EventEntity.OutlookConnectionId)]));
+        Assert.Equal(DeleteBehavior.SetNull, connectionForeignKey.DeleteBehavior);
+    }
+
+    [Fact]
+    public void MicrosoftSyncModel_OutlookEventIdentityIgnoresSoftDeletedRows()
+    {
+        using var db = CreateDb();
+        var outlookEvent = db.Model.FindEntityType(typeof(EventEntity))!;
+        var index = Assert.Single(outlookEvent.GetIndexes(), candidate =>
+            candidate.Properties.Select(property => property.Name).SequenceEqual([
+                nameof(EventEntity.OutlookCalendarBindingId),
+                nameof(EventEntity.OutlookEventId)]));
+
+        Assert.True(index.IsUnique);
+        Assert.Equal(
+            "\"outlook_calendar_binding_id\" IS NOT NULL AND \"outlook_event_id\" IS NOT NULL AND \"deleted_at\" IS NULL",
+            index.GetFilter());
+    }
+
+    private static PimDbContext CreateDb()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(OutlookConnectionEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseNpgsql("Host=localhost;Database=pim_model_tests")
+            .Options;
+        return new PimDbContext(options);
     }
 }

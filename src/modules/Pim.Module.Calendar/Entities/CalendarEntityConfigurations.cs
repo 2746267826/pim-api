@@ -31,13 +31,21 @@ public class EventEntityConfiguration : IEntityTypeConfiguration<EventEntity>
         builder.HasIndex(e => e.OutlookEventId);
         builder.HasIndex(e => new { e.OutlookCalendarBindingId, e.OutlookEventId })
             .IsUnique()
-            .HasFilter("\"outlook_calendar_binding_id\" IS NOT NULL AND \"outlook_event_id\" IS NOT NULL");
+            .HasFilter("\"outlook_calendar_binding_id\" IS NOT NULL AND \"outlook_event_id\" IS NOT NULL AND \"deleted_at\" IS NULL");
         builder.HasIndex(e => e.OutlookChangeKey);
         builder.HasIndex(e => new { e.DeletedAt, e.DtStart });
         builder.HasIndex(e => e.DeletedByOperationId);
         builder.HasOne(e => e.Calendar)
             .WithMany(c => c.Events)
             .HasForeignKey(e => e.CalendarId);
+        builder.HasOne(e => e.OutlookCalendarBinding)
+            .WithMany()
+            .HasForeignKey(e => e.OutlookCalendarBindingId)
+            .OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne<OutlookConnectionEntity>()
+            .WithMany()
+            .HasForeignKey(e => e.OutlookConnectionId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 

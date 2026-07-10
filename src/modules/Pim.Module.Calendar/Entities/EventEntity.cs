@@ -52,4 +52,7 @@ public class EventEntity : ISoftDeletable
 
     [ForeignKey(nameof(CalendarId))]
     public CalendarEntity Calendar { get; set; } = null!;
+
+    [ForeignKey(nameof(OutlookCalendarBindingId))]
+    public OutlookCalendarBindingEntity? OutlookCalendarBinding { get; set; }
 }
