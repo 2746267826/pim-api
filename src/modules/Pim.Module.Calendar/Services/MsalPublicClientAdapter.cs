@@ -17,7 +17,11 @@ public sealed record OutlookDeviceCodePrompt(
     string UserCode,
     string VerificationUri,
     DateTimeOffset ExpiresAt,
-    string Message);
+    string Message)
+{
+    public override string ToString()
+        => $"{nameof(OutlookDeviceCodePrompt)} {{ VerificationUri = {VerificationUri}, ExpiresAt = {ExpiresAt:O} }}";
+}
 
 public sealed record MsalAuthenticationResult(
     string AccessToken,
@@ -25,7 +29,11 @@ public sealed record MsalAuthenticationResult(
     string? Username,
     string? DisplayName,
     DateTimeOffset ExpiresOn,
-    IReadOnlyList<string> Scopes);
+    IReadOnlyList<string> Scopes)
+{
+    public override string ToString()
+        => $"{nameof(MsalAuthenticationResult)} {{ ExpiresOn = {ExpiresOn:O}, ScopeCount = {Scopes.Count} }}";
+}
 
 public interface IMsalPublicClientAdapter
 {
@@ -46,30 +54,54 @@ public sealed class OutlookReauthenticationRequiredException(string code, Except
     public string Code { get; } = code;
 }
 
+internal interface IMsalClientApplication
+{
+    void BindCache(
+        Func<ITokenCacheSerializer, CancellationToken, Task> beforeAccess,
+        Func<ITokenCacheSerializer, bool, CancellationToken, Task> afterAccess);
+
+    Task<bool> TrySelectAccountAsync(string homeAccountId, CancellationToken ct);
+    Task<MsalAuthenticationResult> AcquireTokenSilentAsync(bool forceRefresh, CancellationToken ct);
+
+    Task<MsalAuthenticationResult> AcquireTokenWithDeviceCodeAsync(
+        Func<OutlookDeviceCodePrompt, Task> onPrompt,
+        CancellationToken ct);
+}
+
 public sealed class MsalPublicClientAdapter : IMsalPublicClientAdapter
 {
     private readonly OutlookTokenCacheStore _cacheStore;
+    private readonly Func<OutlookAuthContext, IMsalClientApplication> _clientFactory;
 
-    public MsalPublicClientAdapter(OutlookTokenCacheStore cacheStore) => _cacheStore = cacheStore;
+    public MsalPublicClientAdapter(OutlookTokenCacheStore cacheStore)
+        : this(cacheStore, Build)
+    {
+    }
+
+    internal MsalPublicClientAdapter(
+        OutlookTokenCacheStore cacheStore,
+        Func<OutlookAuthContext, IMsalClientApplication> clientFactory)
+    {
+        _cacheStore = cacheStore;
+        _clientFactory = clientFactory;
+    }
 
     public async Task<MsalAuthenticationResult> AcquireTokenSilentAsync(
         OutlookAuthContext context,
         bool forceRefresh,
         CancellationToken ct)
     {
-        var app = Build(context);
-        BindCache(app.UserTokenCache, context.ConnectionId);
-        var accounts = await app.GetAccountsAsync();
-        var account = accounts.SingleOrDefault(item => item.HomeAccountId.Identifier == context.HomeAccountId)
-            ?? accounts.SingleOrDefault();
-        if (account is null) throw new OutlookReauthenticationRequiredException("account-missing");
+        if (string.IsNullOrWhiteSpace(context.HomeAccountId))
+            throw new OutlookReauthenticationRequiredException("account-anchor-missing");
+
+        var app = _clientFactory(context);
+        BindCache(app, context.ConnectionId);
+        if (!await app.TrySelectAccountAsync(context.HomeAccountId, ct))
+            throw new OutlookReauthenticationRequiredException("account-missing");
 
         try
         {
-            var result = await app.AcquireTokenSilent(OutlookAuthScopes.Required, account)
-                .WithForceRefresh(forceRefresh)
-                .ExecuteAsync(ct);
-            return Map(result);
+            return await app.AcquireTokenSilentAsync(forceRefresh, ct);
         }
         catch (MsalUiRequiredException exception)
         {
@@ -82,9 +114,96 @@ public sealed class MsalPublicClientAdapter : IMsalPublicClientAdapter
         Func<OutlookDeviceCodePrompt, Task> onPrompt,
         CancellationToken ct)
     {
-        var app = Build(context);
-        BindCache(app.UserTokenCache, context.ConnectionId);
-        var result = await app.AcquireTokenWithDeviceCode(
+        var app = _clientFactory(context);
+        BindCache(app, context.ConnectionId);
+        return await app.AcquireTokenWithDeviceCodeAsync(onPrompt, ct);
+    }
+
+    private void BindCache(IMsalClientApplication app, Guid connectionId)
+    {
+        OutlookTokenCacheSnapshot? snapshot = null;
+        app.BindCache(
+            async (tokenCache, callbackCt) =>
+            {
+                snapshot = await _cacheStore.LoadAsync(connectionId, callbackCt);
+                if (snapshot.Blob is not { Length: > 0 }) return;
+
+                try
+                {
+                    tokenCache.DeserializeMsalV3(snapshot.Blob, shouldClearExistingCache: true);
+                }
+                catch (MsalClientException exception) when (exception.ErrorCode == MsalError.JsonParseError)
+                {
+                    throw new OutlookTokenCacheCorruptedException();
+                }
+            },
+            async (tokenCache, hasStateChanged, callbackCt) =>
+            {
+                if (!hasStateChanged) return;
+
+                snapshot ??= await _cacheStore.LoadAsync(connectionId, callbackCt);
+                snapshot = await _cacheStore.SaveAsync(
+                    connectionId,
+                    tokenCache.SerializeMsalV3(),
+                    snapshot.Version,
+                    callbackCt);
+            });
+    }
+
+    private static IMsalClientApplication Build(OutlookAuthContext context)
+        => new MsalClientApplication(
+            PublicClientApplicationBuilder.Create(context.ClientId)
+                .WithAuthority(context.Authority)
+                .Build());
+}
+
+internal sealed class MsalClientApplication(IPublicClientApplication application) : IMsalClientApplication
+{
+    private IAccount? _selectedAccount;
+
+    public void BindCache(
+        Func<ITokenCacheSerializer, CancellationToken, Task> beforeAccess,
+        Func<ITokenCacheSerializer, bool, CancellationToken, Task> afterAccess)
+    {
+        application.UserTokenCache.SetBeforeAccessAsync(args =>
+            beforeAccess(args.TokenCache, args.CancellationToken));
+        application.UserTokenCache.SetAfterAccessAsync(args =>
+            afterAccess(args.TokenCache, args.HasStateChanged, args.CancellationToken));
+    }
+
+    public async Task<bool> TrySelectAccountAsync(string homeAccountId, CancellationToken ct)
+    {
+        if (application is ClientApplicationBase concreteApplication)
+        {
+            _selectedAccount = await concreteApplication.GetAccountAsync(homeAccountId, ct);
+        }
+        else
+        {
+            ct.ThrowIfCancellationRequested();
+            _selectedAccount = await application.GetAccountAsync(homeAccountId);
+            ct.ThrowIfCancellationRequested();
+        }
+
+        return _selectedAccount is not null;
+    }
+
+    public async Task<MsalAuthenticationResult> AcquireTokenSilentAsync(
+        bool forceRefresh,
+        CancellationToken ct)
+    {
+        var account = _selectedAccount
+            ?? throw new InvalidOperationException("An exact Microsoft account must be selected first.");
+        var result = await application.AcquireTokenSilent(OutlookAuthScopes.Required, account)
+            .WithForceRefresh(forceRefresh)
+            .ExecuteAsync(ct);
+        return Map(result);
+    }
+
+    public async Task<MsalAuthenticationResult> AcquireTokenWithDeviceCodeAsync(
+        Func<OutlookDeviceCodePrompt, Task> onPrompt,
+        CancellationToken ct)
+    {
+        var result = await application.AcquireTokenWithDeviceCode(
                 OutlookAuthScopes.Required,
                 code => onPrompt(new OutlookDeviceCodePrompt(
                     code.UserCode,
@@ -93,31 +212,6 @@ public sealed class MsalPublicClientAdapter : IMsalPublicClientAdapter
                     code.Message)))
             .ExecuteAsync(ct);
         return Map(result);
-    }
-
-    private static IPublicClientApplication Build(OutlookAuthContext context)
-        => PublicClientApplicationBuilder.Create(context.ClientId)
-            .WithAuthority(context.Authority)
-            .Build();
-
-    private void BindCache(ITokenCache tokenCache, Guid connectionId)
-    {
-        tokenCache.SetBeforeAccessAsync(async args =>
-        {
-            var bytes = await _cacheStore.LoadAsync(connectionId, args.CancellationToken);
-            if (bytes is { Length: > 0 })
-                args.TokenCache.DeserializeMsalV3(bytes, shouldClearExistingCache: true);
-        });
-        tokenCache.SetAfterAccessAsync(async args =>
-        {
-            if (args.HasStateChanged)
-            {
-                await _cacheStore.SaveAsync(
-                    connectionId,
-                    args.TokenCache.SerializeMsalV3(),
-                    args.CancellationToken);
-            }
-        });
     }
 
     private static MsalAuthenticationResult Map(AuthenticationResult result)

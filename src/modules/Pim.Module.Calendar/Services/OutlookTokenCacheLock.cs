@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 
 namespace Pim.Module.Calendar.Services;
 
-public sealed class OutlookConnectionLock
+public sealed class OutlookTokenCacheLock
 {
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _locks = new();
 
