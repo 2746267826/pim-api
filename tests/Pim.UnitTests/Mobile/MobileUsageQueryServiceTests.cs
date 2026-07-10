@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Pim.Module.Mobile.DTOs;
 using Pim.Module.Mobile.Entities;
 using Pim.Module.Mobile.Services;
@@ -9,6 +10,47 @@ namespace Pim.UnitTests.Mobile;
 
 public sealed class MobileUsageQueryServiceTests
 {
+    [Fact]
+    public async Task GetSummaryAsync_InterpretsVersionedBatchErrorsWithoutMisreportingSuccess()
+    {
+        var now = DateTimeOffset.Parse("2026-07-06T12:00:00Z");
+        await using var db = MobileTestHelpers.CreateDb();
+        db.Set<MobileSyncBatchEntity>().AddRange(
+            Batch(
+                "batch-ok",
+                "completed",
+                JsonSerializer.Serialize(new MobileSyncBatchEnvelope(1, [], [])),
+                now.AddMinutes(-3)),
+            Batch(
+                "batch-errors",
+                "completed-with-errors",
+                JsonSerializer.Serialize(new MobileSyncBatchEnvelope(
+                    1,
+                    [],
+                    ["network unavailable", "retry later"])),
+                now.AddMinutes(-2)),
+            Batch(
+                "batch-legacy",
+                "failed",
+                "{\"message\":\"legacy failure\"}",
+                now.AddMinutes(-1)));
+        await db.SaveChangesAsync();
+
+        var service = new MobileUsageQueryService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            MobileTestHelpers.Time(now));
+
+        var summary = await service.GetSummaryAsync(
+            new MobileSummaryQuery("android-main", now.AddHours(-3), now),
+            CancellationToken.None);
+        var batches = summary.SyncBatches.ToDictionary(batch => batch.ClientBatchId);
+
+        Assert.Null(batches["batch-ok"].ErrorMessage);
+        Assert.Equal("network unavailable; retry later", batches["batch-errors"].ErrorMessage);
+        Assert.Equal("{\"message\":\"legacy failure\"}", batches["batch-legacy"].ErrorMessage);
+    }
+
     [Fact]
     public async Task GetSummaryAsync_ReturnsLocationCountsForBatchWindow()
     {
@@ -44,6 +86,7 @@ public sealed class MobileUsageQueryServiceTests
             now), CancellationToken.None);
 
         var batch = Assert.Single(summary.SyncBatches);
+        Assert.Equal(3, batch.AcceptedEventCount);
         Assert.Equal(1, batch.AcceptedLocationCount);
         Assert.Equal(1, batch.RejectedLocationCount);
     }
@@ -79,5 +122,23 @@ public sealed class MobileUsageQueryServiceTests
             Quality = quality,
             RawJson = "{}",
             CreatedAt = recordedAt.AddSeconds(3)
+        };
+
+    private static MobileSyncBatchEntity Batch(
+        string batchId,
+        string status,
+        string errorJson,
+        DateTimeOffset createdAt)
+        => new()
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = "android-main",
+            BatchId = batchId,
+            WindowStartUtc = createdAt.AddHours(-1),
+            WindowEndUtc = createdAt,
+            Status = status,
+            ErrorJson = errorJson,
+            CreatedAt = createdAt,
+            CompletedAtUtc = createdAt
         };
 }

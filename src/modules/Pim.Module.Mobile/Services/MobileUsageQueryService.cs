@@ -98,7 +98,7 @@ public sealed class MobileUsageQueryService
                     && p.RecordedAtUtc >= b.WindowStartUtc
                     && p.RecordedAtUtc < b.WindowEndUtc
                     && string.Equals(p.Quality, "rejected", StringComparison.OrdinalIgnoreCase)),
-                b.ErrorJson is "{}" or "" ? null : b.ErrorJson))
+                MobileSyncBatchEnvelopeCodec.ErrorMessage(b.ErrorJson)))
             .ToList();
 
         return new MobileUsageSummaryResponse(
