@@ -232,6 +232,15 @@ public sealed class OutlookMsalAuthenticationTests
     }
 
     [Fact]
+    public Task SilentAuth_ReauthenticationFailure_DoesNotOverwriteNewerAccountState()
+        => AssertNewerAccountStateIsPreservedAsync(
+            new OutlookReauthenticationRequiredException("interaction_required"));
+
+    [Fact]
+    public Task SilentAuth_CacheCorruption_DoesNotOverwriteNewerAccountState()
+        => AssertNewerAccountStateIsPreservedAsync(new OutlookTokenCacheCorruptedException());
+
+    [Fact]
     public async Task SilentAuth_DoesNotWriteWhenConnectionStateAlreadyMatches()
     {
         await using var db = CreateDb();
@@ -380,30 +389,80 @@ public sealed class OutlookMsalAuthenticationTests
         db.Set<OutlookConnectionEntity>().Add(connection);
         await db.SaveChangesAsync();
     }
+
+    private static async Task AssertNewerAccountStateIsPreservedAsync(Exception authenticationException)
+    {
+        await using var services = CreateServices();
+        var connection = Connection();
+        await SeedAsync(services, connection);
+        await using var coordinatorScope = services.CreateAsyncScope();
+        var coordinatorDb = coordinatorScope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var client = new FakeMsalClient
+        {
+            SilentException = authenticationException,
+            BeforeSilentFailure = async (_, ct) =>
+            {
+                await using var updateScope = services.CreateAsyncScope();
+                var updateDb = updateScope.ServiceProvider.GetRequiredService<PimDbContext>();
+                var newer = await updateDb.Set<OutlookConnectionEntity>()
+                    .SingleAsync(item => item.Id == connection.Id, ct);
+                newer.HomeAccountId = "new-home-account";
+                newer.AccountDisplayName = "New Account";
+                newer.AccountLoginHint = "new-account@example.com";
+                newer.Status = "connected";
+                newer.TokenHealth = "healthy";
+                newer.LastError = null;
+                newer.Version++;
+                await updateDb.SaveChangesAsync(ct);
+            }
+        };
+        var coordinator = new MsalOutlookAuthCoordinator(
+            coordinatorDb,
+            client,
+            new OutlookTokenCacheLock());
+
+        var thrown = await Record.ExceptionAsync(() =>
+            coordinator.AcquireAccessTokenAsync(connection.Id, false, CancellationToken.None));
+
+        Assert.Same(authenticationException, thrown);
+        await using var verificationScope = services.CreateAsyncScope();
+        var verificationDb = verificationScope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var stored = await verificationDb.Set<OutlookConnectionEntity>()
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == connection.Id);
+        Assert.Equal("new-home-account", stored.HomeAccountId);
+        Assert.Equal("New Account", stored.AccountDisplayName);
+        Assert.Equal("new-account@example.com", stored.AccountLoginHint);
+        Assert.Equal("connected", stored.Status);
+        Assert.Equal("healthy", stored.TokenHealth);
+        Assert.Null(stored.LastError);
+        Assert.Equal(connection.Version + 1, stored.Version);
+    }
 }
 
 internal sealed class FakeMsalClient : IMsalPublicClientAdapter
 {
     public Exception? SilentException { get; set; }
+    public Func<OutlookAuthContext, CancellationToken, Task>? BeforeSilentFailure { get; set; }
     public int CacheConcurrencyFailuresRemaining { get; set; }
     public int SilentAcquisitionCount { get; private set; }
     public MsalAuthenticationResult Result { get; set; } = new(
         "access-token", "home-account", "user@example.com", "User", DateTimeOffset.UtcNow.AddHours(1),
         ["Calendars.ReadWrite", "User.Read"]);
 
-    public Task<MsalAuthenticationResult> AcquireTokenSilentAsync(
+    public async Task<MsalAuthenticationResult> AcquireTokenSilentAsync(
         OutlookAuthContext context, bool forceRefresh, CancellationToken ct)
     {
         SilentAcquisitionCount++;
         if (CacheConcurrencyFailuresRemaining > 0)
         {
             CacheConcurrencyFailuresRemaining--;
-            return Task.FromException<MsalAuthenticationResult>(new OutlookTokenCacheConcurrencyException());
+            throw new OutlookTokenCacheConcurrencyException();
         }
 
-        return SilentException is null
-            ? Task.FromResult(Result)
-            : Task.FromException<MsalAuthenticationResult>(SilentException);
+        if (BeforeSilentFailure is not null) await BeforeSilentFailure(context, ct);
+        if (SilentException is not null) throw SilentException;
+        return Result;
     }
 
     public Task<MsalAuthenticationResult> AcquireTokenWithDeviceCodeAsync(

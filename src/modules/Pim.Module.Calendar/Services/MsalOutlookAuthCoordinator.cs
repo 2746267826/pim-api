@@ -62,21 +62,27 @@ public sealed class MsalOutlookAuthCoordinator : IOutlookAccessTokenProvider
         catch (OutlookReauthenticationRequiredException)
         {
             await _db.Entry(connection).ReloadAsync(ct);
-            await MarkFailureAsync(
-                connection,
-                "interaction-required",
-                ReauthenticationMessage,
-                ct);
+            if (string.Equals(connection.HomeAccountId, anchor, StringComparison.Ordinal))
+            {
+                await MarkFailureAsync(
+                    connection,
+                    "interaction-required",
+                    ReauthenticationMessage,
+                    ct);
+            }
             throw;
         }
         catch (OutlookTokenCacheCorruptedException)
         {
             await _db.Entry(connection).ReloadAsync(ct);
-            await MarkFailureAsync(
-                connection,
-                "cache-corrupted",
-                CacheCorruptedMessage,
-                ct);
+            if (string.Equals(connection.HomeAccountId, anchor, StringComparison.Ordinal))
+            {
+                await MarkFailureAsync(
+                    connection,
+                    "cache-corrupted",
+                    CacheCorruptedMessage,
+                    ct);
+            }
             throw;
         }
     }
