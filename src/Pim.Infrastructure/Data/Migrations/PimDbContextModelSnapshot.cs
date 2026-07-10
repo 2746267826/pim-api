@@ -1112,6 +1112,12 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_default");
 
+                    b.Property<bool>("IsVisible")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_visible");
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -1123,6 +1129,14 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)")
                         .HasColumnName("name");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("manual")
+                        .HasColumnName("source");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -1199,6 +1213,14 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<DateOnly?>("AllDayEndDateExclusive")
+                        .HasColumnType("date")
+                        .HasColumnName("all_day_end_date_exclusive");
+
+                    b.Property<DateOnly?>("AllDayStartDate")
+                        .HasColumnType("date")
+                        .HasColumnName("all_day_start_date");
+
                     b.Property<Guid>("CalendarId")
                         .HasColumnType("uuid")
                         .HasColumnName("calendar_id");
@@ -1250,9 +1272,20 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasDefaultValue("{}")
                         .HasColumnName("external_metadata_json");
 
+                    b.Property<string>("GraphRecurrenceJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("graph_recurrence_json");
+
                     b.Property<bool>("IsAllDay")
                         .HasColumnType("boolean")
                         .HasColumnName("is_all_day");
+
+                    b.Property<Guid?>("LastSeenSyncGeneration")
+                        .HasColumnType("uuid")
+                        .HasColumnName("last_seen_sync_generation");
 
                     b.Property<string>("Location")
                         .HasMaxLength(500)
@@ -1264,10 +1297,28 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(255)")
                         .HasColumnName("organizer");
 
+                    b.Property<string>("OriginalEndTimeZone")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("original_end_time_zone");
+
+                    b.Property<string>("OriginalStartTimeZone")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("original_start_time_zone");
+
+                    b.Property<Guid?>("OutlookCalendarBindingId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("outlook_calendar_binding_id");
+
                     b.Property<string>("OutlookChangeKey")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)")
                         .HasColumnName("outlook_change_key");
+
+                    b.Property<Guid?>("OutlookConnectionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("outlook_connection_id");
 
                     b.Property<string>("OutlookEtag")
                         .HasMaxLength(255)
@@ -1278,6 +1329,21 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)")
                         .HasColumnName("outlook_event_id");
+
+                    b.Property<string>("OutlookEventType")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("outlook_event_type");
+
+                    b.Property<string>("OutlookSeriesMasterId")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("outlook_series_master_id");
+
+                    b.Property<string>("OutlookSyncState")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("outlook_sync_state");
 
                     b.Property<string>("RRule")
                         .HasColumnType("text")
@@ -1354,6 +1420,8 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasIndex("OutlookChangeKey");
 
+                    b.HasIndex("OutlookConnectionId");
+
                     b.HasIndex("OutlookEventId");
 
                     b.HasIndex("SourceUid");
@@ -1361,6 +1429,10 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("Uid");
 
                     b.HasIndex("DeletedAt", "DtStart");
+
+                    b.HasIndex("OutlookCalendarBindingId", "OutlookEventId")
+                        .IsUnique()
+                        .HasFilter("\"outlook_calendar_binding_id\" IS NOT NULL AND \"outlook_event_id\" IS NOT NULL AND \"deleted_at\" IS NULL");
 
                     b.ToTable("events");
                 });
@@ -1494,6 +1566,221 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.ToTable("habit_routines");
                 });
 
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.OutlookAuthorizationSessionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AccountDisplayName")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("account_display_name");
+
+                    b.Property<string>("AccountLoginHint")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("account_login_hint");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("connection_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("error_code");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasColumnType("text")
+                        .HasColumnName("error_message");
+
+                    b.Property<DateTimeOffset?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("starting")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("UserCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("user_code");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("VerificationUri")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("verification_uri");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConnectionId", "Status");
+
+                    b.HasIndex("UserId", "CreatedAt");
+
+                    b.ToTable("outlook_authorization_sessions");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.OutlookCalendarBindingEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("BaselineWindowEnd")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("baseline_window_end");
+
+                    b.Property<DateTimeOffset?>("BaselineWindowStart")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("baseline_window_start");
+
+                    b.Property<bool>("CanEdit")
+                        .HasColumnType("boolean")
+                        .HasColumnName("can_edit");
+
+                    b.Property<bool>("CanViewPrivateItems")
+                        .HasColumnType("boolean")
+                        .HasColumnName("can_view_private_items");
+
+                    b.Property<string>("Color")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("color");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("connection_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DeltaLink")
+                        .HasColumnType("text")
+                        .HasColumnName("delta_link");
+
+                    b.Property<string>("GraphCalendarId")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("graph_calendar_id");
+
+                    b.Property<string>("GraphGroupId")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("graph_group_id");
+
+                    b.Property<string>("GraphGroupName")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("graph_group_name");
+
+                    b.Property<bool>("IsDefaultCalendar")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_default_calendar");
+
+                    b.Property<bool>("IsSelected")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_selected");
+
+                    b.Property<DateTimeOffset?>("LastDiscoveryAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_discovery_at");
+
+                    b.Property<string>("LastErrorCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("last_error_code");
+
+                    b.Property<string>("LastErrorMessage")
+                        .HasColumnType("text")
+                        .HasColumnName("last_error_message");
+
+                    b.Property<DateTimeOffset?>("LastFullBaselineAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_full_baseline_at");
+
+                    b.Property<Guid?>("LastSuccessfulGeneration")
+                        .HasColumnType("uuid")
+                        .HasColumnName("last_successful_generation");
+
+                    b.Property<DateTimeOffset?>("LastSyncedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_synced_at");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("OwnerAddress")
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("owner_address");
+
+                    b.Property<string>("OwnerName")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("owner_name");
+
+                    b.Property<Guid>("PimCalendarId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("pim_calendar_id");
+
+                    b.Property<string>("RemoteState")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("active")
+                        .HasColumnName("remote_state");
+
+                    b.Property<string>("SyncStrategy")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("window-reconcile")
+                        .HasColumnName("sync_strategy");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PimCalendarId")
+                        .IsUnique();
+
+                    b.HasIndex("ConnectionId", "GraphCalendarId")
+                        .IsUnique();
+
+                    b.ToTable("outlook_calendar_bindings");
+                });
+
             modelBuilder.Entity("Pim.Module.Calendar.Entities.OutlookConnectionEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1510,6 +1797,24 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("access_token_expires_at");
 
+                    b.Property<string>("AccountDisplayName")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("account_display_name");
+
+                    b.Property<string>("AccountLoginHint")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("account_login_hint");
+
+                    b.Property<string>("Authority")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasDefaultValue("https://login.microsoftonline.com/common")
+                        .HasColumnName("authority");
+
                     b.Property<string>("ClientId")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)")
@@ -1523,6 +1828,11 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("text")
                         .HasColumnName("delta_link");
 
+                    b.Property<string>("HomeAccountId")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("home_account_id");
+
                     b.Property<string>("LastError")
                         .HasColumnType("text")
                         .HasColumnName("last_error");
@@ -1530,6 +1840,10 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Property<DateTimeOffset?>("LastSyncedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_synced_at");
+
+                    b.Property<byte[]>("MsalCacheEncrypted")
+                        .HasColumnType("bytea")
+                        .HasColumnName("msal_cache_encrypted");
 
                     b.Property<string>("Provider")
                         .IsRequired()
@@ -1592,12 +1906,100 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("version");
+
                     b.HasKey("Id");
 
                     b.HasIndex("UserId")
                         .IsUnique();
 
                     b.ToTable("outlook_connections");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.OutlookOperationExecutionEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<Guid>("ConfirmationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("confirmation_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("LastErrorCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("last_error_code");
+
+                    b.Property<string>("LastErrorMessage")
+                        .HasColumnType("text")
+                        .HasColumnName("last_error_message");
+
+                    b.Property<DateTimeOffset?>("NextAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<string>("OperationType")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("operation_type");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}")
+                        .HasColumnName("payload_json");
+
+                    b.Property<string>("ProposedHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("proposed_hash");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("queued")
+                        .HasColumnName("state");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConfirmationId")
+                        .IsUnique();
+
+                    b.HasIndex("State", "NextAttemptAt");
+
+                    b.ToTable("outlook_operation_executions");
                 });
 
             modelBuilder.Entity("Pim.Module.Calendar.Entities.OutlookSyncBatchEntity", b =>
@@ -1607,6 +2009,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<bool>("CancelRequested")
+                        .HasColumnType("boolean")
+                        .HasColumnName("cancel_requested");
+
                     b.Property<int>("ConfirmationCount")
                         .HasColumnType("integer")
                         .HasColumnName("confirmation_count");
@@ -1614,6 +2020,10 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Property<int>("ConflictCount")
                         .HasColumnType("integer")
                         .HasColumnName("conflict_count");
+
+                    b.Property<Guid?>("ConnectionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("connection_id");
 
                     b.Property<int>("CreatedCount")
                         .HasColumnType("integer")
@@ -1638,6 +2048,21 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("finished_at");
 
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("incremental")
+                        .HasColumnName("mode");
+
+                    b.Property<string>("PerCalendarJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("per_calendar_json");
+
                     b.Property<string>("Provider")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -1649,6 +2074,21 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Property<int>("ReadCount")
                         .HasColumnType("integer")
                         .HasColumnName("read_count");
+
+                    b.Property<string>("RequestedCalendarIdsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("requested_calendar_ids_json");
+
+                    b.Property<DateTimeOffset?>("RequestedWindowEnd")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requested_window_end");
+
+                    b.Property<DateTimeOffset?>("RequestedWindowStart")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requested_window_start");
 
                     b.Property<DateTimeOffset>("StartedAt")
                         .ValueGeneratedOnAdd()
@@ -1670,6 +2110,12 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("jsonb")
                         .HasDefaultValue("[]")
                         .HasColumnName("steps_json");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("now()");
 
                     b.Property<int>("UpdatedCount")
                         .HasColumnType("integer")
@@ -2148,6 +2594,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("resolved_confirmation_id");
 
+                    b.Property<Guid?>("SourceConfirmationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_confirmation_id");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -2169,6 +2619,8 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("GraphEventId");
 
                     b.HasIndex("ResolvedConfirmationId");
+
+                    b.HasIndex("SourceConfirmationId");
 
                     b.HasIndex("ObjectType", "ObjectId");
 
@@ -5549,7 +6001,19 @@ namespace Pim.Infrastructure.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("Pim.Module.Calendar.Entities.OutlookCalendarBindingEntity", "OutlookCalendarBinding")
+                        .WithMany()
+                        .HasForeignKey("OutlookCalendarBindingId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("Pim.Module.Calendar.Entities.OutlookConnectionEntity", null)
+                        .WithMany()
+                        .HasForeignKey("OutlookConnectionId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("Calendar");
+
+                    b.Navigation("OutlookCalendarBinding");
                 });
 
             modelBuilder.Entity("Pim.Module.Calendar.Entities.HabitOccurrenceEntity", b =>
@@ -5561,6 +6025,21 @@ namespace Pim.Infrastructure.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("HabitRoutine");
+                });
+
+            modelBuilder.Entity("Pim.Module.Calendar.Entities.OutlookCalendarBindingEntity", b =>
+                {
+                    b.HasOne("Pim.Module.Calendar.Entities.OutlookConnectionEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ConnectionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Pim.Module.Calendar.Entities.CalendarEntity", null)
+                        .WithMany()
+                        .HasForeignKey("PimCalendarId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Pim.Module.Calendar.Entities.ReminderDeliveryEntity", b =>

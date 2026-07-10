@@ -1,5 +1,7 @@
+using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Pim.Infrastructure.Data;
 using Xunit;
 
@@ -7,6 +9,17 @@ namespace Pim.UnitTests.Operations;
 
 public class PimDbContextModelCacheTests
 {
+    [Fact]
+    public void MicrosoftCalendarSyncMigration_HasStableIdentifier()
+    {
+        var migration = typeof(Pim.Infrastructure.Data.Migrations.MicrosoftCalendarSync);
+        var attribute = migration.GetCustomAttributes(typeof(MigrationAttribute), false)
+            .Cast<MigrationAttribute>()
+            .Single();
+
+        Assert.Equal("20260710000000_MicrosoftCalendarSync", attribute.Id);
+    }
+
     [Fact]
     public void ModelCache_UsesModuleAssembliesRegisteredAfterCoreModelIsBuilt()
     {
