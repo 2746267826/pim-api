@@ -440,7 +440,7 @@ public sealed class OutlookMsalAuthenticationTests
     }
 }
 
-internal sealed class FakeMsalClient : IMsalPublicClientAdapter
+internal class FakeMsalClient : IMsalPublicClientAdapter
 {
     public Exception? SilentException { get; set; }
     public Func<OutlookAuthContext, CancellationToken, Task>? BeforeSilentFailure { get; set; }
@@ -450,7 +450,7 @@ internal sealed class FakeMsalClient : IMsalPublicClientAdapter
         "access-token", "home-account", "user@example.com", "User", DateTimeOffset.UtcNow.AddHours(1),
         ["Calendars.ReadWrite", "User.Read"]);
 
-    public async Task<MsalAuthenticationResult> AcquireTokenSilentAsync(
+    public virtual async Task<MsalAuthenticationResult> AcquireTokenSilentAsync(
         OutlookAuthContext context, bool forceRefresh, CancellationToken ct)
     {
         SilentAcquisitionCount++;
@@ -465,7 +465,7 @@ internal sealed class FakeMsalClient : IMsalPublicClientAdapter
         return Result;
     }
 
-    public Task<MsalAuthenticationResult> AcquireTokenWithDeviceCodeAsync(
+    public virtual Task<MsalAuthenticationResult> AcquireTokenWithDeviceCodeAsync(
         OutlookAuthContext context,
         Func<OutlookDeviceCodePrompt, Task> onPrompt,
         CancellationToken ct)

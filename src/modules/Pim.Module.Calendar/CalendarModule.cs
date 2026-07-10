@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Pim.Core.Audit;
 using Pim.Core.Common;
 using Pim.Core.Modules;
@@ -36,6 +37,11 @@ public class CalendarModule : IModule
         services.AddScoped<OutlookSyncService>();
         services.AddScoped<OutlookTokenService>();
         services.AddScoped<IMicrosoftGraphClient, MicrosoftGraphDeviceCodeClient>();
+        services.AddSingleton<OutlookTokenCacheLock>();
+        services.AddScoped<OutlookTokenCacheStore>();
+        services.AddScoped<IMsalPublicClientAdapter, MsalPublicClientAdapter>();
+        services.AddScoped<IOutlookAccessTokenProvider, MsalOutlookAuthCoordinator>();
+        services.AddSingleton<OutlookAuthorizationSessionRunner>();
         services.AddHttpClient("outlook");
         services.AddScoped<OutlookConflictService>();
         services.AddScoped<CalendarAuditWriter>();
@@ -724,7 +730,17 @@ public class CalendarModule : IModule
 
     public async Task InitializeAsync(IServiceProvider serviceProvider)
     {
-        await Task.CompletedTask;
+        try
+        {
+            await serviceProvider.GetRequiredService<OutlookAuthorizationSessionRunner>()
+                .FailInterruptedSessionsAsync(CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            serviceProvider.GetService<ILogger<CalendarModule>>()?.LogWarning(
+                exception,
+                "Microsoft authorization session cleanup was skipped because the database is unavailable.");
+        }
     }
 }
 
