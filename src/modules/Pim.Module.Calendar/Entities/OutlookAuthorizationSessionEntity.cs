@@ -17,6 +17,7 @@ public sealed class OutlookAuthorizationSessionEntity
     [Column("account_login_hint"), MaxLength(255)] public string? AccountLoginHint { get; set; }
     [Column("error_code"), MaxLength(128)] public string? ErrorCode { get; set; }
     [Column("error_message")] public string? ErrorMessage { get; set; }
+    [Column("version"), ConcurrencyCheck] public long Version { get; set; }
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("updated_at")] public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }

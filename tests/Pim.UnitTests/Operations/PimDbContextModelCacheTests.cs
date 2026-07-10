@@ -35,6 +35,18 @@ public class PimDbContextModelCacheTests
     }
 
     [Fact]
+    public void MicrosoftAuthorizationSessionIntegrityMigration_HasStableIdentifierAndTargetModel()
+    {
+        var migration = new Pim.Infrastructure.Data.Migrations.MicrosoftAuthorizationSessionIntegrity();
+        var attribute = migration.GetType().GetCustomAttributes(typeof(MigrationAttribute), false)
+            .Cast<MigrationAttribute>()
+            .Single();
+
+        Assert.Equal("20260710001000_MicrosoftAuthorizationSessionIntegrity", attribute.Id);
+        Assert.NotNull(migration.TargetModel.FindEntityType(typeof(OutlookAuthorizationSessionEntity)));
+    }
+
+    [Fact]
     public void ModelCache_UsesModuleAssembliesRegisteredAfterCoreModelIsBuilt()
     {
         var coreOptions = new DbContextOptionsBuilder<PimDbContext>()

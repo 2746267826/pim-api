@@ -83,6 +83,26 @@ public sealed class OutlookPersistenceModelTests
             index.GetFilter());
     }
 
+    [Fact]
+    public void MicrosoftSyncModel_AuthorizationSessionHasConnectionIntegrity()
+    {
+        using var db = CreateDb();
+        var session = db.Model.FindEntityType(typeof(OutlookAuthorizationSessionEntity))!;
+
+        Assert.True(session.FindProperty(nameof(OutlookAuthorizationSessionEntity.Version))!.IsConcurrencyToken);
+        var connectionForeignKey = Assert.Single(session.GetForeignKeys(), foreignKey =>
+            foreignKey.PrincipalEntityType.ClrType == typeof(OutlookConnectionEntity));
+        Assert.Equal(DeleteBehavior.Cascade, connectionForeignKey.DeleteBehavior);
+        var activeConnection = Assert.Single(session.GetIndexes(), index =>
+            index.GetDatabaseName() == "UX_outlook_authorization_sessions_active_connection");
+        Assert.True(activeConnection.IsUnique);
+        Assert.Equal("\"status\" IN ('starting', 'waiting-for-user')", activeConnection.GetFilter());
+        Assert.Contains(session.GetIndexes(), index =>
+            index.Properties.Select(property => property.Name).SequenceEqual([
+                nameof(OutlookAuthorizationSessionEntity.ConnectionId),
+                nameof(OutlookAuthorizationSessionEntity.Status)]));
+    }
+
     private static PimDbContext CreateDb()
     {
         PimDbContext.RegisterModuleAssembly(typeof(OutlookConnectionEntity).Assembly);

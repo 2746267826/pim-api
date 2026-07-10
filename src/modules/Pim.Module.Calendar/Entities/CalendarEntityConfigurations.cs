@@ -212,8 +212,17 @@ public sealed class OutlookAuthorizationSessionEntityConfiguration
     public void Configure(EntityTypeBuilder<OutlookAuthorizationSessionEntity> builder)
     {
         builder.Property(entity => entity.Status).HasDefaultValue("starting");
+        builder.Property(entity => entity.Version).HasDefaultValue(0).IsConcurrencyToken();
         builder.HasIndex(entity => new { entity.UserId, entity.CreatedAt });
         builder.HasIndex(entity => new { entity.ConnectionId, entity.Status });
+        builder.HasIndex(entity => entity.ConnectionId)
+            .IsUnique()
+            .HasFilter("\"status\" IN ('starting', 'waiting-for-user')")
+            .HasDatabaseName("UX_outlook_authorization_sessions_active_connection");
+        builder.HasOne<OutlookConnectionEntity>()
+            .WithMany()
+            .HasForeignKey(entity => entity.ConnectionId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
 
