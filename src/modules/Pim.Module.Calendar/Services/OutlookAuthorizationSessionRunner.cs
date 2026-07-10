@@ -98,7 +98,7 @@ public sealed class OutlookAuthorizationSessionRunner : IAsyncDisposable
     public async Task<int> FailInterruptedSessionsAsync(CancellationToken ct)
     {
         var failedIds = new HashSet<Guid>();
-        for (var attempt = 0; attempt < FinalizationAttempts; attempt++)
+        while (true)
         {
             await using var scope = _scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
@@ -110,7 +110,6 @@ public sealed class OutlookAuthorizationSessionRunner : IAsyncDisposable
             var now = DateTimeOffset.UtcNow;
             foreach (var session in interrupted)
             {
-                failedIds.Add(session.Id);
                 MarkTerminal(
                     session,
                     "failed",
@@ -122,14 +121,12 @@ public sealed class OutlookAuthorizationSessionRunner : IAsyncDisposable
             try
             {
                 await db.SaveChangesAsync(ct);
-                return failedIds.Count;
+                foreach (var session in interrupted) failedIds.Add(session.Id);
             }
-            catch (DbUpdateConcurrencyException) when (attempt + 1 < FinalizationAttempts)
+            catch (DbUpdateConcurrencyException)
             {
             }
         }
-
-        return failedIds.Count;
     }
 
     public async ValueTask DisposeAsync()

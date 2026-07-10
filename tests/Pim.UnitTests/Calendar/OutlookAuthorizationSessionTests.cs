@@ -406,6 +406,36 @@ public sealed class OutlookAuthorizationSessionTests
     }
 
     [Fact]
+    public async Task Runner_RestartCleanupRetriesUntilEveryActiveSessionIsTerminal()
+    {
+        var interceptor = new FailSessionStatusSavesInterceptor("failed", 7);
+        await using var provider = Services(new PromptingMsalClient(), interceptor)
+            .BuildServiceProvider();
+        var first = await SeedAsync(provider);
+        var second = await SeedAsync(provider);
+        var runner = provider.GetRequiredService<OutlookAuthorizationSessionRunner>();
+
+        var count = await runner.FailInterruptedSessionsAsync(CancellationToken.None);
+
+        Assert.Equal(7, interceptor.FailureCount);
+        Assert.Equal(2, count);
+        await using var scope = provider.CreateAsyncScope();
+        var sessions = await scope.ServiceProvider.GetRequiredService<PimDbContext>()
+            .Set<OutlookAuthorizationSessionEntity>()
+            .Where(item => item.Id == first.SessionId || item.Id == second.SessionId)
+            .ToListAsync();
+        Assert.All(sessions, session =>
+        {
+            Assert.Equal("failed", session.Status);
+            Assert.Equal("service-restarted", session.ErrorCode);
+            Assert.Null(session.UserCode);
+            Assert.Null(session.ExpiresAt);
+        });
+        Assert.Equal(0, sessions.Count(session =>
+            session.Status is "starting" or "waiting-for-user"));
+    }
+
+    [Fact]
     public async Task Runner_DisposeCancelsAndAwaitsFlowsWithoutPretendingUserCanceled()
     {
         var msal = new BlockingMsalClient();
@@ -413,6 +443,7 @@ public sealed class OutlookAuthorizationSessionTests
         var ids = await SeedAsync(provider);
         var runner = provider.GetRequiredService<OutlookAuthorizationSessionRunner>();
         await runner.StartAsync(ids.SessionId, ids.UserId, CancellationToken.None);
+        await msal.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
         await runner.DisposeAsync();
         await runner.DisposeAsync();
@@ -441,12 +472,16 @@ public sealed class OutlookAuthorizationSessionTests
         await Task.Delay(50);
         var disposedBeforeValidationReleased = dispose.IsCompleted;
         interceptor.Release.Set();
-        var startException = await Record.ExceptionAsync(async () => await start);
+        var startResult = await start;
         await dispose.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.False(disposedBeforeValidationReleased);
-        Assert.Null(startException);
-        await msal.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(ids.SessionId, startResult.Id);
+        var stored = await ReadAsync(provider, ids);
+        Assert.Equal("failed", stored.Session.Status);
+        Assert.Equal("service-restarted", stored.Session.ErrorCode);
+        Assert.Null(stored.Session.UserCode);
+        Assert.Null(stored.Session.ExpiresAt);
         var rejected = await Task.WhenAll(Enumerable.Range(0, 32).Select(_ =>
             Record.ExceptionAsync(() =>
                 runner.StartAsync(ids.SessionId, ids.UserId, CancellationToken.None))));
@@ -631,6 +666,8 @@ public sealed class OutlookAuthorizationSessionTests
 
     private sealed class BlockingMsalClient : PromptingMsalClient
     {
+        public TaskCompletionSource Entered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource CancellationObserved { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -640,6 +677,7 @@ public sealed class OutlookAuthorizationSessionTests
             CancellationToken ct)
         {
             CallCount++;
+            Entered.TrySetResult();
             await onPrompt(Prompt());
             try
             {
