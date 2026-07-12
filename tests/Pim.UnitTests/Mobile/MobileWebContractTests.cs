@@ -10,6 +10,29 @@ public sealed class MobileWebContractTests
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     [Fact]
+    public void IngestResponse_SerializesItemAcknowledgementsExpectedByMobileClients()
+    {
+        var response = ApiResponse<MobileUsageIngestResult>.Ok(new MobileUsageIngestResult(
+            "batch-1",
+            1,
+            1,
+            0,
+            0,
+            [
+                new MobileIngestItemResult("event-1", "usage-event", "accepted", "accepted", "Accepted."),
+                new MobileIngestItemResult("event-2", "usage-event", "skipped", "duplicate", "Duplicate.")
+            ]));
+
+        var json = JsonSerializer.Serialize(response, JsonOptions);
+
+        Assert.Contains("\"itemResults\"", json);
+        Assert.Contains("\"clientItemKey\":\"event-1\"", json);
+        Assert.Contains("\"entityType\":\"usage-event\"", json);
+        Assert.Contains("\"outcome\":\"accepted\"", json);
+        Assert.Contains("\"code\":\"duplicate\"", json);
+    }
+
+    [Fact]
     public void SummaryResponse_SerializesDashboardFieldsExpectedByWeb()
     {
         var response = ApiResponse<MobileUsageSummaryResponse>.Ok(new MobileUsageSummaryResponse(

@@ -123,7 +123,8 @@ public sealed record MobileAppMetadataDto(
     string? InstallerPackageName,
     DateTimeOffset? FirstInstallTimeUtc,
     DateTimeOffset? LastUpdateTimeUtc,
-    string RawJson)
+    string RawJson,
+    string? ClientItemKey = null)
 {
     public string? Category => CategoryName;
     public string? InstallerPackage => InstallerPackageName;
@@ -135,7 +136,8 @@ public sealed record MobileUsageEventDto(
     DateTimeOffset EventTimestampUtc,
     string? ClassName,
     DateTimeOffset CollectedAtUtc,
-    string RawJson);
+    string RawJson,
+    string? ClientItemKey = null);
 
 public sealed record MobileUsageSummaryDto(
     string PackageName,
@@ -144,20 +146,39 @@ public sealed record MobileUsageSummaryDto(
     long TotalTimeForegroundMs,
     DateTimeOffset? LastTimeUsedUtc,
     string SourceKind,
-    string RawJson)
+    string RawJson,
+    string? ClientItemKey = null)
 {
     public long TotalTimeVisibleMs => TotalTimeForegroundMs;
 }
+
+public sealed record MobileIngestItemResult(
+    string ClientItemKey,
+    string EntityType,
+    string Outcome,
+    string Code,
+    string Message);
 
 public sealed record MobileUsageIngestResult(
     string BatchId,
     int AcceptedCount,
     int SkippedCount,
     int RejectedCount,
-    int FailedCount)
+    int FailedCount,
+    IReadOnlyList<MobileIngestItemResult> ItemResults)
 {
+    public MobileUsageIngestResult(
+        string batchId,
+        int acceptedCount,
+        int skippedCount,
+        int rejectedCount,
+        int failedCount)
+        : this(batchId, acceptedCount, skippedCount, rejectedCount, failedCount, [])
+    {
+    }
+
     public MobileUsageIngestResult(string batchId, int acceptedCount, int failedCount)
-        : this(batchId, acceptedCount, 0, 0, failedCount)
+        : this(batchId, acceptedCount, 0, 0, failedCount, [])
     {
     }
 }
