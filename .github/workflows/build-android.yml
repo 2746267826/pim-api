@@ -142,8 +142,19 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk \
             "build/artifacts/pim-android-v${{ steps.ver.outputs.artifact_slug }}-vc${{ steps.ver.outputs.version_code }}.apk"
 
+      - name: Log signing cert fingerprint
+        working-directory: src/client-android
+        run: |
+          APK=$(ls build/artifacts/*.apk | head -n1)
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ 2>/dev/null | sort -V | tail -n1)
+          if [ -z "$BT" ]; then
+            echo "::warning::build-tools not found; skip apksigner"
+            exit 0
+          fi
+          "${BT}apksigner" verify --print-certs "$APK" | tee build/artifacts/signing-certs.txt
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: pim-android-v${{ steps.ver.outputs.artifact_slug }}-vc${{ steps.ver.outputs.version_code }}
-          path: src/client-android/build/artifacts/*.apk
+          path: src/client-android/build/artifacts/*
