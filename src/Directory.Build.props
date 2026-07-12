@@ -5,5 +5,7 @@
     <FileVersion Condition="'$(FileVersion)' == ''">$(Version)</FileVersion>
     <!-- Display version: local default; CI passes -p:InformationalVersion=... -->
     <InformationalVersion Condition="'$(InformationalVersion)' == ''">0.0.0-local</InformationalVersion>
+    <!-- Keep InformationalVersion exact (no +SourceRevisionId suffix from SDK) -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 </Project>
