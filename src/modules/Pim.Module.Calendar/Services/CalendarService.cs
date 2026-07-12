@@ -26,16 +26,24 @@ public class CalendarService
     // --- Calendars ---
     public async Task<List<CalendarResponse>> GetCalendarsAsync(string? kind, CancellationToken ct)
     {
-        var query = _db.Set<CalendarEntity>()
+        var calendarsQuery = _db.Set<CalendarEntity>()
             .Where(c => c.UserId == UserId);
 
         if (kind is not null)
-            query = query.Where(c => c.Kind == kind);
+            calendarsQuery = calendarsQuery.Where(c => c.Kind == kind);
 
-        return await query
-            .Select(c => new CalendarResponse(c.Id, c.Name, c.Color, c.Kind, c.IsDefault,
-                c.Events.Count))
-            .ToListAsync(ct);
+        var query =
+            from calendar in calendarsQuery
+            join binding in _db.Set<OutlookCalendarBindingEntity>()
+                on calendar.Id equals binding.PimCalendarId into bindingGroup
+            from binding in bindingGroup.DefaultIfEmpty()
+            select new CalendarResponse(
+                calendar.Id, calendar.Name, calendar.Color, calendar.Kind,
+                calendar.IsDefault, calendar.Events.Count, calendar.Source,
+                binding == null ? null : binding.Id,
+                binding == null || binding.CanEdit);
+
+        return await query.ToListAsync(ct);
     }
 
     public async Task<CalendarResponse> CreateCalendarAsync(CreateCalendarRequest request, CancellationToken ct)
