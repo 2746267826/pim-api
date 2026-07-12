@@ -280,6 +280,56 @@ public class CalendarStage5ModelTests
     }
 
     [Fact]
+    public async Task EventResponse_PropagatesOutlookMetadataFields()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
+        await using var db = CreateDb();
+        var userId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var calendar = new CalendarEntity
+        {
+            UserId = userId,
+            Name = "Outlook Calendar",
+            Kind = "calendar",
+            IsDefault = true
+        };
+        db.Set<CalendarEntity>().Add(calendar);
+
+        var outlookBindingId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        const string outlookEventId = "outlook-event-123";
+        const string outlookEtag = "etag-value-456";
+        const string outlookEventType = "singleInstance";
+
+        var evt = new EventEntity
+        {
+            CalendarId = calendar.Id,
+            Calendar = calendar,
+            Uid = "test-uid@pim",
+            Title = "Test Event",
+            DtStart = new DateTimeOffset(2026, 7, 12, 9, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 7, 12, 10, 0, 0, TimeSpan.Zero),
+            Source = "outlook",
+            OutlookEventId = outlookEventId,
+            OutlookCalendarBindingId = outlookBindingId,
+            OutlookEtag = outlookEtag,
+            OutlookEventType = outlookEventType
+        };
+        db.Set<EventEntity>().Add(evt);
+        await db.SaveChangesAsync();
+
+        var service = CreateService(db, userId);
+        var events = await service.GetEventsAsync(
+            new DateTimeOffset(2026, 7, 12, 0, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 13, 0, 0, 0, TimeSpan.Zero),
+            default);
+
+        var response = Assert.Single(events);
+        Assert.Equal(outlookBindingId, response.OutlookCalendarBindingId);
+        Assert.Equal(outlookEventId, response.OutlookEventId);
+        Assert.Equal(outlookEtag, response.OutlookEtag);
+        Assert.Equal(outlookEventType, response.OutlookEventType);
+    }
+
+    [Fact]
     public void EventResponse_DoesNotExposeSourceIcsComponent()
     {
         Assert.Null(typeof(EventResponse).GetProperty("SourceIcsComponent"));

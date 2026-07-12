@@ -9,8 +9,15 @@ public record CreateCalendarRequest(
 );
 
 public record CalendarResponse(
-    Guid Id, string Name, string Color, string Kind, bool IsDefault, int EventCount
-);
+    Guid Id, string Name, string Color, string Kind, bool IsDefault, int EventCount,
+    string Source = "manual",
+    Guid? OutlookCalendarBindingId = null,
+    bool CanEdit = true
+)
+{
+    public CalendarResponse(Guid Id, string Name, string Color, string Kind, bool IsDefault, int EventCount)
+        : this(Id, Name, Color, Kind, IsDefault, EventCount, "manual", null, true) { }
+}
 
 public record CreateEventRequest(
     [Required] Guid CalendarId,
@@ -51,7 +58,11 @@ public record EventResponse(
     string ExternalMetadataJson = "{}",
     string? RecurrenceId = null,
     string ExDatesJson = "[]",
-    string RecurrenceMetadataJson = "{}"
+    string RecurrenceMetadataJson = "{}",
+    Guid? OutlookCalendarBindingId = null,
+    string? OutlookEventId = null,
+    string? OutlookEtag = null,
+    string? OutlookEventType = null
 );
 
 public record CreateTaskRequest(
@@ -385,7 +396,9 @@ public record OutlookSettingsResponse(
     string Status,
     string TokenHealth,
     DateTimeOffset? LastSyncedAt,
-    string? LastError
+    string? LastError,
+    string UiStatus = "unknown",
+    OutlookAuthorizationSessionResponse? ActiveAuthorization = null
 );
 
 public record UpdateOutlookSettingsRequest(
@@ -427,7 +440,12 @@ public record OutlookSyncBatchResponse(
     IReadOnlyList<OutlookSyncStep> Steps,
     string? ErrorSummary,
     DateTimeOffset StartedAt,
-    DateTimeOffset? FinishedAt
+    DateTimeOffset? FinishedAt,
+    string? Mode = null,
+    DateTimeOffset? RequestedWindowStart = null,
+    DateTimeOffset? RequestedWindowEnd = null,
+    string? PerCalendarJson = null,
+    bool CancelRequested = false
 );
 
 public record ConflictResolutionRequest(

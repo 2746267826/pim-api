@@ -645,7 +645,8 @@ public class CalendarService
             e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source, null,
             e.IsAllDay, e.TimeZoneId, e.SourceTimeZoneId, e.SourceUid,
             e.ExternalMetadataJson, e.RecurrenceId, e.ExDatesJson,
-            e.RecurrenceMetadataJson);
+            e.RecurrenceMetadataJson,
+            e.OutlookCalendarBindingId, e.OutlookEventId, e.OutlookEtag, e.OutlookEventType);
 
     private static EventResponse MapExpandedEvent(ExpandedEvent e) =>
         new(e.OccurrenceId, e.Entity.CalendarId, e.Entity.Uid,
@@ -655,7 +656,8 @@ public class CalendarService
             e.Entity.Id, e.Entity.IsAllDay, e.Entity.TimeZoneId,
             e.Entity.SourceTimeZoneId, e.Entity.SourceUid,
             e.Entity.ExternalMetadataJson, e.Entity.RecurrenceId, e.Entity.ExDatesJson,
-            e.Entity.RecurrenceMetadataJson);
+            e.Entity.RecurrenceMetadataJson,
+            e.Entity.OutlookCalendarBindingId, e.Entity.OutlookEventId, e.Entity.OutlookEtag, e.Entity.OutlookEventType);
 
     private static string? FormatDuration(TimeSpan? duration) =>
         duration is not null ? duration.Value.ToString("c") : null;
