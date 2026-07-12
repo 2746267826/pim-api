@@ -158,8 +158,27 @@ jobs:
       git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
     secrets: inherit
 
+  summarize:
+    needs: [resolve-version, changes, build-api, build-web, build-windows, build-android]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print build summary
+        run: |
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          echo "## ✅ CI Build Summary — v${VERSION}" 
+          echo ""
+          echo "| Platform | Status |"
+          echo "|:---------|:-------|"
+          echo "| 🖥️  API     | ${{ needs.build-api.result == 'success' && '✅ Built' || needs.build-api.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
+          echo "| 🌐  Web     | ${{ needs.build-web.result == 'success' && '✅ Built' || needs.build-web.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
+          echo "| 🪟  Windows | ${{ needs.build-windows.result == 'success' && '✅ Built' || needs.build-windows.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
+          echo "| 📱  Android | ${{ needs.build-android.result == 'success' && '✅ Built' || needs.build-android.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
+          echo ""
+          echo "> Artifacts: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
   release:
-    needs: [resolve-version, build-api, build-web, build-windows, build-android]
+    needs: [summarize, build-api, build-web, build-windows, build-android]
     if: |
       always() &&
       needs.resolve-version.outputs.is_release == 'true' &&
