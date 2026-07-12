@@ -1,0 +1,47 @@
+name: Resolve version
+description: >
+  CalVer YYYY.MM.N from GITHUB_RUN_NUMBER with PR/dev suffixes.
+  Requires repository checkout so scripts/ci/resolve-version.sh is available.
+inputs:
+  client_patch:
+    description: Optional patch suffix like android.1
+    required: false
+    default: ''
+  pr_number:
+    description: PR number when event is pull_request
+    required: false
+    default: ''
+outputs:
+  version:
+    description: Display version
+    value: ${{ steps.run.outputs.version }}
+  version_code:
+    description: Integer version code
+    value: ${{ steps.run.outputs.version_code }}
+  artifact_slug:
+    description: Filesystem-safe version slug
+    value: ${{ steps.run.outputs.artifact_slug }}
+  git_sha_short:
+    description: Short git SHA
+    value: ${{ steps.run.outputs.git_sha_short }}
+  is_release:
+    description: Whether this is a release build
+    value: ${{ steps.run.outputs.is_release }}
+  year_month:
+    description: Year.Month prefix
+    value: ${{ steps.run.outputs.year_month }}
+  assembly_version:
+    description: .NET assembly version
+    value: ${{ steps.run.outputs.assembly_version }}
+  base_version:
+    description: Base CalVer without suffix
+    value: ${{ steps.run.outputs.base_version }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        CLIENT_PATCH: ${{ inputs.client_patch }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+      run: bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"

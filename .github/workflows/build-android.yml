@@ -1,17 +1,41 @@
 name: Build Android APK
 
 on:
-  push:
-    branches: [master, codex/schedule-task-complete-system]
-    paths:
-      - 'src/client-android/**'
-      - '.github/workflows/build-android.yml'
-  pull_request:
-    branches: [master]
-    paths:
-      - 'src/client-android/**'
-      - '.github/workflows/build-android.yml'
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      version_code:
+        required: true
+        type: string
+      artifact_slug:
+        required: true
+        type: string
+      assembly_version:
+        required: true
+        type: string
+      git_sha_short:
+        required: true
+        type: string
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Display version (empty = resolve locally for debug)'
+        required: false
+        default: ''
+      version_code:
+        required: false
+        default: ''
+      artifact_slug:
+        required: false
+        default: ''
+      assembly_version:
+        required: false
+        default: ''
+      git_sha_short:
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -24,6 +48,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Resolve version if needed
+        id: ver
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "version_code=${{ inputs.version_code }}" >> "$GITHUB_OUTPUT"
+            echo "artifact_slug=${{ inputs.artifact_slug }}" >> "$GITHUB_OUTPUT"
+            echo "assembly_version=${{ inputs.assembly_version }}" >> "$GITHUB_OUTPUT"
+            echo "git_sha_short=${{ inputs.git_sha_short }}" >> "$GITHUB_OUTPUT"
+          else
+            bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"
+          fi
 
       - uses: actions/setup-java@v4
         with:
@@ -40,23 +79,14 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v3
 
-      - name: Generate version string
-        id: version
+      - name: Set CI version env
+        shell: bash
+        working-directory: ${{ github.workspace }}
         run: |
-          SHORT_SHA=$(git rev-parse --short=7 HEAD)
-          BUILD_NUMBER=${GITHUB_RUN_NUMBER:-1}
-          VERSION_CODE=$((100000 + BUILD_NUMBER))
-          VERSION_NAME="0.1.${BUILD_NUMBER}+${SHORT_SHA}"
-          VERSION_FILE="0.1.${BUILD_NUMBER}-${SHORT_SHA}"
-          ARTIFACT_NAME="pim-android-v${VERSION_FILE}-vc${VERSION_CODE}"
-          echo "value=$VERSION_NAME" >> "$GITHUB_OUTPUT"
-          echo "artifact=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION_NAME"
-          echo "VERSION_DISPLAY=$VERSION_NAME" >> "$GITHUB_ENV"
-          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
-          echo "VERSION_FILE=$VERSION_FILE" >> "$GITHUB_ENV"
-          echo "CI_APP_VERSION=$VERSION_NAME" >> "$GITHUB_ENV"
-          echo "CI_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "CI_APP_VERSION=${{ steps.ver.outputs.version }}" >> "$GITHUB_ENV"
+          echo "CI_VERSION_CODE=${{ steps.ver.outputs.version_code }}" >> "$GITHUB_ENV"
+          echo "VERSION_FILE=${{ steps.ver.outputs.artifact_slug }}" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=${{ steps.ver.outputs.version_code }}" >> "$GITHUB_ENV"
 
       - name: Decode Android signing key
         env:
@@ -85,7 +115,6 @@ jobs:
           chmod +x "$OLDPWD/gradlew"
           rm -rf "$TMPDIR"
 
-
       - name: Unit tests & build release (parallel)
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -110,10 +139,22 @@ jobs:
       - name: Stage APK
         run: |
           mkdir -p build/artifacts
-          cp app/build/outputs/apk/release/app-release.apk "build/artifacts/pim-android-v${VERSION_FILE}-vc${VERSION_CODE}.apk"
+          cp app/build/outputs/apk/release/app-release.apk \
+            "build/artifacts/pim-android-v${{ steps.ver.outputs.artifact_slug }}-vc${{ steps.ver.outputs.version_code }}.apk"
+
+      - name: Log signing cert fingerprint
+        working-directory: src/client-android
+        run: |
+          APK=$(ls build/artifacts/*.apk | head -n1)
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ 2>/dev/null | sort -V | tail -n1)
+          if [ -z "$BT" ]; then
+            echo "::warning::build-tools not found; skip apksigner"
+            exit 0
+          fi
+          "${BT}apksigner" verify --print-certs "$APK" | tee build/artifacts/signing-certs.txt
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.version.outputs.artifact }}
-          path: src/client-android/build/artifacts/*.apk
+          name: pim-android-v${{ steps.ver.outputs.artifact_slug }}-vc${{ steps.ver.outputs.version_code }}
+          path: src/client-android/build/artifacts/*
