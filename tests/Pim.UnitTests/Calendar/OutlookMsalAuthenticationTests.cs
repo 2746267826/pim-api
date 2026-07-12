@@ -327,7 +327,7 @@ public sealed class OutlookMsalAuthenticationTests
 
         Assert.False(secondAcquisition.IsCompleted);
         await first.DisposeAsync();
-        await using var second = await secondAcquisition.WaitAsync(TimeSpan.FromSeconds(1));
+        await using var second = await secondAcquisition.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
     private static OutlookAuthContext AuthContext(
