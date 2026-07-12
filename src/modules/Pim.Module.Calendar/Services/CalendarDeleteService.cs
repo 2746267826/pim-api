@@ -101,6 +101,15 @@ public sealed class CalendarDeleteService
     public async Task<CalendarOperationResult> DeleteEventAsync(Guid eventId, CancellationToken ct = default)
     {
         var evt = await LoadEventAsync(eventId, ct);
+
+        if (evt.OutlookCalendarBindingId != null)
+            throw new DomainException(02009, "Microsoft 日程必须通过确认写回流程删除。");
+
+        var calendarHasBinding = await _db.Set<OutlookCalendarBindingEntity>()
+            .AnyAsync(b => b.PimCalendarId == evt.CalendarId, ct);
+        if (calendarHasBinding)
+            throw new DomainException(02009, "Microsoft 日历的日程必须通过确认写回流程删除。");
+
         var operationId = Guid.NewGuid();
         var deletedAt = DateTimeOffset.UtcNow;
         var operationKind = "single-event";
@@ -133,6 +142,15 @@ public sealed class CalendarDeleteService
             .ToListAsync(ct);
         if (events.Count == 0)
             return EmptyResult(operation, operationId, "没有删除日程。");
+
+        if (events.Any(e => e.OutlookCalendarBindingId != null))
+            throw new DomainException(02009, "批量删除中包含 Microsoft 日程，必须通过确认写回流程。");
+
+        var calendarIds = events.Select(e => e.CalendarId).Distinct().ToList();
+        var hasBoundCalendar = await _db.Set<OutlookCalendarBindingEntity>()
+            .AnyAsync(b => calendarIds.Contains(b.PimCalendarId), ct);
+        if (hasBoundCalendar)
+            throw new DomainException(02009, "批量删除中包含 Microsoft 日历的日程，必须通过确认写回流程。");
 
         var deletedAt = DateTimeOffset.UtcNow;
         var operationKind = "batch-event";

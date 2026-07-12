@@ -147,6 +147,11 @@ public class CalendarService
                 .FirstOrDefaultAsync(c => c.Id == request.CalendarId && c.UserId == UserId, ct)
                 ?? throw new DomainException(02003, "日历不存在");
 
+        var hasOutlookBinding = await _db.Set<OutlookCalendarBindingEntity>()
+            .AnyAsync(b => b.PimCalendarId == calendar.Id, ct);
+        if (hasOutlookBinding)
+            throw new DomainException(02009, "Microsoft 日历的日程必须通过确认写回流程创建。");
+
         var entity = new EventEntity
         {
             CalendarId = calendar.Id,
@@ -325,6 +330,22 @@ public class CalendarService
         var entity = await _db.Set<EventEntity>()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
             ?? throw new DomainException(02001, "日程不存在");
+
+        if (entity.OutlookCalendarBindingId != null)
+            throw new DomainException(02009, "Microsoft 日程必须通过确认写回流程修改。");
+
+        var sourceCalendarHasBinding = await _db.Set<OutlookCalendarBindingEntity>()
+            .AnyAsync(b => b.PimCalendarId == entity.CalendarId, ct);
+        if (sourceCalendarHasBinding)
+            throw new DomainException(02009, "Microsoft 日历的日程必须通过确认写回流程修改。");
+
+        if (request.CalendarId != entity.CalendarId)
+        {
+            var targetCalendarHasBinding = await _db.Set<OutlookCalendarBindingEntity>()
+                .AnyAsync(b => b.PimCalendarId == request.CalendarId, ct);
+            if (targetCalendarHasBinding)
+                throw new DomainException(02009, "目标日历为 Microsoft 日历，移动操作必须通过确认写回流程。");
+        }
 
         entity.Title = request.Title;
         entity.Description = request.Description;
