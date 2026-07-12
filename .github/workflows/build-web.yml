@@ -1,21 +1,41 @@
 name: Build Web Client
 
 on:
-  push:
-    branches: [master, codex/schedule-task-complete-system]
-    paths:
-      - 'src/client-web/**'
-      - '.github/workflows/build-web.yml'
-  pull_request:
-    branches: [master]
-    paths:
-      - 'src/client-web/**'
-      - '.github/workflows/build-web.yml'
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      version_code:
+        required: true
+        type: string
+      artifact_slug:
+        required: true
+        type: string
+      assembly_version:
+        required: true
+        type: string
+      git_sha_short:
+        required: true
+        type: string
   workflow_dispatch:
-
-env:
-  # Generate version string: 1.0.0(abc1234)
-  APP_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('0.0.0({0})', github.sha) }}
+    inputs:
+      version:
+        description: 'Display version (empty = resolve locally for debug)'
+        required: false
+        default: ''
+      version_code:
+        required: false
+        default: ''
+      artifact_slug:
+        required: false
+        default: ''
+      assembly_version:
+        required: false
+        default: ''
+      git_sha_short:
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -29,20 +49,26 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Resolve version if needed
+        id: ver
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "version_code=${{ inputs.version_code }}" >> "$GITHUB_OUTPUT"
+            echo "artifact_slug=${{ inputs.artifact_slug }}" >> "$GITHUB_OUTPUT"
+            echo "assembly_version=${{ inputs.assembly_version }}" >> "$GITHUB_OUTPUT"
+            echo "git_sha_short=${{ inputs.git_sha_short }}" >> "$GITHUB_OUTPUT"
+          else
+            bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: src/client-web/package-lock.json
-
-      - name: Generate version string
-        id: version
-        run: |
-          VERSION=$(git describe --tags --always --match "v*" 2>/dev/null || echo "0.0.0")
-          # Convert v1.0.0-2-gabc1234 → 1.0.0(abc1234)
-          DISPLAY=$(echo "$VERSION" | sed 's/^v//' | sed 's/-[0-9]*-g\([0-9a-f]\{7\}$\)/\(\1\)/' | sed 's/-g\([0-9a-f]\{7\}$\)/\(\1\)/')
-          echo "value=$DISPLAY" >> "$GITHUB_OUTPUT"
-          echo "version=$DISPLAY"
 
       - name: Install dependencies
         run: npm ci
@@ -56,11 +82,11 @@ jobs:
       - name: Build
         run: npm run build
         env:
-          VITE_APP_VERSION: ${{ steps.version.outputs.value }}
+          VITE_APP_VERSION: ${{ steps.ver.outputs.version }}
 
       - name: Upload web build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pim-web-build
+          name: pim-web-v${{ steps.ver.outputs.artifact_slug }}
           path: src/Pim.Api/wwwroot/
           if-no-files-found: error

@@ -1,23 +1,41 @@
 name: Build Windows Client
 
 on:
-  push:
-    branches: [master, codex/schedule-task-complete-system]
-    paths:
-      - 'src/client-windows/**'
-      - 'src/Pim.Core/**'
-      - 'src/Pim.Infrastructure/**'
-      - 'src/Directory.Build.props'
-      - '.github/workflows/build-windows.yml'
-  pull_request:
-    branches: [master]
-    paths:
-      - 'src/client-windows/**'
-      - 'src/Pim.Core/**'
-      - 'src/Pim.Infrastructure/**'
-      - 'src/Directory.Build.props'
-      - '.github/workflows/build-windows.yml'
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      version_code:
+        required: true
+        type: string
+      artifact_slug:
+        required: true
+        type: string
+      assembly_version:
+        required: true
+        type: string
+      git_sha_short:
+        required: true
+        type: string
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Display version (empty = resolve locally for debug)'
+        required: false
+        default: ''
+      version_code:
+        required: false
+        default: ''
+      artifact_slug:
+        required: false
+        default: ''
+      assembly_version:
+        required: false
+        default: ''
+      git_sha_short:
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -35,20 +53,26 @@ jobs:
         with:
           dotnet-version: '8.0'
 
+      - name: Resolve version if needed
+        id: ver
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "version_code=${{ inputs.version_code }}" >> "$GITHUB_OUTPUT"
+            echo "artifact_slug=${{ inputs.artifact_slug }}" >> "$GITHUB_OUTPUT"
+            echo "assembly_version=${{ inputs.assembly_version }}" >> "$GITHUB_OUTPUT"
+            echo "git_sha_short=${{ inputs.git_sha_short }}" >> "$GITHUB_OUTPUT"
+          else
+            bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"
+          fi
+
       - name: Windows companion tests
         run: |
           dotnet test ../../tests/Pim.UnitTests/Pim.UnitTests.csproj `
             --configuration Release `
             --filter "FullyQualifiedName~WindowsCompanionShellTests|FullyQualifiedName~WindowsNotificationActionRouterTests|FullyQualifiedName~ApiClientDefaultsTests"
-
-      - name: Generate version string
-        id: version
-        shell: bash
-        run: |
-          VERSION=$(git describe --tags --always --match "v*" 2>/dev/null || echo "0.0.0")
-          DISPLAY=$(echo "$VERSION" | sed 's/^v//' | sed 's/-[0-9]*-g\([0-9a-f]\{7\}\)$/\(\1\)/' | sed 's/-g\([0-9a-f]\{7\}\)$/\(\1\)/')
-          echo "value=$DISPLAY" >> "$GITHUB_OUTPUT"
-          echo "version=$DISPLAY"
 
       - name: Publish (restore + build + publish in one step)
         run: |
@@ -59,7 +83,9 @@ jobs:
             --self-contained true `
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
-            -p:GitHash=${{ steps.version.outputs.value }}
+            -p:InformationalVersion=${{ steps.ver.outputs.version }} `
+            -p:Version=${{ steps.ver.outputs.assembly_version }} `
+            -p:FileVersion=${{ steps.ver.outputs.assembly_version }}
 
       - name: Build and include KeyStats
         shell: pwsh
@@ -93,11 +119,11 @@ jobs:
 
       - name: Write version file for reference
         shell: bash
-        run: echo "${{ steps.version.outputs.value }}" > publish/VERSION
+        run: echo "${{ steps.ver.outputs.version }}" > publish/VERSION
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pim-windows-client
+          name: pim-windows-v${{ steps.ver.outputs.artifact_slug }}
           path: src/client-windows/publish/
           compression-level: 6
