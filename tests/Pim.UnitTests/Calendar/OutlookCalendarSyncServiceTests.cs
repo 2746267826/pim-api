@@ -1253,7 +1253,7 @@ public sealed class OutlookCalendarSyncServiceTests
         var service = CreateService(db, graph);
 
         var ex = await Assert.ThrowsAsync<DomainException>(() =>
-            service.SyncAsync(UserId, new OutlookSyncRequest("full-resources"), CancellationToken.None));
+            service.SyncAsync(UserId, new OutlookSyncRequest("unsupported-mode"), CancellationToken.None));
         Assert.Equal(02009, ex.ErrorCode);
     }
 
@@ -2640,5 +2640,952 @@ public sealed class OutlookCalendarSyncServiceTests
         var deletedChanges = changes.Where(c => c.GetProperty("action").GetString() == "deleted").ToList();
         Assert.Single(deletedChanges);
         Assert.Equal("event-1", deletedChanges[0].GetProperty("id").GetString());
+    }
+
+    // ===== Task 5A: Deep Sync Modes =====
+
+    [Fact]
+    public async Task FullResources_OnlyUpsertsAndNeverDeletesMissingEvents()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+        await SeedEventAsync(db, calId, bindingId, "not-returned");
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest(
+            "full-resources",
+            RangeStart: FixedNow,
+            RangeEnd: FixedNow.AddDays(30)), CancellationToken.None);
+
+        Assert.Equal("full-resources", response.Mode);
+        Assert.Null(response.RequestedWindowStart);
+        Assert.Null(response.RequestedWindowEnd);
+        Assert.Equal(0, response.ConfirmationCount);
+
+        var cvRequests = ExtractCalendarViewRequests(handler);
+        Assert.Empty(cvRequests);
+
+        Assert.Single(handler.Requests);
+        Assert.Contains("/events", handler.Requests[0].RequestUri!.ToString());
+
+        var evt1 = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(evt1);
+        Assert.Equal("Test 1", evt1!.Title);
+
+        var notReturned = await LoadEventByOutlookIdAsync(db, "not-returned");
+        Assert.NotNull(notReturned);
+        Assert.Null(notReturned!.DeletedAt);
+
+        var batch = await LatestBatchAsync(db);
+        Assert.Equal("full-resources", batch.Mode);
+        Assert.Null(batch.RequestedWindowStart);
+        Assert.Null(batch.RequestedWindowEnd);
+        Assert.Equal(0, batch.ConfirmationCount);
+    }
+
+    [Fact]
+    public async Task FullResources_PaginatesAndCommitsEachPage()
+    {
+        var counter = new EventSaveCounterInterceptor();
+        var db = CreateDbWithInterceptor("full-resources-pagination-" + Guid.NewGuid(), counter);
+        await SeedConnectionAsync(db, UserId);
+        await SeedTwoSelectedBindingsAsync(db, UserId, ConnectionId);
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewPageResponse(
+            "https://graph.microsoft.com/v1.0/me/calendars/cal-1/events?$skiptoken=p1", SyncEvent1));
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent2));
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent3));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        await service.SyncAsync(UserId, new OutlookSyncRequest("full-resources"), CancellationToken.None);
+
+        Assert.Equal(3, counter.EventSaves.Count);
+        Assert.All(counter.EventSaves, c => Assert.Equal(1, c));
+
+        var batch = await LatestBatchAsync(db);
+        Assert.Equal(3, batch.ReadCount);
+        Assert.Equal(3, batch.CreatedCount);
+        Assert.Equal(0, batch.UpdatedCount);
+    }
+
+    [Fact]
+    public async Task RangeInstances_UsesAtMost180DayChunksAndDeduplicatesIds()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+
+        var handler = new ScriptedHttpMessageHandler();
+        var rangeStart = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var rangeEnd = new DateTimeOffset(2026, 7, 5, 0, 0, 0, TimeSpan.Zero);
+        // Chunk 1: [2026-01-01, 2026-06-30) — 180 days
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
+        // Chunk 2: [2026-06-30, 2026-07-05) — 5 days
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(
+            SyncEvent1.Replace("\"event-1\"", "\"event-2\""),
+            SyncEvent1.Replace("\"Test 1\"", "\"Duplicate Override\"")));
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("range-instances",
+            RangeStart: rangeStart, RangeEnd: rangeEnd), CancellationToken.None);
+
+        Assert.Equal("range-instances", response.Mode);
+        Assert.Equal(rangeStart, response.RequestedWindowStart);
+        Assert.Equal(rangeEnd, response.RequestedWindowEnd);
+
+        var cvRequests = ExtractCalendarViewRequests(handler);
+        Assert.Equal(2, cvRequests.Count);
+        foreach (var r in cvRequests)
+        {
+            var days = (r.End - r.Start).TotalDays;
+            Assert.True(days <= 180, $"Chunk {r.Start} to {r.End} is {days} days (exceeds 180)");
+        }
+        Assert.Equal(cvRequests[0].End, cvRequests[1].Start);
+        Assert.Equal(rangeStart, cvRequests[0].Start);
+        Assert.Equal(rangeEnd, cvRequests[1].End);
+
+        var events = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .Where(e => e.OutlookCalendarBindingId == bindingId)
+            .ToListAsync();
+        Assert.Equal(2, events.Count);
+        Assert.Contains(events, e => e.OutlookEventId == "event-1");
+        Assert.Contains(events, e => e.OutlookEventId == "event-2");
+        Assert.Equal("Test 1", events.Single(e => e.OutlookEventId == "event-1").Title);
+
+        var batch = await LatestBatchAsync(db);
+        Assert.Equal("range-instances", batch.Mode);
+        Assert.Equal(rangeStart, batch.RequestedWindowStart);
+        Assert.Equal(rangeEnd, batch.RequestedWindowEnd);
+        Assert.Equal(2, batch.ReadCount);
+        Assert.Equal(2, batch.CreatedCount);
+        Assert.Equal(0, batch.UpdatedCount);
+
+        using var history = JsonDocument.Parse(batch.PerCalendarJson);
+        var calendar = Assert.Single(history.RootElement.EnumerateArray().ToList());
+        Assert.Equal(2, calendar.GetProperty("changes").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task RangeInstances_RequiresValidRange()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var ex1 = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("range-instances"), CancellationToken.None));
+        Assert.Equal(02009, ex1.ErrorCode);
+
+        var start = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        var end = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var ex2 = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("range-instances",
+                RangeStart: start, RangeEnd: end), CancellationToken.None));
+        Assert.Equal(02009, ex2.ErrorCode);
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task RangeInstances_AllDuplicatePage_SkipsRemappingAndFinishesCompleted()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+
+        var handler = new ScriptedHttpMessageHandler();
+        // 180-day chunks from Jan 1 cover: [Jan 1, Jun 30), [Jun 30, Jul 5) — 2 chunks
+        var rangeStart = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var rangeEnd = new DateTimeOffset(2026, 7, 5, 0, 0, 0, TimeSpan.Zero);
+        // Chunk 1: has event-1 and event-2
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1, SyncEvent2));
+        // Chunk 2: has only event-1 duplicate with different title (all duplicates)
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1.Replace("\"Test 1\"", "\"Remap Check\"")));
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("range-instances",
+            RangeStart: rangeStart, RangeEnd: rangeEnd), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+
+        var batch = await LatestBatchAsync(db);
+        Assert.Equal("completed", batch.Status);
+        Assert.Equal(2, batch.ReadCount);
+        Assert.Equal(2, batch.CreatedCount);
+        Assert.Equal(0, batch.UpdatedCount);
+
+        var events = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .Where(e => e.OutlookCalendarBindingId == bindingId)
+            .ToListAsync();
+        Assert.Equal(2, events.Count);
+        var event1 = events.Single(e => e.OutlookEventId == "event-1");
+        Assert.Equal("Test 1", event1.Title);
+        Assert.Equal(0, batch.FailureCount);
+
+        using var history = JsonDocument.Parse(batch.PerCalendarJson);
+        var calendar = Assert.Single(history.RootElement.EnumerateArray().ToList());
+        Assert.Equal("completed", calendar.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task DeepMode_ExplicitBindingIdsProcessesOnlyRequestedSelectedActiveBindings()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        await SeedTwoSelectedBindingsAsync(db, UserId, ConnectionId);
+        var binding1 = await BindingByGraphIdAsync(db, "cal-1");
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("full-resources",
+            CalendarBindingIds: new[] { binding1.Id }), CancellationToken.None);
+
+        Assert.Single(handler.Requests);
+        Assert.Contains("cal-1", handler.Requests[0].RequestUri!.ToString());
+
+        var events = await db.Set<EventEntity>().IgnoreQueryFilters().ToListAsync();
+        Assert.Single(events);
+        Assert.Equal("event-1", events[0].OutlookEventId);
+    }
+
+    [Fact]
+    public async Task DeepMode_RejectsUnknownOrUnselectedBindingIds()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId1, bindingId1) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+        // Unselected binding
+        var cal2 = new CalendarEntity { UserId = UserId, Name = "Unselected", Source = "outlook" };
+        db.Set<CalendarEntity>().Add(cal2);
+        await db.SaveChangesAsync();
+        var unselectedBinding = new OutlookCalendarBindingEntity
+        {
+            ConnectionId = ConnectionId, PimCalendarId = cal2.Id,
+            GraphCalendarId = "cal-2", Name = "Unselected",
+            IsSelected = false, RemoteState = "active"
+        };
+        db.Set<OutlookCalendarBindingEntity>().Add(unselectedBinding);
+        await db.SaveChangesAsync();
+        // Remote-missing binding
+        var cal3 = new CalendarEntity { UserId = UserId, Name = "Missing", Source = "outlook" };
+        db.Set<CalendarEntity>().Add(cal3);
+        await db.SaveChangesAsync();
+        var missingBinding = new OutlookCalendarBindingEntity
+        {
+            ConnectionId = ConnectionId, PimCalendarId = cal3.Id,
+            GraphCalendarId = "cal-3", Name = "Missing",
+            IsSelected = true, RemoteState = "remote-missing"
+        };
+        db.Set<OutlookCalendarBindingEntity>().Add(missingBinding);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        // Unknown binding ID
+        var ex1 = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("full-resources",
+                CalendarBindingIds: new[] { Guid.NewGuid() }), CancellationToken.None));
+        Assert.Equal(02009, ex1.ErrorCode);
+
+        // Unselected binding ID
+        var ex2 = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("full-resources",
+                CalendarBindingIds: new[] { unselectedBinding.Id }), CancellationToken.None));
+        Assert.Equal(02009, ex2.ErrorCode);
+
+        // Remote-missing binding ID
+        var ex3 = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("full-resources",
+                CalendarBindingIds: new[] { missingBinding.Id }), CancellationToken.None));
+        Assert.Equal(02009, ex3.ErrorCode);
+
+        Assert.Empty(handler.Requests);
+    }
+
+    // ===== Task 5B: Retry =====
+
+    private sealed record RetryTestHelper(Guid BatchId, Guid Binding1Id, Guid Binding2Id, Guid Binding3Id);
+
+    private static async Task<RetryTestHelper> SeedRetryScenarioAsync(PimDbContext db)
+    {
+        var b1 = Guid.NewGuid();
+        var b2 = Guid.NewGuid();
+        var b3 = Guid.NewGuid();
+        var cal1 = new CalendarEntity { UserId = UserId, Name = "Cal1", Source = "outlook", IsVisible = true };
+        var cal2 = new CalendarEntity { UserId = UserId, Name = "Cal2", Source = "outlook", IsVisible = true };
+        var cal3 = new CalendarEntity { UserId = UserId, Name = "Cal3", Source = "outlook", IsVisible = true };
+        db.Set<CalendarEntity>().AddRange(cal1, cal2, cal3);
+        await db.SaveChangesAsync();
+        db.Set<OutlookCalendarBindingEntity>().AddRange(
+            new OutlookCalendarBindingEntity { Id = b1, ConnectionId = ConnectionId, PimCalendarId = cal1.Id, GraphCalendarId = "cal-1", Name = "Cal1", IsSelected = true, RemoteState = "active" },
+            new OutlookCalendarBindingEntity { Id = b2, ConnectionId = ConnectionId, PimCalendarId = cal2.Id, GraphCalendarId = "cal-2", Name = "Cal2", IsSelected = true, RemoteState = "active" },
+            new OutlookCalendarBindingEntity { Id = b3, ConnectionId = ConnectionId, PimCalendarId = cal3.Id, GraphCalendarId = "cal-3", Name = "Cal3", IsSelected = true, RemoteState = "active" });
+        await db.SaveChangesAsync();
+        return new RetryTestHelper(Guid.Empty, b1, b2, b3);
+    }
+
+    [Fact]
+    public async Task Retry_CreatesNewBatchLinkedToOriginalAndRunsOnlyFailedBindings()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+        var binding1Id = helper.Binding1Id;
+        var binding2Id = helper.Binding2Id;
+
+        var originalBatch = new OutlookSyncBatchEntity
+        {
+            UserId = UserId, ConnectionId = ConnectionId, Mode = "normal", Status = "partial",
+            StartedAt = FixedNow.AddDays(-1),
+            PerCalendarJson = JsonSerializer.Serialize(new object[]
+            {
+                new { bindingId = binding1Id.ToString(), calendarName = "Cal1", status = "failed", readCount = 0, createdCount = 0, updatedCount = 0, deletedCount = 0, failureCount = 1, changes = Array.Empty<object>(), failures = Array.Empty<object>() },
+                new { bindingId = binding2Id.ToString(), calendarName = "Cal2", status = "completed", readCount = 5, createdCount = 3, updatedCount = 1, deletedCount = 1, failureCount = 0, changes = Array.Empty<object>(), failures = Array.Empty<object>() }
+            })
+        };
+        db.Set<OutlookSyncBatchEntity>().Add(originalBatch);
+        await db.SaveChangesAsync();
+        var originalId = originalBatch.Id;
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: originalId), CancellationToken.None);
+
+        Assert.Single(handler.Requests);
+        Assert.Contains("cal-1", handler.Requests[0].RequestUri!.ToString());
+
+        var newBatch = await LatestBatchAsync(db);
+        Assert.NotEqual(originalId, newBatch.Id);
+
+        using var idsDoc = JsonDocument.Parse(newBatch.RequestedCalendarIdsJson);
+        var ids = idsDoc.RootElement.EnumerateArray().Select(e => Guid.Parse(e.GetString()!)).ToList();
+        Assert.Single(ids);
+        Assert.Equal(binding1Id, ids[0]);
+
+        using var calDoc = JsonDocument.Parse(newBatch.PerCalendarJson);
+        var entries = calDoc.RootElement.EnumerateArray().ToList();
+        Assert.Single(entries);
+        Assert.Equal(binding1Id.ToString(), entries[0].GetProperty("bindingId").GetString());
+        Assert.True(entries[0].TryGetProperty("retryOfBatchId", out var rob));
+        Assert.Equal(originalId.ToString(), rob.GetString());
+
+        var originalReloaded = await db.Set<OutlookSyncBatchEntity>().FirstAsync(b => b.Id == originalId);
+        Assert.Equal("partial", originalReloaded.Status);
+    }
+
+    [Fact]
+    public async Task Retry_WithoutExplicitIdsRunsFailedAndPartialBindings()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+
+        var originalBatch = new OutlookSyncBatchEntity
+        {
+            UserId = UserId, ConnectionId = ConnectionId, Mode = "normal", Status = "partial",
+            StartedAt = FixedNow.AddDays(-1),
+            PerCalendarJson = JsonSerializer.Serialize(new object[]
+            {
+                new { bindingId = helper.Binding1Id.ToString(), calendarName = "Failed", status = "failed", readCount = 0, createdCount = 0, updatedCount = 0, deletedCount = 0, failureCount = 1, changes = Array.Empty<object>(), failures = Array.Empty<object>() },
+                new { bindingId = helper.Binding2Id.ToString(), calendarName = "Partial", status = "partial", readCount = 2, createdCount = 1, updatedCount = 0, deletedCount = 0, failureCount = 0, changes = Array.Empty<object>(), failures = Array.Empty<object>() },
+                new { bindingId = helper.Binding3Id.ToString(), calendarName = "Completed", status = "completed", readCount = 5, createdCount = 3, updatedCount = 1, deletedCount = 1, failureCount = 0, changes = Array.Empty<object>(), failures = Array.Empty<object>() }
+            })
+        };
+        db.Set<OutlookSyncBatchEntity>().Add(originalBatch);
+        await db.SaveChangesAsync();
+        var originalId = originalBatch.Id;
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent2));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: originalId), CancellationToken.None);
+
+        Assert.Equal(2, handler.Requests.Count);
+        var calIds = handler.Requests.Select(r => r.RequestUri!.ToString()).ToList();
+        Assert.Contains(calIds, u => u.Contains("cal-1"));
+        Assert.Contains(calIds, u => u.Contains("cal-2"));
+
+        using var idsDoc = JsonDocument.Parse((await LatestBatchAsync(db)).RequestedCalendarIdsJson);
+        var ids = idsDoc.RootElement.EnumerateArray().Select(e => Guid.Parse(e.GetString()!)).Order().ToList();
+        Assert.Equal(2, ids.Count);
+        Assert.Contains(helper.Binding1Id, ids);
+        Assert.Contains(helper.Binding2Id, ids);
+    }
+
+    [Fact]
+    public async Task Retry_ExplicitIdsMustBeSubsetOfRetryableBindings()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+
+        var originalBatch = new OutlookSyncBatchEntity
+        {
+            UserId = UserId, ConnectionId = ConnectionId, Mode = "normal", Status = "partial",
+            PerCalendarJson = JsonSerializer.Serialize(new object[]
+            {
+                new { bindingId = helper.Binding1Id.ToString(), status = "failed" },
+                new { bindingId = helper.Binding2Id.ToString(), status = "completed" }
+            })
+        };
+        db.Set<OutlookSyncBatchEntity>().Add(originalBatch);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        // Completed binding ID should be rejected
+        var ex1 = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal",
+                CalendarBindingIds: new[] { helper.Binding2Id }, RetryOfBatchId: originalBatch.Id), CancellationToken.None));
+        Assert.Equal(02009, ex1.ErrorCode);
+
+        // Unknown binding ID
+        var ex2 = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal",
+                CalendarBindingIds: new[] { Guid.NewGuid() }, RetryOfBatchId: originalBatch.Id), CancellationToken.None));
+        Assert.Equal(02009, ex2.ErrorCode);
+
+        Assert.Empty(handler.Requests);
+        var batchesAfter = await db.Set<OutlookSyncBatchEntity>().ToListAsync();
+        Assert.Single(batchesAfter); // only original
+    }
+
+    [Fact]
+    public async Task Retry_RejectsCrossUserOrCrossConnectionBatch()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+
+        // Batch for different user and connection
+        var otherBatch = new OutlookSyncBatchEntity
+        {
+            UserId = OtherUserId, ConnectionId = Guid.NewGuid(), Mode = "normal", Status = "partial",
+            PerCalendarJson = JsonSerializer.Serialize(new object[]
+            {
+                new { bindingId = helper.Binding1Id.ToString(), status = "failed" }
+            })
+        };
+        db.Set<OutlookSyncBatchEntity>().Add(otherBatch);
+        await db.SaveChangesAsync();
+        var otherBatchId = otherBatch.Id;
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: otherBatchId), CancellationToken.None));
+        Assert.Equal(02009, ex.ErrorCode);
+
+        Assert.Empty(handler.Requests);
+        var batchesAfter = await db.Set<OutlookSyncBatchEntity>().ToListAsync();
+        Assert.Single(batchesAfter); // only the seeded one
+    }
+
+    [Fact]
+    public async Task Retry_RequiresMatchingModeAndValidHistory()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+
+        async Task<Guid> SeedBatchAsync(string mode, string status, string perCalendarJson)
+        {
+            var b = new OutlookSyncBatchEntity { UserId = UserId, ConnectionId = ConnectionId, Mode = mode, Status = status, PerCalendarJson = perCalendarJson };
+            db.Set<OutlookSyncBatchEntity>().Add(b);
+            await db.SaveChangesAsync();
+            return b.Id;
+        }
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        // Mode mismatch
+        var modeMismatchId = await SeedBatchAsync("full-resources", "partial",
+            JsonSerializer.Serialize(new object[] { new { bindingId = helper.Binding1Id.ToString(), status = "failed" } }));
+        var ex1 = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: modeMismatchId), CancellationToken.None));
+        Assert.Equal(02009, ex1.ErrorCode);
+
+        // PerCalendarJson not an array (null)
+        var nullJsonId = await SeedBatchAsync("normal", "partial", "null");
+        var ex2 = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: nullJsonId), CancellationToken.None));
+        Assert.Equal(02009, ex2.ErrorCode);
+
+        // PerCalendarJson empty array → no retryable entries
+        var emptyArrayId = await SeedBatchAsync("normal", "partial", "[]");
+        var ex3 = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: emptyArrayId), CancellationToken.None));
+        Assert.Equal(02009, ex3.ErrorCode);
+
+        // PerCalendarJson with no failed/partial entries
+        var noRetryableId = await SeedBatchAsync("normal", "completed",
+            JsonSerializer.Serialize(new object[] { new { bindingId = helper.Binding1Id.ToString(), status = "completed" } }));
+        var ex4 = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: noRetryableId), CancellationToken.None));
+        Assert.Equal(02009, ex4.ErrorCode);
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Retry_MalformedPerCalendarJson_ThrowsDomainException()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+
+        var originalBatch = new OutlookSyncBatchEntity
+        {
+            UserId = UserId, ConnectionId = ConnectionId, Mode = "normal", Status = "partial",
+            PerCalendarJson = "this is not valid json {{{",
+            StartedAt = FixedNow.AddDays(-1)
+        };
+        db.Set<OutlookSyncBatchEntity>().Add(originalBatch);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: originalBatch.Id), CancellationToken.None));
+        Assert.Equal(02009, ex.ErrorCode);
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Retry_RejectsNonObjectEntryInHistory()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+
+        var originalBatch = new OutlookSyncBatchEntity
+        {
+            UserId = UserId, ConnectionId = ConnectionId, Mode = "normal", Status = "partial",
+            PerCalendarJson = """["not-an-object"]""",
+            StartedAt = FixedNow.AddDays(-1)
+        };
+        db.Set<OutlookSyncBatchEntity>().Add(originalBatch);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: originalBatch.Id), CancellationToken.None));
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Retry_RejectsEntryMissingBindingId()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+
+        var originalBatch = new OutlookSyncBatchEntity
+        {
+            UserId = UserId, ConnectionId = ConnectionId, Mode = "normal", Status = "partial",
+            PerCalendarJson = JsonSerializer.Serialize(new object[]
+            {
+                new { status = "failed" }
+            }),
+            StartedAt = FixedNow.AddDays(-1)
+        };
+        db.Set<OutlookSyncBatchEntity>().Add(originalBatch);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: originalBatch.Id), CancellationToken.None));
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Retry_RejectsEntryWithInvalidBindingIdGuid()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+
+        var originalBatch = new OutlookSyncBatchEntity
+        {
+            UserId = UserId, ConnectionId = ConnectionId, Mode = "normal", Status = "partial",
+            PerCalendarJson = JsonSerializer.Serialize(new object[]
+            {
+                new { bindingId = "not-a-guid", status = "failed" }
+            }),
+            StartedAt = FixedNow.AddDays(-1)
+        };
+        db.Set<OutlookSyncBatchEntity>().Add(originalBatch);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: originalBatch.Id), CancellationToken.None));
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Retry_RejectsEntryMissingStatus()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+
+        var originalBatch = new OutlookSyncBatchEntity
+        {
+            UserId = UserId, ConnectionId = ConnectionId, Mode = "normal", Status = "partial",
+            PerCalendarJson = JsonSerializer.Serialize(new object[]
+            {
+                new { bindingId = helper.Binding1Id.ToString() }
+            }),
+            StartedAt = FixedNow.AddDays(-1)
+        };
+        db.Set<OutlookSyncBatchEntity>().Add(originalBatch);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: originalBatch.Id), CancellationToken.None));
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Retry_RejectsUnknownStatus()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+
+        var originalBatch = new OutlookSyncBatchEntity
+        {
+            UserId = UserId, ConnectionId = ConnectionId, Mode = "normal", Status = "partial",
+            PerCalendarJson = JsonSerializer.Serialize(new object[]
+            {
+                new { bindingId = helper.Binding1Id.ToString(), status = "garbage-status" }
+            }),
+            StartedAt = FixedNow.AddDays(-1)
+        };
+        db.Set<OutlookSyncBatchEntity>().Add(originalBatch);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: originalBatch.Id), CancellationToken.None));
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Retry_RejectsDuplicateBindingEntry()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+
+        var originalBatch = new OutlookSyncBatchEntity
+        {
+            UserId = UserId, ConnectionId = ConnectionId, Mode = "normal", Status = "partial",
+            PerCalendarJson = JsonSerializer.Serialize(new object[]
+            {
+                new { bindingId = helper.Binding1Id.ToString(), status = "failed" },
+                new { bindingId = helper.Binding1Id.ToString(), status = "failed" }
+            }),
+            StartedAt = FixedNow.AddDays(-1)
+        };
+        db.Set<OutlookSyncBatchEntity>().Add(originalBatch);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: originalBatch.Id), CancellationToken.None));
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Retry_RejectsUppercaseStatus()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var helper = await SeedRetryScenarioAsync(db);
+
+        var originalBatch = new OutlookSyncBatchEntity
+        {
+            UserId = UserId, ConnectionId = ConnectionId, Mode = "normal", Status = "partial",
+            PerCalendarJson = JsonSerializer.Serialize(new object[]
+            {
+                new { bindingId = helper.Binding1Id.ToString(), status = "Failed" },
+                new { bindingId = helper.Binding2Id.ToString(), status = "failed" }
+            }),
+            StartedAt = FixedNow.AddDays(-1)
+        };
+        db.Set<OutlookSyncBatchEntity>().Add(originalBatch);
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal", RetryOfBatchId: originalBatch.Id), CancellationToken.None));
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    // ===== Task 5B: Cancel =====
+
+    [Fact]
+    public async Task CancelRequested_StopsBeforeNextPageAndPreservesCommittedPage()
+    {
+        var dbName = "cancel-paging-" + Guid.NewGuid();
+        var sharedOptions = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(dbName)
+            .Options;
+        PimDbContext.RegisterModuleAssembly(typeof(CalendarEntity).Assembly);
+
+        using (var seedCtx = new PimDbContext(sharedOptions))
+        {
+            await SeedConnectionAsync(seedCtx, UserId);
+            await SeedSingleBindingAsync(seedCtx, UserId, ConnectionId, "cal-1");
+        }
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(request =>
+        {
+            using var db = new PimDbContext(sharedOptions);
+            var batch = db.Set<OutlookSyncBatchEntity>().FirstOrDefault(b => b.Status == "running");
+            if (batch is not null)
+            {
+                batch.CancelRequested = true;
+                db.SaveChanges();
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    CalendarViewPageResponse("https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView?$skiptoken=p2", SyncEvent1),
+                    System.Text.Encoding.UTF8, "application/json")
+            };
+        });
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+
+        using var ctx = new PimDbContext(sharedOptions);
+        var service = CreateService(ctx, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("canceled", response.Status);
+        Assert.True(response.CancelRequested);
+
+        Assert.Single(handler.Requests);
+
+        var evt = await LoadEventByOutlookIdAsync(ctx, "event-1");
+        Assert.NotNull(evt);
+        Assert.Null(evt.DeletedAt);
+
+        var batch = await LatestBatchAsync(ctx);
+        Assert.Equal("canceled", batch.Status);
+        Assert.True(batch.CancelRequested);
+        Assert.NotNull(batch.FinishedAt);
+        Assert.True(batch.ReadCount >= 1);
+        Assert.Equal(0, batch.FailureCount);
+
+        using var doc = JsonDocument.Parse(batch.PerCalendarJson);
+        var entries = doc.RootElement.EnumerateArray().ToList();
+        Assert.Single(entries);
+        Assert.Equal("canceled", entries[0].GetProperty("status").GetString());
+
+        var step = Assert.Single(response.Steps);
+        Assert.Equal("canceled", step.Status);
+    }
+
+    [Fact]
+    public async Task CancelRequested_WithTwoBindings_StopsAfterFirstBinding()
+    {
+        var dbName = "cancel-two-bindings-" + Guid.NewGuid();
+        var sharedOptions = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(dbName)
+            .Options;
+        PimDbContext.RegisterModuleAssembly(typeof(CalendarEntity).Assembly);
+
+        using (var seedCtx = new PimDbContext(sharedOptions))
+        {
+            await SeedConnectionAsync(seedCtx, UserId);
+            await SeedTwoSelectedBindingsAsync(seedCtx, UserId, ConnectionId);
+        }
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(request =>
+        {
+            using var db = new PimDbContext(sharedOptions);
+            var batch = db.Set<OutlookSyncBatchEntity>().FirstOrDefault(b => b.Status == "running");
+            if (batch is not null)
+            {
+                batch.CancelRequested = true;
+                db.SaveChanges();
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    CalendarViewPageResponse("https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView?$skiptoken=p2", SyncEvent1),
+                    System.Text.Encoding.UTF8, "application/json")
+            };
+        });
+        // Second binding response queued but should never be requested
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent2));
+
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+
+        using var ctx = new PimDbContext(sharedOptions);
+        var service = CreateService(ctx, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("canceled", response.Status);
+        Assert.True(response.CancelRequested);
+
+        Assert.Single(handler.Requests);
+
+        var evt = await LoadEventByOutlookIdAsync(ctx, "event-1");
+        Assert.NotNull(evt);
+        Assert.Null(evt.DeletedAt);
+
+        var batch = await LatestBatchAsync(ctx);
+        Assert.Equal("canceled", batch.Status);
+        Assert.True(batch.CancelRequested);
+
+        using var doc = JsonDocument.Parse(batch.PerCalendarJson);
+        var entries = doc.RootElement.EnumerateArray().ToList();
+        Assert.Single(entries);
+        Assert.Equal("canceled", entries[0].GetProperty("status").GetString());
+
+        var requestedUri = handler.Requests[0].RequestUri!.ToString();
+        var processedGraphId = requestedUri.Contains("cal-1") ? "cal-1" : "cal-2";
+        var processedBinding = await BindingByGraphIdAsync(ctx, processedGraphId);
+        Assert.Equal(processedBinding.Id.ToString(), entries[0].GetProperty("bindingId").GetString());
+    }
+
+    [Fact]
+    public async Task CancelRequested_StopsBeforeNextRangeChunk()
+    {
+        var dbName = "cancel-chunk-" + Guid.NewGuid();
+        var sharedOptions = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(dbName)
+            .Options;
+        PimDbContext.RegisterModuleAssembly(typeof(CalendarEntity).Assembly);
+
+        using (var seedCtx = new PimDbContext(sharedOptions))
+        {
+            await SeedConnectionAsync(seedCtx, UserId);
+            await SeedSingleBindingAsync(seedCtx, UserId, ConnectionId, "cal-1");
+        }
+
+        var handler = new ScriptedHttpMessageHandler();
+        // Chunk 1 response: single page with no nextLink
+        handler.Enqueue(request =>
+        {
+            using var db = new PimDbContext(sharedOptions);
+            var batch = db.Set<OutlookSyncBatchEntity>().FirstOrDefault(b => b.Status == "running");
+            if (batch is not null)
+            {
+                batch.CancelRequested = true;
+                db.SaveChanges();
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(CalendarViewResponse(SyncEvent1),
+                    System.Text.Encoding.UTF8, "application/json")
+            };
+        });
+        // Chunk 2 response: queued but will never be requested
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent2));
+
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+
+        using var ctx = new PimDbContext(sharedOptions);
+        var service = CreateService(ctx, graph, time);
+
+        var rangeStart = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var rangeEnd = new DateTimeOffset(2026, 12, 31, 0, 0, 0, TimeSpan.Zero);
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("range-instances",
+            RangeStart: rangeStart, RangeEnd: rangeEnd), CancellationToken.None);
+
+        Assert.Equal("canceled", response.Status);
+        Assert.True(response.CancelRequested);
+        Assert.Single(handler.Requests);
+
+        var evt = await LoadEventByOutlookIdAsync(ctx, "event-1");
+        Assert.NotNull(evt);
+        Assert.Null(evt.DeletedAt);
+
+        var batch = await LatestBatchAsync(ctx);
+        Assert.Equal("canceled", batch.Status);
+        Assert.True(batch.CancelRequested);
+
+        using var doc = JsonDocument.Parse(batch.PerCalendarJson);
+        var entries = doc.RootElement.EnumerateArray().ToList();
+        Assert.Single(entries);
+        Assert.Equal("canceled", entries[0].GetProperty("status").GetString());
+
+        var step = Assert.Single(response.Steps);
+        Assert.Equal("canceled", step.Status);
     }
 }

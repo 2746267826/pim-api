@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -339,19 +340,68 @@ public sealed class OutlookCalendarSyncService
 
     // ===== SyncAsync =====
 
+    private static readonly string[] AllowedModes = ["normal", "full-resources", "range-instances"];
+
     public async Task<OutlookSyncBatchResponse> SyncAsync(Guid userId, OutlookSyncRequest request, CancellationToken ct)
     {
-        if (request.Mode != "normal")
+        if (!AllowedModes.Contains(request.Mode))
             throw new DomainException(02009, "不支持的 Microsoft 同步模式。");
+
+        if (request.Mode == "range-instances")
+        {
+            if (request.RangeStart is null || request.RangeEnd is null || request.RangeStart >= request.RangeEnd)
+                throw new DomainException(02009, "无效的同步时间范围。");
+        }
 
         var connection = await _db.Set<OutlookConnectionEntity>()
             .FirstOrDefaultAsync(c => c.UserId == userId, ct)
             ?? throw new DomainException(02005, "Outlook is not connected.");
 
+        Guid? retryOfBatchId = null;
+        if (request.RetryOfBatchId is not null)
+        {
+            var originalBatch = await _db.Set<OutlookSyncBatchEntity>()
+                .FirstOrDefaultAsync(b => b.Id == request.RetryOfBatchId && b.UserId == userId && b.ConnectionId == connection.Id, ct)
+                ?? throw new DomainException(02009, "原始同步批次不存在或无法访问。");
+
+            if (originalBatch.Status is "running" or null)
+                throw new DomainException(02009, "原始同步批次仍在运行。");
+
+            if (originalBatch.Mode != request.Mode)
+                throw new DomainException(02009, "重试模式必须与原始批次一致。");
+
+            var retryableIds = ParseRetryableBindingIds(originalBatch.PerCalendarJson);
+
+            if (request.CalendarBindingIds is { Count: > 0 })
+            {
+                var requestedSet = request.CalendarBindingIds.ToHashSet();
+                if (!requestedSet.IsSubsetOf(retryableIds.ToHashSet()))
+                    throw new DomainException(02009, "指定的日历绑定 ID 不可重试。");
+                retryableIds = requestedSet.ToList();
+            }
+
+            if (retryableIds.Count == 0)
+                throw new DomainException(02009, "没有可重试的日历绑定。");
+
+            retryOfBatchId = originalBatch.Id;
+            request = request with { CalendarBindingIds = retryableIds };
+        }
+
         var bindings = await _db.Set<OutlookCalendarBindingEntity>()
             .Where(b => b.ConnectionId == connection.Id && b.IsSelected && b.RemoteState == "active")
             .OrderBy(b => b.Id)
             .ToListAsync(ct);
+
+        if (request.CalendarBindingIds is { Count: > 0 })
+        {
+            var bindingIds = bindings.Select(b => b.Id).ToHashSet();
+            foreach (var id in request.CalendarBindingIds)
+            {
+                if (!bindingIds.Contains(id))
+                    throw new DomainException(02009, "指定的日历绑定 ID 无效或未选中。");
+            }
+            bindings = bindings.Where(b => request.CalendarBindingIds.Contains(b.Id)).ToList();
+        }
 
         var semaphore = ConnectionLocks.GetOrAdd(connection.Id, _ => new SemaphoreSlim(1, 1));
 
@@ -369,7 +419,7 @@ public sealed class OutlookCalendarSyncService
 
         try
         {
-            return await RunSyncInternalAsync(userId, connection, bindings, ct);
+            return await RunSyncInternalAsync(userId, connection, bindings, request.Mode, request.RangeStart, request.RangeEnd, retryOfBatchId, ct);
         }
         finally
         {
@@ -402,11 +452,31 @@ public sealed class OutlookCalendarSyncService
         Guid userId,
         OutlookConnectionEntity connection,
         IReadOnlyList<OutlookCalendarBindingEntity> bindings,
+        string mode,
+        DateTimeOffset? requestWindowStart,
+        DateTimeOffset? requestWindowEnd,
+        Guid? retryOfBatchId,
         CancellationToken ct)
     {
         var now = _timeProvider.GetUtcNow();
-        var windowStart = now.AddDays(-90);
-        var windowEnd = now.AddDays(365);
+
+        DateTimeOffset? windowStart, windowEnd;
+        if (mode == "normal")
+        {
+            windowStart = now.AddDays(-90);
+            windowEnd = now.AddDays(365);
+        }
+        else if (mode == "range-instances")
+        {
+            windowStart = requestWindowStart;
+            windowEnd = requestWindowEnd;
+        }
+        else
+        {
+            windowStart = null;
+            windowEnd = null;
+        }
+
         var generation = Guid.NewGuid();
 
         // Interrupt old running non-writeback batches
@@ -428,7 +498,7 @@ public sealed class OutlookCalendarSyncService
         {
             UserId = userId,
             ConnectionId = connection.Id,
-            Mode = "normal",
+            Mode = mode,
             RequestedWindowStart = windowStart,
             RequestedWindowEnd = windowEnd,
             RequestedCalendarIdsJson = JsonSerializer.Serialize(bindings.Select(b => b.Id.ToString()).ToList()),
@@ -457,7 +527,7 @@ public sealed class OutlookCalendarSyncService
                 try
                 {
                     await ProcessSingleBindingAsync(
-                        connection, binding, state, batch, windowStart, windowEnd, generation, now, ct);
+                        connection, binding, state, batch, windowStart, windowEnd, generation, now, mode, ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -496,6 +566,9 @@ public sealed class OutlookCalendarSyncService
                     state.Steps.Add(new OutlookSyncStep(binding.Id.ToString(), "failed", "未知错误", now));
                     state.Status = state.ProgressMade ? "partial" : "failed";
                 }
+
+                if (state.Status == "canceled")
+                    break;
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested && !canceled)
@@ -557,7 +630,8 @@ public sealed class OutlookCalendarSyncService
                     title = f.Title,
                     code = f.Code,
                     message = f.Message
-                })
+                }),
+                retryOfBatchId = retryOfBatchId?.ToString()
             });
         }
 
@@ -583,8 +657,11 @@ public sealed class OutlookCalendarSyncService
         }
 
         // Batch status (canceled/reauth preserved first)
-        if (canceled)
+        var anyCanceled = states.Any(s => s.Status == "canceled");
+        if (canceled || anyCanceled)
         {
+            if (anyCanceled)
+                batch.CancelRequested = true;
             batch.Status = "canceled";
         }
         else if (reauthEncountered)
@@ -605,7 +682,7 @@ public sealed class OutlookCalendarSyncService
         }
 
         // Connection status (reauth not overridden)
-        if (!reauthEncountered && !canceled)
+        if (!reauthEncountered && !canceled && !anyCanceled)
         {
             if (batch.Status == "completed")
             {
@@ -635,103 +712,59 @@ public sealed class OutlookCalendarSyncService
         OutlookCalendarBindingEntity binding,
         BindingSyncState state,
         OutlookSyncBatchEntity batch,
-        DateTimeOffset windowStart,
-        DateTimeOffset windowEnd,
+        DateTimeOffset? windowStart,
+        DateTimeOffset? windowEnd,
         Guid generation,
         DateTimeOffset now,
+        string mode,
         CancellationToken ct)
     {
+        IAsyncEnumerable<GraphPage> pages;
+        HashSet<string>? seenIds = null;
+
+        if (mode == "full-resources")
+        {
+            pages = _graph.GetEventsAsync(connection.Id, binding.GraphCalendarId, ct);
+        }
+        else if (mode == "range-instances")
+        {
+            pages = GetRangeViewPagesAsync(connection.Id, binding.GraphCalendarId, windowStart!.Value, windowEnd!.Value, ct);
+            seenIds = new HashSet<string>(StringComparer.Ordinal);
+        }
+        else
+        {
+            pages = _graph.GetCalendarViewAsync(connection.Id, binding.GraphCalendarId, windowStart!.Value, windowEnd!.Value, ct);
+        }
+
         var pagesCompleted = false;
+        var cancelRequested = false;
 
         try
         {
-            var pages = _graph.GetCalendarViewAsync(
-                connection.Id, binding.GraphCalendarId, windowStart, windowEnd, ct);
-
-            await foreach (var page in pages)
+            await using var enumerator = pages.GetAsyncEnumerator(ct);
+            while (true)
             {
-                ct.ThrowIfCancellationRequested();
-
-                var pageAdded = new List<EventEntity>();
-                var pageModified = new List<EventEntity>();
-                var pageRead = 0;
-                var pageCreated = 0;
-                var pageUpdated = 0;
-                var pageChanges = new List<EventChangeSummary>();
-
-                try
+                var dbCancel = await _db.Set<OutlookSyncBatchEntity>()
+                    .AsNoTracking()
+                    .Where(b => b.Id == batch.Id)
+                    .Select(b => b.CancelRequested)
+                    .FirstOrDefaultAsync(ct);
+                if (dbCancel)
                 {
-                    foreach (var graphEvent in page.Items)
-                    {
-                        var eventId = graphEvent.GetProperty("id").GetString()!;
-
-                        var existing = await _db.Set<EventEntity>()
-                            .IgnoreQueryFilters()
-                            .Where(e => e.OutlookConnectionId == connection.Id && e.OutlookEventId == eventId)
-                            .FirstOrDefaultAsync(ct);
-
-                        if (existing is not null)
-                        {
-                            existing.CalendarId = binding.PimCalendarId;
-                            existing.OutlookCalendarBindingId = binding.Id;
-                            existing.DeletedAt = null;
-                            existing.DeletedByOperationId = null;
-                            existing.DeletedByOperationKind = null;
-                            OutlookEventMapper.ApplyGraphEvent(
-                                existing, graphEvent, binding.Id, binding.PimCalendarId, connection.Id, generation);
-                            existing.UpdatedAt = now;
-                            pageModified.Add(existing);
-                            pageUpdated++;
-                        }
-                        else
-                        {
-                            var newEvent = new EventEntity();
-                            OutlookEventMapper.ApplyGraphEvent(
-                                newEvent, graphEvent, binding.Id, binding.PimCalendarId, connection.Id, generation);
-                            newEvent.CreatedAt = now;
-                            newEvent.UpdatedAt = now;
-                            newEvent.DtStamp = now;
-                            newEvent.OutlookConnectionId = connection.Id;
-                            newEvent.Source = "outlook";
-                            _db.Set<EventEntity>().Add(newEvent);
-                            pageAdded.Add(newEvent);
-                            pageCreated++;
-                        }
-                        pageRead++;
-                        pageChanges.Add(new EventChangeSummary(
-                            eventId,
-                            graphEvent.GetProperty("subject").GetString(),
-                            existing is not null ? "updated" : "created"));
-                    }
-
-                    await _db.SaveChangesAsync(ct);
-                }
-                catch
-                {
-                    // Detach this page's unsaved Added/Modified events so the final batch save
-                    // cannot accidentally commit half a page. Prior successful pages persist.
-                    foreach (var added in pageAdded)
-                        _db.Entry(added).State = EntityState.Detached;
-                    foreach (var modified in pageModified)
-                    {
-                        var entry = _db.Entry(modified);
-                        if (entry.State == EntityState.Modified)
-                            entry.CurrentValues.SetValues(entry.OriginalValues);
-                        entry.State = EntityState.Unchanged;
-                    }
-                    throw;
+                    batch.CancelRequested = true;
+                    state.Status = "canceled";
+                    cancelRequested = true;
+                    break;
                 }
 
-                // Page fully processed and saved -> commit local progress for this page
-                state.Read += pageRead;
-                state.Created += pageCreated;
-                state.Updated += pageUpdated;
-                state.Changes.AddRange(pageChanges);
-                state.SuccessfulPages++;
-                state.ProgressMade = true;
+                if (!await enumerator.MoveNextAsync())
+                {
+                    pagesCompleted = true;
+                    break;
+                }
+
+                await ProcessPageAsync(connection, binding, state, enumerator.Current, generation, now, seenIds, ct);
             }
-
-            pagesCompleted = true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -751,10 +784,10 @@ public sealed class OutlookCalendarSyncService
             throw;
         }
 
-        if (pagesCompleted && !ct.IsCancellationRequested)
+        if (pagesCompleted && !ct.IsCancellationRequested && !cancelRequested && mode == "normal")
         {
             await RunMissingVerificationAsync(
-                connection, binding, state, batch, windowStart, windowEnd, generation, now, ct);
+                connection, binding, state, batch, windowStart!.Value, windowEnd!.Value, generation, now, ct);
         }
 
         if (!ct.IsCancellationRequested)
@@ -764,6 +797,116 @@ public sealed class OutlookCalendarSyncService
                 state.Status = "completed";
 
             state.Steps.Add(new OutlookSyncStep(binding.Id.ToString(), state.Status, detail, now));
+        }
+    }
+
+    private async Task ProcessPageAsync(
+        OutlookConnectionEntity connection,
+        OutlookCalendarBindingEntity binding,
+        BindingSyncState state,
+        GraphPage page,
+        Guid generation,
+        DateTimeOffset now,
+        HashSet<string>? seenIds,
+        CancellationToken ct)
+    {
+        var pageAdded = new List<EventEntity>();
+        var pageModified = new List<EventEntity>();
+        var pageRead = 0;
+        var pageCreated = 0;
+        var pageUpdated = 0;
+        var pageChanges = new List<EventChangeSummary>();
+
+        try
+        {
+            foreach (var graphEvent in page.Items)
+            {
+                var eventId = graphEvent.GetProperty("id").GetString()!;
+                if (seenIds is not null && !seenIds.Add(eventId))
+                    continue;
+
+                var existing = await _db.Set<EventEntity>()
+                    .IgnoreQueryFilters()
+                    .Where(e => e.OutlookConnectionId == connection.Id && e.OutlookEventId == eventId)
+                    .FirstOrDefaultAsync(ct);
+
+                if (existing is not null)
+                {
+                    existing.CalendarId = binding.PimCalendarId;
+                    existing.OutlookCalendarBindingId = binding.Id;
+                    existing.DeletedAt = null;
+                    existing.DeletedByOperationId = null;
+                    existing.DeletedByOperationKind = null;
+                    OutlookEventMapper.ApplyGraphEvent(
+                        existing, graphEvent, binding.Id, binding.PimCalendarId, connection.Id, generation);
+                    existing.UpdatedAt = now;
+                    pageModified.Add(existing);
+                    pageUpdated++;
+                }
+                else
+                {
+                    var newEvent = new EventEntity();
+                    OutlookEventMapper.ApplyGraphEvent(
+                        newEvent, graphEvent, binding.Id, binding.PimCalendarId, connection.Id, generation);
+                    newEvent.CreatedAt = now;
+                    newEvent.UpdatedAt = now;
+                    newEvent.DtStamp = now;
+                    newEvent.OutlookConnectionId = connection.Id;
+                    newEvent.Source = "outlook";
+                    _db.Set<EventEntity>().Add(newEvent);
+                    pageAdded.Add(newEvent);
+                    pageCreated++;
+                }
+
+                pageRead++;
+                pageChanges.Add(new EventChangeSummary(
+                    eventId,
+                    graphEvent.GetProperty("subject").GetString(),
+                    existing is not null ? "updated" : "created"));
+            }
+
+            await _db.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            foreach (var added in pageAdded)
+                _db.Entry(added).State = EntityState.Detached;
+            foreach (var modified in pageModified)
+            {
+                var entry = _db.Entry(modified);
+                if (entry.State == EntityState.Modified)
+                    entry.CurrentValues.SetValues(entry.OriginalValues);
+                entry.State = EntityState.Unchanged;
+            }
+            throw;
+        }
+
+        state.Read += pageRead;
+        state.Created += pageCreated;
+        state.Updated += pageUpdated;
+        state.Changes.AddRange(pageChanges);
+        state.SuccessfulPages++;
+        state.ProgressMade = true;
+    }
+
+    private async IAsyncEnumerable<GraphPage> GetRangeViewPagesAsync(
+        Guid connectionId, string calendarId,
+        DateTimeOffset rangeStart, DateTimeOffset rangeEnd,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        var current = rangeStart;
+        while (current < rangeEnd)
+        {
+            var next = current.AddDays(180);
+            if (next > rangeEnd) next = rangeEnd;
+
+            var pages = _graph.GetCalendarViewAsync(connectionId, calendarId, current, next, ct);
+            await foreach (var page in pages)
+            {
+                yield return page;
+            }
+
+            current = next;
         }
     }
 
@@ -880,6 +1023,60 @@ public sealed class OutlookCalendarSyncService
         state.Deleted += pendingDeleted;
         state.Updated += pendingUpdated;
         state.Changes.AddRange(pendingChanges);
+    }
+
+    private static List<Guid> ParseRetryableBindingIds(string perCalendarJson)
+    {
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(perCalendarJson);
+        }
+        catch (JsonException)
+        {
+            throw new DomainException(02009, "无效的同步历史记录格式。");
+        }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Array)
+                throw new DomainException(02009, "无效的同步历史记录格式。");
+
+            var result = new List<Guid>();
+            var seenIds = new HashSet<Guid>();
+            foreach (var entry in root.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object)
+                    throw new DomainException(02009, "无效的同步历史记录格式。");
+
+                if (!entry.TryGetProperty("bindingId", out var bindingIdProp)
+                    || bindingIdProp.ValueKind != JsonValueKind.String
+                    || !Guid.TryParse(bindingIdProp.GetString(), out var bindingId))
+                    throw new DomainException(02009, "无效的同步历史记录格式。");
+
+                if (!entry.TryGetProperty("status", out var statusProp)
+                    || statusProp.ValueKind != JsonValueKind.String)
+                    throw new DomainException(02009, "无效的同步历史记录格式。");
+
+                var knownStatuses = new HashSet<string>(StringComparer.Ordinal)
+                    { "failed", "partial", "completed", "canceled" };
+                var status = statusProp.GetString()!;
+                if (!knownStatuses.Contains(status))
+                    throw new DomainException(02009, "无效的同步历史记录格式。");
+
+                if (!seenIds.Add(bindingId))
+                    throw new DomainException(02009, "无效的同步历史记录格式。");
+
+                if (status == "failed" || status == "partial")
+                    result.Add(bindingId);
+            }
+
+            if (result.Count == 0)
+                throw new DomainException(02009, "没有可重试的日历绑定。");
+
+            return result;
+        }
     }
 
     private static OutlookSyncBatchResponse MapBatch(OutlookSyncBatchEntity batch)
