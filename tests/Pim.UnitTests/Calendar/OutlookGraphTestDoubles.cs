@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using Pim.Infrastructure.Secrets;
@@ -95,4 +96,162 @@ internal sealed class FakeSecretProtector : ISecretProtector
 
     public string Unprotect(string protectedValue)
         => Encoding.UTF8.GetString(Convert.FromBase64String(protectedValue["protected:".Length..]));
+}
+
+internal sealed class ScriptedHttpMessageHandler : HttpMessageHandler
+{
+    private readonly Queue<Func<HttpRequestMessage, HttpResponseMessage>> _scripts = new();
+
+    public List<HttpRequestMessage> Requests { get; } = [];
+    public List<HttpRequestMessage> OriginalRequests { get; } = [];
+
+    public void Enqueue(HttpStatusCode statusCode, string? body = null, string? retryAfter = null)
+    {
+        _scripts.Enqueue(request =>
+        {
+            var response = new HttpResponseMessage(statusCode);
+            if (body is not null)
+                response.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            if (retryAfter is not null)
+                response.Headers.TryAddWithoutValidation("Retry-After", retryAfter);
+            return response;
+        });
+    }
+
+    public void EnqueueException(HttpRequestException exception)
+    {
+        _scripts.Enqueue(_ => throw exception);
+    }
+
+    public void EnqueueTimeout()
+    {
+        _scripts.Enqueue(_ => throw new OperationCanceledException());
+    }
+
+    public void Enqueue(Func<HttpRequestMessage, HttpResponseMessage> handler)
+    {
+        _scripts.Enqueue(handler);
+    }
+
+    protected override Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return Task.FromCanceled<HttpResponseMessage>(cancellationToken);
+
+        var script = _scripts.Count > 0 ? _scripts.Dequeue() : null;
+        if (script is null)
+            throw new InvalidOperationException(
+                $"No response queued for {request.Method} {request.RequestUri}");
+
+        OriginalRequests.Add(request);
+        Requests.Add(SnapshotRequest(request));
+
+        try
+        {
+            return Task.FromResult(script(request));
+        }
+        catch (Exception ex)
+        {
+            return Task.FromException<HttpResponseMessage>(ex);
+        }
+    }
+
+    private static HttpRequestMessage SnapshotRequest(HttpRequestMessage original)
+    {
+        var clone = new HttpRequestMessage(original.Method, original.RequestUri)
+        {
+            Version = original.Version
+        };
+
+        foreach (var header in original.Headers)
+            clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
+
+        if (original.Content is not null)
+        {
+            var body = original.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            clone.Content = new StringContent(body, Encoding.UTF8, original.Content.Headers.ContentType?.MediaType ?? "application/json");
+
+            foreach (var header in original.Content.Headers)
+                clone.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
+
+        return clone;
+    }
+}
+
+internal sealed class StubHttpClientFactory : IHttpClientFactory
+{
+    private readonly HttpMessageHandler _handler;
+
+    public StubHttpClientFactory(HttpMessageHandler handler)
+    {
+        _handler = handler;
+    }
+
+    public HttpClient CreateClient(string name)
+        => new(_handler, disposeHandler: false);
+}
+
+internal sealed class FakeOutlookAccessTokenProvider : IOutlookAccessTokenProvider
+{
+    public string Token { get; set; } = "test-access-token";
+    public int CallCount { get; private set; }
+    public bool LastForceRefresh { get; private set; }
+
+    public Task<string> AcquireAccessTokenAsync(Guid connectionId, bool forceRefresh, CancellationToken ct)
+    {
+        CallCount++;
+        LastForceRefresh = forceRefresh;
+        return Task.FromResult(Token);
+    }
+}
+
+internal sealed class StubTimeProvider : TimeProvider
+{
+    public DateTimeOffset UtcNowValue { get; set; } = DateTimeOffset.UtcNow;
+    public List<TimeSpan> RequestedDelays { get; } = [];
+
+    public override DateTimeOffset GetUtcNow() => UtcNowValue;
+
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        if (dueTime > TimeSpan.Zero && dueTime != Timeout.InfiniteTimeSpan)
+            RequestedDelays.Add(dueTime);
+
+        if (dueTime > TimeSpan.Zero && dueTime != Timeout.InfiniteTimeSpan)
+            _ = Task.Run(() => callback(state));
+
+        return new StubTimer();
+    }
+}
+
+internal sealed class StubTimer : ITimer
+{
+    public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+    public void Dispose() { }
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+internal sealed class NonSeekableReadStream : Stream
+{
+    private readonly Stream _inner;
+    public NonSeekableReadStream(Stream inner) => _inner = inner;
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override void Flush() { }
+    public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _inner.Dispose();
+        base.Dispose(disposing);
+    }
 }
