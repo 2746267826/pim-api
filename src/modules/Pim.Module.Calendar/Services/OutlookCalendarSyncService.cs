@@ -338,6 +338,22 @@ public sealed class OutlookCalendarSyncService
 
     private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> ConnectionLocks = new();
 
+    public async Task<IReadOnlyList<Guid>> ListRunnableUsersAsync(CancellationToken ct)
+    {
+        var userIds = await _db.Set<OutlookConnectionEntity>()
+            .Where(c => c.Status == "connected")
+            .Join(
+                _db.Set<OutlookCalendarBindingEntity>(),
+                c => c.Id,
+                b => b.ConnectionId,
+                (c, b) => new { c.UserId, b.IsSelected, b.RemoteState })
+            .Where(x => x.IsSelected && x.RemoteState == "active")
+            .Select(x => x.UserId)
+            .Distinct()
+            .ToListAsync(ct);
+        return userIds;
+    }
+
     // ===== SyncAsync =====
 
     private static readonly string[] AllowedModes = ["normal", "full-resources", "range-instances"];
@@ -356,6 +372,9 @@ public sealed class OutlookCalendarSyncService
         var connection = await _db.Set<OutlookConnectionEntity>()
             .FirstOrDefaultAsync(c => c.UserId == userId, ct)
             ?? throw new DomainException(02005, "Outlook is not connected.");
+
+        if (connection.Status != "connected")
+            throw new DomainException(02005, "Outlook 未连接。");
 
         Guid? retryOfBatchId = null;
         if (request.RetryOfBatchId is not null)
@@ -578,6 +597,12 @@ public sealed class OutlookCalendarSyncService
         catch (OperationCanceledException) when (canceled)
         {
             // Already recorded; swallow rethrow path.
+        }
+
+        // Unmatched legacy pass (full-resources only, all bindings completed)
+        if (mode == "full-resources" && !reauthEncountered && !canceled && states.Count > 0 && states.All(s => s.Status == "completed"))
+        {
+            await MarkUnmatchedLegacyEventsAsync(connection, now, ct);
         }
 
         // Aggregate batch counters from per-binding states
@@ -845,17 +870,37 @@ public sealed class OutlookCalendarSyncService
                 }
                 else
                 {
-                    var newEvent = new EventEntity();
-                    OutlookEventMapper.ApplyGraphEvent(
-                        newEvent, graphEvent, binding.Id, binding.PimCalendarId, connection.Id, generation);
-                    newEvent.CreatedAt = now;
-                    newEvent.UpdatedAt = now;
-                    newEvent.DtStamp = now;
-                    newEvent.OutlookConnectionId = connection.Id;
-                    newEvent.Source = "outlook";
-                    _db.Set<EventEntity>().Add(newEvent);
-                    pageAdded.Add(newEvent);
-                    pageCreated++;
+                    existing = await TryRebindLegacyEventAsync(
+                        connection, graphEvent, eventId, pageModified, ct);
+
+                    if (existing is not null)
+                    {
+                        existing.CalendarId = binding.PimCalendarId;
+                        existing.OutlookCalendarBindingId = binding.Id;
+                        existing.DeletedAt = null;
+                        existing.DeletedByOperationId = null;
+                        existing.DeletedByOperationKind = null;
+                        existing.OutlookSyncState = null;
+                        OutlookEventMapper.ApplyGraphEvent(
+                            existing, graphEvent, binding.Id, binding.PimCalendarId, connection.Id, generation);
+                        existing.UpdatedAt = now;
+                        pageModified.Add(existing);
+                        pageUpdated++;
+                    }
+                    else
+                    {
+                        var newEvent = new EventEntity();
+                        OutlookEventMapper.ApplyGraphEvent(
+                            newEvent, graphEvent, binding.Id, binding.PimCalendarId, connection.Id, generation);
+                        newEvent.CreatedAt = now;
+                        newEvent.UpdatedAt = now;
+                        newEvent.DtStamp = now;
+                        newEvent.OutlookConnectionId = connection.Id;
+                        newEvent.Source = "outlook";
+                        _db.Set<EventEntity>().Add(newEvent);
+                        pageAdded.Add(newEvent);
+                        pageCreated++;
+                    }
                 }
 
                 pageRead++;
@@ -887,6 +932,91 @@ public sealed class OutlookCalendarSyncService
         state.Changes.AddRange(pageChanges);
         state.SuccessfulPages++;
         state.ProgressMade = true;
+    }
+
+    private async Task<EventEntity?> TryRebindLegacyEventAsync(
+        OutlookConnectionEntity connection,
+        JsonElement graphEvent,
+        string eventId,
+        List<EventEntity> pageModified,
+        CancellationToken ct)
+    {
+        var userCalendarIds = await _db.Set<CalendarEntity>()
+            .Where(c => c.UserId == connection.UserId)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+
+        if (userCalendarIds.Count == 0)
+            return null;
+
+        // 1. Prefer exact Graph event ID match (includes soft-deleted legacy candidates)
+        var byGraphId = await _db.Set<EventEntity>()
+            .IgnoreQueryFilters()
+            .Where(e => userCalendarIds.Contains(e.CalendarId)
+                && e.Source == "outlook-ics"
+                && e.OutlookEventId == eventId)
+            .ToListAsync(ct);
+
+        if (byGraphId.Count == 1)
+            return byGraphId[0];
+
+        // 2. Try iCalUId match
+        var iCalUId = graphEvent.TryGetProperty("iCalUId", out var ical) && ical.ValueKind == JsonValueKind.String
+            ? ical.GetString()
+            : null;
+
+        if (!string.IsNullOrEmpty(iCalUId))
+        {
+            var byIcal = await _db.Set<EventEntity>()
+                .IgnoreQueryFilters()
+                .Where(e => userCalendarIds.Contains(e.CalendarId)
+                    && e.Source == "outlook-ics"
+                    && (e.SourceUid == iCalUId || e.Uid == iCalUId))
+                .ToListAsync(ct);
+
+            if (byIcal.Count == 1)
+                return byIcal[0];
+
+            // 3. Duplicate iCalUId: mark all ambiguous and rebind none
+            if (byIcal.Count > 1)
+            {
+                foreach (var evt in byIcal)
+                {
+                    evt.OutlookSyncState = "legacy-unbound";
+                    pageModified.Add(evt);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private async Task MarkUnmatchedLegacyEventsAsync(
+        OutlookConnectionEntity connection,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var userCalendarIds = await _db.Set<CalendarEntity>()
+            .Where(c => c.UserId == connection.UserId)
+            .Select(c => c.Id)
+            .ToListAsync(ct);
+
+        if (userCalendarIds.Count == 0)
+            return;
+
+        var unmatched = await _db.Set<EventEntity>()
+            .IgnoreQueryFilters()
+            .Where(e => userCalendarIds.Contains(e.CalendarId)
+                && e.Source == "outlook-ics"
+                && e.DeletedAt == null
+                && e.OutlookSyncState == null)
+            .ToListAsync(ct);
+
+        foreach (var evt in unmatched)
+        {
+            evt.OutlookSyncState = "legacy-unbound";
+            evt.UpdatedAt = now;
+        }
     }
 
     private async IAsyncEnumerable<GraphPage> GetRangeViewPagesAsync(

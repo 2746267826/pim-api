@@ -1244,6 +1244,28 @@ public sealed class OutlookCalendarSyncServiceTests
     }
 
     [Fact]
+    public async Task SyncAsync_DisconnectedConnection_ThrowsDomainException()
+    {
+        var db = CreateDb();
+        var connection = new OutlookConnectionEntity
+        {
+            Id = ConnectionId,
+            UserId = UserId,
+            Status = "not-connected"
+        };
+        db.Set<OutlookConnectionEntity>().Add(connection);
+        await db.SaveChangesAsync();
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None));
+        Assert.Equal(02005, ex.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
     public async Task SyncAsync_UnsupportedMode_ThrowsDomainException()
     {
         var db = CreateDb();
@@ -3587,5 +3609,253 @@ public sealed class OutlookCalendarSyncServiceTests
 
         var step = Assert.Single(response.Steps);
         Assert.Equal("canceled", step.Status);
+    }
+
+    // ===== Task 7: Legacy Event Rebinding =====
+
+    [Fact]
+    public async Task Rebind_PrefersExactGraphId()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "rebind-cal");
+
+        var legacyId = Guid.NewGuid();
+        var legacy = new EventEntity
+        {
+            Id = legacyId,
+            CalendarId = calId,
+            Uid = "legacy-old@pim",
+            Title = "Legacy Exact",
+            DtStart = FixedNow,
+            DtEnd = FixedNow.AddHours(1),
+            Source = "outlook-ics",
+            OutlookEventId = "rebind-exact-graph",
+            OutlookConnectionId = null,
+            OutlookCalendarBindingId = null,
+            DeletedAt = FixedNow.AddDays(-1),
+            DeletedByOperationId = Guid.NewGuid(),
+            DeletedByOperationKind = "outlook-sync",
+            OutlookSyncState = "legacy-unbound"
+        };
+        db.Set<EventEntity>().Add(legacy);
+
+        var otherCal = new CalendarEntity { Id = Guid.NewGuid(), UserId = OtherUserId, Name = "OtherCal", Source = "outlook" };
+        db.Set<CalendarEntity>().Add(otherCal);
+        await db.SaveChangesAsync();
+
+        var otherLegacyId = Guid.NewGuid();
+        db.Set<EventEntity>().Add(new EventEntity
+        {
+            Id = otherLegacyId,
+            CalendarId = otherCal.Id,
+            Uid = "legacy-other@pim",
+            Title = "Other Legacy",
+            DtStart = FixedNow,
+            DtEnd = FixedNow.AddHours(1),
+            Source = "outlook-ics",
+            OutlookEventId = "rebind-exact-graph",
+            OutlookConnectionId = null,
+            OutlookCalendarBindingId = null
+        });
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(
+            SyncEvent1.Replace("\"event-1\"", "\"rebind-exact-graph\"")
+                .Replace("\"event-1@outlook\"", "\"exact-new@test\"")
+                .Replace("\"Test 1\"", "\"Exact Rebound\"")));
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("full-resources"), CancellationToken.None);
+
+        var rebound = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == legacyId);
+        Assert.Equal("outlook", rebound.Source);
+        Assert.Equal("rebind-exact-graph", rebound.OutlookEventId);
+        Assert.Equal(bindingId, rebound.OutlookCalendarBindingId);
+        Assert.Equal(ConnectionId, rebound.OutlookConnectionId);
+        Assert.Null(rebound.OutlookSyncState);
+        Assert.Equal("Exact Rebound", rebound.Title);
+        Assert.Null(rebound.DeletedAt);
+        Assert.Null(rebound.DeletedByOperationId);
+        Assert.Null(rebound.DeletedByOperationKind);
+
+        var outlookEventsWithGraphId = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .Where(e => e.OutlookEventId == "rebind-exact-graph" && e.Source == "outlook").ToListAsync();
+        Assert.Single(outlookEventsWithGraphId);
+
+        var otherEvent = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == otherLegacyId);
+        Assert.Equal("outlook-ics", otherEvent.Source);
+        Assert.Null(otherEvent.OutlookCalendarBindingId);
+        Assert.Equal("Other Legacy", otherEvent.Title);
+
+        Assert.Equal("completed", response.Status);
+    }
+
+    [Fact]
+    public async Task Rebind_UsesOnlyUniqueIcalUid()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "rebind-ical-cal");
+
+        var legacyId = Guid.NewGuid();
+        db.Set<EventEntity>().Add(new EventEntity
+        {
+            Id = legacyId,
+            CalendarId = calId,
+            Uid = "rebind-unique-ical",
+            Title = "ICal Legacy",
+            DtStart = FixedNow,
+            DtEnd = FixedNow.AddHours(1),
+            Source = "outlook-ics",
+            OutlookEventId = null,
+            SourceUid = "rebind-unique-ical",
+            OutlookConnectionId = null,
+            OutlookCalendarBindingId = null,
+            OutlookSyncState = "legacy-unbound"
+        });
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(
+            SyncEvent1.Replace("\"event-1\"", "\"rebind-ical-graph\"")
+                .Replace("\"event-1@outlook\"", "\"rebind-unique-ical\"")
+                .Replace("\"Test 1\"", "\"Rebound by ICAL\"")));
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("full-resources"), CancellationToken.None);
+
+        var rebound = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == legacyId);
+        Assert.Equal("outlook", rebound.Source);
+        Assert.Equal("rebind-ical-graph", rebound.OutlookEventId);
+        Assert.Equal(bindingId, rebound.OutlookCalendarBindingId);
+        Assert.Equal(ConnectionId, rebound.OutlookConnectionId);
+        Assert.Null(rebound.OutlookSyncState);
+        Assert.Equal("Rebound by ICAL", rebound.Title);
+
+        var eventsWithGraphId = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .Where(e => e.OutlookEventId == "rebind-ical-graph").ToListAsync();
+        Assert.Single(eventsWithGraphId);
+
+        Assert.Equal("completed", response.Status);
+    }
+
+    [Fact]
+    public async Task Rebind_DoesNotUseDuplicateIcalUid()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "rebind-dup-cal");
+
+        var legacyAId = Guid.NewGuid();
+        var legacyBId = Guid.NewGuid();
+        db.Set<EventEntity>().AddRange(
+            new EventEntity
+            {
+                Id = legacyAId,
+                CalendarId = calId,
+                Uid = "rebind-dup-ical",
+                Title = "Dup A",
+                DtStart = FixedNow,
+                DtEnd = FixedNow.AddHours(1),
+                Source = "outlook-ics",
+                SourceUid = "rebind-dup-ical",
+                OutlookEventId = null,
+                OutlookConnectionId = null,
+                OutlookCalendarBindingId = null
+            },
+            new EventEntity
+            {
+                Id = legacyBId,
+                CalendarId = calId,
+                Uid = "rebind-dup-ical",
+                Title = "Dup B",
+                DtStart = FixedNow.AddDays(1),
+                DtEnd = FixedNow.AddDays(1).AddHours(1),
+                Source = "outlook-ics",
+                SourceUid = "rebind-dup-ical",
+                OutlookEventId = null,
+                OutlookConnectionId = null,
+                OutlookCalendarBindingId = null
+            });
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(
+            SyncEvent1.Replace("\"event-1\"", "\"rebind-dup-graph\"")
+                .Replace("\"event-1@outlook\"", "\"rebind-dup-ical\"")
+                .Replace("\"Test 1\"", "\"Should Not Rebind\"")));
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("full-resources"), CancellationToken.None);
+
+        // Neither legacy should be rebound
+        var eventA = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == legacyAId);
+        Assert.Equal("outlook-ics", eventA.Source);
+        Assert.Equal("legacy-unbound", eventA.OutlookSyncState);
+        Assert.Null(eventA.OutlookCalendarBindingId);
+
+        var eventB = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == legacyBId);
+        Assert.Equal("outlook-ics", eventB.Source);
+        Assert.Equal("legacy-unbound", eventB.OutlookSyncState);
+        Assert.Null(eventB.OutlookCalendarBindingId);
+
+        // A new normal event should exist representing the Graph event
+        var normalEvent = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .FirstOrDefaultAsync(e => e.OutlookEventId == "rebind-dup-graph" && e.Source == "outlook");
+        Assert.NotNull(normalEvent);
+        Assert.Equal(bindingId, normalEvent!.OutlookCalendarBindingId);
+        Assert.Equal(ConnectionId, normalEvent.OutlookConnectionId);
+
+        Assert.Equal("completed", response.Status);
+    }
+
+    [Fact]
+    public async Task Rebind_MarksUnmatchedEventLegacyUnbound()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, _) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "rebind-empty-cal");
+
+        var legacyId = Guid.NewGuid();
+        db.Set<EventEntity>().Add(new EventEntity
+        {
+            Id = legacyId,
+            CalendarId = calId,
+            Uid = "rebind-unmatched",
+            Title = "Unmatched Legacy",
+            DtStart = FixedNow,
+            DtEnd = FixedNow.AddHours(1),
+            Source = "outlook-ics",
+            SourceUid = "rebind-unmatched-ical",
+            OutlookEventId = null,
+            OutlookConnectionId = null,
+            OutlookCalendarBindingId = null
+        });
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse());
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("full-resources"), CancellationToken.None);
+
+        var unmatched = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == legacyId);
+        Assert.NotNull(unmatched);
+        Assert.Equal("outlook-ics", unmatched.Source);
+        Assert.Equal("legacy-unbound", unmatched.OutlookSyncState);
+        Assert.Equal("Unmatched Legacy", unmatched.Title);
+        Assert.Null(unmatched.DeletedAt);
+
+        Assert.Equal("completed", response.Status);
     }
 }

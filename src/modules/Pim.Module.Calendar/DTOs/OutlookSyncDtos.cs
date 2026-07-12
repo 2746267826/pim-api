@@ -46,3 +46,5 @@ public sealed record OutlookWriteResult(
 public sealed record UpdateOutlookClientIdRequest(Guid ClientId);
 public sealed record OutlookAuthorizationSessionRequest(Guid SessionId);
 public sealed record OutlookLocalDataPreview(int BindingCount, int CalendarCount, int EventCount);
+
+public sealed record UpdateCalendarSelectionRequest(IReadOnlyCollection<Guid> SelectedBindingIds);
