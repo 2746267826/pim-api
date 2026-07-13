@@ -113,6 +113,15 @@ jobs:
           Get-ChildItem "bin/Release/net48/*" -Include *.exe,*.dll,*.config,*.xml | ForEach-Object {
             Copy-Item $_.FullName "$publishDir/$($_.Name)" -Force
           }
+          # Copy locale resource directories (zh-Hans, zh-Hant, etc.)
+          Get-ChildItem "bin/Release/net48" -Directory | Where-Object {
+            $_.Name -match '^[a-z]{2}(-[A-Za-z0-9]+)?$'
+          } | ForEach-Object {
+            $locale = $_.Name
+            if (Test-Path "$publishDir/$locale") { Remove-Item -Recurse -Force "$publishDir/$locale" }
+            Copy-Item -Recurse $_.FullName "$publishDir/$locale" -Force
+            Write-Host "✅ Copied locale: $locale"
+          }
           Write-Host "KeyStats built and $( (Get-ChildItem bin/Release/net48 -Filter *.dll).Count ) DLLs copied to publish directory"
           cd ../../..
           Remove-Item -Recurse -Force .keyStats-tmp -ErrorAction SilentlyContinue
