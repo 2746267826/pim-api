@@ -38,7 +38,7 @@ public class KeyStatsOneClickFixServiceTests
                 if (!processes.Any(p => p.IsCurrentUserSession && p.SessionId == SessionId))
                     processes.Add(new KeyStatsProcessInfo(300, SessionId, true));
             },
-            elevate: (_, _) =>
+            elevate: (_, _, _) =>
             {
                 elevateCalls++;
                 return Task.FromResult((0, "", false));
@@ -79,7 +79,7 @@ public class KeyStatsOneClickFixServiceTests
                 if (!processes.Any(p => p.IsCurrentUserSession && p.SessionId == SessionId))
                     processes.Add(new KeyStatsProcessInfo(300, SessionId, true));
             },
-            elevate: (_, _) =>
+            elevate: (_, _, _) =>
             {
                 elevated = true;
                 processes.RemoveAll(p => p.ProcessId == 200);
@@ -97,6 +97,77 @@ public class KeyStatsOneClickFixServiceTests
     }
 
     [Fact]
+    public async Task RunAsync_NoElevation_WhenAccessDeniedButFailedPidGoneAndNoForeign()
+    {
+        var processes = new List<KeyStatsProcessInfo>
+        {
+            new(100, SessionId, true),
+            new(200, SessionId, true)
+        };
+
+        var elevateCalls = 0;
+        var (service, exe, script) = CreateService(
+            processes,
+            stop: ids => ids.Select(id =>
+            {
+                // Report access-denied, but process is already gone on re-list.
+                processes.RemoveAll(p => p.ProcessId == id);
+                return new KeyStatsStopResult(id, Succeeded: false, Error: "access-denied");
+            }).ToArray(),
+            start: _ =>
+            {
+                if (!processes.Any(p => p.IsCurrentUserSession && p.SessionId == SessionId))
+                    processes.Add(new KeyStatsProcessInfo(300, SessionId, true));
+            },
+            elevate: (_, _, _) =>
+            {
+                elevateCalls++;
+                return Task.FromResult((0, "", false));
+            },
+            snapshots: GrowingSnapshots());
+
+        var result = await service.RunAsync(exe, script, SessionId, _ => true);
+
+        Assert.Equal(0, elevateCalls);
+        Assert.False(result.ElevatedUsed);
+        Assert.Equal(KeyStatsFixOutcome.Succeeded, result.Outcome);
+    }
+
+    [Fact]
+    public async Task RunAsync_PassesSharedLogPath_ToElevate()
+    {
+        var processes = new List<KeyStatsProcessInfo>
+        {
+            new(200, 0, false)
+        };
+
+        string? receivedLogPath = null;
+        var (service, exe, script) = CreateService(
+            processes,
+            stop: ids => ids.Select(id =>
+                new KeyStatsStopResult(id, Succeeded: false, Error: "access-denied")).ToArray(),
+            start: _ =>
+            {
+                if (!processes.Any(p => p.IsCurrentUserSession && p.SessionId == SessionId))
+                    processes.Add(new KeyStatsProcessInfo(300, SessionId, true));
+            },
+            elevate: (_, _, logPath) =>
+            {
+                receivedLogPath = logPath;
+                processes.RemoveAll(p => p.ProcessId == 200);
+                return Task.FromResult((0, "cleaned", false));
+            },
+            snapshots: GrowingSnapshots());
+
+        var result = await service.RunAsync(exe, script, SessionId, _ => true);
+
+        Assert.True(result.ElevatedUsed);
+        Assert.NotNull(receivedLogPath);
+        Assert.EndsWith(KeyStatsOneClickFixService.FixLogFileName, receivedLogPath, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PIM", receivedLogPath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task RunAsync_Cancelled_WhenUserRejectsConfirm()
     {
         var processes = new List<KeyStatsProcessInfo>
@@ -110,7 +181,7 @@ public class KeyStatsOneClickFixServiceTests
             stop: ids => ids.Select(id =>
                 new KeyStatsStopResult(id, Succeeded: false, Error: "access-denied")).ToArray(),
             start: _ => { },
-            elevate: (_, _) =>
+            elevate: (_, _, _) =>
             {
                 elevateCalls++;
                 return Task.FromResult((0, "", false));
@@ -136,7 +207,7 @@ public class KeyStatsOneClickFixServiceTests
             processes,
             stop: _ => Array.Empty<KeyStatsStopResult>(),
             start: _ => { },
-            elevate: (_, _) => Task.FromResult((0, "", false)),
+            elevate: (_, _, _) => Task.FromResult((0, "", false)),
             snapshots: ZeroSnapshots());
 
         var result = await service.RunAsync(exe, script, SessionId, _ => true);
@@ -156,7 +227,7 @@ public class KeyStatsOneClickFixServiceTests
             new List<KeyStatsProcessInfo>(),
             stop: _ => Array.Empty<KeyStatsStopResult>(),
             start: _ => { },
-            elevate: (_, _) => Task.FromResult((0, "", false)),
+            elevate: (_, _, _) => Task.FromResult((0, "", false)),
             snapshots: ZeroSnapshots(),
             createExe: false);
 
@@ -183,7 +254,7 @@ public class KeyStatsOneClickFixServiceTests
             stop: ids => ids.Select(id =>
                 new KeyStatsStopResult(id, Succeeded: false, Error: "access-denied")).ToArray(),
             start: _ => { },
-            elevate: (_, _) => Task.FromResult((0, "", false)),
+            elevate: (_, _, _) => Task.FromResult((0, "", false)),
             snapshots: ZeroSnapshots(),
             createScript: false);
 
@@ -211,7 +282,7 @@ public class KeyStatsOneClickFixServiceTests
             stop: ids => ids.Select(id =>
                 new KeyStatsStopResult(id, Succeeded: false, Error: "access-denied")).ToArray(),
             start: _ => { },
-            elevate: (_, _) => Task.FromResult((7, "script error detail", false)),
+            elevate: (_, _, _) => Task.FromResult((7, "script error detail", false)),
             snapshots: GrowingSnapshots());
 
         var result = await service.RunAsync(exe, script, SessionId, _ => true);
@@ -235,7 +306,7 @@ public class KeyStatsOneClickFixServiceTests
             stop: ids => ids.Select(id =>
                 new KeyStatsStopResult(id, Succeeded: false, Error: "access-denied")).ToArray(),
             start: _ => { },
-            elevate: (_, _) => Task.FromResult((0, "", true)),
+            elevate: (_, _, _) => Task.FromResult((0, "", true)),
             snapshots: GrowingSnapshots());
 
         var result = await service.RunAsync(exe, script, SessionId, _ => true);
@@ -275,7 +346,7 @@ public class KeyStatsOneClickFixServiceTests
                 if (!processes.Any(p => p.IsCurrentUserSession && p.SessionId == SessionId))
                     processes.Add(new KeyStatsProcessInfo(300, SessionId, true));
             },
-            elevate: (_, _) =>
+            elevate: (_, _, _) =>
             {
                 elevateCalls++;
                 elevatedSeen = true;
@@ -307,7 +378,7 @@ public class KeyStatsOneClickFixServiceTests
             stop: ids => ids.Select(id =>
                 new KeyStatsStopResult(id, Succeeded: false, Error: "access-denied")).ToArray(),
             start: _ => { },
-            elevate: (_, _) =>
+            elevate: (_, _, _) =>
             {
                 // Elevate "succeeds" but leaves foreign process in place.
                 return Task.FromResult((0, "partial clean", false));
@@ -343,7 +414,7 @@ public class KeyStatsOneClickFixServiceTests
         List<KeyStatsProcessInfo> processes,
         Func<IReadOnlyList<int>, IReadOnlyList<KeyStatsStopResult>> stop,
         Action<string> start,
-        Func<string, string, Task<(int ExitCode, string Output, bool Cancelled)>> elevate,
+        Func<string, string, string, Task<(int ExitCode, string Output, bool Cancelled)>> elevate,
         IReadOnlyList<string> snapshots,
         bool createExe = true,
         bool createScript = true)
@@ -377,8 +448,8 @@ public class KeyStatsOneClickFixServiceTests
             stop: stop,
             start: start,
             runElevatedScript: elevate,
-            delayPhase1: () => Task.CompletedTask,
-            delayPhase2: () => Task.CompletedTask,
+            delayPhase1: _ => Task.CompletedTask,
+            delayPhase2: _ => Task.CompletedTask,
             listProcesses: _ => processes.ToArray());
 
         return (service, exe, script);

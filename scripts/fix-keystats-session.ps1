@@ -1,7 +1,9 @@
 #Requires -Version 5.1
 param(
+    # KeyStatsExe is audit-only (logged); do not Start-Process from this script.
     [Parameter(Mandatory = $true)]
     [string]$KeyStatsExe,
+    # Prefer an explicit -LogPath from the client so elevated/non-elevated share one file.
     [string]$LogPath = $(Join-Path $env:TEMP "pim-keystats-fix-last.log")
 )
 
