@@ -198,6 +198,132 @@ public class KeyStatsOneClickFixServiceTests
         Assert.False(result.ElevatedUsed);
     }
 
+    [Fact]
+    public async Task RunAsync_Failed_WhenElevateExitCodeNonZero()
+    {
+        var processes = new List<KeyStatsProcessInfo>
+        {
+            new(200, 0, false)
+        };
+
+        var (service, exe, script) = CreateService(
+            processes,
+            stop: ids => ids.Select(id =>
+                new KeyStatsStopResult(id, Succeeded: false, Error: "access-denied")).ToArray(),
+            start: _ => { },
+            elevate: (_, _) => Task.FromResult((7, "script error detail", false)),
+            snapshots: GrowingSnapshots());
+
+        var result = await service.RunAsync(exe, script, SessionId, _ => true);
+
+        Assert.Equal(KeyStatsFixOutcome.Failed, result.Outcome);
+        Assert.True(result.ElevatedUsed);
+        Assert.Equal(7, result.ScriptExitCode);
+        Assert.Contains("7", result.Phase1MessageZh);
+    }
+
+    [Fact]
+    public async Task RunAsync_Cancelled_WhenElevateReturnsCancelled()
+    {
+        var processes = new List<KeyStatsProcessInfo>
+        {
+            new(200, 0, false)
+        };
+
+        var (service, exe, script) = CreateService(
+            processes,
+            stop: ids => ids.Select(id =>
+                new KeyStatsStopResult(id, Succeeded: false, Error: "access-denied")).ToArray(),
+            start: _ => { },
+            elevate: (_, _) => Task.FromResult((0, "", true)),
+            snapshots: GrowingSnapshots());
+
+        var result = await service.RunAsync(exe, script, SessionId, _ => true);
+
+        Assert.Equal(KeyStatsFixOutcome.Cancelled, result.Outcome);
+        Assert.False(result.ElevatedUsed);
+        Assert.Contains("UAC", result.Phase1MessageZh);
+    }
+
+    [Fact]
+    public async Task RunAsync_RequestsElevation_WhenStopSucceedsButForeignRemains()
+    {
+        var processes = new List<KeyStatsProcessInfo>
+        {
+            new(100, SessionId, true),
+            new(200, 0, false)
+        };
+
+        var elevateCalls = 0;
+        var startCalls = 0;
+        var elevatedSeen = false;
+        var startBeforeElevate = false;
+        var (service, exe, script) = CreateService(
+            processes,
+            stop: ids => ids.Select(id =>
+            {
+                // Report success for foreign stop, but leave it listed (reappears / not really gone).
+                if (id != 200)
+                    processes.RemoveAll(p => p.ProcessId == id);
+                return new KeyStatsStopResult(id, Succeeded: true, Error: null);
+            }).ToArray(),
+            start: _ =>
+            {
+                startCalls++;
+                if (!elevatedSeen)
+                    startBeforeElevate = true;
+                if (!processes.Any(p => p.IsCurrentUserSession && p.SessionId == SessionId))
+                    processes.Add(new KeyStatsProcessInfo(300, SessionId, true));
+            },
+            elevate: (_, _) =>
+            {
+                elevateCalls++;
+                elevatedSeen = true;
+                processes.RemoveAll(p => p.ProcessId == 200);
+                return Task.FromResult((0, "cleaned foreign", false));
+            },
+            snapshots: GrowingSnapshots());
+
+        var result = await service.RunAsync(exe, script, SessionId, _ => true);
+
+        Assert.Equal(1, elevateCalls);
+        Assert.True(result.ElevatedUsed);
+        Assert.False(startBeforeElevate);
+        Assert.Equal(1, startCalls);
+        Assert.Equal(KeyStatsFixOutcome.Succeeded, result.Outcome);
+    }
+
+    [Fact]
+    public async Task RunAsync_FailedMessage_WhenCountersGrewButProcessNotOk()
+    {
+        var processes = new List<KeyStatsProcessInfo>
+        {
+            new(100, SessionId, true),
+            new(200, 0, false)
+        };
+
+        var (service, exe, script) = CreateService(
+            processes,
+            stop: ids => ids.Select(id =>
+                new KeyStatsStopResult(id, Succeeded: false, Error: "access-denied")).ToArray(),
+            start: _ => { },
+            elevate: (_, _) =>
+            {
+                // Elevate "succeeds" but leaves foreign process in place.
+                return Task.FromResult((0, "partial clean", false));
+            },
+            snapshots: GrowingSnapshots());
+
+        var result = await service.RunAsync(exe, script, SessionId, _ => true);
+
+        Assert.Equal(KeyStatsFixOutcome.Failed, result.Outcome);
+        Assert.True(result.CountersGrew);
+        Assert.DoesNotContain("修复成功", result.Phase2MessageZh);
+        Assert.True(
+            result.Phase2MessageZh.Contains("进程", StringComparison.Ordinal) ||
+            result.Phase2MessageZh.Contains("异常", StringComparison.Ordinal));
+    }
+
     private static IReadOnlyList<string> GrowingSnapshots() => new[]
     {
         """{"keyPresses":0,"leftClicks":0,"rightClicks":0,"middleClicks":0,"sideBackClicks":0,"sideForwardClicks":0,"mouseDistance":0,"scrollDistance":0}""",
