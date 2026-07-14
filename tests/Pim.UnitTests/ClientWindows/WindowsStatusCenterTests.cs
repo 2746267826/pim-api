@@ -23,9 +23,12 @@ public class WindowsStatusCenterTests
         Assert.Contains("修复建议", xaml);
         Assert.Contains("修复结果", xaml);
         Assert.Contains("KeyStatsOneClickFixButton", xaml);
+        Assert.Contains("KeyStatsRestartButton", xaml);
         Assert.Contains("KeyStatsFixSuggestionText", xaml);
         Assert.Contains("KeyStatsFixResultText", xaml);
         Assert.Contains("OnOneClickFixKeyStats", code);
+        Assert.Contains("KeyStatsRestartButton.IsEnabled", code);
+        Assert.Contains("SyncNowAsync", code);
         Assert.Contains("fix-keystats-session.ps1", code);
     }
 
