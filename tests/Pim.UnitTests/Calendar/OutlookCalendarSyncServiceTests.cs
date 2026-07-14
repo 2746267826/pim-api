@@ -2519,12 +2519,80 @@ public sealed class OutlookCalendarSyncServiceTests
 
         Assert.Equal("failed", response.Status);
 
+        var unknownBatch = await LatestBatchAsync(db);
+        using (var unknownDoc = JsonDocument.Parse(response.PerCalendarJson!))
+        {
+            var unknownCal = Assert.Single(unknownDoc.RootElement.EnumerateArray().ToList());
+            var unknownFailure = Assert.Single(unknownCal.GetProperty("failures").EnumerateArray().ToList());
+            Assert.Equal("unknown", unknownFailure.GetProperty("code").GetString());
+            Assert.Equal("未知错误", unknownFailure.GetProperty("message").GetString());
+            Assert.DoesNotContain("SECRET_EXCEPTION_MARKER", response.PerCalendarJson!);
+            Assert.DoesNotContain("SECRET_EXCEPTION_MARKER", unknownBatch.ErrorsJson);
+        }
+
+        var bindingAfterUnknown = await db.Set<OutlookCalendarBindingEntity>().SingleAsync(b => b.Id == bindingId);
+        Assert.Equal("unknown", bindingAfterUnknown.LastErrorCode);
+        Assert.Equal("未知错误", bindingAfterUnknown.LastErrorMessage);
+
         foreach (var msg in logger.Messages)
             Assert.DoesNotContain("SECRET_EXCEPTION_MARKER", msg);
         foreach (var ex in logger.CapturedExceptions)
         {
             if (ex is not null)
                 Assert.DoesNotContain("SECRET_EXCEPTION_MARKER", ex.ToString());
+        }
+    }
+
+    [Fact]
+    public async Task SyncAsync_InvalidNextLink_MapsToSafeFailureCodeAndMessage()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewPageResponse(
+            "https://evil.example.com/v1.0/me/calendars/cal-1/calendarView?$skiptoken=SECRET_NEXT_LINK_TOKEN",
+            SyncEvent1));
+        var logger = new CaptureLogger();
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+        var service = new OutlookCalendarSyncService(db, graph, time, logger);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("partial", response.Status);
+        var batch = await LatestBatchAsync(db);
+        Assert.DoesNotContain("SECRET_NEXT_LINK_TOKEN", response.PerCalendarJson!);
+        Assert.DoesNotContain("SECRET_NEXT_LINK_TOKEN", batch.ErrorsJson);
+        Assert.DoesNotContain("Invalid nextLink rejected", response.PerCalendarJson!);
+        Assert.DoesNotContain("evil.example.com", response.PerCalendarJson!);
+        Assert.DoesNotContain("Invalid nextLink rejected", batch.ErrorsJson);
+        Assert.DoesNotContain("evil.example.com", batch.ErrorsJson);
+
+        using var doc = JsonDocument.Parse(response.PerCalendarJson!);
+        var cal = Assert.Single(doc.RootElement.EnumerateArray().ToList());
+        Assert.Equal("partial", cal.GetProperty("status").GetString());
+        Assert.Equal(1, cal.GetProperty("readCount").GetInt32());
+        var failure = Assert.Single(cal.GetProperty("failures").EnumerateArray().ToList());
+        Assert.Equal("invalid-next-link", failure.GetProperty("code").GetString());
+        Assert.Equal("分页链接校验失败", failure.GetProperty("message").GetString());
+
+        using var errorsDoc = JsonDocument.Parse(batch.ErrorsJson);
+        var error = Assert.Single(errorsDoc.RootElement.EnumerateArray().ToList());
+        Assert.Equal("invalid-next-link", error.GetProperty("code").GetString());
+        Assert.Equal("分页链接校验失败", error.GetProperty("message").GetString());
+
+        var binding = await db.Set<OutlookCalendarBindingEntity>().SingleAsync(b => b.Id == bindingId);
+        Assert.Equal("invalid-next-link", binding.LastErrorCode);
+        Assert.Equal("分页链接校验失败", binding.LastErrorMessage);
+
+        Assert.Contains(logger.Messages, m => m.Contains("InvalidOperationException", StringComparison.Ordinal));
+        Assert.Contains(logger.Messages, m => m.Contains("invalid-next-link", StringComparison.Ordinal));
+        foreach (var msg in logger.Messages)
+        {
+            Assert.DoesNotContain("SECRET_NEXT_LINK_TOKEN", msg);
+            Assert.DoesNotContain("evil.example.com", msg);
         }
     }
 
