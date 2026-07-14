@@ -178,7 +178,7 @@ jobs:
           echo "> Artifacts: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   release:
-    needs: [summarize, build-api, build-web, build-windows, build-android]
+    needs: [resolve-version, summarize, build-api, build-web, build-windows, build-android]
     if: |
       always() &&
       needs.resolve-version.outputs.is_release == 'true' &&
