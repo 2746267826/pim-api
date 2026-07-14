@@ -19,6 +19,14 @@ public class WindowsStatusCenterTests
         Assert.Contains("复制诊断", xaml);
         Assert.Contains("在浏览器打开 Web", xaml);
         Assert.Contains("KeyStatsProcessManager", code);
+        Assert.Contains("一键修复", xaml);
+        Assert.Contains("修复建议", xaml);
+        Assert.Contains("修复结果", xaml);
+        Assert.Contains("KeyStatsOneClickFixButton", xaml);
+        Assert.Contains("KeyStatsFixSuggestionText", xaml);
+        Assert.Contains("KeyStatsFixResultText", xaml);
+        Assert.Contains("OnOneClickFixKeyStats", code);
+        Assert.Contains("fix-keystats-session.ps1", code);
     }
 
     [Theory]
