@@ -126,6 +126,8 @@ public sealed class GraphCalendarClient
             return false;
 
         var remaining = path.AsSpan("/v1.0/".Length);
+        while (remaining.Length > 0 && remaining[^1] == '/')
+            remaining = remaining[..^1];
         if (remaining.Length == 0)
             return false;
 

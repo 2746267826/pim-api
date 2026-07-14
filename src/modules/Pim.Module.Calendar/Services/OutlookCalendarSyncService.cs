@@ -579,11 +579,19 @@ public sealed class OutlookCalendarSyncService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning("同步 binding {BindingId} 时出错: {ErrorType}", binding.Id, ex.GetType().Name);
+                    var (code, message) = MapSafeSyncError(ex);
+                    _logger.LogWarning(
+                        "同步 binding {BindingId} 时出错: {ErrorType} {SafeCode}",
+                        binding.Id,
+                        ex.GetType().Name,
+                        code);
                     state.Failure = 1;
-                    state.Failures.Add(new SyncFailureSummary(null, null, "unknown", "未知错误"));
-                    state.Steps.Add(new OutlookSyncStep(binding.Id.ToString(), "failed", "未知错误", now));
+                    state.Failures.Add(new SyncFailureSummary(null, null, code, message));
+                    state.Steps.Add(new OutlookSyncStep(binding.Id.ToString(), "failed", message, now));
                     state.Status = state.ProgressMade ? "partial" : "failed";
+                    binding.LastErrorCode = code;
+                    binding.LastErrorMessage = message;
+                    binding.UpdatedAt = now;
                 }
 
                 if (state.Status == "canceled")
@@ -805,7 +813,12 @@ public sealed class OutlookCalendarSyncService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning("同步 binding {BindingId} 分页处理出错: {ErrorType}", binding.Id, ex.GetType().Name);
+            var (code, _) = MapSafeSyncError(ex);
+            _logger.LogWarning(
+                "同步 binding {BindingId} 分页处理出错: {ErrorType} {SafeCode}",
+                binding.Id,
+                ex.GetType().Name,
+                code);
             throw;
         }
 
@@ -820,6 +833,13 @@ public sealed class OutlookCalendarSyncService
             var detail = $"读取:{state.Read} 新建:{state.Created} 更新:{state.Updated} 删除:{state.Deleted}";
             if (state.Status == "running")
                 state.Status = "completed";
+
+            if (state.Status == "completed")
+            {
+                binding.LastErrorCode = null;
+                binding.LastErrorMessage = null;
+                binding.UpdatedAt = now;
+            }
 
             state.Steps.Add(new OutlookSyncStep(binding.Id.ToString(), state.Status, detail, now));
         }
@@ -1234,5 +1254,13 @@ public sealed class OutlookCalendarSyncService
             batch.RequestedWindowEnd,
             batch.PerCalendarJson,
             batch.CancelRequested);
+    }
+
+    private static (string code, string message) MapSafeSyncError(Exception ex)
+    {
+        if (ex.Message == "Invalid nextLink rejected")
+            return ("invalid-next-link", "分页链接校验失败");
+
+        return ("unknown", "未知错误");
     }
 }
