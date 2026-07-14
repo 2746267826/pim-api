@@ -72,5 +72,46 @@ public class KeyStatsFixAdvisorTests
     {
         var s = KeyStatsFixAdvisor.BuildSuggestion(null);
         Assert.False(string.IsNullOrWhiteSpace(s.MessageZh));
+        Assert.True(s.ShowActionHint);
+    }
+
+    [Fact]
+    public void BuildSuggestion_ApiOkButStaleZeroNullSkipWithForeign_MentionsSessionAndOneClick()
+    {
+        var health = new KeyStatsHealthResult(
+            KeyStatsDetailState.ApiOkButStaleZero,
+            "Unavailable",
+            CanUpload: false,
+            SkipReason: null,
+            ProcessCount: 2,
+            HasForeignSessionProcess: true,
+            Snapshot: null,
+            SummaryZh: "x");
+
+        var s = KeyStatsFixAdvisor.BuildSuggestion(health);
+        Assert.Contains("Session", s.MessageZh);
+        Assert.Contains("一键修复", s.MessageZh);
+        Assert.True(s.ShowActionHint);
+    }
+
+    [Fact]
+    public void BuildSuggestion_ApiUnreachableWithForeign_MentionsSessionOrForeignSession()
+    {
+        var health = new KeyStatsHealthResult(
+            KeyStatsDetailState.ApiUnreachable,
+            "Unavailable",
+            CanUpload: false,
+            SkipReason: "api-unreachable",
+            ProcessCount: 2,
+            HasForeignSessionProcess: true,
+            Snapshot: null,
+            SummaryZh: "x");
+
+        var s = KeyStatsFixAdvisor.BuildSuggestion(health);
+        Assert.True(
+            s.MessageZh.Contains("Session", StringComparison.Ordinal)
+            || s.MessageZh.Contains("会话", StringComparison.Ordinal));
+        Assert.Contains("一键修复", s.MessageZh);
+        Assert.True(s.ShowActionHint);
     }
 }
