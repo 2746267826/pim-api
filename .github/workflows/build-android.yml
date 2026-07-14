@@ -154,7 +154,7 @@ jobs:
           "${BT}apksigner" verify --print-certs "$APK" | tee build/artifacts/signing-certs.txt
 
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pim-android-v${{ steps.ver.outputs.artifact_slug }}-vc${{ steps.ver.outputs.version_code }}
           path: src/client-android/build/artifacts/*

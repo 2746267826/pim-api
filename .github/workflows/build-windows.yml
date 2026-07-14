@@ -131,7 +131,7 @@ jobs:
         run: echo "${{ steps.ver.outputs.version }}" > publish/VERSION
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pim-windows-v${{ steps.ver.outputs.artifact_slug }}
           path: src/client-windows/publish/
