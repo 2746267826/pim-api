@@ -126,6 +126,16 @@ jobs:
           cd ../../..
           Remove-Item -Recurse -Force .keyStats-tmp -ErrorAction SilentlyContinue
 
+      - name: Include KeyStats fix script
+        shell: pwsh
+        run: |
+          $fixScript = Join-Path $env:GITHUB_WORKSPACE "scripts\fix-keystats-session.ps1"
+          if (Test-Path $fixScript) {
+            Copy-Item -LiteralPath $fixScript -Destination "publish/fix-keystats-session.ps1" -Force
+          } else {
+            Write-Warning "fix-keystats-session.ps1 missing"
+          }
+
       - name: Write version file for reference
         shell: bash
         run: echo "${{ steps.ver.outputs.version }}" > publish/VERSION
