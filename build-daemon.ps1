@@ -76,7 +76,8 @@ if ($Publish) {
     if (Test-Path $fixScript) {
         Copy-Item -LiteralPath $fixScript -Destination (Join-Path $daemonDir "fix-keystats-session.ps1") -Force
     } else {
-        Write-Host "WARNING: fix-keystats-session.ps1 missing" -ForegroundColor Yellow
+        Write-Host "ERROR: fix-keystats-session.ps1 missing" -ForegroundColor Red
+        exit 1
     }
 
     if (Test-Path $zipPath) {
