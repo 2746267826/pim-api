@@ -72,7 +72,7 @@ jobs:
         run: |
           dotnet test ../../tests/Pim.UnitTests/Pim.UnitTests.csproj `
             --configuration Release `
-            --filter "FullyQualifiedName~WindowsCompanionShellTests|FullyQualifiedName~WindowsNotificationActionRouterTests|FullyQualifiedName~ApiClientDefaultsTests"
+            --filter "FullyQualifiedName~WindowsCompanionShellTests|FullyQualifiedName~WindowsNotificationActionRouterTests|FullyQualifiedName~ApiClientDefaultsTests|FullyQualifiedName~KeyStats|FullyQualifiedName~WindowsStatusCenterTests"
 
       - name: Publish (restore + build + publish in one step)
         run: |
@@ -125,6 +125,17 @@ jobs:
           Write-Host "KeyStats built and $( (Get-ChildItem bin/Release/net48 -Filter *.dll).Count ) DLLs copied to publish directory"
           cd ../../..
           Remove-Item -Recurse -Force .keyStats-tmp -ErrorAction SilentlyContinue
+
+      - name: Include KeyStats fix script
+        shell: pwsh
+        run: |
+          $fixScript = Join-Path $env:GITHUB_WORKSPACE "scripts\fix-keystats-session.ps1"
+          if (Test-Path $fixScript) {
+            Copy-Item -LiteralPath $fixScript -Destination "publish/fix-keystats-session.ps1" -Force
+          } else {
+            throw "fix-keystats-session.ps1 missing"
+          }
+          if (-not (Test-Path "publish/fix-keystats-session.ps1")) { throw "fix-keystats-session.ps1 not in publish" }
 
       - name: Write version file for reference
         shell: bash
