@@ -178,7 +178,7 @@ jobs:
           echo "> Artifacts: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   release:
-    needs: [summarize, build-api, build-web, build-windows, build-android]
+    needs: [resolve-version, summarize, build-api, build-web, build-windows, build-android]
     if: |
       always() &&
       needs.resolve-version.outputs.is_release == 'true' &&
@@ -203,6 +203,10 @@ jobs:
           tag_name: v${{ needs.resolve-version.outputs.version }}
           name: v${{ needs.resolve-version.outputs.version }}
           generate_release_notes: true
-          files: release-assets/**
+          files: |
+            release-assets/pim-api-*.tar.gz
+            release-assets/pim-web-*.tar.gz
+            release-assets/pim-windows-*.zip
+            release-assets/pim-android-*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
