@@ -40,6 +40,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 ## Before Pushing Or Opening A PR
 
 - Run the relevant verification commands for the touched surface. Prefer `dotnet test Pim.sln` for backend/daemon changes and `npm --prefix src/client-web run build` for web changes.
+- Android status UI changes must also run `src/client-android/gradlew.bat :app:connectedDebugAndroidTest --no-daemon` on a started emulator or physical device; this is a local gate because CI does not provide an emulator.
 - Re-run `git status --short --branch` and confirm only intentional changes are staged.
 - Push the working branch to `origin` and open a pull request. Do not push directly to `master` unless the user explicitly asks for a direct update and understands it bypasses the PR workflow.
 
