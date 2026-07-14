@@ -468,14 +468,15 @@ public sealed class OutlookCalendarApiContractTests : IAsyncLifetime
         var connection = await _db.Set<OutlookConnectionEntity>().FirstAsync(c => c.UserId == UserId);
         connection.AccessTokenEncrypted = [1, 2, 3];
         connection.MsalCacheEncrypted = [4, 5, 6];
+        var now = _app.Services.GetRequiredService<TimeProvider>().GetUtcNow();
         var runningBatch = new OutlookSyncBatchEntity
         {
             UserId = UserId,
             ConnectionId = connection.Id,
             Mode = "normal",
             Status = "running",
-            StartedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
-            UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-5)
+            StartedAt = now.AddMinutes(-5),
+            UpdatedAt = now.AddMinutes(-5)
         };
         var writebackBatch = new OutlookSyncBatchEntity
         {
@@ -483,8 +484,8 @@ public sealed class OutlookCalendarApiContractTests : IAsyncLifetime
             ConnectionId = connection.Id,
             Mode = "writeback",
             Status = "running",
-            StartedAt = DateTimeOffset.UtcNow.AddMinutes(-4),
-            UpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-4)
+            StartedAt = now.AddMinutes(-4),
+            UpdatedAt = now.AddMinutes(-4)
         };
         _db.Set<OutlookSyncBatchEntity>().AddRange(runningBatch, writebackBatch);
         await _db.SaveChangesAsync();
