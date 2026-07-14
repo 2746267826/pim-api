@@ -37,4 +37,28 @@ public class KeyStatsProcessManagerTests
         Assert.True(plan.ShouldStart);
         Assert.Null(plan.KeepProcessId);
     }
+
+    [Fact]
+    public void StopResult_NeedsElevation_WhenAnyAccessDenied()
+    {
+        var results = new[]
+        {
+            new KeyStatsStopResult(10, Succeeded: true, Error: null),
+            new KeyStatsStopResult(20, Succeeded: false, Error: "access-denied")
+        };
+
+        Assert.True(KeyStatsProcessManager.NeedsElevation(results));
+        Assert.Equal(new[] { 20 }, KeyStatsProcessManager.FailedStopIds(results));
+    }
+
+    [Fact]
+    public void StopResult_DoesNotNeedElevation_WhenAllSucceeded()
+    {
+        var results = new[]
+        {
+            new KeyStatsStopResult(10, Succeeded: true, Error: null)
+        };
+
+        Assert.False(KeyStatsProcessManager.NeedsElevation(results));
+    }
 }
