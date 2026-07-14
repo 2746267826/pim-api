@@ -44,7 +44,7 @@ public class KeyStatsProcessManagerTests
         var results = new[]
         {
             new KeyStatsStopResult(10, Succeeded: true, Error: null),
-            new KeyStatsStopResult(20, Succeeded: false, Error: "access-denied")
+            new KeyStatsStopResult(20, Succeeded: false, Error: KeyStatsProcessManager.AccessDeniedError)
         };
 
         Assert.True(KeyStatsProcessManager.NeedsElevation(results));
@@ -60,5 +60,47 @@ public class KeyStatsProcessManagerTests
         };
 
         Assert.False(KeyStatsProcessManager.NeedsElevation(results));
+    }
+
+    [Fact]
+    public void StopResult_DoesNotNeedElevation_WhenErrorIsTimeout()
+    {
+        var results = new[]
+        {
+            new KeyStatsStopResult(10, Succeeded: false, Error: "timeout")
+        };
+
+        Assert.False(KeyStatsProcessManager.NeedsElevation(results));
+    }
+
+    [Fact]
+    public void StopResult_DoesNotNeedElevation_WhenErrorIsWin32Other()
+    {
+        var results = new[]
+        {
+            new KeyStatsStopResult(10, Succeeded: false, Error: "win32-87")
+        };
+
+        Assert.False(KeyStatsProcessManager.NeedsElevation(results));
+    }
+
+    [Fact]
+    public void FailedStopIds_IncludesMultipleFailures()
+    {
+        var results = new[]
+        {
+            new KeyStatsStopResult(10, Succeeded: true, Error: null),
+            new KeyStatsStopResult(20, Succeeded: false, Error: "timeout"),
+            new KeyStatsStopResult(30, Succeeded: false, Error: KeyStatsProcessManager.AccessDeniedError)
+        };
+
+        Assert.Equal(new[] { 20, 30 }, KeyStatsProcessManager.FailedStopIds(results));
+    }
+
+    [Fact]
+    public void StopResult_DoesNotNeedElevation_WhenEmptyList()
+    {
+        Assert.False(KeyStatsProcessManager.NeedsElevation(Array.Empty<KeyStatsStopResult>()));
+        Assert.Empty(KeyStatsProcessManager.FailedStopIds(Array.Empty<KeyStatsStopResult>()));
     }
 }
