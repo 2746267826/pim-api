@@ -149,19 +149,44 @@ public sealed class GraphCalendarClient
         if (segments is ["me", "calendarGroups"])
             return true;
 
-        if (segments is ["me", "calendarGroups", not "", "calendars"])
-            return true;
-
         if (segments is ["me", "calendars"])
             return true;
 
-        if (segments is ["me", "calendars", not "", "calendarView"])
+        // ImmutableId calendar/group ids may contain raw '/' so the id can span multiple path segments.
+        if (MatchesMeCollectionLeaf(segments, "calendars", "calendarView"))
             return true;
 
-        if (segments is ["me", "calendars", not "", "events"])
+        if (MatchesMeCollectionLeaf(segments, "calendars", "events"))
+            return true;
+
+        if (MatchesMeCollectionLeaf(segments, "calendarGroups", "calendars"))
             return true;
 
         return false;
+    }
+
+    private static bool MatchesMeCollectionLeaf(string[] segments, string collection, string leaf)
+    {
+        // me/{collection}/{id...}/{leaf} with one or more non-empty id segments
+        if (segments.Length < 4)
+            return false;
+
+        if (!string.Equals(segments[0], "me", StringComparison.Ordinal))
+            return false;
+
+        if (!string.Equals(segments[1], collection, StringComparison.Ordinal))
+            return false;
+
+        if (!string.Equals(segments[^1], leaf, StringComparison.Ordinal))
+            return false;
+
+        for (var i = 2; i < segments.Length - 1; i++)
+        {
+            if (segments[i].Length == 0)
+                return false;
+        }
+
+        return true;
     }
 
     private static bool HasRawDotSegments(Uri uri)

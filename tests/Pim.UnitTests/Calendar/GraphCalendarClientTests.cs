@@ -28,6 +28,12 @@ public sealed class GraphCalendarClientTests
         { "https://graph.microsoft.com/v1.0/me/calendars/c1/calendarView/?$skiptoken=a", true },
         { "https://graph.microsoft.com/v1.0/me/calendars/AAMkA%2Fxxx%3D%3D/calendarView?$skiptoken=a", true },
         { "https://graph.microsoft.com/v1.0/me/calendars/c1/calendarView?$skiptoken=" + new string('A', 2048), true },
+        // ImmutableId may embed raw '/' so path has more than one id segment.
+        { "https://graph.microsoft.com/v1.0/me/calendars/AAMkA/xxx==/calendarView?$skiptoken=a", true },
+        { "https://graph.microsoft.com/v1.0/me/calendars/AAMkA+B/C==/calendarView?$skiptoken=a", true },
+        { "https://graph.microsoft.com/v1.0/me/calendars/part1/part2/part3/calendarView/?$skiptoken=p2", true },
+        { "https://graph.microsoft.com/v1.0/me/calendars/AAMkA/xxx==/events?$skiptoken=a", true },
+        { "https://graph.microsoft.com/v1.0/me/calendarGroups/g/a/calendars?$skiptoken=y", true },
         { "https://graph.microsoft.com/beta/me/calendarGroups", false },
         { "https://evil.com/v1.0/me/calendarGroups", false },
         { "https://graph.microsoft.us/v1.0/me/calendars?s=s", false },
@@ -40,6 +46,8 @@ public sealed class GraphCalendarClientTests
         { "https://graph.microsoft.com/v1.0/me/calendars/c1/calendarView/e1", false },
         { "https://graph.microsoft.com/v1.0/me/calendars/c1/events/e1", false },
         { "https://graph.microsoft.com/v1.0/me/calendars/c1/calendarView?s=s#frag", false },
+        { "https://graph.microsoft.com/v1.0/me/calendars//calendarView?$skiptoken=x", false },
+        { "https://graph.microsoft.com/v1.0/users/u@t.com/calendars/c1/calendarView?$skiptoken=a", false },
         { "https://graph.microsoft.com/v1.0/me/calendarGroups/../me/calendarGroups?s=s", false },
         { "https://graph.microsoft.com/v1.0/me/calendarGroups/%2e%2e/me/calendarGroups?s=s", false },
         { "https://graph.microsoft.com/v1.0/me/calendarGroups/%2E%2E/me/calendarGroups?s=s", false },
@@ -385,6 +393,27 @@ public sealed class GraphCalendarClientTests
         Assert.Equal(2, handler.Requests.Count);
         Assert.Equal(
             "https://graph.microsoft.com/v1.0/me/calendars/c1/calendarView/?$skiptoken=a",
+            handler.Requests[1].RequestUri!.AbsoluteUri);
+        Assert.Equal("e1", pages[0].Items[0].GetProperty("id").GetString());
+        Assert.Equal("e2", pages[1].Items[0].GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public async Task Pagination_FollowsUnencodedSlashImmutableIdCalendarViewNextLink()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(HttpStatusCode.OK,
+            """{"value":[{"id":"e1"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/calendars/AAMkA/xxx==/calendarView?$skiptoken=p2"}""");
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[{"id":"e2"}]}""");
+
+        var start = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero);
+        var end = new DateTimeOffset(2026, 7, 31, 0, 0, 0, TimeSpan.Zero);
+        var pages = await CollectPages(client.GetCalendarViewAsync(ConnectionId, "AAMkA/xxx==", start, end, default));
+
+        Assert.Equal(2, pages.Count);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(
+            "https://graph.microsoft.com/v1.0/me/calendars/AAMkA/xxx==/calendarView?$skiptoken=p2",
             handler.Requests[1].RequestUri!.AbsoluteUri);
         Assert.Equal("e1", pages[0].Items[0].GetProperty("id").GetString());
         Assert.Equal("e2", pages[1].Items[0].GetProperty("id").GetString());
