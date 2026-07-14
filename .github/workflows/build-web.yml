@@ -85,7 +85,7 @@ jobs:
           VITE_APP_VERSION: ${{ steps.ver.outputs.version }}
 
       - name: Package web build
-        run: tar -czf ../pim-web-v${{ steps.ver.outputs.artifact_slug }}.tar.gz -C ../Pim.Api/wwwroot .
+        run: tar -czf pim-web-v${{ steps.ver.outputs.artifact_slug }}.tar.gz -C ../Pim.Api/wwwroot .
 
       - name: Upload web build artifact
         uses: actions/upload-artifact@v7
