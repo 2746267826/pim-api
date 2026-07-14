@@ -121,9 +121,12 @@ jobs:
         shell: bash
         run: echo "${{ steps.ver.outputs.version }}" > publish/VERSION
 
+      - name: Package Windows build
+        shell: pwsh
+        run: Compress-Archive -Path publish/* -DestinationPath pim-windows-v${{ steps.ver.outputs.artifact_slug }}.zip
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: pim-windows-v${{ steps.ver.outputs.artifact_slug }}
-          path: src/client-windows/publish/
-          compression-level: 6
+          path: src/client-windows/pim-windows-v${{ steps.ver.outputs.artifact_slug }}.zip
