@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -6,12 +7,17 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Pim.Core.Audit;
 using Pim.Core.Common;
+using Pim.Core.Exceptions;
 using Pim.Core.Modules;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Secrets;
+using Hangfire;
 using Pim.Module.Calendar.DTOs;
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Search;
@@ -28,6 +34,8 @@ public class CalendarModule : IModule
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
 
+        services.TryAddSingleton(TimeProvider.System);
+
         services.AddScoped<CalendarService>();
         services.AddScoped<IcsService>();
         services.AddScoped<OutlookIcsService>();
@@ -36,6 +44,11 @@ public class CalendarModule : IModule
         services.AddScoped<OutlookSyncService>();
         services.AddScoped<OutlookTokenService>();
         services.AddScoped<IMicrosoftGraphClient, MicrosoftGraphDeviceCodeClient>();
+        services.AddSingleton<OutlookTokenCacheLock>();
+        services.AddScoped<OutlookTokenCacheStore>();
+        services.AddScoped<IMsalPublicClientAdapter, MsalPublicClientAdapter>();
+        services.AddScoped<IOutlookAccessTokenProvider, MsalOutlookAuthCoordinator>();
+        services.AddSingleton<OutlookAuthorizationSessionRunner>();
         services.AddHttpClient("outlook");
         services.AddScoped<OutlookConflictService>();
         services.AddScoped<CalendarAuditWriter>();
@@ -48,6 +61,12 @@ public class CalendarModule : IModule
         services.AddScoped<ReportService>();
 
         services.AddSingleton<ISearchProvider, CalendarSearchProvider>();
+
+        // New lightweight chain (Task 7)
+        services.AddScoped<GraphCalendarClient>();
+        services.AddScoped<OutlookCalendarSyncService>();
+        services.AddScoped<OutlookEventWriteService>();
+        services.AddScoped<OutlookCalendarSyncJob>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -573,158 +592,474 @@ public class CalendarModule : IModule
                 "pim-events.ics");
         });
 
-        // Outlook
+        // Outlook (rewired to new lightweight chain)
         group.MapGet("/outlook/settings", async (
-            [FromServices] OutlookSyncService outlookSvc,
+            [FromServices] PimDbContext db,
             [FromServices] ICurrentUserService currentUser,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<OutlookSettingsResponse>.Ok(
-                await outlookSvc.GetSettingsAsync(currentUser.UserId!.Value, ct))));
+        {
+            var userId = currentUser.UserId!.Value;
+            var connection = await db.Set<OutlookConnectionEntity>()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(c => c.UserId == userId, ct);
+            return Results.Ok(ApiResponse<OutlookSettingsResponse>.Ok(MapSettings(connection)));
+        });
 
         group.MapPut("/outlook/settings", async (
-            [FromBody] UpdateOutlookSettingsRequest req,
-            [FromServices] OutlookSyncService outlookSvc,
-            [FromServices] ICurrentUserService currentUser,
-            CancellationToken ct) =>
-            Results.Ok(ApiResponse<OutlookSettingsResponse>.Ok(
-                await outlookSvc.UpdateSettingsAsync(currentUser.UserId!.Value, req, ct))));
-
-        group.MapPost("/outlook/device-code", async (
-            [FromServices] OutlookSyncService outlookSvc,
-            [FromServices] ICurrentUserService currentUser,
-            CancellationToken ct) =>
-            Results.Ok(ApiResponse<OutlookDeviceCodeRequestResponse>.Ok(
-                await outlookSvc.CreateDeviceCodeRequestAsync(currentUser.UserId!.Value, ct))));
-
-        group.MapPost("/outlook/device-code/poll", async (
-            [FromBody] OutlookDeviceCodePollRequest req,
-            [FromServices] OutlookSyncService outlookSvc,
-            [FromServices] ICurrentUserService currentUser,
-            CancellationToken ct) =>
-            Results.Ok(ApiResponse<OutlookSettingsResponse>.Ok(
-                await outlookSvc.PollDeviceCodeAsync(currentUser.UserId!.Value, req.DeviceCode, ct))));
-
-        group.MapGet("/outlook/sync/batches", async (
-            [FromServices] OutlookSyncService outlookSvc,
-            [FromServices] ICurrentUserService currentUser,
-            CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<OutlookSyncBatchResponse>>.Ok(
-                await outlookSvc.ListBatchesAsync(currentUser.UserId!.Value, ct))));
-
-        group.MapPost("/outlook/sync", async (
-            [FromServices] OutlookSyncService outlookSvc,
-            [FromServices] ICurrentUserService currentUser,
-            CancellationToken ct) =>
-        {
-            var result = await outlookSvc.SyncAsync(currentUser.UserId!.Value, ct);
-            return Results.Ok(ApiResponse<OutlookSyncBatchResponse>.Ok(result));
-        });
-
-        group.MapGet("/outlook/events", async (
+            [FromBody] UpdateOutlookClientIdRequest req,
             [FromServices] PimDbContext db,
             [FromServices] ICurrentUserService currentUser,
+            [FromServices] TimeProvider timeProvider,
             CancellationToken ct) =>
         {
             var userId = currentUser.UserId!.Value;
-            var items = await db.Set<EventEntity>()
-                .AsNoTracking()
-                .Include(e => e.Calendar)
-                .Where(e => e.Calendar.UserId == userId && e.Source.StartsWith("outlook"))
-                .OrderBy(e => e.DtStart)
-                .ToListAsync(ct);
-            return Results.Ok(ApiResponse<object>.Ok(items.Select(e => new
+            var connection = await db.Set<OutlookConnectionEntity>()
+                .FirstOrDefaultAsync(c => c.UserId == userId, ct);
+            if (connection is null)
             {
-                e.Id,
-                e.Title,
-                e.OutlookEventId,
-                e.OutlookChangeKey,
-                e.Source,
-                e.DtStart,
-                e.DtEnd
-            }).ToList()));
-        });
-
-        group.MapPost("/outlook/events/batch-tag", async (
-            [FromBody] BatchIdsRequest req,
-            [FromServices] PimDbContext db,
-            [FromServices] ICurrentUserService currentUser,
-            CancellationToken ct) =>
-        {
-            var userId = currentUser.UserId!.Value;
-            var events = await db.Set<EventEntity>()
-                .Include(e => e.Calendar)
-                .Where(e => req.Ids.Contains(e.Id) && e.Calendar.UserId == userId)
-                .ToListAsync(ct);
-            foreach (var evt in events)
-            {
-                evt.Source = "outlook";
-                evt.UpdatedAt = DateTimeOffset.UtcNow;
+                connection = new OutlookConnectionEntity { UserId = userId };
+                db.Set<OutlookConnectionEntity>().Add(connection);
             }
 
+            connection.ClientId = req.ClientId.ToString("D");
+            connection.TenantId = "common";
+            connection.Authority = "https://login.microsoftonline.com/common";
+            connection.Scopes = "Calendars.ReadWrite offline_access User.Read openid profile";
+            connection.Provider = "outlook";
+            connection.Status = string.IsNullOrWhiteSpace(connection.Status) ? "not-connected" : connection.Status;
+            connection.TokenHealth = string.IsNullOrWhiteSpace(connection.TokenHealth) ? "missing" : connection.TokenHealth;
+            connection.UpdatedAt = timeProvider.GetUtcNow();
             await db.SaveChangesAsync(ct);
-            return Results.Ok(ApiResponse<object>.Ok(new { affectedCount = events.Count }));
+            return Results.Ok(ApiResponse<OutlookSettingsResponse>.Ok(MapSettings(connection)));
         });
 
-        group.MapPost("/outlook/events/{id:guid}/pause-sync", async (
-            Guid id,
+        group.MapPost("/outlook/device-code", async (
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] OutlookAuthorizationSessionRunner runner,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var connection = await db.Set<OutlookConnectionEntity>()
+                .FirstOrDefaultAsync(c => c.UserId == userId, ct)
+                ?? throw new DomainException(02005, "Outlook is not connected.");
+            if (string.IsNullOrWhiteSpace(connection.ClientId))
+                throw new DomainException(02005, "Microsoft Client ID is not configured.");
+
+            var session = new OutlookAuthorizationSessionEntity
+            {
+                UserId = userId,
+                ConnectionId = connection.Id,
+                Status = "starting"
+            };
+            db.Set<OutlookAuthorizationSessionEntity>().Add(session);
+            await db.SaveChangesAsync(ct);
+
+            var result = await runner.StartAsync(session.Id, userId, ct);
+            return Results.Ok(ApiResponse<OutlookAuthorizationSessionResponse>.Ok(ToSessionResponse(result)));
+        });
+
+        group.MapPost("/outlook/device-code/poll", async (
+            [FromBody] OutlookAuthorizationSessionRequest req,
             [FromServices] PimDbContext db,
             [FromServices] ICurrentUserService currentUser,
             CancellationToken ct) =>
         {
             var userId = currentUser.UserId!.Value;
-            var evt = await db.Set<EventEntity>()
-                .Include(e => e.Calendar)
-                .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == userId, ct);
-            if (evt is null)
-                return Results.NotFound(ApiResponse<string>.Error(404, "Event does not exist."));
-
-            evt.Source = "outlook-paused";
-            evt.UpdatedAt = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(ct);
-            return Results.Ok(ApiResponse<object>.Ok(new { evt.Id, evt.Source }));
-        });
-
-        group.MapPost("/outlook/events/{id:guid}/stop-sync-preview", async (
-            Guid id,
-            [FromServices] OutlookConflictService svc,
-            CancellationToken ct) =>
-            Results.Ok(ApiResponse<object>.Ok(await svc.RequestStopSyncPreviewAsync(id, ct))));
-
-        group.MapPost("/outlook/events/{id:guid}/stop-sync", async (
-            Guid id,
-            [FromBody] OutlookStopSyncExecuteRequest req,
-            [FromServices] OutlookConflictService svc,
-            CancellationToken ct) =>
-            Results.Ok(ApiResponse<object>.Ok(await svc.ExecuteStopSyncAsync(id, req.ConfirmationId, ct))));
-
-        group.MapGet("/outlook/events/{id:guid}/history", async (
-            Guid id,
-            [FromServices] PimDbContext db,
-            [FromServices] ICurrentUserService currentUser,
-            CancellationToken ct) =>
-        {
-            var userId = currentUser.UserId!.Value;
-            var evt = await db.Set<EventEntity>()
+            var session = await db.Set<OutlookAuthorizationSessionEntity>()
                 .AsNoTracking()
-                .Include(e => e.Calendar)
-                .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == userId, ct);
-            if (evt is null)
-                return Results.NotFound(ApiResponse<string>.Error(404, "Event does not exist."));
+                .FirstOrDefaultAsync(s => s.Id == req.SessionId && s.UserId == userId, ct);
+            if (session is null)
+                return Results.NotFound(ApiResponse<string>.Error(404, "Session not found."));
+
+            return Results.Ok(ApiResponse<OutlookAuthorizationSessionResponse>.Ok(ToSessionResponse(session)));
+        });
+
+        group.MapPost("/outlook/device-code/{sessionId:guid}/cancel", async (
+            Guid sessionId,
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] OutlookAuthorizationSessionRunner runner,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            try
+            {
+                await runner.CancelAsync(sessionId, userId, ct);
+            }
+            catch (InvalidOperationException)
+            {
+                return Results.NotFound(ApiResponse<string>.Error(404, "Session not found."));
+            }
+            return Results.Ok(ApiResponse<string>.Ok("已取消"));
+        });
+
+        group.MapPost("/outlook/check", async (
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] GraphCalendarClient graph,
+            [FromServices] OutlookCalendarSyncService syncSvc,
+            [FromServices] TimeProvider timeProvider,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var connection = await db.Set<OutlookConnectionEntity>()
+                .FirstOrDefaultAsync(c => c.UserId == userId, ct);
+            if (connection is null)
+                return Results.Ok(ApiResponse<OutlookSettingsResponse>.Ok(MapSettings(null)));
+
+            try
+            {
+                var me = await graph.GetMeAsync(connection.Id, ct);
+                await syncSvc.DiscoverAsync(userId, ct);
+                connection.Status = "connected";
+                connection.TokenHealth = "healthy";
+                connection.LastError = null;
+            }
+            catch (OutlookReauthenticationRequiredException)
+            {
+                connection.Status = "reauth-required";
+                connection.TokenHealth = "interaction-required";
+            }
+            catch (GraphRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                connection.Status = "reauth-required";
+                connection.TokenHealth = "interaction-required";
+            }
+
+            connection.UpdatedAt = timeProvider.GetUtcNow();
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(ApiResponse<OutlookSettingsResponse>.Ok(MapSettings(connection)));
+        });
+
+        group.MapPost("/outlook/calendars/discover", async (
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] OutlookCalendarSyncService syncSvc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<OutlookCalendarBindingResponse>>.Ok(
+                await syncSvc.DiscoverAsync(currentUser.UserId!.Value, ct))));
+
+        group.MapPut("/outlook/calendars/selection", async (
+            [FromBody] UpdateCalendarSelectionRequest req,
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] OutlookCalendarSyncService syncSvc,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            await syncSvc.SetSelectionAsync(userId, req.SelectedBindingIds, ct);
+            var bindings = await syncSvc.ListCalendarsAsync(userId, ct);
+            return Results.Ok(ApiResponse<IReadOnlyList<OutlookCalendarBindingResponse>>.Ok(bindings));
+        });
+
+        group.MapPost("/outlook/sync", async (
+            [FromBody] OutlookSyncRequest req,
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] OutlookCalendarSyncService syncSvc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<OutlookSyncBatchResponse>.Ok(
+                await syncSvc.SyncAsync(currentUser.UserId!.Value, req, ct))));
+
+        group.MapPost("/outlook/sync/{batchId:guid}/cancel", async (
+            Guid batchId,
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] TimeProvider timeProvider,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var batch = await db.Set<OutlookSyncBatchEntity>()
+                .FirstOrDefaultAsync(b => b.Id == batchId && b.UserId == userId && b.Status == "running", ct);
+            if (batch is null)
+                return Results.NotFound(ApiResponse<string>.Error(404, "Batch not found or not running."));
+
+            batch.CancelRequested = true;
+            batch.UpdatedAt = timeProvider.GetUtcNow();
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(ApiResponse<string>.Ok("已取消"));
+        });
+
+        group.MapGet("/outlook/sync/batches", async (
+            [FromQuery] int? page,
+            [FromQuery] int? pageSize,
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var query = db.Set<OutlookSyncBatchEntity>()
+                .AsNoTracking()
+                .Where(b => b.UserId == userId)
+                .OrderByDescending(b => b.StartedAt);
+
+            var p = Math.Max(1, page ?? 1);
+            var ps = Math.Clamp(pageSize ?? 20, 1, 100);
+            var total = await query.CountAsync(ct);
+            var items = await query
+                .Skip((p - 1) * ps)
+                .Take(ps)
+                .ToListAsync(ct);
 
             return Results.Ok(ApiResponse<object>.Ok(new
             {
-                evt.Id,
-                evt.OutlookEventId,
-                evt.OutlookChangeKey,
-                evt.OutlookEtag,
-                evt.SourceIcsComponent
+                items = items.Select(MapBatch),
+                total,
+                page = p,
+                pageSize = ps
             }));
         });
+
+        group.MapPost("/outlook/events/writeback", async (
+            [FromBody] OutlookWriteRequest req,
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] OutlookEventWriteService writeSvc,
+            CancellationToken ct) =>
+        {
+            var result = await writeSvc.ExecuteAsync(currentUser.UserId!.Value, req, ct);
+            if (result.Status == "conflict" || result.ErrorCode == "CONFLICT")
+                return Results.Conflict(ApiResponse<OutlookWriteResult>.Ok(result));
+            return Results.Ok(ApiResponse<OutlookWriteResult>.Ok(result));
+        });
+
+        group.MapPost("/outlook/disconnect", async (
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] TimeProvider timeProvider,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var connection = await db.Set<OutlookConnectionEntity>()
+                .FirstOrDefaultAsync(c => c.UserId == userId, ct);
+            if (connection is not null)
+            {
+                // Request cancellation of running non-writeback sync batches
+                var runningBatches = await db.Set<OutlookSyncBatchEntity>()
+                    .Where(b => b.UserId == userId && b.Status == "running" && b.Mode != "writeback")
+                    .ToListAsync(ct);
+                var now = timeProvider.GetUtcNow();
+                foreach (var batch in runningBatches)
+                {
+                    batch.CancelRequested = true;
+                    batch.UpdatedAt = now;
+                }
+
+                // Clear encrypted cache
+                connection.AccessTokenEncrypted = [];
+                connection.MsalCacheEncrypted = null;
+                connection.RefreshTokenEncrypted = null;
+                connection.Status = "not-connected";
+                connection.TokenHealth = "missing";
+                connection.HomeAccountId = null;
+                connection.AccountDisplayName = null;
+                connection.AccountLoginHint = null;
+                connection.LastSyncedAt = null;
+                connection.LastError = null;
+                connection.UpdatedAt = now;
+                await db.SaveChangesAsync(ct);
+            }
+
+            return Results.Ok(ApiResponse<string>.Ok("已断开"));
+        });
+
+        group.MapGet("/outlook/local-data/preview", async (
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var connection = await db.Set<OutlookConnectionEntity>()
+                .FirstOrDefaultAsync(c => c.UserId == userId, ct);
+            if (connection is null)
+                return Results.Ok(ApiResponse<OutlookLocalDataPreview>.Ok(new(0, 0, 0)));
+
+            var bindingCount = await db.Set<OutlookCalendarBindingEntity>()
+                .CountAsync(b => b.ConnectionId == connection.Id, ct);
+            var calendarCount = await db.Set<OutlookCalendarBindingEntity>()
+                .Where(b => b.ConnectionId == connection.Id)
+                .Join(db.Set<CalendarEntity>().IgnoreQueryFilters(),
+                    b => b.PimCalendarId, c => c.Id,
+                    (_, c) => c)
+                .CountAsync(c => c.DeletedAt == null, ct);
+            var eventCount = await db.Set<OutlookCalendarBindingEntity>()
+                .Where(b => b.ConnectionId == connection.Id)
+                .Join(db.Set<EventEntity>().IgnoreQueryFilters(),
+                    b => b.PimCalendarId, e => e.CalendarId,
+                    (_, e) => e)
+                .CountAsync(e => e.DeletedAt == null && e.Source.StartsWith("outlook"), ct);
+
+            return Results.Ok(ApiResponse<OutlookLocalDataPreview>.Ok(
+                new OutlookLocalDataPreview(bindingCount, calendarCount, eventCount)));
+        });
+
+        group.MapDelete("/outlook/local-data", async (
+            [FromServices] PimDbContext db,
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] TimeProvider timeProvider,
+            CancellationToken ct) =>
+        {
+            var userId = currentUser.UserId!.Value;
+            var connection = await db.Set<OutlookConnectionEntity>()
+                .FirstOrDefaultAsync(c => c.UserId == userId, ct);
+            if (connection is null)
+                return Results.Ok(ApiResponse<string>.Ok("无本地数据"));
+
+            var now = timeProvider.GetUtcNow();
+
+            // Soft-delete Microsoft events
+            var msEvents = await db.Set<EventEntity>()
+                .IgnoreQueryFilters()
+                .Where(e => e.Calendar.UserId == userId && e.Source.StartsWith("outlook"))
+                .ToListAsync(ct);
+            foreach (var e in msEvents)
+            {
+                e.DeletedAt = now;
+                e.UpdatedAt = now;
+            }
+
+            // Soft-delete outlook-sourced calendars
+            var msCalendars = await db.Set<CalendarEntity>()
+                .IgnoreQueryFilters()
+                .Where(c => c.UserId == userId && c.Source == "outlook")
+                .ToListAsync(ct);
+            foreach (var c in msCalendars)
+            {
+                c.DeletedAt = now;
+                c.UpdatedAt = now;
+            }
+
+            // Remove bindings
+            var bindings = await db.Set<OutlookCalendarBindingEntity>()
+                .Where(b => b.ConnectionId == connection.Id)
+                .ToListAsync(ct);
+            db.Set<OutlookCalendarBindingEntity>().RemoveRange(bindings);
+
+            // Clear encrypted cache (leave connection row disconnected)
+            connection.AccessTokenEncrypted = [];
+            connection.MsalCacheEncrypted = null;
+            connection.RefreshTokenEncrypted = null;
+            connection.Status = "not-connected";
+            connection.TokenHealth = "missing";
+            connection.HomeAccountId = null;
+            connection.UpdatedAt = now;
+
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(ApiResponse<string>.Ok("已清理"));
+        });
+    }
+
+    private static OutlookSettingsResponse MapSettings(OutlookConnectionEntity? connection)
+    {
+        if (connection is null || string.IsNullOrWhiteSpace(connection.ClientId))
+            return new OutlookSettingsResponse("outlook", "common", null,
+                "Calendars.ReadWrite offline_access User.Read openid profile",
+                "not-connected", "missing", null, null, "not-configured");
+
+        var uiStatus = connection.Status switch
+        {
+            "not-connected" => "failed",
+            "waiting-for-user" => "waiting-auth",
+            "connected" => "connected",
+            "reauth-required" => "reauth-required",
+            "failed" => "failed",
+            _ => "failed"
+        };
+
+        return new OutlookSettingsResponse(
+            connection.Provider,
+            connection.TenantId,
+            connection.ClientId,
+            connection.Scopes,
+            connection.Status,
+            connection.TokenHealth,
+            connection.LastSyncedAt,
+            connection.LastError,
+            uiStatus);
+    }
+
+    private static OutlookAuthorizationSessionResponse ToSessionResponse(OutlookAuthorizationSessionEntity s) =>
+        new(s.Id, s.Status, s.VerificationUri, s.UserCode, s.ExpiresAt,
+            s.AccountDisplayName, s.AccountLoginHint, s.ErrorCode, s.ErrorMessage, null);
+
+    private static OutlookSyncBatchResponse MapBatch(OutlookSyncBatchEntity b)
+    {
+        var steps = string.IsNullOrEmpty(b.StepsJson) || b.StepsJson == "[]"
+            ? Array.Empty<OutlookSyncStep>()
+            : JsonSerializer.Deserialize<OutlookSyncStep[]>(b.StepsJson) ?? Array.Empty<OutlookSyncStep>();
+
+        return new OutlookSyncBatchResponse(
+            b.Id, b.Provider, b.Status, b.ReadCount, b.CreatedCount, b.UpdatedCount,
+            b.ConflictCount, b.ConfirmationCount, b.FailureCount,
+            steps, b.ErrorSummary, b.StartedAt, b.FinishedAt,
+            b.Mode, b.RequestedWindowStart, b.RequestedWindowEnd,
+            b.PerCalendarJson, b.CancelRequested);
     }
 
     public async Task InitializeAsync(IServiceProvider serviceProvider)
     {
-        await Task.CompletedTask;
+        try
+        {
+            await serviceProvider.GetRequiredService<OutlookAuthorizationSessionRunner>()
+                .FailInterruptedSessionsAsync(CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            serviceProvider.GetService<ILogger<CalendarModule>>()?.LogWarning(
+                exception,
+                "Microsoft authorization session cleanup was skipped because the database is unavailable.");
+        }
+
+        // Mark interrupted sync batches
+        try
+        {
+            using var scope = serviceProvider.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var timeProvider = scope.ServiceProvider.GetRequiredService<TimeProvider>();
+            var now = timeProvider.GetUtcNow();
+            var running = await db.Set<OutlookSyncBatchEntity>()
+                .Where(b => b.Status == "running")
+                .ToListAsync(CancellationToken.None);
+            foreach (var batch in running)
+            {
+                batch.Status = "interrupted";
+                batch.FinishedAt = now;
+                batch.UpdatedAt = now;
+            }
+
+            if (running.Count > 0)
+                await db.SaveChangesAsync(CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            serviceProvider.GetService<ILogger<CalendarModule>>()?.LogWarning(
+                exception,
+                "Interrupted batch cleanup was skipped because the database is unavailable.");
+        }
+
+        // Schedule recurring job
+        try
+        {
+            var jobClient = serviceProvider.GetService<IBackgroundJobClient>();
+            var recurringJobs = serviceProvider.GetService<IRecurringJobManager>();
+            var logger = serviceProvider.GetService<ILogger<CalendarModule>>();
+
+            if (jobClient is null || recurringJobs is null)
+            {
+                logger?.LogWarning(
+                    "Background job infrastructure is not available; scheduled sync is disabled.");
+            }
+            else
+            {
+                jobClient.Enqueue<OutlookCalendarSyncJob>(j => j.RunAllAsync());
+                recurringJobs.AddOrUpdate<OutlookCalendarSyncJob>(
+                    "outlook-calendar-sync",
+                    j => j.RunAllAsync(),
+                    "*/5 * * * *");
+            }
+        }
+        catch (Exception exception)
+        {
+            serviceProvider.GetService<ILogger<CalendarModule>>()?.LogWarning(
+                exception,
+                "Failed to schedule the recurring outlook sync job.");
+        }
     }
 }
 
@@ -750,6 +1085,13 @@ public static class CalendarEndpointPaths
     public const string OutlookDeviceCodePoll = "/api/v1/calendar/outlook/device-code/poll";
     public const string OutlookSync = "/api/v1/calendar/outlook/sync";
     public const string OutlookSyncBatches = "/api/v1/calendar/outlook/sync/batches";
+    public const string OutlookCheck = "/api/v1/calendar/outlook/check";
+    public const string OutlookCalendarsDiscover = "/api/v1/calendar/outlook/calendars/discover";
+    public const string OutlookCalendarsSelection = "/api/v1/calendar/outlook/calendars/selection";
+    public const string OutlookEventsWriteback = "/api/v1/calendar/outlook/events/writeback";
+    public const string OutlookDisconnect = "/api/v1/calendar/outlook/disconnect";
+    public const string OutlookLocalDataPreview = "/api/v1/calendar/outlook/local-data/preview";
+    public const string OutlookLocalDataDelete = "/api/v1/calendar/outlook/local-data";
     public const string Reports = "/api/v1/calendar/reports";
     public const string GenerateReport = "/api/v1/calendar/reports/generate";
     public const string RequestReportSuggestionAction = "/api/v1/calendar/reports/suggestions/{id}/request-action";
@@ -757,4 +1099,6 @@ public static class CalendarEndpointPaths
     public static string TaskPlan(string id) => $"{Root}/tasks/{id}/plan";
     public static string RecycleRestorePreview(string type, string id) => $"{RecycleBin}/{type}/{id}/restore-preview";
     public static string RecycleRestore(string type, string id) => $"{RecycleBin}/{type}/{id}/restore";
+    public static string OutlookDeviceCodeCancel(Guid sessionId) => $"{OutlookDeviceCode}/{sessionId}/cancel";
+    public static string OutlookSyncCancel(Guid batchId) => $"{OutlookSync}/{batchId}/cancel";
 }

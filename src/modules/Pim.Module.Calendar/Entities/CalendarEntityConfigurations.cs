@@ -8,6 +8,8 @@ public class CalendarEntityConfiguration : IEntityTypeConfiguration<CalendarEnti
     public void Configure(EntityTypeBuilder<CalendarEntity> builder)
     {
         builder.HasQueryFilter(c => c.DeletedAt == null);
+        builder.Property(c => c.Source).HasDefaultValue("manual");
+        builder.Property(c => c.IsVisible).HasDefaultValue(true);
         builder.HasIndex(c => c.UserId);
         builder.HasIndex(c => new { c.UserId, c.DeletedAt });
         builder.HasIndex(c => c.DeletedByOperationId);
@@ -22,16 +24,28 @@ public class EventEntityConfiguration : IEntityTypeConfiguration<EventEntity>
         builder.Property(e => e.ExternalMetadataJson).HasDefaultValue("{}");
         builder.Property(e => e.ExDatesJson).HasDefaultValue("[]");
         builder.Property(e => e.RecurrenceMetadataJson).HasDefaultValue("{}");
+        builder.Property(e => e.GraphRecurrenceJson).HasDefaultValue("{}");
         builder.HasIndex(e => e.CalendarId);
         builder.HasIndex(e => e.Uid);
         builder.HasIndex(e => e.SourceUid);
         builder.HasIndex(e => e.OutlookEventId);
+        builder.HasIndex(e => new { e.OutlookCalendarBindingId, e.OutlookEventId })
+            .IsUnique()
+            .HasFilter("\"outlook_calendar_binding_id\" IS NOT NULL AND \"outlook_event_id\" IS NOT NULL AND \"deleted_at\" IS NULL");
         builder.HasIndex(e => e.OutlookChangeKey);
         builder.HasIndex(e => new { e.DeletedAt, e.DtStart });
         builder.HasIndex(e => e.DeletedByOperationId);
         builder.HasOne(e => e.Calendar)
             .WithMany(c => c.Events)
             .HasForeignKey(e => e.CalendarId);
+        builder.HasOne(e => e.OutlookCalendarBinding)
+            .WithMany()
+            .HasForeignKey(e => e.OutlookCalendarBindingId)
+            .OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne<OutlookConnectionEntity>()
+            .WithMany()
+            .HasForeignKey(e => e.OutlookConnectionId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 
@@ -183,10 +197,53 @@ public class OutlookConnectionEntityConfiguration : IEntityTypeConfiguration<Out
     {
         builder.Property(o => o.Provider).HasDefaultValue("outlook");
         builder.Property(o => o.TenantId).HasDefaultValue("common");
+        builder.Property(o => o.Authority).HasDefaultValue("https://login.microsoftonline.com/common");
         builder.Property(o => o.Scopes).HasDefaultValue("Calendars.ReadWrite offline_access User.Read openid profile");
         builder.Property(o => o.Status).HasDefaultValue("not-connected");
         builder.Property(o => o.TokenHealth).HasDefaultValue("missing");
+        builder.Property(o => o.Version).HasDefaultValue(0).IsConcurrencyToken();
         builder.HasIndex(o => o.UserId).IsUnique();
+    }
+}
+
+public sealed class OutlookAuthorizationSessionEntityConfiguration
+    : IEntityTypeConfiguration<OutlookAuthorizationSessionEntity>
+{
+    public void Configure(EntityTypeBuilder<OutlookAuthorizationSessionEntity> builder)
+    {
+        builder.Property(entity => entity.Status).HasDefaultValue("starting");
+        builder.Property(entity => entity.Version).HasDefaultValue(0).IsConcurrencyToken();
+        builder.HasIndex(entity => new { entity.UserId, entity.CreatedAt });
+        builder.HasIndex(entity => new { entity.ConnectionId, entity.Status });
+        builder.HasIndex(entity => entity.ConnectionId)
+            .IsUnique()
+            .HasFilter("\"status\" IN ('starting', 'waiting-for-user')")
+            .HasDatabaseName("UX_outlook_authorization_sessions_active_connection");
+        builder.HasOne<OutlookConnectionEntity>()
+            .WithMany()
+            .HasForeignKey(entity => entity.ConnectionId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+public sealed class OutlookCalendarBindingEntityConfiguration
+    : IEntityTypeConfiguration<OutlookCalendarBindingEntity>
+{
+    public void Configure(EntityTypeBuilder<OutlookCalendarBindingEntity> builder)
+    {
+        builder.Property(entity => entity.IsSelected).HasDefaultValue(true);
+        builder.Property(entity => entity.RemoteState).HasDefaultValue("active");
+        builder.Property(entity => entity.SyncStrategy).HasDefaultValue("window-reconcile");
+        builder.HasIndex(entity => new { entity.ConnectionId, entity.GraphCalendarId }).IsUnique();
+        builder.HasIndex(entity => entity.PimCalendarId).IsUnique();
+        builder.HasOne<OutlookConnectionEntity>()
+            .WithMany()
+            .HasForeignKey(entity => entity.ConnectionId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<CalendarEntity>()
+            .WithMany()
+            .HasForeignKey(entity => entity.PimCalendarId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -196,12 +253,28 @@ public class OutlookSyncBatchEntityConfiguration : IEntityTypeConfiguration<Outl
     {
         builder.Property(o => o.Provider).HasDefaultValue("outlook");
         builder.Property(o => o.Status).HasDefaultValue("running");
+        builder.Property(o => o.Mode).HasDefaultValue("incremental");
         builder.Property(o => o.StepsJson).HasDefaultValue("[]");
         builder.Property(o => o.ErrorsJson).HasDefaultValue("[]");
+        builder.Property(o => o.RequestedCalendarIdsJson).HasDefaultValue("[]");
+        builder.Property(o => o.PerCalendarJson).HasDefaultValue("[]");
         builder.Property(o => o.StartedAt).HasDefaultValueSql("now()");
+        builder.Property(o => o.UpdatedAt).HasDefaultValueSql("now()");
         builder.HasIndex(o => o.UserId);
         builder.HasIndex(o => new { o.UserId, o.StartedAt });
         builder.HasIndex(o => new { o.UserId, o.Provider, o.StartedAt });
+    }
+}
+
+public sealed class OutlookOperationExecutionEntityConfiguration
+    : IEntityTypeConfiguration<OutlookOperationExecutionEntity>
+{
+    public void Configure(EntityTypeBuilder<OutlookOperationExecutionEntity> builder)
+    {
+        builder.Property(entity => entity.PayloadJson).HasDefaultValue("{}");
+        builder.Property(entity => entity.State).HasDefaultValue("queued");
+        builder.HasIndex(entity => entity.ConfirmationId).IsUnique();
+        builder.HasIndex(entity => new { entity.State, entity.NextAttemptAt });
     }
 }
 
@@ -219,6 +292,7 @@ public class SyncConflictEntityConfiguration : IEntityTypeConfiguration<SyncConf
         builder.HasIndex(c => new { c.ObjectType, c.ObjectId });
         builder.HasIndex(c => c.GraphEventId);
         builder.HasIndex(c => c.ResolvedConfirmationId);
+        builder.HasIndex(c => c.SourceConfirmationId);
     }
 }
 

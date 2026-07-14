@@ -26,16 +26,24 @@ public class CalendarService
     // --- Calendars ---
     public async Task<List<CalendarResponse>> GetCalendarsAsync(string? kind, CancellationToken ct)
     {
-        var query = _db.Set<CalendarEntity>()
+        var calendarsQuery = _db.Set<CalendarEntity>()
             .Where(c => c.UserId == UserId);
 
         if (kind is not null)
-            query = query.Where(c => c.Kind == kind);
+            calendarsQuery = calendarsQuery.Where(c => c.Kind == kind);
 
-        return await query
-            .Select(c => new CalendarResponse(c.Id, c.Name, c.Color, c.Kind, c.IsDefault,
-                c.Events.Count))
-            .ToListAsync(ct);
+        var query =
+            from calendar in calendarsQuery
+            join binding in _db.Set<OutlookCalendarBindingEntity>()
+                on calendar.Id equals binding.PimCalendarId into bindingGroup
+            from binding in bindingGroup.DefaultIfEmpty()
+            select new CalendarResponse(
+                calendar.Id, calendar.Name, calendar.Color, calendar.Kind,
+                calendar.IsDefault, calendar.Events.Count, calendar.Source,
+                binding == null ? null : binding.Id,
+                binding == null || binding.CanEdit);
+
+        return await query.ToListAsync(ct);
     }
 
     public async Task<CalendarResponse> CreateCalendarAsync(CreateCalendarRequest request, CancellationToken ct)
@@ -138,6 +146,11 @@ public class CalendarService
             : await _db.Set<CalendarEntity>()
                 .FirstOrDefaultAsync(c => c.Id == request.CalendarId && c.UserId == UserId, ct)
                 ?? throw new DomainException(02003, "日历不存在");
+
+        var hasOutlookBinding = await _db.Set<OutlookCalendarBindingEntity>()
+            .AnyAsync(b => b.PimCalendarId == calendar.Id, ct);
+        if (hasOutlookBinding)
+            throw new DomainException(02009, "Microsoft 日历的日程必须通过确认写回流程创建。");
 
         var entity = new EventEntity
         {
@@ -317,6 +330,22 @@ public class CalendarService
         var entity = await _db.Set<EventEntity>()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
             ?? throw new DomainException(02001, "日程不存在");
+
+        if (entity.OutlookCalendarBindingId != null)
+            throw new DomainException(02009, "Microsoft 日程必须通过确认写回流程修改。");
+
+        var sourceCalendarHasBinding = await _db.Set<OutlookCalendarBindingEntity>()
+            .AnyAsync(b => b.PimCalendarId == entity.CalendarId, ct);
+        if (sourceCalendarHasBinding)
+            throw new DomainException(02009, "Microsoft 日历的日程必须通过确认写回流程修改。");
+
+        if (request.CalendarId != entity.CalendarId)
+        {
+            var targetCalendarHasBinding = await _db.Set<OutlookCalendarBindingEntity>()
+                .AnyAsync(b => b.PimCalendarId == request.CalendarId, ct);
+            if (targetCalendarHasBinding)
+                throw new DomainException(02009, "目标日历为 Microsoft 日历，移动操作必须通过确认写回流程。");
+        }
 
         entity.Title = request.Title;
         entity.Description = request.Description;
@@ -645,7 +674,8 @@ public class CalendarService
             e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source, null,
             e.IsAllDay, e.TimeZoneId, e.SourceTimeZoneId, e.SourceUid,
             e.ExternalMetadataJson, e.RecurrenceId, e.ExDatesJson,
-            e.RecurrenceMetadataJson);
+            e.RecurrenceMetadataJson,
+            e.OutlookCalendarBindingId, e.OutlookEventId, e.OutlookEtag, e.OutlookEventType);
 
     private static EventResponse MapExpandedEvent(ExpandedEvent e) =>
         new(e.OccurrenceId, e.Entity.CalendarId, e.Entity.Uid,
@@ -655,7 +685,8 @@ public class CalendarService
             e.Entity.Id, e.Entity.IsAllDay, e.Entity.TimeZoneId,
             e.Entity.SourceTimeZoneId, e.Entity.SourceUid,
             e.Entity.ExternalMetadataJson, e.Entity.RecurrenceId, e.Entity.ExDatesJson,
-            e.Entity.RecurrenceMetadataJson);
+            e.Entity.RecurrenceMetadataJson,
+            e.Entity.OutlookCalendarBindingId, e.Entity.OutlookEventId, e.Entity.OutlookEtag, e.Entity.OutlookEventType);
 
     private static string? FormatDuration(TimeSpan? duration) =>
         duration is not null ? duration.Value.ToString("c") : null;

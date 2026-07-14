@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Pim.Infrastructure.Data;
@@ -11,9 +12,11 @@ using Pim.Infrastructure.Data;
 namespace Pim.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(PimDbContext))]
-    partial class PimDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260710000000_MicrosoftCalendarSync")]
+    partial class MicrosoftCalendarSync
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1630,19 +1633,7 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(512)")
                         .HasColumnName("verification_uri");
 
-                    b.Property<long>("Version")
-                        .IsConcurrencyToken()
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasDefaultValue(0L)
-                        .HasColumnName("version");
-
                     b.HasKey("Id");
-
-                    b.HasIndex("ConnectionId")
-                        .IsUnique()
-                        .HasDatabaseName("UX_outlook_authorization_sessions_active_connection")
-                        .HasFilter("\"status\" IN ('starting', 'waiting-for-user')");
 
                     b.HasIndex("ConnectionId", "Status");
 
@@ -6037,15 +6028,6 @@ namespace Pim.Infrastructure.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("HabitRoutine");
-                });
-
-            modelBuilder.Entity("Pim.Module.Calendar.Entities.OutlookAuthorizationSessionEntity", b =>
-                {
-                    b.HasOne("Pim.Module.Calendar.Entities.OutlookConnectionEntity", null)
-                        .WithMany()
-                        .HasForeignKey("ConnectionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
                 });
 
             modelBuilder.Entity("Pim.Module.Calendar.Entities.OutlookCalendarBindingEntity", b =>

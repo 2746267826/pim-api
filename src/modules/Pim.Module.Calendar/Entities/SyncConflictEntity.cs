@@ -17,6 +17,7 @@ public class SyncConflictEntity
     [Column("pim_snapshot_json", TypeName = "jsonb")] public string PimSnapshotJson { get; set; } = "{}";
     [Column("external_snapshot_json", TypeName = "jsonb")] public string ExternalSnapshotJson { get; set; } = "{}";
     [Column("resolved_confirmation_id")] public Guid? ResolvedConfirmationId { get; set; }
+    [Column("source_confirmation_id")] public Guid? SourceConfirmationId { get; set; }
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("updated_at")] public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }

@@ -1,12 +1,51 @@
+using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Pim.Infrastructure.Data;
+using Pim.Module.Calendar.Entities;
 using Xunit;
 
 namespace Pim.UnitTests.Operations;
 
 public class PimDbContextModelCacheTests
 {
+    [Fact]
+    public void MicrosoftCalendarSyncMigration_HasStableIdentifier()
+    {
+        var migration = typeof(Pim.Infrastructure.Data.Migrations.MicrosoftCalendarSync);
+        var attribute = migration.GetCustomAttributes(typeof(MigrationAttribute), false)
+            .Cast<MigrationAttribute>()
+            .Single();
+
+        Assert.Equal("20260710000000_MicrosoftCalendarSync", attribute.Id);
+    }
+
+    [Fact]
+    public void MicrosoftCalendarSyncMigration_TargetModelContainsMicrosoftSyncEntities()
+    {
+        var migration = new Pim.Infrastructure.Data.Migrations.MicrosoftCalendarSync();
+
+        var targetModel = migration.TargetModel;
+
+        Assert.NotNull(targetModel);
+        Assert.NotNull(targetModel.FindEntityType(typeof(OutlookAuthorizationSessionEntity)));
+        Assert.NotNull(targetModel.FindEntityType(typeof(OutlookCalendarBindingEntity)));
+        Assert.NotNull(targetModel.FindEntityType(typeof(OutlookOperationExecutionEntity)));
+    }
+
+    [Fact]
+    public void MicrosoftAuthorizationSessionIntegrityMigration_HasStableIdentifierAndTargetModel()
+    {
+        var migration = new Pim.Infrastructure.Data.Migrations.MicrosoftAuthorizationSessionIntegrity();
+        var attribute = migration.GetType().GetCustomAttributes(typeof(MigrationAttribute), false)
+            .Cast<MigrationAttribute>()
+            .Single();
+
+        Assert.Equal("20260710001000_MicrosoftAuthorizationSessionIntegrity", attribute.Id);
+        Assert.NotNull(migration.TargetModel.FindEntityType(typeof(OutlookAuthorizationSessionEntity)));
+    }
+
     [Fact]
     public void ModelCache_UsesModuleAssembliesRegisteredAfterCoreModelIsBuilt()
     {
