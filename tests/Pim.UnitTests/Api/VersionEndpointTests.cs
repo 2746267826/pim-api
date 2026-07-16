@@ -9,10 +9,10 @@ namespace Pim.UnitTests.Api;
 public sealed class VersionEndpointTests
 {
     [Fact]
-    public void PhaseOneCapabilitiesAdvertiseItemResultsOnly()
+    public void PhaseOneCapabilitiesAdvertiseItemResultsAndAndroidEmbed()
     {
         Assert.Contains(VersionEndpoints.MobileItemResultsV1, VersionEndpoints.Capabilities);
-        Assert.DoesNotContain("androidEmbedV1", VersionEndpoints.Capabilities);
+        Assert.Contains("androidEmbedV1", VersionEndpoints.Capabilities);
     }
 
     [Fact]
@@ -29,6 +29,7 @@ public sealed class VersionEndpointTests
 
         Assert.NotNull(response);
         Assert.False(string.IsNullOrWhiteSpace(response.Version));
-        Assert.Equal([VersionEndpoints.MobileItemResultsV1], response.Capabilities);
+        Assert.Contains(VersionEndpoints.MobileItemResultsV1, response.Capabilities);
+        Assert.Contains("androidEmbedV1", response.Capabilities);
     }
 }
