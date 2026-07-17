@@ -24,6 +24,7 @@ src/Pim.Api/wwwroot/
 .dotnet-appdata/
 .dotnet-home/
 .worktrees/
+.opencode-session/
 .superpowers/brainstorm/
 objTestDuration/
 docker-compose.override.yml
