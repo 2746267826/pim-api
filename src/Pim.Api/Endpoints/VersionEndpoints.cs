@@ -5,7 +5,8 @@ public sealed record ApiVersionResponse(string Version, IReadOnlyList<string> Ca
 public static class VersionEndpoints
 {
     public const string MobileItemResultsV1 = "mobileItemResultsV1";
-    public static IReadOnlyList<string> Capabilities { get; } = [MobileItemResultsV1];
+    public const string AndroidEmbedV1 = "androidEmbedV1";
+    public static IReadOnlyList<string> Capabilities { get; } = [MobileItemResultsV1, AndroidEmbedV1];
 
     public static IEndpointRouteBuilder MapVersionEndpoints(this IEndpointRouteBuilder endpoints)
     {
