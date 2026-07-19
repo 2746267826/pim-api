@@ -131,6 +131,57 @@ public class CalendarServiceReliabilityTests
         Assert.Equal(02010, ex.ErrorCode);
     }
 
+    [Fact]
+    public async Task UpdateEventAsync_EndBeforeStart_Returns02010()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        var evt = SeedEvent(db, calendar, "Original event");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.UpdateEventAsync(
+                evt.Id,
+                new UpdateEventRequest(
+                    calendar.Id, "Updated", null, null,
+                    new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+                    new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+                    null),
+                default));
+
+        Assert.Equal(02010, ex.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UpdateEventAsync_InvalidRange_DoesNotMutateTrackedEntity()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        var evt = SeedEvent(db, calendar, "Original title");
+        evt.Description = "Original description";
+        evt.Location = "Original location";
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+        var start = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.UpdateEventAsync(
+                evt.Id,
+                new UpdateEventRequest(
+                    calendar.Id, "Hacked title", "Hacked description", "Hacked location",
+                    start, start, null),
+                default));
+
+        Assert.Equal(02010, ex.ErrorCode);
+
+        Assert.Equal("Original title", evt.Title);
+        Assert.Equal("Original description", evt.Description);
+        Assert.Equal("Original location", evt.Location);
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero), evt.DtStart);
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero), evt.DtEnd);
+    }
+
     // --- Helpers ---
 
     private static PimDbContext CreateDb()

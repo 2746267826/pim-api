@@ -349,11 +349,11 @@ public class CalendarService
                 throw new DomainException(02009, "目标日历为 Microsoft 日历，移动操作必须通过确认写回流程。");
         }
 
+        var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
+
         entity.Title = request.Title;
         entity.Description = request.Description;
         entity.Location = request.Location;
-
-        var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
         entity.DtStart = normalizedStart;
         entity.DtEnd = normalizedEnd;
 
