@@ -154,6 +154,8 @@ public class CalendarService
 
         var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
 
+        ManualDescriptionValidator.EnsureSafe(request.Description);
+
         var entity = new EventEntity
         {
             CalendarId = calendar.Id,
@@ -351,6 +353,8 @@ public class CalendarService
 
         var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
 
+        ManualDescriptionValidator.EnsureSafe(request.Description);
+
         entity.Title = request.Title;
         entity.Description = request.Description;
         entity.Location = request.Location;
@@ -487,6 +491,8 @@ public class CalendarService
 
         ValidateTaskRange(dtStart, plannedEnd);
 
+        ManualDescriptionValidator.EnsureSafe(request.Description);
+
         var task = new TaskEntity
         {
             UserId = UserId,
@@ -524,6 +530,8 @@ public class CalendarService
             : task.PlannedEnd;
 
         ValidateTaskRange(finalStart, finalEnd);
+
+        ManualDescriptionValidator.EnsureSafe(request.Description);
 
         task.Title = request.Title;
         task.Description = request.Description;

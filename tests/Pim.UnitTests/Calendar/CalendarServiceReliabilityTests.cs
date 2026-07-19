@@ -789,6 +789,241 @@ public class CalendarServiceReliabilityTests
         Assert.Equal(new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero), entity.PlannedEnd);
     }
 
+    // --- Manual description guard ---
+
+    [Fact]
+    public async Task CreateEventAsync_RejectsScriptTag()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "Cal", "calendar");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateEventAsync(
+                new CreateEventRequest(
+                    calendar.Id, "Event", "<script>alert('xss')</script>", null,
+                    new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+                    new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+                    null),
+                default));
+
+        Assert.Equal(02013, ex.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_RejectsIframeTag()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "Cal", "calendar");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateEventAsync(
+                new CreateEventRequest(
+                    calendar.Id, "Event", "<iframe src='http://evil.com'></iframe>", null,
+                    new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+                    new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+                    null),
+                default));
+
+        Assert.Equal(02013, ex.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("<object data='evil.swf'></object>")]
+    [InlineData("<embed src='evil.swf'></embed>")]
+    public async Task CreateEventAsync_RejectsObjectAndEmbedTags(string description)
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "Cal", "calendar");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateEventAsync(
+                new CreateEventRequest(
+                    calendar.Id, "Event", description, null,
+                    new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+                    new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+                    null),
+                default));
+
+        Assert.Equal(02013, ex.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_RejectsOnErrorHandler()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "Cal", "calendar");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateEventAsync(
+                new CreateEventRequest(
+                    calendar.Id, "Event", "<img src=x onerror=alert(1)>", null,
+                    new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+                    new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+                    null),
+                default));
+
+        Assert.Equal(02013, ex.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_RejectsCaseInsensitiveHtml()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "Cal", "calendar");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateEventAsync(
+                new CreateEventRequest(
+                    calendar.Id, "Event", "<SCRIPT>evil()</SCRIPT>", null,
+                    new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+                    new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+                    null),
+                default));
+
+        Assert.Equal(02013, ex.ErrorCode);
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_AllowsComparisonOperatorsInDescription()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "Cal", "calendar");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var response = await service.CreateEventAsync(
+            new CreateEventRequest(
+                calendar.Id, "Event", "a < b and c > d", null,
+                new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+                null),
+            default);
+
+        Assert.Equal("a < b and c > d", response.Description);
+
+        var entity = await db.Set<EventEntity>().AsNoTracking().SingleAsync();
+        Assert.Equal("a < b and c > d", entity.Description);
+    }
+
+    [Fact]
+    public async Task UpdateEventAsync_RejectsExecutableHtml_DoesNotMutate()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "Cal", "calendar");
+        var evt = SeedEvent(db, calendar, "Safe event");
+        evt.Description = "safe description";
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.UpdateEventAsync(
+                evt.Id,
+                new UpdateEventRequest(
+                    calendar.Id, "Safe event", "<script>evil()</script>", null,
+                    new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+                    new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+                    null),
+                default));
+
+        Assert.Equal(02013, ex.ErrorCode);
+
+        Assert.Equal("safe description", evt.Description);
+        Assert.Equal("Safe event", evt.Title);
+    }
+
+    [Fact]
+    public async Task CreateTaskAsync_RejectsExecutableHtml()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCalendar(db, "Tasks", "task");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateTaskAsync(
+                new CreateTaskRequest(
+                    cal.Id, "Task", "<script>evil()</script>", 0,
+                    null, null, null, null, null, null),
+                default));
+
+        Assert.Equal(02013, ex.ErrorCode);
+    }
+
+    [Fact]
+    public async Task UpdateTaskAsync_RejectsExecutableHtml_DoesNotMutate()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCalendar(db, "Tasks", "task");
+        var task = SeedTask(db, "Safe task", t =>
+        {
+            t.Title = "Safe task";
+            t.Description = "safe description";
+        });
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.UpdateTaskAsync(
+                task.Id,
+                new UpdateTaskRequest(
+                    cal.Id, "Safe task", "<script>evil()</script>", 0,
+                    null, null, null, null, null, null),
+                default));
+
+        Assert.Equal(02013, ex.ErrorCode);
+
+        Assert.Equal("safe description", task.Description);
+        Assert.Equal("Safe task", task.Title);
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_NullDescription_Accepted()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "Cal", "calendar");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var response = await service.CreateEventAsync(
+            new CreateEventRequest(
+                calendar.Id, "Event", null, null,
+                new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+                null),
+            default);
+
+        Assert.Null(response.Description);
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_PlainDescription_Accepted()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "Cal", "calendar");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var response = await service.CreateEventAsync(
+            new CreateEventRequest(
+                calendar.Id, "Event", "Just some meeting notes", null,
+                new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+                null),
+            default);
+
+        Assert.Equal("Just some meeting notes", response.Description);
+    }
+
     // --- Helpers ---
 
     private static PimDbContext CreateDb()
