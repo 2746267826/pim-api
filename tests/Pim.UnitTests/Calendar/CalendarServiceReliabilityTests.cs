@@ -444,6 +444,31 @@ public class CalendarServiceReliabilityTests
         Assert.Equal(02011, ex.ErrorCode);
     }
 
+    [Fact]
+    public async Task UpdateTaskAsync_NullEstimatedDurationClears()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCalendar(db, "Tasks", "task");
+        var task = SeedTask(db, "With duration", t =>
+        {
+            t.EstimatedDuration = TimeSpan.FromHours(2);
+        });
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var response = await service.UpdateTaskAsync(
+            task.Id,
+            new UpdateTaskRequest(
+                cal.Id, "Updated", null, 0,
+                null, null, null, null, null, null),
+            default);
+
+        Assert.Null(response.EstimatedDuration);
+
+        var entity = await db.Set<TaskEntity>().AsNoTracking().SingleAsync();
+        Assert.Null(entity.EstimatedDuration);
+    }
+
     // ========== PlanTaskAsync ==========
 
     [Fact]
