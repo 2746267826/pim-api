@@ -503,7 +503,14 @@ public class CalendarServiceReliabilityTests
     {
         await using var db = CreateDb();
         var cal = SeedCalendar(db, "Tasks", "task");
-        var task = SeedTask(db, "Plan me");
+        var task = SeedTask(db, "Plan me", t =>
+        {
+            t.DtStart = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero);
+            t.PlannedEnd = new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero);
+            t.IsInbox = true;
+            t.SortOrder = 42;
+            t.EstimatedDuration = TimeSpan.FromHours(1);
+        });
         await db.SaveChangesAsync();
         var service = CreateService(db);
 
@@ -517,6 +524,12 @@ public class CalendarServiceReliabilityTests
                 default));
 
         Assert.Equal(02010, ex.ErrorCode);
+
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero), task.DtStart);
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero), task.PlannedEnd);
+        Assert.Equal(TimeSpan.FromHours(1), task.EstimatedDuration);
+        Assert.True(task.IsInbox);
+        Assert.Equal(42, task.SortOrder);
     }
 
     [Fact]
@@ -524,7 +537,14 @@ public class CalendarServiceReliabilityTests
     {
         await using var db = CreateDb();
         var cal = SeedCalendar(db, "Tasks", "task");
-        var task = SeedTask(db, "Plan me");
+        var task = SeedTask(db, "Plan me", t =>
+        {
+            t.DtStart = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero);
+            t.PlannedEnd = new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero);
+            t.IsInbox = true;
+            t.SortOrder = 42;
+            t.EstimatedDuration = TimeSpan.FromHours(1);
+        });
         await db.SaveChangesAsync();
         var service = CreateService(db);
 
@@ -538,6 +558,12 @@ public class CalendarServiceReliabilityTests
                 default));
 
         Assert.Equal(02011, ex.ErrorCode);
+
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero), task.DtStart);
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero), task.PlannedEnd);
+        Assert.Equal(TimeSpan.FromHours(1), task.EstimatedDuration);
+        Assert.True(task.IsInbox);
+        Assert.Equal(42, task.SortOrder);
     }
 
     [Fact]
@@ -599,6 +625,8 @@ public class CalendarServiceReliabilityTests
         {
             t.DtStart = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero);
             t.PlannedEnd = new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero);
+            t.IsInbox = true;
+            t.SortOrder = 42;
         });
         await db.SaveChangesAsync();
         var service = CreateService(db);
@@ -614,6 +642,11 @@ public class CalendarServiceReliabilityTests
                 default));
 
         Assert.Equal(02010, ex.ErrorCode);
+
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero), task.DtStart);
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero), task.PlannedEnd);
+        Assert.True(task.IsInbox);
+        Assert.Equal(42, task.SortOrder);
     }
 
     [Fact]
@@ -698,7 +731,13 @@ public class CalendarServiceReliabilityTests
     {
         await using var db = CreateDb();
         var cal = SeedCalendar(db, "Tasks", "task");
-        var task = SeedTask(db, "Move me");
+        var task = SeedTask(db, "Move me", t =>
+        {
+            t.DtStart = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero);
+            t.PlannedEnd = new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero);
+            t.IsInbox = true;
+            t.SortOrder = 42;
+        });
         await db.SaveChangesAsync();
         var service = CreateService(db);
 
@@ -713,6 +752,41 @@ public class CalendarServiceReliabilityTests
                 default));
 
         Assert.Equal(02010, ex.ErrorCode);
+
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero), task.DtStart);
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero), task.PlannedEnd);
+        Assert.True(task.IsInbox);
+        Assert.Equal(42, task.SortOrder);
+    }
+
+    [Fact]
+    public async Task MoveTaskAsync_DurationWithoutScheduledStart_IsIgnored()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCalendar(db, "Tasks", "task");
+        var task = SeedTask(db, "Move me", t =>
+        {
+            t.DtStart = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero);
+            t.PlannedEnd = new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero);
+        });
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        await service.MoveTaskAsync(
+            task.Id,
+            new MoveTaskRequest(
+                null,               // ScheduledStart = null — Duration is ignored
+                TimeSpan.FromHours(2),
+                null,
+                null),
+            default);
+
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero), task.DtStart);
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero), task.PlannedEnd);
+
+        var entity = await db.Set<TaskEntity>().AsNoTracking().SingleAsync();
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero), entity.DtStart);
+        Assert.Equal(new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero), entity.PlannedEnd);
     }
 
     // --- Helpers ---
