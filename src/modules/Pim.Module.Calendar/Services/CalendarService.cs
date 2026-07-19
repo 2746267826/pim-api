@@ -152,6 +152,8 @@ public class CalendarService
         if (hasOutlookBinding)
             throw new DomainException(02009, "Microsoft 日历的日程必须通过确认写回流程创建。");
 
+        var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
+
         var entity = new EventEntity
         {
             CalendarId = calendar.Id,
@@ -159,8 +161,8 @@ public class CalendarService
             Title = request.Title,
             Description = request.Description,
             Location = request.Location,
-            DtStart = request.DtStart,
-            DtEnd = request.DtEnd,
+            DtStart = normalizedStart,
+            DtEnd = normalizedEnd,
             RRule = request.RRule,
             IsAllDay = request.IsAllDay,
             TimeZoneId = request.TimeZoneId
@@ -350,8 +352,11 @@ public class CalendarService
         entity.Title = request.Title;
         entity.Description = request.Description;
         entity.Location = request.Location;
-        entity.DtStart = request.DtStart;
-        entity.DtEnd = request.DtEnd;
+
+        var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
+        entity.DtStart = normalizedStart;
+        entity.DtEnd = normalizedEnd;
+
         entity.RRule = request.RRule;
         if (request.IsAllDay.HasValue)
             entity.IsAllDay = request.IsAllDay.Value;
@@ -667,6 +672,16 @@ public class CalendarService
 
         task.DeletedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
+    }
+
+    private static (DateTimeOffset Start, DateTimeOffset End) NormalizeAndValidateEventRange(
+        DateTimeOffset start, DateTimeOffset end)
+    {
+        var normalizedStart = start.ToUniversalTime();
+        var normalizedEnd = end.ToUniversalTime();
+        if (normalizedEnd <= normalizedStart)
+            throw new DomainException(02010, "结束时间必须晚于开始时间");
+        return (normalizedStart, normalizedEnd);
     }
 
     private static EventResponse MapEvent(EventEntity e) =>
