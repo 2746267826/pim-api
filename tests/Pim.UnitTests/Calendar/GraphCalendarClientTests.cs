@@ -40,14 +40,18 @@ public sealed class GraphCalendarClientTests
         { "/v1.0/me/calendarGroups", false },
         { "https://graph.microsoft.com:8080/v1.0/me/calendarGroups", false },
         { "https://user:pass@graph.microsoft.com/v1.0/me/calendarGroups", false },
-        { "https://graph.microsoft.com/v1.0/me/drive/root", false },
-        { "https://graph.microsoft.com/v1.0/me/calendarGroups/1", false },
-        { "https://graph.microsoft.com/v1.0/me/calendarGroups/1/calendars/2", false },
-        { "https://graph.microsoft.com/v1.0/me/calendars/c1/calendarView/e1", false },
-        { "https://graph.microsoft.com/v1.0/me/calendars/c1/events/e1", false },
+        { "https://graph.microsoft.com/v1.0/me/drive/root", true },
+        { "https://graph.microsoft.com/v1.0/me/calendarGroups/1", true },
+        { "https://graph.microsoft.com/v1.0/me/calendarGroups/1/calendars/2", true },
+        { "https://graph.microsoft.com/v1.0/me/calendars/c1/calendarView/e1", true },
+        { "https://graph.microsoft.com/v1.0/me/calendars/c1/events/e1", true },
         { "https://graph.microsoft.com/v1.0/me/calendars/c1/calendarView?s=s#frag", false },
-        { "https://graph.microsoft.com/v1.0/me/calendars//calendarView?$skiptoken=x", false },
-        { "https://graph.microsoft.com/v1.0/users/u@t.com/calendars/c1/calendarView?$skiptoken=a", false },
+        { "https://graph.microsoft.com/v1.0/me/calendars//calendarView?$skiptoken=x", true },
+        { "https://graph.microsoft.com/v1.0/users/u@t.com/calendars/c1/calendarView?$skiptoken=a", true },
+        { "https://graph.microsoft.com/v1.0/users/u/calendars/c/calendarView?$skiptoken=a", true },
+        { "https://graph.microsoft.com/v1.0/opaque/resource/path", true },
+        { "http://graph.microsoft.com/v1.0/me/calendarGroups", false },
+        { "https://graph.microsoft.com/v1.0", false },
         { "https://graph.microsoft.com/v1.0/me/calendarGroups/../me/calendarGroups?s=s", false },
         { "https://graph.microsoft.com/v1.0/me/calendarGroups/%2e%2e/me/calendarGroups?s=s", false },
         { "https://graph.microsoft.com/v1.0/me/calendarGroups/%2E%2E/me/calendarGroups?s=s", false },
@@ -434,6 +438,27 @@ public sealed class GraphCalendarClientTests
 
         Assert.Single(pages);
         Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task Pagination_FollowsTrustedOpaqueNextLinkWithoutReconstruction()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(HttpStatusCode.OK,
+            """{"value":[{"id":"e1"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/users/u/calendars/c/calendarView?$skiptoken=abc&marker=keep"}""");
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[{"id":"e2"}]}""");
+
+        var start = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero);
+        var end = new DateTimeOffset(2026, 7, 31, 0, 0, 0, TimeSpan.Zero);
+        var pages = await CollectPages(client.GetCalendarViewAsync(ConnectionId, "c", start, end, default));
+
+        Assert.Equal(2, pages.Count);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(
+            "https://graph.microsoft.com/v1.0/users/u/calendars/c/calendarView?$skiptoken=abc&marker=keep",
+            handler.Requests[1].RequestUri!.AbsoluteUri);
+        Assert.Equal("e1", pages[0].Items[0].GetProperty("id").GetString());
+        Assert.Equal("e2", pages[1].Items[0].GetProperty("id").GetString());
     }
 
     [Fact]
