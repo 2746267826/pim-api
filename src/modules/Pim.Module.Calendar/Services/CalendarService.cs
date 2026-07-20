@@ -152,6 +152,10 @@ public class CalendarService
         if (hasOutlookBinding)
             throw new DomainException(02009, "Microsoft 日历的日程必须通过确认写回流程创建。");
 
+        var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
+
+        ManualDescriptionValidator.EnsureSafe(request.Description);
+
         var entity = new EventEntity
         {
             CalendarId = calendar.Id,
@@ -159,8 +163,8 @@ public class CalendarService
             Title = request.Title,
             Description = request.Description,
             Location = request.Location,
-            DtStart = request.DtStart,
-            DtEnd = request.DtEnd,
+            DtStart = normalizedStart,
+            DtEnd = normalizedEnd,
             RRule = request.RRule,
             IsAllDay = request.IsAllDay,
             TimeZoneId = request.TimeZoneId
@@ -347,11 +351,16 @@ public class CalendarService
                 throw new DomainException(02009, "目标日历为 Microsoft 日历，移动操作必须通过确认写回流程。");
         }
 
+        var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
+
+        ManualDescriptionValidator.EnsureSafe(request.Description);
+
         entity.Title = request.Title;
         entity.Description = request.Description;
         entity.Location = request.Location;
-        entity.DtStart = request.DtStart;
-        entity.DtEnd = request.DtEnd;
+        entity.DtStart = normalizedStart;
+        entity.DtEnd = normalizedEnd;
+
         entity.RRule = request.RRule;
         if (request.IsAllDay.HasValue)
             entity.IsAllDay = request.IsAllDay.Value;
@@ -474,6 +483,16 @@ public class CalendarService
 
     public async Task<TaskResponse> CreateTaskAsync(CreateTaskRequest request, CancellationToken ct)
     {
+        var due = NormalizeToUtc(request.Due);
+        var dtStart = NormalizeToUtc(request.DtStart);
+        var plannedEnd = NormalizeToUtc(request.PlannedEnd);
+        var estimatedDuration = ParseEstimatedDuration(request.EstimatedDuration);
+        var minimumSegment = ParseDuration(request.MinimumSegment);
+
+        ValidateTaskRange(dtStart, plannedEnd);
+
+        ManualDescriptionValidator.EnsureSafe(request.Description);
+
         var task = new TaskEntity
         {
             UserId = UserId,
@@ -482,12 +501,12 @@ public class CalendarService
             Title = request.Title,
             Description = request.Description,
             Priority = request.Priority,
-            Due = request.Due,
-            EstimatedDuration = ParseDuration(request.EstimatedDuration),
-            MinimumSegment = ParseDuration(request.MinimumSegment),
-            IsInbox = request.CalendarId is null && !request.DtStart.HasValue,
-            DtStart = request.DtStart,
-            PlannedEnd = request.PlannedEnd
+            Due = due,
+            EstimatedDuration = estimatedDuration,
+            MinimumSegment = minimumSegment,
+            IsInbox = request.CalendarId is null && !dtStart.HasValue,
+            DtStart = dtStart,
+            PlannedEnd = plannedEnd
         };
 
         _db.Set<TaskEntity>().Add(task);
@@ -501,16 +520,31 @@ public class CalendarService
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
             ?? throw new DomainException(02004, "任务不存在");
 
+        var due = NormalizeToUtc(request.Due);
+        var estimatedDuration = ParseEstimatedDuration(request.EstimatedDuration);
+        var minimumSegment = ParseDuration(request.MinimumSegment);
+
+        var finalStart = NormalizeToUtc(request.DtStart);
+        var finalEnd = request.PlannedEnd.HasValue
+            ? request.PlannedEnd.Value.ToUniversalTime()
+            : task.PlannedEnd;
+
+        ValidateTaskRange(finalStart, finalEnd);
+
+        ManualDescriptionValidator.EnsureSafe(request.Description);
+
         task.Title = request.Title;
         task.Description = request.Description;
         task.Priority = request.Priority;
-        task.Due = request.Due;
-        task.EstimatedDuration = ParseDuration(request.EstimatedDuration);
-        task.MinimumSegment = ParseDuration(request.MinimumSegment);
-        task.DtStart = request.DtStart;
+        task.Due = due;
+        task.EstimatedDuration = estimatedDuration;
+        task.MinimumSegment = minimumSegment;
+        task.DtStart = finalStart;
         if (request.PlannedEnd.HasValue)
-            task.PlannedEnd = request.PlannedEnd;
+            task.PlannedEnd = finalEnd;
         task.CalendarId = request.CalendarId;
+        if (finalStart.HasValue || request.CalendarId.HasValue)
+            task.IsInbox = false;
         if (request.Status is not null)
         {
             task.Status = request.Status;
@@ -529,10 +563,19 @@ public class CalendarService
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
             ?? throw new DomainException(02004, "任务不存在");
 
-        task.DtStart = request.PlannedStart.ToUniversalTime();
-        task.PlannedEnd = request.PlannedEnd?.ToUniversalTime();
+        var start = request.PlannedStart.ToUniversalTime();
+        var end = request.PlannedEnd?.ToUniversalTime();
+
+        ValidateTaskRange(start, end);
+
+        var estimatedDuration = request.EstimatedDuration is not null
+            ? ParseEstimatedDuration(request.EstimatedDuration)
+            : task.EstimatedDuration;
+
+        task.DtStart = start;
+        task.PlannedEnd = end;
         if (request.EstimatedDuration is not null)
-            task.EstimatedDuration = ParseDuration(request.EstimatedDuration);
+            task.EstimatedDuration = estimatedDuration;
         task.IsInbox = false;
         task.UpdatedAt = DateTimeOffset.UtcNow;
 
@@ -641,9 +684,21 @@ public class CalendarService
         var task = await _db.Set<TaskEntity>().FindAsync(new object[] { id }, ct)
             ?? throw new DomainException(02004, "任务不存在");
 
+        var newStart = request.ScheduledStart?.ToUniversalTime() ?? task.DtStart;
+        DateTimeOffset? newEnd;
+        if (request.PlannedEnd.HasValue)
+            newEnd = request.PlannedEnd.Value.ToUniversalTime();
+        else if (request.Duration.HasValue && request.ScheduledStart.HasValue)
+            newEnd = request.ScheduledStart.Value.ToUniversalTime().Add(request.Duration.Value);
+        else
+            newEnd = task.PlannedEnd;
+
+        if (request.ScheduledStart is not null || request.PlannedEnd is not null)
+            ValidateTaskRange(newStart, newEnd);
+
         if (request.ScheduledStart.HasValue)
         {
-            task.DtStart = request.ScheduledStart;
+            task.DtStart = newStart;
             task.IsInbox = false;
         }
 
@@ -651,9 +706,9 @@ public class CalendarService
             task.SortOrder = request.NewSortOrder.Value;
 
         if (request.PlannedEnd.HasValue)
-            task.PlannedEnd = request.PlannedEnd;
+            task.PlannedEnd = newEnd;
         else if (request.Duration.HasValue && request.ScheduledStart.HasValue)
-            task.PlannedEnd = request.ScheduledStart.Value.Add(request.Duration.Value);
+            task.PlannedEnd = newEnd;
 
         task.UpdatedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
@@ -667,6 +722,16 @@ public class CalendarService
 
         task.DeletedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
+    }
+
+    private static (DateTimeOffset Start, DateTimeOffset End) NormalizeAndValidateEventRange(
+        DateTimeOffset start, DateTimeOffset end)
+    {
+        var normalizedStart = start.ToUniversalTime();
+        var normalizedEnd = end.ToUniversalTime();
+        if (normalizedEnd <= normalizedStart)
+            throw new DomainException(02010, "结束时间必须晚于开始时间");
+        return (normalizedStart, normalizedEnd);
     }
 
     private static EventResponse MapEvent(EventEntity e) =>
@@ -695,7 +760,30 @@ public class CalendarService
     {
         if (value is null) return null;
         try { return System.Xml.XmlConvert.ToTimeSpan(value); }
-        catch { throw new DomainException(02009, $"时长格式无效：{value}。请使用 ISO 8601 格式，例如 PT1H30M。"); }
+        catch (FormatException) { }
+        catch (OverflowException) { }
+
+        if (System.TimeSpan.TryParseExact(value, "c", System.Globalization.CultureInfo.InvariantCulture, out var fallback))
+            return fallback;
+
+        throw new DomainException(02009, $"时长格式无效：{value}。请使用 ISO 8601 格式，例如 PT1H30M。");
+    }
+
+    private static DateTimeOffset? NormalizeToUtc(DateTimeOffset? dt) =>
+        dt?.ToUniversalTime();
+
+    private static void ValidateTaskRange(DateTimeOffset? start, DateTimeOffset? end)
+    {
+        if (start.HasValue && end.HasValue && end.Value <= start.Value)
+            throw new DomainException(02010, "结束时间必须晚于开始时间");
+    }
+
+    private static TimeSpan? ParseEstimatedDuration(string? value)
+    {
+        var parsed = ParseDuration(value);
+        if (parsed.HasValue && parsed.Value < TimeSpan.FromMinutes(1))
+            throw new DomainException(02011, "预计时长至少为 1 分钟");
+        return parsed;
     }
 
     private static TaskResponse MapTask(TaskEntity t) =>
