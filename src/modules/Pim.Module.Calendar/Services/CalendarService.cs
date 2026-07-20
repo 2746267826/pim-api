@@ -543,6 +543,8 @@ public class CalendarService
         if (request.PlannedEnd.HasValue)
             task.PlannedEnd = finalEnd;
         task.CalendarId = request.CalendarId;
+        if (finalStart.HasValue || request.CalendarId.HasValue)
+            task.IsInbox = false;
         if (request.Status is not null)
         {
             task.Status = request.Status;

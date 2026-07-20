@@ -326,6 +326,29 @@ public class CalendarServiceReliabilityTests
     }
 
     [Fact]
+    public async Task UpdateTaskAsync_SchedulingInboxTaskClearsInbox()
+    {
+        await using var db = CreateDb();
+        var task = SeedTask(db, "Inbox task", t => t.IsInbox = true);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var response = await service.UpdateTaskAsync(
+            task.Id,
+            new UpdateTaskRequest(
+                null, "Scheduled task", null, 0,
+                null, null, null,
+                new DateTimeOffset(2026, 7, 22, 9, 0, 0, TimeSpan.Zero),
+                null,
+                new DateTimeOffset(2026, 7, 22, 10, 0, 0, TimeSpan.Zero)),
+            default);
+
+        Assert.False(response.IsInbox);
+        var entity = await db.Set<TaskEntity>().AsNoTracking().SingleAsync();
+        Assert.False(entity.IsInbox);
+    }
+
+    [Fact]
     public async Task UpdateTaskAsync_EndBeforeStart_Returns02010_DoesNotMutate()
     {
         await using var db = CreateDb();
