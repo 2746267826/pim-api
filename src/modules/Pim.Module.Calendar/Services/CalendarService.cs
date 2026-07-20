@@ -758,7 +758,13 @@ public class CalendarService
     {
         if (value is null) return null;
         try { return System.Xml.XmlConvert.ToTimeSpan(value); }
-        catch { throw new DomainException(02009, $"时长格式无效：{value}。请使用 ISO 8601 格式，例如 PT1H30M。"); }
+        catch (FormatException) { }
+        catch (OverflowException) { }
+
+        if (System.TimeSpan.TryParseExact(value, "c", System.Globalization.CultureInfo.InvariantCulture, out var fallback))
+            return fallback;
+
+        throw new DomainException(02009, $"时长格式无效：{value}。请使用 ISO 8601 格式，例如 PT1H30M。");
     }
 
     private static DateTimeOffset? NormalizeToUtc(DateTimeOffset? dt) =>

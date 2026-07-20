@@ -469,6 +469,37 @@ public class CalendarServiceReliabilityTests
         Assert.Null(entity.EstimatedDuration);
     }
 
+    // ========== Duration round-trip ==========
+
+    [Fact]
+    public async Task UpdateTaskAsync_AcceptsDotNetConstantDurationFormat()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCalendar(db, "Tasks", "task");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var created = await service.CreateTaskAsync(
+            new CreateTaskRequest(
+                cal.Id, "Round-trip test", null, 0,
+                "PT1H30M", null, null, null, null, null),
+            default);
+
+        Assert.Equal("01:30:00", created.EstimatedDuration);
+
+        var updated = await service.UpdateTaskAsync(
+            created.Id,
+            new UpdateTaskRequest(
+                cal.Id, "Round-trip updated", null, 0,
+                created.EstimatedDuration, null, null, null, null, null),
+            default);
+
+        Assert.Equal("01:30:00", updated.EstimatedDuration);
+
+        var entity = await db.Set<TaskEntity>().AsNoTracking().SingleAsync();
+        Assert.Equal(TimeSpan.FromHours(1.5), entity.EstimatedDuration);
+    }
+
     // ========== PlanTaskAsync ==========
 
     [Fact]
