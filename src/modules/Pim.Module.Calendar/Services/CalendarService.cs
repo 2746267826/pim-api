@@ -99,7 +99,7 @@ public class CalendarService
 
         return expanded
             .OrderBy(x => x.OccurrenceStart)
-            .Select(MapExpandedEvent)
+            .Select(EventResponseMapper.MapExpanded)
             .ToList();
     }
 
@@ -133,7 +133,7 @@ public class CalendarService
             .OrderByDescending(x => x.OccurrenceStart)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(MapExpandedEvent)
+            .Select(EventResponseMapper.MapExpanded)
             .ToList();
 
         return new PagedResult<EventResponse>(items, page, pageSize, totalCount, totalPages);
@@ -141,6 +141,8 @@ public class CalendarService
 
     public async Task<EventResponse> CreateEventAsync(CreateEventRequest request, CancellationToken ct)
     {
+        request = EventFieldValidator.ValidateAndNormalize(request);
+
         var calendar = request.CalendarId == Guid.Empty
             ? await GetOrCreateDefaultCalendarAsync("calendar", ct)
             : await _db.Set<CalendarEntity>()
@@ -154,7 +156,15 @@ public class CalendarService
 
         var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
 
-        ManualDescriptionValidator.EnsureSafe(request.Description);
+        var isHtml = string.Equals(request.DescriptionFormat, "html", StringComparison.OrdinalIgnoreCase);
+        if (isHtml)
+        {
+            request = request with { Description = EventDescriptionSanitizer.Normalize(request.Description, "html") };
+        }
+        else
+        {
+            ManualDescriptionValidator.EnsureSafe(request.Description);
+        }
 
         var entity = new EventEntity
         {
@@ -170,10 +180,12 @@ public class CalendarService
             TimeZoneId = request.TimeZoneId
         };
 
+        ApplyUnifiedFields(entity, request);
+
         _db.Set<EventEntity>().Add(entity);
         await _db.SaveChangesAsync(ct);
 
-        return MapEvent(entity);
+        return EventResponseMapper.Map(entity);
     }
 
     public async Task<ImportReport> ImportOutlookIcsAsync(
@@ -331,6 +343,8 @@ public class CalendarService
 
     public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, CancellationToken ct)
     {
+        request = EventFieldValidator.ValidateAndNormalize(request);
+
         var entity = await _db.Set<EventEntity>()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
             ?? throw new DomainException(02001, "日程不存在");
@@ -353,7 +367,15 @@ public class CalendarService
 
         var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
 
-        ManualDescriptionValidator.EnsureSafe(request.Description);
+        var isHtml = string.Equals(request.DescriptionFormat, "html", StringComparison.OrdinalIgnoreCase);
+        if (isHtml)
+        {
+            request = request with { Description = EventDescriptionSanitizer.Normalize(request.Description, "html") };
+        }
+        else
+        {
+            ManualDescriptionValidator.EnsureSafe(request.Description);
+        }
 
         entity.Title = request.Title;
         entity.Description = request.Description;
@@ -368,8 +390,10 @@ public class CalendarService
             entity.TimeZoneId = request.TimeZoneId;
         entity.UpdatedAt = DateTimeOffset.UtcNow;
 
+        ApplyUnifiedFields(entity, request);
+
         await _db.SaveChangesAsync(ct);
-        return MapEvent(entity);
+        return EventResponseMapper.Map(entity);
     }
 
     public async Task<List<EventEntity>> GetEventEntitiesAsync(
@@ -734,23 +758,57 @@ public class CalendarService
         return (normalizedStart, normalizedEnd);
     }
 
-    private static EventResponse MapEvent(EventEntity e) =>
-        new(e.Id, e.CalendarId, e.Uid, e.Title, e.Description,
-            e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source, null,
-            e.IsAllDay, e.TimeZoneId, e.SourceTimeZoneId, e.SourceUid,
-            e.RecurrenceId, e.ExDatesJson, e.RecurrenceMetadataJson,
-            e.OutlookCalendarBindingId, e.OutlookEventId, e.OutlookEtag, e.OutlookEventType);
+    private static void ApplyUnifiedFields(EventEntity entity, CreateEventRequest request)
+    {
+        entity.DescriptionFormat = request.DescriptionFormat;
+        entity.ShowAs = request.ShowAs;
+        entity.Importance = request.Importance;
+        entity.Sensitivity = request.Sensitivity;
+        entity.CategoriesJson = EventFieldCodec.SerializeCategories(request.Categories);
+        entity.IsReminderOn = request.IsReminderOn ?? false;
+        entity.ReminderMinutesBeforeStart = request.IsReminderOn == true ? request.ReminderMinutesBeforeStart : null;
+        entity.OrganizerJson = EventFieldCodec.SerializePerson(request.Organizer);
+        entity.AttendeesJson = EventFieldCodec.SerializeAttendees(request.Attendees);
+        entity.IsOnlineMeeting = request.IsOnlineMeeting ?? false;
+        entity.OnlineMeetingProvider = request.OnlineMeetingProvider;
+        entity.OnlineMeetingUrl = request.OnlineMeetingUrl;
+        entity.ExternalLink = request.ExternalLink;
+        entity.AttachmentReferencesJson = EventFieldCodec.SerializeAttachments(request.AttachmentReferences);
+    }
 
-    private static EventResponse MapExpandedEvent(ExpandedEvent e) =>
-        new(e.OccurrenceId, e.Entity.CalendarId, e.Entity.Uid,
-            e.Entity.Title, e.Entity.Description,
-            e.Entity.Location, e.OccurrenceStart, e.OccurrenceEnd,
-            e.Entity.RRule, e.Entity.Status, e.Entity.Source,
-            e.Entity.Id, e.Entity.IsAllDay, e.Entity.TimeZoneId,
-            e.Entity.SourceTimeZoneId, e.Entity.SourceUid,
-            e.Entity.RecurrenceId, e.Entity.ExDatesJson,
-            e.Entity.RecurrenceMetadataJson,
-            e.Entity.OutlookCalendarBindingId, e.Entity.OutlookEventId, e.Entity.OutlookEtag, e.Entity.OutlookEventType);
+    private static void ApplyUnifiedFields(EventEntity entity, UpdateEventRequest request)
+    {
+        entity.DescriptionFormat = request.DescriptionFormat;
+        entity.ShowAs = request.ShowAs;
+        entity.Importance = request.Importance;
+        entity.Sensitivity = request.Sensitivity;
+
+        if (request.Categories is not null)
+            entity.CategoriesJson = EventFieldCodec.SerializeCategories(request.Categories);
+        if (request.Attendees is not null)
+            entity.AttendeesJson = EventFieldCodec.SerializeAttendees(request.Attendees);
+        if (request.AttachmentReferences is not null)
+            entity.AttachmentReferencesJson = EventFieldCodec.SerializeAttachments(request.AttachmentReferences);
+
+        if (request.IsReminderOn.HasValue)
+        {
+            entity.IsReminderOn = request.IsReminderOn.Value;
+            entity.ReminderMinutesBeforeStart = request.IsReminderOn.Value
+                ? request.ReminderMinutesBeforeStart
+                : null;
+        }
+        else if (request.ReminderMinutesBeforeStart.HasValue)
+        {
+            entity.ReminderMinutesBeforeStart = request.ReminderMinutesBeforeStart;
+        }
+
+        entity.OrganizerJson = EventFieldCodec.SerializePerson(request.Organizer);
+        if (request.IsOnlineMeeting.HasValue)
+            entity.IsOnlineMeeting = request.IsOnlineMeeting.Value;
+        entity.OnlineMeetingProvider = request.OnlineMeetingProvider;
+        entity.OnlineMeetingUrl = request.OnlineMeetingUrl;
+        entity.ExternalLink = request.ExternalLink;
+    }
 
     private static string? FormatDuration(TimeSpan? duration) =>
         duration is not null ? duration.Value.ToString("c") : null;
