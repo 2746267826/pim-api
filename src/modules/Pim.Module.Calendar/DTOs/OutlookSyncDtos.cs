@@ -26,6 +26,30 @@ public sealed record OutlookSyncRequest(
     DateTimeOffset? RangeEnd = null,
     Guid? RetryOfBatchId = null);
 
+public sealed record OutlookEventDraft(
+    Guid CalendarId,
+    string Title,
+    string? Description,
+    string? DescriptionFormat,
+    string? Location,
+    DateTimeOffset DtStart,
+    DateTimeOffset DtEnd,
+    bool IsAllDay,
+    string? TimeZoneId,
+    string? ShowAs,
+    string? Importance,
+    string? Sensitivity,
+    IReadOnlyList<string>? Categories,
+    bool? IsReminderOn,
+    int? ReminderMinutesBeforeStart,
+    EventPersonDto? Organizer,
+    IReadOnlyList<EventAttendeeDto>? Attendees,
+    bool? IsOnlineMeeting,
+    string? OnlineMeetingProvider,
+    string? OnlineMeetingUrl,
+    string? ExternalLink,
+    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences);
+
 public sealed record OutlookWriteRequest(
     string Operation,
     Guid CalendarBindingId,

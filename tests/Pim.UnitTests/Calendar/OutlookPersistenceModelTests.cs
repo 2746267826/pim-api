@@ -103,6 +103,84 @@ public sealed class OutlookPersistenceModelTests
                 nameof(OutlookAuthorizationSessionEntity.Status)]));
     }
 
+    [Fact]
+    public void EventEntity_HasNewUnifiedFields()
+    {
+        using var db = CreateDb();
+        var entity = db.Model.FindEntityType(typeof(EventEntity))!;
+
+        Assert.NotNull(entity.FindProperty("DescriptionFormat"));
+        Assert.NotNull(entity.FindProperty("ShowAs"));
+        Assert.NotNull(entity.FindProperty("Importance"));
+        Assert.NotNull(entity.FindProperty("Sensitivity"));
+        Assert.NotNull(entity.FindProperty("CategoriesJson"));
+        Assert.NotNull(entity.FindProperty("IsReminderOn"));
+        Assert.NotNull(entity.FindProperty("ReminderMinutesBeforeStart"));
+        Assert.NotNull(entity.FindProperty("OrganizerJson"));
+        Assert.NotNull(entity.FindProperty("AttendeesJson"));
+        Assert.NotNull(entity.FindProperty("IsOnlineMeeting"));
+        Assert.NotNull(entity.FindProperty("OnlineMeetingProvider"));
+        Assert.NotNull(entity.FindProperty("OnlineMeetingUrl"));
+        Assert.NotNull(entity.FindProperty("ExternalLink"));
+        Assert.NotNull(entity.FindProperty("AttachmentReferencesJson"));
+    }
+
+    [Fact]
+    public void EventEntity_StillHasLegacyOrganizer()
+    {
+        using var db = CreateDb();
+        var entity = db.Model.FindEntityType(typeof(EventEntity))!;
+        Assert.NotNull(entity.FindProperty("Organizer"));
+    }
+
+    [Fact]
+    public void EventEntity_CollectionColumnsAreJsonb()
+    {
+        using var db = CreateDb();
+        var entity = db.Model.FindEntityType(typeof(EventEntity))!;
+
+        Assert.NotNull(entity.FindProperty("CategoriesJson"));
+        Assert.Equal("jsonb", entity.FindProperty("CategoriesJson")!.GetColumnType());
+
+        Assert.NotNull(entity.FindProperty("OrganizerJson"));
+        Assert.Equal("jsonb", entity.FindProperty("OrganizerJson")!.GetColumnType());
+
+        Assert.NotNull(entity.FindProperty("AttendeesJson"));
+        Assert.Equal("jsonb", entity.FindProperty("AttendeesJson")!.GetColumnType());
+
+        Assert.NotNull(entity.FindProperty("AttachmentReferencesJson"));
+        Assert.Equal("jsonb", entity.FindProperty("AttachmentReferencesJson")!.GetColumnType());
+    }
+
+    [Fact]
+    public void EventEntity_CollectionColumnsDefaultToEmptyArray()
+    {
+        using var db = CreateDb();
+        var entity = db.Model.FindEntityType(typeof(EventEntity))!;
+
+        Assert.NotNull(entity.FindProperty("CategoriesJson"));
+        Assert.Equal("[]", entity.FindProperty("CategoriesJson")!.GetDefaultValue());
+
+        Assert.NotNull(entity.FindProperty("AttendeesJson"));
+        Assert.Equal("[]", entity.FindProperty("AttendeesJson")!.GetDefaultValue());
+
+        Assert.NotNull(entity.FindProperty("AttachmentReferencesJson"));
+        Assert.Equal("[]", entity.FindProperty("AttachmentReferencesJson")!.GetDefaultValue());
+    }
+
+    [Fact]
+    public void EventEntity_BoolColumnsDefaultToFalse()
+    {
+        using var db = CreateDb();
+        var entity = db.Model.FindEntityType(typeof(EventEntity))!;
+
+        Assert.NotNull(entity.FindProperty("IsReminderOn"));
+        Assert.Equal(false, entity.FindProperty("IsReminderOn")!.GetDefaultValue());
+
+        Assert.NotNull(entity.FindProperty("IsOnlineMeeting"));
+        Assert.Equal(false, entity.FindProperty("IsOnlineMeeting")!.GetDefaultValue());
+    }
+
     private static PimDbContext CreateDb()
     {
         PimDbContext.RegisterModuleAssembly(typeof(OutlookConnectionEntity).Assembly);

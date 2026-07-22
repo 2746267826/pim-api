@@ -663,8 +663,7 @@ public sealed class OutlookEventWriteService
         new(e.Id, e.CalendarId, e.Uid, e.Title, e.Description,
             e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source, null,
             e.IsAllDay, e.TimeZoneId, e.SourceTimeZoneId, e.SourceUid,
-            e.ExternalMetadataJson, e.RecurrenceId, e.ExDatesJson,
-            e.RecurrenceMetadataJson,
+            e.RecurrenceId, e.ExDatesJson, e.RecurrenceMetadataJson,
             e.OutlookCalendarBindingId, e.OutlookEventId, e.OutlookEtag, e.OutlookEventType);
 
     private sealed record BatchStepEntry(string Step, string Status, DateTimeOffset Timestamp);
