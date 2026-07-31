@@ -13,6 +13,7 @@ public sealed class OutlookEventWriteService
 {
     private readonly PimDbContext _db;
     private readonly GraphCalendarClient _graph;
+    private readonly EventAttachmentService _attachments;
     private readonly CalendarAuditWriter _audit;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<OutlookEventWriteService> _logger;
@@ -23,9 +24,21 @@ public sealed class OutlookEventWriteService
         CalendarAuditWriter audit,
         TimeProvider timeProvider,
         ILogger<OutlookEventWriteService> logger)
+        : this(db, graph, new EventAttachmentService(db), audit, timeProvider, logger)
+    {
+    }
+
+    public OutlookEventWriteService(
+        PimDbContext db,
+        GraphCalendarClient graph,
+        EventAttachmentService attachments,
+        CalendarAuditWriter audit,
+        TimeProvider timeProvider,
+        ILogger<OutlookEventWriteService> logger)
     {
         _db = db;
         _graph = graph;
+        _attachments = attachments;
         _audit = audit;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -88,6 +101,9 @@ public sealed class OutlookEventWriteService
         if (request.Draft.CalendarId != binding.PimCalendarId)
             throw new DomainException(02009, "日历不匹配。");
 
+        var draftPimFileReferences = await ValidateDraftPimFileReferencesAsync(
+            userId, request.Draft.AttachmentReferences, ct);
+
         var batch = NewBatch(userId, connection.Id, binding.Id, binding.Name, "create");
         _db.Set<OutlookSyncBatchEntity>().Add(batch);
         await _db.SaveChangesAsync(ct);
@@ -149,6 +165,12 @@ public sealed class OutlookEventWriteService
             _db.Set<EventEntity>().Add(localEvent);
         }
 
+        // Outlook/Graph attachments stay provider-read-only: persist the
+        // validated native pimFile references plus the target's existing
+        // outlook references; never store client-supplied outlook refs.
+        localEvent.AttachmentReferencesJson =
+            MergeAttachmentReferences(draftPimFileReferences, localEvent.AttachmentReferencesJson);
+
         var steps = new List<BatchStepEntry>
         {
             new("graph-create", "success", now),
@@ -177,6 +199,9 @@ public sealed class OutlookEventWriteService
             throw new DomainException(02009, "修改事件需要 ExpectedEtag。");
         if (request.Scope is not ("instance" or "series"))
             throw new DomainException(02009, "Scope 必须是 instance 或 series。");
+
+        var draftPimFileReferences = await ValidateDraftPimFileReferencesAsync(
+            userId, request.Draft.AttachmentReferences, ct);
 
         var localEvent = await LoadEventAsync(request.EventId.Value, userId, ct);
         ValidateEventBinding(localEvent, binding.Id);
@@ -271,6 +296,13 @@ public sealed class OutlookEventWriteService
                 localEvent.UpdatedAt = now;
                 localEvent.DtStamp = now;
             }
+
+            // Outlook/Graph attachments stay provider-read-only: persist the
+            // validated native pimFile references from the draft plus the
+            // target entity's existing outlook references; never store
+            // client-supplied outlook refs as authoritative data.
+            targetEntity.AttachmentReferencesJson =
+                MergeAttachmentReferences(draftPimFileReferences, targetEntity.AttachmentReferencesJson);
 
             var steps = new List<BatchStepEntry>
             {
@@ -423,6 +455,32 @@ public sealed class OutlookEventWriteService
         if (evt.Calendar.DeletedAt is not null)
             throw new DomainException(02009, "事件所属日历已被删除。");
         return evt;
+    }
+
+    private async Task<IReadOnlyList<EventAttachmentReferenceDto>?> ValidateDraftPimFileReferencesAsync(
+        Guid userId,
+        IReadOnlyList<EventAttachmentReferenceDto>? references,
+        CancellationToken ct)
+    {
+        if (references is null)
+            return null;
+        var pimFileReferences = references
+            .Where(reference => string.Equals(reference.Kind, "pimFile", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (var reference in pimFileReferences)
+            await _attachments.ValidatePimFileReferenceAsync(userId, reference, ct);
+        return pimFileReferences;
+    }
+
+    private static string MergeAttachmentReferences(
+        IReadOnlyList<EventAttachmentReferenceDto>? pimFileReferences,
+        string existingReferencesJson)
+    {
+        if (pimFileReferences is null)
+            return existingReferencesJson;
+        var outlookReferences = EventFieldCodec.DeserializeAttachments(existingReferencesJson)
+            .Where(reference => string.Equals(reference.Kind, "outlook", StringComparison.OrdinalIgnoreCase));
+        return EventFieldCodec.SerializeAttachments(pimFileReferences.Concat(outlookReferences).ToList());
     }
 
     private static void ValidateEventBinding(EventEntity evt, Guid bindingId)

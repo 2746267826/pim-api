@@ -3991,4 +3991,726 @@ public sealed class OutlookCalendarSyncServiceTests
 
         Assert.Equal("completed", response.Status);
     }
+
+    // ===== Task 5: Attachment reference hydration =====
+
+    private const string SyncEventWithAttachments = """
+        {
+            "@odata.etag": "etag-att",
+            "id": "event-1",
+            "subject": "Test With Attachments",
+            "body": {"contentType": "text", "content": "desc-att"},
+            "start": {"dateTime": "2026-05-01T09:00:00.0000000", "timeZone": "UTC"},
+            "end": {"dateTime": "2026-05-01T10:00:00.0000000", "timeZone": "UTC"},
+            "location": {"displayName": "Room A"},
+            "isAllDay": false,
+            "type": "singleInstance",
+            "iCalUId": "event-1@outlook",
+            "changeKey": "ck-1",
+            "hasAttachments": true,
+            "originalStartTimeZone": "UTC",
+            "originalEndTimeZone": "UTC"
+        }
+        """;
+
+    private const string FileAttachmentMetadata = """
+        {
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": "att-1",
+            "name": "Report.pdf",
+            "contentType": "application/pdf",
+            "size": 2048,
+            "isInline": false
+        }
+        """;
+
+    private const string ExistingOutlookRefJson = """
+        [{"kind":"outlook","id":"att-1","name":"Old.pdf","contentType":"application/pdf","size":10,"canDownload":true}]
+        """;
+
+    private const string InlineAndReferenceAttachmentMetadata = """
+        {
+            "@odata.type": "#microsoft.graph.referenceAttachment",
+            "id": "att-link",
+            "name": "https://example.com/doc",
+            "contentType": "text/plain",
+            "size": 0,
+            "isInline": false
+        },
+        {
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "id": "att-inline",
+            "name": "Inline.png",
+            "contentType": "image/png",
+            "size": 512,
+            "isInline": true
+        }
+        """;
+
+    private static string AttachmentsMetadataPage(string items)
+        => $$"""{"value":[{{items}}]}""";
+
+    private static List<string> ExtractAttachmentMetadataRequests(ScriptedHttpMessageHandler handler)
+        => handler.Requests
+            .Select(r => r.RequestUri?.ToString() ?? string.Empty)
+            .Where(u => u.Contains("/attachments?"))
+            .Where(u => u.Contains("$select="))
+            .ToList();
+
+    private static async Task<EventEntity> SeedOutlookEventAsync(
+        PimDbContext db, Guid calendarId, Guid bindingId,
+        string outlookEventId = "event-1", string? changeKey = null, string refsJson = "[]")
+    {
+        var entity = new EventEntity
+        {
+            CalendarId = calendarId,
+            Uid = outlookEventId + "@pim",
+            Title = "Test Event",
+            DtStart = FixedNow,
+            DtEnd = FixedNow.AddHours(1),
+            Source = "outlook",
+            OutlookEventId = outlookEventId,
+            OutlookCalendarBindingId = bindingId,
+            OutlookConnectionId = ConnectionId,
+            OutlookChangeKey = changeKey,
+            AttachmentReferencesJson = refsJson
+        };
+        db.Set<EventEntity>().Add(entity);
+        await db.SaveChangesAsync();
+        return entity;
+    }
+
+    private static async Task<OutlookCalendarBindingEntity> SeedOutlookBindingWithCalendarAsync(
+        PimDbContext db, string graphCalendarId = "cal-1")
+    {
+        var calendar = new CalendarEntity { UserId = UserId, Name = "Cal " + graphCalendarId, Source = "outlook" };
+        db.Set<CalendarEntity>().Add(calendar);
+        await db.SaveChangesAsync();
+        await SeedBindingWithCalendarAsync(db, calendar, graphCalendarId);
+        return await BindingByGraphIdAsync(db, graphCalendarId);
+    }
+
+    [Fact]
+    public async Task SyncAsync_NewEventWithAttachments_FetchesMetadataAndHydratesOutlookReferences()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        await SeedOutlookBindingWithCalendarAsync(db);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+        handler.Enqueue(HttpStatusCode.OK, AttachmentsMetadataPage(FileAttachmentMetadata));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        var req = Assert.Single(ExtractAttachmentMetadataRequests(handler));
+        Assert.Contains("/calendars/cal-1/events/event-1/attachments?", req);
+        Assert.Contains("$select=id,name,contentType,size,isInline,@odata.type", req);
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        var references = EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson);
+        var reference = Assert.Single(references);
+        Assert.Equal("outlook", reference.Kind);
+        Assert.Equal("att-1", reference.Id);
+        Assert.Equal("Report.pdf", reference.Name);
+        Assert.Equal("application/pdf", reference.ContentType);
+        Assert.Equal(2048, reference.Size);
+        Assert.True(reference.CanDownload);
+    }
+
+    [Fact]
+    public async Task SyncAsync_ExistingEventWithUnchangedChangeKey_SkipsAttachmentMetadataFetch()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-1", refsJson: ExistingOutlookRefJson);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        Assert.Empty(ExtractAttachmentMetadataRequests(handler));
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        Assert.Equal("ck-1", stored.OutlookChangeKey);
+        var reference = Assert.Single(EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson));
+        Assert.Equal("Old.pdf", reference.Name);
+    }
+
+    [Fact]
+    public async Task SyncAsync_ExistingEventWithChangedChangeKey_RefetchesAttachmentMetadata()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-old", refsJson: ExistingOutlookRefJson);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+        handler.Enqueue(HttpStatusCode.OK, AttachmentsMetadataPage(FileAttachmentMetadata));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        var req = Assert.Single(ExtractAttachmentMetadataRequests(handler));
+        Assert.Contains("/calendars/cal-1/events/event-1/attachments?", req);
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        Assert.Equal("ck-1", stored.OutlookChangeKey);
+        var reference = Assert.Single(EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson));
+        Assert.Equal("Report.pdf", reference.Name);
+    }
+
+    [Fact]
+    public async Task SyncAsync_ExistingEventWithEmptyStoredReferences_RefetchesAttachmentMetadata()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-1", refsJson: "[]");
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+        handler.Enqueue(HttpStatusCode.OK, AttachmentsMetadataPage(FileAttachmentMetadata));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        Assert.Single(ExtractAttachmentMetadataRequests(handler));
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        var reference = Assert.Single(EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson));
+        Assert.Equal("Report.pdf", reference.Name);
+    }
+
+    [Fact]
+    public async Task SyncAsync_EventWithoutAttachments_StoresEmptyReferences_AndMakesNoAttachmentRequest()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        await SeedOutlookBindingWithCalendarAsync(db);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        Assert.Empty(ExtractAttachmentMetadataRequests(handler));
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        Assert.Equal("[]", stored.AttachmentReferencesJson);
+    }
+
+    [Fact]
+    public async Task SyncAsync_AttachmentMetadataFailure_PreservesExistingReferences_AndRecordsBindingFailure()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-old", refsJson: ExistingOutlookRefJson);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+        handler.Enqueue(HttpStatusCode.ServiceUnavailable);
+        handler.Enqueue(HttpStatusCode.ServiceUnavailable);
+        handler.Enqueue(HttpStatusCode.ServiceUnavailable);
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("partial", response.Status);
+        Assert.Equal(3, ExtractAttachmentMetadataRequests(handler).Count);
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        var reference = Assert.Single(EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson));
+        Assert.Equal("Old.pdf", reference.Name);
+
+        var reloadedBinding = await BindingByGraphIdAsync(db, "cal-1");
+        Assert.NotNull(reloadedBinding.LastErrorMessage);
+    }
+
+    [Fact]
+    public async Task SyncAsync_ExistingEventWithMixedReferences_AndExplicitNoAttachments_PreservesOnlyPimFile_AndMakesNoAttachmentRequest()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        var mixedRefsJson = """
+            [
+                {"kind":"pimFile","id":"pim-file-1","name":"Local.pdf","contentType":"application/pdf","size":1024,"canDownload":true},
+                {"kind":"outlook","id":"att-1","name":"Old.pdf","contentType":"application/pdf","size":10,"canDownload":true}
+            ]
+            """;
+        await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-1", refsJson: mixedRefsJson);
+        var handler = new ScriptedHttpMessageHandler();
+        var noAttachmentsEvent = SyncEventWithAttachments.Replace(
+            "\"hasAttachments\": true", "\"hasAttachments\": false");
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(noAttachmentsEvent));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        Assert.Empty(ExtractAttachmentMetadataRequests(handler));
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        var references = EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson);
+        var reference = Assert.Single(references);
+        Assert.Equal("pimFile", reference.Kind);
+        Assert.Equal("pim-file-1", reference.Id);
+    }
+
+    [Fact]
+    public async Task SyncAsync_ExistingEventWithOutlookReferences_AndOmittedHasAttachments_PreservesReferencesAndMakesNoMetadataRequest()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-1", refsJson: ExistingOutlookRefJson);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        Assert.Empty(ExtractAttachmentMetadataRequests(handler));
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        var reference = Assert.Single(EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson));
+        Assert.Equal("outlook", reference.Kind);
+        Assert.Equal("att-1", reference.Id);
+        Assert.Equal("Old.pdf", reference.Name);
+    }
+
+    [Fact]
+    public async Task SyncAsync_ExistingEventWithOnlyPimFileReferences_AndHasAttachments_FetchesGraphRefsAndRetainsPimFile()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        var pimFileOnlyRefsJson = """
+            [{"kind":"pimFile","id":"pim-file-1","name":"Local.pdf","contentType":"application/pdf","size":1024,"canDownload":true}]
+            """;
+        await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-1", refsJson: pimFileOnlyRefsJson);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+        handler.Enqueue(HttpStatusCode.OK, AttachmentsMetadataPage(FileAttachmentMetadata));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        Assert.Single(ExtractAttachmentMetadataRequests(handler));
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        var references = EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson);
+        Assert.Equal(2, references.Count);
+        var pimFile = Assert.Single(references, r => r.Kind == "pimFile");
+        Assert.Equal("pim-file-1", pimFile.Id);
+        var outlook = Assert.Single(references, r => r.Kind == "outlook");
+        Assert.Equal("att-1", outlook.Id);
+        Assert.Equal("Report.pdf", outlook.Name);
+    }
+
+    [Fact]
+    public async Task SyncAsync_EventWithOnlyInlineOrReferenceAttachments_HydratesEmptyOnce_ThenSkipsOnUnchangedSync_AndRefetchesOnChangeKeyChange()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-1", refsJson: "[]");
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+        handler.Enqueue(HttpStatusCode.OK, AttachmentsMetadataPage(InlineAndReferenceAttachmentMetadata));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var first = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", first.Status);
+        Assert.Single(ExtractAttachmentMetadataRequests(handler));
+        var afterFirst = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(afterFirst);
+        Assert.Equal("attachments-hydrated-empty", afterFirst.OutlookSyncState);
+        Assert.Equal("[]", afterFirst.AttachmentReferencesJson);
+
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+
+        var second = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", second.Status);
+        Assert.Single(ExtractAttachmentMetadataRequests(handler));
+        var afterSecond = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(afterSecond);
+        Assert.Equal("attachments-hydrated-empty", afterSecond.OutlookSyncState);
+
+        var changedChangeKeyEvent = SyncEventWithAttachments.Replace("\"changeKey\": \"ck-1\"", "\"changeKey\": \"ck-2\"");
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(changedChangeKeyEvent));
+        handler.Enqueue(HttpStatusCode.OK, AttachmentsMetadataPage(InlineAndReferenceAttachmentMetadata));
+
+        var third = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", third.Status);
+        Assert.Equal(2, ExtractAttachmentMetadataRequests(handler).Count);
+        var afterThird = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(afterThird);
+        Assert.Equal("ck-2", afterThird.OutlookChangeKey);
+        Assert.Equal("attachments-hydrated-empty", afterThird.OutlookSyncState);
+        Assert.Equal("[]", afterThird.AttachmentReferencesJson);
+    }
+
+    [Fact]
+    public async Task SyncAsync_NonEmptyHydration_ClearsHydratedEmptyMarker()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        var entity = await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-old", refsJson: "[]");
+        entity.OutlookSyncState = "attachments-hydrated-empty";
+        await db.SaveChangesAsync();
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+        handler.Enqueue(HttpStatusCode.OK, AttachmentsMetadataPage(FileAttachmentMetadata));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        var req = Assert.Single(ExtractAttachmentMetadataRequests(handler));
+        Assert.Contains("/calendars/cal-1/events/event-1/attachments?", req);
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        Assert.Null(stored.OutlookSyncState);
+        var reference = Assert.Single(EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson));
+        Assert.Equal("Report.pdf", reference.Name);
+    }
+
+    [Fact]
+    public async Task SyncAsync_ExplicitNoAttachments_ClearsHydratedEmptyMarker_AndMakesNoAttachmentRequest()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        var entity = await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-1", refsJson: "[]");
+        entity.OutlookSyncState = "attachments-hydrated-empty";
+        await db.SaveChangesAsync();
+        var handler = new ScriptedHttpMessageHandler();
+        var noAttachmentsEvent = SyncEventWithAttachments.Replace(
+            "\"hasAttachments\": true", "\"hasAttachments\": false");
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(noAttachmentsEvent));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        Assert.Empty(ExtractAttachmentMetadataRequests(handler));
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        Assert.Null(stored.OutlookSyncState);
+        Assert.Equal("[]", stored.AttachmentReferencesJson);
+    }
+
+    [Fact]
+    public async Task SyncAsync_AttachmentHydrationFailure_ThenSameChangeKeyRetry_RefetchesAndRefreshesMetadata()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-old", refsJson: ExistingOutlookRefJson);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+        handler.Enqueue(HttpStatusCode.ServiceUnavailable);
+        handler.Enqueue(HttpStatusCode.ServiceUnavailable);
+        handler.Enqueue(HttpStatusCode.ServiceUnavailable);
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var first = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("partial", first.Status);
+
+        var afterFailure = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(afterFailure);
+        Assert.Equal("ck-1", afterFailure.OutlookChangeKey);
+        Assert.Equal("attachments-pending", afterFailure.OutlookSyncState);
+        Assert.Equal("Old.pdf", Assert.Single(EventFieldCodec.DeserializeAttachments(afterFailure.AttachmentReferencesJson)).Name);
+
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+        handler.Enqueue(HttpStatusCode.OK, AttachmentsMetadataPage(FileAttachmentMetadata));
+
+        var second = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", second.Status);
+
+        var refreshed = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(refreshed);
+        Assert.Equal("ck-1", refreshed.OutlookChangeKey);
+        Assert.Null(refreshed.OutlookSyncState);
+        var reference = Assert.Single(EventFieldCodec.DeserializeAttachments(refreshed.AttachmentReferencesJson));
+        Assert.Equal("Report.pdf", reference.Name);
+    }
+
+    [Fact]
+    public async Task SyncAsync_AttachmentHydrationFailure_DoesNotOverwriteLegacyUnboundState()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        var entity = await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-old", refsJson: ExistingOutlookRefJson);
+        entity.OutlookSyncState = "legacy-unbound";
+        await db.SaveChangesAsync();
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+        handler.Enqueue(HttpStatusCode.ServiceUnavailable);
+        handler.Enqueue(HttpStatusCode.ServiceUnavailable);
+        handler.Enqueue(HttpStatusCode.ServiceUnavailable);
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("partial", response.Status);
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        Assert.Equal("legacy-unbound", stored.OutlookSyncState);
+        Assert.Equal("Old.pdf", Assert.Single(EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson)).Name);
+    }
+
+    [Fact]
+    public async Task SyncAsync_AttachmentReauthAfterRemoteChange_DoesNotPersistNewChangeKeyWithOldReferences()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var binding = await SeedOutlookBindingWithCalendarAsync(db);
+        await SeedOutlookEventAsync(db, binding.PimCalendarId, binding.Id,
+            changeKey: "ck-old", refsJson: ExistingOutlookRefJson);
+        var handler = new ScriptedHttpMessageHandler();
+        // CalendarView: same event, remote changeKey/title changed, hasAttachments=true
+        var changedEvent = SyncEventWithAttachments
+            .Replace("\"changeKey\": \"ck-1\"", "\"changeKey\": \"ck-new\"")
+            .Replace("\"subject\": \"Test With Attachments\"", "\"subject\": \"Renamed Subject\"");
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(changedEvent));
+        // Attachment metadata request: first 401 -> force refresh replay, second 401 -> reauth
+        handler.Enqueue(HttpStatusCode.Unauthorized);
+        handler.Enqueue(HttpStatusCode.Unauthorized);
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("failed", response.Status);
+        var connection = await db.Set<OutlookConnectionEntity>().FirstAsync(c => c.Id == ConnectionId);
+        Assert.Equal("reauth-required", connection.Status);
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        Assert.Equal("ck-old", stored.OutlookChangeKey);
+        Assert.Equal("Test Event", stored.Title);
+        Assert.Equal(ExistingOutlookRefJson, stored.AttachmentReferencesJson);
+        Assert.Equal("Old.pdf", Assert.Single(EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson)).Name);
+    }
+
+    [Fact]
+    public async Task SyncAsync_MissingVerificationRestore_WithChangedChangeKey_RefetchesAttachmentMetadata()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+        await SeedOutlookEventAsync(db, calId, bindingId,
+            outlookEventId: "missing-event", changeKey: "ck-old", refsJson: ExistingOutlookRefJson);
+
+        var handler = new ScriptedHttpMessageHandler();
+        // CalendarView: missing-event not present
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent2));
+        // GetEventAsync -> event still exists with a changed changeKey and hasAttachments=true
+        var restoredEvent = SyncEventWithAttachments.Replace("\"event-1\"", "\"missing-event\"");
+        handler.Enqueue(HttpStatusCode.OK, SingleEventResponse(restoredEvent));
+        handler.Enqueue(HttpStatusCode.OK, AttachmentsMetadataPage(FileAttachmentMetadata));
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        var req = Assert.Single(ExtractAttachmentMetadataRequests(handler));
+        Assert.Contains("/calendars/cal-1/events/missing-event/attachments?", req);
+
+        var stored = await LoadEventByOutlookIdAsync(db, "missing-event");
+        Assert.NotNull(stored);
+        Assert.Equal("ck-1", stored.OutlookChangeKey);
+        Assert.Null(stored.OutlookSyncState);
+        var reference = Assert.Single(EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson));
+        Assert.Equal("outlook", reference.Kind);
+        Assert.Equal("Report.pdf", reference.Name);
+    }
+
+    [Fact]
+    public async Task SyncAsync_MissingVerificationRestore_ExplicitNoAttachments_ClearsOutlookRefsKeepsPimFile()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+        var mixedRefsJson = """
+            [
+                {"kind":"pimFile","id":"pim-file-1","name":"Local.pdf","contentType":"application/pdf","size":1024,"canDownload":true},
+                {"kind":"outlook","id":"att-1","name":"Old.pdf","contentType":"application/pdf","size":10,"canDownload":true}
+            ]
+            """;
+        await SeedOutlookEventAsync(db, calId, bindingId,
+            outlookEventId: "missing-event", changeKey: "ck-1", refsJson: mixedRefsJson);
+
+        var handler = new ScriptedHttpMessageHandler();
+        // CalendarView: missing-event not present
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent2));
+        // GetEventAsync -> event still exists but explicitly has no attachments
+        var noAttachmentsEvent = SyncEventWithAttachments.Replace(
+            "\"event-1\"", "\"missing-event\"").Replace("\"hasAttachments\": true", "\"hasAttachments\": false");
+        handler.Enqueue(HttpStatusCode.OK, SingleEventResponse(noAttachmentsEvent));
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        Assert.Empty(ExtractAttachmentMetadataRequests(handler));
+
+        var stored = await LoadEventByOutlookIdAsync(db, "missing-event");
+        Assert.NotNull(stored);
+        var references = EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson);
+        var reference = Assert.Single(references);
+        Assert.Equal("pimFile", reference.Kind);
+        Assert.Equal("pim-file-1", reference.Id);
+    }
+
+    // ===== Task 5 final hardening: regression locks =====
+
+    [Fact]
+    public async Task SyncAsync_NewEventMetadata503_StoresEmptyReferencesAndPendingState_PartialBatch()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        await SeedOutlookBindingWithCalendarAsync(db);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEventWithAttachments));
+        handler.Enqueue(HttpStatusCode.ServiceUnavailable);
+        handler.Enqueue(HttpStatusCode.ServiceUnavailable);
+        handler.Enqueue(HttpStatusCode.ServiceUnavailable);
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("partial", response.Status);
+        Assert.Equal(3, ExtractAttachmentMetadataRequests(handler).Count);
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        Assert.Equal("[]", stored.AttachmentReferencesJson);
+        Assert.Equal("attachments-pending", stored.OutlookSyncState);
+    }
+
+    [Fact]
+    public async Task SyncAsync_NewEventExplicitNoAttachments_SavesEmptyReferencesWithoutMetadataRequest()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        await SeedOutlookBindingWithCalendarAsync(db);
+        var handler = new ScriptedHttpMessageHandler();
+        var noAttachmentsEvent = SyncEventWithAttachments.Replace(
+            "\"hasAttachments\": true", "\"hasAttachments\": false");
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(noAttachmentsEvent));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        Assert.Empty(ExtractAttachmentMetadataRequests(handler));
+
+        var stored = await LoadEventByOutlookIdAsync(db, "event-1");
+        Assert.NotNull(stored);
+        Assert.Equal("[]", stored.AttachmentReferencesJson);
+    }
+
+    [Fact]
+    public async Task SyncAsync_MissingVerificationRestore_ReauthOnMetadata_RollsBackEventAndSetsConnectionReauth()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+        await SeedOutlookEventAsync(db, calId, bindingId,
+            outlookEventId: "missing-event", changeKey: "ck-old", refsJson: ExistingOutlookRefJson);
+
+        var handler = new ScriptedHttpMessageHandler();
+        // CalendarView: missing-event not present
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse());
+        // GetEventAsync -> event still exists with changed key/title and hasAttachments=true
+        var restoredEvent = SyncEventWithAttachments
+            .Replace("\"event-1\"", "\"missing-event\"")
+            .Replace("\"subject\": \"Test With Attachments\"", "\"subject\": \"Renamed Subject\"")
+            .Replace("\"changeKey\": \"ck-1\"", "\"changeKey\": \"ck-new\"");
+        handler.Enqueue(HttpStatusCode.OK, SingleEventResponse(restoredEvent));
+        // Attachment metadata request: first 401 -> force refresh replay, second 401 -> reauth
+        handler.Enqueue(HttpStatusCode.Unauthorized);
+        handler.Enqueue(HttpStatusCode.Unauthorized);
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 7, 12, 12, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("partial", response.Status);
+        var connection = await db.Set<OutlookConnectionEntity>().FirstAsync(c => c.Id == ConnectionId);
+        Assert.Equal("reauth-required", connection.Status);
+        Assert.Equal("interaction-required", connection.TokenHealth);
+        Assert.NotNull(connection.LastError);
+
+        var stored = await LoadEventByOutlookIdAsync(db, "missing-event");
+        Assert.NotNull(stored);
+        Assert.Equal("ck-old", stored.OutlookChangeKey);
+        Assert.Equal("Test Event", stored.Title);
+        Assert.Equal("Old.pdf", Assert.Single(EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson)).Name);
+    }
 }

@@ -13,12 +13,23 @@ public class CalendarService
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly RecurrenceService _recurrence;
+    private readonly EventAttachmentService _attachments;
 
     public CalendarService(PimDbContext db, ICurrentUserService currentUser, RecurrenceService recurrence)
+        : this(db, currentUser, recurrence, new EventAttachmentService(db))
+    {
+    }
+
+    public CalendarService(
+        PimDbContext db,
+        ICurrentUserService currentUser,
+        RecurrenceService recurrence,
+        EventAttachmentService attachments)
     {
         _db = db;
         _currentUser = currentUser;
         _recurrence = recurrence;
+        _attachments = attachments;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "未登录");
@@ -165,6 +176,8 @@ public class CalendarService
         {
             ManualDescriptionValidator.EnsureSafe(request.Description);
         }
+
+        await ValidatePimFileReferencesAsync(request.AttachmentReferences, ct);
 
         var entity = new EventEntity
         {
@@ -376,6 +389,8 @@ public class CalendarService
         {
             ManualDescriptionValidator.EnsureSafe(request.Description);
         }
+
+        await ValidatePimFileReferencesAsync(request.AttachmentReferences, ct);
 
         entity.Title = request.Title;
         entity.Description = request.Description;
@@ -756,6 +771,25 @@ public class CalendarService
         if (normalizedEnd <= normalizedStart)
             throw new DomainException(02010, "结束时间必须晚于开始时间");
         return (normalizedStart, normalizedEnd);
+    }
+
+    private async Task ValidatePimFileReferencesAsync(
+        IReadOnlyList<EventAttachmentReferenceDto>? references,
+        CancellationToken ct)
+    {
+        if (references is null)
+            return;
+
+        foreach (var reference in references)
+        {
+            // Native calendar CRUD is the only writer of pimFile references.
+            // Outlook references are server-authoritative (sync hydration) and
+            // must never be accepted from client requests through this path.
+            if (!string.Equals(reference.Kind, "pimFile", StringComparison.OrdinalIgnoreCase))
+                throw new DomainException(02009, "Outlook 附件引用只能由服务器同步写入。");
+
+            await _attachments.ValidatePimFileReferenceAsync(UserId, reference, ct);
+        }
     }
 
     private static void ApplyUnifiedFields(EventEntity entity, CreateEventRequest request)

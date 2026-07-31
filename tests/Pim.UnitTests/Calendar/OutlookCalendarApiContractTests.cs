@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Json;
@@ -1023,6 +1024,387 @@ public sealed class OutlookCalendarApiContractTests : IAsyncLifetime
                 """{"value":[{"id":"cal-1","name":"Calendar 1","color":"auto","owner":{"name":"U","address":"u@t"},"isDefaultCalendar":true,"canEdit":true,"canViewPrivateItems":true}]}""",
                 System.Text.Encoding.UTF8, "application/json")
         });
+    }
+
+    // ===== Task 5: Attachment download proxy =====
+
+    private const string OutlookDownloadRefJson = """
+        [{"kind":"outlook","id":"att-1","name":"report final.pdf","contentType":"application/pdf","size":1024,"canDownload":true}]
+        """;
+
+    private async Task<Guid> SeedUserConnectionAsync(Guid userId, string status)
+    {
+        var connection = new OutlookConnectionEntity
+        {
+            UserId = userId,
+            ClientId = ClientIdStr,
+            Status = status,
+            TokenHealth = status == "connected" ? "healthy" : "missing"
+        };
+        _db.Set<OutlookConnectionEntity>().Add(connection);
+        await _db.SaveChangesAsync();
+        return connection.Id;
+    }
+
+    private async Task<(Guid CalendarId, Guid BindingId)> SeedCalendarBindingAsync(
+        Guid userId, Guid connectionId, string graphCalendarId)
+    {
+        var calendar = new CalendarEntity { UserId = userId, Name = "Cal " + graphCalendarId, Source = "outlook" };
+        _db.Set<CalendarEntity>().Add(calendar);
+        await _db.SaveChangesAsync();
+        var binding = new OutlookCalendarBindingEntity
+        {
+            ConnectionId = connectionId,
+            PimCalendarId = calendar.Id,
+            GraphCalendarId = graphCalendarId,
+            Name = "Cal " + graphCalendarId,
+            IsSelected = true,
+            RemoteState = "active"
+        };
+        _db.Set<OutlookCalendarBindingEntity>().Add(binding);
+        await _db.SaveChangesAsync();
+        return (calendar.Id, binding.Id);
+    }
+
+    private async Task<Guid> SeedDownloadEventAsync(
+        Guid calendarId, Guid bindingId, Guid connectionId, string refsJson)
+    {
+        var evt = new EventEntity
+        {
+            CalendarId = calendarId,
+            Uid = Guid.NewGuid().ToString(),
+            Title = "Download Event",
+            DtStart = DateTimeOffset.UtcNow,
+            DtEnd = DateTimeOffset.UtcNow.AddHours(1),
+            Source = "outlook",
+            OutlookEventId = "graph-event-" + Guid.NewGuid().ToString("N")[..8],
+            OutlookCalendarBindingId = bindingId,
+            OutlookConnectionId = connectionId,
+            AttachmentReferencesJson = refsJson
+        };
+        _db.Set<EventEntity>().Add(evt);
+        await _db.SaveChangesAsync();
+        return evt.Id;
+    }
+
+    private async Task AssertAttachmentDownloadRejectedAsync(Guid eventId, string attachmentId)
+    {
+        var handler = _app.Services.GetRequiredService<ContractGraphHandler>();
+        var requestCountBefore = handler.Requests.Count;
+
+        var resp = await _client.GetAsync(
+            $"/api/v1/calendar/events/{eventId}/attachments/{attachmentId}/download");
+
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.Equal(requestCountBefore, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_ReturnsStreamedContent_WithContentTypeAndFileName()
+    {
+        var connectionId = await SeedUserConnectionAsync(UserId, "connected");
+        var (calendarId, bindingId) = await SeedCalendarBindingAsync(UserId, connectionId, "cal-1");
+        var eventId = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, OutlookDownloadRefJson);
+
+        var handler = _app.Services.GetRequiredService<ContractGraphHandler>();
+        var requestCountBefore = handler.Requests.Count;
+        var pdfBytes = new byte[] { 37, 80, 68, 70, 45, 49, 46, 52 };
+        handler.QueueResponse(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(pdfBytes)
+            {
+                Headers = { ContentType = new MediaTypeHeaderValue("application/pdf") }
+            }
+        });
+
+        var resp = await _client.GetAsync($"/api/v1/calendar/events/{eventId}/attachments/att-1/download");
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.Equal("application/pdf", resp.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(pdfBytes, await resp.Content.ReadAsByteArrayAsync());
+        Assert.NotNull(resp.Content.Headers.ContentDisposition);
+        Assert.Equal("report final.pdf", resp.Content.Headers.ContentDisposition.FileName?.Trim('"'));
+
+        var newRequests = handler.Requests.Skip(requestCountBefore).ToList();
+        var valueRequest = Assert.Single(newRequests);
+        Assert.Contains("/attachments/att-1/$value", valueRequest.RequestUri!.ToString());
+        Assert.DoesNotContain("$select", valueRequest.RequestUri!.ToString());
+
+        // Binary content is streamed, never persisted: stored references stay untouched.
+        _db.ChangeTracker.Clear();
+        var stored = await _db.Set<EventEntity>().AsNoTracking().SingleAsync(e => e.Id == eventId);
+        Assert.Equal(OutlookDownloadRefJson, stored.AttachmentReferencesJson);
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_SanitizesFileNameHeader()
+    {
+        var connectionId = await SeedUserConnectionAsync(UserId, "connected");
+        var (calendarId, bindingId) = await SeedCalendarBindingAsync(UserId, connectionId, "cal-1");
+        var refsJson = """
+            [{"kind":"outlook","id":"att-1","name":"report\r\nfinal.pdf","contentType":"application/pdf","size":1024,"canDownload":true}]
+            """;
+        var eventId = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, refsJson);
+
+        var handler = _app.Services.GetRequiredService<ContractGraphHandler>();
+        handler.QueueResponse(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent([])
+            {
+                Headers = { ContentType = new MediaTypeHeaderValue("application/pdf") }
+            }
+        });
+
+        var resp = await _client.GetAsync($"/api/v1/calendar/events/{eventId}/attachments/att-1/download");
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        Assert.True(resp.Content.Headers.TryGetValues("Content-Disposition", out var values));
+        var header = string.Join(";", values);
+        Assert.DoesNotContain("\r", header);
+        Assert.DoesNotContain("\n", header);
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_RejectsEventOwnedByAnotherUser_NoGraphCall()
+    {
+        var connectionId = await SeedUserConnectionAsync(OtherUserId, "connected");
+        var (calendarId, bindingId) = await SeedCalendarBindingAsync(OtherUserId, connectionId, "cal-other");
+        var eventId = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, OutlookDownloadRefJson);
+
+        await AssertAttachmentDownloadRejectedAsync(eventId, "att-1");
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_RejectsCrossBindingEvent_NoGraphCall()
+    {
+        var userConnectionId = await SeedUserConnectionAsync(UserId, "connected");
+        var otherConnectionId = await SeedUserConnectionAsync(OtherUserId, "connected");
+        var calendar = new CalendarEntity { UserId = UserId, Name = "Cal", Source = "outlook" };
+        _db.Set<CalendarEntity>().Add(calendar);
+        await _db.SaveChangesAsync();
+        var binding = new OutlookCalendarBindingEntity
+        {
+            ConnectionId = otherConnectionId,
+            PimCalendarId = calendar.Id,
+            GraphCalendarId = "cal-cross",
+            Name = "Cal",
+            IsSelected = true,
+            RemoteState = "active"
+        };
+        _db.Set<OutlookCalendarBindingEntity>().Add(binding);
+        await _db.SaveChangesAsync();
+        var evt = new EventEntity
+        {
+            CalendarId = calendar.Id,
+            Uid = Guid.NewGuid().ToString(),
+            Title = "Cross Binding",
+            DtStart = DateTimeOffset.UtcNow,
+            DtEnd = DateTimeOffset.UtcNow.AddHours(1),
+            Source = "outlook",
+            OutlookEventId = "graph-cross",
+            OutlookCalendarBindingId = binding.Id,
+            OutlookConnectionId = userConnectionId,
+            AttachmentReferencesJson = OutlookDownloadRefJson
+        };
+        _db.Set<EventEntity>().Add(evt);
+        await _db.SaveChangesAsync();
+
+        await AssertAttachmentDownloadRejectedAsync(evt.Id, "att-1");
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_RejectsUnknownAttachmentId_NoGraphCall()
+    {
+        var connectionId = await SeedUserConnectionAsync(UserId, "connected");
+        var (calendarId, bindingId) = await SeedCalendarBindingAsync(UserId, connectionId, "cal-1");
+        var eventId = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, OutlookDownloadRefJson);
+
+        await AssertAttachmentDownloadRejectedAsync(eventId, "att-unknown");
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_RejectsAttachmentNotPresentOnThisEvent_NoGraphCall()
+    {
+        var connectionId = await SeedUserConnectionAsync(UserId, "connected");
+        var (calendarId, bindingId) = await SeedCalendarBindingAsync(UserId, connectionId, "cal-1");
+        var eventA = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, OutlookDownloadRefJson);
+        var otherRefsJson = """
+            [{"kind":"outlook","id":"att-2","name":"Other.pdf","contentType":"application/pdf","size":512,"canDownload":true}]
+            """;
+        var eventB = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, otherRefsJson);
+
+        await AssertAttachmentDownloadRejectedAsync(eventA, "att-2");
+        Assert.NotEqual(eventA, eventB);
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_RejectsInactiveConnection_NoGraphCall()
+    {
+        var connectionId = await SeedUserConnectionAsync(UserId, "not-connected");
+        var (calendarId, bindingId) = await SeedCalendarBindingAsync(UserId, connectionId, "cal-1");
+        var eventId = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, OutlookDownloadRefJson);
+
+        await AssertAttachmentDownloadRejectedAsync(eventId, "att-1");
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_RejectsPimFileReference_EvenWhenCanDownloadTrue_NoGraphCall()
+    {
+        var connectionId = await SeedUserConnectionAsync(UserId, "connected");
+        var (calendarId, bindingId) = await SeedCalendarBindingAsync(UserId, connectionId, "cal-1");
+        var pimFileRefsJson = """
+            [{"kind":"pimFile","id":"att-1","name":"Doc.pdf","contentType":"application/pdf","size":1024,"canDownload":true}]
+            """;
+        var eventId = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, pimFileRefsJson);
+
+        await AssertAttachmentDownloadRejectedAsync(eventId, "att-1");
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_GraphNotFound_Returns404()
+    {
+        var connectionId = await SeedUserConnectionAsync(UserId, "connected");
+        var (calendarId, bindingId) = await SeedCalendarBindingAsync(UserId, connectionId, "cal-1");
+        var eventId = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, OutlookDownloadRefJson);
+
+        var handler = _app.Services.GetRequiredService<ContractGraphHandler>();
+        var requestCountBefore = handler.Requests.Count;
+        handler.QueueResponse(new HttpResponseMessage(HttpStatusCode.NotFound)
+        {
+            Content = new StringContent(
+                """{"error":{"code":"ErrorItemNotFound","message":"Item not found"}}""",
+                System.Text.Encoding.UTF8, "application/json")
+        });
+
+        var resp = await _client.GetAsync($"/api/v1/calendar/events/{eventId}/attachments/att-1/download");
+
+        Assert.Equal(HttpStatusCode.NotFound, resp.StatusCode);
+        Assert.Equal(requestCountBefore + 1, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_RejectsCanDownloadFalseReference_NoGraphCall()
+    {
+        var connectionId = await SeedUserConnectionAsync(UserId, "connected");
+        var (calendarId, bindingId) = await SeedCalendarBindingAsync(UserId, connectionId, "cal-1");
+        var readOnlyRefsJson = """
+            [{"kind":"outlook","id":"att-1","name":"Report.pdf","contentType":"application/pdf","size":1024,"canDownload":false}]
+            """;
+        var eventId = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, readOnlyRefsJson);
+
+        await AssertAttachmentDownloadRejectedAsync(eventId, "att-1");
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_RejectsSoftDeletedEvent_NoGraphCall()
+    {
+        var connectionId = await SeedUserConnectionAsync(UserId, "connected");
+        var (calendarId, bindingId) = await SeedCalendarBindingAsync(UserId, connectionId, "cal-1");
+        var eventId = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, OutlookDownloadRefJson);
+        var evt = await _db.Set<EventEntity>().FirstAsync(e => e.Id == eventId);
+        evt.DeletedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync();
+
+        await AssertAttachmentDownloadRejectedAsync(eventId, "att-1");
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_SecondUnauthorized_Returns409Conflict_PersistsReauth_NoTokenLeak()
+    {
+        var connectionId = await SeedUserConnectionAsync(UserId, "connected");
+        var (calendarId, bindingId) = await SeedCalendarBindingAsync(UserId, connectionId, "cal-1");
+        var eventId = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, OutlookDownloadRefJson);
+
+        var handler = _app.Services.GetRequiredService<ContractGraphHandler>();
+        var requestCountBefore = handler.Requests.Count;
+        handler.QueueResponse(new HttpResponseMessage(HttpStatusCode.Unauthorized)
+        {
+            Content = new StringContent(
+                """{"error":{"code":"InvalidAuthenticationToken","message":"token expired"}}""",
+                System.Text.Encoding.UTF8, "application/json")
+        });
+        handler.QueueResponse(new HttpResponseMessage(HttpStatusCode.Unauthorized)
+        {
+            Content = new StringContent(
+                """{"error":{"code":"InvalidAuthenticationToken","message":"token expired"}}""",
+                System.Text.Encoding.UTF8, "application/json")
+        });
+
+        var resp = await _client.GetAsync($"/api/v1/calendar/events/{eventId}/attachments/att-1/download");
+
+        Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
+        Assert.Equal(requestCountBefore + 2, handler.Requests.Count);
+
+        var api = await resp.Content.ReadFromJsonAsync<ApiResponse<string>>();
+        Assert.NotNull(api);
+        Assert.Equal(02009, api.Code);
+        Assert.Equal("Outlook 连接需要重新授权。", api.Message);
+
+        var body = await resp.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("contract-test-token", body);
+
+        _db.ChangeTracker.Clear();
+        var connection = await _db.Set<OutlookConnectionEntity>().AsNoTracking()
+            .FirstAsync(c => c.Id == connectionId);
+        Assert.Equal("reauth-required", connection.Status);
+        Assert.Equal("interaction-required", connection.TokenHealth);
+        Assert.NotNull(connection.LastError);
+        Assert.DoesNotContain("contract-test-token", connection.LastError);
+    }
+
+    [Fact]
+    public async Task AttachmentDownload_TransientFailuresThenFinalUnauthorized_Returns409Conflict_PersistsReauth()
+    {
+        var connectionId = await SeedUserConnectionAsync(UserId, "connected");
+        var (calendarId, bindingId) = await SeedCalendarBindingAsync(UserId, connectionId, "cal-1");
+        var eventId = await SeedDownloadEventAsync(calendarId, bindingId, connectionId, OutlookDownloadRefJson);
+
+        var handler = _app.Services.GetRequiredService<ContractGraphHandler>();
+        var requestCountBefore = handler.Requests.Count;
+
+        void QueueServiceUnavailable()
+        {
+            var resp = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            {
+                Content = new StringContent(
+                    """{"error":{"code":"ServiceUnavailable","message":"transient failure"}}""",
+                    System.Text.Encoding.UTF8, "application/json")
+            };
+            resp.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.Zero);
+            handler.QueueResponse(resp);
+        }
+
+        QueueServiceUnavailable();
+        QueueServiceUnavailable();
+        handler.QueueResponse(new HttpResponseMessage(HttpStatusCode.Unauthorized)
+        {
+            Content = new StringContent(
+                """{"error":{"code":"InvalidAuthenticationToken","message":"token expired"}}""",
+                System.Text.Encoding.UTF8, "application/json")
+        });
+
+        var resp = await _client.GetAsync($"/api/v1/calendar/events/{eventId}/attachments/att-1/download");
+
+        Assert.Equal(HttpStatusCode.Conflict, resp.StatusCode);
+        Assert.Equal(requestCountBefore + 3, handler.Requests.Count);
+
+        var api = await resp.Content.ReadFromJsonAsync<ApiResponse<string>>();
+        Assert.NotNull(api);
+        Assert.Equal(02009, api.Code);
+        Assert.Equal("Outlook 连接需要重新授权。", api.Message);
+
+        var body = await resp.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("contract-test-token", body);
+        Assert.DoesNotContain("InvalidAuthenticationToken", body);
+        Assert.DoesNotContain("ServiceUnavailable", body);
+
+        _db.ChangeTracker.Clear();
+        var connection = await _db.Set<OutlookConnectionEntity>().AsNoTracking()
+            .FirstAsync(c => c.Id == connectionId);
+        Assert.Equal("reauth-required", connection.Status);
+        Assert.Equal("interaction-required", connection.TokenHealth);
+        Assert.NotNull(connection.LastError);
+        Assert.DoesNotContain("contract-test-token", connection.LastError);
     }
 
     private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement value)

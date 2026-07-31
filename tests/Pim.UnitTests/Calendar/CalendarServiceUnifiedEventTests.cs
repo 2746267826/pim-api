@@ -6,6 +6,7 @@ using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.DTOs;
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Services;
+using Pim.Module.Files.Entities;
 using Xunit;
 
 namespace Pim.UnitTests.Calendar;
@@ -13,12 +14,14 @@ namespace Pim.UnitTests.Calendar;
 public sealed class CalendarServiceUnifiedEventTests
 {
     private static readonly Guid UserId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+    private static readonly Guid OtherUserId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccd");
 
     [Fact]
     public async Task CreateEventAsync_PersistsAndReturnsAllUnifiedFields()
     {
         await using var db = CreateDb();
         var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        var (_, file) = SeedFileItem(db, UserId);
         await db.SaveChangesAsync();
         var service = CreateService(db);
 
@@ -48,7 +51,7 @@ public sealed class CalendarServiceUnifiedEventTests
                 ExternalLink: "https://outlook.office.com/calendar/item/abc",
                 AttachmentReferences: new List<EventAttachmentReferenceDto>
                 {
-                    new("pimFile", "file-001", "Contract.pdf", "application/pdf", 1024, true)
+                    new("pimFile", file.Id.ToString(), "Contract.pdf", "application/pdf", 1024, true)
                 }),
             default);
 
@@ -82,7 +85,7 @@ public sealed class CalendarServiceUnifiedEventTests
         Assert.NotNull(response.AttachmentReferences);
         var attRef = Assert.Single(response.AttachmentReferences);
         Assert.Equal("pimFile", attRef.Kind);
-        Assert.Equal("file-001", attRef.Id);
+        Assert.Equal(file.Id.ToString(), attRef.Id);
         Assert.Equal("Contract.pdf", attRef.Name);
         Assert.Equal("application/pdf", attRef.ContentType);
         Assert.Equal(1024, attRef.Size);
@@ -363,6 +366,7 @@ public sealed class CalendarServiceUnifiedEventTests
     private static PimDbContext CreateDb()
     {
         PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
+        PimDbContext.RegisterModuleAssembly(typeof(FileItemEntity).Assembly);
         var options = new DbContextOptionsBuilder<PimDbContext>()
             .UseInMemoryDatabase($"unified-events-{Guid.NewGuid()}")
             .Options;
@@ -415,6 +419,318 @@ public sealed class CalendarServiceUnifiedEventTests
         Assert.Null(entity.OnlineMeetingUrl);
         Assert.Null(entity.ExternalLink);
         Assert.Null(entity.OrganizerJson);
+    }
+
+    // ===== Task 5: pimFile attachment reference validation =====
+
+    private static CreateEventRequest BaseRequest(Guid calendarId, IReadOnlyList<EventAttachmentReferenceDto>? refs = null)
+    {
+        var start = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero);
+        var end = new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero);
+        return new CreateEventRequest(
+            calendarId, "Test", null, null, start, end, null,
+            AttachmentReferences: refs);
+    }
+
+    private static (FileProviderEntity Provider, FileItemEntity Item) SeedFileItem(
+        PimDbContext db, Guid ownerUserId, bool deleted = false, string itemType = "file")
+    {
+        var provider = new FileProviderEntity
+        {
+            Id = Guid.NewGuid(),
+            UserId = ownerUserId,
+            Provider = "nextcloud",
+            BaseUrl = "https://nc.example",
+            Username = "test-user"
+        };
+        var item = new FileItemEntity
+        {
+            Id = Guid.NewGuid(),
+            ProviderId = provider.Id,
+            Name = "Contract.pdf",
+            ItemType = itemType,
+            Path = "/Contract.pdf",
+            IsDeleted = deleted
+        };
+        db.Set<FileProviderEntity>().Add(provider);
+        db.Set<FileItemEntity>().Add(item);
+        return (provider, item);
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_PimFileReference_Accepted_WhenFileItemOwnedAndActive()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        var (_, item) = SeedFileItem(db, UserId);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var response = await service.CreateEventAsync(
+            BaseRequest(calendar.Id, new List<EventAttachmentReferenceDto>
+            {
+                new("pimFile", item.Id.ToString(), "Contract.pdf", "application/pdf", 1024, true)
+            }),
+            default);
+
+        Assert.NotNull(response.AttachmentReferences);
+        var reference = Assert.Single(response.AttachmentReferences);
+        Assert.Equal("pimFile", reference.Kind);
+        Assert.Equal(item.Id.ToString(), reference.Id);
+        Assert.Equal("Contract.pdf", reference.Name);
+
+        var entity = await db.Set<EventEntity>().AsNoTracking().SingleAsync();
+        var stored = EventFieldCodec.DeserializeAttachments(entity.AttachmentReferencesJson);
+        Assert.Equal(item.Id.ToString(), Assert.Single(stored).Id);
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_PimFileReference_Rejected_WhenFileItemMissing()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateEventAsync(
+                BaseRequest(calendar.Id, new List<EventAttachmentReferenceDto>
+                {
+                    new("pimFile", Guid.NewGuid().ToString(), "Missing.pdf")
+                }),
+                default));
+
+        Assert.True(ex.ErrorCode > 0);
+        Assert.Equal(0, await db.Set<EventEntity>().CountAsync());
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_PimFileReference_Rejected_WhenIdIsNotGuid()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateEventAsync(
+                BaseRequest(calendar.Id, new List<EventAttachmentReferenceDto>
+                {
+                    new("pimFile", "not-a-guid", "Broken.pdf")
+                }),
+                default));
+
+        Assert.Equal(0, await db.Set<EventEntity>().CountAsync());
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_PimFileReference_Rejected_WhenFileItemSoftDeleted()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        var (_, item) = SeedFileItem(db, UserId, deleted: true);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateEventAsync(
+                BaseRequest(calendar.Id, new List<EventAttachmentReferenceDto>
+                {
+                    new("pimFile", item.Id.ToString(), item.Name)
+                }),
+                default));
+
+        Assert.Equal(0, await db.Set<EventEntity>().CountAsync());
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_PimFileReference_Rejected_WhenFileOwnedByAnotherUser()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        var (_, item) = SeedFileItem(db, OtherUserId);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateEventAsync(
+                BaseRequest(calendar.Id, new List<EventAttachmentReferenceDto>
+                {
+                    new("pimFile", item.Id.ToString(), item.Name)
+                }),
+                default));
+
+        Assert.Equal(0, await db.Set<EventEntity>().CountAsync());
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_PimFileReference_Rejected_WhenFileItemIsFolder()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        var (_, item) = SeedFileItem(db, UserId, itemType: "folder");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateEventAsync(
+                BaseRequest(calendar.Id, new List<EventAttachmentReferenceDto>
+                {
+                    new("pimFile", item.Id.ToString(), item.Name)
+                }),
+                default));
+
+        Assert.Equal(0, await db.Set<EventEntity>().CountAsync());
+    }
+
+    [Fact]
+    public async Task CreateEventAsync_OutlookKindReference_Rejected()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateEventAsync(
+                BaseRequest(calendar.Id, new List<EventAttachmentReferenceDto>
+                {
+                    new("outlook", "att-1", "Report.pdf", "application/pdf", 2048, true)
+                }),
+                default));
+
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Equal(0, await db.Set<EventEntity>().CountAsync());
+    }
+
+    [Fact]
+    public async Task UpdateEventAsync_OutlookKindReference_Rejected_ExistingReferencesUnchanged()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        var evt = new EventEntity
+        {
+            Calendar = calendar,
+            CalendarId = calendar.Id,
+            Uid = $"{Guid.NewGuid()}@pim",
+            Title = "Original",
+            DtStart = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+            AttachmentReferencesJson = """
+                [{"kind":"outlook","id":"att-1","name":"Synced.pdf","contentType":"application/pdf","size":20,"canDownload":true}]
+                """,
+        };
+        db.Set<EventEntity>().Add(evt);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var start = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero);
+        var end = new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.UpdateEventAsync(
+                evt.Id,
+                new UpdateEventRequest(
+                    calendar.Id, "Updated", null, null,
+                    start, end, null,
+                    AttachmentReferences: new List<EventAttachmentReferenceDto>
+                    {
+                        new("outlook", "att-forged", "Forged.pdf")
+                    }),
+                default));
+
+        Assert.Equal(02009, ex.ErrorCode);
+
+        var entity = await db.Set<EventEntity>().AsNoTracking().SingleAsync();
+        Assert.Equal("Original", entity.Title);
+        var stored = EventFieldCodec.DeserializeAttachments(entity.AttachmentReferencesJson);
+        var reference = Assert.Single(stored);
+        Assert.Equal("outlook", reference.Kind);
+        Assert.Equal("att-1", reference.Id);
+        Assert.Equal("Synced.pdf", reference.Name);
+    }
+
+    [Fact]
+    public async Task UpdateEventAsync_PimFileReference_Rejected_WhenFileItemMissing()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        var evt = new EventEntity
+        {
+            Calendar = calendar,
+            CalendarId = calendar.Id,
+            Uid = $"{Guid.NewGuid()}@pim",
+            Title = "Original",
+            DtStart = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+            AttachmentReferencesJson = """
+                [{"kind":"pimFile","id":"f1","name":"doc.pdf"}]
+                """,
+        };
+        db.Set<EventEntity>().Add(evt);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var start = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero);
+        var end = new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero);
+
+        await Assert.ThrowsAsync<DomainException>(() =>
+            service.UpdateEventAsync(
+                evt.Id,
+                new UpdateEventRequest(
+                    calendar.Id, "Updated", null, null,
+                    start, end, null,
+                    AttachmentReferences: new List<EventAttachmentReferenceDto>
+                    {
+                        new("pimFile", Guid.NewGuid().ToString(), "Missing.pdf")
+                    }),
+                default));
+
+        var entity = await db.Set<EventEntity>().AsNoTracking().SingleAsync();
+        Assert.Equal("Original", entity.Title);
+        var stored = EventFieldCodec.DeserializeAttachments(entity.AttachmentReferencesJson);
+        Assert.Equal("f1", Assert.Single(stored).Id);
+    }
+
+    [Fact]
+    public async Task UpdateEventAsync_NullAttachmentReferences_PreservesExistingReferences()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        var evt = new EventEntity
+        {
+            Calendar = calendar,
+            CalendarId = calendar.Id,
+            Uid = $"{Guid.NewGuid()}@pim",
+            Title = "Original",
+            DtStart = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero),
+            AttachmentReferencesJson = """
+                [{"kind":"pimFile","id":"f1","name":"doc.pdf"}]
+                """,
+        };
+        db.Set<EventEntity>().Add(evt);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var start = new DateTimeOffset(2026, 7, 20, 9, 0, 0, TimeSpan.Zero);
+        var end = new DateTimeOffset(2026, 7, 20, 10, 0, 0, TimeSpan.Zero);
+
+        var response = await service.UpdateEventAsync(
+            evt.Id,
+            new UpdateEventRequest(
+                calendar.Id, "Updated", null, null,
+                start, end, null,
+                AttachmentReferences: null),
+            default);
+
+        Assert.NotNull(response.AttachmentReferences);
+        var reference = Assert.Single(response.AttachmentReferences);
+        Assert.Equal("f1", reference.Id);
+
+        var entity = await db.Set<EventEntity>().AsNoTracking().SingleAsync();
+        var stored = EventFieldCodec.DeserializeAttachments(entity.AttachmentReferencesJson);
+        Assert.Equal("f1", Assert.Single(stored).Id);
     }
 
     private sealed class FixedCurrentUserService(Guid userId) : ICurrentUserService

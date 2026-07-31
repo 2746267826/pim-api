@@ -7,6 +7,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\Pim.Core\Pim.Core.csproj" />
     <ProjectReference Include="..\..\Pim.Infrastructure\Pim.Infrastructure.csproj" />
+    <ProjectReference Include="..\Pim.Module.Files\Pim.Module.Files.csproj" />
   </ItemGroup>
 
   <ItemGroup>
