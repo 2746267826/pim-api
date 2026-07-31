@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Pim.Module.Calendar.DTOs;
@@ -127,13 +128,18 @@ public static class OutlookEventMapper
 
     public static Dictionary<string, object?> BuildWritePayload(CreateEventRequest draft, string? transactionId)
     {
+        var bodyContentType = string.Equals(draft.DescriptionFormat, "html", StringComparison.OrdinalIgnoreCase)
+            ? "html"
+            : "text";
         var payload = new Dictionary<string, object?>
         {
             ["subject"] = draft.Title,
             ["body"] = new Dictionary<string, object?>
             {
-                ["contentType"] = "text",
-                ["content"] = draft.Description ?? string.Empty
+                ["contentType"] = bodyContentType,
+                ["content"] = bodyContentType == "html"
+                    ? EventDescriptionSanitizer.NormalizeHtml(draft.Description ?? string.Empty)
+                    : draft.Description ?? string.Empty
             },
             ["location"] = new Dictionary<string, object?>
             {
@@ -155,6 +161,60 @@ public static class OutlookEventMapper
         if (!string.IsNullOrEmpty(transactionId))
         {
             payload["transactionId"] = transactionId;
+        }
+
+        if (!string.IsNullOrEmpty(draft.Importance))
+        {
+            payload["importance"] = draft.Importance;
+        }
+
+        if (!string.IsNullOrEmpty(draft.Sensitivity))
+        {
+            payload["sensitivity"] = draft.Sensitivity;
+        }
+
+        if (!string.IsNullOrEmpty(draft.ShowAs))
+        {
+            payload["showAs"] = draft.ShowAs;
+        }
+
+        if (draft.Categories is not null)
+        {
+            payload["categories"] = draft.Categories;
+        }
+
+        if (draft.Attendees is not null)
+        {
+            payload["attendees"] = draft.Attendees
+                .Select(attendee => (object)new Dictionary<string, object?>
+                {
+                    ["emailAddress"] = new Dictionary<string, object?>
+                    {
+                        ["name"] = attendee.Name,
+                        ["address"] = attendee.Email
+                    },
+                    ["type"] = attendee.Type
+                })
+                .ToArray();
+        }
+
+        if (draft.IsReminderOn is bool isReminderOn)
+        {
+            payload["isReminderOn"] = isReminderOn;
+            if (isReminderOn && draft.ReminderMinutesBeforeStart is int reminderMinutes)
+            {
+                payload["reminderMinutesBeforeStart"] = reminderMinutes;
+            }
+        }
+
+        if (draft.IsOnlineMeeting is bool isOnlineMeeting)
+        {
+            payload["isOnlineMeeting"] = isOnlineMeeting;
+            if (isOnlineMeeting
+                && string.Equals(draft.OnlineMeetingProvider, "teams", StringComparison.OrdinalIgnoreCase))
+            {
+                payload["onlineMeetingProvider"] = "teamsForBusiness";
+            }
         }
 
         return payload;

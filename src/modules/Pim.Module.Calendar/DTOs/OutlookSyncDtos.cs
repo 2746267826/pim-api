@@ -61,11 +61,11 @@ public sealed record OutlookWriteRequest(
 
 public sealed record OutlookWriteResult(
     string Status,
-    EventResponse? Event,
-    string? LatestOutlookJson,
-    string? LatestEtag,
-    string? ErrorCode,
-    string? ErrorMessage);
+    EventResponse? Event = null,
+    EventResponse? LatestEvent = null,
+    string? LatestEtag = null,
+    string? ErrorCode = null,
+    string? ErrorMessage = null);
 
 public sealed record UpdateOutlookClientIdRequest(Guid ClientId);
 public sealed record OutlookAuthorizationSessionRequest(Guid SessionId);

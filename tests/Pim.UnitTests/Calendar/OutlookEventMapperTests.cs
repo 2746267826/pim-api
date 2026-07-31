@@ -223,6 +223,99 @@ public sealed class OutlookEventMapperTests
     }
 
     [Fact]
+    public void BuildWritePayload_MapsGraphFieldsAndOmitsSourceOnlyValues()
+    {
+        var draft = new CreateEventRequest(
+            PimCalendarId,
+            "Graph Write Fields",
+            "<p>safe</p>",
+            "Room A",
+            new DateTimeOffset(2026, 7, 16, 9, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 16, 10, 0, 0, TimeSpan.Zero),
+            "FREQ=WEEKLY;INTERVAL=1",
+            DescriptionFormat: "html",
+            Importance: "high",
+            Sensitivity: "private",
+            ShowAs: "tentative",
+            Categories: new[] { "Project" },
+            Attendees: new[] { new EventAttendeeDto("Zhang San", "zhangsan@contoso.com") },
+            IsReminderOn: true,
+            ReminderMinutesBeforeStart: 15,
+            IsOnlineMeeting: true,
+            OnlineMeetingProvider: "teams",
+            Organizer: new EventPersonDto("Li Si", "lisi@contoso.com"),
+            OnlineMeetingUrl: "https://teams.microsoft.com/l/meetup-join/xyz",
+            ExternalLink: "https://outlook.office.com/calendar/deeplink/xyz",
+            AttachmentReferences: new[]
+            {
+                new EventAttachmentReferenceDto("file", "attach-1", "report.pdf"),
+            });
+
+        var payload = OutlookEventMapper.BuildWritePayload(draft, "op-graph");
+
+        var body = Assert.IsType<Dictionary<string, object?>>(payload["body"]);
+        Assert.Equal("html", body["contentType"]);
+        Assert.Equal("<p>safe</p>", body["content"]);
+
+        Assert.Equal("high", payload["importance"]);
+        Assert.Equal("private", payload["sensitivity"]);
+        Assert.Equal("tentative", payload["showAs"]);
+        Assert.Equal(new object?[] { "Project" },
+            Assert.IsAssignableFrom<IEnumerable<object?>>(payload["categories"]));
+
+        var attendee = Assert.Single(Assert.IsAssignableFrom<IEnumerable<object?>>(payload["attendees"]));
+        var attendeeMap = Assert.IsType<Dictionary<string, object?>>(attendee);
+        Assert.Equal("required", attendeeMap["type"]);
+        var emailAddress = Assert.IsType<Dictionary<string, object?>>(attendeeMap["emailAddress"]);
+        Assert.Equal("Zhang San", emailAddress["name"]);
+        Assert.Equal("zhangsan@contoso.com", emailAddress["address"]);
+
+        Assert.Equal(true, payload["isReminderOn"]);
+        Assert.Equal(15, payload["reminderMinutesBeforeStart"]);
+        Assert.Equal(true, payload["isOnlineMeeting"]);
+        Assert.Equal("teamsForBusiness", payload["onlineMeetingProvider"]);
+
+        Assert.DoesNotContain("organizer", payload.Keys);
+        Assert.DoesNotContain("onlineMeetingUrl", payload.Keys);
+        Assert.DoesNotContain("onlineMeeting", payload.Keys);
+        Assert.DoesNotContain("externalLink", payload.Keys);
+        Assert.DoesNotContain("attachmentReferences", payload.Keys);
+        Assert.DoesNotContain("recurrence", payload.Keys);
+        Assert.DoesNotContain("responseRequested", payload.Keys);
+        Assert.DoesNotContain("allowNewTimeProposals", payload.Keys);
+        Assert.DoesNotContain("hideAttendees", payload.Keys);
+
+        var reminderOffDraft = new CreateEventRequest(
+            PimCalendarId,
+            "Reminder Off",
+            null,
+            null,
+            new DateTimeOffset(2026, 7, 17, 9, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 17, 10, 0, 0, TimeSpan.Zero),
+            null,
+            IsReminderOn: false);
+
+        var reminderOffPayload = OutlookEventMapper.BuildWritePayload(reminderOffDraft, null);
+        Assert.Equal(false, reminderOffPayload["isReminderOn"]);
+        Assert.DoesNotContain("reminderMinutesBeforeStart", reminderOffPayload.Keys);
+
+        var emptyListsDraft = new CreateEventRequest(
+            PimCalendarId,
+            "Empty Lists",
+            null,
+            null,
+            new DateTimeOffset(2026, 7, 18, 9, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 18, 10, 0, 0, TimeSpan.Zero),
+            null,
+            Categories: Array.Empty<string>(),
+            Attendees: Array.Empty<EventAttendeeDto>());
+
+        var emptyPayload = OutlookEventMapper.BuildWritePayload(emptyListsDraft, null);
+        Assert.Empty(Assert.IsAssignableFrom<IEnumerable<object?>>(emptyPayload["categories"]));
+        Assert.Empty(Assert.IsAssignableFrom<IEnumerable<object?>>(emptyPayload["attendees"]));
+    }
+
+    [Fact]
     public void ApplyGraphEvent_TimedWithPositiveOffset_ConvertsToUtc()
     {
         const string json = """
@@ -889,6 +982,30 @@ public sealed class OutlookEventMapperTests
         Assert.Equal("", body["content"]);
         var location = Assert.IsType<Dictionary<string, object?>>(payload["location"]);
         Assert.Equal("", location["displayName"]);
+    }
+
+    [Fact]
+    public void BuildWritePayload_SanitizesHtmlDescriptionBeforeSendingToGraph()
+    {
+        var draft = new CreateEventRequest(
+            PimCalendarId,
+            "Sanitized Subject",
+            "<p>Safe formatting survives</p><script>alert('xss')</script><a href=\"javascript:alert(1)\">safe link text</a>",
+            "Room C",
+            new DateTimeOffset(2026, 7, 19, 9, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 19, 10, 0, 0, TimeSpan.Zero),
+            null,
+            DescriptionFormat: "html");
+
+        var payload = OutlookEventMapper.BuildWritePayload(draft, null);
+
+        var body = Assert.IsType<Dictionary<string, object?>>(payload["body"]);
+        Assert.Equal("html", body["contentType"]);
+        var content = Assert.IsType<string>(body["content"]);
+        Assert.Contains("<p>Safe formatting survives</p>", content);
+        Assert.Contains("safe link text", content);
+        Assert.DoesNotContain("script", content, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("javascript:", content, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -64,6 +64,19 @@ public sealed class OutlookEventWriteServiceTests
     }
     """;
 
+    private const string LatestConflictGraphEventJson = """
+    {
+        "@odata.etag": "latest-etag",
+        "id": "graph-event-1",
+        "subject": "Latest Subject",
+        "body": {"contentType": "html", "content": "<p>Sanitized latest description</p><script>RAW-CONFLICT-BODY-MARKER</script>"},
+        "start": {"dateTime": "2026-07-08T11:00:00.0000000Z", "timeZone": "UTC"},
+        "end": {"dateTime": "2026-07-08T12:00:00.0000000Z", "timeZone": "UTC"},
+        "location": {"displayName": "Room B"},
+        "FUTURE-CONFLICT-FIELD-MARKER": "TOKEN-CONFLICT-MARKER"
+    }
+    """;
+
     // ---------- Tests ----------
 
     [Fact]
@@ -234,9 +247,9 @@ public sealed class OutlookEventWriteServiceTests
         var result = await service.ExecuteAsync(UserId, request, default);
 
         Assert.Equal("conflict", result.Status);
-        Assert.NotNull(result.LatestOutlookJson);
-        Assert.Contains("latest-etag", result.LatestEtag);
-        Assert.Contains("Latest Subject", result.LatestOutlookJson);
+        Assert.NotNull(result.LatestEvent);
+        Assert.Equal("latest-etag", result.LatestEtag);
+        Assert.Equal("Latest Subject", result.LatestEvent!.Title);
 
         var stored = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == eventId);
         Assert.Equal("Original Title", stored.Title);
@@ -248,6 +261,76 @@ public sealed class OutlookEventWriteServiceTests
         Assert.Equal("failed", batch.Status);
         Assert.Equal(1, batch.ConflictCount);
         Assert.Equal(0, batch.ConfirmationCount);
+    }
+
+    [Fact]
+    public async Task Update_412_ConflictReturnsSanitizedLatestEvent_NoRawJsonOrSecrets()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.PreconditionFailed);
+        handler.Enqueue(HttpStatusCode.OK, LatestConflictGraphEventJson);
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId,
+            ExpectedEtag: "W/\"stale-etag\"");
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        static bool TryGetPropertyIgnoreCase(JsonElement element, string name, out JsonElement value)
+        {
+            foreach (var prop in element.EnumerateObject())
+            {
+                if (string.Equals(prop.Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = prop.Value;
+                    return true;
+                }
+            }
+            value = default;
+            return false;
+        }
+
+        static string? GetPropertyStringIgnoreCase(JsonElement element, string name)
+        {
+            if (TryGetPropertyIgnoreCase(element, name, out var value) &&
+                value.ValueKind == JsonValueKind.String)
+            {
+                return value.GetString();
+            }
+            return null;
+        }
+
+        var serialized = JsonSerializer.Serialize(result);
+        using var json = JsonDocument.Parse(serialized);
+        var root = json.RootElement;
+
+        var status = GetPropertyStringIgnoreCase(root, "status");
+        Assert.NotNull(status);
+        Assert.Equal("conflict", status);
+
+        var latestEtag = GetPropertyStringIgnoreCase(root, "latestEtag");
+        Assert.NotNull(latestEtag);
+        Assert.Contains("latest-etag", latestEtag);
+
+        Assert.True(TryGetPropertyIgnoreCase(root, "latestEvent", out var latestEvent));
+        Assert.Equal(JsonValueKind.Object, latestEvent.ValueKind);
+
+        var title = GetPropertyStringIgnoreCase(latestEvent, "title");
+        Assert.NotNull(title);
+        Assert.NotEmpty(title);
+
+        var description = GetPropertyStringIgnoreCase(latestEvent, "description");
+        Assert.NotNull(description);
+        Assert.Equal("<p>Sanitized latest description</p>", description);
+        Assert.DoesNotContain("<script", description);
+        Assert.False(TryGetPropertyIgnoreCase(root, "latestOutlookJson", out _));
+        Assert.False(TryGetPropertyIgnoreCase(root, "externalMetadataJson", out _));
+        Assert.DoesNotContain("RAW-CONFLICT-BODY-MARKER", serialized);
+        Assert.DoesNotContain("FUTURE-CONFLICT-FIELD-MARKER", serialized);
+        Assert.DoesNotContain("TOKEN-CONFLICT-MARKER", serialized);
     }
 
     [Fact]
@@ -325,7 +408,8 @@ public sealed class OutlookEventWriteServiceTests
         var result = await service.ExecuteAsync(UserId, request, default);
 
         Assert.Equal("conflict", result.Status);
-        Assert.Contains("Latest Subject", result.LatestOutlookJson);
+        Assert.NotNull(result.LatestEvent);
+        Assert.Equal("Latest Subject", result.LatestEvent!.Title);
 
         var stored = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == eventId);
         Assert.Null(stored.DeletedAt);
@@ -1816,6 +1900,27 @@ public sealed class OutlookEventWriteServiceTests
 
         var request = new OutlookWriteRequest(
             "create", bindingId, null, MakeDraft(calendarId), "series", OpId);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.ExecuteAsync(UserId, request, default));
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Empty(handler.Requests);
+        Assert.Empty(await db.Set<OutlookSyncBatchEntity>().ToListAsync());
+    }
+
+    // ---------- Fix 6A: Unified field validation ----------
+
+    [Fact]
+    public async Task Create_InvalidShowAs_RejectedBeforeBatch_NoGraphCall()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        var service = CreateService(db, handler);
+
+        var draft = MakeDraft(calendarId) with { ShowAs = "not-a-status" };
+        var request = new OutlookWriteRequest(
+            "create", bindingId, null, draft, "instance", OpId);
 
         var ex = await Assert.ThrowsAsync<DomainException>(() =>
             service.ExecuteAsync(UserId, request, default));

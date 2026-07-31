@@ -365,7 +365,19 @@ public sealed class OutlookCalendarApiContractTests : IAsyncLifetime
         await _db.SaveChangesAsync();
 
         var handler = _app.Services.GetRequiredService<ContractGraphHandler>();
-        handler.NextResponse = new HttpResponseMessage(HttpStatusCode.PreconditionFailed);
+        handler.QueueResponse(new HttpResponseMessage(HttpStatusCode.PreconditionFailed));
+        handler.QueueResponse(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """
+                {"id":"graph-event-1","subject":"Latest Subject",
+                 "body":{"contentType":"html","content":"<p>Latest Description</p><script>window.alert('graph-xss')</script>"},
+                 "internalDebugNote":"INTERNAL-DEBUG-LEAK",
+                 "start":{"dateTime":"2026-07-13T12:00:00Z","timeZone":"UTC"},
+                 "end":{"dateTime":"2026-07-13T13:00:00Z","timeZone":"UTC"}}
+                """,
+                System.Text.Encoding.UTF8, "application/json")
+        });
 
         var writeResp = await _client.PostAsJsonAsync("/api/v1/calendar/outlook/events/writeback",
             new OutlookWriteRequest(
@@ -384,6 +396,35 @@ public sealed class OutlookCalendarApiContractTests : IAsyncLifetime
                 ClientOperationId: Guid.NewGuid(),
                 ExpectedEtag: "old-etag"));
         Assert.Equal(HttpStatusCode.Conflict, writeResp.StatusCode);
+
+        var body = await writeResp.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("graph-xss", body);
+        Assert.DoesNotContain("INTERNAL-DEBUG-LEAK", body);
+
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+        Assert.True(root.TryGetProperty("data", out var data));
+        Assert.Equal("conflict", GetPropertyStringIgnoreCase(data, "status"));
+        Assert.True(TryGetPropertyIgnoreCase(data, "latestEvent", out var latestEvent));
+        Assert.Equal(JsonValueKind.Object, latestEvent.ValueKind);
+
+        // The writeback command shares the unified EventResponse shape: the
+        // typed conflict payload must expose the same common fields as the
+        // draft (CreateEventRequest) and successful write responses.
+        Assert.NotEmpty(GetPropertyStringIgnoreCase(latestEvent, "title"));
+        Assert.Equal("<p>Latest Description</p>", GetPropertyStringIgnoreCase(latestEvent, "description"));
+        Assert.NotEqual(string.Empty, GetPropertyStringIgnoreCase(latestEvent, "dtStart"));
+        Assert.NotEqual(string.Empty, GetPropertyStringIgnoreCase(latestEvent, "dtEnd"));
+        Assert.Equal("outlook", GetPropertyStringIgnoreCase(latestEvent, "source"));
+        Assert.NotEqual(string.Empty, GetPropertyStringIgnoreCase(latestEvent, "outlookEventId"));
+        Assert.True(TryGetPropertyIgnoreCase(latestEvent, "isAllDay", out _));
+        Assert.True(TryGetPropertyIgnoreCase(latestEvent, "categories", out _));
+        Assert.True(TryGetPropertyIgnoreCase(latestEvent, "attendees", out _));
+        Assert.True(TryGetPropertyIgnoreCase(latestEvent, "isReminderOn", out _));
+        Assert.False(TryGetPropertyIgnoreCase(data, "latestOutlookJson", out _));
+        Assert.False(TryGetPropertyIgnoreCase(data, "externalMetadataJson", out _));
+        Assert.DoesNotContain("externalMetadataJson", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("latestOutlookJson", body, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -982,6 +1023,28 @@ public sealed class OutlookCalendarApiContractTests : IAsyncLifetime
                 """{"value":[{"id":"cal-1","name":"Calendar 1","color":"auto","owner":{"name":"U","address":"u@t"},"isDefaultCalendar":true,"canEdit":true,"canViewPrivateItems":true}]}""",
                 System.Text.Encoding.UTF8, "application/json")
         });
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement value)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+        value = default;
+        return false;
+    }
+
+    private static string GetPropertyStringIgnoreCase(JsonElement element, string propertyName)
+    {
+        if (TryGetPropertyIgnoreCase(element, propertyName, out var value)
+            && value.ValueKind is JsonValueKind.String)
+            return value.GetString() ?? string.Empty;
+        return string.Empty;
     }
 }
 
