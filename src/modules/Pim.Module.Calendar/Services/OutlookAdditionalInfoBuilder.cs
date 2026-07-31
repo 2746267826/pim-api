@@ -27,7 +27,7 @@ public static class OutlookAdditionalInfoBuilder
 
     private static readonly HashSet<string> BlockedRootKeys = new(StringComparer.OrdinalIgnoreCase)
     {
-        "sourceSnapshot", "body", "bodyPreview", "id", "etag",
+        "mappingVersion", "sourceSnapshot", "body", "bodyPreview", "id", "etag",
         "@odata.etag", "changeKey", "iCalUId"
     };
 
@@ -48,14 +48,11 @@ public static class OutlookAdditionalInfoBuilder
 
         AddEntitySyncProperties(entity, syncItems);
 
-        var metadataHasContent = false;
-
         if (metadata is not null)
         {
             foreach (var kvp in metadata.Value.EnumerateObject())
             {
                 var key = kvp.Name;
-                metadataHasContent = true;
 
                 if (BlockedRootKeys.Contains(key))
                     continue;
@@ -99,10 +96,51 @@ public static class OutlookAdditionalInfoBuilder
         if (metadataItems.Count > 0)
             groups.Add(new OutlookAdditionalInfoGroupDto("metadata", "Outlook 字段", metadataItems));
 
-        if (groups.Count == 0 && hiddenFieldCount == 0 && !metadataHasContent)
+        if (groups.Count == 0 && hiddenFieldCount == 0 && (metadata is null || IsBareV2Envelope(metadata.Value)))
             return null;
 
         return new OutlookAdditionalInfoDto(groups, hiddenFieldCount);
+    }
+
+    // An envelope is "bare" when it carries nothing user-visible, so Build()
+    // may return null instead of an empty DTO. This covers:
+    // - a v2 envelope that has a mappingVersion but only plumbing keys
+    //   (blocked root keys such as sourceSnapshot, or an empty unmapped object);
+    // - an empty object, which is what legacy (pre-v2) records produced when
+    //   no metadata existed.
+    // Any other key means the envelope holds content that must be rendered,
+    // which keeps v1 records with arbitrary keys compatible.
+    private static bool IsBareV2Envelope(JsonElement metadata)
+    {
+        var hasMappingVersion = false;
+        var hasOnlyNoopKeys = false;
+
+        foreach (var kvp in metadata.EnumerateObject())
+        {
+            var key = kvp.Name;
+
+            if (key.Equals("mappingVersion", StringComparison.OrdinalIgnoreCase))
+            {
+                hasMappingVersion = true;
+                continue;
+            }
+
+            if (BlockedRootKeys.Contains(key))
+            {
+                hasOnlyNoopKeys = true;
+                continue;
+            }
+
+            if (IsUnmappedKey(key) && kvp.Value.ValueKind == JsonValueKind.Object && !kvp.Value.EnumerateObject().Any())
+            {
+                hasOnlyNoopKeys = true;
+                continue;
+            }
+
+            return false;
+        }
+
+        return hasMappingVersion || !hasOnlyNoopKeys;
     }
 
     private static void AddEntitySyncProperties(EventEntity entity, List<OutlookAdditionalInfoItemDto> syncItems)

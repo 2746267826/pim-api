@@ -20,7 +20,10 @@ public sealed class GraphCalendarClient
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(30);
 
     private static readonly string CalendarEventSelect =
-        "id,subject,body,start,end,location,isAllDay,type,seriesMasterId,recurrence,iCalUId,changeKey,originalStartTimeZone,originalEndTimeZone";
+        "id,subject,body,start,end,location,isAllDay,type,seriesMasterId,recurrence,iCalUId,changeKey,originalStartTimeZone,originalEndTimeZone" +
+        ",importance,sensitivity,showAs,categories,isReminderOn,reminderMinutesBeforeStart" +
+        ",organizer,attendees,isOnlineMeeting,onlineMeetingProvider,onlineMeeting,webLink" +
+        ",responseRequested,allowNewTimeProposals,hideAttendees,hasAttachments";
 
     private readonly HttpClient _httpClient;
     private readonly IOutlookAccessTokenProvider _tokenProvider;

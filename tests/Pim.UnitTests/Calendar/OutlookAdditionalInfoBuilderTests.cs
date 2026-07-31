@@ -289,6 +289,74 @@ public sealed class OutlookAdditionalInfoBuilderTests
     }
 
     [Fact]
+    public void Build_ReturnsNull_ForBareV2Envelope()
+    {
+        var entity = new EventEntity
+        {
+            Source = "outlook",
+            ExternalMetadataJson = /*lang=json,strict*/ """
+            {
+                "mappingVersion": 2,
+                "sourceSnapshot": {
+                    "body": { "contentType": "html", "content": "raw body content" },
+                    "event": {
+                        "attendees": [
+                            { "status": { "response": "accepted" }, "emailAddress": { "address": "guest@example.test" } }
+                        ],
+                        "onlineMeeting": { "conferenceId": "987654321", "tollNumber": "+1 555 0100" }
+                    }
+                },
+                "unmapped": {}
+            }
+            """,
+        };
+
+        var result = OutlookAdditionalInfoBuilder.Build(entity);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void Build_WithV2EnvelopeAndUnmappedContent_DoesNotLeakSnapshotOrCountMappingVersion()
+    {
+        var entity = new EventEntity
+        {
+            Source = "outlook",
+            ExternalMetadataJson = /*lang=json,strict*/ """
+            {
+                "mappingVersion": 2,
+                "sourceSnapshot": {
+                    "body": { "content": "raw body content" },
+                    "event": {
+                        "attendees": [
+                            { "status": { "response": "accepted" }, "emailAddress": { "address": "guest@example.test" } }
+                        ],
+                        "onlineMeeting": { "conferenceId": "987654321" }
+                    }
+                },
+                "unmapped": {
+                    "responseRequested": true
+                }
+            }
+            """,
+        };
+
+        var result = OutlookAdditionalInfoBuilder.Build(entity);
+
+        Assert.NotNull(result);
+        Assert.Equal(0, result.HiddenFieldCount);
+
+        var allKeys = string.Join(" ", result.Groups.SelectMany(g => g.Items).Select(i => i.Key));
+        var allValues = string.Join(" ", result.Groups.SelectMany(g => g.Items).Select(i => i.Value));
+        Assert.Contains("responseRequested", allKeys);
+        Assert.DoesNotContain("sourceSnapshot", allKeys, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("mappingVersion", allKeys, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("raw body content", allValues, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("guest@example.test", allValues, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("987654321", allValues, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Build_ReturnsNull_ForManualEvent()
     {
         var entity = new EventEntity

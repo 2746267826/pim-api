@@ -168,6 +168,95 @@ public sealed class GraphCalendarClientTests
     }
 
     [Fact]
+    public async Task GetCalendarViewAsync_SelectIncludesTask3Fields()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        var start = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero);
+        var end = new DateTimeOffset(2026, 7, 31, 0, 0, 0, TimeSpan.Zero);
+        await CollectPages(client.GetCalendarViewAsync(ConnectionId, "cal1", start, end, default));
+
+        var uri = handler.Requests[0].RequestUri!.AbsoluteUri;
+        Assert.Contains("hasAttachments", uri);
+        Assert.DoesNotContain("singleValueExtendedProperties", uri);
+        Assert.DoesNotContain("multiValueExtendedProperties", uri);
+        Assert.Contains("importance", uri);
+        Assert.Contains("sensitivity", uri);
+        Assert.Contains("showAs", uri);
+        Assert.Contains("categories", uri);
+        Assert.Contains("isReminderOn", uri);
+        Assert.Contains("reminderMinutesBeforeStart", uri);
+        Assert.Contains("organizer", uri);
+        Assert.Contains("attendees", uri);
+        Assert.Contains("isOnlineMeeting", uri);
+        Assert.Contains("onlineMeetingProvider", uri);
+        Assert.Contains("onlineMeeting", uri);
+        Assert.Contains("webLink", uri);
+        Assert.Contains("responseRequested", uri);
+        Assert.Contains("hideAttendees", uri);
+        Assert.Contains("allowNewTimeProposals", uri);
+    }
+
+    [Fact]
+    public async Task GetEventsAsync_SelectIncludesTask3Fields()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        await CollectPages(client.GetEventsAsync(ConnectionId, "cal1", default));
+
+        var uri = handler.Requests[0].RequestUri!.AbsoluteUri;
+        Assert.Contains("hasAttachments", uri);
+        Assert.DoesNotContain("singleValueExtendedProperties", uri);
+        Assert.DoesNotContain("multiValueExtendedProperties", uri);
+        Assert.Contains("importance", uri);
+        Assert.Contains("sensitivity", uri);
+        Assert.Contains("showAs", uri);
+        Assert.Contains("categories", uri);
+        Assert.Contains("isReminderOn", uri);
+        Assert.Contains("reminderMinutesBeforeStart", uri);
+        Assert.Contains("organizer", uri);
+        Assert.Contains("attendees", uri);
+        Assert.Contains("isOnlineMeeting", uri);
+        Assert.Contains("onlineMeetingProvider", uri);
+        Assert.Contains("onlineMeeting", uri);
+        Assert.Contains("webLink", uri);
+        Assert.Contains("responseRequested", uri);
+        Assert.Contains("hideAttendees", uri);
+        Assert.Contains("allowNewTimeProposals", uri);
+    }
+
+    [Fact]
+    public async Task GetEventAsync_SelectIncludesTask3Fields()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(HttpStatusCode.OK, """{"id":"e1","subject":"S"}""");
+
+        var result = await client.GetEventAsync(ConnectionId, "cal1", "e1", default);
+
+        var uri = handler.Requests[0].RequestUri!.AbsoluteUri;
+        Assert.Contains("hasAttachments", uri);
+        Assert.DoesNotContain("singleValueExtendedProperties", uri);
+        Assert.DoesNotContain("multiValueExtendedProperties", uri);
+        Assert.Contains("importance", uri);
+        Assert.Contains("sensitivity", uri);
+        Assert.Contains("showAs", uri);
+        Assert.Contains("categories", uri);
+        Assert.Contains("isReminderOn", uri);
+        Assert.Contains("reminderMinutesBeforeStart", uri);
+        Assert.Contains("organizer", uri);
+        Assert.Contains("attendees", uri);
+        Assert.Contains("isOnlineMeeting", uri);
+        Assert.Contains("onlineMeetingProvider", uri);
+        Assert.Contains("onlineMeeting", uri);
+        Assert.Contains("webLink", uri);
+        Assert.Contains("responseRequested", uri);
+        Assert.Contains("hideAttendees", uri);
+        Assert.Contains("allowNewTimeProposals", uri);
+    }
+
+    [Fact]
     public async Task GetEventAsync_NotFound_ReturnsNull()
     {
         var (client, handler, _, _) = CreateClient();

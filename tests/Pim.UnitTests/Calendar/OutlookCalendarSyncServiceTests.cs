@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.IO;
 using System.Net;
 using System.Data.Common;
 using System.Text.Json;
@@ -2804,6 +2805,70 @@ public sealed class OutlookCalendarSyncServiceTests
         Assert.Equal(3, batch.ReadCount);
         Assert.Equal(3, batch.CreatedCount);
         Assert.Equal(0, batch.UpdatedCount);
+    }
+
+    [Fact]
+    public async Task FullResources_BackfillsEmptyExternalMetadataWithVersion2AndTypedFields()
+    {
+        var fixturePath = Path.Combine(AppContext.BaseDirectory, "Calendar", "Fixtures", "graph-event-pr2.json");
+        Assert.True(File.Exists(fixturePath), $"Fixture not copied to test output: {fixturePath}");
+        var fixtureJson = File.ReadAllText(fixturePath);
+
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+        var oldEvent = new EventEntity
+        {
+            CalendarId = calId,
+            OutlookCalendarBindingId = bindingId,
+            OutlookConnectionId = ConnectionId,
+            OutlookEventId = "pr2-fixture-event",
+            Uid = "pr2-fixture@outlook.test",
+            Title = "Old Title",
+            DtStart = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 1, 1, 1, 0, 0, TimeSpan.Zero),
+            Source = "outlook",
+            ExternalMetadataJson = "{}"
+        };
+        db.Set<EventEntity>().Add(oldEvent);
+        await db.SaveChangesAsync();
+        var oldEventId = oldEvent.Id;
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(fixtureJson));
+        var graph = CreateGraphClient(handler);
+        var service = CreateService(db, graph);
+
+        await service.SyncAsync(UserId, new OutlookSyncRequest("full-resources"), CancellationToken.None);
+
+        var reloaded = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .FirstAsync(e => e.Id == oldEventId);
+        Assert.Equal(oldEventId, reloaded.Id);
+        Assert.Equal("high", reloaded.Importance);
+        Assert.Equal("private", reloaded.Sensitivity);
+        Assert.Equal("tentative", reloaded.ShowAs);
+        Assert.Equal("html", reloaded.DescriptionFormat);
+        Assert.True(reloaded.IsReminderOn);
+        Assert.Equal(15, reloaded.ReminderMinutesBeforeStart);
+        Assert.Equal("teams", reloaded.OnlineMeetingProvider);
+        Assert.True(reloaded.IsOnlineMeeting);
+        Assert.Equal("https://teams.microsoft.com/l/meetup-join/xxx", reloaded.OnlineMeetingUrl);
+        Assert.Equal("https://outlook.office.com/calendar/deeplink/xxx", reloaded.ExternalLink);
+        Assert.DoesNotContain("<h1>", reloaded.Description);
+        Assert.NotEqual("{}", reloaded.ExternalMetadataJson);
+        using var metaDoc = JsonDocument.Parse(reloaded.ExternalMetadataJson);
+        Assert.Equal(2, metaDoc.RootElement.GetProperty("mappingVersion").GetInt32());
+
+        using var orgDoc = JsonDocument.Parse(reloaded.OrganizerJson!);
+        Assert.Equal("张三", orgDoc.RootElement.GetProperty("name").GetString());
+        Assert.Equal("zhangsan@contoso.com", orgDoc.RootElement.GetProperty("email").GetString());
+
+        using var attDoc = JsonDocument.Parse(reloaded.AttendeesJson);
+        var atts = attDoc.RootElement.EnumerateArray().ToList();
+        Assert.Single(atts);
+        Assert.Equal("required", atts[0].GetProperty("type").GetString());
+        Assert.Equal("李四", atts[0].GetProperty("name").GetString());
+        Assert.Equal("lisi@contoso.com", atts[0].GetProperty("email").GetString());
     }
 
     [Fact]

@@ -1,0 +1,79 @@
+{
+  "@odata.etag": "W/\"pr2-fixture-etag\"",
+  "id": "pr2-fixture-event",
+  "iCalUId": "pr2-fixture@outlook.test",
+  "subject": "Task 3 完整字段测试",
+  "body": {
+    "contentType": "html",
+    "content": "<h1>会议通知</h1><p>请准时参加</p>"
+  },
+  "bodyPreview": "会议通知 请准时参加",
+  "importance": "high",
+  "sensitivity": "private",
+  "showAs": "tentative",
+  "categories": ["蓝组会议", "产品评审"],
+  "isReminderOn": true,
+  "reminderMinutesBeforeStart": 15,
+  "start": {
+    "dateTime": "2026-08-15T14:00:00.0000000",
+    "timeZone": "Asia/Shanghai"
+  },
+  "end": {
+    "dateTime": "2026-08-15T15:00:00.0000000",
+    "timeZone": "Asia/Shanghai"
+  },
+  "originalStartTimeZone": "Asia/Shanghai",
+  "originalEndTimeZone": "Asia/Shanghai",
+  "location": {
+    "displayName": "上海办公室 3F 会议室 A"
+  },
+  "isAllDay": false,
+  "type": "singleInstance",
+  "changeKey": "pr2-ck",
+  "recurrence": null,
+  "seriesMasterId": null,
+  "organizer": {
+    "emailAddress": {"name": "张三", "address": "zhangsan@contoso.com"}
+  },
+  "attendees": [
+    {
+      "type": "required",
+      "status": {"response": "accepted", "time": "2026-08-10T09:00:00Z"},
+      "emailAddress": {"name": "李四", "address": "lisi@contoso.com"}
+    }
+  ],
+  "responseRequested": true,
+  "hideAttendees": false,
+  "responseStatus": {
+    "response": "organizer",
+    "time": "2026-08-10T08:00:00Z"
+  },
+  "allowNewTimeProposals": true,
+  "isOnlineMeeting": true,
+  "onlineMeetingProvider": "teamsForBusiness",
+  "onlineMeeting": {
+    "joinUrl": "https://teams.microsoft.com/l/meetup-join/xxx",
+    "conferenceId": "123456789",
+    "tollNumber": "+86 21 1234 5678"
+  },
+  "webLink": "https://outlook.office.com/calendar/deeplink/xxx",
+  "hasAttachments": true,
+  "singleValueExtendedProperties": [
+    {
+      "id": "String {00020329-0000-0000-C000-000000000046} name x-custom-tag",
+      "value": "custom-value-1"
+    }
+  ],
+  "multiValueExtendedProperties": [
+    {
+      "id": "String[] {00020329-0000-0000-C000-000000000046} name x-custom-tags",
+      "value": ["tag-a", "tag-b"]
+    }
+  ],
+  "futureGraphField": {
+    "nested": {
+      "version": 2,
+      "feature": "predictive-scheduling"
+    }
+  }
+}

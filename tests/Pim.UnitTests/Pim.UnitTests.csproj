@@ -35,4 +35,10 @@
     <ProjectReference Include="..\..\src\modules\Pim.Module.Mobile\Pim.Module.Mobile.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="Calendar\Fixtures\graph-event-pr2.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>
