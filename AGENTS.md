@@ -18,7 +18,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 ## Branch, PR, And GitHub Actions Workflow
 
 - All file-changing work must happen on a non-`master` branch.
-- Create branches with the `codex/` prefix unless the user asks for another branch name.
+- Create branches with an `{agent}-{os}/{topic}` prefix (e.g. `reasonix-win/location-fix`, `claude-linux/api-build`) unless the user asks for another branch name. `agent` is the AI agent's name, `os` is the operating system the agent runs on (`win` or `linux`), and `topic` is a short kebab-case English summary of the branch's purpose.
 - Make focused commits at suitable checkpoints. Push the working branch to GitHub when creating a PR, enabling CI visibility, handing work off, or preserving a useful checkpoint.
 - Open a pull request for all file-changing work.
 - After opening or updating a PR, wait for triggered GitHub Actions checks and confirm they pass before calling the task complete.
