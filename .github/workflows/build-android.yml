@@ -73,8 +73,8 @@ jobs:
 
       - name: Install Android SDK packages (if missing)
         run: |
-          if [ ! -d "$ANDROID_HOME/platforms/android-34" ]; then
-            sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          if [ ! -d "$ANDROID_HOME/platforms/android-36.1" ]; then
+            sdkmanager "platforms;android-36.1" "build-tools;36.1.0"
           fi
 
       - uses: gradle/actions/setup-gradle@v3
