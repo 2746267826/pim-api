@@ -24,6 +24,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - After opening or updating a PR, wait for triggered GitHub Actions checks and confirm they pass before calling the task complete.
 - If no GitHub Actions workflow is triggered because the changed files do not match workflow path filters, state that explicitly instead of waiting.
 - Do not modify `.github/workflows/*` unless the task is specifically about CI/release automation or the user explicitly asks for it. If a workflow change is unavoidable, explain why before editing it.
+- Write PR titles and descriptions in both English and Simplified Chinese.
 
 ## Parallel Agent Workflow
 
@@ -35,7 +36,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - Keep generated outputs out of commits: `bin/`, `obj/`, `build/`, `dist/`, `publish/PimDaemon/`, `publish/*.zip`, `.dotnet-*`, `.superpowers/brainstorm/`, npm caches, and API `wwwroot` build artifacts.
 - Commit source changes, tests, scripts, and docs that are needed to reproduce the current runnable version.
 - Keep API and daemon defaults aligned. The local API is expected at `http://127.0.0.1:5858`, and the Windows daemon default server URL should match it.
-- Use focused commits with conventional messages such as `feat:`, `fix:`, `docs:`, or `chore:`.
+- Use focused commits with conventional messages such as `feat:`, `fix:`, `docs:`, or `chore:`. Write both commit messages (titles & descriptions) and PR titles/descriptions in bilingual format (English and Simplified Chinese).
 
 ## Before Pushing Or Opening A PR
 
