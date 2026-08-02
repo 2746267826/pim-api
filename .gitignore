@@ -28,6 +28,8 @@ src/Pim.Api/wwwroot/
 .superpowers/brainstorm/
 objTestDuration/
 docker-compose.override.yml
+.gradle/
+local.properties
 
 # Production log reader — DO NOT commit private key
 .reasonix/production-log-key
