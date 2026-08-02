@@ -76,6 +76,17 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - **C1. Maximize parallelism, serialize writes.** Read/investigation/review tasks run in parallel; file-writing tasks serialize or declare non-overlapping paths.
 - **C2. Leave resumable state when interrupted.** End sessions by stating the current step and what the next agent should do first.
 
+## Production Log Access
+
+生产服务器日志通过受限 SSH 只读访问，封装为 `production-log-reader` skill。
+
+- **密钥位置**: `.reasonix/production-log-key`（私钥，已生成）和 `.reasonix/production-log-key.pub`（公钥，用于服务器配置）
+- **服务器端**: 在 Ubuntu 生产服务器上部署 `.reasonix/skills/production-log-reader/scripts/log-reader.sh` 到 `/usr/local/bin/pim-log-reader.sh`，使用 `setup-server.sh` 参考脚本完成配置
+- **安全限制**: 每次 SSH 会话最多 10MB，每条命令最多 200 行，仅允许读取 `/data/pim/logs/*.jsonl` 和 systemd journal，禁止路径穿越
+- **前置条件**: 服务器 SSH 主机密钥已确认、公钥已配置到 `authorized_keys` 的 `command=` 限制中
+- **使用方式**: 调用 `production-log-reader` skill 或直接执行 `ssh -i .reasonix/production-log-key logreader@<server-ip> <command>`
+- **配置简化**: 建议在 `~/.ssh/config` 中添加 `Host pim-log-prod` 别名
+
 ### Repository gates (verified baselines)
 
 | Gate | Command | Baseline |
