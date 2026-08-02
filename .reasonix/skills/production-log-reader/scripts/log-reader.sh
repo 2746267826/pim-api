@@ -166,12 +166,18 @@ case "$CMD" in
     journal)
         SINCE="24h ago"
         LINES=50
-        if [[ ${#REMAINING[@]} -ge 1 ]]; then
-            SINCE="${REMAINING[0]}"
-        fi
-        if [[ ${#REMAINING[@]} -ge 2 ]]; then
-            LINES="${REMAINING[1]#lines=}"
-            validate_lines "$LINES"
+        SINCE_ARGS=()
+        # Extract lines=N from args; join the rest as the since value (may contain spaces)
+        for arg in "${REMAINING[@]}"; do
+            if [[ "$arg" == lines=* ]]; then
+                LINES="${arg#lines=}"
+                validate_lines "$LINES"
+            else
+                SINCE_ARGS+=("$arg")
+            fi
+        done
+        if [[ ${#SINCE_ARGS[@]} -gt 0 ]]; then
+            SINCE="${SINCE_ARGS[*]}"
         fi
         check_quota $(lines_to_bytes "$LINES")
         exec journalctl --since "$SINCE" --no-pager -n "$LINES" --unit=pim-api.service 2>/dev/null || \

@@ -14,6 +14,16 @@ runAs: inline
 - 服务器端已部署 `log-reader.sh` 并配置 `authorized_keys` 的 `command=` 限制
 - 服务器 SSH 主机密钥已确认
 
+### Windows 私钥权限修复（常见问题）
+
+Windows 的 OpenSSH 要求私钥文件只能被当前用户访问，否则报 `Bad permissions` / `UNPROTECTED PRIVATE KEY FILE`。修复（CMD）：
+
+```cmd
+icacls "C:/Users/a2746/Desktop/0/PIM/pim-platform-master/.reasonix/production-log-key" /inheritance:r /grant:r "%USERNAME%:F"
+```
+
+PowerShell 版本把 `%USERNAME%` 换成 `$env:USERNAME`。
+
 ## 快速使用
 
 ```bash
@@ -27,7 +37,7 @@ ssh -i .reasonix/production-log-key logreader@<server-ip> tail pim-api-20260802.
 ssh -i .reasonix/production-log-key logreader@<server-ip> find 'ERROR'
 
 # 查看 systemd journal
-ssh -i .reasonix/production-log-key logreader@<server-ip> journal '2h ago' lines=50
+ssh -i .reasonix/production-log-key logreader@<server-ip> journal 2h ago lines=50
 
 # 查看日志目录大小
 ssh -i .reasonix/production-log-key logreader@<server-ip> du
@@ -58,7 +68,7 @@ ssh pim-log-prod tail pim-api-20260802.jsonl lines=100
 | `tail` | 查看日志文件尾部 | `tail pim-api-20260802.jsonl lines=100` |
 | `cat` | 查看日志文件开头 | `cat pim-api-20260802.jsonl lines=50` |
 | `ls` | 列出日志目录文件 | `ls` 或 `ls pim-api-*.jsonl` |
-| `journal` | 查看 systemd journal | `journal '30 min ago' lines=50` |
+| `journal` | 查看 systemd journal | `journal 30 min ago lines=50`（since 含空格时**不要加引号**，服务器端自动拼接） |
 | `du` | 查看日志目录大小 | `du` |
 | `find` | 搜索关键词 | `find 'ERROR'` 或 `find 'TimeoutException' pim-api-20260802.jsonl` |
 | `help` | 显示帮助 | 无参数连接 |
