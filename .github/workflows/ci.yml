@@ -51,9 +51,10 @@ jobs:
       android: ${{ steps.flags.outputs.android }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - id: filter
-        if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@v3
         with:
           filters: |
@@ -94,11 +95,12 @@ jobs:
       - id: flags
         shell: bash
         run: |
-          # master / workflow_dispatch: always build all
-          # PR: path filters; force_all or infra (ci.yml / resolve-version / scripts/ci) => all
+          # workflow_dispatch: force_all or always build all
+          # push (master) / pull_request: path filters; infra changes or first push => all
           FORCE_ALL="${{ github.event_name == 'workflow_dispatch' && inputs.force_all || false }}"
-          if [ "${{ github.event_name }}" != "pull_request" ] \
-            || [ "$FORCE_ALL" = "true" ] \
+          FIRST_PUSH="${{ github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000' || false }}"
+          if [ "$FORCE_ALL" = "true" ] \
+            || [ "$FIRST_PUSH" = "true" ] \
             || [ "${{ steps.filter.outputs.infra }}" = "true" ]; then
             echo "all=true" >> "$GITHUB_OUTPUT"
             echo "api=true" >> "$GITHUB_OUTPUT"
@@ -189,7 +191,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: read
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download release artifacts
         uses: actions/download-artifact@v8
         with:
@@ -197,12 +204,24 @@ jobs:
           merge-multiple: true
           path: release-assets
 
+      - name: Build release notes from merged PRs
+        id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NOTES="$(bash scripts/ci/build-release-notes.sh \
+            --repo "${{ github.repository }}" \
+            --to-tag "v${{ needs.resolve-version.outputs.version }}")"
+          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$NOTES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.resolve-version.outputs.version }}
           name: v${{ needs.resolve-version.outputs.version }}
-          generate_release_notes: true
+          body: ${{ steps.notes.outputs.notes }}
           files: |
             release-assets/pim-api-*.tar.gz
             release-assets/pim-web-*.tar.gz
