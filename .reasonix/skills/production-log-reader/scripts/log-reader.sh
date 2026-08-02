@@ -156,7 +156,8 @@ case "$CMD" in
             fi
             # Quick check: ls output is small, < 1MB
             check_quota 50000
-            exec ls -lh "${LOG_DIR}/${PATTERN}" 2>/dev/null || { echo "无匹配文件"; exit 0; }
+            # NOTE: no quotes around the glob so it expands; PATTERN is validated to contain no spaces
+            ls -lh ${LOG_DIR}/${PATTERN} 2>/dev/null || echo "无匹配文件"
         else
             check_quota 50000
             exec ls -lh "${LOG_DIR}/"
@@ -180,8 +181,8 @@ case "$CMD" in
             SINCE="${SINCE_ARGS[*]}"
         fi
         check_quota $(lines_to_bytes "$LINES")
-        exec journalctl --since "$SINCE" --no-pager -n "$LINES" --unit=pim-api.service 2>/dev/null || \
-            exec journalctl --since "$SINCE" --no-pager -n "$LINES" 2>/dev/null
+        journalctl --since "$SINCE" --no-pager -n "$LINES" --unit=pim-api.service 2>/dev/null || \
+            journalctl --since "$SINCE" --no-pager -n "$LINES" 2>/dev/null
         ;;
 
     du)
@@ -205,7 +206,7 @@ case "$CMD" in
                 exit 1
             fi
             check_quota 524288  # 512KB for search
-            exec grep -h -i --max-count="$MAX_MATCHES" "$KEYWORD" "$FILEPATH" 2>/dev/null || echo "无匹配"
+            grep -h -i --max-count="$MAX_MATCHES" "$KEYWORD" "$FILEPATH" 2>/dev/null || echo "无匹配"
         else
             # Search recent 3 files
             check_quota 1048576  # 1MB for multi-file search
