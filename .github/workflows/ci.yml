@@ -43,16 +43,32 @@ jobs:
 
   changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       all: ${{ steps.flags.outputs.all }}
       api: ${{ steps.flags.outputs.api }}
       web: ${{ steps.flags.outputs.web }}
       windows: ${{ steps.flags.outputs.windows }}
       android: ${{ steps.flags.outputs.android }}
+      has_release: ${{ steps.rel.outputs.has_release }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # First-ever master push: no release exists yet, so no artifacts can be
+      # copied from a previous release - force a full build instead.
+      - id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$(gh release list --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || true)"
+          if [[ -n "$TAG" ]]; then
+            echo "has_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_release=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - id: filter
         uses: dorny/paths-filter@v3
@@ -99,8 +115,10 @@ jobs:
           # push (master) / pull_request: path filters; infra changes or first push => all
           FORCE_ALL="${{ github.event_name == 'workflow_dispatch' && inputs.force_all || false }}"
           FIRST_PUSH="${{ github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000' || false }}"
+          NO_RELEASE="${{ github.event_name == 'push' && steps.rel.outputs.has_release == 'false' || false }}"
           if [ "$FORCE_ALL" = "true" ] \
             || [ "$FIRST_PUSH" = "true" ] \
+            || [ "$NO_RELEASE" = "true" ] \
             || [ "${{ steps.filter.outputs.infra }}" = "true" ]; then
             echo "all=true" >> "$GITHUB_OUTPUT"
             echo "api=true" >> "$GITHUB_OUTPUT"
@@ -181,13 +199,13 @@ jobs:
 
   release:
     needs: [resolve-version, summarize, build-api, build-web, build-windows, build-android]
+    # Release on every master push where no build failed. Skipped (unchanged)
+    # components are fine: their assets are copied from the previous release.
     if: |
       always() &&
       needs.resolve-version.outputs.is_release == 'true' &&
-      needs.build-api.result == 'success' &&
-      needs.build-web.result == 'success' &&
-      needs.build-windows.result == 'success' &&
-      needs.build-android.result == 'success'
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -197,14 +215,62 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Docs-only changes build nothing - skip the release entirely.
+      - name: Decide whether to create a release
+        id: decide
+        run: |
+          BUILT=0
+          for r in "${{ needs.build-api.result }}" "${{ needs.build-web.result }}" \
+                    "${{ needs.build-windows.result }}" "${{ needs.build-android.result }}"; do
+            if [ "$r" = "success" ]; then BUILT=$((BUILT+1)); fi
+          done
+          if [ "$BUILT" -gt 0 ]; then
+            echo "do_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "do_release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No component changed; skipping release"
+          fi
+
       - name: Download release artifacts
+        if: steps.decide.outputs.do_release == 'true'
         uses: actions/download-artifact@v8
         with:
           pattern: pim-*
           merge-multiple: true
           path: release-assets
 
+      # For components that were not rebuilt this run, reuse the asset from the
+      # latest release as-is (same file name and version number - the artifact
+      # version stays consistent with its content).
+      - name: Fill missing assets from last release
+        if: steps.decide.outputs.do_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$(gh release list --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || true)"
+          copy_if_missing() {
+            local pattern="$1"
+            if ! ls release-assets/${pattern} >/dev/null 2>&1; then
+              if [[ -z "$TAG" ]]; then
+                echo "::error::No previous release to copy ${pattern} from; run a full build" >&2
+                exit 1
+              fi
+              gh release download "$TAG" --pattern "$pattern" --dir release-assets
+            fi
+          }
+          [ "${{ needs.build-api.result }}" != "success" ] && copy_if_missing 'pim-api-*.tar.gz'
+          [ "${{ needs.build-web.result }}" != "success" ] && copy_if_missing 'pim-web-*.tar.gz'
+          [ "${{ needs.build-windows.result }}" != "success" ] && copy_if_missing 'pim-windows-*.zip'
+          [ "${{ needs.build-android.result }}" != "success" ] && copy_if_missing 'pim-android-*.apk'
+          # Sanity check: every asset family must be present before uploading.
+          for p in pim-api-*.tar.gz pim-web-*.tar.gz pim-windows-*.zip pim-android-*.apk; do
+            ls release-assets/${p} >/dev/null 2>&1 \
+              || { echo "::error::Missing release asset family: ${p}" >&2; exit 1; }
+          done
+          ls -la release-assets/
+
       - name: Build release notes from merged PRs
+        if: steps.decide.outputs.do_release == 'true'
         id: notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -217,6 +283,7 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
+        if: steps.decide.outputs.do_release == 'true'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.resolve-version.outputs.version }}
