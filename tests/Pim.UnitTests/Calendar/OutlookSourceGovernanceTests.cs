@@ -120,7 +120,7 @@ public class OutlookSourceGovernanceTests
     }
 
     [Fact]
-    public async Task DataCenterOutlookSourceIncludesGraphIds()
+    public async Task DataCenterOutlookSourceHidesGraphIds()
     {
         await using var db = CreateDb();
         var calendar = new CalendarEntity { UserId = UserId, Name = "Default", IsDefault = true };
@@ -136,7 +136,9 @@ public class OutlookSourceGovernanceTests
             PendingOnly: false));
 
         var item = Assert.Single(result.Items);
-        Assert.Contains("GraphEventId=outlook-1", item.Summary);
+        Assert.DoesNotContain("outlook-1", item.Summary);
+        Assert.DoesNotContain("GraphEventId=", item.Summary);
+        Assert.DoesNotContain("ChangeKey=", item.Summary);
     }
 
     private static EventEntity Event(CalendarEntity calendar, string outlookId, string title, string source)

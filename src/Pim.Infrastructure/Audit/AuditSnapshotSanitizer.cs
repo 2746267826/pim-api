@@ -16,7 +16,7 @@ public static partial class AuditSnapshotSanitizer
     // Mirrors the client-side LEGACY_SENSITIVE_KEY_PATTERN in
     // src/client-web/src/utils/eventFieldDiff.ts so the API no longer ships raw values.
     [GeneratedRegex(
-        "(metadata|raw|body|header|secret|token|password|etag|change[_-]?key|outlook.*id|graph|ical[-_]?uid|recurrence[-_]?id|source[-_]?ics[-_]?component)",
+        "(metadata|raw|body|header|secret|token|password|etag|change[_-]?key|outlook.*id|graph|ical[-_]?uid|recurrence[-_]?id|source[-_]?ics[-_]?component|delta[-_]?link)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex SensitiveKeyRegex();
 

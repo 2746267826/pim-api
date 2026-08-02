@@ -242,7 +242,7 @@ public class OutlookSyncService
 
                 if (!string.IsNullOrWhiteSpace(page.NextLink))
                 {
-                    AddStep(steps, "Follow nextLink", "completed", page.NextLink);
+                    AddStep(steps, "Follow nextLink", "completed", "Pagination continued.");
                     nextUrl = page.NextLink;
                     continue;
                 }
@@ -250,7 +250,7 @@ public class OutlookSyncService
                 if (!string.IsNullOrWhiteSpace(page.DeltaLink))
                 {
                     connection.DeltaLink = page.DeltaLink;
-                    AddStep(steps, "Store deltaLink", "completed", page.DeltaLink);
+                    AddStep(steps, "Store deltaLink", "completed", "Delta link stored.");
                 }
 
                 nextUrl = null;
