@@ -24,7 +24,7 @@ public sealed class OutlookEventWriteService
         CalendarAuditWriter audit,
         TimeProvider timeProvider,
         ILogger<OutlookEventWriteService> logger)
-        : this(db, graph, new EventAttachmentService(db), audit, timeProvider, logger)
+        : this(db, graph, new EventAttachmentService(db, graph), audit, timeProvider, logger)
     {
     }
 
@@ -215,9 +215,11 @@ public sealed class OutlookEventWriteService
 
         try
         {
+            var expectedEtag = await ResolveWriteEtagAsync(
+                localEvent, request.Scope, request.ExpectedEtag!, ct);
             var graphResult = await _graph.UpdateEventAsync(
                 connection.Id, binding.GraphCalendarId, graphTargetId,
-                request.ExpectedEtag!, payload, ct);
+                expectedEtag, payload, ct);
 
             var resultGraphId = graphResult.GetProperty("id").GetString()!;
             EventEntity targetEntity;
@@ -321,7 +323,7 @@ public sealed class OutlookEventWriteService
         {
             return await HandleReauthAsync(connection, batch, binding.Name, "update", localEvent.Id, localEvent.Title);
         }
-        catch (GraphRequestException ex) when (ex.StatusCode == HttpStatusCode.PreconditionFailed)
+        catch (GraphRequestException ex) when (ex.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict)
         {
             try
             {
@@ -368,15 +370,17 @@ public sealed class OutlookEventWriteService
 
         try
         {
+            var expectedEtag = await ResolveWriteEtagAsync(
+                localEvent, request.Scope, request.ExpectedEtag!, ct);
             await _graph.DeleteEventAsync(
                 connection.Id, binding.GraphCalendarId, graphTargetId,
-                request.ExpectedEtag!, ct);
+                expectedEtag, ct);
         }
         catch (OutlookReauthenticationRequiredException)
         {
             return await HandleReauthAsync(connection, batch, binding.Name, "delete", localEvent.Id, localEvent.Title);
         }
-        catch (GraphRequestException ex) when (ex.StatusCode == HttpStatusCode.PreconditionFailed)
+        catch (GraphRequestException ex) when (ex.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict)
         {
             try
             {
@@ -498,6 +502,23 @@ public sealed class OutlookEventWriteService
             ? evt.OutlookSeriesMasterId ?? evt.OutlookEventId!
             : evt.OutlookEventId!;
 
+    private async Task<string> ResolveWriteEtagAsync(
+        EventEntity evt, string scope, string requestEtag, CancellationToken ct)
+    {
+        if (scope == "series" && !string.IsNullOrEmpty(evt.OutlookSeriesMasterId))
+        {
+            var masterEtag = await _db.Set<EventEntity>()
+                .IgnoreQueryFilters()
+                .Where(e => e.OutlookCalendarBindingId == evt.OutlookCalendarBindingId
+                    && e.OutlookEventId == evt.OutlookSeriesMasterId)
+                .Select(e => e.OutlookEtag)
+                .FirstOrDefaultAsync(ct);
+            if (!string.IsNullOrEmpty(masterEtag))
+                return masterEtag;
+        }
+        return requestEtag;
+    }
+
     private async Task<OutlookWriteResult> HandleConflictAsync(
         OutlookCalendarBindingEntity binding, EventEntity localEvent,
         string graphCalendarId, string graphEventId,
@@ -563,8 +584,45 @@ public sealed class OutlookEventWriteService
             OutlookEventMapper.ApplyGraphEvent(
                 transient, latest.Value, binding.Id, binding.PimCalendarId,
                 binding.ConnectionId, Guid.NewGuid());
+
+            // PR2: the typed latest event must carry remote attachment
+            // references so the client re-compare does not report spurious
+            // attachment diffs. Hydration is best-effort: a failure keeps the
+            // typed latest event usable without attachments.
+            try
+            {
+                var references = await _attachments.GetOutlookAttachmentReferencesAsync(
+                    binding.ConnectionId, graphCalendarId, graphEventId, ct);
+                transient.AttachmentReferencesJson =
+                    EventFieldCodec.SerializeAttachments(references);
+            }
+            catch (OutlookReauthenticationRequiredException)
+            {
+                throw;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Outlook conflict attachment hydration failed for binding {BindingId}, event {EventId}",
+                    binding.Id,
+                    graphEventId);
+            }
+
             latestEtag = transient.OutlookEtag;
             latestEvent = EventResponseMapper.Map(transient);
+        }
+        catch (OutlookReauthenticationRequiredException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {

@@ -265,6 +265,159 @@ public sealed class OutlookEventWriteServiceTests
     }
 
     [Fact]
+    public async Task Update_409_ReturnsConflictLatest_LocalAndAuditUnchanged()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.Conflict);
+        handler.Enqueue(HttpStatusCode.OK, LatestGraphEventJson);
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId,
+            ExpectedEtag: "W/\"stale-etag\"");
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("conflict", result.Status);
+        Assert.NotNull(result.LatestEvent);
+        Assert.Equal("latest-etag", result.LatestEtag);
+        Assert.Equal("Latest Subject", result.LatestEvent!.Title);
+
+        var stored = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == eventId);
+        Assert.Equal("Original Title", stored.Title);
+
+        Assert.False(await db.AuditLogs.AnyAsync());
+    }
+
+    [Fact]
+    public async Task Update_412_ConflictLatestIncludesRemoteAttachmentReferences()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.PreconditionFailed);
+        handler.Enqueue(HttpStatusCode.OK, LatestGraphEventJson);
+        handler.Enqueue(HttpStatusCode.OK, """
+            {"value":[
+                {"@odata.type":"#microsoft.graph.fileAttachment",
+                 "id":"att-1","name":"Report.pdf","contentType":"application/pdf","size":2048,"isInline":false}
+            ]}
+            """);
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId,
+            ExpectedEtag: "W/\"stale-etag\"");
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("conflict", result.Status);
+        var latestEvent = Assert.IsType<EventResponse>(result.LatestEvent);
+        var attachment = Assert.Single(latestEvent.AttachmentReferences ?? []);
+        Assert.Equal("outlook", attachment.Kind);
+        Assert.Equal("att-1", attachment.Id);
+        Assert.Equal("Report.pdf", attachment.Name);
+    }
+
+    [Fact]
+    public async Task Update412_AttachmentHydrationReauth_PropagatesReauth_ConnectionStateReauth()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.PreconditionFailed);
+        handler.Enqueue(HttpStatusCode.OK, LatestGraphEventJson);
+        handler.Enqueue(HttpStatusCode.Unauthorized);
+        handler.Enqueue(HttpStatusCode.Unauthorized);
+        var tokens = new FakeOutlookAccessTokenProvider();
+        var service = CreateService(db, handler, tokens);
+
+        var request = new OutlookWriteRequest(
+            "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId,
+            ExpectedEtag: "W/\"stale-etag\"");
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("reauth-required", result.Status);
+        Assert.Equal("REAUTH_REQUIRED", result.ErrorCode);
+
+        var conn = await db.Set<OutlookConnectionEntity>().FirstAsync();
+        Assert.Equal("reauth-required", conn.Status);
+        Assert.Equal("interaction-required", conn.TokenHealth);
+
+        var stored = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == eventId);
+        Assert.Equal("Original Title", stored.Title);
+        Assert.Null(stored.DeletedAt);
+
+        var batches = await db.Set<OutlookSyncBatchEntity>().ToListAsync();
+        var batch = Assert.Single(batches);
+        Assert.Equal("failed", batch.Status);
+        Assert.Equal(1, batch.FailureCount);
+        Assert.Contains("reauth-required", batch.ErrorSummary);
+    }
+
+    [Fact]
+    public async Task Update412_AttachmentHydrationCancellation_OperationCanceledPropagates()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var cts = new CancellationTokenSource();
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.PreconditionFailed);
+        handler.Enqueue(HttpStatusCode.OK, LatestGraphEventJson);
+        handler.Enqueue(_ =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException();
+        });
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId,
+            ExpectedEtag: "W/\"stale-etag\"");
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.ExecuteAsync(UserId, request, cts.Token));
+
+        db.ChangeTracker.Clear();
+        var stored = await db.Set<EventEntity>().IgnoreQueryFilters().FirstAsync(e => e.Id == eventId);
+        Assert.Equal("Original Title", stored.Title);
+        Assert.Null(stored.DeletedAt);
+        Assert.False(await db.AuditLogs.AnyAsync());
+
+        var batches = await db.Set<OutlookSyncBatchEntity>().ToListAsync();
+        var batch = Assert.Single(batches);
+        Assert.Equal("failed", batch.Status);
+        Assert.Equal(1, batch.FailureCount);
+        Assert.NotNull(batch.FinishedAt);
+    }
+
+    [Fact]
+    public async Task Update412_AttachmentHydrationFailure_StillReturnsConflictWithoutAttachments()
+    {
+        await using var db = CreateDb();
+        var (_, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.PreconditionFailed);
+        handler.Enqueue(HttpStatusCode.OK, LatestGraphEventJson);
+        handler.Enqueue(HttpStatusCode.InternalServerError, """{"error":{"code":"ServerError"}}""");
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "update", bindingId, eventId, MakeDraft(calendarId), "instance", OpId,
+            ExpectedEtag: "W/\"stale-etag\"");
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("conflict", result.Status);
+        Assert.NotNull(result.LatestEvent);
+        Assert.Equal("Latest Subject", result.LatestEvent!.Title);
+        Assert.Empty(result.LatestEvent.AttachmentReferences ?? []);
+    }
+
+    [Fact]
     public async Task Update_412_ConflictReturnsSanitizedLatestEvent_NoRawJsonOrSecrets()
     {
         await using var db = CreateDb();
@@ -752,6 +905,129 @@ public sealed class OutlookEventWriteServiceTests
         Assert.Equal("updated", result.Status);
         var req = Assert.Single(handler.Requests);
         Assert.Contains("graph-series-1", req.RequestUri!.AbsoluteUri);
+    }
+
+    [Fact]
+    public async Task Update_SeriesOccurrence_IfMatchUsesLocalMasterEtag()
+    {
+        await using var db = CreateDb();
+        var (connectionId, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        SeedSeriesMasterAndOccurrence(db, connectionId, bindingId, calendarId);
+        await db.SaveChangesAsync();
+        var occurrence = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .FirstAsync(e => e.OutlookEventId == "graph-occ-1");
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, MasterUpdateResponseJson("graph-series-1"));
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "update", bindingId, occurrence.Id, MakeDraft(calendarId), "series", OpId,
+            ExpectedEtag: "W/\"occ-etag\"");
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("updated", result.Status);
+        var req = Assert.Single(handler.Requests);
+        Assert.Contains("graph-series-1", req.RequestUri!.AbsoluteUri);
+        Assert.Equal("W/\"master-etag\"", req.Headers.IfMatch.ToString());
+    }
+
+    [Fact]
+    public async Task Delete_SeriesOccurrence_IfMatchUsesLocalMasterEtag()
+    {
+        await using var db = CreateDb();
+        var (connectionId, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        SeedSeriesMasterAndOccurrence(db, connectionId, bindingId, calendarId);
+        await db.SaveChangesAsync();
+        var occurrence = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .FirstAsync(e => e.OutlookEventId == "graph-occ-1");
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.NoContent);
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "delete", bindingId, occurrence.Id, null, "series", OpId,
+            ExpectedEtag: "W/\"occ-etag\"");
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("deleted", result.Status);
+        var req = Assert.Single(handler.Requests);
+        Assert.Contains("graph-series-1", req.RequestUri!.AbsoluteUri);
+        Assert.Equal("W/\"master-etag\"", req.Headers.IfMatch.ToString());
+    }
+
+    [Fact]
+    public async Task Update_SeriesOccurrence_NoLocalMasterRow_FallsBackToRequestEtag()
+    {
+        await using var db = CreateDb();
+        var (connectionId, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var occurrenceId = Guid.NewGuid();
+        db.Set<EventEntity>().Add(new EventEntity
+        {
+            Id = occurrenceId,
+            CalendarId = calendarId,
+            Uid = "occ",
+            Title = "Occurrence",
+            DtStart = DateTimeOffset.UtcNow,
+            DtEnd = DateTimeOffset.UtcNow.AddHours(1),
+            Source = "outlook",
+            OutlookEventId = "graph-occ-1",
+            OutlookCalendarBindingId = bindingId,
+            OutlookConnectionId = connectionId,
+            OutlookSeriesMasterId = "graph-series-1",
+            OutlookEventType = "occurrence"
+        });
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, MasterUpdateResponseJson("graph-series-1"));
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "update", bindingId, occurrenceId, MakeDraft(calendarId), "series", OpId,
+            ExpectedEtag: "W/\"occ-etag\"");
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("updated", result.Status);
+        var req = Assert.Single(handler.Requests);
+        Assert.Contains("graph-series-1", req.RequestUri!.AbsoluteUri);
+        Assert.Equal("W/\"occ-etag\"", req.Headers.IfMatch.ToString());
+    }
+
+    [Fact]
+    public async Task Update_SeriesOccurrence_SoftDeletedMasterRow_IfMatchUsesMasterEtag()
+    {
+        await using var db = CreateDb();
+        var (connectionId, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        SeedSeriesMasterAndOccurrence(db, connectionId, bindingId, calendarId);
+        await db.SaveChangesAsync();
+        var master = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .FirstAsync(e => e.OutlookEventId == "graph-series-1");
+        master.DeletedAt = DateTimeOffset.UtcNow.AddDays(-1);
+        master.DeletedByOperationId = Guid.NewGuid();
+        master.DeletedByOperationKind = "outlook-writeback";
+        await db.SaveChangesAsync();
+        var occurrence = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .FirstAsync(e => e.OutlookEventId == "graph-occ-1");
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, MasterUpdateResponseJson("graph-series-1"));
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "update", bindingId, occurrence.Id, MakeDraft(calendarId), "series", OpId,
+            ExpectedEtag: "W/\"occ-etag\"");
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("updated", result.Status);
+        var req = Assert.Single(handler.Requests);
+        Assert.Contains("graph-series-1", req.RequestUri!.AbsoluteUri);
+        Assert.Equal("W/\"master-etag\"", req.Headers.IfMatch.ToString());
     }
 
     [Fact]
@@ -3130,6 +3406,42 @@ public sealed class OutlookEventWriteServiceTests
         return (connectionId, bindingId, calendarId, eventId);
     }
 
+    private static void SeedSeriesMasterAndOccurrence(
+        PimDbContext db, Guid connectionId, Guid bindingId, Guid calendarId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        db.Set<EventEntity>().Add(new EventEntity
+        {
+            Id = Guid.NewGuid(),
+            CalendarId = calendarId,
+            Uid = "master@outlook",
+            Title = "Series Master",
+            DtStart = now,
+            DtEnd = now.AddHours(1),
+            Source = "outlook",
+            OutlookEventId = "graph-series-1",
+            OutlookCalendarBindingId = bindingId,
+            OutlookConnectionId = connectionId,
+            OutlookEventType = "seriesMaster",
+            OutlookEtag = "W/\"master-etag\""
+        });
+        db.Set<EventEntity>().Add(new EventEntity
+        {
+            Id = Guid.NewGuid(),
+            CalendarId = calendarId,
+            Uid = "occ@outlook",
+            Title = "Occurrence",
+            DtStart = now.AddDays(1),
+            DtEnd = now.AddDays(1).AddHours(1),
+            Source = "outlook",
+            OutlookEventId = "graph-occ-1",
+            OutlookCalendarBindingId = bindingId,
+            OutlookConnectionId = connectionId,
+            OutlookSeriesMasterId = "graph-series-1",
+            OutlookEventType = "occurrence",
+            OutlookEtag = "W/\"occ-etag\""
+        });
+    }
     private static OutlookEventWriteService CreateService(
         PimDbContext db,
         ScriptedHttpMessageHandler handler,
