@@ -28,6 +28,9 @@ src/Pim.Api/wwwroot/
 .superpowers/brainstorm/
 objTestDuration/
 docker-compose.override.yml
+
+# Production log reader — DO NOT commit private key
+.reasonix/production-log-key
 docs/input/日程测试/
 src/client-windows/Pim.Client.App/src/
 
