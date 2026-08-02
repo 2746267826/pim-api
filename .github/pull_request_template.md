@@ -21,8 +21,12 @@
 
 ## 如何体验 / How to try it
 
-<!-- 具体到可操作：构建命令、运行步骤、验证路径、预期结果 -->
-<!-- Concrete steps: build commands, run steps, verification path, expected results -->
+<!-- 用户视角：用户如何体验这个功能——在哪个页面/界面、做什么操作、会看到什么效果（可附操作步骤）。
+     注意：这是功能体验指引，不是部署/构建说明；构建、运行、验证命令请写在「测试 / Tests」章节。 -->
+<!-- User perspective: how a user experiences this feature — which page/screen, what actions to take,
+     what visible effect to expect (step-by-step is fine).
+     Note: this is an experience guide for users, NOT deployment/build instructions; build/run/verify
+     commands belong in the 测试 / Tests section. -->
 
 -
 
