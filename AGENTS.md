@@ -50,3 +50,36 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - Do not claim the branch is complete.
 - Commit only if the failure is clearly unrelated and document the exact failure in the final response.
 - Leave enough status detail for the next conversation to continue without rediscovering the same state.
+
+## Working Practices (derived from session experience)
+
+### Process discipline
+
+- **A1. Mandatory TDD (RED-GREEN-REFACTOR).** Write a failing test and watch it fail before writing the minimal implementation. Never substitute a "looks right" implementation for real concurrency/timing correctness.
+- **A2. Verify before claiming done, using fresh output only.** Re-run the relevant gate commands and base claims on that run, never on stale results. Re-run the full suite once before commit and once before opening a PR.
+- **A3. Review is a mandatory gate: severity-graded, zero-blockers to proceed.** Classify findings Critical/Important/Minor; no Important+ findings may remain before commit/merge. After fixing, always re-review the changed result.
+- **A4. Review cadence.** Small changes: single review round, then re-review after fixes. Large stages: one holistic review at stage end.
+- **A5. Deliverables carry explicit acceptance criteria.** State in the PR both how success will be judged after merge and how to test it, written in plain language (avoid overly technical control names and jargon).
+
+### Quality habits
+
+- **B1. Use injected clocks in tests; never fixed timestamps.** Prefer TimeProvider/clock injection over direct UtcNow and hard-coded dates.
+- **B2. Classify test failures before fixing.** Failures may be environmental: wrong cwd (relative-path false positives), build-tool injection (Playwright evaluate rewritten by esbuild), or CI-only races. Confirm the failure's ownership before changing product code or tests.
+- **B3. Bug fixing is log/data-driven; disproving assumptions is normal.** Locate issues from logs, data, and precise timelines before touching code. When an assumption is falsified, restart that line of investigation.
+- **B4. Verify external sub-agent output.** Delegated workers may fabricate, exit early, or return unreliable conclusions. Check their actual tool-call traces and require reproducible evidence; re-dispatch on anomalies.
+- **B5. Security review for anything touching external URLs, credentials, or privacy.** Whitelist-style validation must be re-checked against "follow what the server returns" semantics. Logs/confirmation pages must not leak tokens, GraphEventId, ChangeKey, etc. Tokens live in memory or encrypted storage only — never in WebView or uploads.
+
+### Collaboration
+
+- **C1. Maximize parallelism, serialize writes.** Read/investigation/review tasks run in parallel; file-writing tasks serialize or declare non-overlapping paths.
+- **C2. Leave resumable state when interrupted.** End sessions by stating the current step and what the next agent should do first.
+
+### Repository gates (verified baselines)
+
+| Gate | Command | Baseline |
+|---|---|---|
+| Backend | `dotnet test Pim.sln --no-restore` | 1092–1377 passing |
+| Android unit | `gradlew :app:testDebugUnitTest` | 1224 tests |
+| Android instrumented | `gradlew :app:connectedDebugAndroidTest` (local emulator; CI has none) | 64/device |
+| Web | `npm run build`, vitest, Playwright | visual scenarios |
+| Ship | bilingual commit, push, wait for CI green | — |
