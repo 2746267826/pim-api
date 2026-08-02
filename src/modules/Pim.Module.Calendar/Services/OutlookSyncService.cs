@@ -570,7 +570,7 @@ public class OutlookSyncService
                 true,
                 BeforeJson: pimSnapshotJson,
                 AfterJson: externalSnapshotJson,
-                ExternalEffect: string.IsNullOrWhiteSpace(outlookEvent.Id) ? null : $"GraphEventId={outlookEvent.Id}",
+                ExternalEffect: "Outlook event changed remotely (details hidden)",
                 RecoveryPath: "Review the Outlook conflict queue before applying external changes."),
             ct);
 

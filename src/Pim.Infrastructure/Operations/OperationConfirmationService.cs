@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
@@ -335,6 +336,21 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             && property.GetBoolean();
     }
 
+    private static readonly Regex ExternalEffectToken = new(
+        "(?:GraphEventId|ChangeKey|ETag|DeltaLink|@odata\\.etag)=[^\\s,;]+",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>Redacts provider token assignments inside free-text effect summaries.</summary>
+    private static string RedactExternalEffect(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return value ?? string.Empty;
+        }
+
+        return ExternalEffectToken.Replace(value, "***");
+    }
+
     private static OperationConfirmationDto Map(OperationConfirmationEntity entity)
     {
         var payloadJson = AuditSnapshotSanitizer.SanitizeJson(entity.PayloadJson);
@@ -343,6 +359,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             ? null
             : AuditSnapshotSanitizer.SanitizeJson(entity.ResultJson);
         var metadata = ExtractMetadata(previewJson);
+        var redactedEffect = RedactExternalEffect(metadata.ExternalEffect);
         return new OperationConfirmationDto(
             entity.Id,
             entity.RequestedByUserId,
@@ -364,12 +381,12 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             metadata.ObjectType,
             metadata.ObjectId,
             metadata.RequiresSecondLevelConfirmation,
-            metadata.BeforeJson,
-            metadata.AfterJson,
+            AuditSnapshotSanitizer.SanitizeJson(metadata.BeforeJson),
+            AuditSnapshotSanitizer.SanitizeJson(metadata.AfterJson),
             metadata.RequiresStrictConfirmation,
             metadata.AuditBatchId,
             metadata.AiRecommendation,
-            metadata.ExternalEffect,
+            redactedEffect,
             metadata.RecoveryPath);
     }
 

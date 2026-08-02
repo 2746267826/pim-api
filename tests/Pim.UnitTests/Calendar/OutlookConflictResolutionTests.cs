@@ -57,6 +57,72 @@ public class OutlookConflictResolutionTests
         Assert.Equal(action == "stop_sync", confirmation.RequiresStrictConfirmation);
     }
 
+    [Fact]
+    public async Task GetAsync_RedactsGraphEventIdAndProviderTokens()
+    {
+        await using var db = CreateDb();
+        var conflict = new SyncConflictEntity
+        {
+            UserId = UserId,
+            Provider = "outlook",
+            ObjectType = "event",
+            ObjectId = Guid.NewGuid(),
+            GraphEventId = "graph-1",
+            ConflictKind = "both_sides_changed_location",
+            PimSnapshotJson = """{"title":"Old","OutlookChangeKey":"ck-local"}""",
+            ExternalSnapshotJson = """{"title":"New","OutlookChangeKey":"ck-remote","GraphEventId":"AAMk-secret"}"""
+        };
+        db.Set<SyncConflictEntity>().Add(conflict);
+        await db.SaveChangesAsync();
+        var service = new OutlookConflictService(
+            db,
+            new FixedCurrentUserService(UserId),
+            new OperationConfirmationService(db));
+
+        var detail = await service.GetAsync(conflict.Id, CancellationToken.None);
+
+        Assert.Null(detail.GraphEventId);
+        Assert.DoesNotContain("ck-local", detail.PimSnapshotJson);
+        Assert.DoesNotContain("ck-remote", detail.ExternalSnapshotJson);
+        Assert.DoesNotContain("AAMk-secret", detail.ExternalSnapshotJson);
+        Assert.Contains("Old", detail.PimSnapshotJson);
+        Assert.Contains("New", detail.ExternalSnapshotJson);
+    }
+
+    [Fact]
+    public async Task RequestActionAsync_RedactsProviderTokensFromConfirmationSnapshots()
+    {
+        await using var db = CreateDb();
+        var conflict = new SyncConflictEntity
+        {
+            UserId = UserId,
+            Provider = "outlook",
+            ObjectType = "event",
+            ObjectId = Guid.NewGuid(),
+            GraphEventId = "graph-1",
+            ConflictKind = "both_sides_changed_location",
+            PimSnapshotJson = """{"location":"Old room","OutlookChangeKey":"ck-local"}""",
+            ExternalSnapshotJson = """{"location":"New room","OutlookChangeKey":"ck-remote"}"""
+        };
+        db.Set<SyncConflictEntity>().Add(conflict);
+        await db.SaveChangesAsync();
+        var service = new OutlookConflictService(
+            db,
+            new FixedCurrentUserService(UserId),
+            new OperationConfirmationService(db));
+
+        var confirmation = await service.RequestActionAsync(
+            conflict.Id,
+            new ConflictResolutionRequest("merge_by_field", """{"location":"New room"}""", "manual test"),
+            CancellationToken.None);
+
+        Assert.DoesNotContain("ck-local", confirmation.BeforeJson ?? "");
+        Assert.DoesNotContain("ck-remote", confirmation.AfterJson ?? "");
+        Assert.DoesNotContain("graph-1", confirmation.ExternalEffect ?? "");
+        Assert.Contains("Old room", confirmation.BeforeJson ?? "");
+        Assert.Contains("New room", confirmation.AfterJson ?? "");
+    }
+
     private static PimDbContext CreateDb()
     {
         PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);

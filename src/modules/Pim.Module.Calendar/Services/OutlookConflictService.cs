@@ -271,10 +271,10 @@ public sealed class OutlookConflictService
             conflict.Provider,
             conflict.ObjectType,
             conflict.ObjectId,
-            conflict.GraphEventId,
+            GraphEventId: null,
             conflict.ConflictKind,
             conflict.Status,
-            conflict.PimSnapshotJson,
-            conflict.ExternalSnapshotJson,
+            AuditSnapshotSanitizer.SanitizeJson(conflict.PimSnapshotJson),
+            AuditSnapshotSanitizer.SanitizeJson(conflict.ExternalSnapshotJson),
             conflict.ResolvedConfirmationId);
 }

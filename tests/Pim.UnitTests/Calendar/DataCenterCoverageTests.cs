@@ -46,6 +46,50 @@ public class DataCenterCoverageTests
         }
     }
 
+    [Fact]
+    public async Task QueryDoesNotExposeOtherUsersAuditVersions()
+    {
+        await using var db = CreateDb();
+        var otherAudit = new AuditVersionEntity
+        {
+            ObjectType = "task",
+            ObjectId = Guid.NewGuid(),
+            Source = "outlook-sync",
+            Actor = "system",
+            UserId = Guid.Parse("99999999-9999-9999-9999-999999999999"),
+            BeforeJson = """{"title":"Other","OutlookChangeKey":"ck-other"}""",
+            AfterJson = "{}",
+            ChangedFieldsJson = """["title"]""",
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        db.AuditVersions.Add(otherAudit);
+        await db.SaveChangesAsync();
+        var service = new DataCenterQueryService(db, new FixedCurrentUserService(UserId));
+
+        var result = await service.QueryAsync(
+            new DataCenterQueryRequest(null, null, null, false, 1, 200),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(result.Items, item => item.ObjectType == "audit-version");
+    }
+
+    [Fact]
+    public async Task QueryRedactsProviderTokensFromSummaries()
+    {
+        await using var db = CreateDb();
+        SeedFullDataCenterFixture(db);
+        await db.SaveChangesAsync();
+        var service = new DataCenterQueryService(db, new FixedCurrentUserService(UserId));
+
+        var result = await service.QueryAsync(
+            new DataCenterQueryRequest(null, null, null, false, 1, 200),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(result.Items, item => item.Summary.Contains("graph-event-coverage"));
+        Assert.DoesNotContain(result.Items, item => item.Summary.Contains("GraphEventId="));
+        Assert.DoesNotContain(result.Items, item => item.Summary.Contains("ChangeKey="));
+    }
+
     private static PimDbContext CreateDb()
     {
         PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
@@ -165,6 +209,7 @@ public class DataCenterCoverageTests
             ObjectId = task.Id,
             Source = "data-center",
             Actor = "system",
+            UserId = UserId,
             BeforeJson = "{}",
             AfterJson = """{"title":"Coverage task"}""",
             ChangedFieldsJson = """["title"]""",
