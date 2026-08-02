@@ -449,6 +449,7 @@ public class OutlookSyncService
                 ["title", "location", "dtStart", "dtEnd"],
                 confirmationId,
                 Provider,
+                userId,
                 ct);
             await _confirmationService.MarkExecutedAsync(
                 confirmationId,

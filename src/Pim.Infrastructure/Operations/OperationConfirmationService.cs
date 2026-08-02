@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
+using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 
@@ -336,7 +337,12 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
 
     private static OperationConfirmationDto Map(OperationConfirmationEntity entity)
     {
-        var metadata = ExtractMetadata(entity.PreviewJson);
+        var payloadJson = AuditSnapshotSanitizer.SanitizeJson(entity.PayloadJson);
+        var previewJson = AuditSnapshotSanitizer.SanitizeJson(entity.PreviewJson);
+        var resultJson = entity.ResultJson is null
+            ? null
+            : AuditSnapshotSanitizer.SanitizeJson(entity.ResultJson);
+        var metadata = ExtractMetadata(previewJson);
         return new OperationConfirmationDto(
             entity.Id,
             entity.RequestedByUserId,
@@ -344,14 +350,14 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             entity.Summary,
             ParseRiskLevel(entity.RiskLevel),
             entity.Source,
-            entity.PayloadJson,
-            entity.PreviewJson,
+            payloadJson,
+            previewJson,
             Enum.Parse<OperationConfirmationStatus>(entity.Status),
             entity.ExpiresAt,
             entity.CreatedAt,
             entity.ConfirmedAt,
             entity.ExecutedAt,
-            entity.ResultJson,
+            resultJson,
             entity.CorrelationId,
             metadata.ChangedFields,
             metadata.AllowedActions,

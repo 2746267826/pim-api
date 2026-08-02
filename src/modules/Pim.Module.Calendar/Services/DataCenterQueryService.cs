@@ -209,7 +209,7 @@ public sealed class DataCenterQueryService
             c.Status,
             c.LastSyncedAt ?? c.CreatedAt,
             c.AccessTokenExpiresAt,
-            FirstText(c.TokenHealth, c.LastError, c.DeltaLink))));
+            FirstText(c.TokenHealth, c.LastError))));
 
         var syncBatches = await _db.Set<OutlookSyncBatchEntity>()
             .AsNoTracking()

@@ -113,12 +113,12 @@ public sealed class DataCenterGovernanceService
         DateTimeOffset start,
         DateTimeOffset end,
         CancellationToken ct = default)
-        => _auditVersions.ExportAsync(start, end, ct);
+        => _auditVersions.ExportAsync(start, end, UserId, ct);
 
     public Task<RestorePreviewResponse> PreviewRestoreAsync(
         DataCenterRestoreRequest request,
         CancellationToken ct = default)
-        => _auditVersions.PreviewRestoreAsync(request.AuditVersionId, ct);
+        => _auditVersions.PreviewRestoreAsync(request.AuditVersionId, UserId, ct);
 
     public async Task<OperationConfirmationDto> RequestRestoreConfirmationAsync(
         DataCenterRestoreRequest request,
@@ -144,8 +144,8 @@ public sealed class DataCenterGovernanceService
                 preview.ObjectType,
                 preview.ObjectId,
                 RequiresSecondLevelConfirmation: true,
-                BeforeJson: null,
-                AfterJson: null,
+                BeforeJson: preview.BeforeJson,
+                AfterJson: preview.AfterJson,
                 RequiresStrictConfirmation: true,
                 AuditBatchId: Guid.NewGuid(),
                 AiRecommendation: "Restore only after reviewing audit before/after values.",
@@ -234,6 +234,7 @@ public sealed class DataCenterGovernanceService
                 ["deletedAt", "deletedByOperationId", "deletedByOperationKind", "updatedAt"],
                 confirmationId,
                 "data-center",
+                UserId,
                 ct);
             return 1;
         }
@@ -271,6 +272,7 @@ public sealed class DataCenterGovernanceService
                 ["deletedAt", "deletedByOperationId", "deletedByOperationKind", "updatedAt"],
                 confirmationId,
                 "data-center",
+                UserId,
                 ct);
             return 1;
         }
@@ -301,6 +303,7 @@ public sealed class DataCenterGovernanceService
                 ["status", "updatedAt"],
                 confirmationId,
                 "data-center",
+                UserId,
                 ct);
             return 1;
         }

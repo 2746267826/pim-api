@@ -33,6 +33,7 @@ public class DataCenterGovernanceTests
             ObjectId = task.Id,
             Source = "data-center",
             Actor = "system",
+            UserId = UserId,
             BeforeJson = "{}",
             AfterJson = """{"title":"Governance task"}""",
             ChangedFieldsJson = """["title"]""",
@@ -125,6 +126,66 @@ public class DataCenterGovernanceTests
 
         await Assert.ThrowsAsync<DomainException>(() =>
             service.ExecuteConfirmedBatchAsync(confirmation.Id, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RequestRestoreConfirmationCarriesStoredSnapshots()
+    {
+        await using var db = CreateDb();
+        var objectId = Guid.NewGuid();
+        var audit = new AuditVersionEntity
+        {
+            ObjectType = "task",
+            ObjectId = objectId,
+            Source = "data-center",
+            Actor = "system",
+            UserId = UserId,
+            BeforeJson = """{"title":"Before"}""",
+            AfterJson = """{"title":"After"}""",
+            ChangedFieldsJson = """["title"]""",
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        db.AuditVersions.Add(audit);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var confirmation = await service.RequestRestoreConfirmationAsync(
+            new DataCenterRestoreRequest(audit.Id),
+            CancellationToken.None);
+
+        Assert.Equal(audit.BeforeJson, confirmation.BeforeJson);
+        Assert.Equal(audit.AfterJson, confirmation.AfterJson);
+    }
+
+    [Fact]
+    public async Task RequestRestoreConfirmation_StripsProviderTokensFromSnapshots()
+    {
+        await using var db = CreateDb();
+        var objectId = Guid.NewGuid();
+        var audit = new AuditVersionEntity
+        {
+            ObjectType = "event",
+            ObjectId = objectId,
+            Source = "outlook-sync",
+            Actor = "system",
+            BeforeJson = """{"title":"Before","OutlookChangeKey":"ck-secret-1"}""",
+            AfterJson = """{"title":"After","GraphEventId":"AAMk-secret-2"}""",
+            ChangedFieldsJson = """["title","outlookChangeKey"]""",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UserId = UserId
+        };
+        db.AuditVersions.Add(audit);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var confirmation = await service.RequestRestoreConfirmationAsync(
+            new DataCenterRestoreRequest(audit.Id),
+            CancellationToken.None);
+
+        Assert.DoesNotContain("ck-secret-1", confirmation.BeforeJson);
+        Assert.DoesNotContain("AAMk-secret-2", confirmation.AfterJson);
+        Assert.Contains("\"title\":\"Before\"", confirmation.BeforeJson);
+        Assert.Contains("\"title\":\"After\"", confirmation.AfterJson);
     }
 
     private static DataCenterGovernanceService CreateService(PimDbContext db)
