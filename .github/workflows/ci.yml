@@ -51,7 +51,6 @@ jobs:
       web: ${{ steps.flags.outputs.web }}
       windows: ${{ steps.flags.outputs.windows }}
       android: ${{ steps.flags.outputs.android }}
-      has_release: ${{ steps.rel.outputs.has_release }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,7 +62,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="$(gh release list --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || true)"
+          TAG="$(gh release list --limit 1 --json tagName -q '.[0].tagName // empty' 2>/dev/null || true)"
           if [[ -n "$TAG" ]]; then
             echo "has_release=true" >> "$GITHUB_OUTPUT"
           else
@@ -247,7 +246,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="$(gh release list --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || true)"
+          TAG="$(gh release list --limit 1 --json tagName -q '.[0].tagName // empty' 2>/dev/null || true)"
           copy_if_missing() {
             local pattern="$1"
             if ! ls release-assets/${pattern} >/dev/null 2>&1; then
@@ -258,10 +257,22 @@ jobs:
               gh release download "$TAG" --pattern "$pattern" --dir release-assets
             fi
           }
-          [ "${{ needs.build-api.result }}" != "success" ] && copy_if_missing 'pim-api-*.tar.gz'
-          [ "${{ needs.build-web.result }}" != "success" ] && copy_if_missing 'pim-web-*.tar.gz'
-          [ "${{ needs.build-windows.result }}" != "success" ] && copy_if_missing 'pim-windows-*.zip'
-          [ "${{ needs.build-android.result }}" != "success" ] && copy_if_missing 'pim-android-*.apk'
+          # Only replace skipped (unchanged) components with last release's
+          # assets; any other non-success result is unexpected here and must
+          # fail loudly instead of silently publishing a stale asset.
+          fill_if_skipped() {
+            local result="$1" pattern="$2"
+            if [ "$result" = "skipped" ]; then
+              copy_if_missing "$pattern"
+            elif [ "$result" != "success" ]; then
+              echo "::error::Unexpected build result '${result}' for ${pattern}; not replacing with a stale asset" >&2
+              exit 1
+            fi
+          }
+          fill_if_skipped "${{ needs.build-api.result }}" 'pim-api-*.tar.gz'
+          fill_if_skipped "${{ needs.build-web.result }}" 'pim-web-*.tar.gz'
+          fill_if_skipped "${{ needs.build-windows.result }}" 'pim-windows-*.zip'
+          fill_if_skipped "${{ needs.build-android.result }}" 'pim-android-*.apk'
           # Sanity check: every asset family must be present before uploading.
           for p in pim-api-*.tar.gz pim-web-*.tar.gz pim-windows-*.zip pim-android-*.apk; do
             ls release-assets/${p} >/dev/null 2>&1 \
