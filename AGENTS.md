@@ -26,6 +26,16 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - Do not modify `.github/workflows/*` unless the task is specifically about CI/release automation or the user explicitly asks for it. If a workflow change is unavoidable, explain why before editing it.
 - Write PR titles and descriptions in both English and Simplified Chinese.
 
+## Pull Request Descriptions Feed The Release Changelog
+
+- Every PR description MUST include the four bilingual sections below, keeping the exact heading format. CI extracts these into the GitHub Release changelog (`scripts/ci/build-release-notes.sh`):
+  - `## 技术修改 / Technical changes` — modules/files touched, key design decisions, API or schema changes, dependency changes
+  - `## 功能变化 / Feature changes` — user-visible changes; write `无 / None` if none
+  - `## 如何体验 / How to try it` — how a user experiences the feature: which screen, what actions, what visible effect to expect (step-by-step is fine). This is an experience guide for users, NOT deployment/build instructions — build/run/verify commands belong in 测试 / Tests
+  - `## 测试 / Tests` — verification commands run and their results
+- PRs without these sections still merge, but their release entry falls back to a bare title link — filling them in keeps the changelog useful.
+- Docs-only merges skip all platform builds and do not produce a GitHub Release (path-filtered); the sections above are still expected for accurate history.
+
 ## Parallel Agent Workflow
 
 - Prefer multiple subagents for independent investigation, implementation, review, and verification work when tasks can safely run in parallel.
