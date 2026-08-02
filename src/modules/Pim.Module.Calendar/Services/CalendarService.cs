@@ -372,8 +372,11 @@ public class CalendarService
 
         if (request.CalendarId != entity.CalendarId)
         {
+            var targetCalendar = await _db.Set<CalendarEntity>()
+                .FirstOrDefaultAsync(c => c.Id == request.CalendarId && c.UserId == UserId, ct)
+                ?? throw new DomainException(02003, "日历不存在");
             var targetCalendarHasBinding = await _db.Set<OutlookCalendarBindingEntity>()
-                .AnyAsync(b => b.PimCalendarId == request.CalendarId, ct);
+                .AnyAsync(b => b.PimCalendarId == targetCalendar.Id, ct);
             if (targetCalendarHasBinding)
                 throw new DomainException(02009, "目标日历为 Microsoft 日历，移动操作必须通过确认写回流程。");
         }
@@ -522,6 +525,13 @@ public class CalendarService
 
     public async Task<TaskResponse> CreateTaskAsync(CreateTaskRequest request, CancellationToken ct)
     {
+        if (request.CalendarId.HasValue)
+        {
+            var calendar = await _db.Set<CalendarEntity>()
+                .FirstOrDefaultAsync(c => c.Id == request.CalendarId.Value && c.UserId == UserId, ct)
+                ?? throw new DomainException(02003, "日历不存在");
+        }
+
         var due = NormalizeToUtc(request.Due);
         var dtStart = NormalizeToUtc(request.DtStart);
         var plannedEnd = NormalizeToUtc(request.PlannedEnd);
@@ -558,6 +568,13 @@ public class CalendarService
         var task = await _db.Set<TaskEntity>()
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
             ?? throw new DomainException(02004, "任务不存在");
+
+        if (request.CalendarId.HasValue)
+        {
+            var calendar = await _db.Set<CalendarEntity>()
+                .FirstOrDefaultAsync(c => c.Id == request.CalendarId.Value && c.UserId == UserId, ct)
+                ?? throw new DomainException(02003, "日历不存在");
+        }
 
         var due = NormalizeToUtc(request.Due);
         var estimatedDuration = ParseEstimatedDuration(request.EstimatedDuration);
@@ -720,7 +737,8 @@ public class CalendarService
 
     public async Task MoveTaskAsync(Guid id, MoveTaskRequest request, CancellationToken ct)
     {
-        var task = await _db.Set<TaskEntity>().FindAsync(new object[] { id }, ct)
+        var task = await _db.Set<TaskEntity>()
+            .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
             ?? throw new DomainException(02004, "任务不存在");
 
         var newStart = request.ScheduledStart?.ToUniversalTime() ?? task.DtStart;
