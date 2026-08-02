@@ -25,6 +25,8 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - If no GitHub Actions workflow is triggered because the changed files do not match workflow path filters, state that explicitly instead of waiting.
 - Do not modify `.github/workflows/*` unless the task is specifically about CI/release automation or the user explicitly asks for it. If a workflow change is unavoidable, explain why before editing it.
 - Write PR titles and descriptions in both English and Simplified Chinese.
+- Create git worktrees under a single short root directory (e.g. `C:\pim-wt\{topic}`), never directly under `C:\` or scattered across drive roots. Use short directory names (topic only, ≤ 12 chars) to avoid Windows MAX_PATH issues from long nested paths.
+- After a PR is merged (or work is abandoned), remove the worktree (`git worktree remove`) and delete the local branch. Do not leave dead worktrees behind.
 
 ## Pull Request Descriptions Feed The Release Changelog
 
