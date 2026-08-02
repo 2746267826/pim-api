@@ -74,6 +74,8 @@ public static class OutlookAdditionalInfoBuilder
                     var item = ExtractScalarItem(key, kvp.Value, out _);
                     if (item is not null)
                         metadataItems.Add(item);
+                    else
+                        hiddenFieldCount++;
                     continue;
                 }
 
@@ -176,6 +178,8 @@ public static class OutlookAdditionalInfoBuilder
                 var item = ExtractScalarItem(key, kvp.Value, out _);
                 if (item is not null)
                     metadataItems.Add(item);
+                else
+                    hiddenFieldCount++;
                 continue;
             }
 
@@ -227,14 +231,20 @@ public static class OutlookAdditionalInfoBuilder
             return null;
         }
 
-        var truncated = raw.Length > MaxValueLength ? raw[..MaxValueLength] : raw;
+        var truncated = raw;
+        if (truncated.Length > MaxValueLength)
+        {
+            truncated = raw[..MaxValueLength];
+            if (char.IsHighSurrogate(truncated[^1]))
+                truncated = truncated[..^1];
+        }
         return new OutlookAdditionalInfoItemDto(key, GetChineseLabel(key), truncated);
     }
 
     private static int CountExtendedProperties(JsonElement element)
     {
         if (element.ValueKind != JsonValueKind.Array)
-            return 0;
+            return 1;
 
         var count = 0;
         foreach (var prop in element.EnumerateArray())
@@ -289,18 +299,17 @@ public static class OutlookAdditionalInfoBuilder
         };
     }
 
-    private static string GetChineseLabel(string key)
+    private static readonly Dictionary<string, string> ChineseLabels = new(StringComparer.OrdinalIgnoreCase)
     {
-        return key switch
-        {
-            "responseRequested" => "需要响应",
-            "allowNewTimeProposals" => "允许新时间提议",
-            "hideAttendees" => "隐藏参会者",
-            "OutlookSyncState" => "同步状态",
-            "OutlookEventType" => "事件类型",
-            "OriginalStartTimeZone" => "原始开始时间时区",
-            "OriginalEndTimeZone" => "原始结束时间时区",
-            _ => key
-        };
-    }
+        ["responseRequested"] = "需要响应",
+        ["allowNewTimeProposals"] = "允许新时间提议",
+        ["hideAttendees"] = "隐藏参会者",
+        ["OutlookSyncState"] = "同步状态",
+        ["OutlookEventType"] = "事件类型",
+        ["OriginalStartTimeZone"] = "原始开始时间时区",
+        ["OriginalEndTimeZone"] = "原始结束时间时区",
+    };
+
+    private static string GetChineseLabel(string key) =>
+        ChineseLabels.TryGetValue(key, out var label) ? label : key;
 }

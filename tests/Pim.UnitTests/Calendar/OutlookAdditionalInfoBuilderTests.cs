@@ -391,4 +391,107 @@ public sealed class OutlookAdditionalInfoBuilderTests
             .ToDictionary(i => i.Key, i => i.Value, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("responseRequested", allItems.Keys);
     }
+
+    [Fact]
+    public void Build_TruncatesAtSurrogateBoundary_NoDanglingSurrogate()
+    {
+        var prefix = new string('A', 199);
+        var longValue = prefix + "\U0001F60A";
+
+        var entity = new EventEntity
+        {
+            Source = "outlook",
+            ExternalMetadataJson = $$"""
+            {
+                "responseRequested": "{{longValue}}"
+            }
+            """,
+        };
+
+        var result = OutlookAdditionalInfoBuilder.Build(entity);
+
+        Assert.NotNull(result);
+        foreach (var item in result.Groups.SelectMany(g => g.Items))
+        {
+            Assert.True(item.Value.Length <= 200,
+                $"Value length {item.Value.Length} exceeds 200");
+            Assert.True(HasValidSurrogates(item.Value),
+                $"Value contains unpaired surrogate: ...{item.Value[^10..]}");
+        }
+
+        static bool HasValidSurrogates(string s)
+        {
+            for (var i = 0; i < s.Length; i++)
+            {
+                if (char.IsHighSurrogate(s[i]))
+                {
+                    if (i + 1 >= s.Length || !char.IsLowSurrogate(s[i + 1]))
+                        return false;
+                    i++;
+                }
+                else if (char.IsLowSurrogate(s[i]))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    [Fact]
+    public void Build_AllowlistedKeysWithMixedCase_ReturnsChineseLabels()
+    {
+        var entity = new EventEntity
+        {
+            Source = "outlook",
+            ExternalMetadataJson = /*lang=json,strict*/ """
+            {
+                "ResponseRequested": true,
+                "ALLOWNEWTIMEPROPOSALS": false
+            }
+            """,
+            OutlookSyncState = "synced",
+            OutlookEventType = "singleInstance",
+        };
+
+        var result = OutlookAdditionalInfoBuilder.Build(entity);
+
+        Assert.NotNull(result);
+        var items = result.Groups
+            .SelectMany(g => g.Items)
+            .ToDictionary(i => i.Key, i => i, StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal("需要响应", items["ResponseRequested"].Label);
+        Assert.Equal("允许新时间提议", items["ALLOWNEWTIMEPROPOSALS"].Label);
+    }
+
+    [Fact]
+    public void Build_NonScalarAllowlistedValues_HidesAndCounts()
+    {
+        var entity = new EventEntity
+        {
+            Source = "outlook",
+            ExternalMetadataJson = /*lang=json,strict*/ """
+            {
+                "responseRequested": {"nested": "value"},
+                "ALLOWNEWTIMEPROPOSALS": "this is a secret value",
+                "hideAttendees": [1, 2, 3],
+                "singleValueExtendedProperties": "not-an-array"
+            }
+            """,
+            OutlookSyncState = "synced",
+            OutlookEventType = "singleInstance",
+        };
+
+        var result = OutlookAdditionalInfoBuilder.Build(entity);
+
+        Assert.NotNull(result);
+        Assert.Equal(4, result.HiddenFieldCount);
+
+        var allValues = string.Join(" ", result.Groups
+            .SelectMany(g => g.Items)
+            .Select(i => i.Value));
+        Assert.DoesNotContain("secret value", allValues);
+        Assert.DoesNotContain("nested", allValues);
+    }
 }
