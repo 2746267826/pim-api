@@ -32,7 +32,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 
 Apply this policy at the start of every session/task:
 
-- **L0 — read-only sessions** (investigation, discussion, review, inspection): make no file changes; work directly in the main workspace, which stays on the latest `origin/master`. No branch or worktree is created.
+- **L0 — read-only sessions** (investigation, discussion, review, inspection): make no file changes; work directly in the main workspace. Before investigating, run `git fetch --all --prune` and fast-forward local `master` to `origin/master` — the remote is the source of truth, so the main workspace must always read the latest `master`. No branch or worktree is created.
 - **L1 — file-changing tasks**: before editing any file, fetch the latest `origin/master`, create a branch `{agent}-{os}/{topic}` based on it, and add a worktree for that branch. Do all edits inside that worktree; the main workspace never receives file changes.
 - **L2 — handoff tasks**: when new work must build on an unmerged branch (e.g. continuing another agent's PR), base the new branch on that branch's latest HEAD and state the base in the PR description. If the source branch is already merged, base on `origin/master` instead.
 - Cleaning is part of the definition of done: when a PR is merged or work is abandoned, remove the worktree (`git worktree remove`) and delete the local branch in the same task. Dead worktrees/branches from earlier tasks must be cleaned when noticed — e.g. if the main workspace is found on a stale or merged branch, move it back to `origin/master` before starting new work.
