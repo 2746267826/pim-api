@@ -13,6 +13,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - Run `git status --short --branch` before changing files.
 - Run `git fetch --all --prune` before deciding whether `master` is current.
 - If `master` is behind `origin/master`, pull before making new work unless the user explicitly asks otherwise.
+- Move the main workspace to the latest `origin/master` at the start of every conversation (see the branch/worktree policy below), unless the user explicitly asks to base work on another branch (e.g. a handoff task). The main workspace is for read-only investigation; all file-changing work happens in worktrees.
 - Note existing dirty files and do not revert or overwrite work you did not create.
 
 ## Branch, PR, And GitHub Actions Workflow
@@ -26,7 +27,15 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - Do not modify `.github/workflows/*` unless the task is specifically about CI/release automation or the user explicitly asks for it. If a workflow change is unavoidable, explain why before editing it.
 - Write PR titles and descriptions in both English and Simplified Chinese.
 - Create git worktrees under a single short root directory (e.g. `C:\pim-wt\{topic}`), never directly under `C:\` or scattered across drive roots. Use short directory names (topic only, ≤ 12 chars) to avoid Windows MAX_PATH issues from long nested paths.
-- After a PR is merged (or work is abandoned), remove the worktree (`git worktree remove`) and delete the local branch. Do not leave dead worktrees behind.
+
+### Branch And Worktree Policy (L0/L1/L2)
+
+Apply this policy at the start of every session/task:
+
+- **L0 — read-only sessions** (investigation, discussion, review, inspection): make no file changes; work directly in the main workspace, which stays on the latest `origin/master`. No branch or worktree is created.
+- **L1 — file-changing tasks**: before editing any file, fetch the latest `origin/master`, create a branch `{agent}-{os}/{topic}` based on it, and add a worktree for that branch. Do all edits inside that worktree; the main workspace never receives file changes.
+- **L2 — handoff tasks**: when new work must build on an unmerged branch (e.g. continuing another agent's PR), base the new branch on that branch's latest HEAD and state the base in the PR description. If the source branch is already merged, base on `origin/master` instead.
+- Cleaning is part of the definition of done: when a PR is merged or work is abandoned, remove the worktree (`git worktree remove`) and delete the local branch in the same task. Dead worktrees/branches from earlier tasks must be cleaned when noticed — e.g. if the main workspace is found on a stale or merged branch, move it back to `origin/master` before starting new work.
 
 ## Pull Request Descriptions Feed The Release Changelog
 
