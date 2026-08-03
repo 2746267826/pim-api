@@ -401,7 +401,9 @@ public class OutlookSyncService
                 ?? throw new DomainException(02005, "Outlook is not connected.");
             var accessToken = await GetAccessTokenAsync(connection, ct)
                 ?? throw new DomainException(02005, "Outlook token is not available.");
-            var evt = await _db.Set<EventEntity>().FindAsync(new object[] { eventId }, ct)
+            var evt = await _db.Set<EventEntity>()
+                .Include(e => e.Calendar)
+                .FirstOrDefaultAsync(e => e.Id == eventId && e.Calendar.UserId == userId, ct)
                 ?? throw new DomainException(02001, "Event does not exist.");
             if (string.IsNullOrWhiteSpace(evt.OutlookEventId))
                 throw new DomainException(02038, "Event is not linked to an Outlook event.");

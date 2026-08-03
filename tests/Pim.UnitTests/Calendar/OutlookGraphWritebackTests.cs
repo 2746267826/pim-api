@@ -1,5 +1,7 @@
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
+using Pim.Core.Operations;
 using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Operations;
@@ -71,6 +73,84 @@ public class OutlookGraphWritebackTests
         Assert.Contains(graph.PatchRequests, x =>
             x.EventId == "graph-1" && x.ChangeKey == "change-1" && x.Body.Contains("location"));
         Assert.NotEmpty(await db.Set<AuditVersionEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task ConfirmedWritebackRejectsEventOwnedByAnotherUser()
+    {
+        await using var db = CreateDb();
+        var protector = new FakeSecretProtector();
+        var graph = new FakeMicrosoftGraphClient();
+        var confirmationService = new OperationConfirmationService(db);
+        var service = new OutlookSyncService(
+            db,
+            new StubHttpClientFactory(),
+            confirmationService,
+            new OutlookTokenService(db, protector),
+            graph);
+        var otherUserId = Guid.Parse("99999999-9999-9999-9999-999999999999");
+        var otherCalendar = new CalendarEntity
+        {
+            UserId = otherUserId,
+            Name = "Other user calendar",
+            IsDefault = true
+        };
+        var otherEvent = new EventEntity
+        {
+            Calendar = otherCalendar,
+            CalendarId = otherCalendar.Id,
+            Uid = "other@outlook",
+            OutlookEventId = "graph-other",
+            OutlookChangeKey = "change-other",
+            Title = "Other user event",
+            DtStart = new DateTimeOffset(2026, 7, 8, 9, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 7, 8, 10, 0, 0, TimeSpan.Zero),
+            Source = "outlook"
+        };
+        db.Set<CalendarEntity>().Add(otherCalendar);
+        db.Set<EventEntity>().Add(otherEvent);
+        db.Set<OutlookConnectionEntity>().Add(new OutlookConnectionEntity
+        {
+            UserId = UserId,
+            ClientId = "client-id",
+            AccessTokenEncrypted = Encoding.UTF8.GetBytes(protector.Protect("access-token")),
+            RefreshTokenEncrypted = Encoding.UTF8.GetBytes(protector.Protect("refresh-token")),
+            AccessTokenExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+            Status = "connected",
+            TokenHealth = "healthy"
+        });
+        await db.SaveChangesAsync();
+
+        var payloadJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            provider = "outlook",
+            eventId = otherEvent.Id,
+            graphEventId = "graph-other",
+            changeKey = "change-other",
+            action = "write_to_outlook"
+        });
+        var confirmation = await confirmationService.CreateAsync(
+            new CreateOperationConfirmationRequest(
+                UserId,
+                "outlook.writeback",
+                "Write other user event to Outlook.",
+                Pim.Core.Operations.OperationRiskLevel.L3ExternalSourceOrWriteback,
+                "outlook",
+                payloadJson,
+                "{}",
+                DateTimeOffset.UtcNow.AddHours(2),
+                otherEvent.Id.ToString("N"),
+                ["title"],
+                ["review", "write_to_outlook", "skip"],
+                "event",
+                otherEvent.Id,
+                true));
+        await confirmationService.ConfirmSecondLevelAsync(confirmation.Id, UserId);
+
+        await Assert.ThrowsAsync<DomainException>(() =>
+            service.ExecuteConfirmedWriteAsync(confirmation.Id));
+
+        Assert.Empty(graph.PatchRequests);
     }
 
     private static PimDbContext CreateDb()
