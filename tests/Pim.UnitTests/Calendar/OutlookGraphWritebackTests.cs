@@ -147,8 +147,9 @@ public class OutlookGraphWritebackTests
                 true));
         await confirmationService.ConfirmSecondLevelAsync(confirmation.Id, UserId);
 
-        await Assert.ThrowsAsync<DomainException>(() =>
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
             service.ExecuteConfirmedWriteAsync(confirmation.Id));
+        Assert.Equal(02001, ex.ErrorCode);
 
         Assert.Empty(graph.PatchRequests);
     }
