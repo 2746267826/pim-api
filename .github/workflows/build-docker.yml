@@ -78,7 +78,7 @@ jobs:
 
       - name: Smoke test
         run: |
-          CID="$(docker run -d "${{ env.IMAGE }}:latest")"
+          CID="$(docker run -d -e ASPNETCORE_URLS=http://+:5000 "${{ env.IMAGE }}:latest")"
           trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 30); do
             if docker exec "$CID" bash -c \
