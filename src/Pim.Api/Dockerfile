@@ -24,5 +24,19 @@ RUN dotnet publish "Pim.Api.csproj" -c Release -o /app/publish
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 COPY --from=server-build /app/publish .
-EXPOSE 5000
-ENTRYPOINT ["dotnet", "Pim.Api.dll"]
+EXPOSE 5000 22
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-server supervisor tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -r -u 1001 -m -d /home/pimlog -s /usr/sbin/nologin pimlog
+
+COPY scripts/docker/sshd-pim.conf /etc/ssh/sshd_config.d/pim.conf
+COPY scripts/docker/supervisord.conf /etc/supervisor/supervisord.conf
+COPY scripts/docker/entrypoint.sh /entrypoint.sh
+COPY scripts/docker/pim-log-cat.sh /usr/local/bin/pim-log-cat.sh
+
+RUN chmod 755 /entrypoint.sh /usr/local/bin/pim-log-cat.sh \
+    && chmod 644 /etc/ssh/sshd_config.d/pim.conf /etc/supervisor/supervisord.conf
+
+ENTRYPOINT ["tini", "--", "/entrypoint.sh"]
