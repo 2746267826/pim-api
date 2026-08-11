@@ -123,20 +123,13 @@ app.MapAiEndpoints();
 moduleRegistry.MapAllEndpoints(app);
 
 // Init modules
-if (app.Environment.IsDevelopment())
-{
-    try
-    {
-        await moduleRegistry.InitializeAllAsync(app.Services);
-    }
-    catch (Exception ex)
-    {
-        Log.Warning(ex, "Module initialization failed; the API will start but module endpoints may not work.");
-    }
-}
-else
+try
 {
     await moduleRegistry.InitializeAllAsync(app.Services);
+}
+catch (Exception ex)
+{
+    Log.Warning(ex, "Module initialization failed; the API will start but module endpoints may not work.");
 }
 try
 {
