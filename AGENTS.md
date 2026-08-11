@@ -56,7 +56,7 @@ Apply this policy at the start of every session/task:
 
 ## During Work
 
-- Keep generated outputs out of commits: `bin/`, `obj/`, `build/`, `dist/`, `publish/PimDaemon/`, `publish/*.zip`, `.dotnet-*`, `.superpowers/brainstorm/`, npm caches, and API `wwwroot` build artifacts.
+- Keep generated outputs out of commits: `bin/`, `obj/`, `build/`, `build/artifacts/` (docker image tarballs), `dist/`, `publish/PimDaemon/`, `publish/*.zip`, `.dotnet-*`, `.superpowers/brainstorm/`, npm caches, and API `wwwroot` build artifacts.
 - Commit source changes, tests, scripts, and docs that are needed to reproduce the current runnable version.
 - Keep API and daemon defaults aligned. The local API is expected at `http://127.0.0.1:5858`, and the Windows daemon default server URL should match it.
 - Use focused commits with conventional messages such as `feat:`, `fix:`, `docs:`, or `chore:`. Write both commit messages (titles & descriptions) and PR titles/descriptions in bilingual format (English and Simplified Chinese).
@@ -64,7 +64,7 @@ Apply this policy at the start of every session/task:
 ## Before Pushing Or Opening A PR
 
 - Run the relevant verification commands for the touched surface. Prefer `dotnet test Pim.sln` for backend/daemon changes and `npm --prefix src/client-web run build` for web changes.
-- Android status UI changes must also run `src/client-android/gradlew.bat :app:connectedDebugAndroidTest --no-daemon` on a started emulator or physical device; this is a local gate because CI does not provide an emulator.
+- Android status UI changes must also run the connected Android test gate on a started emulator or physical device — Windows: `src/client-android/gradlew.bat :app:connectedDebugAndroidTest --no-daemon`; Linux: `src/client-android/gradlew :app:connectedDebugAndroidTest --no-daemon`. This is a local gate because CI does not provide an emulator.
 - Re-run `git status --short --branch` and confirm only intentional changes are staged.
 - Push the working branch to `origin` and open a pull request. Do not push directly to `master` unless the user explicitly asks for a direct update and understands it bypasses the PR workflow.
 
