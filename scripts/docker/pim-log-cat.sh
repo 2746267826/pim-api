@@ -81,7 +81,7 @@ case "$CMD" in
         validate_filename "$FILENAME"
         ensure_in_logdir "${LOG_DIR}/${FILENAME}" || exit 1
         check_quota $(lines_to_bytes "$LINES")
-        exec tail -n "$LINES" "${LOG_DIR}/${FILENAME}"
+        tail -n "$LINES" "${LOG_DIR}/${FILENAME}"
         ;;
     cat)
         [[ ${#REMAINING[@]} -ge 1 ]] || { echo "用法: cat <filename> [lines=N]" >&2; exit 1; }
@@ -90,7 +90,7 @@ case "$CMD" in
         validate_filename "$FILENAME"
         ensure_in_logdir "${LOG_DIR}/${FILENAME}" || exit 1
         check_quota $(lines_to_bytes "$LINES")
-        exec head -n "$LINES" "${LOG_DIR}/${FILENAME}"
+        head -n "$LINES" "${LOG_DIR}/${FILENAME}"
         ;;
     ls)
         check_quota 50000
@@ -106,7 +106,7 @@ case "$CMD" in
             fi
             ls -lh ${LOG_DIR}/${PATTERN} 2>/dev/null || echo "无匹配文件"
         else
-            exec ls -lh "${LOG_DIR}/"
+            ls -lh "${LOG_DIR}/"
         fi
         ;;
     find)
@@ -129,7 +129,7 @@ case "$CMD" in
         ;;
     du)
         check_quota 50000
-        exec du -sh "${LOG_DIR}/"
+        du -sh "${LOG_DIR}/"
         ;;
     *)
         echo "错误: 未知命令: ${CMD}" >&2
