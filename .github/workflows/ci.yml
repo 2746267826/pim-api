@@ -18,6 +18,10 @@ on:
         default: true
         type: boolean
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   resolve-version:
     runs-on: ubuntu-latest
