@@ -13,7 +13,8 @@ fi
 # 2. SSH host keys（/etc/pim/ssh 为持久化卷；缺失才生成，重建容器指纹不变）
 mkdir -p /etc/pim/ssh
 if [[ ! -s /etc/pim/ssh/ssh_host_ed25519_key ]]; then
-    ssh-keygen -A -f /etc/pim/ssh/ssh_host_
+    ssh-keygen -t ed25519 -N '' -f /etc/pim/ssh/ssh_host_ed25519_key
+    ssh-keygen -t rsa -b 4096 -N '' -f /etc/pim/ssh/ssh_host_rsa_key
 fi
 
 # 3. sshd 运行所需目录
