@@ -41,7 +41,7 @@ services:
       - Embedding__Provider=hashing
       - Embedding__Dimensions=384
       - PIM_SSH_AUTHORIZED_KEYS=${PIM_SSH_AUTHORIZED_KEYS}
-      - PIM_LOG_RETAINED_FILES=2
+      - PIM_LOG_RETAINED_FILES=${PIM_LOG_RETAINED_FILES:-2}
     volumes:
       - pim_data:/data
       - /data/pim/logs:/data/pim/logs
@@ -52,6 +52,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+      start_period: 180s
     logging:
       driver: json-file
       options:
