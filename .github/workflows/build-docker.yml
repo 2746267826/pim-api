@@ -78,7 +78,7 @@ jobs:
 
       - name: Smoke test
         run: |
-          CID="$(docker run -d -e ASPNETCORE_URLS=http://+:5000 -e ASPNETCORE_ENVIRONMENT=Development "${{ env.IMAGE }}:latest")"
+          CID="$(docker run -d --rm -e ASPNETCORE_URLS=http://+:5000 -e ASPNETCORE_ENVIRONMENT=Development "${{ env.IMAGE }}:latest")"
           trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 90); do
             if docker exec "$CID" bash -c \
@@ -110,10 +110,13 @@ jobs:
       - name: Export image tarball
         if: steps.ver.outputs.is_release == 'true'
         run: |
+          set -o pipefail
           mkdir -p build/artifacts
           docker save "${{ env.IMAGE }}:v${{ steps.ver.outputs.artifact_slug }}" \
             | gzip > "build/artifacts/pim-platform-server-v${{ steps.ver.outputs.artifact_slug }}.tar.gz"
-          echo "Artifact size: $(du -sh build/artifacts/*.tar.gz | cut -f1)"
+          TARBALL="build/artifacts/pim-platform-server-v${{ steps.ver.outputs.artifact_slug }}.tar.gz"
+          test -s "$TARBALL" || { echo "错误: docker save 产物为空: $TARBALL" >&2; exit 1; }
+          echo "Artifact size: $(du -sh "$TARBALL" | cut -f1)"
 
       - name: Upload docker artifact
         if: steps.ver.outputs.is_release == 'true'
