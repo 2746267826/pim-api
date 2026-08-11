@@ -29,7 +29,7 @@ EXPOSE 5000 22
 RUN apt-get update \
     && apt-get install -y --no-install-recommends openssh-server supervisor tini \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -r -u 1001 -m -d /home/pimlog -s /usr/sbin/nologin pimlog
+    && useradd -r -u 1001 -m -d /home/pimlog -s /bin/bash pimlog
 
 COPY scripts/docker/sshd-pim.conf /etc/ssh/sshd_config.d/pim.conf
 COPY scripts/docker/supervisord.conf /etc/supervisor/supervisord.conf
