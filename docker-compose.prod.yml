@@ -1,0 +1,64 @@
+services:
+  pim:
+    image: ghcr.io/2746267826/pim-platform-server:${PIM_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PIM_HTTP_PORT:-5858}:5000"
+      - "127.0.0.1:${PIM_SSH_PORT:-2222}:22"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5000
+      - TZ=Asia/Shanghai
+      - ConnectionStrings__DefaultConnection=${PG_CONNECTION}
+      - Jwt__PrivateKeyPath=/data/keys/jwt_private.pem
+      - DataProtection__KeysPath=/data/data-protection
+      - Minio__Endpoint=${MINIO_ENDPOINT}
+      - Minio__AccessKey=${MINIO_ACCESS_KEY}
+      - Minio__SecretKey=${MINIO_SECRET_KEY}
+      - Kopia__RepositoryPath=/data/kopia-repo
+      - Kopia__Password=${KOPIA_PASSWORD}
+      - Tika__BaseUrl=${TIKA_BASE_URL}
+      - Ai__Enabled=${AI_ENABLED:-false}
+      - Ai__Provider=litellm
+      - Ai__BaseUrl=${AI_BASE_URL}
+      - Ai__ApiKey=${AI_API_KEY}
+      - Ai__DefaultModel=${AI_DEFAULT_MODEL:-pim-default}
+      - Ai__TimeoutSeconds=30
+      - Ai__MaxOutputTokensPerRequest=1000
+      - Ai__MaxAttemptsPerRequest=2
+      - Ai__SaveFullPrompts=true
+      - Ai__SaveFullResponses=true
+      - Nextcloud__PublicBaseUrl=${NEXTCLOUD_PUBLIC_BASE_URL}
+      - Nextcloud__InternalBaseUrl=${NEXTCLOUD_INTERNAL_BASE_URL}
+      - OnlyOffice__PublicUrl=${ONLYOFFICE_PUBLIC_URL}
+      - OnlyOffice__JwtSecret=${ONLYOFFICE_JWT_SECRET}
+      - Qdrant__BaseUrl=${QDRANT_BASE_URL}
+      - Qdrant__Url=${QDRANT_BASE_URL}
+      - Qdrant__Collection=pim_file_chunks
+      - Files__AiDisabledPathPatterns__0=/Secrets/*
+      - Files__AiDisabledPathPatterns__1=/Passwords/*
+      - Files__MaxInlineTextBytes=1048576
+      - Embedding__Provider=hashing
+      - Embedding__Dimensions=384
+      - PIM_SSH_AUTHORIZED_KEYS=${PIM_SSH_AUTHORIZED_KEYS}
+      - PIM_LOG_RETAINED_FILES=${PIM_LOG_RETAINED_FILES:-2}
+    volumes:
+      - pim_data:/data
+      - /data/pim/logs:/data/pim/logs
+      - /data/keys:/data/keys:ro
+      - pim_ssh_keys:/etc/pim/ssh
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/5000; printf \"GET /health HTTP/1.0\\r\\n\\r\\n\" >&3; grep -q healthy <&3'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pim_data:
+  pim_ssh_keys:

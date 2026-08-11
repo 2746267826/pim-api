@@ -19,7 +19,8 @@ Log.Logger = new LoggerConfiguration()
     .WriteTo.Console(new CompactJsonFormatter())
     .WriteTo.File(new CompactJsonFormatter(), "/data/pim/logs/pim-api-.jsonl",
         rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 30)
+        retainedFileCountLimit: LoggingConfig.ResolveRetainedFileCount(
+            Environment.GetEnvironmentVariable("PIM_LOG_RETAINED_FILES")))
     .CreateLogger();
 
 var builder = WebApplication.CreateBuilder(args);
@@ -122,7 +123,14 @@ app.MapAiEndpoints();
 moduleRegistry.MapAllEndpoints(app);
 
 // Init modules
-await moduleRegistry.InitializeAllAsync(app.Services);
+try
+{
+    await moduleRegistry.InitializeAllAsync(app.Services);
+}
+catch (Exception ex)
+{
+    Log.Warning(ex, "Module initialization failed; the API will start but module endpoints may not work.");
+}
 try
 {
     RecurringJob.AddOrUpdate<Stage0DiagnosticJob>(

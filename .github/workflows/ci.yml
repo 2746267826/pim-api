@@ -18,6 +18,10 @@ on:
         default: true
         type: boolean
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   resolve-version:
     runs-on: ubuntu-latest
@@ -51,6 +55,7 @@ jobs:
       web: ${{ steps.flags.outputs.web }}
       windows: ${{ steps.flags.outputs.windows }}
       android: ${{ steps.flags.outputs.android }}
+      docker: ${{ steps.flags.outputs.docker }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,6 +107,13 @@ jobs:
               - 'branding/**'
               - '.github/workflows/build-android.yml'
               - '.github/workflows/ci.yml'
+            docker:
+              - 'src/Pim.Api/Dockerfile'
+              - 'scripts/docker/**'
+              - '.github/workflows/build-docker.yml'
+              - '.github/workflows/ci.yml'
+              - 'docker-compose.prod.yml'
+              - '.env.prod.example'
             infra:
               - '.github/workflows/ci.yml'
               - '.github/actions/**'
@@ -124,12 +136,14 @@ jobs:
             echo "web=true" >> "$GITHUB_OUTPUT"
             echo "windows=true" >> "$GITHUB_OUTPUT"
             echo "android=true" >> "$GITHUB_OUTPUT"
+            echo "docker=true" >> "$GITHUB_OUTPUT"
           else
             echo "all=false" >> "$GITHUB_OUTPUT"
             echo "api=${{ steps.filter.outputs.api }}" >> "$GITHUB_OUTPUT"
             echo "web=${{ steps.filter.outputs.web }}" >> "$GITHUB_OUTPUT"
             echo "windows=${{ steps.filter.outputs.windows }}" >> "$GITHUB_OUTPUT"
             echo "android=${{ steps.filter.outputs.android }}" >> "$GITHUB_OUTPUT"
+            echo "docker=${{ steps.filter.outputs.docker }}" >> "$GITHUB_OUTPUT"
           fi
 
   build-api:
@@ -177,8 +191,18 @@ jobs:
       git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
     secrets: inherit
 
+  build-docker:
+    needs: [resolve-version, changes]
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.docker == 'true'
+    uses: ./.github/workflows/build-docker.yml
+    with:
+      version: ${{ needs.resolve-version.outputs.version }}
+      artifact_slug: ${{ needs.resolve-version.outputs.artifact_slug }}
+      git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
+      is_release: ${{ needs.resolve-version.outputs.is_release }}
+
   summarize:
-    needs: [resolve-version, changes, build-api, build-web, build-windows, build-android]
+    needs: [resolve-version, changes, build-api, build-web, build-windows, build-android, build-docker]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -192,12 +216,13 @@ jobs:
           echo "| 🖥️  API     | ${{ needs.build-api.result == 'success' && '✅ Built' || needs.build-api.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo "| 🌐  Web     | ${{ needs.build-web.result == 'success' && '✅ Built' || needs.build-web.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo "| 🪟  Windows | ${{ needs.build-windows.result == 'success' && '✅ Built' || needs.build-windows.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
+          echo "| 🐳  Docker  | ${{ needs.build-docker.result == 'success' && '✅ Built' || needs.build-docker.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo "| 📱  Android | ${{ needs.build-android.result == 'success' && '✅ Built' || needs.build-android.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo ""
           echo "> Artifacts: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   release:
-    needs: [resolve-version, summarize, build-api, build-web, build-windows, build-android]
+    needs: [resolve-version, summarize, build-api, build-web, build-windows, build-android, build-docker]
     # Release on every master push where no build failed. Skipped (unchanged)
     # components are fine: their assets are copied from the previous release.
     if: |
@@ -220,7 +245,8 @@ jobs:
         run: |
           BUILT=0
           for r in "${{ needs.build-api.result }}" "${{ needs.build-web.result }}" \
-                    "${{ needs.build-windows.result }}" "${{ needs.build-android.result }}"; do
+                    "${{ needs.build-windows.result }}" "${{ needs.build-android.result }}" \
+                    "${{ needs.build-docker.result }}"; do
             if [ "$r" = "success" ]; then BUILT=$((BUILT+1)); fi
           done
           if [ "$BUILT" -gt 0 ]; then
@@ -273,8 +299,9 @@ jobs:
           fill_if_skipped "${{ needs.build-web.result }}" 'pim-web-*.tar.gz'
           fill_if_skipped "${{ needs.build-windows.result }}" 'pim-windows-*.zip'
           fill_if_skipped "${{ needs.build-android.result }}" 'pim-android-*.apk'
+          fill_if_skipped "${{ needs.build-docker.result }}" 'pim-platform-server-*.tar.gz'
           # Sanity check: every asset family must be present before uploading.
-          for p in pim-api-*.tar.gz pim-web-*.tar.gz pim-windows-*.zip pim-android-*.apk; do
+          for p in pim-api-*.tar.gz pim-web-*.tar.gz pim-windows-*.zip pim-android-*.apk pim-platform-server-*.tar.gz; do
             ls release-assets/${p} >/dev/null 2>&1 \
               || { echo "::error::Missing release asset family: ${p}" >&2; exit 1; }
           done
@@ -305,5 +332,6 @@ jobs:
             release-assets/pim-web-*.tar.gz
             release-assets/pim-windows-*.zip
             release-assets/pim-android-*.apk
+            release-assets/pim-platform-server-*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
