@@ -78,7 +78,7 @@ jobs:
 
       - name: Smoke test
         run: |
-          CID="$(docker run -d -e ASPNETCORE_URLS=http://+:5000 "${{ env.IMAGE }}:latest")"
+          CID="$(docker run -d -e ASPNETCORE_URLS=http://+:5000 -e ASPNETCORE_ENVIRONMENT=Development "${{ env.IMAGE }}:latest")"
           trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 30); do
             if docker exec "$CID" bash -c \
@@ -88,7 +88,9 @@ jobs:
             fi
             sleep 2
           done
-          echo "smoke: /health FAILED" >&2
+          echo "smoke: /health FAILED — container logs:"
+          docker logs "$CID" 2>&1 | tail -n 100 || true
+          docker ps -a --filter "id=$CID" || true
           exit 1
 
       - name: Login to GHCR
