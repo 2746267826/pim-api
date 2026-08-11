@@ -48,7 +48,7 @@ services:
       - /data/keys:/data/keys:ro
       - pim_ssh_keys:/etc/pim/ssh
     healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/5000'"]
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/5000; printf \"GET /health HTTP/1.0\\r\\n\\r\\n\" >&3; grep -q healthy <&3'"]
       interval: 15s
       timeout: 5s
       retries: 5
