@@ -11,7 +11,7 @@ services:
       - TZ=Asia/Shanghai
       - ConnectionStrings__DefaultConnection=${PG_CONNECTION}
       - Jwt__PrivateKeyPath=/data/keys/jwt_private.pem
-      - DataProtection__KeysPath=/data/data-protection
+      - DataProtection__KeysPath=/data/keys/data-protection
       - Minio__Endpoint=${MINIO_ENDPOINT}
       - Minio__AccessKey=${MINIO_ACCESS_KEY}
       - Minio__SecretKey=${MINIO_SECRET_KEY}
