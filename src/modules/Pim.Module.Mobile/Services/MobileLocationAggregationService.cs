@@ -235,7 +235,7 @@ public sealed class MobileLocationAggregationService
                 else if (classification.Evidence != currentEvidence)
                 {
                     segments.Add(BuildSegment(current, KindOf(currentEvidence), jumpPointIds, context, trackId));
-                    current = [points[index - 1], points[index]];
+                    current = [points[index - 1]];
                     currentEvidence = classification.Evidence;
                 }
             }

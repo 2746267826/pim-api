@@ -141,6 +141,15 @@ public sealed class MobileLocationAggregationServiceTests
 
         Assert.Equal(3, track.SegmentCount);
         Assert.Equal(new[] { "stay", "move", "stay" }, track.Segments.Select(segment => segment.Kind).ToArray());
+        Assert.All(track.Segments, segment => Assert.Equal(2, segment.PointCount));
+        var distinctSegmentPointIds = track.Segments
+            .SelectMany(segment => segment.Path)
+            .Select(point => point.Id)
+            .Distinct()
+            .Count();
+        Assert.True(
+            distinctSegmentPointIds == 4,
+            $"boundary points are shared between adjacent segments, never duplicated within one segment (found {distinctSegmentPointIds} distinct ids)");
     }
 
     [Fact]
