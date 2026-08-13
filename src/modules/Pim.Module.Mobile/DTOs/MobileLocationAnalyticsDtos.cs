@@ -44,7 +44,8 @@ public sealed record MobileLocationPathPointDto(
     double Latitude,
     double Longitude,
     double HorizontalAccuracyMeters,
-    string Quality);
+    string Quality,
+    IReadOnlyList<string> QualityFlags);
 
 public sealed record MobileLocationSegmentDto(
     string Id,

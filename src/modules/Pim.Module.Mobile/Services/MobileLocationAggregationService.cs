@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -10,9 +11,11 @@ namespace Pim.Module.Mobile.Services;
 public sealed class MobileLocationAggregationService
 {
     private static readonly TimeSpan TrackGapThreshold = TimeSpan.FromHours(2);
-    private static readonly TimeSpan StayDurationThreshold = TimeSpan.FromMinutes(10);
-    private const double StayRadiusThresholdMeters = 150;
-    private const double MoveDistanceThresholdMeters = 30;
+
+    private const double NoiseDisplacementFloorMeters = 30;
+    private const double StaySpeedThresholdMetersPerSecond = 0.3;
+    private const double MoveSpeedThresholdMetersPerSecond = 1.0;
+    private const double JumpSpeedThresholdMetersPerSecond = 30;
     private const double EarthRadiusMeters = 6371000;
 
     private readonly PimDbContext _db;
@@ -199,7 +202,7 @@ public sealed class MobileLocationAggregationService
             first.DeviceId,
             first.RecordedAtUtc,
             last.RecordedAtUtc,
-            Math.Round(TotalDistanceMeters(points), 1),
+            Math.Round(segments.Sum(segment => segment.DistanceMeters), 1),
             DurationSeconds(first.RecordedAtUtc, last.RecordedAtUtc),
             points.Count,
             segments.Count,
@@ -213,53 +216,49 @@ public sealed class MobileLocationAggregationService
         MobileLocationQueryContext context,
         string trackId)
     {
-        if (points.Count <= 2)
-            return [BuildSegment(points, context, trackId)];
+        if (points.Count <= 1)
+            return [BuildSegment(points, "stay", new HashSet<Guid>(), context, trackId)];
 
+        var jumpPointIds = MarkJumpPoints(points);
         var segments = new List<MobileLocationSegmentDto>();
-        var index = 0;
-        while (index < points.Count - 1)
+        var current = new List<MobileLocationPointEntity> { points[0] };
+        var currentEvidence = PairEvidence.None;
+        for (var index = 1; index < points.Count; index++)
         {
-            var stayEnd = FindStayEnd(points, index);
-            if (stayEnd > index)
+            var classification = ClassifyPair(points[index - 1], points[index], currentEvidence);
+            if (classification.Evidence != PairEvidence.None)
             {
-                segments.Add(BuildSegment(points.GetRange(index, stayEnd - index + 1), context, trackId));
-                if (stayEnd >= points.Count - 1)
-                    return segments;
-
-                index = stayEnd;
-                continue;
+                if (currentEvidence == PairEvidence.None)
+                {
+                    currentEvidence = classification.Evidence;
+                }
+                else if (classification.Evidence != currentEvidence)
+                {
+                    segments.Add(BuildSegment(current, KindOf(currentEvidence), jumpPointIds, context, trackId));
+                    current = [points[index - 1], points[index]];
+                    currentEvidence = classification.Evidence;
+                }
             }
 
-            var nextStayStart = FindNextStayStart(points, index + 1);
-            if (nextStayStart > index)
-            {
-                segments.Add(BuildSegment(points.GetRange(index, nextStayStart - index + 1), context, trackId));
-                index = nextStayStart;
-                continue;
-            }
-
-            segments.Add(BuildSegment(points.GetRange(index, points.Count - index), context, trackId));
-            return segments;
+            current.Add(points[index]);
         }
 
-        if (segments.Count == 0)
-            segments.Add(BuildSegment(points, context, trackId));
-
+        segments.Add(BuildSegment(current, KindOf(currentEvidence), jumpPointIds, context, trackId));
         return segments;
     }
 
     private static MobileLocationSegmentDto BuildSegment(
         List<MobileLocationPointEntity> points,
+        string kind,
+        IReadOnlySet<Guid> jumpPointIds,
         MobileLocationQueryContext context,
         string trackId)
     {
         var first = points[0];
         var last = points[^1];
-        var distanceMeters = TotalDistanceMeters(points);
+        var distanceMeters = kind == "move" ? MoveDistanceMeters(points, jumpPointIds) : 0;
         var durationSeconds = DurationSeconds(first.RecordedAtUtc, last.RecordedAtUtc);
-        var kind = SegmentKind(distanceMeters, durationSeconds, points);
-        var qualityFlags = SegmentQualityFlags(points, context);
+        var qualityFlags = SegmentQualityFlags(points, context, jumpPointIds);
         var quality = qualityFlags.Count == 0 ? "usable" : "review";
 
         return new MobileLocationSegmentDto(
@@ -280,57 +279,147 @@ public sealed class MobileLocationAggregationService
             quality,
             qualityFlags,
             Bounds(points),
-            points.Select(MapPathPoint).ToList());
+            points.Select(point => MapPathPoint(point, jumpPointIds.Contains(point.Id))).ToList());
     }
 
-    private static int FindStayEnd(IReadOnlyList<MobileLocationPointEntity> points, int start)
+    private static IReadOnlySet<Guid> MarkJumpPoints(IReadOnlyList<MobileLocationPointEntity> points)
     {
-        var stayEnd = -1;
-        for (var end = start + 1; end < points.Count; end++)
+        var jumpPairCount = new int[points.Count];
+        for (var index = 0; index < points.Count - 1; index++)
         {
-            var candidate = points.Skip(start).Take(end - start + 1).ToList();
-            if (DurationSeconds(candidate[0].RecordedAtUtc, candidate[^1].RecordedAtUtc) >= StayDurationThreshold.TotalSeconds
-                && MaxRadiusMeters(candidate) <= StayRadiusThresholdMeters)
+            if (IsJumpPair(points[index], points[index + 1]))
             {
-                stayEnd = end;
+                jumpPairCount[index]++;
+                jumpPairCount[index + 1]++;
+            }
+        }
+
+        var jumpIds = new HashSet<Guid>();
+        for (var index = 0; index < points.Count; index++)
+        {
+            if (jumpPairCount[index] == 0)
+                continue;
+
+            if (jumpPairCount[index] >= 2)
+            {
+                jumpIds.Add(points[index].Id);
                 continue;
             }
 
-            if (stayEnd > start)
-                break;
+            var partnerIndex = index > 0 && IsJumpPair(points[index - 1], points[index])
+                ? index - 1
+                : index + 1;
+            if (jumpPairCount[partnerIndex] == 1)
+                jumpIds.Add(points[index].Id);
         }
 
-        return stayEnd;
+        return jumpIds;
     }
 
-    private static int FindNextStayStart(IReadOnlyList<MobileLocationPointEntity> points, int start)
+    private static bool IsJumpPair(MobileLocationPointEntity from, MobileLocationPointEntity to)
     {
-        for (var index = start; index < points.Count - 1; index++)
+        var elapsedSeconds = DurationSeconds(from.RecordedAtUtc, to.RecordedAtUtc);
+        if (elapsedSeconds <= 0)
+            return false;
+
+        var distanceMeters = DistanceMeters(from, to);
+        return distanceMeters > 0
+            && distanceMeters / elapsedSeconds > JumpSpeedThresholdMetersPerSecond;
+    }
+
+    private static PairClassification ClassifyPair(
+        MobileLocationPointEntity from,
+        MobileLocationPointEntity to,
+        PairEvidence carry)
+    {
+        var elapsedSeconds = DurationSeconds(from.RecordedAtUtc, to.RecordedAtUtc);
+        var distanceMeters = DistanceMeters(from, to);
+        if (elapsedSeconds <= 0 || distanceMeters <= 0)
+            return new PairClassification(PairEvidence.None, false);
+
+        var noiseFloorMeters = Math.Max(
+            NoiseDisplacementFloorMeters,
+            2 * ((AccuracyMeters(from) + AccuracyMeters(to)) / 2));
+        if (distanceMeters < noiseFloorMeters)
+            return new PairClassification(PairEvidence.None, false);
+
+        var speedMetersPerSecond = distanceMeters / elapsedSeconds;
+        if (speedMetersPerSecond > JumpSpeedThresholdMetersPerSecond)
+            return new PairClassification(PairEvidence.None, true);
+
+        if (speedMetersPerSecond < StaySpeedThresholdMetersPerSecond)
+            return new PairClassification(PairEvidence.Stay, false);
+
+        if (speedMetersPerSecond > MoveSpeedThresholdMetersPerSecond)
+            return new PairClassification(PairEvidence.Move, false);
+
+        return new PairClassification(MotionSignalEvidence(from, to) ?? carry, false);
+    }
+
+    private static PairEvidence? MotionSignalEvidence(MobileLocationPointEntity from, MobileLocationPointEntity to)
+    {
+        var fromSignal = MotionSignalFromRawJson(from.RawJson);
+        var toSignal = MotionSignalFromRawJson(to.RawJson);
+        foreach (var signal in new[] { fromSignal, toSignal })
         {
-            if (FindStayEnd(points, index) > index)
-                return index;
+            if (string.Equals(signal, "Still", StringComparison.OrdinalIgnoreCase))
+                return PairEvidence.Stay;
+            if (IsMovingSignal(signal))
+                return PairEvidence.Move;
         }
 
-        return -1;
+        return null;
     }
 
-    private static string SegmentKind(
-        double distanceMeters,
-        long durationSeconds,
-        IReadOnlyList<MobileLocationPointEntity> points)
+    private static bool IsMovingSignal(string signal)
+        => signal.Trim().ToLowerInvariant() is "walking" or "running" or "onbicycle" or "invehicle" or "moving";
+
+    private static string MotionSignalFromRawJson(string rawJson)
     {
-        if (points.Count <= 1)
-            return "stay";
+        if (string.IsNullOrWhiteSpace(rawJson))
+            return "Unknown";
 
-        if (durationSeconds >= StayDurationThreshold.TotalSeconds && MaxRadiusMeters(points) <= StayRadiusThresholdMeters)
-            return "stay";
+        try
+        {
+            using var document = JsonDocument.Parse(rawJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("motionSignal", out var signal)
+                || signal.ValueKind != JsonValueKind.String)
+            {
+                return "Unknown";
+            }
 
-        return distanceMeters >= MoveDistanceThresholdMeters ? "move" : "stay";
+            return signal.GetString() ?? "Unknown";
+        }
+        catch (JsonException)
+        {
+            return "Unknown";
+        }
     }
+
+    private static double MoveDistanceMeters(
+        IReadOnlyList<MobileLocationPointEntity> points,
+        IReadOnlySet<Guid> jumpPointIds)
+    {
+        var distance = 0d;
+        for (var index = 1; index < points.Count; index++)
+        {
+            if (jumpPointIds.Contains(points[index - 1].Id) || jumpPointIds.Contains(points[index].Id))
+                continue;
+
+            distance += DistanceMeters(points[index - 1], points[index]);
+        }
+
+        return distance;
+    }
+
+    private static string KindOf(PairEvidence evidence)
+        => evidence == PairEvidence.Move ? "move" : "stay";
 
     private static IReadOnlyList<string> SegmentQualityFlags(
         IReadOnlyList<MobileLocationPointEntity> points,
-        MobileLocationQueryContext context)
+        MobileLocationQueryContext context,
+        IReadOnlySet<Guid> jumpPointIds)
     {
         var flags = new List<string>();
         if (points.Count <= 1)
@@ -339,6 +428,8 @@ public sealed class MobileLocationAggregationService
             flags.Add("low-accuracy");
         if (points.Any(point => string.Equals(point.Quality, "rejected", StringComparison.OrdinalIgnoreCase)))
             flags.Add("rejected-points");
+        if (points.Any(point => jumpPointIds.Contains(point.Id)))
+            flags.Add("jump-point");
         return flags.Distinct(StringComparer.Ordinal).ToList();
     }
 
@@ -377,29 +468,30 @@ public sealed class MobileLocationAggregationService
     }
 
     private static int CountStaySegments(List<MobileLocationPointEntity> points)
-        => BuildTracks(points, new MobileLocationQueryContext(
-                new MobileAnalyticsRangeDto(DateTimeOffset.MinValue, DateTimeOffset.MaxValue, MobileAnalyticsDefaults.DefaultTimezone, "0001-01-01", "9999-12-31"),
-                null,
-                MobileLocationQueryService.DefaultMaxAccuracyMeters,
-                false,
-                null,
-                MobileLocationQueryService.DefaultPageSize))
+        => BuildTracks(points, DefaultSegmentContext())
             .SelectMany(track => track.Segments)
             .Count(segment => segment.Kind == "stay");
 
     private static long LongestStaySeconds(List<MobileLocationPointEntity> points)
-        => BuildTracks(points, new MobileLocationQueryContext(
-                new MobileAnalyticsRangeDto(DateTimeOffset.MinValue, DateTimeOffset.MaxValue, MobileAnalyticsDefaults.DefaultTimezone, "0001-01-01", "9999-12-31"),
-                null,
-                MobileLocationQueryService.DefaultMaxAccuracyMeters,
-                false,
-                null,
-                MobileLocationQueryService.DefaultPageSize))
+        => BuildTracks(points, DefaultSegmentContext())
             .SelectMany(track => track.Segments)
             .Where(segment => segment.Kind == "stay")
             .Select(segment => segment.DurationSeconds)
             .DefaultIfEmpty(0)
             .Max();
+
+    private static double TotalDistanceMetersByDevice(List<MobileLocationPointEntity> points)
+        => BuildTracks(points, DefaultSegmentContext())
+            .Sum(track => track.DistanceMeters);
+
+    private static MobileLocationQueryContext DefaultSegmentContext()
+        => new(
+            new MobileAnalyticsRangeDto(DateTimeOffset.MinValue, DateTimeOffset.MaxValue, MobileAnalyticsDefaults.DefaultTimezone, "0001-01-01", "9999-12-31"),
+            null,
+            MobileLocationQueryService.DefaultMaxAccuracyMeters,
+            false,
+            null,
+            MobileLocationQueryService.DefaultPageSize);
 
     private static MobileGeoBoundsDto? Bounds(IReadOnlyList<MobileLocationPointEntity> points)
     {
@@ -413,14 +505,15 @@ public sealed class MobileLocationAggregationService
             points.Max(Longitude));
     }
 
-    private static MobileLocationPathPointDto MapPathPoint(MobileLocationPointEntity point)
+    private static MobileLocationPathPointDto MapPathPoint(MobileLocationPointEntity point, bool isJump)
         => new(
             point.Id.ToString(),
             point.RecordedAtUtc,
             Latitude(point),
             Longitude(point),
             AccuracyMeters(point),
-            point.Quality);
+            point.Quality,
+            isJump ? ["jump-point"] : []);
 
     private static MobileLocationPointDto MapPoint(MobileLocationPointEntity point)
         => new(
@@ -450,19 +543,6 @@ public sealed class MobileLocationAggregationService
     private static long DurationSeconds(DateTimeOffset start, DateTimeOffset end)
         => Math.Max(0, Convert.ToInt64((end - start).TotalSeconds));
 
-    private static double TotalDistanceMeters(IReadOnlyList<MobileLocationPointEntity> points)
-    {
-        var distance = 0d;
-        for (var index = 1; index < points.Count; index++)
-            distance += DistanceMeters(points[index - 1], points[index]);
-        return distance;
-    }
-
-    private static double TotalDistanceMetersByDevice(IReadOnlyList<MobileLocationPointEntity> points)
-        => points
-            .GroupBy(point => point.DeviceId)
-            .Sum(group => TotalDistanceMeters(group.OrderBy(point => point.RecordedAtUtc).ThenBy(point => point.Id).ToList()));
-
     private static string StableId(string prefix, Guid firstPointId, Guid lastPointId)
         => $"{prefix}_{firstPointId:N}_{lastPointId:N}";
 
@@ -472,25 +552,6 @@ public sealed class MobileLocationAggregationService
         var lat2 = DegreesToRadians(Latitude(to));
         var deltaLat = DegreesToRadians(Latitude(to) - Latitude(from));
         var deltaLon = DegreesToRadians(Longitude(to) - Longitude(from));
-        var a = Math.Sin(deltaLat / 2) * Math.Sin(deltaLat / 2)
-            + Math.Cos(lat1) * Math.Cos(lat2) * Math.Sin(deltaLon / 2) * Math.Sin(deltaLon / 2);
-        var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
-        return EarthRadiusMeters * c;
-    }
-
-    private static double MaxRadiusMeters(IReadOnlyList<MobileLocationPointEntity> points)
-    {
-        var centerLat = points.Average(Latitude);
-        var centerLon = points.Average(Longitude);
-        return points.Max(point => DistanceMeters(centerLat, centerLon, Latitude(point), Longitude(point)));
-    }
-
-    private static double DistanceMeters(double fromLat, double fromLon, double toLat, double toLon)
-    {
-        var lat1 = DegreesToRadians(fromLat);
-        var lat2 = DegreesToRadians(toLat);
-        var deltaLat = DegreesToRadians(toLat - fromLat);
-        var deltaLon = DegreesToRadians(toLon - fromLon);
         var a = Math.Sin(deltaLat / 2) * Math.Sin(deltaLat / 2)
             + Math.Cos(lat1) * Math.Cos(lat2) * Math.Sin(deltaLon / 2) * Math.Sin(deltaLon / 2);
         var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
@@ -533,4 +594,13 @@ public sealed class MobileLocationAggregationService
 
     private static double? DecimalToDouble(decimal? value)
         => value is null ? null : Convert.ToDouble(value.Value);
+
+    private enum PairEvidence
+    {
+        None,
+        Stay,
+        Move
+    }
+
+    private readonly record struct PairClassification(PairEvidence Evidence, bool IsJump);
 }
