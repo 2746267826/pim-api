@@ -131,10 +131,129 @@ public sealed class MemoryAggregateResultCacheTests
         var second = AggregateResultCacheKeys.Build(context.Request);
 
         Assert.Equal(second, first);
-        Assert.StartsWith("/api/v1/pc/summary?", first);
+        Assert.StartsWith("u:anon|/api/v1/pc/summary?", first);
         Assert.Contains("a=1", first);
         Assert.Contains("b=2", first);
         Assert.DoesNotContain("force", first);
+    }
+
+    [Fact]
+    public void BuildKey_IncludesUserIdentity()
+    {
+        var userContext = new DefaultHttpContext();
+        userContext.User = new System.Security.Claims.ClaimsPrincipal(
+            new System.Security.Claims.ClaimsIdentity(
+                [new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, "user-7")],
+                "test"));
+        userContext.Request.Path = "/api/v1/mobile/location/analytics/tracks";
+
+        var anonymousContext = new DefaultHttpContext();
+        anonymousContext.Request.Path = "/api/v1/mobile/location/analytics/tracks";
+
+        var userKey = AggregateResultCacheKeys.Build(userContext.Request);
+        var anonymousKey = AggregateResultCacheKeys.Build(anonymousContext.Request);
+
+        Assert.StartsWith("u:user-7|", userKey);
+        Assert.StartsWith("u:anon|", anonymousKey);
+        Assert.NotEqual(userKey, anonymousKey);
+    }
+
+    [Fact]
+    public void BuildKey_OverridesReplaceQueryParameters()
+    {
+        var context = new DefaultHttpContext();
+        context.Request.Path = "/api/v1/pc/aw/heatmap";
+        context.Request.QueryString = new QueryString("?start=2026-01-01");
+        var overrides = new List<KeyValuePair<string, string>>
+        {
+            new("start", "2026-08-08"),
+            new("end", "2026-08-15"),
+        };
+
+        var key = AggregateResultCacheKeys.Build(context.Request, overrides: overrides);
+
+        Assert.Contains("start=2026-08-08", key);
+        Assert.Contains("end=2026-08-15", key);
+        Assert.DoesNotContain("2026-01-01", key);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_ConcurrentSameKey_FactoryRunsOnce()
+    {
+        var cache = CreateCache();
+        var calls = 0;
+
+        Task<int> Factory()
+        {
+            calls++;
+            return Task.FromResult(42);
+        }
+
+        var results = await Task.WhenAll(
+            cache.GetOrCreateAsync("key", false, Factory),
+            cache.GetOrCreateAsync("key", false, Factory),
+            cache.GetOrCreateAsync("key", false, Factory));
+
+        Assert.All(results, result => Assert.Equal(42, result));
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task GetOrCreateAsync_ForceDuringInFlight_StaleFactoryDoesNotOverwrite()
+    {
+        var cache = CreateCache();
+        var slowFactoryGate = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var inFlight = cache.GetOrCreateAsync("key", false, () => slowFactoryGate.Task);
+
+        var forced = await cache.GetOrCreateAsync("key", true, () => Task.FromResult(99));
+        Assert.Equal(99, forced);
+
+        slowFactoryGate.SetResult(1);
+        var stale = await inFlight;
+        Assert.Equal(1, stale);
+
+        var afterForce = await cache.GetOrCreateAsync("key", false, () => Task.FromResult(100));
+        Assert.Equal(99, afterForce);
+    }
+
+    [Fact]
+    public async Task EvictByPrefix_RemovesMatchingEntries()
+    {
+        var cache = CreateCache();
+
+        await cache.GetOrCreateAsync("/api/v1/pc/summary", false, () => Task.FromResult(1));
+        await cache.GetOrCreateAsync("/api/v1/pc/aw/heatmap", false, () => Task.FromResult(2));
+        await cache.GetOrCreateAsync("/api/v1/mobile/summary", false, () => Task.FromResult(3));
+
+        cache.EvictByPrefix("/api/v1/pc/");
+
+        var pcSummaryCalls = 0;
+        var pcHeatmapCalls = 0;
+        var mobileCalls = 0;
+
+        var pcSummary = await cache.GetOrCreateAsync("/api/v1/pc/summary", false, () =>
+        {
+            pcSummaryCalls++;
+            return Task.FromResult(11);
+        });
+        var pcHeatmap = await cache.GetOrCreateAsync("/api/v1/pc/aw/heatmap", false, () =>
+        {
+            pcHeatmapCalls++;
+            return Task.FromResult(12);
+        });
+        var mobile = await cache.GetOrCreateAsync("/api/v1/mobile/summary", false, () =>
+        {
+            mobileCalls++;
+            return Task.FromResult(13);
+        });
+
+        Assert.Equal(11, pcSummary);
+        Assert.Equal(12, pcHeatmap);
+        Assert.Equal(3, mobile);
+        Assert.Equal(1, pcSummaryCalls);
+        Assert.Equal(1, pcHeatmapCalls);
+        Assert.Equal(0, mobileCalls);
     }
 
     [Fact]

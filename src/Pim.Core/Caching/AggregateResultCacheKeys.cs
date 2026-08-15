@@ -1,14 +1,27 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 
 namespace Pim.Core.Caching;
 
 public static class AggregateResultCacheKeys
 {
-    public static string Build(HttpRequest request, string excludedQueryParam = "force")
+    public static string Build(
+        HttpRequest request,
+        string excludedQueryParam = "force",
+        IReadOnlyList<KeyValuePair<string, string>>? overrides = null)
     {
         var pairs = request.Query
             .Where(pair => !string.Equals(pair.Key, excludedQueryParam, StringComparison.OrdinalIgnoreCase))
-            .SelectMany(pair => pair.Value.Select(value => (Key: pair.Key, Value: value ?? string.Empty)))
+            .SelectMany(pair => pair.Value.Select(value => (Key: pair.Key, Value: value ?? string.Empty)));
+
+        if (overrides is not null)
+        {
+            pairs = pairs.Where(pair => !overrides.Any(overridePair =>
+                    string.Equals(pair.Key, overridePair.Key, StringComparison.OrdinalIgnoreCase)))
+                .Concat(overrides.Select(pair => (pair.Key, Value: pair.Value ?? string.Empty)));
+        }
+
+        var normalized = pairs
             .OrderBy(pair => pair.Key, StringComparer.InvariantCulture)
             .ThenBy(pair => pair.Value, StringComparer.InvariantCulture)
             .Select(pair => string.Concat(
@@ -16,9 +29,12 @@ public static class AggregateResultCacheKeys
                 "=",
                 Uri.EscapeDataString(pair.Value)));
 
-        var query = string.Join("&", pairs);
-        return string.IsNullOrEmpty(query)
+        var query = string.Join("&", normalized);
+        var key = string.IsNullOrEmpty(query)
             ? request.Path.Value ?? string.Empty
             : string.Concat(request.Path.Value, "?", query);
+
+        var userId = request.HttpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "anon";
+        return string.Concat("u:", Uri.EscapeDataString(userId), "|", key);
     }
 }
