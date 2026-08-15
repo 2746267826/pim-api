@@ -290,7 +290,8 @@ public sealed class MobileAppCatalogOverrideService
     private static string NormalizeLifeCategory(string value)
     {
         var normalized = (value ?? string.Empty).Trim();
-        if (!MobileLifeCategories.All.Contains(normalized))
+        if (!MobileLifeCategories.All.Contains(normalized)
+            && !string.Equals(normalized, MobileLifeCategories.ToolsSystem, StringComparison.Ordinal))
             throw new ArgumentException($"Unsupported mobile life category: {value}.", nameof(value));
 
         return normalized;

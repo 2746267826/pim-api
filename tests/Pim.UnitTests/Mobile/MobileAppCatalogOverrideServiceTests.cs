@@ -17,7 +17,7 @@ public sealed class MobileAppCatalogOverrideServiceTests
         var created = await service.UpsertOverrideAsync(new MobileAppCatalogOverrideUpsertRequest(
             " COM.EXAMPLE.APP ",
             "Example",
-            MobileLifeCategories.Social,
+            MobileLifeCategories.Chat,
             false,
             false));
 
@@ -73,7 +73,7 @@ public sealed class MobileAppCatalogOverrideServiceTests
         var low = await service.CreateCategoryRuleAsync(new MobileAppCategoryRuleUpsertRequest(
             MobileAppClassificationService.RuleTypePackagePrefix,
             "com.example.",
-            MobileLifeCategories.WorkProductivity,
+            MobileLifeCategories.Documents,
             100,
             true,
             "Example Suite",
@@ -81,7 +81,7 @@ public sealed class MobileAppCatalogOverrideServiceTests
         var high = await service.CreateCategoryRuleAsync(new MobileAppCategoryRuleUpsertRequest(
             MobileAppClassificationService.RuleTypeKeyword,
             "pay",
-            MobileLifeCategories.FinancePayment,
+            MobileLifeCategories.Other,
             900,
             true));
 
@@ -151,7 +151,7 @@ public sealed class MobileAppCatalogOverrideServiceTests
             UserId = userId,
             PackageName = packageName,
             DisplayNameOverride = packageName,
-            LifeCategory = MobileLifeCategories.Social,
+            LifeCategory = MobileLifeCategories.Chat,
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -169,7 +169,7 @@ public sealed class MobileAppCatalogOverrideServiceTests
             BucketEndUtc = end,
             PackageName = packageName,
             DisplayName = packageName,
-            LifeCategory = MobileLifeCategories.Social,
+            LifeCategory = MobileLifeCategories.Chat,
             ForegroundSeconds = 60,
             CreatedAt = start,
             UpdatedAt = start
@@ -186,7 +186,7 @@ public sealed class MobileAppCatalogOverrideServiceTests
             StartUtc = start,
             EndUtc = end,
             LocalDate = "2026-07-07",
-            LifeCategory = MobileLifeCategories.Social,
+            LifeCategory = MobileLifeCategories.Chat,
             ForegroundSeconds = 60,
             SessionCount = 1,
             AppCount = 1,

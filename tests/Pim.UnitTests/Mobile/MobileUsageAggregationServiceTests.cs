@@ -18,7 +18,7 @@ public sealed class MobileUsageAggregationServiceTests
             UserId = MobileTestHelpers.UserId,
             PackageName = "com.tencent.mobileqq",
             DisplayNameOverride = "QQ",
-            LifeCategory = MobileLifeCategories.Social
+            LifeCategory = MobileLifeCategories.Chat
         });
         db.Set<MobileUsageGoalEntity>().Add(new MobileUsageGoalEntity
         {
@@ -43,7 +43,7 @@ public sealed class MobileUsageAggregationServiceTests
         Assert.Equal(1, overview.AppCount);
         Assert.Equal("每日手机总时长", overview.GoalProgress?.Label);
         Assert.Equal(1800, overview.GoalProgress?.RemainingSeconds);
-        Assert.Contains(overview.Suggestions, item => item.Text.Contains("社交通讯", StringComparison.Ordinal));
+        Assert.Contains(overview.Suggestions, item => item.Text.Contains("聊天", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -64,9 +64,9 @@ public sealed class MobileUsageAggregationServiceTests
             DateTimeOffset.Parse("2026-07-06T00:00:00Z"),
             DateTimeOffset.Parse("2026-07-07T00:00:00Z")), CancellationToken.None);
 
-        Assert.Contains(heatmap, bucket => bucket.LocalHour == 21 && bucket.LifeCategory == "社交通讯");
-        Assert.Contains(heatmap, bucket => bucket.LocalHour == 22 && bucket.LifeCategory == "短视频/娱乐");
-        Assert.Contains(charts, chart => chart.Key == "category-share" && chart.Points.Any(point => point.Label == "社交通讯"));
+        Assert.Contains(heatmap, bucket => bucket.LocalHour == 21 && bucket.LifeCategory == "聊天");
+        Assert.Contains(heatmap, bucket => bucket.LocalHour == 22 && bucket.LifeCategory == "视频");
+        Assert.Contains(charts, chart => chart.Key == "category-share" && chart.Points.Any(point => point.Label == "聊天"));
         Assert.Contains(charts, chart => chart.Key == "top-apps" && chart.Points.Any(point => point.PackageName == "com.tencent.mobileqq"));
         Assert.Contains(charts, chart => chart.Key == "hour-distribution");
     }

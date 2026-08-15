@@ -24,6 +24,16 @@ public class PcCategoryService
         return BuildTree(all, null);
     }
 
+    /// <summary>平铺字典：7 大类 + 自定义分类，按 sort_order 排序（前端打标组件用）。</summary>
+    public async Task<List<CategoryDictionaryItemDto>> GetDictionaryAsync(CancellationToken ct)
+    {
+        return await _db.Set<PcCategoryEntity>()
+            .OrderBy(c => c.SortOrder)
+            .ThenBy(c => c.Name)
+            .Select(c => new CategoryDictionaryItemDto(c.Id, c.Name, c.Color, c.Icon))
+            .ToListAsync(ct);
+    }
+
     private static List<CategoryTreeNode> BuildTree(List<PcCategoryEntity> all, Guid? parentId)
     {
         return all

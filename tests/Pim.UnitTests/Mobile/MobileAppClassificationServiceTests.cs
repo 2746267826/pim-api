@@ -31,7 +31,7 @@ public sealed class MobileAppClassificationServiceTests
             UserId = MobileTestHelpers.UserId,
             RuleType = MobileAppClassificationService.RuleTypePackageExact,
             Pattern = "com.tencent.mm",
-            LifeCategory = MobileLifeCategories.Social,
+            LifeCategory = MobileLifeCategories.Chat,
             Priority = 1000,
             IsEnabled = true,
             CreatedAt = now,
@@ -58,9 +58,9 @@ public sealed class MobileAppClassificationServiceTests
         var now = DateTimeOffset.Parse("2026-07-07T08:00:00Z");
 
         db.Set<MobileAppCategoryRuleEntity>().AddRange(
-            Rule(MobileAppClassificationService.RuleTypeKeyword, "video", MobileLifeCategories.ShortVideoEntertainment, 900, now),
-            Rule(MobileAppClassificationService.RuleTypePackagePrefix, "com.example.", MobileLifeCategories.WorkProductivity, 100, now),
-            Rule(MobileAppClassificationService.RuleTypePackageExact, "com.example.reader", MobileLifeCategories.ReadingNews, 1, now));
+            Rule(MobileAppClassificationService.RuleTypeKeyword, "video", MobileLifeCategories.Video, 900, now),
+            Rule(MobileAppClassificationService.RuleTypePackagePrefix, "com.example.", MobileLifeCategories.Documents, 100, now),
+            Rule(MobileAppClassificationService.RuleTypePackageExact, "com.example.reader", MobileLifeCategories.Learning, 1, now));
         await db.SaveChangesAsync();
 
         var exact = await service.ClassifyAsync("com.example.reader");
@@ -69,11 +69,11 @@ public sealed class MobileAppClassificationServiceTests
             "com.creator.clip",
             DisplayName: "Video Studio"));
 
-        Assert.Equal(MobileLifeCategories.ReadingNews, exact.LifeCategory);
+        Assert.Equal(MobileLifeCategories.Learning, exact.LifeCategory);
         Assert.Equal("user-rule:package-exact", exact.Source);
-        Assert.Equal(MobileLifeCategories.WorkProductivity, prefix.LifeCategory);
+        Assert.Equal(MobileLifeCategories.Documents, prefix.LifeCategory);
         Assert.Equal("user-rule:package-prefix", prefix.Source);
-        Assert.Equal(MobileLifeCategories.ShortVideoEntertainment, keyword.LifeCategory);
+        Assert.Equal(MobileLifeCategories.Video, keyword.LifeCategory);
         Assert.Equal("user-rule:keyword", keyword.Source);
     }
 
@@ -91,9 +91,9 @@ public sealed class MobileAppClassificationServiceTests
         var builtIn = await service.ClassifyAsync("com.tencent.mobileqq");
         var fallback = await service.ClassifyAsync("com.unknown.app");
 
-        Assert.Equal(MobileLifeCategories.MusicAudio, metadata.LifeCategory);
+        Assert.Equal(MobileLifeCategories.Other, metadata.LifeCategory);
         Assert.Equal("android-metadata", metadata.Source);
-        Assert.Equal(MobileLifeCategories.Social, builtIn.LifeCategory);
+        Assert.Equal(MobileLifeCategories.Chat, builtIn.LifeCategory);
         Assert.Equal("built-in-package", builtIn.Source);
         Assert.Equal(MobileLifeCategories.Uncategorized, fallback.LifeCategory);
         Assert.Equal("fallback", fallback.Source);
@@ -101,10 +101,10 @@ public sealed class MobileAppClassificationServiceTests
 
     [Theory]
     [InlineData("0", MobileLifeCategories.Game)]
-    [InlineData("1", MobileLifeCategories.MusicAudio)]
-    [InlineData("2", MobileLifeCategories.ShortVideoEntertainment)]
-    [InlineData("4", MobileLifeCategories.Social)]
-    [InlineData("7", MobileLifeCategories.WorkProductivity)]
+    [InlineData("1", MobileLifeCategories.Other)]
+    [InlineData("2", MobileLifeCategories.Video)]
+    [InlineData("4", MobileLifeCategories.Chat)]
+    [InlineData("7", MobileLifeCategories.Documents)]
     public async Task ClassifyAsync_MapsLegacyAndroidNumericCategories(string androidCategory, string expectedCategory)
     {
         await using var db = MobileTestHelpers.CreateDb();
