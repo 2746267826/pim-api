@@ -266,14 +266,24 @@ public sealed class MobileModule : IModule
         group.MapPost("/analytics/goals", async (
             [FromBody] MobileUsageGoalUpsertRequest request,
             [FromServices] MobileUsageGoalService service,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileUsageGoalDto>.Ok(await service.SaveAsync(request, ct))));
+        {
+            var result = await service.SaveAsync(request, ct);
+            cache.EvictByPrefix("/api/v1/mobile/");
+            return Results.Ok(ApiResponse<MobileUsageGoalDto>.Ok(result));
+        });
 
         group.MapDelete("/analytics/goals/{goalId}", async (
             [FromRoute] string goalId,
             [FromServices] MobileUsageGoalService service,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<string>.Ok(await service.DeleteAsync(goalId, ct) ? goalId : string.Empty)));
+        {
+            var ok = await service.DeleteAsync(goalId, ct);
+            cache.EvictByPrefix("/api/v1/mobile/");
+            return Results.Ok(ApiResponse<string>.Ok(ok ? goalId : string.Empty));
+        });
 
         group.MapGet("/apps/catalog-overrides", async (
             [FromServices] MobileAppCatalogOverrideService service,

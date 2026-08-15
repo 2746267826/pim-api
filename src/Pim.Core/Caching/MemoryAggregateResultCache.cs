@@ -28,10 +28,10 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
 
     public async Task<T> GetOrCreateAsync<T>(string key, bool force, Func<Task<T>> factory, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+
         if (force)
             BumpGeneration(key);
-
-        ct.ThrowIfCancellationRequested();
 
         _keys[key] = 0;
         while (true)
@@ -61,6 +61,8 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
 
     public void EvictByPrefix(string keyPrefix)
     {
+        // _keys 在工厂启动前登记（见 GetOrCreateAsync），且写端点在驱逐前已完成提交，
+        // 因此快照之后才登记的新键必然读取写后的数据，不会回填旧值。
         foreach (var key in _keys.Keys)
         {
             if (MatchesPrefix(key, keyPrefix))
@@ -94,20 +96,21 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
             entry.Size = 1;
             entry.AbsoluteExpirationRelativeToNow = ResolveTtl(_timeProvider.GetUtcNow());
             entry.Value = (object?)value;
-            entry.RegisterPostEvictionCallback(OnEvicted);
+            entry.RegisterPostEvictionCallback(OnEvicted, version);
+            _keys[key] = 0;
         }
         return value;
     }
 
     private void OnEvicted(object key, object? value, EvictionReason reason, object? state)
     {
-        if (key is string cacheKey)
+        if (key is not string cacheKey) return;
+        if (reason is EvictionReason.Removed or EvictionReason.Replaced) return;
+        var stateVersion = state is int version ? version : -1;
+        if (_versions.TryGetValue(cacheKey, out var current) && current == stateVersion)
         {
             _keys.TryRemove(cacheKey, out _);
-            if (reason is EvictionReason.Expired or EvictionReason.Capacity or EvictionReason.TokenExpired)
-            {
-                _versions.TryRemove(cacheKey, out _);
-            }
+            _versions.TryRemove(cacheKey, out _);
         }
     }
 }

@@ -312,6 +312,59 @@ public sealed class MemoryAggregateResultCacheTests
     }
 
     [Fact]
+    public async Task EvictByPrefix_AfterForceBackfill_StillEvicts()
+    {
+        var cache = CreateCache();
+        var context = new DefaultHttpContext();
+        context.Request.Path = "/api/v1/pc/summary";
+        var key = AggregateResultCacheKeys.Build(context.Request);
+
+        await cache.GetOrCreateAsync(key, false, () => Task.FromResult(1));
+        var forced = await cache.GetOrCreateAsync(key, true, () => Task.FromResult(2));
+        Assert.Equal(2, forced);
+
+        cache.EvictByPrefix("/api/v1/pc/");
+
+        var calls = 0;
+        var value = await cache.GetOrCreateAsync(key, false, () =>
+        {
+            calls++;
+            return Task.FromResult(3);
+        });
+
+        Assert.Equal(3, value);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task EvictByPrefix_AfterExpiry_StillEvicts()
+    {
+        var clock = new FakeTimeProvider();
+        var cache = CreateCache(clock);
+        var context = new DefaultHttpContext();
+        context.Request.Path = "/api/v1/pc/summary";
+        var key = AggregateResultCacheKeys.Build(context.Request);
+
+        await cache.GetOrCreateAsync(key, false, () => Task.FromResult(1));
+
+        clock.UtcNow = clock.UtcNow.AddMinutes(6);
+        var refreshed = await cache.GetOrCreateAsync(key, false, () => Task.FromResult(2));
+        Assert.Equal(2, refreshed);
+
+        cache.EvictByPrefix("/api/v1/pc/");
+
+        var calls = 0;
+        var value = await cache.GetOrCreateAsync(key, false, () =>
+        {
+            calls++;
+            return Task.FromResult(3);
+        });
+
+        Assert.Equal(3, value);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
     public async Task EvictByPrefix_DuringInFlight_StaleFactoryDoesNotRepopulate()
     {
         var cache = CreateCache();

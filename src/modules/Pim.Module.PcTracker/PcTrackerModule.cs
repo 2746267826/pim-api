@@ -758,20 +758,24 @@ public class PcTrackerModule : IModule
         catWrite.MapPost("/", async (
             [FromBody] CategorySaveRequest req,
             [FromServices] PcCategoryService svc,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             var result = await svc.SaveAsync(req, ct);
+            cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<CategoryTreeNode>.Ok(result));
         });
 
         catWrite.MapDelete("/{id:guid}", async (
             Guid id,
             [FromServices] PcCategoryService svc,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             try
             {
                 var ok = await svc.DeleteAsync(id, ct);
+                cache.EvictByPrefix("/api/v1/pc/");
                 return ok
                     ? Results.Ok(ApiResponse<string>.Ok("已删除"))
                     : Results.BadRequest(ApiResponse<string>.Error(400, "内置项不可删除或不存在"));
@@ -795,9 +799,11 @@ public class PcTrackerModule : IModule
 
         catWrite.MapPost("/seed", async (
             [FromServices] PcCategoryService svc,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             await svc.SeedDefaultsAsync(ct);
+            cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<string>.Ok("种子数据已初始化"));
         });
 
