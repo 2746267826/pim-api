@@ -181,7 +181,7 @@ public class ActivityClassifierTests
     }
 
     [Fact]
-    public void Classify_TerminalAppBecomesTerminal()
+    public void Classify_TerminalAppBecomesUnifiedProgramming()
     {
         var context = CreateContext(
             RecordType: "window",

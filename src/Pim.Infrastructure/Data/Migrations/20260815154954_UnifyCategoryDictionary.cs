@@ -32,14 +32,40 @@ namespace Pim.Infrastructure.Data.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            // 1) 删除旧 builtin 细分支（用户自建 is_builtin=false 保留）
+            // 0) 先 upsert 7 大类（本迁移在应用启动 seed 之前执行，存量库可能还没有这 7 行；
+            //    先保证 pc_categories 存在 7 大类，后续回填 category_id 才能命中）。
+            //    id 与 PcCategoryService.SeedDefaultsAsync 一致（20000000-...-{index+1:D12}，index 0-6），
+            //    颜色/图标与 CategoryLegacyMapper.UnifiedColors/UnifiedIcons 一致。
+            migrationBuilder.Sql(
+                """
+                INSERT INTO pc_categories (id, parent_id, name, color, icon, productivity, sort_order, is_builtin, created_at, updated_at) VALUES
+                ('20000000-0000-0000-0000-000000000001', NULL, '编程/折腾', '#6B5EE4', '💻', 'neutral', 10, true, now(), now()),
+                ('20000000-0000-0000-0000-000000000002', NULL, '学习', '#14b8a6', '📚', 'neutral', 20, true, now(), now()),
+                ('20000000-0000-0000-0000-000000000003', NULL, '视频', '#F97316', '📺', 'neutral', 30, true, now(), now()),
+                ('20000000-0000-0000-0000-000000000004', NULL, '聊天', '#3B82F6', '💬', 'neutral', 40, true, now(), now()),
+                ('20000000-0000-0000-0000-000000000005', NULL, '文档', '#F59E0B', '📄', 'neutral', 50, true, now(), now()),
+                ('20000000-0000-0000-0000-000000000006', NULL, '游戏', '#F43F5E', '🎮', 'neutral', 60, true, now(), now()),
+                ('20000000-0000-0000-0000-000000000007', NULL, '其他', '#64748b', '📋', 'neutral', 99, true, now(), now())
+                ON CONFLICT (id) DO UPDATE
+                    SET name = EXCLUDED.name, color = EXCLUDED.color, icon = EXCLUDED.icon,
+                        sort_order = EXCLUDED.sort_order, is_builtin = true, productivity = 'neutral', parent_id = NULL;
+                """);
+
+            // 1) 先清理旧 builtin 细分支下挂靠的子分类（用户自建 is_builtin=false 可能挂在被删父类下，
+            //    外键 RESTRICT 会阻塞删除），再删除旧 builtin 细分支。
+            migrationBuilder.Sql(
+                """
+                UPDATE pc_categories SET parent_id = NULL
+                 WHERE is_builtin AND name NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他')
+                   AND parent_id IS NOT NULL;
+                """);
             migrationBuilder.Sql(
                 """
                 DELETE FROM pc_categories
                  WHERE is_builtin AND name NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他');
                 """);
 
-            // 2) 历史快照重映射（UPDATE + CASE）
+            // 2) 历史快照重映射（UPDATE + CASE；NULL/未知值归「其他」符合快照语义）
             migrationBuilder.Sql(
                 """
                 UPDATE pc_activity_classifications SET category_name = CASE category_name
@@ -53,7 +79,50 @@ namespace Pim.Infrastructure.Data.Migrations
                   WHEN '单机游戏' THEN '游戏' WHEN '网络游戏' THEN '游戏'
                   WHEN '娱乐' THEN '其他' WHEN '音乐' THEN '其他' WHEN '工作' THEN '其他'
                   ELSE '其他' END
-                 WHERE category_name NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他');
+                 WHERE (category_name NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他')
+                        OR category_name IS NULL);
+                """);
+
+            // 2b) 手机端存量 life_category 旧分类 → 7 大类（ToolsSystem 相关值保留不动）。
+            //     旧值集合核对自 MobileAnalyticsDtos.cs 改动前的 MobileLifeCategories 常量
+            //     （社交通讯/短视频娱乐/阅读资讯/工作生产力/音乐音频/浏览器搜索/出行地图/购物外卖/
+            //      金融支付/健康运动/相机创作/生活服务/未分类）及历史上曾出现的别名（社交/短视频/视频/
+            //      阅读/生产力/办公/文档/购物/金融/娱乐/新闻/工具/系统工具/教育/学习/游戏/其他）。
+            migrationBuilder.Sql(
+                """
+                UPDATE mobile_usage_aggregates SET life_category = CASE life_category
+                  WHEN '社交通讯' THEN '聊天' WHEN '社交' THEN '聊天' WHEN '即时通讯' THEN '聊天'
+                  WHEN '短视频/娱乐' THEN '视频' WHEN '短视频' THEN '视频' WHEN '短视频娱乐' THEN '视频' WHEN '视频' THEN '视频'
+                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '学习' THEN '学习'
+                  WHEN '工作/生产力' THEN '文档' WHEN '生产力' THEN '文档' WHEN '办公' THEN '文档' WHEN '文档' THEN '文档'
+                  WHEN '游戏' THEN '游戏'
+                  WHEN '系统工具' THEN '系统工具' WHEN '工具/系统' THEN '工具/系统'
+                  ELSE '其他' END
+                 WHERE life_category NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他','工具/系统');
+                """);
+            migrationBuilder.Sql(
+                """
+                UPDATE mobile_app_category_rules SET life_category = CASE life_category
+                  WHEN '社交通讯' THEN '聊天' WHEN '社交' THEN '聊天' WHEN '即时通讯' THEN '聊天'
+                  WHEN '短视频/娱乐' THEN '视频' WHEN '短视频' THEN '视频' WHEN '短视频娱乐' THEN '视频' WHEN '视频' THEN '视频'
+                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '学习' THEN '学习'
+                  WHEN '工作/生产力' THEN '文档' WHEN '生产力' THEN '文档' WHEN '办公' THEN '文档' WHEN '文档' THEN '文档'
+                  WHEN '游戏' THEN '游戏'
+                  WHEN '系统工具' THEN '系统工具' WHEN '工具/系统' THEN '工具/系统'
+                  ELSE '其他' END
+                 WHERE life_category NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他','工具/系统');
+                """);
+            migrationBuilder.Sql(
+                """
+                UPDATE mobile_app_catalog_overrides SET life_category = CASE life_category
+                  WHEN '社交通讯' THEN '聊天' WHEN '社交' THEN '聊天' WHEN '即时通讯' THEN '聊天'
+                  WHEN '短视频/娱乐' THEN '视频' WHEN '短视频' THEN '视频' WHEN '短视频娱乐' THEN '视频' WHEN '视频' THEN '视频'
+                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '学习' THEN '学习'
+                  WHEN '工作/生产力' THEN '文档' WHEN '生产力' THEN '文档' WHEN '办公' THEN '文档' WHEN '文档' THEN '文档'
+                  WHEN '游戏' THEN '游戏'
+                  WHEN '系统工具' THEN '系统工具' WHEN '工具/系统' THEN '工具/系统'
+                  ELSE '其他' END
+                 WHERE life_category NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他','工具/系统');
                 """);
 
             // 3a) 垃圾规则删除（conditions_json 无合法 all 数组，含 {"test":true} 类）
@@ -77,7 +146,9 @@ namespace Pim.Infrastructure.Data.Migrations
                 DELETE FROM pc_activity_category_rules WHERE rule_name = 'Builtin: Browser apps';
                 """);
 
-            // 3d) 剩余规则 category_name 重映射
+            // 3d) 剩余规则 category_name 重映射。
+            //    3b 已删除空分类规则，剩余规则若 category_name 不在旧值集合里即为用户自定义分类名，
+            //    不能静默改成「其他」→ ELSE 保留原值（NULL 走 ELSE 同样不变）。
             migrationBuilder.Sql(
                 """
                 UPDATE pc_activity_category_rules SET category_name = CASE category_name
@@ -90,11 +161,12 @@ namespace Pim.Infrastructure.Data.Migrations
                   WHEN '办公' THEN '文档' WHEN '文件' THEN '文档' WHEN '浏览' THEN '文档'
                   WHEN '单机游戏' THEN '游戏' WHEN '网络游戏' THEN '游戏'
                   WHEN '娱乐' THEN '其他' WHEN '音乐' THEN '其他' WHEN '工作' THEN '其他'
-                  ELSE '其他' END
-                 WHERE category_name NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他');
+                  ELSE category_name END
+                 WHERE (category_name NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他')
+                        OR category_name IS NULL);
                 """);
 
-            // 4) app_signatures.category_path 重映射
+            // 4) pc_app_signatures.category_path 重映射
             //    注意 category_path 形如 '工作·编程'（点分隔路径）。种子（PcTrackerSchemaInitializer
             //    171 条）distinct 旧路径核对结果（14 个非空值 + 6 行 NULL）：
             //      工作·编程 / 工作·文档 / 工作·设计 / 工作·运维 / 沟通·会议 /
@@ -104,7 +176,7 @@ namespace Pim.Infrastructure.Data.Migrations
             //    NULL 行由 WHERE 条件排除，不映射）。逐字面量映射（含层级组合，末段按 §0.2 规则映射）：
             migrationBuilder.Sql(
                 """
-                UPDATE app_signatures SET category_path = CASE category_path
+                UPDATE pc_app_signatures SET category_path = CASE category_path
                   WHEN '工作' THEN '其他'
                   WHEN '工作·编程' THEN '编程/折腾' WHEN '工作·前端' THEN '编程/折腾' WHEN '工作·后端' THEN '编程/折腾'
                   WHEN '工作·终端' THEN '编程/折腾' WHEN '工作·运维' THEN '编程/折腾' WHEN '工作·设计' THEN '编程/折腾'

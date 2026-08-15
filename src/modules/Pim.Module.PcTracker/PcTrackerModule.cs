@@ -259,9 +259,10 @@ public class PcTrackerModule : IModule
         readGroup.MapGet("/classification/queue", async (
             [FromQuery] int limit,
             [FromServices] ActivityLabelingService svc,
+            [FromServices] ICurrentUserService currentUser,
             CancellationToken ct) =>
         {
-            var result = await svc.BuildQueueAsync(limit, ct);
+            var result = await svc.BuildQueueAsync(limit, currentUser.UserId, ct);
             return Results.Ok(ApiResponse<ActivityLabelingQueueResponse>.Ok(result));
         });
 
