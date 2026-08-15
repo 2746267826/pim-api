@@ -125,45 +125,18 @@ public class PcCategoryService
 
     public async Task SeedDefaultsAsync(CancellationToken ct)
     {
-        var categories = new List<PcCategoryEntity>
-        {
-            // Root: 娱乐
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000001"), Name = "娱乐", Color = "#EC4899", Icon = "🎮", Productivity = "distracting", SortOrder = 10, IsBuiltin = true },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000002"), Name = "游戏", Color = "#F43F5E", Icon = "🎮", Productivity = "distracting", SortOrder = 0, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000001") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000003"), Name = "单机游戏", Color = "#FB7185", Productivity = "distracting", SortOrder = 0, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000002") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000004"), Name = "网络游戏", Color = "#E11D48", Productivity = "distracting", SortOrder = 1, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000002") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000005"), Name = "视频", Color = "#F97316", Icon = "📺", Productivity = "distracting", SortOrder = 1, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000001") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000006"), Name = "音乐", Color = "#A855F7", Icon = "🎵", Productivity = "neutral", SortOrder = 2, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000001") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000007"), Name = "社交", Color = "#3B82F6", Icon = "💬", Productivity = "neutral", SortOrder = 3, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000001") },
-
-            // Root: 工作
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000010"), Name = "工作", Color = "#22C55E", Icon = "💼", Productivity = "productive", SortOrder = 20, IsBuiltin = true },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000011"), Name = "编程", Color = "#22C55E", Icon = "💻", Productivity = "productive", SortOrder = 0, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000012"), Name = "前端", Color = "#3B82F6", Productivity = "productive", SortOrder = 0, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000011") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000013"), Name = "后端", Color = "#10B981", Productivity = "productive", SortOrder = 1, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000011") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000014"), Name = "文档", Color = "#F59E0B", Icon = "📄", Productivity = "productive", SortOrder = 1, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000015"), Name = "会议", Color = "#8B5CF6", Icon = "📞", Productivity = "productive", SortOrder = 2, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000016"), Name = "设计", Color = "#EC4899", Productivity = "productive", SortOrder = 3, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000017"), Name = "运维", Color = "#06B6D4", Productivity = "productive", SortOrder = 4, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000018"), Name = "终端", Color = "#E05A7A", Icon = "⌨️", Productivity = "productive", SortOrder = 5, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000019"), Name = "办公", Color = "#F59E0B", Icon = "📊", Productivity = "productive", SortOrder = 6, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
-
-            // Root: 学习
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000020"), Name = "学习", Color = "#A855F7", Icon = "📚", Productivity = "productive", SortOrder = 30, IsBuiltin = true },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000021"), Name = "技术学习", Color = "#8B5CF6", Productivity = "productive", SortOrder = 0, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000020") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000022"), Name = "外语学习", Color = "#D946EF", Productivity = "productive", SortOrder = 1, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000020") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000023"), Name = "阅读", Color = "#F59E0B", Icon = "📖", Productivity = "neutral", SortOrder = 2, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000020") },
-
-            // Root: 沟通
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000030"), Name = "沟通", Color = "#3B82F6", Icon = "💬", Productivity = "productive", SortOrder = 40, IsBuiltin = true },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000031"), Name = "即时消息", Color = "#6366F1", Productivity = "neutral", SortOrder = 0, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000030") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000032"), Name = "邮件", Color = "#2563EB", Productivity = "productive", SortOrder = 1, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000030") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000033"), Name = "文件", Color = "#3B82F6", Icon = "📁", Productivity = "neutral", SortOrder = 7, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000034"), Name = "浏览", Color = "#0EA8A0", Icon = "🌐", Productivity = "neutral", SortOrder = 8, IsBuiltin = true, ParentId = Guid.Parse("10000000-0000-0000-0000-000000000010") },
-
-            // Root: 其他
-            new() { Id = Guid.Parse("10000000-0000-0000-0000-000000000099"), Name = "其他", Color = "#64748b", Icon = "📋", Productivity = "neutral", SortOrder = 99, IsBuiltin = true }
-        };
+        var categories = CategoryLegacyMapper.UnifiedCategoryNames
+            .Select((name, index) => new PcCategoryEntity
+            {
+                Id = Guid.Parse($"20000000-0000-0000-0000-{index + 1:D12}"),
+                Name = name,
+                Color = CategoryLegacyMapper.UnifiedColors[name],
+                Icon = CategoryLegacyMapper.UnifiedIcons[name],
+                Productivity = "neutral",
+                SortOrder = (name == CategoryLegacyMapper.Other ? 99 : 10 * (index + 1)),
+                IsBuiltin = true
+            })
+            .ToList();
 
         var existingCategories = await _db.Set<PcCategoryEntity>()
             .Select(category => new { category.Id, category.Name })
