@@ -83,7 +83,7 @@ Android 客户端常驻采集定位与手机使用数据，服务端负责轨迹
 AI 层通过 LiteLLM 网关接入任意 OpenAI 兼容模型：
 
 - **建议与叙事场景**：文件摘要 / 问答 / 组织建议等。
-- **不碰核心数据**：所有统计由服务端代码计算，AI 输出不参与存储、计算与判定。
+- **不碰核心数据**：统计、分类、判定全部由服务端代码计算；AI 只产出建议性内容（文件摘要、标签、组织建议），不参与核心事实的生成。
 - **可审计**：每次调用的 prompt / response 完整落库。
 - **可关闭**：`AI_ENABLED=false` 即可整体关闭，核心功能不受影响；调用带超时与重试上限。
 
@@ -121,7 +121,7 @@ AI 层通过 LiteLLM 网关接入任意 OpenAI 兼容模型：
       │  ├ Pim.Module.Calendar        │
       │  ├ Pim.Module.Files           │
       │  ├ Pim.Module.QuickNotes      │
-      │  └ Pim.Module.Stats           │
+      │  └ （模块按领域扩展）            │
       │  （Web 前端由服务端托管）        │
       └──────────────┬───────────────┘
                      ▼
@@ -139,7 +139,7 @@ AI 层通过 LiteLLM 网关接入任意 OpenAI 兼容模型：
 3. **定位设计三原则。**
    - *手动 = 自动*：同一套采集引擎，手动触发只是「立即执行一次」，不存在两套代码。
    - *全力定位*：所有场景恒定高精度，省电靠采样间隔而不是降精度；20m 质量门，宁缺毋滥。
-   - *不依赖 GMS*：自研传感器运动检测（加速度计 + 步数 + 重大运动），在无 GMS 设备上同样可靠。
+   - *不依赖 GMS 活动识别*：自研传感器运动检测（加速度计 + 步数 + 重大运动），在 GMS 活动识别不可用的设备上（如部分国行机型）同样可靠。
 4. **分类描述事实，不评判人。** 分类回答「这段时间在做什么」（编程、视频、文档……），把好与坏的判断留给你自己。
 5. **交互式收敛，不写死映射。** 分类靠使用中互动维护：打标队列、自定义分类、时间线纠错沉淀为规则，而不是静态配置表。
 6. **展示结论而非记录。** 面板上的每个数字都是处理过的结论；聚合在服务端完成、固定格式、可复现，不依赖 AI 现算。
@@ -148,7 +148,7 @@ AI 层通过 LiteLLM 网关接入任意 OpenAI 兼容模型：
 
 ## 快速开始
 
-前置：Docker + Docker Compose，一台可访问的 PostgreSQL 16 与 MinIO 实例（或用开发全家桶一并启动）。
+前置：Docker + Docker Compose，可访问的 PostgreSQL 16、MinIO 与 Tika 实例（或按开发全家桶一并启动）。
 
 ```bash
 git clone https://github.com/2746267826/pim-platform.git
@@ -158,15 +158,15 @@ cp .env.prod.example .env.prod
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 ```
 
-验证健康状态：
+验证服务已启动并进入健康状态：
 
 ```bash
-docker compose --env-file .env.prod -f docker-compose.prod.yml exec pim curl -s http://localhost:5000/health
+docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 ```
 
 然后浏览器打开服务端地址（默认仅绑定本机回环，端口由 `.env.prod` 中的 `PIM_HTTP_PORT` 决定），注册账号并登录。之后安装 [Windows 客户端](#windows-客户端)与 [Android 客户端](#android-客户端)，数据就开始流动了。
 
-> 更完整的生产部署说明见下文；只想要一个本地环境一把梭，用「Docker 全家桶」开发部署即可。
+> 更完整的生产部署说明见下文；只想要一个本地环境一条命令启动，用「Docker 全家桶」开发部署即可。
 
 ## 部署指南
 
@@ -174,7 +174,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml exec pim curl -s 
 
 镜像：`ghcr.io/2746267826/pim-platform-server:latest`（公开镜像，可匿名拉取）。
 
-单容器形态：HTTP（容器内 5000）+ SSH（容器内 22，用于受限远程管理）。编排文件 `docker-compose.prod.yml` 包含：
+单容器形态：HTTP（容器内 5000）+ SSH（容器内 22，用于远程管理）。编排文件 `docker-compose.prod.yml` 包含：
 
 - **数据卷** `pim_data`：应用数据与备份仓库（Kopia）。
 - **密钥卷**（只读挂载）：`/data/keys` 存放 JWT 私钥与数据保护密钥，容器重建不丢登录态。
@@ -187,8 +187,8 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml exec pim curl -s 
 |---|---|---|
 | PostgreSQL 16 | 主存储 | 是 |
 | MinIO | 对象存储（文件） | 是 |
-| Qdrant | 向量库（文件语义搜索） | 推荐 |
-| Apache Tika | 文档内容解析 | 推荐 |
+| Apache Tika | 文档内容解析 | 是（未配置将导致服务启动失败） |
+| Qdrant | 向量库（文件语义搜索） | 推荐（未配置时语义搜索不可用，其余正常） |
 | LiteLLM | AI 网关 | 否（关闭 AI 可不接） |
 | Nextcloud | 网盘对接 | 否 |
 | OnlyOffice | 在线编辑 | 否 |
@@ -196,17 +196,25 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml exec pim curl -s 
 部署步骤：
 
 1. 复制模板：`cp .env.prod.example .env.prod`，逐项填入（见[配置参考](#配置参考)）。
-2. 生成容器 SSH 公钥（base64 单行）：
+2. 预置密钥目录与 JWT 私钥（容器只读挂载，缺失将导致启动失败）：
+
+   ```bash
+   sudo mkdir -p /data/keys/data-protection
+   sudo openssl genrsa -out /data/keys/jwt_private.pem 2048
+   # 确保容器运行用户对以上路径可读
+   ```
+
+3. 生成容器 SSH 公钥（base64 单行）：
 
    ```bash
    printf 'ssh-ed25519 AAAA...\n' | base64 -w0
    ```
 
-3. 启动并检查：
+4. 启动并检查：
 
    ```bash
    docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
-   docker compose --env-file .env.prod -f docker-compose.prod.yml exec pim curl -s http://localhost:5000/health
+   docker compose --env-file .env.prod -f docker-compose.prod.yml ps
    ```
 
 ### 开发部署（Docker 全家桶）
@@ -234,7 +242,7 @@ npm --prefix src/client-web run dev
 - **SSL**：证书 `fullchain.pem` / `privkey.pem`。
 - **WebSocket**：`Upgrade` / `Connection` 头必须透传（OnlyOffice 在线编辑依赖）。
 - **上传体积**：`client_max_body_size 500M`。
-- **路径转发**：`/` 与 `/api/` 转发到 API；地图瓦片经 `/tiles` 中转。
+- **路径转发**：`/` 与 `/api/` 转发到 API；仓库 `nginx.conf` 为基础参考，地图瓦片另需补充 `/tiles` 反代 OpenStreetMap 瓦片服务。
 
 ### 备份与恢复
 
@@ -278,7 +286,7 @@ cd src/client-android
 | `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | MinIO 对象存储 | 是 |
 | `KOPIA_PASSWORD` | Kopia 备份仓库加密密码 | 是 |
 | `PIM_SSH_AUTHORIZED_KEYS` | 容器 SSH 公钥（base64 单行） | 是 |
-| `TIKA_BASE_URL` | Tika 服务地址 | 否 |
+| `TIKA_BASE_URL` | Tika 服务地址（缺失会导致启动失败） | 是 |
 | `AI_ENABLED` | AI 开关（默认 `false`） | 否 |
 | `AI_BASE_URL` / `AI_API_KEY` | LiteLLM 网关地址与虚拟密钥 | 启用 AI 时 |
 | `AI_DEFAULT_MODEL` | 默认模型名（网关侧 `pim-default`） | 否 |
@@ -308,7 +316,7 @@ cd src/client-android
 ## 常见问题
 
 **数据存在哪里？**
-服务端 PostgreSQL（结构化数据）与 MinIO（文件），备份进 Kopia 仓库。全部自托管，无云端依赖。
+服务端 PostgreSQL（结构化数据）与 MinIO（文件），备份进 Kopia 仓库。核心数据无云端依赖（可选的外部服务对接除外）。
 
 **AI 必须开吗？**
 不必须。`AI_ENABLED=false`（默认）时文件库、分类、统计全部照常工作，只有 AI 摘要 / 建议类功能不可用。
