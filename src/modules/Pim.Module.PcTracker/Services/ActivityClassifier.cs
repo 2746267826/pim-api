@@ -8,25 +8,12 @@ public static class ActivityClassifier
 {
     private const int DeferredRulePriorityThreshold = 100;
     private const double DeferredRuleConfidenceThreshold = 0.65;
-    private const string ProgrammingCategory = "\u7f16\u7a0b";
-    private const string ProgrammingColor = "#6B5EE4";
-    private const string LearningCategory = "\u5b66\u4e60";
-    private const string LearningColor = "#14b8a6";
-    private const string TerminalCategory = "\u7ec8\u7aef";
-    private const string TerminalColor = "#E05A7A";
-    private const string CommunicationCategory = "\u6c9f\u901a";
-    private const string CommunicationColor = "#F5935A";
-    private const string OfficeCategory = "\u529e\u516c";
-    private const string OfficeColor = "#F59E0B";
-    private const string FilesCategory = "\u6587\u4ef6";
-    private const string FilesColor = "#3B82F6";
-    private const string EntertainmentCategory = "\u5a31\u4e50";
-    private const string EntertainmentColor = "#EC4899";
 
     public static ActivityClassificationResult Classify(
         ActivityClassificationContext context,
         IReadOnlyCollection<ActivityCategoryRuleEntity> rules,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        IReadOnlyDictionary<Guid, string>? categoryNamesById = null)
     {
         var activeRules = (rules ?? Array.Empty<ActivityCategoryRuleEntity>())
             .Where(rule => string.Equals(rule.Status, "active", StringComparison.OrdinalIgnoreCase))
@@ -34,14 +21,14 @@ public static class ActivityClassifier
             .OrderByDescending(rule => rule.Priority)
             .ToArray();
 
-        if (TryClassifyWithRules(context, activeRules.Where(rule => !IsDeferredFallbackRule(rule)), out var result, logger))
+        if (TryClassifyWithRules(context, activeRules.Where(rule => !IsDeferredFallbackRule(rule)), out var result, logger, categoryNamesById))
             return result;
 
         var heuristicResult = ClassifyWithHeuristics(context);
         if (heuristicResult is not null)
             return heuristicResult;
 
-        return TryClassifyWithRules(context, activeRules.Where(IsDeferredFallbackRule), out result, logger)
+        return TryClassifyWithRules(context, activeRules.Where(IsDeferredFallbackRule), out result, logger, categoryNamesById)
             ? result
             : ActivityClassificationResult.Fallback();
     }
@@ -50,18 +37,20 @@ public static class ActivityClassifier
         ActivityClassificationContext context,
         IEnumerable<ActivityCategoryRuleEntity> rules,
         out ActivityClassificationResult result,
-        ILogger? logger = null)
+        ILogger? logger = null,
+        IReadOnlyDictionary<Guid, string>? categoryNamesById = null)
     {
         foreach (var rule in rules)
         {
             if (!ActivityClassificationRuleEvaluator.Matches(rule.ConditionsJson, context, logger))
                 continue;
 
+            var categoryName = ResolveRuleCategoryName(rule, categoryNamesById);
             result = new ActivityClassificationResult(
-                string.IsNullOrWhiteSpace(rule.CategoryName)
+                string.IsNullOrWhiteSpace(categoryName)
                     ? ActivityClassificationResult.Fallback().CategoryName
-                    : rule.CategoryName,
-                rule.Color,
+                    : categoryName,
+                ResolveRuleCategoryColor(rule, categoryNamesById),
                 rule.ProjectTag,
                 rule.Confidence,
                 "rule",
@@ -72,6 +61,31 @@ public static class ActivityClassifier
 
         result = ActivityClassificationResult.Fallback();
         return false;
+    }
+
+    /// <summary>规则命中时优先用 category_id 反查统一字典名（字典改名自动跟随），查不到回退 rule.CategoryName。</summary>
+    private static string? ResolveRuleCategoryName(
+        ActivityCategoryRuleEntity rule,
+        IReadOnlyDictionary<Guid, string>? categoryNamesById)
+    {
+        if (rule.CategoryId is { } categoryId
+            && categoryNamesById is not null
+            && categoryNamesById.TryGetValue(categoryId, out var unifiedName))
+            return unifiedName;
+        return rule.CategoryName;
+    }
+
+    /// <summary>颜色优先用统一字典色（builtin 7 大类）；自定义分类（不在字典中）取规则自带 Color。</summary>
+    private static string ResolveRuleCategoryColor(
+        ActivityCategoryRuleEntity rule,
+        IReadOnlyDictionary<Guid, string>? categoryNamesById)
+    {
+        if (rule.CategoryId is { } categoryId
+            && categoryNamesById is not null
+            && categoryNamesById.TryGetValue(categoryId, out var unifiedName)
+            && CategoryLegacyMapper.UnifiedColors.TryGetValue(unifiedName, out var unifiedColor))
+            return unifiedColor;
+        return rule.Color;
     }
 
     private static bool IsDeferredFallbackRule(ActivityCategoryRuleEntity rule)
@@ -97,8 +111,8 @@ public static class ActivityClassifier
         if (IsDocumentationSignal(domain, context.UrlPath, context.Title, context.WindowTitle))
         {
             return new ActivityClassificationResult(
-                LearningCategory,
-                LearningColor,
+                CategoryLegacyMapper.Learning,
+                CategoryLegacyMapper.UnifiedColors[CategoryLegacyMapper.Learning],
                 InferDocumentationProjectTag(domain, context.Title, context.WindowTitle),
                 0.72,
                 "heuristic",
@@ -125,59 +139,34 @@ public static class ActivityClassifier
             return Programming(null, 0.78, "Coding app activity.");
 
         if (ContainsAny(appName, TerminalApps))
-        {
-            return new ActivityClassificationResult(
-                TerminalCategory,
-                TerminalColor,
-                null,
-                0.75,
-                "heuristic",
-                "Terminal app activity.");
-        }
+            return Programming(null, 0.75, "Terminal app activity.");
 
         if (ContainsAny(appName, CommunicationApps))
             return Communication(0.74, "Communication app activity.");
 
         if (ContainsAny(appName, OfficeApps))
-        {
-            return new ActivityClassificationResult(
-                OfficeCategory,
-                OfficeColor,
-                null,
-                0.72,
-                "heuristic",
-                "Office app activity.");
-        }
+            return Documents(0.72, "Office app activity.");
 
         if (ContainsAny(appName, FileApps))
-        {
-            return new ActivityClassificationResult(
-                FilesCategory,
-                FilesColor,
-                null,
-                0.72,
-                "heuristic",
-                "File manager activity.");
-        }
+            return Documents(0.72, "File manager activity.");
 
-        if (ContainsAny(appName, EntertainmentApps))
-        {
-            return new ActivityClassificationResult(
-                EntertainmentCategory,
-                EntertainmentColor,
-                null,
-                0.7,
-                "heuristic",
-                "Entertainment app activity.");
-        }
+        var searchable = JoinForSearch(domain, appName);
+        if (ContainsAny(searchable, VideoApps))
+            return Video(0.7, "Video app activity.");
+
+        if (ContainsAny(appName, GameApps))
+            return Gaming(0.7, "Gaming app activity.");
+
+        if (ContainsAny(appName, OtherEntertainmentApps))
+            return OtherEntertainment(0.7, "Entertainment app activity.");
 
         return null;
     }
 
     private static ActivityClassificationResult Programming(string? projectTag, double confidence, string explanation) =>
         new(
-            ProgrammingCategory,
-            ProgrammingColor,
+            CategoryLegacyMapper.ProgrammingTinkering,
+            CategoryLegacyMapper.UnifiedColors[CategoryLegacyMapper.ProgrammingTinkering],
             projectTag,
             confidence,
             "heuristic",
@@ -185,8 +174,44 @@ public static class ActivityClassifier
 
     private static ActivityClassificationResult Communication(double confidence, string explanation) =>
         new(
-            CommunicationCategory,
-            CommunicationColor,
+            CategoryLegacyMapper.Chat,
+            CategoryLegacyMapper.UnifiedColors[CategoryLegacyMapper.Chat],
+            null,
+            confidence,
+            "heuristic",
+            explanation);
+
+    private static ActivityClassificationResult Documents(double confidence, string explanation) =>
+        new(
+            CategoryLegacyMapper.Documents,
+            CategoryLegacyMapper.UnifiedColors[CategoryLegacyMapper.Documents],
+            null,
+            confidence,
+            "heuristic",
+            explanation);
+
+    private static ActivityClassificationResult Video(double confidence, string explanation) =>
+        new(
+            CategoryLegacyMapper.Video,
+            CategoryLegacyMapper.UnifiedColors[CategoryLegacyMapper.Video],
+            null,
+            confidence,
+            "heuristic",
+            explanation);
+
+    private static ActivityClassificationResult Gaming(double confidence, string explanation) =>
+        new(
+            CategoryLegacyMapper.Gaming,
+            CategoryLegacyMapper.UnifiedColors[CategoryLegacyMapper.Gaming],
+            null,
+            confidence,
+            "heuristic",
+            explanation);
+
+    private static ActivityClassificationResult OtherEntertainment(double confidence, string explanation) =>
+        new(
+            CategoryLegacyMapper.Other,
+            CategoryLegacyMapper.UnifiedColors[CategoryLegacyMapper.Other],
             null,
             confidence,
             "heuristic",
@@ -336,15 +361,23 @@ public static class ActivityClassifier
         "directory opus"
     ];
 
-    private static readonly string[] EntertainmentApps =
+    private static readonly string[] VideoApps =
     [
-        "spotify",
-        "netflix",
         "youtube",
-        "steam",
+        "netflix",
         "vlc",
         "potplayer",
-        "bilibili",
+        "bilibili"
+    ];
+
+    private static readonly string[] GameApps =
+    [
+        "steam"
+    ];
+
+    private static readonly string[] OtherEntertainmentApps =
+    [
+        "spotify",
         "music"
     ];
 }

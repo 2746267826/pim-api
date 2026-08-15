@@ -94,6 +94,11 @@ public class ActivityCategoryRuleEntityConfiguration : IEntityTypeConfiguration<
         builder.HasIndex(e => e.Priority).HasDatabaseName("ix_pc_activity_category_rules_priority");
         builder.HasIndex(e => e.CategoryName).HasDatabaseName("ix_pc_activity_category_rules_category_name");
         builder.HasIndex(e => e.ProjectTag).HasDatabaseName("ix_pc_activity_category_rules_project_tag");
+        builder.Property(e => e.CategoryId).HasColumnName("category_id");
+        builder.HasOne<PcCategoryEntity>()
+            .WithMany()
+            .HasForeignKey(e => e.CategoryId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 
