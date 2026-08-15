@@ -125,7 +125,7 @@ AI 层通过 LiteLLM 网关接入任意 OpenAI 兼容模型：
       │  （Web 前端由服务端托管）        │
       └──────────────┬───────────────┘
                      ▼
-   PostgreSQL ─ MinIO ─ Qdrant ─ Tika ─ LiteLLM（可选）─ Nextcloud / OnlyOffice（可选）
+   PostgreSQL ─ MinIO ─ Tika ─ Qdrant（可选）─ LiteLLM（可选）─ Nextcloud / OnlyOffice（可选）
 ```
 
 - **服务端是唯一事实来源**：业务规则、聚合计算、分类判定全部在服务端完成；客户端只是传感器。
@@ -143,7 +143,7 @@ AI 层通过 LiteLLM 网关接入任意 OpenAI 兼容模型：
 4. **分类描述事实，不评判人。** 分类回答「这段时间在做什么」（编程、视频、文档……），把好与坏的判断留给你自己。
 5. **交互式收敛，不写死映射。** 分类靠使用中互动维护：打标队列、自定义分类、时间线纠错沉淀为规则，而不是静态配置表。
 6. **展示结论而非记录。** 面板上的每个数字都是处理过的结论；聚合在服务端完成、固定格式、可复现，不依赖 AI 现算。
-7. **AI 有清晰边界。** AI 只做建议与叙事，存储、计算、判定全部由代码完成——代码写可靠系统，AI 只做接口。
+7. **AI 有清晰边界。** AI 只做建议与叙事，核心数据的存储、计算、判定全部由代码完成——代码写可靠系统，AI 只做接口。
 8. **数据完整性优先。** 审计、回收站、备份、密钥持久化、健康检查，都为「数据不能丢」服务。
 
 ## 快速开始
@@ -155,6 +155,7 @@ git clone https://github.com/2746267826/pim-platform.git
 cd pim-platform
 cp .env.prod.example .env.prod
 # 编辑 .env.prod：填入数据库连接串、MinIO 凭据与 Kopia 密码
+# 预置密钥：mkdir -p /data/keys/data-protection && openssl genrsa -out /data/keys/jwt_private.pem 2048
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 ```
 
@@ -177,7 +178,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 单容器形态：HTTP（容器内 5000）+ SSH（容器内 22，用于远程管理）。编排文件 `docker-compose.prod.yml` 包含：
 
 - **数据卷** `pim_data`：应用数据与备份仓库（Kopia）。
-- **密钥卷**（只读挂载）：`/data/keys` 存放 JWT 私钥与数据保护密钥，容器重建不丢登录态。
+- **密钥卷**（只读挂载）：`/data/keys` 存放 JWT 私钥与数据保护密钥，容器重建不丢登录态；部署前需预置（见下）。
 - **健康检查**：`GET /health`。
 - **日志**：JSON 日志轮转（10m × 3），保留策略可配。
 
@@ -186,8 +187,8 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 | 依赖 | 用途 | 必选 |
 |---|---|---|
 | PostgreSQL 16 | 主存储 | 是 |
-| MinIO | 对象存储（文件） | 是 |
-| Apache Tika | 文档内容解析 | 是（未配置将导致服务启动失败） |
+| MinIO | 对象存储（文件） | 是（未配置时服务可启动，但文件模块不可用） |
+| Apache Tika | 文档内容解析 | 是（未配置时文档解析不可用，文件索引报错） |
 | Qdrant | 向量库（文件语义搜索） | 推荐（未配置时语义搜索不可用，其余正常） |
 | LiteLLM | AI 网关 | 否（关闭 AI 可不接） |
 | Nextcloud | 网盘对接 | 否 |
@@ -201,7 +202,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
    ```bash
    sudo mkdir -p /data/keys/data-protection
    sudo openssl genrsa -out /data/keys/jwt_private.pem 2048
-   # 确保容器运行用户对以上路径可读
+   # 确保容器运行用户对以上路径可读；数据保护密钥需运行时写入，如遇权限问题请检查该目录读写属性
    ```
 
 3. 生成容器 SSH 公钥（base64 单行）：
@@ -286,7 +287,7 @@ cd src/client-android
 | `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | MinIO 对象存储 | 是 |
 | `KOPIA_PASSWORD` | Kopia 备份仓库加密密码 | 是 |
 | `PIM_SSH_AUTHORIZED_KEYS` | 容器 SSH 公钥（base64 单行） | 是 |
-| `TIKA_BASE_URL` | Tika 服务地址（缺失会导致启动失败） | 是 |
+| `TIKA_BASE_URL` | Tika 服务地址（未配置时文档解析不可用） | 是 |
 | `AI_ENABLED` | AI 开关（默认 `false`） | 否 |
 | `AI_BASE_URL` / `AI_API_KEY` | LiteLLM 网关地址与虚拟密钥 | 启用 AI 时 |
 | `AI_DEFAULT_MODEL` | 默认模型名（网关侧 `pim-default`） | 否 |
