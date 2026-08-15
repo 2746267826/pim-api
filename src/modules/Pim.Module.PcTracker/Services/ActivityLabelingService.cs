@@ -485,10 +485,11 @@ public sealed class ActivityLabelingService
     /// <summary>加载已覆盖规则：返回精确匹配域名集合与域名后缀集合。
     /// 规则条件模型里 domainSuffix 是 **op**（field 只有 "domain"）：
     /// field=="domain" 且 op=="equals" → 精确域名；field=="domain" 且 op=="domainSuffix" → 域名后缀。
-    /// 组合规则防误判：规则 all 数组只要含 domain 之外的其他条件（urlPath/windowTitle/title 等
-    /// 任一 field），该规则仅部分覆盖（如 domain equals + urlPath contains），其 domain/domainSuffix
-    /// 条件一律不加入覆盖集合；只有 all 数组全部为 domain 条件（可含多条 equals/domainSuffix）才
-    /// 算完整覆盖。field=="domain" 其他 op（contains/startsWith 等）不构成全域覆盖，忽略。</summary>
+    /// all 是 AND 语义：多条条件要同时满足才命中，而 domain 不可能同时等于多个域名，
+    /// 因此仅当 all 数组**长度为 1** 且唯一条件为 domain+equals（或 domain+domainSuffix）时，
+    /// 该规则才构成对该域名的完整覆盖并加入覆盖集合；其余情况（多条件/含 domain 外 field）
+    /// 一律不算完整覆盖，整体跳过。field=="domain" 其他 op（contains/startsWith 等）
+    /// 不构成全域覆盖，忽略。</summary>
     private async Task<(HashSet<string> ExactDomains, List<string> DomainSuffixes)> LoadCoveredDomainsAsync(CancellationToken ct)
     {
         var exactDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -511,44 +512,28 @@ public sealed class ActivityLabelingService
                 if (!document.RootElement.TryGetProperty("all", out var all) || all.ValueKind != JsonValueKind.Array)
                     continue;
 
-                // 先判定规则是否含 domain 之外的其他条件：含 → 仅部分覆盖，整体跳过不计入覆盖集合。
-                var hasOtherConditions = false;
-                foreach (var condition in all.EnumerateArray())
-                {
-                    if (condition.ValueKind != JsonValueKind.Object
-                        || !condition.TryGetProperty("field", out var field))
-                    {
-                        hasOtherConditions = true;
-                        break;
-                    }
-                    if (field.GetString() != "domain")
-                    {
-                        hasOtherConditions = true;
-                        break;
-                    }
-                }
-                if (hasOtherConditions)
+                // AND 语义：仅 all 数组只有单条条件且该条件为 domain equals/domainSuffix 时
+                // 才算完整覆盖该域名；多条件（含多条 domain 或含 urlPath 等其他 field）均不构成完整覆盖。
+                if (all.GetArrayLength() != 1)
                     continue;
 
-                foreach (var condition in all.EnumerateArray())
-                {
-                    if (!condition.TryGetProperty("op", out var op) || op.ValueKind != JsonValueKind.String)
-                        continue;
-                    var opName = op.GetString();
+                var condition = all.EnumerateArray().First();
+                if (condition.ValueKind != JsonValueKind.Object
+                    || !condition.TryGetProperty("field", out var field) || field.GetString() != "domain"
+                    || !condition.TryGetProperty("op", out var op) || op.ValueKind != JsonValueKind.String
+                    || !condition.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.String)
+                    continue;
 
-                    if (!condition.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.String)
-                        continue;
+                var pattern = value.GetString();
+                if (string.IsNullOrWhiteSpace(pattern))
+                    continue;
 
-                    var pattern = value.GetString();
-                    if (string.IsNullOrWhiteSpace(pattern))
-                        continue;
-
-                    if (opName == "equals")
-                        exactDomains.Add(pattern);
-                    else if (opName == "domainSuffix")
-                        domainSuffixes.Add(pattern);
-                    // 其他 op（contains/startsWith 等）不构成全域覆盖，忽略
-                }
+                var opName = op.GetString();
+                if (opName == "equals")
+                    exactDomains.Add(pattern);
+                else if (opName == "domainSuffix")
+                    domainSuffixes.Add(pattern);
+                // 其他 op（contains/startsWith 等）不构成全域覆盖，忽略
             }
             catch (JsonException)
             {
@@ -693,9 +678,9 @@ public sealed class ActivityLabelingService
                      WHERE r.user_id = mobile_usage_aggregates.user_id AND r.is_enabled
                        AND (
                             (r.rule_type = 'package-exact' AND r.pattern = mobile_usage_aggregates.package_name)
-                         OR (r.rule_type = 'package-prefix' AND mobile_usage_aggregates.package_name LIKE r.pattern || '%')
-                         OR (r.rule_type IN ('package-keyword', 'keyword') AND mobile_usage_aggregates.package_name LIKE '%' || r.pattern || '%')
-                         OR (r.rule_type IN ('display-keyword', 'keyword') AND mobile_usage_aggregates.display_name LIKE '%' || r.pattern || '%')
+                             OR (r.rule_type = 'package-prefix' AND mobile_usage_aggregates.package_name ILIKE r.pattern || '%')
+                             OR (r.rule_type IN ('package-keyword', 'keyword') AND mobile_usage_aggregates.package_name ILIKE '%' || r.pattern || '%')
+                             OR (r.rule_type IN ('display-keyword', 'keyword') AND mobile_usage_aggregates.display_name ILIKE '%' || r.pattern || '%')
                        )
                 )
              GROUP BY package_name

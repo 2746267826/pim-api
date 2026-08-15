@@ -158,4 +158,165 @@ public class ActivityLabelingServiceTests
         Assert.Contains("\"field\":\"windowTitle\"", rule.ConditionsJson);
         Assert.Equal("编程/折腾", rule.CategoryName);
     }
+
+    [Fact]
+    public async Task BuildQueue_DomainCombinedRule_DoesNotExcludeDomain()
+    {
+        var (db, svc) = Create();
+        var now = DateTimeOffset.UtcNow.AddDays(-1);
+        db.Set<AwEventEntity>().Add(new AwEventEntity
+        {
+            AppNameNormalized = "msedge",
+            EventType = "web",
+            Duration = 45 * 60,
+            Timestamp = now,
+            DataJson = """{"url":"https://blog.csdn.net/a"}"""
+        });
+        db.Set<ActivityCategoryRuleEntity>().Add(new ActivityCategoryRuleEntity
+        {
+            Id = Guid.NewGuid(),
+            RuleName = "combined-domain-rule",
+            Scope = "activity",
+            Source = "user",
+            Status = "active",
+            Priority = 450,
+            CategoryName = "学习",
+            ConditionsJson = """{"all":[{"field":"domain","op":"equals","value":"blog.csdn.net"},{"field":"urlPath","op":"contains","value":"tutorial"}]}""",
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await db.SaveChangesAsync();
+
+        var queue = await svc.BuildQueueAsync(20, CancellationToken.None);
+
+        Assert.Contains(queue.Items, i => i.TargetType == "domain" && i.Target == "blog.csdn.net");
+    }
+
+    [Fact]
+    public async Task BuildQueue_DomainSingleEqualsRule_ExcludesDomain()
+    {
+        var (db, svc) = Create();
+        var now = DateTimeOffset.UtcNow.AddDays(-1);
+        db.Set<AwEventEntity>().Add(new AwEventEntity
+        {
+            AppNameNormalized = "msedge",
+            EventType = "web",
+            Duration = 45 * 60,
+            Timestamp = now,
+            DataJson = """{"url":"https://blog.csdn.net/a"}"""
+        });
+        db.Set<ActivityCategoryRuleEntity>().Add(new ActivityCategoryRuleEntity
+        {
+            Id = Guid.NewGuid(),
+            RuleName = "exact-domain-rule",
+            Scope = "activity",
+            Source = "user",
+            Status = "active",
+            Priority = 400,
+            CategoryName = "学习",
+            ConditionsJson = """{"all":[{"field":"domain","op":"equals","value":"blog.csdn.net"}]}""",
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await db.SaveChangesAsync();
+
+        var queue = await svc.BuildQueueAsync(20, CancellationToken.None);
+
+        Assert.DoesNotContain(queue.Items, i => i.TargetType == "domain" && i.Target == "blog.csdn.net");
+    }
+
+    [Fact]
+    public async Task BuildQueue_DomainMultipleDomainConditions_DoesNotExclude()
+    {
+        var (db, svc) = Create();
+        var now = DateTimeOffset.UtcNow.AddDays(-1);
+        db.Set<AwEventEntity>().Add(new AwEventEntity
+        {
+            AppNameNormalized = "msedge",
+            EventType = "web",
+            Duration = 45 * 60,
+            Timestamp = now,
+            DataJson = """{"url":"https://blog.csdn.net/a"}"""
+        });
+        db.Set<ActivityCategoryRuleEntity>().Add(new ActivityCategoryRuleEntity
+        {
+            Id = Guid.NewGuid(),
+            RuleName = "multi-domain-rule",
+            Scope = "activity",
+            Source = "user",
+            Status = "active",
+            Priority = 400,
+            CategoryName = "学习",
+            ConditionsJson = """{"all":[{"field":"domain","op":"equals","value":"blog.csdn.net"},{"field":"domain","op":"equals","value":"example.com"}]}""",
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await db.SaveChangesAsync();
+
+        var queue = await svc.BuildQueueAsync(20, CancellationToken.None);
+
+        // AND 语义：domain 不可能同时等于两个域名，该规则实际不命中任何域名 → 不排除。
+        Assert.Contains(queue.Items, i => i.TargetType == "domain" && i.Target == "blog.csdn.net");
+    }
+
+    [Fact]
+    public async Task BuildQueue_AppSingleEqualsRuleExcludes_CombinedRuleDoesNot()
+    {
+        var (db, svc) = Create();
+        var now = DateTimeOffset.UtcNow.AddDays(-1);
+        db.Set<AwEventEntity>().AddRange(
+            new AwEventEntity { AppNameNormalized = "code", Duration = 45 * 60, Timestamp = now, EventType = "window" },
+            new AwEventEntity { AppNameNormalized = "idea", Duration = 45 * 60, Timestamp = now.AddSeconds(1), EventType = "window" });
+        db.Set<ActivityCategoryRuleEntity>().AddRange(
+            new ActivityCategoryRuleEntity
+            {
+                Id = Guid.NewGuid(),
+                RuleName = "exact-app-rule",
+                Scope = "activity",
+                Source = "user",
+                Status = "active",
+                Priority = 400,
+                CategoryName = "编程/折腾",
+                ConditionsJson = """{"all":[{"field":"appNameNormalized","op":"equals","value":"code"}]}""",
+                CreatedAt = now,
+                UpdatedAt = now
+            },
+            new ActivityCategoryRuleEntity
+            {
+                Id = Guid.NewGuid(),
+                RuleName = "context-app-rule",
+                Scope = "activity",
+                Source = "user",
+                Status = "active",
+                Priority = 500,
+                CategoryName = "编程/折腾",
+                ConditionsJson = """{"all":[{"field":"appNameNormalized","op":"equals","value":"idea"},{"field":"windowTitle","op":"contains","value":"rust"}]}""",
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+        await db.SaveChangesAsync();
+
+        var queue = await svc.BuildQueueAsync(20, CancellationToken.None);
+
+        Assert.DoesNotContain(queue.Items, i => i.TargetType == "app" && i.Target == "code");
+        Assert.Contains(queue.Items, i => i.TargetType == "app" && i.Target == "idea");
+    }
+
+    [Fact]
+    public async Task LabelDomain_LongTarget_ProducesStableUniqueRuleNames()
+    {
+        var (db, svc) = Create();
+        var target1 = new string('x', 60);
+        var req1 = new ActivityLabelingRequest("domain", target1, null, "学习", "all", null);
+        await svc.LabelAsync(req1, CancellationToken.None);
+        await svc.LabelAsync(req1, CancellationToken.None);
+        Assert.Single(db.Set<ActivityCategoryRuleEntity>());
+
+        // 与 target1 前 48 字符相同、尾部不同 → 截断名相同，需靠稳定哈希区分。
+        var target2 = new string('x', 59) + "y";
+        await svc.LabelAsync(new ActivityLabelingRequest("domain", target2, null, "学习", "all", null), CancellationToken.None);
+        var names = db.Set<ActivityCategoryRuleEntity>().Select(r => r.RuleName).ToList();
+        Assert.Equal(2, names.Count);
+        Assert.NotEqual(names[0], names[1]);
+    }
 }
