@@ -6,6 +6,7 @@ using Pim.Api.Infrastructure;
 using Pim.Api.Middleware;
 using Pim.Api.Search;
 using Pim.Api.Today;
+using Pim.Core.Caching;
 using Pim.Core.Today;
 using Pim.Infrastructure.Extensions;
 using Pim.Infrastructure.Operations;
@@ -29,6 +30,7 @@ builder.Host.UseSerilog();
 // Infrastructure
 builder.Services.AddPimInfrastructure(builder.Configuration);
 builder.Services.AddPimAuth();
+builder.Services.AddAggregateResultCaching();
 
 // HTTP (AddHttpContextAccessor is already called in AddPimInfrastructure)
 builder.Services.AddCors(options =>

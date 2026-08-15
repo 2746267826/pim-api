@@ -8,6 +8,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Pim.Core.Common;
+using Pim.Core.Caching;
 using Pim.Core.Modules;
 using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
@@ -127,22 +128,43 @@ public sealed class MobileModule : IModule
         group.MapGet("/location/analytics/overview", async (
             [AsParameters] MobileLocationEndpointQuery query,
             [FromServices] MobileLocationAggregationService service,
-            CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileLocationAnalyticsOverviewResponse>.Ok(await service.GetOverviewAsync(query.ToRequest(), ct))));
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+            Results.Ok(ApiResponse<MobileLocationAnalyticsOverviewResponse>.Ok(await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request),
+                force,
+                () => service.GetOverviewAsync(query.ToRequest(), ct),
+                ct))));
 
         group.MapGet("/location/analytics/tracks", async (
             [AsParameters] MobileLocationEndpointQuery query,
             [FromServices] MobileLocationAggregationService service,
-            CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<MobileLocationTrackDto>>.Ok(await service.GetTracksAsync(query.ToRequest(), ct))));
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+            Results.Ok(ApiResponse<IReadOnlyList<MobileLocationTrackDto>>.Ok(await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request),
+                force,
+                () => service.GetTracksAsync(query.ToRequest(), ct),
+                ct))));
 
         group.MapGet("/location/analytics/segments/{segmentId}", async (
             [FromRoute] string segmentId,
             [AsParameters] MobileLocationEndpointQuery query,
             [FromServices] MobileLocationAggregationService service,
-            CancellationToken ct) =>
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
         {
-            var segment = await service.GetSegmentAsync(segmentId, query.ToRequest(), ct);
+            var segment = await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request),
+                force,
+                () => service.GetSegmentAsync(segmentId, query.ToRequest(), ct),
+                ct);
             return segment is null
                 ? Results.NotFound(ApiResponse<string>.Error(404, "Location segment not found."))
                 : Results.Ok(ApiResponse<MobileLocationSegmentDto>.Ok(segment));
@@ -174,26 +196,54 @@ public sealed class MobileModule : IModule
         group.MapGet("/analytics/overview", async (
             [AsParameters] MobileAnalyticsEndpointQuery query,
             [FromServices] MobileUsageAggregationService service,
-            CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileAnalyticsOverviewResponse>.Ok(await service.GetOverviewAsync(query.ToRequest(), ct))));
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+            Results.Ok(ApiResponse<MobileAnalyticsOverviewResponse>.Ok(await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request),
+                force,
+                () => service.GetOverviewAsync(query.ToRequest(), ct),
+                ct))));
 
         group.MapGet("/analytics/heatmap", async (
             [AsParameters] MobileAnalyticsEndpointQuery query,
             [FromServices] MobileUsageAggregationService service,
-            CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<MobileHeatmapBucketDto>>.Ok(await service.GetHeatmapAsync(query.ToRequest(), ct))));
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+            Results.Ok(ApiResponse<IReadOnlyList<MobileHeatmapBucketDto>>.Ok(await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request),
+                force,
+                () => service.GetHeatmapAsync(query.ToRequest(), ct),
+                ct))));
 
         group.MapGet("/analytics/charts", async (
             [AsParameters] MobileAnalyticsEndpointQuery query,
             [FromServices] MobileUsageAggregationService service,
-            CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<MobileAnalyticsChartDto>>.Ok(await service.GetChartsAsync(query.ToRequest(), ct))));
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+            Results.Ok(ApiResponse<IReadOnlyList<MobileAnalyticsChartDto>>.Ok(await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request),
+                force,
+                () => service.GetChartsAsync(query.ToRequest(), ct),
+                ct))));
 
         group.MapGet("/analytics/timeline-blocks", async (
             [AsParameters] MobileAnalyticsEndpointQuery query,
             [FromServices] MobileTimelineBlockService service,
-            CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileTimelineBlockPageDto>.Ok(await service.GetBlocksAsync(query.ToRequest(), ct))));
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+            Results.Ok(ApiResponse<MobileTimelineBlockPageDto>.Ok(await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request),
+                force,
+                () => service.GetBlocksAsync(query.ToRequest(), ct),
+                ct))));
 
         group.MapGet("/analytics/timeline-blocks/{blockId}/sessions", async (
             [FromRoute] string blockId,
