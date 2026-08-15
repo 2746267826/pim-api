@@ -375,7 +375,7 @@ public sealed class ActivityLabelingService
 
                 var pattern = value.GetString();
                 if (!string.IsNullOrWhiteSpace(pattern))
-                    covered.Add(pattern);
+                    covered.Add(AppNameNormalizer.Normalize(pattern));
             }
             catch (JsonException)
             {
@@ -678,9 +678,9 @@ public sealed class ActivityLabelingService
                      WHERE r.user_id = mobile_usage_aggregates.user_id AND r.is_enabled
                        AND (
                             (r.rule_type = 'package-exact' AND r.pattern = mobile_usage_aggregates.package_name)
-                             OR (r.rule_type = 'package-prefix' AND mobile_usage_aggregates.package_name ILIKE r.pattern || '%')
-                             OR (r.rule_type IN ('package-keyword', 'keyword') AND mobile_usage_aggregates.package_name ILIKE '%' || r.pattern || '%')
-                             OR (r.rule_type IN ('display-keyword', 'keyword') AND mobile_usage_aggregates.display_name ILIKE '%' || r.pattern || '%')
+                             OR (r.rule_type = 'package-prefix' AND mobile_usage_aggregates.package_name ILIKE replace(replace(replace(r.pattern, '\', '\\'), '%', '\%'), '_', '\_') || '%' ESCAPE '\')
+                             OR (r.rule_type IN ('package-keyword', 'keyword') AND mobile_usage_aggregates.package_name ILIKE '%' || replace(replace(replace(r.pattern, '\', '\\'), '%', '\%'), '_', '\_') || '%' ESCAPE '\')
+                             OR (r.rule_type IN ('display-keyword', 'keyword') AND mobile_usage_aggregates.display_name ILIKE '%' || replace(replace(replace(r.pattern, '\', '\\'), '%', '\%'), '_', '\_') || '%' ESCAPE '\')
                        )
                 )
              GROUP BY package_name

@@ -122,7 +122,7 @@ namespace Pim.Infrastructure.Data.Migrations
                 UPDATE mobile_usage_aggregates SET life_category = CASE life_category
                   WHEN '社交通讯' THEN '聊天' WHEN '社交' THEN '聊天' WHEN '即时通讯' THEN '聊天'
                   WHEN '短视频/娱乐' THEN '视频' WHEN '短视频' THEN '视频' WHEN '短视频娱乐' THEN '视频' WHEN '视频' THEN '视频'
-                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '学习' THEN '学习'
+                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '新闻' THEN '学习' WHEN '教育' THEN '学习' WHEN '学习' THEN '学习'
                   WHEN '工作/生产力' THEN '文档' WHEN '工作生产力' THEN '文档' WHEN '生产力' THEN '文档' WHEN '办公' THEN '文档' WHEN '文档' THEN '文档'
                   WHEN '游戏' THEN '游戏'
                   WHEN '系统工具' THEN '工具/系统' WHEN '工具' THEN '工具/系统'
@@ -134,7 +134,7 @@ namespace Pim.Infrastructure.Data.Migrations
                 UPDATE mobile_app_category_rules SET life_category = CASE life_category
                   WHEN '社交通讯' THEN '聊天' WHEN '社交' THEN '聊天' WHEN '即时通讯' THEN '聊天'
                   WHEN '短视频/娱乐' THEN '视频' WHEN '短视频' THEN '视频' WHEN '短视频娱乐' THEN '视频' WHEN '视频' THEN '视频'
-                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '学习' THEN '学习'
+                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '新闻' THEN '学习' WHEN '教育' THEN '学习' WHEN '学习' THEN '学习'
                   WHEN '工作/生产力' THEN '文档' WHEN '工作生产力' THEN '文档' WHEN '生产力' THEN '文档' WHEN '办公' THEN '文档' WHEN '文档' THEN '文档'
                   WHEN '游戏' THEN '游戏'
                   WHEN '系统工具' THEN '工具/系统' WHEN '工具' THEN '工具/系统'
@@ -146,7 +146,7 @@ namespace Pim.Infrastructure.Data.Migrations
                 UPDATE mobile_app_catalog_overrides SET life_category = CASE life_category
                   WHEN '社交通讯' THEN '聊天' WHEN '社交' THEN '聊天' WHEN '即时通讯' THEN '聊天'
                   WHEN '短视频/娱乐' THEN '视频' WHEN '短视频' THEN '视频' WHEN '短视频娱乐' THEN '视频' WHEN '视频' THEN '视频'
-                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '学习' THEN '学习'
+                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '新闻' THEN '学习' WHEN '教育' THEN '学习' WHEN '学习' THEN '学习'
                   WHEN '工作/生产力' THEN '文档' WHEN '工作生产力' THEN '文档' WHEN '生产力' THEN '文档' WHEN '办公' THEN '文档' WHEN '文档' THEN '文档'
                   WHEN '游戏' THEN '游戏'
                   WHEN '系统工具' THEN '工具/系统' WHEN '工具' THEN '工具/系统'
@@ -158,7 +158,7 @@ namespace Pim.Infrastructure.Data.Migrations
                 UPDATE mobile_usage_goals SET life_category = CASE life_category
                   WHEN '社交通讯' THEN '聊天' WHEN '社交' THEN '聊天' WHEN '即时通讯' THEN '聊天'
                   WHEN '短视频/娱乐' THEN '视频' WHEN '短视频' THEN '视频' WHEN '短视频娱乐' THEN '视频' WHEN '视频' THEN '视频'
-                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '学习' THEN '学习'
+                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '新闻' THEN '学习' WHEN '教育' THEN '学习' WHEN '学习' THEN '学习'
                   WHEN '工作/生产力' THEN '文档' WHEN '工作生产力' THEN '文档' WHEN '生产力' THEN '文档' WHEN '办公' THEN '文档' WHEN '文档' THEN '文档'
                   WHEN '游戏' THEN '游戏'
                   WHEN '系统工具' THEN '工具/系统' WHEN '工具' THEN '工具/系统'
@@ -170,7 +170,7 @@ namespace Pim.Infrastructure.Data.Migrations
                 UPDATE mobile_timeline_blocks SET life_category = CASE life_category
                   WHEN '社交通讯' THEN '聊天' WHEN '社交' THEN '聊天' WHEN '即时通讯' THEN '聊天'
                   WHEN '短视频/娱乐' THEN '视频' WHEN '短视频' THEN '视频' WHEN '短视频娱乐' THEN '视频' WHEN '视频' THEN '视频'
-                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '学习' THEN '学习'
+                  WHEN '阅读/资讯' THEN '学习' WHEN '阅读资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '新闻' THEN '学习' WHEN '教育' THEN '学习' WHEN '学习' THEN '学习'
                   WHEN '工作/生产力' THEN '文档' WHEN '工作生产力' THEN '文档' WHEN '生产力' THEN '文档' WHEN '办公' THEN '文档' WHEN '文档' THEN '文档'
                   WHEN '游戏' THEN '游戏'
                   WHEN '系统工具' THEN '工具/系统' WHEN '工具' THEN '工具/系统'
