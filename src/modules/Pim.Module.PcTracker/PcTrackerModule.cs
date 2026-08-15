@@ -394,11 +394,13 @@ public class PcTrackerModule : IModule
         writeGroup.MapPut("/classification/settings", async (
             [FromBody] SaveActivityClassificationSettingsRequest req,
             [FromServices] ActivityClassificationSettingsService settingsService,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             var settings = await settingsService.SaveSettingsAsync(
                 req.RecommendedMinimumClassificationDurationMinutes,
                 ct);
+            cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<ActivityClassificationSettingsDto>.Ok(settings));
         });
 

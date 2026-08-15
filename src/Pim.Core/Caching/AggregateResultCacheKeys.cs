@@ -34,6 +34,8 @@ public static class AggregateResultCacheKeys
             ? request.Path.Value ?? string.Empty
             : string.Concat(request.Path.Value, "?", query);
 
+        // 未认证请求统一归入 anon 桶。pc 读端点匿名开放且数据全局（非用户级），共享 anon 桶安全；
+        // 认证端点（mobile/today）按 ClaimTypes.NameIdentifier 隔离，避免跨用户串数据。
         var userId = request.HttpContext.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "anon";
         return string.Concat("u:", Uri.EscapeDataString(userId), "|", key);
     }

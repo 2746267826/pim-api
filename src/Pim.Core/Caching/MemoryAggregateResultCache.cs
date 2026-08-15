@@ -12,7 +12,7 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
     private readonly TimeProvider _timeProvider;
     private readonly ConcurrentDictionary<string, byte> _keys = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, int> _versions = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, Task<object?>> _inFlight = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Lazy<Task<object?>>> _inFlight = new(StringComparer.Ordinal);
 
     public MemoryAggregateResultCache(IMemoryCache cache, TimeProvider timeProvider)
     {
@@ -29,11 +29,7 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
     public async Task<T> GetOrCreateAsync<T>(string key, bool force, Func<Task<T>> factory, CancellationToken ct = default)
     {
         if (force)
-        {
-            _versions.AddOrUpdate(key, 1, (_, version) => version + 1);
-            _cache.Remove(key);
-            _inFlight.TryRemove(key, out _);
-        }
+            BumpGeneration(key);
 
         ct.ThrowIfCancellationRequested();
 
@@ -44,19 +40,21 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
                 return (T)cached!;
 
             var version = _versions.GetOrAdd(key, 0);
-            var task = _inFlight.GetOrAdd(key, _ => RunFactoryAsync(key, version, factory));
+            var lazy = _inFlight.GetOrAdd(key, _ => new Lazy<Task<object?>>(
+                () => RunFactoryAsync(key, version, factory),
+                LazyThreadSafetyMode.ExecutionAndPublication));
             try
             {
-                var result = (T)(await task.ConfigureAwait(false))!;
+                var result = (T)(await lazy.Value.ConfigureAwait(false))!;
 
-                if (_inFlight.TryGetValue(key, out var current) && !ReferenceEquals(current, task))
+                if (_inFlight.TryGetValue(key, out var current) && !ReferenceEquals(current, lazy))
                     continue;
 
                 return result;
             }
             finally
             {
-                _inFlight.TryRemove(new KeyValuePair<string, Task<object?>>(key, task));
+                _inFlight.TryRemove(new KeyValuePair<string, Lazy<Task<object?>>>(key, lazy));
             }
         }
     }
@@ -65,14 +63,26 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
     {
         foreach (var key in _keys.Keys)
         {
-            if (key.StartsWith(keyPrefix, StringComparison.Ordinal))
+            if (MatchesPrefix(key, keyPrefix))
             {
                 _cache.Remove(key);
-                _keys.TryRemove(key, out _);
-                _versions.TryRemove(key, out _);
-                _inFlight.TryRemove(key, out _);
+                BumpGeneration(key);
             }
         }
+    }
+
+    private void BumpGeneration(string key)
+    {
+        _versions.AddOrUpdate(key, 1, (_, version) => version + 1);
+        _cache.Remove(key);
+        _inFlight.TryRemove(key, out _);
+    }
+
+    private static bool MatchesPrefix(string key, string keyPrefix)
+    {
+        var separatorIndex = key.IndexOf('|');
+        var pathPart = separatorIndex >= 0 ? key.AsSpan(separatorIndex + 1) : key.AsSpan();
+        return pathPart.StartsWith(keyPrefix, StringComparison.Ordinal);
     }
 
     private async Task<object?> RunFactoryAsync<T>(string key, int version, Func<Task<T>> factory)
@@ -84,8 +94,21 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
             entry.Size = 1;
             entry.AbsoluteExpirationRelativeToNow = ResolveTtl(_timeProvider.GetUtcNow());
             entry.Value = (object?)value;
+            entry.RegisterPostEvictionCallback(OnEvicted);
         }
         return value;
+    }
+
+    private void OnEvicted(object key, object? value, EvictionReason reason, object? state)
+    {
+        if (key is string cacheKey)
+        {
+            _keys.TryRemove(cacheKey, out _);
+            if (reason is EvictionReason.Expired or EvictionReason.Capacity or EvictionReason.TokenExpired)
+            {
+                _versions.TryRemove(cacheKey, out _);
+            }
+        }
     }
 }
 

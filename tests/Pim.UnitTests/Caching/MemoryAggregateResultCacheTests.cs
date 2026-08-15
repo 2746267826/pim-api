@@ -182,17 +182,21 @@ public sealed class MemoryAggregateResultCacheTests
     {
         var cache = CreateCache();
         var calls = 0;
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        Task<int> Factory()
+        async Task<int> Factory()
         {
             calls++;
-            return Task.FromResult(42);
+            await gate.Task;
+            return 42;
         }
 
-        var results = await Task.WhenAll(
-            cache.GetOrCreateAsync("key", false, Factory),
-            cache.GetOrCreateAsync("key", false, Factory),
-            cache.GetOrCreateAsync("key", false, Factory));
+        var first = cache.GetOrCreateAsync("key", false, Factory);
+        var second = cache.GetOrCreateAsync("key", false, Factory);
+        var third = cache.GetOrCreateAsync("key", false, Factory);
+
+        gate.SetResult();
+        var results = await Task.WhenAll(first, second, third);
 
         Assert.All(results, result => Assert.Equal(42, result));
         Assert.Equal(1, calls);
@@ -221,10 +225,19 @@ public sealed class MemoryAggregateResultCacheTests
     public async Task EvictByPrefix_RemovesMatchingEntries()
     {
         var cache = CreateCache();
+        var context = new DefaultHttpContext();
+        context.Request.Path = "/api/v1/pc/summary";
+        context.Request.QueryString = new QueryString("?date=2026-08-15");
+        var pcSummaryKey = AggregateResultCacheKeys.Build(context.Request);
+        context.Request.Path = "/api/v1/pc/aw/heatmap";
+        context.Request.QueryString = QueryString.Empty;
+        var pcHeatmapKey = AggregateResultCacheKeys.Build(context.Request);
+        context.Request.Path = "/api/v1/mobile/summary";
+        var mobileKey = AggregateResultCacheKeys.Build(context.Request);
 
-        await cache.GetOrCreateAsync("/api/v1/pc/summary", false, () => Task.FromResult(1));
-        await cache.GetOrCreateAsync("/api/v1/pc/aw/heatmap", false, () => Task.FromResult(2));
-        await cache.GetOrCreateAsync("/api/v1/mobile/summary", false, () => Task.FromResult(3));
+        await cache.GetOrCreateAsync(pcSummaryKey, false, () => Task.FromResult(1));
+        await cache.GetOrCreateAsync(pcHeatmapKey, false, () => Task.FromResult(2));
+        await cache.GetOrCreateAsync(mobileKey, false, () => Task.FromResult(3));
 
         cache.EvictByPrefix("/api/v1/pc/");
 
@@ -232,17 +245,17 @@ public sealed class MemoryAggregateResultCacheTests
         var pcHeatmapCalls = 0;
         var mobileCalls = 0;
 
-        var pcSummary = await cache.GetOrCreateAsync("/api/v1/pc/summary", false, () =>
+        var pcSummary = await cache.GetOrCreateAsync(pcSummaryKey, false, () =>
         {
             pcSummaryCalls++;
             return Task.FromResult(11);
         });
-        var pcHeatmap = await cache.GetOrCreateAsync("/api/v1/pc/aw/heatmap", false, () =>
+        var pcHeatmap = await cache.GetOrCreateAsync(pcHeatmapKey, false, () =>
         {
             pcHeatmapCalls++;
             return Task.FromResult(12);
         });
-        var mobile = await cache.GetOrCreateAsync("/api/v1/mobile/summary", false, () =>
+        var mobile = await cache.GetOrCreateAsync(mobileKey, false, () =>
         {
             mobileCalls++;
             return Task.FromResult(13);
@@ -254,6 +267,76 @@ public sealed class MemoryAggregateResultCacheTests
         Assert.Equal(1, pcSummaryCalls);
         Assert.Equal(1, pcHeatmapCalls);
         Assert.Equal(0, mobileCalls);
+    }
+
+    [Fact]
+    public async Task EvictByPrefix_RemovesEntriesAcrossAllUsers()
+    {
+        var cache = CreateCache();
+        var userOne = new DefaultHttpContext();
+        userOne.User = new System.Security.Claims.ClaimsPrincipal(
+            new System.Security.Claims.ClaimsIdentity(
+                [new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, "user-1")],
+                "test"));
+        userOne.Request.Path = "/api/v1/mobile/analytics/overview";
+        var userOneKey = AggregateResultCacheKeys.Build(userOne.Request);
+
+        var userTwo = new DefaultHttpContext();
+        userTwo.User = new System.Security.Claims.ClaimsPrincipal(
+            new System.Security.Claims.ClaimsIdentity(
+                [new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, "user-2")],
+                "test"));
+        userTwo.Request.Path = "/api/v1/mobile/analytics/overview";
+        var userTwoKey = AggregateResultCacheKeys.Build(userTwo.Request);
+
+        await cache.GetOrCreateAsync(userOneKey, false, () => Task.FromResult(1));
+        await cache.GetOrCreateAsync(userTwoKey, false, () => Task.FromResult(2));
+
+        cache.EvictByPrefix("/api/v1/mobile/");
+
+        var calls = 0;
+        var first = await cache.GetOrCreateAsync(userOneKey, false, () =>
+        {
+            calls++;
+            return Task.FromResult(10);
+        });
+        var second = await cache.GetOrCreateAsync(userTwoKey, false, () =>
+        {
+            calls++;
+            return Task.FromResult(20);
+        });
+
+        Assert.Equal(10, first);
+        Assert.Equal(20, second);
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public async Task EvictByPrefix_DuringInFlight_StaleFactoryDoesNotRepopulate()
+    {
+        var cache = CreateCache();
+        var slowFactoryGate = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var context = new DefaultHttpContext();
+        context.Request.Path = "/api/v1/pc/summary";
+        var key = AggregateResultCacheKeys.Build(context.Request);
+
+        var inFlight = cache.GetOrCreateAsync(key, false, () => slowFactoryGate.Task);
+
+        cache.EvictByPrefix("/api/v1/pc/");
+
+        slowFactoryGate.SetResult(1);
+        var stale = await inFlight;
+        Assert.Equal(1, stale);
+
+        var calls = 0;
+        var fresh = await cache.GetOrCreateAsync(key, false, () =>
+        {
+            calls++;
+            return Task.FromResult(99);
+        });
+
+        Assert.Equal(99, fresh);
+        Assert.Equal(1, calls);
     }
 
     [Fact]
