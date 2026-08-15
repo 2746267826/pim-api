@@ -628,6 +628,7 @@ public class PcTrackerModule : IModule
             [FromServices] ActivityClassificationRecomputeService recompute,
             [FromServices] ClassificationRuleDraftService drafts,
             [FromServices] AppKnowledgeSuggestionService appKnowledge,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             try
@@ -660,6 +661,7 @@ public class PcTrackerModule : IModule
                         return await appKnowledge.SaveRecommendedContextAsync(appliedKnowledgePreview, token);
                     },
                     ct);
+                cache.EvictByPrefix("/api/v1/pc/");
                 var result = new AppKnowledgeSuggestionApplyDto(
                     id,
                     savedContext,

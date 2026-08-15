@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Pim.Core.Caching;
 
@@ -13,6 +14,9 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
     private readonly ConcurrentDictionary<string, byte> _keys = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, int> _versions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Lazy<Task<object?>>> _inFlight = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _tokens = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, object> _sync = new(StringComparer.Ordinal);
+    private long _nextToken;
 
     public MemoryAggregateResultCache(IMemoryCache cache, TimeProvider timeProvider)
     {
@@ -67,7 +71,6 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
         {
             if (MatchesPrefix(key, keyPrefix))
             {
-                _cache.Remove(key);
                 BumpGeneration(key);
             }
         }
@@ -75,9 +78,13 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
 
     private void BumpGeneration(string key)
     {
-        _versions.AddOrUpdate(key, 1, (_, version) => version + 1);
-        _cache.Remove(key);
-        _inFlight.TryRemove(key, out _);
+        var sync = _sync.GetOrAdd(key, static _ => new object());
+        lock (sync)
+        {
+            _versions.AddOrUpdate(key, 1, (_, version) => version + 1);
+            _cache.Remove(key);
+            _inFlight.TryRemove(key, out _);
+        }
     }
 
     private static bool MatchesPrefix(string key, string keyPrefix)
@@ -90,14 +97,20 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
     private async Task<object?> RunFactoryAsync<T>(string key, int version, Func<Task<T>> factory)
     {
         var value = await factory().ConfigureAwait(false);
-        if (_versions.TryGetValue(key, out var current) && current == version)
+        var sync = _sync.GetOrAdd(key, static _ => new object());
+        lock (sync)
         {
-            using var entry = _cache.CreateEntry(key);
-            entry.Size = 1;
-            entry.AbsoluteExpirationRelativeToNow = ResolveTtl(_timeProvider.GetUtcNow());
-            entry.Value = (object?)value;
-            entry.RegisterPostEvictionCallback(OnEvicted, version);
-            _keys[key] = 0;
+            if (_versions.TryGetValue(key, out var current) && current == version)
+            {
+                var token = Interlocked.Increment(ref _nextToken);
+                using var entry = _cache.CreateEntry(key);
+                entry.Size = 1;
+                entry.AbsoluteExpirationRelativeToNow = ResolveTtl(_timeProvider.GetUtcNow());
+                entry.Value = (object?)value;
+                entry.RegisterPostEvictionCallback(OnEvicted, token);
+                _tokens[key] = token;
+                _keys[key] = 0;
+            }
         }
         return value;
     }
@@ -106,11 +119,16 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
     {
         if (key is not string cacheKey) return;
         if (reason is EvictionReason.Removed or EvictionReason.Replaced) return;
-        var stateVersion = state is int version ? version : -1;
-        if (_versions.TryGetValue(cacheKey, out var current) && current == stateVersion)
+        if (state is not long token) return;
+        var sync = _sync.GetOrAdd(cacheKey, static _ => new object());
+        lock (sync)
         {
-            _keys.TryRemove(cacheKey, out _);
-            _versions.TryRemove(cacheKey, out _);
+            if (_tokens.TryGetValue(cacheKey, out var current) && current == token)
+            {
+                _tokens.TryRemove(cacheKey, out _);
+                _keys.TryRemove(cacheKey, out _);
+                _versions.TryRemove(cacheKey, out _);
+            }
         }
     }
 }
@@ -119,6 +137,7 @@ public static class CachingServiceCollectionExtensions
 {
     public static IServiceCollection AddAggregateResultCaching(this IServiceCollection services)
     {
+        services.TryAddSingleton(TimeProvider.System);
         services.AddMemoryCache(options => options.SizeLimit = 10_000);
         services.AddSingleton<IAggregateResultCache, MemoryAggregateResultCache>();
         return services;
