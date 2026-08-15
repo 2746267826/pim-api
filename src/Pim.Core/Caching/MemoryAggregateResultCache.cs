@@ -84,6 +84,10 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
             _versions.AddOrUpdate(key, 1, (_, version) => version + 1);
             _cache.Remove(key);
             _inFlight.TryRemove(key, out _);
+            // 移除旁路索引；代际（_versions）必须保留，防止驱逐前的在途旧工厂以重置后的版本回填。
+            // _sync 亦保留：删除会破坏互斥。两者的缓慢增长是已知设计债（个人部署查询组合有限）。
+            _tokens.TryRemove(key, out _);
+            _keys.TryRemove(key, out _);
         }
     }
 
@@ -120,6 +124,8 @@ public sealed class MemoryAggregateResultCache : IAggregateResultCache
         if (key is not string cacheKey) return;
         if (reason is EvictionReason.Removed or EvictionReason.Replaced) return;
         if (state is not long token) return;
+        // 过期回调只对已发布的条目触发，而发布发生在工厂完成后（此时在途任务已移除），
+        // 因此回调删除 _versions 后新请求重建版本 0 不会与旧在途工厂碰撞。
         var sync = _sync.GetOrAdd(cacheKey, static _ => new object());
         lock (sync)
         {
