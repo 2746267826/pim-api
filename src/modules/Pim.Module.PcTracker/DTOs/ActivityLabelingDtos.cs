@@ -1,7 +1,7 @@
 namespace Pim.Module.PcTracker.DTOs;
 
 public sealed record ActivityLabelingQueueItem(
-    string TargetType, string Target, string DisplayName, int Minutes, List<string> SampleTitles);
+    string TargetType, string Target, string DisplayName, int Minutes, List<string> SampleTitles, string? CurrentCategory = null);
 
 public sealed record ActivityLabelingQueueResponse(List<ActivityLabelingQueueItem> Items);
 

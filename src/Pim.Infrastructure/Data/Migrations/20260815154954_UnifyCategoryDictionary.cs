@@ -34,30 +34,57 @@ namespace Pim.Infrastructure.Data.Migrations
         {
             // 0) 先 upsert 7 大类（本迁移在应用启动 seed 之前执行，存量库可能还没有这 7 行；
             //    先保证 pc_categories 存在 7 大类，后续回填 category_id 才能命中）。
-            //    id 与 PcCategoryService.SeedDefaultsAsync 一致（20000000-...-{index+1:D12}，index 0-6），
-            //    颜色/图标与 CategoryLegacyMapper.UnifiedColors/UnifiedIcons 一致。
+            //    **按名 upsert**：存量库中同名的旧 builtin 行（如「学习」「视频」「游戏」「文档」
+            //    「其他」等）直接 UPDATE 收敛，避免按 id ON CONFLICT 造成同名双行；
+            //    名不存在时才按固定 id INSERT（id 与 PcCategoryService.SeedDefaultsAsync 一致，
+            //    20000000-...-{index+1:D12}，index 0-6），颜色/图标与 CategoryLegacyMapper
+            //    UnifiedColors/UnifiedIcons 一致。
             migrationBuilder.Sql(
                 """
-                INSERT INTO pc_categories (id, parent_id, name, color, icon, productivity, sort_order, is_builtin, created_at, updated_at) VALUES
-                ('20000000-0000-0000-0000-000000000001', NULL, '编程/折腾', '#6B5EE4', '💻', 'neutral', 10, true, now(), now()),
-                ('20000000-0000-0000-0000-000000000002', NULL, '学习', '#14b8a6', '📚', 'neutral', 20, true, now(), now()),
-                ('20000000-0000-0000-0000-000000000003', NULL, '视频', '#F97316', '📺', 'neutral', 30, true, now(), now()),
-                ('20000000-0000-0000-0000-000000000004', NULL, '聊天', '#3B82F6', '💬', 'neutral', 40, true, now(), now()),
-                ('20000000-0000-0000-0000-000000000005', NULL, '文档', '#F59E0B', '📄', 'neutral', 50, true, now(), now()),
-                ('20000000-0000-0000-0000-000000000006', NULL, '游戏', '#F43F5E', '🎮', 'neutral', 60, true, now(), now()),
-                ('20000000-0000-0000-0000-000000000007', NULL, '其他', '#64748b', '📋', 'neutral', 99, true, now(), now())
-                ON CONFLICT (id) DO UPDATE
-                    SET name = EXCLUDED.name, color = EXCLUDED.color, icon = EXCLUDED.icon,
-                        sort_order = EXCLUDED.sort_order, is_builtin = true, productivity = 'neutral', parent_id = NULL;
+                UPDATE pc_categories SET color='#6B5EE4', icon='💻', sort_order=10, is_builtin=true, productivity='neutral', parent_id=NULL, updated_at=now() WHERE name='编程/折腾';
+                INSERT INTO pc_categories (id, parent_id, name, color, icon, productivity, sort_order, is_builtin, created_at, updated_at)
+                SELECT '20000000-0000-0000-0000-000000000001', NULL, '编程/折腾', '#6B5EE4', '💻', 'neutral', 10, true, now(), now()
+                WHERE NOT EXISTS (SELECT 1 FROM pc_categories WHERE name='编程/折腾');
+
+                UPDATE pc_categories SET color='#14b8a6', icon='📚', sort_order=20, is_builtin=true, productivity='neutral', parent_id=NULL, updated_at=now() WHERE name='学习';
+                INSERT INTO pc_categories (id, parent_id, name, color, icon, productivity, sort_order, is_builtin, created_at, updated_at)
+                SELECT '20000000-0000-0000-0000-000000000002', NULL, '学习', '#14b8a6', '📚', 'neutral', 20, true, now(), now()
+                WHERE NOT EXISTS (SELECT 1 FROM pc_categories WHERE name='学习');
+
+                UPDATE pc_categories SET color='#F97316', icon='📺', sort_order=30, is_builtin=true, productivity='neutral', parent_id=NULL, updated_at=now() WHERE name='视频';
+                INSERT INTO pc_categories (id, parent_id, name, color, icon, productivity, sort_order, is_builtin, created_at, updated_at)
+                SELECT '20000000-0000-0000-0000-000000000003', NULL, '视频', '#F97316', '📺', 'neutral', 30, true, now(), now()
+                WHERE NOT EXISTS (SELECT 1 FROM pc_categories WHERE name='视频');
+
+                UPDATE pc_categories SET color='#3B82F6', icon='💬', sort_order=40, is_builtin=true, productivity='neutral', parent_id=NULL, updated_at=now() WHERE name='聊天';
+                INSERT INTO pc_categories (id, parent_id, name, color, icon, productivity, sort_order, is_builtin, created_at, updated_at)
+                SELECT '20000000-0000-0000-0000-000000000004', NULL, '聊天', '#3B82F6', '💬', 'neutral', 40, true, now(), now()
+                WHERE NOT EXISTS (SELECT 1 FROM pc_categories WHERE name='聊天');
+
+                UPDATE pc_categories SET color='#F59E0B', icon='📄', sort_order=50, is_builtin=true, productivity='neutral', parent_id=NULL, updated_at=now() WHERE name='文档';
+                INSERT INTO pc_categories (id, parent_id, name, color, icon, productivity, sort_order, is_builtin, created_at, updated_at)
+                SELECT '20000000-0000-0000-0000-000000000005', NULL, '文档', '#F59E0B', '📄', 'neutral', 50, true, now(), now()
+                WHERE NOT EXISTS (SELECT 1 FROM pc_categories WHERE name='文档');
+
+                UPDATE pc_categories SET color='#F43F5E', icon='🎮', sort_order=60, is_builtin=true, productivity='neutral', parent_id=NULL, updated_at=now() WHERE name='游戏';
+                INSERT INTO pc_categories (id, parent_id, name, color, icon, productivity, sort_order, is_builtin, created_at, updated_at)
+                SELECT '20000000-0000-0000-0000-000000000006', NULL, '游戏', '#F43F5E', '🎮', 'neutral', 60, true, now(), now()
+                WHERE NOT EXISTS (SELECT 1 FROM pc_categories WHERE name='游戏');
+
+                UPDATE pc_categories SET color='#64748b', icon='📋', sort_order=99, is_builtin=true, productivity='neutral', parent_id=NULL, updated_at=now() WHERE name='其他';
+                INSERT INTO pc_categories (id, parent_id, name, color, icon, productivity, sort_order, is_builtin, created_at, updated_at)
+                SELECT '20000000-0000-0000-0000-000000000007', NULL, '其他', '#64748b', '📋', 'neutral', 99, true, now(), now()
+                WHERE NOT EXISTS (SELECT 1 FROM pc_categories WHERE name='其他');
                 """);
 
-            // 1) 先清理旧 builtin 细分支下挂靠的子分类（用户自建 is_builtin=false 可能挂在被删父类下，
-            //    外键 RESTRICT 会阻塞删除），再删除旧 builtin 细分支。
+            // 1) 先断开所有引用待删旧 builtin 细分支的行（包括用户自建 is_builtin=false 子行、
+            //    以及 name 属于 7 大类但挂在旧树下的行如旧「视频」挂在「娱乐」下），
+            //    外键 RESTRICT 会阻塞删除，先置空 parent_id 再删除旧 builtin 细分支。
             migrationBuilder.Sql(
                 """
                 UPDATE pc_categories SET parent_id = NULL
-                 WHERE is_builtin AND name NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他')
-                   AND parent_id IS NOT NULL;
+                 WHERE parent_id IN (SELECT id FROM pc_categories
+                                      WHERE is_builtin AND name NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他'));
                 """);
             migrationBuilder.Sql(
                 """
@@ -173,7 +200,8 @@ namespace Pim.Infrastructure.Data.Migrations
             //      沟通·即时消息 / 沟通·邮件 / 浏览 / 娱乐 / 娱乐·游戏 / 娱乐·游戏·单机 /
             //      娱乐·游戏·网络 / 娱乐·视频 / 娱乐·音乐
             //    计划 CASE 全覆盖上述值（'浏览' 由 '工作·浏览' 行缺漏补齐为本行；
-            //    NULL 行由 WHERE 条件排除，不映射）。逐字面量映射（含层级组合，末段按 §0.2 规则映射）：
+            //    '沟通·会议' 已补入 CASE；NULL 行由 WHERE 条件排除，不映射）。
+            //    逐字面量映射（含层级组合，末段按 §0.2 规则映射）：
             migrationBuilder.Sql(
                 """
                 UPDATE pc_app_signatures SET category_path = CASE category_path
@@ -188,7 +216,7 @@ namespace Pim.Infrastructure.Data.Migrations
                   WHEN '娱乐·视频' THEN '视频' WHEN '娱乐·音乐' THEN '其他' WHEN '娱乐·社交' THEN '聊天'
                   WHEN '学习' THEN '学习'
                   WHEN '学习·技术学习' THEN '学习' WHEN '学习·外语学习' THEN '学习' WHEN '学习·阅读' THEN '学习'
-                  WHEN '沟通' THEN '聊天' WHEN '沟通·即时消息' THEN '聊天' WHEN '沟通·邮件' THEN '聊天'
+                  WHEN '沟通' THEN '聊天' WHEN '沟通·会议' THEN '聊天' WHEN '沟通·即时消息' THEN '聊天' WHEN '沟通·邮件' THEN '聊天'
                   ELSE '其他' END
                  WHERE category_path IS NOT NULL AND category_path <> '';
                 """);

@@ -70,6 +70,8 @@ public sealed class ActivityLabelingService
         var categoryName = req.CategoryName?.Trim();
         if (string.IsNullOrWhiteSpace(categoryName))
             throw new ArgumentException("category_id 与 category_name 不能同时为空。", nameof(req));
+        if (categoryName.Length > 64)
+            throw new ArgumentException($"自定义分类名不能超过 64 个字符（当前 {categoryName.Length}）。", nameof(req));
 
         var existing = await _db.Set<PcCategoryEntity>()
             .FirstOrDefaultAsync(c => c.Name == categoryName, ct);
@@ -130,10 +132,12 @@ public sealed class ActivityLabelingService
         CancellationToken ct)
     {
         var normalizedKeyword = NormalizeKeyword(keyword);
+        var normalizedTarget = AppNameNormalizer.Normalize(target);
         var conditions = JsonSerializer.Serialize(new
         {
             all = new object[]
             {
+                new { field = "appNameNormalized", op = "equals", value = normalizedTarget },
                 new { field = "windowTitle", op = "contains", value = normalizedKeyword }
             }
         });
@@ -242,11 +246,36 @@ public sealed class ActivityLabelingService
     /// 手机应用候选按 mobile_usage_aggregates 聚合，均排除已有映射/规则覆盖，按时长降序取前 limit 项。
     /// 无 userId 时（匿名/测试）不生成手机应用候选。</summary>
     public async Task<ActivityLabelingQueueResponse> BuildQueueAsync(int limit, CancellationToken ct)
-        => await BuildQueueAsync(limit, null, ct);
+        => await BuildQueueAsync(limit, null, "queue", ct);
 
     public async Task<ActivityLabelingQueueResponse> BuildQueueAsync(int limit, Guid? userId, CancellationToken ct)
+        => await BuildQueueAsync(limit, userId, "queue", ct);
+
+    /// <summary>mode="wizard" 时返回 Top N 高频应用候选（含已分类），每项附 current_category；
+    /// 跳过「排除已覆盖」步骤，聚合/排序逻辑复用。其他 mode 走常规队列。</summary>
+    public async Task<ActivityLabelingQueueResponse> BuildQueueAsync(int limit, Guid? userId, string mode, CancellationToken ct)
     {
         var safeLimit = Math.Clamp(limit, 1, 100);
+
+        if (mode == "wizard")
+        {
+            var candidates = await BuildAppCandidatesAsync(ct, excludeCovered: false);
+            var currentByApp = await LoadCurrentCategoryByAppAsync(ct);
+            var wizardTop = candidates
+                .OrderByDescending(c => c.TotalSeconds)
+                .Take(safeLimit)
+                .Select(c => new ActivityLabelingQueueItem(
+                    "app",
+                    c.App,
+                    c.DisplayName,
+                    (int)(c.TotalSeconds / 60),
+                    new List<string>(),
+                    currentByApp.GetValueOrDefault(c.App)))
+                .ToList();
+            await FillAppSampleTitlesAsync(wizardTop, ct);
+            return new ActivityLabelingQueueResponse(wizardTop);
+        }
+
         var items = new List<ActivityLabelingQueueItem>();
 
         var appCandidates = await BuildAppCandidatesAsync(ct);
@@ -272,7 +301,7 @@ public sealed class ActivityLabelingService
 
     private sealed record AppCandidate(string App, string DisplayName, double TotalSeconds);
 
-    private async Task<List<AppCandidate>> BuildAppCandidatesAsync(CancellationToken ct)
+    private async Task<List<AppCandidate>> BuildAppCandidatesAsync(CancellationToken ct, bool excludeCovered = true)
     {
         var aggregates = await _db.Set<AwEventEntity>()
             .Where(e => e.AppNameNormalized != null && e.AppNameNormalized != "")
@@ -294,10 +323,63 @@ public sealed class ActivityLabelingService
 
         return aggregates
             .Where(a => a.TotalSeconds >= MinimumCandidateDurationSeconds)
-            .Where(a => !mappedSet.Contains(a.App))
+            .Where(a => !excludeCovered || !mappedSet.Contains(a.App))
             .Select(a => new AppCandidate(a.App, displayNames.GetValueOrDefault(a.App, a.App), a.TotalSeconds))
             .OrderByDescending(a => a.TotalSeconds)
             .ToList();
+    }
+
+    /// <summary>向导模式：每个应用候选的当前分类（已有映射或规则判定，无则 null）。
+    /// 映射按 app_pattern 精确命中；规则按 conditions_json 中 field=appNameNormalized 且 op=equals 命中。</summary>
+    private async Task<Dictionary<string, string>> LoadCurrentCategoryByAppAsync(CancellationToken ct)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        var mappings = await _db.Set<AppCategoryEntity>()
+            .Where(e => e.AppPattern != null && e.AppPattern != "")
+            .Select(e => new { e.AppPattern, e.CategoryName })
+            .ToListAsync(ct);
+        foreach (var mapping in mappings)
+        {
+            if (!string.IsNullOrWhiteSpace(mapping.CategoryName))
+                result.TryAdd(mapping.AppPattern, mapping.CategoryName);
+        }
+
+        var rules = await _db.Set<ActivityCategoryRuleEntity>()
+            .Where(r => r.Status == "active" && r.ConditionsJson.Contains("appNameNormalized"))
+            .Select(r => new { r.ConditionsJson, r.CategoryName })
+            .ToListAsync(ct);
+        foreach (var rule in rules)
+        {
+            if (string.IsNullOrWhiteSpace(rule.CategoryName) || string.IsNullOrWhiteSpace(rule.ConditionsJson))
+                continue;
+
+            try
+            {
+                using var document = JsonDocument.Parse(rule.ConditionsJson);
+                if (!document.RootElement.TryGetProperty("all", out var all) || all.ValueKind != JsonValueKind.Array)
+                    continue;
+
+                foreach (var condition in all.EnumerateArray())
+                {
+                    if (condition.ValueKind != JsonValueKind.Object
+                        || !condition.TryGetProperty("field", out var field) || field.GetString() != "appNameNormalized"
+                        || !condition.TryGetProperty("op", out var op) || op.GetString() != "equals"
+                        || !condition.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.String)
+                        continue;
+
+                    var appPattern = value.GetString();
+                    if (!string.IsNullOrWhiteSpace(appPattern))
+                        result.TryAdd(appPattern, rule.CategoryName);
+                }
+            }
+            catch (JsonException)
+            {
+                // 忽略损坏的条件 JSON
+            }
+        }
+
+        return result;
     }
 
     private async Task<List<ActivityLabelingQueueItem>> BuildDomainCandidatesAsync(CancellationToken ct)
@@ -344,7 +426,9 @@ public sealed class ActivityLabelingService
     }
 
     /// <summary>加载已覆盖规则：返回精确匹配域名集合与域名后缀集合。
-    /// 仅解析 all 数组中的 domain/domainSuffix 条件；仅含 urlPath/windowTitle/title 关键词条件的规则不构成排除。</summary>
+    /// 规则条件模型里 domainSuffix 是 **op**（field 只有 "domain"）：
+    /// field=="domain" 且 op=="equals" → 精确域名；field=="domain" 且 op=="domainSuffix" → 域名后缀；
+    /// field=="domain" 其他 op（contains/startsWith 等）不构成全域覆盖，忽略；其他 field 忽略。</summary>
     private async Task<(HashSet<string> ExactDomains, List<string> DomainSuffixes)> LoadCoveredDomainsAsync(CancellationToken ct)
     {
         var exactDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -374,8 +458,12 @@ public sealed class ActivityLabelingService
                         continue;
 
                     var fieldName = field.GetString();
-                    if (fieldName != "domain" && fieldName != "domainSuffix")
+                    if (fieldName != "domain")
                         continue;
+
+                    if (!condition.TryGetProperty("op", out var op) || op.ValueKind != JsonValueKind.String)
+                        continue;
+                    var opName = op.GetString();
 
                     if (!condition.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.String)
                         continue;
@@ -384,10 +472,11 @@ public sealed class ActivityLabelingService
                     if (string.IsNullOrWhiteSpace(pattern))
                         continue;
 
-                    if (fieldName == "domain")
+                    if (opName == "equals")
                         exactDomains.Add(pattern);
-                    else
+                    else if (opName == "domainSuffix")
                         domainSuffixes.Add(pattern);
+                    // 其他 op（contains/startsWith 等）不构成全域覆盖，忽略
                 }
             }
             catch (JsonException)
@@ -419,7 +508,10 @@ public sealed class ActivityLabelingService
         return false;
     }
 
-    /// <summary>单次批量查询 app_signatures 显示名（避免逐个应用 N+1 查询）。</summary>
+    /// <summary>批量解析应用显示名：一次性把 pc_app_signatures 全量拉到内存（量级 171+，可接受），
+    /// 内存中按 AppSignatureService.FindMatchingEntityByProcessNameAsync 的三段式语义
+    /// （精确 → 补 .exe → glob 通配正则）对每个 AppNameNormalized 匹配，避免按
+    /// app_name_normalized 直接 IN 匹配 process_name 时大小写/后缀/通配不命中。</summary>
     private async Task<Dictionary<string, string>> ResolveDisplayNamesAsync(List<string> apps, CancellationToken ct)
     {
         var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -427,14 +519,50 @@ public sealed class ActivityLabelingService
             return names;
 
         var signatures = await _db.Set<AppSignatureEntity>()
-            .Where(s => apps.Contains(s.ProcessName))
             .Select(s => new { s.ProcessName, s.DisplayName })
             .ToListAsync(ct);
 
-        foreach (var signature in signatures)
-            names[signature.ProcessName] = string.IsNullOrWhiteSpace(signature.DisplayName)
-                ? signature.ProcessName
-                : signature.DisplayName;
+        var signatureList = signatures
+            .Select(s => (
+                ProcessName: s.ProcessName ?? string.Empty,
+                DisplayName: (string.IsNullOrWhiteSpace(s.DisplayName) ? s.ProcessName : s.DisplayName) ?? string.Empty))
+            .ToList();
+
+        foreach (var app in apps)
+        {
+            var normalized = app.ToLowerInvariant();
+
+            // 1) 精确匹配（大小写不敏感）
+            var signature = signatureList.FirstOrDefault(s => s.ProcessName.ToLowerInvariant() == normalized);
+
+            // 2) 补 .exe 后缀匹配
+            if (signature.ProcessName is null && !normalized.EndsWith(".exe", StringComparison.Ordinal))
+                signature = signatureList.FirstOrDefault(s => s.ProcessName.ToLowerInvariant() == normalized + ".exe");
+
+            // 3) glob 通配正则匹配（如 MobaXterm*.exe）
+            if (signature.ProcessName is null)
+            {
+                foreach (var candidateName in new[] { normalized, normalized + ".exe" })
+                {
+                    signature = signatureList.FirstOrDefault(s =>
+                    {
+                        var pattern = s.ProcessName;
+                        if (!pattern.Contains('*') && !pattern.Contains('?'))
+                            return false;
+                        var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+                            .Replace("\\*", ".*")
+                            .Replace("\\?", ".") + "$";
+                        return System.Text.RegularExpressions.Regex.IsMatch(candidateName, regex,
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    });
+                    if (signature.ProcessName is not null)
+                        break;
+                }
+            }
+
+            if (signature.ProcessName is not null)
+                names[app] = signature.DisplayName;
+        }
 
         return names;
     }
