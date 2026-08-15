@@ -110,11 +110,13 @@ namespace Pim.Infrastructure.Data.Migrations
                         OR category_name IS NULL);
                 """);
 
-            // 2b) 手机端存量 life_category 旧分类 → 7 大类（ToolsSystem 相关值保留不动）。
+            // 2b) 手机端存量 life_category 旧分类 → 7 大类（ToolsSystem 相关值映射到 '工具/系统'）。
             //     旧值集合核对自 MobileAnalyticsDtos.cs 改动前的 MobileLifeCategories 常量
             //     （社交通讯/短视频娱乐/阅读资讯/工作生产力/音乐音频/浏览器搜索/出行地图/购物外卖/
             //      金融支付/健康运动/相机创作/生活服务/未分类）及历史上曾出现的别名（社交/短视频/视频/
             //      阅读/生产力/办公/文档/购物/金融/娱乐/新闻/工具/系统工具/教育/学习/游戏/其他）。
+            //     '系统工具'/'工具' 是 ToolsSystem（'工具/系统'）的历史别名 → 映射到 '工具/系统'，
+            //     与 MobileLifeCategories.ToolsSystem 常量一致，而不是原值保留或落「其他」。
             migrationBuilder.Sql(
                 """
                 UPDATE mobile_usage_aggregates SET life_category = CASE life_category
@@ -123,7 +125,7 @@ namespace Pim.Infrastructure.Data.Migrations
                   WHEN '阅读/资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '学习' THEN '学习'
                   WHEN '工作/生产力' THEN '文档' WHEN '生产力' THEN '文档' WHEN '办公' THEN '文档' WHEN '文档' THEN '文档'
                   WHEN '游戏' THEN '游戏'
-                  WHEN '系统工具' THEN '系统工具' WHEN '工具/系统' THEN '工具/系统'
+                  WHEN '系统工具' THEN '工具/系统' WHEN '工具' THEN '工具/系统'
                   ELSE '其他' END
                  WHERE life_category NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他','工具/系统');
                 """);
@@ -135,7 +137,7 @@ namespace Pim.Infrastructure.Data.Migrations
                   WHEN '阅读/资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '学习' THEN '学习'
                   WHEN '工作/生产力' THEN '文档' WHEN '生产力' THEN '文档' WHEN '办公' THEN '文档' WHEN '文档' THEN '文档'
                   WHEN '游戏' THEN '游戏'
-                  WHEN '系统工具' THEN '系统工具' WHEN '工具/系统' THEN '工具/系统'
+                  WHEN '系统工具' THEN '工具/系统' WHEN '工具' THEN '工具/系统'
                   ELSE '其他' END
                  WHERE life_category NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他','工具/系统');
                 """);
@@ -147,7 +149,7 @@ namespace Pim.Infrastructure.Data.Migrations
                   WHEN '阅读/资讯' THEN '学习' WHEN '阅读' THEN '学习' WHEN '学习' THEN '学习'
                   WHEN '工作/生产力' THEN '文档' WHEN '生产力' THEN '文档' WHEN '办公' THEN '文档' WHEN '文档' THEN '文档'
                   WHEN '游戏' THEN '游戏'
-                  WHEN '系统工具' THEN '系统工具' WHEN '工具/系统' THEN '工具/系统'
+                  WHEN '系统工具' THEN '工具/系统' WHEN '工具' THEN '工具/系统'
                   ELSE '其他' END
                  WHERE life_category NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他','工具/系统');
                 """);
@@ -218,7 +220,8 @@ namespace Pim.Infrastructure.Data.Migrations
                   WHEN '学习·技术学习' THEN '学习' WHEN '学习·外语学习' THEN '学习' WHEN '学习·阅读' THEN '学习'
                   WHEN '沟通' THEN '聊天' WHEN '沟通·会议' THEN '聊天' WHEN '沟通·即时消息' THEN '聊天' WHEN '沟通·邮件' THEN '聊天'
                   ELSE '其他' END
-                 WHERE category_path IS NOT NULL AND category_path <> '';
+                 WHERE category_path IS NOT NULL AND category_path <> ''
+                   AND category_path NOT IN ('编程/折腾','学习','视频','聊天','文档','游戏','其他');
                 """);
 
             // 5) 规则表加 category_id 列 + 回填（任务 2 消费）

@@ -317,16 +317,73 @@ public sealed class ActivityLabelingService
             .Where(p => p.Length > 0)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        // 排除集合 = 映射 ∪ 规则覆盖：keyword 情境规则（appNameNormalized + windowTitle 等附加
+        // 条件）只覆盖部分窗口，不排除；仅 all 数组只有单条 appNameNormalized equals 条件的规则
+        // 视为全量覆盖该 app，并入排除集合（这类 app 只写规则表、无映射行）。
+        var excluded = mappedSet;
+        if (excludeCovered)
+        {
+            excluded = new HashSet<string>(mappedSet, StringComparer.OrdinalIgnoreCase);
+            foreach (var app in await LoadCoveredAppPatternsAsync(ct))
+                excluded.Add(app);
+        }
+
         var displayNames = await ResolveDisplayNamesAsync(
             aggregates.Select(a => a.App).ToList(),
             ct);
 
         return aggregates
             .Where(a => a.TotalSeconds >= MinimumCandidateDurationSeconds)
-            .Where(a => !excludeCovered || !mappedSet.Contains(a.App))
+            .Where(a => !excludeCovered || !excluded.Contains(a.App))
             .Select(a => new AppCandidate(a.App, displayNames.GetValueOrDefault(a.App, a.App), a.TotalSeconds))
             .OrderByDescending(a => a.TotalSeconds)
             .ToList();
+    }
+
+    /// <summary>加载被规则完整覆盖的 app：解析 active 规则中「all 数组仅含单条
+    /// appNameNormalized equals 条件」的规则目标（appNameNormalized 值），用于排除集合。</summary>
+    private async Task<HashSet<string>> LoadCoveredAppPatternsAsync(CancellationToken ct)
+    {
+        var covered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var rules = await _db.Set<ActivityCategoryRuleEntity>()
+            .Where(r => r.Status == "active" && r.ConditionsJson.Contains("appNameNormalized"))
+            .Select(r => r.ConditionsJson)
+            .ToListAsync(ct);
+
+        foreach (var conditions in rules)
+        {
+            if (string.IsNullOrWhiteSpace(conditions))
+                continue;
+
+            try
+            {
+                using var document = JsonDocument.Parse(conditions);
+                if (!document.RootElement.TryGetProperty("all", out var all) || all.ValueKind != JsonValueKind.Array)
+                    continue;
+
+                // 仅认可 all 数组只有单条条件且为 appNameNormalized equals 的全量覆盖规则
+                if (all.GetArrayLength() != 1)
+                    continue;
+
+                var condition = all.EnumerateArray().First();
+                if (condition.ValueKind != JsonValueKind.Object
+                    || !condition.TryGetProperty("field", out var field) || field.GetString() != "appNameNormalized"
+                    || !condition.TryGetProperty("op", out var op) || op.GetString() != "equals"
+                    || !condition.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.String)
+                    continue;
+
+                var pattern = value.GetString();
+                if (!string.IsNullOrWhiteSpace(pattern))
+                    covered.Add(pattern);
+            }
+            catch (JsonException)
+            {
+                // 忽略损坏的条件 JSON
+            }
+        }
+
+        return covered;
     }
 
     /// <summary>向导模式：每个应用候选的当前分类（已有映射或规则判定，无则 null）。
@@ -427,8 +484,11 @@ public sealed class ActivityLabelingService
 
     /// <summary>加载已覆盖规则：返回精确匹配域名集合与域名后缀集合。
     /// 规则条件模型里 domainSuffix 是 **op**（field 只有 "domain"）：
-    /// field=="domain" 且 op=="equals" → 精确域名；field=="domain" 且 op=="domainSuffix" → 域名后缀；
-    /// field=="domain" 其他 op（contains/startsWith 等）不构成全域覆盖，忽略；其他 field 忽略。</summary>
+    /// field=="domain" 且 op=="equals" → 精确域名；field=="domain" 且 op=="domainSuffix" → 域名后缀。
+    /// 组合规则防误判：规则 all 数组只要含 domain 之外的其他条件（urlPath/windowTitle/title 等
+    /// 任一 field），该规则仅部分覆盖（如 domain equals + urlPath contains），其 domain/domainSuffix
+    /// 条件一律不加入覆盖集合；只有 all 数组全部为 domain 条件（可含多条 equals/domainSuffix）才
+    /// 算完整覆盖。field=="domain" 其他 op（contains/startsWith 等）不构成全域覆盖，忽略。</summary>
     private async Task<(HashSet<string> ExactDomains, List<string> DomainSuffixes)> LoadCoveredDomainsAsync(CancellationToken ct)
     {
         var exactDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -451,16 +511,27 @@ public sealed class ActivityLabelingService
                 if (!document.RootElement.TryGetProperty("all", out var all) || all.ValueKind != JsonValueKind.Array)
                     continue;
 
+                // 先判定规则是否含 domain 之外的其他条件：含 → 仅部分覆盖，整体跳过不计入覆盖集合。
+                var hasOtherConditions = false;
                 foreach (var condition in all.EnumerateArray())
                 {
                     if (condition.ValueKind != JsonValueKind.Object
                         || !condition.TryGetProperty("field", out var field))
-                        continue;
+                    {
+                        hasOtherConditions = true;
+                        break;
+                    }
+                    if (field.GetString() != "domain")
+                    {
+                        hasOtherConditions = true;
+                        break;
+                    }
+                }
+                if (hasOtherConditions)
+                    continue;
 
-                    var fieldName = field.GetString();
-                    if (fieldName != "domain")
-                        continue;
-
+                foreach (var condition in all.EnumerateArray())
+                {
                     if (!condition.TryGetProperty("op", out var op) || op.ValueKind != JsonValueKind.String)
                         continue;
                     var opName = op.GetString();
@@ -612,7 +683,7 @@ public sealed class ActivityLabelingService
 
         const string sql = """
             SELECT package_name AS "PackageName",
-                   COALESCE(NULLIF(display_name, ''), package_name) AS "DisplayName",
+                   MAX(COALESCE(NULLIF(display_name, ''), package_name)) AS "DisplayName",
                    SUM(foreground_seconds) AS "TotalSeconds"
               FROM mobile_usage_aggregates
              WHERE user_id = {0}
@@ -627,7 +698,7 @@ public sealed class ActivityLabelingService
                          OR (r.rule_type IN ('display-keyword', 'keyword') AND mobile_usage_aggregates.display_name LIKE '%' || r.pattern || '%')
                        )
                 )
-             GROUP BY package_name, display_name
+             GROUP BY package_name
              ORDER BY SUM(foreground_seconds) DESC
             """;
 
@@ -707,12 +778,33 @@ public sealed class ActivityLabelingService
     }
 
     /// <summary>规则名：target/关键词截断到 48 字符，避免超过 rule_name 128 上限；
-    /// 截断规则固定，保证幂等键（规则名）稳定。</summary>
+    /// 截断规则固定，保证幂等键（规则名）稳定。截断发生后追加原始完整名的稳定短哈希
+    /// （SHA256 前 8 位十六进制），避免同前缀不同目标/关键词截断后碰撞互相覆盖；
+    /// 未截断的名字保持原样（与存量规则名兼容）。</summary>
     private static string BuildRuleName(string target, string? keyword)
     {
+        var keywordPart = keyword ?? "all";
+        var fullName = $"Label: {target} [{keywordPart}]";
+
         var truncatedTarget = TruncateForRuleName(target);
-        var truncatedKeyword = keyword is null ? "all" : TruncateForRuleName(keyword);
-        return $"Label: {truncatedTarget} [{truncatedKeyword}]";
+        var truncatedKeyword = TruncateForRuleName(keywordPart);
+        var truncatedName = $"Label: {truncatedTarget} [{truncatedKeyword}]";
+
+        if (truncatedName == fullName)
+            return fullName;
+
+        var withHash = $"{truncatedName}-{ComputeStableHash(fullName)}";
+        return withHash.Length <= RuleNameMaxLength ? withHash : withHash[..RuleNameMaxLength];
+    }
+
+    /// <summary>规则名最大长度（rule_name 列为 VARCHAR(128)）。</summary>
+    private const int RuleNameMaxLength = 128;
+
+    private static string ComputeStableHash(string value)
+    {
+        using var sha256 = System.Security.Cryptography.SHA256.Create();
+        var bytes = sha256.ComputeHash(System.Text.Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(bytes, 0, 4).ToLowerInvariant();
     }
 
     private static string TruncateForRuleName(string value)

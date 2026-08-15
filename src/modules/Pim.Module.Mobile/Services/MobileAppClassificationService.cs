@@ -346,10 +346,13 @@ public sealed class MobileAppClassificationService
     private static string NormalizeRuleType(string? value)
         => NormalizePattern(value);
 
+    /// <summary>分类名归一化：null/空串 → Uncategorized；否则原值保留
+    /// （All 集合、ToolsSystem、任意自定义分类名均原样返回，不兜底「其他」，
+    /// 否则自定义分类打 mobile_app 会在读取时静默失效）。</summary>
     private static string NormalizeLifeCategory(string? lifeCategory)
-        => MobileLifeCategories.All.Contains(lifeCategory) || string.Equals(lifeCategory, MobileLifeCategories.ToolsSystem, StringComparison.Ordinal)
-            ? lifeCategory!
-            : MobileLifeCategories.Uncategorized;
+        => string.IsNullOrWhiteSpace(lifeCategory)
+            ? MobileLifeCategories.Uncategorized
+            : lifeCategory!;
 
     private static bool ContainsIgnoreCase(string value, string pattern)
         => value.Contains(pattern, StringComparison.OrdinalIgnoreCase);
