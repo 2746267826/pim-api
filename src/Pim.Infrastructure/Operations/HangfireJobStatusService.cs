@@ -32,10 +32,12 @@ public sealed class HangfireMonitoringClient : IHangfireMonitoringClient
 public sealed class HangfireJobStatusService : IBackgroundJobStatusService
 {
     private readonly IHangfireMonitoringClient _monitoringClient;
+    private readonly TimeProvider _timeProvider;
 
-    public HangfireJobStatusService(IHangfireMonitoringClient monitoringClient)
+    public HangfireJobStatusService(IHangfireMonitoringClient monitoringClient, TimeProvider? timeProvider = null)
     {
         _monitoringClient = monitoringClient;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public Task<BackgroundJobSummaryDto> GetSummaryAsync(CancellationToken ct = default)
@@ -50,7 +52,7 @@ public sealed class HangfireJobStatusService : IBackgroundJobStatusService
                 snapshot.Enqueued,
                 snapshot.Scheduled,
                 snapshot.Failed,
-                DateTimeOffset.UtcNow,
+                _timeProvider.GetUtcNow(),
                 snapshot.Failed > 0 ? "部分后台任务执行失败。" : "后台任务正常。"));
         }
         catch
@@ -61,7 +63,7 @@ public sealed class HangfireJobStatusService : IBackgroundJobStatusService
                 0,
                 0,
                 0,
-                DateTimeOffset.UtcNow,
+                _timeProvider.GetUtcNow(),
                 "后台任务状态不可用。"));
         }
     }

@@ -88,7 +88,7 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
             _db.DaemonHeartbeats.Add(entity);
         }
 
-        ApplyPlannedOffline(request, entity);
+        ApplyPlannedOffline(request, entity, isNew);
 
         try
         {
@@ -108,7 +108,7 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
                 throw;
             }
 
-            ApplyPlannedOffline(request, entity);
+            ApplyPlannedOffline(request, entity, isNew: false);
             await _db.SaveChangesAsync(ct);
         }
 
@@ -159,11 +159,25 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
 
     private void ApplyPlannedOffline(
         PlannedOfflineRequest request,
-        DaemonHeartbeatEntity entity)
+        DaemonHeartbeatEntity entity,
+        bool isNew)
     {
         // planned_offline 只写 planned 标记，不刷新 received_at（received_at 语义 = 最近普通心跳）。
-        entity.PlannedOfflineAt = request.OccurredAt ?? _timeProvider.GetUtcNow();
+        // 客户端时钟可能早于服务端时钟：钳制 planned_at >= received_at，保证分类器不把正常下线误判为 stale。
+        var plannedAt = request.OccurredAt ?? _timeProvider.GetUtcNow();
+        if (!isNew && plannedAt < entity.ReceivedAt)
+        {
+            plannedAt = entity.ReceivedAt;
+        }
+
+        entity.PlannedOfflineAt = plannedAt;
         entity.OfflineReason = Truncate(request.Reason, 32);
+
+        // 新建行时用同一注入时钟统一 received_at/planned_offline_at，保证 planned_offline_at >= received_at 恒成立。
+        if (isNew)
+        {
+            entity.ReceivedAt = plannedAt;
+        }
     }
 
     private static string? Truncate(string? value, int maxLength)

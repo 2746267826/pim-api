@@ -14,8 +14,8 @@ public sealed record DaemonLifecycleState(
 /// <summary>共享静态分类器：按心跳新鲜度 + planned 标记判定守护程序生命周期状态。</summary>
 public static class DaemonLifecycleClassifier
 {
+    // degraded 区间用 OnlineDaemonAge/AbnormalDaemonAge 界定，无独立退化年龄常量。
     public static readonly TimeSpan OnlineDaemonAge = TimeSpan.FromMinutes(5);
-    public static readonly TimeSpan DegradedDaemonAge = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan AbnormalDaemonAge = TimeSpan.FromMinutes(15);
 
     public static DaemonLifecycleState Classify(DaemonHeartbeatEntity? heartbeat, DateTimeOffset checkedAt)

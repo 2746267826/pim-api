@@ -198,7 +198,22 @@ public class DaemonHeartbeatServiceTests
         var row = await db.DaemonHeartbeats.SingleAsync();
         Assert.Equal(FixedNow, row.PlannedOfflineAt);
         Assert.Equal("shutdown", row.OfflineReason);
-        Assert.NotEqual(FixedNow.AddMinutes(1), row.ReceivedAt); // received_at 不被刷新（保持初始/默认语义——断言它不等于 occurredAt+1 即可）
+        // 新建行时 received_at 与 planned_offline_at 同源（注入时钟），保证 planned_offline_at >= received_at 恒成立。
+        Assert.Equal(FixedNow, row.ReceivedAt);
+        Assert.Equal(row.PlannedOfflineAt, row.ReceivedAt);
+    }
+
+    [Fact]
+    public async Task RecordPlannedOfflineAsync_NewRow_ClassifiedAsPlannedOffline()
+    {
+        await using var db = CreateDb();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "shutdown", FixedNow), CancellationToken.None);
+        var row = await db.DaemonHeartbeats.SingleAsync();
+        var lifecycle = DaemonLifecycleClassifier.Classify(row, FixedNow);
+        Assert.Equal("planned-offline", lifecycle.State);
+        Assert.Equal(PimHealthStatus.Healthy, lifecycle.Status);
     }
 
     [Fact]
@@ -214,6 +229,23 @@ public class DaemonHeartbeatServiceTests
         Assert.Equal(FixedNow, existing.PlannedOfflineAt);
         Assert.Equal("suspend", existing.OfflineReason);
         Assert.Equal(FixedNow.AddMinutes(-30), existing.ReceivedAt);
+    }
+
+    [Fact]
+    public async Task RecordPlannedOfflineAsync_ClampsClientClockBeforeServerReceivedAt()
+    {
+        // 客户端时钟早于服务端最近心跳：planned_at 钳制到 received_at，避免分类器判 stale。
+        await using var db = CreateDb();
+        var existing = new DaemonHeartbeatEntity { DeviceId = "PC-1", DaemonKind = "windows", ReceivedAt = FixedNow };
+        db.DaemonHeartbeats.Add(existing);
+        await db.SaveChangesAsync();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "shutdown", FixedNow.AddMinutes(-5)), CancellationToken.None);
+        Assert.Equal(FixedNow, existing.PlannedOfflineAt);
+        Assert.Equal(FixedNow, existing.ReceivedAt);
+        var lifecycle = DaemonLifecycleClassifier.Classify(existing, FixedNow);
+        Assert.Equal("planned-offline", lifecycle.State);
     }
 
     [Fact]

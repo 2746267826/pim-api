@@ -233,7 +233,7 @@ public class PcTrackerQualityServiceTests
         Assert.DoesNotContain(result.Issues, i => i.Code == "stale-windows-daemon-heartbeat");
         Assert.DoesNotContain(result.Issues, i => i.Code == "old-daemon-heartbeat");
         var issue = Assert.Single(result.Issues, i => i.Code == "daemon-planned-offline");
-        Assert.Equal(PimHealthStatus.Warning, issue.Severity);
+        Assert.Equal(PimHealthStatus.Unknown, issue.Severity);
         Assert.Equal("守护程序已正常下线（关机/休眠）。", issue.Message);
         var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
         Assert.Contains("daemonState", daemon.Details.Keys);

@@ -331,7 +331,7 @@ public sealed class PcTrackerQualityService
         {
             componentIssues.Add(new PcQualityIssueDto(
                 "daemon-planned-offline",
-                PimHealthStatus.Warning,
+                PimHealthStatus.Unknown,
                 "daemon-upload",
                 "守护程序已正常下线（关机/休眠）。",
                 "Windows 守护程序将在下次开机后自动恢复。"));

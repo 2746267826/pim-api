@@ -88,6 +88,16 @@ public class DaemonLifecycleClassifierTests
     }
 
     [Fact]
+    public void Classify_PlannedAtEqualsReceivedAt_PlannedOffline()
+    {
+        // planned_at == received_at（钳制结果）→ 相等成立 → planned-offline
+        var heartbeat = Heartbeat(receivedAt: FixedNow.AddHours(-3), plannedAt: FixedNow.AddHours(-3), reason: "shutdown");
+        var result = DaemonLifecycleClassifier.Classify(heartbeat, FixedNow);
+        Assert.Equal("planned-offline", result.State);
+        Assert.Equal(PimHealthStatus.Healthy, result.Status);
+    }
+
+    [Fact]
     public void Classify_NullHeartbeat_NeverConnected()
     {
         var result = DaemonLifecycleClassifier.Classify(null, FixedNow);
