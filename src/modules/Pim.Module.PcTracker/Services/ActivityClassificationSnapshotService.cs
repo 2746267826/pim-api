@@ -95,7 +95,8 @@ public class ActivityClassificationSnapshotService
     /// <summary>
     /// 并发防护：后台定时补齐与页面触发的 ensure 可能同时插入同一 record_key，
     /// PG 唯一索引会让后提交方抛 DbUpdateException。此处重查该批 keys、剔除他方已写入的
-    /// 重复实体（含未保存的 Add 跟踪项）后重试一次；再失败则抛原始异常。
+    /// 重复实体后重试一次；仅当确实存在重复键时才重试（其他更新异常原样抛出），
+    /// 重试再失败抛原始异常。
     /// </summary>
     private async Task SaveWithUniqueKeyRetryAsync(List<string> keys, CancellationToken ct)
     {
@@ -103,8 +104,12 @@ public class ActivityClassificationSnapshotService
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException original)
         {
+            var tracked = _db.ChangeTracker.Entries<ActivityClassificationEntity>()
+                .Where(entry => entry.State == EntityState.Added)
+                .ToList();
+
             var existingKeys = new HashSet<string>(
                 await _db.Set<ActivityClassificationEntity>()
                     .Where(entity => keys.Contains(entity.RecordKey))
@@ -112,16 +117,23 @@ public class ActivityClassificationSnapshotService
                     .ToListAsync(ct),
                 StringComparer.Ordinal);
 
-            var tracked = _db.ChangeTracker.Entries<ActivityClassificationEntity>()
-                .Where(entry => entry.State == EntityState.Added)
+            var duplicates = tracked
+                .Where(entry => existingKeys.Contains(entry.Entity.RecordKey))
                 .ToList();
-            foreach (var entry in tracked)
-            {
-                if (existingKeys.Contains(entry.Entity.RecordKey))
-                    entry.State = EntityState.Detached;
-            }
+            if (duplicates.Count == 0)
+                throw;
 
-            await _db.SaveChangesAsync(ct);
+            foreach (var entry in duplicates)
+                entry.State = EntityState.Detached;
+
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch
+            {
+                throw original;
+            }
         }
     }
 
