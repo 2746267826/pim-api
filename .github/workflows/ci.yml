@@ -21,6 +21,7 @@ on:
 permissions:
   contents: read
   packages: write
+  pull-requests: read
 
 jobs:
   resolve-version:
@@ -49,6 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       all: ${{ steps.flags.outputs.all }}
       api: ${{ steps.flags.outputs.api }}
