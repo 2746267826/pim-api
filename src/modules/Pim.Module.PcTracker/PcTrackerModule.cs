@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Pim.Core.Common;
 using Pim.Core.Caching;
 using Pim.Core.Modules;
+using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Services;
@@ -32,6 +33,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<ActivityTimelineSmoothingService>();
         services.AddScoped<ActivityClassificationRuleService>();
         services.AddScoped<ClassificationRuleDraftService>();
+        services.AddScoped<ActivityLabelingService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
         services.AddScoped<AppSignatureService>();
         services.AddScoped<AppKnowledgeContextService>();
@@ -300,6 +302,34 @@ public class PcTrackerModule : IModule
         {
             var settings = await settingsService.GetSettingsAsync(ct);
             return Results.Ok(ApiResponse<ActivityClassificationSettingsDto>.Ok(settings));
+        });
+
+        readGroup.MapGet("/classification/queue", async (
+            [FromQuery] int limit,
+            [FromQuery] string? mode,
+            [FromServices] ActivityLabelingService svc,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var result = await svc.BuildQueueAsync(limit, currentUser.UserId, mode ?? "queue", ct);
+            return Results.Ok(ApiResponse<ActivityLabelingQueueResponse>.Ok(result));
+        });
+
+        writeGroup.MapPost("/classification/label", async (
+            [FromBody] ActivityLabelingRequest req,
+            [FromServices] ActivityLabelingService svc,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var result = await svc.LabelAsync(req, currentUser.UserId, ct);
+                return Results.Ok(ApiResponse<ActivityLabelingResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
         });
 
         readGroup.MapGet("/activity-analysis", async (
@@ -755,6 +785,14 @@ public class PcTrackerModule : IModule
         {
             var tree = await svc.GetTreeAsync(ct);
             return Results.Ok(ApiResponse<List<CategoryTreeNode>>.Ok(tree));
+        });
+
+        catRead.MapGet("/dictionary", async (
+            [FromServices] PcCategoryService svc,
+            CancellationToken ct) =>
+        {
+            var list = await svc.GetDictionaryAsync(ct);
+            return Results.Ok(ApiResponse<List<CategoryDictionaryItemDto>>.Ok(list));
         });
 
         catWrite.MapPost("/", async (

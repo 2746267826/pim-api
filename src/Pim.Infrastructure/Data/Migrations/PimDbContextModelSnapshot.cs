@@ -4580,6 +4580,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("category_name");
 
+                    b.Property<Guid?>("CategoryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("category_id");
+
                     b.Property<string>("Color")
                         .IsRequired()
                         .HasMaxLength(7)
@@ -6239,6 +6243,14 @@ namespace Pim.Infrastructure.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("FileItem");
+                });
+
+            modelBuilder.Entity("Pim.Module.PcTracker.Entities.ActivityCategoryRuleEntity", b =>
+                {
+                    b.HasOne("Pim.Module.PcTracker.Entities.PcCategoryEntity", null)
+                        .WithMany()
+                        .HasForeignKey("CategoryId")
+                        .OnDelete(DeleteBehavior.SetNull);
                 });
 
             modelBuilder.Entity("Pim.Module.PcTracker.Entities.AppKnowledgeContextEntity", b =>

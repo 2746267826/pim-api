@@ -25,26 +25,18 @@ public sealed class MobileAnalyticsContractTests
 
         string[] expectedCategories =
         [
-            "社交通讯",
-            "短视频/娱乐",
-            "游戏",
-            "音乐/音频",
-            "阅读/资讯",
+            "编程/折腾",
             "学习",
-            "工作/生产力",
-            "工具/系统",
-            "浏览器/搜索",
-            "出行/地图",
-            "购物/外卖",
-            "金融/支付",
-            "健康/运动",
-            "相机/创作",
-            "生活服务",
-            "未分类"
+            "视频",
+            "聊天",
+            "文档",
+            "游戏",
+            "其他"
         ];
 
         Assert.Equal(expectedCategories, MobileLifeCategories.All);
         Assert.Equal(MobileLifeCategories.All, MobileAnalyticsDefaults.LifeCategories);
+        Assert.Equal(7, MobileLifeCategories.All.Length);
     }
 
     [Fact]
@@ -55,14 +47,14 @@ public sealed class MobileAnalyticsContractTests
             UserId = MobileTestHelpers.UserId,
             PackageName = "com.tencent.mobileqq",
             DisplayNameOverride = "QQ",
-            LifeCategory = MobileLifeCategories.Social,
+            LifeCategory = MobileLifeCategories.Chat,
             IsSystemNoise = false,
             HideShortEvents = false
         };
 
         Assert.Equal("com.tencent.mobileqq", entity.PackageName);
         Assert.Equal("QQ", entity.DisplayNameOverride);
-        Assert.Equal("社交通讯", entity.LifeCategory);
+        Assert.Equal("聊天", entity.LifeCategory);
     }
 
     [Fact]
@@ -96,7 +88,7 @@ public sealed class MobileAnalyticsContractTests
                 []),
             new MobileGoalProgressDto("total-daily", "每日手机总时长", 14400, 3600, false, 10800),
             [new MobileAnomalyDto("night-use", "Warning", "夜间使用偏高", "22:00 后使用增加", "heatmap:night")],
-            [new MobileSuggestionDto("short-video-night", "短视频/娱乐集中在 22:00 后", "category:短视频/娱乐")]);
+            [new MobileSuggestionDto("short-video-night", "视频集中在 22:00 后", "category:视频")]);
 
         var json = JsonSerializer.Serialize(response, JsonOptions);
 
@@ -104,7 +96,7 @@ public sealed class MobileAnalyticsContractTests
         Assert.Contains("\"goalProgress\"", json);
         Assert.Contains("每日手机总时长", json);
         Assert.Contains("夜间使用偏高", json);
-        Assert.Contains("短视频/娱乐集中在 22:00 后", json);
+        Assert.Contains("视频集中在 22:00 后", json);
     }
 
     [Fact]

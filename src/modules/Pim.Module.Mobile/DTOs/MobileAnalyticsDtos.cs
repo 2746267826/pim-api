@@ -10,43 +10,32 @@ public static class MobileAnalyticsDefaults
     public static IReadOnlyList<string> LifeCategories => MobileLifeCategories.All;
 }
 
+/// <summary>手机端生活分类与 PC 侧统一字典对齐（7 大类）。ToolsSystem 仅用于系统噪音，不进用户可选列表。</summary>
 public static class MobileLifeCategories
 {
-    public const string Social = "社交通讯";
-    public const string ShortVideoEntertainment = "短视频/娱乐";
-    public const string Game = "游戏";
-    public const string MusicAudio = "音乐/音频";
-    public const string ReadingNews = "阅读/资讯";
+    public const string ProgrammingTinkering = "编程/折腾";
     public const string Learning = "学习";
-    public const string WorkProductivity = "工作/生产力";
+    public const string Video = "视频";
+    public const string Chat = "聊天";
+    public const string Documents = "文档";
+    public const string Game = "游戏";
+    public const string Other = "其他";
+
+    /// <summary>系统噪音专用（保留），不进入用户可选分类。</summary>
     public const string ToolsSystem = "工具/系统";
-    public const string BrowserSearch = "浏览器/搜索";
-    public const string TravelMaps = "出行/地图";
-    public const string ShoppingFood = "购物/外卖";
-    public const string FinancePayment = "金融/支付";
-    public const string HealthFitness = "健康/运动";
-    public const string CameraCreation = "相机/创作";
-    public const string LifeServices = "生活服务";
-    public const string Uncategorized = "未分类";
+
+    /// <summary>未分类语义对齐「其他」（默认兜底值）。</summary>
+    public const string Uncategorized = Other;
 
     public static readonly string[] All =
     [
-        Social,
-        ShortVideoEntertainment,
-        Game,
-        MusicAudio,
-        ReadingNews,
+        ProgrammingTinkering,
         Learning,
-        WorkProductivity,
-        ToolsSystem,
-        BrowserSearch,
-        TravelMaps,
-        ShoppingFood,
-        FinancePayment,
-        HealthFitness,
-        CameraCreation,
-        LifeServices,
-        Uncategorized
+        Video,
+        Chat,
+        Documents,
+        Game,
+        Other
     ];
 }
 

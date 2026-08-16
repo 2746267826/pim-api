@@ -101,7 +101,7 @@ public class ActivityClassifierTests
 
         var result = ActivityClassifier.Classify(context, []);
 
-        Assert.Equal("编程", result.CategoryName);
+        Assert.Equal("编程/折腾", result.CategoryName);
         Assert.Equal("#6B5EE4", result.CategoryColor);
         Assert.Equal("projectGPT", result.ProjectTag);
         Assert.Equal("heuristic", result.Source);
@@ -181,7 +181,7 @@ public class ActivityClassifierTests
     }
 
     [Fact]
-    public void Classify_TerminalAppBecomesTerminal()
+    public void Classify_TerminalAppBecomesUnifiedProgramming()
     {
         var context = CreateContext(
             RecordType: "window",
@@ -191,8 +191,8 @@ public class ActivityClassifierTests
 
         var result = ActivityClassifier.Classify(context, []);
 
-        Assert.Equal("终端", result.CategoryName);
-        Assert.Equal("#E05A7A", result.CategoryColor);
+        Assert.Equal("编程/折腾", result.CategoryName);
+        Assert.Equal("#6B5EE4", result.CategoryColor);
         Assert.Equal("heuristic", result.Source);
     }
 
@@ -207,7 +207,7 @@ public class ActivityClassifierTests
 
         var result = ActivityClassifier.Classify(context, []);
 
-        Assert.Equal("办公", result.CategoryName);
+        Assert.Equal("文档", result.CategoryName);
         Assert.Equal("#F59E0B", result.CategoryColor);
         Assert.Equal("heuristic", result.Source);
     }
@@ -223,8 +223,8 @@ public class ActivityClassifierTests
 
         var result = ActivityClassifier.Classify(context, []);
 
-        Assert.Equal("文件", result.CategoryName);
-        Assert.Equal("#3B82F6", result.CategoryColor);
+        Assert.Equal("文档", result.CategoryName);
+        Assert.Equal("#F59E0B", result.CategoryColor);
         Assert.Equal("heuristic", result.Source);
     }
 
@@ -393,6 +393,39 @@ public class ActivityClassifierTests
         Assert.Equal("#14b8a6", result.CategoryColor);
         Assert.Equal("heuristic", result.Source);
         Assert.Null(result.ProjectTag);
+    }
+
+    [Fact]
+    public void Classify_HeuristicTerminal_ReturnsUnifiedProgramming()
+    {
+        var context = CreateContext(AppNameNormalized: "windowsterminal");
+        var result = ActivityClassifier.Classify(context, Array.Empty<ActivityCategoryRuleEntity>());
+        Assert.Equal("编程/折腾", result.CategoryName);
+    }
+
+    [Fact]
+    public void Classify_HeuristicVideoDomain_ReturnsVideo()
+    {
+        var context = CreateContext(AppNameNormalized: "msedge", Domain: "www.bilibili.com", UrlPath: "/video/BV1xx");
+        var result = ActivityClassifier.Classify(context, Array.Empty<ActivityCategoryRuleEntity>());
+        Assert.Equal("视频", result.CategoryName);
+    }
+
+    [Fact]
+    public void Classify_HeuristicDocsDomain_ReturnsLearning()
+    {
+        var context = CreateContext(Domain: "docs.python.org", Title: "Documentation");
+        var result = ActivityClassifier.Classify(context, Array.Empty<ActivityCategoryRuleEntity>());
+        Assert.Equal("学习", result.CategoryName);
+    }
+
+    [Fact]
+    public void Classify_NoSignal_ReturnsFallbackOther()
+    {
+        var context = CreateContext(AppNameNormalized: "mobaxterm");
+        var result = ActivityClassifier.Classify(context, Array.Empty<ActivityCategoryRuleEntity>());
+        Assert.Equal("其他", result.CategoryName);
+        Assert.Equal("fallback", result.Source);
     }
 
     private static ActivityClassificationContext CreateContext(

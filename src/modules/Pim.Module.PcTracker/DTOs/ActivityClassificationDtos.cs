@@ -18,6 +18,7 @@ public record ActivityClassificationRuleDto(
     string RuleName,
     string Scope,
     string? CategoryName,
+    Guid? CategoryId,
     string? ProjectTag,
     string Color,
     int Priority,

@@ -10,6 +10,7 @@ public class ActivityCategoryRuleEntity
     [Column("rule_name")][MaxLength(128)] public string RuleName { get; set; } = string.Empty;
     [Column("scope")][MaxLength(16)] public string Scope { get; set; } = "activity";
     [Column("category_name")][MaxLength(64)] public string? CategoryName { get; set; }
+    [Column("category_id")] public Guid? CategoryId { get; set; }
     [Column("project_tag")][MaxLength(128)] public string? ProjectTag { get; set; }
     [Column("color")][MaxLength(7)] public string Color { get; set; } = "#64748b";
     [Column("priority")] public int Priority { get; set; }
