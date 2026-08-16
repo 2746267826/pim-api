@@ -806,6 +806,82 @@ public class PcTrackerModule : IModule
             }
         });
 
+        readGroup.MapGet("/aggregation/app-usage", async (
+            [FromQuery] string? date,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromQuery] string? timezone,
+            [FromQuery] int? limit,
+            [FromServices] PcActivityAggregationService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request,
+                        overrides:
+                        [
+                            new("date", date ?? string.Empty),
+                            new("start", start ?? string.Empty),
+                            new("end", end ?? string.Empty),
+                            new("timezone", timezone ?? string.Empty),
+                            new("limit", limit?.ToString(CultureInfo.InvariantCulture) ?? string.Empty),
+                        ]),
+                    force,
+                    () => svc.GetAppUsageAsync(new PcAggregationQuery(date, start, end, timezone), limit, ct),
+                    ct);
+                return Results.Ok(ApiResponse<PcAppUsageResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        readGroup.MapGet("/aggregation/late-night", async (
+            [FromQuery] string? date,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromQuery] string? timezone,
+            [FromServices] PcActivityAggregationService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request,
+                        overrides:
+                        [
+                            new("date", date ?? string.Empty),
+                            new("start", start ?? string.Empty),
+                            new("end", end ?? string.Empty),
+                            new("timezone", timezone ?? string.Empty),
+                        ]),
+                    force,
+                    () => svc.GetLateNightAsync(new PcAggregationQuery(date, start, end, timezone), ct),
+                    ct);
+                return Results.Ok(ApiResponse<PcLateNightResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
         // === Phase 2: 分类树 ===
         var catRead = endpoints.MapGroup("/api/v1/pc/categories").AllowAnonymous();
         var catWrite = endpoints.MapGroup("/api/v1/pc/categories").RequireAuthorization();

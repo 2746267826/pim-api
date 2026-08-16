@@ -86,6 +86,79 @@ public sealed class PcActivityAggregationService
         return new PcFocusBlocksResponse(items);
     }
 
+    // === 应用时长 Top ===
+
+    public async Task<PcAppUsageResponse> GetAppUsageAsync(PcAggregationQuery query, int? limit, CancellationToken ct)
+    {
+        var window = ResolveWindow(query);
+        var clampedLimit = Math.Clamp(limit.GetValueOrDefault(DefaultAppUsageLimit), 1, MaxAppUsageLimit);
+        var events = await _db.Set<AwEventEntity>()
+            .Where(e => e.EventType == "window"
+                && (e.AfkStatus == null || e.AfkStatus != "afk")
+                && e.Timestamp >= window.StartUtc
+                && e.Timestamp < window.EndUtc)
+            .ToListAsync(ct);
+
+        var groups = events
+            .GroupBy(NormalizeApp, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new { App = g.Key, Seconds = g.Sum(e => Math.Min(e.Duration, MaxEventDurationSeconds)) })
+            .Where(x => x.Seconds >= MinAppDurationSeconds)
+            .OrderByDescending(x => x.Seconds)
+            .ThenBy(x => x.App, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var totalMinutes = (int)Math.Round(
+            events.Sum(e => Math.Min(e.Duration, MaxEventDurationSeconds)) / 60.0);
+
+        var displayNames = await ResolveDisplayNamesAsync(
+            groups.Select(g => g.App).ToList(), ct);
+
+        var items = groups
+            .Take(clampedLimit)
+            .Select(g =>
+            {
+                var minutes = (int)Math.Round(g.Seconds / 60.0);
+                var percentage = totalMinutes > 0 ? Math.Round(minutes * 100.0 / totalMinutes, 1) : 0;
+                return new PcAppUsageItem(g.App, displayNames.GetValueOrDefault(g.App), minutes, percentage);
+            })
+            .ToList();
+
+        return new PcAppUsageResponse(items, totalMinutes);
+    }
+
+    // === 深夜使用 ===
+
+    public async Task<PcLateNightResponse> GetLateNightAsync(PcAggregationQuery query, CancellationToken ct)
+    {
+        var window = ResolveWindow(query);
+        var events = await _db.Set<AwEventEntity>()
+            .Where(e => e.EventType == "window"
+                && (e.AfkStatus == null || e.AfkStatus != "afk")
+                && e.Timestamp >= window.StartUtc
+                && e.Timestamp < window.EndUtc)
+            .ToListAsync(ct);
+
+        var items = new List<PcLateNightDayItem>();
+        for (var day = window.StartLocalDate; day <= window.EndLocalDate; day = day.AddDays(1))
+        {
+            var dayStartUtc = ToUtc(day, BusinessDayStartHour, 0, window.TimeZone);
+            var dayEndUtc = ToUtc(day.AddDays(1), BusinessDayStartHour, 0, window.TimeZone);
+            var lateStartUtc = ToUtc(day, LateNightStartHour, LateNightStartMinute, window.TimeZone);
+
+            var dayEvents = events.Where(e => e.Timestamp >= dayStartUtc && e.Timestamp < dayEndUtc).ToList();
+            var minutes = (int)Math.Round(
+                dayEvents.Where(e => e.Timestamp >= lateStartUtc)
+                    .Sum(e => Math.Min(e.Duration, MaxEventDurationSeconds)) / 60.0);
+
+            items.Add(new PcLateNightDayItem(
+                day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                minutes,
+                dayEvents.Count > 0));
+        }
+
+        return new PcLateNightResponse(items);
+    }
+
     // === 共享 ===
 
     /// <summary>解析查询窗口：date 单日 → 单业务日；start&end → [start 04:00, end+1 04:00) 本地。

@@ -161,4 +161,142 @@ public class PcActivityAggregationServiceTests
 
         Assert.Empty(result.Items);
     }
+
+    // === 任务 2：应用时长 Top + 深夜使用 ===
+
+    [Fact]
+    public async Task GetAppUsageAsync_SumsCappedDurationAndRanks()
+    {
+        await using var db = CreateDb();
+        // Code.exe：7200 封顶 3600 + 300 + 300 = 4200s；Edge.exe：1800s；总 6000s = 100min
+        db.Set<AwEventEntity>().AddRange(
+            Win("2026-07-10T01:00:00Z", 7200, "Code.exe"),
+            Win("2026-07-10T02:00:00Z", 300, "Code.exe"),
+            Win("2026-07-10T03:00:00Z", 300, "Code.exe"),
+            Win("2026-07-10T01:30:00Z", 1800, "Edge.exe"));
+        await db.SaveChangesAsync();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetAppUsageAsync(DayQuery("2026-07-10"), null, CancellationToken.None);
+
+        Assert.Equal(2, result.Items.Count);
+        Assert.Equal("code", result.Items[0].AppName); // .exe 原值归一合并
+        Assert.Null(result.Items[0].DisplayName);      // 无签名 → null
+        Assert.Equal(70, result.Items[0].TotalMinutes);
+        Assert.Equal(70.0, result.Items[0].Percentage, 1);
+        Assert.Equal("edge", result.Items[1].AppName);
+        Assert.Equal(30, result.Items[1].TotalMinutes);
+        Assert.Equal(30.0, result.Items[1].Percentage, 1);
+        Assert.Equal(100, result.TotalMinutes);
+        Assert.True(result.Items.Sum(i => i.Percentage) >= 99); // 未取整和 ≈ 100
+    }
+
+    [Fact]
+    public async Task GetAppUsageAsync_ExcludesAfkAndWebEvents()
+    {
+        await using var db = CreateDb();
+        db.Set<AwEventEntity>().AddRange(
+            Win("2026-07-10T01:00:00Z", 600, "Code"),
+            Win("2026-07-10T02:00:00Z", 600, "Code", afk: "afk"),
+            new AwEventEntity
+            {
+                Id = Random.Shared.NextInt64(1, long.MaxValue),
+                DeviceId = "d1",
+                Timestamp = DateTimeOffset.Parse("2026-07-10T03:00:00Z"),
+                Duration = 1200,
+                EventType = "web",
+                AppName = "Code",
+                AppNameNormalized = AppNameNormalizer.Normalize("Code"),
+                WindowTitle = "t",
+                AfkStatus = "not-afk",
+                DataJson = "{}",
+                CreatedAt = DateTimeOffset.Parse("2026-07-10T03:00:00Z"),
+                UpdatedAt = DateTimeOffset.Parse("2026-07-10T03:00:00Z")
+            });
+        await db.SaveChangesAsync();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetAppUsageAsync(DayQuery("2026-07-10"), null, CancellationToken.None);
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal(10, item.TotalMinutes); // 仅非 afk window 的 600s
+        Assert.Equal(10, result.TotalMinutes);
+    }
+
+    [Fact]
+    public async Task GetAppUsageAsync_FiltersSubMinuteApps()
+    {
+        await using var db = CreateDb();
+        db.Set<AwEventEntity>().AddRange(
+            Win("2026-07-10T01:00:00Z", 30, "Code"),
+            Win("2026-07-10T01:30:00Z", 500, "Edge"));
+        await db.SaveChangesAsync();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetAppUsageAsync(DayQuery("2026-07-10"), null, CancellationToken.None);
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("edge", item.AppName);
+        Assert.Equal(8, item.TotalMinutes);
+        Assert.Equal(9, result.TotalMinutes); // 30s 噪声不计入排行，但计入总时长
+    }
+
+    [Fact]
+    public async Task GetAppUsageAsync_RespectsLimit()
+    {
+        await using var db = CreateDb();
+        db.Set<AwEventEntity>().AddRange(
+            Win("2026-07-10T01:00:00Z", 3600, "Code"),
+            Win("2026-07-10T02:00:00Z", 600, "Code"),
+            Win("2026-07-10T01:30:00Z", 1800, "Edge"),
+            Win("2026-07-10T03:00:00Z", 600, "Chrome"));
+        await db.SaveChangesAsync();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetAppUsageAsync(DayQuery("2026-07-10"), 2, CancellationToken.None);
+
+        Assert.Equal(2, result.Items.Count);
+        Assert.Equal("code", result.Items[0].AppName);
+        Assert.Equal("edge", result.Items[1].AppName);
+        Assert.Equal(110, result.TotalMinutes); // totalMinutes 仍是全量
+    }
+
+    [Fact]
+    public async Task GetLateNightAsync_SumsMinutesInLateWindow()
+    {
+        await using var db = CreateDb();
+        // 业务日 2026-07-10（Asia/Shanghai）：
+        //   23:00 本地(=15:00Z) 不算深夜；23:45 本地(=15:45Z) 算；次日 02:00 本地(=18:00Z) 算归 D；
+        //   次日 05:00 本地(=21:00Z) 已出 D 业务日窗口，不算
+        db.Set<AwEventEntity>().AddRange(
+            Win("2026-07-10T15:00:00Z", 300, "Code"),
+            Win("2026-07-10T15:45:00Z", 1200, "Code"),
+            Win("2026-07-10T18:00:00Z", 1800, "Edge"),
+            Win("2026-07-10T21:00:00Z", 900, "Chrome"));
+        await db.SaveChangesAsync();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetLateNightAsync(DayQuery("2026-07-10"), CancellationToken.None);
+
+        var day = Assert.Single(result.Items);
+        Assert.Equal("2026-07-10", day.Date);
+        Assert.Equal(50, day.Minutes); // (1200+1800)/60
+        Assert.True(day.HadActivity);
+        // 边界换算用 TimeZoneInfo，不用 ToLocalTime
+        Assert.Equal(new DateTime(2026, 7, 10, 23, 0, 0),
+            TimeZoneInfo.ConvertTime(DateTimeOffset.Parse("2026-07-10T15:00:00Z"), Tz).DateTime);
+    }
+
+    [Fact]
+    public async Task GetLateNightAsync_AllDaysWithNoEvents()
+    {
+        await using var db = CreateDb();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetLateNightAsync(DayQuery("2026-07-10"), CancellationToken.None);
+
+        var day = Assert.Single(result.Items);
+        Assert.Equal(0, day.Minutes);
+        Assert.False(day.HadActivity);
+    }
 }
