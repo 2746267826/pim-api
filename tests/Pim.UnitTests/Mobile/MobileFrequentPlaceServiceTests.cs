@@ -133,17 +133,193 @@ public sealed class MobileFrequentPlaceServiceTests
         Assert.Equal(2, unfiltered.Places.Count);
     }
 
+    [Fact]
+    public async Task MovementStats_CountsOutingWhenLeavingHomeBeyondRadius()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var id = 0;
+        SeedHome(db, ref id);
+        // 走到 300m 外（0.0027° ≈ 300.6m > 150m），03:00-03:30 每 5 分钟一点，再回家
+        SeedAway(db, ref id, "2026-07-08T03:00:00Z", 7);
+        SeedPoint(db, ref id, "2026-07-08T03:35:00Z", 31.230416, 121.473701, 12, "usable");
+        SeedPoint(db, ref id, "2026-07-08T03:40:00Z", 31.230416, 121.473701, 12, "usable");
+        await db.SaveChangesAsync();
+        var service = StatsService(db);
+
+        var stats = await service.GetMovementStatsAsync(Query(), CancellationToken.None);
+
+        Assert.NotNull(stats.HomeCenter);
+        Assert.Equal(1, stats.OutingCount);
+        Assert.Equal(1800, stats.OutingSeconds);
+        var outing = Assert.Single(stats.Outings);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-08T03:00:00Z"), outing.StartUtc);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-08T03:30:00Z"), outing.EndUtc);
+        Assert.Equal(1800, outing.Seconds);
+    }
+
+    [Fact]
+    public async Task ShortExcursionUnder10MinNotCounted()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var id = 0;
+        SeedHome(db, ref id);
+        SeedAway(db, ref id, "2026-07-08T03:00:00Z", 2); // 03:00-03:05，5 分钟
+        SeedPoint(db, ref id, "2026-07-08T03:10:00Z", 31.230416, 121.473701, 12, "usable");
+        await db.SaveChangesAsync();
+        var service = StatsService(db);
+
+        var stats = await service.GetMovementStatsAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(0, stats.OutingCount);
+        Assert.Equal(0, stats.OutingSeconds);
+        Assert.Empty(stats.Outings);
+    }
+
+    [Fact]
+    public async Task OutingGapUnder10MinMerged()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var id = 0;
+        SeedHome(db, ref id);
+        SeedAway(db, ref id, "2026-07-08T03:00:00Z", 5);      // 03:00-03:20
+        SeedPoint(db, ref id, "2026-07-08T03:24:00Z", 31.230416, 121.473701, 12, "usable"); // 回家 8 分钟
+        SeedAway(db, ref id, "2026-07-08T03:28:00Z", 5);      // 03:28-03:48，间隔 8 分钟 <= 10 分钟
+        await db.SaveChangesAsync();
+        var service = StatsService(db);
+
+        var stats = await service.GetMovementStatsAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(1, stats.OutingCount);
+        Assert.Equal(2880, stats.OutingSeconds);
+        var outing = Assert.Single(stats.Outings);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-08T03:00:00Z"), outing.StartUtc);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-08T03:48:00Z"), outing.EndUtc);
+    }
+
+    [Fact]
+    public async Task DistanceSumsMoveSegmentsOnly()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var id = 0;
+        SeedPoint(db, ref id, "2026-07-08T03:00:00Z", 31.230416, 121.473701, 12, "usable");
+        SeedPoint(db, ref id, "2026-07-08T03:05:00Z", 31.230866, 121.473701, 12, "usable"); // stay ~50m/300s
+        SeedPoint(db, ref id, "2026-07-08T03:10:00Z", 31.230416, 121.473701, 12, "usable");
+        SeedPoint(db, ref id, "2026-07-08T03:12:00Z", 31.234016, 121.473701, 12, "usable"); // move ~400m
+        SeedPoint(db, ref id, "2026-07-08T03:12:30Z", 31.280000, 121.473701, 12, "usable"); // jump
+        SeedPoint(db, ref id, "2026-07-08T03:14:00Z", 31.234016, 121.473701, 12, "usable");
+        SeedPoint(db, ref id, "2026-07-08T03:20:00Z", 31.234016, 121.473701, 12, "usable");
+        await db.SaveChangesAsync();
+        var service = StatsService(db);
+
+        var stats = await service.GetMovementStatsAsync(Query(), CancellationToken.None);
+
+        Assert.True(stats.DistanceMeters > 390 && stats.DistanceMeters < 410,
+            $"move 段距离应 ≈ 400m（jump 剔除、stay 不计），实际 {stats.DistanceMeters}");
+    }
+
+    [Fact]
+    public async Task SpeedPeakPrefersPointSpeedField()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var id = 0;
+        SeedHome(db, ref id);
+        SeedPoint(db, ref id, "2026-07-08T03:00:00Z", 31.230416, 121.473701, 12, "usable", speed: 4.2);
+        SeedPoint(db, ref id, "2026-07-08T03:02:00Z", 31.234016, 121.473701, 12, "usable", speed: 2.1); // 段速 ~3.34
+        await db.SaveChangesAsync();
+        var stats = await StatsService(db).GetMovementStatsAsync(Query(), CancellationToken.None);
+        Assert.Equal(4.2, stats.MaxSpeedMetersPerSecond);
+
+        // 全空时退化为段速
+        await using var db2 = MobileTestHelpers.CreateDb();
+        id = 0;
+        SeedPoint(db2, ref id, "2026-07-08T03:00:00Z", 31.230416, 121.473701, 12, "usable");
+        SeedPoint(db2, ref id, "2026-07-08T03:02:00Z", 31.234016, 121.473701, 12, "usable");
+        await db2.SaveChangesAsync();
+        var fallback = await StatsService(db2).GetMovementStatsAsync(Query(), CancellationToken.None);
+        Assert.NotNull(fallback.MaxSpeedMetersPerSecond);
+        Assert.True(fallback.MaxSpeedMetersPerSecond > 3.0 && fallback.MaxSpeedMetersPerSecond < 3.6,
+            $"段速 ≈ 3.34，实际 {fallback.MaxSpeedMetersPerSecond}");
+    }
+
+    [Fact]
+    public async Task NoHomeReturnsZeroOutings()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var id = 0;
+        SeedCluster(db, ref id, 31.230416, 121.473701, Jitter[0], 9, "2026-07-07T18:00:00Z");
+        await db.SaveChangesAsync();
+        var service = StatsService(db);
+
+        var stats = await service.GetMovementStatsAsync(Query(), CancellationToken.None);
+
+        Assert.Null(stats.HomeCenter);
+        Assert.Equal(0, stats.OutingCount);
+        Assert.Empty(stats.Outings);
+        Assert.True(stats.DistanceMeters >= 0);
+        Assert.True(stats.MaxSpeedMetersPerSecond is null || stats.MaxSpeedMetersPerSecond >= 0);
+    }
+
+    [Fact]
+    public async Task PerDaySplitsByLocalCalendarDay()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var id = 0;
+        SeedHome(db, ref id);
+        // 本地 07-08 的出门（11:00-11:30 local）
+        SeedAway(db, ref id, "2026-07-08T03:00:00Z", 7);
+        // 本地 07-09 的 move 段（04:00 local = 20:00Z 前一日）
+        SeedPoint(db, ref id, "2026-07-08T20:00:00Z", 31.230416, 121.473701, 12, "usable");
+        SeedPoint(db, ref id, "2026-07-08T20:02:00Z", 31.234016, 121.473701, 12, "usable");
+        await db.SaveChangesAsync();
+        var service = StatsService(db);
+
+        var stats = await service.GetMovementStatsAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(2, stats.PerDay.Count);
+        var day8 = stats.PerDay.Single(day => day.Date == "2026-07-08");
+        Assert.Equal(1, day8.OutingCount);
+        Assert.Equal(1800, day8.OutingSeconds);
+        Assert.Equal(0, day8.DistanceMeters);
+        var day9 = stats.PerDay.Single(day => day.Date == "2026-07-09");
+        Assert.Equal(0, day9.OutingCount);
+        Assert.True(day9.DistanceMeters > 390 && day9.DistanceMeters < 410);
+    }
+
     private static MobileLocationQueryRequest Query(string? deviceId = null) => new(
         RangeStartUtc: DateTimeOffset.Parse("2026-07-07T00:00:00Z"),
         RangeEndUtc: DateTimeOffset.Parse("2026-07-10T00:00:00Z"),
         Timezone: "Asia/Shanghai",
         DeviceId: deviceId);
 
+    private static void SeedHome(PimDbContext db, ref int id)
+        => SeedCluster(db, ref id, 31.230416, 121.473701, Jitter[0], 12, "2026-07-07T18:00:00Z");
+
+    private static void SeedAway(PimDbContext db, ref int id, string firstTimeUtc, int count)
+    {
+        for (var index = 0; index < count; index++)
+        {
+            var time = DateTimeOffset.Parse(firstTimeUtc).AddMinutes(5 * index);
+            SeedPoint(db, ref id, time.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"), 31.233116, 121.473701, 12, "usable");
+        }
+    }
+
     private static MobileFrequentPlaceService Service(PimDbContext db)
         => new(
             db,
             MobileTestHelpers.CurrentUser(),
             new MobileLocationQueryService(MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-10T00:00:00Z"))));
+
+    private static MobileMovementStatsService StatsService(PimDbContext db)
+        => new(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            new MobileLocationQueryService(MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-10T00:00:00Z"))),
+            new MobileLocationAggregationService(
+                db,
+                MobileTestHelpers.CurrentUser(),
+                new MobileLocationQueryService(MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-10T00:00:00Z"))),
+                MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-10T00:00:00Z"))),
+            Service(db));
 
     private static void SeedCluster(
         PimDbContext db,

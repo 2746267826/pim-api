@@ -33,6 +33,7 @@ public sealed class MobileModule : IModule
         services.AddScoped<MobileLocationQueryService>();
         services.AddScoped<MobileLocationAggregationService>();
         services.AddScoped<MobileFrequentPlaceService>();
+        services.AddScoped<MobileMovementStatsService>();
         services.AddScoped<MobileUsageQueryService>();
         services.AddScoped<MobileQualityService>();
         services.AddScoped<MobileAnalyticsQueryService>();
@@ -182,6 +183,19 @@ public sealed class MobileModule : IModule
                 AggregateResultCacheKeys.Build(httpContext.Request),
                 force,
                 () => service.GetFrequentPlacesAsync(query.ToRequest(), ct),
+                ct))));
+
+        group.MapGet("/location/analytics/movement-stats", async (
+            [AsParameters] MobileLocationEndpointQuery query,
+            [FromServices] MobileMovementStatsService service,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+            Results.Ok(ApiResponse<MobileMovementStatsResponse>.Ok(await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request),
+                force,
+                () => service.GetMovementStatsAsync(query.ToRequest(), ct),
                 ct))));
 
         group.MapGet("/location/analytics/segments/{segmentId}/points", async (
