@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Pim.Core.Caching;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -549,6 +550,7 @@ public class AppKnowledgeSuggestionServiceTests
     {
         var builder = WebApplication.CreateBuilder();
         builder.Services.AddAuthorization();
+        builder.Services.AddAggregateResultCaching();
         builder.Services.AddDbContext<PimDbContext>(options =>
             options.UseInMemoryDatabase(databaseName));
         builder.Services.AddScoped<ICurrentUserService>(_ =>
