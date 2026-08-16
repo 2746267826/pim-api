@@ -42,6 +42,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<PcProductivityService>();
         services.AddScoped<PcActivityRecordKeyService>();
         services.AddScoped<PcActivityAnalysisService>();
+        services.AddScoped<PcActivityAggregationService>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -765,6 +766,44 @@ public class PcTrackerModule : IModule
             return ok
                 ? Results.Ok(ApiResponse<string>.Ok("已删除"))
                 : Results.BadRequest(ApiResponse<string>.Error(400, "内置项不可删除或不存在"));
+        });
+
+        // === Phase 2: 服务端聚合（专注块 / 应用时长 / 深夜使用 / 分类分布）===
+        readGroup.MapGet("/aggregation/focus-blocks", async (
+            [FromQuery] string? date,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromQuery] string? timezone,
+            [FromServices] PcActivityAggregationService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request,
+                        overrides:
+                        [
+                            new("date", date ?? string.Empty),
+                            new("start", start ?? string.Empty),
+                            new("end", end ?? string.Empty),
+                            new("timezone", timezone ?? string.Empty),
+                        ]),
+                    force,
+                    () => svc.GetFocusBlocksAsync(new PcAggregationQuery(date, start, end, timezone), ct),
+                    ct);
+                return Results.Ok(ApiResponse<PcFocusBlocksResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
         });
 
         // === Phase 2: 分类树 ===
