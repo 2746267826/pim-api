@@ -4,12 +4,39 @@ using Pim.Core.Operations;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Operations;
+using Pim.UnitTests.Calendar;
 using Xunit;
 
 namespace Pim.UnitTests.Operations;
 
 public class DaemonHeartbeatServiceTests
 {
+    private static readonly DateTimeOffset FixedNow = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
+
+    private static PimDbContext CreateDb()
+    {
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        return new PimDbContext(options);
+    }
+
+    private static StubTimeProvider StubClock(DateTimeOffset now) => new() { UtcNowValue = now };
+
+    private static DaemonHeartbeatRequest HeartbeatRequest(string deviceId) => new(
+        deviceId,
+        "windows",
+        "1.0.0",
+        "http://127.0.0.1:5858",
+        null,
+        null,
+        null,
+        0,
+        DaemonSourceState.Available,
+        DaemonSourceState.Available,
+        false,
+        "{}");
+
     [Fact]
     public async Task UpsertAsync_ReplacesExistingDeviceHeartbeat()
     {
@@ -159,5 +186,51 @@ public class DaemonHeartbeatServiceTests
 
         Assert.Equal(DaemonSourceState.Available, latest!.ActivityWatchState);
         Assert.Equal(DaemonSourceState.Unknown, latest.KeyStatsState);
+    }
+
+    [Fact]
+    public async Task RecordPlannedOfflineAsync_CreatesRowWhenMissing()
+    {
+        await using var db = CreateDb();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        var result = await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "shutdown", FixedNow), CancellationToken.None);
+        var row = await db.DaemonHeartbeats.SingleAsync();
+        Assert.Equal(FixedNow, row.PlannedOfflineAt);
+        Assert.Equal("shutdown", row.OfflineReason);
+        Assert.NotEqual(FixedNow.AddMinutes(1), row.ReceivedAt); // received_at 不被刷新（保持初始/默认语义——断言它不等于 occurredAt+1 即可）
+    }
+
+    [Fact]
+    public async Task RecordPlannedOfflineAsync_UpdatesExistingRowWithoutTouchingReceivedAt()
+    {
+        await using var db = CreateDb();
+        var existing = new DaemonHeartbeatEntity { DeviceId = "PC-1", DaemonKind = "windows", ReceivedAt = FixedNow.AddMinutes(-30) };
+        db.DaemonHeartbeats.Add(existing);
+        await db.SaveChangesAsync();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        var result = await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "suspend", FixedNow), CancellationToken.None);
+        Assert.Equal(FixedNow, existing.PlannedOfflineAt);
+        Assert.Equal("suspend", existing.OfflineReason);
+        Assert.Equal(FixedNow.AddMinutes(-30), existing.ReceivedAt);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_ClearsPlannedOfflineOnRegularHeartbeat()
+    {
+        await using var db = CreateDb();
+        db.DaemonHeartbeats.Add(new DaemonHeartbeatEntity
+        {
+            DeviceId = "PC-1", DaemonKind = "windows",
+            PlannedOfflineAt = FixedNow.AddMinutes(-5), OfflineReason = "suspend",
+            ReceivedAt = FixedNow.AddMinutes(-10)
+        });
+        await db.SaveChangesAsync();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        await service.UpsertAsync(HeartbeatRequest("PC-1"), CancellationToken.None);
+        var row = await db.DaemonHeartbeats.SingleAsync();
+        Assert.Null(row.PlannedOfflineAt);
+        Assert.Null(row.OfflineReason);
     }
 }

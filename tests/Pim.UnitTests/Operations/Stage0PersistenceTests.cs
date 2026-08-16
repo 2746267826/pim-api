@@ -89,4 +89,33 @@ public class Stage0PersistenceTests
         Assert.Equal(1, await db.OperationConfirmations.CountAsync());
         Assert.Equal(1, await db.DaemonHeartbeats.CountAsync());
     }
+
+    [Fact]
+    public void ModelSnapshot_ContainsDaemonPlannedOfflineColumns()
+    {
+        var snapshot = File.ReadAllText(RepoPath(
+            "src", "Pim.Infrastructure", "Data", "Migrations", "PimDbContextModelSnapshot.cs"));
+
+        Assert.Contains("\"planned_offline_at\"", snapshot);
+        Assert.Contains("\"offline_reason\"", snapshot);
+        Assert.Contains("PlannedOfflineAt", snapshot);
+        Assert.Contains("OfflineReason", snapshot);
+    }
+
+    private static string RepoPath(params string[] parts)
+    {
+        var current = AppContext.BaseDirectory;
+        while (!string.IsNullOrWhiteSpace(current))
+        {
+            var candidate = Path.Combine(new[] { current }.Concat(parts).ToArray());
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            current = Directory.GetParent(current)?.FullName;
+        }
+
+        throw new FileNotFoundException($"Could not find repository file {Path.Combine(parts)}.");
+    }
 }
