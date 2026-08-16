@@ -299,4 +299,116 @@ public class PcActivityAggregationServiceTests
         Assert.Equal(0, day.Minutes);
         Assert.False(day.HadActivity);
     }
+
+    // === 任务 3：分类分布 ===
+
+    private static ActivityClassificationEntity Snap(string start, string end, string category, string? color = null) => new()
+    {
+        Id = Guid.NewGuid(),
+        RecordKey = Guid.NewGuid().ToString("N"),
+        DeviceId = "d1",
+        StartedAt = DateTimeOffset.Parse(start),
+        EndedAt = DateTimeOffset.Parse(end),
+        CategoryName = category,
+        CategoryColor = color ?? "#64748b",
+        RecordType = "window",
+        RecordKeyVersion = "pc-fallback-v1",
+        RecordKeyStability = "low",
+        SourceType = "fallback",
+        InterpretationVersion = "interpreted-aw-v1",
+        ProjectTag = null,
+        Confidence = 0.2,
+        Source = "fallback",
+        Explanation = string.Empty,
+        ClassifierVersion = "local-v1",
+        ClassifiedAt = DateTimeOffset.Parse(start)
+    };
+
+    [Fact]
+    public async Task GetCategoryDistributionAsync_SumsSnapshotDurations()
+    {
+        await using var db = CreateDb();
+        // 编程/折腾 30min + 学习 40min + 编程/折腾 30min → 60min 60% / 40min 40%
+        db.Set<ActivityClassificationEntity>().AddRange(
+            Snap("2026-07-10T01:00:00Z", "2026-07-10T01:30:00Z", "编程/折腾", "#6B5EE4"),
+            Snap("2026-07-10T01:30:00Z", "2026-07-10T02:10:00Z", "学习", "#14b8a6"),
+            Snap("2026-07-10T02:30:00Z", "2026-07-10T03:00:00Z", "编程/折腾", "#6B5EE4"));
+        await db.SaveChangesAsync();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetCategoryDistributionAsync(DayQuery("2026-07-10"), CancellationToken.None);
+
+        Assert.Equal(2, result.Items.Count);
+        Assert.Equal("编程/折腾", result.Items[0].CategoryName);
+        Assert.Equal(60, result.Items[0].Minutes);
+        Assert.Equal(60.0, result.Items[0].Percentage, 1);
+        Assert.Equal("学习", result.Items[1].CategoryName);
+        Assert.Equal(40, result.Items[1].Minutes);
+        Assert.Equal(40.0, result.Items[1].Percentage, 1);
+    }
+
+    [Fact]
+    public async Task GetCategoryDistributionAsync_FiltersByStartedAtWindow()
+    {
+        await using var db = CreateDb();
+        // 07-10T20:00Z 恰为业务日窗口终点（04:00 本地 07-11）→ 不计
+        db.Set<ActivityClassificationEntity>().AddRange(
+            Snap("2026-07-10T01:00:00Z", "2026-07-10T01:30:00Z", "编程/折腾", "#6B5EE4"),
+            Snap("2026-07-10T20:00:00Z", "2026-07-10T21:00:00Z", "学习", "#14b8a6"));
+        await db.SaveChangesAsync();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetCategoryDistributionAsync(DayQuery("2026-07-10"), CancellationToken.None);
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("编程/折腾", item.CategoryName);
+        Assert.Equal(30, item.Minutes);
+    }
+
+    [Fact]
+    public async Task GetCategoryDistributionAsync_CapsSingleSnapshotHour()
+    {
+        await using var db = CreateDb();
+        // Ended-Started = 2h → 只计 60min
+        db.Set<ActivityClassificationEntity>().Add(
+            Snap("2026-07-10T01:00:00Z", "2026-07-10T03:00:00Z", "编程/折腾", "#6B5EE4"));
+        await db.SaveChangesAsync();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetCategoryDistributionAsync(DayQuery("2026-07-10"), CancellationToken.None);
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal(60, item.Minutes);
+    }
+
+    [Fact]
+    public async Task GetCategoryDistributionAsync_EmptyReturnsEmptyItems()
+    {
+        await using var db = CreateDb();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetCategoryDistributionAsync(DayQuery("2026-07-10"), CancellationToken.None);
+
+        Assert.Empty(result.Items);
+    }
+
+    [Fact]
+    public async Task GetCategoryDistributionAsync_FallsBackColor()
+    {
+        await using var db = CreateDb();
+        // 编程/折腾 空色 → UnifiedColors #6B5EE4；未知分类空色 → #64748b；有效色直接使用
+        db.Set<ActivityClassificationEntity>().AddRange(
+            Snap("2026-07-10T01:00:00Z", "2026-07-10T01:30:00Z", "编程/折腾", ""),
+            Snap("2026-07-10T02:00:00Z", "2026-07-10T02:20:00Z", "神秘分类", ""),
+            Snap("2026-07-10T03:00:00Z", "2026-07-10T03:10:00Z", "学习", "#123456"));
+        await db.SaveChangesAsync();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetCategoryDistributionAsync(DayQuery("2026-07-10"), CancellationToken.None);
+
+        Assert.Equal(3, result.Items.Count);
+        Assert.Equal("#6B5EE4", result.Items[0].Color); // 编程/折腾 → UnifiedColors 兜底
+        Assert.Equal("#64748b", result.Items[1].Color); // 未知分类 → 默认灰
+        Assert.Equal("#123456", result.Items[2].Color); // 有效快照色直接使用
+    }
 }

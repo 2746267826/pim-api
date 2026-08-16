@@ -159,6 +159,55 @@ public sealed class PcActivityAggregationService
         return new PcLateNightResponse(items);
     }
 
+    // === 分类分布 ===
+
+    public async Task<PcCategoryDistributionResponse> GetCategoryDistributionAsync(PcAggregationQuery query, CancellationToken ct)
+    {
+        var window = ResolveWindow(query);
+        var snapshots = await _db.Set<ActivityClassificationEntity>()
+            .Where(s => s.StartedAt >= window.StartUtc && s.StartedAt < window.EndUtc)
+            .ToListAsync(ct);
+
+        var groups = snapshots
+            .GroupBy(s => s.CategoryName, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new
+            {
+                Category = g.Key,
+                Seconds = g.Sum(s => Math.Min(Math.Max(0, (s.EndedAt - s.StartedAt).TotalSeconds), MaxEventDurationSeconds)),
+                Color = ResolveCategoryColor(g.Key, g.Select(s => s.CategoryColor))
+            })
+            .OrderByDescending(x => x.Seconds)
+            .ThenBy(x => x.Category, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var totalSeconds = groups.Sum(g => g.Seconds);
+        var totalMinutes = (int)Math.Round(totalSeconds / 60.0);
+        var items = groups
+            .Select(g =>
+            {
+                var minutes = (int)Math.Round(g.Seconds / 60.0);
+                var percentage = totalMinutes > 0 ? Math.Round(minutes * 100.0 / totalMinutes, 1) : 0;
+                return new PcCategoryDistributionItem(g.Category, g.Color, minutes, percentage);
+            })
+            .ToList();
+
+        return new PcCategoryDistributionResponse(items);
+    }
+
+    /// <summary>分类颜色兜底：快照 CategoryColor 合法（非空、以 # 开头、长度 7）→ 用之；
+    /// 否则 CategoryLegacyMapper.UnifiedColors 按分类名取；再兜底 #64748b。</summary>
+    private static string ResolveCategoryColor(string categoryName, IEnumerable<string?> snapshotColors)
+    {
+        foreach (var color in snapshotColors)
+        {
+            if (!string.IsNullOrWhiteSpace(color) && color.StartsWith('#') && color.Length == 7)
+                return color;
+        }
+        return CategoryLegacyMapper.UnifiedColors.TryGetValue(categoryName, out var unified)
+            ? unified
+            : DefaultCategoryColor;
+    }
+
     // === 共享 ===
 
     /// <summary>解析查询窗口：date 单日 → 单业务日；start&end → [start 04:00, end+1 04:00) 本地。
