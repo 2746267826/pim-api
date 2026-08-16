@@ -1,11 +1,13 @@
 using System.Reflection;
 using System.Globalization;
+using Hangfire;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Pim.Core.Common;
 using Pim.Core.Caching;
 using Pim.Core.Modules;
@@ -43,6 +45,8 @@ public class PcTrackerModule : IModule
         services.AddScoped<PcActivityRecordKeyService>();
         services.AddScoped<PcActivityAnalysisService>();
         services.AddScoped<PcActivityAggregationService>();
+        services.AddScoped<PcClassificationBackfillService>();
+        services.AddScoped<PcClassificationSnapshotJob>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -1065,6 +1069,30 @@ public class PcTrackerModule : IModule
 
         var categories = scope.ServiceProvider.GetRequiredService<PcCategoryService>();
         await categories.SeedDefaultsAsync(CancellationToken.None);
+
+        // Schedule recurring classification snapshot backfill
+        try
+        {
+            var recurring = serviceProvider.GetService<IRecurringJobManager>();
+            if (recurring is null)
+            {
+                serviceProvider.GetService<ILogger<PcTrackerModule>>()?.LogWarning(
+                    "Background job infrastructure is not available; classification snapshot backfill is disabled.");
+            }
+            else
+            {
+                recurring.AddOrUpdate<PcClassificationSnapshotJob>(
+                    "pc-classification-snapshot",
+                    job => job.RunAsync(),
+                    "*/30 * * * *");
+            }
+        }
+        catch (Exception exception)
+        {
+            serviceProvider.GetService<ILogger<PcTrackerModule>>()?.LogWarning(
+                exception,
+                "Failed to schedule the recurring classification snapshot backfill job.");
+        }
     }
 
     private static DateTime? TryParseDate(string? value)
