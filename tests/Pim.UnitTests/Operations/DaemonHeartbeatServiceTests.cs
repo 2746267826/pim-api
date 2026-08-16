@@ -249,6 +249,49 @@ public class DaemonHeartbeatServiceTests
     }
 
     [Fact]
+    public async Task RecordPlannedOfflineAsync_StaleRequestIgnored()
+    {
+        // 陈旧 planned 请求：不建行，已存在行也不动 planned 字段。
+        await using var db = CreateDb();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+
+        // 行不存在 → 不建行，返回 null。
+        var missing = await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "suspend", FixedNow.AddMinutes(-6)), CancellationToken.None);
+        Assert.Null(missing);
+        Assert.Equal(0, await db.DaemonHeartbeats.CountAsync());
+
+        // 行已存在 → planned 字段不动。
+        db.DaemonHeartbeats.Add(new DaemonHeartbeatEntity
+        {
+            DeviceId = "PC-2", DaemonKind = "windows",
+            ReceivedAt = FixedNow.AddMinutes(-10)
+        });
+        await db.SaveChangesAsync();
+        var existing = await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-2", "windows", "shutdown", FixedNow.AddMinutes(-6)), CancellationToken.None);
+        Assert.NotNull(existing);
+        var row = await db.DaemonHeartbeats.SingleAsync(h => h.DeviceId == "PC-2");
+        Assert.Null(row.PlannedOfflineAt);
+        Assert.Null(row.OfflineReason);
+        Assert.Equal(FixedNow.AddMinutes(-10), row.ReceivedAt);
+    }
+
+    [Fact]
+    public async Task RecordPlannedOfflineAsync_FreshRequestStillWorks()
+    {
+        // 新鲜 planned 请求（窗口内）→ 正常写入（回归）。
+        await using var db = CreateDb();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        var result = await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "suspend", FixedNow.AddMinutes(-1)), CancellationToken.None);
+        Assert.NotNull(result);
+        var row = await db.DaemonHeartbeats.SingleAsync();
+        Assert.Equal(FixedNow.AddMinutes(-1), row.PlannedOfflineAt);
+        Assert.Equal("suspend", row.OfflineReason);
+    }
+
+    [Fact]
     public async Task UpsertAsync_ClearsPlannedOfflineOnRegularHeartbeat()
     {
         await using var db = CreateDb();

@@ -40,7 +40,7 @@ public sealed record PlannedOfflineRequest(
 public interface IDaemonHeartbeatService
 {
     Task<DaemonHeartbeatDto> UpsertAsync(DaemonHeartbeatRequest request, CancellationToken ct = default);
-    Task<DaemonHeartbeatDto> RecordPlannedOfflineAsync(PlannedOfflineRequest request, CancellationToken ct = default);
+    Task<DaemonHeartbeatDto?> RecordPlannedOfflineAsync(PlannedOfflineRequest request, CancellationToken ct = default);
     Task<DaemonHeartbeatDto?> GetLatestAsync(string deviceId, CancellationToken ct = default);
     Task<DaemonHeartbeatDto?> GetLatestWindowsAsync(CancellationToken ct = default);
 }

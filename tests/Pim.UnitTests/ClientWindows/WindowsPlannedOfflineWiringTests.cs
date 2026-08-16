@@ -13,6 +13,8 @@ public class WindowsPlannedOfflineWiringTests
         Assert.Contains("TryReportPlannedOffline", source);
         Assert.Contains("Interlocked", source);
         Assert.Contains("_plannedOfflineTask", source);
+        Assert.Contains("_plannedOfflineLock", source);
+        Assert.Contains("_shutdown.Cancel()", source);
         Assert.Contains("PowerModes.Resume", source);
         Assert.Contains("wait: true", source);
         Assert.Contains("TimeSpan.FromSeconds(2)", source);

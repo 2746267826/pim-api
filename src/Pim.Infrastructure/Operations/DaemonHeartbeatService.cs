@@ -67,10 +67,26 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         return Map(entity);
     }
 
-    public async Task<DaemonHeartbeatDto> RecordPlannedOfflineAsync(
+    /// <summary>迟到 planned 请求的容忍窗口：超过该窗口即丢弃，避免污染已恢复的状态。</summary>
+    private static readonly TimeSpan PlannedOfflineStaleTolerance = TimeSpan.FromMinutes(5);
+
+    public async Task<DaemonHeartbeatDto?> RecordPlannedOfflineAsync(
         PlannedOfflineRequest request,
         CancellationToken ct = default)
     {
+        // 陈旧守卫：迟到的 suspend 请求（客户端挂起时网络未送达、恢复后晚到）不再建行/改行。
+        if (request.OccurredAt is { } occurredAt
+            && _timeProvider.GetUtcNow() - occurredAt > PlannedOfflineStaleTolerance)
+        {
+            var existing = await _db.DaemonHeartbeats
+                .AsNoTracking()
+                .SingleOrDefaultAsync(d =>
+                    d.DeviceId == request.DeviceId
+                    && d.DaemonKind == request.DaemonKind,
+                    ct);
+            return existing is null ? null : Map(existing);
+        }
+
         var entity = await _db.DaemonHeartbeats
             .SingleOrDefaultAsync(d =>
                 d.DeviceId == request.DeviceId

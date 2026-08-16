@@ -24,7 +24,7 @@ public static class DaemonEndpoints
             CancellationToken ct) =>
         {
             var result = await heartbeats.RecordPlannedOfflineAsync(request, ct);
-            return Results.Ok(ApiResponse<DaemonHeartbeatDto>.Ok(result));
+            return Results.Ok(ApiResponse<DaemonHeartbeatDto?>.Ok(result));
         });
     }
 }
