@@ -158,6 +158,39 @@ public sealed class MobileFrequentPlaceServiceTests
     }
 
     [Fact]
+    public async Task OutingTotalsNotTruncatedByDetailLimit()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var id = 0;
+        // 家簇给足夜间点（三次 SeedHome = 36 个 02:00 本地点）：
+        // 离家点簇跨度覆盖一个夜间窗（约 36 个夜间点），不给足会被点数决胜翻盘
+        SeedHome(db, ref id);
+        SeedHome(db, ref id);
+        SeedHome(db, ref id);
+        // 55 次出门：每次离家 10 分钟（3 点，间隔 5min）+ 回家收口；循环 25 分钟
+        // （下一轮首点距上一轮末点 15 分钟 > 10 分钟桥接阈值，不会被合并）
+        var baseTime = DateTimeOffset.Parse("2026-07-07T00:10:00Z");
+        for (var outingIndex = 0; outingIndex < 55; outingIndex++)
+        {
+            var start = baseTime.AddMinutes(outingIndex * 25);
+            for (var pointIndex = 0; pointIndex < 3; pointIndex++)
+            {
+                SeedPoint(db, ref id, start.AddMinutes(5 * pointIndex).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"), 31.233116, 121.473701, 12, "usable");
+            }
+            SeedPoint(db, ref id, start.AddMinutes(12).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"), 31.230416, 121.473701, 12, "usable");
+        }
+        await db.SaveChangesAsync();
+        var service = StatsService(db);
+
+        var stats = await service.GetMovementStatsAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(55, stats.OutingCount);
+        Assert.Equal(55 * 600, stats.OutingSeconds);
+        Assert.Equal(50, stats.Outings.Count);
+        Assert.Equal(55, stats.PerDay.Sum(day => day.OutingCount));
+    }
+
+    [Fact]
     public async Task ShortExcursionUnder10MinNotCounted()
     {
         await using var db = MobileTestHelpers.CreateDb();

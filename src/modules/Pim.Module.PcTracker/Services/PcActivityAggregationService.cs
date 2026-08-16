@@ -107,8 +107,8 @@ public sealed class PcActivityAggregationService
             .ThenBy(x => x.App, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var totalMinutes = (int)Math.Round(
-            events.Sum(e => Math.Min(e.Duration, MaxEventDurationSeconds)) / 60.0);
+        var totalSeconds = events.Sum(e => Math.Min(e.Duration, MaxEventDurationSeconds));
+        var totalMinutes = (int)Math.Round(totalSeconds / 60.0);
 
         var displayNames = await ResolveDisplayNamesAsync(
             groups.Select(g => g.App).ToList(), ct);
@@ -118,7 +118,7 @@ public sealed class PcActivityAggregationService
             .Select(g =>
             {
                 var minutes = (int)Math.Round(g.Seconds / 60.0);
-                var percentage = totalMinutes > 0 ? Math.Round(minutes * 100.0 / totalMinutes, 1) : 0;
+                var percentage = totalSeconds > 0 ? Math.Round(g.Seconds * 100.0 / totalSeconds, 1) : 0;
                 return new PcAppUsageItem(g.App, displayNames.GetValueOrDefault(g.App), minutes, percentage);
             })
             .ToList();
@@ -186,7 +186,7 @@ public sealed class PcActivityAggregationService
             .Select(g =>
             {
                 var minutes = (int)Math.Round(g.Seconds / 60.0);
-                var percentage = totalMinutes > 0 ? Math.Round(minutes * 100.0 / totalMinutes, 1) : 0;
+                var percentage = totalSeconds > 0 ? Math.Round(g.Seconds * 100.0 / totalSeconds, 1) : 0;
                 return new PcCategoryDistributionItem(g.Category, g.Color, minutes, percentage);
             })
             .ToList();
@@ -194,19 +194,25 @@ public sealed class PcActivityAggregationService
         return new PcCategoryDistributionResponse(items);
     }
 
-    /// <summary>分类颜色兜底：快照 CategoryColor 合法（非空、以 # 开头、长度 7）→ 用之；
+    /// <summary>分类颜色兜底：快照 CategoryColor 合法（# + 6 位十六进制）→ 用之；
     /// 否则 CategoryLegacyMapper.UnifiedColors 按分类名取；再兜底 #64748b。</summary>
     private static string ResolveCategoryColor(string categoryName, IEnumerable<string?> snapshotColors)
     {
         foreach (var color in snapshotColors)
         {
-            if (!string.IsNullOrWhiteSpace(color) && color.StartsWith('#') && color.Length == 7)
-                return color;
+            if (IsValidHexColor(color))
+                return color!;
         }
         return CategoryLegacyMapper.UnifiedColors.TryGetValue(categoryName, out var unified)
             ? unified
             : DefaultCategoryColor;
     }
+
+    private static bool IsValidHexColor(string? color)
+        => !string.IsNullOrWhiteSpace(color)
+            && color.Length == 7
+            && color[0] == '#'
+            && color[1..].All(char.IsAsciiHexDigit);
 
     // === 共享 ===
 

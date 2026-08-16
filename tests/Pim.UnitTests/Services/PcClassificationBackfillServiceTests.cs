@@ -50,6 +50,42 @@ public class PcClassificationBackfillServiceTests
     }
 
     [Fact]
+    public async Task EnsureClassificationsAsync_SecondRunDoesNotDuplicateSnapshots()
+    {
+        // 并发防护的幂等面：同一批 records 连续 ensure 两次，第二次全命中已有快照，不新增不抛。
+        await using var db = CreateDb();
+        var snapshotService = new ActivityClassificationSnapshotService(
+            db, NullLogger<ActivityClassificationSnapshotService>.Instance);
+        var rules = new List<ActivityCategoryRuleEntity>();
+        var records = new List<PcDetailRecord>
+        {
+            new(
+                RecordType: "window",
+                Start: "2026-08-10T08:00:00Z",
+                End: "2026-08-10T08:10:00Z",
+                DurationSeconds: 600,
+                DeviceId: "device-1",
+                AppName: "Code.exe",
+                DisplayName: null,
+                CategoryName: null,
+                Title: "Program.cs",
+                KeyPresses: null,
+                TotalClicks: null,
+                MouseDistance: null,
+                ScrollDistance: null,
+                KeyCounts: null,
+                Raw: null,
+                SourceWebEventIds: null,
+                SourceWindowEventIds: null)
+        };
+
+        await snapshotService.EnsureClassificationsAsync(records, rules, null, CancellationToken.None);
+        await snapshotService.EnsureClassificationsAsync(records, rules, null, CancellationToken.None);
+
+        Assert.Equal(1, await db.Set<ActivityClassificationEntity>().CountAsync());
+    }
+
+    [Fact]
     public async Task BackfillAsync_SkipsDayWithoutEvents()
     {
         await using var db = CreateDb();

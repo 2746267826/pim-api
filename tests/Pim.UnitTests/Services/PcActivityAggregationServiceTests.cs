@@ -192,6 +192,26 @@ public class PcActivityAggregationServiceTests
     }
 
     [Fact]
+    public async Task GetAppUsageAsync_ComputesPercentageFromRawSeconds()
+    {
+        await using var db = CreateDb();
+        // 90s / 60s / 90s：秒数占比 37.5/25/37.5（按四舍五入分钟 2/1/2 会错算成 50/25/50）
+        db.Set<AwEventEntity>().AddRange(
+            Win("2026-07-10T01:00:00Z", 90, "A"),
+            Win("2026-07-10T01:30:00Z", 60, "B"),
+            Win("2026-07-10T02:00:00Z", 90, "C"));
+        await db.SaveChangesAsync();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetAppUsageAsync(DayQuery("2026-07-10"), null, CancellationToken.None);
+
+        Assert.Equal(3, result.Items.Count);
+        Assert.Equal(37.5, result.Items.Single(i => i.AppName == "a").Percentage, 1);
+        Assert.Equal(25.0, result.Items.Single(i => i.AppName == "b").Percentage, 1);
+        Assert.Equal(37.5, result.Items.Single(i => i.AppName == "c").Percentage, 1);
+    }
+
+    [Fact]
     public async Task GetAppUsageAsync_ExcludesAfkAndWebEvents()
     {
         await using var db = CreateDb();
@@ -410,5 +430,21 @@ public class PcActivityAggregationServiceTests
         Assert.Equal("#6B5EE4", result.Items[0].Color); // 编程/折腾 → UnifiedColors 兜底
         Assert.Equal("#64748b", result.Items[1].Color); // 未知分类 → 默认灰
         Assert.Equal("#123456", result.Items[2].Color); // 有效快照色直接使用
+    }
+
+    [Fact]
+    public async Task GetCategoryDistributionAsync_RejectsNonHexColor()
+    {
+        await using var db = CreateDb();
+        // #zzzzzz 长度与前缀都对但非十六进制 → 兜底 UnifiedColors
+        db.Set<ActivityClassificationEntity>().AddRange(
+            Snap("2026-07-10T01:00:00Z", "2026-07-10T01:30:00Z", "编程/折腾", "#zzzzzz"));
+        await db.SaveChangesAsync();
+        var service = new PcActivityAggregationService(db);
+
+        var result = await service.GetCategoryDistributionAsync(DayQuery("2026-07-10"), CancellationToken.None);
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("#6B5EE4", item.Color);
     }
 }

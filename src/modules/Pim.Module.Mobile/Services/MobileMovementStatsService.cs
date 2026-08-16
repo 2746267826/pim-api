@@ -64,7 +64,7 @@ public sealed class MobileMovementStatsService
                 BuildPerDay(segments, [], context));
         }
 
-        var (outingCount, outingSeconds, outings) = ComputeOutings(usablePoints, home);
+        var (outingCount, outingSeconds, outings, allOutings) = ComputeOutings(usablePoints, home);
         return new MobileMovementStatsResponse(
             new MobileGeoPointDto(home.CenterLatitude, home.CenterLongitude),
             outingCount,
@@ -72,7 +72,7 @@ public sealed class MobileMovementStatsService
             outings,
             distanceMeters,
             maxSpeed,
-            BuildPerDay(segments, outings, context));
+            BuildPerDay(segments, allOutings, context));
     }
 
     private async Task<List<MobileLocationPointEntity>> LoadUsablePointsAsync(
@@ -97,12 +97,12 @@ public sealed class MobileMovementStatsService
             .ToListAsync(ct);
     }
 
-    private static (int Count, long Seconds, IReadOnlyList<MobileOutingDto> Outings) ComputeOutings(
+    private static (int Count, long Seconds, IReadOnlyList<MobileOutingDto> Outings, IReadOnlyList<MobileOutingDto> AllOutings) ComputeOutings(
         IReadOnlyList<MobileLocationPointEntity> points,
         MobileFrequentPlaceDto home)
     {
         // 离家距离序列（usable 点按时间）：>150m 起、<=150m 止；间隔 <=10min 桥接；
-        // 区间时长 >=10min 计一次出门。
+        // 区间时长 >=10min 计一次出门。汇总基于全量区间；明细仅截断返回。
         var intervals = new List<(DateTimeOffset Start, DateTimeOffset End)>();
         DateTimeOffset? start = null;
         DateTimeOffset? lastAway = null;
@@ -136,18 +136,21 @@ public sealed class MobileMovementStatsService
         if (start is not null)
             intervals.Add((start.Value, lastAway!.Value));
 
-        var outings = intervals
+        var allOutings = intervals
             .Where(interval => interval.End - interval.Start >= MinOutingDuration)
             .Select(interval => new MobileOutingDto(
                 interval.Start,
                 interval.End,
                 Convert.ToInt64((interval.End - interval.Start).TotalSeconds)))
+            .ToList();
+
+        var outings = allOutings
             .OrderByDescending(outing => outing.StartUtc)
             .Take(MaxOutings)
             .OrderBy(outing => outing.StartUtc)
             .ToList();
 
-        return (outings.Count, outings.Sum(outing => outing.Seconds), outings);
+        return (allOutings.Count, allOutings.Sum(outing => outing.Seconds), outings, allOutings);
     }
 
     private static double? ComputeMaxSpeed(
