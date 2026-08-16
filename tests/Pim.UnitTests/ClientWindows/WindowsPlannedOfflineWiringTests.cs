@@ -16,6 +16,8 @@ public class WindowsPlannedOfflineWiringTests
         Assert.Contains("_plannedOfflineLock", source);
         Assert.Contains("_shutdown.Cancel()", source);
         Assert.Contains("PowerModes.Resume", source);
+        Assert.Contains("StopHeartbeatLoopAndWait", source);
+        Assert.Contains("ReportHeartbeatOnceAsync(CancellationToken.None)", source);
         Assert.Contains("wait: true", source);
         Assert.Contains("TimeSpan.FromSeconds(2)", source);
         Assert.Contains("PlannedOfflineReporter", source);
