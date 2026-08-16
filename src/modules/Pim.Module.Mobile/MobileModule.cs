@@ -32,6 +32,8 @@ public sealed class MobileModule : IModule
         services.AddScoped<MobileLocationService>();
         services.AddScoped<MobileLocationQueryService>();
         services.AddScoped<MobileLocationAggregationService>();
+        services.AddScoped<MobileFrequentPlaceService>();
+        services.AddScoped<MobileMovementStatsService>();
         services.AddScoped<MobileUsageQueryService>();
         services.AddScoped<MobileQualityService>();
         services.AddScoped<MobileAnalyticsQueryService>();
@@ -169,6 +171,32 @@ public sealed class MobileModule : IModule
                 ? Results.NotFound(ApiResponse<string>.Error(404, "Location segment not found."))
                 : Results.Ok(ApiResponse<MobileLocationSegmentDto>.Ok(segment));
         });
+
+        group.MapGet("/location/analytics/frequent-places", async (
+            [AsParameters] MobileLocationEndpointQuery query,
+            [FromServices] MobileFrequentPlaceService service,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+            Results.Ok(ApiResponse<MobileFrequentPlacesResponse>.Ok(await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request),
+                force,
+                () => service.GetFrequentPlacesAsync(query.ToRequest(), ct),
+                ct))));
+
+        group.MapGet("/location/analytics/movement-stats", async (
+            [AsParameters] MobileLocationEndpointQuery query,
+            [FromServices] MobileMovementStatsService service,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+            Results.Ok(ApiResponse<MobileMovementStatsResponse>.Ok(await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request),
+                force,
+                () => service.GetMovementStatsAsync(query.ToRequest(), ct),
+                ct))));
 
         group.MapGet("/location/analytics/segments/{segmentId}/points", async (
             [FromRoute] string segmentId,

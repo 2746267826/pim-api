@@ -73,6 +73,26 @@ public sealed class MobileLocationAggregationService
         return BuildTracks(points, context);
     }
 
+    /// <summary>
+    /// 复用 GetTracksAsync 的既有分段输出，返回按设备分组的 move 段扁平列表
+    /// （jump 点已剔除，与轨迹页口径一致）。供移动统计复用里程算法，避免复制。
+    /// </summary>
+    public async Task<IReadOnlyList<MobileMovementSegmentDto>> GetMovementSegmentsAsync(
+        MobileLocationQueryRequest request,
+        CancellationToken ct = default)
+    {
+        var tracks = await GetTracksAsync(request, ct);
+        return tracks
+            .SelectMany(track => track.Segments)
+            .Where(segment => segment.Kind == "move")
+            .Select(segment => new MobileMovementSegmentDto(
+                segment.DeviceId,
+                segment.StartUtc,
+                segment.EndUtc,
+                segment.DistanceMeters))
+            .ToList();
+    }
+
     public async Task<MobileLocationSegmentDto?> GetSegmentAsync(
         string segmentId,
         MobileLocationQueryRequest request,

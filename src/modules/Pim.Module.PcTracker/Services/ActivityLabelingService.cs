@@ -565,62 +565,21 @@ public sealed class ActivityLabelingService
     }
 
     /// <summary>批量解析应用显示名：一次性把 pc_app_signatures 全量拉到内存（量级 171+，可接受），
-    /// 内存中按 AppSignatureService.FindMatchingEntityByProcessNameAsync 的三段式语义
-    /// （精确 → 补 .exe → glob 通配正则）对每个 AppNameNormalized 匹配，避免按
-    /// app_name_normalized 直接 IN 匹配 process_name 时大小写/后缀/通配不命中。</summary>
+    /// 内存中按 AppSignatureMatcher 的三段式语义（精确 → 补 .exe → glob 通配正则）对每个
+    /// AppNameNormalized 匹配，避免按 app_name_normalized 直接 IN 匹配 process_name 时
+    /// 大小写/后缀/通配不命中。</summary>
     private async Task<Dictionary<string, string>> ResolveDisplayNamesAsync(List<string> apps, CancellationToken ct)
     {
-        var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (apps.Count == 0)
-            return names;
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         var signatures = await _db.Set<AppSignatureEntity>()
             .Select(s => new { s.ProcessName, s.DisplayName })
             .ToListAsync(ct);
 
-        var signatureList = signatures
-            .Select(s => (
-                ProcessName: s.ProcessName ?? string.Empty,
-                DisplayName: (string.IsNullOrWhiteSpace(s.DisplayName) ? s.ProcessName : s.DisplayName) ?? string.Empty))
-            .ToList();
-
-        foreach (var app in apps)
-        {
-            var normalized = app.ToLowerInvariant();
-
-            // 1) 精确匹配（大小写不敏感）
-            var signature = signatureList.FirstOrDefault(s => s.ProcessName.ToLowerInvariant() == normalized);
-
-            // 2) 补 .exe 后缀匹配
-            if (signature.ProcessName is null && !normalized.EndsWith(".exe", StringComparison.Ordinal))
-                signature = signatureList.FirstOrDefault(s => s.ProcessName.ToLowerInvariant() == normalized + ".exe");
-
-            // 3) glob 通配正则匹配（如 MobaXterm*.exe）
-            if (signature.ProcessName is null)
-            {
-                foreach (var candidateName in new[] { normalized, normalized + ".exe" })
-                {
-                    signature = signatureList.FirstOrDefault(s =>
-                    {
-                        var pattern = s.ProcessName;
-                        if (!pattern.Contains('*') && !pattern.Contains('?'))
-                            return false;
-                        var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
-                            .Replace("\\*", ".*")
-                            .Replace("\\?", ".") + "$";
-                        return System.Text.RegularExpressions.Regex.IsMatch(candidateName, regex,
-                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    });
-                    if (signature.ProcessName is not null)
-                        break;
-                }
-            }
-
-            if (signature.ProcessName is not null)
-                names[app] = signature.DisplayName;
-        }
-
-        return names;
+        return AppSignatureMatcher.ResolveDisplayNames(
+            apps,
+            signatures.Select(s => (s.ProcessName ?? string.Empty, s.DisplayName ?? string.Empty)));
     }
 
     /// <summary>为队列顶部的 app 候选批量补 sample_titles（在 limit 截断后执行，避免全量 N+1）。</summary>

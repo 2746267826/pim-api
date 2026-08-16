@@ -1,11 +1,13 @@
 using System.Reflection;
 using System.Globalization;
+using Hangfire;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Pim.Core.Common;
 using Pim.Core.Caching;
 using Pim.Core.Modules;
@@ -42,6 +44,9 @@ public class PcTrackerModule : IModule
         services.AddScoped<PcProductivityService>();
         services.AddScoped<PcActivityRecordKeyService>();
         services.AddScoped<PcActivityAnalysisService>();
+        services.AddScoped<PcActivityAggregationService>();
+        services.AddScoped<PcClassificationBackfillService>();
+        services.AddScoped<PcClassificationSnapshotJob>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -767,6 +772,157 @@ public class PcTrackerModule : IModule
                 : Results.BadRequest(ApiResponse<string>.Error(400, "内置项不可删除或不存在"));
         });
 
+        // === Phase 2: 服务端聚合（专注块 / 应用时长 / 深夜使用 / 分类分布）===
+        readGroup.MapGet("/aggregation/focus-blocks", async (
+            [FromQuery] string? date,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromQuery] string? timezone,
+            [FromServices] PcActivityAggregationService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request,
+                        overrides:
+                        [
+                            new("date", date ?? string.Empty),
+                            new("start", start ?? string.Empty),
+                            new("end", end ?? string.Empty),
+                            new("timezone", timezone ?? string.Empty),
+                        ]),
+                    force,
+                    () => svc.GetFocusBlocksAsync(new PcAggregationQuery(date, start, end, timezone), ct),
+                    ct);
+                return Results.Ok(ApiResponse<PcFocusBlocksResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        readGroup.MapGet("/aggregation/app-usage", async (
+            [FromQuery] string? date,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromQuery] string? timezone,
+            [FromQuery] int? limit,
+            [FromServices] PcActivityAggregationService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request,
+                        overrides:
+                        [
+                            new("date", date ?? string.Empty),
+                            new("start", start ?? string.Empty),
+                            new("end", end ?? string.Empty),
+                            new("timezone", timezone ?? string.Empty),
+                            new("limit", limit?.ToString(CultureInfo.InvariantCulture) ?? string.Empty),
+                        ]),
+                    force,
+                    () => svc.GetAppUsageAsync(new PcAggregationQuery(date, start, end, timezone), limit, ct),
+                    ct);
+                return Results.Ok(ApiResponse<PcAppUsageResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        readGroup.MapGet("/aggregation/late-night", async (
+            [FromQuery] string? date,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromQuery] string? timezone,
+            [FromServices] PcActivityAggregationService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request,
+                        overrides:
+                        [
+                            new("date", date ?? string.Empty),
+                            new("start", start ?? string.Empty),
+                            new("end", end ?? string.Empty),
+                            new("timezone", timezone ?? string.Empty),
+                        ]),
+                    force,
+                    () => svc.GetLateNightAsync(new PcAggregationQuery(date, start, end, timezone), ct),
+                    ct);
+                return Results.Ok(ApiResponse<PcLateNightResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        readGroup.MapGet("/aggregation/category-distribution", async (
+            [FromQuery] string? date,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromQuery] string? timezone,
+            [FromServices] PcActivityAggregationService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request,
+                        overrides:
+                        [
+                            new("date", date ?? string.Empty),
+                            new("start", start ?? string.Empty),
+                            new("end", end ?? string.Empty),
+                            new("timezone", timezone ?? string.Empty),
+                        ]),
+                    force,
+                    () => svc.GetCategoryDistributionAsync(new PcAggregationQuery(date, start, end, timezone), ct),
+                    ct);
+                return Results.Ok(ApiResponse<PcCategoryDistributionResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
         // === Phase 2: 分类树 ===
         var catRead = endpoints.MapGroup("/api/v1/pc/categories").AllowAnonymous();
         var catWrite = endpoints.MapGroup("/api/v1/pc/categories").RequireAuthorization();
@@ -913,6 +1069,30 @@ public class PcTrackerModule : IModule
 
         var categories = scope.ServiceProvider.GetRequiredService<PcCategoryService>();
         await categories.SeedDefaultsAsync(CancellationToken.None);
+
+        // Schedule recurring classification snapshot backfill
+        try
+        {
+            var recurring = serviceProvider.GetService<IRecurringJobManager>();
+            if (recurring is null)
+            {
+                serviceProvider.GetService<ILogger<PcTrackerModule>>()?.LogWarning(
+                    "Background job infrastructure is not available; classification snapshot backfill is disabled.");
+            }
+            else
+            {
+                recurring.AddOrUpdate<PcClassificationSnapshotJob>(
+                    "pc-classification-snapshot",
+                    job => job.RunAsync(),
+                    "*/30 * * * *");
+            }
+        }
+        catch (Exception exception)
+        {
+            serviceProvider.GetService<ILogger<PcTrackerModule>>()?.LogWarning(
+                exception,
+                "Failed to schedule the recurring classification snapshot backfill job.");
+        }
     }
 
     private static DateTime? TryParseDate(string? value)
