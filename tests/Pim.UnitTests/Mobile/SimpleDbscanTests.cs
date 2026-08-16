@@ -8,16 +8,16 @@ public sealed class SimpleDbscanTests
     [Fact]
     public void Run_AssignsBorderPointToCoreNeighborhood()
     {
-        // (0,0) 与 (10,0) 互在 eps=15 邻域内；minPts=2 时二者均为核心点。
-        // (25,0) 非核心（与 (10,0) 距离 15 <= eps 属边界），应归入簇而不是噪声。
+        // eps=15、minPts=3：(10,0) 邻域含自身+(0,0)+(20,0) 共 3 点 → 核心；
+        // (0,0) 与 (20,0) 邻域各仅 2 点 < minPts → 非核心的边界点，应被核心点扩展归簇。
         var points = new[]
         {
             new SimpleDbscan.Point(0, 0, 0),
             new SimpleDbscan.Point(1, 10, 0),
-            new SimpleDbscan.Point(2, 25, 0)
+            new SimpleDbscan.Point(2, 20, 0)
         };
 
-        var result = SimpleDbscan.Run(points, eps: 15, minPts: 2);
+        var result = SimpleDbscan.Run(points, eps: 15, minPts: 3);
 
         var cluster = Assert.Single(result.Clusters);
         Assert.Equal(new[] { 0, 1, 2 }, cluster.OrderBy(index => index).ToArray());

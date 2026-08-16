@@ -20,6 +20,8 @@ public sealed class MobileMovementStatsService
     private static readonly TimeSpan OutingBridgeGap = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan MinOutingDuration = TimeSpan.FromMinutes(10);
 
+    // 口径说明：家中心识别（FrequentPlaceService）固定容纳精度 ≤100m 的点以稳定聚类；
+    // 出门判定走查询上下文精度（默认 50m），只用更准的点判定离家，避免噪声点抖动出假出门。
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly MobileLocationQueryService _queryService;

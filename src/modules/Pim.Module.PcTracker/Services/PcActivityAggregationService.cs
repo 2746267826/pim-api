@@ -107,6 +107,8 @@ public sealed class PcActivityAggregationService
             .ThenBy(x => x.App, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        // percentage 分母 = 全部 window 事件封顶秒数（含被 <60s 过滤的噪声应用），
+        // 与 totalMinutes 同口径；分子为该应用封顶秒数。
         var totalSeconds = events.Sum(e => Math.Min(e.Duration, MaxEventDurationSeconds));
         var totalMinutes = (int)Math.Round(totalSeconds / 60.0);
 
