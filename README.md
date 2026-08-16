@@ -202,10 +202,12 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
    ```bash
    sudo mkdir -p /data/keys/data-protection
    sudo openssl genrsa -out /data/keys/jwt_private.pem 2048
-   # 确保容器运行用户对以上路径可读；数据保护密钥需运行时写入，如遇权限问题请检查该目录读写属性
+   # 确保容器内运行用户对以上路径可读
    ```
 
-3. 生成容器 SSH 公钥（base64 单行）：
+   > **已知限制**：当前生产编排将 `/data/keys` 挂载为只读。依赖数据保护密钥写入的功能（如 Outlook 日历同步、文件提供商绑定）在此挂载下无法保存新密钥；如需使用这些功能，请将宿主机目录调整为可写挂载。
+
+3. 生成容器 SSH 公钥（base64 单行，`AAAA...` 替换为你的公钥内容，可多行）：
 
    ```bash
    printf 'ssh-ed25519 AAAA...\n' | base64 -w0
