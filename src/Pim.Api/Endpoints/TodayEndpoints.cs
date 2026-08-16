@@ -1,4 +1,8 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Routing;
 using Pim.Api.Today;
+using Pim.Core.Caching;
 using Pim.Core.Common;
 using Pim.Core.Today;
 
@@ -21,11 +25,18 @@ public static class TodayEndpoints
         group.MapGet("/sections", async (
             string? date,
             TodaySectionService today,
-            CancellationToken ct) =>
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
         {
             return await RunWithDateValidationAsync(async () =>
             {
-                var result = await today.GetRegistryAsync(date, ct);
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request),
+                    force,
+                    () => today.GetRegistryAsync(date, ct),
+                    ct);
                 return Results.Ok(ApiResponse<TodaySectionRegistryDto>.Ok(result));
             });
         });
@@ -34,11 +45,18 @@ public static class TodayEndpoints
             string sectionId,
             string? date,
             TodaySectionService today,
-            CancellationToken ct) =>
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
         {
             return await RunWithDateValidationAsync(async () =>
             {
-                var result = await today.GetSectionAsync(sectionId, date, ct);
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request),
+                    force,
+                    () => today.GetSectionAsync(sectionId, date, ct),
+                    ct);
                 return result is null
                     ? Results.NotFound(ApiResponse<string>.Error(404, "今日模块不存在。"))
                     : Results.Ok(ApiResponse<TodaySectionDto>.Ok(result));
