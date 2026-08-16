@@ -7,16 +7,15 @@ namespace Pim.Infrastructure.Operations;
 
 public sealed class SystemStatusService : ISystemStatusService
 {
-    private static readonly TimeSpan WarningDaemonAge = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan CriticalDaemonAge = TimeSpan.FromMinutes(60);
-
     private readonly PimDbContext _db;
     private readonly IBackgroundJobStatusService _backgroundJobs;
+    private readonly TimeProvider _timeProvider;
 
-    public SystemStatusService(PimDbContext db, IBackgroundJobStatusService backgroundJobs)
+    public SystemStatusService(PimDbContext db, IBackgroundJobStatusService backgroundJobs, TimeProvider timeProvider)
     {
         _db = db;
         _backgroundJobs = backgroundJobs;
+        _timeProvider = timeProvider;
     }
 
     public async Task<SystemStatusSummaryDto> GetSummaryAsync(CancellationToken ct = default)
@@ -27,7 +26,7 @@ public sealed class SystemStatusService : ISystemStatusService
 
     public async Task<SystemStatusDetailDto> GetDetailAsync(CancellationToken ct = default)
     {
-        var checkedAt = DateTimeOffset.UtcNow;
+        var checkedAt = _timeProvider.GetUtcNow();
         var components = new List<StatusComponentDto>
         {
             new(
@@ -134,35 +133,31 @@ public sealed class SystemStatusService : ISystemStatusService
                 new Dictionary<string, string>());
         }
 
-        var age = checkedAt - heartbeat.ReceivedAt;
-        var status = age >= CriticalDaemonAge
-            ? PimHealthStatus.Critical
-            : age >= WarningDaemonAge
-                ? PimHealthStatus.Warning
-                : PimHealthStatus.Healthy;
-
-        var message = status switch
+        var lifecycle = DaemonLifecycleClassifier.Classify(heartbeat, checkedAt);
+        var details = new Dictionary<string, string>
         {
-            PimHealthStatus.Critical => "Windows 守护程序心跳已过期。",
-            PimHealthStatus.Warning => "Windows 守护程序心跳偏旧。",
-            _ => "Windows 守护程序心跳正常。"
+            ["deviceId"] = heartbeat.DeviceId,
+            ["version"] = heartbeat.Version,
+            ["receivedAt"] = heartbeat.ReceivedAt.ToString("O"),
+            ["activityWatch"] = heartbeat.ActivityWatchState,
+            ["keyStats"] = heartbeat.KeyStatsState,
+            ["daemonState"] = lifecycle.State
         };
+
+        if (lifecycle.PlannedOfflineAt is not null)
+        {
+            details["plannedOfflineAt"] = lifecycle.PlannedOfflineAt;
+            details["offlineReason"] = lifecycle.OfflineReason ?? "";
+        }
 
         return new StatusComponentDto(
             "windows-daemon",
             "Windows 守护程序",
             StatusComponentKind.Daemon,
-            status,
-            message,
+            lifecycle.Status,
+            lifecycle.Message,
             checkedAt,
-            new Dictionary<string, string>
-            {
-                ["deviceId"] = heartbeat.DeviceId,
-                ["version"] = heartbeat.Version,
-                ["receivedAt"] = heartbeat.ReceivedAt.ToString("O"),
-                ["activityWatch"] = heartbeat.ActivityWatchState,
-                ["keyStats"] = heartbeat.KeyStatsState
-            });
+            details);
     }
 
     private async Task<StatusComponentDto> BuildBackgroundJobsComponentAsync(CancellationToken ct)

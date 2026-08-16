@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
+using Pim.Infrastructure.Operations;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
 
@@ -12,15 +13,17 @@ public sealed class PcTrackerQualityService
 {
     private static readonly TimeSpan StaleBucketAge = TimeSpan.FromHours(24);
     private readonly PimDbContext _db;
+    private readonly TimeProvider _timeProvider;
 
-    public PcTrackerQualityService(PimDbContext db)
+    public PcTrackerQualityService(PimDbContext db, TimeProvider timeProvider)
     {
         _db = db;
+        _timeProvider = timeProvider;
     }
 
     public async Task<PcQualityResponse> GetQualityAsync(DateTime? date, DateTime? dateFrom, DateTime? dateTo, CancellationToken ct)
     {
-        var checkedAt = DateTimeOffset.UtcNow;
+        var checkedAt = _timeProvider.GetUtcNow();
         var (rangeStart, rangeEnd) = GetRange(date, dateFrom, dateTo);
 
         var buckets = await _db.Set<AwBucketEntity>()
@@ -311,29 +314,48 @@ public sealed class PcTrackerQualityService
         }
 
         var age = checkedAt - heartbeat.ReceivedAt;
+        var lifecycle = DaemonLifecycleClassifier.Classify(heartbeat, checkedAt);
         details["receivedAt"] = heartbeat.ReceivedAt.ToString("O");
         details["ageMinutes"] = Math.Max(0, age.TotalMinutes).ToString("0.0");
         details["uploadQueueCount"] = (heartbeat.UploadQueueCount ?? 0).ToString();
         details["activityWatchState"] = heartbeat.ActivityWatchState;
         details["keyStatsState"] = heartbeat.KeyStatsState;
-
-        if (age >= TimeSpan.FromMinutes(60))
+        details["daemonState"] = lifecycle.State;
+        if (heartbeat.PlannedOfflineAt is not null)
         {
-            componentIssues.Add(new PcQualityIssueDto(
-                "stale-windows-daemon-heartbeat",
-                PimHealthStatus.Critical,
-                "daemon-upload",
-                "Windows 守护程序心跳已过期。",
-                "重启 Windows 守护程序，并确认它能访问 API。"));
+            details["plannedOfflineAt"] = heartbeat.PlannedOfflineAt.Value.ToString("O");
+            details["offlineReason"] = heartbeat.OfflineReason ?? "";
         }
-        else if (age >= TimeSpan.FromMinutes(10))
+
+        if (lifecycle.State == "planned-offline")
         {
             componentIssues.Add(new PcQualityIssueDto(
-                "old-daemon-heartbeat",
+                "daemon-planned-offline",
                 PimHealthStatus.Warning,
                 "daemon-upload",
-                "Windows 守护程序心跳偏旧。",
-                "检查 Windows 守护程序是否仍在运行。"));
+                "守护程序已正常下线（关机/休眠）。",
+                "Windows 守护程序将在下次开机后自动恢复。"));
+        }
+        else
+        {
+            if (age >= DaemonLifecycleClassifier.AbnormalDaemonAge)
+            {
+                componentIssues.Add(new PcQualityIssueDto(
+                    "stale-windows-daemon-heartbeat",
+                    PimHealthStatus.Critical,
+                    "daemon-upload",
+                    "Windows 守护程序心跳已过期。",
+                    "重启 Windows 守护程序，并确认它能访问 API。"));
+            }
+            else if (age >= DaemonLifecycleClassifier.OnlineDaemonAge)
+            {
+                componentIssues.Add(new PcQualityIssueDto(
+                    "old-daemon-heartbeat",
+                    PimHealthStatus.Warning,
+                    "daemon-upload",
+                    "Windows 守护程序心跳偏旧。",
+                    "检查 Windows 守护程序是否仍在运行。"));
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(heartbeat.LastError))

@@ -10,6 +10,7 @@ using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Services;
 using Pim.Module.PcTracker.Entities;
 using Pim.Module.PcTracker.Services;
+using Pim.UnitTests.Calendar;
 using Xunit;
 
 namespace Pim.UnitTests.Today;
@@ -120,7 +121,7 @@ public class TodaySectionProviderTests
     public async Task PcQualityProvider_UsesQualityService()
     {
         var (db, _) = CreateDb(registerPc: true);
-        var provider = new PcQualityTodaySectionProvider(new PcTrackerQualityService(db));
+        var provider = new PcQualityTodaySectionProvider(new PcTrackerQualityService(db, new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 8, 16, 12, 0, 0, TimeSpan.Zero) }));
 
         var section = await provider.BuildAsync(Query(), CancellationToken.None);
 
