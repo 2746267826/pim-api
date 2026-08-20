@@ -67,8 +67,8 @@ public record CreateEventRequest(
     string? OnlineMeetingUrl = null,
     string? ExternalLink = null,
     IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null,
-    bool IsSeriesMaster = false,
-    bool IsException = false,
+    bool? IsSeriesMaster = null,
+    bool? IsException = null,
     Guid? SeriesMasterId = null,
     string? RecurrenceId = null
 );
@@ -104,8 +104,8 @@ public record UpdateEventRequest(
     string? OnlineMeetingUrl = null,
     string? ExternalLink = null,
     IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null,
-    bool IsSeriesMaster = false,
-    bool IsException = false,
+    bool? IsSeriesMaster = null,
+    bool? IsException = null,
     Guid? SeriesMasterId = null,
     string? RecurrenceId = null
 );

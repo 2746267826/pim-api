@@ -14,9 +14,10 @@ public class CalendarService
     private readonly ICurrentUserService _currentUser;
     private readonly RecurrenceService _recurrence;
     private readonly EventAttachmentService _attachments;
+    private readonly TimeProvider _timeProvider;
 
     public CalendarService(PimDbContext db, ICurrentUserService currentUser, RecurrenceService recurrence)
-        : this(db, currentUser, recurrence, new EventAttachmentService(db))
+        : this(db, currentUser, recurrence, new EventAttachmentService(db), TimeProvider.System)
     {
     }
 
@@ -24,12 +25,14 @@ public class CalendarService
         PimDbContext db,
         ICurrentUserService currentUser,
         RecurrenceService recurrence,
-        EventAttachmentService attachments)
+        EventAttachmentService attachments,
+        TimeProvider? timeProvider = null)
     {
         _db = db;
         _currentUser = currentUser;
         _recurrence = recurrence;
         _attachments = attachments;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "未登录");
@@ -80,7 +83,7 @@ public class CalendarService
             ?? throw new DomainException(02002, "日历不存在");
         cal.Name = request.Name;
         if (request.Color is not null) cal.Color = request.Color;
-        cal.UpdatedAt = DateTimeOffset.UtcNow;
+        cal.UpdatedAt = _timeProvider.GetUtcNow();
         await _db.SaveChangesAsync(ct);
         return new CalendarResponse(cal.Id, cal.Name, cal.Color, cal.Kind, cal.IsDefault, cal.Events.Count);
     }
@@ -90,7 +93,7 @@ public class CalendarService
         var cal = await _db.Set<CalendarEntity>()
             .FirstOrDefaultAsync(c => c.Id == id && c.UserId == UserId, ct)
             ?? throw new DomainException(02002, "日历不存在");
-        cal.DeletedAt = DateTimeOffset.UtcNow;
+        cal.DeletedAt = _timeProvider.GetUtcNow();
         await _db.SaveChangesAsync(ct);
     }
 
@@ -195,8 +198,8 @@ public class CalendarService
 
         ApplyUnifiedFields(entity, request);
 
-        // PR3: Series / exception handling
-        if (request.IsException)
+        // PR3: Series / exception handling (bool? : null defaults to false)
+        if (request.IsException == true)
         {
             if (!request.SeriesMasterId.HasValue || string.IsNullOrEmpty(request.RecurrenceId))
                 throw new DomainException(02009, "例外必须指定系列主事件和原始发生时间");
@@ -219,7 +222,7 @@ public class CalendarService
         }
         else
         {
-            entity.IsSeriesMaster = request.IsSeriesMaster;
+            entity.IsSeriesMaster = request.IsSeriesMaster == true;
             entity.IsException = false;
             entity.SeriesMasterId = null;
         }
@@ -432,9 +435,15 @@ public class CalendarService
         // Scope=this : edit single occurrence -> create/update exception
         if (isScopeThis)
         {
-            // If target itself is an exception, update it directly
+            // If target itself is an exception, update it directly with validation and status preservation
             if (entity.IsException)
             {
+                // Validate SeriesMasterId / RecurrenceId belongs to same series if provided
+                if (request.SeriesMasterId.HasValue && request.SeriesMasterId.Value != entity.SeriesMasterId)
+                    throw new DomainException(02009, "例外与系列主事件不匹配");
+                if (!string.IsNullOrEmpty(request.RecurrenceId) && !string.Equals(request.RecurrenceId, entity.RecurrenceId, StringComparison.Ordinal))
+                    throw new DomainException(02009, "例外 RecurrenceId 与目标不一致");
+                var prevStatus = entity.Status;
                 entity.Title = request.Title;
                 entity.Description = request.Description;
                 entity.Location = request.Location;
@@ -442,11 +451,14 @@ public class CalendarService
                 entity.DtEnd = normalizedEnd;
                 if (request.IsAllDay.HasValue) entity.IsAllDay = request.IsAllDay.Value;
                 if (request.TimeZoneId is not null) entity.TimeZoneId = request.TimeZoneId;
-                entity.UpdatedAt = DateTimeOffset.UtcNow;
+                entity.UpdatedAt = _timeProvider.GetUtcNow();
                 ApplyUnifiedFields(entity, request);
                 if (!string.IsNullOrEmpty(request.RecurrenceId))
                     entity.RecurrenceId = request.RecurrenceId;
                 entity.RRule = null;
+                // Preserve CANCELLED status — do not auto-revert to CONFIRMED
+                if (string.Equals(prevStatus, "CANCELLED", StringComparison.OrdinalIgnoreCase))
+                    entity.Status = prevStatus;
                 await _db.SaveChangesAsync(ct);
                 return EventResponseMapper.Map(entity);
             }
@@ -461,12 +473,16 @@ public class CalendarService
             {
                 if (string.IsNullOrEmpty(request.RecurrenceId))
                     throw new DomainException(02009, "修改单次需指定 RecurrenceId");
+                // If request provides SeriesMasterId, it must match the target master
+                if (request.SeriesMasterId.HasValue && request.SeriesMasterId.Value != entity.Id)
+                    throw new DomainException(02009, "例外与系列主事件不匹配");
 
                 var existingException = await _db.Set<EventEntity>()
                     .FirstOrDefaultAsync(e => e.SeriesMasterId == entity.Id && e.RecurrenceId == request.RecurrenceId && e.IsException && e.DeletedAt == null, ct);
 
                 if (existingException != null)
                 {
+                    var prevStatus = existingException.Status;
                     existingException.Title = request.Title;
                     existingException.Description = request.Description;
                     existingException.Location = request.Location;
@@ -474,10 +490,13 @@ public class CalendarService
                     existingException.DtEnd = normalizedEnd;
                     if (request.IsAllDay.HasValue) existingException.IsAllDay = request.IsAllDay.Value;
                     if (request.TimeZoneId is not null) existingException.TimeZoneId = request.TimeZoneId;
-                    existingException.UpdatedAt = DateTimeOffset.UtcNow;
+                    existingException.UpdatedAt = _timeProvider.GetUtcNow();
                     ApplyUnifiedFields(existingException, request);
                     existingException.RecurrenceId = request.RecurrenceId;
                     existingException.RRule = null;
+                    // Preserve CANCELLED — do not auto-revert
+                    if (string.Equals(prevStatus, "CANCELLED", StringComparison.OrdinalIgnoreCase))
+                        existingException.Status = prevStatus;
                     await _db.SaveChangesAsync(ct);
                     return EventResponseMapper.Map(existingException);
                 }
@@ -526,12 +545,12 @@ public class CalendarService
             entity.IsAllDay = request.IsAllDay.Value;
         if (request.TimeZoneId is not null)
             entity.TimeZoneId = request.TimeZoneId;
-        entity.UpdatedAt = DateTimeOffset.UtcNow;
+        entity.UpdatedAt = _timeProvider.GetUtcNow();
 
         ApplyUnifiedFields(entity, request);
 
-        // PR3: Series / exception handling for updates
-        if (request.IsException)
+        // PR3: Series / exception handling for updates (bool? handling)
+        if (request.IsException == true)
         {
             if (!request.SeriesMasterId.HasValue || string.IsNullOrEmpty(request.RecurrenceId))
                 throw new DomainException(02009, "例外必须指定系列主事件和原始发生时间");
@@ -555,13 +574,13 @@ public class CalendarService
             // If RRule cleared, clear master flag
             if (entity.IsSeriesMaster && string.IsNullOrEmpty(request.RRule))
                 entity.IsSeriesMaster = false;
-            // Explicit master flag from request
-            if (request.IsSeriesMaster)
+            // Explicit master flag from request (bool? : null => false)
+            if (request.IsSeriesMaster == true)
                 entity.IsSeriesMaster = true;
         }
 
         // Update RecurrenceId for exception if provided
-        if (request.IsException && !string.IsNullOrEmpty(request.RecurrenceId))
+        if (request.IsException == true && !string.IsNullOrEmpty(request.RecurrenceId))
             entity.RecurrenceId = request.RecurrenceId;
 
         await _db.SaveChangesAsync(ct);
@@ -599,7 +618,7 @@ public class CalendarService
         {
             // Delete single occurrence -> create/update CANCELLED exception
             var recId = recurrenceId;
-            // If recurrenceId not supplied separately, try to infer from entity if it's an exception
+            // If recurrenceId not supplied separately, try to infer from entity if it's an exception or from request
             if (string.IsNullOrEmpty(recId) && entity.IsException)
                 recId = entity.RecurrenceId;
 
@@ -613,7 +632,7 @@ public class CalendarService
                 if (existing != null)
                 {
                     existing.Status = "CANCELLED";
-                    existing.UpdatedAt = DateTimeOffset.UtcNow;
+                    existing.UpdatedAt = _timeProvider.GetUtcNow();
                     await _db.SaveChangesAsync(ct);
                     return;
                 }
@@ -648,19 +667,55 @@ public class CalendarService
             if (entity.IsException)
             {
                 entity.Status = "CANCELLED";
-                entity.UpdatedAt = DateTimeOffset.UtcNow;
+                entity.UpdatedAt = _timeProvider.GetUtcNow();
                 await _db.SaveChangesAsync(ct);
                 return;
             }
 
             // Non-series entity with scope=this -> soft delete as fallback
-            entity.DeletedAt = DateTimeOffset.UtcNow;
+            entity.DeletedAt = _timeProvider.GetUtcNow();
             await _db.SaveChangesAsync(ct);
             return;
         }
 
         // scope=series or null: soft-delete master/exception cascade
-        entity.DeletedAt = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
+        var isScopeSeries = string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase);
+        // If target is exception and scope=series, resolve master and cascade delete master + all its exceptions
+        if (entity.IsException && isScopeSeries)
+        {
+            if (entity.SeriesMasterId.HasValue)
+            {
+                var master = await _db.Set<EventEntity>()
+                    .FirstOrDefaultAsync(e => e.Id == entity.SeriesMasterId.Value && e.Calendar.UserId == UserId, ct);
+                if (master != null)
+                {
+                    master.DeletedAt = now;
+                    master.UpdatedAt = now;
+                    var exceptions = await _db.Set<EventEntity>()
+                        .Where(e => e.SeriesMasterId == master.Id && e.IsException && e.DeletedAt == null)
+                        .ToListAsync(ct);
+                    foreach (var ex in exceptions)
+                    {
+                        ex.DeletedAt = now;
+                        ex.UpdatedAt = now;
+                    }
+                    // Also ensure the triggering exception is soft-deleted (covered above if it's in the set, but also explicitly)
+                    entity.DeletedAt = now;
+                    entity.UpdatedAt = now;
+                    await _db.SaveChangesAsync(ct);
+                    return;
+                }
+            }
+            // Fallback: if master not found, just soft-delete the exception
+            entity.DeletedAt = now;
+            entity.UpdatedAt = now;
+            await _db.SaveChangesAsync(ct);
+            return;
+        }
+
+        entity.DeletedAt = now;
+        entity.UpdatedAt = now;
 
         // PR3: cascade delete exceptions when deleting a series master
         if (entity.IsSeriesMaster)
@@ -669,7 +724,10 @@ public class CalendarService
                 .Where(e => e.SeriesMasterId == entity.Id && e.IsException && e.DeletedAt == null)
                 .ToListAsync(ct);
             foreach (var ex in exceptions)
-                ex.DeletedAt = DateTimeOffset.UtcNow;
+            {
+                ex.DeletedAt = now;
+                ex.UpdatedAt = now;
+            }
         }
 
         await _db.SaveChangesAsync(ct);
@@ -682,7 +740,7 @@ public class CalendarService
             .ToListAsync(ct);
 
         foreach (var entity in entities)
-            entity.DeletedAt = DateTimeOffset.UtcNow;
+            entity.DeletedAt = _timeProvider.GetUtcNow();
 
         if (entities.Count > 0)
             await _db.SaveChangesAsync(ct);
@@ -843,9 +901,9 @@ public class CalendarService
         {
             task.Status = request.Status;
             if (request.Status == "COMPLETED")
-                task.CompletedAt = DateTimeOffset.UtcNow;
+                task.CompletedAt = _timeProvider.GetUtcNow();
         }
-        task.UpdatedAt = DateTimeOffset.UtcNow;
+        task.UpdatedAt = _timeProvider.GetUtcNow();
 
         await _db.SaveChangesAsync(ct);
         return MapTask(task);
@@ -871,7 +929,7 @@ public class CalendarService
         if (request.EstimatedDuration is not null)
             task.EstimatedDuration = estimatedDuration;
         task.IsInbox = false;
-        task.UpdatedAt = DateTimeOffset.UtcNow;
+        task.UpdatedAt = _timeProvider.GetUtcNow();
 
         await _db.SaveChangesAsync(ct);
         return MapTask(task);
@@ -921,7 +979,7 @@ public class CalendarService
             .Include(t => t.Calendar)
             .Where(t => t.UserId == UserId && ids.Contains(t.Id))
             .ToListAsync(ct);
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
 
         foreach (var task in tasks)
         {
@@ -1005,7 +1063,7 @@ public class CalendarService
         else if (request.Duration.HasValue && request.ScheduledStart.HasValue)
             task.PlannedEnd = newEnd;
 
-        task.UpdatedAt = DateTimeOffset.UtcNow;
+        task.UpdatedAt = _timeProvider.GetUtcNow();
         await _db.SaveChangesAsync(ct);
     }
 
@@ -1015,7 +1073,7 @@ public class CalendarService
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
             ?? throw new DomainException(02004, "任务不存在");
 
-        task.DeletedAt = DateTimeOffset.UtcNow;
+        task.DeletedAt = _timeProvider.GetUtcNow();
         await _db.SaveChangesAsync(ct);
     }
 

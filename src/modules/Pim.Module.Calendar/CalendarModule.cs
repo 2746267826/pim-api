@@ -359,12 +359,24 @@ public class CalendarModule : IModule
 
         group.MapPut("/events/{id:guid}", async (
             Guid id, [FromBody] UpdateEventRequest req,
+            [FromQuery] string? scope,
+            [FromQuery] string? recurrenceId,
             [FromServices] CalendarService svc, CancellationToken ct) =>
-            Results.Ok(ApiResponse<EventResponse>.Ok(await svc.UpdateEventAsync(id, req, ct))));
+        {
+            if (!string.IsNullOrEmpty(recurrenceId) && string.IsNullOrEmpty(req.RecurrenceId))
+                req = req with { RecurrenceId = recurrenceId };
+            return Results.Ok(ApiResponse<EventResponse>.Ok(await svc.UpdateEventAsync(id, req, scope, ct)));
+        });
 
         group.MapDelete("/events/{id:guid}", async (
-            Guid id, [FromServices] CalendarDeleteService svc, CancellationToken ct) =>
-            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.DeleteEventAsync(id, ct))));
+            Guid id,
+            [FromQuery] string? scope,
+            [FromQuery] string? recurrenceId,
+            [FromServices] CalendarService svc, CancellationToken ct) =>
+        {
+            await svc.DeleteEventAsync(id, scope, recurrenceId, ct);
+            return Results.Ok(ApiResponse<string>.Ok("已删除"));
+        });
 
         group.MapPost("/events/{id:guid}/restore", async (
             Guid id,
