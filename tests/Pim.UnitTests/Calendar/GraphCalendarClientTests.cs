@@ -135,7 +135,7 @@ public sealed class GraphCalendarClientTests
         var uri = req.RequestUri!.AbsoluteUri;
         Assert.Contains("startDateTime=2026-07-01T00%3A00%3A00Z", uri);
         Assert.Contains("endDateTime=2026-07-31T00%3A00%3A00Z", uri);
-        Assert.Contains("$select=id,subject,body,start,end,location,isAllDay,type,seriesMasterId,recurrence,iCalUId,changeKey,originalStartTimeZone,originalEndTimeZone", uri);
+        Assert.Contains("$select=id,subject,body,start,end,location,isAllDay,type,seriesMasterId,recurrence,iCalUId,changeKey,originalStart,originalStartTimeZone,originalEndTimeZone,isCancelled", uri);
         Assert.Contains(req.Headers, h => h.Key == "Prefer" && h.Value.Contains("outlook.timezone=\"UTC\""));
         Assert.Contains(req.Headers, h => h.Key == "Prefer" && h.Value.Contains("IdType=\"ImmutableId\""));
     }
@@ -150,7 +150,7 @@ public sealed class GraphCalendarClientTests
 
         var req = Assert.Single(handler.Requests);
         Assert.Contains("/me/calendars/cal1/events", req.RequestUri!.AbsoluteUri);
-        Assert.Contains("$select=id,subject,body,start,end,location,isAllDay,type,seriesMasterId,recurrence,iCalUId,changeKey,originalStartTimeZone,originalEndTimeZone", req.RequestUri!.AbsoluteUri);
+        Assert.Contains("$select=id,subject,body,start,end,location,isAllDay,type,seriesMasterId,recurrence,iCalUId,changeKey,originalStart,originalStartTimeZone,originalEndTimeZone,isCancelled", req.RequestUri!.AbsoluteUri);
     }
 
     [Fact]
