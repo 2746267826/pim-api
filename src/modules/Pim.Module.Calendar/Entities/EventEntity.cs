@@ -19,6 +19,20 @@ public class EventEntity : ISoftDeletable
     [Column("rrule")] public string? RRule { get; set; }
     [Column("status")][MaxLength(20)] public string Status { get; set; } = "CONFIRMED";
     [Column("organizer")][MaxLength(255)] public string? Organizer { get; set; }
+    [Column("description_format")][MaxLength(10)] public string? DescriptionFormat { get; set; }
+    [Column("show_as")][MaxLength(20)] public string? ShowAs { get; set; }
+    [Column("importance")][MaxLength(20)] public string? Importance { get; set; }
+    [Column("sensitivity")][MaxLength(20)] public string? Sensitivity { get; set; }
+    [Column("categories", TypeName = "jsonb")] public string CategoriesJson { get; set; } = "[]";
+    [Column("is_reminder_on")] public bool IsReminderOn { get; set; }
+    [Column("reminder_minutes_before_start")] public int? ReminderMinutesBeforeStart { get; set; }
+    [Column("organizer_json", TypeName = "jsonb")] public string? OrganizerJson { get; set; }
+    [Column("attendees", TypeName = "jsonb")] public string AttendeesJson { get; set; } = "[]";
+    [Column("is_online_meeting")] public bool IsOnlineMeeting { get; set; }
+    [Column("online_meeting_provider")][MaxLength(50)] public string? OnlineMeetingProvider { get; set; }
+    [Column("online_meeting_url")] public string? OnlineMeetingUrl { get; set; }
+    [Column("external_link")] public string? ExternalLink { get; set; }
+    [Column("attachment_references", TypeName = "jsonb")] public string AttachmentReferencesJson { get; set; } = "[]";
     [Column("source")][MaxLength(20)] public string Source { get; set; } = "manual";
     [Column("outlook_event_id")][MaxLength(255)] public string? OutlookEventId { get; set; }
     [Column("outlook_connection_id")] public Guid? OutlookConnectionId { get; set; }

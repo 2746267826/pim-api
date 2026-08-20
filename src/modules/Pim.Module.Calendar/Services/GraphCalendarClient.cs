@@ -6,6 +6,21 @@ namespace Pim.Module.Calendar.Services;
 
 public sealed record GraphPage(IReadOnlyList<JsonElement> Items, string? NextLink);
 
+public sealed record GraphBinaryContent(Stream Content, string ContentType, string? FileName)
+{
+    public static string SanitizeFileName(string? fileName)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return "attachment";
+
+        var sanitized = new string(fileName
+            .Where(ch => ch >= 0x20 && ch != '"' && ch != '/' && ch != '\\' && ch != ';')
+            .ToArray()).Trim();
+
+        return string.IsNullOrEmpty(sanitized) ? "attachment" : sanitized;
+    }
+}
+
 public sealed class GraphRequestException : HttpRequestException
 {
     public GraphRequestException(HttpStatusCode statusCode, string message)
@@ -20,20 +35,26 @@ public sealed class GraphCalendarClient
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(30);
 
     private static readonly string CalendarEventSelect =
-        "id,subject,body,start,end,location,isAllDay,type,seriesMasterId,recurrence,iCalUId,changeKey,originalStartTimeZone,originalEndTimeZone";
+        "id,subject,body,start,end,location,isAllDay,type,seriesMasterId,recurrence,iCalUId,changeKey,originalStartTimeZone,originalEndTimeZone" +
+        ",importance,sensitivity,showAs,categories,isReminderOn,reminderMinutesBeforeStart" +
+        ",organizer,attendees,isOnlineMeeting,onlineMeetingProvider,onlineMeeting,webLink" +
+        ",responseRequested,allowNewTimeProposals,hideAttendees,hasAttachments";
 
     private readonly HttpClient _httpClient;
     private readonly IOutlookAccessTokenProvider _tokenProvider;
     private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _bodyReadTimeout;
 
     public GraphCalendarClient(
         IHttpClientFactory httpClientFactory,
         IOutlookAccessTokenProvider tokenProvider,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        TimeSpan? bodyReadTimeout = null)
     {
         _httpClient = httpClientFactory.CreateClient("outlook");
         _tokenProvider = tokenProvider;
         _timeProvider = timeProvider;
+        _bodyReadTimeout = bodyReadTimeout ?? PerAttemptTimeout;
     }
 
     public async Task<JsonElement> GetMeAsync(Guid connectionId, CancellationToken ct)
@@ -78,6 +99,207 @@ public sealed class GraphCalendarClient
         => ReadSingleAsync(connectionId, token => BuildGet(
             $"me/calendars/{EscapeDataString(calendarId)}/events/{EscapeDataString(eventId)}?$select={CalendarEventSelect}",
             token), ct, allowNull: true);
+
+    public IAsyncEnumerable<GraphPage> GetEventAttachmentsAsync(
+        Guid connectionId, string calendarId, string eventId, CancellationToken ct)
+        => GetPagesAsync(connectionId,
+            $"{GraphBase}me/calendars/{EscapeDataString(calendarId)}/events/{EscapeDataString(eventId)}" +
+            "/attachments?$select=id,name,contentType,size,isInline,@odata.type", ct);
+
+    public async Task<GraphBinaryContent> DownloadEventAttachmentAsync(
+        Guid connectionId, string calendarId, string eventId, string attachmentId, CancellationToken ct)
+    {
+        var token = await _tokenProvider.AcquireAccessTokenAsync(connectionId, false, ct);
+        var replayed401 = false;
+
+        for (var attempt = 1; attempt <= MaxReadAttempts; attempt++)
+        {
+            using var request = BuildGet(
+                $"me/calendars/{EscapeDataString(calendarId)}/events/{EscapeDataString(eventId)}" +
+                $"/attachments/{EscapeDataString(attachmentId)}/$value", token);
+            HttpResponseMessage? response = null;
+
+            try
+            {
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeoutCts.CancelAfter(PerAttemptTimeout);
+
+                try
+                {
+                    response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    if (attempt < MaxReadAttempts)
+                    {
+                        await BackoffAsync(null, attempt, ct);
+                        continue;
+                    }
+                    throw;
+                }
+                catch (HttpRequestException)
+                {
+                    if (attempt < MaxReadAttempts)
+                    {
+                        await BackoffAsync(null, attempt, ct);
+                        continue;
+                    }
+                    throw;
+                }
+
+                if (response.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    response.Dispose();
+                    response = null;
+                    if (replayed401)
+                        throw new OutlookReauthenticationRequiredException("graph-unauthorized");
+                    if (attempt == MaxReadAttempts)
+                        throw new GraphRequestException(
+                            HttpStatusCode.Unauthorized,
+                            "Read request failed after retries");
+                    replayed401 = true;
+                    token = await _tokenProvider.AcquireAccessTokenAsync(connectionId, true, ct);
+                    continue;
+                }
+
+                if (IsRetryableStatusCode(response.StatusCode))
+                {
+                    var retryAfter = response.Headers.RetryAfter;
+                    var lastStatus = response.StatusCode;
+                    response.Dispose();
+                    response = null;
+                    if (attempt < MaxReadAttempts)
+                    {
+                        await BackoffAsync(retryAfter, attempt, ct);
+                        continue;
+                    }
+                    throw new GraphRequestException(lastStatus, "Read request failed after retries");
+                }
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var stream = await response.Content.ReadAsStreamAsync(ct);
+                    var contentType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+                    var fileName = GraphBinaryContent.SanitizeFileName(ParseContentDispositionFileName(response));
+                    var content = new GraphBinaryContent(
+                        new ResponseDisposingStream(stream, response, _bodyReadTimeout), contentType, fileName);
+                    response = null;
+                    return content;
+                }
+
+                var status = response.StatusCode;
+                response.Dispose();
+                response = null;
+                throw new GraphRequestException(status, "Read request failed");
+            }
+            finally
+            {
+                response?.Dispose();
+            }
+        }
+
+        throw new InvalidOperationException("Unreachable");
+    }
+
+    private static string? ParseContentDispositionFileName(HttpResponseMessage response)
+    {
+        if (!response.Content.Headers.TryGetValues("Content-Disposition", out var values))
+            return null;
+
+        var raw = string.Join(";", values);
+        foreach (var part in raw.Split(';'))
+        {
+            var trimmed = part.Trim();
+            if (!trimmed.StartsWith("filename=", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var value = trimmed["filename=".Length..].Trim().Trim('"');
+            return value.Length == 0 ? null : value;
+        }
+
+        return null;
+    }
+
+    private sealed class ResponseDisposingStream : Stream
+    {
+        private readonly Stream _inner;
+        private readonly HttpResponseMessage _response;
+        private readonly TimeSpan _bodyReadTimeout;
+
+        public ResponseDisposingStream(Stream inner, HttpResponseMessage response, TimeSpan bodyReadTimeout)
+        {
+            _inner = inner;
+            _response = response;
+            _bodyReadTimeout = bodyReadTimeout;
+        }
+
+        public override bool CanRead => _inner.CanRead;
+        public override bool CanSeek => _inner.CanSeek;
+        public override bool CanWrite => _inner.CanWrite;
+        public override long Length => _inner.Length;
+
+        public override long Position
+        {
+            get => _inner.Position;
+            set => _inner.Position = value;
+        }
+
+        public override void Flush()
+            => _inner.Flush();
+
+        public override int Read(byte[] buffer, int offset, int count)
+            => ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+
+        public override long Seek(long offset, SeekOrigin origin)
+            => _inner.Seek(offset, origin);
+
+        public override void SetLength(long value)
+            => _inner.SetLength(value);
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => _inner.Write(buffer, offset, count);
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(_bodyReadTimeout);
+
+            try
+            {
+                return await _inner.ReadAsync(buffer, timeoutCts.Token);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new IOException("The response body read timed out.", ex);
+            }
+        }
+
+        public override async Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken)
+            => await ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
+
+        public override async ValueTask DisposeAsync()
+        {
+            await _inner.DisposeAsync();
+            _response.Dispose();
+            await base.DisposeAsync();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _inner.Dispose();
+                _response.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
 
     public Task<JsonElement> CreateEventAsync(
         Guid connectionId, string calendarId,

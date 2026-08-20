@@ -209,7 +209,7 @@ public sealed class DataCenterQueryService
             c.Status,
             c.LastSyncedAt ?? c.CreatedAt,
             c.AccessTokenExpiresAt,
-            FirstText(c.TokenHealth, c.LastError, c.DeltaLink))));
+            FirstText(c.TokenHealth, c.LastError))));
 
         var syncBatches = await _db.Set<OutlookSyncBatchEntity>()
             .AsNoTracking()
@@ -237,10 +237,13 @@ public sealed class DataCenterQueryService
             c.Status,
             c.CreatedAt,
             c.UpdatedAt,
-            FirstText($"GraphEventId={c.GraphEventId ?? "unknown"}", c.PimSnapshotJson, c.ExternalSnapshotJson))));
+            FirstText(
+                AuditSnapshotSanitizer.SanitizeJson(c.PimSnapshotJson),
+                AuditSnapshotSanitizer.SanitizeJson(c.ExternalSnapshotJson)))));
 
         var auditVersions = await _db.Set<AuditVersionEntity>()
             .AsNoTracking()
+            .Where(v => v.UserId == userId)
             .ToListAsync(ct);
         items.AddRange(auditVersions.Select(v => new DataCenterItem(
             "audit-version",
@@ -250,7 +253,10 @@ public sealed class DataCenterQueryService
             "recorded",
             v.CreatedAt,
             null,
-            FirstText(v.ChangedFieldsJson, v.AfterJson, v.BeforeJson))));
+            FirstText(
+                AuditSnapshotSanitizer.SanitizeJson(v.ChangedFieldsJson),
+                AuditSnapshotSanitizer.SanitizeJson(v.AfterJson),
+                AuditSnapshotSanitizer.SanitizeJson(v.BeforeJson)))));
 
         var confirmations = await _db.OperationConfirmations
             .AsNoTracking()
@@ -384,8 +390,7 @@ public sealed class DataCenterQueryService
         Add(e.Calendar.Name);
         if (e.Source.StartsWith("outlook", StringComparison.OrdinalIgnoreCase))
         {
-            Add($"GraphEventId={e.OutlookEventId ?? "unknown"}");
-            Add($"ChangeKey={e.OutlookChangeKey ?? "unknown"}");
+            Add("Outlook event (external identifiers hidden)");
         }
 
         return string.Join(" | ", parts);

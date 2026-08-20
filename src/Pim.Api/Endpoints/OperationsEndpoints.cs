@@ -85,8 +85,8 @@ public static class OperationsEndpoints
             ICurrentUserService currentUser,
             CancellationToken ct) =>
         {
-            _ = RequireCurrentUserId(currentUser);
-            var result = await audit.GetTimelineAsync(objectType, objectId, ct);
+            var userId = RequireCurrentUserId(currentUser);
+            var result = await audit.GetTimelineAsync(objectType, objectId, userId, ct);
             return Results.Ok(ApiResponse<object>.Ok(result));
         });
 
@@ -96,8 +96,8 @@ public static class OperationsEndpoints
             ICurrentUserService currentUser,
             CancellationToken ct) =>
         {
-            _ = RequireCurrentUserId(currentUser);
-            var result = await audit.PreviewRestoreAsync(auditVersionId, ct);
+            var userId = RequireCurrentUserId(currentUser);
+            var result = await audit.PreviewRestoreAsync(auditVersionId, userId, ct);
             return Results.Ok(ApiResponse<object>.Ok(result));
         });
 
@@ -108,10 +108,11 @@ public static class OperationsEndpoints
             ICurrentUserService currentUser,
             CancellationToken ct) =>
         {
-            _ = RequireCurrentUserId(currentUser);
+            var userId = RequireCurrentUserId(currentUser);
             var result = await audit.ExportAsync(
                 start ?? DateTimeOffset.MinValue,
                 end ?? DateTimeOffset.MaxValue,
+                userId,
                 ct);
             return Results.Ok(ApiResponse<object>.Ok(result));
         });

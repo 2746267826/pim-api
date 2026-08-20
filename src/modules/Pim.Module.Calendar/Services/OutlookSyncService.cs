@@ -242,7 +242,7 @@ public class OutlookSyncService
 
                 if (!string.IsNullOrWhiteSpace(page.NextLink))
                 {
-                    AddStep(steps, "Follow nextLink", "completed", page.NextLink);
+                    AddStep(steps, "Follow nextLink", "completed", "Pagination continued.");
                     nextUrl = page.NextLink;
                     continue;
                 }
@@ -250,7 +250,7 @@ public class OutlookSyncService
                 if (!string.IsNullOrWhiteSpace(page.DeltaLink))
                 {
                     connection.DeltaLink = page.DeltaLink;
-                    AddStep(steps, "Store deltaLink", "completed", page.DeltaLink);
+                    AddStep(steps, "Store deltaLink", "completed", "Delta link stored.");
                 }
 
                 nextUrl = null;
@@ -401,7 +401,11 @@ public class OutlookSyncService
                 ?? throw new DomainException(02005, "Outlook is not connected.");
             var accessToken = await GetAccessTokenAsync(connection, ct)
                 ?? throw new DomainException(02005, "Outlook token is not available.");
-            var evt = await _db.Set<EventEntity>().FindAsync(new object[] { eventId }, ct)
+            // Deliberately the same 02001 as "event missing": not revealing whether
+            // the event exists prevents cross-user id enumeration.
+            var evt = await _db.Set<EventEntity>()
+                .Include(e => e.Calendar)
+                .FirstOrDefaultAsync(e => e.Id == eventId && e.Calendar.UserId == userId, ct)
                 ?? throw new DomainException(02001, "Event does not exist.");
             if (string.IsNullOrWhiteSpace(evt.OutlookEventId))
                 throw new DomainException(02038, "Event is not linked to an Outlook event.");
@@ -449,6 +453,7 @@ public class OutlookSyncService
                 ["title", "location", "dtStart", "dtEnd"],
                 confirmationId,
                 Provider,
+                userId,
                 ct);
             await _confirmationService.MarkExecutedAsync(
                 confirmationId,
@@ -569,7 +574,7 @@ public class OutlookSyncService
                 true,
                 BeforeJson: pimSnapshotJson,
                 AfterJson: externalSnapshotJson,
-                ExternalEffect: string.IsNullOrWhiteSpace(outlookEvent.Id) ? null : $"GraphEventId={outlookEvent.Id}",
+                ExternalEffect: "Outlook event changed remotely (details hidden)",
                 RecoveryPath: "Review the Outlook conflict queue before applying external changes."),
             ct);
 

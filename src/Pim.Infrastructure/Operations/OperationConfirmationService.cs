@@ -1,7 +1,9 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
+using Pim.Infrastructure.Audit;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 
@@ -334,9 +336,30 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             && property.GetBoolean();
     }
 
+    private static readonly Regex ExternalEffectToken = new(
+        "(?:GraphEventId|ChangeKey|ETag|DeltaLink|@odata\\.etag)=[^\\s,;]+",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>Redacts provider token assignments inside free-text effect summaries.</summary>
+    private static string RedactExternalEffect(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return value ?? string.Empty;
+        }
+
+        return ExternalEffectToken.Replace(value, "***");
+    }
+
     private static OperationConfirmationDto Map(OperationConfirmationEntity entity)
     {
-        var metadata = ExtractMetadata(entity.PreviewJson);
+        var payloadJson = AuditSnapshotSanitizer.SanitizeJson(entity.PayloadJson);
+        var previewJson = AuditSnapshotSanitizer.SanitizeJson(entity.PreviewJson);
+        var resultJson = entity.ResultJson is null
+            ? null
+            : AuditSnapshotSanitizer.SanitizeJson(entity.ResultJson);
+        var metadata = ExtractMetadata(previewJson);
+        var redactedEffect = RedactExternalEffect(metadata.ExternalEffect);
         return new OperationConfirmationDto(
             entity.Id,
             entity.RequestedByUserId,
@@ -344,26 +367,26 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             entity.Summary,
             ParseRiskLevel(entity.RiskLevel),
             entity.Source,
-            entity.PayloadJson,
-            entity.PreviewJson,
+            payloadJson,
+            previewJson,
             Enum.Parse<OperationConfirmationStatus>(entity.Status),
             entity.ExpiresAt,
             entity.CreatedAt,
             entity.ConfirmedAt,
             entity.ExecutedAt,
-            entity.ResultJson,
+            resultJson,
             entity.CorrelationId,
             metadata.ChangedFields,
             metadata.AllowedActions,
             metadata.ObjectType,
             metadata.ObjectId,
             metadata.RequiresSecondLevelConfirmation,
-            metadata.BeforeJson,
-            metadata.AfterJson,
+            AuditSnapshotSanitizer.SanitizeJson(metadata.BeforeJson),
+            AuditSnapshotSanitizer.SanitizeJson(metadata.AfterJson),
             metadata.RequiresStrictConfirmation,
             metadata.AuditBatchId,
             metadata.AiRecommendation,
-            metadata.ExternalEffect,
+            redactedEffect,
             metadata.RecoveryPath);
     }
 

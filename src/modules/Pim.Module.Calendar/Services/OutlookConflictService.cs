@@ -174,6 +174,7 @@ public sealed class OutlookConflictService
             ["source", "outlookEventId", "outlookChangeKey", "outlookEtag", "updatedAt"],
             confirmationId,
             "outlook",
+            UserId,
             ct);
 
         await _confirmations.MarkExecutedAsync(
@@ -220,6 +221,10 @@ public sealed class OutlookConflictService
             outlook = JsonDocument.Parse(externalSnapshotJson).RootElement
         });
 
+        // The raw Graph event id must never leave the server: it is redacted from
+        // payload/preview JSON by AuditSnapshotSanitizer and the effect text is static.
+        _ = graphEventId;
+
         return await _confirmations.CreateAsync(
             new CreateOperationConfirmationRequest(
                 UserId,
@@ -239,7 +244,7 @@ public sealed class OutlookConflictService
                 BeforeJson: pimSnapshotJson,
                 AfterJson: externalSnapshotJson,
                 RequiresStrictConfirmation: risk == OperationRiskLevel.L4BatchOrDestructiveGovernance,
-                ExternalEffect: graphEventId is null ? null : $"GraphEventId={graphEventId}",
+                ExternalEffect: "Graph event conflict (details hidden)",
                 RecoveryPath: "Use audit timeline or conflict queue to revisit this decision."),
             ct);
     }
@@ -266,10 +271,10 @@ public sealed class OutlookConflictService
             conflict.Provider,
             conflict.ObjectType,
             conflict.ObjectId,
-            conflict.GraphEventId,
+            GraphEventId: null,
             conflict.ConflictKind,
             conflict.Status,
-            conflict.PimSnapshotJson,
-            conflict.ExternalSnapshotJson,
+            AuditSnapshotSanitizer.SanitizeJson(conflict.PimSnapshotJson),
+            AuditSnapshotSanitizer.SanitizeJson(conflict.ExternalSnapshotJson),
             conflict.ResolvedConfirmationId);
 }

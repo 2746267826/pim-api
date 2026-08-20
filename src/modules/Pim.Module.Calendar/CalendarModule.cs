@@ -64,6 +64,7 @@ public class CalendarModule : IModule
 
         // New lightweight chain (Task 7)
         services.AddScoped<GraphCalendarClient>();
+        services.AddScoped<EventAttachmentService>();
         services.AddScoped<OutlookCalendarSyncService>();
         services.AddScoped<OutlookEventWriteService>();
         services.AddScoped<OutlookCalendarSyncJob>();
@@ -377,6 +378,29 @@ public class CalendarModule : IModule
             [FromServices] CalendarDeleteService svc,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.BatchDeleteEventsAsync(req.Ids, ct))));
+
+        group.MapGet("/events/{eventId:guid}/attachments/{attachmentId}/download", async (
+            Guid eventId,
+            string attachmentId,
+            [FromServices] EventAttachmentService svc,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            if (currentUser.UserId is not { } userId)
+                return Results.NotFound();
+
+            try
+            {
+                var download = await svc.DownloadOutlookAttachmentAsync(userId, eventId, attachmentId, ct);
+                return download is null
+                    ? Results.NotFound()
+                    : Results.File(download.Content, download.ContentType, download.FileName);
+            }
+            catch (OutlookReauthenticationRequiredException)
+            {
+                return Results.Conflict(ApiResponse<string>.Error(02009, "Outlook 连接需要重新授权。"));
+            }
+        });
 
         // Tasks
         group.MapGet("/tasks", async (
@@ -1097,6 +1121,8 @@ public static class CalendarEndpointPaths
     public const string RequestReportSuggestionAction = "/api/v1/calendar/reports/suggestions/{id}/request-action";
 
     public static string TaskPlan(string id) => $"{Root}/tasks/{id}/plan";
+    public static string EventAttachmentDownload(Guid eventId, string attachmentId) =>
+        $"{Root}/events/{eventId}/attachments/{attachmentId}/download";
     public static string RecycleRestorePreview(string type, string id) => $"{RecycleBin}/{type}/{id}/restore-preview";
     public static string RecycleRestore(string type, string id) => $"{RecycleBin}/{type}/{id}/restore";
     public static string OutlookDeviceCodeCancel(Guid sessionId) => $"{OutlookDeviceCode}/{sessionId}/cancel";

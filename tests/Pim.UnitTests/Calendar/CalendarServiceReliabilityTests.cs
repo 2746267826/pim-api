@@ -83,6 +83,39 @@ public class CalendarServiceReliabilityTests
     }
 
     [Fact]
+    public async Task UpdateEventAsync_RejectsAnotherUsersTargetCalendar_Throws02003_NoChangePersisted()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, "My Calendar", "calendar");
+        var otherUsersCalendar = new CalendarEntity
+        {
+            UserId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            Name = "Other user's calendar",
+            Kind = "calendar",
+        };
+        db.Set<CalendarEntity>().Add(otherUsersCalendar);
+        var evt = SeedEvent(db, calendar, "Original event");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.UpdateEventAsync(
+                evt.Id,
+                new UpdateEventRequest(
+                    otherUsersCalendar.Id, "Updated", null, null,
+                    new DateTimeOffset(2026, 7, 21, 14, 0, 0, TimeSpan.FromHours(8)),
+                    new DateTimeOffset(2026, 7, 21, 15, 0, 0, TimeSpan.FromHours(8)),
+                    null),
+                default));
+
+        Assert.Equal(02003, ex.ErrorCode);
+        Assert.Equal("日历不存在", ex.Message);
+        var entity = await db.Set<EventEntity>().AsNoTracking().SingleAsync();
+        Assert.Equal("Original event", entity.Title);
+        Assert.Equal(calendar.Id, entity.CalendarId);
+    }
+
+    [Fact]
     public async Task UpdateEventAsync_NormalizesAndValidatesRange()
     {
         await using var db = CreateDb();
@@ -290,7 +323,102 @@ public class CalendarServiceReliabilityTests
         Assert.Null(entity.EstimatedDuration);
     }
 
+    [Fact]
+    public async Task CreateTaskAsync_RejectsUnknownCalendarId_Throws02003_NoTaskPersisted()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateTaskAsync(
+                new CreateTaskRequest(
+                    Guid.NewGuid(), "Task", null, 0, null, null, null, null, null, null),
+                default));
+
+        Assert.Equal(02003, ex.ErrorCode);
+        Assert.Equal("日历不存在", ex.Message);
+        Assert.Empty(await db.Set<TaskEntity>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task CreateTaskAsync_RejectsAnotherUsersCalendar_Throws02003_NoTaskPersisted()
+    {
+        await using var db = CreateDb();
+        var otherUsersCalendar = new CalendarEntity
+        {
+            UserId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            Name = "Other user's tasks",
+            Kind = "task",
+        };
+        db.Set<CalendarEntity>().Add(otherUsersCalendar);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.CreateTaskAsync(
+                new CreateTaskRequest(
+                    otherUsersCalendar.Id, "Task", null, 0, null, null, null, null, null, null),
+                default));
+
+        Assert.Equal(02003, ex.ErrorCode);
+        Assert.Equal("日历不存在", ex.Message);
+        Assert.Empty(await db.Set<TaskEntity>().ToListAsync());
+    }
+
     // ========== UpdateTaskAsync ==========
+
+    [Fact]
+    public async Task UpdateTaskAsync_RejectsUnknownCalendarId_Throws02003_NoChangePersisted()
+    {
+        await using var db = CreateDb();
+        var task = SeedTask(db, "Original");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.UpdateTaskAsync(
+                task.Id,
+                new UpdateTaskRequest(
+                    Guid.NewGuid(), "Updated", null, 0,
+                    null, null, null, null, null, null),
+                default));
+
+        Assert.Equal(02003, ex.ErrorCode);
+        Assert.Equal("日历不存在", ex.Message);
+        var entity = await db.Set<TaskEntity>().AsNoTracking().SingleAsync();
+        Assert.Equal("Original", entity.Title);
+        Assert.Null(entity.CalendarId);
+    }
+
+    [Fact]
+    public async Task UpdateTaskAsync_RejectsAnotherUsersCalendar_Throws02003_NoChangePersisted()
+    {
+        await using var db = CreateDb();
+        var otherUsersCalendar = new CalendarEntity
+        {
+            UserId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            Name = "Other user's tasks",
+            Kind = "task",
+        };
+        db.Set<CalendarEntity>().Add(otherUsersCalendar);
+        var task = SeedTask(db, "Original");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.UpdateTaskAsync(
+                task.Id,
+                new UpdateTaskRequest(
+                    otherUsersCalendar.Id, "Updated", null, 0,
+                    null, null, null, null, null, null),
+                default));
+
+        Assert.Equal(02003, ex.ErrorCode);
+        Assert.Equal("日历不存在", ex.Message);
+        var entity = await db.Set<TaskEntity>().AsNoTracking().SingleAsync();
+        Assert.Equal("Original", entity.Title);
+        Assert.Null(entity.CalendarId);
+    }
 
     [Fact]
     public async Task UpdateTaskAsync_NormalizesPlus08ToUtc()
@@ -644,6 +772,35 @@ public class CalendarServiceReliabilityTests
     }
 
     // ========== MoveTaskAsync ==========
+
+    [Fact]
+    public async Task MoveTaskAsync_RejectsAnotherUsersTask_Throws02004()
+    {
+        await using var db = CreateDb();
+        var otherTask = new TaskEntity
+        {
+            UserId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            Uid = "other-user-task@pim",
+            Title = "Other user's task"
+        };
+        db.Set<TaskEntity>().Add(otherTask);
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        await Assert.ThrowsAsync<DomainException>(() =>
+            service.MoveTaskAsync(
+                otherTask.Id,
+                new MoveTaskRequest(
+                    new DateTimeOffset(2026, 7, 22, 9, 0, 0, TimeSpan.Zero),
+                    TimeSpan.FromHours(1),
+                    null),
+                default));
+
+        var entity = await db.Set<TaskEntity>().AsNoTracking().SingleAsync();
+        Assert.Null(entity.DtStart);
+        Assert.Null(entity.PlannedEnd);
+        Assert.Equal(0, entity.SortOrder);
+    }
 
     [Fact]
     public async Task MoveTaskAsync_NormalizesPlus08ToUtc()

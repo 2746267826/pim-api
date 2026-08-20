@@ -13,12 +13,23 @@ public class CalendarService
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly RecurrenceService _recurrence;
+    private readonly EventAttachmentService _attachments;
 
     public CalendarService(PimDbContext db, ICurrentUserService currentUser, RecurrenceService recurrence)
+        : this(db, currentUser, recurrence, new EventAttachmentService(db))
+    {
+    }
+
+    public CalendarService(
+        PimDbContext db,
+        ICurrentUserService currentUser,
+        RecurrenceService recurrence,
+        EventAttachmentService attachments)
     {
         _db = db;
         _currentUser = currentUser;
         _recurrence = recurrence;
+        _attachments = attachments;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "未登录");
@@ -99,7 +110,7 @@ public class CalendarService
 
         return expanded
             .OrderBy(x => x.OccurrenceStart)
-            .Select(MapExpandedEvent)
+            .Select(EventResponseMapper.MapExpanded)
             .ToList();
     }
 
@@ -133,7 +144,7 @@ public class CalendarService
             .OrderByDescending(x => x.OccurrenceStart)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(MapExpandedEvent)
+            .Select(EventResponseMapper.MapExpanded)
             .ToList();
 
         return new PagedResult<EventResponse>(items, page, pageSize, totalCount, totalPages);
@@ -141,6 +152,8 @@ public class CalendarService
 
     public async Task<EventResponse> CreateEventAsync(CreateEventRequest request, CancellationToken ct)
     {
+        request = EventFieldValidator.ValidateAndNormalize(request);
+
         var calendar = request.CalendarId == Guid.Empty
             ? await GetOrCreateDefaultCalendarAsync("calendar", ct)
             : await _db.Set<CalendarEntity>()
@@ -154,7 +167,17 @@ public class CalendarService
 
         var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
 
-        ManualDescriptionValidator.EnsureSafe(request.Description);
+        var isHtml = string.Equals(request.DescriptionFormat, "html", StringComparison.OrdinalIgnoreCase);
+        if (isHtml)
+        {
+            request = request with { Description = EventDescriptionSanitizer.Normalize(request.Description, "html") };
+        }
+        else
+        {
+            ManualDescriptionValidator.EnsureSafe(request.Description);
+        }
+
+        await ValidatePimFileReferencesAsync(request.AttachmentReferences, ct);
 
         var entity = new EventEntity
         {
@@ -170,10 +193,12 @@ public class CalendarService
             TimeZoneId = request.TimeZoneId
         };
 
+        ApplyUnifiedFields(entity, request);
+
         _db.Set<EventEntity>().Add(entity);
         await _db.SaveChangesAsync(ct);
 
-        return MapEvent(entity);
+        return EventResponseMapper.Map(entity);
     }
 
     public async Task<ImportReport> ImportOutlookIcsAsync(
@@ -331,6 +356,8 @@ public class CalendarService
 
     public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, CancellationToken ct)
     {
+        request = EventFieldValidator.ValidateAndNormalize(request);
+
         var entity = await _db.Set<EventEntity>()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
             ?? throw new DomainException(02001, "日程不存在");
@@ -345,15 +372,28 @@ public class CalendarService
 
         if (request.CalendarId != entity.CalendarId)
         {
+            var targetCalendar = await _db.Set<CalendarEntity>()
+                .FirstOrDefaultAsync(c => c.Id == request.CalendarId && c.UserId == UserId, ct)
+                ?? throw new DomainException(02003, "日历不存在");
             var targetCalendarHasBinding = await _db.Set<OutlookCalendarBindingEntity>()
-                .AnyAsync(b => b.PimCalendarId == request.CalendarId, ct);
+                .AnyAsync(b => b.PimCalendarId == targetCalendar.Id, ct);
             if (targetCalendarHasBinding)
                 throw new DomainException(02009, "目标日历为 Microsoft 日历，移动操作必须通过确认写回流程。");
         }
 
         var (normalizedStart, normalizedEnd) = NormalizeAndValidateEventRange(request.DtStart, request.DtEnd);
 
-        ManualDescriptionValidator.EnsureSafe(request.Description);
+        var isHtml = string.Equals(request.DescriptionFormat, "html", StringComparison.OrdinalIgnoreCase);
+        if (isHtml)
+        {
+            request = request with { Description = EventDescriptionSanitizer.Normalize(request.Description, "html") };
+        }
+        else
+        {
+            ManualDescriptionValidator.EnsureSafe(request.Description);
+        }
+
+        await ValidatePimFileReferencesAsync(request.AttachmentReferences, ct);
 
         entity.Title = request.Title;
         entity.Description = request.Description;
@@ -368,8 +408,10 @@ public class CalendarService
             entity.TimeZoneId = request.TimeZoneId;
         entity.UpdatedAt = DateTimeOffset.UtcNow;
 
+        ApplyUnifiedFields(entity, request);
+
         await _db.SaveChangesAsync(ct);
-        return MapEvent(entity);
+        return EventResponseMapper.Map(entity);
     }
 
     public async Task<List<EventEntity>> GetEventEntitiesAsync(
@@ -483,6 +525,13 @@ public class CalendarService
 
     public async Task<TaskResponse> CreateTaskAsync(CreateTaskRequest request, CancellationToken ct)
     {
+        if (request.CalendarId.HasValue)
+        {
+            var calendar = await _db.Set<CalendarEntity>()
+                .FirstOrDefaultAsync(c => c.Id == request.CalendarId.Value && c.UserId == UserId, ct)
+                ?? throw new DomainException(02003, "日历不存在");
+        }
+
         var due = NormalizeToUtc(request.Due);
         var dtStart = NormalizeToUtc(request.DtStart);
         var plannedEnd = NormalizeToUtc(request.PlannedEnd);
@@ -519,6 +568,13 @@ public class CalendarService
         var task = await _db.Set<TaskEntity>()
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
             ?? throw new DomainException(02004, "任务不存在");
+
+        if (request.CalendarId.HasValue)
+        {
+            var calendar = await _db.Set<CalendarEntity>()
+                .FirstOrDefaultAsync(c => c.Id == request.CalendarId.Value && c.UserId == UserId, ct)
+                ?? throw new DomainException(02003, "日历不存在");
+        }
 
         var due = NormalizeToUtc(request.Due);
         var estimatedDuration = ParseEstimatedDuration(request.EstimatedDuration);
@@ -681,7 +737,8 @@ public class CalendarService
 
     public async Task MoveTaskAsync(Guid id, MoveTaskRequest request, CancellationToken ct)
     {
-        var task = await _db.Set<TaskEntity>().FindAsync(new object[] { id }, ct)
+        var task = await _db.Set<TaskEntity>()
+            .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
             ?? throw new DomainException(02004, "任务不存在");
 
         var newStart = request.ScheduledStart?.ToUniversalTime() ?? task.DtStart;
@@ -734,24 +791,76 @@ public class CalendarService
         return (normalizedStart, normalizedEnd);
     }
 
-    private static EventResponse MapEvent(EventEntity e) =>
-        new(e.Id, e.CalendarId, e.Uid, e.Title, e.Description,
-            e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source, null,
-            e.IsAllDay, e.TimeZoneId, e.SourceTimeZoneId, e.SourceUid,
-            e.ExternalMetadataJson, e.RecurrenceId, e.ExDatesJson,
-            e.RecurrenceMetadataJson,
-            e.OutlookCalendarBindingId, e.OutlookEventId, e.OutlookEtag, e.OutlookEventType);
+    private async Task ValidatePimFileReferencesAsync(
+        IReadOnlyList<EventAttachmentReferenceDto>? references,
+        CancellationToken ct)
+    {
+        if (references is null)
+            return;
 
-    private static EventResponse MapExpandedEvent(ExpandedEvent e) =>
-        new(e.OccurrenceId, e.Entity.CalendarId, e.Entity.Uid,
-            e.Entity.Title, e.Entity.Description,
-            e.Entity.Location, e.OccurrenceStart, e.OccurrenceEnd,
-            e.Entity.RRule, e.Entity.Status, e.Entity.Source,
-            e.Entity.Id, e.Entity.IsAllDay, e.Entity.TimeZoneId,
-            e.Entity.SourceTimeZoneId, e.Entity.SourceUid,
-            e.Entity.ExternalMetadataJson, e.Entity.RecurrenceId, e.Entity.ExDatesJson,
-            e.Entity.RecurrenceMetadataJson,
-            e.Entity.OutlookCalendarBindingId, e.Entity.OutlookEventId, e.Entity.OutlookEtag, e.Entity.OutlookEventType);
+        foreach (var reference in references)
+        {
+            // Native calendar CRUD is the only writer of pimFile references.
+            // Outlook references are server-authoritative (sync hydration) and
+            // must never be accepted from client requests through this path.
+            if (!string.Equals(reference.Kind, "pimFile", StringComparison.OrdinalIgnoreCase))
+                throw new DomainException(02009, "Outlook 附件引用只能由服务器同步写入。");
+
+            await _attachments.ValidatePimFileReferenceAsync(UserId, reference, ct);
+        }
+    }
+
+    private static void ApplyUnifiedFields(EventEntity entity, CreateEventRequest request)
+    {
+        entity.DescriptionFormat = request.DescriptionFormat;
+        entity.ShowAs = request.ShowAs;
+        entity.Importance = request.Importance;
+        entity.Sensitivity = request.Sensitivity;
+        entity.CategoriesJson = EventFieldCodec.SerializeCategories(request.Categories);
+        entity.IsReminderOn = request.IsReminderOn ?? false;
+        entity.ReminderMinutesBeforeStart = request.IsReminderOn == true ? request.ReminderMinutesBeforeStart : null;
+        entity.OrganizerJson = EventFieldCodec.SerializePerson(request.Organizer);
+        entity.AttendeesJson = EventFieldCodec.SerializeAttendees(request.Attendees);
+        entity.IsOnlineMeeting = request.IsOnlineMeeting ?? false;
+        entity.OnlineMeetingProvider = request.OnlineMeetingProvider;
+        entity.OnlineMeetingUrl = request.OnlineMeetingUrl;
+        entity.ExternalLink = request.ExternalLink;
+        entity.AttachmentReferencesJson = EventFieldCodec.SerializeAttachments(request.AttachmentReferences);
+    }
+
+    private static void ApplyUnifiedFields(EventEntity entity, UpdateEventRequest request)
+    {
+        entity.DescriptionFormat = request.DescriptionFormat;
+        entity.ShowAs = request.ShowAs;
+        entity.Importance = request.Importance;
+        entity.Sensitivity = request.Sensitivity;
+
+        if (request.Categories is not null)
+            entity.CategoriesJson = EventFieldCodec.SerializeCategories(request.Categories);
+        if (request.Attendees is not null)
+            entity.AttendeesJson = EventFieldCodec.SerializeAttendees(request.Attendees);
+        if (request.AttachmentReferences is not null)
+            entity.AttachmentReferencesJson = EventFieldCodec.SerializeAttachments(request.AttachmentReferences);
+
+        if (request.IsReminderOn.HasValue)
+        {
+            entity.IsReminderOn = request.IsReminderOn.Value;
+            entity.ReminderMinutesBeforeStart = request.IsReminderOn.Value
+                ? request.ReminderMinutesBeforeStart
+                : null;
+        }
+        else if (request.ReminderMinutesBeforeStart.HasValue)
+        {
+            entity.ReminderMinutesBeforeStart = request.ReminderMinutesBeforeStart;
+        }
+
+        entity.OrganizerJson = EventFieldCodec.SerializePerson(request.Organizer);
+        if (request.IsOnlineMeeting.HasValue)
+            entity.IsOnlineMeeting = request.IsOnlineMeeting.Value;
+        entity.OnlineMeetingProvider = request.OnlineMeetingProvider;
+        entity.OnlineMeetingUrl = request.OnlineMeetingUrl;
+        entity.ExternalLink = request.ExternalLink;
+    }
 
     private static string? FormatDuration(TimeSpan? duration) =>
         duration is not null ? duration.Value.ToString("c") : null;

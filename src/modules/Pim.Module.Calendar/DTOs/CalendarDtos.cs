@@ -19,6 +19,29 @@ public record CalendarResponse(
         : this(Id, Name, Color, Kind, IsDefault, EventCount, "manual", null, true) { }
 }
 
+public record EventPersonDto(string? Name, string? Email);
+
+public record EventAttendeeDto(string? Name, string Email, string Type = "required");
+
+public record EventAttachmentReferenceDto(
+    string Kind,
+    string Id,
+    string Name,
+    string? ContentType = null,
+    long? Size = null,
+    bool CanDownload = false);
+
+public record OutlookAdditionalInfoItemDto(string Key, string Label, string Value);
+
+public record OutlookAdditionalInfoGroupDto(
+    string Key,
+    string Label,
+    IReadOnlyList<OutlookAdditionalInfoItemDto> Items);
+
+public record OutlookAdditionalInfoDto(
+    IReadOnlyList<OutlookAdditionalInfoGroupDto> Groups,
+    int HiddenFieldCount);
+
 public record CreateEventRequest(
     [Required] Guid CalendarId,
     [Required][MaxLength(255)] string Title,
@@ -29,7 +52,21 @@ public record CreateEventRequest(
     string? RRule,
     string? Uid = null,
     bool IsAllDay = false,
-    string? TimeZoneId = null
+    string? TimeZoneId = null,
+    string? DescriptionFormat = null,
+    string? ShowAs = null,
+    string? Importance = null,
+    string? Sensitivity = null,
+    IReadOnlyList<string>? Categories = null,
+    bool? IsReminderOn = null,
+    int? ReminderMinutesBeforeStart = null,
+    EventPersonDto? Organizer = null,
+    IReadOnlyList<EventAttendeeDto>? Attendees = null,
+    bool? IsOnlineMeeting = null,
+    string? OnlineMeetingProvider = null,
+    string? OnlineMeetingUrl = null,
+    string? ExternalLink = null,
+    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null
 );
 
 public record UpdateEventRequest(
@@ -42,7 +79,21 @@ public record UpdateEventRequest(
     string? RRule,
     string? Uid = null,
     bool? IsAllDay = null,
-    string? TimeZoneId = null
+    string? TimeZoneId = null,
+    string? DescriptionFormat = null,
+    string? ShowAs = null,
+    string? Importance = null,
+    string? Sensitivity = null,
+    IReadOnlyList<string>? Categories = null,
+    bool? IsReminderOn = null,
+    int? ReminderMinutesBeforeStart = null,
+    EventPersonDto? Organizer = null,
+    IReadOnlyList<EventAttendeeDto>? Attendees = null,
+    bool? IsOnlineMeeting = null,
+    string? OnlineMeetingProvider = null,
+    string? OnlineMeetingUrl = null,
+    string? ExternalLink = null,
+    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null
 );
 
 public record EventResponse(
@@ -55,14 +106,28 @@ public record EventResponse(
     string? TimeZoneId = null,
     string? SourceTimeZoneId = null,
     string? SourceUid = null,
-    string ExternalMetadataJson = "{}",
     string? RecurrenceId = null,
     string ExDatesJson = "[]",
     string RecurrenceMetadataJson = "{}",
     Guid? OutlookCalendarBindingId = null,
     string? OutlookEventId = null,
     string? OutlookEtag = null,
-    string? OutlookEventType = null
+    string? OutlookEventType = null,
+    OutlookAdditionalInfoDto? OutlookAdditionalInfo = null,
+    string? DescriptionFormat = null,
+    string? ShowAs = null,
+    string? Importance = null,
+    string? Sensitivity = null,
+    IReadOnlyList<string>? Categories = null,
+    bool? IsReminderOn = null,
+    int? ReminderMinutesBeforeStart = null,
+    EventPersonDto? Organizer = null,
+    IReadOnlyList<EventAttendeeDto>? Attendees = null,
+    bool? IsOnlineMeeting = null,
+    string? OnlineMeetingProvider = null,
+    string? OnlineMeetingUrl = null,
+    string? ExternalLink = null,
+    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null
 );
 
 public record CreateTaskRequest(

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Pim.Infrastructure.Data;
@@ -11,9 +12,11 @@ using Pim.Infrastructure.Data;
 namespace Pim.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(PimDbContext))]
-    partial class PimDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260802175024_AddAuditVersionOwner")]
+    partial class AddAuditVersionOwner
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -529,15 +532,6 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.Property<DateTimeOffset?>("LastSuccessfulUploadAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_successful_upload_at");
-
-                    b.Property<string>("OfflineReason")
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)")
-                        .HasColumnName("offline_reason");
-
-                    b.Property<DateTimeOffset?>("PlannedOfflineAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("planned_offline_at");
 
                     b.Property<DateTimeOffset>("ReceivedAt")
                         .ValueGeneratedOnAdd()
@@ -4667,10 +4661,6 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("category_name");
 
-                    b.Property<Guid?>("CategoryId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("category_id");
-
                     b.Property<string>("Color")
                         .IsRequired()
                         .HasMaxLength(7)
@@ -6330,14 +6320,6 @@ namespace Pim.Infrastructure.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("FileItem");
-                });
-
-            modelBuilder.Entity("Pim.Module.PcTracker.Entities.ActivityCategoryRuleEntity", b =>
-                {
-                    b.HasOne("Pim.Module.PcTracker.Entities.PcCategoryEntity", null)
-                        .WithMany()
-                        .HasForeignKey("CategoryId")
-                        .OnDelete(DeleteBehavior.SetNull);
                 });
 
             modelBuilder.Entity("Pim.Module.PcTracker.Entities.AppKnowledgeContextEntity", b =>

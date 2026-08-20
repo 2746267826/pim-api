@@ -13,6 +13,9 @@ namespace Pim.Module.Calendar.Services;
 
 public sealed class OutlookCalendarSyncService
 {
+    private const string AttachmentHydrationPendingState = "attachments-pending";
+    private const string AttachmentHydratedEmptyState = "attachments-hydrated-empty";
+
     private static readonly Dictionary<string, string> GraphColorToHex = new(StringComparer.OrdinalIgnoreCase)
     {
         ["lightBlue"] = "#69AFE5",
@@ -30,6 +33,7 @@ public sealed class OutlookCalendarSyncService
 
     private readonly PimDbContext _db;
     private readonly GraphCalendarClient _graph;
+    private readonly EventAttachmentService _attachments;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<OutlookCalendarSyncService> _logger;
 
@@ -38,9 +42,20 @@ public sealed class OutlookCalendarSyncService
         GraphCalendarClient graph,
         TimeProvider timeProvider,
         ILogger<OutlookCalendarSyncService> logger)
+        : this(db, graph, new EventAttachmentService(db, graph), timeProvider, logger)
+    {
+    }
+
+    public OutlookCalendarSyncService(
+        PimDbContext db,
+        GraphCalendarClient graph,
+        EventAttachmentService attachments,
+        TimeProvider timeProvider,
+        ILogger<OutlookCalendarSyncService> logger)
     {
         _db = db;
         _graph = graph;
+        _attachments = attachments;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -875,59 +890,59 @@ public sealed class OutlookCalendarSyncService
                     .Where(e => e.OutlookConnectionId == connection.Id && e.OutlookEventId == eventId)
                     .FirstOrDefaultAsync(ct);
 
-                if (existing is not null)
-                {
-                    existing.CalendarId = binding.PimCalendarId;
-                    existing.OutlookCalendarBindingId = binding.Id;
-                    existing.DeletedAt = null;
-                    existing.DeletedByOperationId = null;
-                    existing.DeletedByOperationKind = null;
-                    OutlookEventMapper.ApplyGraphEvent(
-                        existing, graphEvent, binding.Id, binding.PimCalendarId, connection.Id, generation);
-                    existing.UpdatedAt = now;
-                    pageModified.Add(existing);
-                    pageUpdated++;
-                }
-                else
+                var wasLegacyRebind = false;
+                if (existing is null)
                 {
                     existing = await TryRebindLegacyEventAsync(
                         connection, graphEvent, eventId, pageModified, ct);
-
-                    if (existing is not null)
-                    {
-                        existing.CalendarId = binding.PimCalendarId;
-                        existing.OutlookCalendarBindingId = binding.Id;
-                        existing.DeletedAt = null;
-                        existing.DeletedByOperationId = null;
-                        existing.DeletedByOperationKind = null;
-                        existing.OutlookSyncState = null;
-                        OutlookEventMapper.ApplyGraphEvent(
-                            existing, graphEvent, binding.Id, binding.PimCalendarId, connection.Id, generation);
-                        existing.UpdatedAt = now;
-                        pageModified.Add(existing);
-                        pageUpdated++;
-                    }
-                    else
-                    {
-                        var newEvent = new EventEntity();
-                        OutlookEventMapper.ApplyGraphEvent(
-                            newEvent, graphEvent, binding.Id, binding.PimCalendarId, connection.Id, generation);
-                        newEvent.CreatedAt = now;
-                        newEvent.UpdatedAt = now;
-                        newEvent.DtStamp = now;
-                        newEvent.OutlookConnectionId = connection.Id;
-                        newEvent.Source = "outlook";
-                        _db.Set<EventEntity>().Add(newEvent);
-                        pageAdded.Add(newEvent);
-                        pageCreated++;
-                    }
+                    wasLegacyRebind = existing is not null;
                 }
+
+                var isNew = existing is null;
+                var target = existing ?? new EventEntity();
+                var oldChangeKey = target.OutlookChangeKey;
+                var oldReferencesJson = target.AttachmentReferencesJson;
+
+                // Track existing targets for page rollback before any field
+                // mutation (ApplyGraphEvent / hydration) so an escaped exception
+                // restores them even though they never reached pageModified later.
+                if (!isNew && !pageModified.Contains(target))
+                    pageModified.Add(target);
+
+                target.CalendarId = binding.PimCalendarId;
+                target.OutlookCalendarBindingId = binding.Id;
+                target.DeletedAt = null;
+                target.DeletedByOperationId = null;
+                target.DeletedByOperationKind = null;
+                if (wasLegacyRebind)
+                    target.OutlookSyncState = null;
+
+                OutlookEventMapper.ApplyGraphEvent(
+                    target, graphEvent, binding.Id, binding.PimCalendarId, connection.Id, generation);
+                await HydrateAttachmentReferencesAsync(
+                    connection, binding, state, target, graphEvent, eventId,
+                    isNew, oldChangeKey, oldReferencesJson, now, ct);
+
+                if (isNew)
+                {
+                    target.CreatedAt = now;
+                    target.DtStamp = now;
+                    _db.Set<EventEntity>().Add(target);
+                    pageAdded.Add(target);
+                    pageCreated++;
+                }
+                else
+                {
+                    pageUpdated++;
+                }
+
+                target.UpdatedAt = now;
 
                 pageRead++;
                 pageChanges.Add(new EventChangeSummary(
                     eventId,
                     graphEvent.GetProperty("subject").GetString(),
-                    existing is not null ? "updated" : "created"));
+                    isNew ? "created" : "updated"));
             }
 
             await _db.SaveChangesAsync(ct);
@@ -952,6 +967,99 @@ public sealed class OutlookCalendarSyncService
         state.Changes.AddRange(pageChanges);
         state.SuccessfulPages++;
         state.ProgressMade = true;
+    }
+
+    private async Task HydrateAttachmentReferencesAsync(
+        OutlookConnectionEntity connection,
+        OutlookCalendarBindingEntity binding,
+        BindingSyncState state,
+        EventEntity target,
+        JsonElement graphEvent,
+        string eventId,
+        bool isNew,
+        string? oldChangeKey,
+        string oldReferencesJson,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var hasAttachmentsProperty = graphEvent.TryGetProperty("hasAttachments", out var hasAttachmentsValue)
+            && hasAttachmentsValue.ValueKind is JsonValueKind.True or JsonValueKind.False;
+        var hasAttachments = hasAttachmentsProperty && hasAttachmentsValue.ValueKind == JsonValueKind.True;
+
+        var existingReferences = EventFieldCodec.DeserializeAttachments(oldReferencesJson);
+        var pimFileReferences = existingReferences
+            .Where(reference => string.Equals(reference.Kind, "pimFile", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // Explicit hasAttachments=false owns only the outlook entries: keep pimFile
+        // references, drop outlook ones, and never issue an attachment list request.
+        if (hasAttachmentsProperty && !hasAttachments)
+        {
+            target.AttachmentReferencesJson = EventFieldCodec.SerializeAttachments(pimFileReferences);
+            if (target.OutlookSyncState is AttachmentHydrationPendingState or AttachmentHydratedEmptyState)
+                target.OutlookSyncState = null;
+            return;
+        }
+
+        // Omitted hasAttachments is treated conservatively: preserve existing
+        // references as-is instead of silently clearing them.
+        if (!hasAttachmentsProperty)
+            return;
+
+        var hasOutlookReferences = existingReferences
+            .Any(reference => string.Equals(reference.Kind, "outlook", StringComparison.OrdinalIgnoreCase));
+        var needsHydration = isNew
+            || !string.Equals(oldChangeKey, target.OutlookChangeKey, StringComparison.Ordinal)
+            || (!hasOutlookReferences && target.OutlookSyncState != AttachmentHydratedEmptyState)
+            || target.OutlookSyncState == AttachmentHydrationPendingState;
+        if (!needsHydration)
+            return;
+
+        try
+        {
+            var references = await _attachments.GetOutlookAttachmentReferencesAsync(
+                connection.Id, binding.GraphCalendarId, eventId, ct);
+            var merged = pimFileReferences.Concat(references).ToList();
+            target.AttachmentReferencesJson = EventFieldCodec.SerializeAttachments(merged);
+            // A successful run owns the attachment state: an empty result is
+            // authoritative too, so later unchanged syncs do not refetch.
+            if (target.OutlookSyncState != "legacy-unbound")
+                target.OutlookSyncState = references.Count == 0
+                    ? AttachmentHydratedEmptyState
+                    : null;
+        }
+        catch (OutlookReauthenticationRequiredException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            target.AttachmentReferencesJson = oldReferencesJson;
+            if (target.OutlookSyncState != "legacy-unbound")
+                target.OutlookSyncState = AttachmentHydrationPendingState;
+            var (code, message) = ex is GraphRequestException graphException
+                ? (graphException.StatusCode is { } statusCode ? ((int)statusCode).ToString() : "graph-error",
+                    "Graph attachment metadata request failed.")
+                : MapSafeSyncError(ex);
+
+            state.Failure = 1;
+            state.Status = "partial";
+            state.Failures.Add(new SyncFailureSummary(eventId, target.Title, code, message));
+            state.Steps.Add(new OutlookSyncStep(binding.Id.ToString(), "partial", message, now));
+            binding.LastErrorCode = code;
+            binding.LastErrorMessage = message;
+            binding.UpdatedAt = now;
+            _logger.LogWarning(
+                ex,
+                "Outlook attachment metadata hydration failed for binding {BindingId}, event {EventId}: {Code}",
+                binding.Id,
+                eventId,
+                code);
+        }
     }
 
     private async Task<EventEntity?> TryRebindLegacyEventAsync(
@@ -1147,8 +1255,13 @@ public sealed class OutlookCalendarSyncService
                 }
                 else
                 {
+                    var oldChangeKey = local.OutlookChangeKey;
+                    var oldReferencesJson = local.AttachmentReferencesJson;
                     OutlookEventMapper.ApplyGraphEvent(
                         local, remote.Value, binding.Id, binding.PimCalendarId, connection.Id, generation);
+                    await HydrateAttachmentReferencesAsync(
+                        connection, binding, state, local, remote.Value, local.OutlookEventId!,
+                        isNew: false, oldChangeKey, oldReferencesJson, now, ct);
                     local.UpdatedAt = now;
                     pendingUpdated++;
                     pendingChanges.Add(new EventChangeSummary(local.OutlookEventId, local.Title, "restored"));

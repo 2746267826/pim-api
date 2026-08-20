@@ -39,6 +39,8 @@ public class OutlookGraphDeltaSyncTests
         Assert.Equal(2, batch.ReadCount);
         Assert.Contains(batch.Steps, x => x.Name == "Follow nextLink");
         Assert.Contains(batch.Steps, x => x.Name == "Store deltaLink");
+        Assert.DoesNotContain(batch.Steps, x => (x.Detail ?? "").Contains("deltatoken=done"));
+        Assert.DoesNotContain(batch.Steps, x => (x.Detail ?? "").Contains("skiptoken=next"));
         var connection = await db.Set<OutlookConnectionEntity>().SingleAsync(c => c.UserId == UserId);
         Assert.Contains("$deltatoken=done", connection.DeltaLink);
     }

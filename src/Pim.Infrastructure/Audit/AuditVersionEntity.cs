@@ -10,6 +10,7 @@ public class AuditVersionEntity
     [Column("object_type")][MaxLength(80)] public string ObjectType { get; set; } = string.Empty;
     [Column("object_id")] public Guid ObjectId { get; set; }
     [Column("confirmation_id")] public Guid? ConfirmationId { get; set; }
+    [Column("user_id")] public Guid? UserId { get; set; }
     [Column("source")][MaxLength(80)] public string Source { get; set; } = "pim";
     [Column("actor")][MaxLength(255)] public string Actor { get; set; } = "system";
     [Column("before_json")] public string BeforeJson { get; set; } = "{}";

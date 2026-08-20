@@ -168,6 +168,95 @@ public sealed class GraphCalendarClientTests
     }
 
     [Fact]
+    public async Task GetCalendarViewAsync_SelectIncludesTask3Fields()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        var start = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero);
+        var end = new DateTimeOffset(2026, 7, 31, 0, 0, 0, TimeSpan.Zero);
+        await CollectPages(client.GetCalendarViewAsync(ConnectionId, "cal1", start, end, default));
+
+        var uri = handler.Requests[0].RequestUri!.AbsoluteUri;
+        Assert.Contains("hasAttachments", uri);
+        Assert.DoesNotContain("singleValueExtendedProperties", uri);
+        Assert.DoesNotContain("multiValueExtendedProperties", uri);
+        Assert.Contains("importance", uri);
+        Assert.Contains("sensitivity", uri);
+        Assert.Contains("showAs", uri);
+        Assert.Contains("categories", uri);
+        Assert.Contains("isReminderOn", uri);
+        Assert.Contains("reminderMinutesBeforeStart", uri);
+        Assert.Contains("organizer", uri);
+        Assert.Contains("attendees", uri);
+        Assert.Contains("isOnlineMeeting", uri);
+        Assert.Contains("onlineMeetingProvider", uri);
+        Assert.Contains("onlineMeeting", uri);
+        Assert.Contains("webLink", uri);
+        Assert.Contains("responseRequested", uri);
+        Assert.Contains("hideAttendees", uri);
+        Assert.Contains("allowNewTimeProposals", uri);
+    }
+
+    [Fact]
+    public async Task GetEventsAsync_SelectIncludesTask3Fields()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        await CollectPages(client.GetEventsAsync(ConnectionId, "cal1", default));
+
+        var uri = handler.Requests[0].RequestUri!.AbsoluteUri;
+        Assert.Contains("hasAttachments", uri);
+        Assert.DoesNotContain("singleValueExtendedProperties", uri);
+        Assert.DoesNotContain("multiValueExtendedProperties", uri);
+        Assert.Contains("importance", uri);
+        Assert.Contains("sensitivity", uri);
+        Assert.Contains("showAs", uri);
+        Assert.Contains("categories", uri);
+        Assert.Contains("isReminderOn", uri);
+        Assert.Contains("reminderMinutesBeforeStart", uri);
+        Assert.Contains("organizer", uri);
+        Assert.Contains("attendees", uri);
+        Assert.Contains("isOnlineMeeting", uri);
+        Assert.Contains("onlineMeetingProvider", uri);
+        Assert.Contains("onlineMeeting", uri);
+        Assert.Contains("webLink", uri);
+        Assert.Contains("responseRequested", uri);
+        Assert.Contains("hideAttendees", uri);
+        Assert.Contains("allowNewTimeProposals", uri);
+    }
+
+    [Fact]
+    public async Task GetEventAsync_SelectIncludesTask3Fields()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(HttpStatusCode.OK, """{"id":"e1","subject":"S"}""");
+
+        var result = await client.GetEventAsync(ConnectionId, "cal1", "e1", default);
+
+        var uri = handler.Requests[0].RequestUri!.AbsoluteUri;
+        Assert.Contains("hasAttachments", uri);
+        Assert.DoesNotContain("singleValueExtendedProperties", uri);
+        Assert.DoesNotContain("multiValueExtendedProperties", uri);
+        Assert.Contains("importance", uri);
+        Assert.Contains("sensitivity", uri);
+        Assert.Contains("showAs", uri);
+        Assert.Contains("categories", uri);
+        Assert.Contains("isReminderOn", uri);
+        Assert.Contains("reminderMinutesBeforeStart", uri);
+        Assert.Contains("organizer", uri);
+        Assert.Contains("attendees", uri);
+        Assert.Contains("isOnlineMeeting", uri);
+        Assert.Contains("onlineMeetingProvider", uri);
+        Assert.Contains("onlineMeeting", uri);
+        Assert.Contains("webLink", uri);
+        Assert.Contains("responseRequested", uri);
+        Assert.Contains("hideAttendees", uri);
+        Assert.Contains("allowNewTimeProposals", uri);
+    }
+
+    [Fact]
     public async Task GetEventAsync_NotFound_ReturnsNull()
     {
         var (client, handler, _, _) = CreateClient();
@@ -865,16 +954,230 @@ public sealed class GraphCalendarClientTests
         }
     }
 
+    // ===== Task 5: Attachment metadata and binary download =====
+
+    [Fact]
+    public async Task GetEventAttachmentsAsync_CorrectRequest_WithSelectAndAuthConventions()
+    {
+        var (client, handler, tokens, _) = CreateClient();
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        await CollectPages(client.GetEventAttachmentsAsync(ConnectionId, "cal1", "event-1", default));
+
+        var req = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, req.Method);
+        Assert.Equal(
+            "https://graph.microsoft.com/v1.0/me/calendars/cal1/events/event-1/attachments?$select=id,name,contentType,size,isInline,@odata.type",
+            req.RequestUri!.AbsoluteUri);
+        Assert.Equal("Bearer test-access-token", req.Headers.Authorization?.ToString());
+        var preferValues = req.Headers.GetValues("Prefer").ToArray();
+        Assert.Contains("outlook.timezone=\"UTC\"", preferValues);
+        Assert.Contains("IdType=\"ImmutableId\"", preferValues);
+        Assert.Equal(1, tokens.CallCount);
+        Assert.False(tokens.LastForceRefresh);
+    }
+
+    [Fact]
+    public async Task GetEventAttachmentsAsync_EscapesCalendarAndEventIds()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        await CollectPages(client.GetEventAttachmentsAsync(ConnectionId, "cal/1", "ev nt/2", default));
+
+        var req = Assert.Single(handler.Requests);
+        Assert.Contains(
+            "/calendars/" + Uri.EscapeDataString("cal/1") + "/events/" + Uri.EscapeDataString("ev nt/2") + "/attachments",
+            req.RequestUri!.AbsoluteUri);
+    }
+
+    [Fact]
+    public async Task GetEventAttachmentsAsync_FollowsNextLink()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(HttpStatusCode.OK,
+            """{"value":[{"id":"att-1"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/calendars/cal1/events/event-1/attachments?$skiptoken=p1"}""");
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[{"id":"att-2"}]}""");
+
+        var pages = await CollectPages(client.GetEventAttachmentsAsync(ConnectionId, "cal1", "event-1", default));
+
+        Assert.Equal(2, pages.Count);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Contains("$skiptoken=p1", handler.Requests[1].RequestUri!.ToString());
+    }
+
+    [Fact]
+    public async Task DownloadEventAttachmentAsync_CorrectRequest_ReturnsStreamedContent()
+    {
+        var (client, handler, tokens, _) = CreateClient();
+        var bytes = new byte[] { 37, 80, 68, 70, 45, 49, 46, 52 }; // %PDF-1.4
+        handler.Enqueue(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(bytes)
+            {
+                Headers = { ContentType = new MediaTypeHeaderValue("application/pdf") }
+            }
+        });
+
+        var result = await client.DownloadEventAttachmentAsync(
+            ConnectionId, "cal1", "event-1", "att-1", default);
+
+        var req = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, req.Method);
+        Assert.Equal(
+            "https://graph.microsoft.com/v1.0/me/calendars/cal1/events/event-1/attachments/att-1/$value",
+            req.RequestUri!.AbsoluteUri);
+        Assert.Equal("Bearer test-access-token", req.Headers.Authorization?.ToString());
+        Assert.Equal(1, tokens.CallCount);
+        Assert.False(tokens.LastForceRefresh);
+
+        Assert.Equal("application/pdf", result.ContentType);
+        using var ms = new MemoryStream();
+        await result.Content.CopyToAsync(ms);
+        Assert.Equal(bytes, ms.ToArray());
+    }
+
+    [Fact]
+    public async Task DownloadEventAttachmentAsync_EscapesAttachmentId()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent([])
+        });
+
+        await client.DownloadEventAttachmentAsync(ConnectionId, "cal1", "event-1", "att/1", default);
+
+        var req = Assert.Single(handler.Requests);
+        Assert.Contains("/attachments/" + Uri.EscapeDataString("att/1") + "/$value", req.RequestUri!.AbsoluteUri);
+    }
+
+    [Fact]
+    public async Task DownloadEventAttachmentAsync_FileNameFromContentDisposition()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent([])
+            };
+            response.Content.Headers.TryAddWithoutValidation(
+                "Content-Disposition", "attachment; filename=\"Report.pdf\"");
+            return response;
+        });
+
+        var result = await client.DownloadEventAttachmentAsync(
+            ConnectionId, "cal1", "event-1", "att-1", default);
+
+        Assert.Equal("Report.pdf", result.FileName);
+    }
+
+    [Fact]
+    public async Task DownloadEventAttachmentAsync_SanitizesContentDispositionFileName()
+    {
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent([])
+            };
+            response.Content.Headers.TryAddWithoutValidation(
+                "Content-Disposition", "attachment; filename=\"bad\r\nname.pdf\"");
+            return response;
+        });
+
+        var result = await client.DownloadEventAttachmentAsync(
+            ConnectionId, "cal1", "event-1", "att-1", default);
+
+        Assert.DoesNotContain("\r", result.FileName);
+        Assert.DoesNotContain("\n", result.FileName);
+        Assert.DoesNotContain("\"", result.FileName);
+        Assert.DoesNotContain("/", result.FileName);
+        Assert.DoesNotContain("\\", result.FileName);
+    }
+
+    [Fact]
+    public async Task DownloadEventAttachmentAsync_BodyReadTimeout_ThrowsIOException()
+    {
+        var (client, handler, _, _) = CreateClient(bodyReadTimeout: TimeSpan.FromMilliseconds(100));
+        handler.Enqueue(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new StalledReadStream())
+            {
+                Headers = { ContentType = new MediaTypeHeaderValue("application/pdf") }
+            }
+        });
+
+        var result = await client.DownloadEventAttachmentAsync(
+            ConnectionId, "cal1", "event-1", "att-1", default);
+
+        using var content = result.Content;
+        var buffer = new byte[64];
+        await Assert.ThrowsAsync<IOException>(async () =>
+        {
+            while (await content.ReadAsync(buffer, 0, buffer.Length) > 0)
+            {
+            }
+        });
+    }
+
+    [Fact]
+    public async Task DownloadEventAttachmentAsync_BodyReadTimeout_SynchronousRead_ThrowsIOException()
+    {
+        var (client, handler, _, _) = CreateClient(bodyReadTimeout: TimeSpan.FromMilliseconds(100));
+        handler.Enqueue(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new StalledReadStream())
+            {
+                Headers = { ContentType = new MediaTypeHeaderValue("application/pdf") }
+            }
+        });
+
+        var result = await client.DownloadEventAttachmentAsync(
+            ConnectionId, "cal1", "event-1", "att-1", default);
+
+        using var content = result.Content;
+        var buffer = new byte[64];
+        Assert.Throws<IOException>(() => content.Read(buffer, 0, buffer.Length));
+    }
+
+    [Fact]
+    public async Task DownloadEventAttachmentAsync_BodyReadUserCancellation_PropagatesOperationCanceledException()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (client, handler, _, _) = CreateClient();
+        handler.Enqueue(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new StalledReadStream(entered))
+            {
+                Headers = { ContentType = new MediaTypeHeaderValue("application/pdf") }
+            }
+        });
+
+        var result = await client.DownloadEventAttachmentAsync(
+            ConnectionId, "cal1", "event-1", "att-1", default);
+
+        using var cts = new CancellationTokenSource();
+        var readTask = result.Content.ReadAsync(new byte[64].AsMemory(), cts.Token).AsTask();
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await readTask);
+    }
+
     private static (GraphCalendarClient Client, ScriptedHttpMessageHandler Handler, FakeOutlookAccessTokenProvider Tokens, StubTimeProvider Clock) CreateClient(
         ScriptedHttpMessageHandler? handler = null,
         string? token = null,
-        StubTimeProvider? clock = null)
+        StubTimeProvider? clock = null,
+        TimeSpan? bodyReadTimeout = null)
     {
         handler ??= new ScriptedHttpMessageHandler();
         var tokens = new FakeOutlookAccessTokenProvider { Token = token ?? "test-access-token" };
         clock ??= new StubTimeProvider();
         var factory = new StubHttpClientFactory(handler);
-        var client = new GraphCalendarClient(factory, tokens, clock);
+        var client = new GraphCalendarClient(factory, tokens, clock, bodyReadTimeout);
         return (client, handler, tokens, clock);
     }
 

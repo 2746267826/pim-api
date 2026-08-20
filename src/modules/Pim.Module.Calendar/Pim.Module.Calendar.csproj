@@ -7,6 +7,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\Pim.Core\Pim.Core.csproj" />
     <ProjectReference Include="..\..\Pim.Infrastructure\Pim.Infrastructure.csproj" />
+    <ProjectReference Include="..\Pim.Module.Files\Pim.Module.Files.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -14,6 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="HtmlSanitizer" Version="9.0.967" />
     <PackageReference Include="Ical.Net" Version="5.2.2" />
     <PackageReference Include="Microsoft.Identity.Client" Version="4.86.0" />
     <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="8.10.0" />

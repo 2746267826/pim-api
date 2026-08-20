@@ -25,6 +25,11 @@ public class EventEntityConfiguration : IEntityTypeConfiguration<EventEntity>
         builder.Property(e => e.ExDatesJson).HasDefaultValue("[]");
         builder.Property(e => e.RecurrenceMetadataJson).HasDefaultValue("{}");
         builder.Property(e => e.GraphRecurrenceJson).HasDefaultValue("{}");
+        builder.Property(e => e.CategoriesJson).HasDefaultValue("[]");
+        builder.Property(e => e.AttendeesJson).HasDefaultValue("[]");
+        builder.Property(e => e.AttachmentReferencesJson).HasDefaultValue("[]");
+        builder.Property(e => e.IsReminderOn).HasDefaultValue(false);
+        builder.Property(e => e.IsOnlineMeeting).HasDefaultValue(false);
         builder.HasIndex(e => e.CalendarId);
         builder.HasIndex(e => e.Uid);
         builder.HasIndex(e => e.SourceUid);

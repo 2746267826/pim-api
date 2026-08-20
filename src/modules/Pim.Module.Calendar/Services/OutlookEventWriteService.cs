@@ -13,6 +13,7 @@ public sealed class OutlookEventWriteService
 {
     private readonly PimDbContext _db;
     private readonly GraphCalendarClient _graph;
+    private readonly EventAttachmentService _attachments;
     private readonly CalendarAuditWriter _audit;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<OutlookEventWriteService> _logger;
@@ -23,9 +24,21 @@ public sealed class OutlookEventWriteService
         CalendarAuditWriter audit,
         TimeProvider timeProvider,
         ILogger<OutlookEventWriteService> logger)
+        : this(db, graph, new EventAttachmentService(db, graph), audit, timeProvider, logger)
+    {
+    }
+
+    public OutlookEventWriteService(
+        PimDbContext db,
+        GraphCalendarClient graph,
+        EventAttachmentService attachments,
+        CalendarAuditWriter audit,
+        TimeProvider timeProvider,
+        ILogger<OutlookEventWriteService> logger)
     {
         _db = db;
         _graph = graph;
+        _attachments = attachments;
         _audit = audit;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -38,6 +51,9 @@ public sealed class OutlookEventWriteService
             throw new DomainException(02009, "不支持的 Microsoft 日程操作。");
         if (request.ClientOperationId == Guid.Empty)
             throw new DomainException(02009, "Client operation ID is required.");
+
+        if (request.Draft is not null)
+            request = request with { Draft = EventFieldValidator.ValidateAndNormalize(request.Draft) };
 
         var connection = await _db.Set<OutlookConnectionEntity>()
             .FirstOrDefaultAsync(c => c.UserId == userId, ct)
@@ -84,6 +100,9 @@ public sealed class OutlookEventWriteService
             throw new DomainException(02009, "新建事件必须包含 Draft。");
         if (request.Draft.CalendarId != binding.PimCalendarId)
             throw new DomainException(02009, "日历不匹配。");
+
+        var draftPimFileReferences = await ValidateDraftPimFileReferencesAsync(
+            userId, request.Draft.AttachmentReferences, ct);
 
         var batch = NewBatch(userId, connection.Id, binding.Id, binding.Name, "create");
         _db.Set<OutlookSyncBatchEntity>().Add(batch);
@@ -146,6 +165,12 @@ public sealed class OutlookEventWriteService
             _db.Set<EventEntity>().Add(localEvent);
         }
 
+        // Outlook/Graph attachments stay provider-read-only: persist the
+        // validated native pimFile references plus the target's existing
+        // outlook references; never store client-supplied outlook refs.
+        localEvent.AttachmentReferencesJson =
+            MergeAttachmentReferences(draftPimFileReferences, localEvent.AttachmentReferencesJson);
+
         var steps = new List<BatchStepEntry>
         {
             new("graph-create", "success", now),
@@ -175,6 +200,9 @@ public sealed class OutlookEventWriteService
         if (request.Scope is not ("instance" or "series"))
             throw new DomainException(02009, "Scope 必须是 instance 或 series。");
 
+        var draftPimFileReferences = await ValidateDraftPimFileReferencesAsync(
+            userId, request.Draft.AttachmentReferences, ct);
+
         var localEvent = await LoadEventAsync(request.EventId.Value, userId, ct);
         ValidateEventBinding(localEvent, binding.Id);
 
@@ -187,9 +215,11 @@ public sealed class OutlookEventWriteService
 
         try
         {
+            var expectedEtag = await ResolveWriteEtagAsync(
+                localEvent, request.Scope, request.ExpectedEtag!, ct);
             var graphResult = await _graph.UpdateEventAsync(
                 connection.Id, binding.GraphCalendarId, graphTargetId,
-                request.ExpectedEtag!, payload, ct);
+                expectedEtag, payload, ct);
 
             var resultGraphId = graphResult.GetProperty("id").GetString()!;
             EventEntity targetEntity;
@@ -269,6 +299,13 @@ public sealed class OutlookEventWriteService
                 localEvent.DtStamp = now;
             }
 
+            // Outlook/Graph attachments stay provider-read-only: persist the
+            // validated native pimFile references from the draft plus the
+            // target entity's existing outlook references; never store
+            // client-supplied outlook refs as authoritative data.
+            targetEntity.AttachmentReferencesJson =
+                MergeAttachmentReferences(draftPimFileReferences, targetEntity.AttachmentReferencesJson);
+
             var steps = new List<BatchStepEntry>
             {
                 new("graph-update", "success", _timeProvider.GetUtcNow()),
@@ -286,12 +323,12 @@ public sealed class OutlookEventWriteService
         {
             return await HandleReauthAsync(connection, batch, binding.Name, "update", localEvent.Id, localEvent.Title);
         }
-        catch (GraphRequestException ex) when (ex.StatusCode == HttpStatusCode.PreconditionFailed)
+        catch (GraphRequestException ex) when (ex.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict)
         {
             try
             {
                 return await HandleConflictAsync(
-                    connection.Id, binding.GraphCalendarId, graphTargetId, batch, binding.Name, "update", ct);
+                    binding, localEvent, binding.GraphCalendarId, graphTargetId, batch, binding.Name, "update", ct);
             }
             catch (OperationCanceledException oce)
             {
@@ -333,20 +370,22 @@ public sealed class OutlookEventWriteService
 
         try
         {
+            var expectedEtag = await ResolveWriteEtagAsync(
+                localEvent, request.Scope, request.ExpectedEtag!, ct);
             await _graph.DeleteEventAsync(
                 connection.Id, binding.GraphCalendarId, graphTargetId,
-                request.ExpectedEtag!, ct);
+                expectedEtag, ct);
         }
         catch (OutlookReauthenticationRequiredException)
         {
             return await HandleReauthAsync(connection, batch, binding.Name, "delete", localEvent.Id, localEvent.Title);
         }
-        catch (GraphRequestException ex) when (ex.StatusCode == HttpStatusCode.PreconditionFailed)
+        catch (GraphRequestException ex) when (ex.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict)
         {
             try
             {
                 return await HandleConflictAsync(
-                    connection.Id, binding.GraphCalendarId, graphTargetId, batch, binding.Name, "delete", ct);
+                    binding, localEvent, binding.GraphCalendarId, graphTargetId, batch, binding.Name, "delete", ct);
             }
             catch (OperationCanceledException oce)
             {
@@ -422,6 +461,32 @@ public sealed class OutlookEventWriteService
         return evt;
     }
 
+    private async Task<IReadOnlyList<EventAttachmentReferenceDto>?> ValidateDraftPimFileReferencesAsync(
+        Guid userId,
+        IReadOnlyList<EventAttachmentReferenceDto>? references,
+        CancellationToken ct)
+    {
+        if (references is null)
+            return null;
+        var pimFileReferences = references
+            .Where(reference => string.Equals(reference.Kind, "pimFile", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (var reference in pimFileReferences)
+            await _attachments.ValidatePimFileReferenceAsync(userId, reference, ct);
+        return pimFileReferences;
+    }
+
+    private static string MergeAttachmentReferences(
+        IReadOnlyList<EventAttachmentReferenceDto>? pimFileReferences,
+        string existingReferencesJson)
+    {
+        if (pimFileReferences is null)
+            return existingReferencesJson;
+        var outlookReferences = EventFieldCodec.DeserializeAttachments(existingReferencesJson)
+            .Where(reference => string.Equals(reference.Kind, "outlook", StringComparison.OrdinalIgnoreCase));
+        return EventFieldCodec.SerializeAttachments(pimFileReferences.Concat(outlookReferences).ToList());
+    }
+
     private static void ValidateEventBinding(EventEntity evt, Guid bindingId)
     {
         if (evt.OutlookCalendarBindingId != bindingId)
@@ -437,15 +502,55 @@ public sealed class OutlookEventWriteService
             ? evt.OutlookSeriesMasterId ?? evt.OutlookEventId!
             : evt.OutlookEventId!;
 
+    private async Task<string> ResolveWriteEtagAsync(
+        EventEntity evt, string scope, string requestEtag, CancellationToken ct)
+    {
+        if (scope == "series" && !string.IsNullOrEmpty(evt.OutlookSeriesMasterId))
+        {
+            var masterEtag = await _db.Set<EventEntity>()
+                .IgnoreQueryFilters()
+                .Where(e => e.OutlookCalendarBindingId == evt.OutlookCalendarBindingId
+                    && e.OutlookEventId == evt.OutlookSeriesMasterId)
+                .Select(e => e.OutlookEtag)
+                .FirstOrDefaultAsync(ct);
+            if (!string.IsNullOrEmpty(masterEtag))
+                return masterEtag;
+        }
+        return requestEtag;
+    }
+
     private async Task<OutlookWriteResult> HandleConflictAsync(
-        Guid connectionId, string graphCalendarId, string graphEventId,
+        OutlookCalendarBindingEntity binding, EventEntity localEvent,
+        string graphCalendarId, string graphEventId,
         OutlookSyncBatchEntity batch, string calendarName, string operation, CancellationToken ct)
     {
+        async Task<OutlookWriteResult> FailConflictResolveAsync(
+            string errorCode, string errorMessage, string resultCode, string resultMessage,
+            string step, string stepStatus)
+        {
+            var now = _timeProvider.GetUtcNow();
+            batch.Status = "failed";
+            batch.FailureCount = 1;
+            batch.FinishedAt = now;
+            batch.UpdatedAt = now;
+            batch.ConfirmationCount = 0;
+            SetBatchError(batch, errorCode, errorMessage);
+            PopulateBatchHistory(batch, calendarName, operation, "failed", null, null,
+                0, 0, 0, 0, 1, GetBindingIdFromBatch(batch));
+            batch.StepsJson = JsonSerializer.Serialize(new[]
+            {
+                new { step, status = stepStatus, timestamp = now }
+            });
+            await _db.SaveChangesAsync(CancellationToken.None);
+            return new OutlookWriteResult(
+                "error", null, null, null, resultCode, resultMessage);
+        }
+
         JsonElement? latest;
         try
         {
             latest = await _graph.GetEventAsync(
-                connectionId, graphCalendarId, graphEventId, ct);
+                binding.ConnectionId, graphCalendarId, graphEventId, ct);
         }
         catch (OutlookReauthenticationRequiredException)
         {
@@ -457,42 +562,74 @@ public sealed class OutlookEventWriteService
         }
         catch
         {
-            batch.Status = "failed";
-            batch.FailureCount = 1;
-            batch.FinishedAt = _timeProvider.GetUtcNow();
-            batch.UpdatedAt = _timeProvider.GetUtcNow();
-            batch.ConfirmationCount = 0;
-            SetBatchError(batch, "conflict-resolve-failed", "Failed to retrieve latest event from Graph.");
-            PopulateBatchHistory(batch, calendarName, operation, "failed", null, null,
-                0, 0, 0, 0, 1, GetBindingIdFromBatch(batch));
-            batch.StepsJson = JsonSerializer.Serialize(new[]
-            {
-                new { step = "conflict-fetch", status = "failed", timestamp = _timeProvider.GetUtcNow() }
-            });
-            await _db.SaveChangesAsync(CancellationToken.None);
-            return new OutlookWriteResult(
-                "error", null, null, null, "CONFLICT_RESOLVE_FAILED",
-                "冲突后获取最新数据失败。");
+            return await FailConflictResolveAsync(
+                "conflict-resolve-failed", "Failed to retrieve latest event from Graph.",
+                "CONFLICT_RESOLVE_FAILED", "冲突后获取最新数据失败。",
+                "conflict-fetch", "failed");
         }
 
         if (latest is null)
         {
-            batch.Status = "failed";
-            batch.FailureCount = 1;
-            batch.FinishedAt = _timeProvider.GetUtcNow();
-            batch.UpdatedAt = _timeProvider.GetUtcNow();
-            batch.ConfirmationCount = 0;
-            SetBatchError(batch, "conflict-resolve-not-found", "Latest event not found on Graph.");
-            PopulateBatchHistory(batch, calendarName, operation, "failed", null, null,
-                0, 0, 0, 0, 1, GetBindingIdFromBatch(batch));
-            batch.StepsJson = JsonSerializer.Serialize(new[]
+            return await FailConflictResolveAsync(
+                "conflict-resolve-not-found", "Latest event not found on Graph.",
+                "CONFLICT_EVENT_MISSING", "冲突后最新事件在远端已不存在。",
+                "conflict-fetch", "not-found");
+        }
+
+        EventResponse? latestEvent;
+        string? latestEtag;
+        try
+        {
+            var transient = new EventEntity { Id = localEvent.Id };
+            OutlookEventMapper.ApplyGraphEvent(
+                transient, latest.Value, binding.Id, binding.PimCalendarId,
+                binding.ConnectionId, Guid.NewGuid());
+
+            // PR2: the typed latest event must carry remote attachment
+            // references so the client re-compare does not report spurious
+            // attachment diffs. Hydration is best-effort: a failure keeps the
+            // typed latest event usable without attachments.
+            try
             {
-                new { step = "conflict-fetch", status = "not-found", timestamp = _timeProvider.GetUtcNow() }
-            });
-            await _db.SaveChangesAsync(CancellationToken.None);
-            return new OutlookWriteResult(
-                "error", null, null, null, "CONFLICT_EVENT_MISSING",
-                "冲突后最新事件在远端已不存在。");
+                var references = await _attachments.GetOutlookAttachmentReferencesAsync(
+                    binding.ConnectionId, graphCalendarId, graphEventId, ct);
+                transient.AttachmentReferencesJson =
+                    EventFieldCodec.SerializeAttachments(references);
+            }
+            catch (OutlookReauthenticationRequiredException)
+            {
+                throw;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Outlook conflict attachment hydration failed for binding {BindingId}, event {EventId}",
+                    binding.Id,
+                    graphEventId);
+            }
+
+            latestEtag = transient.OutlookEtag;
+            latestEvent = EventResponseMapper.Map(transient);
+        }
+        catch (OutlookReauthenticationRequiredException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return await FailConflictResolveAsync(
+                "conflict-resolve-failed", "Failed to resolve latest event from Graph.",
+                "CONFLICT_RESOLVE_FAILED", "冲突后获取最新数据失败。",
+                "conflict-fetch", "failed");
         }
 
         batch.Status = "failed";
@@ -511,10 +648,7 @@ public sealed class OutlookEventWriteService
         await _db.SaveChangesAsync(CancellationToken.None);
 
         return new OutlookWriteResult(
-            "conflict", null,
-            latest.Value.GetRawText(),
-            latest.Value.TryGetProperty("@odata.etag", out var etagProp)
-                ? etagProp.GetString() : null,
+            "conflict", null, latestEvent, latestEtag,
             "CONFLICT",
             "事件在 Outlook 中已被修改。请刷新后重新编辑。");
     }
@@ -660,12 +794,7 @@ public sealed class OutlookEventWriteService
     }
 
     private static EventResponse MapEvent(EventEntity e) =>
-        new(e.Id, e.CalendarId, e.Uid, e.Title, e.Description,
-            e.Location, e.DtStart, e.DtEnd, e.RRule, e.Status, e.Source, null,
-            e.IsAllDay, e.TimeZoneId, e.SourceTimeZoneId, e.SourceUid,
-            e.ExternalMetadataJson, e.RecurrenceId, e.ExDatesJson,
-            e.RecurrenceMetadataJson,
-            e.OutlookCalendarBindingId, e.OutlookEventId, e.OutlookEtag, e.OutlookEventType);
+        EventResponseMapper.Map(e);
 
     private sealed record BatchStepEntry(string Step, string Status, DateTimeOffset Timestamp);
 

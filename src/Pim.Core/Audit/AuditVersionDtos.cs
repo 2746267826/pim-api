@@ -19,7 +19,9 @@ public sealed record RestorePreviewResponse(
     Guid ObjectId,
     string Summary,
     bool RequiresConfirmation,
-    IReadOnlyList<string> ChangedFields);
+    IReadOnlyList<string> ChangedFields,
+    string? BeforeJson = null,
+    string? AfterJson = null);
 
 public sealed record AuditExportResponse(
     string FileName,
