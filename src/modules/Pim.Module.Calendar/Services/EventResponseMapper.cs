@@ -8,6 +8,7 @@ public static class EventResponseMapper
     public static EventResponse Map(EventEntity e)
     {
         var outlookInfo = OutlookAdditionalInfoBuilder.Build(e);
+        var isCancelled = string.Equals(e.Status, "CANCELLED", StringComparison.OrdinalIgnoreCase);
 
         return new EventResponse(
             e.Id, e.CalendarId, e.Uid, e.Title, e.Description,
@@ -24,7 +25,8 @@ public static class EventResponseMapper
             EventFieldCodec.DeserializeAttendees(e.AttendeesJson),
             e.IsOnlineMeeting, e.OnlineMeetingProvider,
             e.OnlineMeetingUrl, e.ExternalLink,
-            EventFieldCodec.DeserializeAttachments(e.AttachmentReferencesJson));
+            EventFieldCodec.DeserializeAttachments(e.AttachmentReferencesJson),
+            e.IsSeriesMaster, e.IsException, e.SeriesMasterId, isCancelled);
     }
 
     public static EventResponse MapExpanded(ExpandedEvent ex)
@@ -38,7 +40,7 @@ public static class EventResponseMapper
             e.RRule, e.Status, e.Source,
             e.Id, e.IsAllDay, e.TimeZoneId,
             e.SourceTimeZoneId, e.SourceUid,
-            e.RecurrenceId, e.ExDatesJson, e.RecurrenceMetadataJson,
+            ex.RecurrenceId ?? e.RecurrenceId, e.ExDatesJson, e.RecurrenceMetadataJson,
             e.OutlookCalendarBindingId, e.OutlookEventId, e.OutlookEtag, e.OutlookEventType,
             outlookInfo,
             e.DescriptionFormat, e.ShowAs, e.Importance, e.Sensitivity,
@@ -48,6 +50,7 @@ public static class EventResponseMapper
             EventFieldCodec.DeserializeAttendees(e.AttendeesJson),
             e.IsOnlineMeeting, e.OnlineMeetingProvider,
             e.OnlineMeetingUrl, e.ExternalLink,
-            EventFieldCodec.DeserializeAttachments(e.AttachmentReferencesJson));
+            EventFieldCodec.DeserializeAttachments(e.AttachmentReferencesJson),
+            ex.IsSeriesMaster, ex.IsException, ex.SeriesMasterId, ex.IsCancelled);
     }
 }

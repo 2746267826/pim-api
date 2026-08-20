@@ -30,6 +30,8 @@ public class EventEntityConfiguration : IEntityTypeConfiguration<EventEntity>
         builder.Property(e => e.AttachmentReferencesJson).HasDefaultValue("[]");
         builder.Property(e => e.IsReminderOn).HasDefaultValue(false);
         builder.Property(e => e.IsOnlineMeeting).HasDefaultValue(false);
+        builder.Property(e => e.IsSeriesMaster).HasDefaultValue(false);
+        builder.Property(e => e.IsException).HasDefaultValue(false);
         builder.HasIndex(e => e.CalendarId);
         builder.HasIndex(e => e.Uid);
         builder.HasIndex(e => e.SourceUid);
@@ -38,8 +40,15 @@ public class EventEntityConfiguration : IEntityTypeConfiguration<EventEntity>
             .IsUnique()
             .HasFilter("\"outlook_calendar_binding_id\" IS NOT NULL AND \"outlook_event_id\" IS NOT NULL AND \"deleted_at\" IS NULL");
         builder.HasIndex(e => e.OutlookChangeKey);
+        builder.HasIndex(e => new { e.SeriesMasterId, e.RecurrenceId })
+            .IsUnique()
+            .HasFilter("\"is_exception\" = true AND \"series_master_id\" IS NOT NULL AND \"recurrence_id\" IS NOT NULL AND \"deleted_at\" IS NULL");
         builder.HasIndex(e => new { e.DeletedAt, e.DtStart });
         builder.HasIndex(e => e.DeletedByOperationId);
+        builder.HasOne(e => e.SeriesMaster)
+            .WithMany()
+            .HasForeignKey(e => e.SeriesMasterId)
+            .OnDelete(DeleteBehavior.SetNull);
         builder.HasOne(e => e.Calendar)
             .WithMany(c => c.Events)
             .HasForeignKey(e => e.CalendarId);

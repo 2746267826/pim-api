@@ -836,18 +836,29 @@ public sealed class OutlookEventWriteServiceTests
     }
 
     [Fact]
-    public async Task NonemptyRRule_Rejected()
+    public async Task NonemptyRRule_Allowed_SendsGraphRecurrence()
     {
         await using var db = CreateDb();
         var (_, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
-        var service = CreateService(db, new ScriptedHttpMessageHandler());
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.Created, GraphEventJson);
+        var service = CreateService(db, handler);
 
-        var draft = MakeDraft(calendarId) with { RRule = "FREQ=WEEKLY" };
+        var draft = MakeDraft(calendarId) with { RRule = "FREQ=WEEKLY;COUNT=3" };
         var request = new OutlookWriteRequest(
             "create", bindingId, null, draft, "instance", OpId);
 
-        await Assert.ThrowsAsync<DomainException>(() =>
-            service.ExecuteAsync(UserId, request, default));
+        var result = await service.ExecuteAsync(UserId, request, default);
+        Assert.Equal("created", result.Status);
+        var req = Assert.Single(handler.Requests);
+        var body = await req.Content!.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+        Assert.True(json.RootElement.TryGetProperty("recurrence", out var recurrence));
+        var pattern = recurrence.GetProperty("pattern");
+        Assert.Equal("weekly", pattern.GetProperty("type").GetString());
+        var range = recurrence.GetProperty("range");
+        Assert.Equal("numbered", range.GetProperty("type").GetString());
+        Assert.Equal(3, range.GetProperty("numberOfOccurrences").GetInt32());
     }
 
     [Fact]

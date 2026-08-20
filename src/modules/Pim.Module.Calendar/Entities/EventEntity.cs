@@ -56,6 +56,9 @@ public class EventEntity : ISoftDeletable
     [Column("source_ics_component")] public string? SourceIcsComponent { get; set; }
     [Column("external_metadata_json", TypeName = "jsonb")] public string ExternalMetadataJson { get; set; } = "{}";
     [Column("recurrence_id")][MaxLength(255)] public string? RecurrenceId { get; set; }
+    [Column("is_series_master")] public bool IsSeriesMaster { get; set; }
+    [Column("is_exception")] public bool IsException { get; set; }
+    [Column("series_master_id")] public Guid? SeriesMasterId { get; set; }
     [Column("exdates_json", TypeName = "jsonb")] public string ExDatesJson { get; set; } = "[]";
     [Column("recurrence_metadata_json", TypeName = "jsonb")] public string RecurrenceMetadataJson { get; set; } = "{}";
     [Column("deleted_by_operation_id")] public Guid? DeletedByOperationId { get; set; }
@@ -69,4 +72,7 @@ public class EventEntity : ISoftDeletable
 
     [ForeignKey(nameof(OutlookCalendarBindingId))]
     public OutlookCalendarBindingEntity? OutlookCalendarBinding { get; set; }
+
+    [ForeignKey(nameof(SeriesMasterId))]
+    public EventEntity? SeriesMaster { get; set; }
 }

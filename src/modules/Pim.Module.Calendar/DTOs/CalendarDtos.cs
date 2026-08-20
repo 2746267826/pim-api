@@ -66,8 +66,18 @@ public record CreateEventRequest(
     string? OnlineMeetingProvider = null,
     string? OnlineMeetingUrl = null,
     string? ExternalLink = null,
-    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null
+    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null,
+    bool? IsSeriesMaster = null,
+    bool? IsException = null,
+    Guid? SeriesMasterId = null,
+    string? RecurrenceId = null
 );
+
+public enum UpdateEventScope
+{
+    This,
+    Series
+}
 
 public record UpdateEventRequest(
     [Required] Guid CalendarId,
@@ -93,7 +103,11 @@ public record UpdateEventRequest(
     string? OnlineMeetingProvider = null,
     string? OnlineMeetingUrl = null,
     string? ExternalLink = null,
-    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null
+    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null,
+    bool? IsSeriesMaster = null,
+    bool? IsException = null,
+    Guid? SeriesMasterId = null,
+    string? RecurrenceId = null
 );
 
 public record EventResponse(
@@ -127,7 +141,11 @@ public record EventResponse(
     string? OnlineMeetingProvider = null,
     string? OnlineMeetingUrl = null,
     string? ExternalLink = null,
-    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null
+    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null,
+    bool IsSeriesMaster = false,
+    bool IsException = false,
+    Guid? SeriesMasterId = null,
+    bool IsCancelled = false
 );
 
 public record CreateTaskRequest(

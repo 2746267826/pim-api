@@ -57,7 +57,9 @@ public sealed record OutlookWriteRequest(
     CreateEventRequest? Draft,
     string Scope,
     Guid ClientOperationId,
-    string? ExpectedEtag = null);
+    string? ExpectedEtag = null,
+    Guid? OriginalEventId = null,
+    string? RecurrenceId = null);
 
 public sealed record OutlookWriteResult(
     string Status,

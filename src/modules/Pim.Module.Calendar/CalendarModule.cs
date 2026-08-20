@@ -359,12 +359,45 @@ public class CalendarModule : IModule
 
         group.MapPut("/events/{id:guid}", async (
             Guid id, [FromBody] UpdateEventRequest req,
+            [FromQuery] string? scope,
+            [FromQuery] string? recurrenceId,
+            [FromQuery] Guid? originalEventId,
             [FromServices] CalendarService svc, CancellationToken ct) =>
-            Results.Ok(ApiResponse<EventResponse>.Ok(await svc.UpdateEventAsync(id, req, ct))));
+        {
+            string? normalizedRecurrenceId = recurrenceId;
+            if (!string.IsNullOrEmpty(recurrenceId))
+            {
+                if (!DateTimeOffset.TryParse(recurrenceId, out var parsed))
+                    throw new DomainException(02009, "RecurrenceId 格式无效");
+                normalizedRecurrenceId = parsed.ToString("O");
+                if (!string.IsNullOrEmpty(req.RecurrenceId) && !string.Equals(req.RecurrenceId, normalizedRecurrenceId, StringComparison.Ordinal) && !string.Equals(req.RecurrenceId, recurrenceId, StringComparison.Ordinal))
+                    throw new DomainException(02009, "RecurrenceId 与查询参数不一致");
+                if (string.IsNullOrEmpty(req.RecurrenceId))
+                    req = req with { RecurrenceId = normalizedRecurrenceId };
+                else if (!DateTimeOffset.TryParse(req.RecurrenceId, out var bodyParsed))
+                    throw new DomainException(02009, "RecurrenceId 格式无效");
+                else
+                    req = req with { RecurrenceId = bodyParsed.ToString("O") };
+            }
+            else if (!string.IsNullOrEmpty(req.RecurrenceId))
+            {
+                if (!DateTimeOffset.TryParse(req.RecurrenceId, out var bodyParsed2))
+                    throw new DomainException(02009, "RecurrenceId 格式无效");
+                req = req with { RecurrenceId = bodyParsed2.ToString("O") };
+            }
+            return Results.Ok(ApiResponse<EventResponse>.Ok(await svc.UpdateEventAsync(id, req, scope, originalEventId, ct)));
+        });
 
         group.MapDelete("/events/{id:guid}", async (
-            Guid id, [FromServices] CalendarDeleteService svc, CancellationToken ct) =>
-            Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.DeleteEventAsync(id, ct))));
+            Guid id,
+            [FromQuery] string? scope,
+            [FromQuery] string? recurrenceId,
+            [FromQuery] Guid? originalEventId,
+            [FromServices] CalendarService svc, CancellationToken ct) =>
+        {
+            await svc.DeleteEventAsync(id, scope, recurrenceId, originalEventId, ct);
+            return Results.Ok(ApiResponse<string>.Ok("已删除"));
+        });
 
         group.MapPost("/events/{id:guid}/restore", async (
             Guid id,

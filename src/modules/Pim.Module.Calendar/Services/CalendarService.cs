@@ -14,9 +14,11 @@ public class CalendarService
     private readonly ICurrentUserService _currentUser;
     private readonly RecurrenceService _recurrence;
     private readonly EventAttachmentService _attachments;
+    private readonly TimeProvider _timeProvider;
+    private readonly CalendarAuditWriter? _audit;
 
     public CalendarService(PimDbContext db, ICurrentUserService currentUser, RecurrenceService recurrence)
-        : this(db, currentUser, recurrence, new EventAttachmentService(db))
+        : this(db, currentUser, recurrence, new EventAttachmentService(db), TimeProvider.System, null)
     {
     }
 
@@ -24,12 +26,16 @@ public class CalendarService
         PimDbContext db,
         ICurrentUserService currentUser,
         RecurrenceService recurrence,
-        EventAttachmentService attachments)
+        EventAttachmentService attachments,
+        TimeProvider? timeProvider = null,
+        CalendarAuditWriter? audit = null)
     {
         _db = db;
         _currentUser = currentUser;
         _recurrence = recurrence;
         _attachments = attachments;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _audit = audit;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "未登录");
@@ -80,7 +86,7 @@ public class CalendarService
             ?? throw new DomainException(02002, "日历不存在");
         cal.Name = request.Name;
         if (request.Color is not null) cal.Color = request.Color;
-        cal.UpdatedAt = DateTimeOffset.UtcNow;
+        cal.UpdatedAt = _timeProvider.GetUtcNow();
         await _db.SaveChangesAsync(ct);
         return new CalendarResponse(cal.Id, cal.Name, cal.Color, cal.Kind, cal.IsDefault, cal.Events.Count);
     }
@@ -90,7 +96,7 @@ public class CalendarService
         var cal = await _db.Set<CalendarEntity>()
             .FirstOrDefaultAsync(c => c.Id == id && c.UserId == UserId, ct)
             ?? throw new DomainException(02002, "日历不存在");
-        cal.DeletedAt = DateTimeOffset.UtcNow;
+        cal.DeletedAt = _timeProvider.GetUtcNow();
         await _db.SaveChangesAsync(ct);
     }
 
@@ -102,11 +108,12 @@ public class CalendarService
         var entities = await _db.Set<EventEntity>()
             .Where(e => e.Calendar.UserId == UserId
                         && e.DtStart > minValidDate
-                        && e.DtEnd > minValidDate)
+                        && e.DtEnd > minValidDate
+                        && ((e.DtStart < end && e.DtEnd > start) || !string.IsNullOrEmpty(e.RRule) || e.IsException))
             .AsNoTracking()
             .ToListAsync(ct);
 
-        var expanded = _recurrence.ExpandEvents(entities, start, end);
+        var expanded = _recurrence.ExpandEventsV2(entities, start, end);
 
         return expanded
             .OrderBy(x => x.OccurrenceStart)
@@ -121,10 +128,18 @@ public class CalendarService
         CancellationToken ct = default)
     {
         var minValidDate = DateTimeOffset.MinValue.AddYears(100);
+        var hasWindow = start.HasValue && end.HasValue;
         var query = _db.Set<EventEntity>()
             .Where(e => e.Calendar.UserId == UserId
                         && e.DtStart > minValidDate
                         && e.DtEnd > minValidDate);
+
+        if (hasWindow)
+        {
+            var s = start!.Value;
+            var e2 = end!.Value;
+            query = query.Where(e => ((e.DtStart < e2 && e.DtEnd > s) || !string.IsNullOrEmpty(e.RRule) || e.IsException));
+        }
 
         if (!string.IsNullOrEmpty(search))
             query = query.Where(e => e.Title.Contains(search));
@@ -135,7 +150,7 @@ public class CalendarService
 
         var rangeStart = start ?? DateTimeOffset.MinValue;
         var rangeEnd = end ?? DateTimeOffset.MaxValue;
-        var expanded = _recurrence.ExpandEvents(entities, rangeStart, rangeEnd);
+        var expanded = _recurrence.ExpandEventsV2(entities, rangeStart, rangeEnd);
 
         var totalCount = expanded.Count;
         var totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);
@@ -194,6 +209,35 @@ public class CalendarService
         };
 
         ApplyUnifiedFields(entity, request);
+
+        // PR3: Series / exception handling (bool? : null defaults to false)
+        if (request.IsException == true)
+        {
+            if (!request.SeriesMasterId.HasValue || string.IsNullOrEmpty(request.RecurrenceId))
+                throw new DomainException(02009, "例外必须指定系列主事件和原始发生时间");
+            var master = await _db.Set<EventEntity>()
+                .FirstOrDefaultAsync(m => m.Id == request.SeriesMasterId.Value && m.Calendar.UserId == UserId, ct)
+                ?? throw new DomainException(02001, "系列主事件不存在");
+            entity.IsException = true;
+            entity.SeriesMasterId = request.SeriesMasterId;
+            entity.RecurrenceId = request.RecurrenceId;
+            entity.IsSeriesMaster = false;
+            // Exceptions do not carry RRule
+            entity.RRule = null;
+        }
+        else if (!string.IsNullOrEmpty(request.RRule))
+        {
+            entity.IsSeriesMaster = true;
+            entity.IsException = false;
+            entity.SeriesMasterId = null;
+            // Keep RRule as provided
+        }
+        else
+        {
+            entity.IsSeriesMaster = request.IsSeriesMaster == true;
+            entity.IsException = false;
+            entity.SeriesMasterId = null;
+        }
 
         _db.Set<EventEntity>().Add(entity);
         await _db.SaveChangesAsync(ct);
@@ -286,7 +330,10 @@ public class CalendarService
                 ExternalMetadataJson = item.ExternalMetadataJson,
                 RecurrenceId = Truncate(item.RecurrenceId, 255),
                 ExDatesJson = item.ExDatesJson,
-                RecurrenceMetadataJson = item.RecurrenceMetadataJson
+                RecurrenceMetadataJson = item.RecurrenceMetadataJson,
+                IsSeriesMaster = !string.IsNullOrEmpty(item.RRule),
+                IsException = false,
+                SeriesMasterId = null
             });
             acceptedEvents.Add(item);
             imported++;
@@ -355,12 +402,28 @@ public class CalendarService
     }
 
     public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, CancellationToken ct)
+        => await UpdateEventAsync(id, request, null, null, ct);
+
+    public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, string? scope, CancellationToken ct)
+        => await UpdateEventAsync(id, request, scope, null, ct);
+
+    public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, string? scope, Guid? originalEventId, CancellationToken ct)
     {
         request = EventFieldValidator.ValidateAndNormalize(request);
 
-        var entity = await _db.Set<EventEntity>()
+        // If originalEventId provided (synthetic occurrence case), prefer master via originalEventId for scope=this/series
+        EventEntity? entity = null;
+        var hasOriginal = originalEventId.HasValue && originalEventId.Value != Guid.Empty && !string.Equals(scope, "instance", StringComparison.OrdinalIgnoreCase);
+        if (hasOriginal && (string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase)))
+        {
+            entity = await _db.Set<EventEntity>()
+                .FirstOrDefaultAsync(e => e.Id == originalEventId.Value && e.Calendar.UserId == UserId, ct);
+        }
+        entity ??= await _db.Set<EventEntity>()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
             ?? throw new DomainException(02001, "日程不存在");
+        // Fallback: if requested id is synthetic (not found) but originalEventId is master, entity already resolved
+        // Normalize recurrenceId from request / query if needed will be handled by caller
 
         if (entity.OutlookCalendarBindingId != null)
             throw new DomainException(02009, "Microsoft 日程必须通过确认写回流程修改。");
@@ -395,6 +458,173 @@ public class CalendarService
 
         await ValidatePimFileReferencesAsync(request.AttachmentReferences, ct);
 
+        var isScopeThis = string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase);
+
+        // Scope=this : edit single occurrence -> create/update exception
+        if (isScopeThis)
+        {
+            // If target itself is an exception, update it directly with validation and status preservation
+            if (entity.IsException)
+            {
+                // Validate SeriesMasterId / RecurrenceId belongs to same series if provided
+                if (request.SeriesMasterId.HasValue && request.SeriesMasterId.Value != entity.SeriesMasterId)
+                    throw new DomainException(02009, "例外与系列主事件不匹配");
+                if (!string.IsNullOrEmpty(request.RecurrenceId) && !string.Equals(request.RecurrenceId, entity.RecurrenceId, StringComparison.Ordinal))
+                    throw new DomainException(02009, "例外 RecurrenceId 与目标不一致");
+                var prevStatus = entity.Status;
+                entity.Title = request.Title;
+                entity.Description = request.Description;
+                entity.Location = request.Location;
+                entity.DtStart = normalizedStart;
+                entity.DtEnd = normalizedEnd;
+                if (request.IsAllDay.HasValue) entity.IsAllDay = request.IsAllDay.Value;
+                if (request.TimeZoneId is not null) entity.TimeZoneId = request.TimeZoneId;
+                entity.UpdatedAt = _timeProvider.GetUtcNow();
+                ApplyUnifiedFields(entity, request);
+                if (!string.IsNullOrEmpty(request.RecurrenceId))
+                    entity.RecurrenceId = request.RecurrenceId;
+                entity.RRule = null;
+                // Preserve CANCELLED status — do not auto-revert to CONFIRMED
+                if (string.Equals(prevStatus, "CANCELLED", StringComparison.OrdinalIgnoreCase))
+                    entity.Status = prevStatus;
+                await _db.SaveChangesAsync(ct);
+                return EventResponseMapper.Map(entity);
+            }
+
+            // Target is master (or regular) -> create or update exception for given RecurrenceId
+            if (!entity.IsSeriesMaster && string.IsNullOrEmpty(entity.RRule))
+            {
+                // Not a series master but scope=this requested -> treat as normal update
+                // fall through to series path below
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(request.RecurrenceId))
+                    throw new DomainException(02009, "修改单次需指定 RecurrenceId");
+                // If request provides SeriesMasterId, it must match the target master
+                if (request.SeriesMasterId.HasValue && request.SeriesMasterId.Value != entity.Id)
+                    throw new DomainException(02009, "例外与系列主事件不匹配");
+
+                var existingException = await _db.Set<EventEntity>()
+                    .FirstOrDefaultAsync(e => e.SeriesMasterId == entity.Id && e.RecurrenceId == request.RecurrenceId && e.IsException && e.DeletedAt == null, ct);
+
+                if (existingException != null)
+                {
+                    var prevStatus = existingException.Status;
+                    existingException.Title = request.Title;
+                    existingException.Description = request.Description;
+                    existingException.Location = request.Location;
+                    existingException.DtStart = normalizedStart;
+                    existingException.DtEnd = normalizedEnd;
+                    if (request.IsAllDay.HasValue) existingException.IsAllDay = request.IsAllDay.Value;
+                    if (request.TimeZoneId is not null) existingException.TimeZoneId = request.TimeZoneId;
+                    existingException.UpdatedAt = _timeProvider.GetUtcNow();
+                    ApplyUnifiedFields(existingException, request);
+                    existingException.RecurrenceId = request.RecurrenceId;
+                    existingException.RRule = null;
+                    // Preserve CANCELLED — do not auto-revert
+                    if (string.Equals(prevStatus, "CANCELLED", StringComparison.OrdinalIgnoreCase))
+                        existingException.Status = prevStatus;
+                    await _db.SaveChangesAsync(ct);
+                    return EventResponseMapper.Map(existingException);
+                }
+
+                var exceptionEntity = new EventEntity
+                {
+                    CalendarId = entity.CalendarId,
+                    Uid = entity.Uid,
+                    Title = request.Title,
+                    Description = request.Description,
+                    Location = request.Location,
+                    DtStart = normalizedStart,
+                    DtEnd = normalizedEnd,
+                    IsAllDay = request.IsAllDay ?? entity.IsAllDay,
+                    TimeZoneId = request.TimeZoneId ?? entity.TimeZoneId,
+                    IsException = true,
+                    IsSeriesMaster = false,
+                    SeriesMasterId = entity.Id,
+                    RecurrenceId = request.RecurrenceId,
+                    RRule = null,
+                    Status = "CONFIRMED",
+                    Source = entity.Source,
+                };
+                ApplyUnifiedFields(exceptionEntity, request);
+                // Ensure exception flag persists regardless of ApplyUnifiedFields
+                exceptionEntity.IsException = true;
+                exceptionEntity.IsSeriesMaster = false;
+                exceptionEntity.SeriesMasterId = entity.Id;
+                exceptionEntity.RecurrenceId = request.RecurrenceId;
+                exceptionEntity.RRule = null;
+                _db.Set<EventEntity>().Add(exceptionEntity);
+                await _db.SaveChangesAsync(ct);
+                return EventResponseMapper.Map(exceptionEntity);
+            }
+        }
+
+        var isScopeSeries = string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase);
+
+        // scope=series from exception: resolve master and update master, not exception
+        // Fix: do not overwrite master DtStart/DtEnd with occurrence's time unless explicitly changed vs master
+        if (isScopeSeries && entity.IsException)
+        {
+            if (!entity.SeriesMasterId.HasValue)
+                throw new DomainException(02009, "例外缺少系列主事件");
+            var masterEntity = await _db.Set<EventEntity>()
+                .FirstOrDefaultAsync(e => e.Id == entity.SeriesMasterId.Value && e.Calendar.UserId == UserId, ct)
+                ?? throw new DomainException(02001, "系列主事件不存在");
+
+            if (masterEntity.OutlookCalendarBindingId != null)
+                throw new DomainException(02009, "Microsoft 日程必须通过确认写回流程修改。");
+
+            masterEntity.Title = request.Title;
+            masterEntity.Description = request.Description;
+            masterEntity.Location = request.Location;
+            // Only overwrite master time if request time differs from master time (explicit series time change)
+            // Otherwise keep master's original DtStart/DtEnd to avoid copying occurrence date to master
+            if (normalizedStart != masterEntity.DtStart)
+                masterEntity.DtStart = normalizedStart;
+            if (normalizedEnd != masterEntity.DtEnd)
+            {
+                // also ensure only update if duration or time explicitly changed; if only date part differs due to occurrence, skip
+                // Compare time-of-day and duration: keep master if only occurrence date shifted
+                var reqDuration = normalizedEnd - normalizedStart;
+                var masterDuration = masterEntity.DtEnd - masterEntity.DtStart;
+                // If durations differ or time-of-day differs, treat as explicit change
+                if (reqDuration != masterDuration || normalizedStart.TimeOfDay != masterEntity.DtStart.TimeOfDay)
+                    masterEntity.DtEnd = normalizedEnd;
+            }
+            masterEntity.RRule = request.RRule;
+            if (request.IsAllDay.HasValue)
+                masterEntity.IsAllDay = request.IsAllDay.Value;
+            if (request.TimeZoneId is not null)
+                masterEntity.TimeZoneId = request.TimeZoneId;
+            masterEntity.UpdatedAt = _timeProvider.GetUtcNow();
+
+            ApplyUnifiedFields(masterEntity, request);
+
+            // Update master fields; ensure RRule/master flags correct and exception not created
+            if (!string.IsNullOrEmpty(request.RRule))
+            {
+                masterEntity.IsSeriesMaster = true;
+                masterEntity.IsException = false;
+                masterEntity.SeriesMasterId = null;
+                masterEntity.RecurrenceId = null;
+            }
+            else
+            {
+                if (masterEntity.IsSeriesMaster && string.IsNullOrEmpty(request.RRule))
+                    masterEntity.IsSeriesMaster = false;
+                if (request.IsSeriesMaster == true)
+                    masterEntity.IsSeriesMaster = true;
+                masterEntity.IsException = false;
+                masterEntity.SeriesMasterId = null;
+            }
+
+            await _db.SaveChangesAsync(ct);
+            return EventResponseMapper.Map(masterEntity);
+        }
+
+        // Default: series/master update path
         entity.Title = request.Title;
         entity.Description = request.Description;
         entity.Location = request.Location;
@@ -406,9 +636,43 @@ public class CalendarService
             entity.IsAllDay = request.IsAllDay.Value;
         if (request.TimeZoneId is not null)
             entity.TimeZoneId = request.TimeZoneId;
-        entity.UpdatedAt = DateTimeOffset.UtcNow;
+        entity.UpdatedAt = _timeProvider.GetUtcNow();
 
         ApplyUnifiedFields(entity, request);
+
+        // PR3: Series / exception handling for updates (bool? handling)
+        if (request.IsException == true)
+        {
+            if (!request.SeriesMasterId.HasValue || string.IsNullOrEmpty(request.RecurrenceId))
+                throw new DomainException(02009, "例外必须指定系列主事件和原始发生时间");
+            var master = await _db.Set<EventEntity>()
+                .FirstOrDefaultAsync(m => m.Id == request.SeriesMasterId.Value && m.Calendar.UserId == UserId, ct)
+                ?? throw new DomainException(02001, "系列主事件不存在");
+            entity.IsException = true;
+            entity.SeriesMasterId = request.SeriesMasterId;
+            entity.RecurrenceId = request.RecurrenceId;
+            entity.IsSeriesMaster = false;
+            entity.RRule = null;
+        }
+        else if (!string.IsNullOrEmpty(request.RRule))
+        {
+            entity.IsSeriesMaster = true;
+            entity.IsException = false;
+            entity.SeriesMasterId = null;
+        }
+        else
+        {
+            // If RRule cleared, clear master flag
+            if (entity.IsSeriesMaster && string.IsNullOrEmpty(request.RRule))
+                entity.IsSeriesMaster = false;
+            // Explicit master flag from request (bool? : null => false)
+            if (request.IsSeriesMaster == true)
+                entity.IsSeriesMaster = true;
+        }
+
+        // Update RecurrenceId for exception if provided
+        if (request.IsException == true && !string.IsNullOrEmpty(request.RecurrenceId))
+            entity.RecurrenceId = request.RecurrenceId;
 
         await _db.SaveChangesAsync(ct);
         return EventResponseMapper.Map(entity);
@@ -428,13 +692,209 @@ public class CalendarService
     }
 
     public async Task DeleteEventAsync(Guid id, CancellationToken ct)
+        => await DeleteEventAsync(id, null, null, null, ct);
+
+    public async Task DeleteEventAsync(Guid id, string? scope, CancellationToken ct)
+        => await DeleteEventAsync(id, scope, null, null, ct);
+
+    public async Task DeleteEventAsync(Guid id, string? scope, string? recurrenceId, CancellationToken ct)
+        => await DeleteEventAsync(id, scope, recurrenceId, null, ct);
+
+    public async Task DeleteEventAsync(Guid id, string? scope, string? recurrenceId, Guid? originalEventId, CancellationToken ct)
     {
-        var entity = await _db.Set<EventEntity>()
+        EventEntity? entity = null;
+        var hasOriginal = originalEventId.HasValue && originalEventId.Value != Guid.Empty;
+        if (hasOriginal && (string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase)))
+        {
+            entity = await _db.Set<EventEntity>().IgnoreQueryFilters()
+                .FirstOrDefaultAsync(e => e.Id == originalEventId.Value && e.Calendar.UserId == UserId, ct);
+        }
+        entity ??= await _db.Set<EventEntity>().IgnoreQueryFilters()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
             ?? throw new DomainException(02001, "日程不存在");
+        if (entity.DeletedAt != null)
+            return;
 
-        entity.DeletedAt = DateTimeOffset.UtcNow;
+        // Normalize recurrenceId to O format when needed
+        string? normalizedRecurrenceId = recurrenceId;
+        if (!string.IsNullOrEmpty(recurrenceId))
+        {
+            if (DateTimeOffset.TryParse(recurrenceId, out var parsed))
+                normalizedRecurrenceId = parsed.ToString("O");
+            else
+                throw new DomainException(02009, "RecurrenceId 格式无效");
+        }
+
+        var isScopeThis = string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase);
+        var isScopeSeries = string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase);
+        var operationId = Guid.NewGuid();
+        var now = _timeProvider.GetUtcNow();
+
+        void EnsureNotOutlook(EventEntity e, Guid calendarId, Guid? bindingId)
+        {
+            if (bindingId != null)
+                throw new DomainException(02009, "Microsoft 日程必须通过确认写回流程删除。");
+        }
+
+        async Task EnsureCalendarNotOutlookBound(Guid calendarId)
+        {
+            var hasBinding = await _db.Set<OutlookCalendarBindingEntity>()
+                .AnyAsync(b => b.PimCalendarId == calendarId, ct);
+            if (hasBinding)
+                throw new DomainException(02009, "Microsoft 日历的日程必须通过确认写回流程删除。");
+        }
+
+        // Pre-check for direct entity
+        EnsureNotOutlook(entity, entity.CalendarId, entity.OutlookCalendarBindingId);
+        await EnsureCalendarNotOutlookBound(entity.CalendarId);
+
+        // If scope=series from exception, also check master binding
+        EventEntity? resolvedMaster = null;
+        if (entity.IsException && isScopeSeries && entity.SeriesMasterId.HasValue)
+        {
+            resolvedMaster = await _db.Set<EventEntity>().IgnoreQueryFilters()
+                .FirstOrDefaultAsync(e => e.Id == entity.SeriesMasterId.Value && e.Calendar.UserId == UserId, ct);
+            if (resolvedMaster != null && resolvedMaster.DeletedAt == null)
+            {
+                EnsureNotOutlook(resolvedMaster, resolvedMaster.CalendarId, resolvedMaster.OutlookCalendarBindingId);
+                await EnsureCalendarNotOutlookBound(resolvedMaster.CalendarId);
+            }
+        }
+        if (entity.IsSeriesMaster && !string.IsNullOrEmpty(normalizedRecurrenceId))
+        {
+            // scope=this path will check master already, but also ensure normalized
+        }
+
+        if (isScopeThis)
+        {
+            var recId = normalizedRecurrenceId;
+            if (string.IsNullOrEmpty(recId) && entity.IsException)
+                recId = entity.RecurrenceId;
+
+            if (entity.IsSeriesMaster)
+            {
+                if (string.IsNullOrEmpty(recId))
+                    throw new DomainException(02009, "删除单次需指定 RecurrenceId");
+                var existing = await _db.Set<EventEntity>()
+                    .FirstOrDefaultAsync(e => e.SeriesMasterId == entity.Id && e.RecurrenceId == recId && e.IsException && e.DeletedAt == null, ct);
+                if (existing != null)
+                {
+                    existing.Status = "CANCELLED";
+                    existing.UpdatedAt = now;
+                    await _db.SaveChangesAsync(ct);
+                    if (_audit != null)
+                        await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", existing.Id,
+                            new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "cancel-occurrence", ["affectedCount"] = "1" }, ct);
+                    return;
+                }
+                DateTimeOffset occurrenceStart;
+                if (!DateTimeOffset.TryParse(recId, out occurrenceStart))
+                    occurrenceStart = entity.DtStart;
+                var duration = entity.DtEnd - entity.DtStart;
+                var cancelled = new EventEntity
+                {
+                    CalendarId = entity.CalendarId,
+                    Uid = entity.Uid,
+                    Title = entity.Title,
+                    Description = entity.Description,
+                    Location = entity.Location,
+                    DtStart = occurrenceStart,
+                    DtEnd = occurrenceStart.Add(duration),
+                    IsException = true,
+                    IsSeriesMaster = false,
+                    SeriesMasterId = entity.Id,
+                    RecurrenceId = recId,
+                    RRule = null,
+                    Status = "CANCELLED",
+                    Source = entity.Source,
+                };
+                _db.Set<EventEntity>().Add(cancelled);
+                await _db.SaveChangesAsync(ct);
+                if (_audit != null)
+                    await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", cancelled.Id,
+                        new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "cancel-occurrence", ["affectedCount"] = "1" }, ct);
+                return;
+            }
+
+            if (entity.IsException)
+            {
+                entity.Status = "CANCELLED";
+                entity.UpdatedAt = now;
+                await _db.SaveChangesAsync(ct);
+                if (_audit != null)
+                    await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", entity.Id,
+                        new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "cancel-occurrence", ["affectedCount"] = "1" }, ct);
+                return;
+            }
+
+            // Non-series entity with scope=this -> soft delete as fallback
+            entity.DeletedAt = now;
+            entity.DeletedByOperationId = operationId;
+            entity.DeletedByOperationKind = "single-event";
+            entity.UpdatedAt = now;
+            await _db.SaveChangesAsync(ct);
+            if (_audit != null)
+                await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", entity.Id,
+                    new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "single-event", ["affectedCount"] = "1" }, ct);
+            return;
+        }
+
+        // scope=series or null: soft-delete cascade
+        void MarkDeleted(EventEntity e)
+        {
+            e.DeletedAt = now;
+            e.DeletedByOperationId = operationId;
+            e.DeletedByOperationKind = isScopeSeries ? "series" : (e.IsSeriesMaster ? "series" : "single-event");
+            e.UpdatedAt = now;
+        }
+
+        if (entity.IsException && isScopeSeries)
+        {
+            if (entity.SeriesMasterId.HasValue)
+            {
+                var master = resolvedMaster ?? await _db.Set<EventEntity>().IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(e => e.Id == entity.SeriesMasterId.Value && e.Calendar.UserId == UserId, ct);
+                if (master != null && master.DeletedAt == null)
+                {
+                    MarkDeleted(master);
+                    var exceptions = await _db.Set<EventEntity>()
+                        .Where(e => e.SeriesMasterId == master.Id && e.IsException && e.DeletedAt == null)
+                        .ToListAsync(ct);
+                    foreach (var ex in exceptions) MarkDeleted(ex);
+                    if (entity.DeletedAt == null) MarkDeleted(entity);
+                    await _db.SaveChangesAsync(ct);
+                    if (_audit != null)
+                        await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", master.Id,
+                            new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "series", ["affectedCount"] = (1 + exceptions.Count).ToString() }, ct);
+                    return;
+                }
+            }
+            MarkDeleted(entity);
+            await _db.SaveChangesAsync(ct);
+            if (_audit != null)
+                await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", entity.Id,
+                    new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "single-event", ["affectedCount"] = "1" }, ct);
+            return;
+        }
+
+        MarkDeleted(entity);
+        if (entity.IsSeriesMaster)
+        {
+            var exceptions = await _db.Set<EventEntity>()
+                .Where(e => e.SeriesMasterId == entity.Id && e.IsException && e.DeletedAt == null)
+                .ToListAsync(ct);
+            foreach (var ex in exceptions) MarkDeleted(ex);
+            await _db.SaveChangesAsync(ct);
+            if (_audit != null)
+                await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", entity.Id,
+                    new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "series", ["affectedCount"] = (1 + exceptions.Count).ToString() }, ct);
+            return;
+        }
+
         await _db.SaveChangesAsync(ct);
+        if (_audit != null)
+            await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", entity.Id,
+                new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "single-event", ["affectedCount"] = "1" }, ct);
     }
 
     public async Task<int> DeleteEventsAsync(IEnumerable<Guid> ids, CancellationToken ct)
@@ -444,7 +904,7 @@ public class CalendarService
             .ToListAsync(ct);
 
         foreach (var entity in entities)
-            entity.DeletedAt = DateTimeOffset.UtcNow;
+            entity.DeletedAt = _timeProvider.GetUtcNow();
 
         if (entities.Count > 0)
             await _db.SaveChangesAsync(ct);
@@ -605,9 +1065,9 @@ public class CalendarService
         {
             task.Status = request.Status;
             if (request.Status == "COMPLETED")
-                task.CompletedAt = DateTimeOffset.UtcNow;
+                task.CompletedAt = _timeProvider.GetUtcNow();
         }
-        task.UpdatedAt = DateTimeOffset.UtcNow;
+        task.UpdatedAt = _timeProvider.GetUtcNow();
 
         await _db.SaveChangesAsync(ct);
         return MapTask(task);
@@ -633,7 +1093,7 @@ public class CalendarService
         if (request.EstimatedDuration is not null)
             task.EstimatedDuration = estimatedDuration;
         task.IsInbox = false;
-        task.UpdatedAt = DateTimeOffset.UtcNow;
+        task.UpdatedAt = _timeProvider.GetUtcNow();
 
         await _db.SaveChangesAsync(ct);
         return MapTask(task);
@@ -683,7 +1143,7 @@ public class CalendarService
             .Include(t => t.Calendar)
             .Where(t => t.UserId == UserId && ids.Contains(t.Id))
             .ToListAsync(ct);
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
 
         foreach (var task in tasks)
         {
@@ -767,7 +1227,7 @@ public class CalendarService
         else if (request.Duration.HasValue && request.ScheduledStart.HasValue)
             task.PlannedEnd = newEnd;
 
-        task.UpdatedAt = DateTimeOffset.UtcNow;
+        task.UpdatedAt = _timeProvider.GetUtcNow();
         await _db.SaveChangesAsync(ct);
     }
 
@@ -777,7 +1237,7 @@ public class CalendarService
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
             ?? throw new DomainException(02004, "任务不存在");
 
-        task.DeletedAt = DateTimeOffset.UtcNow;
+        task.DeletedAt = _timeProvider.GetUtcNow();
         await _db.SaveChangesAsync(ct);
     }
 

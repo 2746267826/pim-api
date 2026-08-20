@@ -12,12 +12,14 @@ public sealed class CalendarDeleteService
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly CalendarAuditWriter _audit;
+    private readonly TimeProvider _timeProvider;
 
-    public CalendarDeleteService(PimDbContext db, ICurrentUserService currentUser, CalendarAuditWriter audit)
+    public CalendarDeleteService(PimDbContext db, ICurrentUserService currentUser, CalendarAuditWriter audit, TimeProvider? timeProvider = null)
     {
         _db = db;
         _currentUser = currentUser;
         _audit = audit;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(1002, "未登录");
@@ -45,7 +47,7 @@ public sealed class CalendarDeleteService
         var calendar = await LoadCalendarAsync(calendarId, ct);
         var operationId = Guid.NewGuid();
         var operationKind = CalendarOperationKind(calendar);
-        var deletedAt = DateTimeOffset.UtcNow;
+        var deletedAt = _timeProvider.GetUtcNow();
         var childSamples = await LoadCalendarChildSamplesAsync(calendar, 5, ct);
         var affectedIds = new List<Guid> { calendar.Id };
 
@@ -111,7 +113,7 @@ public sealed class CalendarDeleteService
             throw new DomainException(02009, "Microsoft 日历的日程必须通过确认写回流程删除。");
 
         var operationId = Guid.NewGuid();
-        var deletedAt = DateTimeOffset.UtcNow;
+        var deletedAt = _timeProvider.GetUtcNow();
         var operationKind = "single-event";
 
         MarkDeleted(evt, deletedAt, operationId, operationKind);
@@ -152,7 +154,7 @@ public sealed class CalendarDeleteService
         if (hasBoundCalendar)
             throw new DomainException(02009, "批量删除中包含 Microsoft 日历的日程，必须通过确认写回流程。");
 
-        var deletedAt = DateTimeOffset.UtcNow;
+        var deletedAt = _timeProvider.GetUtcNow();
         var operationKind = "batch-event";
 
         foreach (var evt in events)
@@ -176,7 +178,7 @@ public sealed class CalendarDeleteService
     {
         var task = await LoadTaskAsync(taskId, ct);
         var operationId = Guid.NewGuid();
-        var deletedAt = DateTimeOffset.UtcNow;
+        var deletedAt = _timeProvider.GetUtcNow();
         var operationKind = "single-task";
 
         MarkDeleted(task, deletedAt, operationId, operationKind);
@@ -208,7 +210,7 @@ public sealed class CalendarDeleteService
         if (tasks.Count == 0)
             return EmptyResult(operation, operationId, "没有删除任务。");
 
-        var deletedAt = DateTimeOffset.UtcNow;
+        var deletedAt = _timeProvider.GetUtcNow();
         var operationKind = "batch-task";
 
         foreach (var task in tasks)
