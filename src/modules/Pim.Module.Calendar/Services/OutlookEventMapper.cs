@@ -76,9 +76,24 @@ public static class OutlookEventMapper
             target.OutlookSeriesMasterId = GetStringOrNull(graph, "seriesMasterId");
         }
 
-        if (graph.TryGetProperty("recurrence", out var recurrence) && recurrence.ValueKind != JsonValueKind.Null)
+        JsonElement? recurrenceElement = null;
+        if (graph.TryGetProperty("recurrence", out var recurrence) && recurrence.ValueKind != JsonValueKind.Null && recurrence.ValueKind != JsonValueKind.Undefined)
         {
-            target.GraphRecurrenceJson = recurrence.GetRawText();
+            if (recurrence.ValueKind == JsonValueKind.Object && recurrence.EnumerateObject().Any())
+            {
+                target.GraphRecurrenceJson = recurrence.GetRawText();
+                recurrenceElement = recurrence;
+            }
+            else if (recurrence.ValueKind == JsonValueKind.Object)
+            {
+                target.GraphRecurrenceJson = "{}";
+            }
+            else
+            {
+                target.GraphRecurrenceJson = recurrence.GetRawText();
+                if (recurrence.ValueKind == JsonValueKind.Object)
+                    recurrenceElement = recurrence;
+            }
         }
         else
         {
@@ -92,6 +107,9 @@ public static class OutlookEventMapper
 
         target.DtStart = ParseGraphDateTime(startRaw);
         target.DtEnd = ParseGraphDateTime(endRaw);
+
+        // Map Graph recurrence ↔ RRule / master flags
+        MapRecurrenceToEntity(target, type, recurrenceElement);
 
         if (target.IsAllDay)
         {
@@ -215,6 +233,12 @@ public static class OutlookEventMapper
             {
                 payload["onlineMeetingProvider"] = "teamsForBusiness";
             }
+        }
+
+        var recurrencePayload = BuildGraphRecurrencePayload(draft.RRule, draft.DtStart, draft.IsAllDay);
+        if (recurrencePayload is not null)
+        {
+            payload["recurrence"] = recurrencePayload;
         }
 
         return payload;
@@ -351,6 +375,221 @@ public static class OutlookEventMapper
         }
 
         return GetStringOrNull(element, "onlineMeetingUrl");
+    }
+
+    private static void MapRecurrenceToEntity(EventEntity target, string? type, JsonElement? recurrenceElement)
+    {
+        // Reset recurrence-derived flags first; RRule will be set if recurrence present.
+        if (type == "seriesMaster")
+        {
+            if (recurrenceElement.HasValue)
+            {
+                var rrule = TryConvertGraphRecurrenceToRRule(recurrenceElement.Value, target.DtStart);
+                if (!string.IsNullOrEmpty(rrule))
+                {
+                    target.RRule = rrule;
+                    target.IsSeriesMaster = true;
+                    target.IsException = false;
+                    target.SeriesMasterId = null;
+                    target.RecurrenceId = null;
+                    target.OutlookEventType = "seriesMaster";
+                    target.OutlookSeriesMasterId = null;
+                    return;
+                }
+            }
+            // seriesMaster without valid recurrence: clear master flags
+            target.RRule = null;
+            target.IsSeriesMaster = false;
+            target.IsException = false;
+            target.SeriesMasterId = null;
+            target.RecurrenceId = null;
+        }
+        else if (type == "exception")
+        {
+            target.IsException = true;
+            target.IsSeriesMaster = false;
+            target.RRule = null;
+            // RecurrenceId stays as-is if already set; otherwise leave null (diff confirm will handle)
+            // SeriesMasterId GUID cannot be resolved in mapper (needs DB), keep OutlookSeriesMasterId string.
+        }
+        else if (type == "occurrence")
+        {
+            target.IsException = false;
+            target.IsSeriesMaster = false;
+            target.RRule = null;
+        }
+        else // singleInstance or unknown
+        {
+            target.IsException = false;
+            target.IsSeriesMaster = false;
+            target.RRule = null;
+            target.SeriesMasterId = null;
+            target.RecurrenceId = null;
+        }
+    }
+
+    private static string? TryConvertGraphRecurrenceToRRule(JsonElement recurrence, DateTimeOffset dtStart)
+    {
+        try
+        {
+            if (!recurrence.TryGetProperty("pattern", out var pattern) || pattern.ValueKind != JsonValueKind.Object)
+                return null;
+            if (!recurrence.TryGetProperty("range", out var range) || range.ValueKind != JsonValueKind.Object)
+                return null;
+
+            var patternType = GetStringOrNull(pattern, "type");
+            if (string.IsNullOrEmpty(patternType))
+                return null;
+            var freq = MapGraphPatternTypeToFreq(patternType);
+            if (freq is null)
+                return null;
+
+            var interval = GetIntOrNull(pattern, "interval") ?? 1;
+            var rangeType = GetStringOrNull(range, "type") ?? "noEnd";
+
+            var rrule = $"FREQ={freq}";
+            if (interval > 1)
+                rrule += $";INTERVAL={interval}";
+
+            if (string.Equals(rangeType, "numbered", StringComparison.OrdinalIgnoreCase))
+            {
+                var count = GetIntOrNull(range, "numberOfOccurrences");
+                if (count.HasValue && count.Value > 0)
+                    rrule += $";COUNT={count.Value}";
+            }
+            else if (string.Equals(rangeType, "endDate", StringComparison.OrdinalIgnoreCase))
+            {
+                var endDateStr = GetStringOrNull(range, "endDate");
+                if (!string.IsNullOrEmpty(endDateStr) && DateOnly.TryParse(endDateStr, CultureInfo.InvariantCulture, out var endDate))
+                {
+                    // Use dtStart time component for UNTIL, in UTC.
+                    var utc = dtStart.ToUniversalTime();
+                    var until = new DateTimeOffset(endDate.Year, endDate.Month, endDate.Day, utc.Hour, utc.Minute, utc.Second, TimeSpan.Zero);
+                    // If time is 00:00, Graph endDate is date-only inclusive; use end of day 23:59:59? Keep as start time.
+                    rrule += $";UNTIL={until.UtcDateTime:yyyyMMdd'T'HHmmss'Z'}";
+                }
+            }
+
+            return rrule;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? MapGraphPatternTypeToFreq(string patternType)
+    {
+        return patternType.ToLowerInvariant() switch
+        {
+            "daily" => "DAILY",
+            "weekly" => "WEEKLY",
+            "absolutemonthly" => "MONTHLY",
+            "relativemonthly" => "MONTHLY",
+            "monthly" => "MONTHLY",
+            "absoluteyearly" => "YEARLY",
+            "relativeyearly" => "YEARLY",
+            "yearly" => "YEARLY",
+            _ => null
+        };
+    }
+
+    private static Dictionary<string, object?>? BuildGraphRecurrencePayload(string? rrule, DateTimeOffset dtStart, bool isAllDay)
+    {
+        if (string.IsNullOrWhiteSpace(rrule))
+            return null;
+
+        var map = ParseRRule(rrule);
+        if (!map.TryGetValue("FREQ", out var freqRaw) || string.IsNullOrEmpty(freqRaw))
+            return null;
+        var freqUpper = freqRaw!.ToUpperInvariant();
+        string graphType = freqUpper switch
+        {
+            "DAILY" => "daily",
+            "WEEKLY" => "weekly",
+            "MONTHLY" => "absoluteMonthly",
+            "YEARLY" => "absoluteYearly",
+            _ => "daily"
+        };
+        int interval = 1;
+        if (map.TryGetValue("INTERVAL", out var intervalRaw) && int.TryParse(intervalRaw, out var iv) && iv > 0)
+            interval = iv;
+
+        var pattern = new Dictionary<string, object?>
+        {
+            ["type"] = graphType,
+            ["interval"] = interval
+        };
+
+        var startDate = dtStart.ToUniversalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        Dictionary<string, object?> range;
+        if (map.TryGetValue("COUNT", out var countRaw) && int.TryParse(countRaw, out var count) && count > 0)
+        {
+            range = new Dictionary<string, object?>
+            {
+                ["type"] = "numbered",
+                ["startDate"] = startDate,
+                ["numberOfOccurrences"] = count,
+                ["recurrenceTimeZone"] = "UTC"
+            };
+        }
+        else if (map.TryGetValue("UNTIL", out var untilRaw) && !string.IsNullOrEmpty(untilRaw))
+        {
+            var endDate = ParseUntilToDateString(untilRaw!);
+            range = new Dictionary<string, object?>
+            {
+                ["type"] = "endDate",
+                ["startDate"] = startDate,
+                ["endDate"] = endDate,
+                ["recurrenceTimeZone"] = "UTC"
+            };
+        }
+        else
+        {
+            range = new Dictionary<string, object?>
+            {
+                ["type"] = "noEnd",
+                ["startDate"] = startDate,
+                ["recurrenceTimeZone"] = "UTC"
+            };
+        }
+
+        return new Dictionary<string, object?>
+        {
+            ["pattern"] = pattern,
+            ["range"] = range
+        };
+    }
+
+    private static Dictionary<string, string> ParseRRule(string rrule)
+    {
+        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var parts = rrule.Split(';', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var part in parts)
+        {
+            var kv = part.Split('=', 2);
+            if (kv.Length == 2)
+                dict[kv[0].Trim().ToUpperInvariant()] = kv[1].Trim();
+        }
+        return dict;
+    }
+
+    private static string ParseUntilToDateString(string untilRaw)
+    {
+        // UNTIL formats: 20261215T090000Z or 20261215
+        try
+        {
+            if (untilRaw.Length >= 8)
+            {
+                var datePart = untilRaw.Substring(0, 8);
+                if (DateTime.TryParseExact(datePart, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d))
+                    return d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            }
+            if (DateTimeOffset.TryParse(untilRaw, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var dto))
+                return dto.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        }
+        catch { }
+        return DateOnly.FromDateTime(DateTime.UtcNow).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     }
 
     private static void WriteExternalMetadata(EventEntity target, JsonElement graph)

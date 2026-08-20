@@ -75,8 +75,8 @@ public sealed class OutlookEventWriteService
             .FirstOrDefaultAsync(c => c.Id == binding.PimCalendarId && c.UserId == userId, ct)
             ?? throw new DomainException(02005, "日历不存在。");
 
-        if (request.Draft?.RRule is { Length: > 0 })
-            throw new DomainException(02009, "PIM 不支持创建或修改重复日程规则。");
+        if (request.Draft?.RRule is string rrule && rrule.Length > 0 && string.IsNullOrWhiteSpace(rrule))
+            throw new DomainException(02009, "RRule 不能为空白。");
 
         if (request.Operation == "create" && request.Scope != "instance")
             throw new DomainException(02009, "创建操作 Scope 仅支持 instance。");
