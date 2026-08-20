@@ -11,54 +11,6 @@ namespace Pim.Infrastructure.Data.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AlterColumn<string>(
-                name: "life_category",
-                table: "mobile_usage_aggregates",
-                type: "character varying(128)",
-                maxLength: 128,
-                nullable: false,
-                defaultValue: "其他",
-                oldClrType: typeof(string),
-                oldType: "character varying(128)",
-                oldMaxLength: 128,
-                oldDefaultValue: "未分类");
-
-            migrationBuilder.AlterColumn<string>(
-                name: "life_category",
-                table: "mobile_timeline_blocks",
-                type: "character varying(128)",
-                maxLength: 128,
-                nullable: false,
-                defaultValue: "其他",
-                oldClrType: typeof(string),
-                oldType: "character varying(128)",
-                oldMaxLength: 128,
-                oldDefaultValue: "未分类");
-
-            migrationBuilder.AlterColumn<string>(
-                name: "life_category",
-                table: "mobile_app_category_rules",
-                type: "character varying(128)",
-                maxLength: 128,
-                nullable: false,
-                defaultValue: "其他",
-                oldClrType: typeof(string),
-                oldType: "character varying(128)",
-                oldMaxLength: 128,
-                oldDefaultValue: "未分类");
-
-            migrationBuilder.AlterColumn<string>(
-                name: "life_category",
-                table: "mobile_app_catalog_overrides",
-                type: "character varying(128)",
-                maxLength: 128,
-                nullable: false,
-                defaultValue: "其他",
-                oldClrType: typeof(string),
-                oldType: "character varying(128)",
-                oldMaxLength: 128,
-                oldDefaultValue: "未分类");
-
             migrationBuilder.AddColumn<bool>(
                 name: "is_exception",
                 table: "events",
@@ -98,10 +50,25 @@ namespace Pim.Infrastructure.Data.Migrations
                   AND events.is_exception = false;
                 """);
 
-            migrationBuilder.CreateIndex(
-                name: "IX_pc_activity_category_rules_category_id",
-                table: "pc_activity_category_rules",
-                column: "category_id");
+            migrationBuilder.Sql("""
+                UPDATE events
+                SET recurrence_id = dtstart::text
+                WHERE is_exception = true
+                  AND recurrence_id IS NULL;
+                """);
+
+            migrationBuilder.Sql("""
+                UPDATE events
+                SET recurrence_metadata_json = jsonb_set(
+                    COALESCE(recurrence_metadata_json::jsonb, '{}'::jsonb),
+                    '{legacyOccurrence}',
+                    'true'::jsonb,
+                    true)
+                WHERE outlook_event_type = 'occurrence'
+                  AND is_exception = false
+                  AND is_series_master = false
+                  AND COALESCE(recurrence_metadata_json::jsonb->>'legacyOccurrence', '') <> 'true';
+                """);
 
             migrationBuilder.CreateIndex(
                 name: "IX_events_series_master_id_recurrence_id",
@@ -127,10 +94,6 @@ namespace Pim.Infrastructure.Data.Migrations
                 table: "events");
 
             migrationBuilder.DropIndex(
-                name: "IX_pc_activity_category_rules_category_id",
-                table: "pc_activity_category_rules");
-
-            migrationBuilder.DropIndex(
                 name: "IX_events_series_master_id_recurrence_id",
                 table: "events");
 
@@ -145,54 +108,6 @@ namespace Pim.Infrastructure.Data.Migrations
             migrationBuilder.DropColumn(
                 name: "series_master_id",
                 table: "events");
-
-            migrationBuilder.AlterColumn<string>(
-                name: "life_category",
-                table: "mobile_usage_aggregates",
-                type: "character varying(128)",
-                maxLength: 128,
-                nullable: false,
-                defaultValue: "未分类",
-                oldClrType: typeof(string),
-                oldType: "character varying(128)",
-                oldMaxLength: 128,
-                oldDefaultValue: "其他");
-
-            migrationBuilder.AlterColumn<string>(
-                name: "life_category",
-                table: "mobile_timeline_blocks",
-                type: "character varying(128)",
-                maxLength: 128,
-                nullable: false,
-                defaultValue: "未分类",
-                oldClrType: typeof(string),
-                oldType: "character varying(128)",
-                oldMaxLength: 128,
-                oldDefaultValue: "其他");
-
-            migrationBuilder.AlterColumn<string>(
-                name: "life_category",
-                table: "mobile_app_category_rules",
-                type: "character varying(128)",
-                maxLength: 128,
-                nullable: false,
-                defaultValue: "未分类",
-                oldClrType: typeof(string),
-                oldType: "character varying(128)",
-                oldMaxLength: 128,
-                oldDefaultValue: "其他");
-
-            migrationBuilder.AlterColumn<string>(
-                name: "life_category",
-                table: "mobile_app_catalog_overrides",
-                type: "character varying(128)",
-                maxLength: 128,
-                nullable: false,
-                defaultValue: "未分类",
-                oldClrType: typeof(string),
-                oldType: "character varying(128)",
-                oldMaxLength: 128,
-                oldDefaultValue: "其他");
         }
     }
 }
