@@ -31,28 +31,32 @@ public class RecurrenceService
 
     private DateTimeOffset GetEffectiveRangeEnd(DateTimeOffset rangeStart, DateTimeOffset rangeEnd)
     {
-        var needsCap = rangeEnd == DateTimeOffset.MaxValue;
-        if (!needsCap)
-        {
-            try
-            {
-                var spanDays = (rangeEnd - rangeStart).TotalDays;
-                needsCap = spanDays > MaxWindowDays || double.IsInfinity(spanDays) || double.IsNaN(spanDays);
-            }
-            catch { needsCap = true; }
-        }
-        if (!needsCap) return rangeEnd;
+        // Only cap unbounded windows (rangeEnd=MaxValue or rangeStart=MinValue).
+        // Finite / normal events with explicit >5yr window must not be truncated.
+        var isUnbounded = rangeEnd == DateTimeOffset.MaxValue || rangeStart == DateTimeOffset.MinValue;
+        if (!isUnbounded) return rangeEnd;
 
         DateTimeOffset capped;
         if (rangeStart == DateTimeOffset.MinValue)
-            capped = DateTimeOffset.UtcNow.AddDays(MaxWindowDays);
+            capped = SafeAddDays(DateTimeOffset.UtcNow, MaxWindowDays);
         else
-            capped = rangeStart.AddDays(MaxWindowDays);
+            capped = SafeAddDays(rangeStart, MaxWindowDays);
 
-        // Guard against overflow
-        if (capped > rangeEnd && rangeEnd != DateTimeOffset.MaxValue) return rangeEnd;
         _logger.LogWarning("[Recurrence V2] unbounded window capped: rangeStart={Start} rangeEnd={End} -> effectiveEnd={Capped} (MaxWindowDays={Days}, MaxOccurrences={Max})", rangeStart, rangeEnd, capped, MaxWindowDays, MaxOccurrences);
         return capped;
+    }
+
+    private static DateTimeOffset SafeAddDays(DateTimeOffset date, int days)
+    {
+        try
+        {
+            return date.AddDays(days);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            // Overflow when date near MaxValue/MinValue — clamp to boundary
+            return days > 0 ? DateTimeOffset.MaxValue : DateTimeOffset.MinValue;
+        }
     }
 
     public virtual List<ExpandedEvent> ExpandEventsV2(
@@ -224,9 +228,14 @@ public class RecurrenceService
 
             var occurrences = calEvent.GetOccurrences(startDt, options);
 
+            // Only cap infinite rules (no COUNT and no UNTIL); finite rules respect their COUNT even if >500
+            var rruleUpper = entity.RRule ?? string.Empty;
+            var isInfinite = rruleUpper.IndexOf("COUNT", StringComparison.OrdinalIgnoreCase) < 0
+                          && rruleUpper.IndexOf("UNTIL", StringComparison.OrdinalIgnoreCase) < 0;
+
             foreach (var occ in occurrences)
             {
-                if (results.Count >= MaxOccurrences)
+                if (isInfinite && results.Count >= MaxOccurrences)
                     break;
                 var start = new DateTimeOffset(occ.Period.StartTime.Value, TimeSpan.Zero);
                 if (start < rangeStart)
