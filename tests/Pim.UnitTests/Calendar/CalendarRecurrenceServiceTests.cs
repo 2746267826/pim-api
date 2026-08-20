@@ -465,6 +465,65 @@ public class CalendarRecurrenceServiceTests
         Assert.Equal(fixedTime.AddHours(1), m.DeletedAt);
     }
 
+    [Fact]
+    public async Task UpdateSeries_FromException_ScopeSeries_UpdatesMasterNotException()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCal(db);
+        await db.SaveChangesAsync();
+        var svc = Svc(db);
+
+        var master = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Weekly", null, null, D(2026, 1, 5), D(2026, 1, 5).AddHours(1), "FREQ=WEEKLY;COUNT=4"), default);
+        var recId = D(2026, 1, 12).ToString("O");
+        var ex = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Ex", null, null, D(2026, 1, 12, 11), D(2026, 1, 12, 12), null,
+            IsException: true, SeriesMasterId: master.Id, RecurrenceId: recId), default);
+
+        var originalExTitle = ex.Title;
+        var originalExStart = ex.DtStart;
+
+        var updated = await svc.UpdateEventAsync(ex.Id, new UpdateEventRequest(
+            cal.Id, "Master Renamed", null, null, D(2026, 1, 5, 9), D(2026, 1, 5, 10), "FREQ=WEEKLY;COUNT=10"), "series", default);
+
+        Assert.Equal(master.Id, updated.Id);
+        Assert.Equal("Master Renamed", updated.Title);
+        Assert.Equal("FREQ=WEEKLY;COUNT=10", updated.RRule);
+        Assert.True(updated.IsSeriesMaster);
+
+        var masterEntity = await db.Set<EventEntity>().FirstAsync(e => e.Id == master.Id);
+        Assert.Equal("Master Renamed", masterEntity.Title);
+        Assert.Equal("FREQ=WEEKLY;COUNT=10", masterEntity.RRule);
+
+        var exEntity = await db.Set<EventEntity>().FirstAsync(e => e.Id == ex.Id);
+        Assert.Equal(originalExTitle, exEntity.Title);
+        Assert.Equal(originalExStart, exEntity.DtStart);
+        Assert.Equal(recId, exEntity.RecurrenceId);
+        Assert.True(exEntity.IsException);
+    }
+
+    [Fact]
+    public async Task EndpointScope_Series_FromException_DelegatesToMaster()
+    {
+        await using var db = CreateDb();
+        var cal = SeedCal(db);
+        await db.SaveChangesAsync();
+        var svc = Svc(db);
+        var master = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Weekly", null, null, D(2026, 1, 5), D(2026, 1, 5).AddHours(1), "FREQ=WEEKLY;COUNT=2"), default);
+        var recId = D(2026, 1, 12).ToString("O");
+        var ex = await svc.CreateEventAsync(new CreateEventRequest(
+            cal.Id, "Ex", null, null, D(2026, 1, 12, 11), D(2026, 1, 12, 12), null,
+            IsException: true, SeriesMasterId: master.Id, RecurrenceId: recId), default);
+        // Simulate endpoint: PUT /events/{exId}?scope=series (query scope binding)
+        var req = new UpdateEventRequest(cal.Id, "ViaEndpointSeries", null, null, D(2026, 1, 5, 9), D(2026, 1, 5, 10), "FREQ=WEEKLY;COUNT=5");
+        // endpoint would merge recurrenceId if present; for series it should not be required
+        var result = await svc.UpdateEventAsync(ex.Id, req, "series", default);
+        Assert.Equal(master.Id, result.Id);
+        Assert.Equal("ViaEndpointSeries", result.Title);
+        Assert.Equal("FREQ=WEEKLY;COUNT=5", result.RRule);
+    }
+
     // Minimal endpoint-scope wiring test — verifies service overload is reachable with scope param.
     // Full HTTP integration test requires WebApplicationFactory; service-level coverage is sufficient for PR3.
     // See note in report: endpoint binds scope/recurrenceId query and delegates to CalendarService.

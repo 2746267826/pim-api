@@ -533,6 +533,56 @@ public class CalendarService
             }
         }
 
+        var isScopeSeries = string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase);
+
+        // scope=series from exception: resolve master and update master, not exception
+        if (isScopeSeries && entity.IsException)
+        {
+            if (!entity.SeriesMasterId.HasValue)
+                throw new DomainException(02009, "例外缺少系列主事件");
+            var masterEntity = await _db.Set<EventEntity>()
+                .FirstOrDefaultAsync(e => e.Id == entity.SeriesMasterId.Value && e.Calendar.UserId == UserId, ct)
+                ?? throw new DomainException(02001, "系列主事件不存在");
+
+            if (masterEntity.OutlookCalendarBindingId != null)
+                throw new DomainException(02009, "Microsoft 日程必须通过确认写回流程修改。");
+
+            masterEntity.Title = request.Title;
+            masterEntity.Description = request.Description;
+            masterEntity.Location = request.Location;
+            masterEntity.DtStart = normalizedStart;
+            masterEntity.DtEnd = normalizedEnd;
+            masterEntity.RRule = request.RRule;
+            if (request.IsAllDay.HasValue)
+                masterEntity.IsAllDay = request.IsAllDay.Value;
+            if (request.TimeZoneId is not null)
+                masterEntity.TimeZoneId = request.TimeZoneId;
+            masterEntity.UpdatedAt = _timeProvider.GetUtcNow();
+
+            ApplyUnifiedFields(masterEntity, request);
+
+            // Update master fields; ensure RRule/master flags correct and exception not created
+            if (!string.IsNullOrEmpty(request.RRule))
+            {
+                masterEntity.IsSeriesMaster = true;
+                masterEntity.IsException = false;
+                masterEntity.SeriesMasterId = null;
+                masterEntity.RecurrenceId = null;
+            }
+            else
+            {
+                if (masterEntity.IsSeriesMaster && string.IsNullOrEmpty(request.RRule))
+                    masterEntity.IsSeriesMaster = false;
+                if (request.IsSeriesMaster == true)
+                    masterEntity.IsSeriesMaster = true;
+                masterEntity.IsException = false;
+                masterEntity.SeriesMasterId = null;
+            }
+
+            await _db.SaveChangesAsync(ct);
+            return EventResponseMapper.Map(masterEntity);
+        }
+
         // Default: series/master update path
         entity.Title = request.Title;
         entity.Description = request.Description;
