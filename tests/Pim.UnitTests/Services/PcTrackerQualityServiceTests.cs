@@ -4,12 +4,18 @@ using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 using Pim.Module.PcTracker.Entities;
 using Pim.Module.PcTracker.Services;
+using Pim.UnitTests.Calendar;
 using Xunit;
 
 namespace Pim.UnitTests.Services;
 
 public class PcTrackerQualityServiceTests
 {
+    private static readonly DateTimeOffset FixedNow = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
+
+    private static PcTrackerQualityService CreateService(PimDbContext db)
+        => new(db, new StubTimeProvider { UtcNowValue = FixedNow });
+
     [Fact]
     public async Task GetQualityAsync_ReturnsCritical_WhenWindowBucketIsMissing()
     {
@@ -21,7 +27,7 @@ public class PcTrackerQualityServiceTests
         AddKeyStatsSample(db);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerQualityService(db);
+        var service = CreateService(db);
         var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
 
         Assert.Equal(PimHealthStatus.Critical, result.OverallStatus);
@@ -44,7 +50,7 @@ public class PcTrackerQualityServiceTests
         AddKeyStatsSample(db);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerQualityService(db);
+        var service = CreateService(db);
         var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
 
         Assert.Equal(PimHealthStatus.Warning, result.OverallStatus);
@@ -64,7 +70,7 @@ public class PcTrackerQualityServiceTests
         AddKeyStatsSample(db);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerQualityService(db);
+        var service = CreateService(db);
         var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
 
         var issue = Assert.Single(result.Issues, i => i.Code == "missing-windows-daemon-heartbeat");
@@ -88,7 +94,7 @@ public class PcTrackerQualityServiceTests
         AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:11:00+00:00"), keys: 12);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerQualityService(db);
+        var service = CreateService(db);
         var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
 
         Assert.DoesNotContain(result.Issues, i => i.Code == "missing-aw-window-bucket");
@@ -110,7 +116,7 @@ public class PcTrackerQualityServiceTests
         AddKeyStatsSample(db);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerQualityService(db);
+        var service = CreateService(db);
         var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
 
         Assert.Equal(PimHealthStatus.Warning, result.OverallStatus);
@@ -134,7 +140,7 @@ public class PcTrackerQualityServiceTests
         AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:11:00+00:00"), keys: 12);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerQualityService(db);
+        var service = CreateService(db);
         var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
 
         Assert.Equal(PimHealthStatus.Warning, result.OverallStatus);
@@ -159,7 +165,7 @@ public class PcTrackerQualityServiceTests
         AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T05:05:00+00:00"), keys: 10);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerQualityService(db);
+        var service = CreateService(db);
         var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
 
         Assert.Equal(PimHealthStatus.Warning, result.OverallStatus);
@@ -180,7 +186,7 @@ public class PcTrackerQualityServiceTests
         AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:11:00+00:00"), keys: 12);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerQualityService(db);
+        var service = CreateService(db);
         var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
 
         Assert.Contains(result.Issues, i => i.Code == "aw-events-missing-source-id");
@@ -191,7 +197,7 @@ public class PcTrackerQualityServiceTests
     public async Task GetQualityAsync_ReturnsCritical_WhenDaemonHeartbeatIsStale()
     {
         await using var db = CreateDbContext();
-        AddRecentWindowsDaemon(db, DateTimeOffset.UtcNow.AddHours(-2));
+        AddRecentWindowsDaemon(db, FixedNow.AddHours(-2));
         AddBucket(db, "aw-watcher-window_DESKTOP", "currentwindow");
         AddBucket(db, "aw-watcher-afk_DESKTOP", "afkstatus");
         AddBucket(db, "aw-watcher-web-chrome_DESKTOP", "web.tab.current");
@@ -200,11 +206,38 @@ public class PcTrackerQualityServiceTests
         AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:11:00+00:00"), keys: 12);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerQualityService(db);
+        var service = CreateService(db);
         var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
 
         Assert.Equal(PimHealthStatus.Critical, result.OverallStatus);
         Assert.Contains(result.Issues, i => i.Code == "stale-windows-daemon-heartbeat");
+    }
+
+    [Fact]
+    public async Task GetQualityAsync_PlannedOfflineDaemon_DoesNotEmitStaleIssues()
+    {
+        await using var db = CreateDbContext();
+        AddRecentWindowsDaemon(db, FixedNow.AddHours(-3), plannedAt: FixedNow.AddMinutes(-1), reason: "shutdown");
+        AddBucket(db, "aw-watcher-window_DESKTOP", "currentwindow");
+        AddBucket(db, "aw-watcher-afk_DESKTOP", "afkstatus");
+        AddBucket(db, "aw-watcher-web-chrome_DESKTOP", "web.tab.current");
+        AddWindowEvent(db);
+        AddAfkEvent(db);
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:10:00+00:00"), keys: 10);
+        AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:11:00+00:00"), keys: 12);
+        await db.SaveChangesAsync();
+
+        var service = CreateService(db);
+        var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
+
+        Assert.DoesNotContain(result.Issues, i => i.Code == "stale-windows-daemon-heartbeat");
+        Assert.DoesNotContain(result.Issues, i => i.Code == "old-daemon-heartbeat");
+        var issue = Assert.Single(result.Issues, i => i.Code == "daemon-planned-offline");
+        Assert.Equal(PimHealthStatus.Unknown, issue.Severity);
+        Assert.Equal("守护程序已正常下线（关机/休眠）。", issue.Message);
+        var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
+        Assert.Contains("daemonState", daemon.Details.Keys);
+        Assert.Equal("planned-offline", daemon.Details["daemonState"]);
     }
 
     [Fact]
@@ -221,7 +254,7 @@ public class PcTrackerQualityServiceTests
         AddKeyStatsSample(db, DateTimeOffset.Parse("2026-05-20T06:11:00+00:00"), keys: 12);
         await db.SaveChangesAsync();
 
-        var service = new PcTrackerQualityService(db);
+        var service = CreateService(db);
         var result = await service.GetQualityAsync(new DateTime(2026, 5, 20), null, null, CancellationToken.None);
 
         Assert.Equal(PimHealthStatus.Healthy, result.OverallStatus);
@@ -262,9 +295,9 @@ public class PcTrackerQualityServiceTests
         return new PimDbContext(options);
     }
 
-    private static void AddRecentWindowsDaemon(PimDbContext db, DateTimeOffset? receivedAt = null)
+    private static void AddRecentWindowsDaemon(PimDbContext db, DateTimeOffset? receivedAt = null, DateTimeOffset? plannedAt = null, string? reason = null)
     {
-        var heartbeatAt = receivedAt ?? DateTimeOffset.UtcNow.AddMinutes(-1);
+        var heartbeatAt = receivedAt ?? FixedNow.AddMinutes(-1);
 
         db.DaemonHeartbeats.Add(new DaemonHeartbeatEntity
         {
@@ -278,7 +311,9 @@ public class PcTrackerQualityServiceTests
             ActivityWatchState = DaemonSourceState.Available.ToString(),
             KeyStatsState = DaemonSourceState.Available.ToString(),
             StatusJson = "{}",
-            ReceivedAt = heartbeatAt
+            ReceivedAt = heartbeatAt,
+            PlannedOfflineAt = plannedAt,
+            OfflineReason = reason
         });
     }
 

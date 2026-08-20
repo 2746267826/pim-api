@@ -43,7 +43,8 @@ public sealed class ActivityClassificationRuleService
         CancellationToken ct)
     {
         await ValidateAsync(request, ensureUniqueRuleName: true, ct);
-        var rule = ToEntity(request);
+        var categoryId = await ResolveCategoryIdAsync(request, ct);
+        var rule = ToEntity(request, categoryId);
         _db.Set<ActivityCategoryRuleEntity>().Add(rule);
         await _db.SaveChangesAsync(ct);
         return ToDto(rule);
@@ -89,7 +90,23 @@ public sealed class ActivityClassificationRuleService
         };
     }
 
-    public static ActivityCategoryRuleEntity ToEntity(SaveActivityClassificationRuleRequest request)
+    /// <summary>分类名非空时按名查 pc_categories 解析 category_id；查不到抛与 ValidateAsync 相同的异常。</summary>
+    private async Task<Guid?> ResolveCategoryIdAsync(SaveActivityClassificationRuleRequest request, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(request.CategoryName))
+            return null;
+
+        var categoryName = request.CategoryName.Trim();
+        var categoryId = await _db.Set<PcCategoryEntity>()
+            .Where(category => category.Name == categoryName)
+            .Select(category => (Guid?)category.Id)
+            .FirstOrDefaultAsync(ct);
+        if (categoryId is null)
+            throw new ArgumentException($"分类「{categoryName}」不存在。", nameof(request));
+        return categoryId;
+    }
+
+    public static ActivityCategoryRuleEntity ToEntity(SaveActivityClassificationRuleRequest request, Guid? categoryId = null)
     {
         var now = DateTimeOffset.UtcNow;
         return new ActivityCategoryRuleEntity
@@ -98,6 +115,7 @@ public sealed class ActivityClassificationRuleService
             RuleName = request.RuleName.Trim(),
             Scope = NormalizeScope(request.Scope),
             CategoryName = string.IsNullOrWhiteSpace(request.CategoryName) ? null : request.CategoryName.Trim(),
+            CategoryId = categoryId,
             ProjectTag = string.IsNullOrWhiteSpace(request.ProjectTag) ? null : request.ProjectTag.Trim(),
             Color = string.IsNullOrWhiteSpace(request.Color) ? "#64748b" : request.Color.Trim(),
             Priority = request.Priority,
@@ -117,6 +135,7 @@ public sealed class ActivityClassificationRuleService
             rule.RuleName,
             rule.Scope,
             rule.CategoryName,
+            rule.CategoryId,
             rule.ProjectTag,
             rule.Color,
             rule.Priority,

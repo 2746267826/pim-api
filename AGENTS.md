@@ -13,6 +13,8 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - Run `git status --short --branch` before changing files.
 - Run `git fetch --all --prune` before deciding whether `master` is current.
 - If `master` is behind `origin/master`, pull before making new work unless the user explicitly asks otherwise.
+- Move the main workspace to the latest `origin/master` at the start of every conversation (see the branch/worktree policy below), unless the user explicitly asks to base work on another branch (e.g. a handoff task). The main workspace is for read-only investigation; all file-changing work happens in worktrees.
+- Baseline reads must reflect the latest `origin/master`. If the main workspace is stale (checked out on a non-`master` branch, has dirty files, or is behind the remote), never use it as the baseline — read via `git show origin/master:<path>` or an up-to-date worktree instead; reading stale main-workspace files as a baseline is a bug and can silently revert newer merged work when the file is later rewritten. Targeted reads are exempt and read their own target: PR reviews inspect the PR head/diff, L2 handoffs inspect their source branch, and local uncommitted changes are read as-is — always compare such targets against the latest `origin/master`.
 - Note existing dirty files and do not revert or overwrite work you did not create.
 
 ## Branch, PR, And GitHub Actions Workflow
@@ -25,8 +27,18 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - If no GitHub Actions workflow is triggered because the changed files do not match workflow path filters, state that explicitly instead of waiting.
 - Do not modify `.github/workflows/*` unless the task is specifically about CI/release automation or the user explicitly asks for it. If a workflow change is unavoidable, explain why before editing it.
 - Write PR titles and descriptions in both English and Simplified Chinese.
-- Create git worktrees under a single short root directory (e.g. `C:\pim-wt\{topic}`), never directly under `C:\` or scattered across drive roots. Use short directory names (topic only, ≤ 12 chars) to avoid Windows MAX_PATH issues from long nested paths.
-- After a PR is merged (or work is abandoned), remove the worktree (`git worktree remove`) and delete the local branch. Do not leave dead worktrees behind.
+- Create git worktrees under a single short root directory per platform, never scattered across filesystem roots:
+  - **Windows**: `C:\pim-wt\{topic}`. Use short directory names (topic only, ≤ 12 chars) to avoid Windows MAX_PATH issues from long nested paths.
+  - **Linux (incl. opencode container)**: `/workspace/pim-wt/{topic}` — persistent bind mount that survives container rebuilds. **Never use `/tmp`** (wiped on rebuild, losing in-progress work). No MAX_PATH constraint, but keep names short for consistency.
+
+### Branch And Worktree Policy (L0/L1/L2)
+
+Apply this policy at the start of every session/task:
+
+- **L0 — read-only sessions** (investigation, discussion, review, inspection): make no file changes; work directly in the main workspace. Before investigating, run `git fetch --all --prune` and fast-forward local `master` to `origin/master` — the remote is the source of truth, so the main workspace must always read the latest `master`. The main workspace is a valid baseline only after it has been fast-forwarded to `origin/master` this session; otherwise read baseline content via `git show origin/master:<path>` or an up-to-date worktree. Targeted reads (PR head/diff, handoff source branch, local changes under review) read their own target refs and are compared against the latest `origin/master`. No branch or worktree is created.
+- **L1 — file-changing tasks**: before editing any file, fetch the latest `origin/master`, create a branch `{agent}-{os}/{topic}` based on it, and add a worktree for that branch. Do all edits inside that worktree; the main workspace never receives file changes.
+- **L2 — handoff tasks**: when new work must build on an unmerged branch (e.g. continuing another agent's PR), base the new branch on that branch's latest HEAD and state the base in the PR description. If the source branch is already merged, base on `origin/master` instead.
+- Cleaning is part of the definition of done: when a PR is merged or work is abandoned, remove the worktree (`git worktree remove`) and delete the local branch in the same task. Dead worktrees/branches from earlier tasks must be cleaned when noticed — e.g. if the main workspace is found on a stale or merged branch, move it back to `origin/master` before starting new work.
 
 ## Pull Request Descriptions Feed The Release Changelog
 
@@ -45,7 +57,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 
 ## During Work
 
-- Keep generated outputs out of commits: `bin/`, `obj/`, `build/`, `dist/`, `publish/PimDaemon/`, `publish/*.zip`, `.dotnet-*`, `.superpowers/brainstorm/`, npm caches, and API `wwwroot` build artifacts.
+- Keep generated outputs out of commits: `bin/`, `obj/`, `build/`, `build/artifacts/` (docker image tarballs), `dist/`, `publish/PimDaemon/`, `publish/*.zip`, `.dotnet-*`, `.superpowers/brainstorm/`, npm caches, and API `wwwroot` build artifacts.
 - Commit source changes, tests, scripts, and docs that are needed to reproduce the current runnable version.
 - Keep API and daemon defaults aligned. The local API is expected at `http://127.0.0.1:5858`, and the Windows daemon default server URL should match it.
 - Use focused commits with conventional messages such as `feat:`, `fix:`, `docs:`, or `chore:`. Write both commit messages (titles & descriptions) and PR titles/descriptions in bilingual format (English and Simplified Chinese).
@@ -53,7 +65,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 ## Before Pushing Or Opening A PR
 
 - Run the relevant verification commands for the touched surface. Prefer `dotnet test Pim.sln` for backend/daemon changes and `npm --prefix src/client-web run build` for web changes.
-- Android status UI changes must also run `src/client-android/gradlew.bat :app:connectedDebugAndroidTest --no-daemon` on a started emulator or physical device; this is a local gate because CI does not provide an emulator.
+- Android status UI changes must also run the connected Android test gate on a started emulator or physical device — Windows: `src/client-android/gradlew.bat :app:connectedDebugAndroidTest --no-daemon`; Linux: `src/client-android/gradlew :app:connectedDebugAndroidTest --no-daemon`. This is a local gate because CI does not provide an emulator.
 - Re-run `git status --short --branch` and confirm only intentional changes are staged.
 - Push the working branch to `origin` and open a pull request. Do not push directly to `master` unless the user explicitly asks for a direct update and understands it bypasses the PR workflow.
 

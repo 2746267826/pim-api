@@ -55,4 +55,11 @@ public sealed class DaemonHeartbeatEntity
 
     [Column("received_at")]
     public DateTimeOffset ReceivedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    [Column("planned_offline_at")]
+    public DateTimeOffset? PlannedOfflineAt { get; set; }
+
+    [Column("offline_reason")]
+    [MaxLength(32)]
+    public string? OfflineReason { get; set; }
 }

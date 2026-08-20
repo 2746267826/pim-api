@@ -150,8 +150,9 @@ public class ActivityClassificationRecomputeService
         ActivityClassificationApplyRangeRequest range,
         CancellationToken ct)
     {
+        var (start, end) = ParseRange(range);
         var rules = await _rules.LoadActiveAsync(ct);
-        var records = await LoadActivityRecordsAsync(range, rules, ct);
+        var records = await LoadActivityRecordsAsync(start, end, rules, ct);
         var duration = records.Sum(record => record.DurationSeconds ?? 0);
 
         return await ExecuteInTransactionAsync(async token =>
@@ -167,7 +168,7 @@ public class ActivityClassificationRecomputeService
             _db.Set<ActivityClassificationAuditEntity>().Add(audit);
             await _db.SaveChangesAsync(token);
 
-            await _snapshots.EnsureClassificationsAsync(records, rules, audit.Id, token);
+            await EnsureSnapshotsForRangeAsync(start, end, audit.Id, token);
 
             return new ActivityClassificationRecomputeDto(
                 records.Count,
@@ -175,6 +176,21 @@ public class ActivityClassificationRecomputeService
                 audit.Id,
                 $"\u5df2\u91cd\u7b97 {records.Count} \u6761\u8bb0\u5f55\uff0c\u8303\u56f4\uff1a{FormatRangeMode(range.Mode)}\u3002");
         }, ct);
+    }
+
+    /// <summary>共享核心：加载窗口内事件（Duration &gt; 0）→ BuildInterpretedAwRecords → EnsureClassificationsAsync。
+    /// 手动 recompute 先写审计再把 auditId 传入（快照可溯源）；后台定时补齐传 null 不写审计。
+    /// 返回加载的记录数，便于调用方记录统计。</summary>
+    public async Task<int> EnsureSnapshotsForRangeAsync(
+        DateTimeOffset startUtc,
+        DateTimeOffset endUtc,
+        Guid? auditId,
+        CancellationToken ct)
+    {
+        var rules = await _rules.LoadActiveAsync(ct);
+        var records = await LoadActivityRecordsAsync(startUtc, endUtc, rules, ct);
+        await _snapshots.EnsureClassificationsAsync(records, rules, auditId, ct);
+        return records.Count;
     }
 
     private async Task<ApplyRuleCoreResult> ApplyRuleCoreAsync(
@@ -293,9 +309,18 @@ public class ActivityClassificationRecomputeService
         CancellationToken ct)
     {
         var (start, end) = ParseRange(range);
+        return await LoadActivityRecordsAsync(start, end, rules, ct);
+    }
+
+    private async Task<List<PcDetailRecord>> LoadActivityRecordsAsync(
+        DateTimeOffset startUtc,
+        DateTimeOffset endUtc,
+        IReadOnlyCollection<ActivityCategoryRuleEntity> rules,
+        CancellationToken ct)
+    {
         var events = await _db.Set<AwEventEntity>()
             .Where(e => e.Duration > 0)
-            .Where(e => e.Timestamp >= start && e.Timestamp < end)
+            .Where(e => e.Timestamp >= startUtc && e.Timestamp < endUtc)
             .OrderBy(e => e.Timestamp)
             .ThenBy(e => e.Id)
             .ToListAsync(ct);

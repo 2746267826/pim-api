@@ -40,14 +40,14 @@ public sealed class MobileUsageGoalServiceTests
         var first = await service.SaveAsync(new MobileUsageGoalUpsertRequest(
             "category-daily",
             null,
-            MobileLifeCategories.ShortVideoEntertainment,
+            MobileLifeCategories.Video,
             "少刷短视频",
             1800,
             true), CancellationToken.None);
         var updated = await service.SaveAsync(new MobileUsageGoalUpsertRequest(
             "category-daily",
             null,
-            MobileLifeCategories.ShortVideoEntertainment,
+            MobileLifeCategories.Video,
             "短视频控制",
             1200,
             false), CancellationToken.None);

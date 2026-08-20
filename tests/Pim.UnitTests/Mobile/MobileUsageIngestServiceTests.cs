@@ -509,7 +509,7 @@ public sealed class MobileUsageIngestServiceTests
             BucketEndUtc = request.WindowEndUtc,
             PackageName = "com.example.messages",
             DisplayName = "Messages",
-            LifeCategory = MobileLifeCategories.Social,
+            LifeCategory = MobileLifeCategories.Chat,
             ForegroundSeconds = 60,
             CreatedAt = now,
             UpdatedAt = now
@@ -548,7 +548,7 @@ public sealed class MobileUsageIngestServiceTests
             BucketEndUtc = request.WindowEndUtc,
             PackageName = "com.example.messages",
             DisplayName = "Messages",
-            LifeCategory = MobileLifeCategories.Social,
+            LifeCategory = MobileLifeCategories.Chat,
             ForegroundSeconds = 60,
             CreatedAt = now,
             UpdatedAt = now
@@ -560,7 +560,7 @@ public sealed class MobileUsageIngestServiceTests
             StartUtc = request.WindowStartUtc,
             EndUtc = request.WindowEndUtc,
             LocalDate = "2026-07-06",
-            LifeCategory = MobileLifeCategories.Social,
+            LifeCategory = MobileLifeCategories.Chat,
             ForegroundSeconds = 60,
             SessionCount = 1,
             AppCount = 1,

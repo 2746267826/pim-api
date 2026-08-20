@@ -36,7 +36,7 @@ public sealed class MobileAnalyticsQueryServiceTests
             RangeEndUtc: DateTimeOffset.Parse("2026-07-02T00:00:00Z"),
             Timezone: "Asia/Shanghai",
             DeviceId: "phone-main",
-            LifeCategory: MobileLifeCategories.Social,
+            LifeCategory: MobileLifeCategories.Chat,
             PackageName: "com.tencent.mobileqq",
             Source: "events",
             IncludeSystemNoise: true,
@@ -55,6 +55,6 @@ public sealed class MobileAnalyticsQueryServiceTests
         Assert.Equal("15m", query.Granularity);
         Assert.Equal("cursor", query.Cursor);
         Assert.Equal("phone-main", query.DeviceId);
-        Assert.Equal("社交通讯", query.LifeCategory);
+        Assert.Equal("聊天", query.LifeCategory);
     }
 }

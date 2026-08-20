@@ -68,7 +68,7 @@ fi
 # 2. Collect merged PR numbers in the window, ordered by merge commit time
 #    (merge commits only; squash merges are not used in this repo)
 PR_NUMBERS="$(git log --format='%ct %s' "${PREV_SHA}..HEAD" \
-  | grep 'Merge pull request #[0-9]' \
+  | { grep 'Merge pull request #[0-9]' || true; } \
   | sort -n \
   | sed -E 's/^[0-9]+ Merge pull request #([0-9]+).*/\1/' \
   | awk '!seen[$0]++')"

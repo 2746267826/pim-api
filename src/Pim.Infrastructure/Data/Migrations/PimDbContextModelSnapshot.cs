@@ -530,6 +530,15 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_successful_upload_at");
 
+                    b.Property<string>("OfflineReason")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("offline_reason");
+
+                    b.Property<DateTimeOffset?>("PlannedOfflineAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("planned_offline_at");
+
                     b.Property<DateTimeOffset>("ReceivedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -4658,6 +4667,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("category_name");
 
+                    b.Property<Guid?>("CategoryId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("category_id");
+
                     b.Property<string>("Color")
                         .IsRequired()
                         .HasMaxLength(7)
@@ -6317,6 +6330,14 @@ namespace Pim.Infrastructure.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("FileItem");
+                });
+
+            modelBuilder.Entity("Pim.Module.PcTracker.Entities.ActivityCategoryRuleEntity", b =>
+                {
+                    b.HasOne("Pim.Module.PcTracker.Entities.PcCategoryEntity", null)
+                        .WithMany()
+                        .HasForeignKey("CategoryId")
+                        .OnDelete(DeleteBehavior.SetNull);
                 });
 
             modelBuilder.Entity("Pim.Module.PcTracker.Entities.AppKnowledgeContextEntity", b =>

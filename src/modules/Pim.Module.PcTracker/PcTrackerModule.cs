@@ -1,13 +1,17 @@
 using System.Reflection;
 using System.Globalization;
+using Hangfire;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Pim.Core.Common;
+using Pim.Core.Caching;
 using Pim.Core.Modules;
+using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Services;
@@ -31,6 +35,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<ActivityTimelineSmoothingService>();
         services.AddScoped<ActivityClassificationRuleService>();
         services.AddScoped<ClassificationRuleDraftService>();
+        services.AddScoped<ActivityLabelingService>();
         services.AddScoped<PcTrackerSchemaInitializer>();
         services.AddScoped<AppSignatureService>();
         services.AddScoped<AppKnowledgeContextService>();
@@ -39,6 +44,9 @@ public class PcTrackerModule : IModule
         services.AddScoped<PcProductivityService>();
         services.AddScoped<PcActivityRecordKeyService>();
         services.AddScoped<PcActivityAnalysisService>();
+        services.AddScoped<PcActivityAggregationService>();
+        services.AddScoped<PcClassificationBackfillService>();
+        services.AddScoped<PcClassificationSnapshotJob>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -86,20 +94,34 @@ public class PcTrackerModule : IModule
         readGroup.MapGet("/summary", async (
             [FromQuery] string? date,
             [FromServices] PcTrackerService svc,
-            CancellationToken ct) =>
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
         {
             var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
-            var result = await svc.GetSummaryAsync(d, ct);
+            var result = await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("date", d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
+                force,
+                () => svc.GetSummaryAsync(d, ct),
+                ct);
             return Results.Ok(ApiResponse<PcSummaryResponse>.Ok(result));
         });
 
         readGroup.MapGet("/aw/timeline", async (
             [FromQuery] string? date,
             [FromServices] PcTrackerService svc,
-            CancellationToken ct) =>
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
         {
             var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
-            var result = await svc.GetTimelineAsync(d, ct);
+            var result = await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("date", d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
+                force,
+                () => svc.GetTimelineAsync(d, ct),
+                ct);
             return Results.Ok(ApiResponse<List<TimelineItem>>.Ok(result));
         });
 
@@ -107,11 +129,18 @@ public class PcTrackerModule : IModule
             [FromQuery] string? start,
             [FromQuery] string? end,
             [FromServices] PcTrackerService svc,
-            CancellationToken ct) =>
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
         {
             var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-7);
             var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
-            var result = await svc.GetHeatmapAsync(s, e, ct);
+            var result = await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
+                force,
+                () => svc.GetHeatmapAsync(s, e, ct),
+                ct);
             return Results.Ok(ApiResponse<List<HeatmapBucket>>.Ok(result));
         });
 
@@ -119,11 +148,18 @@ public class PcTrackerModule : IModule
             [FromQuery] string? start,
             [FromQuery] string? end,
             [FromServices] PcTrackerService svc,
-            CancellationToken ct) =>
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
         {
             var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-7);
             var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
-            var result = await svc.GetKeystatsRangeAsync(s, e, ct);
+            var result = await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
+                force,
+                () => svc.GetKeystatsRangeAsync(s, e, ct),
+                ct);
             return Results.Ok(ApiResponse<List<KeystatsSummary>>.Ok(result));
         });
 
@@ -159,12 +195,27 @@ public class PcTrackerModule : IModule
             [FromQuery] string? dateFrom,
             [FromQuery] string? dateTo,
             [FromServices] PcTrackerQualityService svc,
-            CancellationToken ct) =>
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
         {
-            var result = await svc.GetQualityAsync(
-                TryParseDate(date),
-                TryParseDate(dateFrom),
-                TryParseDate(dateTo),
+            var parsedDate = TryParseDate(date);
+            var parsedDateFrom = TryParseDate(dateFrom);
+            var parsedDateTo = TryParseDate(dateTo);
+            var result = await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request, overrides:
+                [
+                    new("date", parsedDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty),
+                    new("dateFrom", parsedDateFrom?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty),
+                    new("dateTo", parsedDateTo?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty),
+                ]),
+                force,
+                () => svc.GetQualityAsync(
+                    parsedDate,
+                    parsedDateFrom,
+                    parsedDateTo,
+                    ct),
                 ct);
             return Results.Ok(ApiResponse<PcQualityResponse>.Ok(result));
         });
@@ -180,18 +231,22 @@ public class PcTrackerModule : IModule
         writeGroup.MapPost("/categories", async (
             [FromBody] SaveCategoryRequest req,
             [FromServices] PcTrackerService svc,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             var result = await svc.SaveCategoryAsync(req, ct);
+            cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<AppCategoryRule>.Ok(result));
         });
 
         writeGroup.MapDelete("/categories/{id}", async (
             Guid id,
             [FromServices] PcTrackerService svc,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             var ok = await svc.DeleteCategoryAsync(id, ct);
+            cache.EvictByPrefix("/api/v1/pc/");
             return ok
                 ? Results.Ok(ApiResponse<string>.Ok("已删除"))
                 : Results.NotFound(ApiResponse<string>.Error(404, "不存在或为内置项"));
@@ -254,16 +309,51 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<ActivityClassificationSettingsDto>.Ok(settings));
         });
 
-        readGroup.MapGet("/activity-analysis", async (
-            [FromQuery] string? date,
-            [FromQuery] int? blockMinutes,
-            [FromServices] PcActivityAnalysisService svc,
+        readGroup.MapGet("/classification/queue", async (
+            [FromQuery] int limit,
+            [FromQuery] string? mode,
+            [FromServices] ActivityLabelingService svc,
+            [FromServices] ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            var result = await svc.BuildQueueAsync(limit, currentUser.UserId, mode ?? "queue", ct);
+            return Results.Ok(ApiResponse<ActivityLabelingQueueResponse>.Ok(result));
+        });
+
+        writeGroup.MapPost("/classification/label", async (
+            [FromBody] ActivityLabelingRequest req,
+            [FromServices] ActivityLabelingService svc,
+            [FromServices] ICurrentUserService currentUser,
             CancellationToken ct) =>
         {
             try
             {
+                var result = await svc.LabelAsync(req, currentUser.UserId, ct);
+                return Results.Ok(ApiResponse<ActivityLabelingResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        readGroup.MapGet("/activity-analysis", async (
+            [FromQuery] string? date,
+            [FromQuery] int? blockMinutes,
+            [FromServices] PcActivityAnalysisService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
                 var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
-                var result = await svc.GetDailyAnalysisAsync(d, blockMinutes ?? 60, ct);
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("date", d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
+                    force,
+                    () => svc.GetDailyAnalysisAsync(d, blockMinutes ?? 60, ct),
+                    ct);
                 return Results.Ok(ApiResponse<PcActivityAnalysisResponse>.Ok(result));
             }
             catch (ArgumentException ex)
@@ -279,11 +369,13 @@ public class PcTrackerModule : IModule
         writeGroup.MapPost("/classification/rules", async (
             [FromBody] SaveActivityClassificationRuleRequest req,
             [FromServices] ActivityClassificationRuleService svc,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             try
             {
                 var rule = await svc.SaveAsync(req, ct);
+                cache.EvictByPrefix("/api/v1/pc/");
                 return Results.Ok(ApiResponse<ActivityClassificationRuleDto>.Ok(rule));
             }
             catch (ArgumentException ex)
@@ -315,11 +407,13 @@ public class PcTrackerModule : IModule
         writeGroup.MapPost("/classification/rules/apply", async (
             [FromBody] ApplyActivityClassificationRuleRequest req,
             [FromServices] ActivityClassificationRecomputeService svc,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             try
             {
                 var preview = await svc.ApplyRuleAsync(req.Rule, req.Range, ct);
+                cache.EvictByPrefix("/api/v1/pc/");
                 return Results.Ok(ApiResponse<ActivityClassificationPreviewDto>.Ok(preview));
             }
             catch (ArgumentException ex)
@@ -335,11 +429,13 @@ public class PcTrackerModule : IModule
         writeGroup.MapPut("/classification/settings", async (
             [FromBody] SaveActivityClassificationSettingsRequest req,
             [FromServices] ActivityClassificationSettingsService settingsService,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             var settings = await settingsService.SaveSettingsAsync(
                 req.RecommendedMinimumClassificationDurationMinutes,
                 ct);
+            cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<ActivityClassificationSettingsDto>.Ok(settings));
         });
 
@@ -374,11 +470,13 @@ public class PcTrackerModule : IModule
             [FromBody] SuggestionClassificationApplyRequest req,
             [FromServices] ActivityClassificationRecomputeService recompute,
             [FromServices] ClassificationRuleDraftService drafts,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             try
             {
                 var result = await recompute.ApplySuggestionAsync(id, req, drafts, ct);
+                cache.EvictByPrefix("/api/v1/pc/");
                 return Results.Ok(ApiResponse<ActivityClassificationSuggestionApplyDto>.Ok(result));
             }
             catch (KeyNotFoundException)
@@ -399,11 +497,13 @@ public class PcTrackerModule : IModule
             Guid id,
             [FromBody] AcceptActivityClassificationSuggestionRequest req,
             [FromServices] ActivitySuggestionService suggestionService,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             try
             {
                 var rule = await suggestionService.AcceptSuggestionAsync(id, req, ct);
+                cache.EvictByPrefix("/api/v1/pc/");
                 return Results.Ok(ApiResponse<ActivityClassificationRuleDto>.Ok(rule));
             }
             catch (KeyNotFoundException)
@@ -419,11 +519,13 @@ public class PcTrackerModule : IModule
         writeGroup.MapPost("/classification/suggestions/{id:guid}/reject", async (
             Guid id,
             [FromServices] ActivitySuggestionService suggestionService,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             try
             {
                 await suggestionService.RejectSuggestionAsync(id, ct);
+                cache.EvictByPrefix("/api/v1/pc/");
                 return Results.Ok(ApiResponse<string>.Ok("已拒绝"));
             }
             catch (KeyNotFoundException)
@@ -439,11 +541,13 @@ public class PcTrackerModule : IModule
         writeGroup.MapPost("/classification/recompute", async (
             [FromBody] ActivityClassificationRecomputeRequest req,
             [FromServices] ActivityClassificationRecomputeService svc,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             try
             {
                 var result = await svc.RecomputeAsync(req.Range, ct);
+                cache.EvictByPrefix("/api/v1/pc/");
                 return Results.Ok(ApiResponse<ActivityClassificationRecomputeDto>.Ok(result));
             }
             catch (ArgumentException ex)
@@ -456,12 +560,19 @@ public class PcTrackerModule : IModule
             [FromQuery] string? start,
             [FromQuery] string? end,
             [FromServices] PcTrackerService svc,
-            CancellationToken ct,
-            [FromQuery] string dimension = "day") =>
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] string dimension = "day",
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
         {
             var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-30);
             var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
-            var result = await svc.GetHeatmapGridAsync(s, e, dimension, ct);
+            var result = await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
+                force,
+                () => svc.GetHeatmapGridAsync(s, e, dimension, ct),
+                ct);
             return Results.Ok(ApiResponse<HeatmapGridResponse>.Ok(result));
         });
 
@@ -552,6 +663,7 @@ public class PcTrackerModule : IModule
             [FromServices] ActivityClassificationRecomputeService recompute,
             [FromServices] ClassificationRuleDraftService drafts,
             [FromServices] AppKnowledgeSuggestionService appKnowledge,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             try
@@ -584,6 +696,7 @@ public class PcTrackerModule : IModule
                         return await appKnowledge.SaveRecommendedContextAsync(appliedKnowledgePreview, token);
                     },
                     ct);
+                cache.EvictByPrefix("/api/v1/pc/");
                 var result = new AppKnowledgeSuggestionApplyDto(
                     id,
                     savedContext,
@@ -659,6 +772,157 @@ public class PcTrackerModule : IModule
                 : Results.BadRequest(ApiResponse<string>.Error(400, "内置项不可删除或不存在"));
         });
 
+        // === Phase 2: 服务端聚合（专注块 / 应用时长 / 深夜使用 / 分类分布）===
+        readGroup.MapGet("/aggregation/focus-blocks", async (
+            [FromQuery] string? date,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromQuery] string? timezone,
+            [FromServices] PcActivityAggregationService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request,
+                        overrides:
+                        [
+                            new("date", date ?? string.Empty),
+                            new("start", start ?? string.Empty),
+                            new("end", end ?? string.Empty),
+                            new("timezone", timezone ?? string.Empty),
+                        ]),
+                    force,
+                    () => svc.GetFocusBlocksAsync(new PcAggregationQuery(date, start, end, timezone), ct),
+                    ct);
+                return Results.Ok(ApiResponse<PcFocusBlocksResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        readGroup.MapGet("/aggregation/app-usage", async (
+            [FromQuery] string? date,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromQuery] string? timezone,
+            [FromQuery] int? limit,
+            [FromServices] PcActivityAggregationService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request,
+                        overrides:
+                        [
+                            new("date", date ?? string.Empty),
+                            new("start", start ?? string.Empty),
+                            new("end", end ?? string.Empty),
+                            new("timezone", timezone ?? string.Empty),
+                            new("limit", limit?.ToString(CultureInfo.InvariantCulture) ?? string.Empty),
+                        ]),
+                    force,
+                    () => svc.GetAppUsageAsync(new PcAggregationQuery(date, start, end, timezone), limit, ct),
+                    ct);
+                return Results.Ok(ApiResponse<PcAppUsageResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        readGroup.MapGet("/aggregation/late-night", async (
+            [FromQuery] string? date,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromQuery] string? timezone,
+            [FromServices] PcActivityAggregationService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request,
+                        overrides:
+                        [
+                            new("date", date ?? string.Empty),
+                            new("start", start ?? string.Empty),
+                            new("end", end ?? string.Empty),
+                            new("timezone", timezone ?? string.Empty),
+                        ]),
+                    force,
+                    () => svc.GetLateNightAsync(new PcAggregationQuery(date, start, end, timezone), ct),
+                    ct);
+                return Results.Ok(ApiResponse<PcLateNightResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        readGroup.MapGet("/aggregation/category-distribution", async (
+            [FromQuery] string? date,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromQuery] string? timezone,
+            [FromServices] PcActivityAggregationService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request,
+                        overrides:
+                        [
+                            new("date", date ?? string.Empty),
+                            new("start", start ?? string.Empty),
+                            new("end", end ?? string.Empty),
+                            new("timezone", timezone ?? string.Empty),
+                        ]),
+                    force,
+                    () => svc.GetCategoryDistributionAsync(new PcAggregationQuery(date, start, end, timezone), ct),
+                    ct);
+                return Results.Ok(ApiResponse<PcCategoryDistributionResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
         // === Phase 2: 分类树 ===
         var catRead = endpoints.MapGroup("/api/v1/pc/categories").AllowAnonymous();
         var catWrite = endpoints.MapGroup("/api/v1/pc/categories").RequireAuthorization();
@@ -679,23 +943,35 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<List<CategoryTreeNode>>.Ok(tree));
         });
 
-        catWrite.MapPost("/", async (
-            [FromBody] CategorySaveRequest req,
+        catRead.MapGet("/dictionary", async (
             [FromServices] PcCategoryService svc,
             CancellationToken ct) =>
         {
+            var list = await svc.GetDictionaryAsync(ct);
+            return Results.Ok(ApiResponse<List<CategoryDictionaryItemDto>>.Ok(list));
+        });
+
+        catWrite.MapPost("/", async (
+            [FromBody] CategorySaveRequest req,
+            [FromServices] PcCategoryService svc,
+            [FromServices] IAggregateResultCache cache,
+            CancellationToken ct) =>
+        {
             var result = await svc.SaveAsync(req, ct);
+            cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<CategoryTreeNode>.Ok(result));
         });
 
         catWrite.MapDelete("/{id:guid}", async (
             Guid id,
             [FromServices] PcCategoryService svc,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             try
             {
                 var ok = await svc.DeleteAsync(id, ct);
+                cache.EvictByPrefix("/api/v1/pc/");
                 return ok
                     ? Results.Ok(ApiResponse<string>.Ok("已删除"))
                     : Results.BadRequest(ApiResponse<string>.Error(400, "内置项不可删除或不存在"));
@@ -709,17 +985,21 @@ public class PcTrackerModule : IModule
         catWrite.MapPut("/reorder", async (
             [FromBody] ReorderCategoriesRequest req,
             [FromServices] PcCategoryService svc,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             await svc.ReorderAsync(req, ct);
+            cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<string>.Ok("排序已更新"));
         });
 
         catWrite.MapPost("/seed", async (
             [FromServices] PcCategoryService svc,
+            [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
             await svc.SeedDefaultsAsync(ct);
+            cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<string>.Ok("种子数据已初始化"));
         });
 
@@ -729,10 +1009,17 @@ public class PcTrackerModule : IModule
         prodRead.MapGet("/dashboard", async (
             [FromQuery] string? date,
             [FromServices] PcProductivityService svc,
-            CancellationToken ct) =>
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
         {
             var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
-            var result = await svc.GetDashboardAsync(d, ct);
+            var result = await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("date", d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
+                force,
+                () => svc.GetDashboardAsync(d, ct),
+                ct);
             return Results.Ok(ApiResponse<ProductivityDashboardDto>.Ok(result));
         });
 
@@ -740,11 +1027,18 @@ public class PcTrackerModule : IModule
             [FromQuery] string? start,
             [FromQuery] string? end,
             [FromServices] PcProductivityService svc,
-            CancellationToken ct) =>
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
         {
             var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-7);
             var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
-            var result = await svc.GetRangeAsync(s, e, ct);
+            var result = await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
+                force,
+                () => svc.GetRangeAsync(s, e, ct),
+                ct);
             return Results.Ok(ApiResponse<List<DailyProductivityDto>>.Ok(result));
         });
 
@@ -752,10 +1046,17 @@ public class PcTrackerModule : IModule
         readGroup.MapGet("/timeline/v2", async (
             [FromQuery] string? date,
             [FromServices] PcProductivityService svc,
-            CancellationToken ct) =>
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
         {
             var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
-            var result = await svc.GetTimelineV2Async(d, ct);
+            var result = await cache.GetOrCreateAsync(
+                AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("date", d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
+                force,
+                () => svc.GetTimelineV2Async(d, ct),
+                ct);
             return Results.Ok(ApiResponse<List<TimelineV2Item>>.Ok(result));
         });
     }
@@ -768,6 +1069,30 @@ public class PcTrackerModule : IModule
 
         var categories = scope.ServiceProvider.GetRequiredService<PcCategoryService>();
         await categories.SeedDefaultsAsync(CancellationToken.None);
+
+        // Schedule recurring classification snapshot backfill
+        try
+        {
+            var recurring = serviceProvider.GetService<IRecurringJobManager>();
+            if (recurring is null)
+            {
+                serviceProvider.GetService<ILogger<PcTrackerModule>>()?.LogWarning(
+                    "Background job infrastructure is not available; classification snapshot backfill is disabled.");
+            }
+            else
+            {
+                recurring.AddOrUpdate<PcClassificationSnapshotJob>(
+                    "pc-classification-snapshot",
+                    job => job.RunAsync(),
+                    "*/30 * * * *");
+            }
+        }
+        catch (Exception exception)
+        {
+            serviceProvider.GetService<ILogger<PcTrackerModule>>()?.LogWarning(
+                exception,
+                "Failed to schedule the recurring classification snapshot backfill job.");
+        }
     }
 
     private static DateTime? TryParseDate(string? value)

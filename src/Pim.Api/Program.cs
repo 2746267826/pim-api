@@ -6,6 +6,7 @@ using Pim.Api.Infrastructure;
 using Pim.Api.Middleware;
 using Pim.Api.Search;
 using Pim.Api.Today;
+using Pim.Core.Caching;
 using Pim.Core.Today;
 using Pim.Infrastructure.Extensions;
 using Pim.Infrastructure.Operations;
@@ -19,7 +20,8 @@ Log.Logger = new LoggerConfiguration()
     .WriteTo.Console(new CompactJsonFormatter())
     .WriteTo.File(new CompactJsonFormatter(), "/data/pim/logs/pim-api-.jsonl",
         rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 30)
+        retainedFileCountLimit: LoggingConfig.ResolveRetainedFileCount(
+            Environment.GetEnvironmentVariable("PIM_LOG_RETAINED_FILES")))
     .CreateLogger();
 
 var builder = WebApplication.CreateBuilder(args);
@@ -28,6 +30,7 @@ builder.Host.UseSerilog();
 // Infrastructure
 builder.Services.AddPimInfrastructure(builder.Configuration);
 builder.Services.AddPimAuth();
+builder.Services.AddAggregateResultCaching();
 
 // HTTP (AddHttpContextAccessor is already called in AddPimInfrastructure)
 builder.Services.AddCors(options =>
@@ -122,7 +125,14 @@ app.MapAiEndpoints();
 moduleRegistry.MapAllEndpoints(app);
 
 // Init modules
-await moduleRegistry.InitializeAllAsync(app.Services);
+try
+{
+    await moduleRegistry.InitializeAllAsync(app.Services);
+}
+catch (Exception ex)
+{
+    Log.Warning(ex, "Module initialization failed; the API will start but module endpoints may not work.");
+}
 try
 {
     RecurringJob.AddOrUpdate<Stage0DiagnosticJob>(

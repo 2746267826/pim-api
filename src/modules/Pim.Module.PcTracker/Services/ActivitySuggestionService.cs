@@ -280,6 +280,7 @@ public class ActivitySuggestionService
             rule.RuleName,
             rule.Scope,
             rule.CategoryName,
+            rule.CategoryId,
             rule.ProjectTag,
             rule.Color,
             rule.Priority,

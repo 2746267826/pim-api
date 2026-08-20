@@ -28,14 +28,12 @@ public class PcCategoryServiceTests
             .Select(category => category.Name)
             .ToListAsync();
         Assert.Contains("Custom", names);
-        Assert.Contains("\u7f16\u7a0b", names);
-        Assert.Contains("\u7ec8\u7aef", names);
-        Assert.Contains("\u6c9f\u901a", names);
-        Assert.Contains("\u529e\u516c", names);
-        Assert.Contains("\u6587\u4ef6", names);
-        Assert.Contains("\u6d4f\u89c8", names);
+        Assert.Contains("\u7f16\u7a0b/\u6298\u817e", names);
         Assert.Contains("\u5b66\u4e60", names);
-        Assert.Contains("\u5a31\u4e50", names);
+        Assert.Contains("\u89c6\u9891", names);
+        Assert.Contains("\u804a\u5929", names);
+        Assert.Contains("\u6587\u6863", names);
+        Assert.Contains("\u6e38\u620f", names);
         Assert.Contains("\u5176\u4ed6", names);
 
         var countAfterFirstSeed = await db.Set<PcCategoryEntity>().CountAsync();
@@ -51,7 +49,7 @@ public class PcCategoryServiceTests
         db.Set<PcCategoryEntity>().Add(new PcCategoryEntity
         {
             Id = Guid.NewGuid(),
-            Name = "\u7ec8\u7aef",
+            Name = "\u5b66\u4e60",
             Color = "#111827",
             IsBuiltin = false
         });
@@ -60,18 +58,18 @@ public class PcCategoryServiceTests
 
         await service.SeedDefaultsAsync(CancellationToken.None);
 
-        Assert.Equal(1, await db.Set<PcCategoryEntity>().CountAsync(category => category.Name == "\u7ec8\u7aef"));
+        Assert.Equal(1, await db.Set<PcCategoryEntity>().CountAsync(category => category.Name == "\u5b66\u4e60"));
     }
 
     [Fact]
-    public async Task SeedDefaultsAsync_UsesExistingSameNameParentForMissingChildren()
+    public async Task SeedDefaultsAsync_UsesExistingSameNameCategoryForMissingSeed()
     {
         await using var db = CreateDb();
-        var existingWorkId = Guid.NewGuid();
+        var existingId = Guid.NewGuid();
         db.Set<PcCategoryEntity>().Add(new PcCategoryEntity
         {
-            Id = existingWorkId,
-            Name = "\u5de5\u4f5c",
+            Id = existingId,
+            Name = "\u6587\u6863",
             Color = "#111827",
             IsBuiltin = false
         });
@@ -80,8 +78,8 @@ public class PcCategoryServiceTests
 
         await service.SeedDefaultsAsync(CancellationToken.None);
 
-        var programming = await db.Set<PcCategoryEntity>().SingleAsync(category => category.Name == "\u7f16\u7a0b");
-        Assert.Equal(existingWorkId, programming.ParentId);
+        var document = await db.Set<PcCategoryEntity>().SingleAsync(category => category.Name == "\u6587\u6863");
+        Assert.Equal(existingId, document.Id);
     }
 
     private static PimDbContext CreateDb()
