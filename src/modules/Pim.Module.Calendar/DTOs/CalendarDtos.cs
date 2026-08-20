@@ -73,6 +73,12 @@ public record CreateEventRequest(
     string? RecurrenceId = null
 );
 
+public enum UpdateEventScope
+{
+    This,
+    Series
+}
+
 public record UpdateEventRequest(
     [Required] Guid CalendarId,
     [Required][MaxLength(255)] string Title,

@@ -384,6 +384,9 @@ public class CalendarService
     }
 
     public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, CancellationToken ct)
+        => await UpdateEventAsync(id, request, null, ct);
+
+    public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, string? scope, CancellationToken ct)
     {
         request = EventFieldValidator.ValidateAndNormalize(request);
 
@@ -424,6 +427,94 @@ public class CalendarService
 
         await ValidatePimFileReferencesAsync(request.AttachmentReferences, ct);
 
+        var isScopeThis = string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase);
+
+        // Scope=this : edit single occurrence -> create/update exception
+        if (isScopeThis)
+        {
+            // If target itself is an exception, update it directly
+            if (entity.IsException)
+            {
+                entity.Title = request.Title;
+                entity.Description = request.Description;
+                entity.Location = request.Location;
+                entity.DtStart = normalizedStart;
+                entity.DtEnd = normalizedEnd;
+                if (request.IsAllDay.HasValue) entity.IsAllDay = request.IsAllDay.Value;
+                if (request.TimeZoneId is not null) entity.TimeZoneId = request.TimeZoneId;
+                entity.UpdatedAt = DateTimeOffset.UtcNow;
+                ApplyUnifiedFields(entity, request);
+                if (!string.IsNullOrEmpty(request.RecurrenceId))
+                    entity.RecurrenceId = request.RecurrenceId;
+                entity.RRule = null;
+                await _db.SaveChangesAsync(ct);
+                return EventResponseMapper.Map(entity);
+            }
+
+            // Target is master (or regular) -> create or update exception for given RecurrenceId
+            if (!entity.IsSeriesMaster && string.IsNullOrEmpty(entity.RRule))
+            {
+                // Not a series master but scope=this requested -> treat as normal update
+                // fall through to series path below
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(request.RecurrenceId))
+                    throw new DomainException(02009, "修改单次需指定 RecurrenceId");
+
+                var existingException = await _db.Set<EventEntity>()
+                    .FirstOrDefaultAsync(e => e.SeriesMasterId == entity.Id && e.RecurrenceId == request.RecurrenceId && e.IsException && e.DeletedAt == null, ct);
+
+                if (existingException != null)
+                {
+                    existingException.Title = request.Title;
+                    existingException.Description = request.Description;
+                    existingException.Location = request.Location;
+                    existingException.DtStart = normalizedStart;
+                    existingException.DtEnd = normalizedEnd;
+                    if (request.IsAllDay.HasValue) existingException.IsAllDay = request.IsAllDay.Value;
+                    if (request.TimeZoneId is not null) existingException.TimeZoneId = request.TimeZoneId;
+                    existingException.UpdatedAt = DateTimeOffset.UtcNow;
+                    ApplyUnifiedFields(existingException, request);
+                    existingException.RecurrenceId = request.RecurrenceId;
+                    existingException.RRule = null;
+                    await _db.SaveChangesAsync(ct);
+                    return EventResponseMapper.Map(existingException);
+                }
+
+                var exceptionEntity = new EventEntity
+                {
+                    CalendarId = entity.CalendarId,
+                    Uid = entity.Uid,
+                    Title = request.Title,
+                    Description = request.Description,
+                    Location = request.Location,
+                    DtStart = normalizedStart,
+                    DtEnd = normalizedEnd,
+                    IsAllDay = request.IsAllDay ?? entity.IsAllDay,
+                    TimeZoneId = request.TimeZoneId ?? entity.TimeZoneId,
+                    IsException = true,
+                    IsSeriesMaster = false,
+                    SeriesMasterId = entity.Id,
+                    RecurrenceId = request.RecurrenceId,
+                    RRule = null,
+                    Status = "CONFIRMED",
+                    Source = entity.Source,
+                };
+                ApplyUnifiedFields(exceptionEntity, request);
+                // Ensure exception flag persists regardless of ApplyUnifiedFields
+                exceptionEntity.IsException = true;
+                exceptionEntity.IsSeriesMaster = false;
+                exceptionEntity.SeriesMasterId = entity.Id;
+                exceptionEntity.RecurrenceId = request.RecurrenceId;
+                exceptionEntity.RRule = null;
+                _db.Set<EventEntity>().Add(exceptionEntity);
+                await _db.SaveChangesAsync(ct);
+                return EventResponseMapper.Map(exceptionEntity);
+            }
+        }
+
+        // Default: series/master update path
         entity.Title = request.Title;
         entity.Description = request.Description;
         entity.Location = request.Location;
@@ -491,11 +582,84 @@ public class CalendarService
     }
 
     public async Task DeleteEventAsync(Guid id, CancellationToken ct)
+        => await DeleteEventAsync(id, null, null, ct);
+
+    public async Task DeleteEventAsync(Guid id, string? scope, CancellationToken ct)
+        => await DeleteEventAsync(id, scope, null, ct);
+
+    public async Task DeleteEventAsync(Guid id, string? scope, string? recurrenceId, CancellationToken ct)
     {
         var entity = await _db.Set<EventEntity>()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
             ?? throw new DomainException(02001, "日程不存在");
 
+        var isScopeThis = string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase);
+
+        if (isScopeThis)
+        {
+            // Delete single occurrence -> create/update CANCELLED exception
+            var recId = recurrenceId;
+            // If recurrenceId not supplied separately, try to infer from entity if it's an exception
+            if (string.IsNullOrEmpty(recId) && entity.IsException)
+                recId = entity.RecurrenceId;
+
+            if (entity.IsSeriesMaster)
+            {
+                if (string.IsNullOrEmpty(recId))
+                    throw new DomainException(02009, "删除单次需指定 RecurrenceId");
+
+                var existing = await _db.Set<EventEntity>()
+                    .FirstOrDefaultAsync(e => e.SeriesMasterId == entity.Id && e.RecurrenceId == recId && e.IsException && e.DeletedAt == null, ct);
+                if (existing != null)
+                {
+                    existing.Status = "CANCELLED";
+                    existing.UpdatedAt = DateTimeOffset.UtcNow;
+                    await _db.SaveChangesAsync(ct);
+                    return;
+                }
+
+                // Create CANCELLED exception sentinel
+                DateTimeOffset occurrenceStart;
+                if (!DateTimeOffset.TryParse(recId, out occurrenceStart))
+                    occurrenceStart = entity.DtStart;
+                var duration = entity.DtEnd - entity.DtStart;
+                var cancelled = new EventEntity
+                {
+                    CalendarId = entity.CalendarId,
+                    Uid = entity.Uid,
+                    Title = entity.Title,
+                    Description = entity.Description,
+                    Location = entity.Location,
+                    DtStart = occurrenceStart,
+                    DtEnd = occurrenceStart.Add(duration),
+                    IsException = true,
+                    IsSeriesMaster = false,
+                    SeriesMasterId = entity.Id,
+                    RecurrenceId = recId,
+                    RRule = null,
+                    Status = "CANCELLED",
+                    Source = entity.Source,
+                };
+                _db.Set<EventEntity>().Add(cancelled);
+                await _db.SaveChangesAsync(ct);
+                return;
+            }
+
+            if (entity.IsException)
+            {
+                entity.Status = "CANCELLED";
+                entity.UpdatedAt = DateTimeOffset.UtcNow;
+                await _db.SaveChangesAsync(ct);
+                return;
+            }
+
+            // Non-series entity with scope=this -> soft delete as fallback
+            entity.DeletedAt = DateTimeOffset.UtcNow;
+            await _db.SaveChangesAsync(ct);
+            return;
+        }
+
+        // scope=series or null: soft-delete master/exception cascade
         entity.DeletedAt = DateTimeOffset.UtcNow;
 
         // PR3: cascade delete exceptions when deleting a series master
