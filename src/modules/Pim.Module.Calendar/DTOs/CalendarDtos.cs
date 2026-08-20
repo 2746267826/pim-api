@@ -138,7 +138,8 @@ public record EventResponse(
     IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null,
     bool IsSeriesMaster = false,
     bool IsException = false,
-    Guid? SeriesMasterId = null
+    Guid? SeriesMasterId = null,
+    bool IsCancelled = false
 );
 
 public record CreateTaskRequest(

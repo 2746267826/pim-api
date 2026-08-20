@@ -106,7 +106,7 @@ public class CalendarService
             .AsNoTracking()
             .ToListAsync(ct);
 
-        var expanded = _recurrence.ExpandEvents(entities, start, end);
+        var expanded = _recurrence.ExpandEventsV2(entities, start, end);
 
         return expanded
             .OrderBy(x => x.OccurrenceStart)
@@ -135,7 +135,7 @@ public class CalendarService
 
         var rangeStart = start ?? DateTimeOffset.MinValue;
         var rangeEnd = end ?? DateTimeOffset.MaxValue;
-        var expanded = _recurrence.ExpandEvents(entities, rangeStart, rangeEnd);
+        var expanded = _recurrence.ExpandEventsV2(entities, rangeStart, rangeEnd);
 
         var totalCount = expanded.Count;
         var totalPages = (int)Math.Ceiling(totalCount / (double)pageSize);

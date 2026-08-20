@@ -8,6 +8,7 @@ public static class EventResponseMapper
     public static EventResponse Map(EventEntity e)
     {
         var outlookInfo = OutlookAdditionalInfoBuilder.Build(e);
+        var isCancelled = string.Equals(e.Status, "CANCELLED", StringComparison.OrdinalIgnoreCase);
 
         return new EventResponse(
             e.Id, e.CalendarId, e.Uid, e.Title, e.Description,
@@ -25,7 +26,7 @@ public static class EventResponseMapper
             e.IsOnlineMeeting, e.OnlineMeetingProvider,
             e.OnlineMeetingUrl, e.ExternalLink,
             EventFieldCodec.DeserializeAttachments(e.AttachmentReferencesJson),
-            e.IsSeriesMaster, e.IsException, e.SeriesMasterId);
+            e.IsSeriesMaster, e.IsException, e.SeriesMasterId, isCancelled);
     }
 
     public static EventResponse MapExpanded(ExpandedEvent ex)
@@ -50,6 +51,6 @@ public static class EventResponseMapper
             e.IsOnlineMeeting, e.OnlineMeetingProvider,
             e.OnlineMeetingUrl, e.ExternalLink,
             EventFieldCodec.DeserializeAttachments(e.AttachmentReferencesJson),
-            ex.IsSeriesMaster, ex.IsException, ex.SeriesMasterId);
+            ex.IsSeriesMaster, ex.IsException, ex.SeriesMasterId, ex.IsCancelled);
     }
 }

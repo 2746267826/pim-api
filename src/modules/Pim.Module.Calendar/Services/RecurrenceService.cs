@@ -18,7 +18,7 @@ public class RecurrenceService
         _logger = logger;
     }
 
-    public List<ExpandedEvent> ExpandEvents(
+    public virtual List<ExpandedEvent> ExpandEvents(
         IEnumerable<EventEntity> events,
         DateTimeOffset rangeStart,
         DateTimeOffset rangeEnd)
@@ -26,7 +26,7 @@ public class RecurrenceService
         return ExpandEventsV2(events, rangeStart, rangeEnd);
     }
 
-    public List<ExpandedEvent> ExpandEventsV2(
+    public virtual List<ExpandedEvent> ExpandEventsV2(
         IEnumerable<EventEntity> events,
         DateTimeOffset rangeStart,
         DateTimeOffset rangeEnd)
@@ -35,7 +35,22 @@ public class RecurrenceService
         var exceptionsByMaster = all
             .Where(e => e.IsException && e.SeriesMasterId.HasValue && !string.IsNullOrEmpty(e.RecurrenceId))
             .GroupBy(e => e.SeriesMasterId!.Value)
-            .ToDictionary(g => g.Key, g => g.ToDictionary(x => x.RecurrenceId!, x => x, StringComparer.Ordinal));
+            .ToDictionary(g => g.Key, g =>
+            {
+                var deduped = g.GroupBy(x => x.RecurrenceId!, StringComparer.Ordinal)
+                    .ToDictionary(
+                        grp => grp.Key,
+                        grp =>
+                        {
+                            if (grp.Count() > 1)
+                            {
+                                _logger.LogWarning("[Recurrence V2] duplicate exception RecurrenceId {RecurrenceId} for master {MasterId}: {Count} entries, picking latest UpdatedAt", grp.Key, g.Key, grp.Count());
+                            }
+                            return grp.OrderByDescending(x => x.UpdatedAt).ThenByDescending(x => x.CreatedAt).First();
+                        },
+                        StringComparer.Ordinal);
+                return deduped;
+            });
 
         var masterIds = new HashSet<Guid>(exceptionsByMaster.Keys);
         var results = new List<ExpandedEvent>();
@@ -175,13 +190,15 @@ public class RecurrenceService
 #pragma warning restore CS0618
 
             var options = new EvaluationOptions { MaxUnmatchedIncrementsLimit = 500 };
-            var rangeStartDt = new CalDateTime(rangeStart.UtcDateTime);
+            var startDt = new CalDateTime(entity.DtStart.UtcDateTime);
 
-            var occurrences = calEvent.GetOccurrences(rangeStartDt, options);
+            var occurrences = calEvent.GetOccurrences(startDt, options);
 
             foreach (var occ in occurrences)
             {
                 var start = new DateTimeOffset(occ.Period.StartTime.Value, TimeSpan.Zero);
+                if (start < rangeStart)
+                    continue;
                 if (start >= rangeEnd)
                     break;
 
@@ -230,8 +247,9 @@ public class ExpandedEvent
     public bool IsSeriesMaster { get; }
     public bool IsException { get; }
     public Guid? SeriesMasterId { get; }
+    public bool IsCancelled { get; }
 
-    public ExpandedEvent(EventEntity entity, Guid occurrenceId, DateTimeOffset occurrenceStart, DateTimeOffset occurrenceEnd, string? recurrenceId = null, bool isSeriesMaster = false, bool isException = false, Guid? seriesMasterId = null)
+    public ExpandedEvent(EventEntity entity, Guid occurrenceId, DateTimeOffset occurrenceStart, DateTimeOffset occurrenceEnd, string? recurrenceId = null, bool isSeriesMaster = false, bool isException = false, Guid? seriesMasterId = null, bool? isCancelled = null)
     {
         Entity = entity;
         OccurrenceId = occurrenceId;
@@ -241,5 +259,6 @@ public class ExpandedEvent
         IsSeriesMaster = isSeriesMaster;
         IsException = isException;
         SeriesMasterId = seriesMasterId;
+        IsCancelled = isCancelled ?? string.Equals(entity.Status, "CANCELLED", StringComparison.OrdinalIgnoreCase);
     }
 }

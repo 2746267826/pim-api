@@ -207,4 +207,44 @@ public class RecurrenceGeneratorTests
         Assert.DoesNotContain(result, r => r.OccurrenceStart == start.AddDays(1));
         Assert.DoesNotContain(result, r => r.OccurrenceStart == start.AddDays(3));
     }
+
+    [Fact]
+    public void FarWindow_DailyCount_FilteredCorrectlyFromDtStart()
+    {
+        var start = new DateTimeOffset(2026, 1, 1, 9, 0, 0, TimeSpan.Zero);
+        // 100 daily occurrences, window far: 30 days after start => should return 5 occurrences in window
+        var master = Master("FREQ=DAILY;COUNT=100", start, start.AddHours(1));
+        var rangeStart = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero); // day 31
+        var rangeEnd = new DateTimeOffset(2026, 2, 6, 0, 0, 0, TimeSpan.Zero); // 5 days
+        var result = Expand(master, rangeStart, rangeEnd);
+        // Jan1 +31 days = Feb1, so Feb1-5 => 5 occurrences
+        Assert.Equal(5, result.Count);
+        Assert.Equal(new DateTimeOffset(2026, 2, 1, 9, 0, 0, TimeSpan.Zero), result[0].OccurrenceStart);
+        Assert.Equal(new DateTimeOffset(2026, 2, 5, 9, 0, 0, TimeSpan.Zero), result[4].OccurrenceStart);
+    }
+
+    [Fact]
+    public void FarWindow_WeeklyFarWindow_NoEmptyDueToIncrementsLimit()
+    {
+        var start = new DateTimeOffset(2026, 1, 1, 9, 0, 0, TimeSpan.Zero);
+        // Weekly without COUNT, window 500 days later — must still emit occurrences
+        var master = Master("FREQ=WEEKLY;COUNT=200", start, start.AddHours(1));
+        var rangeStart = new DateTimeOffset(2027, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var rangeEnd = new DateTimeOffset(2027, 1, 31, 0, 0, 0, TimeSpan.Zero);
+        var result = Expand(master, rangeStart, rangeEnd);
+        // From Jan1 2026 weekly, occurrences in Jan 2027: Jan 7,14,21,28 => 4
+        Assert.Equal(4, result.Count);
+        Assert.All(result, r => Assert.True(r.OccurrenceStart >= rangeStart && r.OccurrenceStart < rangeEnd));
+    }
+
+    [Fact]
+    public void FarWindow_BeyondCount_ReturnsEmpty()
+    {
+        var start = new DateTimeOffset(2026, 1, 1, 9, 0, 0, TimeSpan.Zero);
+        var master = Master("FREQ=DAILY;COUNT=5", start, start.AddHours(1));
+        var rangeStart = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        var rangeEnd = new DateTimeOffset(2026, 6, 10, 0, 0, 0, TimeSpan.Zero);
+        var result = Expand(master, rangeStart, rangeEnd);
+        Assert.Empty(result);
+    }
 }

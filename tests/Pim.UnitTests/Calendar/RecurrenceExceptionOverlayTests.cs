@@ -83,18 +83,23 @@ public class RecurrenceExceptionOverlayTests
         Assert.Equal(new DateTimeOffset(2026, 1, 12, 11, 0, 0, TimeSpan.Zero), second.OccurrenceStart);
         Assert.Equal(secondOccurrenceId, second.RecurrenceId);
         Assert.True(second.IsException);
+        Assert.False(second.IsCancelled);
         Assert.Equal("CONFIRMED", second.Entity.Status);
+        Assert.False(EventResponseMapper.MapExpanded(second).IsCancelled);
 
-        // Third occurrence is cancelled exception (isCancelled equivalent = Status CANCELLED + IsException)
+        // Third occurrence is cancelled exception (isCancelled = true)
         var third = ordered[2];
         Assert.Equal(cancelledException.Id, third.OccurrenceId);
         Assert.Equal(thirdOccurrenceId, third.RecurrenceId);
         Assert.True(third.IsException);
+        Assert.True(third.IsCancelled);
         Assert.Equal("CANCELLED", third.Entity.Status);
+        Assert.True(EventResponseMapper.MapExpanded(third).IsCancelled);
 
         // Fourth unchanged
         Assert.Equal(new DateTimeOffset(2026, 1, 26, 10, 0, 0, TimeSpan.Zero), ordered[3].OccurrenceStart);
         Assert.False(ordered[3].IsException);
+        Assert.False(ordered[3].IsCancelled);
     }
 
     [Fact]
@@ -181,5 +186,124 @@ public class RecurrenceExceptionOverlayTests
         {
             Assert.Equal(r.OccurrenceStart.ToString("O"), r.RecurrenceId);
         }
+    }
+
+    [Fact]
+    public void IsCancelled_Field_ReflectsStatusCancelled()
+    {
+        var masterId = Guid.NewGuid();
+        var calendarId = Guid.NewGuid();
+        var masterStart = new DateTimeOffset(2026, 1, 5, 10, 0, 0, TimeSpan.Zero);
+        var master = new EventEntity
+        {
+            Id = masterId,
+            CalendarId = calendarId,
+            Uid = "cancel-check",
+            Title = "Check Cancelled",
+            DtStart = masterStart,
+            DtEnd = masterStart.AddHours(1),
+            RRule = "FREQ=WEEKLY;COUNT=2",
+            IsSeriesMaster = true,
+        };
+        var recurrenceId = new DateTimeOffset(2026, 1, 12, 10, 0, 0, TimeSpan.Zero).ToString("O");
+        var cancelled = new EventEntity
+        {
+            Id = Guid.NewGuid(),
+            CalendarId = calendarId,
+            Uid = "cancel-check",
+            Title = "Cancelled occ",
+            DtStart = new DateTimeOffset(2026, 1, 12, 10, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 1, 12, 11, 0, 0, TimeSpan.Zero),
+            IsException = true,
+            SeriesMasterId = masterId,
+            RecurrenceId = recurrenceId,
+            Status = "CANCELLED",
+        };
+        var confirmed = new EventEntity
+        {
+            Id = Guid.NewGuid(),
+            CalendarId = calendarId,
+            Uid = "cancel-check2",
+            Title = "Confirmed",
+            DtStart = new DateTimeOffset(2026, 1, 5, 10, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 1, 5, 11, 0, 0, TimeSpan.Zero),
+            IsException = true,
+            SeriesMasterId = masterId,
+            RecurrenceId = new DateTimeOffset(2026, 1, 5, 10, 0, 0, TimeSpan.Zero).ToString("O"),
+            Status = "CONFIRMED",
+        };
+        var result = Service.ExpandEventsV2(new[] { master, cancelled, confirmed },
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero));
+        var cancelledOcc = result.First(r => r.RecurrenceId == recurrenceId);
+        Assert.True(cancelledOcc.IsCancelled);
+        Assert.True(cancelledOcc.IsException);
+        var mapped = EventResponseMapper.MapExpanded(cancelledOcc);
+        Assert.True(mapped.IsCancelled);
+        Assert.Equal("CANCELLED", mapped.Status);
+        var confirmedOcc = result.First(r => r.OccurrenceId == confirmed.Id);
+        Assert.False(confirmedOcc.IsCancelled);
+        Assert.False(EventResponseMapper.MapExpanded(confirmedOcc).IsCancelled);
+    }
+
+    [Fact]
+    public void DuplicateRecurrenceId_DoesNotThrow_PicksLatestUpdatedAt()
+    {
+        var masterId = Guid.NewGuid();
+        var calendarId = Guid.NewGuid();
+        var masterStart = new DateTimeOffset(2026, 1, 5, 10, 0, 0, TimeSpan.Zero);
+        var master = new EventEntity
+        {
+            Id = masterId,
+            CalendarId = calendarId,
+            Uid = "dup-check",
+            Title = "Master",
+            DtStart = masterStart,
+            DtEnd = masterStart.AddHours(1),
+            RRule = "FREQ=WEEKLY;COUNT=2",
+            IsSeriesMaster = true,
+        };
+        var recurrenceId = new DateTimeOffset(2026, 1, 12, 10, 0, 0, TimeSpan.Zero).ToString("O");
+        var older = new EventEntity
+        {
+            Id = Guid.NewGuid(),
+            CalendarId = calendarId,
+            Uid = "dup-check",
+            Title = "Older",
+            DtStart = new DateTimeOffset(2026, 1, 12, 11, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 1, 12, 12, 0, 0, TimeSpan.Zero),
+            IsException = true,
+            SeriesMasterId = masterId,
+            RecurrenceId = recurrenceId,
+            Status = "CONFIRMED",
+            UpdatedAt = new DateTimeOffset(2026, 1, 10, 0, 0, 0, TimeSpan.Zero),
+            CreatedAt = new DateTimeOffset(2026, 1, 9, 0, 0, 0, TimeSpan.Zero),
+        };
+        var newer = new EventEntity
+        {
+            Id = Guid.NewGuid(),
+            CalendarId = calendarId,
+            Uid = "dup-check",
+            Title = "Newer",
+            DtStart = new DateTimeOffset(2026, 1, 12, 13, 0, 0, TimeSpan.Zero),
+            DtEnd = new DateTimeOffset(2026, 1, 12, 14, 0, 0, TimeSpan.Zero),
+            IsException = true,
+            SeriesMasterId = masterId,
+            RecurrenceId = recurrenceId,
+            Status = "CANCELLED",
+            UpdatedAt = new DateTimeOffset(2026, 1, 11, 0, 0, 0, TimeSpan.Zero),
+            CreatedAt = new DateTimeOffset(2026, 1, 9, 0, 0, 0, TimeSpan.Zero),
+        };
+        // Should not throw despite duplicate RecurrenceId
+        var result = Service.ExpandEventsV2(new[] { master, older, newer },
+            new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero));
+        // Still 2 occurrences after overlay, duplicate collapsed to one
+        Assert.Equal(2, result.Count);
+        var dupOcc = result.First(r => r.RecurrenceId == recurrenceId);
+        // Picks latest UpdatedAt => newer (CANCELLED)
+        Assert.Equal(newer.Id, dupOcc.OccurrenceId);
+        Assert.Equal("Newer", dupOcc.Entity.Title);
+        Assert.True(dupOcc.IsCancelled);
     }
 }
