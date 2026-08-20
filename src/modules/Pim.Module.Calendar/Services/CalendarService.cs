@@ -321,7 +321,10 @@ public class CalendarService
                 ExternalMetadataJson = item.ExternalMetadataJson,
                 RecurrenceId = Truncate(item.RecurrenceId, 255),
                 ExDatesJson = item.ExDatesJson,
-                RecurrenceMetadataJson = item.RecurrenceMetadataJson
+                RecurrenceMetadataJson = item.RecurrenceMetadataJson,
+                IsSeriesMaster = !string.IsNullOrEmpty(item.RRule),
+                IsException = false,
+                SeriesMasterId = null
             });
             acceptedEvents.Add(item);
             imported++;
