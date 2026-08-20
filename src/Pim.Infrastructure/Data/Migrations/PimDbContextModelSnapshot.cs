@@ -526,6 +526,15 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_successful_upload_at");
 
+                    b.Property<string>("OfflineReason")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("offline_reason");
+
+                    b.Property<DateTimeOffset?>("PlannedOfflineAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("planned_offline_at");
+
                     b.Property<DateTimeOffset>("ReceivedAt")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")

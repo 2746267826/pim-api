@@ -10,10 +10,12 @@ namespace Pim.Infrastructure.Operations;
 public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
 {
     private readonly PimDbContext _db;
+    private readonly TimeProvider _timeProvider;
 
-    public DaemonHeartbeatService(PimDbContext db)
+    public DaemonHeartbeatService(PimDbContext db, TimeProvider? timeProvider = null)
     {
         _db = db;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<DaemonHeartbeatDto> UpsertAsync(
@@ -65,6 +67,70 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         return Map(entity);
     }
 
+    /// <summary>迟到 planned 请求的容忍窗口：超过该窗口即丢弃，避免污染已恢复的状态。</summary>
+    private static readonly TimeSpan PlannedOfflineStaleTolerance = TimeSpan.FromMinutes(5);
+
+    public async Task<DaemonHeartbeatDto?> RecordPlannedOfflineAsync(
+        PlannedOfflineRequest request,
+        CancellationToken ct = default)
+    {
+        // 陈旧守卫：迟到的 suspend 请求（客户端挂起时网络未送达、恢复后晚到）不再建行/改行。
+        if (request.OccurredAt is { } occurredAt
+            && _timeProvider.GetUtcNow() - occurredAt > PlannedOfflineStaleTolerance)
+        {
+            var existing = await _db.DaemonHeartbeats
+                .AsNoTracking()
+                .SingleOrDefaultAsync(d =>
+                    d.DeviceId == request.DeviceId
+                    && d.DaemonKind == request.DaemonKind,
+                    ct);
+            return existing is null ? null : Map(existing);
+        }
+
+        var entity = await _db.DaemonHeartbeats
+            .SingleOrDefaultAsync(d =>
+                d.DeviceId == request.DeviceId
+                && d.DaemonKind == request.DaemonKind,
+                ct);
+
+        var isNew = entity is null;
+        if (entity is null)
+        {
+            entity = new DaemonHeartbeatEntity
+            {
+                DeviceId = request.DeviceId,
+                DaemonKind = request.DaemonKind
+            };
+            _db.DaemonHeartbeats.Add(entity);
+        }
+
+        ApplyPlannedOffline(request, entity, isNew);
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException) when (isNew)
+        {
+            _db.ChangeTracker.Clear();
+            entity = await _db.DaemonHeartbeats
+                .SingleOrDefaultAsync(d =>
+                    d.DeviceId == request.DeviceId
+                    && d.DaemonKind == request.DaemonKind,
+                    ct);
+
+            if (entity is null)
+            {
+                throw;
+            }
+
+            ApplyPlannedOffline(request, entity, isNew: false);
+            await _db.SaveChangesAsync(ct);
+        }
+
+        return Map(entity);
+    }
+
     public async Task<DaemonHeartbeatDto?> GetLatestAsync(string deviceId, CancellationToken ct = default)
     {
         var entity = await _db.DaemonHeartbeats
@@ -102,10 +168,45 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
             ParseSourceState(entity.KeyStatsState),
             entity.CollectionPaused,
             entity.StatusJson,
-            entity.ReceivedAt);
+            entity.ReceivedAt,
+            entity.PlannedOfflineAt,
+            entity.OfflineReason);
     }
 
-    private static void Apply(
+    private void ApplyPlannedOffline(
+        PlannedOfflineRequest request,
+        DaemonHeartbeatEntity entity,
+        bool isNew)
+    {
+        // planned_offline 只写 planned 标记，不刷新 received_at（received_at 语义 = 最近普通心跳）。
+        // 客户端时钟可能早于服务端时钟：钳制 planned_at >= received_at，保证分类器不把正常下线误判为 stale。
+        var plannedAt = request.OccurredAt ?? _timeProvider.GetUtcNow();
+        if (!isNew && plannedAt < entity.ReceivedAt)
+        {
+            plannedAt = entity.ReceivedAt;
+        }
+
+        entity.PlannedOfflineAt = plannedAt;
+        entity.OfflineReason = Truncate(request.Reason, 32);
+
+        // 新建行时用同一注入时钟统一 received_at/planned_offline_at，保证 planned_offline_at >= received_at 恒成立。
+        if (isNew)
+        {
+            entity.ReceivedAt = plannedAt;
+        }
+    }
+
+    private static string? Truncate(string? value, int maxLength)
+    {
+        if (value is null || value.Length <= maxLength)
+        {
+            return value;
+        }
+
+        return value[..maxLength];
+    }
+
+    private void Apply(
         DaemonHeartbeatRequest request,
         string statusJson,
         DaemonHeartbeatEntity entity)
@@ -120,7 +221,9 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         entity.KeyStatsState = request.KeyStatsState.ToString();
         entity.CollectionPaused = request.CollectionPaused;
         entity.StatusJson = statusJson;
-        entity.ReceivedAt = DateTimeOffset.UtcNow;
+        entity.ReceivedAt = _timeProvider.GetUtcNow();
+        entity.PlannedOfflineAt = null;
+        entity.OfflineReason = null;
     }
 
     private static string NormalizeStatusJson(string statusJson)

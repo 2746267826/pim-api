@@ -4,12 +4,39 @@ using Pim.Core.Operations;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Operations;
+using Pim.UnitTests.Calendar;
 using Xunit;
 
 namespace Pim.UnitTests.Operations;
 
 public class DaemonHeartbeatServiceTests
 {
+    private static readonly DateTimeOffset FixedNow = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
+
+    private static PimDbContext CreateDb()
+    {
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        return new PimDbContext(options);
+    }
+
+    private static StubTimeProvider StubClock(DateTimeOffset now) => new() { UtcNowValue = now };
+
+    private static DaemonHeartbeatRequest HeartbeatRequest(string deviceId) => new(
+        deviceId,
+        "windows",
+        "1.0.0",
+        "http://127.0.0.1:5858",
+        null,
+        null,
+        null,
+        0,
+        DaemonSourceState.Available,
+        DaemonSourceState.Available,
+        false,
+        "{}");
+
     [Fact]
     public async Task UpsertAsync_ReplacesExistingDeviceHeartbeat()
     {
@@ -159,5 +186,126 @@ public class DaemonHeartbeatServiceTests
 
         Assert.Equal(DaemonSourceState.Available, latest!.ActivityWatchState);
         Assert.Equal(DaemonSourceState.Unknown, latest.KeyStatsState);
+    }
+
+    [Fact]
+    public async Task RecordPlannedOfflineAsync_CreatesRowWhenMissing()
+    {
+        await using var db = CreateDb();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        var result = await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "shutdown", FixedNow), CancellationToken.None);
+        var row = await db.DaemonHeartbeats.SingleAsync();
+        Assert.Equal(FixedNow, row.PlannedOfflineAt);
+        Assert.Equal("shutdown", row.OfflineReason);
+        // 新建行时 received_at 与 planned_offline_at 同源（注入时钟），保证 planned_offline_at >= received_at 恒成立。
+        Assert.Equal(FixedNow, row.ReceivedAt);
+        Assert.Equal(row.PlannedOfflineAt, row.ReceivedAt);
+    }
+
+    [Fact]
+    public async Task RecordPlannedOfflineAsync_NewRow_ClassifiedAsPlannedOffline()
+    {
+        await using var db = CreateDb();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "shutdown", FixedNow), CancellationToken.None);
+        var row = await db.DaemonHeartbeats.SingleAsync();
+        var lifecycle = DaemonLifecycleClassifier.Classify(row, FixedNow);
+        Assert.Equal("planned-offline", lifecycle.State);
+        Assert.Equal(PimHealthStatus.Healthy, lifecycle.Status);
+    }
+
+    [Fact]
+    public async Task RecordPlannedOfflineAsync_UpdatesExistingRowWithoutTouchingReceivedAt()
+    {
+        await using var db = CreateDb();
+        var existing = new DaemonHeartbeatEntity { DeviceId = "PC-1", DaemonKind = "windows", ReceivedAt = FixedNow.AddMinutes(-30) };
+        db.DaemonHeartbeats.Add(existing);
+        await db.SaveChangesAsync();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        var result = await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "suspend", FixedNow), CancellationToken.None);
+        Assert.Equal(FixedNow, existing.PlannedOfflineAt);
+        Assert.Equal("suspend", existing.OfflineReason);
+        Assert.Equal(FixedNow.AddMinutes(-30), existing.ReceivedAt);
+    }
+
+    [Fact]
+    public async Task RecordPlannedOfflineAsync_ClampsClientClockBeforeServerReceivedAt()
+    {
+        // 客户端时钟早于服务端最近心跳：planned_at 钳制到 received_at，避免分类器判 stale。
+        await using var db = CreateDb();
+        var existing = new DaemonHeartbeatEntity { DeviceId = "PC-1", DaemonKind = "windows", ReceivedAt = FixedNow };
+        db.DaemonHeartbeats.Add(existing);
+        await db.SaveChangesAsync();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "shutdown", FixedNow.AddMinutes(-5)), CancellationToken.None);
+        Assert.Equal(FixedNow, existing.PlannedOfflineAt);
+        Assert.Equal(FixedNow, existing.ReceivedAt);
+        var lifecycle = DaemonLifecycleClassifier.Classify(existing, FixedNow);
+        Assert.Equal("planned-offline", lifecycle.State);
+    }
+
+    [Fact]
+    public async Task RecordPlannedOfflineAsync_StaleRequestIgnored()
+    {
+        // 陈旧 planned 请求：不建行，已存在行也不动 planned 字段。
+        await using var db = CreateDb();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+
+        // 行不存在 → 不建行，返回 null。
+        var missing = await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "suspend", FixedNow.AddMinutes(-6)), CancellationToken.None);
+        Assert.Null(missing);
+        Assert.Equal(0, await db.DaemonHeartbeats.CountAsync());
+
+        // 行已存在 → planned 字段不动。
+        db.DaemonHeartbeats.Add(new DaemonHeartbeatEntity
+        {
+            DeviceId = "PC-2", DaemonKind = "windows",
+            ReceivedAt = FixedNow.AddMinutes(-10)
+        });
+        await db.SaveChangesAsync();
+        var existing = await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-2", "windows", "shutdown", FixedNow.AddMinutes(-6)), CancellationToken.None);
+        Assert.NotNull(existing);
+        var row = await db.DaemonHeartbeats.SingleAsync(h => h.DeviceId == "PC-2");
+        Assert.Null(row.PlannedOfflineAt);
+        Assert.Null(row.OfflineReason);
+        Assert.Equal(FixedNow.AddMinutes(-10), row.ReceivedAt);
+    }
+
+    [Fact]
+    public async Task RecordPlannedOfflineAsync_FreshRequestStillWorks()
+    {
+        // 新鲜 planned 请求（窗口内）→ 正常写入（回归）。
+        await using var db = CreateDb();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        var result = await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "suspend", FixedNow.AddMinutes(-1)), CancellationToken.None);
+        Assert.NotNull(result);
+        var row = await db.DaemonHeartbeats.SingleAsync();
+        Assert.Equal(FixedNow.AddMinutes(-1), row.PlannedOfflineAt);
+        Assert.Equal("suspend", row.OfflineReason);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_ClearsPlannedOfflineOnRegularHeartbeat()
+    {
+        await using var db = CreateDb();
+        db.DaemonHeartbeats.Add(new DaemonHeartbeatEntity
+        {
+            DeviceId = "PC-1", DaemonKind = "windows",
+            PlannedOfflineAt = FixedNow.AddMinutes(-5), OfflineReason = "suspend",
+            ReceivedAt = FixedNow.AddMinutes(-10)
+        });
+        await db.SaveChangesAsync();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        await service.UpsertAsync(HeartbeatRequest("PC-1"), CancellationToken.None);
+        var row = await db.DaemonHeartbeats.SingleAsync();
+        Assert.Null(row.PlannedOfflineAt);
+        Assert.Null(row.OfflineReason);
     }
 }
