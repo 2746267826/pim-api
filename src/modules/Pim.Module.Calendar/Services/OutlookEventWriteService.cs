@@ -203,7 +203,24 @@ public sealed class OutlookEventWriteService
         var draftPimFileReferences = await ValidateDraftPimFileReferencesAsync(
             userId, request.Draft.AttachmentReferences, ct);
 
-        var localEvent = await LoadEventAsync(request.EventId.Value, userId, ct);
+        EventEntity? localEvent = null;
+        // Prefer OriginalEventId (master) when provided for synthetic occurrence
+        if (request.OriginalEventId.HasValue && request.OriginalEventId.Value != Guid.Empty)
+        {
+            try { localEvent = await LoadEventAsync(request.OriginalEventId.Value, userId, ct); } catch { localEvent = null; }
+        }
+        localEvent ??= await LoadEventAsync(request.EventId.Value, userId, ct);
+        // If recurrenceId provided for instance scope, try to resolve exception entity for correct Graph id
+        if (request.Scope == "instance" && !string.IsNullOrEmpty(request.RecurrenceId))
+        {
+            var normalized = DateTimeOffset.TryParse(request.RecurrenceId, out var p) ? p.ToString("O") : request.RecurrenceId;
+            var exception = await _db.Set<EventEntity>()
+                .FirstOrDefaultAsync(e => e.SeriesMasterId == localEvent.Id && e.RecurrenceId == normalized && e.IsException && e.DeletedAt == null, ct);
+            if (exception != null && exception.OutlookCalendarBindingId == binding.Id)
+            {
+                localEvent = exception;
+            }
+        }
         ValidateEventBinding(localEvent, binding.Id);
 
         var batch = NewBatch(userId, connection.Id, binding.Id, binding.Name, "update", localEvent.Id, localEvent.Title);
@@ -358,7 +375,20 @@ public sealed class OutlookEventWriteService
         if (request.Scope is not ("instance" or "series"))
             throw new DomainException(02009, "Scope 必须是 instance 或 series。");
 
-        var localEvent = await LoadEventAsync(request.EventId.Value, userId, ct);
+        EventEntity? localEvent = null;
+        if (request.OriginalEventId.HasValue && request.OriginalEventId.Value != Guid.Empty)
+        {
+            try { localEvent = await LoadEventAsync(request.OriginalEventId.Value, userId, ct); } catch { localEvent = null; }
+        }
+        localEvent ??= await LoadEventAsync(request.EventId.Value, userId, ct);
+        if (request.Scope == "instance" && !string.IsNullOrEmpty(request.RecurrenceId))
+        {
+            var normalized = DateTimeOffset.TryParse(request.RecurrenceId, out var p) ? p.ToString("O") : request.RecurrenceId;
+            var exception = await _db.Set<EventEntity>()
+                .FirstOrDefaultAsync(e => e.SeriesMasterId == localEvent.Id && e.RecurrenceId == normalized && e.IsException && e.DeletedAt == null, ct);
+            if (exception != null && exception.OutlookCalendarBindingId == binding.Id)
+                localEvent = exception;
+        }
         ValidateEventBinding(localEvent, binding.Id);
 
         var batch = NewBatch(userId, connection.Id, binding.Id, binding.Name, "delete", localEvent.Id, localEvent.Title);

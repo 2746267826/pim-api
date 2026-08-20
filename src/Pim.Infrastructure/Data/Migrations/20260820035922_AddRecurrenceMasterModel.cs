@@ -52,7 +52,7 @@ namespace Pim.Infrastructure.Data.Migrations
 
             migrationBuilder.Sql("""
                 UPDATE events
-                SET recurrence_id = dtstart::text
+                SET recurrence_id = to_char(dtstart AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')
                 WHERE is_exception = true
                   AND recurrence_id IS NULL;
                 """);

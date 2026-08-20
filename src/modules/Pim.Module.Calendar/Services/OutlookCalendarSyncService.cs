@@ -919,6 +919,35 @@ public sealed class OutlookCalendarSyncService
 
                 OutlookEventMapper.ApplyGraphEvent(
                     target, graphEvent, binding.Id, binding.PimCalendarId, connection.Id, generation);
+                // Resolve SeriesMasterId GUID for exception via OutlookSeriesMasterId lookup
+                if (target.IsException && target.SeriesMasterId == null && !string.IsNullOrEmpty(target.OutlookSeriesMasterId))
+                {
+                    var master = await _db.Set<EventEntity>()
+                        .Where(e => e.OutlookEventId == target.OutlookSeriesMasterId && e.OutlookCalendarBindingId == binding.Id)
+                        .Select(e => new { e.Id })
+                        .FirstOrDefaultAsync(ct);
+                    if (master != null)
+                        target.SeriesMasterId = master.Id;
+                    else
+                    {
+                        // fallback: try by OutlookConnectionId + OutlookEventId
+                        var master2 = await _db.Set<EventEntity>()
+                            .Where(e => e.OutlookEventId == target.OutlookSeriesMasterId && e.OutlookConnectionId == connection.Id)
+                            .Select(e => new { e.Id })
+                            .FirstOrDefaultAsync(ct);
+                        if (master2 != null) target.SeriesMasterId = master2.Id;
+                    }
+                    // Ensure RecurrenceId normalized to O if still missing (mapper should have set)
+                    if (string.IsNullOrEmpty(target.RecurrenceId))
+                    {
+                        // fallback: use DtStart O
+                        target.RecurrenceId = target.DtStart.ToString("O");
+                    }
+                    else if (DateTimeOffset.TryParse(target.RecurrenceId, out var parsedRec))
+                    {
+                        target.RecurrenceId = parsedRec.ToString("O");
+                    }
+                }
                 await HydrateAttachmentReferencesAsync(
                     connection, binding, state, target, graphEvent, eventId,
                     isNew, oldChangeKey, oldReferencesJson, now, ct);

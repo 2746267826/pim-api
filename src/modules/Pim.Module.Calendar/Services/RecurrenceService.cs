@@ -66,12 +66,18 @@ public class RecurrenceService
     {
         var effectiveRangeEnd = GetEffectiveRangeEnd(rangeStart, rangeEnd);
         var all = events.ToList();
+        // normalize RecurrenceId to O format for stable matching
+        string Normalize(string? v)
+        {
+            if (string.IsNullOrEmpty(v)) return v ?? string.Empty;
+            return DateTimeOffset.TryParse(v, out var parsed) ? parsed.ToString("O") : v;
+        }
         var exceptionsByMaster = all
             .Where(e => e.IsException && e.SeriesMasterId.HasValue && !string.IsNullOrEmpty(e.RecurrenceId))
             .GroupBy(e => e.SeriesMasterId!.Value)
             .ToDictionary(g => g.Key, g =>
             {
-                var deduped = g.GroupBy(x => x.RecurrenceId!, StringComparer.Ordinal)
+                var deduped = g.GroupBy(x => Normalize(x.RecurrenceId)!, StringComparer.Ordinal)
                     .ToDictionary(
                         grp => grp.Key,
                         grp =>
@@ -83,7 +89,21 @@ public class RecurrenceService
                             return grp.OrderByDescending(x => x.UpdatedAt).ThenByDescending(x => x.CreatedAt).First();
                         },
                         StringComparer.Ordinal);
-                return deduped;
+                // ensure stored key is normalized and entity RecurrenceId normalized for overlay
+                var normalized = new Dictionary<string, EventEntity>(StringComparer.Ordinal);
+                foreach (var kv in deduped)
+                {
+                    var entity = kv.Value;
+                    // normalize stored entity's RecurrenceId for consistency (in-memory only)
+                    if (!string.IsNullOrEmpty(entity.RecurrenceId))
+                    {
+                        var n = Normalize(entity.RecurrenceId);
+                        if (n != entity.RecurrenceId)
+                            entity.RecurrenceId = n;
+                    }
+                    normalized[kv.Key] = entity;
+                }
+                return normalized;
             });
 
         var masterIds = new HashSet<Guid>(exceptionsByMaster.Keys);

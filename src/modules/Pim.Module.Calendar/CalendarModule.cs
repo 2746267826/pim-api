@@ -361,6 +361,7 @@ public class CalendarModule : IModule
             Guid id, [FromBody] UpdateEventRequest req,
             [FromQuery] string? scope,
             [FromQuery] string? recurrenceId,
+            [FromQuery] Guid? originalEventId,
             [FromServices] CalendarService svc, CancellationToken ct) =>
         {
             string? normalizedRecurrenceId = recurrenceId;
@@ -384,16 +385,17 @@ public class CalendarModule : IModule
                     throw new DomainException(02009, "RecurrenceId 格式无效");
                 req = req with { RecurrenceId = bodyParsed2.ToString("O") };
             }
-            return Results.Ok(ApiResponse<EventResponse>.Ok(await svc.UpdateEventAsync(id, req, scope, ct)));
+            return Results.Ok(ApiResponse<EventResponse>.Ok(await svc.UpdateEventAsync(id, req, scope, originalEventId, ct)));
         });
 
         group.MapDelete("/events/{id:guid}", async (
             Guid id,
             [FromQuery] string? scope,
             [FromQuery] string? recurrenceId,
+            [FromQuery] Guid? originalEventId,
             [FromServices] CalendarService svc, CancellationToken ct) =>
         {
-            await svc.DeleteEventAsync(id, scope, recurrenceId, ct);
+            await svc.DeleteEventAsync(id, scope, recurrenceId, originalEventId, ct);
             return Results.Ok(ApiResponse<string>.Ok("已删除"));
         });
 

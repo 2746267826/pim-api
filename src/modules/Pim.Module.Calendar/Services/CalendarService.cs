@@ -108,7 +108,8 @@ public class CalendarService
         var entities = await _db.Set<EventEntity>()
             .Where(e => e.Calendar.UserId == UserId
                         && e.DtStart > minValidDate
-                        && e.DtEnd > minValidDate)
+                        && e.DtEnd > minValidDate
+                        && ((e.DtStart < end && e.DtEnd > start) || !string.IsNullOrEmpty(e.RRule) || e.IsException))
             .AsNoTracking()
             .ToListAsync(ct);
 
@@ -127,10 +128,18 @@ public class CalendarService
         CancellationToken ct = default)
     {
         var minValidDate = DateTimeOffset.MinValue.AddYears(100);
+        var hasWindow = start.HasValue && end.HasValue;
         var query = _db.Set<EventEntity>()
             .Where(e => e.Calendar.UserId == UserId
                         && e.DtStart > minValidDate
                         && e.DtEnd > minValidDate);
+
+        if (hasWindow)
+        {
+            var s = start!.Value;
+            var e2 = end!.Value;
+            query = query.Where(e => ((e.DtStart < e2 && e.DtEnd > s) || !string.IsNullOrEmpty(e.RRule) || e.IsException));
+        }
 
         if (!string.IsNullOrEmpty(search))
             query = query.Where(e => e.Title.Contains(search));
@@ -393,15 +402,28 @@ public class CalendarService
     }
 
     public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, CancellationToken ct)
-        => await UpdateEventAsync(id, request, null, ct);
+        => await UpdateEventAsync(id, request, null, null, ct);
 
     public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, string? scope, CancellationToken ct)
+        => await UpdateEventAsync(id, request, scope, null, ct);
+
+    public async Task<EventResponse> UpdateEventAsync(Guid id, UpdateEventRequest request, string? scope, Guid? originalEventId, CancellationToken ct)
     {
         request = EventFieldValidator.ValidateAndNormalize(request);
 
-        var entity = await _db.Set<EventEntity>()
+        // If originalEventId provided (synthetic occurrence case), prefer master via originalEventId for scope=this/series
+        EventEntity? entity = null;
+        var hasOriginal = originalEventId.HasValue && originalEventId.Value != Guid.Empty && !string.Equals(scope, "instance", StringComparison.OrdinalIgnoreCase);
+        if (hasOriginal && (string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase)))
+        {
+            entity = await _db.Set<EventEntity>()
+                .FirstOrDefaultAsync(e => e.Id == originalEventId.Value && e.Calendar.UserId == UserId, ct);
+        }
+        entity ??= await _db.Set<EventEntity>()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
             ?? throw new DomainException(02001, "日程不存在");
+        // Fallback: if requested id is synthetic (not found) but originalEventId is master, entity already resolved
+        // Normalize recurrenceId from request / query if needed will be handled by caller
 
         if (entity.OutlookCalendarBindingId != null)
             throw new DomainException(02009, "Microsoft 日程必须通过确认写回流程修改。");
@@ -542,6 +564,7 @@ public class CalendarService
         var isScopeSeries = string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase);
 
         // scope=series from exception: resolve master and update master, not exception
+        // Fix: do not overwrite master DtStart/DtEnd with occurrence's time unless explicitly changed vs master
         if (isScopeSeries && entity.IsException)
         {
             if (!entity.SeriesMasterId.HasValue)
@@ -556,8 +579,20 @@ public class CalendarService
             masterEntity.Title = request.Title;
             masterEntity.Description = request.Description;
             masterEntity.Location = request.Location;
-            masterEntity.DtStart = normalizedStart;
-            masterEntity.DtEnd = normalizedEnd;
+            // Only overwrite master time if request time differs from master time (explicit series time change)
+            // Otherwise keep master's original DtStart/DtEnd to avoid copying occurrence date to master
+            if (normalizedStart != masterEntity.DtStart)
+                masterEntity.DtStart = normalizedStart;
+            if (normalizedEnd != masterEntity.DtEnd)
+            {
+                // also ensure only update if duration or time explicitly changed; if only date part differs due to occurrence, skip
+                // Compare time-of-day and duration: keep master if only occurrence date shifted
+                var reqDuration = normalizedEnd - normalizedStart;
+                var masterDuration = masterEntity.DtEnd - masterEntity.DtStart;
+                // If durations differ or time-of-day differs, treat as explicit change
+                if (reqDuration != masterDuration || normalizedStart.TimeOfDay != masterEntity.DtStart.TimeOfDay)
+                    masterEntity.DtEnd = normalizedEnd;
+            }
             masterEntity.RRule = request.RRule;
             if (request.IsAllDay.HasValue)
                 masterEntity.IsAllDay = request.IsAllDay.Value;
@@ -657,14 +692,24 @@ public class CalendarService
     }
 
     public async Task DeleteEventAsync(Guid id, CancellationToken ct)
-        => await DeleteEventAsync(id, null, null, ct);
+        => await DeleteEventAsync(id, null, null, null, ct);
 
     public async Task DeleteEventAsync(Guid id, string? scope, CancellationToken ct)
-        => await DeleteEventAsync(id, scope, null, ct);
+        => await DeleteEventAsync(id, scope, null, null, ct);
 
     public async Task DeleteEventAsync(Guid id, string? scope, string? recurrenceId, CancellationToken ct)
+        => await DeleteEventAsync(id, scope, recurrenceId, null, ct);
+
+    public async Task DeleteEventAsync(Guid id, string? scope, string? recurrenceId, Guid? originalEventId, CancellationToken ct)
     {
-        var entity = await _db.Set<EventEntity>().IgnoreQueryFilters()
+        EventEntity? entity = null;
+        var hasOriginal = originalEventId.HasValue && originalEventId.Value != Guid.Empty;
+        if (hasOriginal && (string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase) || string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase)))
+        {
+            entity = await _db.Set<EventEntity>().IgnoreQueryFilters()
+                .FirstOrDefaultAsync(e => e.Id == originalEventId.Value && e.Calendar.UserId == UserId, ct);
+        }
+        entity ??= await _db.Set<EventEntity>().IgnoreQueryFilters()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
             ?? throw new DomainException(02001, "日程不存在");
         if (entity.DeletedAt != null)

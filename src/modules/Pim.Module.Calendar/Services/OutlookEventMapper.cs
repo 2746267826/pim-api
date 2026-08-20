@@ -14,8 +14,8 @@ public static class OutlookEventMapper
     private static readonly HashSet<string> MappedGraphPropertyKeys = new(StringComparer.Ordinal)
     {
         "@odata.etag", "id", "iCalUId", "subject", "body", "location",
-        "start", "end", "originalStartTimeZone", "originalEndTimeZone",
-        "changeKey", "type", "seriesMasterId", "recurrence", "isAllDay",
+        "start", "end", "originalStart", "originalStartTimeZone", "originalEndTimeZone",
+        "changeKey", "type", "seriesMasterId", "recurrence", "isAllDay", "isCancelled",
         "importance", "sensitivity", "showAs", "categories",
         "isReminderOn", "reminderMinutesBeforeStart",
         "organizer", "attendees",
@@ -50,7 +50,8 @@ public static class OutlookEventMapper
         target.OutlookConnectionId = connectionId;
         target.LastSeenSyncGeneration = generation;
         target.Source = "outlook";
-        target.Status = "CONFIRMED";
+        var isCancelled = GetBoolOrFalse(graph, "isCancelled");
+        target.Status = isCancelled ? "CANCELLED" : "CONFIRMED";
 
         var iCalUId = GetStringOrNull(graph, "iCalUId");
         if (!string.IsNullOrEmpty(iCalUId))
@@ -108,8 +109,8 @@ public static class OutlookEventMapper
         target.DtStart = ParseGraphDateTime(startRaw);
         target.DtEnd = ParseGraphDateTime(endRaw);
 
-        // Map Graph recurrence ↔ RRule / master flags
-        MapRecurrenceToEntity(target, type, recurrenceElement);
+        // Map Graph recurrence ↔ RRule / master flags (with exception originalStart handling)
+        MapRecurrenceToEntity(target, type, recurrenceElement, graph);
 
         if (target.IsAllDay)
         {
@@ -377,7 +378,7 @@ public static class OutlookEventMapper
         return GetStringOrNull(element, "onlineMeetingUrl");
     }
 
-    private static void MapRecurrenceToEntity(EventEntity target, string? type, JsonElement? recurrenceElement)
+    private static void MapRecurrenceToEntity(EventEntity target, string? type, JsonElement? recurrenceElement, JsonElement graph)
     {
         // Reset recurrence-derived flags first; RRule will be set if recurrence present.
         if (type == "seriesMaster")
@@ -409,7 +410,37 @@ public static class OutlookEventMapper
             target.IsException = true;
             target.IsSeriesMaster = false;
             target.RRule = null;
-            // RecurrenceId stays as-is if already set; otherwise leave null (diff confirm will handle)
+            // Resolve RecurrenceId from originalStart if not already set
+            if (string.IsNullOrEmpty(target.RecurrenceId))
+            {
+                string? originalStartRaw = null;
+                if (graph.TryGetProperty("originalStart", out var originalStartEl) && originalStartEl.ValueKind == JsonValueKind.Object)
+                {
+                    originalStartRaw = GetStringOrNull(originalStartEl, "dateTime");
+                    if (originalStartRaw is null && originalStartEl.TryGetProperty("dateTime", out var dtProp) && dtProp.ValueKind == JsonValueKind.String)
+                        originalStartRaw = dtProp.GetString();
+                }
+                if (!string.IsNullOrEmpty(originalStartRaw))
+                {
+                    try
+                    {
+                        var parsed = DateTimeOffset.Parse(originalStartRaw!, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
+                        target.RecurrenceId = parsed.ToString("O");
+                    }
+                    catch { }
+                }
+                // fallback: use current DtStart as occurrence start (already UTC)
+                if (string.IsNullOrEmpty(target.RecurrenceId))
+                {
+                    target.RecurrenceId = target.DtStart.ToString("O");
+                }
+            }
+            else
+            {
+                // normalize existing RecurrenceId to O format
+                if (DateTimeOffset.TryParse(target.RecurrenceId, out var existing))
+                    target.RecurrenceId = existing.ToString("O");
+            }
             // SeriesMasterId GUID cannot be resolved in mapper (needs DB), keep OutlookSeriesMasterId string.
         }
         else if (type == "occurrence")
@@ -427,6 +458,17 @@ public static class OutlookEventMapper
             target.RecurrenceId = null;
         }
     }
+
+    private static readonly Dictionary<string, string> GraphDayToByDay = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["sunday"] = "SU", ["monday"] = "MO", ["tuesday"] = "TU", ["wednesday"] = "WE",
+        ["thursday"] = "TH", ["friday"] = "FR", ["saturday"] = "SA"
+    };
+    private static readonly Dictionary<string, string> ByDayToGraphDay = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["SU"] = "sunday", ["MO"] = "monday", ["TU"] = "tuesday", ["WE"] = "wednesday",
+        ["TH"] = "thursday", ["FR"] = "friday", ["SA"] = "saturday"
+    };
 
     private static string? TryConvertGraphRecurrenceToRRule(JsonElement recurrence, DateTimeOffset dtStart)
     {
@@ -450,6 +492,21 @@ public static class OutlookEventMapper
             var rrule = $"FREQ={freq}";
             if (interval > 1)
                 rrule += $";INTERVAL={interval}";
+
+            if (string.Equals(freq, "WEEKLY", StringComparison.OrdinalIgnoreCase))
+            {
+                if (pattern.TryGetProperty("daysOfWeek", out var daysEl) && daysEl.ValueKind == JsonValueKind.Array)
+                {
+                    var byDays = new List<string>();
+                    foreach (var d in daysEl.EnumerateArray())
+                    {
+                        if (d.ValueKind == JsonValueKind.String && GraphDayToByDay.TryGetValue(d.GetString()!, out var by))
+                            byDays.Add(by);
+                    }
+                    if (byDays.Count > 0)
+                        rrule += $";BYDAY={string.Join(",", byDays)}";
+                }
+            }
 
             if (string.Equals(rangeType, "numbered", StringComparison.OrdinalIgnoreCase))
             {
@@ -520,6 +577,16 @@ public static class OutlookEventMapper
             ["type"] = graphType,
             ["interval"] = interval
         };
+        if (string.Equals(freqUpper, "WEEKLY", StringComparison.OrdinalIgnoreCase) && map.TryGetValue("BYDAY", out var byDayRaw) && !string.IsNullOrWhiteSpace(byDayRaw))
+        {
+            var days = byDayRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => s.Trim().ToUpperInvariant())
+                .Where(s => ByDayToGraphDay.ContainsKey(s))
+                .Select(s => ByDayToGraphDay[s])
+                .ToArray();
+            if (days.Length > 0)
+                pattern["daysOfWeek"] = days;
+        }
 
         var startDate = dtStart.ToUniversalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         Dictionary<string, object?> range;
