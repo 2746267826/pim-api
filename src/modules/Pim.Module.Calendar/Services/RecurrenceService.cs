@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Ical.Net.CalendarComponents;
 using Ical.Net.DataTypes;
 using Ical.Net.Evaluation;
@@ -22,34 +23,142 @@ public class RecurrenceService
         DateTimeOffset rangeStart,
         DateTimeOffset rangeEnd)
     {
+        return ExpandEventsV2(events, rangeStart, rangeEnd);
+    }
+
+    public List<ExpandedEvent> ExpandEventsV2(
+        IEnumerable<EventEntity> events,
+        DateTimeOffset rangeStart,
+        DateTimeOffset rangeEnd)
+    {
+        var all = events.ToList();
+        var exceptionsByMaster = all
+            .Where(e => e.IsException && e.SeriesMasterId.HasValue && !string.IsNullOrEmpty(e.RecurrenceId))
+            .GroupBy(e => e.SeriesMasterId!.Value)
+            .ToDictionary(g => g.Key, g => g.ToDictionary(x => x.RecurrenceId!, x => x, StringComparer.Ordinal));
+
+        var masterIds = new HashSet<Guid>(exceptionsByMaster.Keys);
         var results = new List<ExpandedEvent>();
-        int recurring = 0, simple = 0, errors = 0;
-        foreach (var entity in events)
+        int recurring = 0, simple = 0, errors = 0, exceptionsApplied = 0;
+
+        foreach (var entity in all)
         {
+            // Skip exception rows themselves — they are rendered via overlay, not as standalone
+            if (entity.IsException)
+                continue;
+
+            // Skip legacy Outlook occurrence rows that are not part of master model (stage A compatibility)
+            if (entity.OutlookEventType == "occurrence" && !entity.IsSeriesMaster && entity.SeriesMasterId is null && !entity.IsException)
+                continue;
+
+            // Simple non-recurring
             if (string.IsNullOrEmpty(entity.RRule))
             {
                 simple++;
                 if (entity.DtEnd > rangeStart && entity.DtStart < rangeEnd)
-                    results.Add(new ExpandedEvent(entity, entity.Id, entity.DtStart, entity.DtEnd));
+                    results.Add(new ExpandedEvent(entity, entity.Id, entity.DtStart, entity.DtEnd, entity.RecurrenceId, entity.IsSeriesMaster, entity.IsException, entity.SeriesMasterId));
+                continue;
+            }
+
+            // Recurring master (or legacy RRule without IsSeriesMaster flag)
+            recurring++;
+            var exDates = ParseExDates(entity.ExDatesJson);
+            var expanded = ExpandRecurring(entity, rangeStart, rangeEnd, exDates);
+            if (expanded.Count == 0 && entity.RRule is not null)
+                errors++;
+
+            // Overlay exceptions
+            if (exceptionsByMaster.TryGetValue(entity.Id, out var map))
+            {
+                var overlaid = new List<ExpandedEvent>();
+                foreach (var occ in expanded)
+                {
+                    var recurrenceId = occ.RecurrenceId ?? occ.OccurrenceStart.ToString("O");
+                    if (map.TryGetValue(recurrenceId, out var exception))
+                    {
+                        exceptionsApplied++;
+                        // Use exception entity's own time and status; keep original recurrenceId
+                        overlaid.Add(new ExpandedEvent(
+                            exception,
+                            exception.Id,
+                            exception.DtStart,
+                            exception.DtEnd,
+                            exception.RecurrenceId,
+                            exception.IsSeriesMaster,
+                            exception.IsException,
+                            exception.SeriesMasterId));
+                    }
+                    else
+                    {
+                        // Tag normal occurrence with master linkage
+                        overlaid.Add(new ExpandedEvent(
+                            occ.Entity,
+                            occ.OccurrenceId,
+                            occ.OccurrenceStart,
+                            occ.OccurrenceEnd,
+                            recurrenceId,
+                            false,
+                            false,
+                            entity.Id));
+                    }
+                }
+                // Add exceptions that have no matching generated occurrence (e.g., out of range but still in window, or standalone)
+                foreach (var kv in map)
+                {
+                    if (!expanded.Any(o => (o.RecurrenceId ?? o.OccurrenceStart.ToString("O")) == kv.Key))
+                    {
+                        var ex = kv.Value;
+                        if (ex.DtEnd > rangeStart && ex.DtStart < rangeEnd)
+                        {
+                            overlaid.Add(new ExpandedEvent(ex, ex.Id, ex.DtStart, ex.DtEnd, ex.RecurrenceId, ex.IsSeriesMaster, ex.IsException, ex.SeriesMasterId));
+                        }
+                    }
+                }
+                results.AddRange(overlaid);
             }
             else
             {
-                recurring++;
-                var expanded = ExpandRecurring(entity, rangeStart, rangeEnd);
-                if (expanded.Count == 0 && entity.RRule is not null)
-                    errors++;
-                results.AddRange(expanded);
+                // Tag occurrences with master linkage
+                foreach (var occ in expanded)
+                {
+                    var recurrenceId = occ.RecurrenceId ?? occ.OccurrenceStart.ToString("O");
+                    results.Add(new ExpandedEvent(
+                        occ.Entity,
+                        occ.OccurrenceId,
+                        occ.OccurrenceStart,
+                        occ.OccurrenceEnd,
+                        recurrenceId,
+                        false,
+                        false,
+                        entity.Id));
+                }
             }
         }
-        _logger.LogInformation("[Recurrence] {EventCount} events: {Recurring} recurring, {Simple} simple, {Results} results, {Errors} failed expansions (range: {Start} to {End})",
-            events.Count(), recurring, simple, results.Count, errors, rangeStart, rangeEnd);
+
+        _logger.LogInformation("[Recurrence V2] {EventCount} events: {Recurring} recurring, {Simple} simple, {Results} results, {Errors} errors, {Exceptions} overlays (range: {Start} to {End})",
+            all.Count, recurring, simple, results.Count, errors, exceptionsApplied, rangeStart, rangeEnd);
         return results;
+    }
+
+    private static HashSet<string> ParseExDates(string exDatesJson)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(exDatesJson)) return new HashSet<string>();
+            var arr = JsonSerializer.Deserialize<List<string>>(exDatesJson);
+            return arr is null ? new HashSet<string>() : new HashSet<string>(arr, StringComparer.Ordinal);
+        }
+        catch
+        {
+            return new HashSet<string>();
+        }
     }
 
     private static List<ExpandedEvent> ExpandRecurring(
         EventEntity entity,
         DateTimeOffset rangeStart,
-        DateTimeOffset rangeEnd)
+        DateTimeOffset rangeEnd,
+        HashSet<string>? exDates = null)
     {
         var results = new List<ExpandedEvent>();
         var duration = entity.DtEnd - entity.DtStart;
@@ -77,16 +186,27 @@ public class RecurrenceService
                     break;
 
                 var end = new DateTimeOffset(occ.Period.EndTime?.Value ?? start.Add(duration).UtcDateTime, TimeSpan.Zero);
+                var recurrenceId = start.ToString("O");
+                if (exDates != null && exDates.Contains(recurrenceId))
+                    continue;
+                // Also support ExDates stored as date-only or without millis
+                if (exDates != null && exDates.Any(d => string.Equals(d, start.ToString("yyyy-MM-ddTHH:mm:ssZ"), StringComparison.Ordinal) || string.Equals(d, start.UtcDateTime.ToString("O"), StringComparison.Ordinal)))
+                    continue;
+
                 results.Add(new ExpandedEvent(
                     entity,
                     DeriveOccurrenceId(entity.Id, start),
-                    start, end));
+                    start, end,
+                    recurrenceId,
+                    entity.IsSeriesMaster,
+                    entity.IsException,
+                    entity.SeriesMasterId));
             }
         }
         catch
         {
             if (entity.DtEnd > rangeStart && entity.DtStart < rangeEnd)
-                results.Add(new ExpandedEvent(entity, entity.Id, entity.DtStart, entity.DtEnd));
+                results.Add(new ExpandedEvent(entity, entity.Id, entity.DtStart, entity.DtEnd, entity.RecurrenceId, entity.IsSeriesMaster, entity.IsException, entity.SeriesMasterId));
         }
 
         return results;
@@ -106,12 +226,20 @@ public class ExpandedEvent
     public Guid OccurrenceId { get; }
     public DateTimeOffset OccurrenceStart { get; }
     public DateTimeOffset OccurrenceEnd { get; }
+    public string? RecurrenceId { get; }
+    public bool IsSeriesMaster { get; }
+    public bool IsException { get; }
+    public Guid? SeriesMasterId { get; }
 
-    public ExpandedEvent(EventEntity entity, Guid occurrenceId, DateTimeOffset occurrenceStart, DateTimeOffset occurrenceEnd)
+    public ExpandedEvent(EventEntity entity, Guid occurrenceId, DateTimeOffset occurrenceStart, DateTimeOffset occurrenceEnd, string? recurrenceId = null, bool isSeriesMaster = false, bool isException = false, Guid? seriesMasterId = null)
     {
         Entity = entity;
         OccurrenceId = occurrenceId;
         OccurrenceStart = occurrenceStart;
         OccurrenceEnd = occurrenceEnd;
+        RecurrenceId = recurrenceId;
+        IsSeriesMaster = isSeriesMaster;
+        IsException = isException;
+        SeriesMasterId = seriesMasterId;
     }
 }

@@ -195,6 +195,35 @@ public class CalendarService
 
         ApplyUnifiedFields(entity, request);
 
+        // PR3: Series / exception handling
+        if (request.IsException)
+        {
+            if (!request.SeriesMasterId.HasValue || string.IsNullOrEmpty(request.RecurrenceId))
+                throw new DomainException(02009, "例外必须指定系列主事件和原始发生时间");
+            var master = await _db.Set<EventEntity>()
+                .FirstOrDefaultAsync(m => m.Id == request.SeriesMasterId.Value && m.Calendar.UserId == UserId, ct)
+                ?? throw new DomainException(02001, "系列主事件不存在");
+            entity.IsException = true;
+            entity.SeriesMasterId = request.SeriesMasterId;
+            entity.RecurrenceId = request.RecurrenceId;
+            entity.IsSeriesMaster = false;
+            // Exceptions do not carry RRule
+            entity.RRule = null;
+        }
+        else if (!string.IsNullOrEmpty(request.RRule))
+        {
+            entity.IsSeriesMaster = true;
+            entity.IsException = false;
+            entity.SeriesMasterId = null;
+            // Keep RRule as provided
+        }
+        else
+        {
+            entity.IsSeriesMaster = request.IsSeriesMaster;
+            entity.IsException = false;
+            entity.SeriesMasterId = null;
+        }
+
         _db.Set<EventEntity>().Add(entity);
         await _db.SaveChangesAsync(ct);
 
@@ -410,6 +439,40 @@ public class CalendarService
 
         ApplyUnifiedFields(entity, request);
 
+        // PR3: Series / exception handling for updates
+        if (request.IsException)
+        {
+            if (!request.SeriesMasterId.HasValue || string.IsNullOrEmpty(request.RecurrenceId))
+                throw new DomainException(02009, "例外必须指定系列主事件和原始发生时间");
+            var master = await _db.Set<EventEntity>()
+                .FirstOrDefaultAsync(m => m.Id == request.SeriesMasterId.Value && m.Calendar.UserId == UserId, ct)
+                ?? throw new DomainException(02001, "系列主事件不存在");
+            entity.IsException = true;
+            entity.SeriesMasterId = request.SeriesMasterId;
+            entity.RecurrenceId = request.RecurrenceId;
+            entity.IsSeriesMaster = false;
+            entity.RRule = null;
+        }
+        else if (!string.IsNullOrEmpty(request.RRule))
+        {
+            entity.IsSeriesMaster = true;
+            entity.IsException = false;
+            entity.SeriesMasterId = null;
+        }
+        else
+        {
+            // If RRule cleared, clear master flag
+            if (entity.IsSeriesMaster && string.IsNullOrEmpty(request.RRule))
+                entity.IsSeriesMaster = false;
+            // Explicit master flag from request
+            if (request.IsSeriesMaster)
+                entity.IsSeriesMaster = true;
+        }
+
+        // Update RecurrenceId for exception if provided
+        if (request.IsException && !string.IsNullOrEmpty(request.RecurrenceId))
+            entity.RecurrenceId = request.RecurrenceId;
+
         await _db.SaveChangesAsync(ct);
         return EventResponseMapper.Map(entity);
     }
@@ -434,6 +497,17 @@ public class CalendarService
             ?? throw new DomainException(02001, "日程不存在");
 
         entity.DeletedAt = DateTimeOffset.UtcNow;
+
+        // PR3: cascade delete exceptions when deleting a series master
+        if (entity.IsSeriesMaster)
+        {
+            var exceptions = await _db.Set<EventEntity>()
+                .Where(e => e.SeriesMasterId == entity.Id && e.IsException && e.DeletedAt == null)
+                .ToListAsync(ct);
+            foreach (var ex in exceptions)
+                ex.DeletedAt = DateTimeOffset.UtcNow;
+        }
+
         await _db.SaveChangesAsync(ct);
     }
 

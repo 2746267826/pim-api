@@ -66,7 +66,11 @@ public record CreateEventRequest(
     string? OnlineMeetingProvider = null,
     string? OnlineMeetingUrl = null,
     string? ExternalLink = null,
-    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null
+    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null,
+    bool IsSeriesMaster = false,
+    bool IsException = false,
+    Guid? SeriesMasterId = null,
+    string? RecurrenceId = null
 );
 
 public record UpdateEventRequest(
@@ -93,7 +97,11 @@ public record UpdateEventRequest(
     string? OnlineMeetingProvider = null,
     string? OnlineMeetingUrl = null,
     string? ExternalLink = null,
-    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null
+    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null,
+    bool IsSeriesMaster = false,
+    bool IsException = false,
+    Guid? SeriesMasterId = null,
+    string? RecurrenceId = null
 );
 
 public record EventResponse(
@@ -127,7 +135,10 @@ public record EventResponse(
     string? OnlineMeetingProvider = null,
     string? OnlineMeetingUrl = null,
     string? ExternalLink = null,
-    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null
+    IReadOnlyList<EventAttachmentReferenceDto>? AttachmentReferences = null,
+    bool IsSeriesMaster = false,
+    bool IsException = false,
+    Guid? SeriesMasterId = null
 );
 
 public record CreateTaskRequest(
