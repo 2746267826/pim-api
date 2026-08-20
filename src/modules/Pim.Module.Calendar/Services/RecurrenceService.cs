@@ -26,11 +26,41 @@ public class RecurrenceService
         return ExpandEventsV2(events, rangeStart, rangeEnd);
     }
 
+    private const int MaxOccurrences = 500;
+    private const int MaxWindowDays = 1825;
+
+    private DateTimeOffset GetEffectiveRangeEnd(DateTimeOffset rangeStart, DateTimeOffset rangeEnd)
+    {
+        var needsCap = rangeEnd == DateTimeOffset.MaxValue;
+        if (!needsCap)
+        {
+            try
+            {
+                var spanDays = (rangeEnd - rangeStart).TotalDays;
+                needsCap = spanDays > MaxWindowDays || double.IsInfinity(spanDays) || double.IsNaN(spanDays);
+            }
+            catch { needsCap = true; }
+        }
+        if (!needsCap) return rangeEnd;
+
+        DateTimeOffset capped;
+        if (rangeStart == DateTimeOffset.MinValue)
+            capped = DateTimeOffset.UtcNow.AddDays(MaxWindowDays);
+        else
+            capped = rangeStart.AddDays(MaxWindowDays);
+
+        // Guard against overflow
+        if (capped > rangeEnd && rangeEnd != DateTimeOffset.MaxValue) return rangeEnd;
+        _logger.LogWarning("[Recurrence V2] unbounded window capped: rangeStart={Start} rangeEnd={End} -> effectiveEnd={Capped} (MaxWindowDays={Days}, MaxOccurrences={Max})", rangeStart, rangeEnd, capped, MaxWindowDays, MaxOccurrences);
+        return capped;
+    }
+
     public virtual List<ExpandedEvent> ExpandEventsV2(
         IEnumerable<EventEntity> events,
         DateTimeOffset rangeStart,
         DateTimeOffset rangeEnd)
     {
+        var effectiveRangeEnd = GetEffectiveRangeEnd(rangeStart, rangeEnd);
         var all = events.ToList();
         var exceptionsByMaster = all
             .Where(e => e.IsException && e.SeriesMasterId.HasValue && !string.IsNullOrEmpty(e.RecurrenceId))
@@ -70,7 +100,7 @@ public class RecurrenceService
             if (string.IsNullOrEmpty(entity.RRule))
             {
                 simple++;
-                if (entity.DtEnd > rangeStart && entity.DtStart < rangeEnd)
+                if (entity.DtEnd > rangeStart && entity.DtStart < effectiveRangeEnd)
                     results.Add(new ExpandedEvent(entity, entity.Id, entity.DtStart, entity.DtEnd, entity.RecurrenceId, entity.IsSeriesMaster, entity.IsException, entity.SeriesMasterId));
                 continue;
             }
@@ -78,7 +108,7 @@ public class RecurrenceService
             // Recurring master (or legacy RRule without IsSeriesMaster flag)
             recurring++;
             var exDates = ParseExDates(entity.ExDatesJson);
-            var expanded = ExpandRecurring(entity, rangeStart, rangeEnd, exDates);
+            var expanded = ExpandRecurring(entity, rangeStart, effectiveRangeEnd, exDates);
             if (expanded.Count == 0 && entity.RRule is not null)
                 errors++;
 
@@ -123,7 +153,7 @@ public class RecurrenceService
                     if (!expanded.Any(o => (o.RecurrenceId ?? o.OccurrenceStart.ToString("O")) == kv.Key))
                     {
                         var ex = kv.Value;
-                        if (ex.DtEnd > rangeStart && ex.DtStart < rangeEnd)
+                        if (ex.DtEnd > rangeStart && ex.DtStart < effectiveRangeEnd)
                         {
                             overlaid.Add(new ExpandedEvent(ex, ex.Id, ex.DtStart, ex.DtEnd, ex.RecurrenceId, ex.IsSeriesMaster, ex.IsException, ex.SeriesMasterId));
                         }
@@ -150,8 +180,8 @@ public class RecurrenceService
             }
         }
 
-        _logger.LogInformation("[Recurrence V2] {EventCount} events: {Recurring} recurring, {Simple} simple, {Results} results, {Errors} errors, {Exceptions} overlays (range: {Start} to {End})",
-            all.Count, recurring, simple, results.Count, errors, exceptionsApplied, rangeStart, rangeEnd);
+        _logger.LogInformation("[Recurrence V2] {EventCount} events: {Recurring} recurring, {Simple} simple, {Results} results, {Errors} errors, {Exceptions} overlays (range: {Start} to {End} effective:{EffEnd})",
+            all.Count, recurring, simple, results.Count, errors, exceptionsApplied, rangeStart, rangeEnd, effectiveRangeEnd);
         return results;
     }
 
@@ -196,6 +226,8 @@ public class RecurrenceService
 
             foreach (var occ in occurrences)
             {
+                if (results.Count >= MaxOccurrences)
+                    break;
                 var start = new DateTimeOffset(occ.Period.StartTime.Value, TimeSpan.Zero);
                 if (start < rangeStart)
                     continue;

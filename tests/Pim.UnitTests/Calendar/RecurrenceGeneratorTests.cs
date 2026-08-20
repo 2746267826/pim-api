@@ -247,4 +247,48 @@ public class RecurrenceGeneratorTests
         var result = Expand(master, rangeStart, rangeEnd);
         Assert.Empty(result);
     }
+
+    [Fact]
+    public void UnboundedWindow_InfiniteDaily_CappedToMaxOccurrences()
+    {
+        var start = new DateTimeOffset(2026, 1, 1, 9, 0, 0, TimeSpan.Zero);
+        // No COUNT/UNTIL => infinite daily
+        var master = Master("FREQ=DAILY", start, start.AddHours(1));
+        var rangeStart = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var rangeEnd = DateTimeOffset.MaxValue;
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = Expand(master, rangeStart, rangeEnd);
+        sw.Stop();
+
+        // Should not hang and be capped
+        Assert.True(sw.ElapsedMilliseconds < 5000, $"Unbounded expansion took too long: {sw.ElapsedMilliseconds}ms");
+        Assert.True(result.Count > 0 && result.Count <= 500, $"Expected capped count <=500, got {result.Count}");
+        // With 730-day cap, daily => ~730 but also capped to 500, so expect 500
+        Assert.Equal(500, result.Count);
+        Assert.Equal(start, result[0].OccurrenceStart);
+    }
+
+    [Fact]
+    public void UnboundedWindow_InfiniteDaily_MaxValue_WithMinStart_Capped()
+    {
+        var start = new DateTimeOffset(2026, 1, 1, 9, 0, 0, TimeSpan.Zero);
+        var master = Master("FREQ=DAILY", start, start.AddHours(1));
+        // Simulate GetEventsPaged with no range => MinValue to MaxValue
+        var result = Service.ExpandEventsV2(new[] { master }, DateTimeOffset.MinValue, DateTimeOffset.MaxValue);
+        Assert.True(result.Count > 0 && result.Count <= 500);
+    }
+
+    [Fact]
+    public void VeryFarWindow_CappedTo730Days()
+    {
+        var start = new DateTimeOffset(2026, 1, 1, 9, 0, 0, TimeSpan.Zero);
+        var master = Master("FREQ=DAILY", start, start.AddHours(1));
+        var rangeStart = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var rangeEnd = rangeStart.AddDays(2000); // >730
+        var result = Expand(master, rangeStart, rangeEnd);
+        // Capped to 730 days => capped to 500 due to occurrence limit
+        Assert.Equal(500, result.Count);
+        Assert.True(result.Last().OccurrenceStart < rangeStart.AddDays(730));
+    }
 }
