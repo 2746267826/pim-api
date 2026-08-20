@@ -280,7 +280,11 @@ public sealed class OutlookEventMapperTests
         Assert.DoesNotContain("onlineMeeting", payload.Keys);
         Assert.DoesNotContain("externalLink", payload.Keys);
         Assert.DoesNotContain("attachmentReferences", payload.Keys);
-        Assert.DoesNotContain("recurrence", payload.Keys);
+        Assert.Contains("recurrence", payload.Keys);
+        var recurrence = Assert.IsType<Dictionary<string, object?>>(payload["recurrence"]);
+        var pattern = Assert.IsType<Dictionary<string, object?>>(recurrence["pattern"]);
+        Assert.Equal("weekly", pattern["type"]);
+        Assert.Equal(1, pattern["interval"]);
         Assert.DoesNotContain("responseRequested", payload.Keys);
         Assert.DoesNotContain("allowNewTimeProposals", payload.Keys);
         Assert.DoesNotContain("hideAttendees", payload.Keys);
