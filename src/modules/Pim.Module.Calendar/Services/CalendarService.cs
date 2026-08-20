@@ -15,9 +15,10 @@ public class CalendarService
     private readonly RecurrenceService _recurrence;
     private readonly EventAttachmentService _attachments;
     private readonly TimeProvider _timeProvider;
+    private readonly CalendarAuditWriter? _audit;
 
     public CalendarService(PimDbContext db, ICurrentUserService currentUser, RecurrenceService recurrence)
-        : this(db, currentUser, recurrence, new EventAttachmentService(db), TimeProvider.System)
+        : this(db, currentUser, recurrence, new EventAttachmentService(db), TimeProvider.System, null)
     {
     }
 
@@ -26,13 +27,15 @@ public class CalendarService
         ICurrentUserService currentUser,
         RecurrenceService recurrence,
         EventAttachmentService attachments,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        CalendarAuditWriter? audit = null)
     {
         _db = db;
         _currentUser = currentUser;
         _recurrence = recurrence;
         _attachments = attachments;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _audit = audit;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "未登录");
@@ -658,17 +661,65 @@ public class CalendarService
 
     public async Task DeleteEventAsync(Guid id, string? scope, string? recurrenceId, CancellationToken ct)
     {
-        var entity = await _db.Set<EventEntity>()
+        var entity = await _db.Set<EventEntity>().IgnoreQueryFilters()
             .FirstOrDefaultAsync(e => e.Id == id && e.Calendar.UserId == UserId, ct)
             ?? throw new DomainException(02001, "日程不存在");
+        if (entity.DeletedAt != null)
+            return;
+
+        // Normalize recurrenceId to O format when needed
+        string? normalizedRecurrenceId = recurrenceId;
+        if (!string.IsNullOrEmpty(recurrenceId))
+        {
+            if (DateTimeOffset.TryParse(recurrenceId, out var parsed))
+                normalizedRecurrenceId = parsed.ToString("O");
+            else
+                throw new DomainException(02009, "RecurrenceId 格式无效");
+        }
 
         var isScopeThis = string.Equals(scope, "this", StringComparison.OrdinalIgnoreCase);
+        var isScopeSeries = string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase);
+        var operationId = Guid.NewGuid();
+        var now = _timeProvider.GetUtcNow();
+
+        void EnsureNotOutlook(EventEntity e, Guid calendarId, Guid? bindingId)
+        {
+            if (bindingId != null)
+                throw new DomainException(02009, "Microsoft 日程必须通过确认写回流程删除。");
+        }
+
+        async Task EnsureCalendarNotOutlookBound(Guid calendarId)
+        {
+            var hasBinding = await _db.Set<OutlookCalendarBindingEntity>()
+                .AnyAsync(b => b.PimCalendarId == calendarId, ct);
+            if (hasBinding)
+                throw new DomainException(02009, "Microsoft 日历的日程必须通过确认写回流程删除。");
+        }
+
+        // Pre-check for direct entity
+        EnsureNotOutlook(entity, entity.CalendarId, entity.OutlookCalendarBindingId);
+        await EnsureCalendarNotOutlookBound(entity.CalendarId);
+
+        // If scope=series from exception, also check master binding
+        EventEntity? resolvedMaster = null;
+        if (entity.IsException && isScopeSeries && entity.SeriesMasterId.HasValue)
+        {
+            resolvedMaster = await _db.Set<EventEntity>().IgnoreQueryFilters()
+                .FirstOrDefaultAsync(e => e.Id == entity.SeriesMasterId.Value && e.Calendar.UserId == UserId, ct);
+            if (resolvedMaster != null && resolvedMaster.DeletedAt == null)
+            {
+                EnsureNotOutlook(resolvedMaster, resolvedMaster.CalendarId, resolvedMaster.OutlookCalendarBindingId);
+                await EnsureCalendarNotOutlookBound(resolvedMaster.CalendarId);
+            }
+        }
+        if (entity.IsSeriesMaster && !string.IsNullOrEmpty(normalizedRecurrenceId))
+        {
+            // scope=this path will check master already, but also ensure normalized
+        }
 
         if (isScopeThis)
         {
-            // Delete single occurrence -> create/update CANCELLED exception
-            var recId = recurrenceId;
-            // If recurrenceId not supplied separately, try to infer from entity if it's an exception or from request
+            var recId = normalizedRecurrenceId;
             if (string.IsNullOrEmpty(recId) && entity.IsException)
                 recId = entity.RecurrenceId;
 
@@ -676,18 +727,18 @@ public class CalendarService
             {
                 if (string.IsNullOrEmpty(recId))
                     throw new DomainException(02009, "删除单次需指定 RecurrenceId");
-
                 var existing = await _db.Set<EventEntity>()
                     .FirstOrDefaultAsync(e => e.SeriesMasterId == entity.Id && e.RecurrenceId == recId && e.IsException && e.DeletedAt == null, ct);
                 if (existing != null)
                 {
                     existing.Status = "CANCELLED";
-                    existing.UpdatedAt = _timeProvider.GetUtcNow();
+                    existing.UpdatedAt = now;
                     await _db.SaveChangesAsync(ct);
+                    if (_audit != null)
+                        await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", existing.Id,
+                            new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "cancel-occurrence", ["affectedCount"] = "1" }, ct);
                     return;
                 }
-
-                // Create CANCELLED exception sentinel
                 DateTimeOffset occurrenceStart;
                 if (!DateTimeOffset.TryParse(recId, out occurrenceStart))
                     occurrenceStart = entity.DtStart;
@@ -711,76 +762,91 @@ public class CalendarService
                 };
                 _db.Set<EventEntity>().Add(cancelled);
                 await _db.SaveChangesAsync(ct);
+                if (_audit != null)
+                    await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", cancelled.Id,
+                        new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "cancel-occurrence", ["affectedCount"] = "1" }, ct);
                 return;
             }
 
             if (entity.IsException)
             {
                 entity.Status = "CANCELLED";
-                entity.UpdatedAt = _timeProvider.GetUtcNow();
+                entity.UpdatedAt = now;
                 await _db.SaveChangesAsync(ct);
+                if (_audit != null)
+                    await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", entity.Id,
+                        new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "cancel-occurrence", ["affectedCount"] = "1" }, ct);
                 return;
             }
 
             // Non-series entity with scope=this -> soft delete as fallback
-            entity.DeletedAt = _timeProvider.GetUtcNow();
+            entity.DeletedAt = now;
+            entity.DeletedByOperationId = operationId;
+            entity.DeletedByOperationKind = "single-event";
+            entity.UpdatedAt = now;
             await _db.SaveChangesAsync(ct);
+            if (_audit != null)
+                await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", entity.Id,
+                    new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "single-event", ["affectedCount"] = "1" }, ct);
             return;
         }
 
-        // scope=series or null: soft-delete master/exception cascade
-        var now = _timeProvider.GetUtcNow();
-        var isScopeSeries = string.Equals(scope, "series", StringComparison.OrdinalIgnoreCase);
-        // If target is exception and scope=series, resolve master and cascade delete master + all its exceptions
+        // scope=series or null: soft-delete cascade
+        void MarkDeleted(EventEntity e)
+        {
+            e.DeletedAt = now;
+            e.DeletedByOperationId = operationId;
+            e.DeletedByOperationKind = isScopeSeries ? "series" : (e.IsSeriesMaster ? "series" : "single-event");
+            e.UpdatedAt = now;
+        }
+
         if (entity.IsException && isScopeSeries)
         {
             if (entity.SeriesMasterId.HasValue)
             {
-                var master = await _db.Set<EventEntity>()
+                var master = resolvedMaster ?? await _db.Set<EventEntity>().IgnoreQueryFilters()
                     .FirstOrDefaultAsync(e => e.Id == entity.SeriesMasterId.Value && e.Calendar.UserId == UserId, ct);
-                if (master != null)
+                if (master != null && master.DeletedAt == null)
                 {
-                    master.DeletedAt = now;
-                    master.UpdatedAt = now;
+                    MarkDeleted(master);
                     var exceptions = await _db.Set<EventEntity>()
                         .Where(e => e.SeriesMasterId == master.Id && e.IsException && e.DeletedAt == null)
                         .ToListAsync(ct);
-                    foreach (var ex in exceptions)
-                    {
-                        ex.DeletedAt = now;
-                        ex.UpdatedAt = now;
-                    }
-                    // Also ensure the triggering exception is soft-deleted (covered above if it's in the set, but also explicitly)
-                    entity.DeletedAt = now;
-                    entity.UpdatedAt = now;
+                    foreach (var ex in exceptions) MarkDeleted(ex);
+                    if (entity.DeletedAt == null) MarkDeleted(entity);
                     await _db.SaveChangesAsync(ct);
+                    if (_audit != null)
+                        await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", master.Id,
+                            new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "series", ["affectedCount"] = (1 + exceptions.Count).ToString() }, ct);
                     return;
                 }
             }
-            // Fallback: if master not found, just soft-delete the exception
-            entity.DeletedAt = now;
-            entity.UpdatedAt = now;
+            MarkDeleted(entity);
             await _db.SaveChangesAsync(ct);
+            if (_audit != null)
+                await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", entity.Id,
+                    new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "single-event", ["affectedCount"] = "1" }, ct);
             return;
         }
 
-        entity.DeletedAt = now;
-        entity.UpdatedAt = now;
-
-        // PR3: cascade delete exceptions when deleting a series master
+        MarkDeleted(entity);
         if (entity.IsSeriesMaster)
         {
             var exceptions = await _db.Set<EventEntity>()
                 .Where(e => e.SeriesMasterId == entity.Id && e.IsException && e.DeletedAt == null)
                 .ToListAsync(ct);
-            foreach (var ex in exceptions)
-            {
-                ex.DeletedAt = now;
-                ex.UpdatedAt = now;
-            }
+            foreach (var ex in exceptions) MarkDeleted(ex);
+            await _db.SaveChangesAsync(ct);
+            if (_audit != null)
+                await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", entity.Id,
+                    new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "series", ["affectedCount"] = (1 + exceptions.Count).ToString() }, ct);
+            return;
         }
 
         await _db.SaveChangesAsync(ct);
+        if (_audit != null)
+            await _audit.RecordSuccessAsync(UserId, "calendar.events.delete", "calendar_event", entity.Id,
+                new Dictionary<string, string> { ["operationId"] = operationId.ToString(), ["operationKind"] = "single-event", ["affectedCount"] = "1" }, ct);
     }
 
     public async Task<int> DeleteEventsAsync(IEnumerable<Guid> ids, CancellationToken ct)

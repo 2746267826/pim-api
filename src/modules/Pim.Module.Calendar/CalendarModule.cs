@@ -363,8 +363,27 @@ public class CalendarModule : IModule
             [FromQuery] string? recurrenceId,
             [FromServices] CalendarService svc, CancellationToken ct) =>
         {
-            if (!string.IsNullOrEmpty(recurrenceId) && string.IsNullOrEmpty(req.RecurrenceId))
-                req = req with { RecurrenceId = recurrenceId };
+            string? normalizedRecurrenceId = recurrenceId;
+            if (!string.IsNullOrEmpty(recurrenceId))
+            {
+                if (!DateTimeOffset.TryParse(recurrenceId, out var parsed))
+                    throw new DomainException(02009, "RecurrenceId 格式无效");
+                normalizedRecurrenceId = parsed.ToString("O");
+                if (!string.IsNullOrEmpty(req.RecurrenceId) && !string.Equals(req.RecurrenceId, normalizedRecurrenceId, StringComparison.Ordinal) && !string.Equals(req.RecurrenceId, recurrenceId, StringComparison.Ordinal))
+                    throw new DomainException(02009, "RecurrenceId 与查询参数不一致");
+                if (string.IsNullOrEmpty(req.RecurrenceId))
+                    req = req with { RecurrenceId = normalizedRecurrenceId };
+                else if (!DateTimeOffset.TryParse(req.RecurrenceId, out var bodyParsed))
+                    throw new DomainException(02009, "RecurrenceId 格式无效");
+                else
+                    req = req with { RecurrenceId = bodyParsed.ToString("O") };
+            }
+            else if (!string.IsNullOrEmpty(req.RecurrenceId))
+            {
+                if (!DateTimeOffset.TryParse(req.RecurrenceId, out var bodyParsed2))
+                    throw new DomainException(02009, "RecurrenceId 格式无效");
+                req = req with { RecurrenceId = bodyParsed2.ToString("O") };
+            }
             return Results.Ok(ApiResponse<EventResponse>.Ok(await svc.UpdateEventAsync(id, req, scope, ct)));
         });
 
