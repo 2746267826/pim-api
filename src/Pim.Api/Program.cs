@@ -5,6 +5,7 @@ using Pim.Api.Endpoints;
 using Pim.Api.Infrastructure;
 using Pim.Api.Infrastructure.Ops;
 using Pim.Api.Middleware;
+using Pim.Api.Services;
 using Pim.Api.Search;
 using Pim.Api.Today;
 using Pim.Core.Caching;
@@ -90,6 +91,7 @@ builder.Services.AddScoped<ITodaySectionProvider, PcActivityTodaySectionProvider
 builder.Services.AddScoped<ITodaySectionProvider, PcQualityTodaySectionProvider>();
 builder.Services.AddScoped<ITodaySectionProvider, OperationsHealthTodaySectionProvider>();
 builder.Services.AddScoped<ITodaySectionProvider, ClassificationSuggestionsTodaySectionProvider>();
+builder.Services.AddSingleton<OpsLogsService>();
 
 var app = builder.Build();
 
@@ -131,6 +133,9 @@ catch (Exception ex)
 
 // Health check endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTimeOffset.UtcNow })).AllowAnonymous();
+
+// Ops logs endpoints
+app.MapOpsLogsEndpoints();
 
 // Version endpoint — reads AssemblyInformationalVersion at runtime
 app.MapVersionEndpoints();
