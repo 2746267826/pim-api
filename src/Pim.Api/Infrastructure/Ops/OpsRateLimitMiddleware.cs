@@ -23,9 +23,7 @@ public sealed class OpsRateLimitMiddleware
             return;
         }
 
-        var ip = ctx.Connection.RemoteIpAddress?.ToString()
-            ?? ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
-            ?? "unknown";
+        var ip = OpsIpHelper.GetClientIp(ctx);
 
         if (!_limiter.TryAcquire(ip, 0, out var retryAfter))
         {

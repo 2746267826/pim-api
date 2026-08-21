@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Api.Infrastructure;
+using Pim.Api.Infrastructure.Ops;
 using Pim.Api.Services;
 using Pim.Core.Common;
 using Pim.Core.Operations;
@@ -73,9 +74,7 @@ public static class OpsDbEndpoints
         });
     }
 
-    private static string GetIp(HttpContext ctx) => ctx.Connection.RemoteIpAddress?.ToString()
-        ?? ctx.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
-        ?? "unknown";
+    private static string GetIp(HttpContext ctx) => OpsIpHelper.GetClientIp(ctx);
 
     private static string? GetCorrelation(HttpContext ctx) => ctx.Items[CorrelationIdMiddleware.HeaderName]?.ToString() ?? ctx.TraceIdentifier;
 

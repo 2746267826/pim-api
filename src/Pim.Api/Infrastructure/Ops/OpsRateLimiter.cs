@@ -66,8 +66,7 @@ public sealed class OpsRateLimiter
         {
             if (now - state.WindowStart >= Window)
             {
-                // window expired, start fresh without counting previous request
-                state.Count = 0;
+                state.Count = 1;
                 state.Bytes = bytes;
                 state.WindowStart = now;
                 return;

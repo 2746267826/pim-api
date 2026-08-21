@@ -71,7 +71,6 @@ public sealed class OpsLogsService
             to = t;
         }
 
-        // decode cursor base64(file:offset)
         string? cursorFile = null;
         long cursorOffset = 0;
         if (!string.IsNullOrWhiteSpace(q.Cursor))
@@ -92,14 +91,12 @@ public sealed class OpsLogsService
             catch { throw new DomainException(40002, "InvalidCursor"); }
         }
 
-        // Determine files to scan
         List<string> filesToScan;
         if (q.File != null)
         {
             var p = Path.Combine(_logDir, q.File);
             if (!File.Exists(p)) throw new DomainException(40401, "LogFileNotFound");
             filesToScan = new() { p };
-            // if cursor file differs from query file, ignore cursor
             if (cursorFile != null && cursorFile != q.File) cursorOffset = 0;
         }
         else
@@ -107,7 +104,6 @@ public sealed class OpsLogsService
             if (!Directory.Exists(_logDir)) return new OpsLogsResult(Array.Empty<string>(), false, null);
             var all = Directory.GetFiles(_logDir, "*.jsonl").OrderBy(f => f).ToList();
             filesToScan = all;
-            // if cursor specified, skip files before cursor file
             if (cursorFile != null)
             {
                 var idx = filesToScan.FindIndex(f => Path.GetFileName(f) == cursorFile);
@@ -130,7 +126,6 @@ public sealed class OpsLogsService
             long startOffset = 0;
             if (cursorFile != null && fileName == cursorFile)
                 startOffset = cursorOffset;
-            // subsequent files start at 0, cursor consumed
             var (lines, fileTruncated, nextOffset, newBytes) = await ReadQueryFileAsync(filePath, startOffset, q, from, to, collected.Count, sw, bytes, ct);
             bytes = newBytes;
             foreach (var l in lines)
@@ -139,22 +134,18 @@ public sealed class OpsLogsService
                 collected.Add(l);
             }
             if (fileTruncated) { truncated = true; nextCursor = EncodeCursor(fileName, nextOffset); break; }
-            // if we filled limit and there are more lines, generate cursor
             if (collected.Count >= q.Limit)
             {
-                // check if file has more
                 var remaining = await HasMoreLinesAsync(filePath, nextOffset, q, from, to, ct);
                 if (remaining) nextCursor = EncodeCursor(fileName, nextOffset);
                 else
                 {
-                    // next file
                     var idx = filesToScan.IndexOf(filePath);
                     if (idx + 1 < filesToScan.Count)
                         nextCursor = EncodeCursor(Path.GetFileName(filesToScan[idx + 1]), 0);
                 }
                 break;
             }
-            // prepare for next file: reset cursorFile so next file starts at 0
             cursorFile = null;
             cursorOffset = 0;
             if (sw.Elapsed > MaxDuration) { truncated = true; if (nextCursor == null) nextCursor = EncodeCursor(fileName, nextOffset); break; }
@@ -169,41 +160,126 @@ public sealed class OpsLogsService
         int alreadyCollected, Stopwatch sw, long bytes, CancellationToken ct)
     {
         var result = new List<string>();
-        long offset = startOffset;
         bool truncated = false;
-        long nextOffset = startOffset;
+        long nextOffset;
+        // Use accurate byte tracking via raw file reading
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, true);
-        if (startOffset > 0) fs.Seek(startOffset, SeekOrigin.Begin);
-        using var reader = new StreamReader(fs, Encoding.UTF8);
+        if (startOffset < 0) startOffset = 0;
+        if (startOffset > fs.Length) startOffset = fs.Length;
+        fs.Seek(startOffset, SeekOrigin.Begin);
+
+        long currentOffset = startOffset;
+        nextOffset = startOffset;
+
+        // Buffered raw reader state - accurate byte tracking
+        var buffer = new byte[8192];
+        int bufLen = 0, bufPos = 0;
+        var lineBytes = new List<byte>(1024);
+        long LastLineBytes = 0;
+
+        async Task<string?> ReadLineWrapper()
+        {
+            lineBytes.Clear();
+            long consumed = 0;
+            bool nl = false;
+            while (true)
+            {
+                if (bufPos >= bufLen)
+                {
+                    bufLen = await fs.ReadAsync(buffer, 0, buffer.Length, ct);
+                    bufPos = 0;
+                    if (bufLen == 0)
+                    {
+                        if (lineBytes.Count == 0) return null;
+                        break;
+                    }
+                }
+                byte b = buffer[bufPos++];
+                consumed++;
+                if (b == (byte)'\n')
+                {
+                    nl = true;
+                    break;
+                }
+                lineBytes.Add(b);
+            }
+            if (nl && lineBytes.Count > 0 && lineBytes[lineBytes.Count - 1] == (byte)'\r')
+                lineBytes.RemoveAt(lineBytes.Count - 1);
+            LastLineBytes = consumed;
+            return Encoding.UTF8.GetString(lineBytes.ToArray());
+        }
+
         string? line;
-        while ((line = await reader.ReadLineAsync()) != null)
+        while ((line = await ReadLineWrapper()) != null)
         {
             ct.ThrowIfCancellationRequested();
-            if (sw.Elapsed > MaxDuration) { truncated = true; break; }
-            // track byte length including newline
-            var lineBytes = Encoding.UTF8.GetByteCount(line) + 1;
-            // filters
-            if (!MatchesFilters(line, q.Level, q.Keyword, from, to)) { offset += lineBytes; nextOffset = offset; continue; }
-            if (bytes + lineBytes > MaxBytes) { truncated = true; break; }
-            if (result.Count + alreadyCollected >= q.Limit) break;
-            // check timeout before adding
+            if (sw.Elapsed > MaxDuration) { truncated = true; nextOffset = currentOffset; break; }
+
+            long lineStartOffset = currentOffset;
+            long rawBytes = LastLineBytes;
+            // Advance offset for next iteration (will be used if we continue)
+            // But we need to decide nextOffset based on whether line is matched/added or skipped
+            bool matches = MatchesFilters(line, q.Level, q.Keyword, from, to);
+            if (!matches)
+            {
+                currentOffset += rawBytes;
+                nextOffset = currentOffset;
+                continue;
+            }
+
+            var outBytes = Encoding.UTF8.GetByteCount(line) + 1;
+            if (bytes + outBytes > MaxBytes) { truncated = true; nextOffset = lineStartOffset; break; }
+            if (result.Count + alreadyCollected >= q.Limit) { truncated = false; nextOffset = lineStartOffset; break; }
+
             result.Add(line);
-            bytes += lineBytes;
-            offset += lineBytes;
-            nextOffset = offset;
+            bytes += outBytes;
+            currentOffset += rawBytes;
+            nextOffset = currentOffset;
+
             if (bytes >= MaxBytes) { truncated = true; break; }
+            if (sw.Elapsed > MaxDuration) { truncated = true; break; }
         }
-        // if truncated due to limit, nextOffset already points after last returned line
+
         return (result, truncated, nextOffset, bytes);
     }
 
     private async Task<bool> HasMoreLinesAsync(string path, long offset, OpsLogsQuery q, DateTimeOffset? from, DateTimeOffset? to, CancellationToken ct)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, true);
+        if (offset < 0) offset = 0;
+        if (offset > fs.Length) return false;
         fs.Seek(offset, SeekOrigin.Begin);
-        using var reader = new StreamReader(fs, Encoding.UTF8);
+        // Use same accurate reader for consistency
+        var buffer = new byte[8192];
+        int bufLen = 0, bufPos = 0;
+        var lineBytes = new List<byte>(1024);
+        async Task<string?> ReadNext()
+        {
+            lineBytes.Clear();
+            bool nl = false;
+            while (true)
+            {
+                if (bufPos >= bufLen)
+                {
+                    bufLen = await fs.ReadAsync(buffer, 0, buffer.Length, ct);
+                    bufPos = 0;
+                    if (bufLen == 0)
+                    {
+                        if (lineBytes.Count == 0) return null;
+                        break;
+                    }
+                }
+                byte b = buffer[bufPos++];
+                if (b == (byte)'\n') { nl = true; break; }
+                lineBytes.Add(b);
+            }
+            if (nl && lineBytes.Count > 0 && lineBytes[lineBytes.Count - 1] == (byte)'\r')
+                lineBytes.RemoveAt(lineBytes.Count - 1);
+            return Encoding.UTF8.GetString(lineBytes.ToArray());
+        }
+
         string? line;
-        while ((line = await reader.ReadLineAsync()) != null)
+        while ((line = await ReadNext()) != null)
         {
             if (MatchesFilters(line, q.Level, q.Keyword, from, to)) return true;
         }
@@ -216,41 +292,31 @@ public sealed class OpsLogsService
     private async Task<OpsLogsResult> ReadTailAsync(FileStream fs, int lines, string? level, string? keyword, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
-        long bytes = 0;
-        var allMatching = new List<string>();
+        var queue = new Queue<string>(lines);
         using var reader = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
         string? line;
-        // Read all lines then filter tail - simple but respects truncation
-        var rawLines = new List<string>();
+        bool timedOut = false;
         while ((line = await reader.ReadLineAsync()) != null)
         {
             ct.ThrowIfCancellationRequested();
-            if (sw.Elapsed > MaxDuration) break;
-            rawLines.Add(line);
+            if (sw.Elapsed > MaxDuration) { timedOut = true; break; }
+            if (!MatchesFilters(line, level, keyword, null, null)) continue;
+            if (queue.Count == lines) queue.Dequeue();
+            queue.Enqueue(line);
         }
-        // filter and take tail
-        var filtered = new List<string>();
-        foreach (var l in rawLines)
-        {
-            if (sw.Elapsed > MaxDuration) break;
-            if (!MatchesFilters(l, level, keyword, null, null)) continue;
-            filtered.Add(l);
-        }
-        // take last 'lines' entries
-        var tail = filtered.Count > lines ? filtered.Skip(filtered.Count - lines).ToList() : filtered;
 
-        // apply 5MB/10s truncation on output
+        var tail = queue.ToList();
         var output = new List<string>();
-        bool truncated = false;
+        bool truncated = timedOut;
+        long outBytes = 0;
         foreach (var l in tail)
         {
             if (sw.Elapsed > MaxDuration) { truncated = true; break; }
             var lb = Encoding.UTF8.GetByteCount(l) + 1;
-            if (bytes + lb > MaxBytes) { truncated = true; break; }
+            if (outBytes + lb > MaxBytes) { truncated = true; break; }
             output.Add(l);
-            bytes += lb;
+            outBytes += lb;
         }
-        // Also if rawLines reading was interrupted by timeout, truncated
         if (sw.Elapsed > MaxDuration) truncated = true;
         return new OpsLogsResult(output, truncated);
     }

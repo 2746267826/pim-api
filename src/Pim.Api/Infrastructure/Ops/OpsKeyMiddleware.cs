@@ -42,7 +42,7 @@ public sealed class OpsKeyMiddleware
             return;
         }
 
-        var ip = ctx.Connection.RemoteIpAddress?.ToString();
+        var ip = OpsIpHelper.GetClientIp(ctx);
         if (!validator.IsIpAllowed(ip))
         {
             ctx.Response.StatusCode = 403;
