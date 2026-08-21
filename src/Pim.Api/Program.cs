@@ -92,6 +92,8 @@ builder.Services.AddScoped<ITodaySectionProvider, PcQualityTodaySectionProvider>
 builder.Services.AddScoped<ITodaySectionProvider, OperationsHealthTodaySectionProvider>();
 builder.Services.AddScoped<ITodaySectionProvider, ClassificationSuggestionsTodaySectionProvider>();
 builder.Services.AddSingleton<OpsLogsService>();
+builder.Services.AddSingleton<SqlAstValidator>();
+builder.Services.AddScoped<OpsDbService>();
 
 var app = builder.Build();
 
@@ -134,8 +136,9 @@ catch (Exception ex)
 // Health check endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTimeOffset.UtcNow })).AllowAnonymous();
 
-// Ops logs endpoints
+// Ops endpoints
 app.MapOpsLogsEndpoints();
+app.MapOpsDbEndpoints();
 
 // Version endpoint — reads AssemblyInformationalVersion at runtime
 app.MapVersionEndpoints();
