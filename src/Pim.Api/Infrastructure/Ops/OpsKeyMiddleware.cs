@@ -14,8 +14,7 @@ public sealed class OpsKeyMiddleware
     }
 
     private OpsKeyValidator CreateValidator() => new(
-        _cfg["PIM_OPS_KEY"] ?? _cfg["Ops:Key"],
-        _cfg["PIM_OPS_ALLOWED_CIDRS"] ?? _cfg["Ops:AllowedCidrs"]);
+        _cfg["PIM_OPS_KEY"] ?? _cfg["Ops:Key"]);
 
     public async Task InvokeAsync(HttpContext ctx)
     {
@@ -39,14 +38,6 @@ public sealed class OpsKeyMiddleware
         {
             ctx.Response.StatusCode = 401;
             await ctx.Response.WriteAsJsonAsync(new { code = 40101, message = "OpsKeyMissingOrInvalid" });
-            return;
-        }
-
-        var ip = OpsIpHelper.GetClientIp(ctx);
-        if (!validator.IsIpAllowed(ip))
-        {
-            ctx.Response.StatusCode = 403;
-            await ctx.Response.WriteAsJsonAsync(new { code = 40301, message = "IpNotAllowed" });
             return;
         }
 

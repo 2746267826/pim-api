@@ -12,30 +12,23 @@ public class OpsKeyValidatorTests
     [InlineData("K1", "k1", false)]
     public void Validate_ReturnsExpected(string? provided, string configured, bool expected)
     {
-        var v = new OpsKeyValidator(configured, null);
+        var v = new OpsKeyValidator(configured);
         Assert.Equal(expected, v.IsValid(provided));
     }
 
     [Fact]
-    public void Cidr_Denied_WhenNotInRange()
+    public void NoCidrConfig_AllowsAllIps_Conceptually()
     {
-        var v = new OpsKeyValidator("k1", "10.0.0.0/8");
-        Assert.False(v.IsIpAllowed("192.168.1.1"));
-        Assert.True(v.IsIpAllowed("10.1.2.3"));
-    }
-
-    [Fact]
-    public void Cidr_Empty_AllowsAll()
-    {
-        var v = new OpsKeyValidator("k1", null);
-        Assert.True(v.IsIpAllowed("192.168.1.1"));
-        Assert.True(v.IsIpAllowed("10.1.2.3"));
+        // CIDR 已移除，无 IP 白名单；仅密钥校验生效
+        var v = new OpsKeyValidator("k1");
+        Assert.True(v.IsValid("k1"));
+        Assert.False(v.IsValid("wrong"));
     }
 
     [Fact]
     public void HasKeys_False_WhenEmpty()
     {
-        var v = new OpsKeyValidator(null, null);
+        var v = new OpsKeyValidator(null);
         Assert.False(v.HasKeys);
         Assert.False(v.IsValid("k1"));
     }

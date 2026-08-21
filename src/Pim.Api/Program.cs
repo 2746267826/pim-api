@@ -37,7 +37,6 @@ builder.Services.AddAggregateResultCaching();
 builder.Services.Configure<OpsOptions>(o =>
 {
     o.OpsKey = builder.Configuration["PIM_OPS_KEY"] ?? builder.Configuration["Ops:Key"];
-    o.AllowedCidrs = builder.Configuration["PIM_OPS_ALLOWED_CIDRS"] ?? builder.Configuration["Ops:AllowedCidrs"];
     o.RoConnectionString = builder.Configuration["PIM_OPS_RO_CONNECTION"] ?? builder.Configuration.GetConnectionString("OpsRo");
 });
 builder.Services.AddOptions<OpsOptions>()
@@ -45,7 +44,7 @@ builder.Services.AddOptions<OpsOptions>()
     {
         try
         {
-            _ = new OpsKeyValidator(o.OpsKey, o.AllowedCidrs);
+            _ = new OpsKeyValidator(o.OpsKey);
             return true;
         }
         catch (Microsoft.Extensions.Options.OptionsValidationException)
@@ -101,7 +100,9 @@ var app = builder.Build();
 
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
-    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+    KnownProxies = { System.Net.IPAddress.Parse("127.0.0.1"), System.Net.IPAddress.Parse("::1") },
+    KnownNetworks = { new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("127.0.0.1"), 32), new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("::1"), 128) }
 });
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseSerilogRequestLogging(options =>

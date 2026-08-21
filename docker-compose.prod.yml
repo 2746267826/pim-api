@@ -3,7 +3,7 @@ services:
     image: ghcr.io/2746267826/pim-platform-server:${PIM_IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${PIM_HTTP_PORT:-5858}:5000"
+      - "0.0.0.0:${PIM_HTTP_PORT:-5858}:5000"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5000
@@ -41,7 +41,6 @@ services:
       - Embedding__Dimensions=384
       - PIM_OPS_KEY=${PIM_OPS_KEY}
       - PIM_OPS_RO_CONNECTION=${PIM_OPS_RO_CONNECTION}
-      - PIM_OPS_ALLOWED_CIDRS=${PIM_OPS_ALLOWED_CIDRS:-}
       - PIM_LOG_RETAINED_FILES=${PIM_LOG_RETAINED_FILES:-2}
     volumes:
       - pim_data:/data

@@ -10,7 +10,7 @@ public static class OpsHealthEndpoints
         var g = e.MapGroup("/api/v1/ops");
         g.MapGet("/health", async (IConfiguration cfg, OpsLogsService logsSvc, OpsDbService dbSvc, CancellationToken ct) =>
         {
-            var validator = new OpsKeyValidator(cfg["PIM_OPS_KEY"] ?? cfg["Ops:Key"], cfg["PIM_OPS_ALLOWED_CIDRS"] ?? cfg["Ops:AllowedCidrs"]);
+            var validator = new OpsKeyValidator(cfg["PIM_OPS_KEY"] ?? cfg["Ops:Key"]);
             var opsEnabled = validator.HasKeys;
 
             int tablesCount = 0;

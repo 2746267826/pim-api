@@ -87,14 +87,14 @@ public class OpsEndpointsTests
     }
 
     [Fact]
-    public async Task Ops_CidrBlocked_Returns403()
+    public async Task Ops_WithValidKey_AlwaysSucceeds_NoCidrCheck()
     {
-        using var server = CreateServer(new Dictionary<string, string?> { ["PIM_OPS_KEY"] = "secret", ["PIM_OPS_ALLOWED_CIDRS"] = "10.0.0.0/8" });
+        // CIDR 已移除，无论 RemoteIpAddress 如何均不做 403
+        using var server = CreateServer(new Dictionary<string, string?> { ["PIM_OPS_KEY"] = "secret" });
         var client = server.CreateClient();
         client.DefaultRequestHeaders.Add("X-PIM-Ops-Key", "secret");
         var resp = await client.GetAsync("/api/v1/ops/logs/files");
-        // TestServer RemoteIpAddress is null => IsIpAllowed(null) returns false when CIDR configured => 403
-        Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
     }
 
     [Fact]
