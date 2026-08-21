@@ -6,6 +6,7 @@ using Pim.Api.Endpoints;
 using Pim.Api.Infrastructure;
 using Pim.Api.Infrastructure.Ops;
 using Pim.Api.Middleware;
+using Pim.Api.Modules.ClientShell;
 using Pim.Api.Services;
 using Pim.Api.Search;
 using Pim.Api.Today;
@@ -95,6 +96,7 @@ builder.Services.AddSingleton<OpsLogsService>();
 builder.Services.AddSingleton<SqlAstValidator>();
 builder.Services.AddScoped<OpsDbService>();
 builder.Services.AddSingleton<OpsRateLimiter>();
+builder.Services.AddClientShell(builder.Configuration);
 
 var app = builder.Build();
 
@@ -163,6 +165,7 @@ app.MapEndpointEndpoints();
 app.MapOperationsEndpoints();
 app.MapTodayEndpoints();
 app.MapAiEndpoints();
+app.MapClientShell();
 
 // Module endpoints
 moduleRegistry.MapAllEndpoints(app);
@@ -192,3 +195,5 @@ catch (Exception ex)
 app.MapFallbackToFile("index.html").AllowAnonymous();
 
 app.Run();
+
+public partial class Program { }
