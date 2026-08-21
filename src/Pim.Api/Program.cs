@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Pim.Api;
 using Pim.Api.Endpoints;
 using Pim.Api.Infrastructure;
+using Pim.Api.Infrastructure.Ops;
 using Pim.Api.Middleware;
 using Pim.Api.Search;
 using Pim.Api.Today;
@@ -31,6 +32,12 @@ builder.Host.UseSerilog();
 builder.Services.AddPimInfrastructure(builder.Configuration);
 builder.Services.AddPimAuth();
 builder.Services.AddAggregateResultCaching();
+builder.Services.Configure<OpsOptions>(o =>
+{
+    o.OpsKey = builder.Configuration["PIM_OPS_KEY"] ?? builder.Configuration["Ops:Key"];
+    o.AllowedCidrs = builder.Configuration["PIM_OPS_ALLOWED_CIDRS"] ?? builder.Configuration["Ops:AllowedCidrs"];
+    o.RoConnectionString = builder.Configuration["PIM_OPS_RO_CONNECTION"] ?? builder.Configuration.GetConnectionString("OpsRo");
+});
 
 // HTTP (AddHttpContextAccessor is already called in AddPimInfrastructure)
 builder.Services.AddCors(options =>
@@ -75,6 +82,7 @@ app.UseSerilogRequestLogging(options =>
 });
 app.UseMiddleware<ExceptionMiddleware>();
 app.UseCors();
+app.UseMiddleware<OpsKeyMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseHangfireDashboard("/hangfire", new DashboardOptions
