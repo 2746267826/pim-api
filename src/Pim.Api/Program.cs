@@ -1,9 +1,12 @@
 using Hangfire;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Pim.Api;
 using Pim.Api.Endpoints;
 using Pim.Api.Infrastructure;
+using Pim.Api.Infrastructure.Ops;
 using Pim.Api.Middleware;
+using Pim.Api.Services;
 using Pim.Api.Search;
 using Pim.Api.Today;
 using Pim.Core.Caching;
@@ -31,6 +34,29 @@ builder.Host.UseSerilog();
 builder.Services.AddPimInfrastructure(builder.Configuration);
 builder.Services.AddPimAuth();
 builder.Services.AddAggregateResultCaching();
+builder.Services.Configure<OpsOptions>(o =>
+{
+    o.OpsKey = builder.Configuration["PIM_OPS_KEY"] ?? builder.Configuration["Ops:Key"];
+    o.RoConnectionString = builder.Configuration["PIM_OPS_RO_CONNECTION"] ?? builder.Configuration.GetConnectionString("OpsRo");
+});
+builder.Services.AddOptions<OpsOptions>()
+    .Validate(o =>
+    {
+        try
+        {
+            _ = new OpsKeyValidator(o.OpsKey);
+            return true;
+        }
+        catch (Microsoft.Extensions.Options.OptionsValidationException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new Microsoft.Extensions.Options.OptionsValidationException(nameof(OpsOptions), typeof(OpsOptions), new[] { ex.Message });
+        }
+    })
+    .ValidateOnStart();
 
 // HTTP (AddHttpContextAccessor is already called in AddPimInfrastructure)
 builder.Services.AddCors(options =>
@@ -65,9 +91,19 @@ builder.Services.AddScoped<ITodaySectionProvider, PcActivityTodaySectionProvider
 builder.Services.AddScoped<ITodaySectionProvider, PcQualityTodaySectionProvider>();
 builder.Services.AddScoped<ITodaySectionProvider, OperationsHealthTodaySectionProvider>();
 builder.Services.AddScoped<ITodaySectionProvider, ClassificationSuggestionsTodaySectionProvider>();
+builder.Services.AddSingleton<OpsLogsService>();
+builder.Services.AddSingleton<SqlAstValidator>();
+builder.Services.AddScoped<OpsDbService>();
+builder.Services.AddSingleton<OpsRateLimiter>();
 
 var app = builder.Build();
 
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+    KnownProxies = { System.Net.IPAddress.Parse("127.0.0.1"), System.Net.IPAddress.Parse("::1") },
+    KnownNetworks = { new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("127.0.0.1"), 32), new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("::1"), 128) }
+});
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseSerilogRequestLogging(options =>
 {
@@ -76,6 +112,8 @@ app.UseSerilogRequestLogging(options =>
 app.UseMiddleware<ExceptionMiddleware>();
 app.UseCors();
 app.UseAuthentication();
+app.UseMiddleware<OpsRateLimitMiddleware>();
+app.UseMiddleware<OpsKeyMiddleware>();
 app.UseAuthorization();
 app.UseHangfireDashboard("/hangfire", new DashboardOptions
 {
@@ -105,6 +143,11 @@ catch (Exception ex)
 
 // Health check endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTimeOffset.UtcNow })).AllowAnonymous();
+
+// Ops endpoints
+app.MapOpsLogsEndpoints();
+app.MapOpsDbEndpoints();
+app.MapOpsHealthEndpoints();
 
 // Version endpoint — reads AssemblyInformationalVersion at runtime
 app.MapVersionEndpoints();

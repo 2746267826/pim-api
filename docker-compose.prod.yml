@@ -3,8 +3,7 @@ services:
     image: ghcr.io/2746267826/pim-platform-server:${PIM_IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${PIM_HTTP_PORT:-5858}:5000"
-      - "127.0.0.1:${PIM_SSH_PORT:-2222}:22"
+      - "0.0.0.0:${PIM_HTTP_PORT:-5858}:5000"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5000
@@ -40,13 +39,13 @@ services:
       - Files__MaxInlineTextBytes=1048576
       - Embedding__Provider=hashing
       - Embedding__Dimensions=384
-      - PIM_SSH_AUTHORIZED_KEYS=${PIM_SSH_AUTHORIZED_KEYS}
+      - PIM_OPS_KEY=${PIM_OPS_KEY}
+      - PIM_OPS_RO_CONNECTION=${PIM_OPS_RO_CONNECTION}
       - PIM_LOG_RETAINED_FILES=${PIM_LOG_RETAINED_FILES:-2}
     volumes:
       - pim_data:/data
       - /data/pim/logs:/data/pim/logs
       - /data/keys:/data/keys:ro
-      - pim_ssh_keys:/etc/pim/ssh
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/5000; printf \"GET /health HTTP/1.0\\r\\n\\r\\n\" >&3; grep -q healthy <&3'"]
       interval: 15s
@@ -61,4 +60,3 @@ services:
 
 volumes:
   pim_data:
-  pim_ssh_keys:
