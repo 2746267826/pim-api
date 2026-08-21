@@ -38,6 +38,24 @@ builder.Services.Configure<OpsOptions>(o =>
     o.AllowedCidrs = builder.Configuration["PIM_OPS_ALLOWED_CIDRS"] ?? builder.Configuration["Ops:AllowedCidrs"];
     o.RoConnectionString = builder.Configuration["PIM_OPS_RO_CONNECTION"] ?? builder.Configuration.GetConnectionString("OpsRo");
 });
+builder.Services.AddOptions<OpsOptions>()
+    .Validate(o =>
+    {
+        try
+        {
+            _ = new OpsKeyValidator(o.OpsKey, o.AllowedCidrs);
+            return true;
+        }
+        catch (Microsoft.Extensions.Options.OptionsValidationException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new Microsoft.Extensions.Options.OptionsValidationException(nameof(OpsOptions), typeof(OpsOptions), new[] { ex.Message });
+        }
+    })
+    .ValidateOnStart();
 
 // HTTP (AddHttpContextAccessor is already called in AddPimInfrastructure)
 builder.Services.AddCors(options =>
@@ -82,8 +100,8 @@ app.UseSerilogRequestLogging(options =>
 });
 app.UseMiddleware<ExceptionMiddleware>();
 app.UseCors();
-app.UseMiddleware<OpsKeyMiddleware>();
 app.UseAuthentication();
+app.UseMiddleware<OpsKeyMiddleware>();
 app.UseAuthorization();
 app.UseHangfireDashboard("/hangfire", new DashboardOptions
 {

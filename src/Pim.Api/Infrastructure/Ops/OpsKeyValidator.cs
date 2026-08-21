@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Options;
 
 namespace Pim.Api.Infrastructure.Ops;
 
@@ -45,6 +46,7 @@ public sealed class OpsKeyValidator
     {
         var list = new List<(IPAddress, int)>();
         if (string.IsNullOrWhiteSpace(s)) return list;
+        var failures = new List<string>();
         foreach (var part in s.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var slash = part.IndexOf('/');
@@ -55,16 +57,34 @@ public sealed class OpsKeyValidator
                     var prefix = single.AddressFamily == AddressFamily.InterNetworkV6 ? 128 : 32;
                     list.Add((single, prefix));
                 }
+                else
+                {
+                    failures.Add(part);
+                }
                 continue;
             }
             var ipPart = part[..slash].Trim();
             var prefixPart = part[(slash + 1)..].Trim();
-            if (!IPAddress.TryParse(ipPart, out var net)) continue;
-            if (!int.TryParse(prefixPart, out var parsedPrefix)) continue;
+            if (!IPAddress.TryParse(ipPart, out var net))
+            {
+                failures.Add(part);
+                continue;
+            }
+            if (!int.TryParse(prefixPart, out var parsedPrefix))
+            {
+                failures.Add(part);
+                continue;
+            }
             var maxPrefix = net.AddressFamily == AddressFamily.InterNetworkV6 ? 128 : 32;
-            if (parsedPrefix < 0 || parsedPrefix > maxPrefix) continue;
+            if (parsedPrefix < 0 || parsedPrefix > maxPrefix)
+            {
+                failures.Add(part);
+                continue;
+            }
             list.Add((net, parsedPrefix));
         }
+        if (failures.Count > 0)
+            throw new OptionsValidationException(nameof(OpsOptions), typeof(OpsOptions), new[] { $"Invalid PIM_OPS_ALLOWED_CIDRS entries: {string.Join(", ", failures)}" });
         return list;
     }
 
