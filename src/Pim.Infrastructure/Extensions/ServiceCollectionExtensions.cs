@@ -46,7 +46,7 @@ public static class ServiceCollectionExtensions
         services.AddHangfire(config =>
             config.UsePostgreSqlStorage(options =>
                 options.UseNpgsqlConnection(configuration.GetConnectionString("DefaultConnection"))));
-        if (configuration["DisableHangfire"] != "true")
+        if (!(bool.TryParse(configuration["DisableHangfire"], out var d) && d))
         {
             services.AddHangfireServer();
         }

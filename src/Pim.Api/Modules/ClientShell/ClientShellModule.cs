@@ -6,6 +6,7 @@ public static class ClientShellModule
 {
     public static IServiceCollection AddClientShell(this IServiceCollection services, IConfiguration cfg)
     {
+        // Priority: ClientShell > ShellClient (later Configure wins for overlapping keys)
         services.Configure<ClientShellOptions>(cfg.GetSection("ShellClient"));
         services.Configure<ClientShellOptions>(cfg.GetSection("ClientShell"));
         return services;
