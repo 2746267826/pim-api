@@ -94,6 +94,7 @@ builder.Services.AddScoped<ITodaySectionProvider, ClassificationSuggestionsToday
 builder.Services.AddSingleton<OpsLogsService>();
 builder.Services.AddSingleton<SqlAstValidator>();
 builder.Services.AddScoped<OpsDbService>();
+builder.Services.AddSingleton<OpsRateLimiter>();
 
 var app = builder.Build();
 
@@ -106,6 +107,7 @@ app.UseMiddleware<ExceptionMiddleware>();
 app.UseCors();
 app.UseAuthentication();
 app.UseMiddleware<OpsKeyMiddleware>();
+app.UseMiddleware<OpsRateLimitMiddleware>();
 app.UseAuthorization();
 app.UseHangfireDashboard("/hangfire", new DashboardOptions
 {
@@ -139,6 +141,7 @@ app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = Dat
 // Ops endpoints
 app.MapOpsLogsEndpoints();
 app.MapOpsDbEndpoints();
+app.MapOpsHealthEndpoints();
 
 // Version endpoint — reads AssemblyInformationalVersion at runtime
 app.MapVersionEndpoints();
