@@ -1,0 +1,68 @@
+name: Build Shell Windows
+
+on:
+  workflow_call:
+    inputs:
+      version: { required: true, type: string }
+      version_code: { required: true, type: string }
+      artifact_slug: { required: true, type: string }
+      assembly_version: { required: true, type: string }
+      git_sha_short: { required: true, type: string }
+  workflow_dispatch:
+    inputs:
+      version: { required: false, default: '' }
+      version_code: { required: false, default: '' }
+      artifact_slug: { required: false, default: '' }
+      assembly_version: { required: false, default: '' }
+      git_sha_short: { required: false, default: '' }
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src/client-shell-windows
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0' }
+      - name: Resolve version if needed
+        id: ver
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "version_code=${{ inputs.version_code }}" >> "$GITHUB_OUTPUT"
+            echo "artifact_slug=${{ inputs.artifact_slug }}" >> "$GITHUB_OUTPUT"
+            echo "assembly_version=${{ inputs.assembly_version }}" >> "$GITHUB_OUTPUT"
+            echo "git_sha_short=${{ inputs.git_sha_short }}" >> "$GITHUB_OUTPUT"
+          else
+            bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"
+          fi
+      - name: Shell Windows tests
+        run: dotnet test Pim.Shell.Tests/Pim.Shell.Tests.csproj -c Release
+      - name: Publish (restore + build + publish in one step)
+        run: |
+          dotnet publish Pim.Shell.App/Pim.Shell.App.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:InformationalVersion=${{ steps.ver.outputs.version }} `
+            -p:Version=${{ steps.ver.outputs.assembly_version }} `
+            -p:FileVersion=${{ steps.ver.outputs.assembly_version }} `
+            -o publish/
+      - name: Write version file for reference
+        shell: bash
+        run: echo "${{ steps.ver.outputs.version }}" > publish/VERSION
+      - name: Package Shell Windows build
+        shell: pwsh
+        run: Compress-Archive -Path publish/* -DestinationPath pim-shell-windows-v${{ steps.ver.outputs.artifact_slug }}.zip
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: pim-shell-windows-v${{ steps.ver.outputs.artifact_slug }}
+          path: src/client-shell-windows/pim-shell-windows-v${{ steps.ver.outputs.artifact_slug }}.zip
