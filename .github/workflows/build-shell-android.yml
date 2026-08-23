@@ -1,0 +1,115 @@
+name: Build Shell Android APK
+
+on:
+  workflow_call:
+    inputs:
+      version: { required: true, type: string }
+      version_code: { required: true, type: string }
+      artifact_slug: { required: true, type: string }
+      assembly_version: { required: true, type: string }
+      git_sha_short: { required: true, type: string }
+  workflow_dispatch:
+    inputs:
+      version: { required: false, default: '' }
+      version_code: { required: false, default: '' }
+      artifact_slug: { required: false, default: '' }
+      assembly_version: { required: false, default: '' }
+      git_sha_short: { required: false, default: '' }
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/client-shell-android
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Resolve version if needed
+        id: ver
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "version_code=${{ inputs.version_code }}" >> "$GITHUB_OUTPUT"
+            echo "artifact_slug=${{ inputs.artifact_slug }}" >> "$GITHUB_OUTPUT"
+            echo "assembly_version=${{ inputs.assembly_version }}" >> "$GITHUB_OUTPUT"
+            echo "git_sha_short=${{ inputs.git_sha_short }}" >> "$GITHUB_OUTPUT"
+          else
+            bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"
+          fi
+      - uses: actions/setup-java@v4
+        with: { distribution: 'temurin', java-version: '21' }
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages (if missing)
+        run: |
+          if [ ! -d "$ANDROID_HOME/platforms/android-36.1" ]; then
+            sdkmanager "platforms;android-36.1" "build-tools;36.1.0"
+          fi
+      - uses: gradle/actions/setup-gradle@v3
+      - name: Set CI version env
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "CI_APP_VERSION=${{ steps.ver.outputs.version }}" >> "$GITHUB_ENV"
+          echo "CI_VERSION_CODE=${{ steps.ver.outputs.version_code }}" >> "$GITHUB_ENV"
+          echo "VERSION_FILE=${{ steps.ver.outputs.artifact_slug }}" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=${{ steps.ver.outputs.version_code }}" >> "$GITHUB_ENV"
+      - name: Decode Shell Android signing key
+        env:
+          SHELL_ANDROID_KEYSTORE_BASE64: ${{ secrets.SHELL_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "${SHELL_ANDROID_KEYSTORE_BASE64:-}" ]; then
+            echo "::error::SHELL_ANDROID_KEYSTORE_BASE64 secret is not set."
+            exit 1
+          fi
+          SIGNING_DIR="$RUNNER_TEMP/android-shell-signing"
+          mkdir -p "$SIGNING_DIR"
+          printf '%s' "$SHELL_ANDROID_KEYSTORE_BASE64" | tr -d '\r\n[:space:]' | base64 --decode > "$SIGNING_DIR/pim-shell-ci.jks"
+          echo "ANDROID_KEYSTORE_FILE=$SIGNING_DIR/pim-shell-ci.jks" >> "$GITHUB_ENV"
+      - name: Generate gradlew wrapper
+        run: |
+          TMPDIR=$(mktemp -d)
+          cd "$TMPDIR"
+          touch settings.gradle
+          gradle wrapper --gradle-version 8.14
+          cp gradlew gradlew.bat "$OLDPWD/"
+          mkdir -p "$OLDPWD/gradle/wrapper"
+          cp gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties "$OLDPWD/gradle/wrapper/"
+          chmod +x "$OLDPWD/gradlew"
+          rm -rf "$TMPDIR"
+      - name: Unit tests & build release (parallel)
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.SHELL_ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.SHELL_ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.SHELL_ANDROID_KEY_PASSWORD }}
+        run: |
+          for name in ANDROID_KEYSTORE_FILE ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then echo "::error::$name is not set."; exit 1; fi
+          done
+          ./gradlew :app:testDebugUnitTest --no-daemon &
+          PID1=$!
+          ./gradlew assembleRelease --no-daemon &
+          PID2=$!
+          STATUS=0
+          wait $PID1 || STATUS=$?
+          wait $PID2 || STATUS=$?
+          exit $STATUS
+      - name: Stage APK
+        run: |
+          mkdir -p build/artifacts
+          cp app/build/outputs/apk/release/app-release.apk \
+            "build/artifacts/pim-shell-android-v${{ steps.ver.outputs.artifact_slug }}-vc${{ steps.ver.outputs.version_code }}.apk"
+      - name: Log signing cert fingerprint
+        working-directory: src/client-shell-android
+        run: |
+          APK=$(ls build/artifacts/*.apk | head -n1)
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ 2>/dev/null | sort -V | tail -n1)
+          if [ -z "$BT" ]; then echo "::warning::build-tools not found; skip apksigner"; exit 0; fi
+          "${BT}apksigner" verify --print-certs "$APK" | tee build/artifacts/signing-certs.txt
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: pim-shell-android-v${{ steps.ver.outputs.artifact_slug }}-vc${{ steps.ver.outputs.version_code }}
+          path: src/client-shell-android/build/artifacts/*
