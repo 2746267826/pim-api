@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Http.Headers;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Pim.Api.Services;
@@ -29,7 +28,7 @@ public sealed class GitHubReleaseServiceTests
                 Headers = { ETag = new EntityTagHeaderValue("\"abc\"") }
             };
         });
-        var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions { Repo = "2746267826/pim-platform" }), new MemoryCache(new MemoryCacheOptions()), NullLogger<GitHubReleaseService>.Instance);
+        var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions { Repo = "2746267826/pim-platform" }), NullLogger<GitHubReleaseService>.Instance);
         var result = await svc.RefreshAsync(CancellationToken.None);
         Assert.Equal("2026.08.212", result.LatestVersion);
         Assert.Contains("pim-windows", result.WindowsUrl);
@@ -43,7 +42,7 @@ public sealed class GitHubReleaseServiceTests
     public async Task FetchAsync_SetsErrorOnFailure_AndEndpointExposesError()
     {
         var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.Forbidden));
-        var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), new MemoryCache(new MemoryCacheOptions()), NullLogger<GitHubReleaseService>.Instance);
+        var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), NullLogger<GitHubReleaseService>.Instance);
         var r = await svc.RefreshAsync(CancellationToken.None);
         Assert.NotNull(r.Error);
         Assert.NotNull(r.CheckedAt);
@@ -56,7 +55,7 @@ public sealed class GitHubReleaseServiceTests
         {
             Content = new StringContent("{\"tag_name\":\"v2026.08.213\",\"assets\":[{\"name\":\"pim-windows-v2026.08.213.zip\",\"browser_download_url\":\"https://evil.com/pim-windows-v2026.08.213.zip\"},{\"name\":\"pim-android-v2026.08.213.apk\",\"browser_download_url\":\"https://github.com/2746267826/pim-platform/releases/download/v2026.08.213/pim-android-v2026.08.213.apk\"}]}")
         });
-        var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), new MemoryCache(new MemoryCacheOptions()), NullLogger<GitHubReleaseService>.Instance);
+        var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), NullLogger<GitHubReleaseService>.Instance);
         var r = await svc.RefreshAsync(CancellationToken.None);
         Assert.Null(r.WindowsUrl);
         Assert.Contains("pim-android", r.AndroidUrl);
@@ -80,7 +79,7 @@ public sealed class GitHubReleaseServiceTests
             Assert.True(req.Headers.IfNoneMatch.Count > 0);
             return new HttpResponseMessage(HttpStatusCode.NotModified);
         });
-        var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), new MemoryCache(new MemoryCacheOptions()), NullLogger<GitHubReleaseService>.Instance);
+        var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), NullLogger<GitHubReleaseService>.Instance);
         var first = await svc.RefreshAsync(CancellationToken.None);
         var firstChecked = first.CheckedAt;
         await Task.Delay(10);
@@ -97,7 +96,7 @@ public sealed class GitHubReleaseServiceTests
         {
             Content = new StringContent("{\"tag_name\":\"2026.08.214\",\"assets\":[]}")
         });
-        var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), new MemoryCache(new MemoryCacheOptions()), NullLogger<GitHubReleaseService>.Instance);
+        var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), NullLogger<GitHubReleaseService>.Instance);
         var r = await svc.RefreshAsync(CancellationToken.None);
         Assert.Equal("2026.08.214", r.LatestVersion);
     }

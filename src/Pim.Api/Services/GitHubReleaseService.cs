@@ -27,10 +27,6 @@ public class GitHubReleaseService : IHostedService, IDisposable
         _log = log;
     }
 
-    // Backward-compatible overload for existing tests that pass IMemoryCache (now unused)
-    public GitHubReleaseService(HttpClient http, IOptions<GitHubReleaseOptions> opts, Microsoft.Extensions.Caching.Memory.IMemoryCache _, ILogger<GitHubReleaseService> log)
-        : this(http, opts, log) { }
-
     public Task StartAsync(CancellationToken ct)
     {
         _ = RefreshAsync(ct);

@@ -33,7 +33,7 @@ public sealed class VersionEndpointTests
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
-        builder.Services.AddSingleton(new GitHubReleaseService(new HttpClient(new FakeHandler(_ => new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("{}") })), Options.Create(new GitHubReleaseOptions()), new MemoryCache(new MemoryCacheOptions()), NullLogger<GitHubReleaseService>.Instance));
+        builder.Services.AddSingleton(new GitHubReleaseService(new HttpClient(new FakeHandler(_ => new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("{}") })), Options.Create(new GitHubReleaseOptions()), NullLogger<GitHubReleaseService>.Instance));
         await using var app = builder.Build();
         app.MapVersionEndpoints();
         await app.StartAsync();
@@ -55,7 +55,7 @@ public sealed class VersionEndpointTests
             Content = new StringContent("{\"tag_name\":\"v2026.08.212\",\"assets\":[{\"name\":\"pim-windows-v2026.08.212.zip\",\"browser_download_url\":\"https://github.com/2746267826/pim-platform/releases/download/v2026.08.212/pim-windows-v2026.08.212.zip\"}]}"),
             Headers = { ETag = new EntityTagHeaderValue("\"abc\"") }
         });
-        var gh = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions { Repo = "2746267826/pim-platform" }), new MemoryCache(new MemoryCacheOptions()), NullLogger<GitHubReleaseService>.Instance);
+        var gh = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions { Repo = "2746267826/pim-platform" }), NullLogger<GitHubReleaseService>.Instance);
         await gh.RefreshAsync(CancellationToken.None);
 
         var builder = WebApplication.CreateBuilder();
@@ -75,7 +75,7 @@ public sealed class VersionEndpointTests
     public async Task MapVersionEndpoints_ExposesErrorWhenFetchFailed()
     {
         var handler = new FakeHandler(_ => new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.Forbidden));
-        var gh = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), new MemoryCache(new MemoryCacheOptions()), NullLogger<GitHubReleaseService>.Instance);
+        var gh = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), NullLogger<GitHubReleaseService>.Instance);
         await gh.RefreshAsync(CancellationToken.None);
 
         var builder = WebApplication.CreateBuilder();
