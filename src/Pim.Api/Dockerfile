@@ -6,6 +6,8 @@ COPY src/client-web .
 RUN npx vite build --outDir /dist
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS server-build
+ARG PIM_VERSION=0.0.0-local
+ARG ASSEMBLY_VERSION=0.0.0.0
 WORKDIR /src
 COPY ["src/Pim.Core/Pim.Core.csproj", "Pim.Core/"]
 COPY ["src/Pim.Infrastructure/Pim.Infrastructure.csproj", "Pim.Infrastructure/"]
@@ -19,7 +21,8 @@ RUN dotnet restore "Pim.Api/Pim.Api.csproj"
 COPY . .
 COPY --from=client-build /dist/ src/Pim.Api/wwwroot/
 WORKDIR "/src/src/Pim.Api"
-RUN dotnet publish "Pim.Api.csproj" -c Release -o /app/publish
+RUN dotnet publish "Pim.Api.csproj" -c Release -o /app/publish \
+  -p:InformationalVersion="$PIM_VERSION" -p:Version="$ASSEMBLY_VERSION" -p:FileVersion="$ASSEMBLY_VERSION"
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app

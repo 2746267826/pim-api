@@ -1,6 +1,8 @@
+using Pim.Api.Services;
+
 namespace Pim.Api.Endpoints;
 
-public sealed record ApiVersionResponse(string Version, IReadOnlyList<string> Capabilities);
+public sealed record ApiVersionResponse(string Version, IReadOnlyList<string> Capabilities, string? LatestVersion, DateTimeOffset? CheckedAt, string? Error);
 
 public static class VersionEndpoints
 {
@@ -10,13 +12,14 @@ public static class VersionEndpoints
 
     public static IEndpointRouteBuilder MapVersionEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapGet("/api/version", () =>
+        endpoints.MapGet("/api/version", (GitHubReleaseService gh) =>
         {
             var version = typeof(Program).Assembly
                 .GetCustomAttributes(false)
                 .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
                 .FirstOrDefault()?.InformationalVersion ?? "0.0.0(unknown)";
-            return Results.Ok(new ApiVersionResponse(version, Capabilities));
+            var snap = gh.Snapshot;
+            return Results.Ok(new ApiVersionResponse(version, Capabilities, snap.LatestVersion, snap.CheckedAt, snap.Error));
         }).AllowAnonymous();
         return endpoints;
     }

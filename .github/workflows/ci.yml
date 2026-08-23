@@ -242,6 +242,7 @@ jobs:
       artifact_slug: ${{ needs.resolve-version.outputs.artifact_slug }}
       git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
       is_release: ${{ needs.resolve-version.outputs.is_release }}
+      assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
 
   summarize:
     needs: [resolve-version, changes, build-api, build-web, build-windows, build-android, build-docker, build-shell-windows, build-shell-android]

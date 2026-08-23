@@ -74,7 +74,7 @@ jobs:
             --configuration Release `
             --filter "FullyQualifiedName~WindowsCompanionShellTests|FullyQualifiedName~WindowsNotificationActionRouterTests|FullyQualifiedName~ApiClientDefaultsTests|FullyQualifiedName~KeyStats|FullyQualifiedName~WindowsStatusCenterTests"
 
-      - name: Publish (restore + build + publish in one step)
+      - name: Publish Daemon
         run: |
           dotnet publish Pim.Client.App/Pim.Client.App.csproj `
             -c Release `
@@ -83,6 +83,17 @@ jobs:
             --self-contained true `
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:InformationalVersion=${{ steps.ver.outputs.version }} `
+            -p:Version=${{ steps.ver.outputs.assembly_version }} `
+            -p:FileVersion=${{ steps.ver.outputs.assembly_version }}
+
+      - name: Publish Shell
+        run: |
+          dotnet publish ../../src/client-shell-windows/Pim.Shell.App/Pim.Shell.App.csproj `
+            -c Release `
+            -o publish/ `
+            -r win-x64 `
+            --self-contained true `
             -p:InformationalVersion=${{ steps.ver.outputs.version }} `
             -p:Version=${{ steps.ver.outputs.assembly_version }} `
             -p:FileVersion=${{ steps.ver.outputs.assembly_version }}

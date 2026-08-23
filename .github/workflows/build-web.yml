@@ -83,6 +83,7 @@ jobs:
         run: npm run build
         env:
           VITE_APP_VERSION: ${{ steps.ver.outputs.version }}
+          VITE_GIT_SHA: ${{ steps.ver.outputs.git_sha_short }}
 
       - name: Package web build
         run: tar -czf pim-web-v${{ steps.ver.outputs.artifact_slug }}.tar.gz -C ../Pim.Api/wwwroot .
