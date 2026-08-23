@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using Pim.Api.Services;
 
 namespace Pim.Api.Modules.ClientShell;
 
@@ -14,10 +15,12 @@ public static class ClientShellModule
 
     public static IEndpointRouteBuilder MapClientShell(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/client/shell/latest", (IOptions<ClientShellOptions> opts) =>
+        app.MapGet("/api/client/shell/latest", (IOptions<ClientShellOptions> opts, GitHubReleaseService gh) =>
         {
+            var snap = gh.Snapshot;
+            if (snap.LatestVersion != null) return Results.Ok(new { windowsVersion = snap.LatestVersion, windowsUrl = snap.WindowsUrl, androidVersion = snap.LatestVersion, androidUrl = snap.AndroidUrl, checkedAt = snap.CheckedAt, error = snap.Error });
             var o = opts.Value;
-            return Results.Ok(new { windowsVersion = o.WindowsVersion, windowsUrl = o.WindowsUrl, androidVersion = o.AndroidVersion, androidUrl = o.AndroidUrl });
+            return Results.Ok(new { windowsVersion = o.WindowsVersion, windowsUrl = o.WindowsUrl, androidVersion = o.AndroidVersion, androidUrl = o.AndroidUrl, checkedAt = snap.CheckedAt, error = snap.Error });
         }).AllowAnonymous();
         return app;
     }

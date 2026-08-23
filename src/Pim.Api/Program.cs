@@ -97,6 +97,15 @@ builder.Services.AddSingleton<SqlAstValidator>();
 builder.Services.AddScoped<OpsDbService>();
 builder.Services.AddSingleton<OpsRateLimiter>();
 builder.Services.AddClientShell(builder.Configuration);
+builder.Services.AddMemoryCache();
+builder.Services.Configure<GitHubReleaseOptions>(o =>
+{
+    o.Repo = builder.Configuration["GitHub:Repo"] ?? "2746267826/pim-platform";
+    o.Token = builder.Configuration["GITHUB_TOKEN"] ?? builder.Configuration["GitHub:Token"];
+});
+builder.Services.AddHttpClient<GitHubReleaseService>();
+builder.Services.AddSingleton<GitHubReleaseService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<GitHubReleaseService>());
 
 var app = builder.Build();
 
