@@ -75,6 +75,9 @@ jobs:
             ${{ env.IMAGE }}:latest
           cache-from: type=gha,scope=pim-server
           cache-to: type=gha,mode=max,scope=pim-server
+          build-args: |
+            PIM_VERSION=v${{ steps.ver.outputs.version }}
+            ASSEMBLY_VERSION=${{ steps.ver.outputs.assembly_version }}
 
       - name: Smoke test
         run: |

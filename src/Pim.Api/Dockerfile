@@ -15,11 +15,14 @@ COPY ["src/modules/Pim.Module.PcTracker/Pim.Module.PcTracker.csproj", "modules/P
 COPY ["src/modules/Pim.Module.Files/Pim.Module.Files.csproj", "modules/Pim.Module.Files/"]
 COPY ["src/modules/Pim.Module.QuickNotes/Pim.Module.QuickNotes.csproj", "modules/Pim.Module.QuickNotes/"]
 COPY ["src/modules/Pim.Module.Mobile/Pim.Module.Mobile.csproj", "modules/Pim.Module.Mobile/"]
+ARG PIM_VERSION=0.0.0-local
+ARG ASSEMBLY_VERSION=0.0.0.0
 RUN dotnet restore "Pim.Api/Pim.Api.csproj"
 COPY . .
 COPY --from=client-build /dist/ src/Pim.Api/wwwroot/
 WORKDIR "/src/src/Pim.Api"
-RUN dotnet publish "Pim.Api.csproj" -c Release -o /app/publish
+RUN dotnet publish "Pim.Api.csproj" -c Release -o /app/publish \
+  -p:InformationalVersion=$PIM_VERSION -p:Version=$ASSEMBLY_VERSION -p:FileVersion=$ASSEMBLY_VERSION
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
