@@ -37,6 +37,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\src\client-windows\Pim.Client.App\UpdateChecker.cs" Link="ClientWindows\UpdateChecker.cs" />
+    <Compile Include="..\..\src\client-windows\Pim.Client.App\TrayIcon.BuildMenu.cs" Link="ClientWindows\TrayIcon.BuildMenu.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="Calendar\Fixtures\graph-event-pr2.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
