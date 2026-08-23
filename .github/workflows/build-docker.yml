@@ -15,6 +15,9 @@ on:
       is_release:
         required: true
         type: string
+      assembly_version:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       version:
@@ -32,6 +35,10 @@ on:
       is_release:
         required: false
         default: 'false'
+        type: string
+      assembly_version:
+        required: false
+        default: ''
         type: string
 
 env:
@@ -57,6 +64,7 @@ jobs:
             echo "artifact_slug=${{ inputs.artifact_slug }}" >> "$GITHUB_OUTPUT"
             echo "git_sha_short=${{ inputs.git_sha_short }}" >> "$GITHUB_OUTPUT"
             echo "is_release=${{ inputs.is_release }}" >> "$GITHUB_OUTPUT"
+            echo "assembly_version=${{ inputs.assembly_version }}" >> "$GITHUB_OUTPUT"
           else
             bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"
           fi
@@ -76,7 +84,7 @@ jobs:
           cache-from: type=gha,scope=pim-server
           cache-to: type=gha,mode=max,scope=pim-server
           build-args: |
-            PIM_VERSION=v${{ steps.ver.outputs.version }}
+            PIM_VERSION=${{ steps.ver.outputs.version }}
             ASSEMBLY_VERSION=${{ steps.ver.outputs.assembly_version }}
 
       - name: Smoke test
