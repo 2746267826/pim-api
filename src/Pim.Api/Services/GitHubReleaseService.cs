@@ -51,30 +51,45 @@ public class GitHubReleaseService : IHostedService, IDisposable
     public Task StopAsync(CancellationToken ct)
     {
         _timer?.Dispose();
+        _timer = null;
+        try { _gate.Dispose(); } catch (ObjectDisposedException) { }
         return Task.CompletedTask;
     }
 
     public void Dispose()
     {
         _timer?.Dispose();
-        _gate.Dispose();
+        _timer = null;
+        try { _gate.Dispose(); } catch (ObjectDisposedException) { }
     }
 
     public async Task<GitHubReleaseSnapshot> RefreshAsync(CancellationToken ct)
     {
-        // Prevent overlapping executions
-        if (!await _gate.WaitAsync(0, ct))
-        {
-            _log.LogInformation("GitHub release refresh skipped due to overlapping execution");
-            return _snapshot;
-        }
+        // Prevent overlapping executions; handle disposal race during shutdown
+        bool entered = false;
         try
         {
+            try
+            {
+                entered = await _gate.WaitAsync(0, ct);
+            }
+            catch (ObjectDisposedException)
+            {
+                return _snapshot;
+            }
+            if (!entered)
+            {
+                _log.LogInformation("GitHub release refresh skipped due to overlapping execution");
+                return _snapshot;
+            }
             return await RefreshCoreAsync(ct);
         }
         finally
         {
-            _gate.Release();
+            if (entered)
+            {
+                try { _gate.Release(); } catch (ObjectDisposedException) { }
+            }
         }
     }
 
@@ -110,6 +125,10 @@ public class GitHubReleaseService : IHostedService, IDisposable
             var etag = resp.Headers.ETag?.Tag;
             _snapshot = new(tag, win, and, DateTimeOffset.UtcNow, null, etag);
             _log.LogInformation("GitHub release refreshed latest={Latest} checkedAt={CheckedAt} duration={Ms}ms", tag, _snapshot.CheckedAt, sw.ElapsedMilliseconds);
+            return _snapshot;
+        }
+        catch (ObjectDisposedException)
+        {
             return _snapshot;
         }
         catch (Exception ex)

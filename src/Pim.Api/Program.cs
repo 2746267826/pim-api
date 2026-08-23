@@ -103,8 +103,11 @@ builder.Services.Configure<GitHubReleaseOptions>(o =>
     o.Repo = builder.Configuration["GitHub:Repo"] ?? "2746267826/pim-platform";
     o.Token = builder.Configuration["GITHUB_TOKEN"] ?? builder.Configuration["GitHub:Token"];
 });
-builder.Services.AddHttpClient<GitHubReleaseService>();
-builder.Services.AddSingleton(sp => sp.GetRequiredService<GitHubReleaseService>());
+builder.Services.AddHttpClient("GitHubRelease");
+builder.Services.AddSingleton<GitHubReleaseService>(sp => new GitHubReleaseService(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient("GitHubRelease"),
+    sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GitHubReleaseOptions>>(),
+    sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<GitHubReleaseService>>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<GitHubReleaseService>());
 
 var app = builder.Build();
