@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -14,25 +13,38 @@ public class GitHubReleaseService : IHostedService, IDisposable
 {
     private readonly HttpClient _http;
     private readonly GitHubReleaseOptions _opts;
-    private readonly IMemoryCache _cache;
     private readonly ILogger<GitHubReleaseService> _log;
-    private GitHubReleaseSnapshot _snapshot = new(null, null, null, null, null, null);
+    private volatile GitHubReleaseSnapshot _snapshot = new(null, null, null, null, null, null);
     private Timer? _timer;
+    private readonly SemaphoreSlim _gate = new(1, 1);
 
     public GitHubReleaseSnapshot Snapshot => _snapshot;
 
-    public GitHubReleaseService(HttpClient http, IOptions<GitHubReleaseOptions> opts, IMemoryCache cache, ILogger<GitHubReleaseService> log)
+    public GitHubReleaseService(HttpClient http, IOptions<GitHubReleaseOptions> opts, ILogger<GitHubReleaseService> log)
     {
         _http = http;
         _opts = opts.Value;
-        _cache = cache;
         _log = log;
     }
+
+    // Backward-compatible overload for existing tests that pass IMemoryCache (now unused)
+    public GitHubReleaseService(HttpClient http, IOptions<GitHubReleaseOptions> opts, Microsoft.Extensions.Caching.Memory.IMemoryCache _, ILogger<GitHubReleaseService> log)
+        : this(http, opts, log) { }
 
     public Task StartAsync(CancellationToken ct)
     {
         _ = RefreshAsync(ct);
-        _timer = new Timer(async _ => await RefreshAsync(CancellationToken.None), null, _opts.PollInterval, _opts.PollInterval);
+        _timer = new Timer(async _ =>
+        {
+            try
+            {
+                await RefreshAsync(CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "GitHub release timer refresh failed");
+            }
+        }, null, _opts.PollInterval, _opts.PollInterval);
         return Task.CompletedTask;
     }
 
@@ -42,9 +54,31 @@ public class GitHubReleaseService : IHostedService, IDisposable
         return Task.CompletedTask;
     }
 
-    public void Dispose() => _timer?.Dispose();
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        _gate.Dispose();
+    }
 
     public async Task<GitHubReleaseSnapshot> RefreshAsync(CancellationToken ct)
+    {
+        // Prevent overlapping executions
+        if (!await _gate.WaitAsync(0, ct))
+        {
+            _log.LogInformation("GitHub release refresh skipped due to overlapping execution");
+            return _snapshot;
+        }
+        try
+        {
+            return await RefreshCoreAsync(ct);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task<GitHubReleaseSnapshot> RefreshCoreAsync(CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
         try
@@ -70,8 +104,8 @@ public class GitHubReleaseService : IHostedService, IDisposable
                 var name = a.GetProperty("name").GetString();
                 var url = a.GetProperty("browser_download_url").GetString();
                 if (url != null && !url.StartsWith("https://github.com/2746267826/pim-platform/releases/download/")) continue;
-                if (name?.StartsWith("pim-windows-") == true) win = url;
-                if (name?.StartsWith("pim-android-") == true) and = url;
+                if (name?.StartsWith("pim-windows-") == true && name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) win = url;
+                if (name?.StartsWith("pim-android-") == true && name.EndsWith(".apk", StringComparison.OrdinalIgnoreCase)) and = url;
             }
             var etag = resp.Headers.ETag?.Tag;
             _snapshot = new(tag, win, and, DateTimeOffset.UtcNow, null, etag);

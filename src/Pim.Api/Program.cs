@@ -104,7 +104,7 @@ builder.Services.Configure<GitHubReleaseOptions>(o =>
     o.Token = builder.Configuration["GITHUB_TOKEN"] ?? builder.Configuration["GitHub:Token"];
 });
 builder.Services.AddHttpClient<GitHubReleaseService>();
-builder.Services.AddSingleton<GitHubReleaseService>();
+builder.Services.AddSingleton(sp => sp.GetRequiredService<GitHubReleaseService>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<GitHubReleaseService>());
 
 var app = builder.Build();
