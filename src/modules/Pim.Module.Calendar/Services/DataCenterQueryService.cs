@@ -43,7 +43,7 @@ public sealed class DataCenterQueryService
         var filterSource = request.Source?.Trim();
         bool ShouldInclude(string type) => string.IsNullOrWhiteSpace(filterType) || string.Equals(filterType, type, StringComparison.OrdinalIgnoreCase);
 
-        // Fast path: single ObjectType → DB 级分页，避免全量加载
+        // Fast path: single ObjectType → DB-level pagination to avoid full load
         if (!string.IsNullOrWhiteSpace(filterType))
         {
             var single = await QuerySingleTypeAsync(userId, filterType!, searchTerm, filterSource, request, page, pageSize, ct);
@@ -182,7 +182,7 @@ public sealed class DataCenterQueryService
 
     private async Task<DataCenterQueryResponse?> QuerySingleTypeAsync(Guid userId, string filterType, string? searchTerm, string? filterSource, DataCenterQueryRequest request, int page, int pageSize, CancellationToken ct)
     {
-        // 为最常见的单类型查询提供真正的 DB 级分页，避免全量
+        // 为最常见的单类型查询提供真正的 DB pagination，避免全量
         switch (filterType)
         {
             case "event":

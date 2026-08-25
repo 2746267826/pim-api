@@ -94,7 +94,7 @@ public sealed class AuditVersionService
         CancellationToken ct = default)
     {
         if (end < start) (start, end) = (end, start);
-        // 限制导出范围与条数，防止 OOM：大范围仍允许但仅返回最近 5000 条
+        // Limit export range and count to prevent OOM: large range allowed but only latest 5000 returned
         const int maxExport = 5000;
         // 返回最近的 maxExport 条，按时间升序返回
         var itemsDesc = await _db.AuditVersions
