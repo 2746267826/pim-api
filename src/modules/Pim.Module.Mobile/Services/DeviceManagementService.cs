@@ -36,14 +36,17 @@ public sealed class DeviceManagementService
         var evtMap = evtCounts.ToDictionary(x => x.DeviceId, x => x.Count);
         var locMap = locCounts.ToDictionary(x => x.DeviceId, x => x.Count);
         var sumMap = sumCounts.ToDictionary(x => x.DeviceId, x => x.Count);
-        // anomalous & ranges per device still loop but cheap (6 queries total now)
+        // also batch anomalous/earliest/latest
+        var anomalousMap = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && deviceIds.Contains(s.DeviceId) && s.DurationMs > 8L * 60 * 60 * 1000).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Count = g.Count() }).ToListAsync(ct);
+        var аномDict = anomalousMap.ToDictionary(x => x.DeviceId, x => x.Count);
+        var earliestMap = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && deviceIds.Contains(s.DeviceId)).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Earliest = g.Min(x => x.StartUtc) }).ToListAsync(ct);
+        var latestMap = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && deviceIds.Contains(s.DeviceId)).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Latest = g.Max(x => x.StartUtc) }).ToListAsync(ct);
+        var earlyDict = earliestMap.ToDictionary(x => x.DeviceId, x => (DateTimeOffset?)x.Earliest);
+        var lateDict = latestMap.ToDictionary(x => x.DeviceId, x => (DateTimeOffset?)x.Latest);
         var list = new List<DeviceListDto>();
         foreach (var d in devices)
         {
-            var stats = new DeviceStats(sessMap.GetValueOrDefault(d.DeviceId), evtMap.GetValueOrDefault(d.DeviceId), locMap.GetValueOrDefault(d.DeviceId), sumMap.GetValueOrDefault(d.DeviceId), 0, null, null, 0);
-            // fetch earliest/latest/anomalous lazily only if needed - keep simple
-            var detail = await GetStatsAsync(userId, d.DeviceId, ct);
-            stats = detail;
+            var stats = new DeviceStats(sessMap.GetValueOrDefault(d.DeviceId), evtMap.GetValueOrDefault(d.DeviceId), locMap.GetValueOrDefault(d.DeviceId), sumMap.GetValueOrDefault(d.DeviceId), аномDict.GetValueOrDefault(d.DeviceId), earlyDict.GetValueOrDefault(d.DeviceId), lateDict.GetValueOrDefault(d.DeviceId), (sessMap.GetValueOrDefault(d.DeviceId)+evtMap.GetValueOrDefault(d.DeviceId)+locMap.GetValueOrDefault(d.DeviceId))*2);
             var health = GetHealth(d, stats);
             list.Add(new DeviceListDto(
                 d.DeviceId, d.DisplayName, d.Brand, d.Model, d.OsVersion, d.AppVersion,
@@ -87,12 +90,17 @@ public sealed class DeviceManagementService
         var allIds = sourceDeviceIds.Concat(new[] { targetDeviceId }).Distinct().ToList();
         var devices = await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && allIds.Contains(d.DeviceId)).ToListAsync(ct);
         if (devices.Count != allIds.Count) throw new DomainException(04004, "部分设备不存在或不属于当前用户");
+        // batch counts for preview
+        var sessP = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && allIds.Contains(s.DeviceId)).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Count = g.Count() }).ToListAsync(ct);
+        var evtP = await _db.Set<MobileUsageEventEntity>().Where(s => s.UserId == userId && allIds.Contains(s.DeviceId)).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Count = g.Count() }).ToListAsync(ct);
+        var locP = await _db.Set<MobileLocationPointEntity>().Where(s => s.UserId == userId && allIds.Contains(s.DeviceId)).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Count = g.Count() }).ToListAsync(ct);
+        var sumP = await _db.Set<MobileUsageSummaryEntity>().Where(s => s.UserId == userId && allIds.Contains(s.DeviceId)).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Count = g.Count() }).ToListAsync(ct);
+        var sd = sessP.ToDictionary(x=>x.DeviceId,x=>x.Count); var ed = evtP.ToDictionary(x=>x.DeviceId,x=>x.Count); var ld = locP.ToDictionary(x=>x.DeviceId,x=>x.Count); var sud = sumP.ToDictionary(x=>x.DeviceId,x=>x.Count);
         var preview = new List<DeviceMergeItemDto>();
         long total = 0;
         foreach (var id in allIds)
         {
-            var s = await GetStatsAsync(userId, id, ct);
-            var cnt = s.SessionCount + s.EventCount + s.LocationCount + s.SummaryCount;
+            var cnt = sd.GetValueOrDefault(id) + ed.GetValueOrDefault(id) + ld.GetValueOrDefault(id) + sud.GetValueOrDefault(id);
             preview.Add(new DeviceMergeItemDto(id, cnt));
             total += cnt;
         }
