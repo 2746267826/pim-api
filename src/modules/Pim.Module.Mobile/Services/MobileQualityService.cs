@@ -423,6 +423,77 @@ public sealed class MobileQualityService
             checkedAt,
             details);
 
+    // === 脏数据自动清理 ===
+    public async Task<int> CleanupAnomalousDataAsync(CancellationToken ct = default)
+    {
+        var userId = MobileUserContext.RequireUserId(_currentUser);
+        var updated = 0;
+        const long eightHoursMs = 8L * 60 * 60 * 1000;
+
+        // 1) session duration > 8h → anomalous_duration
+        var longSessions = await _db.Set<MobileUsageSessionEntity>()
+            .Where(s => s.UserId == userId && s.DurationMs > eightHoursMs && !s.QualityFlagsJson.Contains("anomalous_duration"))
+            .ToListAsync(ct);
+        foreach (var s in longSessions)
+        {
+            s.QualityFlagsJson = MergeFlag(s.QualityFlagsJson, "anomalous_duration");
+            updated++;
+        }
+
+        // 2)同一天所有 session 之和 >24h → day_overflow (标记该天所有 session)
+        var sessionsByDay = await _db.Set<MobileUsageSessionEntity>()
+            .Where(s => s.UserId == userId)
+            .Select(s => new { s.Id, s.StartUtc, s.DurationMs, s.QualityFlagsJson })
+            .ToListAsync(ct);
+        var byDayGroups = sessionsByDay.GroupBy(x => DateOnly.FromDateTime(x.StartUtc.UtcDateTime));
+        foreach (var group in byDayGroups)
+        {
+            var totalMs = group.Sum(x => x.DurationMs ?? 0);
+            if (totalMs > 24L * 60 * 60 * 1000)
+            {
+                foreach (var item in group.Where(x => !x.QualityFlagsJson.Contains("day_overflow")))
+                {
+                    var entity = await _db.Set<MobileUsageSessionEntity>().FindAsync(new object[] { item.Id }, ct);
+                    if (entity != null)
+                    {
+                        entity.QualityFlagsJson = MergeFlag(entity.QualityFlagsJson, "day_overflow");
+                        updated++;
+                    }
+                }
+            }
+        }
+
+        // 3)同一 package+同一小时窗口多条 summary → 保留最大，其余标记重复
+        var summaries = await _db.Set<MobileUsageSummaryEntity>()
+            .Where(s => s.UserId == userId)
+            .ToListAsync(ct);
+        var dupGroups = summaries.GroupBy(s => new { s.PackageName, Hour = new DateTimeOffset(s.WindowStartUtc.Year, s.WindowStartUtc.Month, s.WindowStartUtc.Day, s.WindowStartUtc.Hour, 0, 0, TimeSpan.Zero) })
+            .Where(g => g.Count() > 1);
+        foreach (var group in dupGroups)
+        {
+            var ordered = group.OrderByDescending(s => s.TotalTimeVisibleMs).ToList();
+            foreach (var dup in ordered.Skip(1).Where(s => !s.QualityFlagsJson.Contains("duplicate_summary")))
+            {
+                dup.QualityFlagsJson = MergeFlag(dup.QualityFlagsJson, "duplicate_summary");
+                updated++;
+            }
+        }
+
+        if (updated > 0) await _db.SaveChangesAsync(ct);
+        return updated;
+    }
+
+    private static string MergeFlag(string json, string flag)
+    {
+        try
+        {
+            var arr = System.Text.Json.JsonDocument.Parse(json).RootElement.EnumerateArray().Select(e => e.GetString()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+            if (!arr.Contains(flag)) arr.Add(flag);
+            return System.Text.Json.JsonSerializer.Serialize(arr);
+        }
+        catch { return $"[\"{flag}\"]"; }
+    }
+
     private static bool IsFallbackSource(string sourceKind)
         => sourceKind.Contains("fallback", StringComparison.OrdinalIgnoreCase)
             || sourceKind.Contains("summary", StringComparison.OrdinalIgnoreCase);

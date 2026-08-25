@@ -54,21 +54,29 @@ public class GreedyScheduler : ISchedulingAlgorithm
             .ThenBy(t => t.Deadline ?? DateTimeOffset.MaxValue)
             .ToList();
 
-        var freeSlots = SchedulingHelpers.ComputeFreeSlots(busySlots, searchStart, searchEnd);
+        var freeSlots = SchedulingHelpers.ComputeFreeSlots(busySlots, searchStart, searchEnd)
+            .Select(s => new TimeSlot(s.Start, s.End)).ToList();
         var result = new List<ScheduledSlot>();
 
         foreach (var task in sorted)
         {
             var remaining = task.Duration;
-            foreach (var slot in freeSlots)
+            for (var i = 0; i < freeSlots.Count && remaining > TimeSpan.Zero; i++)
             {
-                if (remaining <= TimeSpan.Zero) break;
+                var slot = freeSlots[i];
                 var slotDuration = slot.End - slot.Start;
                 if (slotDuration <= TimeSpan.Zero) continue;
 
                 var alloc = remaining < slotDuration ? remaining : slotDuration;
                 result.Add(new ScheduledSlot(task.TaskId, task.Title, slot.Start, slot.Start + alloc));
                 remaining -= alloc;
+
+                // update freeSlots to remove allocated prefix
+                var newStart = slot.Start + alloc;
+                if (newStart >= slot.End)
+                    freeSlots.RemoveAt(i--);
+                else
+                    freeSlots[i] = new TimeSlot(newStart, slot.End);
             }
         }
 

@@ -9,6 +9,7 @@ namespace Pim.Module.Mobile.Services;
 public sealed class MobileGapService
 {
     private static readonly TimeSpan MaxBackfillAge = TimeSpan.FromDays(14);
+    private static readonly TimeSpan MinGapThreshold = TimeSpan.FromMinutes(5);
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly TimeProvider _timeProvider;
@@ -99,6 +100,12 @@ public sealed class MobileGapService
 
             var hasFallback = fallbackWindows.Any(window => window.EndUtc > cursor && window.StartUtc < windowEnd);
             var gapStart = coveredUntil > cursor ? coveredUntil : cursor;
+            var gapDuration = windowEnd - gapStart;
+            if (gapDuration < MinGapThreshold)
+            {
+                cursor = windowEnd;
+                continue;
+            }
             var reason = Reason(cursor, windowEnd, gapStart, end, hasFallback);
             windows.Add(new MobileGapWindowDto(
                 gapStart,

@@ -7,9 +7,11 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.EntityFrameworkCore;
 using Pim.Core.Common;
 using Pim.Core.Caching;
 using Pim.Core.Modules;
+using Pim.Module.Mobile.Entities;
 using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
 using Pim.Module.Mobile.Services;
@@ -42,6 +44,7 @@ public sealed class MobileModule : IModule
         services.AddScoped<MobileUsageGoalService>();
         services.AddScoped<MobileUsageAggregationService>();
         services.AddScoped<MobileTimelineBlockService>();
+        services.AddScoped<DeviceManagementService>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -53,6 +56,32 @@ public sealed class MobileModule : IModule
             [FromServices] MobileDeviceService service,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<IReadOnlyList<MobileDeviceDto>>.Ok(await service.ListAsync(ct))));
+
+        group.MapGet("/devices/manage", async ([FromServices] DeviceManagementService svc, [FromQuery] string? sortBy, CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<DeviceListDto>>.Ok(await svc.ListDevicesAsync(sortBy, ct))));
+        group.MapGet("/devices/{deviceId}/detail", async ([FromRoute] string deviceId, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponse<DeviceDetailDto>.Ok(await svc.GetDetailAsync(deviceId, ct))));
+        group.MapPost("/devices/{deviceId}/rename", async ([FromRoute] string deviceId, [FromBody] DeviceRenameRequest req, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponse<DeviceDto>.Ok(await svc.RenameAsync(deviceId, req.DisplayName, ct))));
+        group.MapPost("/devices/merge/preview", async ([FromBody] DeviceMergeRequest req, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponse<DeviceMergePreviewDto>.Ok(await svc.PreviewMergeAsync(req.SourceDeviceIds, req.TargetDeviceId, ct))));
+        group.MapPost("/devices/merge", async ([FromBody] DeviceMergeRequest req, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
+        {
+            await svc.MergeAsync(req.SourceDeviceIds, req.TargetDeviceId, ct);
+            return Results.Ok(ApiResponse<string>.Ok("merged"));
+        });
+        group.MapGet("/devices/{deviceId}/delete-preview", async ([FromRoute] string deviceId, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponse<DeviceDeletePreviewDto>.Ok(await svc.PreviewDeleteAsync(deviceId, ct))));
+        group.MapDelete("/devices/{deviceId}", async ([FromRoute] string deviceId, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
+        {
+            await svc.DeleteAsync(deviceId, ct);
+            return Results.Ok(ApiResponse<string>.Ok("deleted"));
+        });
+        group.MapGet("/devices/{deviceId}/export", async ([FromRoute] string deviceId, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
+        {
+            var exp = await svc.ExportAsync(deviceId, ct);
+            return Results.File(System.Text.Encoding.UTF8.GetBytes(exp.Json), "application/json", exp.FileName);
+        });
 
         group.MapPost("/devices/register", async (
             [FromBody] MobileDeviceRegisterRequest request,
@@ -392,7 +421,32 @@ public sealed class MobileModule : IModule
         });
     }
 
-    public Task InitializeAsync(IServiceProvider serviceProvider) => Task.CompletedTask;
+    public async Task InitializeAsync(IServiceProvider serviceProvider)
+    {
+        using var scope = serviceProvider.CreateScope();
+        try
+        {
+            var quality = scope.ServiceProvider.GetService<MobileQualityService>();
+            if (quality != null)
+            {
+                // trigger cleanup on startup; use current user context if available – for tests this is no-op
+                // best effort: iterate known users via devices
+                var db = scope.ServiceProvider.GetService<Pim.Infrastructure.Data.PimDbContext>();
+                if (db != null)
+                {
+                    var userIds = await db.Set<MobileDeviceEntity>().Select(d => d.UserId).Distinct().ToListAsync();
+                    foreach (var uid in userIds)
+                    {
+                        // cleanup is per-user via CurrentUser; skip auto for now to avoid missing context
+                    }
+                }
+            }
+        }
+        catch { }
+    }
+
+    private sealed record DeviceRenameRequest(string DisplayName);
+    public sealed record DeviceMergeRequest(IReadOnlyList<string> SourceDeviceIds, string TargetDeviceId);
 
     private static MobileSummaryQuery BuildSummaryQuery(
         string? deviceId,

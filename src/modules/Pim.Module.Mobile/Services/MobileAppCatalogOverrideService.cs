@@ -219,7 +219,7 @@ public sealed class MobileAppCatalogOverrideService
 
         var timelineCount = 0;
         foreach (var block in candidateBlocks.Where(block => !block.IsStale
-            && block.TopAppsJson.Contains(normalizedPackageName, StringComparison.OrdinalIgnoreCase)))
+            && ContainsPackageExact(block.TopAppsJson, normalizedPackageName)))
         {
             block.IsStale = true;
             block.UpdatedAt = now;
@@ -295,6 +295,49 @@ public sealed class MobileAppCatalogOverrideService
             throw new ArgumentException($"Unsupported mobile life category: {value}.", nameof(value));
 
         return normalized;
+    }
+
+    private static bool ContainsPackageExact(string json, string packageName)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return false;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var el in doc.RootElement.EnumerateArray())
+                {
+                    string? value = null;
+                    if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                        value = el.GetString();
+                    else if (el.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    {
+                        if (el.TryGetProperty("packageName", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.String)
+                            value = p.GetString();
+                        else if (el.TryGetProperty("package_name", out var p2) && p2.ValueKind == System.Text.Json.JsonValueKind.String)
+                            value = p2.GetString();
+                    }
+                    if (string.Equals(value, packageName, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    if (string.Equals(prop.Name, packageName, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+            }
+            return false;
+        }
+        catch
+        {
+            // fallback: exact token check avoiding substring pollution – split by JSON delimiters
+            var tokens = json.Split(new[] { '"', '\'', ':', ',', '[', ']', '{', '}', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            return tokens.Any(t => string.Equals(t, packageName, StringComparison.OrdinalIgnoreCase));
+        }
     }
 
     private static string? NullIfBlank(string? value)

@@ -15,7 +15,9 @@ namespace Pim.Module.Mobile.Services;
 /// </summary>
 public sealed class MobileFrequentPlaceService
 {
-    private const double EpsMeters = 75;
+    private const double BaseEpsMeters = 75;
+    private const double MinEpsMeters = 30;
+    private const double MaxEpsMeters = 150;
     private const int MinPoints = 10;
     private const double MaxAccuracyMeters = 100;
     private const double EarthRadiusMeters = 6371000;
@@ -84,7 +86,8 @@ public sealed class MobileFrequentPlaceService
                 DegreesToRadians(Convert.ToDouble(point.Latitude)) * EarthRadiusMeters))
             .ToList();
 
-        var result = SimpleDbscan.Run(projected, EpsMeters, MinPoints);
+        var adaptiveEps = ComputeAdaptiveEps(projected);
+        var result = SimpleDbscan.Run(projected, adaptiveEps, MinPoints);
         var timeZone = ResolveTimezone(context.Range.Timezone);
         var places = new List<MobileFrequentPlaceDto>();
         var nightCounts = new List<int>();
@@ -151,6 +154,25 @@ public sealed class MobileFrequentPlaceService
 
     private static double DistanceMeters(double x1, double y1, double x2, double y2)
         => Math.Sqrt(Math.Pow(x2 - x1, 2) + Math.Pow(y2 - y1, 2));
+
+    private static double ComputeAdaptiveEps(IReadOnlyList<SimpleDbscan.Point> projected)
+    {
+        if (projected.Count < 2) return BaseEpsMeters;
+        // k-distance median (k = MinPoints-1) → estimate local density
+        var k = Math.Min(MinPoints - 1, projected.Count - 1);
+        var kDistances = new List<double>(projected.Count);
+        foreach (var p in projected)
+        {
+            var distances = projected.Select(q => DistanceMeters(p.X, p.Y, q.X, q.Y)).OrderBy(d => d).ToList();
+            kDistances.Add(distances[k]);
+        }
+        kDistances.Sort();
+        var medianK = kDistances[kDistances.Count / 2];
+        // scale eps: dense area → smaller, sparse → larger, clamp to [30,150]
+        var scaled = Math.Clamp(medianK * 1.2, MinEpsMeters, MaxEpsMeters);
+        // blend with base to avoid extreme shift
+        return Math.Clamp((scaled + BaseEpsMeters) / 2, MinEpsMeters, MaxEpsMeters);
+    }
 
     private static double DegreesToRadians(double degrees)
         => degrees * Math.PI / 180;

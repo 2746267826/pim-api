@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Reflection;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Infrastructure.Data;
@@ -41,52 +40,59 @@ public class PcTrackerService
     {
         var snapshotDate = DateTimeOffset.Parse(req.Date).Date;
 
-        var existing = await _db.Set<KeystatsDailyEntity>()
-            .Include(x => x.KeyCounts)
-            .Include(x => x.AppBreakdowns)
-            .FirstOrDefaultAsync(x => x.DeviceId == req.DeviceId && x.SnapshotDate == snapshotDate, ct);
-
-        if (existing is not null)
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async token =>
         {
-            _db.Set<KeystatsKeyCountEntity>().RemoveRange(existing.KeyCounts);
-            _db.Set<KeystatsAppBreakdownEntity>().RemoveRange(existing.AppBreakdowns);
-            _db.Set<KeystatsDailyEntity>().Remove(existing);
-        }
+            await using var tx = await _db.Database.BeginTransactionAsync(token);
+            var existing = await _db.Set<KeystatsDailyEntity>()
+                .Include(x => x.KeyCounts)
+                .Include(x => x.AppBreakdowns)
+                .FirstOrDefaultAsync(x => x.DeviceId == req.DeviceId && x.SnapshotDate == snapshotDate, token);
 
-        _db.Set<KeystatsDailyEntity>().Add(new KeystatsDailyEntity
-        {
-            DeviceId = req.DeviceId,
-            SnapshotDate = snapshotDate,
-            KeyPresses = req.KeyPresses,
-            LeftClicks = req.LeftClicks,
-            RightClicks = req.RightClicks,
-            MiddleClicks = req.MiddleClicks,
-            SideBackClicks = req.SideBackClicks,
-            SideForwardClicks = req.SideForwardClicks,
-            MouseDistance = req.MouseDistance,
-            ScrollDistance = req.ScrollDistance,
-            PeakKps = req.PeakKps,
-            PeakCps = req.PeakCps,
-            KeyCounts = req.KeyPressCounts?.Select(kv => new KeystatsKeyCountEntity
+            if (existing is not null)
             {
-                KeyName = kv.Key,
-                Count = kv.Value
-            }).ToList() ?? new(),
-            AppBreakdowns = req.AppStats?.Select(kv => new KeystatsAppBreakdownEntity
-            {
-                AppName = kv.Value.AppName,
-                DisplayName = kv.Value.DisplayName,
-                KeyPresses = kv.Value.KeyPresses,
-                LeftClicks = kv.Value.LeftClicks,
-                RightClicks = kv.Value.RightClicks,
-                MiddleClicks = kv.Value.MiddleClicks,
-                SideBackClicks = kv.Value.SideBackClicks,
-                SideForwardClicks = kv.Value.SideForwardClicks,
-                ScrollDistance = kv.Value.ScrollDistance
-            }).ToList() ?? new()
-        });
+                _db.Set<KeystatsKeyCountEntity>().RemoveRange(existing.KeyCounts);
+                _db.Set<KeystatsAppBreakdownEntity>().RemoveRange(existing.AppBreakdowns);
+                _db.Set<KeystatsDailyEntity>().Remove(existing);
+                await _db.SaveChangesAsync(token);
+            }
 
-        await _db.SaveChangesAsync(ct);
+            _db.Set<KeystatsDailyEntity>().Add(new KeystatsDailyEntity
+            {
+                DeviceId = req.DeviceId,
+                SnapshotDate = snapshotDate,
+                KeyPresses = req.KeyPresses,
+                LeftClicks = req.LeftClicks,
+                RightClicks = req.RightClicks,
+                MiddleClicks = req.MiddleClicks,
+                SideBackClicks = req.SideBackClicks,
+                SideForwardClicks = req.SideForwardClicks,
+                MouseDistance = req.MouseDistance,
+                ScrollDistance = req.ScrollDistance,
+                PeakKps = req.PeakKps,
+                PeakCps = req.PeakCps,
+                KeyCounts = req.KeyPressCounts?.Select(kv => new KeystatsKeyCountEntity
+                {
+                    KeyName = kv.Key,
+                    Count = kv.Value
+                }).ToList() ?? new(),
+                AppBreakdowns = req.AppStats?.Select(kv => new KeystatsAppBreakdownEntity
+                {
+                    AppName = kv.Value.AppName,
+                    DisplayName = kv.Value.DisplayName,
+                    KeyPresses = kv.Value.KeyPresses,
+                    LeftClicks = kv.Value.LeftClicks,
+                    RightClicks = kv.Value.RightClicks,
+                    MiddleClicks = kv.Value.MiddleClicks,
+                    SideBackClicks = kv.Value.SideBackClicks,
+                    SideForwardClicks = kv.Value.SideForwardClicks,
+                    ScrollDistance = kv.Value.ScrollDistance
+                }).ToList() ?? new()
+            });
+
+            await _db.SaveChangesAsync(token);
+            await tx.CommitAsync(token);
+        }, ct);
     }
 
     public async Task<int> UploadAwEventsAsync(AwEventsUploadRequest req, CancellationToken ct)
@@ -1305,20 +1311,17 @@ public class PcTrackerService
 
     private static bool IsUniqueViolation(DbUpdateException ex)
     {
-        return EnumerateExceptions(ex).Any(e =>
-            string.Equals(GetStringProperty(e, "SqlState"), PostgreSqlUniqueViolationSqlState, StringComparison.Ordinal)
-            || string.Equals(GetStringProperty(e, "SQLState"), PostgreSqlUniqueViolationSqlState, StringComparison.Ordinal));
-    }
-
-    private static IEnumerable<Exception> EnumerateExceptions(Exception ex)
-    {
-        for (var current = ex; current is not null; current = current.InnerException)
-            yield return current;
-    }
-
-    private static string? GetStringProperty(Exception ex, string propertyName)
-    {
-        return ex.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public)?.GetValue(ex) as string;
+        for (var inner = ex.InnerException; inner is not null; inner = inner.InnerException)
+        {
+            if (inner.GetType().Name == "PostgresException")
+            {
+                var sqlState = inner.GetType().GetProperty("SqlState")?.GetValue(inner) as string;
+                if (sqlState == PostgreSqlUniqueViolationSqlState) return true;
+            }
+            if (inner.Message.Contains("23505", StringComparison.Ordinal) || inner.Message.Contains("duplicate key", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return ex.Message.Contains("23505", StringComparison.Ordinal) || ex.Message.Contains("duplicate key", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ToJson(object? value)

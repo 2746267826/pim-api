@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Pim.Core.Common;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
@@ -28,7 +29,15 @@ public sealed class FilesModule : IModule
         services.AddScoped<FileOperationService>();
         services.AddScoped<FileIndexingService>();
         services.AddScoped<FileAiService>();
-        services.AddSingleton<IFileEmbeddingService, HashingFileEmbeddingService>();
+        services.AddHttpClient<OpenAiFileEmbeddingService>();
+        services.AddSingleton<IFileEmbeddingService>(sp =>
+        {
+            var http = sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(OpenAiFileEmbeddingService));
+            var config = sp.GetRequiredService<IConfiguration>();
+            var logger = sp.GetRequiredService<ILogger<OpenAiFileEmbeddingService>>();
+            // prefer real embedding when key present, but service itself falls back to hashing
+            return new OpenAiFileEmbeddingService(http, config, logger);
+        });
         services.AddScoped<IFileTextExtractionService, TikaFileTextExtractionService>();
         services.AddHttpClient<NextcloudFileProviderAdapter>();
         services.AddHttpClient<QdrantFileVectorStore>();

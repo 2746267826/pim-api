@@ -357,9 +357,10 @@ public sealed class MobileLocationAggregationService
         if (elapsedSeconds <= 0 || distanceMeters <= 0)
             return new PairClassification(PairEvidence.None, false);
 
+        var medianAccuracy = MedianAccuracy(from, to);
         var noiseFloorMeters = Math.Max(
             NoiseDisplacementFloorMeters,
-            2 * ((AccuracyMeters(from) + AccuracyMeters(to)) / 2));
+            2 * medianAccuracy);
         if (distanceMeters < noiseFloorMeters)
             return new PairClassification(PairEvidence.None, false);
 
@@ -611,6 +612,14 @@ public sealed class MobileLocationAggregationService
 
     private static double AccuracyMeters(MobileLocationPointEntity point)
         => Convert.ToDouble(point.HorizontalAccuracyMeters);
+
+    private static double MedianAccuracy(MobileLocationPointEntity a, MobileLocationPointEntity b)
+    {
+        var values = new[] { AccuracyMeters(a), AccuracyMeters(b) };
+        Array.Sort(values);
+        // lower median to be robust against single outlier (for 2 values == min)
+        return values[(values.Length - 1) / 2];
+    }
 
     private static double? DecimalToDouble(decimal? value)
         => value is null ? null : Convert.ToDouble(value.Value);

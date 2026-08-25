@@ -238,7 +238,7 @@ public sealed class MobileUsageAggregationService
             summariesQuery = summariesQuery.Where(summary => summary.DeviceId == context.DeviceId);
         if (!string.IsNullOrWhiteSpace(context.PackageName))
             summariesQuery = summariesQuery.Where(summary => summary.PackageName == context.PackageName);
-        var summaries = await summariesQuery.ToListAsync(ct);
+        var summaries = await DeduplicateFallbackSummariesAsync(summariesQuery, ct);
 
         var packages = sessions.Select(session => session.PackageName)
             .Concat(summaries.Select(summary => summary.PackageName))
@@ -249,6 +249,11 @@ public sealed class MobileUsageAggregationService
 
         foreach (var session in sessions)
         {
+            // dirty data: skip anomalous sessions
+            if (session.QualityFlagsJson.Contains("anomalous_duration", StringComparison.OrdinalIgnoreCase)
+                || session.QualityFlagsJson.Contains("day_overflow", StringComparison.OrdinalIgnoreCase)
+                || (session.DurationMs ?? 0) > 8L * 60 * 60 * 1000)
+                continue;
             var classification = classifications.GetValueOrDefault(session.PackageName, Classification.Default(session.PackageName));
             if (!MatchesClassification(context, classification))
                 continue;
@@ -273,6 +278,8 @@ public sealed class MobileUsageAggregationService
 
         foreach (var summary in summaries)
         {
+            if (summary.QualityFlagsJson.Contains("duplicate_summary", StringComparison.OrdinalIgnoreCase))
+                continue;
             var classification = classifications.GetValueOrDefault(summary.PackageName, Classification.Default(summary.PackageName));
             if (!MatchesClassification(context, classification))
                 continue;
@@ -319,8 +326,10 @@ public sealed class MobileUsageAggregationService
         if (row.ForegroundSeconds <= 0 || row.EndUtc <= row.StartUtc)
             yield break;
 
-        var localBucket = FloorLocalBucket(TimeZoneInfo.ConvertTime(row.StartUtc, timeZoneInfo), bucketSize, granularity);
+        var localStart = TimeZoneInfo.ConvertTime(row.StartUtc, timeZoneInfo);
+        var localBucket = FloorLocalBucket(localStart, bucketSize, granularity);
         var segments = new List<(DateTimeOffset StartUtc, DateTimeOffset EndUtc, string LocalDate, int LocalHour, double OverlapMs)>();
+        var seenBuckets = new HashSet<string>(StringComparer.Ordinal);
 
         while (true)
         {
@@ -330,6 +339,14 @@ public sealed class MobileUsageAggregationService
 
             var nextLocalBucket = NextLocalBucket(localBucket, bucketSize, granularity);
             var bucketEndUtc = LocalBucketUtc(nextLocalBucket, timeZoneInfo);
+            // DST safety: ensure bucket maps to a unique local date via DateOnly.FromDateTime
+            var localBucketDate = DateOnly.FromDateTime(localBucket).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var bucketKey = $"{localBucketDate}:{localBucket:HH:mm}";
+            if (!seenBuckets.Add(bucketKey) && granularity == "day")
+            {
+                localBucket = nextLocalBucket;
+                continue;
+            }
             if (bucketEndUtc > row.StartUtc)
             {
                 var overlapStart = Max(row.StartUtc, bucketStartUtc);
@@ -339,7 +356,7 @@ public sealed class MobileUsageAggregationService
                     segments.Add((
                         bucketStartUtc,
                         bucketEndUtc,
-                        localBucket.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                        localBucketDate,
                         granularity == "day" ? 0 : localBucket.Hour,
                         (overlapEnd - overlapStart).TotalMilliseconds));
                 }
@@ -652,6 +669,19 @@ public sealed class MobileUsageAggregationService
 
         var ratio = Math.Clamp(overlapMs / sourceMs, 0, 1);
         return Math.Max(0, Convert.ToInt64(Math.Floor(totalVisibleMs * ratio / 1000)));
+    }
+
+    private static async Task<List<MobileUsageSummaryEntity>> DeduplicateFallbackSummariesAsync(
+        IQueryable<MobileUsageSummaryEntity> query,
+        CancellationToken ct)
+    {
+        var summaries = await query.ToListAsync(ct);
+        return summaries
+            .GroupBy(s => (
+                Package: s.PackageName.ToLowerInvariant(),
+                HourStart: new DateTimeOffset(s.WindowStartUtc.Year, s.WindowStartUtc.Month, s.WindowStartUtc.Day, s.WindowStartUtc.Hour, 0, 0, TimeSpan.Zero)))
+            .Select(group => group.OrderByDescending(s => s.TotalTimeVisibleMs).First())
+            .ToList();
     }
 
     private static string FirstNonBlank(params string?[] values)
