@@ -1318,10 +1318,19 @@ public class PcTrackerService
                 var sqlState = inner.GetType().GetProperty("SqlState")?.GetValue(inner) as string;
                 if (sqlState == PostgreSqlUniqueViolationSqlState) return true;
             }
-            if (inner.Message.Contains("23505", StringComparison.Ordinal) || inner.Message.Contains("duplicate key", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(inner.GetType().GetProperty("SqliteErrorCode")?.GetValue(inner)?.ToString(), "19", StringComparison.Ordinal))
+                return true;
+            if (string.Equals(inner.GetType().GetProperty("SqliteExtendedErrorCode")?.GetValue(inner)?.ToString(), "2067", StringComparison.Ordinal))
+                return true;
+            if (inner.Message?.Contains("UNIQUE constraint", StringComparison.OrdinalIgnoreCase) == true
+                || inner.Message?.Contains("unique constraint", StringComparison.OrdinalIgnoreCase) == true)
+                return true;
+            if (inner.Message?.Contains("23505", StringComparison.Ordinal) == true
+                || inner.Message?.Contains("duplicate key", StringComparison.OrdinalIgnoreCase) == true)
                 return true;
         }
-        return ex.Message.Contains("23505", StringComparison.Ordinal) || ex.Message.Contains("duplicate key", StringComparison.OrdinalIgnoreCase);
+        return ex.Message?.Contains("23505", StringComparison.Ordinal) == true
+            || ex.Message?.Contains("duplicate key", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private static string ToJson(object? value)
