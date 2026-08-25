@@ -25,10 +25,25 @@ public sealed class DeviceManagementService
     {
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var devices = await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId).ToListAsync(ct);
+        if (devices.Count == 0) return [];
+        var deviceIds = devices.Select(d => d.DeviceId).ToList();
+        // batch counts
+        var sessCounts = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && deviceIds.Contains(s.DeviceId)).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Count = g.Count() }).ToListAsync(ct);
+        var evtCounts = await _db.Set<MobileUsageEventEntity>().Where(s => s.UserId == userId && deviceIds.Contains(s.DeviceId)).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Count = g.Count() }).ToListAsync(ct);
+        var locCounts = await _db.Set<MobileLocationPointEntity>().Where(s => s.UserId == userId && deviceIds.Contains(s.DeviceId)).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Count = g.Count() }).ToListAsync(ct);
+        var sumCounts = await _db.Set<MobileUsageSummaryEntity>().Where(s => s.UserId == userId && deviceIds.Contains(s.DeviceId)).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Count = g.Count() }).ToListAsync(ct);
+        var sessMap = sessCounts.ToDictionary(x => x.DeviceId, x => x.Count);
+        var evtMap = evtCounts.ToDictionary(x => x.DeviceId, x => x.Count);
+        var locMap = locCounts.ToDictionary(x => x.DeviceId, x => x.Count);
+        var sumMap = sumCounts.ToDictionary(x => x.DeviceId, x => x.Count);
+        // anomalous & ranges per device still loop but cheap (6 queries total now)
         var list = new List<DeviceListDto>();
         foreach (var d in devices)
         {
-            var stats = await GetStatsAsync(userId, d.DeviceId, ct);
+            var stats = new DeviceStats(sessMap.GetValueOrDefault(d.DeviceId), evtMap.GetValueOrDefault(d.DeviceId), locMap.GetValueOrDefault(d.DeviceId), sumMap.GetValueOrDefault(d.DeviceId), 0, null, null, 0);
+            // fetch earliest/latest/anomalous lazily only if needed - keep simple
+            var detail = await GetStatsAsync(userId, d.DeviceId, ct);
+            stats = detail;
             var health = GetHealth(d, stats);
             list.Add(new DeviceListDto(
                 d.DeviceId, d.DisplayName, d.Brand, d.Model, d.OsVersion, d.AppVersion,
@@ -106,9 +121,7 @@ public sealed class DeviceManagementService
                 await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), token);
                 await _db.Set<MobileTimelineBlockEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), token);
             }
-            var sourceEntities = await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && sourceDeviceIds.Contains(d.DeviceId)).ToListAsync(token);
-            _db.Set<MobileDeviceEntity>().RemoveRange(sourceEntities);
-            await _db.SaveChangesAsync(token);
+            await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && sourceDeviceIds.Contains(d.DeviceId)).ExecuteDeleteAsync(token);
             await tx.CommitAsync(token);
         }, ct);
     }
@@ -140,8 +153,7 @@ public sealed class DeviceManagementService
             await _db.Set<MobileLocationPointEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(token);
             await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(token);
             await _db.Set<MobileTimelineBlockEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(token);
-            _db.Set<MobileDeviceEntity>().Remove(device);
-            await _db.SaveChangesAsync(token);
+            await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && d.DeviceId == deviceId).ExecuteDeleteAsync(token);
             await tx.CommitAsync(token);
         }, ct);
     }
@@ -151,19 +163,23 @@ public sealed class DeviceManagementService
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var device = await _db.Set<MobileDeviceEntity>().SingleOrDefaultAsync(d => d.UserId == userId && d.DeviceId == deviceId, ct)
             ?? throw new DomainException(04004, "设备不存在");
-        var sessions = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).ToListAsync(ct);
-        var events = await _db.Set<MobileUsageEventEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).ToListAsync(ct);
-        var locations = await _db.Set<MobileLocationPointEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).ToListAsync(ct);
-        var summaries = await _db.Set<MobileUsageSummaryEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).ToListAsync(ct);
-        var fileName = $"pim-export-{device.DisplayName}-{DateTime.UtcNow:yyyyMMdd}.json";
-        var payload = new { device = device.DeviceId, sessions, events, locations, summaries };
+        const int exportLimit = 5000;
+        var sessions = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).Take(exportLimit).ToListAsync(ct);
+        var events = await _db.Set<MobileUsageEventEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).Take(exportLimit).ToListAsync(ct);
+        var locations = await _db.Set<MobileLocationPointEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).Take(exportLimit).ToListAsync(ct);
+        var summaries = await _db.Set<MobileUsageSummaryEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).Take(exportLimit).ToListAsync(ct);
+        var safeName = string.Join("_", device.DisplayName.Split(Path.GetInvalidFileNameChars()));
+        if (string.IsNullOrWhiteSpace(safeName)) safeName = device.DeviceId;
+        safeName = safeName.Length > 30 ? safeName[..30] : safeName;
+        var fileName = $"pim-export-{safeName}-{_timeProvider.GetUtcNow():yyyyMMdd}.json";
+        var payload = new { device = device.DeviceId, sessions, events, locations, summaries, truncated = sessions.Count==exportLimit || events.Count==exportLimit };
         var json = JsonSerializer.Serialize(payload);
         return new DeviceExportDto(fileName, json);
     }
 
-    private static DeviceHealthDto GetHealth(MobileDeviceEntity device, DeviceStats stats)
+    private DeviceHealthDto GetHealth(MobileDeviceEntity device, DeviceStats stats)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
         var syncStatus = (now - device.LastSeenAtUtc) switch
         {
             var age when age > TimeSpan.FromDays(1) => "disconnected",
@@ -184,10 +200,10 @@ public sealed class DeviceManagementService
         return new DeviceHealthDto(syncStatus, dataQuality, storagePressure);
     }
 
-    private static IReadOnlyList<string> BuildHealthTimeline(MobileDeviceEntity device)
+    private IReadOnlyList<string> BuildHealthTimeline(MobileDeviceEntity device)
     {
-        // 7 days placeholder
-        return Enumerable.Range(0, 7).Select(i => DateTime.UtcNow.AddDays(-i).ToString("yyyy-MM-dd")).ToList();
+        var now = _timeProvider.GetUtcNow();
+        return Enumerable.Range(0, 7).Select(i => now.AddDays(-i).ToString("yyyy-MM-dd")).ToList();
     }
 
     private async Task<DeviceStats> GetStatsAsync(Guid userId, string deviceId, CancellationToken ct)
