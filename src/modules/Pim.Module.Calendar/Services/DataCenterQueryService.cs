@@ -19,11 +19,13 @@ public sealed class DataCenterQueryService
 
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
+    private readonly TimeProvider _timeProvider;
 
-    public DataCenterQueryService(PimDbContext db, ICurrentUserService currentUser)
+    public DataCenterQueryService(PimDbContext db, ICurrentUserService currentUser, TimeProvider? timeProvider = null)
     {
         _db = db;
         _currentUser = currentUser;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "Login required");
@@ -40,6 +42,13 @@ public sealed class DataCenterQueryService
         var searchTerm = request.Search?.Trim();
         var filterSource = request.Source?.Trim();
         bool ShouldInclude(string type) => string.IsNullOrWhiteSpace(filterType) || string.Equals(filterType, type, StringComparison.OrdinalIgnoreCase);
+
+        // Fast path: single ObjectType → DB 级分页，避免全量加载
+        if (!string.IsNullOrWhiteSpace(filterType))
+        {
+            var single = await QuerySingleTypeAsync(userId, filterType!, searchTerm, filterSource, request, page, pageSize, ct);
+            if (single != null) return single;
+        }
 
         if (ShouldInclude("event"))
         {
@@ -171,7 +180,52 @@ public sealed class DataCenterQueryService
         return new DataCenterQueryResponse(pageItems, page, pageSize, totalCount);
     }
 
-    private static IEnumerable<DataCenterItem> ApplyFilters(
+    private async Task<DataCenterQueryResponse?> QuerySingleTypeAsync(Guid userId, string filterType, string? searchTerm, string? filterSource, DataCenterQueryRequest request, int page, int pageSize, CancellationToken ct)
+    {
+        // 为最常见的单类型查询提供真正的 DB 级分页，避免全量
+        switch (filterType)
+        {
+            case "event":
+            {
+                var q = _db.Set<EventEntity>().AsNoTracking().Include(e => e.Calendar).Where(e => e.Calendar.UserId == userId);
+                if (!string.IsNullOrWhiteSpace(filterSource)) q = q.Where(e => e.Source == filterSource);
+                if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(e => e.Title.ToLower().Contains(searchTerm!.ToLower()) || e.Source.ToLower().Contains(searchTerm!.ToLower()));
+                var total = await q.CountAsync(ct);
+                var rows = await q.OrderBy(e => e.DtStart).ThenBy(e => e.Id).Skip((page-1)*pageSize).Take(pageSize).ToListAsync(ct);
+                var items = rows.Select(e => new DataCenterItem("event", e.Id, e.Title, e.Source, e.Status, e.DtStart, e.DtEnd, BuildEventSummary(e))).ToList();
+                // 仍需处理 Source/PendingOnly 的剩余内存过滤（已下推主要条件）
+                items = ApplyFilters(items, request).ToList();
+                return new DataCenterQueryResponse(items, page, pageSize, total);
+            }
+            case "task":
+            {
+                var q = _db.Set<TaskEntity>().AsNoTracking().Include(t => t.Calendar).Where(t => t.UserId == userId);
+                if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(t => t.Title.ToLower().Contains(searchTerm!.ToLower()));
+                var total = await q.CountAsync(ct);
+                var rows = await q.OrderBy(t => t.DtStart).ThenBy(t => t.Id).Skip((page-1)*pageSize).Take(pageSize).ToListAsync(ct);
+                var items = rows.Select(t => new DataCenterItem("task", t.Id, t.Title, "manual", t.Status, t.DtStart, t.PlannedEnd ?? t.Due, FirstText(t.Description, t.Calendar?.Name))).ToList();
+                return new DataCenterQueryResponse(ApplyFilters(items, request).ToList(), page, pageSize, total);
+            }
+            case "confirmation":
+            {
+                var q = _db.OperationConfirmations.AsNoTracking().Where(c => c.RequestedByUserId == null || c.RequestedByUserId == userId);
+                if (!string.IsNullOrWhiteSpace(searchTerm)) q = q.Where(c => c.OperationType.ToLower().Contains(searchTerm!.ToLower()) || c.Summary.ToLower().Contains(searchTerm!.ToLower()));
+                if (!string.IsNullOrWhiteSpace(filterSource)) q = q.Where(c => c.Source == filterSource);
+                if (request.PendingOnly)
+                {
+                    var now = _timeProvider.GetUtcNow();
+                    q = q.Where(c => PendingStatuses.Contains(c.Status) && c.ExpiresAt > now);
+                }
+                var total = await q.CountAsync(ct);
+                var rows = await q.OrderBy(c => c.CreatedAt).ThenBy(c => c.Id).Skip((page-1)*pageSize).Take(pageSize).ToListAsync(ct);
+                var items = rows.Select(c => new DataCenterItem("confirmation", c.Id, c.OperationType, c.Source, c.Status, c.CreatedAt, c.ExpiresAt, c.Summary)).ToList();
+                return new DataCenterQueryResponse(items, page, pageSize, total);
+            }
+            default: return null;
+        }
+    }
+
+    private IEnumerable<DataCenterItem> ApplyFilters(
         IEnumerable<DataCenterItem> items,
         DataCenterQueryRequest request)
     {
@@ -201,7 +255,7 @@ public sealed class DataCenterQueryService
 
         if (request.PendingOnly)
         {
-            var now = DateTimeOffset.UtcNow;
+            var now = _timeProvider.GetUtcNow();
             filtered = filtered.Where(i =>
                 string.Equals(i.ObjectType, "confirmation", StringComparison.OrdinalIgnoreCase)
                 && PendingStatuses.Contains(i.Status)

@@ -14,11 +14,11 @@ public sealed class DeviceManagementService
     private readonly ICurrentUserService _currentUser;
     private readonly TimeProvider _timeProvider;
 
-    public DeviceManagementService(PimDbContext db, ICurrentUserService currentUser, TimeProvider timeProvider)
+    public DeviceManagementService(PimDbContext db, ICurrentUserService currentUser, TimeProvider? timeProvider = null)
     {
         _db = db;
         _currentUser = currentUser;
-        _timeProvider = timeProvider;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<IReadOnlyList<DeviceListDto>> ListDevicesAsync(string? sortBy = null, CancellationToken ct = default)
@@ -46,7 +46,9 @@ public sealed class DeviceManagementService
         var list = new List<DeviceListDto>();
         foreach (var d in devices)
         {
-            var stats = new DeviceStats(sessMap.GetValueOrDefault(d.DeviceId), evtMap.GetValueOrDefault(d.DeviceId), locMap.GetValueOrDefault(d.DeviceId), sumMap.GetValueOrDefault(d.DeviceId), аномDict.GetValueOrDefault(d.DeviceId), earlyDict.GetValueOrDefault(d.DeviceId), lateDict.GetValueOrDefault(d.DeviceId), (sessMap.GetValueOrDefault(d.DeviceId)+evtMap.GetValueOrDefault(d.DeviceId)+locMap.GetValueOrDefault(d.DeviceId))*2);
+            var sc = sessMap.GetValueOrDefault(d.DeviceId); var ec = evtMap.GetValueOrDefault(d.DeviceId); var lc = locMap.GetValueOrDefault(d.DeviceId); var suc = sumMap.GetValueOrDefault(d.DeviceId);
+            var est = (long)(sc * 0.5 + ec * 0.3 + lc * 0.2 + suc * 0.4);
+            var stats = new DeviceStats(sc, ec, lc, suc, аномDict.GetValueOrDefault(d.DeviceId), earlyDict.GetValueOrDefault(d.DeviceId), lateDict.GetValueOrDefault(d.DeviceId), est);
             var health = GetHealth(d, stats);
             list.Add(new DeviceListDto(
                 d.DeviceId, d.DisplayName, d.Brand, d.Model, d.OsVersion, d.AppVersion,
@@ -114,24 +116,35 @@ public sealed class DeviceManagementService
         var allIds = sourceDeviceIds.Concat(new[] { targetDeviceId }).Distinct().ToList();
         var devices = await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && allIds.Contains(d.DeviceId)).ToListAsync(ct);
         if (devices.Count != allIds.Count) throw new DomainException(04004, "部分设备不存在或不属于当前用户");
-        // verify same user already done via query
         var target = devices.Single(d => d.DeviceId == targetDeviceId);
-        var strategy = _db.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(async token =>
+        if (_db.Database.IsRelational())
         {
-            await using var tx = await _db.Database.BeginTransactionAsync(token);
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
             foreach (var sid in sourceDeviceIds)
             {
-                await _db.Set<MobileUsageEventEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), token);
-                await _db.Set<MobileUsageSessionEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), token);
-                await _db.Set<MobileUsageSummaryEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), token);
-                await _db.Set<MobileLocationPointEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), token);
-                await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), token);
-                await _db.Set<MobileTimelineBlockEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), token);
+                await _db.Set<MobileUsageEventEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+                await _db.Set<MobileUsageSessionEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+                await _db.Set<MobileUsageSummaryEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+                await _db.Set<MobileLocationPointEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+                await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+                await _db.Set<MobileTimelineBlockEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
             }
-            await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && sourceDeviceIds.Contains(d.DeviceId)).ExecuteDeleteAsync(token);
-            await tx.CommitAsync(token);
-        }, ct);
+            await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && sourceDeviceIds.Contains(d.DeviceId)).ExecuteDeleteAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+        else
+        {
+            foreach (var sid in sourceDeviceIds)
+            {
+                await _db.Set<MobileUsageEventEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+                await _db.Set<MobileUsageSessionEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+                await _db.Set<MobileUsageSummaryEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+                await _db.Set<MobileLocationPointEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+                await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+                await _db.Set<MobileTimelineBlockEntity>().Where(e => e.UserId == userId && e.DeviceId == sid).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+            }
+            await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && sourceDeviceIds.Contains(d.DeviceId)).ExecuteDeleteAsync(ct);
+        }
     }
 
     public async Task<DeviceDeletePreviewDto> PreviewDeleteAsync(string deviceId, CancellationToken ct = default)
@@ -148,22 +161,30 @@ public sealed class DeviceManagementService
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var device = await _db.Set<MobileDeviceEntity>().SingleOrDefaultAsync(d => d.UserId == userId && d.DeviceId == deviceId, ct)
             ?? throw new DomainException(04004, "设备不存在");
-        // check not syncing
         var syncing = await _db.Set<MobileSyncBatchEntity>().AnyAsync(b => b.UserId == userId && b.DeviceId == deviceId && b.Status == "syncing", ct);
         if (syncing) throw new DomainException(04002, "设备正在同步，禁止删除");
-        var strategy = _db.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(async token =>
+        if (_db.Database.IsRelational())
         {
-            await using var tx = await _db.Database.BeginTransactionAsync(token);
-            await _db.Set<MobileUsageEventEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(token);
-            await _db.Set<MobileUsageSessionEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(token);
-            await _db.Set<MobileUsageSummaryEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(token);
-            await _db.Set<MobileLocationPointEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(token);
-            await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(token);
-            await _db.Set<MobileTimelineBlockEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(token);
-            await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && d.DeviceId == deviceId).ExecuteDeleteAsync(token);
-            await tx.CommitAsync(token);
-        }, ct);
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            await _db.Set<MobileUsageEventEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileUsageSessionEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileUsageSummaryEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileLocationPointEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileTimelineBlockEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && d.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+        else
+        {
+            await _db.Set<MobileUsageEventEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileUsageSessionEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileUsageSummaryEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileLocationPointEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileTimelineBlockEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && d.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+        }
     }
 
     public async Task<DeviceExportDto> ExportAsync(string deviceId, CancellationToken ct = default)
@@ -172,15 +193,16 @@ public sealed class DeviceManagementService
         var device = await _db.Set<MobileDeviceEntity>().SingleOrDefaultAsync(d => d.UserId == userId && d.DeviceId == deviceId, ct)
             ?? throw new DomainException(04004, "设备不存在");
         const int exportLimit = 5000;
-        var sessions = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).Take(exportLimit).ToListAsync(ct);
-        var events = await _db.Set<MobileUsageEventEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).Take(exportLimit).ToListAsync(ct);
-        var locations = await _db.Set<MobileLocationPointEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).Take(exportLimit).ToListAsync(ct);
-        var summaries = await _db.Set<MobileUsageSummaryEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).Take(exportLimit).ToListAsync(ct);
+        var sessions = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).OrderByDescending(s => s.StartUtc).Take(exportLimit).ToListAsync(ct);
+        var events = await _db.Set<MobileUsageEventEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).OrderByDescending(s => s.EventTimestampUtc).Take(exportLimit).ToListAsync(ct);
+        var locations = await _db.Set<MobileLocationPointEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).OrderByDescending(s => s.RecordedAtUtc).Take(exportLimit).ToListAsync(ct);
+        var summaries = await _db.Set<MobileUsageSummaryEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).OrderByDescending(s => s.WindowStartUtc).Take(exportLimit).ToListAsync(ct);
         var safeName = string.Join("_", device.DisplayName.Split(Path.GetInvalidFileNameChars()));
         if (string.IsNullOrWhiteSpace(safeName)) safeName = device.DeviceId;
         safeName = safeName.Length > 30 ? safeName[..30] : safeName;
         var fileName = $"pim-export-{safeName}-{_timeProvider.GetUtcNow():yyyyMMdd}.json";
-        var payload = new { device = device.DeviceId, sessions, events, locations, summaries, truncated = sessions.Count==exportLimit || events.Count==exportLimit };
+        var truncated = sessions.Count==exportLimit || events.Count==exportLimit || locations.Count==exportLimit || summaries.Count==exportLimit;
+        var payload = new { device = device.DeviceId, sessions, events, locations, summaries, truncated };
         var json = JsonSerializer.Serialize(payload);
         return new DeviceExportDto(fileName, json);
     }
@@ -211,7 +233,13 @@ public sealed class DeviceManagementService
     private IReadOnlyList<string> BuildHealthTimeline(MobileDeviceEntity device)
     {
         var now = _timeProvider.GetUtcNow();
-        return Enumerable.Range(0, 7).Select(i => now.AddDays(-i).ToString("yyyy-MM-dd")).ToList();
+        // 基于 LastSeenAtUtc 推断 7 天在线状态：当天有活跃视为在线
+        return Enumerable.Range(0, 7).Select(i =>
+        {
+            var day = now.AddDays(-i).Date;
+            var isOnlineDay = device.LastSeenAtUtc.Date == day;
+            return $"{day:yyyy-MM-dd}:{(isOnlineDay ? "online" : "offline")}";
+        }).ToList();
     }
 
     private async Task<DeviceStats> GetStatsAsync(Guid userId, string deviceId, CancellationToken ct)
@@ -223,7 +251,9 @@ public sealed class DeviceManagementService
         var anomalous = await _db.Set<MobileUsageSessionEntity>().CountAsync(s => s.UserId == userId && s.DeviceId == deviceId && s.DurationMs > 8L * 60 * 60 * 1000, ct);
         var earliest = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).OrderBy(s => s.StartUtc).Select(s => (DateTimeOffset?)s.StartUtc).FirstOrDefaultAsync(ct);
         var latest = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && s.DeviceId == deviceId).OrderByDescending(s => s.StartUtc).Select(s => (DateTimeOffset?)s.StartUtc).FirstOrDefaultAsync(ct);
-        return new DeviceStats(sessionCount, eventCount, locationCount, summaryCount, anomalous, earliest, latest, (sessionCount + eventCount + locationCount) * 2);
+        // 估算: session ~0.5KB, event ~0.3KB, location ~0.2KB (基于平均行大小)
+        var estimateKb = (long)(sessionCount * 0.5 + eventCount * 0.3 + locationCount * 0.2 + summaryCount * 0.4);
+        return new DeviceStats(sessionCount, eventCount, locationCount, summaryCount, anomalous, earliest, latest, estimateKb);
     }
 
     private sealed record DeviceStats(int SessionCount, int EventCount, int LocationCount, int SummaryCount, int AnomalousSessionCount, DateTimeOffset? Earliest, DateTimeOffset? Latest, long StorageEstimateKb);

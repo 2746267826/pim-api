@@ -12,10 +12,12 @@ namespace Pim.Infrastructure.Operations;
 public sealed class OperationConfirmationService : IOperationConfirmationService
 {
     private readonly PimDbContext _db;
+    private readonly TimeProvider _timeProvider;
 
-    public OperationConfirmationService(PimDbContext db)
+    public OperationConfirmationService(PimDbContext db, TimeProvider? timeProvider = null)
     {
         _db = db;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<OperationConfirmationDto> CreateAsync(
@@ -38,7 +40,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             PreviewJson = previewJson,
             Status = OperationConfirmationStatus.Pending.ToString(),
             ExpiresAt = request.ExpiresAt,
-            CreatedAt = DateTimeOffset.UtcNow,
+            CreatedAt = _timeProvider.GetUtcNow(),
             CorrelationId = request.CorrelationId
         };
 
@@ -58,7 +60,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
 
     public async Task<IReadOnlyList<OperationConfirmationDto>> ListPendingAsync(CancellationToken ct = default)
     {
-        await ExpireOldAsync(DateTimeOffset.UtcNow, ct);
+        await ExpireOldAsync(_timeProvider.GetUtcNow(), ct);
 
         var pending = await _db.OperationConfirmations
             .AsNoTracking()
@@ -73,7 +75,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         Guid? userId,
         CancellationToken ct = default)
     {
-        await ExpireOldAsync(DateTimeOffset.UtcNow, ct);
+        await ExpireOldAsync(_timeProvider.GetUtcNow(), ct);
 
         var pending = await _db.OperationConfirmations
             .AsNoTracking()
@@ -112,7 +114,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         EnsureConfirmationMode(entity, mode);
 
         entity.Status = OperationConfirmationStatus.Confirmed.ToString();
-        entity.ConfirmedAt = DateTimeOffset.UtcNow;
+        entity.ConfirmedAt = _timeProvider.GetUtcNow();
 
         await _db.SaveChangesAsync(ct);
         return Map(entity);
@@ -139,7 +141,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         EnsureUserCanAct(entity, userId);
 
         entity.Status = OperationConfirmationStatus.Rejected.ToString();
-        entity.RejectedAt = DateTimeOffset.UtcNow;
+        entity.RejectedAt = _timeProvider.GetUtcNow();
 
         await _db.SaveChangesAsync(ct);
         return Map(entity);
@@ -165,7 +167,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
         ValidateJson(resultJson, 3008, "ResultJson must be valid JSON");
 
         entity.Status = OperationConfirmationStatus.Executed.ToString();
-        entity.ExecutedAt = DateTimeOffset.UtcNow;
+        entity.ExecutedAt = _timeProvider.GetUtcNow();
         entity.ResultJson = resultJson;
 
         await _db.SaveChangesAsync(ct);
@@ -203,7 +205,7 @@ public sealed class OperationConfirmationService : IOperationConfirmationService
             throw new DomainException(3003, "Confirmation record is not pending.");
         }
 
-        if (entity.ExpiresAt <= DateTimeOffset.UtcNow)
+        if (entity.ExpiresAt <= _timeProvider.GetUtcNow())
         {
             entity.Status = OperationConfirmationStatus.Expired.ToString();
             await _db.SaveChangesAsync(ct);
