@@ -193,8 +193,6 @@ public sealed class DataCenterQueryService
                 var total = await q.CountAsync(ct);
                 var rows = await q.OrderBy(e => e.DtStart).ThenBy(e => e.Id).Skip((page-1)*pageSize).Take(pageSize).ToListAsync(ct);
                 var items = rows.Select(e => new DataCenterItem("event", e.Id, e.Title, e.Source, e.Status, e.DtStart, e.DtEnd, BuildEventSummary(e))).ToList();
-                // 仍需处理 Source/PendingOnly 的剩余内存过滤（已下推主要条件）
-                items = ApplyFilters(items, request).ToList();
                 return new DataCenterQueryResponse(items, page, pageSize, total);
             }
             case "task":
@@ -204,7 +202,7 @@ public sealed class DataCenterQueryService
                 var total = await q.CountAsync(ct);
                 var rows = await q.OrderBy(t => t.DtStart).ThenBy(t => t.Id).Skip((page-1)*pageSize).Take(pageSize).ToListAsync(ct);
                 var items = rows.Select(t => new DataCenterItem("task", t.Id, t.Title, "manual", t.Status, t.DtStart, t.PlannedEnd ?? t.Due, FirstText(t.Description, t.Calendar?.Name))).ToList();
-                return new DataCenterQueryResponse(ApplyFilters(items, request).ToList(), page, pageSize, total);
+                return new DataCenterQueryResponse(items, page, pageSize, total);
             }
             case "confirmation":
             {

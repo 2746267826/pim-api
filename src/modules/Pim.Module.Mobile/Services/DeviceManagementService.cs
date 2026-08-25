@@ -38,7 +38,7 @@ public sealed class DeviceManagementService
         var sumMap = sumCounts.ToDictionary(x => x.DeviceId, x => x.Count);
         // also batch anomalous/earliest/latest
         var anomalousMap = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && deviceIds.Contains(s.DeviceId) && s.DurationMs > 8L * 60 * 60 * 1000).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Count = g.Count() }).ToListAsync(ct);
-        var аномDict = anomalousMap.ToDictionary(x => x.DeviceId, x => x.Count);
+        var anomalousDict = anomalousMap.ToDictionary(x => x.DeviceId, x => x.Count);
         var earliestMap = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && deviceIds.Contains(s.DeviceId)).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Earliest = g.Min(x => x.StartUtc) }).ToListAsync(ct);
         var latestMap = await _db.Set<MobileUsageSessionEntity>().Where(s => s.UserId == userId && deviceIds.Contains(s.DeviceId)).GroupBy(s => s.DeviceId).Select(g => new { DeviceId = g.Key, Latest = g.Max(x => x.StartUtc) }).ToListAsync(ct);
         var earlyDict = earliestMap.ToDictionary(x => x.DeviceId, x => (DateTimeOffset?)x.Earliest);
@@ -48,7 +48,7 @@ public sealed class DeviceManagementService
         {
             var sc = sessMap.GetValueOrDefault(d.DeviceId); var ec = evtMap.GetValueOrDefault(d.DeviceId); var lc = locMap.GetValueOrDefault(d.DeviceId); var suc = sumMap.GetValueOrDefault(d.DeviceId);
             var est = (long)(sc * 0.5 + ec * 0.3 + lc * 0.2 + suc * 0.4);
-            var stats = new DeviceStats(sc, ec, lc, suc, аномDict.GetValueOrDefault(d.DeviceId), earlyDict.GetValueOrDefault(d.DeviceId), lateDict.GetValueOrDefault(d.DeviceId), est);
+            var stats = new DeviceStats(sc, ec, lc, suc, anomalousDict.GetValueOrDefault(d.DeviceId), earlyDict.GetValueOrDefault(d.DeviceId), lateDict.GetValueOrDefault(d.DeviceId), est);
             var health = GetHealth(d, stats);
             list.Add(new DeviceListDto(
                 d.DeviceId, d.DisplayName, d.Brand, d.Model, d.OsVersion, d.AppVersion,

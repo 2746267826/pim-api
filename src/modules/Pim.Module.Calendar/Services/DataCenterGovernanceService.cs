@@ -198,7 +198,6 @@ public sealed class DataCenterGovernanceService
                 {
                     affectedCount += await ArchiveObjectAsync(obj, confirmation.Id, operationKind, deletedAt, token);
                 }
-                await _db.SaveChangesAsync(token);
                 await tx.CommitAsync(token);
                 return affectedCount;
             }, ct);
@@ -212,7 +211,6 @@ public sealed class DataCenterGovernanceService
             {
                 affectedCount += await ArchiveObjectAsync(obj, confirmation.Id, operationKind, deletedAt, ct);
             }
-            await _db.SaveChangesAsync(ct);
             return affectedCount;
         }
     }
