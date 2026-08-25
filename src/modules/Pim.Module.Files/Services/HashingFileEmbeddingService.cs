@@ -3,6 +3,10 @@ using System.Text;
 
 namespace Pim.Module.Files.Services;
 
+/// <summary>
+/// Development stub using hashing trick - NOT semantic. Production should replace with real model (e.g. BGE / text-embedding-3-small).
+/// Improved to use signed multi-hash to reduce collisions and better spread.
+/// </summary>
 public sealed class HashingFileEmbeddingService : IFileEmbeddingService
 {
     public const int DefaultDimensions = 384;
@@ -30,8 +34,11 @@ public sealed class HashingFileEmbeddingService : IFileEmbeddingService
         foreach (var token in tokens)
         {
             ct.ThrowIfCancellationRequested();
-            var dimension = HashToDimension(token);
-            vector[dimension] += increment;
+            // Spread each token across 2 hashed dimensions with signed weights to reduce collisions
+            var (dim1, sign1) = HashToDimensionAndSign(token, 0);
+            var (dim2, sign2) = HashToDimensionAndSign(token, 1);
+            vector[dim1] += sign1 * increment * 0.7f;
+            vector[dim2] += sign2 * increment * 0.3f;
         }
 
         Normalize(vector);
@@ -63,13 +70,14 @@ public sealed class HashingFileEmbeddingService : IFileEmbeddingService
             yield return builder.ToString();
     }
 
-    private int HashToDimension(string token)
+    private (int dim, float sign) HashToDimensionAndSign(string token, int seed)
     {
         Span<byte> hash = stackalloc byte[32];
-        SHA256.HashData(Encoding.UTF8.GetBytes(token), hash);
-        var value = BitConverter.ToUInt32(hash[..4]);
-
-        return (int)(value % (uint)Dimensions);
+        var input = seed == 0 ? token : $"{token}\0{seed}";
+        SHA256.HashData(Encoding.UTF8.GetBytes(input), hash);
+        var dim = (int)(BitConverter.ToUInt32(hash[..4]) % (uint)Dimensions);
+        var sign = (hash[4] & 1) == 0 ? 1f : -1f;
+        return (dim, sign);
     }
 
     private static void Normalize(float[] vector)

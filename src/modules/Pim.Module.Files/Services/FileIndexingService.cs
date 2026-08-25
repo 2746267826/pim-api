@@ -197,8 +197,9 @@ public sealed class FileIndexingService(
 
     private async Task<IReadOnlyList<FileItemDto>> SearchItemsAsync(string search, CancellationToken ct)
     {
-        var lower = search.ToLowerInvariant();
-        return await db.Set<FileItemEntity>()
+        var lowered = search.ToLowerInvariant();
+        // DB-side filtering via IQueryable to avoid full table load (OOM risk)
+        var entities = await db.Set<FileItemEntity>()
             .AsNoTracking()
             .Include(item => item.Provider)
             .Include(item => item.IndexJobs)
@@ -206,15 +207,16 @@ public sealed class FileIndexingService(
                 item.Provider != null
                 && item.Provider.UserId == UserId
                 && !item.IsDeleted
-                && (item.Name.ToLower().Contains(lower)
-                    || item.Path.ToLower().Contains(lower)
-                    || (item.MimeType != null && item.MimeType.ToLower().Contains(lower))))
+                && (item.Name.ToLower().Contains(lowered)
+                    || item.Path.ToLower().Contains(lowered)
+                    || (item.MimeType != null && item.MimeType.ToLower().Contains(lowered))))
             .OrderBy(item => item.ItemType == "folder" ? 0 : 1)
-            .ThenBy(item => item.Name)
+            .ThenBy(item => item.Name.ToLower())
             .ThenBy(item => item.Id)
             .Take(20)
-            .Select(item => MapFileItem(item))
             .ToListAsync(ct);
+
+        return entities.Select(MapFileItem).ToList();
     }
 
     private async Task<FileItemEntity> LoadItemAsync(

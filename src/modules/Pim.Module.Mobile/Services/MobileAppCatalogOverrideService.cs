@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -219,7 +220,7 @@ public sealed class MobileAppCatalogOverrideService
 
         var timelineCount = 0;
         foreach (var block in candidateBlocks.Where(block => !block.IsStale
-            && ContainsPackageExact(block.TopAppsJson, normalizedPackageName)))
+            && TopAppsJsonContainsPackage(block.TopAppsJson, normalizedPackageName)))
         {
             block.IsStale = true;
             block.UpdatedAt = now;
@@ -297,53 +298,67 @@ public sealed class MobileAppCatalogOverrideService
         return normalized;
     }
 
-    private static bool ContainsPackageExact(string json, string packageName)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return false;
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
-            {
-                foreach (var el in doc.RootElement.EnumerateArray())
-                {
-                    string? value = null;
-                    if (el.ValueKind == System.Text.Json.JsonValueKind.String)
-                        value = el.GetString();
-                    else if (el.ValueKind == System.Text.Json.JsonValueKind.Object)
-                    {
-                        if (el.TryGetProperty("packageName", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.String)
-                            value = p.GetString();
-                        else if (el.TryGetProperty("package_name", out var p2) && p2.ValueKind == System.Text.Json.JsonValueKind.String)
-                            value = p2.GetString();
-                    }
-                    if (string.Equals(value, packageName, StringComparison.OrdinalIgnoreCase))
-                        return true;
-                }
-                return false;
-            }
-            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
-            {
-                foreach (var prop in doc.RootElement.EnumerateObject())
-                {
-                    if (string.Equals(prop.Name, packageName, StringComparison.OrdinalIgnoreCase))
-                        return true;
-                }
-            }
-            return false;
-        }
-        catch
-        {
-            // fallback: exact token check avoiding substring pollution – split by JSON delimiters
-            var tokens = json.Split(new[] { '"', '\'', ':', ',', '[', ']', '{', '}', ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            return tokens.Any(t => string.Equals(t, packageName, StringComparison.OrdinalIgnoreCase));
-        }
-    }
-
     private static string? NullIfBlank(string? value)
     {
         var normalized = value?.Trim();
         return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+    }
+
+    private static bool TopAppsJsonContainsPackage(string json, string packageName)
+    {
+        if (string.IsNullOrWhiteSpace(json) || string.IsNullOrWhiteSpace(packageName))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var element in doc.RootElement.EnumerateArray())
+                {
+                    if (element.ValueKind == JsonValueKind.String)
+                    {
+                        if (string.Equals(element.GetString(), packageName, StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                    else if (element.ValueKind == JsonValueKind.Object)
+                    {
+                        foreach (var prop in element.EnumerateObject())
+                        {
+                            if (prop.NameEquals("packageName"u8) || prop.NameEquals("PackageName"u8) || string.Equals(prop.Name, "package_name", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (prop.Value.ValueKind == JsonValueKind.String
+                                    && string.Equals(prop.Value.GetString(), packageName, StringComparison.OrdinalIgnoreCase))
+                                    return true;
+                            }
+                        }
+                    }
+                }
+
+                return false;
+            }
+
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    if (prop.NameEquals("packageName"u8) || prop.NameEquals("PackageName"u8) || string.Equals(prop.Name, "package_name", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (prop.Value.ValueKind == JsonValueKind.String
+                            && string.Equals(prop.Value.GetString(), packageName, StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+        catch (JsonException ex)
+        {
+            // Keep not stale on malformed JSON but retain observability for diagnostics
+            System.Diagnostics.Debug.WriteLine($"TopAppsJson parse failed for package '{packageName}': {ex.Message}");
+            return false;
+        }
     }
 }
 
