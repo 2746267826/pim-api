@@ -18,17 +18,20 @@ public sealed class DataCenterGovernanceService
     private readonly ICurrentUserService _currentUser;
     private readonly IOperationConfirmationService _confirmations;
     private readonly AuditVersionService _auditVersions;
+    private readonly TimeProvider _timeProvider;
 
     public DataCenterGovernanceService(
         PimDbContext db,
         ICurrentUserService currentUser,
         IOperationConfirmationService confirmations,
-        AuditVersionService auditVersions)
+        AuditVersionService auditVersions,
+        TimeProvider? timeProvider = null)
     {
         _db = db;
         _currentUser = currentUser;
         _confirmations = confirmations;
         _auditVersions = auditVersions;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "Login required");
@@ -75,7 +78,7 @@ public sealed class DataCenterGovernanceService
                 "data-center",
                 payloadJson,
                 previewJson,
-                DateTimeOffset.UtcNow.AddHours(8),
+                _timeProvider.GetUtcNow().AddHours(8),
                 Guid.NewGuid().ToString("N"),
                 preview.AffectedObjectTypes,
                 ["confirm-strict", "reject"],
@@ -137,7 +140,7 @@ public sealed class DataCenterGovernanceService
                 "data-center",
                 payloadJson,
                 previewJson,
-                DateTimeOffset.UtcNow.AddHours(8),
+                _timeProvider.GetUtcNow().AddHours(8),
                 request.AuditVersionId.ToString("N"),
                 preview.ChangedFields,
                 ["confirm-strict", "reject"],
@@ -182,16 +185,34 @@ public sealed class DataCenterGovernanceService
             throw new DomainException(02049, $"Unsupported data center batch action '{request.Action}'.");
         }
 
-        var affectedCount = 0;
-        var deletedAt = DateTimeOffset.UtcNow;
-        var operationKind = $"data-center.batch.{action.ToLowerInvariant()}";
-
-        foreach (var obj in NormalizeObjects(request.Objects))
+        if (_db.Database.IsRelational())
         {
-            affectedCount += await ArchiveObjectAsync(obj, confirmation.Id, operationKind, deletedAt, ct);
+            var strategy = _db.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async token =>
+            {
+                await using var tx = await _db.Database.BeginTransactionAsync(token);
+                var affectedCount = 0;
+                var deletedAt = _timeProvider.GetUtcNow();
+                var operationKind = $"data-center.batch.{action.ToLowerInvariant()}";
+                foreach (var obj in NormalizeObjects(request.Objects))
+                {
+                    affectedCount += await ArchiveObjectAsync(obj, confirmation.Id, operationKind, deletedAt, token);
+                }
+                await tx.CommitAsync(token);
+                return affectedCount;
+            }, ct);
         }
-
-        return affectedCount;
+        else
+        {
+            var affectedCount = 0;
+            var deletedAt = _timeProvider.GetUtcNow();
+            var operationKind = $"data-center.batch.{action.ToLowerInvariant()}";
+            foreach (var obj in NormalizeObjects(request.Objects))
+            {
+                affectedCount += await ArchiveObjectAsync(obj, confirmation.Id, operationKind, deletedAt, ct);
+            }
+            return affectedCount;
+        }
     }
 
     private async Task<int> ArchiveObjectAsync(

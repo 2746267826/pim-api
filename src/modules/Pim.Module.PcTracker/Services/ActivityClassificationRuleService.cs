@@ -46,8 +46,31 @@ public sealed class ActivityClassificationRuleService
         var categoryId = await ResolveCategoryIdAsync(request, ct);
         var rule = ToEntity(request, categoryId);
         _db.Set<ActivityCategoryRuleEntity>().Add(rule);
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            throw new InvalidOperationException($"活动分类规则「{request.RuleName.Trim()}」已存在。", ex);
+        }
         return ToDto(rule);
+    }
+
+    private static bool IsUniqueViolation(DbUpdateException ex)
+    {
+        var inner = ex.InnerException;
+        while (inner != null)
+        {
+            if (inner.GetType().Name == "PostgresException")
+            {
+                var prop = inner.GetType().GetProperty("SqlState");
+                if (prop?.GetValue(inner) as string == "23505") return true;
+            }
+            inner = inner.InnerException;
+        }
+        return ex.InnerException?.Message.Contains("23505") == true
+            || ex.Message.Contains("23505");
     }
 
     public async Task ValidateAsync(

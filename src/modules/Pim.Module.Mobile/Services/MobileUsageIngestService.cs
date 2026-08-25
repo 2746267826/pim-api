@@ -216,36 +216,25 @@ public sealed class MobileUsageIngestService
 
         if (validEvents.Count > 0)
         {
-            var firstEventAt = validEvents.Min(e => e.EventTimestampUtc);
-            var lastEventAt = validEvents.Max(e => e.EventTimestampUtc);
-            var packageNames = validEvents
-                .Select(e => e.PackageName)
-                .Distinct(StringComparer.Ordinal)
-                .ToArray();
-
-            var existingQuery = _db.Set<MobileUsageEventEntity>()
-                .AsNoTracking()
-                .Where(e => e.UserId == userId
-                    && e.DeviceId == request.DeviceId
-                    && e.EventTimestampUtc >= firstEventAt
-                    && e.EventTimestampUtc <= lastEventAt
-                    && packageNames.Contains(e.PackageName));
-
-            knownKeys = (await existingQuery
-                    .Select(e => new
-                    {
-                        e.PackageName,
-                        e.EventType,
-                        e.EventTimestampUtc,
-                        e.ClassName
-                    })
-                    .ToListAsync(ct))
-                .Select(e => new EventKey(
-                    e.PackageName,
-                    e.EventType,
-                    e.EventTimestampUtc,
-                    NormalizeClassName(e.ClassName)))
-                .ToHashSet();
+            const int chunkSize = 500;
+            for (var offset = 0; offset < validEvents.Count; offset += chunkSize)
+            {
+                var chunk = validEvents.Skip(offset).Take(chunkSize).ToList();
+                var chunkFirst = chunk.Min(e => e.EventTimestampUtc);
+                var chunkLast = chunk.Max(e => e.EventTimestampUtc);
+                var chunkPackages = chunk.Select(e => e.PackageName).Distinct(StringComparer.Ordinal).ToArray();
+                var existingChunk = await _db.Set<MobileUsageEventEntity>()
+                    .AsNoTracking()
+                    .Where(e => e.UserId == userId
+                        && e.DeviceId == request.DeviceId
+                        && e.EventTimestampUtc >= chunkFirst
+                        && e.EventTimestampUtc <= chunkLast
+                        && chunkPackages.Contains(e.PackageName))
+                    .Select(e => new { e.PackageName, e.EventType, e.EventTimestampUtc, e.ClassName })
+                    .ToListAsync(ct);
+                foreach (var e in existingChunk)
+                    knownKeys.Add(new EventKey(e.PackageName, e.EventType, e.EventTimestampUtc, NormalizeClassName(e.ClassName)));
+            }
         }
 
         var results = new List<MobileIngestItemResult>(request.Events.Count);

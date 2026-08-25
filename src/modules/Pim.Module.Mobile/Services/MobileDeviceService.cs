@@ -10,17 +10,19 @@ public sealed class MobileDeviceService
 {
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
+    private readonly TimeProvider _timeProvider;
 
-    public MobileDeviceService(PimDbContext db, ICurrentUserService currentUser)
+    public MobileDeviceService(PimDbContext db, ICurrentUserService currentUser, TimeProvider? timeProvider = null)
     {
         _db = db;
         _currentUser = currentUser;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<MobileDeviceDto> RegisterAsync(MobileDeviceRegisterRequest request, CancellationToken ct = default)
     {
         var userId = MobileUserContext.RequireUserId(_currentUser);
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
         var entity = await _db.Set<MobileDeviceEntity>()
             .SingleOrDefaultAsync(d => d.UserId == userId && d.DeviceId == request.DeviceId, ct);
 

@@ -197,29 +197,24 @@ public sealed class FileIndexingService(
 
     private async Task<IReadOnlyList<FileItemDto>> SearchItemsAsync(string search, CancellationToken ct)
     {
-        var lowered = search.ToLowerInvariant();
-        var items = await db.Set<FileItemEntity>()
+        var lower = search.ToLowerInvariant();
+        return await db.Set<FileItemEntity>()
             .AsNoTracking()
             .Include(item => item.Provider)
             .Include(item => item.IndexJobs)
             .Where(item =>
                 item.Provider != null
                 && item.Provider.UserId == UserId
-                && !item.IsDeleted)
-            .ToListAsync(ct);
-
-        return items
-            .Where(item =>
-                item.Name.Contains(search, StringComparison.OrdinalIgnoreCase)
-                || item.Path.Contains(search, StringComparison.OrdinalIgnoreCase)
-                || (item.MimeType?.Contains(search, StringComparison.OrdinalIgnoreCase) ?? false)
-                || item.Name.ToLowerInvariant().Contains(lowered, StringComparison.Ordinal))
+                && !item.IsDeleted
+                && (item.Name.ToLower().Contains(lower)
+                    || item.Path.ToLower().Contains(lower)
+                    || (item.MimeType != null && item.MimeType.ToLower().Contains(lower))))
             .OrderBy(item => item.ItemType == "folder" ? 0 : 1)
-            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Name)
             .ThenBy(item => item.Id)
             .Take(20)
-            .Select(MapFileItem)
-            .ToList();
+            .Select(item => MapFileItem(item))
+            .ToListAsync(ct);
     }
 
     private async Task<FileItemEntity> LoadItemAsync(

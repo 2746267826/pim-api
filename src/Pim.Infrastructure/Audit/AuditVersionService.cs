@@ -9,10 +9,12 @@ namespace Pim.Infrastructure.Audit;
 public sealed class AuditVersionService
 {
     private readonly PimDbContext _db;
+    private readonly TimeProvider _timeProvider;
 
-    public AuditVersionService(PimDbContext db)
+    public AuditVersionService(PimDbContext db, TimeProvider? timeProvider = null)
     {
         _db = db;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<AuditVersionDto> RecordAsync(
@@ -37,7 +39,7 @@ public sealed class AuditVersionService
             BeforeJson = JsonSerializer.Serialize(before),
             AfterJson = JsonSerializer.Serialize(after),
             ChangedFieldsJson = JsonSerializer.Serialize(changedFields),
-            CreatedAt = DateTimeOffset.UtcNow
+            CreatedAt = _timeProvider.GetUtcNow()
         };
 
         _db.AuditVersions.Add(entity);
@@ -91,14 +93,19 @@ public sealed class AuditVersionService
         Guid userId,
         CancellationToken ct = default)
     {
-        var items = await _db.AuditVersions
+        if (end < start) (start, end) = (end, start);
+        // Limit export range and count to prevent OOM: large range allowed but only latest 5000 returned
+        const int maxExport = 5000;
+        // 返回最近的 maxExport 条，按时间升序返回
+        var itemsDesc = await _db.AuditVersions
             .AsNoTracking()
             .Where(v => v.CreatedAt >= start && v.CreatedAt <= end && v.UserId == userId)
-            .OrderBy(v => v.CreatedAt)
-            .ThenBy(v => v.Id)
+            .OrderByDescending(v => v.CreatedAt)
+            .ThenByDescending(v => v.Id)
+            .Take(maxExport)
             .Select(v => Map(v))
             .ToListAsync(ct);
-
+        var items = itemsDesc.OrderBy(v => v.CreatedAt).ThenBy(v => v.Id).ToList();
         return new AuditExportResponse(
             "audit-export.json",
             "application/json",
