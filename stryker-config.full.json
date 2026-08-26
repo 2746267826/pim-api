@@ -1,0 +1,15 @@
+{
+  "stryker-config": {
+    "test-projects": ["tests/Pim.UnitTests/Pim.UnitTests.csproj"],
+    "mutate": ["src/**/*.cs", "!**/Migrations/**", "!**/obj/**", "!**/bin/**"],
+    "mutation-level": "Basic",
+    "thresholds": {
+      "high": 80,
+      "low": 60,
+      "break": 70
+    },
+    "reporters": ["html", "progress", "json"],
+    "concurrency": 4,
+    "coverage-analysis": "perTest"
+  }
+}

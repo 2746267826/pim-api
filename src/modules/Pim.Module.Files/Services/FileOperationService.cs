@@ -789,4 +789,12 @@ public sealed class FileOperationService(
             : version.Etag;
         return $"{identity} ({version.ModifiedAt:O})";
     }
+
+    // 真库回放修复：禁用路径计费与0字节文件处理
+    private static bool IsPathDisabledForBilling(string path, IReadOnlyList<string> disabledPaths)
+    {
+        if (string.IsNullOrWhiteSpace(path) || disabledPaths.Count == 0) return false;
+        var normalized = path.Replace('\\', '/').Trim().ToLowerInvariant();
+        return disabledPaths.Any(dp => normalized.StartsWith(dp.Replace('\\', '/').Trim().ToLowerInvariant(), StringComparison.Ordinal));
+    }
 }

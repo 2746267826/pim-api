@@ -59,9 +59,10 @@ public sealed class CalendarScheduleTodaySectionProvider(CalendarService calenda
         var end = start.AddDays(1);
         var events = await calendarService.GetEventsAsync(start, end, ct);
         var tasks = await calendarService.GetTasksAsync(null, ct);
+        var shanghai = ResolveShanghaiTimeZone();
         var scheduledTasks = tasks
             .Where(t => !string.Equals(t.Status, "COMPLETED", StringComparison.OrdinalIgnoreCase))
-            .Where(t => t.DtStart is not null && DateOnly.FromDateTime(t.DtStart.Value.ToLocalTime().Date) == query.Date)
+            .Where(t => t.DtStart is not null && DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(t.DtStart.Value, shanghai).Date) == query.Date)
             .OrderBy(t => t.DtStart)
             .ToList();
         var status = events.Count == 0 && scheduledTasks.Count == 0
@@ -80,6 +81,13 @@ public sealed class CalendarScheduleTodaySectionProvider(CalendarService calenda
     {
         var local = date.ToDateTime(TimeOnly.MinValue);
         return new DateTimeOffset(local, TimeZoneInfo.Local.GetUtcOffset(local));
+    }
+
+    private static TimeZoneInfo ResolveShanghaiTimeZone()
+    {
+        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"); }
+        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
+        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
     }
 }
 
@@ -254,9 +262,10 @@ public sealed class ReportsAvailableTodaySectionProvider(ReportService reportSer
     public async Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
     {
         var reports = await reportService.ListAsync(ct);
+        var shanghai2 = ResolveShanghaiTimeZone();
         var available = reports
             .Where(r => string.Equals(r.Status, "Active", StringComparison.OrdinalIgnoreCase))
-            .Where(r => DateOnly.FromDateTime(r.GeneratedAt.ToLocalTime().Date) == query.Date)
+            .Where(r => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(r.GeneratedAt, shanghai2).Date) == query.Date)
             .Take(5)
             .ToList();
 
@@ -266,6 +275,13 @@ public sealed class ReportsAvailableTodaySectionProvider(ReportService reportSer
             available.Count == 0 ? TodaySectionStatuses.Empty : TodaySectionStatuses.Normal,
             new ReportsAvailableTodayData(available.Count, available),
             TodaySectionProviderResult.Details("/reports"));
+    }
+
+    private static TimeZoneInfo ResolveShanghaiTimeZone()
+    {
+        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"); }
+        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
+        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
     }
 }
 
@@ -407,4 +423,11 @@ internal static class TodaySectionProviderResult
             PimHealthStatus.Critical => TodaySectionStatuses.Critical,
             _ => TodaySectionStatuses.Unavailable
         };
+
+    private static TimeZoneInfo ResolveShanghaiTimeZone()
+    {
+        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"); }
+        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
+        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
+    }
 }

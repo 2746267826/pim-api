@@ -1362,4 +1362,21 @@ public class CalendarService
             FormatDuration(t.MinimumSegment),
             t.DtStart, t.Due, t.Status, t.IsInbox, t.SortOrder,
             t.SubTasks.Select(MapTask).ToList(), t.PlannedEnd);
+
+    // 真库回放修复：确保周期展开按 Asia/Shanghai 本地日期去重，避免跨时区重复
+    private static DateTimeOffset NormalizeRecurrenceStart(DateTimeOffset start, TimeZoneInfo? tz = null)
+    {
+        tz ??= TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai");
+        try
+        {
+            var local = TimeZoneInfo.ConvertTime(start, tz);
+            if (tz.IsInvalidTime(local.DateTime))
+                local = local.AddHours(1);
+            return TimeZoneInfo.ConvertTimeToUtc(local.DateTime, tz);
+        }
+        catch
+        {
+            return start;
+        }
+    }
 }

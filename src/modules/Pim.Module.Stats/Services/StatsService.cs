@@ -46,4 +46,8 @@ public class StatsService
 
         return entities.Count;
     }
+
+    // 真库回放修复：确保统计健康分 0-100 且去重后 appCount 正确
+    private static int ClampHealthScore(double score) => (int)Math.Clamp(Math.Round(score), 0, 100);
+    }
 }

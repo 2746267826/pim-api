@@ -27,9 +27,9 @@ public static class RealDataSampler
     private const string SeedFileRelative = "Harness/SeedData/sampled_sessions.json";
 
     /// <summary>
-    /// 采样并写入种子文件，供后续测试复用
+    /// 采样并写入种子文件，供后续测试复用（默认1000行，满足离线兜底）
     /// </summary>
-    public static List<SampledSession> SampleAndWrite(int count = 100, int seed = 42)
+    public static List<SampledSession> SampleAndWrite(int count = 1000, int seed = 42)
     {
         var sessions = TrySampleFromDb(count) ?? GenerateSynthetic(count, seed);
         var anonymized = Anonymize(sessions, seed);
@@ -38,9 +38,9 @@ public static class RealDataSampler
     }
 
     /// <summary>
-    /// 直接生成脱敏合成数据（DB不可用时回退）
+    /// 直接生成脱敏合成数据（DB不可用时回退，默认1000行）
     /// </summary>
-    public static List<SampledSession> GenerateSynthetic(int count = 100, int seed = 42)
+    public static List<SampledSession> GenerateSynthetic(int count = 1000, int seed = 42)
     {
         var faker = new Faker("zh_CN");
         faker.Random = new Randomizer(seed);
@@ -122,28 +122,23 @@ public static class RealDataSampler
     {
         try
         {
-            var psi = new ProcessStartInfo("docker", $"exec 1Panel-postgresql-rIyE psql -U pim -d pim_prod -t -A -F\",\" -c \"SELECT user_id, device_id, package_name, start_utc, end_utc, duration_ms, quality_flags_json FROM mobile_usage_sessions ORDER BY random() LIMIT {count}\"")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            };
-            using var proc = Process.Start(psi);
-            if (proc == null) return null;
-            var output = proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit(5000);
-            if (proc.ExitCode != 0 || string.IsNullOrWhiteSpace(output)) return null;
-            var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            // 优先用 Npgsql 直连真库 pim（Host 127.0.0.1），失败回退合成
+            const string connStr = "Host=127.0.0.1;Database=pim;Username=opencode;Password=62f0a50bb963bb648f8e400399def95a;CommandTimeout=30";
+            using var conn = new Npgsql.NpgsqlConnection(connStr);
+            conn.Open();
+            using var cmd = new Npgsql.NpgsqlCommand($"SELECT user_id, device_id, package_name, start_utc, end_utc, duration_ms, quality_flags_json FROM mobile_usage_sessions ORDER BY random() LIMIT {count}", conn);
+            using var reader = cmd.ExecuteReader();
             var list = new List<SampledSession>();
-            foreach (var line in lines)
+            while (reader.Read())
             {
-                var parts = line.Split(',');
-                if (parts.Length < 5) continue;
-                if (!DateTimeOffset.TryParse(parts[3], out var start)) continue;
-                DateTimeOffset? end = DateTimeOffset.TryParse(parts[4], out var e) ? e : null;
-                var duration = parts.Length > 5 && long.TryParse(parts[5], out var d) ? d : (end.HasValue ? (long)(end.Value - start).TotalMilliseconds : 0);
-                var quality = parts.Length > 6 ? parts[6] : "[]";
-                list.Add(new SampledSession(parts[0], parts[1], parts[2], start, end, duration, quality));
+                var userId = reader.GetGuid(0).ToString();
+                var deviceId = reader.GetString(1);
+                var pkg = reader.GetString(2);
+                var start = reader.GetFieldValue<DateTimeOffset>(3);
+                DateTimeOffset? end = reader.IsDBNull(4) ? null : reader.GetFieldValue<DateTimeOffset>(4);
+                var duration = reader.IsDBNull(5) ? (end.HasValue ? (long)(end.Value - start).TotalMilliseconds : 0) : reader.GetInt64(5);
+                var quality = reader.IsDBNull(6) ? "[]" : reader.GetString(6);
+                list.Add(new SampledSession(userId, deviceId, pkg, start, end, duration, quality));
             }
             return list.Count > 0 ? list : null;
         }
