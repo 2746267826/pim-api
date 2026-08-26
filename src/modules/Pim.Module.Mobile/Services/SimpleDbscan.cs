@@ -35,6 +35,7 @@ public static class SimpleDbscan
 
             var id = clusters.Count;
             var members = new List<int>();
+            var queued = new HashSet<int>(neighbors);
             var queue = new Queue<int>(neighbors);
             while (queue.Count > 0)
             {
@@ -46,7 +47,10 @@ public static class SimpleDbscan
                     if (candidateNeighbors.Count >= minPts)
                     {
                         foreach (var neighbor in candidateNeighbors)
-                            queue.Enqueue(neighbor);
+                        {
+                            if (queued.Add(neighbor))
+                                queue.Enqueue(neighbor);
+                        }
                     }
                 }
 
@@ -56,6 +60,7 @@ public static class SimpleDbscan
                     members.Add(candidate);
                 }
             }
+            members.Sort();
 
             clusters.Add(members);
         }

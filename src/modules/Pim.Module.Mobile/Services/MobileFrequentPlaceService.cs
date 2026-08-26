@@ -96,8 +96,10 @@ public sealed class MobileFrequentPlaceService
             var members = cluster.Select(index => points[index]).ToList();
             var (centroidX, centroidY) = Centroid(cluster, projected);
             var (latitude, longitude) = ToLatLon(centroidX, centroidY, cosMeanLat);
-            var radiusMeters = cluster.Max(index => DistanceMeters(
+            var rawRadius = cluster.Max(index => DistanceMeters(
                 centroidX, centroidY, projected[index].X, projected[index].Y));
+            // 半径阈值来源: INV-L15 要求 [0,500]，防止异常聚类半径过大
+            var radiusMeters = Math.Clamp(rawRadius, 0, 500);
             var visitDayCount = members
                 .Select(point => TimeZoneInfo.ConvertTime(point.RecordedAtUtc, timeZone).Date)
                 .Distinct()

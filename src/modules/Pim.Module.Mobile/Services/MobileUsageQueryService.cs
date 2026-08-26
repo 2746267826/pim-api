@@ -33,7 +33,8 @@ public sealed class MobileUsageQueryService
         if (query.RangeEndUtc is not null)
             summaries = summaries.Where(s => s.WindowStartUtc < query.RangeEndUtc);
 
-        var summaryRows = await summaries.ToListAsync(ct);
+        var rawSummaryRows = await summaries.ToListAsync(ct);
+        var summaryRows = DeduplicateSummaries(rawSummaryRows);
         var deviceIds = summaryRows.Select(s => s.DeviceId).Distinct().ToArray();
         var packageNames = summaryRows.Select(s => s.PackageName).Distinct().ToArray();
         var appCatalog = await AppCatalog(userId, query.DeviceId, packageNames, ct);
@@ -321,4 +322,25 @@ public sealed class MobileUsageQueryService
 
     private static long DurationMs(DateTimeOffset start, DateTimeOffset? end)
         => end is null ? 0 : Convert.ToInt64((end.Value - start).TotalMilliseconds);
+
+    private static List<MobileUsageSummaryEntity> DeduplicateSummaries(List<MobileUsageSummaryEntity> summaries)
+    {
+        var shanghai = ResolveShanghaiTimeZone();
+        return summaries
+            .GroupBy(s =>
+            {
+                var localStart = TimeZoneInfo.ConvertTime(s.WindowStartUtc, shanghai);
+                var hourKey = new DateTime(localStart.Year, localStart.Month, localStart.Day, localStart.Hour, 0, 0);
+                return (DeviceId: s.DeviceId, Package: s.PackageName.ToLowerInvariant(), HourStart: hourKey);
+            })
+            .Select(g => g.OrderByDescending(s => s.TotalTimeVisibleMs).First())
+            .ToList();
+    }
+
+    private static TimeZoneInfo ResolveShanghaiTimeZone()
+    {
+        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"); }
+        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
+        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
+    }
 }

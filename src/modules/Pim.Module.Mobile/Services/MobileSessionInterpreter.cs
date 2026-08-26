@@ -67,7 +67,20 @@ public sealed class MobileSessionInterpreter
 
     private void AddSession(MobileUsageEventEntity startEvent, DateTimeOffset endUtc, string qualityFlagsJson)
     {
+        // 跨天/0ms/1ms边界：确保 EndUtc 合法且 DurationMs 精确
+        if (endUtc < startEvent.EventTimestampUtc)
+            endUtc = startEvent.EventTimestampUtc;
         var duration = Math.Max(0, (long)(endUtc - startEvent.EventTimestampUtc).TotalMilliseconds);
+        // 0ms 与 1ms 为合法边缘，需保留但标记质量
+        var flags = qualityFlagsJson;
+        if (duration == 0 && !flags.Contains("zero-duration", StringComparison.OrdinalIgnoreCase))
+            flags = flags == "[]" ? "[\"zero-duration\"]" : flags.TrimEnd(']') + ",\"zero-duration\"]";
+        else if (duration == 1 && !flags.Contains("one-ms", StringComparison.OrdinalIgnoreCase))
+            flags = flags == "[]" ? "[\"one-ms\"]" : flags.TrimEnd(']') + ",\"one-ms\"]";
+        // 异常超长会话标记，后续聚合会过滤 (>8h)
+        if (duration > 8L * 3600 * 1000 && !flags.Contains("anomalous_duration", StringComparison.OrdinalIgnoreCase))
+            flags = flags == "[]" ? "[\"anomalous_duration\"]" : flags.TrimEnd(']') + ",\"anomalous_duration\"]";
+
         _db.Set<MobileUsageSessionEntity>().Add(new MobileUsageSessionEntity
         {
             UserId = startEvent.UserId,
@@ -76,7 +89,7 @@ public sealed class MobileSessionInterpreter
             StartUtc = startEvent.EventTimestampUtc,
             EndUtc = endUtc,
             DurationMs = duration,
-            QualityFlagsJson = qualityFlagsJson,
+            QualityFlagsJson = flags,
             CreatedAt = DateTimeOffset.UtcNow
         });
     }

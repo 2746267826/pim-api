@@ -1,0 +1,902 @@
+[
+  {
+    "AnonUserId": "anon_user_7012",
+    "AnonDeviceId": "anon_device_226",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T15:21:59+08:00",
+    "EndUtc": "2026-07-06T15:30:27.125+08:00",
+    "DurationMs": 508125,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2129",
+    "AnonDeviceId": "anon_device_570",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T16:39:41+08:00",
+    "EndUtc": "2026-07-06T17:10:28.009+08:00",
+    "DurationMs": 1847009,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2515",
+    "AnonDeviceId": "anon_device_336",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T11:37:44+08:00",
+    "EndUtc": "2026-07-06T11:56:57.519+08:00",
+    "DurationMs": 1153519,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_7519",
+    "AnonDeviceId": "anon_device_561",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T18:43:31+08:00",
+    "EndUtc": "2026-07-06T19:18:09.331+08:00",
+    "DurationMs": 2078331,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2562",
+    "AnonDeviceId": "anon_device_785",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T18:46:20+08:00",
+    "EndUtc": "2026-07-06T19:18:44.354+08:00",
+    "DurationMs": 1944354,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_3111",
+    "AnonDeviceId": "anon_device_331",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T15:55:47+08:00",
+    "EndUtc": "2026-07-06T16:26:46.573+08:00",
+    "DurationMs": 1859573,
+    "QualityFlagsJson": "[\u0022anomalous_duration\u0022]"
+  },
+  {
+    "AnonUserId": "anon_user_5550",
+    "AnonDeviceId": "anon_device_388",
+    "PackageName": "com.alibaba.taobao",
+    "StartUtc": "2026-07-06T18:53:05+08:00",
+    "EndUtc": "2026-07-06T18:53:20.234+08:00",
+    "DurationMs": 15234,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_4428",
+    "AnonDeviceId": "anon_device_334",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T03:25:47+08:00",
+    "EndUtc": "2026-07-06T03:27:22.796+08:00",
+    "DurationMs": 95796,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_5657",
+    "AnonDeviceId": "anon_device_131",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T05:44:57+08:00",
+    "EndUtc": "2026-07-06T06:31:17.97+08:00",
+    "DurationMs": 2780970,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_8327",
+    "AnonDeviceId": "anon_device_619",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T13:54:18+08:00",
+    "EndUtc": "2026-07-06T14:25:15.772+08:00",
+    "DurationMs": 1857772,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_4577",
+    "AnonDeviceId": "anon_device_236",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T05:01:27+08:00",
+    "EndUtc": "2026-07-06T05:02:15.7+08:00",
+    "DurationMs": 48700,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1811",
+    "AnonDeviceId": "anon_device_734",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T01:37:54+08:00",
+    "EndUtc": "2026-07-06T02:05:45.273+08:00",
+    "DurationMs": 1671273,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_8345",
+    "AnonDeviceId": "anon_device_585",
+    "PackageName": "com.baidu.BaiduMap",
+    "StartUtc": "2026-07-06T11:29:27+08:00",
+    "EndUtc": "2026-07-06T11:30:00.222+08:00",
+    "DurationMs": 33222,
+    "QualityFlagsJson": "[\u0022anomalous_duration\u0022]"
+  },
+  {
+    "AnonUserId": "anon_user_1397",
+    "AnonDeviceId": "anon_device_740",
+    "PackageName": "com.autonavi.minimap",
+    "StartUtc": "2026-07-06T15:02:43+08:00",
+    "EndUtc": "2026-07-06T15:04:48.306+08:00",
+    "DurationMs": 125306,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2329",
+    "AnonDeviceId": "anon_device_915",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T14:10:55+08:00",
+    "EndUtc": "2026-07-06T14:13:35.953+08:00",
+    "DurationMs": 160953,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_7233",
+    "AnonDeviceId": "anon_device_564",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T12:14:40+08:00",
+    "EndUtc": "2026-07-06T12:38:43.116+08:00",
+    "DurationMs": 1443116,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2677",
+    "AnonDeviceId": "anon_device_137",
+    "PackageName": "com.autonavi.minimap",
+    "StartUtc": "2026-07-06T00:26:47+08:00",
+    "EndUtc": "2026-07-06T01:19:41.169+08:00",
+    "DurationMs": 3174169,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_3773",
+    "AnonDeviceId": "anon_device_624",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T02:22:20+08:00",
+    "EndUtc": "2026-07-06T02:49:28.293+08:00",
+    "DurationMs": 1628293,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_8389",
+    "AnonDeviceId": "anon_device_103",
+    "PackageName": "com.alibaba.taobao",
+    "StartUtc": "2026-07-06T04:57:36+08:00",
+    "EndUtc": "2026-07-06T05:33:06.393+08:00",
+    "DurationMs": 2130393,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_5821",
+    "AnonDeviceId": "anon_device_824",
+    "PackageName": "com.alibaba.taobao",
+    "StartUtc": "2026-07-06T16:26:38+08:00",
+    "EndUtc": "2026-07-06T16:44:00.82+08:00",
+    "DurationMs": 1042820,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_7735",
+    "AnonDeviceId": "anon_device_336",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T07:56:40+08:00",
+    "EndUtc": "2026-07-06T08:52:24.697+08:00",
+    "DurationMs": 3344697,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_4461",
+    "AnonDeviceId": "anon_device_234",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T04:58:15+08:00",
+    "EndUtc": "2026-07-06T05:33:47.826+08:00",
+    "DurationMs": 2132826,
+    "QualityFlagsJson": "[\u0022anomalous_duration\u0022]"
+  },
+  {
+    "AnonUserId": "anon_user_1237",
+    "AnonDeviceId": "anon_device_145",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T02:26:24+08:00",
+    "EndUtc": "2026-07-06T02:45:41.391+08:00",
+    "DurationMs": 1157391,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_8034",
+    "AnonDeviceId": "anon_device_663",
+    "PackageName": "com.autonavi.minimap",
+    "StartUtc": "2026-07-06T00:58:04+08:00",
+    "EndUtc": "2026-07-06T01:48:29.944+08:00",
+    "DurationMs": 3025944,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2036",
+    "AnonDeviceId": "anon_device_324",
+    "PackageName": "com.netease.cloudmusic",
+    "StartUtc": "2026-07-06T06:25:38+08:00",
+    "EndUtc": "2026-07-06T06:58:21.693+08:00",
+    "DurationMs": 1963693,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_7951",
+    "AnonDeviceId": "anon_device_360",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T04:12:36+08:00",
+    "EndUtc": "2026-07-06T04:14:23.471+08:00",
+    "DurationMs": 107471,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_6833",
+    "AnonDeviceId": "anon_device_229",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T03:06:36+08:00",
+    "EndUtc": "2026-07-06T03:59:36.341+08:00",
+    "DurationMs": 3180341,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1400",
+    "AnonDeviceId": "anon_device_644",
+    "PackageName": "com.alibaba.taobao",
+    "StartUtc": "2026-07-06T16:23:14+08:00",
+    "EndUtc": "2026-07-06T16:30:33.818+08:00",
+    "DurationMs": 439818,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_5643",
+    "AnonDeviceId": "anon_device_145",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T08:00:31+08:00",
+    "EndUtc": "2026-07-06T08:58:20.709+08:00",
+    "DurationMs": 3469709,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1457",
+    "AnonDeviceId": "anon_device_478",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T02:57:05+08:00",
+    "EndUtc": "2026-07-06T03:03:32.295+08:00",
+    "DurationMs": 387295,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_7359",
+    "AnonDeviceId": "anon_device_665",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T09:17:31+08:00",
+    "EndUtc": "2026-07-06T09:52:58.269+08:00",
+    "DurationMs": 2127269,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2966",
+    "AnonDeviceId": "anon_device_111",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T20:28:58+08:00",
+    "EndUtc": "2026-07-06T20:39:20.305+08:00",
+    "DurationMs": 622305,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_4286",
+    "AnonDeviceId": "anon_device_340",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T18:54:50+08:00",
+    "EndUtc": "2026-07-06T19:39:40.589+08:00",
+    "DurationMs": 2690589,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1617",
+    "AnonDeviceId": "anon_device_746",
+    "PackageName": "com.netease.cloudmusic",
+    "StartUtc": "2026-07-06T05:41:00+08:00",
+    "EndUtc": "2026-07-06T06:34:16.915+08:00",
+    "DurationMs": 3196915,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1638",
+    "AnonDeviceId": "anon_device_517",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T19:10:24+08:00",
+    "EndUtc": "2026-07-06T19:48:48.459+08:00",
+    "DurationMs": 2304459,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1108",
+    "AnonDeviceId": "anon_device_665",
+    "PackageName": "com.autonavi.minimap",
+    "StartUtc": "2026-07-06T17:54:44+08:00",
+    "EndUtc": "2026-07-06T18:51:56.161+08:00",
+    "DurationMs": 3432161,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_8180",
+    "AnonDeviceId": "anon_device_561",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T03:35:31+08:00",
+    "EndUtc": "2026-07-06T04:10:46.52+08:00",
+    "DurationMs": 2115520,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_4952",
+    "AnonDeviceId": "anon_device_562",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T02:33:13+08:00",
+    "EndUtc": "2026-07-06T03:21:34.802+08:00",
+    "DurationMs": 2901802,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_5496",
+    "AnonDeviceId": "anon_device_108",
+    "PackageName": "com.alibaba.taobao",
+    "StartUtc": "2026-07-06T12:11:10+08:00",
+    "EndUtc": "2026-07-06T12:58:29.309+08:00",
+    "DurationMs": 2839309,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_8459",
+    "AnonDeviceId": "anon_device_111",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T01:16:50+08:00",
+    "EndUtc": "2026-07-06T01:29:42.78+08:00",
+    "DurationMs": 772780,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1027",
+    "AnonDeviceId": "anon_device_157",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T20:17:15+08:00",
+    "EndUtc": "2026-07-06T20:45:27.65+08:00",
+    "DurationMs": 1692650,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_6887",
+    "AnonDeviceId": "anon_device_131",
+    "PackageName": "com.baidu.BaiduMap",
+    "StartUtc": "2026-07-06T22:59:06+08:00",
+    "EndUtc": "2026-07-06T23:20:27.259+08:00",
+    "DurationMs": 1281259,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_9221",
+    "AnonDeviceId": "anon_device_936",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T13:38:25+08:00",
+    "EndUtc": "2026-07-06T14:15:11.588+08:00",
+    "DurationMs": 2206588,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1108",
+    "AnonDeviceId": "anon_device_515",
+    "PackageName": "com.autonavi.minimap",
+    "StartUtc": "2026-07-06T20:15:18+08:00",
+    "EndUtc": "2026-07-06T20:34:03.338+08:00",
+    "DurationMs": 1125338,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_4377",
+    "AnonDeviceId": "anon_device_103",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T06:51:43+08:00",
+    "EndUtc": "2026-07-06T07:26:32.294+08:00",
+    "DurationMs": 2089294,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_6549",
+    "AnonDeviceId": "anon_device_336",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T15:04:37+08:00",
+    "EndUtc": "2026-07-06T16:03:41.801+08:00",
+    "DurationMs": 3544801,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1399",
+    "AnonDeviceId": "anon_device_435",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T07:50:18+08:00",
+    "EndUtc": "2026-07-06T08:29:44.417+08:00",
+    "DurationMs": 2366417,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2276",
+    "AnonDeviceId": "anon_device_493",
+    "PackageName": "com.alibaba.taobao",
+    "StartUtc": "2026-07-06T07:54:33+08:00",
+    "EndUtc": "2026-07-06T08:07:40.422+08:00",
+    "DurationMs": 787422,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_8130",
+    "AnonDeviceId": "anon_device_579",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T15:17:59+08:00",
+    "EndUtc": "2026-07-06T15:23:58.318+08:00",
+    "DurationMs": 359318,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_4606",
+    "AnonDeviceId": "anon_device_367",
+    "PackageName": "com.alibaba.taobao",
+    "StartUtc": "2026-07-06T08:04:49+08:00",
+    "EndUtc": "2026-07-06T08:04:52.345+08:00",
+    "DurationMs": 3345,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_9165",
+    "AnonDeviceId": "anon_device_628",
+    "PackageName": "com.autonavi.minimap",
+    "StartUtc": "2026-07-06T14:48:39+08:00",
+    "EndUtc": "2026-07-06T14:55:10.64+08:00",
+    "DurationMs": 391640,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2966",
+    "AnonDeviceId": "anon_device_761",
+    "PackageName": "com.baidu.BaiduMap",
+    "StartUtc": "2026-07-06T14:45:47+08:00",
+    "EndUtc": "2026-07-06T15:24:56.248+08:00",
+    "DurationMs": 2349248,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1174",
+    "AnonDeviceId": "anon_device_103",
+    "PackageName": "com.baidu.BaiduMap",
+    "StartUtc": "2026-07-06T09:51:22+08:00",
+    "EndUtc": "2026-07-06T10:03:06.043+08:00",
+    "DurationMs": 704043,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_8935",
+    "AnonDeviceId": "anon_device_961",
+    "PackageName": "com.autonavi.minimap",
+    "StartUtc": "2026-07-06T09:27:41+08:00",
+    "EndUtc": "2026-07-06T10:06:58.185+08:00",
+    "DurationMs": 2357185,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_3995",
+    "AnonDeviceId": "anon_device_739",
+    "PackageName": "com.netease.cloudmusic",
+    "StartUtc": "2026-07-06T12:25:46+08:00",
+    "EndUtc": "2026-07-06T13:14:32.901+08:00",
+    "DurationMs": 2926901,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2461",
+    "AnonDeviceId": "anon_device_192",
+    "PackageName": "com.alibaba.taobao",
+    "StartUtc": "2026-07-06T10:23:06+08:00",
+    "EndUtc": "2026-07-06T11:22:29.321+08:00",
+    "DurationMs": 3563321,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_5069",
+    "AnonDeviceId": "anon_device_399",
+    "PackageName": "com.alibaba.taobao",
+    "StartUtc": "2026-07-06T09:39:49+08:00",
+    "EndUtc": "2026-07-06T09:49:38.962+08:00",
+    "DurationMs": 589962,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_7984",
+    "AnonDeviceId": "anon_device_233",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T10:36:35+08:00",
+    "EndUtc": "2026-07-06T10:55:07.974+08:00",
+    "DurationMs": 1112974,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2212",
+    "AnonDeviceId": "anon_device_294",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T04:20:00+08:00",
+    "EndUtc": "2026-07-06T05:07:49.147+08:00",
+    "DurationMs": 2869147,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_6324",
+    "AnonDeviceId": "anon_device_663",
+    "PackageName": "com.autonavi.minimap",
+    "StartUtc": "2026-07-06T04:47:37+08:00",
+    "EndUtc": "2026-07-06T05:44:27.098+08:00",
+    "DurationMs": 3410098,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_5615",
+    "AnonDeviceId": "anon_device_619",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T11:36:58+08:00",
+    "EndUtc": "2026-07-06T11:56:27.234+08:00",
+    "DurationMs": 1169234,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_9883",
+    "AnonDeviceId": "anon_device_740",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T21:08:53+08:00",
+    "EndUtc": "2026-07-06T21:43:02.188+08:00",
+    "DurationMs": 2049188,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_7896",
+    "AnonDeviceId": "anon_device_704",
+    "PackageName": "com.netease.cloudmusic",
+    "StartUtc": "2026-07-06T02:31:03+08:00",
+    "EndUtc": "2026-07-06T02:31:22.248+08:00",
+    "DurationMs": 19248,
+    "QualityFlagsJson": "[\u0022anomalous_duration\u0022]"
+  },
+  {
+    "AnonUserId": "anon_user_7434",
+    "AnonDeviceId": "anon_device_915",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T19:01:26+08:00",
+    "EndUtc": "2026-07-06T19:50:58.989+08:00",
+    "DurationMs": 2972989,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_3605",
+    "AnonDeviceId": "anon_device_233",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T06:38:03+08:00",
+    "EndUtc": "2026-07-06T07:10:43.084+08:00",
+    "DurationMs": 1960084,
+    "QualityFlagsJson": "[\u0022anomalous_duration\u0022]"
+  },
+  {
+    "AnonUserId": "anon_user_5968",
+    "AnonDeviceId": "anon_device_103",
+    "PackageName": "com.alibaba.taobao",
+    "StartUtc": "2026-07-06T12:11:56+08:00",
+    "EndUtc": "2026-07-06T12:59:08.402+08:00",
+    "DurationMs": 2832402,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_9908",
+    "AnonDeviceId": "anon_device_663",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T20:27:57+08:00",
+    "EndUtc": "2026-07-06T20:49:05.697+08:00",
+    "DurationMs": 1268697,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_6857",
+    "AnonDeviceId": "anon_device_131",
+    "PackageName": "com.netease.cloudmusic",
+    "StartUtc": "2026-07-06T21:39:20+08:00",
+    "EndUtc": "2026-07-06T22:28:00.564+08:00",
+    "DurationMs": 2920564,
+    "QualityFlagsJson": "[\u0022anomalous_duration\u0022]"
+  },
+  {
+    "AnonUserId": "anon_user_1217",
+    "AnonDeviceId": "anon_device_145",
+    "PackageName": "com.netease.cloudmusic",
+    "StartUtc": "2026-07-06T19:30:06+08:00",
+    "EndUtc": "2026-07-06T19:41:18.951+08:00",
+    "DurationMs": 672951,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_4108",
+    "AnonDeviceId": "anon_device_435",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T10:12:32+08:00",
+    "EndUtc": "2026-07-06T11:06:56.551+08:00",
+    "DurationMs": 3264551,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_9361",
+    "AnonDeviceId": "anon_device_124",
+    "PackageName": "com.autonavi.minimap",
+    "StartUtc": "2026-07-06T13:13:57+08:00",
+    "EndUtc": "2026-07-06T14:09:03.437+08:00",
+    "DurationMs": 3306437,
+    "QualityFlagsJson": "[\u0022anomalous_duration\u0022]"
+  },
+  {
+    "AnonUserId": "anon_user_2977",
+    "AnonDeviceId": "anon_device_517",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T19:33:06+08:00",
+    "EndUtc": "2026-07-06T19:56:29.011+08:00",
+    "DurationMs": 1403011,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_3388",
+    "AnonDeviceId": "anon_device_961",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T11:47:05+08:00",
+    "EndUtc": "2026-07-06T12:45:11.269+08:00",
+    "DurationMs": 3486269,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1346",
+    "AnonDeviceId": "anon_device_294",
+    "PackageName": "com.netease.cloudmusic",
+    "StartUtc": "2026-07-06T02:58:54+08:00",
+    "EndUtc": "2026-07-06T03:10:51.974+08:00",
+    "DurationMs": 717974,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_6331",
+    "AnonDeviceId": "anon_device_479",
+    "PackageName": "com.autonavi.minimap",
+    "StartUtc": "2026-07-06T08:47:35+08:00",
+    "EndUtc": "2026-07-06T09:21:26.105+08:00",
+    "DurationMs": 2031105,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1843",
+    "AnonDeviceId": "anon_device_994",
+    "PackageName": "com.alibaba.taobao",
+    "StartUtc": "2026-07-06T11:04:26+08:00",
+    "EndUtc": "2026-07-06T11:41:34.581+08:00",
+    "DurationMs": 2228581,
+    "QualityFlagsJson": "[\u0022anomalous_duration\u0022]"
+  },
+  {
+    "AnonUserId": "anon_user_2092",
+    "AnonDeviceId": "anon_device_195",
+    "PackageName": "com.autonavi.minimap",
+    "StartUtc": "2026-07-06T21:19:02+08:00",
+    "EndUtc": "2026-07-06T22:11:56.14+08:00",
+    "DurationMs": 3174140,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_3891",
+    "AnonDeviceId": "anon_device_391",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T19:06:25+08:00",
+    "EndUtc": "2026-07-06T19:58:45.154+08:00",
+    "DurationMs": 3140154,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_7760",
+    "AnonDeviceId": "anon_device_619",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T18:01:06+08:00",
+    "EndUtc": "2026-07-06T18:54:29.468+08:00",
+    "DurationMs": 3203468,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_8432",
+    "AnonDeviceId": "anon_device_137",
+    "PackageName": "com.baidu.BaiduMap",
+    "StartUtc": "2026-07-06T14:06:59+08:00",
+    "EndUtc": "2026-07-06T14:34:34.481+08:00",
+    "DurationMs": 1655481,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1081",
+    "AnonDeviceId": "anon_device_734",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T08:26:36+08:00",
+    "EndUtc": "2026-07-06T08:35:01.878+08:00",
+    "DurationMs": 505878,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_1378",
+    "AnonDeviceId": "anon_device_856",
+    "PackageName": "com.netease.cloudmusic",
+    "StartUtc": "2026-07-06T08:05:09+08:00",
+    "EndUtc": "2026-07-06T08:33:16.113+08:00",
+    "DurationMs": 1687113,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_9063",
+    "AnonDeviceId": "anon_device_137",
+    "PackageName": "com.autonavi.minimap",
+    "StartUtc": "2026-07-06T08:07:27+08:00",
+    "EndUtc": "2026-07-06T08:56:19.218+08:00",
+    "DurationMs": 2932218,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_8034",
+    "AnonDeviceId": "anon_device_388",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T09:25:06+08:00",
+    "EndUtc": "2026-07-06T09:58:19.661+08:00",
+    "DurationMs": 1993661,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_3142",
+    "AnonDeviceId": "anon_device_933",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T17:07:14+08:00",
+    "EndUtc": "2026-07-06T17:43:26.579+08:00",
+    "DurationMs": 2172579,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_8607",
+    "AnonDeviceId": "anon_device_233",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T02:33:47+08:00",
+    "EndUtc": "2026-07-06T03:02:10.467+08:00",
+    "DurationMs": 1703467,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_3515",
+    "AnonDeviceId": "anon_device_590",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T06:46:37+08:00",
+    "EndUtc": "2026-07-06T07:29:54.148+08:00",
+    "DurationMs": 2597148,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_6710",
+    "AnonDeviceId": "anon_device_493",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T03:31:00+08:00",
+    "EndUtc": "2026-07-06T04:08:46.513+08:00",
+    "DurationMs": 2266513,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_6627",
+    "AnonDeviceId": "anon_device_234",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T15:12:40+08:00",
+    "EndUtc": "2026-07-06T15:29:11.8+08:00",
+    "DurationMs": 991800,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2730",
+    "AnonDeviceId": "anon_device_367",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T03:58:10+08:00",
+    "EndUtc": "2026-07-06T04:11:39.365+08:00",
+    "DurationMs": 809365,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2647",
+    "AnonDeviceId": "anon_device_126",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T00:48:38+08:00",
+    "EndUtc": "2026-07-06T01:15:07.34+08:00",
+    "DurationMs": 1589340,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_3077",
+    "AnonDeviceId": "anon_device_940",
+    "PackageName": "com.baidu.BaiduMap",
+    "StartUtc": "2026-07-06T13:07:54+08:00",
+    "EndUtc": "2026-07-06T13:48:11.861+08:00",
+    "DurationMs": 2417861,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_9886",
+    "AnonDeviceId": "anon_device_324",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T20:45:59+08:00",
+    "EndUtc": "2026-07-06T21:38:02.649+08:00",
+    "DurationMs": 3123649,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_8034",
+    "AnonDeviceId": "anon_device_126",
+    "PackageName": "com.tencent.mobileqq",
+    "StartUtc": "2026-07-06T02:50:34+08:00",
+    "EndUtc": "2026-07-06T03:06:44.352+08:00",
+    "DurationMs": 970352,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_2216",
+    "AnonDeviceId": "anon_device_478",
+    "PackageName": "com.sina.weibo",
+    "StartUtc": "2026-07-06T14:55:27+08:00",
+    "EndUtc": "2026-07-06T15:33:04.921+08:00",
+    "DurationMs": 2257921,
+    "QualityFlagsJson": "[\u0022anomalous_duration\u0022]"
+  },
+  {
+    "AnonUserId": "anon_user_8950",
+    "AnonDeviceId": "anon_device_336",
+    "PackageName": "com.ss.android.ugc.aweme",
+    "StartUtc": "2026-07-06T20:21:16+08:00",
+    "EndUtc": "2026-07-06T20:55:18.895+08:00",
+    "DurationMs": 2042895,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_5615",
+    "AnonDeviceId": "anon_device_268",
+    "PackageName": "com.alibaba.taobao",
+    "StartUtc": "2026-07-06T21:46:59+08:00",
+    "EndUtc": "2026-07-06T22:04:29.442+08:00",
+    "DurationMs": 1050442,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_3652",
+    "AnonDeviceId": "anon_device_603",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T10:35:22+08:00",
+    "EndUtc": "2026-07-06T11:23:22.851+08:00",
+    "DurationMs": 2880851,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_6005",
+    "AnonDeviceId": "anon_device_233",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T01:05:16+08:00",
+    "EndUtc": "2026-07-06T01:08:09.399+08:00",
+    "DurationMs": 173399,
+    "QualityFlagsJson": "[]"
+  },
+  {
+    "AnonUserId": "anon_user_7412",
+    "AnonDeviceId": "anon_device_192",
+    "PackageName": "com.tencent.mm",
+    "StartUtc": "2026-07-06T18:40:57+08:00",
+    "EndUtc": "2026-07-06T19:34:00.666+08:00",
+    "DurationMs": 3183666,
+    "QualityFlagsJson": "[]"
+  }
+]

@@ -192,6 +192,18 @@ public sealed class PcActivityAggregationService
                 return new PcCategoryDistributionItem(g.Category, g.Color, minutes, percentage);
             })
             .ToList();
+        // 百分比和校正：确保四舍五入后和为100（INV-P11/C05要求 |sum-100|<=1）
+        if (items.Count > 0)
+        {
+            var sumPct = items.Sum(i => i.Percentage);
+            var diff = Math.Round(100.0 - sumPct, 1);
+            if (Math.Abs(diff) > 0.05 && Math.Abs(diff) <= 1.0)
+            {
+                var idx = items.Count - 1;
+                var last = items[idx];
+                items[idx] = new PcCategoryDistributionItem(last.CategoryName, last.Color, last.Minutes, Math.Round(last.Percentage + diff, 1));
+            }
+        }
 
         return new PcCategoryDistributionResponse(items);
     }

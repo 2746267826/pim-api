@@ -358,9 +358,9 @@ public sealed class MobileLocationAggregationService
             return new PairClassification(PairEvidence.None, false);
 
         var medianAccuracy = MedianAccuracy(from, to);
-        var noiseFloorMeters = Math.Max(
-            NoiseDisplacementFloorMeters,
-            2 * medianAccuracy);
+        var noiseFloorMeters = Math.Clamp(
+            Math.Max(NoiseDisplacementFloorMeters, 2 * medianAccuracy),
+            NoiseDisplacementFloorMeters, 100.0);
         if (distanceMeters < noiseFloorMeters)
             return new PairClassification(PairEvidence.None, false);
 

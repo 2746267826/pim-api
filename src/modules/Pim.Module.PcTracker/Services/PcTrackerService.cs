@@ -639,7 +639,8 @@ public class PcTrackerService
                 var keyCount = daily is not null && daily.KeyPresses > 0
                     ? totalAwEvents > 0 ? (int)((double)daily.KeyPresses * eventCount / totalAwEvents) : (int)(daily.KeyPresses / 24.0)
                     : 0;
-                return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), bucketStart.ToLocalTime().Hour, 0, eventCount, keyCount);
+                var localHour = TimeZoneInfo.ConvertTime(bucketStart, ResolveBusinessDayTimeZone()).Hour;
+                return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), localHour, 0, eventCount, keyCount);
             }).ToList();
 
             return new HeatmapGridResponse(new List<List<HeatmapBucket>> { row }, dimension, maxKeyCount);
@@ -689,8 +690,19 @@ public class PcTrackerService
 
     public static DateTimeOffset GetBusinessDayStartForQuery(DateTime date)
     {
-        var localStart = DateTime.SpecifyKind(date.Date.AddHours(BusinessDayStartHour), DateTimeKind.Local);
-        return new DateTimeOffset(localStart).ToUniversalTime();
+        var timeZone = ResolveBusinessDayTimeZone();
+        var local = DateTime.SpecifyKind(date.Date.AddHours(BusinessDayStartHour), DateTimeKind.Unspecified);
+        var utc = TimeZoneInfo.ConvertTimeToUtc(local, timeZone);
+        return new DateTimeOffset(utc, TimeSpan.Zero);
+    }
+
+    private static TimeZoneInfo ResolveBusinessDayTimeZone()
+    {
+        const string primary = "Asia/Shanghai";
+        const string fallback = "China Standard Time";
+        try { return TimeZoneInfo.FindSystemTimeZoneById(primary); }
+        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById(fallback); }
+        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById(fallback); }
     }
 
     private static DateTimeOffset BusinessDayStart(DateTime date) => GetBusinessDayStartForQuery(date);
@@ -1032,6 +1044,7 @@ public class PcTrackerService
 
     private static List<HeatmapBucket> BuildHourlyHeatmap(DateTimeOffset dayStart, List<AwEventEntity> events)
     {
+        var timeZone = ResolveBusinessDayTimeZone();
         return Enumerable.Range(0, 24).Select(hour =>
         {
             var bucketStart = dayStart.AddHours(hour);
@@ -1047,7 +1060,8 @@ public class PcTrackerService
                 <= 45 => 4,
                 _ => 5
             };
-            return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), bucketStart.ToLocalTime().Hour, activeMinutes, inBucket.Count, intensity);
+            var localHour = TimeZoneInfo.ConvertTime(bucketStart, timeZone).Hour;
+            return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), localHour, activeMinutes, inBucket.Count, intensity);
         }).ToList();
     }
 

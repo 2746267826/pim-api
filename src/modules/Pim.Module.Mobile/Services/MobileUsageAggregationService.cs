@@ -42,8 +42,8 @@ public sealed class MobileUsageAggregationService
         var qualityRows = context.IncludeSystemNoise
             ? rows
             : await LoadRowsAsync(context with { IncludeSystemNoise = true }, ct);
-        var totalSeconds = rows.Sum(row => row.ForegroundSeconds);
-        var qualityTotalSeconds = qualityRows.Sum(row => row.ForegroundSeconds);
+        var totalSeconds = ComputeUnionSeconds(rows);
+        var qualityTotalSeconds = ComputeUnionSeconds(qualityRows);
         var localDayCount = Math.Max(1, CountLocalDays(context.Range));
         var dayBuckets = SplitRowsIntoBuckets(rows, timeZoneInfo, TimeSpan.FromDays(1), "day");
         var hourBuckets = SplitRowsIntoBuckets(rows, timeZoneInfo, TimeSpan.FromHours(1), "hour");
@@ -599,6 +599,23 @@ public sealed class MobileUsageAggregationService
         return end.DayNumber - start.DayNumber + 1;
     }
 
+    private static long ComputeUnionSeconds(IReadOnlyList<UsageRow> rows)
+    {
+        if (rows.Count == 0) return 0;
+        var intervals = rows.Select(r => (r.StartUtc, r.EndUtc)).OrderBy(i => i.StartUtc).ToList();
+        var merged = new List<(DateTimeOffset Start, DateTimeOffset End)> { intervals[0] };
+        for (int i = 1; i < intervals.Count; i++)
+        {
+            var last = merged[^1];
+            var cur = intervals[i];
+            if (cur.StartUtc <= last.End)
+                merged[^1] = (last.Start, cur.EndUtc > last.End ? cur.EndUtc : last.End);
+            else
+                merged.Add(cur);
+        }
+        return merged.Sum(p => (long)(p.End - p.Start).TotalSeconds);
+    }
+
     private static string LocalDate(DateTimeOffset value, TimeZoneInfo timeZoneInfo)
         => TimeZoneInfo.ConvertTime(value, timeZoneInfo).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
@@ -695,12 +712,23 @@ public sealed class MobileUsageAggregationService
         CancellationToken ct)
     {
         var summaries = await query.ToListAsync(ct);
+        var shanghai = ResolveShanghaiTimeZone();
         return summaries
-            .GroupBy(s => (
-                Package: s.PackageName.ToLowerInvariant(),
-                HourStart: new DateTimeOffset(s.WindowStartUtc.Year, s.WindowStartUtc.Month, s.WindowStartUtc.Day, s.WindowStartUtc.Hour, 0, 0, TimeSpan.Zero)))
+            .GroupBy(s =>
+            {
+                var localStart = TimeZoneInfo.ConvertTime(s.WindowStartUtc, shanghai);
+                var hourKey = new DateTime(localStart.Year, localStart.Month, localStart.Day, localStart.Hour, 0, 0);
+                return (DeviceId: s.DeviceId, Package: s.PackageName.ToLowerInvariant(), HourStart: hourKey);
+            })
             .Select(group => group.OrderByDescending(s => s.TotalTimeVisibleMs).First())
             .ToList();
+    }
+
+    private static TimeZoneInfo ResolveShanghaiTimeZone()
+    {
+        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"); }
+        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
+        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
     }
 
     private static string FirstNonBlank(params string?[] values)

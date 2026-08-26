@@ -667,8 +667,9 @@ public class PcTrackerCompleteCaptureTests
         var service = new PcTrackerService(db, new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance), new ActivityClassificationSettingsService(db), new ActivityTimelineSmoothingService());
         var summary = await service.GetSummaryAsync(date, CancellationToken.None);
 
-        Assert.Equal(dayStart.ToLocalTime().Hour, summary.Heatmap[0].Hour);
-        Assert.Equal(dayStart.AddHours(1).ToLocalTime().Hour, summary.Heatmap[1].Hour);
+        var shanghai = ResolveShanghaiTimeZone();
+        Assert.Equal(TimeZoneInfo.ConvertTime(dayStart, shanghai).Hour, summary.Heatmap[0].Hour);
+        Assert.Equal(TimeZoneInfo.ConvertTime(dayStart.AddHours(1), shanghai).Hour, summary.Heatmap[1].Hour);
         Assert.Equal(1, summary.Heatmap[1].ActiveMinutes);
         Assert.Equal(1, summary.Heatmap[1].TotalEvents);
     }
@@ -1679,5 +1680,12 @@ public class PcTrackerCompleteCaptureTests
             null,
             1,
             20);
+    }
+
+    private static TimeZoneInfo ResolveShanghaiTimeZone()
+    {
+        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"); }
+        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
+        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
     }
 }
