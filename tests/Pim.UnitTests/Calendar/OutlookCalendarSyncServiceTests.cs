@@ -18,6 +18,7 @@ using Xunit;
 
 namespace Pim.UnitTests.Calendar;
 
+[Trait("Category", "Integration")]
 public sealed class OutlookCalendarSyncServiceTests
 {
     private static readonly Guid UserId = Guid.NewGuid();

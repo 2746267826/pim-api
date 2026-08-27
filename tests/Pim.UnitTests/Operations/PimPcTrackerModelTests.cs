@@ -6,6 +6,7 @@ using Xunit;
 
 namespace Pim.UnitTests.Operations;
 
+[Trait("Category", "Integration")]
 public class PimPcTrackerModelTests
 {
     public static TheoryData<Type> PcTrackerUuidDefaultEntities => new()

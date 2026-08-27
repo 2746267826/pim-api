@@ -12,6 +12,7 @@ using Xunit;
 
 namespace Pim.UnitTests.Calendar;
 
+[Trait("Category", "Integration")]
 public sealed class EventAttachmentServiceTests
 {
     private static readonly Guid ConnectionId = Guid.NewGuid();

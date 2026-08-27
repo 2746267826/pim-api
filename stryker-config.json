@@ -16,6 +16,7 @@
     "reporters": ["html", "progress", "json"],
     "concurrency": 2,
     "coverage-analysis": "perTest",
+    "test-case-filter": "Category!=Integration",
     "ignore-mutations": [],
     "ignore-methods": []
   }

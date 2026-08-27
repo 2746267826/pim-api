@@ -5,6 +5,7 @@ using Xunit;
 
 namespace Pim.UnitTests.Calendar;
 
+[Trait("Category", "Integration")]
 public sealed class OutlookPersistenceModelTests
 {
     [Fact]

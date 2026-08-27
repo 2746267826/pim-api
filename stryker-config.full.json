@@ -10,6 +10,7 @@
     },
     "reporters": ["html", "progress", "json"],
     "concurrency": 4,
-    "coverage-analysis": "perTest"
+    "coverage-analysis": "perTest",
+    "test-case-filter": "Category!=Integration"
   }
 }

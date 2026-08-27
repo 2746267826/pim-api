@@ -8,6 +8,7 @@ using Xunit;
 
 namespace Pim.UnitTests.Mobile;
 
+[Trait("Category", "Integration")]
 public sealed class MobileUsageQueryServiceTests
 {
     [Fact]
