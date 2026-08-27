@@ -149,6 +149,21 @@ public sealed class PimDbFixture : IAsyncLifetime
         return list;
     }
 
+    // 静态缓存，避免2000组回放时每次查DB
+    private static List<MobileUsageSessionRow>? _cachedSessions;
+    private static readonly object _cacheLock = new();
+    public async Task<List<MobileUsageSessionRow>> GetCachedSessions(int total = 12000)
+    {
+        if (_cachedSessions != null) return _cachedSessions;
+        lock (_cacheLock)
+        {
+            if (_cachedSessions != null) return _cachedSessions;
+        }
+        var sessions = await SampleSessions(total);
+        lock (_cacheLock) _cachedSessions = sessions;
+        return sessions;
+    }
+
     public sealed record MobileUsageSessionRow(string UserId, string DeviceId, string PackageName, DateTimeOffset StartUtc, DateTimeOffset? EndUtc, long DurationMs, string QualityFlagsJson);
     public sealed record PcAwEventRow(string DeviceId, DateTimeOffset Timestamp, double Duration, string EventType, string? AppName, string? WindowTitle, string? AfkStatus);
     public sealed record MobileLocationPointRow(string UserId, string DeviceId, DateTimeOffset RecordedAtUtc, decimal Latitude, decimal Longitude, decimal HorizontalAccuracyMeters, string? Provider, string? Source, decimal? AltitudeMeters);

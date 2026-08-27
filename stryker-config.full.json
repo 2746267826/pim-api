@@ -9,7 +9,7 @@
       "break": 50
     },
     "reporters": ["html", "progress", "json"],
-    "concurrency": 4,
+    "concurrency": 2,
     "coverage-analysis": "perTest",
     "test-case-filter": "Category!=Integration"
   }
