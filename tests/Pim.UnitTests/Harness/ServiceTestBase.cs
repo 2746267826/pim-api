@@ -30,22 +30,15 @@ public abstract class ServiceTestBase
     // Keep alias required by some existing helpers / future tests.
     public static Guid UserId => DefaultUserId;
 
-    private static void RegisterAllModules()
-    {
-        var services = new ServiceCollection();
-        var config = new ConfigurationBuilder().Build();
-        new MobileModule().RegisterServices(services, config);
-        new PcTrackerModule().RegisterServices(services, config);
-        new CalendarModule().RegisterServices(services, config);
-        new StatsModule().RegisterServices(services, config);
-        // QuickNotes / Files are already referenced by test project; register if available.
-        try { new Pim.Module.QuickNotes.QuickNotesModule().RegisterServices(services, config); } catch { }
-        try { new Pim.Module.Files.FilesModule().RegisterServices(services, config); } catch { }
-    }
-
     public static PimDbContext CreateDb()
     {
-        RegisterAllModules();
+        // 注册所有模块的 EF 配置，确保 InMemory 模型完整
+        PimDbContext.RegisterModuleAssembly(typeof(Pim.Module.Mobile.Entities.MobileUsageSessionEntity).Assembly);
+        PimDbContext.RegisterModuleAssembly(typeof(Pim.Module.PcTracker.Entities.AwEventEntity).Assembly);
+        PimDbContext.RegisterModuleAssembly(typeof(Pim.Module.Calendar.Entities.EventEntity).Assembly);
+        PimDbContext.RegisterModuleAssembly(typeof(Pim.Module.Stats.Entities.AppUsageEntity).Assembly);
+        PimDbContext.RegisterModuleAssembly(typeof(Pim.Module.QuickNotes.Entities.QuickNoteEntity).Assembly);
+        PimDbContext.RegisterModuleAssembly(typeof(Pim.Module.Files.Entities.FileItemEntity).Assembly);
         var options = new DbContextOptionsBuilder<PimDbContext>()
             .UseInMemoryDatabase($"pim-test-{Guid.NewGuid()}")
             .Options;
