@@ -21,6 +21,6 @@
       "json"
     ],
     "concurrency": 2,
-    "coverage-analysis": "perTest"
+    "coverage-analysis": "off"
   }
 }
