@@ -6,6 +6,7 @@
     "thresholds": { "high": 80, "low": 60, "break": 50 },
     "reporters": ["html", "progress", "json"],
     "concurrency": 2,
-    "coverage-analysis": "perTest"
+    "coverage-analysis": "perTest",
+    "test-case-filter": "Category!=Integration"
   }
 }

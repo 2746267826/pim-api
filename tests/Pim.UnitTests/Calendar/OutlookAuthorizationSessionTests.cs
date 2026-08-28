@@ -190,6 +190,7 @@ public sealed class OutlookAuthorizationSessionTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task Runner_CancelStillCancelsMsalWhenCanceledWritesConflict()
     {
         var msal = new BlockingMsalClient();
