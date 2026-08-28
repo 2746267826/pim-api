@@ -1,12 +1,26 @@
 {
   "stryker-config": {
-    "test-projects": ["tests/Pim.UnitTests/Pim.UnitTests.csproj"],
-    "mutate": ["src/**/*.cs", "!**/Migrations/**", "!**/obj/**", "!**/bin/**"],
+    "test-projects": [
+      "tests/Pim.UnitTests/Pim.UnitTests.csproj"
+    ],
+    "mutate": [
+      "src/**/*.cs",
+      "!**/Migrations/**",
+      "!**/obj/**",
+      "!**/bin/**"
+    ],
     "mutation-level": "Basic",
-    "thresholds": { "high": 80, "low": 60, "break": 50 },
-    "reporters": ["html", "progress", "json"],
+    "thresholds": {
+      "high": 80,
+      "low": 60,
+      "break": 50
+    },
+    "reporters": [
+      "html",
+      "progress",
+      "json"
+    ],
     "concurrency": 2,
-    "coverage-analysis": "perTest",
-    "test-case-filter": "Category!=Integration"
+    "coverage-analysis": "perTest"
   }
 }
