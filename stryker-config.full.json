@@ -4,7 +4,7 @@
       "tests/Pim.UnitTests/Pim.UnitTests.csproj"
     ],
     "mutate": [
-      "src/**/*.cs",
+      "**/*.cs",
       "!**/Migrations/**",
       "!**/obj/**",
       "!**/bin/**"
