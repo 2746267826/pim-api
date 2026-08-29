@@ -88,20 +88,30 @@ public class PcProductivityService
         var endDate = end.Date;
         var dayCount = (endDate - startDate).Days + 1;
         var acc = new Dictionary<DateTime, (double p, double d, double n)>();
+        var dayBounds = new Dictionary<DateTime, (DateTimeOffset Start, DateTimeOffset End)>();
         for (int i = 0; i < dayCount; i++)
         {
-            acc[startDate.AddDays(i)] = (0, 0, 0);
+            var day = startDate.AddDays(i);
+            acc[day] = (0, 0, 0);
+            dayBounds[day] = (BusinessDayStart(day), BusinessDayStart(day.AddDays(1)));
         }
 
+        // O(N * span) 而非 O(N*D)：仅遍历事件实际跨越的业务日（通常 1-2 天）
         foreach (var c in classifications)
         {
             var prod = GetProductivity(c.CategoryName);
-            for (int i = 0; i < dayCount; i++)
+            var startDay = BusinessDayForTimestamp(c.StartedAt);
+            var endDay = c.EndedAt > c.StartedAt
+                ? BusinessDayForTimestamp(c.EndedAt.AddTicks(-1))
+                : startDay;
+            if (endDay < startDate || startDay > endDate) continue;
+            if (startDay < startDate) startDay = startDate;
+            if (endDay > endDate) endDay = endDate;
+
+            for (var day = startDay; day <= endDay; day = day.AddDays(1))
             {
-                var day = startDate.AddDays(i);
-                var ds = BusinessDayStart(day);
-                var de = BusinessDayStart(day.AddDays(1));
-                var sec = OverlapSeconds(c, ds, de);
+                if (!dayBounds.TryGetValue(day, out var bounds)) continue;
+                var sec = OverlapSeconds(c, bounds.Start, bounds.End);
                 if (sec <= 0) continue;
                 var min = sec / 60.0;
                 var cur = acc[day];
@@ -146,22 +156,27 @@ public class PcProductivityService
             .OrderBy(c => c.StartedAt)
             .ToListAsync(ct);
 
+        // 裁剪起止到业务日内并过滤 0 时长，保证 Start/End 与 Duration 一致
         return items.Select(c =>
-        {
-            var dur = OverlapSeconds(c, dayStart, dayEnd) / 60.0;
-            return new TimelineV2Item
             {
-                Start = c.StartedAt.DateTime,
-                End = c.EndedAt.DateTime,
-                AppName = c.RecordKey,
+                var overlapStart = c.StartedAt > dayStart ? c.StartedAt : dayStart;
+                var overlapEnd = c.EndedAt < dayEnd ? c.EndedAt : dayEnd;
+                var sec = Math.Max(0, (overlapEnd - overlapStart).TotalSeconds);
+                return (c, overlapStart, overlapEnd, sec);
+            })
+            .Where(x => x.sec > 0)
+            .Select(x => new TimelineV2Item
+            {
+                Start = x.overlapStart.DateTime,
+                End = x.overlapEnd.DateTime,
+                AppName = x.c.RecordKey,
                 WindowTitle = null,
-                CategoryName = c.CategoryName ?? "其他",
-                CategoryColor = c.CategoryColor ?? "#64748b",
-                Productivity = GetProductivity(c.CategoryName),
-                Confidence = c.Confidence,
-                DurationMinutes = Math.Round(dur, 1)
-            };
-        }).ToList();
+                CategoryName = x.c.CategoryName ?? "其他",
+                CategoryColor = x.c.CategoryColor ?? "#64748b",
+                Productivity = GetProductivity(x.c.CategoryName),
+                Confidence = x.c.Confidence,
+                DurationMinutes = Math.Round(x.sec / 60.0, 1)
+            }).ToList();
     }
 
     private static double OverlapSeconds(ActivityClassificationEntity c, DateTimeOffset windowStart, DateTimeOffset windowEnd)
