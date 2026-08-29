@@ -65,8 +65,10 @@ public sealed class QuickNoteAttachmentService(
         var userId = UserId;
         var attachment = await db.Set<QuickNoteAttachmentEntity>()
             .AsNoTracking()
-            .FirstOrDefaultAsync(a => a.Id == id && a.UserId == userId, ct)
+            .FirstOrDefaultAsync(a => a.Id == id, ct)
             ?? throw new DomainException(4006, "附件不存在");
+        if (attachment.UserId != userId)
+            throw new DomainException(40301, "无权访问该附件");
 
         var content = await storage.OpenReadAsync(attachment.ObjectKey, ct);
         return (content, attachment.ContentType, attachment.FileName);
@@ -76,8 +78,10 @@ public sealed class QuickNoteAttachmentService(
     {
         var userId = UserId;
         var attachment = await db.Set<QuickNoteAttachmentEntity>()
-            .FirstOrDefaultAsync(a => a.Id == id && a.UserId == userId, ct)
+            .FirstOrDefaultAsync(a => a.Id == id, ct)
             ?? throw new DomainException(4006, "附件不存在");
+        if (attachment.UserId != userId)
+            throw new DomainException(40301, "无权访问该附件");
 
         attachment.DeletedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
