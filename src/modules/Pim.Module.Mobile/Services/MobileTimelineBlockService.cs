@@ -231,6 +231,15 @@ public sealed class MobileTimelineBlockService
 
         foreach (var summary in summaries)
         {
+            // cross-source dedup: fallback summary overlapped by same device+package session is discarded
+            var hasOverlappingSession = items.Any(item => item.Source == "events"
+                && string.Equals(item.PackageName, summary.PackageName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(item.DeviceId, summary.DeviceId, StringComparison.Ordinal)
+                && summary.WindowStartUtc < item.EndUtc
+                && summary.WindowEndUtc > item.StartUtc);
+            if (hasOverlappingSession)
+                continue;
+
             if (!classifications.TryGetValue(summary.PackageName, out var classification))
                 classification = AppClassification.Default(summary.PackageName);
             if (!MatchesClassificationFilters(classification, context))
