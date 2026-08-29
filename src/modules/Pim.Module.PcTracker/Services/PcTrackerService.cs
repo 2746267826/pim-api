@@ -97,6 +97,11 @@ public class PcTrackerService
 
     public async Task<int> UploadAwEventsAsync(AwEventsUploadRequest req, CancellationToken ct)
     {
+        return await UploadAwEventsCoreAsync(req, ct, attempt: 0);
+    }
+
+    private async Task<int> UploadAwEventsCoreAsync(AwEventsUploadRequest req, CancellationToken ct, int attempt)
+    {
         var now = DateTimeOffset.UtcNow;
         var incoming = req.Events.Select(e => new AwEventEntity
         {
@@ -114,8 +119,9 @@ public class PcTrackerService
 
         var minTimestamp = incoming.Min(e => e.Timestamp);
         var maxTimestamp = incoming.Max(e => e.Timestamp);
+        // 半开区间 [min, max+1tick) 统一聚合 [Start,End) 并包含边界事件
         var existing = await _db.Set<AwEventEntity>()
-            .Where(e => e.DeviceId == req.DeviceId && e.Timestamp >= minTimestamp && e.Timestamp <= maxTimestamp)
+            .Where(e => e.DeviceId == req.DeviceId && e.Timestamp >= minTimestamp && e.Timestamp < maxTimestamp.AddTicks(1))
             .Select(e => new { e.Timestamp, e.Duration, e.EventType, e.AppName, e.WindowTitle, e.AfkStatus })
             .ToListAsync(ct);
         var existingKeys = existing
@@ -129,7 +135,17 @@ public class PcTrackerService
         if (entities.Count == 0) return 0;
 
         _db.Set<AwEventEntity>().AddRange(entities);
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (attempt == 0 && IsUniqueViolation(ex))
+        {
+            // 并发重复插入命中唯一约束，清理跟踪后重试一次（与 UploadCompleteAwEventsCoreAsync 相同模式）
+            // 需 DB 唯一约束 ux_pc_aw_events_source 兜底；旧上传路径无 bucket_id/source_event_id 时建议补充 (device_id,timestamp,duration,event_type,app_name) 唯一约束
+            _db.ChangeTracker.Clear();
+            return await UploadAwEventsCoreAsync(req, ct, attempt: 1);
+        }
         return entities.Count;
     }
 
@@ -732,6 +748,9 @@ public class PcTrackerService
             ? to.Date
             : startDate;
 
+        if (endDate < startDate)
+            throw new ArgumentException("start 不能晚于 end。");
+
         return (
             BusinessDayStart(startDate),
             BusinessDayStart(endDate).AddDays(1));
@@ -1045,12 +1064,14 @@ public class PcTrackerService
     private static List<HeatmapBucket> BuildHourlyHeatmap(DateTimeOffset dayStart, List<AwEventEntity> events)
     {
         var timeZone = ResolveBusinessDayTimeZone();
+        // 去重后的全局并集区间，用于 activeMinutes 去重计算
+        var merged = MergeIntervalsForHeatmap(events.Where(e => e.Duration > 0).ToList());
         return Enumerable.Range(0, 24).Select(hour =>
         {
             var bucketStart = dayStart.AddHours(hour);
             var bucketEnd = bucketStart.AddHours(1);
             var inBucket = events.Where(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd).ToList();
-            var activeMinutes = (int)Math.Min(60, inBucket.Sum(e => Math.Min(e.Duration, 3600)) / 60);
+            var activeMinutes = (int)Math.Min(60, SumOverlapSeconds(merged, bucketStart, bucketEnd) / 60);
             var intensity = activeMinutes switch
             {
                 0 => 0,
@@ -1406,5 +1427,37 @@ public class PcTrackerService
     private static int TotalClicks(AppStatEntry e)
     {
         return e.LeftClicks + e.RightClicks + e.MiddleClicks + e.SideBackClicks + e.SideForwardClicks;
+    }
+
+    private static List<(DateTimeOffset Start, DateTimeOffset End)> MergeIntervalsForHeatmap(List<AwEventEntity> events)
+    {
+        if (events.Count == 0) return new List<(DateTimeOffset, DateTimeOffset)>();
+        var sorted = events.OrderBy(e => e.Timestamp).ToList();
+        var merged = new List<(DateTimeOffset Start, DateTimeOffset End)>();
+        foreach (var e in sorted)
+        {
+            var s = e.Timestamp;
+            var en = e.Timestamp.AddSeconds(Math.Min(e.Duration, 3600));
+            if (merged.Count == 0) { merged.Add((s, en)); continue; }
+            var last = merged[^1];
+            if (s <= last.End)
+            {
+                if (en > last.End) merged[^1] = (last.Start, en);
+            }
+            else merged.Add((s, en));
+        }
+        return merged;
+    }
+
+    private static double SumOverlapSeconds(List<(DateTimeOffset Start, DateTimeOffset End)> merged, DateTimeOffset bucketStart, DateTimeOffset bucketEnd)
+    {
+        double sum = 0;
+        foreach (var (s, e) in merged)
+        {
+            var os = s > bucketStart ? s : bucketStart;
+            var oe = e < bucketEnd ? e : bucketEnd;
+            if (oe > os) sum += (oe - os).TotalSeconds;
+        }
+        return sum;
     }
 }
