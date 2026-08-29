@@ -76,7 +76,7 @@ public sealed class PcTrackerCoverageTests
         var svc = ServiceTestBase.CreatePcAggregationService(db);
         var res = await svc.GetFocusBlocksAsync(new PcAggregationQuery(TestDate.ToString("yyyy-MM-dd"), null, null, null), CancellationToken.None);
         Assert.Single(res.Items);
-        Assert.Equal(75, res.Items[0].DurationMinutes);
+        Assert.Equal(70, res.Items[0].DurationMinutes);
     }
     [Fact] public async Task Agg_FocusBlocks_ShortBlocksFiltered()
     {
@@ -477,7 +477,8 @@ public sealed class PcTrackerCoverageTests
     {
         await using var db = ServiceTestBase.CreateDb();
         var day = TestDate.Date;
-        db.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity { Id = Guid.NewGuid(), RecordKey = "d1", RecordType = "window", DeviceId = "pc-1", StartedAt = new DateTimeOffset(day.AddHours(20), TimeSpan.Zero), EndedAt = new DateTimeOffset(day.AddHours(21), TimeSpan.Zero), CategoryName = "游戏", CategoryColor = "#ef4444", Confidence = 0.9, Source = "rule", ClassifierVersion = "v1", ClassifiedAt = DateTimeOffset.UtcNow });
+        // 使用业务日内时间（10:00 UTC 落在 04:00-次日04:00 Shanghai 窗口内）
+        db.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity { Id = Guid.NewGuid(), RecordKey = "d1", RecordType = "window", DeviceId = "pc-1", StartedAt = new DateTimeOffset(day.AddHours(10), TimeSpan.Zero), EndedAt = new DateTimeOffset(day.AddHours(11), TimeSpan.Zero), CategoryName = "游戏", CategoryColor = "#ef4444", Confidence = 0.9, Source = "rule", ClassifierVersion = "v1", ClassifiedAt = DateTimeOffset.UtcNow });
         await db.SaveChangesAsync();
         var svc = new PcProductivityService(db);
         var res = await svc.GetTimelineV2Async(TestDate, CancellationToken.None);

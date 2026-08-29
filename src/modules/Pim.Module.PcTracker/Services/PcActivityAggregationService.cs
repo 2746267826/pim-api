@@ -40,6 +40,7 @@ public sealed class PcActivityAggregationService
         var events = await _db.Set<AwEventEntity>()
             .Where(e => e.EventType == "window"
                 && (e.AfkStatus == null || e.AfkStatus != "afk")
+                && e.Duration > 0
                 && e.Timestamp >= window.StartUtc
                 && e.Timestamp < window.EndUtc)
             .OrderBy(e => e.Timestamp)
@@ -52,13 +53,13 @@ public sealed class PcActivityAggregationService
         var items = new List<PcFocusBlockItem>();
         foreach (var block in BuildBlocks(events))
         {
-            var durationMinutes = (int)Math.Round((block.EndUtc - block.StartUtc).TotalMinutes);
+            var durationMinutes = (int)Math.Round(block.MergedSeconds / 60.0);
             if (durationMinutes < MinFocusBlockMinutes)
                 continue;
 
-            var byApp = block.Events
-                .GroupBy(NormalizeApp, StringComparer.OrdinalIgnoreCase)
-                .Select(g => new { App = g.Key, Seconds = g.Sum(e => Math.Min(e.Duration, MaxEventDurationSeconds)) })
+            var byApp = block.Intervals
+                .GroupBy(i => i.App, StringComparer.OrdinalIgnoreCase)
+                .Select(g => new { App = g.Key, Seconds = g.Sum(i => (i.End - i.Start).TotalSeconds) })
                 .OrderByDescending(x => x.Seconds)
                 .ThenBy(x => x.App, StringComparer.OrdinalIgnoreCase)
                 .ToList();
@@ -95,21 +96,22 @@ public sealed class PcActivityAggregationService
         var events = await _db.Set<AwEventEntity>()
             .Where(e => e.EventType == "window"
                 && (e.AfkStatus == null || e.AfkStatus != "afk")
+                && e.Duration > 0
                 && e.Timestamp >= window.StartUtc
                 && e.Timestamp < window.EndUtc)
             .ToListAsync(ct);
 
-        var groups = events
+        var validEvents = events.Where(e => e.Duration > 0).ToList();
+        var groups = validEvents
             .GroupBy(NormalizeApp, StringComparer.OrdinalIgnoreCase)
-            .Select(g => new { App = g.Key, Seconds = g.Sum(e => Math.Min(e.Duration, MaxEventDurationSeconds)) })
+            .Select(g => new { App = g.Key, Seconds = SumMergedSeconds(g) })
             .Where(x => x.Seconds >= MinAppDurationSeconds)
             .OrderByDescending(x => x.Seconds)
             .ThenBy(x => x.App, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // percentage 分母 = 全部 window 事件封顶秒数（含被 <60s 过滤的噪声应用），
-        // 与 totalMinutes 同口径；分子为该应用封顶秒数。
-        var totalSeconds = events.Sum(e => Math.Min(e.Duration, MaxEventDurationSeconds));
+        // percentage 分母 = 去重后全部 window 事件并集秒数；与 heatmap 同口径。
+        var totalSeconds = SumMergedSeconds(validEvents);
         var totalMinutes = (int)Math.Round(totalSeconds / 60.0);
 
         var displayNames = await ResolveDisplayNamesAsync(
@@ -136,6 +138,7 @@ public sealed class PcActivityAggregationService
         var events = await _db.Set<AwEventEntity>()
             .Where(e => e.EventType == "window"
                 && (e.AfkStatus == null || e.AfkStatus != "afk")
+                && e.Duration > 0
                 && e.Timestamp >= window.StartUtc
                 && e.Timestamp < window.EndUtc)
             .ToListAsync(ct);
@@ -148,9 +151,8 @@ public sealed class PcActivityAggregationService
             var lateStartUtc = ToUtc(day, LateNightStartHour, LateNightStartMinute, window.TimeZone);
 
             var dayEvents = events.Where(e => e.Timestamp >= dayStartUtc && e.Timestamp < dayEndUtc).ToList();
-            var minutes = (int)Math.Round(
-                dayEvents.Where(e => e.Timestamp >= lateStartUtc)
-                    .Sum(e => Math.Min(e.Duration, MaxEventDurationSeconds)) / 60.0);
+            var lateSeconds = SumMergedSeconds(dayEvents.Where(e => e.Timestamp >= lateStartUtc));
+            var minutes = (int)Math.Round(lateSeconds / 60.0);
 
             items.Add(new PcLateNightDayItem(
                 day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -307,46 +309,117 @@ public sealed class PcActivityAggregationService
             signatures.Select(s => (s.ProcessName ?? string.Empty, s.DisplayName ?? string.Empty)));
     }
 
-    /// <summary>专注块合并：非 afk window 事件按时间排序，相邻事件间隔（上一事件结束 + 5min 容差）内合并。
-    /// 块 = [首事件开始, 末事件结束]，末事件结束 = Timestamp + min(Duration, 3600)。</summary>
+    /// <summary>专注块合并：先按 app 去重合并重叠区间，再按 5min 间隙切分，块时长为去重后并集总时长。</summary>
     private static List<PcFocusBlock> BuildBlocks(List<AwEventEntity> events)
     {
-        var blocks = new List<PcFocusBlock>();
-        List<AwEventEntity>? current = null;
-        DateTimeOffset currentEnd = default;
-        foreach (var e in events)
+        // 1) 去重：按 app 分组各自按 Timestamp 合并重叠区间（capped 3600，Duration>0）
+        var valid = events.Where(e => e.Duration > 0).ToList();
+        var intervals = new List<PcInterval>();
+        foreach (var group in valid.GroupBy(NormalizeApp, StringComparer.OrdinalIgnoreCase))
         {
-            var eventEnd = e.Timestamp.AddSeconds(Math.Min(e.Duration, MaxEventDurationSeconds));
+            var merged = MergeIntervals(group.OrderBy(e => e.Timestamp).ToList());
+            foreach (var m in merged)
+                intervals.Add(new PcInterval(m.Start, m.End, group.Key));
+        }
+        intervals.Sort((a, b) => a.Start.CompareTo(b.Start));
+
+        // 2) 按 5m 间隙切块
+        var blocks = new List<PcFocusBlock>();
+        List<PcInterval>? current = null;
+        DateTimeOffset currentEnd = default;
+        DateTimeOffset blockStart = default;
+        double blockMergedSeconds = 0;
+        foreach (var iv in intervals)
+        {
             if (current is null)
             {
-                current = new List<AwEventEntity> { e };
-                currentEnd = eventEnd;
+                current = new List<PcInterval> { iv };
+                blockStart = iv.Start;
+                currentEnd = iv.End;
+                blockMergedSeconds = (iv.End - iv.Start).TotalSeconds;
                 continue;
             }
 
-            if (e.Timestamp <= currentEnd.AddMinutes(BlockMergeGapMinutes))
+            if (iv.Start <= currentEnd.AddMinutes(BlockMergeGapMinutes))
             {
-                current.Add(e);
-                if (eventEnd > currentEnd)
-                    currentEnd = eventEnd;
+                current.Add(iv);
+                blockMergedSeconds += (iv.End - iv.Start).TotalSeconds;
+                if (iv.End > currentEnd)
+                    currentEnd = iv.End;
             }
             else
             {
-                blocks.Add(new PcFocusBlock(current[0].Timestamp, currentEnd, current));
-                current = new List<AwEventEntity> { e };
-                currentEnd = eventEnd;
+                blocks.Add(new PcFocusBlock(blockStart, currentEnd, current, blockMergedSeconds));
+                current = new List<PcInterval> { iv };
+                blockStart = iv.Start;
+                currentEnd = iv.End;
+                blockMergedSeconds = (iv.End - iv.Start).TotalSeconds;
             }
         }
 
         if (current is not null)
-            blocks.Add(new PcFocusBlock(current[0].Timestamp, currentEnd, current));
+            blocks.Add(new PcFocusBlock(blockStart, currentEnd, current, blockMergedSeconds));
         return blocks;
+    }
+
+    private static List<(DateTimeOffset Start, DateTimeOffset End)> MergeIntervals(List<AwEventEntity> sortedEvents)
+    {
+        var result = new List<(DateTimeOffset Start, DateTimeOffset End)>();
+        foreach (var e in sortedEvents)
+        {
+            var s = e.Timestamp;
+            var en = e.Timestamp.AddSeconds(Math.Min(e.Duration, MaxEventDurationSeconds));
+            if (result.Count == 0)
+            {
+                result.Add((s, en));
+                continue;
+            }
+            var last = result[^1];
+            if (s <= last.End)
+            {
+                if (en > last.End)
+                    result[^1] = (last.Start, en);
+            }
+            else
+            {
+                result.Add((s, en));
+            }
+        }
+        return result;
+    }
+
+    private static double SumMergedSeconds(IEnumerable<AwEventEntity> events)
+    {
+        var filtered = events.Where(e => e.Duration > 0).OrderBy(e => e.Timestamp).ToList();
+        if (filtered.Count == 0) return 0;
+        double total = 0;
+        var curStart = filtered[0].Timestamp;
+        var curEnd = filtered[0].Timestamp.AddSeconds(Math.Min(filtered[0].Duration, MaxEventDurationSeconds));
+        for (var i = 1; i < filtered.Count; i++)
+        {
+            var s = filtered[i].Timestamp;
+            var en = filtered[i].Timestamp.AddSeconds(Math.Min(filtered[i].Duration, MaxEventDurationSeconds));
+            if (s <= curEnd)
+            {
+                if (en > curEnd) curEnd = en;
+            }
+            else
+            {
+                total += (curEnd - curStart).TotalSeconds;
+                curStart = s;
+                curEnd = en;
+            }
+        }
+        total += (curEnd - curStart).TotalSeconds;
+        return total;
     }
 
     private sealed record PcQueryWindow(
         DateTimeOffset StartUtc, DateTimeOffset EndUtc, TimeZoneInfo TimeZone,
         DateTime StartLocalDate, DateTime EndLocalDate);
 
+    private sealed record PcInterval(DateTimeOffset Start, DateTimeOffset End, string App);
+
     private sealed record PcFocusBlock(
-        DateTimeOffset StartUtc, DateTimeOffset EndUtc, List<AwEventEntity> Events);
+        DateTimeOffset StartUtc, DateTimeOffset EndUtc, List<PcInterval> Intervals, double MergedSeconds);
 }

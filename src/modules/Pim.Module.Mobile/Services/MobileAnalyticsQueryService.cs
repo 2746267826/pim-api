@@ -33,7 +33,7 @@ public sealed class MobileAnalyticsQueryService
             timeZoneInfo);
 
         if (rangeEndUtc < rangeStartUtc)
-            (rangeStartUtc, rangeEndUtc) = (rangeEndUtc, rangeStartUtc);
+            throw new ArgumentException("start 不能晚于 end。");
 
         var localStart = TimeZoneInfo.ConvertTime(rangeStartUtc, timeZoneInfo).Date;
         var localEnd = TimeZoneInfo.ConvertTime(rangeEndUtc.AddTicks(-1), timeZoneInfo).Date;
