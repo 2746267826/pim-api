@@ -63,7 +63,39 @@ builder.Services.AddOptions<OpsOptions>()
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
-        policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
+    {
+        // PIM-002: whitelist-based CORS — do not use AllowAnyOrigin with credentials
+        var raw = builder.Configuration["Cors:AllowedOrigins"]
+            ?? Environment.GetEnvironmentVariable("CORS_ALLOWED_ORIGINS")
+            ?? Environment.GetEnvironmentVariable("PIM_CORS_ORIGINS");
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            raw = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5858,http://127.0.0.1:5858";
+        }
+
+        var allowedOrigins = raw
+            .Split([',', ';'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(o => o.Trim())
+            .Where(o => !string.IsNullOrWhiteSpace(o))
+            .ToArray();
+
+        if (allowedOrigins.Length > 0)
+        {
+            policy.WithOrigins(allowedOrigins)
+                .AllowAnyMethod()
+                .AllowAnyHeader()
+                .AllowCredentials()
+                .SetIsOriginAllowed(origin => allowedOrigins.Contains(origin));
+        }
+        else
+        {
+            // Fallback — still whitelist, never AllowAnyOrigin
+            policy.WithOrigins("http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5858", "http://127.0.0.1:5858")
+                .AllowAnyMethod()
+                .AllowAnyHeader()
+                .AllowCredentials();
+        }
+    });
 });
 
 // Module discovery
