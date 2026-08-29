@@ -43,7 +43,10 @@ public sealed class MobileLocationAggregationService
         var rawPoints = await LoadRawPointsAsync(context, ct);
         var usablePoints = rawPoints.Where(point => IsUsable(point, context)).ToList();
         var gaps = CountLargeGaps(usablePoints);
-        var qualityFlags = QualityFlags(rawPoints, usablePoints, context, gaps);
+        var qualityFlags = QualityFlags(rawPoints, usablePoints, context, gaps).ToList();
+        if (HasJumpPoints(usablePoints))
+            qualityFlags.Add("jump-point");
+        qualityFlags = qualityFlags.Distinct(StringComparer.Ordinal).ToList();
         var rejectedCount = rawPoints.Count - usablePoints.Count;
         var activeSpanSeconds = usablePoints.Count <= 1
             ? 0
@@ -461,7 +464,7 @@ public sealed class MobileLocationAggregationService
         int largeGapCount)
     {
         var flags = new List<string>();
-        if (rawPoints.Any(point => AccuracyMeters(point) > context.MaxAccuracyMeters))
+        if (rawPoints.Any(point => AccuracyMeters(point) >= context.MaxAccuracyMeters))
             flags.Add("low-accuracy-cluster");
         if (rawPoints.Any(point => string.Equals(point.Quality, "rejected", StringComparison.OrdinalIgnoreCase)))
             flags.Add("rejected-points");
@@ -470,6 +473,17 @@ public sealed class MobileLocationAggregationService
         if (rawPoints.Count > 0 && usablePoints.Count == 0)
             flags.Add("no-usable-points");
         return flags;
+    }
+
+    private static bool HasJumpPoints(IReadOnlyList<MobileLocationPointEntity> points)
+    {
+        foreach (var devicePoints in points.GroupBy(p => p.DeviceId))
+        {
+            var ordered = devicePoints.OrderBy(p => p.RecordedAtUtc).ThenBy(p => p.Id).ToList();
+            if (MarkJumpPoints(ordered).Count > 0)
+                return true;
+        }
+        return false;
     }
 
     private static int CountLargeGaps(IReadOnlyList<MobileLocationPointEntity> points)
@@ -559,7 +573,7 @@ public sealed class MobileLocationAggregationService
 
     private static bool IsUsable(MobileLocationPointEntity point, MobileLocationQueryContext context)
         => !string.Equals(point.Quality, "rejected", StringComparison.OrdinalIgnoreCase)
-            && AccuracyMeters(point) <= context.MaxAccuracyMeters;
+            && AccuracyMeters(point) < context.MaxAccuracyMeters;
 
     private static long DurationSeconds(DateTimeOffset start, DateTimeOffset end)
         => Math.Max(0, Convert.ToInt64((end - start).TotalSeconds));
