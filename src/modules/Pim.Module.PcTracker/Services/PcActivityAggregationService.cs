@@ -171,15 +171,23 @@ public sealed class PcActivityAggregationService
     {
         var window = ResolveWindow(query);
         var snapshots = await _db.Set<ActivityClassificationEntity>()
-            .Where(s => s.StartedAt >= window.StartUtc && s.StartedAt < window.EndUtc)
+            .Where(s => s.StartedAt < window.EndUtc && s.EndedAt > window.StartUtc)
             .ToListAsync(ct);
+
+        static double OverlapSeconds(ActivityClassificationEntity s, DateTimeOffset start, DateTimeOffset end, double cap)
+        {
+            var overlapStart = s.StartedAt > start ? s.StartedAt : start;
+            var overlapEnd = s.EndedAt < end ? s.EndedAt : end;
+            var seconds = Math.Max(0, (overlapEnd - overlapStart).TotalSeconds);
+            return Math.Min(seconds, cap);
+        }
 
         var groups = snapshots
             .GroupBy(s => s.CategoryName, StringComparer.OrdinalIgnoreCase)
             .Select(g => new
             {
                 Category = g.Key,
-                Seconds = g.Sum(s => Math.Min(Math.Max(0, (s.EndedAt - s.StartedAt).TotalSeconds), MaxEventDurationSeconds)),
+                Seconds = g.Sum(s => OverlapSeconds(s, window.StartUtc, window.EndUtc, MaxEventDurationSeconds)),
                 Color = ResolveCategoryColor(g.Key, g.Select(s => s.CategoryColor))
             })
             .OrderByDescending(x => x.Seconds)
