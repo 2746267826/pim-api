@@ -330,7 +330,6 @@ public sealed class PcActivityAggregationService
         List<PcInterval>? current = null;
         DateTimeOffset currentEnd = default;
         DateTimeOffset blockStart = default;
-        double blockMergedSeconds = 0;
         foreach (var iv in intervals)
         {
             if (current is null)
@@ -338,15 +337,12 @@ public sealed class PcActivityAggregationService
                 current = new List<PcInterval> { iv };
                 blockStart = iv.Start;
                 currentEnd = iv.End;
-                blockMergedSeconds = (iv.End - iv.Start).TotalSeconds;
                 continue;
             }
 
             if (iv.Start <= currentEnd.AddMinutes(BlockMergeGapMinutes))
             {
                 current.Add(iv);
-                // 块内 app 维度统计仍按并集时长（去重后），块总时长按跨度
-                blockMergedSeconds += (iv.End - iv.Start).TotalSeconds;
                 if (iv.End > currentEnd)
                     currentEnd = iv.End;
             }
@@ -357,7 +353,6 @@ public sealed class PcActivityAggregationService
                 current = new List<PcInterval> { iv };
                 blockStart = iv.Start;
                 currentEnd = iv.End;
-                blockMergedSeconds = (iv.End - iv.Start).TotalSeconds;
             }
         }
 

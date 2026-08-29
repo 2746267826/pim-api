@@ -64,9 +64,9 @@ public sealed class HangfireAuthorizationFilter : IDashboardAuthorizationFilter
 
     private static bool FixedTimeEquals(string a, string b)
     {
-        var aBytes = Encoding.UTF8.GetBytes(a);
-        var bBytes = Encoding.UTF8.GetBytes(b);
-        if (aBytes.Length != bBytes.Length) return false;
-        return CryptographicOperations.FixedTimeEquals(aBytes, bBytes);
+        // Hash both to equal length to avoid length-leak timing side-channel
+        var aHash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(a));
+        var bHash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(b));
+        return CryptographicOperations.FixedTimeEquals(aHash, bHash);
     }
 }
