@@ -134,9 +134,8 @@ public sealed class MobileUsageAggregationService
                 var bucketKey = (bucketGroup.Key.BucketStartUtc, bucketGroup.Key.BucketEndUtc, bucketGroup.Key.LocalDate, bucketGroup.Key.LocalHour);
                 var totalInfo = totalsByBucket[bucketKey];
                 var realCap = totalInfo.RealCap > 0 ? totalInfo.RealCap : totalInfo.BucketSizeFallback;
-                var shouldCap = realCap >= 3600 || bucketSize >= TimeSpan.FromHours(1);
-                // Actually cap if bucketSize >=1h or realCap large (day); keep 15m/30m uncapped
-                shouldCap = bucketSize.TotalSeconds >= 3600;
+                // Only cap hour/day buckets (>=3600s); keep 15m/30m uncapped per design
+                var shouldCap = bucketSize.TotalSeconds >= 3600;
                 if (!shouldCap) realCap = int.MaxValue;
                 var total = totalInfo.Total;
                 var needsCap = shouldCap && total > realCap;
