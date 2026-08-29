@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Pim.Core.Ai;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Ai;
@@ -43,14 +44,30 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAiSchemaRegistry, AiSchemaRegistry>();
         services.AddSingleton<IAiChatClientFactory, AiChatClientFactory>();
         services.AddHttpClient("litellm-health");
-        services.AddHangfire(config =>
-            config.UsePostgreSqlStorage(options =>
-                options.UseNpgsqlConnection(configuration.GetConnectionString("DefaultConnection"))));
-        if (!(bool.TryParse(configuration["DisableHangfire"], out var d) && d))
+        var conn = configuration.GetConnectionString("DefaultConnection");
+        var disableHangfire = bool.TryParse(configuration["DisableHangfire"], out var d) && d;
+        if (disableHangfire)
         {
-            services.AddHangfireServer();
+            using var lf = LoggerFactory.Create(builder => { });
+            var logger = lf.CreateLogger("Hangfire");
+            logger.LogWarning("Hangfire disabled explicitly via DisableHangfire=true");
+            services.AddScoped<IHangfireMonitoringClient, NoopHangfireMonitoringClient>();
         }
-        services.AddScoped<IHangfireMonitoringClient, HangfireMonitoringClient>();
+        else if (string.IsNullOrWhiteSpace(conn))
+        {
+            using var lf = LoggerFactory.Create(builder => { });
+            var logger = lf.CreateLogger("Hangfire");
+            logger.LogWarning("Hangfire disabled: connection string not configured or empty");
+            services.AddScoped<IHangfireMonitoringClient, NoopHangfireMonitoringClient>();
+        }
+        else
+        {
+            services.AddHangfire(config =>
+                config.UsePostgreSqlStorage(options =>
+                    options.UseNpgsqlConnection(conn)));
+            services.AddHangfireServer();
+            services.AddScoped<IHangfireMonitoringClient, HangfireMonitoringClient>();
+        }
         services.AddScoped<IBackgroundJobStatusService, HangfireJobStatusService>();
         services.AddScoped<Stage0DiagnosticJob>();
         var dataProtectionKeysPath = configuration["DataProtection:KeysPath"]
