@@ -96,6 +96,7 @@ public class AuthEndpointsValidationTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ConnectionStrings:DefaultConnection"] = "",
+                ["DataProtection:KeysPath"] = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pim-test-keys-" + System.Guid.NewGuid().ToString("N")),
             })
             .Build();
         var services = new ServiceCollection();
@@ -107,7 +108,10 @@ public class AuthEndpointsValidationTests
     public void AddPimInfrastructure_NullConnectionString_DoesNotThrow()
     {
         var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>())
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["DataProtection:KeysPath"] = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pim-test-keys-" + System.Guid.NewGuid().ToString("N")),
+            })
             .Build();
         var services = new ServiceCollection();
         var ex = Record.Exception(() => services.AddPimInfrastructure(config));
@@ -122,6 +126,7 @@ public class AuthEndpointsValidationTests
             {
                 ["ConnectionStrings:DefaultConnection"] = "Host=localhost;Database=pim;Username=pim;Password=pim",
                 ["DisableHangfire"] = "true",
+                ["DataProtection:KeysPath"] = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pim-test-keys-" + System.Guid.NewGuid().ToString("N")),
             })
             .Build();
         var services = new ServiceCollection();
