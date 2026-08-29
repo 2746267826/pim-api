@@ -81,11 +81,12 @@ builder.Services.AddCors(options =>
 
         if (allowedOrigins.Length > 0)
         {
+            // WithOrigins already validates Origin; no need for redundant SetIsOriginAllowed.
+            // Use OrdinalIgnoreCase via normalized comparison if custom check is ever needed.
             policy.WithOrigins(allowedOrigins)
                 .AllowAnyMethod()
                 .AllowAnyHeader()
-                .AllowCredentials()
-                .SetIsOriginAllowed(origin => allowedOrigins.Contains(origin));
+                .AllowCredentials();
         }
         else
         {

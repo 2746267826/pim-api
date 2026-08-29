@@ -558,19 +558,33 @@ public sealed class CalendarRecycleBinService
         };
 
     /// <summary>
-    /// GC：清理超过保留期的软删数据（仅标记软删，未做物理删除时可扩展为硬删）。
-    /// 当前实现为查询过期条数并返回，供运维定时任务调用；如需物理删除可在此替换为 RemoveRange。
+    /// GC：清理超过保留期的软删数据。默认仅统计；当 <paramref name="executeDelete"/> 为 true 时执行物理删除。
+    /// 建议通过 Hangfire 定时任务调用 executeDelete:true，或由运维脚本确认后启用。
     /// </summary>
-    public async Task<int> PurgeExpiredSoftDeletedAsync(TimeSpan? retention = null, CancellationToken ct = default)
+    public async Task<int> PurgeExpiredSoftDeletedAsync(TimeSpan? retention = null, bool executeDelete = false, CancellationToken ct = default)
     {
         var cutoff = DateTimeOffset.UtcNow - (retention ?? DefaultRetention);
         var expiredCalendars = await _db.Set<CalendarEntity>().IgnoreQueryFilters()
-            .CountAsync(c => c.UserId == UserId && c.DeletedAt != null && c.DeletedAt < cutoff, ct);
+            .Where(c => c.UserId == UserId && c.DeletedAt != null && c.DeletedAt < cutoff)
+            .ToListAsync(ct);
         var expiredEvents = await _db.Set<EventEntity>().IgnoreQueryFilters()
-            .CountAsync(e => e.Calendar.UserId == UserId && e.DeletedAt != null && e.DeletedAt < cutoff, ct);
+            .Where(e => e.Calendar.UserId == UserId && e.DeletedAt != null && e.DeletedAt < cutoff)
+            .ToListAsync(ct);
         var expiredTasks = await _db.Set<TaskEntity>().IgnoreQueryFilters()
-            .CountAsync(t => t.UserId == UserId && t.DeletedAt != null && t.DeletedAt < cutoff, ct);
-        // 仅统计，物理清理需运维确认后启用
-        return expiredCalendars + expiredEvents + expiredTasks;
+            .Where(t => t.UserId == UserId && t.DeletedAt != null && t.DeletedAt < cutoff)
+            .ToListAsync(ct);
+        var count = expiredCalendars.Count + expiredEvents.Count + expiredTasks.Count;
+        if (executeDelete && count > 0)
+        {
+            _db.RemoveRange(expiredEvents);
+            _db.RemoveRange(expiredTasks);
+            _db.RemoveRange(expiredCalendars);
+            await _db.SaveChangesAsync(ct);
+        }
+        return count;
     }
+
+    /// <summary>仅统计过期条数，不删除（兼容旧调用）。</summary>
+    public Task<int> CountExpiredSoftDeletedAsync(TimeSpan? retention = null, CancellationToken ct = default)
+        => PurgeExpiredSoftDeletedAsync(retention, executeDelete: false, ct);
 }

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using Hangfire.Dashboard;
 using Microsoft.Extensions.Configuration;
@@ -26,7 +27,7 @@ public sealed class HangfireAuthorizationFilter : IDashboardAuthorizationFilter
                 {
                     var headerKey = http.Request.Headers["X-PIM-Ops-Key"].FirstOrDefault()
                         ?? http.Request.Headers["X-Ops-Key"].FirstOrDefault();
-                    if (!string.IsNullOrEmpty(headerKey) && headerKey == opsKey)
+                    if (!string.IsNullOrEmpty(headerKey) && FixedTimeEquals(headerKey, opsKey))
                         return true;
                 }
 
@@ -47,7 +48,7 @@ public sealed class HangfireAuthorizationFilter : IDashboardAuthorizationFilter
                             {
                                 var u = decoded.Substring(0, sep);
                                 var p = decoded.Substring(sep + 1);
-                                if (u == user && p == pass)
+                                if (FixedTimeEquals(u, user) && FixedTimeEquals(p, pass))
                                     return true;
                             }
                         }
@@ -59,5 +60,13 @@ public sealed class HangfireAuthorizationFilter : IDashboardAuthorizationFilter
         catch { /* config unavailable -> deny */ }
 
         return false;
+    }
+
+    private static bool FixedTimeEquals(string a, string b)
+    {
+        var aBytes = Encoding.UTF8.GetBytes(a);
+        var bBytes = Encoding.UTF8.GetBytes(b);
+        if (aBytes.Length != bBytes.Length) return false;
+        return CryptographicOperations.FixedTimeEquals(aBytes, bBytes);
     }
 }
