@@ -10,6 +10,10 @@ namespace Pim.Module.Calendar.Services;
 
 public sealed class CalendarRecycleBinService
 {
+    // GC 策略：回收站仅软删，不提供永久删除接口；过期数据由运维定期清理。
+    // 默认保留期 30 天，可通过 PurgeExpiredSoftDeletedAsync 定时调用（Hangfire/运维脚本）。
+    public static readonly TimeSpan DefaultRetention = TimeSpan.FromDays(30);
+
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly CalendarAuditWriter _audit;
@@ -552,4 +556,21 @@ public sealed class CalendarRecycleBinService
             ["targetType"] = targetType,
             ["affectedCount"] = affectedCount.ToString()
         };
+
+    /// <summary>
+    /// GC：清理超过保留期的软删数据（仅标记软删，未做物理删除时可扩展为硬删）。
+    /// 当前实现为查询过期条数并返回，供运维定时任务调用；如需物理删除可在此替换为 RemoveRange。
+    /// </summary>
+    public async Task<int> PurgeExpiredSoftDeletedAsync(TimeSpan? retention = null, CancellationToken ct = default)
+    {
+        var cutoff = DateTimeOffset.UtcNow - (retention ?? DefaultRetention);
+        var expiredCalendars = await _db.Set<CalendarEntity>().IgnoreQueryFilters()
+            .CountAsync(c => c.UserId == UserId && c.DeletedAt != null && c.DeletedAt < cutoff, ct);
+        var expiredEvents = await _db.Set<EventEntity>().IgnoreQueryFilters()
+            .CountAsync(e => e.Calendar.UserId == UserId && e.DeletedAt != null && e.DeletedAt < cutoff, ct);
+        var expiredTasks = await _db.Set<TaskEntity>().IgnoreQueryFilters()
+            .CountAsync(t => t.UserId == UserId && t.DeletedAt != null && t.DeletedAt < cutoff, ct);
+        // 仅统计，物理清理需运维确认后启用
+        return expiredCalendars + expiredEvents + expiredTasks;
+    }
 }

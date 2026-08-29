@@ -24,8 +24,12 @@ public sealed class FileOperationService(
 
     public async Task<PagedResult<FileItemDto>> ListItemsAsync(
         FileListQuery query,
+        int page = 1,
+        int pageSize = 50,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var userId = UserId;
         var parentPath = NormalizePath(query.Path);
         var candidatePrefix = parentPath == "/" ? "/" : $"{parentPath}/";
@@ -40,7 +44,7 @@ public sealed class FileOperationService(
                 && item.Path.StartsWith(candidatePrefix))
             .ToListAsync(ct);
 
-        var items = candidates
+        var allItems = candidates
             .Where(item => IsDirectChildPath(item.Path, parentPath))
             .OrderBy(item => item.ItemType == "folder" ? 0 : 1)
             .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
@@ -48,12 +52,19 @@ public sealed class FileOperationService(
             .Select(MapFileItem)
             .ToList();
 
+        var totalCount = allItems.Count;
+        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
+        var items = allItems
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToList();
+
         return new PagedResult<FileItemDto>(
             items,
-            1,
-            items.Count,
-            items.Count,
-            items.Count == 0 ? 0 : 1);
+            page,
+            pageSize,
+            totalCount,
+            totalPages);
     }
 
     public async Task<FileItemDto> GetItemAsync(Guid id, CancellationToken ct = default)

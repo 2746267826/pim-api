@@ -127,6 +127,8 @@ public class CalendarService
         int page = 1, int pageSize = 50,
         CancellationToken ct = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var minValidDate = DateTimeOffset.MinValue.AddYears(100);
         var hasWindow = start.HasValue && end.HasValue;
         var query = _db.Set<EventEntity>()
