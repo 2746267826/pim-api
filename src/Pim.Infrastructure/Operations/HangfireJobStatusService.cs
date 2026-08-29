@@ -10,10 +10,17 @@ public interface IHangfireMonitoringClient
     HangfireMonitoringSnapshot GetSnapshot();
 }
 
+public sealed class NoopHangfireMonitoringClient : IHangfireMonitoringClient
+{
+    public HangfireMonitoringSnapshot GetSnapshot() => new(0, 0, 0, 0);
+}
+
 public sealed class HangfireMonitoringClient : IHangfireMonitoringClient
 {
     public HangfireMonitoringSnapshot GetSnapshot()
     {
+        if (JobStorage.Current == null)
+            return new HangfireMonitoringSnapshot(0, 0, 0, 0);
         var monitoringApi = JobStorage.Current.GetMonitoringApi();
         var queues = monitoringApi.Queues();
         var processing = monitoringApi.ProcessingCount();

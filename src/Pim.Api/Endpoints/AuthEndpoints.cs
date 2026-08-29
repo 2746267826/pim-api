@@ -22,23 +22,50 @@ public static class AuthEndpoints
             JwtService jwt,
             CancellationToken ct) =>
         {
-            if (await db.Users.AnyAsync(u => u.Username == request.Username, ct))
+            var username = request.Username?.Trim() ?? string.Empty;
+            var email = request.Email?.Trim() ?? string.Empty;
+            var normalizedEmail = email.ToLowerInvariant();
+            var displayName = request.DisplayName?.Trim();
+            if (string.IsNullOrEmpty(displayName))
+                displayName = username;
+
+            if (string.IsNullOrWhiteSpace(username))
+                return Results.BadRequest(ApiResponse<string>.Error(40001, "Username is required"));
+            if (string.IsNullOrWhiteSpace(email))
+                return Results.BadRequest(ApiResponse<string>.Error(40002, "Email is required"));
+            if (!new System.ComponentModel.DataAnnotations.EmailAddressAttribute().IsValid(email))
+                return Results.BadRequest(ApiResponse<string>.Error(40003, "Invalid email format"));
+            if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < 8)
+                return Results.BadRequest(ApiResponse<string>.Error(40004, "Password must be at least 8 characters"));
+            if (username.Length > 50) return Results.BadRequest(ApiResponse<string>.Error(40005, "Username must not exceed 50 characters"));
+            if (email.Length > 255) return Results.BadRequest(ApiResponse<string>.Error(40006, "Email must not exceed 255 characters"));
+            if (request.Password.Length > 100) return Results.BadRequest(ApiResponse<string>.Error(40007, "Password must not exceed 100 characters"));
+            if (!string.IsNullOrEmpty(displayName) && displayName.Length > 100) return Results.BadRequest(ApiResponse<string>.Error(40008, "DisplayName must not exceed 100 characters"));
+
+            if (await db.Users.AnyAsync(u => u.Username == username, ct))
                 return Results.Conflict(ApiResponse<string>.Error(01003, "用户名已存在"));
 
-            if (await db.Users.AnyAsync(u => u.Email == request.Email, ct))
+            if (await db.Users.AnyAsync(u => u.Email == normalizedEmail, ct))
                 return Results.Conflict(ApiResponse<string>.Error(01004, "邮箱已存在"));
 
             var user = new UserEntity
             {
-                Username = request.Username,
-                Email = request.Email,
+                Username = username,
+                Email = normalizedEmail,
                 PasswordHash = PasswordHasher.Hash(request.Password),
-                DisplayName = request.DisplayName ?? request.Username,
+                DisplayName = displayName,
                 Role = "user"
             };
 
             db.Users.Add(user);
-            await db.SaveChangesAsync(ct);
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pg && pg.SqlState == "23505")
+            {
+                return Results.Conflict(ApiResponse<string>.Error(01003, "用户名已存在或邮箱已存在"));
+            }
 
             var accessToken = jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
             var refreshToken = jwt.GenerateRefreshToken();

@@ -230,10 +230,10 @@ public sealed class MobileUsageIngestService
                         && e.EventTimestampUtc >= chunkFirst
                         && e.EventTimestampUtc <= chunkLast
                         && chunkPackages.Contains(e.PackageName))
-                    .Select(e => new { e.PackageName, e.EventType, e.EventTimestampUtc, e.ClassName })
+                    .Select(e => new { e.PackageName, e.EventType, e.EventTimestampUtc, e.ClassName, e.CollectedAtUtc, e.RawJson })
                     .ToListAsync(ct);
                 foreach (var e in existingChunk)
-                    knownKeys.Add(new EventKey(e.PackageName, e.EventType, e.EventTimestampUtc, NormalizeClassName(e.ClassName)));
+                    knownKeys.Add(new EventKey(e.PackageName, e.EventType, e.EventTimestampUtc, NormalizeClassName(e.ClassName), e.CollectedAtUtc, ComputeRawJsonHash(e.RawJson)));
             }
         }
 
@@ -479,8 +479,12 @@ public sealed class MobileUsageIngestService
             || summary.WindowEndUtc == default
             || summary.WindowEndUtc <= summary.WindowStartUtc)
             return new ValidationError("invalid-time", "Summary window end must follow its start.");
-        if (summary.TotalTimeForegroundMs < 0)
-            return new ValidationError("invalid-duration", "Foreground duration must not be negative.");
+        if (summary.TotalTimeVisibleMs <= 0)
+            return new ValidationError("invalid-duration", "Foreground duration must be positive and within window.");
+        if (summary.TotalTimeVisibleMs > (summary.WindowEndUtc - summary.WindowStartUtc).TotalMilliseconds)
+            return new ValidationError("invalid-duration", "Foreground duration exceeds window duration.");
+        if (summary.TotalTimeVisibleMs > 8L * 60 * 60 * 1000)
+            return new ValidationError("invalid-duration", "Foreground duration exceeds 8 hours.");
         if (string.IsNullOrWhiteSpace(summary.SourceKind) || summary.SourceKind.Length > 64)
             return new ValidationError("invalid-source-kind", "Source kind is required and must not exceed 64 characters.");
         return ValidateJson(summary.RawJson);
@@ -550,18 +554,25 @@ public sealed class MobileUsageIngestService
     private static string NormalizeClassName(string? value)
         => value ?? string.Empty;
 
+    private static string ComputeRawJsonHash(string? value)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonOrDefault(value)))).ToLowerInvariant();
+
     private sealed record EventKey(
         string PackageName,
         string EventType,
         DateTimeOffset EventTimestampUtc,
-        string ClassName)
+        string ClassName,
+        DateTimeOffset CollectedAtUtc,
+        string RawHash)
     {
         public static EventKey From(MobileUsageEventDto usageEvent)
             => new(
                 usageEvent.PackageName,
                 usageEvent.EventType,
                 usageEvent.EventTimestampUtc,
-                NormalizeClassName(usageEvent.ClassName));
+                NormalizeClassName(usageEvent.ClassName),
+                usageEvent.CollectedAtUtc,
+                ComputeRawJsonHash(usageEvent.RawJson));
     }
 
     private sealed record ValidationError(string Code, string Message);

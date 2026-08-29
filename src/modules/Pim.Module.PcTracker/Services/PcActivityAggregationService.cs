@@ -171,15 +171,29 @@ public sealed class PcActivityAggregationService
     {
         var window = ResolveWindow(query);
         var snapshots = await _db.Set<ActivityClassificationEntity>()
-            .Where(s => s.StartedAt >= window.StartUtc && s.StartedAt < window.EndUtc)
+            .Where(s => s.StartedAt < window.EndUtc && s.EndedAt > window.StartUtc)
             .ToListAsync(ct);
+
+        // cap 按事件总时长先 cap 再按 overlap 比例分摊，避免跨天分片各自 cap 导致膨胀
+        static double OverlapSeconds(ActivityClassificationEntity s, DateTimeOffset start, DateTimeOffset end, double cap)
+        {
+            var totalSeconds = (s.EndedAt - s.StartedAt).TotalSeconds;
+            if (totalSeconds <= 0) return 0;
+            var cappedTotal = Math.Min(totalSeconds, cap);
+            var overlapStart = s.StartedAt > start ? s.StartedAt : start;
+            var overlapEnd = s.EndedAt < end ? s.EndedAt : end;
+            var overlapSeconds = Math.Max(0, (overlapEnd - overlapStart).TotalSeconds);
+            if (overlapSeconds <= 0) return 0;
+            // 按重叠占比分摊 capped 总量
+            return cappedTotal * (overlapSeconds / totalSeconds);
+        }
 
         var groups = snapshots
             .GroupBy(s => s.CategoryName, StringComparer.OrdinalIgnoreCase)
             .Select(g => new
             {
                 Category = g.Key,
-                Seconds = g.Sum(s => Math.Min(Math.Max(0, (s.EndedAt - s.StartedAt).TotalSeconds), MaxEventDurationSeconds)),
+                Seconds = g.Sum(s => OverlapSeconds(s, window.StartUtc, window.EndUtc, MaxEventDurationSeconds)),
                 Color = ResolveCategoryColor(g.Key, g.Select(s => s.CategoryColor))
             })
             .OrderByDescending(x => x.Seconds)

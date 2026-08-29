@@ -204,11 +204,15 @@ public sealed class MobileTimelineBlockService
                 continue;
 
             var startUtc = Max(session.StartUtc, context.Range.RangeStartUtc);
-            var endUtc = Min(EffectiveSessionEnd(session), context.Range.RangeEndUtc);
+            var endUtc = Min(EffectiveSessionEnd(session, context), context.Range.RangeEndUtc);
             var durationSeconds = DurationSeconds(startUtc, endUtc);
             if (ShouldSkipDuration(durationSeconds, context.MinDurationSeconds))
                 continue;
 
+            var isOpenSession = session.EndUtc is null && (session.DurationMs is null || session.DurationMs == 0);
+            var flags = QualityFlags(session.QualityFlagsJson);
+            if (isOpenSession)
+                flags = flags.Concat(["open_session"]).Distinct(StringComparer.Ordinal).ToList();
             items.Add(new TimelineItem(
                 session.Id.ToString("N"),
                 "session",
@@ -221,12 +225,21 @@ public sealed class MobileTimelineBlockService
                 classification.LifeCategory,
                 "events",
                 1,
-                QualityFlags(session.QualityFlagsJson),
+                flags,
                 classification.IsSystemNoise));
         }
 
         foreach (var summary in summaries)
         {
+            // cross-source dedup: fallback summary overlapped by same device+package session is discarded
+            var hasOverlappingSession = items.Any(item => item.Source == "events"
+                && string.Equals(item.PackageName, summary.PackageName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(item.DeviceId, summary.DeviceId, StringComparison.Ordinal)
+                && summary.WindowStartUtc < item.EndUtc
+                && summary.WindowEndUtc > item.StartUtc);
+            if (hasOverlappingSession)
+                continue;
+
             if (!classifications.TryGetValue(summary.PackageName, out var classification))
                 classification = AppClassification.Default(summary.PackageName);
             if (!MatchesClassificationFilters(classification, context))
@@ -414,6 +427,17 @@ public sealed class MobileTimelineBlockService
             return session.StartUtc.AddMilliseconds(session.DurationMs.Value);
 
         return _timeProvider.GetUtcNow();
+    }
+
+    private DateTimeOffset EffectiveSessionEnd(MobileUsageSessionEntity session, MobileAnalyticsQueryContext context)
+    {
+        if (session.EndUtc is not null)
+            return session.EndUtc.Value;
+
+        if (session.DurationMs is > 0)
+            return session.StartUtc.AddMilliseconds(session.DurationMs.Value);
+
+        return context.Range.RangeEndUtc;
     }
 
     private static MobileTimelineBlockSessionDto ToSessionDto(TimelineItem item)

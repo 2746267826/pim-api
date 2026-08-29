@@ -416,7 +416,7 @@ public sealed class MobileUsageIngestServiceTests
             SourceWindowStartUtc = start,
             SourceWindowEndUtc = start.AddHours(1),
             CollectedAtUtc = start.AddMinutes(6),
-            RawJson = "{}",
+            RawJson = "{\"event\":\"tap\"}",
             QualityFlagsJson = "[]",
             CreatedAt = start.AddMinutes(6)
         });

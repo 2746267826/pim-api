@@ -116,26 +116,72 @@ public sealed class MobileUsageAggregationService
             _ => TimeSpan.FromHours(1)
         };
 
-        return SplitRowsIntoBuckets(await LoadRowsAsync(context, ct), timeZoneInfo, bucketSize, context.Granularity)
-            .GroupBy(row => new
+        var buckets = SplitRowsIntoBuckets(await LoadRowsAsync(context, ct), timeZoneInfo, bucketSize, context.Granularity).ToList();
+        // Cap by bucket total (not per LifeCategory) and use real DST-aware cap
+        var totalsByBucket = buckets
+            .GroupBy(row => new { row.BucketStartUtc, row.BucketEndUtc, row.LocalDate, row.LocalHour })
+            .ToDictionary(
+                g => (g.Key.BucketStartUtc, g.Key.BucketEndUtc, g.Key.LocalDate, g.Key.LocalHour),
+                g => new { Total = g.Sum(row => row.BucketSeconds), Flags = g.SelectMany(r => r.QualityFlags).Distinct(StringComparer.Ordinal).ToList(), RealCap = (int)(g.Key.BucketEndUtc - g.Key.BucketStartUtc).TotalSeconds, BucketSizeFallback = (int)bucketSize.TotalSeconds });
+
+        // Proportional allocation when bucket total exceeds real cap
+        var perCategoryGroups = buckets
+            .GroupBy(row => new { row.BucketStartUtc, row.BucketEndUtc, row.LocalDate, row.LocalHour, row.LifeCategory })
+            .Select(g => new { Key = g.Key, Raw = g.Sum(r => r.BucketSeconds), Flags = g.SelectMany(r => r.QualityFlags).Distinct(StringComparer.Ordinal).ToList() })
+            .GroupBy(x => new { x.Key.BucketStartUtc, x.Key.BucketEndUtc, x.Key.LocalDate, x.Key.LocalHour })
+            .SelectMany(bucketGroup =>
             {
-                row.BucketStartUtc,
-                row.BucketEndUtc,
-                row.LocalDate,
-                row.LocalHour,
-                row.LifeCategory
+                var bucketKey = (bucketGroup.Key.BucketStartUtc, bucketGroup.Key.BucketEndUtc, bucketGroup.Key.LocalDate, bucketGroup.Key.LocalHour);
+                var totalInfo = totalsByBucket[bucketKey];
+                var realCap = totalInfo.RealCap > 0 ? totalInfo.RealCap : totalInfo.BucketSizeFallback;
+                // Only cap hour/day buckets (>=3600s); keep 15m/30m uncapped per design
+                var shouldCap = bucketSize.TotalSeconds >= 3600;
+                if (!shouldCap) realCap = int.MaxValue;
+                var total = totalInfo.Total;
+                var needsCap = shouldCap && total > realCap;
+
+                // proportional capped values
+                var entries = bucketGroup.ToList();
+                var cappedValues = new Dictionary<string, long>(StringComparer.Ordinal);
+                if (needsCap && total > 0)
+                {
+                    var exact = entries.Select(e => e.Raw * (realCap / (double)total)).ToArray();
+                    var floors = exact.Select(v => (long)Math.Floor(v)).ToArray();
+                    var sumFloors = floors.Sum();
+                    var remainder = realCap - sumFloors;
+                    var fractions = exact.Select((v, idx) => new { idx, frac = v - Math.Floor(v) }).OrderByDescending(x => x.frac).ThenBy(x => x.idx).ToList();
+                    for (var k = 0; k < remainder && k < fractions.Count; k++) floors[fractions[k].idx] += 1;
+                    for (var i = 0; i < entries.Count; i++) cappedValues[entries[i].Key.LifeCategory] = floors[i];
+                }
+                else
+                {
+                    foreach (var e in entries) cappedValues[e.Key.LifeCategory] = Math.Min(e.Raw, realCap);
+                }
+
+                return bucketGroup.Select(entry =>
+                {
+                    var capped = cappedValues[entry.Key.LifeCategory];
+                    var flags = new List<string>(entry.Flags);
+                    if (needsCap)
+                    {
+                        var overflowFlag = bucketSize == TimeSpan.FromDays(1) ? "day_overflow" : "hour_overflow";
+                        flags.Add(overflowFlag);
+                    }
+                    flags = flags.Distinct(StringComparer.Ordinal).ToList();
+                    return new MobileHeatmapBucketDto(
+                        entry.Key.BucketStartUtc,
+                        entry.Key.BucketEndUtc,
+                        entry.Key.LocalDate,
+                        entry.Key.LocalHour,
+                        entry.Key.LifeCategory,
+                        capped,
+                        flags);
+                });
             })
-            .Select(group => new MobileHeatmapBucketDto(
-                group.Key.BucketStartUtc,
-                group.Key.BucketEndUtc,
-                group.Key.LocalDate,
-                group.Key.LocalHour,
-                group.Key.LifeCategory,
-                group.Sum(row => row.BucketSeconds),
-                group.SelectMany(row => row.QualityFlags).Distinct(StringComparer.Ordinal).ToList()))
             .OrderBy(bucket => bucket.BucketStartUtc)
             .ThenBy(bucket => bucket.LifeCategory, StringComparer.Ordinal)
             .ToList();
+        return perCategoryGroups;
     }
 
     public async Task<IReadOnlyList<MobileAnalyticsChartDto>> GetChartsAsync(
@@ -257,11 +303,16 @@ public sealed class MobileUsageAggregationService
             var classification = classifications.GetValueOrDefault(session.PackageName, Classification.Default(session.PackageName));
             if (!MatchesClassification(context, classification))
                 continue;
+            var isOpenSession = session.EndUtc is null && (session.DurationMs is null || session.DurationMs == 0);
+            var computedEnd = session.EndUtc ?? (session.DurationMs is > 0 ? session.StartUtc.AddMilliseconds(session.DurationMs.Value) : context.Range.RangeEndUtc);
+            var end = Min(computedEnd, context.Range.RangeEndUtc);
             var start = Max(session.StartUtc, context.Range.RangeStartUtc);
-            var end = Min(session.EndUtc ?? start.AddMilliseconds(session.DurationMs.GetValueOrDefault()), context.Range.RangeEndUtc);
             var seconds = Math.Max(0, (long)(end - start).TotalSeconds);
             if (seconds <= context.MinDurationSeconds)
                 continue;
+            var sessionFlags = isOpenSession
+                ? QualityFlags(session.QualityFlagsJson, classification.HasMetadata, "open_session")
+                : QualityFlags(session.QualityFlagsJson, classification.HasMetadata);
             rows.Add(new UsageRow(
                 session.DeviceId,
                 session.PackageName,
@@ -273,12 +324,19 @@ public sealed class MobileUsageAggregationService
                 "events",
                 classification.IsSystemNoise,
                 session.QualityFlagsJson.Contains("stale", StringComparison.OrdinalIgnoreCase),
-                QualityFlags(session.QualityFlagsJson, classification.HasMetadata)));
+                sessionFlags));
         }
 
         foreach (var summary in summaries)
         {
             if (summary.QualityFlagsJson.Contains("duplicate_summary", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var hasOverlappingSession = rows.Any(row => row.Source == "events"
+                && string.Equals(row.PackageName, summary.PackageName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(row.DeviceId, summary.DeviceId, StringComparison.Ordinal)
+                && summary.WindowStartUtc < row.EndUtc
+                && summary.WindowEndUtc > row.StartUtc);
+            if (hasOverlappingSession)
                 continue;
             var classification = classifications.GetValueOrDefault(summary.PackageName, Classification.Default(summary.PackageName));
             if (!MatchesClassification(context, classification))

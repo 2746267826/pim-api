@@ -162,10 +162,17 @@ app.UseAuthentication();
 app.UseMiddleware<OpsRateLimitMiddleware>();
 app.UseMiddleware<OpsKeyMiddleware>();
 app.UseAuthorization();
-app.UseHangfireDashboard("/hangfire", new DashboardOptions
+try
 {
-    Authorization = new[] { new HangfireAuthorizationFilter() }
-});
+    app.UseHangfireDashboard("/hangfire", new DashboardOptions
+    {
+        Authorization = new[] { new HangfireAuthorizationFilter() }
+    });
+}
+catch (Exception ex)
+{
+    Log.Warning(ex, "Hangfire dashboard disabled: storage not configured");
+}
 
 // Serve React SPA static files from wwwroot
 app.UseDefaultFiles();
