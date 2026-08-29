@@ -116,6 +116,7 @@ public sealed class MobileUsageAggregationService
             _ => TimeSpan.FromHours(1)
         };
 
+        var bucketSeconds = (int)bucketSize.TotalSeconds;
         return SplitRowsIntoBuckets(await LoadRowsAsync(context, ct), timeZoneInfo, bucketSize, context.Granularity)
             .GroupBy(row => new
             {
@@ -125,14 +126,25 @@ public sealed class MobileUsageAggregationService
                 row.LocalHour,
                 row.LifeCategory
             })
-            .Select(group => new MobileHeatmapBucketDto(
-                group.Key.BucketStartUtc,
-                group.Key.BucketEndUtc,
-                group.Key.LocalDate,
-                group.Key.LocalHour,
-                group.Key.LifeCategory,
-                group.Sum(row => row.BucketSeconds),
-                group.SelectMany(row => row.QualityFlags).Distinct(StringComparer.Ordinal).ToList()))
+            .Select(group =>
+            {
+                var raw = group.Sum(row => row.BucketSeconds);
+                // cap only for hour/day buckets to avoid breaking DST ambiguous 30m/15m cases
+                var shouldCap = bucketSeconds >= 3600;
+                var capped = shouldCap ? Math.Min(raw, bucketSeconds) : raw;
+                var flags = group.SelectMany(row => row.QualityFlags).Distinct(StringComparer.Ordinal).ToList();
+                if (shouldCap && raw > bucketSeconds)
+                    flags.Add("hour_overflow");
+                flags = flags.Distinct(StringComparer.Ordinal).ToList();
+                return new MobileHeatmapBucketDto(
+                    group.Key.BucketStartUtc,
+                    group.Key.BucketEndUtc,
+                    group.Key.LocalDate,
+                    group.Key.LocalHour,
+                    group.Key.LifeCategory,
+                    capped,
+                    flags);
+            })
             .OrderBy(bucket => bucket.BucketStartUtc)
             .ThenBy(bucket => bucket.LifeCategory, StringComparer.Ordinal)
             .ToList();
@@ -258,10 +270,15 @@ public sealed class MobileUsageAggregationService
             if (!MatchesClassification(context, classification))
                 continue;
             var start = Max(session.StartUtc, context.Range.RangeStartUtc);
-            var end = Min(session.EndUtc ?? start.AddMilliseconds(session.DurationMs.GetValueOrDefault()), context.Range.RangeEndUtc);
+            var isOpenSession = session.EndUtc is null && (session.DurationMs is null || session.DurationMs == 0);
+            var computedEnd = session.EndUtc ?? (session.DurationMs is > 0 ? start.AddMilliseconds(session.DurationMs.Value) : context.Range.RangeEndUtc);
+            var end = Min(computedEnd, context.Range.RangeEndUtc);
             var seconds = Math.Max(0, (long)(end - start).TotalSeconds);
             if (seconds <= context.MinDurationSeconds)
                 continue;
+            var sessionFlags = isOpenSession
+                ? QualityFlags(session.QualityFlagsJson, classification.HasMetadata, "open_session")
+                : QualityFlags(session.QualityFlagsJson, classification.HasMetadata);
             rows.Add(new UsageRow(
                 session.DeviceId,
                 session.PackageName,
@@ -273,12 +290,19 @@ public sealed class MobileUsageAggregationService
                 "events",
                 classification.IsSystemNoise,
                 session.QualityFlagsJson.Contains("stale", StringComparison.OrdinalIgnoreCase),
-                QualityFlags(session.QualityFlagsJson, classification.HasMetadata)));
+                sessionFlags));
         }
 
         foreach (var summary in summaries)
         {
             if (summary.QualityFlagsJson.Contains("duplicate_summary", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var hasOverlappingSession = rows.Any(row => row.Source == "events"
+                && string.Equals(row.PackageName, summary.PackageName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(row.DeviceId, summary.DeviceId, StringComparison.Ordinal)
+                && summary.WindowStartUtc < row.EndUtc
+                && summary.WindowEndUtc > row.StartUtc);
+            if (hasOverlappingSession)
                 continue;
             var classification = classifications.GetValueOrDefault(summary.PackageName, Classification.Default(summary.PackageName));
             if (!MatchesClassification(context, classification))
