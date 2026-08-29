@@ -102,16 +102,18 @@ public sealed class PcActivityAggregationService
             .ToListAsync(ct);
 
         var validEvents = events.Where(e => e.Duration > 0).ToList();
-        var groups = validEvents
+        var groupsAll = validEvents
             .GroupBy(NormalizeApp, StringComparer.OrdinalIgnoreCase)
             .Select(g => new { App = g.Key, Seconds = SumMergedSeconds(g) })
-            .Where(x => x.Seconds >= MinAppDurationSeconds)
             .OrderByDescending(x => x.Seconds)
             .ThenBy(x => x.App, StringComparer.OrdinalIgnoreCase)
             .ToList();
+        var groups = groupsAll
+            .Where(x => x.Seconds >= MinAppDurationSeconds)
+            .ToList();
 
-        // percentage 分母 = 去重后全部 window 事件并集秒数；与 heatmap 同口径。
-        var totalSeconds = SumMergedSeconds(validEvents);
+        // percentage 分母 = 去重后各 app 并集秒数之和（含 <60s 噪声），与 totalMinutes 同口径，跨 app 不合并以免低估多任务并行。
+        var totalSeconds = groupsAll.Sum(x => x.Seconds);
         var totalMinutes = (int)Math.Round(totalSeconds / 60.0);
 
         var displayNames = await ResolveDisplayNamesAsync(
@@ -309,7 +311,7 @@ public sealed class PcActivityAggregationService
             signatures.Select(s => (s.ProcessName ?? string.Empty, s.DisplayName ?? string.Empty)));
     }
 
-    /// <summary>专注块合并：先按 app 去重合并重叠区间，再按 5min 间隙切分，块时长为去重后并集总时长。</summary>
+    /// <summary>专注块合并：先按 app 去重合并重叠区间，再按 5min 间隙切分，块时长为跨度（末结束-首开始，含 ≤5m 间隙）。</summary>
     private static List<PcFocusBlock> BuildBlocks(List<AwEventEntity> events)
     {
         // 1) 去重：按 app 分组各自按 Timestamp 合并重叠区间（capped 3600，Duration>0）
@@ -323,7 +325,7 @@ public sealed class PcActivityAggregationService
         }
         intervals.Sort((a, b) => a.Start.CompareTo(b.Start));
 
-        // 2) 按 5m 间隙切块
+        // 2) 按 5m 间隙切块，块时长按跨度计（含间隙），避免膨胀仅来自重复区间双计而非间隙本身
         var blocks = new List<PcFocusBlock>();
         List<PcInterval>? current = null;
         DateTimeOffset currentEnd = default;
@@ -343,13 +345,15 @@ public sealed class PcActivityAggregationService
             if (iv.Start <= currentEnd.AddMinutes(BlockMergeGapMinutes))
             {
                 current.Add(iv);
+                // 块内 app 维度统计仍按并集时长（去重后），块总时长按跨度
                 blockMergedSeconds += (iv.End - iv.Start).TotalSeconds;
                 if (iv.End > currentEnd)
                     currentEnd = iv.End;
             }
             else
             {
-                blocks.Add(new PcFocusBlock(blockStart, currentEnd, current, blockMergedSeconds));
+                var spanSeconds = (currentEnd - blockStart).TotalSeconds;
+                blocks.Add(new PcFocusBlock(blockStart, currentEnd, current, spanSeconds));
                 current = new List<PcInterval> { iv };
                 blockStart = iv.Start;
                 currentEnd = iv.End;
@@ -358,7 +362,10 @@ public sealed class PcActivityAggregationService
         }
 
         if (current is not null)
-            blocks.Add(new PcFocusBlock(blockStart, currentEnd, current, blockMergedSeconds));
+        {
+            var spanSeconds = (currentEnd - blockStart).TotalSeconds;
+            blocks.Add(new PcFocusBlock(blockStart, currentEnd, current, spanSeconds));
+        }
         return blocks;
     }
 

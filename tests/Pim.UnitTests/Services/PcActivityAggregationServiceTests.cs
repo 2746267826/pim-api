@@ -65,7 +65,7 @@ public class PcActivityAggregationServiceTests
         Assert.Equal("code", block.MainApp);
         var top = Assert.Single(block.TopApps);
         Assert.Equal("code", top.Name);
-        Assert.Equal(13, top.Minutes); // 块内该 app 事件时长之和（300+300+180s）
+        Assert.Equal(11, top.Minutes); // 去重后并集：300+300+180 去重重叠 2min 后 660s=11min
         // 本地时间串断言（不用 ToLocalTime）
         Assert.Equal("2026-07-10 09:00:00", block.StartLocal);
         Assert.Equal("2026-07-10 09:16:00", block.EndLocal);
