@@ -22,6 +22,17 @@ public static class AuthEndpoints
             JwtService jwt,
             CancellationToken ct) =>
         {
+            if (string.IsNullOrWhiteSpace(request.Username))
+                return Results.BadRequest(ApiResponse<string>.Error(40001, "Username is required"));
+            if (string.IsNullOrWhiteSpace(request.Email))
+                return Results.BadRequest(ApiResponse<string>.Error(40002, "Email is required"));
+            if (!new System.ComponentModel.DataAnnotations.EmailAddressAttribute().IsValid(request.Email))
+                return Results.BadRequest(ApiResponse<string>.Error(40003, "Invalid email format"));
+            if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < 8)
+                return Results.BadRequest(ApiResponse<string>.Error(40004, "Password must be at least 8 characters"));
+            if (request.DisplayName is not null && request.DisplayName.Length > 100)
+                return Results.BadRequest(ApiResponse<string>.Error(40005, "DisplayName too long"));
+
             if (await db.Users.AnyAsync(u => u.Username == request.Username, ct))
                 return Results.Conflict(ApiResponse<string>.Error(01003, "用户名已存在"));
 

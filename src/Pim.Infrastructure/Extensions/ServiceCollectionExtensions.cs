@@ -43,11 +43,17 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAiSchemaRegistry, AiSchemaRegistry>();
         services.AddSingleton<IAiChatClientFactory, AiChatClientFactory>();
         services.AddHttpClient("litellm-health");
-        services.AddHangfire(config =>
-            config.UsePostgreSqlStorage(options =>
-                options.UseNpgsqlConnection(configuration.GetConnectionString("DefaultConnection"))));
-        if (!(bool.TryParse(configuration["DisableHangfire"], out var d) && d))
+        var conn = configuration.GetConnectionString("DefaultConnection");
+        var disableHangfire = bool.TryParse(configuration["DisableHangfire"], out var d) && d;
+        if (string.IsNullOrWhiteSpace(conn) || disableHangfire)
         {
+            Console.WriteLine("Warning: Hangfire disabled: connection string not configured");
+        }
+        else
+        {
+            services.AddHangfire(config =>
+                config.UsePostgreSqlStorage(options =>
+                    options.UseNpgsqlConnection(conn)));
             services.AddHangfireServer();
         }
         services.AddScoped<IHangfireMonitoringClient, HangfireMonitoringClient>();
