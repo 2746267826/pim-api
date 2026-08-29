@@ -234,6 +234,9 @@ docker compose up -d
 ```bash
 npm --prefix src/client-web install
 npm --prefix src/client-web run dev
+# 或 pnpm（需 corepack enable；离线环境若 corepack 验签失败请用 npm）
+# corepack enable && corepack prepare pnpm@9.12.3 --activate
+# pnpm --dir src/client-web install && pnpm --dir src/client-web run dev
 ```
 
 开发服务器会将 API 请求代理到本地 API。构建产物输出到 `src/Pim.Api/wwwroot`，由服务端托管。
