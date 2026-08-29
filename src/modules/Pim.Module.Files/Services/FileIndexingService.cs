@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -27,7 +29,9 @@ public sealed class FileIndexingService(
     FileOperationService fileOperations,
     IFileTextExtractionService textExtraction,
     IFileEmbeddingService embeddings,
-    IFileVectorStore vectorStore)
+    IFileVectorStore vectorStore,
+    IConfiguration? configuration = null,
+    ILogger<FileIndexingService>? logger = null)
 {
     private static readonly HashSet<string> SupportedMimeTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -65,6 +69,14 @@ public sealed class FileIndexingService(
 
         try
         {
+            // 配置降级提示：若未配置 Tika/MinIO，明确记录而非静默 Hangfire 重试
+            var tikaBase = configuration?["Tika:BaseUrl"];
+            if (string.IsNullOrWhiteSpace(tikaBase))
+                logger?.LogWarning("文件索引降级：Tika:BaseUrl 未配置，提取可能失败 fileItemId={FileItemId}", item.Id);
+            var minioEndpoint = configuration?["Minio:Endpoint"];
+            if (string.IsNullOrWhiteSpace(minioEndpoint))
+                logger?.LogWarning("文件索引降级：Minio:Endpoint 未配置 fileItemId={FileItemId}", item.Id);
+
             job.Stage = "download";
             await db.SaveChangesAsync(ct);
             var download = await fileOperations.DownloadAsync(item.Id, ct);
@@ -131,6 +143,7 @@ public sealed class FileIndexingService(
         }
         catch (Exception ex) when (ex is not DomainException)
         {
+            logger?.LogError(ex, "文件索引失败 fileItemId={FileItemId} stage={Stage}", item.Id, job.Stage);
             job.Status = "failed";
             job.LastError = ex.Message;
             job.FinishedAt = DateTimeOffset.UtcNow;

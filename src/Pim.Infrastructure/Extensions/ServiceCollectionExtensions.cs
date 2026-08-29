@@ -80,10 +80,14 @@ public static class ServiceCollectionExtensions
             configuration["Kopia:RepositoryPath"]!,
             configuration["Kopia:Password"]!));
 
-        // Tika
+        // Tika (optional — when BaseUrl empty, extraction will fallback with clear error)
+        var tikaBaseUrl = configuration["Tika:BaseUrl"];
         services.AddHttpClient<TikaClient>(client =>
         {
-            client.BaseAddress = new Uri(configuration["Tika:BaseUrl"]!);
+            if (!string.IsNullOrWhiteSpace(tikaBaseUrl) && Uri.TryCreate(tikaBaseUrl, UriKind.Absolute, out var uri))
+                client.BaseAddress = uri;
+            else
+                client.BaseAddress = new Uri("http://tika:9998");
         });
 
         return services;

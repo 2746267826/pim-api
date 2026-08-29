@@ -61,11 +61,11 @@ public class PcActivityAggregationServiceTests
         var block = Assert.Single(result.Items);
         Assert.Equal(DateTimeOffset.Parse("2026-07-10T01:00:00Z"), block.StartUtc);
         Assert.Equal(DateTimeOffset.Parse("2026-07-10T01:16:00Z"), block.EndUtc);
-        Assert.Equal(16, block.DurationMinutes);
+        Assert.Equal(11, block.DurationMinutes); // 去重后并集：300+300+180 去重 120s 后 660s=11min（不计 5m 间隙）
         Assert.Equal("code", block.MainApp);
         var top = Assert.Single(block.TopApps);
         Assert.Equal("code", top.Name);
-        Assert.Equal(13, top.Minutes); // 块内该 app 事件时长之和（300+300+180s）
+        Assert.Equal(11, top.Minutes); // 去重后并集：300+300+180 去重重叠 2min 后 660s=11min
         // 本地时间串断言（不用 ToLocalTime）
         Assert.Equal("2026-07-10 09:00:00", block.StartLocal);
         Assert.Equal("2026-07-10 09:16:00", block.EndLocal);
@@ -89,9 +89,9 @@ public class PcActivityAggregationServiceTests
 
         Assert.Equal(2, result.Items.Count);
         Assert.Equal(DateTimeOffset.Parse("2026-07-10T01:00:00Z"), result.Items[0].StartUtc);
-        Assert.Equal(15, result.Items[0].DurationMinutes);
+        Assert.Equal(10, result.Items[0].DurationMinutes); // 去重后并集 300+300=600s=10min
         Assert.Equal(DateTimeOffset.Parse("2026-07-10T01:21:00Z"), result.Items[1].StartUtc);
-        Assert.Equal(15, result.Items[1].DurationMinutes);
+        Assert.Equal(10, result.Items[1].DurationMinutes); // 去重后并集 300+300=600s=10min
     }
 
     [Fact]

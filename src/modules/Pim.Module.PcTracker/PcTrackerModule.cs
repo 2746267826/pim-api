@@ -577,7 +577,7 @@ public class PcTrackerModule : IModule
         });
 
         // App Knowledge Base endpoints
-        var appKnowledgeRead = endpoints.MapGroup("/api/v1/pc/app-knowledge").AllowAnonymous();
+        var appKnowledgeRead = endpoints.MapGroup("/api/v1/pc/app-knowledge").RequireAuthorization();
         var appKnowledgeWrite = endpoints.MapGroup("/api/v1/pc/app-knowledge").RequireAuthorization();
 
         appKnowledgeRead.MapGet("/apps", async (
@@ -721,7 +721,7 @@ public class PcTrackerModule : IModule
             }
         });
 
-        var kbRead = endpoints.MapGroup("/api/v1/pc/app-signatures").AllowAnonymous();
+        var kbRead = endpoints.MapGroup("/api/v1/pc/app-signatures").RequireAuthorization();
         var kbWrite = endpoints.MapGroup("/api/v1/pc/app-signatures").RequireAuthorization();
 
         kbRead.MapGet("/", async (
@@ -924,7 +924,7 @@ public class PcTrackerModule : IModule
         });
 
         // === Phase 2: 分类树 ===
-        var catRead = endpoints.MapGroup("/api/v1/pc/categories").AllowAnonymous();
+        var catRead = endpoints.MapGroup("/api/v1/pc/categories").RequireAuthorization();
         var catWrite = endpoints.MapGroup("/api/v1/pc/categories").RequireAuthorization();
 
         catRead.MapGet("/", async (
@@ -1004,7 +1004,7 @@ public class PcTrackerModule : IModule
         });
 
         // === Phase 2: Productivity ===
-        var prodRead = endpoints.MapGroup("/api/v1/pc/productivity").AllowAnonymous();
+        var prodRead = endpoints.MapGroup("/api/v1/pc/productivity").RequireAuthorization();
 
         prodRead.MapGet("/dashboard", async (
             [FromQuery] string? date,

@@ -190,7 +190,7 @@ public class QuickNoteAttachmentServiceTests
 
         var error = await Assert.ThrowsAsync<DomainException>(() => attachments.DownloadAsync(uploaded.Id));
 
-        Assert.Equal(4006, error.ErrorCode);
+        Assert.Equal(40301, error.ErrorCode);
     }
 
     [Fact]
