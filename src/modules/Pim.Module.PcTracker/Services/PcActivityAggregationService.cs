@@ -325,11 +325,12 @@ public sealed class PcActivityAggregationService
         }
         intervals.Sort((a, b) => a.Start.CompareTo(b.Start));
 
-        // 2) 按 5m 间隙切块，块时长按跨度计（含间隙），避免膨胀仅来自重复区间双计而非间隙本身
+        // 2) 按 5m 间隙切块，块时长按去重后并集总时长（不计间隙），避免膨胀
         var blocks = new List<PcFocusBlock>();
         List<PcInterval>? current = null;
         DateTimeOffset currentEnd = default;
         DateTimeOffset blockStart = default;
+        double blockMergedSeconds = 0;
         foreach (var iv in intervals)
         {
             if (current is null)
@@ -337,29 +338,30 @@ public sealed class PcActivityAggregationService
                 current = new List<PcInterval> { iv };
                 blockStart = iv.Start;
                 currentEnd = iv.End;
+                blockMergedSeconds = (iv.End - iv.Start).TotalSeconds;
                 continue;
             }
 
             if (iv.Start <= currentEnd.AddMinutes(BlockMergeGapMinutes))
             {
                 current.Add(iv);
+                blockMergedSeconds += (iv.End - iv.Start).TotalSeconds;
                 if (iv.End > currentEnd)
                     currentEnd = iv.End;
             }
             else
             {
-                var spanSeconds = (currentEnd - blockStart).TotalSeconds;
-                blocks.Add(new PcFocusBlock(blockStart, currentEnd, current, spanSeconds));
+                blocks.Add(new PcFocusBlock(blockStart, currentEnd, current, blockMergedSeconds));
                 current = new List<PcInterval> { iv };
                 blockStart = iv.Start;
                 currentEnd = iv.End;
+                blockMergedSeconds = (iv.End - iv.Start).TotalSeconds;
             }
         }
 
         if (current is not null)
         {
-            var spanSeconds = (currentEnd - blockStart).TotalSeconds;
-            blocks.Add(new PcFocusBlock(blockStart, currentEnd, current, spanSeconds));
+            blocks.Add(new PcFocusBlock(blockStart, currentEnd, current, blockMergedSeconds));
         }
         return blocks;
     }
