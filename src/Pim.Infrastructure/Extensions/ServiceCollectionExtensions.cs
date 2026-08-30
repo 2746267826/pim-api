@@ -85,12 +85,14 @@ public static class ServiceCollectionExtensions
 
         // Storage (optional — skip if MinIO is not configured)
         var minioEndpoint = configuration["Minio:Endpoint"];
-        if (!string.IsNullOrWhiteSpace(minioEndpoint))
+        var minioAccess = configuration["Minio:AccessKey"];
+        var minioSecret = configuration["Minio:SecretKey"];
+        if (!string.IsNullOrWhiteSpace(minioEndpoint) && !string.IsNullOrWhiteSpace(minioAccess) && !string.IsNullOrWhiteSpace(minioSecret))
         {
             services.AddSingleton(sp => new MinioStorage(
                 minioEndpoint,
-                configuration["Minio:AccessKey"]!,
-                configuration["Minio:SecretKey"]!));
+                minioAccess!,
+                minioSecret!));
         }
 
         services.AddSingleton(sp => new KopiaService(
