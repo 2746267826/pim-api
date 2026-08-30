@@ -134,8 +134,6 @@ builder.Services.AddMemoryCache();
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
 {
     o.ValueCountLimit = 4096;
-    o.ValueLengthLimit = int.MaxValue;
-    o.MultipartBodyLengthLimit = long.MaxValue;
 });
 builder.Services.Configure<GitHubReleaseOptions>(o =>
 {

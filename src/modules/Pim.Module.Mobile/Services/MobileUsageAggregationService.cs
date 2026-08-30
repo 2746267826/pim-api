@@ -229,7 +229,7 @@ public sealed class MobileUsageAggregationService
             .Select(group => ChartPoint(group.Key, group.Key, group.Sum(row => row.BucketSeconds), totalSeconds, null, null, group.Key, null))
             .OrderBy(point => point.Key, StringComparer.Ordinal)
             .ToList();
-        var dayCount = Math.Max(1, dayBuckets.Select(b => b.LocalDate).Distinct(StringComparer.Ordinal).Count());
+        var dayCount = Math.Max(1, CountLocalDays(context.Range));
         // 小时分布：跨日求和后取日均并封顶 3600，避免 “单小时 5h+” 违反时钟上限（Issue 155）
         var hourDistribution = hourBuckets
             .GroupBy(row => row.LocalHour)

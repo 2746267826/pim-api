@@ -58,7 +58,7 @@ public sealed class MobileFrequentPlaceService
             .Where(point => point.UserId == userId
                 && point.RecordedAtUtc >= context.Range.RangeStartUtc
                 && point.RecordedAtUtc < context.Range.RangeEndUtc
-                && point.Quality.ToLower() != "rejected"
+                && (point.Quality == null || point.Quality.ToLower() != "rejected")
                 && point.HorizontalAccuracyMeters <= (decimal)MaxAccuracyMeters);
 
         if (!string.IsNullOrWhiteSpace(context.DeviceId))
