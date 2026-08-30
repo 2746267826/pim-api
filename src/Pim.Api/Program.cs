@@ -131,6 +131,12 @@ builder.Services.AddScoped<OpsDbService>();
 builder.Services.AddSingleton<OpsRateLimiter>();
 builder.Services.AddClientShell(builder.Configuration);
 builder.Services.AddMemoryCache();
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
+{
+    o.ValueCountLimit = 4096;
+    o.ValueLengthLimit = int.MaxValue;
+    o.MultipartBodyLengthLimit = long.MaxValue;
+});
 builder.Services.Configure<GitHubReleaseOptions>(o =>
 {
     o.Repo = builder.Configuration["GitHub:Repo"] ?? "2746267826/pim-platform";

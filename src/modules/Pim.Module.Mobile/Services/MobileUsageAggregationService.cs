@@ -229,9 +229,17 @@ public sealed class MobileUsageAggregationService
             .Select(group => ChartPoint(group.Key, group.Key, group.Sum(row => row.BucketSeconds), totalSeconds, null, null, group.Key, null))
             .OrderBy(point => point.Key, StringComparer.Ordinal)
             .ToList();
+        var dayCount = Math.Max(1, dayBuckets.Select(b => b.LocalDate).Distinct(StringComparer.Ordinal).Count());
+        // 小时分布：跨日求和后取日均并封顶 3600，避免 “单小时 5h+” 违反时钟上限（Issue 155）
         var hourDistribution = hourBuckets
             .GroupBy(row => row.LocalHour)
-            .Select(group => ChartPoint(group.Key.ToString("00", CultureInfo.InvariantCulture), $"{group.Key:00}:00", group.Sum(row => row.BucketSeconds), totalSeconds, null, null, null, group.Key))
+            .Select(group =>
+            {
+                var total = group.Sum(row => row.BucketSeconds);
+                var avg = (long)Math.Round(total / (double)dayCount);
+                var capped = Math.Min(avg, 3600);
+                return ChartPoint(group.Key.ToString("00", CultureInfo.InvariantCulture), $"{group.Key:00}:00", capped, totalSeconds, null, null, null, group.Key);
+            })
             .OrderBy(point => point.LocalHour)
             .ToList();
         var categoryTrend = dayBuckets

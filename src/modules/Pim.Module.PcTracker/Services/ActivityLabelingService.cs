@@ -347,9 +347,10 @@ public sealed class ActivityLabelingService
         var covered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var rules = await _db.Set<ActivityCategoryRuleEntity>()
-            .Where(r => r.Status == "active" && r.ConditionsJson.Contains("appNameNormalized"))
+            .Where(r => r.Status == "active")
             .Select(r => r.ConditionsJson)
             .ToListAsync(ct);
+        rules = rules.Where(c => c != null && c.Contains("appNameNormalized", StringComparison.Ordinal)).ToList();
 
         foreach (var conditions in rules)
         {
@@ -403,9 +404,10 @@ public sealed class ActivityLabelingService
         }
 
         var rules = await _db.Set<ActivityCategoryRuleEntity>()
-            .Where(r => r.Status == "active" && r.ConditionsJson.Contains("appNameNormalized"))
+            .Where(r => r.Status == "active")
             .Select(r => new { r.ConditionsJson, r.CategoryName })
             .ToListAsync(ct);
+        rules = rules.Where(r => r.ConditionsJson != null && r.ConditionsJson.Contains("appNameNormalized", StringComparison.Ordinal)).ToList();
         foreach (var rule in rules)
         {
             if (string.IsNullOrWhiteSpace(rule.CategoryName) || string.IsNullOrWhiteSpace(rule.ConditionsJson))
@@ -496,10 +498,10 @@ public sealed class ActivityLabelingService
         var domainSuffixes = new List<string>();
 
         var rules = await _db.Set<ActivityCategoryRuleEntity>()
-            .Where(r => r.Status == "active"
-                && (r.ConditionsJson.Contains("\"domain\"") || r.ConditionsJson.Contains("\"domainSuffix\"")))
+            .Where(r => r.Status == "active")
             .Select(r => r.ConditionsJson)
             .ToListAsync(ct);
+        rules = rules.Where(c => c != null && (c.Contains("\"domain\"", StringComparison.Ordinal) || c.Contains("\"domainSuffix\"", StringComparison.Ordinal))).ToList();
 
         foreach (var conditions in rules)
         {
