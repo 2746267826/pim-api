@@ -325,7 +325,9 @@ public class CalendarModule : IModule
             Guid id, [FromServices] CalendarRecycleBinService svc, CancellationToken ct) =>
             Results.Ok(ApiResponse<CalendarOperationResult>.Ok(await svc.RestoreAsync("calendar", id, new CalendarRestoreRequest(), ct))));
 
-        // Events — unified PagedResult (PIM-024): always paginated, no List branch
+        // Events — PagedResult is canonical (PIM-024), but keep List branch for backward compat
+        // with old APKs (e.g. 2026.08.343) that call GET /events?start=&end= without page params.
+        // New clients (web + updated Android) always send page/pageSize and get PagedResult.
         group.MapGet("/events", async (
             [FromQuery] DateTimeOffset? start,
             [FromQuery] DateTimeOffset? end,
@@ -336,6 +338,14 @@ public class CalendarModule : IModule
             [FromServices] CalendarService svc,
             CancellationToken ct) =>
         {
+            if (string.IsNullOrWhiteSpace(search) && calendarId is null && page is null && pageSize is null)
+            {
+                // Old path — return List for legacy clients to avoid SerializationException
+                // Keep until sunset (e.g. after all APKs >2026.08.349 have migrated); web already sends page.
+                var events = await svc.GetEventsAsync(start ?? DateTimeOffset.MinValue, end ?? DateTimeOffset.MaxValue, ct);
+                return Results.Ok(ApiResponse<List<EventResponse>>.Ok(events));
+            }
+
             var result = await svc.GetEventsPagedAsync(search, calendarId, start, end, page ?? 1, pageSize ?? 50, ct);
             return Results.Ok(ApiResponse<PagedResult<EventResponse>>.Ok(result));
         });
@@ -443,7 +453,7 @@ public class CalendarModule : IModule
             [FromServices] CalendarService svc,
             CancellationToken ct) =>
         {
-            if (search is null && calendarId is null && status is null && priority is null
+            if (string.IsNullOrWhiteSpace(search) && calendarId is null && status is null && priority is null
                 && plannedFrom is null && plannedTo is null && dueFrom is null && dueTo is null
                 && page is null && pageSize is null)
             {

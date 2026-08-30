@@ -15,7 +15,7 @@ public static class ClientShellModule
 
     public static IEndpointRouteBuilder MapClientShell(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/client/shell/latest", (IOptions<ClientShellOptions> opts, GitHubReleaseService gh) =>
+        IResult Handle(IOptions<ClientShellOptions> opts, GitHubReleaseService gh)
         {
             var snap = gh.Snapshot;
             // Prefer per-component versions parsed from asset filenames; fallback to tag for backward compat
@@ -51,7 +51,12 @@ public static class ClientShellModule
                 checkedAt = snap.CheckedAt,
                 error = snap.Error
             });
-        }).AllowAnonymous();
+        }
+
+        app.MapGet("/api/client/shell/latest", Handle).AllowAnonymous();
+        // Compatibility: Android previously used /api/v1/client/shell/latest via Retrofit baseUrl.
+        // Keep both so old APKs (e.g. 2026.08.343) and new absolute-path clients succeed.
+        app.MapGet("/api/v1/client/shell/latest", Handle).AllowAnonymous();
         return app;
     }
 }
