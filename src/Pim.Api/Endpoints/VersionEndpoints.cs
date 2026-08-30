@@ -34,10 +34,10 @@ public static class VersionEndpoints
                 snap.LatestVersion,
                 snap.CheckedAt,
                 snap.Error,
-                snap.WindowsVersion ?? snap.LatestVersion,
-                snap.AndroidVersion ?? snap.LatestVersion,
-                snap.ShellWindowsVersion ?? snap.LatestVersion,
-                snap.ShellAndroidVersion ?? snap.LatestVersion));
+                snap.WindowsUrl != null ? (snap.WindowsVersion ?? snap.LatestVersion) : null,
+                snap.AndroidUrl != null ? (snap.AndroidVersion ?? snap.LatestVersion) : null,
+                snap.ShellWindowsUrl != null ? (snap.ShellWindowsVersion ?? snap.LatestVersion) : null,
+                snap.ShellAndroidUrl != null ? (snap.ShellAndroidVersion ?? snap.LatestVersion) : null));
         }).AllowAnonymous();
         return endpoints;
     }
