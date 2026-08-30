@@ -20,9 +20,7 @@ public static class ClientShellModule
             var snap = gh.Snapshot;
             // Prefer per-component versions parsed from asset filenames; fallback to tag for backward compat
             // Only consider snapshot valid if at least one component has a URL (prevents version without URL)
-            var hasSnapshot = snap.WindowsUrl != null || snap.AndroidUrl != null || snap.ShellWindowsUrl != null || snap.ShellAndroidUrl != null
-                || snap.WindowsVersion != null || snap.AndroidVersion != null || snap.ShellWindowsVersion != null || snap.ShellAndroidVersion != null
-                || snap.LatestVersion != null;
+            var hasSnapshot = snap.WindowsUrl != null || snap.AndroidUrl != null || snap.ShellWindowsUrl != null || snap.ShellAndroidUrl != null;
             if (hasSnapshot)
             {
                 return Results.Ok(new

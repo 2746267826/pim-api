@@ -120,7 +120,7 @@ public class GitHubReleaseService : IHostedService, IDisposable
             resp.EnsureSuccessStatusCode();
             var json = await resp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
-            var tag = doc.RootElement.GetProperty("tag_name").GetString()?.TrimStart('v');
+            var tag = doc.RootElement.GetProperty("tag_name").GetString()?.TrimStart('v', 'V');
             string? win = null, and = null, shellWin = null, shellAnd = null;
             string? winVer = null, andVer = null, shellWinVer = null, shellAndVer = null;
             foreach (var a in doc.RootElement.GetProperty("assets").EnumerateArray())
@@ -129,7 +129,7 @@ public class GitHubReleaseService : IHostedService, IDisposable
                 var url = a.GetProperty("browser_download_url").GetString();
                 if (string.IsNullOrEmpty(name)) continue;
                 if (string.IsNullOrEmpty(url)) continue;
-                if (!url.StartsWith("https://github.com/2746267826/pim-platform/releases/download/", StringComparison.Ordinal)) continue;
+                if (!url.StartsWith($"https://github.com/{_opts.Repo}/releases/download/", StringComparison.Ordinal)) continue;
                 // shell variants must be checked before generic windows/android to avoid confusion
                 if (name.StartsWith("pim-shell-windows-", StringComparison.Ordinal) && name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                 {
