@@ -346,8 +346,6 @@ jobs:
           fill_if_skipped "${{ needs.build-windows.result }}" 'pim-windows-*.zip'
           fill_if_skipped "${{ needs.build-android.result }}" 'pim-android-*.apk'
           fill_if_skipped "${{ needs.build-docker.result }}" 'pim-platform-server-*.tar.gz'
-          copy_if_missing 'pim-shell-windows-*.zip'
-          copy_if_missing 'pim-shell-android-*.apk'
           fill_if_skipped "${{ needs.build-shell-windows.result }}" 'pim-shell-windows-*.zip'
           fill_if_skipped "${{ needs.build-shell-android.result }}" 'pim-shell-android-*.apk'
           # Sanity check: every asset family must be present before uploading.

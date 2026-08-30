@@ -7,14 +7,26 @@ using Microsoft.Extensions.Options;
 
 namespace Pim.Api.Services;
 
-public record GitHubReleaseSnapshot(string? LatestVersion, string? WindowsUrl, string? AndroidUrl, DateTimeOffset? CheckedAt, string? Error, string? ETag);
+public record GitHubReleaseSnapshot(
+    string? LatestVersion,
+    string? WindowsVersion,
+    string? WindowsUrl,
+    string? AndroidVersion,
+    string? AndroidUrl,
+    string? ShellWindowsVersion,
+    string? ShellWindowsUrl,
+    string? ShellAndroidVersion,
+    string? ShellAndroidUrl,
+    DateTimeOffset? CheckedAt,
+    string? Error,
+    string? ETag);
 
 public class GitHubReleaseService : IHostedService, IDisposable
 {
     private readonly HttpClient _http;
     private readonly GitHubReleaseOptions _opts;
     private readonly ILogger<GitHubReleaseService> _log;
-    private volatile GitHubReleaseSnapshot _snapshot = new(null, null, null, null, null, null);
+    private volatile GitHubReleaseSnapshot _snapshot = new(null, null, null, null, null, null, null, null, null, null, null, null);
     private Timer? _timer;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -108,19 +120,47 @@ public class GitHubReleaseService : IHostedService, IDisposable
             resp.EnsureSuccessStatusCode();
             var json = await resp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
-            var tag = doc.RootElement.GetProperty("tag_name").GetString()?.TrimStart('v');
-            string? win = null, and = null;
+            var tag = doc.RootElement.GetProperty("tag_name").GetString()?.TrimStart('v', 'V');
+            string? win = null, and = null, shellWin = null, shellAnd = null;
+            string? winVer = null, andVer = null, shellWinVer = null, shellAndVer = null;
             foreach (var a in doc.RootElement.GetProperty("assets").EnumerateArray())
             {
                 var name = a.GetProperty("name").GetString();
                 var url = a.GetProperty("browser_download_url").GetString();
-                if (url != null && !url.StartsWith("https://github.com/2746267826/pim-platform/releases/download/")) continue;
-                if (name?.StartsWith("pim-windows-") == true && name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) win = url;
-                if (name?.StartsWith("pim-android-") == true && name.EndsWith(".apk", StringComparison.OrdinalIgnoreCase)) and = url;
+                if (string.IsNullOrEmpty(name)) continue;
+                if (string.IsNullOrEmpty(url)) continue;
+                if (!url.StartsWith($"https://github.com/{_opts.Repo}/releases/download/", StringComparison.Ordinal)) continue;
+                // shell variants must be checked before generic windows/android to avoid confusion
+                if (name.StartsWith("pim-shell-windows-", StringComparison.Ordinal) && name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    shellWin = url;
+                    shellWinVer = ExtractVersion(name, "pim-shell-windows-v", ".zip");
+                }
+                else if (name.StartsWith("pim-shell-android-", StringComparison.Ordinal) && name.EndsWith(".apk", StringComparison.OrdinalIgnoreCase))
+                {
+                    shellAnd = url;
+                    shellAndVer = ExtractVersion(name, "pim-shell-android-v", ".apk");
+                }
+                else if (name.StartsWith("pim-windows-", StringComparison.Ordinal) && name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    win = url;
+                    winVer = ExtractVersion(name, "pim-windows-v", ".zip");
+                }
+                else if (name.StartsWith("pim-android-", StringComparison.Ordinal) && name.EndsWith(".apk", StringComparison.OrdinalIgnoreCase))
+                {
+                    and = url;
+                    andVer = ExtractVersion(name, "pim-android-v", ".apk");
+                }
             }
+            // fallback to tag when version not parsed but url exists (keep tag to avoid null version with valid url)
+            if (win != null && winVer == null) winVer = tag;
+            if (and != null && andVer == null) andVer = tag;
+            if (shellWin != null && shellWinVer == null) shellWinVer = tag;
+            if (shellAnd != null && shellAndVer == null) shellAndVer = tag;
+            // if no component assets found at all, keep versions null so fallback logic can use config
             var etag = resp.Headers.ETag?.Tag;
-            _snapshot = new(tag, win, and, DateTimeOffset.UtcNow, null, etag);
-            _log.LogInformation("GitHub release refreshed latest={Latest} checkedAt={CheckedAt} duration={Ms}ms", tag, _snapshot.CheckedAt, sw.ElapsedMilliseconds);
+            _snapshot = new(tag, winVer, win, andVer, and, shellWinVer, shellWin, shellAndVer, shellAnd, DateTimeOffset.UtcNow, null, etag);
+            _log.LogInformation("GitHub release refreshed latest={Latest} windows={WindowsVersion} android={AndroidVersion} shellWin={ShellWin} shellAnd={ShellAnd} checkedAt={CheckedAt} duration={Ms}ms", tag, winVer, andVer, shellWinVer, shellAndVer, _snapshot.CheckedAt, sw.ElapsedMilliseconds);
             return _snapshot;
         }
         catch (ObjectDisposedException)
@@ -133,5 +173,18 @@ public class GitHubReleaseService : IHostedService, IDisposable
             _log.LogWarning(ex, "GitHub release fetch failed checkedAt={CheckedAt}", _snapshot.CheckedAt);
             return _snapshot;
         }
+    }
+
+    private static string? ExtractVersion(string name, string prefix, string suffix)
+    {
+        if (!name.StartsWith(prefix, StringComparison.Ordinal)) return null;
+        if (!name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) return null;
+        var mid = name.Substring(prefix.Length, name.Length - prefix.Length - suffix.Length);
+        if (string.IsNullOrWhiteSpace(mid)) return null;
+        // android variants have optional "-vc<digits>" suffix after version
+        var vcIdx = mid.IndexOf("-vc", StringComparison.OrdinalIgnoreCase);
+        if (vcIdx >= 0) mid = mid.Substring(0, vcIdx);
+        mid = mid.Trim();
+        return string.IsNullOrEmpty(mid) ? null : mid;
     }
 }

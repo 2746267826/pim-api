@@ -18,9 +18,39 @@ public static class ClientShellModule
         app.MapGet("/api/client/shell/latest", (IOptions<ClientShellOptions> opts, GitHubReleaseService gh) =>
         {
             var snap = gh.Snapshot;
-            if (snap.LatestVersion != null) return Results.Ok(new { windowsVersion = snap.LatestVersion, windowsUrl = snap.WindowsUrl, androidVersion = snap.LatestVersion, androidUrl = snap.AndroidUrl, checkedAt = snap.CheckedAt, error = snap.Error });
+            // Prefer per-component versions parsed from asset filenames; fallback to tag for backward compat
+            // Only consider snapshot valid if at least one component has a URL (prevents version without URL)
+            var hasSnapshot = snap.WindowsUrl != null || snap.AndroidUrl != null || snap.ShellWindowsUrl != null || snap.ShellAndroidUrl != null;
+            if (hasSnapshot)
+            {
+                return Results.Ok(new
+                {
+                    windowsVersion = snap.WindowsUrl != null ? (snap.WindowsVersion ?? snap.LatestVersion) : null,
+                    windowsUrl = snap.WindowsUrl,
+                    androidVersion = snap.AndroidUrl != null ? (snap.AndroidVersion ?? snap.LatestVersion) : null,
+                    androidUrl = snap.AndroidUrl,
+                    shellWindowsVersion = snap.ShellWindowsUrl != null ? (snap.ShellWindowsVersion ?? snap.LatestVersion) : null,
+                    shellWindowsUrl = snap.ShellWindowsUrl,
+                    shellAndroidVersion = snap.ShellAndroidUrl != null ? (snap.ShellAndroidVersion ?? snap.LatestVersion) : null,
+                    shellAndroidUrl = snap.ShellAndroidUrl,
+                    checkedAt = snap.CheckedAt,
+                    error = snap.Error
+                });
+            }
             var o = opts.Value;
-            return Results.Ok(new { windowsVersion = o.WindowsVersion, windowsUrl = o.WindowsUrl, androidVersion = o.AndroidVersion, androidUrl = o.AndroidUrl, checkedAt = snap.CheckedAt, error = snap.Error });
+            return Results.Ok(new
+            {
+                windowsVersion = o.WindowsVersion,
+                windowsUrl = o.WindowsUrl,
+                androidVersion = o.AndroidVersion,
+                androidUrl = o.AndroidUrl,
+                shellWindowsVersion = o.ShellWindowsVersion,
+                shellWindowsUrl = o.ShellWindowsUrl,
+                shellAndroidVersion = o.ShellAndroidVersion,
+                shellAndroidUrl = o.ShellAndroidUrl,
+                checkedAt = snap.CheckedAt,
+                error = snap.Error
+            });
         }).AllowAnonymous();
         return app;
     }
