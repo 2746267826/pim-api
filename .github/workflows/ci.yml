@@ -106,6 +106,8 @@ jobs:
               - 'branding/**'
               - '.github/workflows/build-windows.yml'
               - '.github/workflows/ci.yml'
+              - 'installer/**'
+              - '**/*.iss'
             android:
               - 'src/client-android/**'
               - 'branding/**'
@@ -310,6 +312,14 @@ jobs:
           merge-multiple: true
           path: release-assets
 
+      - name: Download installer artifact
+        if: steps.decide.outputs.do_release == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: PIM-Setup-*
+          merge-multiple: true
+          path: release-assets
+
       # For components that were not rebuilt this run, reuse the asset from the
       # latest release as-is (same file name and version number - the artifact
       # version stays consistent with its content).
@@ -344,12 +354,14 @@ jobs:
           fill_if_skipped "${{ needs.build-api.result }}" 'pim-api-*.tar.gz'
           fill_if_skipped "${{ needs.build-web.result }}" 'pim-web-*.tar.gz'
           fill_if_skipped "${{ needs.build-windows.result }}" 'pim-windows-*.zip'
+          # Installer is part of windows build
+          fill_if_skipped "${{ needs.build-windows.result }}" 'PIM-Setup-*.exe'
           fill_if_skipped "${{ needs.build-android.result }}" 'pim-android-*.apk'
           fill_if_skipped "${{ needs.build-docker.result }}" 'pim-platform-server-*.tar.gz'
           fill_if_skipped "${{ needs.build-shell-windows.result }}" 'pim-shell-windows-*.zip'
           fill_if_skipped "${{ needs.build-shell-android.result }}" 'pim-shell-android-*.apk'
           # Sanity check: every asset family must be present before uploading.
-          for p in pim-api-*.tar.gz pim-web-*.tar.gz pim-windows-*.zip pim-android-*.apk pim-platform-server-*.tar.gz pim-shell-windows-*.zip pim-shell-android-*.apk; do
+          for p in pim-api-*.tar.gz pim-web-*.tar.gz pim-windows-*.zip PIM-Setup-*.exe pim-android-*.apk pim-platform-server-*.tar.gz pim-shell-windows-*.zip pim-shell-android-*.apk; do
             ls release-assets/${p} >/dev/null 2>&1 \
               || { echo "::error::Missing release asset family: ${p}" >&2; exit 1; }
           done
@@ -379,6 +391,7 @@ jobs:
             release-assets/pim-api-*.tar.gz
             release-assets/pim-web-*.tar.gz
             release-assets/pim-windows-*.zip
+            release-assets/PIM-Setup-*.exe
             release-assets/pim-android-*.apk
             release-assets/pim-platform-server-*.tar.gz
             release-assets/pim-shell-windows-*.zip
