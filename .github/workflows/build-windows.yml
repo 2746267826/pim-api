@@ -161,10 +161,19 @@ jobs:
           if (-not (Test-Path $iscc)) {
             Write-Host "ISCC not found at $iscc, trying chocolatey install..."
             choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { Write-Warning "choco exit $LASTEXITCODE" }
             Start-Sleep -Seconds 5
+            # Refresh PATH after choco
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          }
+          if (-not (Test-Path $iscc)) {
+            # Try where.exe
+            $where = (Get-Command ISCC.exe -ErrorAction SilentlyContinue)?.Source
+            if ($where) { $iscc = $where }
           }
           if (-not (Test-Path $iscc)) {
             Write-Error "ISCC.exe not found after install; checked $iscc"
+            Get-ChildItem "C:\Program Files*\Inno Setup*" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 5 | Format-List
             exit 1
           }
           Write-Host "Using ISCC: $iscc"
