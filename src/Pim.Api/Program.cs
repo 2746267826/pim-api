@@ -243,6 +243,12 @@ catch (Exception ex)
     Log.Warning(ex, "Failed to register Hangfire diagnostic recurring job.");
 }
 
+// 白屏修复 #2：未匹配的 /api/* 返回 JSON 404，避免落入 SPA fallback 返回 index.html 导致前端 Unexpected token '<'
+// 注意顺序：此 catch-all 必须在 SPA fallback 之前，且勿在两者间插入其它 Fallback，否则未知 /api 路径会再次返回 HTML
+app.MapMethods("/api/{*path}", new[] { "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD" }, (HttpContext ctx) =>
+    Results.NotFound(new { code = 404, message = $"接口不存在: {ctx.Request.Path}", data = (object?)null, timestamp = DateTimeOffset.UtcNow }))
+    .AllowAnonymous();
+
 // SPA fallback: non-API routes serve index.html (React Router handles routing)
 app.MapFallbackToFile("index.html").AllowAnonymous();
 
