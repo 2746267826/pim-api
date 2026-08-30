@@ -338,9 +338,10 @@ public class CalendarModule : IModule
             [FromServices] CalendarService svc,
             CancellationToken ct) =>
         {
-            if (search is null && calendarId is null && page is null && pageSize is null)
+            if (string.IsNullOrWhiteSpace(search) && calendarId is null && page is null && pageSize is null)
             {
                 // Old path — return List for legacy clients to avoid SerializationException
+                // Keep until sunset (e.g. after all APKs >2026.08.349 have migrated); web already sends page.
                 var events = await svc.GetEventsAsync(start ?? DateTimeOffset.MinValue, end ?? DateTimeOffset.MaxValue, ct);
                 return Results.Ok(ApiResponse<List<EventResponse>>.Ok(events));
             }
