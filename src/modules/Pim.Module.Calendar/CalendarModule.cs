@@ -453,7 +453,7 @@ public class CalendarModule : IModule
             [FromServices] CalendarService svc,
             CancellationToken ct) =>
         {
-            if (search is null && calendarId is null && status is null && priority is null
+            if (string.IsNullOrWhiteSpace(search) && calendarId is null && status is null && priority is null
                 && plannedFrom is null && plannedTo is null && dueFrom is null && dueTo is null
                 && page is null && pageSize is null)
             {
