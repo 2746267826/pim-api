@@ -3,6 +3,9 @@
   "name": "PIM Browser Watcher",
   "version": "1.0.0",
   "description": "Tracks active browser tab for PIM usage analytics",
+  "icons": {
+    "128": "logo-128.png"
+  },
   "permissions": ["tabs", "alarms", "storage", "notifications"],
   "host_permissions": ["http://localhost:15601/*"],
   "background": {
