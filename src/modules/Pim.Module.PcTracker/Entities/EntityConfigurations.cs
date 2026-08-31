@@ -277,3 +277,36 @@ public class AppKnowledgeContextEntityConfiguration : IEntityTypeConfiguration<A
             .OnDelete(DeleteBehavior.SetNull);
     }
 }
+
+public class TrackerEventEntityConfiguration : IEntityTypeConfiguration<TrackerEventEntity>
+{
+    public void Configure(EntityTypeBuilder<TrackerEventEntity> builder)
+    {
+        builder.HasIndex(e => new { e.DeviceId, e.Date })
+            .HasDatabaseName("idx_tracker_events_device_date");
+        builder.HasIndex(e => e.Timestamp)
+            .HasDatabaseName("idx_tracker_events_timestamp");
+        builder.HasIndex(e => new { e.AppName, e.Date })
+            .HasDatabaseName("idx_tracker_events_app");
+        builder.HasIndex(e => e.EventType)
+            .HasDatabaseName("idx_tracker_events_event_type");
+        builder.HasIndex(e => e.IsIdle)
+            .HasDatabaseName("idx_tracker_events_is_idle");
+        builder.HasIndex(e => new { e.DeviceId, e.Timestamp, e.Duration, e.EventType, e.AppName })
+            .IsUnique()
+            .HasDatabaseName("ux_tracker_events_dedup");
+    }
+}
+
+public class TrackerHealthEntityConfiguration : IEntityTypeConfiguration<TrackerHealthEntity>
+{
+    public void Configure(EntityTypeBuilder<TrackerHealthEntity> builder)
+    {
+        builder.HasIndex(e => e.DeviceId)
+            .HasDatabaseName("ix_pc_tracker_health_device_id");
+        builder.HasIndex(e => e.ReportedAt)
+            .HasDatabaseName("ix_pc_tracker_health_reported_at");
+        builder.HasIndex(e => new { e.DeviceId, e.ReportedAt })
+            .HasDatabaseName("ix_pc_tracker_health_device_reported");
+    }
+}

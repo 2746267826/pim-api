@@ -1,31 +1,38 @@
-using Pim.Client.Core.Services;
+using Pim.Client.Core.Models;
 using Xunit;
 
 namespace Pim.UnitTests.ClientWindows;
 
+// Legacy AwBucketSelection removed per Native Tracker design (pim-native-tracker).
+// This file now validates TrackerConfig defaults and Native Tracker event types.
 public class AwBucketSelectionTests
 {
     [Fact]
-    public void IsSupportedUploadBucket_IncludesWindowAfkAndBrowserPages()
+    public void TrackerConfig_Defaults_MatchSpec()
     {
-        Assert.True(AwBucketSelection.IsSupportedUploadBucket("aw-watcher-window_DESKTOP", "currentwindow", "aw-watcher-window"));
-        Assert.True(AwBucketSelection.IsSupportedUploadBucket("aw-watcher-afk_DESKTOP", "afkstatus", "aw-watcher-afk"));
-        Assert.True(AwBucketSelection.IsSupportedUploadBucket("aw-watcher-web-edge_DESKTOP", "web.tab.current", "aw-client-web"));
+        var cfg = new TrackerConfig();
+        Assert.True(cfg.Enabled);
+        Assert.Equal(10, cfg.PollIntervalSeconds);
+        Assert.Equal(300, cfg.IdleThresholdSeconds);
+        Assert.Equal(60, cfg.GapThresholdSeconds);
+        Assert.Equal(15601, cfg.BrowserBridgePort);
+        Assert.Equal(500, cfg.UploadBatchSize);
+        Assert.Equal(30, cfg.UploadIntervalSeconds);
+        Assert.Equal(300, cfg.HealthReportIntervalSeconds);
+        Assert.Equal(30, cfg.LogRetentionDays);
     }
 
     [Fact]
-    public void IsSupportedUploadBucket_ExcludesInputBuckets()
+    public void TrackerConfig_AllowsCustomExcludedApps()
     {
-        Assert.False(AwBucketSelection.IsSupportedUploadBucket("aw-watcher-input_DESKTOP", "os.hid.input", "aw-watcher-input"));
-        Assert.False(AwBucketSelection.IsSupportedUploadBucket("aw-watcher-input_DESKTOP", "currentwindow", "aw-watcher-input"));
+        var cfg = new TrackerConfig { ExcludedApps = new List<string> { "game.exe" } };
+        Assert.Contains("game.exe", cfg.ExcludedApps);
     }
 
     [Fact]
-    public void DescribeBucketKind_ReturnsStableLogLabels()
+    public void BrowserHeartbeat_ParsesDomain()
     {
-        Assert.Equal("window", AwBucketSelection.DescribeBucketKind("currentwindow"));
-        Assert.Equal("afk", AwBucketSelection.DescribeBucketKind("afkstatus"));
-        Assert.Equal("web", AwBucketSelection.DescribeBucketKind("web.tab.current"));
-        Assert.Equal("unknown", AwBucketSelection.DescribeBucketKind("other"));
+        var hb = new BrowserHeartbeat { Url = "https://github.com/ActivityWatch/aw-watcher-web", Title = "test" };
+        Assert.Equal("github.com", hb.Domain);
     }
 }

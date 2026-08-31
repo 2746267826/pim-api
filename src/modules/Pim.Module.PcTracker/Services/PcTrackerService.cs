@@ -7,10 +7,11 @@ using Pim.Module.PcTracker.Entities;
 
 namespace Pim.Module.PcTracker.Services;
 
-public class PcTrackerService
+public partial class PcTrackerService
 {
     private const int BusinessDayStartHour = 4;
     private const int MaxCompleteAwEventsPerUpload = 500;
+    private const int MaxTrackerEventsPerUpload = 500;
     private const string PostgreSqlUniqueViolationSqlState = "23505";
     private static readonly JsonSerializerOptions ApiJsonSerializerOptions = new(JsonSerializerDefaults.Web);
 
@@ -346,15 +347,28 @@ public class PcTrackerService
             .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd)
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
+        var trackerEvents = await _db.Set<TrackerEventEntity>()
+            .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd)
+            .OrderBy(e => e.Timestamp)
+            .ToListAsync(ct);
+        var combinedEventsForStats = awEvents
+            .Select(e => new { e.Timestamp, e.Duration, e.EventType, e.AppName })
+            .Concat(trackerEvents.Select(e => new { e.Timestamp, e.Duration, EventType = e.EventType, e.AppName }))
+            .ToList();
         var nonWebEvents = awEvents
             .Where(e => e.EventType != "web")
             .ToList();
         var windowEvents = awEvents
             .Where(e => e.EventType == "window")
             .ToList();
+        var trackerWindowEvents = trackerEvents
+            .Where(e => e.EventType == "window")
+            .ToList();
 
-        var heatmap = BuildHourlyHeatmap(dayStart, windowEvents);
-        var timeline = (await BuildInterpretedAwDetailRecordsAsync(awEvents, ct))
+        var heatmap = BuildHourlyHeatmapCombined(dayStart, windowEvents, trackerWindowEvents);
+        var awRecords = await BuildInterpretedAwDetailRecordsAsync(awEvents, ct);
+        var trackerRecords = await BuildInterpretedTrackerDetailRecordsAsync(trackerEvents, ct);
+        var timeline = awRecords.Concat(trackerRecords)
             .Where(IsSummaryTimelineRecord)
             .Select(ToTimelineItem)
             .ToList();
@@ -383,8 +397,14 @@ public class PcTrackerService
             .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd)
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
+        var trackerEvents = await _db.Set<TrackerEventEntity>()
+            .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd)
+            .OrderBy(e => e.Timestamp)
+            .ToListAsync(ct);
 
-        var timeline = (await BuildInterpretedAwDetailRecordsAsync(events, ct))
+        var awRecords = await BuildInterpretedAwDetailRecordsAsync(events, ct);
+        var trackerRecords = await BuildInterpretedTrackerDetailRecordsAsync(trackerEvents, ct);
+        var timeline = awRecords.Concat(trackerRecords)
             .Where(IsSummaryTimelineRecord)
             .Select(ToTimelineItem)
             .ToList();
@@ -402,11 +422,17 @@ public class PcTrackerService
         var events = await _db.Set<AwEventEntity>()
             .Where(ev => ev.Timestamp >= s && ev.Timestamp < e && ev.EventType == "window")
             .ToListAsync(ct);
+        var trackerEvents = await _db.Set<TrackerEventEntity>()
+            .Where(ev => ev.Timestamp >= s && ev.Timestamp < e && ev.EventType == "window")
+            .ToListAsync(ct);
 
         var buckets = new List<HeatmapBucket>();
         for (var day = start.Date; day <= end.Date; day = day.AddDays(1))
         {
-            buckets.AddRange(BuildHourlyHeatmap(BusinessDayStart(day), events));
+            var dayStart = BusinessDayStart(day);
+            var dayEvents = events.Where(ev => ev.Timestamp >= dayStart && ev.Timestamp < dayStart.AddDays(1)).ToList();
+            var dayTrackerEvents = trackerEvents.Where(ev => ev.Timestamp >= dayStart && ev.Timestamp < dayStart.AddDays(1)).ToList();
+            buckets.AddRange(BuildHourlyHeatmapCombined(dayStart, dayEvents, dayTrackerEvents));
         }
         return buckets;
     }
@@ -526,6 +552,10 @@ public class PcTrackerService
             .Where(e => e.Timestamp >= start && e.Timestamp < end)
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
+        var trackerEvents = await _db.Set<TrackerEventEntity>()
+            .Where(e => e.Timestamp >= start && e.Timestamp < end)
+            .OrderBy(e => e.Timestamp)
+            .ToListAsync(ct);
         var samples = await _db.Set<KeystatsSampleEntity>()
             .Where(s => s.SampledAtUtc >= start && s.SampledAtUtc < end)
             .OrderBy(s => s.PimDeviceId)
@@ -536,9 +566,16 @@ public class PcTrackerService
         var records = new List<PcDetailRecord>();
         var rawMode = string.Equals(q.View, "raw", StringComparison.OrdinalIgnoreCase)
             || string.Equals(q.EventType, "web", StringComparison.Ordinal);
-        records.AddRange(rawMode
-            ? awEvents.Select(e => BrowserPageTimelineBuilder.ToRawAwRecord(e, rules))
-            : BrowserPageTimelineBuilder.BuildInterpretedAwRecords(awEvents, rules));
+        if (rawMode)
+        {
+            records.AddRange(awEvents.Select(e => BrowserPageTimelineBuilder.ToRawAwRecord(e, rules)));
+            records.AddRange(trackerEvents.Select(e => TrackerPageTimelineBuilder.ToRawTrackerRecord(e, rules)));
+        }
+        else
+        {
+            records.AddRange(BrowserPageTimelineBuilder.BuildInterpretedAwRecords(awEvents, rules));
+            records.AddRange(TrackerPageTimelineBuilder.BuildInterpretedRecords(trackerEvents, rules));
+        }
 
         if (!rawMode)
             records.AddRange(ToInputMinuteRecords(samples));

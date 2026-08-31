@@ -1,4 +1,5 @@
 using Pim.Client.Core;
+using Pim.Client.Core.Models;
 using Pim.Client.Core.Services;
 using System.Reflection;
 using System.Text.Json.Serialization;
@@ -28,20 +29,61 @@ public class ApiClientDefaultsTests
     }
 
     [Fact]
-    public void AwCollectorCursorState_DoesNotAdvanceUntilUploadSucceeds()
+    public void TrackerSessionManager_AppSwitchedCreatesNewSession()
     {
-        var state = new AwCollectorCursorState();
+        var cfg = new TrackerConfig();
+        var mgr = new TrackerSessionManager(cfg);
+        var now = DateTimeOffset.UtcNow;
+        var w1 = new TrackerWindowInfo { AppName = "chrome", ExePath = "C:\\chrome.exe", WindowTitle = "A", CapturedAt = now };
+        var w2 = new TrackerWindowInfo { AppName = "code", ExePath = "C:\\code.exe", WindowTitle = "B", CapturedAt = now.AddSeconds(10) };
 
-        state.RecordFetched("aw-watcher-window_DESKTOP", 10);
-        state.RecordFetched("aw-watcher-afk_DESKTOP", 20);
+        mgr.HandleWindowChange(w1, now);
+        Assert.Equal("chrome", mgr.Current?.AppName);
+        mgr.HandleWindowChange(w2, now.AddSeconds(10));
+        Assert.Equal("code", mgr.Current?.AppName);
+        Assert.Equal(2, mgr.SessionsCreated);
+    }
 
-        Assert.Equal(0, state.LastForBucket("aw-watcher-window_DESKTOP"));
-        Assert.Equal(0, state.LastForBucket("aw-watcher-afk_DESKTOP"));
+    [Fact]
+    public void TrackerSessionManager_PageVisitDoesNotSplitSession()
+    {
+        var cfg = new TrackerConfig();
+        var mgr = new TrackerSessionManager(cfg);
+        var now = DateTimeOffset.UtcNow;
+        var w1 = new TrackerWindowInfo { AppName = "chrome", ExePath = "C:\\chrome.exe", WindowTitle = "Tab A", CapturedAt = now };
+        var w2 = new TrackerWindowInfo { AppName = "chrome", ExePath = "C:\\chrome.exe", WindowTitle = "Tab B", CapturedAt = now.AddSeconds(5) };
 
-        state.CommitFetched();
+        mgr.HandleWindowChange(w1, now);
+        var s1 = mgr.Current;
+        mgr.HandleWindowChange(w2, now.AddSeconds(5));
+        Assert.Same(s1, mgr.Current);
+        Assert.Single(mgr.Current!.PageVisits);
+    }
 
-        Assert.Equal(10, state.LastForBucket("aw-watcher-window_DESKTOP"));
-        Assert.Equal(20, state.LastForBucket("aw-watcher-afk_DESKTOP"));
+    [Fact]
+    public void TrackerSessionManager_IdleWithGraceDeducts()
+    {
+        var cfg = new TrackerConfig { IdleThresholdSeconds = 300 };
+        var mgr = new TrackerSessionManager(cfg);
+        var now = DateTimeOffset.UtcNow;
+        var w1 = new TrackerWindowInfo { AppName = "chrome", ExePath = "C:\\chrome.exe", WindowTitle = "A", CapturedAt = now };
+        mgr.HandleWindowChange(w1, now);
+        mgr.HandleIdleStarted(now.AddSeconds(400), TimeSpan.FromSeconds(400));
+        Assert.True(mgr.IsIdle);
+        Assert.Equal("__IDLE__", mgr.Current?.AppName);
+    }
+
+    [Fact]
+    public void TrackerSessionManager_GapClosesSession()
+    {
+        var cfg = new TrackerConfig { GapThresholdSeconds = 60 };
+        var mgr = new TrackerSessionManager(cfg);
+        var now = DateTimeOffset.UtcNow;
+        var w1 = new TrackerWindowInfo { AppName = "chrome", ExePath = "C:\\chrome.exe", WindowTitle = "A", CapturedAt = now };
+        mgr.HandleWindowChange(w1, now);
+        var closed = mgr.HandleGap(now, now.AddSeconds(120));
+        Assert.NotNull(closed);
+        Assert.Null(mgr.Current);
     }
 
     [Fact]
@@ -51,44 +93,6 @@ public class ApiClientDefaultsTests
 
         AssertJsonProperty(type, "FormattedMouseDistance", "formattedMouseDistance");
         AssertJsonProperty(type, "FormattedScrollDistance", "formattedScrollDistance");
-    }
-
-    [Fact]
-    public void AwPayloads_MapSnakeCaseActivityWatchFields()
-    {
-        var infoType = typeof(AwCollectorService).GetNestedType("AwInfoPayload", BindingFlags.NonPublic);
-        var bucketType = typeof(AwCollectorService).GetNestedType("AwBucketPayload", BindingFlags.NonPublic);
-
-        AssertJsonProperty(infoType, "DeviceId", "device_id");
-        AssertJsonProperty(bucketType, "LastUpdated", "last_updated");
-    }
-
-    [Fact]
-    public void AwCollector_LiveBacklogHelpersUseUnboundedFetchAndServerCappedBatches()
-    {
-        var unboundedLimit = typeof(AwCollectorService).GetField("ActivityWatchUnboundedLimit", BindingFlags.NonPublic | BindingFlags.Static);
-        var uploadBatchSize = typeof(AwCollectorService).GetField("CompleteAwUploadBatchSize", BindingFlags.NonPublic | BindingFlags.Static);
-        var urlMethod = typeof(AwCollectorService).GetMethod("BuildEventsUrl", BindingFlags.NonPublic | BindingFlags.Static);
-        var chunkMethod = typeof(AwCollectorService).GetMethod("ChunkCompleteAwUploadEvents", BindingFlags.NonPublic | BindingFlags.Static);
-
-        Assert.NotNull(unboundedLimit);
-        Assert.NotNull(uploadBatchSize);
-        Assert.Equal(-1, (int)unboundedLimit.GetRawConstantValue()!);
-        Assert.Equal(500, (int)uploadBatchSize.GetRawConstantValue()!);
-
-        Assert.NotNull(urlMethod);
-        var url = Assert.IsType<string>(urlMethod.Invoke(null, ["aw-watcher-window_DESKTOP"]));
-        Assert.Equal("/api/0/buckets/aw-watcher-window_DESKTOP/events?limit=-1", url);
-
-        Assert.NotNull(chunkMethod);
-        var chunked = chunkMethod
-            .MakeGenericMethod(typeof(int))
-            .Invoke(null, [Enumerable.Range(1, 501).ToList()]);
-        var chunks = Assert.IsAssignableFrom<IEnumerable<IReadOnlyList<int>>>(chunked).ToList();
-        Assert.Collection(
-            chunks,
-            first => Assert.Equal(500, first.Count),
-            second => Assert.Single(second));
     }
 
     [Theory]
@@ -102,32 +106,6 @@ public class ApiClientDefaultsTests
 
         Assert.NotNull(method);
         var actual = method.Invoke(null, [sampleOk, legacyOk]);
-
-        Assert.Equal(expected, actual);
-    }
-
-    [Theory]
-    [InlineData(3, 3, 2, 2, null)]
-    [InlineData(3, 0, 2, 2, "Partial AW upload failure: pending 3 events")]
-    [InlineData(3, 3, 2, 0, "Partial AW upload failure: pending 2 events")]
-    [InlineData(3, 0, 2, 0, "Partial AW upload failure: pending 5 events")]
-    public void AwCollector_BuildsPartialUploadHealthMessage(
-        int windowFetched,
-        int windowUploaded,
-        int afkFetched,
-        int afkUploaded,
-        string? expected)
-    {
-        var method = typeof(AwCollectorService).GetMethod("BuildUploadHealthMessage", BindingFlags.NonPublic | BindingFlags.Static);
-
-        Assert.NotNull(method);
-        var outcomeType = typeof(AwCollectorService).GetNestedType("AwBucketUploadOutcome", BindingFlags.NonPublic);
-        Assert.NotNull(outcomeType);
-        var outcomes = Array.CreateInstance(outcomeType, 2);
-        outcomes.SetValue(Activator.CreateInstance(outcomeType, [windowFetched, windowUploaded, null]), 0);
-        outcomes.SetValue(Activator.CreateInstance(outcomeType, [afkFetched, afkUploaded, null]), 1);
-
-        var actual = method.Invoke(null, [outcomes]);
 
         Assert.Equal(expected, actual);
     }
