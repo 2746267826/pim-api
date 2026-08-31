@@ -86,7 +86,7 @@ public sealed class EventDescriptionSanitizerTests
 
         var result = EventDescriptionSanitizer.Normalize(exchangeEmpty, "html");
         Assert.Null(result);
-        Assert.True(EventDescriptionSanitizer.IsEffectivelyEmptyHtml(exchangeEmpty) || result is null);
+        Assert.True(EventDescriptionSanitizer.IsEffectivelyEmptyHtml(exchangeEmpty));
     }
 
     [Theory]

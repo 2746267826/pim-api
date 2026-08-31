@@ -32,11 +32,8 @@ public static class EventDescriptionSanitizer
         Sanitizer.AllowedSchemes.Add("https");
         Sanitizer.AllowedSchemes.Add("mailto");
 
-        Sanitizer.RemovingTag += (_, e) =>
-        {
-            if (e.Tag.TagName.Equals("style", StringComparison.OrdinalIgnoreCase))
-                e.Cancel = false;
-        };
+        // style/script content is removed via PreprocessHtml before sanitization;
+        // KeepChildNodes=true ensures text inside stripped tags like font/div is preserved.
     }
 
     public static string NormalizeHtml(string html)
@@ -70,9 +67,14 @@ public static class EventDescriptionSanitizer
         if (string.IsNullOrWhiteSpace(html))
             return true;
 
-        var text = Regex.Replace(html, "<[^>]+>", string.Empty);
+        // For raw HTML (e.g. Exchange wrapper), strip script/style/comments first
+        var preprocessed = PreprocessHtml(html);
+        var text = Regex.Replace(preprocessed, "<[^>]+>", string.Empty);
         text = WebUtility.HtmlDecode(text);
         text = text.Replace("\u00A0", " ", StringComparison.Ordinal);
+        // Also treat zero-width spaces as empty
+        text = text.Replace("\u200B", string.Empty, StringComparison.Ordinal)
+                   .Replace("\uFEFF", string.Empty, StringComparison.Ordinal);
         return string.IsNullOrWhiteSpace(text);
     }
 
