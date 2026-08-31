@@ -187,11 +187,18 @@ public class CalendarService
         var isHtml = string.Equals(request.DescriptionFormat, "html", StringComparison.OrdinalIgnoreCase);
         if (isHtml)
         {
-            request = request with { Description = EventDescriptionSanitizer.Normalize(request.Description, "html") };
+            var normalized = EventDescriptionSanitizer.Normalize(request.Description, "html");
+            request = request with
+            {
+                Description = normalized,
+                DescriptionFormat = normalized is null ? null : request.DescriptionFormat
+            };
         }
         else
         {
             ManualDescriptionValidator.EnsureSafe(request.Description);
+            if (string.IsNullOrWhiteSpace(request.Description))
+                request = request with { Description = null, DescriptionFormat = null };
         }
 
         await ValidatePimFileReferencesAsync(request.AttachmentReferences, ct);
@@ -451,11 +458,18 @@ public class CalendarService
         var isHtml = string.Equals(request.DescriptionFormat, "html", StringComparison.OrdinalIgnoreCase);
         if (isHtml)
         {
-            request = request with { Description = EventDescriptionSanitizer.Normalize(request.Description, "html") };
+            var normalized = EventDescriptionSanitizer.Normalize(request.Description, "html");
+            request = request with
+            {
+                Description = normalized,
+                DescriptionFormat = normalized is null ? null : request.DescriptionFormat
+            };
         }
         else
         {
             ManualDescriptionValidator.EnsureSafe(request.Description);
+            if (string.IsNullOrWhiteSpace(request.Description))
+                request = request with { Description = null, DescriptionFormat = null };
         }
 
         await ValidatePimFileReferencesAsync(request.AttachmentReferences, ct);

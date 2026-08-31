@@ -34,11 +34,11 @@ public static class OutlookEventMapper
         target.OutlookEventId = graph.GetProperty("id").GetString()!;
         target.Title = graph.GetProperty("subject").GetString() ?? string.Empty;
         var descriptionFormat = GetDescriptionFormat(graph);
-        target.DescriptionFormat = descriptionFormat;
         var bodyContent = GetStringOrNull(graph, "body", "content");
         target.Description = EventDescriptionSanitizer.Normalize(
             descriptionFormat == "html" ? NormalizeHtmlHeadings(bodyContent) : bodyContent,
             descriptionFormat);
+        target.DescriptionFormat = target.Description is null ? null : descriptionFormat;
         target.Location = GetStringOrNull(graph, "location", "displayName");
         target.OutlookChangeKey = GetStringOrNull(graph, "changeKey");
         target.OutlookEtag = GetStringOrNull(graph, "@odata.etag");
