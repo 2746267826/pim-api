@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Core.Planning;
@@ -32,15 +33,18 @@ public class PlanningModelService
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly IOperationConfirmationService? _confirmationService;
+    private readonly RecurrenceService _recurrence;
 
     public PlanningModelService(
         PimDbContext db,
         ICurrentUserService currentUser,
-        IOperationConfirmationService? confirmationService = null)
+        IOperationConfirmationService? confirmationService = null,
+        RecurrenceService? recurrence = null)
     {
         _db = db;
         _currentUser = currentUser;
         _confirmationService = confirmationService;
+        _recurrence = recurrence ?? new RecurrenceService(NullLogger<RecurrenceService>.Instance);
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "Login required");
@@ -58,27 +62,33 @@ public class PlanningModelService
 
         if (requestedLayers.Contains("events"))
         {
-            var events = await _db.Set<EventEntity>()
+            var minValidDate = DateTimeOffset.MinValue.AddYears(100);
+            var eventEntities = await _db.Set<EventEntity>()
                 .AsNoTracking()
                 .Include(e => e.Calendar)
                 .Where(e => e.Calendar.UserId == userId
-                    && e.DtStart < query.End
-                    && e.DtEnd > query.Start)
+                    && e.DtStart > minValidDate
+                    && e.DtEnd > minValidDate
+                    && ((e.DtStart < query.End && e.DtEnd > query.Start)
+                        || !string.IsNullOrEmpty(e.RRule)
+                        || e.IsException))
                 .ToListAsync(ct);
 
-            items.AddRange(events
-                .Where(e => !query.OutlookOnly || IsOutlookSource(e.Source))
-                .Select(e => new CalendarLayerItem(
-                    $"event:{e.Id}",
+            var expanded = _recurrence.ExpandEventsV2(eventEntities, query.Start, query.End);
+
+            items.AddRange(expanded
+                .Where(ex => !query.OutlookOnly || IsOutlookSource(ex.Entity.Source))
+                .Select(ex => new CalendarLayerItem(
+                    $"event:{ex.OccurrenceId}",
                     "events",
                     "event",
-                    e.Id,
-                    e.Title,
-                    e.DtStart,
-                    e.DtEnd,
-                    e.Source,
-                    e.Status,
-                    e.Calendar.Color,
+                    ex.OccurrenceId,
+                    ex.Entity.Title,
+                    ex.OccurrenceStart,
+                    ex.OccurrenceEnd,
+                    ex.Entity.Source,
+                    ex.Entity.Status,
+                    ex.Entity.Calendar.Color,
                     false)));
         }
 
@@ -615,13 +625,56 @@ public class PlanningModelService
 
     private static HashSet<string> NormalizeLayers(IReadOnlyList<string>? layers)
     {
-        var normalized = layers?
+        var raw = layers?
             .SelectMany(layer => layer.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             .Where(layer => !string.IsNullOrWhiteSpace(layer))
             .Select(layer => layer.ToLowerInvariant())
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToList();
 
-        return normalized is { Count: > 0 }
+        if (raw is null || raw.Count == 0)
+            return new HashSet<string>(DefaultLayers, StringComparer.OrdinalIgnoreCase);
+
+        if (raw.Any(s => s == "all"))
+            return new HashSet<string>(DefaultLayers, StringComparer.OrdinalIgnoreCase);
+
+        var aliasMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["event"] = "events",
+            ["events"] = "events",
+            ["task"] = "task-segments",
+            ["tasks"] = "task-segments",
+            ["task-segment"] = "task-segments",
+            ["task-segments"] = "task-segments",
+            ["task_segments"] = "task-segments",
+            ["tasksegments"] = "task-segments",
+            ["habit"] = "habits",
+            ["habits"] = "habits",
+            ["availability"] = "availability",
+            ["available"] = "availability",
+            ["avail"] = "availability",
+            ["ai"] = "ai-placeholders",
+            ["ai-placeholder"] = "ai-placeholders",
+            ["ai-placeholders"] = "ai-placeholders",
+            ["ai_placeholders"] = "ai-placeholders",
+            ["aiplaceholder"] = "ai-placeholders",
+            ["aiplaceholders"] = "ai-placeholders",
+        };
+
+        var normalized = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var token in raw)
+        {
+            if (aliasMap.TryGetValue(token, out var canonical))
+                normalized.Add(canonical);
+            else if (DefaultLayers.Contains(token))
+                normalized.Add(token);
+            else
+            {
+                // unknown token: ignore silently to avoid returning empty for typo (e.g. layers=evnts)
+                // if all tokens are unknown the result will be empty and fall back to defaults below
+            }
+        }
+
+        return normalized.Count > 0
             ? normalized
             : new HashSet<string>(DefaultLayers, StringComparer.OrdinalIgnoreCase);
     }

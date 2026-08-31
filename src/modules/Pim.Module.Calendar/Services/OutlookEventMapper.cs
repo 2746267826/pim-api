@@ -44,6 +44,26 @@ public static class OutlookEventMapper
         target.OutlookEtag = GetStringOrNull(graph, "@odata.etag");
         target.OriginalStartTimeZone = GetStringOrNull(graph, "originalStartTimeZone");
         target.OriginalEndTimeZone = GetStringOrNull(graph, "originalEndTimeZone");
+        // TimeZoneId/SourceTimeZoneId were previously left null -> clients could not map UTC back to original local time (issue #171)
+        // Populate from originalStartTimeZone (preferred) or start.timeZone, truncated to 100 chars.
+        {
+            var startTz = GetStringOrNull(graph, "start", "timeZone");
+            var effectiveTz = !string.IsNullOrWhiteSpace(target.OriginalStartTimeZone)
+                ? target.OriginalStartTimeZone
+                : startTz;
+            if (!string.IsNullOrWhiteSpace(effectiveTz))
+            {
+                var normalized = effectiveTz!.Length > 100 ? effectiveTz[..100] : effectiveTz;
+                target.TimeZoneId = normalized;
+                target.SourceTimeZoneId = normalized;
+            }
+            else
+            {
+                // Graph omitted timezone (should not happen with Prefer: UTC, but clear stale value on updates)
+                target.TimeZoneId = null;
+                target.SourceTimeZoneId = null;
+            }
+        }
         target.IsAllDay = GetBoolOrFalse(graph, "isAllDay");
         target.OutlookCalendarBindingId = bindingId;
         target.CalendarId = calendarId;
