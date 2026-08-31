@@ -1,20 +1,19 @@
 import browser from 'webextension-polyfill'
 import config from '../config'
 import { heartbeatAlarmListener, sendInitialHeartbeat, tabActivatedListener } from './heartbeat'
-import { waitForPimClient } from './client'
+import { PIM_BASE_URL, waitForPimClient } from './client'
 import { emitNotification } from './helpers'
 import { setBaseUrl, setEnabled, getEnabled } from '../storage'
 
-const PIM_BASE_URL = 'http://localhost:15601'
-
 console.info('PIM Browser Watcher starting...')
 
-// Ensure enabled defaults to true on first install
+// Ensure enabled defaults to true on first install and set up offscreen
 browser.runtime.onInstalled.addListener(async () => {
   const enabled = await getEnabled()
   // getEnabled returns true by default, but ensure persisted
   await setEnabled(enabled)
   console.info('Extension installed, enabled:', enabled)
+  void setupOffscreen()
 })
 
 // Try to reach PIM client before starting heartbeats
@@ -47,8 +46,8 @@ browser.tabs.onActivated.addListener((activeInfo) => {
 console.debug('Setting base url and sending initial heartbeat')
 void (async () => {
   await setBaseUrl(PIM_BASE_URL)
-  await initPimConnection()
-  // Small delay to let storage settle
+  // Start PIM connection check in background without blocking initial heartbeat
+  void initPimConnection()
   await sendInitialHeartbeat()
   console.info('PIM Browser Watcher started successfully')
 })().catch((err) => console.error('Failed to initialize extension:', err))
@@ -64,7 +63,7 @@ async function setupOffscreen() {
 
   try {
     await _chrome.offscreen.createDocument({
-      url: 'src/offscreen.html',
+      url: 'offscreen.html',
       reasons: ['BLOBS'],
       justification: 'Keep service worker alive for heartbeat packets',
     })
@@ -80,11 +79,8 @@ browser.runtime.onMessage.addListener((message: unknown) => {
   return undefined
 })
 
-// Initialize on startup and installation
+// Initialize on startup
 browser.runtime.onStartup.addListener(() => {
-  void setupOffscreen()
-})
-browser.runtime.onInstalled.addListener(() => {
   void setupOffscreen()
 })
 

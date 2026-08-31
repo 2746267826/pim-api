@@ -10,12 +10,23 @@ function watchKey<T>(key: string, cb: (value: T) => void | Promise<void>) {
   return () => browser.storage.local.onChanged.removeListener(listener)
 }
 
-async function waitForKey<T>(key: string, desiredValue: T) {
+async function waitForKey<T>(key: string, desiredValue: T, timeoutMs = 30000): Promise<void> {
   const value = await browser.storage.local.get(key).then((r) => r[key])
   if (value === desiredValue) return
-  return new Promise<void>((resolve) => {
+  return new Promise<void>((resolve, reject) => {
+    let done = false
+    const timer = setTimeout(() => {
+      if (done) return
+      done = true
+      unsubscribe()
+      reject(new Error(`waitForKey timeout: ${key} did not become ${String(desiredValue)} within ${timeoutMs}ms`))
+    }, timeoutMs)
+
     const unsubscribe = watchKey<T>(key, (value) => {
+      if (done) return
       if (value !== desiredValue) return
+      done = true
+      clearTimeout(timer)
       resolve()
       unsubscribe()
     })

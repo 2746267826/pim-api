@@ -10,19 +10,24 @@ import config from '../config'
 function decodeURL(url: string): string {
   try {
     const parsed = new URL(url)
-    if (!parsed.hostname.includes('xn--')) {
-      return url
+    // Strip credentials to avoid leaking passwords via heartbeat
+    // We keep username for debugging but mask password
+    let hostname = parsed.hostname
+    if (hostname.includes('xn--')) {
+      hostname = punycode.toUnicode(hostname)
     }
-
-    const decodedHost = punycode.toUnicode(parsed.hostname)
-    const userinfo =
-      parsed.username === '' ? '' : `${parsed.username}${parsed.password === '' ? '' : `:${parsed.password}`}@`
     const port = parsed.port === '' ? '' : `:${parsed.port}`
-    return `${parsed.protocol}//${userinfo}${decodedHost}${port}${parsed.pathname}${parsed.search}${parsed.hash}`
+    // Do not include userinfo/password in heartbeat payload
+    return `${parsed.protocol}//${hostname}${port}${parsed.pathname}${parsed.search}${parsed.hash}`
   } catch (e) {
     console.error('Error decoding URL:', e)
     return url
   }
+}
+
+function isTrackableUrl(url: string): boolean {
+  // Only track http/https; skip internal schemes
+  return url.startsWith('http://') || url.startsWith('https://')
 }
 
 function formatHeartbeatLogData(data: HeartbeatData) {
@@ -52,6 +57,11 @@ async function heartbeat(tab: browser.Tabs.Tab | undefined, tabCount: number) {
     return
   }
 
+  if (!isTrackableUrl(tab.url)) {
+    console.debug('Ignoring heartbeat for non-http url:', tab.url)
+    return
+  }
+
   const { url, title, audible, incognito } = tab
   const data: HeartbeatData = {
     url: decodeURL(url),
@@ -62,7 +72,7 @@ async function heartbeat(tab: browser.Tabs.Tab | undefined, tabCount: number) {
   }
 
   const previousData = await getHeartbeatData()
-  if (previousData && deepEqual(previousData, data)) {
+  if (previousData && deepEqual(previousData, data, { strict: true })) {
     console.debug('Skipping heartbeat, data unchanged:', formatHeartbeatLogData(data))
     return
   }
@@ -85,16 +95,24 @@ export const sendInitialHeartbeat = async () => {
 
 export const heartbeatAlarmListener = async (alarm: browser.Alarms.Alarm) => {
   if (alarm.name !== config.heartbeat.alarmName) return
-  const activeWindowTab = await getActiveWindowTab()
-  if (!activeWindowTab) return
-  const tabs = await getTabs()
-  console.debug('Sending heartbeat for alarm', activeWindowTab.url)
-  await heartbeat(activeWindowTab, tabs.length)
+  try {
+    const activeWindowTab = await getActiveWindowTab()
+    if (!activeWindowTab) return
+    const tabs = await getTabs()
+    console.debug('Sending heartbeat for alarm', activeWindowTab.url)
+    await heartbeat(activeWindowTab, tabs.length)
+  } catch (err) {
+    console.warn('heartbeatAlarmListener failed:', err)
+  }
 }
 
 export const tabActivatedListener = async (activeInfo: browser.Tabs.OnActivatedActiveInfoType) => {
-  const tab = await getTab(activeInfo.tabId)
-  const tabs = await getTabs()
-  console.debug('Sending heartbeat for tab activation', tab.url)
-  await heartbeat(tab, tabs.length)
+  try {
+    const tab = await getTab(activeInfo.tabId)
+    const tabs = await getTabs()
+    console.debug('Sending heartbeat for tab activation', tab?.url)
+    await heartbeat(tab, tabs.length)
+  } catch (err) {
+    console.warn('tabActivatedListener failed:', err)
+  }
 }

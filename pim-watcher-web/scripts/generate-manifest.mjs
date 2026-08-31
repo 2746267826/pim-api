@@ -29,37 +29,30 @@ for (const asset of assets) {
   }
 }
 
-// offscreen.html handling: ensure dist/src/offscreen.html exists for service worker
-const offscreenSrc = resolve(root, 'src/offscreen.html')
-const offscreenDist = resolve(root, 'dist/src/offscreen.html')
-if (existsSync(offscreenSrc)) {
-  mkdirSync(dirname(offscreenDist), { recursive: true })
-  copyFileSync(offscreenSrc, offscreenDist)
-  console.log('Copied src/offscreen.html')
+// Ensure legacy path dist/src/offscreen.html exists for older service worker references
+const legacySrc = resolve(root, 'src/offscreen.html')
+const legacyDest = resolve(root, 'dist/src/offscreen.html')
+if (existsSync(legacySrc) && !existsSync(legacyDest)) {
+  mkdirSync(dirname(legacyDest), { recursive: true })
+  copyFileSync(legacySrc, legacyDest)
+  console.log('Copied src/offscreen.html (legacy)')
 }
 
-// Also ensure dist/offscreen.html references correct js if needed
-// The vite build outputs offscreen.js at dist/offscreen.js, but offscreen.html expects ./offscreen.ts
-// We copy and keep html as is; browser will load via script tag that vite should have transformed?
-// Our manual html is simple and loads offscreen.ts via type=module, but dist version should load offscreen.js
-// Patch html to point to ../offscreen.js or ./offscreen.js accordingly
+// offscreen.html handling: ensure both locations reference correct js
+// Vite builds offscreen.ts -> dist/offscreen.js, but offscreen.html originally references offscreen.ts
 try {
-  const htmlPaths = [resolve(root, 'dist/offscreen.html'), resolve(root, 'dist/src/offscreen.html')]
-  for (const p of htmlPaths) {
-    if (existsSync(p)) {
-      let html = readFileSync(p, 'utf8')
-      // Replace src reference to offscreen.ts with offscreen.js
-      html = html.replace('src="./offscreen.ts"', 'src="../offscreen.js"').replace('src="./offscreen.js"', 'src="../offscreen.js"')
-      // For dist/offscreen.html case
-      if (p.endsWith('dist/offscreen.html')) {
-        html = readFileSync(p, 'utf8').replace('src="./offscreen.ts"', 'src="./offscreen.js"')
-      }
-      // simpler: ensure it loads offscreen.js from dist root
-      if (html.includes('offscreen.ts')) {
-        html = html.replace(/offscreen\.ts/g, 'offscreen.js')
-      }
-      writeFileSync(p, html)
+  for (const rel of ['dist/offscreen.html', 'dist/src/offscreen.html']) {
+    const p = resolve(root, rel)
+    if (!existsSync(p)) continue
+    let html = readFileSync(p, 'utf8')
+    // Single idempotent replacement
+    html = html.replace(/offscreen\.ts/g, 'offscreen.js')
+    // Ensure src path is correct for each location
+    if (rel === 'dist/src/offscreen.html') {
+      // from dist/src/ need to go up one level
+      html = html.replace('src="./offscreen.js"', 'src="../offscreen.js"')
     }
+    writeFileSync(p, html)
   }
 } catch (e) {
   console.warn('Failed to patch offscreen.html:', e)
