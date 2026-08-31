@@ -31,6 +31,8 @@ public partial class PcTrackerService
             if (!TryParseTimestamp(e.Timestamp, out var timestamp))
                 throw new ArgumentException($"Invalid timestamp '{e.Timestamp}'.", nameof(req));
 
+            timestamp = TruncateToMillisecond(timestamp);
+
             if (!DateTime.TryParseExact(e.Date, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var date))
                 throw new ArgumentException($"Invalid date '{e.Date}'. Expected YYYY-MM-DD.", nameof(req));
 
@@ -75,12 +77,12 @@ public partial class PcTrackerService
         var minTs = entities.Min(x => x.Timestamp);
         var maxTs = entities.Max(x => x.Timestamp);
         var existing = await _db.Set<TrackerEventEntity>()
-            .Where(x => x.DeviceId == req.DeviceId && x.Timestamp >= minTs && x.Timestamp < maxTs.AddTicks(1))
-            .Select(x => new { x.Timestamp, x.Duration, x.EventType, x.AppName, x.WindowTitle, x.ExePath })
+            .Where(x => x.DeviceId == req.DeviceId && x.Timestamp >= minTs && x.Timestamp <= maxTs)
+            .Select(x => new { x.Timestamp, x.Duration, x.EventType, x.AppName })
             .ToListAsync(ct);
-        var existingKeys = existing.Select(x => MakeTrackerKey(x.Timestamp, x.Duration, x.EventType, x.AppName, x.WindowTitle, x.ExePath)).ToHashSet();
+        var existingKeys = existing.Select(x => MakeTrackerKey(x.Timestamp, x.Duration, x.EventType, x.AppName)).ToHashSet();
 
-        var toInsert = entities.Where(x => existingKeys.Add(MakeTrackerKey(x.Timestamp, x.Duration, x.EventType, x.AppName, x.WindowTitle, x.ExePath))).ToList();
+        var toInsert = entities.Where(x => existingKeys.Add(MakeTrackerKey(x.Timestamp, x.Duration, x.EventType, x.AppName))).ToList();
         if (toInsert.Count == 0) return 0;
 
         _db.Set<TrackerEventEntity>().AddRange(toInsert);
@@ -93,11 +95,11 @@ public partial class PcTrackerService
             _db.ChangeTracker.Clear();
             // retry once: re-evaluate dedup against fresh db state
             var retryExisting = await _db.Set<TrackerEventEntity>()
-                .Where(x => x.DeviceId == req.DeviceId && x.Timestamp >= minTs && x.Timestamp < maxTs.AddTicks(1))
-                .Select(x => new { x.Timestamp, x.Duration, x.EventType, x.AppName, x.WindowTitle, x.ExePath })
+                .Where(x => x.DeviceId == req.DeviceId && x.Timestamp >= minTs && x.Timestamp <= maxTs)
+                .Select(x => new { x.Timestamp, x.Duration, x.EventType, x.AppName })
                 .ToListAsync(ct);
-            var retryKeys = retryExisting.Select(x => MakeTrackerKey(x.Timestamp, x.Duration, x.EventType, x.AppName, x.WindowTitle, x.ExePath)).ToHashSet();
-            var retryInsert = entities.Where(x => retryKeys.Add(MakeTrackerKey(x.Timestamp, x.Duration, x.EventType, x.AppName, x.WindowTitle, x.ExePath))).ToList();
+            var retryKeys = retryExisting.Select(x => MakeTrackerKey(x.Timestamp, x.Duration, x.EventType, x.AppName)).ToHashSet();
+            var retryInsert = entities.Where(x => retryKeys.Add(MakeTrackerKey(x.Timestamp, x.Duration, x.EventType, x.AppName))).ToList();
             if (retryInsert.Count == 0) return 0;
             _db.Set<TrackerEventEntity>().AddRange(retryInsert);
             await _db.SaveChangesAsync(ct);
@@ -199,8 +201,14 @@ public partial class PcTrackerService
         return await _classificationSnapshots.EnsureClassificationsAsync(records, rules, auditId: null, ct);
     }
 
-    private static string MakeTrackerKey(DateTimeOffset ts, double duration, string eventType, string? appName, string? title, string? exePath)
-        => $"{ts.ToUnixTimeMilliseconds()}|{duration}|{eventType}|{appName}|{title}|{exePath}";
+    private static string MakeTrackerKey(DateTimeOffset ts, double duration, string eventType, string? appName)
+        => $"{ts.ToUnixTimeMilliseconds()}|{duration.ToString("G17", System.Globalization.CultureInfo.InvariantCulture)}|{eventType}|{appName}";
+
+    private static DateTimeOffset TruncateToMillisecond(DateTimeOffset dto)
+    {
+        // Use UTC milliseconds to stay consistent with MakeTrackerKey's ToUnixTimeMilliseconds
+        return DateTimeOffset.FromUnixTimeMilliseconds(dto.ToUnixTimeMilliseconds());
+    }
 
     private async Task<List<PcDetailRecord>> BuildInterpretedTrackerDetailRecordsAsync(List<TrackerEventEntity> events, CancellationToken ct)
     {

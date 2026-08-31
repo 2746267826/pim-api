@@ -28,5 +28,5 @@ public class TrackerEventEntity
     [Column("page_visit_duration")] public double PageVisitDuration { get; set; }
     [Column("raw_json", TypeName = "jsonb")] public string RawJson { get; set; } = "{}";
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
-    [Column("date")] public DateTime Date { get; set; }
+    [Column("date", TypeName = "date")] public DateTime Date { get; set; }
 }
