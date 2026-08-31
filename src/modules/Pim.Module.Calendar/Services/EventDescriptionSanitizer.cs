@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text.RegularExpressions;
 using Ganss.Xss;
 
 namespace Pim.Module.Calendar.Services;
@@ -9,6 +11,7 @@ public static class EventDescriptionSanitizer
     static EventDescriptionSanitizer()
     {
         Sanitizer = new HtmlSanitizer();
+        Sanitizer.KeepChildNodes = true;
         Sanitizer.AllowedTags.Clear();
         foreach (var tag in new[]
         {
@@ -38,17 +41,53 @@ public static class EventDescriptionSanitizer
 
     public static string NormalizeHtml(string html)
     {
-        return Sanitizer.Sanitize(html);
+        if (string.IsNullOrEmpty(html))
+            return string.Empty;
+
+        var preprocessed = PreprocessHtml(html);
+        return Sanitizer.Sanitize(preprocessed);
     }
 
     public static string? Normalize(string? description, string? descriptionFormat)
     {
-        if (string.IsNullOrEmpty(description))
+        if (string.IsNullOrWhiteSpace(description))
             return null;
 
         if (string.Equals(descriptionFormat, "html", StringComparison.OrdinalIgnoreCase))
-            return NormalizeHtml(description);
+        {
+            var sanitized = NormalizeHtml(description);
+            if (IsEffectivelyEmpty(sanitized))
+                return null;
+
+            return sanitized;
+        }
 
         return description;
+    }
+
+    public static bool IsEffectivelyEmptyHtml(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+            return true;
+
+        var text = Regex.Replace(html, "<[^>]+>", string.Empty);
+        text = WebUtility.HtmlDecode(text);
+        text = text.Replace("\u00A0", " ", StringComparison.Ordinal);
+        return string.IsNullOrWhiteSpace(text);
+    }
+
+    private static bool IsEffectivelyEmpty(string sanitizedHtml)
+    {
+        return IsEffectivelyEmptyHtml(sanitizedHtml);
+    }
+
+    private static string PreprocessHtml(string html)
+    {
+        // Remove script/style blocks entirely including content (XSS vectors and Exchange CSS)
+        html = Regex.Replace(html, @"<script\b[^>]*>.*?</script\s*>", string.Empty, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        html = Regex.Replace(html, @"<style\b[^>]*>.*?</style\s*>", string.Empty, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        // Remove HTML comments (e.g. <!-- converted from rtf --> and <!-- .EmailQuote ... -->)
+        html = Regex.Replace(html, @"<!--.*?-->", string.Empty, RegexOptions.Singleline);
+        return html;
     }
 }
