@@ -57,6 +57,12 @@ public static class OutlookEventMapper
                 target.TimeZoneId = normalized;
                 target.SourceTimeZoneId = normalized;
             }
+            else
+            {
+                // Graph omitted timezone (should not happen with Prefer: UTC, but clear stale value on updates)
+                target.TimeZoneId = null;
+                target.SourceTimeZoneId = null;
+            }
         }
         target.IsAllDay = GetBoolOrFalse(graph, "isAllDay");
         target.OutlookCalendarBindingId = bindingId;

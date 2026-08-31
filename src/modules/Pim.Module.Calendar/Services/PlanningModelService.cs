@@ -668,7 +668,10 @@ public class PlanningModelService
             else if (DefaultLayers.Contains(token))
                 normalized.Add(token);
             else
-                normalized.Add(token);
+            {
+                // unknown token: ignore silently to avoid returning empty for typo (e.g. layers=evnts)
+                // if all tokens are unknown the result will be empty and fall back to defaults below
+            }
         }
 
         return normalized.Count > 0
