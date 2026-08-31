@@ -339,6 +339,15 @@ cd src/client-android
 **支持多端同时使用吗？**
 支持。Windows / Android 客户端按设备上报，Web 统一查看；数据按账号隔离。
 
+## TODO / Roadmap
+
+- [ ] MCP 写入能力 — 设计已就绪，待 Phase 3 按需开放，需 scope + 二次确认。候选：
+  - Calendar: `create_event`, `update_event`, `create_task`, `update_task`, `create_reminder`
+  - QuickNotes: `create_quick_note`, `update_quick_note`
+  - Files: `upload_file`（暂缓，涉二进制与存储）
+  - Mobile/PC: 不开放写入（采集由端侧完成）
+  - Outlook: 全量不开放（涉 OAuth 与外部写回）
+
 ## 开发指南
 
 - 后端：`dotnet test Pim.sln`；前端：`npm --prefix src/client-web run build`；Android：`./gradlew :app:testDebugUnitTest`。

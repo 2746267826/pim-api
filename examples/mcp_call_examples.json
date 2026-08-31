@@ -1,0 +1,317 @@
+{
+  "today": {
+    "description": "今天有啥事 - 4 calls",
+    "calls": [
+      {
+        "tool": "get_today_sections",
+        "arguments": {
+          "date": "2026-08-31"
+        },
+        "response": {
+          "code": 0,
+          "data": {
+            "sections": [
+              {
+                "id": "focus",
+                "title": "专注",
+                "metrics": {
+                  "codingHours": 3.5
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "tool": "get_calendar_layers",
+        "arguments": {
+          "start": "2026-08-31T00:00:00Z",
+          "end": "2026-08-31T16:00:00Z",
+          "layers": "all",
+          "timezone": "Asia/Shanghai"
+        },
+        "response": {
+          "code": 0,
+          "data": {
+            "start": "2026-08-31T00:00:00Z",
+            "end": "2026-08-31T16:00:00Z",
+            "items": [
+              {
+                "id": "evt1",
+                "title": "Daily Standup",
+                "startsAt": "2026-08-31T01:00:00Z",
+                "endsAt": "2026-08-31T01:15:00Z",
+                "layer": "event"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "tool": "get_tasks",
+        "arguments": {
+          "status": "pending",
+          "page": 1,
+          "pageSize": 20
+        },
+        "response": {
+          "code": 0,
+          "data": {
+            "items": [
+              {
+                "id": "t1",
+                "title": "Write report",
+                "status": "pending",
+                "priority": 2
+              }
+            ],
+            "page": 1,
+            "pageSize": 20,
+            "total": 1
+          }
+        }
+      },
+      {
+        "tool": "get_reminders",
+        "arguments": {},
+        "response": {
+          "code": 0,
+          "data": [
+            {
+              "id": "r1",
+              "title": "Review PR",
+              "scheduledAt": "2026-08-31T07:00:00Z"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "weekly_efficiency": {
+    "description": "这周效率咋样 - 4 calls",
+    "calls": [
+      {
+        "tool": "get_pc_productivity_range",
+        "arguments": {
+          "start": "2026-08-24T16:00:00Z",
+          "end": "2026-08-31T16:00:00Z",
+          "timezone": "Asia/Shanghai"
+        },
+        "response": {
+          "code": 0,
+          "data": [
+            {
+              "date": "2026-08-31",
+              "productiveMinutes": 210,
+              "score": 0.82
+            }
+          ]
+        }
+      },
+      {
+        "tool": "get_pc_focus_blocks",
+        "arguments": {
+          "start": "2026-08-24T16:00:00Z",
+          "end": "2026-08-31T16:00:00Z",
+          "timezone": "Asia/Shanghai"
+        },
+        "response": {
+          "code": 0,
+          "data": {
+            "blocks": [
+              {
+                "start": "2026-08-31T01:00:00Z",
+                "end": "2026-08-31T03:30:00Z",
+                "dominantApp": "VSCode"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "tool": "get_pc_category_distribution",
+        "arguments": {
+          "start": "2026-08-24T16:00:00Z",
+          "end": "2026-08-31T16:00:00Z",
+          "timezone": "Asia/Shanghai"
+        },
+        "response": {
+          "code": 0,
+          "data": {
+            "distribution": [
+              {
+                "category": "coding",
+                "minutes": 520,
+                "pct": 0.44
+              }
+            ]
+          }
+        }
+      },
+      {
+        "tool": "get_mobile_analytics_overview",
+        "arguments": {
+          "start": "2026-08-24T16:00:00Z",
+          "end": "2026-08-31T16:00:00Z",
+          "timezone": "Asia/Shanghai"
+        },
+        "response": {
+          "code": 0,
+          "data": {
+            "totalUsageMinutes": 1234,
+            "topApps": [
+              {
+                "package": "com.example.chat",
+                "minutes": 120
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "where_what": {
+    "description": "人在哪，在干啥 - 4 calls",
+    "calls": [
+      {
+        "tool": "get_mobile_location_latest",
+        "arguments": {
+          "maxAccuracyMeters": 50
+        },
+        "response": {
+          "code": 0,
+          "data": {
+            "lat": 39.9042,
+            "lon": 116.4074,
+            "accuracy": 12,
+            "timestamp": "2026-08-31T06:00:00Z"
+          }
+        }
+      },
+      {
+        "tool": "get_mobile_timeline",
+        "arguments": {
+          "date": "2026-08-31"
+        },
+        "response": {
+          "code": 0,
+          "data": {
+            "sessions": [
+              {
+                "app": "Maps",
+                "start": "2026-08-31T06:00:00Z",
+                "durationSeconds": 1800,
+                "urlHash": "a1b2c3d4e5f6"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "tool": "get_mobile_quality",
+        "arguments": {
+          "date": "2026-08-31"
+        },
+        "response": {
+          "code": 0,
+          "data": {
+            "score": 0.95,
+            "gaps": []
+          }
+        }
+      },
+      {
+        "tool": "get_pc_timeline_v2",
+        "arguments": {
+          "date": "2026-08-31"
+        },
+        "response": {
+          "code": 0,
+          "data": [
+            {
+              "start": "2026-08-31T01:00:00Z",
+              "end": "2026-08-31T01:30:00Z",
+              "app": "VSCode",
+              "category": "coding",
+              "urlHash": "b2c3d4e5f6a1"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "find_note_file": {
+    "description": "找个文件/笔记 - 3 calls",
+    "calls": [
+      {
+        "tool": "search_pim",
+        "arguments": {
+          "q": "Q3 计划",
+          "type": "note,file",
+          "limit": 10
+        },
+        "response": {
+          "code": 0,
+          "data": {
+            "items": [
+              {
+                "type": "note",
+                "title": "Q3 计划 - 目标",
+                "id": "n1"
+              }
+            ],
+            "page": 1,
+            "pageSize": 10,
+            "total": 1
+          }
+        }
+      },
+      {
+        "tool": "search_files",
+        "arguments": {
+          "q": "Q3 计划",
+          "page": 1,
+          "pageSize": 10
+        },
+        "response": {
+          "code": 0,
+          "data": {
+            "items": [
+              {
+                "id": "f1",
+                "name": "Q3-plan.docx",
+                "path": "/Docs/Q3-plan.docx"
+              }
+            ],
+            "page": 1,
+            "pageSize": 10,
+            "total": 1
+          }
+        }
+      },
+      {
+        "tool": "get_quick_notes",
+        "arguments": {
+          "search": "Q3",
+          "page": 1,
+          "pageSize": 10
+        },
+        "response": {
+          "code": 0,
+          "data": {
+            "items": [
+              {
+                "id": "qn1",
+                "title": "Q3",
+                "content": "速记..."
+              }
+            ],
+            "page": 1,
+            "pageSize": 10,
+            "total": 1
+          }
+        }
+      }
+    ]
+  }
+}
