@@ -81,9 +81,13 @@ public class CalendarModule : IModule
             [FromQuery] DateTimeOffset end,
             [FromQuery] string? layers,
             [FromQuery] bool? outlookOnly,
+            [FromQuery] string? timezone,
             [FromServices] PlanningModelService svc,
             CancellationToken ct) =>
         {
+            // timezone param is accepted for compatibility (issue #171 passes ?timezone=Asia/Shanghai) but ignored:
+            // start/end already carry offset (e.g. Z), and all stored times are UTC via ToUniversalTime().
+            _ = timezone;
             var requestedLayers = string.IsNullOrWhiteSpace(layers)
                 ? null
                 : layers.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
