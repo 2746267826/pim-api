@@ -6,6 +6,7 @@ import { sendHeartbeat } from './client'
 import type { HeartbeatData } from './client'
 import { getEnabled, getHeartbeatData, setHeartbeatData } from '../storage'
 import config from '../config'
+import { PIM_BASE_URL } from './client'
 
 function decodeURL(url: string): string {
   try {
@@ -26,7 +27,8 @@ function decodeURL(url: string): string {
 }
 
 function isTrackableUrl(url: string): boolean {
-  // Only track http/https; skip internal schemes
+  // Only track http/https; skip internal schemes and PIM itself to avoid self-loop
+  if (url.startsWith(PIM_BASE_URL)) return false
   return url.startsWith('http://') || url.startsWith('https://')
 }
 
