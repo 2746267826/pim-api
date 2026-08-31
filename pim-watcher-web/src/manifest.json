@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "PIM Browser Watcher",
+  "version": "1.0.0",
+  "description": "Tracks active browser tab for PIM usage analytics",
+  "permissions": ["tabs", "alarms", "storage", "notifications"],
+  "host_permissions": ["http://localhost:15601/*"],
+  "background": {
+    "service_worker": "background/main.js"
+  }
+}

@@ -508,6 +508,62 @@ CREATE TABLE IF NOT EXISTS pc_categories (
 CREATE INDEX IF NOT EXISTS ix_pc_categories_parent_id ON pc_categories (parent_id);
 CREATE INDEX IF NOT EXISTS ix_pc_categories_name ON pc_categories (name);
 CREATE INDEX IF NOT EXISTS ix_pc_categories_sort_order ON pc_categories (sort_order);
+
+-- Native Tracker: pc_tracker_events
+CREATE TABLE IF NOT EXISTS pc_tracker_events (
+    id BIGSERIAL PRIMARY KEY,
+    device_id VARCHAR(64) NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
+    duration DOUBLE PRECISION NOT NULL DEFAULT 0,
+    event_type VARCHAR(16) NOT NULL,
+    exe_path TEXT,
+    app_name VARCHAR(256),
+    display_name VARCHAR(256),
+    window_title TEXT,
+    command_line TEXT,
+    is_idle BOOLEAN DEFAULT FALSE,
+    is_media_active BOOLEAN DEFAULT FALSE,
+    url TEXT,
+    domain VARCHAR(512),
+    page_path TEXT,
+    audible BOOLEAN,
+    incognito BOOLEAN,
+    tab_count INTEGER,
+    page_visit_count INTEGER DEFAULT 0,
+    page_visit_duration DOUBLE PRECISION DEFAULT 0,
+    raw_json JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    date DATE NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tracker_events_device_date ON pc_tracker_events(device_id, date);
+CREATE INDEX IF NOT EXISTS idx_tracker_events_timestamp ON pc_tracker_events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_tracker_events_app ON pc_tracker_events(app_name, date);
+CREATE INDEX IF NOT EXISTS idx_tracker_events_event_type ON pc_tracker_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_tracker_events_is_idle ON pc_tracker_events(is_idle);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tracker_events_dedup ON pc_tracker_events(device_id, timestamp, duration, event_type, app_name);
+
+-- Native Tracker: pc_tracker_health
+CREATE TABLE IF NOT EXISTS pc_tracker_health (
+    id BIGSERIAL PRIMARY KEY,
+    device_id VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'running',
+    uptime_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
+    hook_active BOOLEAN NOT NULL DEFAULT TRUE,
+    poll_count BIGINT NOT NULL DEFAULT 0,
+    sessions_created BIGINT NOT NULL DEFAULT 0,
+    events_uploaded BIGINT NOT NULL DEFAULT 0,
+    upload_failures BIGINT NOT NULL DEFAULT 0,
+    last_error TEXT,
+    browser_connected BOOLEAN NOT NULL DEFAULT FALSE,
+    browser_heartbeat_age_seconds DOUBLE PRECISION,
+    reported_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_pc_tracker_health_device_id ON pc_tracker_health(device_id);
+CREATE INDEX IF NOT EXISTS ix_pc_tracker_health_reported_at ON pc_tracker_health(reported_at);
+CREATE INDEX IF NOT EXISTS ix_pc_tracker_health_device_reported ON pc_tracker_health(device_id, reported_at);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_tracker_health_device ON pc_tracker_health(device_id);
 """;
 
     private readonly PimDbContext _db;

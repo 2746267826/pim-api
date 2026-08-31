@@ -49,7 +49,7 @@ public class ScheduledTaskServiceTests
         Assert.Equal(2, fake.Calls.Count);
         Assert.Contains("/delay", fake.Calls[0]);
         Assert.DoesNotContain("/delay", fake.Calls[1]);
-        Assert.Contains("limited", fake.Calls[0]);
+        Assert.Contains("highest", fake.Calls[0]);
     }
 
     [Fact]

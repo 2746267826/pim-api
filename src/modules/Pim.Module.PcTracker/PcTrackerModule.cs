@@ -14,6 +14,7 @@ using Pim.Core.Modules;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
+using Pim.Module.PcTracker.Entities;
 using Pim.Module.PcTracker.Services;
 
 namespace Pim.Module.PcTracker;
@@ -89,6 +90,51 @@ public class PcTrackerModule : IModule
         {
             var count = await svc.UploadCompleteAwEventsAsync(req, ct);
             return Results.Ok(ApiResponse<int>.Ok(count));
+        });
+
+        writeGroup.MapPost("/tracker/upload", async (
+            [FromBody] TrackerEventsUploadRequest req,
+            [FromServices] PcTrackerService svc,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var count = await svc.UploadTrackerEventsAsync(req, ct);
+                return Results.Ok(ApiResponse<int>.Ok(count));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        writeGroup.MapPost("/tracker/health", async (
+            [FromBody] TrackerHealthRequest req,
+            [FromServices] PcTrackerService svc,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                await svc.RecordTrackerHealthAsync(req, ct);
+                return Results.Ok(ApiResponse<string>.Ok("ok"));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        readGroup.MapGet("/tracker/health", async (
+            [FromQuery] string deviceId,
+            [FromServices] PcTrackerService svc,
+            CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(deviceId))
+                return Results.BadRequest(ApiResponse<string>.Error(400, "deviceId required"));
+            var health = await svc.GetTrackerHealthAsync(deviceId, ct);
+            if (health is null)
+                return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
+            return Results.Ok(ApiResponse<TrackerHealthEntity>.Ok(health));
         });
 
         readGroup.MapGet("/summary", async (
