@@ -198,7 +198,7 @@ public class CalendarService
         {
             ManualDescriptionValidator.EnsureSafe(request.Description);
             if (string.IsNullOrWhiteSpace(request.Description))
-                request = request with { Description = null };
+                request = request with { Description = null, DescriptionFormat = null };
         }
 
         await ValidatePimFileReferencesAsync(request.AttachmentReferences, ct);
@@ -469,7 +469,7 @@ public class CalendarService
         {
             ManualDescriptionValidator.EnsureSafe(request.Description);
             if (string.IsNullOrWhiteSpace(request.Description))
-                request = request with { Description = null };
+                request = request with { Description = null, DescriptionFormat = null };
         }
 
         await ValidatePimFileReferencesAsync(request.AttachmentReferences, ct);

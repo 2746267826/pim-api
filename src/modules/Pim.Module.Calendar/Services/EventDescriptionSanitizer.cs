@@ -74,6 +74,9 @@ public static class EventDescriptionSanitizer
         text = text.Replace("\u00A0", " ", StringComparison.Ordinal);
         // Also treat zero-width spaces as empty
         text = text.Replace("\u200B", string.Empty, StringComparison.Ordinal)
+                   .Replace("\u200C", string.Empty, StringComparison.Ordinal)
+                   .Replace("\u200D", string.Empty, StringComparison.Ordinal)
+                   .Replace("\u2060", string.Empty, StringComparison.Ordinal)
                    .Replace("\uFEFF", string.Empty, StringComparison.Ordinal);
         return string.IsNullOrWhiteSpace(text);
     }
