@@ -1,19 +1,19 @@
 """
-PIM MCP v2 - Read-only server for AI Agent
-Exposes 101 read-only tools covering Calendar / PcTracker / Mobile / QuickNotes / Files / Core/Infra.
-Writes 0 - no create/update/delete/sync/import/batch-execute.
+PIM MCP v3 - Read + Write server for AI Agent
+Exposes 151 tools: 101 read-only (Calendar / PcTracker / Mobile / QuickNotes / Files / Core/Infra)
+plus 50 write tools (Calendar 30 + QuickNotes 8 + Files 6 + PcTracker 4 + Mobile 2).
 
-Auth: Bearer token pass-through (MCP context -> Pim.Api)
-- Client obtains JWT via POST /api/v1/auth/login and calls MCP with
-  Authorization: Bearer <token> (HTTP) or PIM_ACCESS_TOKEN env (stdio).
-- stdio: supports file-backed refresh for long-lived process (issue #174):
-  PIM_TOKEN_FILE (or .token next to script) is re-read on each call via
-  mtime+size cache; token selection prefers non-expired JWT (exp+60s leeway,
-  non-JWT is treated as not expired and file mtime decides freshness).
-  If PIM_REFRESH_TOKEN is set, 401 is serialized via asyncio lock, auto-retries
-  via POST /api/v1/auth/refresh (atomic 0o600 write) and persists to file/env.
-- HTTP: Authorization header per-request, no cache.
-- Audits real userId on API side.
+Transports:
+- stdio (default, v2-compatible): Bearer pass-through. Client obtains JWT via
+  POST /api/v1/auth/login and calls with PIM_ACCESS_TOKEN env or a token file
+  (PIM_TOKEN_FILE / .token next to script) with mtime+size hot reload and optional
+  auto-refresh via PIM_REFRESH_TOKEN (issue #174). Audits real userId.
+- HTTP (Streamable HTTP, Phase 3): PIM_MCP_TRANSPORT=http. Every request carries
+  `Authorization: Bearer <pim_mcp_* token>`. Each tool call is authorized via
+  POST /api/v1/mcp/verify: token + tool-level permission check + connection
+  activity/audit tracking; on success a short-lived user JWT is issued and used
+  for the actual REST call. Missing/invalid/revoked token -> 401, denied write
+  permission -> 403 "permission denied: <tool>".
 
 Conventions:
 - time: start/end ISO8601 UTC, timezone IANA default Asia/Shanghai, max span 366 days
@@ -164,7 +164,7 @@ def _summarize_params(args: Dict[str, Any]) -> Optional[str]:
 
 
 async def _resolve_http_identity(tool: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Authorize a tool call in HTTP mode. Returns an error dict to short-circuit, or None if allowed."""
+    """Authorize a tool call in HTTP mode. Returns the identity dict, or an error dict to short-circuit."""
     raw = _get_raw_request_token()
     if not raw:
         return {
@@ -173,12 +173,9 @@ async def _resolve_http_identity(tool: str, args: Dict[str, Any]) -> Optional[Di
             "code": 401,
         }
     data = await _call_verify(raw, tool, _summarize_params(args))
-    if data is None or "error" in data:
-        if data is None:
-            return {"error": "verify failed: no response", "code": 500}
-        return data
-    _current_identity.set(data)
-    return None
+    if data is None:
+        return {"error": "verify failed: no response", "code": 500}
+    return data
 
 
 def _wrap_tools_for_http() -> None:
@@ -190,10 +187,14 @@ def _wrap_tools_for_http() -> None:
         orig = tool.fn
 
         async def wrapped(_name: str = name, _orig: Any = orig, **kwargs: Any) -> Any:
-            err = await _resolve_http_identity(_name, kwargs)
-            if err is not None:
-                return err
-            return await _orig(**kwargs)
+            data = await _resolve_http_identity(_name, kwargs)
+            if "error" in data:
+                return data
+            reset = _current_identity.set(data)
+            try:
+                return await _orig(**kwargs)
+            finally:
+                _current_identity.reset(reset)
 
         tool.fn = wrapped
         tool._pim_wrapped = True  # noqa: SLF001
@@ -624,6 +625,10 @@ def _get_token() -> Optional[str]:
         at = identity.get("accessToken")
         if isinstance(at, str) and at:
             return at
+    # HTTP mode must never fall back to env/file tokens: those are user JWTs that bypass
+    # the per-client permission model. Missing identity -> caller gets a 401.
+    if _http_mode():
+        return None
 
     # Env fallback for stdio transport (with expiry-aware file reload)
     # 1) Collect env token if present
@@ -2884,12 +2889,12 @@ async def create_reminder(
     for f in ("relatedObjectType", "relatedObjectId", "title", "scheduledAt"):
         if not locals().get(f):
             return {"error": f"{f} is required", "code": 400}
-    body = _clean_params(
+    payload = _clean_params(
         relatedObjectType=relatedObjectType, relatedObjectId=relatedObjectId,
         title=title, scheduledAt=scheduledAt, body=body, triggerReason=triggerReason,
         riskLevel=riskLevel, channels=channels,
         doNotDisturbStart=doNotDisturbStart, doNotDisturbEnd=doNotDisturbEnd)
-    return await _call_api("POST", "/api/v1/calendar/reminders", json_body=body)
+    return await _call_api("POST", "/api/v1/calendar/reminders", json_body=payload)
 
 
 @mcp.tool()
@@ -3012,11 +3017,13 @@ async def restore_calendar(calendarId: str) -> Any:
 
 @mcp.tool()
 async def create_quick_note(
-    contentMarkdown: str = "",
+    contentMarkdown: str,
     source: Optional[str] = None,
     attachmentIds: Optional[List[str]] = None,
 ) -> Any:
     """Create a quick note. Requires write permission create_quick_note."""
+    if not contentMarkdown or not contentMarkdown.strip():
+        return {"error": "contentMarkdown is required", "code": 400}
     body = _clean_params(contentMarkdown=contentMarkdown, source=source, attachmentIds=attachmentIds)
     return await _call_api("POST", "/api/v1/quick-notes", json_body=body)
 
@@ -3166,9 +3173,11 @@ async def create_category(
     priority: int,
 ) -> Any:
     """Create a PC activity category (maps an app pattern to a category). Requires write permission create_category."""
-    for f in ("appPattern", "categoryName", "color", "priority"):
+    for f in ("appPattern", "categoryName", "color"):
         if not locals().get(f):
             return {"error": f"{f} is required", "code": 400}
+    if priority is None:
+        return {"error": "priority is required", "code": 400}
     body = _clean_params(appPattern=appPattern, categoryName=categoryName, color=color, priority=priority)
     return await _call_api("POST", "/api/v1/pc/categories", json_body=body)
 
@@ -3242,6 +3251,33 @@ _register_write_tool_names(
 
 
 # ---------- entrypoint ----------
+class _RequireBearer:
+    """Starlette middleware: in HTTP mode reject any /mcp request without an Authorization: Bearer header."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http":
+            headers = {
+                k.decode("latin-1").lower(): v.decode("latin-1")
+                for k, v in scope.get("headers", [])
+            }
+            if not headers.get("authorization", "").strip().lower().startswith("bearer "):
+                from starlette.responses import PlainTextResponse
+
+                response = PlainTextResponse("missing bearer token", status_code=401)
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+def _build_http_app() -> Any:
+    """Starlette app for HTTP mode with a bearer-required guard in front of FastMCP."""
+    app = mcp.streamable_http_app()
+    return _RequireBearer(app)
+
+
 def _run_check() -> None:
     """Self-check: verify tool inventory (101 read + 50 write) without starting a server."""
     tools = _list_tools_meta()
@@ -3263,8 +3299,10 @@ def main() -> None:
         _run_check()
         return
     if _http_mode():
+        import uvicorn
+
         _wrap_tools_for_http()
-        mcp.run(transport="streamable-http")
+        uvicorn.run(_build_http_app(), host=_MCP_HOST, port=_MCP_PORT, log_level="info")
     else:
         mcp.run(transport="stdio")
 

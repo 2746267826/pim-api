@@ -90,7 +90,7 @@ async def main():
 
     assert s._MCP_TRANSPORT == "http", s._MCP_TRANSPORT
     s._wrap_tools_for_http()
-    starlette_app = s.mcp.streamable_http_app()
+    starlette_app = s._build_http_app()
     server = uvicorn.Server(uvicorn.Config(starlette_app, host="127.0.0.1", port=MCP_PORT, log_level="error"))
     threading.Thread(target=server.run, daemon=True).start()
 

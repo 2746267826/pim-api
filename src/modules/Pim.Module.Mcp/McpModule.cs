@@ -32,8 +32,13 @@ public class McpModule : IModule
 
         mgmt.MapGet("/clients", async (
             [FromServices] McpClientService service,
+            [FromServices] ICurrentUserService currentUser,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<List<McpClientDto>>.Ok(await service.ListAsync(ct))));
+        {
+            if (currentUser.UserId is not { } userId)
+                return Results.Unauthorized();
+            return Results.Ok(ApiResponse<List<McpClientDto>>.Ok(await service.ListAsync(userId, ct)));
+        });
 
         mgmt.MapPost("/clients", async (
             [FromBody] McpCreateClientRequest request,

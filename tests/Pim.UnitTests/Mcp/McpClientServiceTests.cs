@@ -171,6 +171,46 @@ public sealed class McpClientServiceTests : IDisposable
         Assert.Empty(_db.Set<Pim.Module.Mcp.Entities.McpClientEntity>());
     }
 
+    [Fact]
+    public async Task ListAsync_OnlyReturnsOwnersClients()
+    {
+        await _service.CreateAsync("Mine1", _owner);
+        await _service.CreateAsync("Mine2", _owner);
+        var other = Guid.NewGuid();
+        _db.Users.Add(new UserEntity
+        {
+            Id = other,
+            Username = "bob",
+            Email = "bob@example.com",
+            PasswordHash = "x",
+            Role = "user",
+        });
+        await _db.SaveChangesAsync();
+        await _service.CreateAsync("Theirs", other);
+
+        var mine = await _service.ListAsync(_owner);
+        var theirs = await _service.ListAsync(other);
+        Assert.Equal(2, mine.Count);
+        Assert.All(mine, c => Assert.Equal("alice", c.CreatedByUsername));
+        Assert.Equal(1, theirs.Count);
+        Assert.Equal("Theirs", theirs[0].Name);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_PartialPermissions_PreservesOtherSection()
+    {
+        var created = await _service.CreateAsync("Partial", _owner);
+        // Send only the write section; read must be preserved as-is (all on).
+        var writeOnly = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, bool>>
+        {
+            ["write"] = new() { ["create_task"] = true },
+        };
+        var dto = await _service.UpdateAsync(created.Client.Id, null, writeOnly, _owner);
+        Assert.Equal(101, dto.Permissions["read"].Count);
+        Assert.True(dto.Permissions["read"]["get_tasks"]);
+        Assert.True(dto.Permissions["write"]["create_task"]);
+    }
+
     private sealed class StubHostEnvironment : IHostEnvironment
     {
         public string EnvironmentName { get; set; } = Environments.Development;

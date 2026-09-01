@@ -79,6 +79,66 @@ def test_required_field_validation_returns_400():
     assert result.get("code") == 400
 
 
+def test_create_category_accepts_priority_zero(monkeypatch):
+    import asyncio
+
+    async def fake_call_api(method, path, params=None, json_body=None, redact_urls=False, _retry_on_401=True):
+        assert json_body["priority"] == 0
+        return {"code": 0, "data": {}}
+
+    monkeypatch.setattr(s, "_call_api", fake_call_api)
+    result = asyncio.run(s.create_category(appPattern="*", categoryName="Dev", color="#fff", priority=0))
+    assert result.get("code") == 0
+
+
+def test_create_quick_note_requires_content():
+    import asyncio
+
+    result = asyncio.run(s.create_quick_note(contentMarkdown=""))
+    assert result.get("code") == 400
+
+
+def test_create_reminder_passes_body(monkeypatch):
+    import asyncio
+
+    captured = {}
+
+    async def fake_call_api(method, path, params=None, json_body=None, redact_urls=False, _retry_on_401=True):
+        captured["json_body"] = json_body
+        return {"code": 0, "data": {}}
+
+    monkeypatch.setattr(s, "_call_api", fake_call_api)
+    asyncio.run(s.create_reminder(
+        relatedObjectType="task", relatedObjectId="1", title="t",
+        scheduledAt="2026-09-01T00:00:00Z", body="note text"))
+    assert captured["json_body"]["body"] == "note text"
+
+
+def test_get_token_http_mode_never_falls_back_to_env(monkeypatch):
+    monkeypatch.setattr(s, "_MCP_TRANSPORT", "http")
+    monkeypatch.setenv("PIM_ACCESS_TOKEN", "env-jwt")
+    s._current_identity.set(None)
+    assert s._get_token() is None
+
+
+def test_require_bearer_rejects_missing_header():
+    import asyncio
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    class Inner:
+        async def __call__(self, scope, receive, send):
+            raise AssertionError("inner app must not run")
+
+    mw = s._RequireBearer(Inner())
+    asyncio.run(mw({"type": "http", "headers": []}, None, send))
+    starts = [m for m in sent if m["type"] == "http.response.start"]
+    assert starts and starts[0]["status"] == 401
+
+
 def test_wrapped_tool_returns_401_when_no_request_token():
     import asyncio
 

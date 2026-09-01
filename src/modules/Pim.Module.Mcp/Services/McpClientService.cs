@@ -53,19 +53,21 @@ public sealed class McpClientService
         _db.Set<McpClientEntity>().Add(entity);
         await _db.SaveChangesAsync(ct);
 
-        return new McpClientCreateResult(await ToDtoAsync(entity, ct), token);
+        return new McpClientCreateResult(ToDto(entity, null), token);
     }
 
-    public async Task<List<McpClientDto>> ListAsync(CancellationToken ct = default)
+    public async Task<List<McpClientDto>> ListAsync(Guid currentUser, CancellationToken ct = default)
     {
         var entities = await _db.Set<McpClientEntity>()
             .AsNoTracking()
+            .Where(e => e.CreatedBy == currentUser)
             .OrderByDescending(e => e.CreatedAt)
             .ToListAsync(ct);
-        var result = new List<McpClientDto>(entities.Count);
-        foreach (var e in entities)
-            result.Add(await ToDtoAsync(e, ct));
-        return result;
+        var username = await _db.Users.AsNoTracking()
+            .Where(u => u.Id == currentUser)
+            .Select(u => u.Username)
+            .FirstOrDefaultAsync(ct);
+        return entities.Select(e => ToDto(e, username)).ToList();
     }
 
     public async Task<McpClientDto> UpdateAsync(
@@ -93,10 +95,13 @@ public sealed class McpClientService
         }
 
         if (permissions is not null)
-            entity.Permissions = SanitizePermissions(permissions);
+        {
+            foreach (var section in SanitizePermissions(permissions))
+                entity.Permissions[section.Key] = section.Value;
+        }
 
         await _db.SaveChangesAsync(ct);
-        return await ToDtoAsync(entity, ct);
+        return ToDto(entity, null);
     }
 
     public async Task<McpClientDto> RevokeAsync(Guid id, Guid currentUser, CancellationToken ct = default)
@@ -111,7 +116,7 @@ public sealed class McpClientService
             entity.RevokedAt = _timeProvider.GetUtcNow();
             await _db.SaveChangesAsync(ct);
         }
-        return await ToDtoAsync(entity, ct);
+        return ToDto(entity, null);
     }
 
     public async Task DeleteAsync(Guid id, Guid currentUser, CancellationToken ct = default)
@@ -155,12 +160,29 @@ public sealed class McpClientService
             return McpVerifyOutcome.Unauthorized();
         var accessToken = _jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
 
-        client.LastSeenAt = _timeProvider.GetUtcNow();
-        client.LastTool = tool;
-        client.CallCount++;
-        if (isWrite)
-            client.WriteCallCount++;
-        await _db.SaveChangesAsync(ct);
+        // Atomically bump connection stats. InMemory provider (tests) does not support
+        // ExecuteUpdateAsync, so fall back to a tracked read-modify-write there.
+        var now = _timeProvider.GetUtcNow();
+        if (_db.Database.ProviderName == "Microsoft.EntityFrameworkCore.InMemory")
+        {
+            client.LastSeenAt = now;
+            client.LastTool = tool;
+            client.CallCount++;
+            if (isWrite)
+                client.WriteCallCount++;
+            await _db.SaveChangesAsync(ct);
+        }
+        else
+        {
+            await _db.Set<McpClientEntity>()
+                .Where(e => e.Id == client.Id)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(e => e.LastSeenAt, now)
+                    .SetProperty(e => e.LastTool, tool)
+                    .SetProperty(e => e.CallCount, e => e.CallCount + 1)
+                    .SetProperty(e => e.WriteCallCount, e => e.WriteCallCount + (isWrite ? 1 : 0)),
+                    ct);
+        }
 
         if (isWrite && !string.IsNullOrEmpty(tool))
         {
@@ -201,39 +223,31 @@ public sealed class McpClientService
         McpToolCatalog.ReadTools.ToList(),
         McpToolCatalog.WriteTools.ToList());
 
-    /// <summary>Keeps only catalog-known tools so arbitrary keys cannot be stored.</summary>
+    /// <summary>Keeps only catalog-known tools. Sections absent from the input are left untouched.</summary>
     private static Dictionary<string, Dictionary<string, bool>> SanitizePermissions(
         Dictionary<string, Dictionary<string, bool>> permissions)
     {
         var result = new Dictionary<string, Dictionary<string, bool>>();
-        var read = CleanSection(permissions, "read", McpToolCatalog.ReadTools.Select(t => t.Name));
-        var write = CleanSection(permissions, "write", McpToolCatalog.WriteTools.Select(t => t.Name));
-        result["read"] = read;
-        result["write"] = write;
+        if (permissions.TryGetValue("read", out var read))
+            result["read"] = CleanSection(read, McpToolCatalog.ReadTools.Select(t => t.Name));
+        if (permissions.TryGetValue("write", out var write))
+            result["write"] = CleanSection(write, McpToolCatalog.WriteTools.Select(t => t.Name));
         return result;
     }
 
     private static Dictionary<string, bool> CleanSection(
-        Dictionary<string, Dictionary<string, bool>> permissions,
-        string section,
+        Dictionary<string, bool> source,
         IEnumerable<string> known)
     {
-        var source = permissions.TryGetValue(section, out var m) ? m : new Dictionary<string, bool>();
         var knownSet = known.ToHashSet(StringComparer.Ordinal);
         return source
             .Where(kv => knownSet.Contains(kv.Key))
             .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
     }
 
-    private async Task<McpClientDto> ToDtoAsync(McpClientEntity e, CancellationToken ct = default)
+    private static McpClientDto ToDto(McpClientEntity e, string? createdByUsername = null)
     {
-        var now = _timeProvider.GetUtcNow();
-        string? createdByUsername = null;
-        if (e.CreatedBy != Guid.Empty)
-        {
-            var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == e.CreatedBy, ct);
-            createdByUsername = user?.Username;
-        }
+        var now = DateTimeOffset.UtcNow;
         return new McpClientDto(
             e.Id,
             e.Name,
@@ -254,6 +268,12 @@ public sealed class McpClientService
 public sealed record McpVerifyOutcome(int HttpStatus, McpVerifyResult? Result, string? Error)
 {
     public static McpVerifyOutcome Unauthorized() => new(401, null, "invalid or revoked token");
-    public static McpVerifyOutcome Forbidden(string tool) => new(403, null, $"permission denied: {tool}");
+    public static McpVerifyOutcome Forbidden(string tool)
+    {
+        var name = tool.Replace("\n", "").Replace("\r", "");
+        if (name.Length > 120)
+            name = name[..120];
+        return new(403, null, $"permission denied: {name}");
+    }
     public static McpVerifyOutcome Ok(McpVerifyResult result) => new(0, result, null);
 }
