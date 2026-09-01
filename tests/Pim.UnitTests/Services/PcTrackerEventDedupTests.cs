@@ -199,4 +199,22 @@ public class PcTrackerEventDedupTests
 
         Assert.Contains("COALESCE(browser,'')", formatted);
     }
+
+    [Fact]
+    public void Model_DoesNotDeclarePlainUniqueDedupIndex()
+    {
+        // 去重唯一索引由 SchemaInitializer 以 COALESCE 表达式索引维护。若在 EF 模型中
+        // 声明普通唯一索引，PostgreSQL 会因 NULL 互不相等导致老数据去重失效，此处断言
+        // 防止该缺陷被重新引入。
+        PimDbContext.RegisterModuleAssembly(typeof(TrackerEventEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        using var db = new PimDbContext(options);
+
+        var entity = db.Model.FindEntityType(typeof(TrackerEventEntity));
+        Assert.NotNull(entity);
+        var dedup = entity!.GetIndexes().FirstOrDefault(i => i.GetDatabaseName() == "ux_tracker_events_dedup");
+        Assert.Null(dedup);
+    }
 }

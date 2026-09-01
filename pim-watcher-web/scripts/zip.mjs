@@ -31,7 +31,8 @@ if (!archiver) {
     execSync(`cd dist && rm -f pim-browser-extension.zip && zip -r pim-browser-extension.zip . > /dev/null`, { stdio: 'inherit' })
     console.log(`Created ${OUT}`)
   } catch (e) {
-    console.log('zip fallback failed, skipping archive creation')
+    console.error(`Failed to create ${OUT}: ${e.message}`)
+    process.exit(1)
   }
   process.exit(0)
 }

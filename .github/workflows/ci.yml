@@ -109,6 +109,9 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'installer/**'
               - '**/*.iss'
+              # build-windows 会内嵌扩展到安装包，扩展变更必须触发 windows 重建
+              - 'pim-watcher-web/**'
+              - '.github/workflows/build-browser-extension.yml'
             android:
               - 'src/client-android/**'
               - 'branding/**'

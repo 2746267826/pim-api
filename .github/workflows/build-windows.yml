@@ -167,8 +167,9 @@ jobs:
           Write-Host "Browser extension packaged to $dest"
           Get-ChildItem $dest | Format-List
           Pop-Location
-          if (-not (Test-Path "publish/browser-extension/manifest.json")) { Write-Error "browser extension manifest missing in publish"; exit 1 }
-          if (-not (Test-Path "publish/browser-extension/background/main.js")) { Write-Error "browser extension background missing"; exit 1 }
+          $checkDest = "$env:GITHUB_WORKSPACE/src/client-windows/publish/browser-extension"
+          if (-not (Test-Path "$checkDest/manifest.json")) { Write-Error "browser extension manifest missing in publish"; exit 1 }
+          if (-not (Test-Path "$checkDest/background/main.js")) { Write-Error "browser extension background missing"; exit 1 }
 
       - name: Write version file for reference
         shell: bash

@@ -214,8 +214,11 @@ public partial class PcTrackerService
         return await _classificationSnapshots.EnsureClassificationsAsync(records, rules, auditId: null, ct);
     }
 
-    private static string MakeTrackerKey(DateTimeOffset ts, double duration, string eventType, string? appName, string? browser = null, string? instanceId = null)
-        => $"{ts.ToUnixTimeMilliseconds()}|{duration.ToString("G17", System.Globalization.CultureInfo.InvariantCulture)}|{eventType}|{appName}|{browser}|{instanceId}";
+    // Deliberately coalesce browser/instanceId nulls to "" to mirror the DB unique
+// index semantics: ux_tracker_events_dedup is a COALESCE(browser,'')/COALESCE(instance_id,'')
+// expression index so legacy rows (NULL browser/instance_id) keep dedup.
+private static string MakeTrackerKey(DateTimeOffset ts, double duration, string eventType, string? appName, string? browser = null, string? instanceId = null)
+        => $"{ts.ToUnixTimeMilliseconds()}|{duration.ToString("G17", System.Globalization.CultureInfo.InvariantCulture)}|{eventType}|{appName}|{browser ?? ""}|{instanceId ?? ""}";
 
     private static string? NormalizeBrowser(string? browser, string paramName)
     {
