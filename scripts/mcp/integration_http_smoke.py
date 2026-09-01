@@ -13,7 +13,10 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import httpx
+try:
+    import httpx
+except ImportError:  # mcp>=2 环境不带 httpx；httpx2 为兼容后继
+    import httpx2 as httpx  # type: ignore
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -95,7 +98,14 @@ async def main():
     threading.Thread(target=server.run, daemon=True).start()
 
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    auth_headers = {"Authorization": f"Bearer {MOCK['token']}"}
+    try:
+        from mcp.client.streamable_http import streamablehttp_client  # mcp 1.x
+        client_kwargs = {"headers": auth_headers}
+    except ImportError:
+        from mcp.client.streamable_http import streamable_http_client as streamablehttp_client  # mcp 2.x
+        from mcp.client.streamable_http import create_mcp_http_client
+        client_kwargs = {"http_client": create_mcp_http_client(headers=auth_headers)}
 
     url = f"http://127.0.0.1:{MCP_PORT}/mcp"
 
@@ -110,7 +120,11 @@ async def main():
         raise RuntimeError("MCP server did not come up")
 
     async def run_client():
-        async with streamablehttp_client(url, headers={"Authorization": f"Bearer {MOCK['token']}"}) as (read, write, _):
+        async with streamablehttp_client(url, **client_kwargs) as streams:
+            if len(streams) == 2:  # mcp 2.x: (read_stream, write_stream)
+                read, write = streams
+            else:  # mcp 1.x: (read, write, get_session_id)
+                read, write, _ = streams
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools = await session.list_tools()
