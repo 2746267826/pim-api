@@ -85,6 +85,56 @@ public class JwtService : IDisposable
         return result;
     }
 
+    /// <summary>
+    /// Generates an access token with additional claims. Used to scope MCP-issued tokens to a
+    /// specific verified tool so they cannot be reused against unrelated REST endpoints.
+    /// </summary>
+    public string GenerateScopedAccessToken(
+        Guid userId,
+        string username,
+        string role,
+        IReadOnlyDictionary<string, string> extraClaims,
+        TimeSpan lifetime)
+    {
+        if (userId == Guid.Empty)
+            throw new ArgumentException("User ID cannot be empty.", nameof(userId));
+        if (string.IsNullOrWhiteSpace(username))
+            throw new ArgumentException("Username cannot be null or whitespace.", nameof(username));
+        if (string.IsNullOrWhiteSpace(role))
+            throw new ArgumentException("Role cannot be null or whitespace.", nameof(role));
+        if (extraClaims is null || extraClaims.Count == 0)
+            throw new ArgumentException("extraClaims cannot be empty.", nameof(extraClaims));
+
+        SigningCredentials credentials;
+        lock (_rsaLock)
+        {
+            credentials = new SigningCredentials(
+                new RsaSecurityKey(_rsa),
+                SecurityAlgorithms.RsaSha256
+            );
+        }
+
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, userId.ToString()),
+            new(ClaimTypes.Name, username),
+            new(ClaimTypes.Role, role),
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+        };
+        foreach (var (key, value) in extraClaims)
+            claims.Add(new Claim(key, value));
+
+        var token = new JwtSecurityToken(
+            issuer: "pim",
+            audience: "pim-client",
+            claims: claims,
+            expires: DateTimeOffset.UtcNow.Add(lifetime).UtcDateTime,
+            signingCredentials: credentials
+        );
+
+        return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
     public string GenerateRefreshToken()
     {
         var bytes = new byte[64];
