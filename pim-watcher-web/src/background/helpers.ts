@@ -60,12 +60,17 @@ export const getBrowserType = (): string => {
 
 // Memoized in-flight promise so concurrent first-time callers (initial heartbeat
 // + alarm) share the same generated id instead of racing on storage read/write.
+// On rejection the memo is cleared so the next call retries instead of being
+// permanently poisoned for the service worker lifetime.
 let instanceIdPromise: Promise<string> | null = null
 
 // Returns a stable, per-install unique id. Stored in storage.local so it
 // survives browser/extension restarts and differs across profiles/browsers.
 export function getInstanceId(): Promise<string> {
-  instanceIdPromise ??= resolveInstanceId()
+  instanceIdPromise ??= resolveInstanceId().catch((err) => {
+    instanceIdPromise = null
+    throw err
+  })
   return instanceIdPromise
 }
 

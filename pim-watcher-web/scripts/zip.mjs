@@ -39,11 +39,18 @@ if (!archiver) {
 
 const output = createWriteStream(join(process.cwd(), OUT))
 const archive = archiver('zip', { zlib: { level: 9 } })
-archive.pipe(output)
-const files = await collect('dist', 'dist')
-for (const f of files) {
-  if (f === 'pim-browser-extension.zip') continue
-  archive.file(join('dist', f), { name: f })
-}
-await archive.finalize()
+await new Promise((resolve, reject) => {
+  output.on('close', resolve)
+  output.on('error', reject)
+  archive.on('error', reject)
+  archive.pipe(output)
+  const filesPromise = collect('dist', 'dist')
+  filesPromise.then((files) => {
+    for (const f of files) {
+      if (f === 'pim-browser-extension.zip') continue
+      archive.file(join('dist', f), { name: f })
+    }
+    return archive.finalize()
+  })
+})
 console.log(`Created ${OUT}`)

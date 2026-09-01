@@ -550,6 +550,8 @@ CREATE INDEX IF NOT EXISTS idx_tracker_events_instance ON pc_tracker_events(inst
 -- NULL-dedup semantics: PostgreSQL treats NULL as distinct, so a plain unique
 -- index on nullable columns would let legacy rows (browser/instance_id NULL)
 -- slip through dedup. COALESCE(browser,'')/COALESCE(instance_id,'') restores it.
+-- app_name 保持裸列（与原索引一致）：超出本工单范围，且 COALESCE(app_name) 会因
+-- 存量 app_name IS NULL 的重复行导致建索引失败，破坏启动。
 DROP INDEX IF EXISTS ux_tracker_events_dedup;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_tracker_events_dedup ON pc_tracker_events(device_id, timestamp, duration, event_type, app_name, COALESCE(browser,''), COALESCE(instance_id,''));
 
