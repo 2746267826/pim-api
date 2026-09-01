@@ -96,6 +96,7 @@ async def main():
         if server is not None:
             server.should_exit = True
         mock.shutdown()
+        mock.server_close()
 
 
 async def _run_http_smoke():
