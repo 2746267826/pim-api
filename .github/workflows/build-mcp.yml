@@ -37,8 +37,9 @@ jobs:
           if [ "${{ matrix.sdk }}" = "1.x" ]; then
             python -m pip install --quiet "mcp==1.*" uvicorn pytest httpx
           else
-            # 2.x：刻意不装 httpx，让脚本的 httpx2 回退分支（issue #179 修复点）在 CI 真实执行
-            python -m pip install --quiet "mcp>=2,<3" uvicorn pytest
+            # 2.x：刻意不装 httpx，让脚本的 httpx2 回退分支（issue #179 修复点）在 CI 真实执行；
+            # httpx2 显式安装，避免依赖 mcp 的传递依赖变动导致 CI 不稳定
+            python -m pip install --quiet "mcp>=2,<3" httpx2 uvicorn pytest
           fi
 
       - name: Self-check (--check)

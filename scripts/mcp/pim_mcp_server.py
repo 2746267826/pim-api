@@ -47,12 +47,14 @@ except ImportError:  # mcp>=2 不再安装 httpx；httpx2 为兼容后继（drop
             "(or `pip install httpx2` when using mcp>=2)"
         )
 
+# 先探测 v2 的 mcpserver：v2 下 fastmcp 模块已删除（import 即 ModuleNotFoundError）；
+# 若未来 v2 提供 fastmcp 兼容 shim，此顺序仍能正确判定 v2（v1 不存在 mcpserver 模块）。
 try:
+    from mcp.server.mcpserver import MCPServer as FastMCP  # type: ignore  # mcp 2.x
+    _MCP_SDK_V2 = True
+except ImportError:
     from mcp.server.fastmcp import FastMCP
     _MCP_SDK_V2 = False
-except ImportError:  # mcp 2.x: FastMCP 更名为 MCPServer，构造/HTTP 启动 API 有变
-    from mcp.server.mcpserver import MCPServer as FastMCP  # type: ignore
-    _MCP_SDK_V2 = True
 
 PIM_API_URL = os.getenv("PIM_API_URL", "http://127.0.0.1:5858").rstrip("/")
 DEFAULT_TIMEZONE = "Asia/Shanghai"
@@ -219,6 +221,7 @@ def _wrap_tools_for_http() -> None:
             try:
                 return await _orig(**kwargs)
             finally:
+                # 同样用 Token 回退（勿用 set(None)），保持与其他 ContextVar 一致
                 _current_identity.reset(reset)
 
         tool.fn = wrapped
@@ -3321,7 +3324,8 @@ class _RequireBearer:
                     )
                     await response(scope, receive, send)
                     return
-            # 透传给工具调用（mcp>=2 无 mcp.get_context()，见 _get_raw_request_token）
+            # 透传给工具调用（mcp>=2 无 mcp.get_context()，见 _get_raw_request_token）。
+            # 必须用 set 返回的 Token 回退（勿用 set(None)），保证任务上下文不串扰。
             token = _http_request_headers.set(headers)
             try:
                 await self.app(scope, receive, send)

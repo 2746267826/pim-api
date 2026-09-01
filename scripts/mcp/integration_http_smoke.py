@@ -83,11 +83,22 @@ class MockPimHandler(BaseHTTPRequestHandler):
 
 async def main():
     mock = ThreadingHTTPServer(("127.0.0.1", MOCK_PORT), MockPimHandler)
-    mock_port = mock.server_address[1]
     threading.Thread(target=mock.serve_forever, daemon=True).start()
     MOCK["token"] = "pim_mcp_smoketoken"
     MOCK["deny_tool"] = "create_task"
+    server = None
+    try:
+        server = await _run_http_smoke()
+        await _run_stdio_smoke()
+        print("ALL SMOKE PASSED")
+    finally:
+        # 异常路径也回收端口/进程，避免 CI 资源残留
+        if server is not None:
+            server.should_exit = True
+        mock.shutdown()
 
+
+async def _run_http_smoke():
     import uvicorn
     import pim_mcp_server as s
 
@@ -142,15 +153,18 @@ async def main():
                 print("SMOKE PASSED")
 
     await asyncio.wait_for(run_client(), timeout=30)
-    server.should_exit = True
-    mock.shutdown()
+    return server
 
-    # stdio 模式端到端（issue #179：mcp>=2 下 stdio 也必须可用）
+
+async def _run_stdio_smoke():
+    # stdio 模式端到端（issue #179：mcp>=2 下 stdio 也必须可用）。
+    # 绝对路径启动子进程（不依赖 CWD）；环境只白名单必要变量，避免继承 HTTP 模式配置。
     from mcp import ClientSession as StdioSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
-    stdio_env = {**os.environ, "PIM_MCP_TRANSPORT": "stdio", "PIM_ACCESS_TOKEN": "dummy"}
-    params = StdioServerParameters(command=sys.executable, args=["scripts/mcp/pim_mcp_server.py"], env=stdio_env)
+    server_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pim_mcp_server.py")
+    stdio_env = {"PIM_MCP_TRANSPORT": "stdio", "PIM_API_URL": "http://127.0.0.1:5858", "PIM_ACCESS_TOKEN": "dummy"}
+    params = StdioServerParameters(command=sys.executable, args=[server_path], env=stdio_env)
 
     async def run_stdio():
         async with stdio_client(params) as (read, write):
