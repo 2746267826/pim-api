@@ -4,7 +4,8 @@
   "description": "Tracks active browser tab for PIM usage analytics",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node scripts/generate-manifest.mjs"
+    "build": "vite build && node scripts/generate-manifest.mjs",
+    "zip": "npm run build && node scripts/zip.mjs"
   },
   "dependencies": {
     "deep-equal": "^2.2.3",

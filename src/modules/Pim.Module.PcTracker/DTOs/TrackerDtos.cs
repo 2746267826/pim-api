@@ -22,7 +22,9 @@ public record TrackerEventDto(
     int PageVisitCount,
     double PageVisitDuration,
     object? RawJson,
-    string Date
+    string Date,
+    string? Browser = null,
+    string? InstanceId = null
 );
 
 public record TrackerEventsUploadRequest(
@@ -50,5 +52,7 @@ public record BrowserHeartbeatDto(
     bool Audible,
     bool Incognito,
     int TabCount,
-    string Timestamp
+    string Timestamp,
+    string? Browser = null,
+    string? InstanceId = null
 );

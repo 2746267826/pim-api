@@ -1,0 +1,94 @@
+name: Build Browser Extension
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      version_code:
+        required: true
+        type: string
+      artifact_slug:
+        required: true
+        type: string
+      assembly_version:
+        required: true
+        type: string
+      git_sha_short:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Display version (empty = resolve locally for debug)'
+        required: false
+        default: ''
+      version_code:
+        required: false
+        default: ''
+      artifact_slug:
+        required: false
+        default: ''
+      assembly_version:
+        required: false
+        default: ''
+      git_sha_short:
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version if needed
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "version_code=${{ inputs.version_code }}" >> "$GITHUB_OUTPUT"
+            echo "artifact_slug=${{ inputs.artifact_slug }}" >> "$GITHUB_OUTPUT"
+            echo "assembly_version=${{ inputs.assembly_version }}" >> "$GITHUB_OUTPUT"
+            echo "git_sha_short=${{ inputs.git_sha_short }}" >> "$GITHUB_OUTPUT"
+          else
+            bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: pim-watcher-web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: pim-watcher-web
+        run: npm ci
+
+      - name: Build extension
+        working-directory: pim-watcher-web
+        run: npm run build
+
+      - name: Verify build output
+        run: |
+          ls -R pim-watcher-web/dist
+          test -f pim-watcher-web/dist/manifest.json || { echo "manifest.json missing"; exit 1; }
+          test -f pim-watcher-web/dist/background/main.js || { echo "dist/background/main.js missing"; exit 1; }
+
+      - name: Package extension
+        working-directory: pim-watcher-web
+        run: |
+          mkdir -p build/artifacts
+          cd dist && zip -r "../build/artifacts/pim-browser-extension-v${{ steps.ver.outputs.artifact_slug }}.zip" . > /dev/null
+          ls -lh ../build/artifacts/*.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: pim-browser-extension-v${{ steps.ver.outputs.artifact_slug }}
+          path: pim-watcher-web/build/artifacts/*.zip
+          if-no-files-found: error

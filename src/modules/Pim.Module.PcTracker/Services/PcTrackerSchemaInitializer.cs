@@ -531,16 +531,29 @@ CREATE TABLE IF NOT EXISTS pc_tracker_events (
     tab_count INTEGER,
     page_visit_count INTEGER DEFAULT 0,
     page_visit_duration DOUBLE PRECISION DEFAULT 0,
+    browser VARCHAR(16),
+    instance_id VARCHAR(128),
     raw_json JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     date DATE NOT NULL
 );
+ALTER TABLE pc_tracker_events ADD COLUMN IF NOT EXISTS browser VARCHAR(16);
+ALTER TABLE pc_tracker_events ADD COLUMN IF NOT EXISTS instance_id VARCHAR(128);
 CREATE INDEX IF NOT EXISTS idx_tracker_events_device_date ON pc_tracker_events(device_id, date);
 CREATE INDEX IF NOT EXISTS idx_tracker_events_timestamp ON pc_tracker_events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_tracker_events_app ON pc_tracker_events(app_name, date);
 CREATE INDEX IF NOT EXISTS idx_tracker_events_event_type ON pc_tracker_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_tracker_events_is_idle ON pc_tracker_events(is_idle);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_tracker_events_dedup ON pc_tracker_events(device_id, timestamp, duration, event_type, app_name);
+CREATE INDEX IF NOT EXISTS idx_tracker_events_browser ON pc_tracker_events(browser);
+CREATE INDEX IF NOT EXISTS idx_tracker_events_instance ON pc_tracker_events(instance_id);
+-- Rebuild the dedup index including browser/instance_id. COALESCE keeps the
+-- NULL-dedup semantics: PostgreSQL treats NULL as distinct, so a plain unique
+-- index on nullable columns would let legacy rows (browser/instance_id NULL)
+-- slip through dedup. COALESCE(browser,'')/COALESCE(instance_id,'') restores it.
+-- app_name 保持裸列（与原索引一致）：超出本工单范围，且 COALESCE(app_name) 会因
+-- 存量 app_name IS NULL 的重复行导致建索引失败，破坏启动。
+DROP INDEX IF EXISTS ux_tracker_events_dedup;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tracker_events_dedup ON pc_tracker_events(device_id, timestamp, duration, event_type, app_name, COALESCE(browser,''), COALESCE(instance_id,''));
 
 -- Native Tracker: pc_tracker_health
 CREATE TABLE IF NOT EXISTS pc_tracker_health (

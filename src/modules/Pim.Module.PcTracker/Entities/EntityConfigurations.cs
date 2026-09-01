@@ -292,9 +292,14 @@ public class TrackerEventEntityConfiguration : IEntityTypeConfiguration<TrackerE
             .HasDatabaseName("idx_tracker_events_event_type");
         builder.HasIndex(e => e.IsIdle)
             .HasDatabaseName("idx_tracker_events_is_idle");
-        builder.HasIndex(e => new { e.DeviceId, e.Timestamp, e.Duration, e.EventType, e.AppName })
-            .IsUnique()
-            .HasDatabaseName("ux_tracker_events_dedup");
+        builder.HasIndex(e => e.Browser)
+            .HasDatabaseName("idx_tracker_events_browser");
+        builder.HasIndex(e => e.InstanceId)
+            .HasDatabaseName("idx_tracker_events_instance");
+        // 去重唯一索引 ux_tracker_events_dedup 由 PcTrackerSchemaInitializer 以
+        // COALESCE(browser,'')/COALESCE(instance_id,'') 表达式索引维护。不能在此声明
+        // 普通唯一索引：PostgreSQL 中 NULL 互不相等，含可空列的唯一索引会让老数据
+        // (browser/instance_id 为 NULL) 的去重约束失效。
     }
 }
 

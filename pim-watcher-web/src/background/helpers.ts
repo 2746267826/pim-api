@@ -1,5 +1,5 @@
 import browser from 'webextension-polyfill'
-import { getBrowserName, setBrowserName } from '../storage'
+import { getBrowserName, getStoredInstanceId, setBrowserName, setStoredInstanceId } from '../storage'
 
 export const getTab = (id: number) => browser.tabs.get(id)
 
@@ -45,6 +45,46 @@ export const getBrowser = async (): Promise<string> => {
 
   await setBrowserName(browserName)
   return browserName
+}
+
+export const getBrowserType = (): string => {
+  const ua = navigator.userAgent
+  // Edge UA includes "Chrome"/"Safari" tokens, so it must be checked first.
+  if (ua.includes('Edg')) return 'edge'
+  if (ua.includes('Firefox')) return 'firefox'
+  // Chrome UA also includes "Safari", so Chrome must win over Safari.
+  if (ua.includes('Chrome')) return 'chrome'
+  if (ua.includes('Safari')) return 'safari'
+  return 'other'
+}
+
+// Memoized in-flight promise so concurrent first-time callers (initial heartbeat
+// + alarm) share the same generated id instead of racing on storage read/write.
+// On rejection the memo is cleared so the next call retries instead of being
+// permanently poisoned for the service worker lifetime.
+let instanceIdPromise: Promise<string> | null = null
+
+// Returns a stable, per-install unique id. Stored in storage.local so it
+// survives browser/extension restarts and differs across profiles/browsers.
+export function getInstanceId(): Promise<string> {
+  instanceIdPromise ??= resolveInstanceId().catch((err) => {
+    instanceIdPromise = null
+    throw err
+  })
+  return instanceIdPromise
+}
+
+async function resolveInstanceId(): Promise<string> {
+  const existing = await getStoredInstanceId()
+  if (existing) return existing
+
+  const id = `${browser.runtime.id}_${crypto.randomUUID()}`
+  try {
+    await setStoredInstanceId(id)
+  } catch (err) {
+    console.error('Failed to persist instance id:', err)
+  }
+  return id
 }
 
 export const detectBrowser = () => {

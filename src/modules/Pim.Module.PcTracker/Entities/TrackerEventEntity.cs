@@ -26,6 +26,8 @@ public class TrackerEventEntity
     [Column("tab_count")] public int? TabCount { get; set; }
     [Column("page_visit_count")] public int PageVisitCount { get; set; }
     [Column("page_visit_duration")] public double PageVisitDuration { get; set; }
+    [Column("browser")][MaxLength(16)] public string? Browser { get; set; }
+    [Column("instance_id")][MaxLength(128)] public string? InstanceId { get; set; }
     [Column("raw_json", TypeName = "jsonb")] public string RawJson { get; set; } = "{}";
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("date", TypeName = "date")] public DateTime Date { get; set; }

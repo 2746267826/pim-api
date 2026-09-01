@@ -1,7 +1,9 @@
 import { readFileSync, writeFileSync, copyFileSync, mkdirSync, existsSync } from 'fs'
 import { resolve, dirname } from 'path'
+import { fileURLToPath } from 'url'
 
-const root = resolve(dirname(new URL(import.meta.url).pathname), '..')
+// fileURLToPath (not URL.pathname) so the Windows drive letter is not mangled.
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
 const manifestSrc = JSON.parse(readFileSync(resolve(root, 'src/manifest.json'), 'utf8'))
 

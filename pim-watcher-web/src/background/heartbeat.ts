@@ -1,7 +1,7 @@
 import browser from 'webextension-polyfill'
 import deepEqual from 'deep-equal'
 import * as punycode from 'punycode.js'
-import { getActiveWindowTab, getTab, getTabs } from './helpers'
+import { getActiveWindowTab, getBrowserType, getInstanceId, getTab, getTabs } from './helpers'
 import { sendHeartbeat } from './client'
 import type { HeartbeatData } from './client'
 import { getEnabled, getHeartbeatData, setHeartbeatData } from '../storage'
@@ -71,6 +71,8 @@ async function heartbeat(tab: browser.Tabs.Tab | undefined, tabCount: number) {
     audible: audible ?? false,
     incognito: incognito ?? false,
     tabCount,
+    browser: getBrowserType(),
+    instanceId: await getInstanceId(),
   }
 
   const previousData = await getHeartbeatData()
