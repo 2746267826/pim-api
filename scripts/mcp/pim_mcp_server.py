@@ -30,6 +30,7 @@ import re
 import time
 import threading
 import asyncio
+import contextvars
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,6 +48,12 @@ except ImportError:
 
 PIM_API_URL = os.getenv("PIM_API_URL", "http://127.0.0.1:5858").rstrip("/")
 DEFAULT_TIMEZONE = "Asia/Shanghai"
+
+# HTTP transport settings (Streamable HTTP). Only used when PIM_MCP_TRANSPORT=http.
+_MCP_TRANSPORT = os.getenv("PIM_MCP_TRANSPORT", "stdio").strip().lower()
+_MCP_HOST = os.getenv("PIM_MCP_HOST", "0.0.0.0")
+_MCP_PORT = int(os.getenv("PIM_MCP_PORT", "8080"))
+_MCP_PATH = os.getenv("PIM_MCP_PATH", "/mcp")
 
 # Token file candidates are checked in order; first existing file wins unless
 # PIM_TOKEN_FILE explicitly points to a path (even if not yet created).
@@ -74,7 +81,138 @@ _token_file_lock = threading.Lock()
 _refresh_lock = asyncio.Lock()
 _refresh_inflight: Optional[asyncio.Future] = None
 
-mcp = FastMCP("pim-mcp-server")
+mcp = FastMCP("pim-mcp-server", host=_MCP_HOST, port=_MCP_PORT, streamable_http_path=_MCP_PATH)
+
+
+# ---------- HTTP mode: per-request identity via /api/v1/mcp/verify ----------
+#
+# In HTTP mode every tool call is first authorized against Pim.Api's /verify
+# endpoint with the raw `pim_mcp_*` token from the Authorization header.
+# /verify performs tool-level permission checks, records connection activity
+# and audit, and returns a short-lived user JWT used for the actual REST call.
+# stdio mode is untouched: it keeps the env/file token pass-through.
+
+# Request-scoped identity: {accessToken, clientId, clientName, permissions}
+_current_identity: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    "pim_mcp_identity", default=None
+)
+
+# Set of write tool names (Phase 3). Read tools are everything else.
+_WRITE_TOOL_NAMES: set = set()
+
+
+def _http_mode() -> bool:
+    return _MCP_TRANSPORT in ("http", "streamable-http")
+
+
+def _get_raw_request_token() -> Optional[str]:
+    """Extract the raw Bearer token from the current HTTP request (mcp_token or user JWT)."""
+    if not _http_mode():
+        return None
+    try:
+        ctx = mcp.get_context()
+        rc = ctx.request_context
+        if rc is None:
+            return None
+        req = rc.request
+        auth = getattr(req, "headers", None).get("authorization", "")
+    except Exception:
+        return None
+    if not auth:
+        return None
+    return _strip_bearer(auth)
+
+
+async def _call_verify(raw_token: str, tool: Optional[str], params_summary: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Call Pim.Api /api/v1/mcp/verify with the raw mcp token. Returns response data dict or None on network error."""
+    try:
+        headers = {"Authorization": f"Bearer {raw_token}", "Content-Type": "application/json"}
+        body: Dict[str, Any] = {}
+        if tool:
+            body["tool"] = tool
+        if params_summary:
+            body["paramsSummary"] = params_summary
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(f"{PIM_API_URL}/api/v1/mcp/verify", json=body, headers=headers)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"raw": resp.text[:400], "status": resp.status_code}
+            if resp.status_code >= 400:
+                if isinstance(data, dict) and "error" in data:
+                    return {"error": str(data.get("error")), "code": resp.status_code}
+                if isinstance(data, dict) and "message" in data:
+                    return {"error": str(data.get("message")), "code": resp.status_code}
+                return {"error": f"HTTP {resp.status_code}: {resp.text[:400]}", "code": resp.status_code}
+            inner = data.get("data") if isinstance(data, dict) else None
+            if isinstance(inner, dict):
+                return inner
+            return {"error": "unexpected verify response", "code": 500}
+    except Exception as e:
+        return {"error": f"verify request failed: {e}", "code": 500}
+
+
+def _summarize_params(args: Dict[str, Any]) -> Optional[str]:
+    """Truncated JSON summary of tool arguments for audit (never contains tokens)."""
+    if not args:
+        return None
+    try:
+        text = json.dumps(args, ensure_ascii=False, default=str, sort_keys=True)
+    except Exception:
+        return None
+    return text if len(text) <= 500 else text[:500]
+
+
+async def _resolve_http_identity(tool: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Authorize a tool call in HTTP mode. Returns an error dict to short-circuit, or None if allowed."""
+    raw = _get_raw_request_token()
+    if not raw:
+        return {
+            "error": "missing bearer token: call MCP with Authorization: Bearer <pim_mcp_* token>. "
+                     "Generate a token in WebUI Settings -> MCP 管理.",
+            "code": 401,
+        }
+    data = await _call_verify(raw, tool, _summarize_params(args))
+    if data is None or "error" in data:
+        if data is None:
+            return {"error": "verify failed: no response", "code": 500}
+        return data
+    _current_identity.set(data)
+    return None
+
+
+def _wrap_tools_for_http() -> None:
+    """Wrap every registered tool so HTTP mode authorizes + enforces permissions before the call."""
+    for tool in mcp._tool_manager.list_tools():  # noqa: SLF001
+        if getattr(tool, "_pim_wrapped", False):
+            continue
+        name = tool.name
+        orig = tool.fn
+
+        async def wrapped(_name: str = name, _orig: Any = orig, **kwargs: Any) -> Any:
+            err = await _resolve_http_identity(_name, kwargs)
+            if err is not None:
+                return err
+            return await _orig(**kwargs)
+
+        tool.fn = wrapped
+        tool._pim_wrapped = True  # noqa: SLF001
+
+
+def _register_write_tool_names(*names: str) -> None:
+    _WRITE_TOOL_NAMES.update(names)
+
+
+def _is_write_tool(name: str) -> bool:
+    return name in _WRITE_TOOL_NAMES
+
+
+def _list_tools_meta() -> List[Dict[str, str]]:
+    """Test/debug helper: metadata for every registered tool."""
+    return [
+        {"name": t.name, "group": "write" if t.name in _WRITE_TOOL_NAMES else "read"}
+        for t in mcp._tool_manager.list_tools()  # noqa: SLF001
+    ]
 
 
 # ---------- helpers: auth, time, pagination, redaction, api ----------
@@ -480,48 +618,12 @@ async def _refresh_access_token(refresh_token: str) -> Optional[Tuple[str, Optio
 
 
 def _get_token() -> Optional[str]:
-    # Try FastMCP context (HTTP transport headers)
-    try:
-        from mcp.server.fastmcp import get_context  # type: ignore
-
-        ctx = get_context()  # type: ignore
-        if ctx is not None:
-            # Attempt to read request headers from various possible locations
-            req = None
-            if hasattr(ctx, "request_context"):
-                rc = getattr(ctx, "request_context")
-                if rc is not None and hasattr(rc, "request"):
-                    req = getattr(rc, "request")
-                elif rc is not None and hasattr(rc, "headers"):
-                    # some versions expose headers directly
-                    hdrs = getattr(rc, "headers", None)
-                    if hdrs:
-                        for k, v in (hdrs.items() if hasattr(hdrs, "items") else []):
-                            if k.lower() == "authorization" and isinstance(v, str) and v.lower().startswith("bearer "):
-                                return v[7:].strip()
-            if req is not None and hasattr(req, "headers"):
-                hdrs = getattr(req, "headers")
-                try:
-                    # headers may be dict-like or Starlette Headers
-                    if hasattr(hdrs, "get"):
-                        auth = hdrs.get("authorization") or hdrs.get("Authorization")  # type: ignore
-                        if auth and isinstance(auth, str) and auth.lower().startswith("bearer "):
-                            return auth[7:].strip()
-                    # fallback iteration
-                    if not auth:
-                        for k, v in (hdrs.items() if hasattr(hdrs, "items") else []):  # type: ignore
-                            if k.lower() == "authorization" and isinstance(v, str) and v.lower().startswith("bearer "):
-                                return v[7:].strip()
-                except Exception:
-                    pass
-            # also try meta
-            if hasattr(ctx, "meta") and isinstance(getattr(ctx, "meta"), dict):
-                meta = getattr(ctx, "meta")
-                auth = meta.get("authorization") or meta.get("Authorization")
-                if auth and isinstance(auth, str) and auth.lower().startswith("bearer "):
-                    return auth[7:].strip()
-    except Exception:
-        pass
+    # HTTP mode: use the JWT issued by /verify for the current request (set by the tool wrapper).
+    identity = _current_identity.get()
+    if identity:
+        at = identity.get("accessToken")
+        if isinstance(at, str) and at:
+            return at
 
     # Env fallback for stdio transport (with expiry-aware file reload)
     # 1) Collect env token if present
@@ -771,6 +873,76 @@ async def _call_api(
                 else:
                     data = _apply_redact(data, True)
             # truncation check
+            data = _check_truncation(data, clean_params)
+            return data
+    except httpx.TimeoutException as e:
+        return {"error": f"request timeout: {e}", "code": 504}
+    except Exception as e:
+        return {"error": f"request failed: {e}", "details": str(e), "code": 500}
+
+
+async def _call_api_multipart(
+    path: str,
+    file_field: str,
+    file_name: Optional[str],
+    file_content: bytes,
+    form_fields: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+    _retry_on_401: bool = True,
+) -> Any:
+    """Multipart/form-data upload (import_ics, upload_file, upload_quick_note_attachment)."""
+    token = _get_token()
+    if not token:
+        return {
+            "error": "missing bearer token: call MCP with Authorization: Bearer <PIM JWT>. Obtain token via POST /api/v1/auth/login {\"username\",\"password\"} -> accessToken",
+            "code": 401,
+        }
+    headers = {"Authorization": f"Bearer {token}"}
+    if not path.startswith("/"):
+        path = "/" + path
+    if not path.startswith("/api/"):
+        if path.startswith("/v1/"):
+            path = "/api" + path
+        else:
+            path = "/api/v1" + path
+    url = f"{PIM_API_URL}{path}"
+    clean_params: Optional[Dict[str, Any]] = None
+    if params:
+        clean_params = {k: v for k, v in params.items() if v is not None}
+        if not clean_params:
+            clean_params = None
+    files: Dict[str, Tuple[Optional[str], bytes]] = {file_field: (file_name, file_content)}
+    data_fields: Dict[str, Any] = {k: v for k, v in (form_fields or {}).items() if v is not None}
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, params=clean_params, files=files, data=data_fields, headers=headers)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"raw": resp.text[:800], "status": resp.status_code}
+            if resp.status_code >= 400:
+                if resp.status_code == 401 and _retry_on_401:
+                    async with _refresh_lock:
+                        current = _get_token()
+                        if current and current != token and not _is_token_expired(current):
+                            return await _call_api_multipart(path, file_field, file_name, file_content, form_fields, params, _retry_on_401=False)
+                        fresh_file_token, _ = _try_load_token_from_file()
+                        if fresh_file_token and fresh_file_token != token and not _is_token_expired(fresh_file_token):
+                            return await _call_api_multipart(path, file_field, file_name, file_content, form_fields, params, _retry_on_401=False)
+                        refresh_tok = _get_refresh_token()
+                        if refresh_tok:
+                            refreshed = await _refresh_access_token(refresh_tok)
+                            if refreshed:
+                                new_at, new_rt = refreshed
+                                _persist_refreshed_tokens(new_at, new_rt)
+                                return await _call_api_multipart(path, file_field, file_name, file_content, form_fields, params, _retry_on_401=False)
+                if isinstance(data, dict) and "error" not in data:
+                    return {"error": f"HTTP {resp.status_code}: {resp.text[:800]}", "details": data, "code": resp.status_code}
+                if isinstance(data, dict):
+                    if "code" not in data:
+                        data["code"] = resp.status_code
+                    return data
+                return {"error": f"HTTP {resp.status_code}: {resp.text[:800]}", "details": data, "code": resp.status_code}
             data = _check_truncation(data, clean_params)
             return data
     except httpx.TimeoutException as e:
@@ -2391,9 +2563,710 @@ async def get_version() -> Any:
         return {"error": f"version check failed: {e}", "code": 500}
 
 
+# ===================== Calendar Writes (30) =====================
+# Phase 3 write tools. Each requires the `write` permission bit for its tool name
+# in the client's permission set (enforced by the HTTP wrapper via /verify).
+
+def _b64_to_bytes(value: str, name: str) -> Any:
+    """Decode base64 string. Returns bytes or an error dict."""
+    try:
+        return base64.b64decode(value, validate=True)
+    except Exception:
+        return {"error": f"{name} must be valid base64", "code": 400}
+
+
+@mcp.tool()
+async def create_event(
+    calendarId: str,
+    title: str,
+    dtStart: str,
+    dtEnd: str,
+    description: Optional[str] = None,
+    location: Optional[str] = None,
+    rRule: Optional[str] = None,
+    uid: Optional[str] = None,
+    isAllDay: bool = False,
+    timeZoneId: Optional[str] = None,
+    showAs: Optional[str] = None,
+    importance: Optional[str] = None,
+    sensitivity: Optional[str] = None,
+    categories: Optional[List[str]] = None,
+    isReminderOn: bool = False,
+    reminderMinutesBeforeStart: Optional[int] = None,
+    organizer: Optional[Dict[str, Any]] = None,
+    attendees: Optional[List[Dict[str, Any]]] = None,
+    isOnlineMeeting: bool = False,
+    onlineMeetingProvider: Optional[str] = None,
+    onlineMeetingUrl: Optional[str] = None,
+    externalLink: Optional[str] = None,
+) -> Any:
+    """Create a calendar event. Requires write permission create_event. Returns the created EventResponse."""
+    for f in ("calendarId", "title", "dtStart", "dtEnd"):
+        if not locals().get(f):
+            return {"error": f"{f} is required", "code": 400}
+    body = _clean_params(
+        calendarId=calendarId, title=title, dtStart=dtStart, dtEnd=dtEnd,
+        description=description, location=location, rRule=rRule, uid=uid,
+        isAllDay=isAllDay, timeZoneId=timeZoneId, showAs=showAs,
+        importance=importance, sensitivity=sensitivity, categories=categories,
+        isReminderOn=isReminderOn, reminderMinutesBeforeStart=reminderMinutesBeforeStart,
+        organizer=organizer, attendees=attendees, isOnlineMeeting=isOnlineMeeting,
+        onlineMeetingProvider=onlineMeetingProvider, onlineMeetingUrl=onlineMeetingUrl,
+        externalLink=externalLink)
+    return await _call_api("POST", "/api/v1/calendar/events", json_body=body)
+
+
+@mcp.tool()
+async def update_event(
+    eventId: str,
+    calendarId: str,
+    title: str,
+    dtStart: str,
+    dtEnd: str,
+    scope: Optional[str] = None,
+    recurrenceId: Optional[str] = None,
+    originalEventId: Optional[str] = None,
+    description: Optional[str] = None,
+    location: Optional[str] = None,
+    rRule: Optional[str] = None,
+    isAllDay: Optional[bool] = None,
+    timeZoneId: Optional[str] = None,
+    showAs: Optional[str] = None,
+    importance: Optional[str] = None,
+    sensitivity: Optional[str] = None,
+    categories: Optional[List[str]] = None,
+    isReminderOn: Optional[bool] = None,
+    reminderMinutesBeforeStart: Optional[int] = None,
+) -> Any:
+    """Update a calendar event. scope=This/Series with recurrenceId updates repeating events. Requires write permission update_event."""
+    if not eventId:
+        return {"error": "eventId is required", "code": 400}
+    params = _clean_params(scope=scope, recurrenceId=recurrenceId, originalEventId=originalEventId)
+    body = _clean_params(
+        calendarId=calendarId, title=title, dtStart=dtStart, dtEnd=dtEnd,
+        description=description, location=location, rRule=rRule, isAllDay=isAllDay,
+        timeZoneId=timeZoneId, showAs=showAs, importance=importance,
+        sensitivity=sensitivity, categories=categories, isReminderOn=isReminderOn,
+        reminderMinutesBeforeStart=reminderMinutesBeforeStart)
+    return await _call_api("PUT", f"/api/v1/calendar/events/{eventId}", params=params, json_body=body)
+
+
+@mcp.tool()
+async def delete_event(
+    eventId: str,
+    scope: Optional[str] = None,
+    recurrenceId: Optional[str] = None,
+    originalEventId: Optional[str] = None,
+) -> Any:
+    """Delete a calendar event (moves to recycle bin). scope=This/Series for repeating events. Requires write permission delete_event."""
+    if not eventId:
+        return {"error": "eventId is required", "code": 400}
+    params = _clean_params(scope=scope, recurrenceId=recurrenceId, originalEventId=originalEventId)
+    return await _call_api("DELETE", f"/api/v1/calendar/events/{eventId}", params=params)
+
+
+@mcp.tool()
+async def restore_event(eventId: str, restoreAsCopy: bool = False) -> Any:
+    """Restore a deleted event from the recycle bin. Requires write permission restore_event."""
+    if not eventId:
+        return {"error": "eventId is required", "code": 400}
+    return await _call_api("POST", f"/api/v1/calendar/events/{eventId}/restore", json_body={"restoreAsCopy": restoreAsCopy})
+
+
+@mcp.tool()
+async def batch_delete_events(ids: List[str]) -> Any:
+    """Batch delete events by ids (move to recycle bin). Requires write permission batch_delete_events."""
+    if not ids:
+        return {"error": "ids is required", "code": 400}
+    return await _call_api("POST", "/api/v1/calendar/events/batch-delete", json_body={"ids": ids})
+
+
+@mcp.tool()
+async def create_task(
+    title: str,
+    priority: Optional[int] = None,
+    calendarId: Optional[str] = None,
+    description: Optional[str] = None,
+    estimatedDuration: Optional[str] = None,
+    minimumSegment: Optional[str] = None,
+    due: Optional[str] = None,
+    dtStart: Optional[str] = None,
+    status: Optional[str] = None,
+    plannedEnd: Optional[str] = None,
+) -> Any:
+    """Create a task. estimatedDuration/minimumSegment use formats like '1h30m'. Requires write permission create_task."""
+    if not title:
+        return {"error": "title is required", "code": 400}
+    body = _clean_params(
+        title=title, priority=priority, calendarId=calendarId, description=description,
+        estimatedDuration=estimatedDuration, minimumSegment=minimumSegment, due=due,
+        dtStart=dtStart, status=status, plannedEnd=plannedEnd)
+    return await _call_api("POST", "/api/v1/calendar/tasks", json_body=body)
+
+
+@mcp.tool()
+async def update_task(
+    taskId: str,
+    title: Optional[str] = None,
+    priority: Optional[int] = None,
+    calendarId: Optional[str] = None,
+    description: Optional[str] = None,
+    estimatedDuration: Optional[str] = None,
+    minimumSegment: Optional[str] = None,
+    due: Optional[str] = None,
+    dtStart: Optional[str] = None,
+    status: Optional[str] = None,
+    plannedEnd: Optional[str] = None,
+) -> Any:
+    """Update a task (status/priority/due dates). Requires write permission update_task."""
+    if not taskId:
+        return {"error": "taskId is required", "code": 400}
+    body = _clean_params(
+        title=title, priority=priority, calendarId=calendarId, description=description,
+        estimatedDuration=estimatedDuration, minimumSegment=minimumSegment, due=due,
+        dtStart=dtStart, status=status, plannedEnd=plannedEnd)
+    return await _call_api("PUT", f"/api/v1/calendar/tasks/{taskId}", json_body=body)
+
+
+@mcp.tool()
+async def delete_task(taskId: str) -> Any:
+    """Delete a task (moves to recycle bin). Requires write permission delete_task."""
+    if not taskId:
+        return {"error": "taskId is required", "code": 400}
+    return await _call_api("DELETE", f"/api/v1/calendar/tasks/{taskId}")
+
+
+@mcp.tool()
+async def restore_task(taskId: str, restoreAsCopy: bool = False) -> Any:
+    """Restore a deleted task from the recycle bin. Requires write permission restore_task."""
+    if not taskId:
+        return {"error": "taskId is required", "code": 400}
+    return await _call_api("POST", f"/api/v1/calendar/tasks/{taskId}/restore", json_body={"restoreAsCopy": restoreAsCopy})
+
+
+@mcp.tool()
+async def move_task(
+    taskId: str,
+    scheduledStart: Optional[str] = None,
+    duration: Optional[str] = None,
+    newSortOrder: Optional[int] = None,
+    plannedEnd: Optional[str] = None,
+) -> Any:
+    """Move a task (change project or ordering). duration is a TimeSpan string like '01:30:00'. Requires write permission move_task."""
+    if not taskId:
+        return {"error": "taskId is required", "code": 400}
+    body = _clean_params(scheduledStart=scheduledStart, duration=duration, newSortOrder=newSortOrder, plannedEnd=plannedEnd)
+    return await _call_api("POST", f"/api/v1/calendar/tasks/{taskId}/move", json_body=body)
+
+
+@mcp.tool()
+async def plan_task(
+    taskId: str,
+    plannedStart: str,
+    plannedEnd: Optional[str] = None,
+    estimatedDuration: Optional[str] = None,
+) -> Any:
+    """Schedule a task onto the calendar (which day it will be done). Requires write permission plan_task."""
+    if not taskId:
+        return {"error": "taskId is required", "code": 400}
+    if not plannedStart:
+        return {"error": "plannedStart is required", "code": 400}
+    body = _clean_params(plannedStart=plannedStart, plannedEnd=plannedEnd, estimatedDuration=estimatedDuration)
+    return await _call_api("POST", f"/api/v1/calendar/tasks/{taskId}/plan", json_body=body)
+
+
+@mcp.tool()
+async def create_task_segment(
+    taskId: str,
+    startsAt: str,
+    endsAt: str,
+    status: str,
+    source: str,
+    planningReason: Optional[str] = None,
+) -> Any:
+    """Add an execution segment (a concrete time block) to a task. Requires write permission create_task_segment."""
+    if not taskId:
+        return {"error": "taskId is required", "code": 400}
+    body = _clean_params(startsAt=startsAt, endsAt=endsAt, status=status, source=source, planningReason=planningReason)
+    if "startsAt" not in body or "endsAt" not in body or "status" not in body or "source" not in body:
+        return {"error": "startsAt, endsAt, status and source are required", "code": 400}
+    return await _call_api("POST", f"/api/v1/calendar/tasks/{taskId}/segments", json_body=body)
+
+
+@mcp.tool()
+async def delete_task_segment(taskId: str, segmentId: str) -> Any:
+    """Delete a task execution segment. Requires write permission delete_task_segment."""
+    if not taskId or not segmentId:
+        return {"error": "taskId and segmentId are required", "code": 400}
+    return await _call_api("DELETE", f"/api/v1/calendar/tasks/{taskId}/segments/{segmentId}")
+
+
+@mcp.tool()
+async def add_task_checklist_item(taskId: str, title: str, sortOrder: Optional[int] = None) -> Any:
+    """Add a checklist item to a task. Requires write permission add_task_checklist_item."""
+    if not taskId:
+        return {"error": "taskId is required", "code": 400}
+    if not title:
+        return {"error": "title is required", "code": 400}
+    body = _clean_params(title=title, sortOrder=sortOrder)
+    return await _call_api("POST", f"/api/v1/calendar/tasks/{taskId}/checklist", json_body=body)
+
+
+@mcp.tool()
+async def batch_delete_tasks(ids: List[str]) -> Any:
+    """Batch delete tasks by ids (move to recycle bin). Requires write permission batch_delete_tasks."""
+    if not ids:
+        return {"error": "ids is required", "code": 400}
+    return await _call_api("POST", "/api/v1/calendar/tasks/batch-delete", json_body={"ids": ids})
+
+
+@mcp.tool()
+async def batch_update_tasks(
+    ids: List[str],
+    status: Optional[str] = None,
+    priority: Optional[int] = None,
+    calendarId: Optional[str] = None,
+) -> Any:
+    """Batch update tasks (status/priority/calendar). At least one of status/priority/calendarId is required. Requires write permission batch_update_tasks."""
+    if not ids:
+        return {"error": "ids is required", "code": 400}
+    body = _clean_params(ids=ids, status=status, priority=priority, calendarId=calendarId)
+    if len(body) == 1:
+        return {"error": "at least one of status/priority/calendarId is required", "code": 400}
+    return await _call_api("POST", "/api/v1/calendar/tasks/batch-update", json_body=body)
+
+
+@mcp.tool()
+async def create_task_book(
+    name: str,
+    domainProjectId: Optional[str] = None,
+    kind: Optional[str] = None,
+    status: Optional[str] = None,
+) -> Any:
+    """Create a task book (a container for tasks). Requires write permission create_task_book."""
+    if not name:
+        return {"error": "name is required", "code": 400}
+    body = _clean_params(name=name, domainProjectId=domainProjectId, kind=kind, status=status)
+    return await _call_api("POST", "/api/v1/calendar/task-books", json_body=body)
+
+
+@mcp.tool()
+async def create_project(name: str, description: Optional[str] = None, status: Optional[str] = None) -> Any:
+    """Create a domain project (a top-level domain for tasks). Requires write permission create_project."""
+    if not name:
+        return {"error": "name is required", "code": 400}
+    body = _clean_params(name=name, description=description, status=status)
+    return await _call_api("POST", "/api/v1/calendar/projects", json_body=body)
+
+
+@mcp.tool()
+async def schedule_tasks(taskIds: List[str]) -> Any:
+    """Run the scheduling engine to place tasks onto the calendar. Requires write permission schedule_tasks."""
+    if not taskIds:
+        return {"error": "taskIds is required", "code": 400}
+    return await _call_api("POST", "/api/v1/calendar/schedule", json_body={"taskIds": taskIds})
+
+
+@mcp.tool()
+async def create_reminder(
+    relatedObjectType: str,
+    relatedObjectId: str,
+    title: str,
+    scheduledAt: str,
+    body: Optional[str] = None,
+    triggerReason: Optional[str] = None,
+    riskLevel: Optional[str] = None,
+    channels: Optional[List[str]] = None,
+    doNotDisturbStart: Optional[str] = None,
+    doNotDisturbEnd: Optional[str] = None,
+) -> Any:
+    """Create a reminder for a related object (e.g. a task). Requires write permission create_reminder."""
+    for f in ("relatedObjectType", "relatedObjectId", "title", "scheduledAt"):
+        if not locals().get(f):
+            return {"error": f"{f} is required", "code": 400}
+    body = _clean_params(
+        relatedObjectType=relatedObjectType, relatedObjectId=relatedObjectId,
+        title=title, scheduledAt=scheduledAt, body=body, triggerReason=triggerReason,
+        riskLevel=riskLevel, channels=channels,
+        doNotDisturbStart=doNotDisturbStart, doNotDisturbEnd=doNotDisturbEnd)
+    return await _call_api("POST", "/api/v1/calendar/reminders", json_body=body)
+
+
+@mcp.tool()
+async def snooze_reminder(reminderId: str, scheduledAt: Optional[str] = None) -> Any:
+    """Snooze a reminder (defaults to +15 minutes). Requires write permission snooze_reminder."""
+    if not reminderId:
+        return {"error": "reminderId is required", "code": 400}
+    params = _clean_params(scheduledAt=scheduledAt)
+    return await _call_api("POST", f"/api/v1/calendar/reminders/{reminderId}/snooze", params=params)
+
+
+@mcp.tool()
+async def dismiss_reminder(reminderId: str) -> Any:
+    """Dismiss/close a reminder. Requires write permission dismiss_reminder."""
+    if not reminderId:
+        return {"error": "reminderId is required", "code": 400}
+    return await _call_api("POST", f"/api/v1/calendar/reminders/{reminderId}/dismiss")
+
+
+@mcp.tool()
+async def create_habit(
+    title: str,
+    description: Optional[str] = None,
+    cadence: Optional[str] = None,
+    source: Optional[str] = None,
+    status: Optional[str] = None,
+    ruleJson: Optional[str] = None,
+) -> Any:
+    """Create a habit routine. Requires write permission create_habit."""
+    if not title:
+        return {"error": "title is required", "code": 400}
+    body = _clean_params(title=title, description=description, cadence=cadence, source=source, status=status, ruleJson=ruleJson)
+    return await _call_api("POST", "/api/v1/calendar/habits", json_body=body)
+
+
+@mcp.tool()
+async def create_habit_occurrence(
+    habitId: str,
+    startsAt: str,
+    endsAt: str,
+    status: Optional[str] = None,
+    source: Optional[str] = None,
+) -> Any:
+    """Log a habit occurrence (check-in). Requires write permission create_habit_occurrence."""
+    if not habitId:
+        return {"error": "habitId is required", "code": 400}
+    if not startsAt or not endsAt:
+        return {"error": "startsAt and endsAt are required", "code": 400}
+    body = _clean_params(startsAt=startsAt, endsAt=endsAt, status=status, source=source)
+    return await _call_api("POST", f"/api/v1/calendar/habits/{habitId}/occurrences", json_body=body)
+
+
+@mcp.tool()
+async def create_availability_window(
+    title: str,
+    startsAt: str,
+    endsAt: str,
+    kind: Optional[str] = None,
+    source: Optional[str] = None,
+) -> Any:
+    """Create an availability window (a block of free time usable for scheduling). Requires write permission create_availability_window."""
+    for f in ("title", "startsAt", "endsAt"):
+        if not locals().get(f):
+            return {"error": f"{f} is required", "code": 400}
+    body = _clean_params(title=title, startsAt=startsAt, endsAt=endsAt, kind=kind, source=source)
+    return await _call_api("POST", "/api/v1/calendar/availability", json_body=body)
+
+
+@mcp.tool()
+async def import_ics(icsContent: str, calendarId: Optional[str] = None) -> Any:
+    """Import an ICS calendar file (pass the raw ICS text). Requires write permission import_ics."""
+    if not icsContent:
+        return {"error": "icsContent is required", "code": 400}
+    fields = {"calendarId": calendarId} if calendarId else None
+    return await _call_api_multipart(
+        "/api/v1/calendar/import-ics",
+        file_field="file",
+        file_name="import.ics",
+        file_content=icsContent.encode("utf-8"),
+        form_fields=fields)
+
+
+@mcp.tool()
+async def create_calendar(name: str, color: Optional[str] = None, kind: Optional[str] = None) -> Any:
+    """Create a calendar. Requires write permission create_calendar."""
+    if not name:
+        return {"error": "name is required", "code": 400}
+    body = _clean_params(name=name, color=color, kind=kind)
+    return await _call_api("POST", "/api/v1/calendar/calendars", json_body=body)
+
+
+@mcp.tool()
+async def update_calendar(calendarId: str, name: str, color: Optional[str] = None, kind: Optional[str] = None) -> Any:
+    """Update a calendar. Requires write permission update_calendar."""
+    if not calendarId:
+        return {"error": "calendarId is required", "code": 400}
+    if not name:
+        return {"error": "name is required", "code": 400}
+    body = _clean_params(name=name, color=color, kind=kind)
+    return await _call_api("PUT", f"/api/v1/calendar/calendars/{calendarId}", json_body=body)
+
+
+@mcp.tool()
+async def delete_calendar(calendarId: str) -> Any:
+    """Delete a calendar (recycle bin). Requires write permission delete_calendar."""
+    if not calendarId:
+        return {"error": "calendarId is required", "code": 400}
+    return await _call_api("DELETE", f"/api/v1/calendar/calendars/{calendarId}")
+
+
+@mcp.tool()
+async def restore_calendar(calendarId: str) -> Any:
+    """Restore a deleted calendar from the recycle bin. Requires write permission restore_calendar."""
+    if not calendarId:
+        return {"error": "calendarId is required", "code": 400}
+    return await _call_api("POST", f"/api/v1/calendar/calendars/{calendarId}/restore")
+
+
+# ===================== QuickNotes Writes (8) =====================
+
+@mcp.tool()
+async def create_quick_note(
+    contentMarkdown: str = "",
+    source: Optional[str] = None,
+    attachmentIds: Optional[List[str]] = None,
+) -> Any:
+    """Create a quick note. Requires write permission create_quick_note."""
+    body = _clean_params(contentMarkdown=contentMarkdown, source=source, attachmentIds=attachmentIds)
+    return await _call_api("POST", "/api/v1/quick-notes", json_body=body)
+
+
+@mcp.tool()
+async def update_quick_note(
+    noteId: str,
+    contentMarkdown: Optional[str] = None,
+    status: Optional[str] = None,
+    attachmentIds: Optional[List[str]] = None,
+) -> Any:
+    """Update a quick note (content/status/attachments). Requires write permission update_quick_note."""
+    if not noteId:
+        return {"error": "noteId is required", "code": 400}
+    body = _clean_params(contentMarkdown=contentMarkdown, status=status, attachmentIds=attachmentIds)
+    return await _call_api("PUT", f"/api/v1/quick-notes/{noteId}", json_body=body)
+
+
+@mcp.tool()
+async def delete_quick_note(noteId: str) -> Any:
+    """Delete a quick note. Requires write permission delete_quick_note."""
+    if not noteId:
+        return {"error": "noteId is required", "code": 400}
+    return await _call_api("DELETE", f"/api/v1/quick-notes/{noteId}")
+
+
+@mcp.tool()
+async def archive_quick_note(noteId: str) -> Any:
+    """Archive a quick note. Requires write permission archive_quick_note."""
+    if not noteId:
+        return {"error": "noteId is required", "code": 400}
+    return await _call_api("POST", f"/api/v1/quick-notes/{noteId}/archive")
+
+
+@mcp.tool()
+async def restore_quick_note(noteId: str, status: Optional[str] = None) -> Any:
+    """Restore an archived quick note (default status 'inbox'). Requires write permission restore_quick_note."""
+    if not noteId:
+        return {"error": "noteId is required", "code": 400}
+    body = _clean_params(status=status)
+    return await _call_api("POST", f"/api/v1/quick-notes/{noteId}/restore", json_body=body)
+
+
+@mcp.tool()
+async def process_quick_note(noteId: str) -> Any:
+    """Process a quick note through AI/rules (sets status to processed). Requires write permission process_quick_note."""
+    if not noteId:
+        return {"error": "noteId is required", "code": 400}
+    return await _call_api("POST", f"/api/v1/quick-notes/{noteId}/process")
+
+
+@mcp.tool()
+async def upload_quick_note_attachment(fileContentBase64: str, fileName: str) -> Any:
+    """Upload an attachment for a quick note (base64 content). Returns attachment id to reference in create/update note. Requires write permission upload_quick_note_attachment."""
+    if not fileContentBase64 or not fileName:
+        return {"error": "fileContentBase64 and fileName are required", "code": 400}
+    content = _b64_to_bytes(fileContentBase64, "fileContentBase64")
+    if isinstance(content, dict):
+        return content
+    return await _call_api_multipart(
+        "/api/v1/quick-notes/attachments",
+        file_field="file",
+        file_name=fileName,
+        file_content=content)
+
+
+@mcp.tool()
+async def delete_quick_note_attachment(attachmentId: str) -> Any:
+    """Delete a quick note attachment. Requires write permission delete_quick_note_attachment."""
+    if not attachmentId:
+        return {"error": "attachmentId is required", "code": 400}
+    return await _call_api("DELETE", f"/api/v1/quick-notes/attachments/{attachmentId}")
+
+
+# ===================== Files Writes (6) =====================
+
+@mcp.tool()
+async def upload_file(providerId: str, path: str, fileContentBase64: str, fileName: str) -> Any:
+    """Upload a file to a provider path (base64 content). Requires write permission upload_file."""
+    for f in ("providerId", "path", "fileContentBase64", "fileName"):
+        if not locals().get(f):
+            return {"error": f"{f} is required", "code": 400}
+    content = _b64_to_bytes(fileContentBase64, "fileContentBase64")
+    if isinstance(content, dict):
+        return content
+    return await _call_api_multipart(
+        "/api/v1/files/items/upload",
+        file_field="file",
+        file_name=fileName,
+        file_content=content,
+        form_fields={"providerId": providerId, "path": path})
+
+
+@mcp.tool()
+async def move_file(fileId: str, destinationPath: str) -> Any:
+    """Move a file to a new path. Requires write permission move_file."""
+    if not fileId:
+        return {"error": "fileId is required", "code": 400}
+    if not destinationPath:
+        return {"error": "destinationPath is required", "code": 400}
+    return await _call_api("POST", f"/api/v1/files/items/{fileId}/move", json_body={"destinationPath": destinationPath})
+
+
+@mcp.tool()
+async def rename_file(fileId: str, name: str) -> Any:
+    """Rename a file. Requires write permission rename_file."""
+    if not fileId:
+        return {"error": "fileId is required", "code": 400}
+    if not name:
+        return {"error": "name is required", "code": 400}
+    return await _call_api("POST", f"/api/v1/files/items/{fileId}/rename", json_body={"name": name})
+
+
+@mcp.tool()
+async def delete_file(fileId: str) -> Any:
+    """Delete a file (moves to trash). Requires write permission delete_file."""
+    if not fileId:
+        return {"error": "fileId is required", "code": 400}
+    return await _call_api("DELETE", f"/api/v1/files/items/{fileId}")
+
+
+@mcp.tool()
+async def restore_file(fileId: str, trashId: str) -> Any:
+    """Restore a file from trash. trashId identifies the trash entry. Requires write permission restore_file."""
+    if not fileId:
+        return {"error": "fileId is required", "code": 400}
+    if not trashId:
+        return {"error": "trashId is required", "code": 400}
+    return await _call_api("POST", f"/api/v1/files/trash/{fileId}/restore", params={"trashId": trashId})
+
+
+@mcp.tool()
+async def index_file(fileId: str) -> Any:
+    """Trigger file indexing for RAG search. Requires write permission index_file."""
+    if not fileId:
+        return {"error": "fileId is required", "code": 400}
+    return await _call_api("POST", f"/api/v1/files/items/{fileId}/index")
+
+
+# ===================== PcTracker Writes (4) =====================
+
+@mcp.tool()
+async def create_category(
+    appPattern: str,
+    categoryName: str,
+    color: str,
+    priority: int,
+) -> Any:
+    """Create a PC activity category (maps an app pattern to a category). Requires write permission create_category."""
+    for f in ("appPattern", "categoryName", "color", "priority"):
+        if not locals().get(f):
+            return {"error": f"{f} is required", "code": 400}
+    body = _clean_params(appPattern=appPattern, categoryName=categoryName, color=color, priority=priority)
+    return await _call_api("POST", "/api/v1/pc/categories", json_body=body)
+
+
+@mcp.tool()
+async def update_categories_order(items: List[Dict[str, Any]]) -> Any:
+    """Reorder PC categories. items: [{id, parentId?, sortOrder}]. Requires write permission update_categories_order."""
+    if not items:
+        return {"error": "items is required", "code": 400}
+    return await _call_api("PUT", "/api/v1/pc/categories/reorder", json_body={"items": items})
+
+
+@mcp.tool()
+async def delete_category(categoryId: str) -> Any:
+    """Delete a PC category. Requires write permission delete_category."""
+    if not categoryId:
+        return {"error": "categoryId is required", "code": 400}
+    return await _call_api("DELETE", f"/api/v1/pc/categories/{categoryId}")
+
+
+@mcp.tool()
+async def seed_categories() -> Any:
+    """Seed default PC categories. Requires write permission seed_categories."""
+    return await _call_api("POST", "/api/v1/pc/categories/seed")
+
+
+# ===================== Mobile Writes (2) =====================
+
+@mcp.tool()
+async def create_mobile_goal(
+    limitSeconds: int,
+    scope: Optional[str] = None,
+    packageName: Optional[str] = None,
+    lifeCategory: Optional[str] = None,
+    label: Optional[str] = None,
+    isEnabled: bool = True,
+) -> Any:
+    """Create a mobile usage goal (daily limit). Requires write permission create_mobile_goal."""
+    if limitSeconds is None:
+        return {"error": "limitSeconds is required", "code": 400}
+    body = _clean_params(
+        scope=scope, packageName=packageName, lifeCategory=lifeCategory,
+        label=label, limitSeconds=limitSeconds, isEnabled=isEnabled)
+    return await _call_api("POST", "/api/v1/mobile/analytics/goals", json_body=body)
+
+
+@mcp.tool()
+async def delete_mobile_goal(goalId: str) -> Any:
+    """Delete a mobile usage goal. Requires write permission delete_mobile_goal."""
+    if not goalId:
+        return {"error": "goalId is required", "code": 400}
+    return await _call_api("DELETE", f"/api/v1/mobile/analytics/goals/{goalId}")
+
+
+_register_write_tool_names(
+    "create_event", "update_event", "delete_event", "restore_event", "batch_delete_events",
+    "create_task", "update_task", "delete_task", "restore_task", "move_task", "plan_task",
+    "create_task_segment", "delete_task_segment", "add_task_checklist_item", "batch_delete_tasks",
+    "batch_update_tasks", "create_task_book", "create_project", "schedule_tasks",
+    "create_reminder", "snooze_reminder", "dismiss_reminder",
+    "create_habit", "create_habit_occurrence",
+    "create_availability_window", "import_ics", "create_calendar", "update_calendar",
+    "delete_calendar", "restore_calendar",
+    "create_quick_note", "update_quick_note", "delete_quick_note", "archive_quick_note",
+    "restore_quick_note", "process_quick_note", "upload_quick_note_attachment",
+    "delete_quick_note_attachment",
+    "upload_file", "move_file", "rename_file", "delete_file", "restore_file", "index_file",
+    "create_category", "update_categories_order", "delete_category", "seed_categories",
+    "create_mobile_goal", "delete_mobile_goal",
+)
+
+
 # ---------- entrypoint ----------
+def _run_check() -> None:
+    """Self-check: verify tool inventory (101 read + 50 write) without starting a server."""
+    tools = _list_tools_meta()
+    read = [t for t in tools if t["group"] == "read"]
+    write = [t for t in tools if t["group"] == "write"]
+    names = {t["name"] for t in tools}
+    if len(names) != len(tools):
+        raise SystemExit(f"--check failed: duplicate tool names ({len(names)} unique / {len(tools)} total)")
+    missing = _WRITE_TOOL_NAMES - names
+    if missing:
+        raise SystemExit(f"--check failed: write tools missing from registration: {sorted(missing)}")
+    if len(write) != len(_WRITE_TOOL_NAMES):
+        raise SystemExit(f"--check failed: expected {len(_WRITE_TOOL_NAMES)} write tools, got {len(write)}")
+    print(f"OK tools read={len(read)} write={len(write)} total={len(tools)}")
+
+
 def main() -> None:
-    mcp.run()
+    if "--check" in os.sys.argv[1:]:
+        _run_check()
+        return
+    if _http_mode():
+        _wrap_tools_for_http()
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
