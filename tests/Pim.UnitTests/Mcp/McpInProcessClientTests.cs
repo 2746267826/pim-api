@@ -135,6 +135,26 @@ public sealed class McpInProcessClientTests
     }
 
     [Fact]
+    public async Task PostRedirect_ReplaysBodyWithNewContent()
+    {
+        var (client, _) = CreateClient(app =>
+        {
+            app.MapPost("/api/v1/move", async (EchoRequest req) => Results.Redirect("/api/v1/land", permanent: true, preserveMethod: true));
+            app.MapPost("/api/v1/land", (EchoRequest req) => Results.Ok(new { title = req.Title }));
+        });
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/move")
+        {
+            Content = new StringContent("""{"title":"replayed","status":"x"}""", Encoding.UTF8, "application/json"),
+        };
+        var response = await client.SendAsync(request, CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("replayed", body.RootElement.GetProperty("title").GetString());
+    }
+
+    [Fact]
     public async Task Fallback_Returns404LikeRealHost()
     {
         var (client, _) = CreateClient(app => app.MapGet("/api/v1/known", () => Results.Ok()));

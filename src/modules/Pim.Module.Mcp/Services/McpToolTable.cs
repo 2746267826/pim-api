@@ -76,9 +76,6 @@ public sealed record McpToolSpec
     /// <summary>Apply url redaction to the response when redactUrls is true.</summary>
     public bool RedactUrls { get; init; }
 
-    /// <summary>Always apply url redaction (get_file_open_link).</summary>
-    public bool AlwaysRedact { get; init; }
-
     /// <summary>Local pagination over a bare list response (page/pageSize/total added).</summary>
     public bool LocalPagination { get; init; }
 

@@ -226,7 +226,8 @@ public sealed class McpToolExecutor
     }
 
     private static bool IsDateOnly(string value)
-        => System.Text.RegularExpressions.Regex.IsMatch(value, @"^\d{4}-\d{2}-\d{2}$");
+        => System.Text.RegularExpressions.Regex.IsMatch(value, @"^\d{4}-\d{1,2}-\d{1,2}$")
+            && System.DateOnly.TryParseExact(value, "yyyy-M-d", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out _);
 
     private static bool HasValue(JsonObject args, string name)
         => args.TryGetPropertyValue(name, out var node) && node is not null
@@ -378,6 +379,13 @@ public sealed class McpToolExecutor
             var value = ToQueryString(node);
             if (value is null)
                 continue;
+            if (spec.DateSpanConversion && (srcName is "start" or "end"))
+            {
+                // Python parity: heatmap/keystats/productivity-range endpoints expect YYYY-MM-DD
+                // query values (converted from ISO); fall back to the raw value when unparseable.
+                if (TryParseIso8601(value, out var parsed, out _))
+                    value = parsed.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            }
             queryParts.Add($"{Uri.EscapeDataString(queryName)}={Uri.EscapeDataString(value)}");
         }
 
@@ -617,7 +625,8 @@ public sealed class McpToolExecutor
                 var lowerKey = key.ToLowerInvariant();
                 var isUrlLike = lowerKey.Contains("url", StringComparison.Ordinal)
                     || lowerKey.Contains("link", StringComparison.Ordinal)
-                    || lowerKey.Contains("href", StringComparison.Ordinal);
+                    || lowerKey == "href"
+                    || lowerKey.EndsWith("href", StringComparison.Ordinal);
                 if (isUrlLike && value is JsonValue stringValue && stringValue.TryGetValue<string>(out var text))
                 {
                     var newKey = lowerKey == "url" ? "urlHash"

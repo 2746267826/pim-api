@@ -156,6 +156,18 @@ public sealed class McpStdioTokenSource
                 var (access, refresh) = ReadTokenFile(candidate);
                 if (access is not null)
                 {
+                    // Re-stat after the read so a writer that swapped the file mid-read does not
+                    // leave a stale cache entry (Python parity).
+                    try
+                    {
+                        var after = new FileInfo(candidate);
+                        mtime = after.LastWriteTimeUtc.Ticks;
+                        size = after.Length;
+                    }
+                    catch (Exception)
+                    {
+                        // Keep the pre-read stat on stat failure.
+                    }
                     lock (_cacheLock)
                     {
                         _cachedPath = candidate;

@@ -28,15 +28,18 @@ public static class McpServerFactory
             sp.GetRequiredService<IOptions<McpOptions>>().Value.DispatchTimeout));
         services.AddSingleton<McpStdioTokenSource>();
 
-        services.AddMcpServer(options =>
+        var options = new McpOptions();
+        configuration.GetSection(McpOptions.SectionName).Bind(options);
+
+        services.AddMcpServer(server =>
         {
-            options.ServerInfo = new Implementation { Name = ServerName, Version = ServerVersion };
-            options.Capabilities = new ServerCapabilities { Tools = new ToolsCapability() };
-            options.Handlers.ListToolsHandler = ListTools;
-            options.Handlers.CallToolHandler = CallTool;
+            server.ServerInfo = new Implementation { Name = ServerName, Version = ServerVersion };
+            server.Capabilities = new ServerCapabilities { Tools = new ToolsCapability() };
+            server.Handlers.ListToolsHandler = ListTools;
+            server.Handlers.CallToolHandler = CallTool;
         }).WithHttpTransport(transport =>
         {
-            transport.IdleTimeout = TimeSpan.FromMinutes(30);
+            transport.IdleTimeout = options.IdleTimeout;
         });
 
         return services;

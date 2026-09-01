@@ -629,6 +629,32 @@ public sealed class McpToolExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task PcHeatmap_ConvertsIsoStartEndToDates()
+    {
+        CreateExecutor();
+        _routes["GET /api/v1/pc/heatmap/grid"] = new(200, "{\"code\":0,\"data\":[]}");
+        await CallTool("get_pc_heatmap", new Dictionary<string, JsonElement>
+        {
+            ["start"] = Json("\"2026-09-01T00:00:00Z\""),
+            ["end"] = Json("\"2026-09-07T23:59:59Z\""),
+        });
+
+        var request = Assert.Single(_requests);
+        Assert.Contains("start=2026-09-01", request.Query);
+        Assert.Contains("end=2026-09-07", request.Query);
+        Assert.DoesNotContain("T00", request.Query);
+    }
+
+    [Fact]
+    public async Task InvalidCalendarDate_RejectedLikePythonStrptime()
+    {
+        CreateExecutor();
+        var result = await CallTool("get_pc_summary", new Dictionary<string, JsonElement> { ["date"] = Json("\"2026-02-30\"") });
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Equal("date must be YYYY-MM-DD", result!["error"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task ExportIcs_IdsFallsBackToCalendarId()
     {
         CreateExecutor();

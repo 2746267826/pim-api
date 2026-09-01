@@ -73,6 +73,7 @@ public sealed class McpInProcessDispatcher : HttpMessageHandler
             // buffering ("Cannot access a closed Stream").
             var bodyBytes = await request.Content.ReadAsByteArrayAsync(cancellationToken);
             context.Request.Body = new MemoryStream(bodyBytes, writable: false);
+            context.Request.ContentLength = bodyBytes.Length;
         }
         else
         {
@@ -180,10 +181,20 @@ public sealed class McpInProcessClient
                 nextMethod = HttpMethod.Get;
 
             var next = new HttpRequestMessage(nextMethod, nextUri);
-            if (current.Content is not null && nextMethod == current.Method)
-                next.Content = current.Content;
-            else
-                current.Content?.Dispose();
+            if (current.Content is not null)
+            {
+                if (nextMethod == current.Method)
+                {
+                    // Buffer before replay: stream/multipart content cannot be read twice
+                    // (httpx parity — it buffers request content for redirects).
+                    var bytes = await current.Content.ReadAsByteArrayAsync(ct);
+                    var replayed = new ByteArrayContent(bytes);
+                    foreach (var contentHeader in current.Content.Headers)
+                        replayed.Headers.TryAddWithoutValidation(contentHeader.Key, contentHeader.Value);
+                    next.Content = replayed;
+                }
+                current.Content.Dispose();
+            }
 
             var sameOrigin = string.Equals(baseAddress.GetLeftPart(UriPartial.Authority), nextUri.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase);
             foreach (var header in current.Headers)

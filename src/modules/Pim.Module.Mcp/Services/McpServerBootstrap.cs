@@ -40,7 +40,7 @@ public static class McpServerBootstrap
                 if (string.Equals(path, mcpPath + "/", StringComparison.OrdinalIgnoreCase))
                 {
                     context.Response.StatusCode = StatusCodes.Status308PermanentRedirect;
-                    context.Response.Headers.Location = mcpPath;
+                    context.Response.Headers.Location = mcpPath + context.Request.QueryString.Value;
                     return;
                 }
                 var isMcpPath = string.Equals(path, mcpPath, StringComparison.OrdinalIgnoreCase)
