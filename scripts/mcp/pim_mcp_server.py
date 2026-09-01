@@ -39,7 +39,13 @@ from zoneinfo import ZoneInfo
 try:
     import httpx
 except ImportError:  # mcp>=2 不再安装 httpx；httpx2 为兼容后继（drop-in）
-    import httpx2 as httpx  # type: ignore
+    try:
+        import httpx2 as httpx  # type: ignore
+    except ImportError:
+        raise ImportError(
+            "pim_mcp_server.py needs an HTTP client: run `pip install httpx` "
+            "(or `pip install httpx2` when using mcp>=2)"
+        )
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -3316,7 +3322,12 @@ class _RequireBearer:
                     await response(scope, receive, send)
                     return
             # 透传给工具调用（mcp>=2 无 mcp.get_context()，见 _get_raw_request_token）
-            _http_request_headers.set(headers)
+            token = _http_request_headers.set(headers)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                _http_request_headers.reset(token)
+            return
         await self.app(scope, receive, send)
 
 

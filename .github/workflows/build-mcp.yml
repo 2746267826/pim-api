@@ -8,10 +8,10 @@ name: MCP
 on:
   push:
     branches: [master]
-    paths: ['scripts/mcp/**']
+    paths: ['scripts/mcp/**', 'docs/mcp.md']
   pull_request:
     branches: [master]
-    paths: ['scripts/mcp/**']
+    paths: ['scripts/mcp/**', 'docs/mcp.md']
 
 permissions:
   contents: read
@@ -37,7 +37,8 @@ jobs:
           if [ "${{ matrix.sdk }}" = "1.x" ]; then
             python -m pip install --quiet "mcp==1.*" uvicorn pytest httpx
           else
-            python -m pip install --quiet "mcp>=2,<3" uvicorn pytest httpx
+            # 2.x：刻意不装 httpx，让脚本的 httpx2 回退分支（issue #179 修复点）在 CI 真实执行
+            python -m pip install --quiet "mcp>=2,<3" uvicorn pytest
           fi
 
       - name: Self-check (--check)

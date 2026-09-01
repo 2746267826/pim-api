@@ -145,6 +145,24 @@ async def main():
     server.should_exit = True
     mock.shutdown()
 
+    # stdio 模式端到端（issue #179：mcp>=2 下 stdio 也必须可用）
+    from mcp import ClientSession as StdioSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    stdio_env = {**os.environ, "PIM_MCP_TRANSPORT": "stdio", "PIM_ACCESS_TOKEN": "dummy"}
+    params = StdioServerParameters(command=sys.executable, args=["scripts/mcp/pim_mcp_server.py"], env=stdio_env)
+
+    async def run_stdio():
+        async with stdio_client(params) as (read, write):
+            async with StdioSession(read, write) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+                assert len(tools.tools) == 151, f"expected 151 stdio tools, got {len(tools.tools)}"
+                print(f"stdio tools listed: {len(tools.tools)}")
+
+    await asyncio.wait_for(run_stdio(), timeout=30)
+    print("STDIO SMOKE PASSED")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
