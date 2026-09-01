@@ -61,6 +61,7 @@ jobs:
       shellWindows: ${{ steps.flags.outputs.shellWindows }}
       shellAndroid: ${{ steps.flags.outputs.shellAndroid }}
       browserExtension: ${{ steps.flags.outputs.browserExtension }}
+      mcp: ${{ steps.flags.outputs.mcp }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -139,6 +140,9 @@ jobs:
               - 'branding/**'
               - '.github/workflows/build-shell-android.yml'
               - '.github/workflows/ci.yml'
+            mcp:
+              - 'scripts/mcp/**'
+              - '.github/workflows/build-mcp.yml'
             infra:
               - '.github/workflows/ci.yml'
               - '.github/actions/**'
@@ -165,6 +169,7 @@ jobs:
             echo "shellWindows=true" >> "$GITHUB_OUTPUT"
             echo "shellAndroid=true" >> "$GITHUB_OUTPUT"
             echo "browserExtension=true" >> "$GITHUB_OUTPUT"
+            echo "mcp=true" >> "$GITHUB_OUTPUT"
           else
             echo "all=false" >> "$GITHUB_OUTPUT"
             echo "api=${{ steps.filter.outputs.api }}" >> "$GITHUB_OUTPUT"
@@ -175,6 +180,7 @@ jobs:
             echo "shellWindows=${{ steps.filter.outputs.shellWindows }}" >> "$GITHUB_OUTPUT"
             echo "shellAndroid=${{ steps.filter.outputs.shellAndroid }}" >> "$GITHUB_OUTPUT"
             echo "browserExtension=${{ steps.filter.outputs.browserExtension }}" >> "$GITHUB_OUTPUT"
+            echo "mcp=${{ steps.filter.outputs.mcp }}" >> "$GITHUB_OUTPUT"
           fi
 
   build-api:
@@ -267,8 +273,15 @@ jobs:
       is_release: ${{ needs.resolve-version.outputs.is_release }}
       assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
 
+  build-mcp:
+    needs: [resolve-version, changes]
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.mcp == 'true'
+    uses: ./.github/workflows/build-mcp.yml
+    with:
+      version: ${{ needs.resolve-version.outputs.version }}
+
   summarize:
-    needs: [resolve-version, changes, build-api, build-web, build-windows, build-android, build-docker, build-shell-windows, build-shell-android, build-browser-extension]
+    needs: [resolve-version, changes, build-api, build-web, build-windows, build-android, build-docker, build-shell-windows, build-shell-android, build-browser-extension, build-mcp]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -287,11 +300,12 @@ jobs:
           echo "| 🪟 Shell-Windows | ${{ needs.build-shell-windows.result == 'success' && '✅ Built' || needs.build-shell-windows.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo "| 📱 Shell-Android | ${{ needs.build-shell-android.result == 'success' && '✅ Built' || needs.build-shell-android.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo "| 🧩 Browser Ext | ${{ needs.build-browser-extension.result == 'success' && '✅ Built' || needs.build-browser-extension.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
+          echo "| 🤖 MCP | ${{ needs.build-mcp.result == 'success' && '✅ Built' || needs.build-mcp.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo ""
           echo "> Artifacts: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   release:
-    needs: [resolve-version, summarize, build-api, build-web, build-windows, build-android, build-docker, build-shell-windows, build-shell-android, build-browser-extension]
+    needs: [resolve-version, summarize, build-api, build-web, build-windows, build-android, build-docker, build-shell-windows, build-shell-android, build-browser-extension, build-mcp]
     # Release on every master push where no build failed. Skipped (unchanged)
     # components are fine: their assets are copied from the previous release.
     if: |
@@ -316,7 +330,8 @@ jobs:
           for r in "${{ needs.build-api.result }}" "${{ needs.build-web.result }}" \
                     "${{ needs.build-windows.result }}" "${{ needs.build-android.result }}" \
                     "${{ needs.build-docker.result }}" "${{ needs.build-shell-windows.result }}" \
-                    "${{ needs.build-shell-android.result }}" "${{ needs.build-browser-extension.result }}"; do
+                    "${{ needs.build-shell-android.result }}" "${{ needs.build-browser-extension.result }}" \
+                    "${{ needs.build-mcp.result }}"; do
             if [ "$r" = "success" ]; then BUILT=$((BUILT+1)); fi
           done
           if [ "$BUILT" -gt 0 ]; then
@@ -391,8 +406,9 @@ jobs:
           fill_if_skipped "${{ needs.build-shell-windows.result }}" 'pim-shell-windows-*.zip'
           fill_if_skipped "${{ needs.build-shell-android.result }}" 'pim-shell-android-*.apk'
           fill_if_skipped "${{ needs.build-browser-extension.result }}" 'pim-browser-extension-*.zip'
+          fill_if_skipped "${{ needs.build-mcp.result }}" 'pim-mcp-server-*.tar.gz'
           # Sanity check: every asset family must be present before uploading.
-          for p in pim-api-*.tar.gz pim-web-*.tar.gz pim-windows-*.zip PIM-Setup-*.exe pim-android-*.apk pim-platform-server-*.tar.gz pim-shell-windows-*.zip pim-shell-android-*.apk pim-browser-extension-*.zip; do
+          for p in pim-api-*.tar.gz pim-web-*.tar.gz pim-windows-*.zip PIM-Setup-*.exe pim-android-*.apk pim-platform-server-*.tar.gz pim-shell-windows-*.zip pim-shell-android-*.apk pim-browser-extension-*.zip pim-mcp-server-*.tar.gz; do
             ls release-assets/${p} >/dev/null 2>&1 \
               || { echo "::error::Missing release asset family: ${p}" >&2; exit 1; }
           done
@@ -428,5 +444,6 @@ jobs:
             release-assets/pim-shell-windows-*.zip
             release-assets/pim-shell-android-*.apk
             release-assets/pim-browser-extension-*.zip
+            release-assets/pim-mcp-server-*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
