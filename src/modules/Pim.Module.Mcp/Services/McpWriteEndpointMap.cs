@@ -100,7 +100,7 @@ public static class McpWriteEndpointMap
             regex += Regex.Escape(parts[i]);
         }
         regex += "$";
-        map[tool] = new Endpoint(method, new Regex(regex, RegexOptions.Compiled | RegexOptions.CultureInvariant));
+        map[tool] = new Endpoint(method, new Regex(regex, RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
     }
 
     /// <summary>True if a (method, path) request targets any write endpoint.</summary>

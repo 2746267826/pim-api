@@ -3266,7 +3266,8 @@ class _RequireBearer:
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         path = scope.get("path", "")
-        is_mcp_path = path == _MCP_PATH or path.startswith(_MCP_PATH + "/") or path.startswith(_MCP_PATH + "?")
+        # ASGI scope["path"] excludes the query string, so exact + prefix check suffices.
+        is_mcp_path = path == _MCP_PATH or path.startswith(_MCP_PATH + "/")
         if scope["type"] == "http" and is_mcp_path:
             method = (scope.get("method") or "").upper()
             if method != "OPTIONS":

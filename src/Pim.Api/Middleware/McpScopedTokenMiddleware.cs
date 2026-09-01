@@ -5,10 +5,11 @@ namespace Pim.Api.Middleware;
 
 /// <summary>
 /// Enforces MCP tool scoping on REST requests. Any JWT that carries an <c>mcp_tool</c> claim
-/// (issued by <c>POST /api/v1/mcp/verify</c>) may only call the REST endpoint of that tool:
+/// (issued by <c>POST /api/v1/mcp/verify</c>) may only call endpoints permitted for that tool:
 /// - write tools: the exact mapped endpoint (method + path);
-/// - read tools: any non-write endpoint.
-/// This prevents a verified read-tool token from being reused against write endpoints.
+/// - read tools: any GET under /api/* plus an allowlist of read-semantic POST endpoints.
+/// This prevents a verified read-tool token from being reused against write endpoints
+/// (including unmapped high-risk ones such as data-center/batch/execute).
 /// </summary>
 public sealed class McpScopedTokenMiddleware
 {
@@ -28,7 +29,7 @@ public sealed class McpScopedTokenMiddleware
             var path = context.Request.Path.Value ?? string.Empty;
             var allowed = McpToolCatalog.IsWrite(tool)
                 ? McpWriteEndpointMap.IsAllowedForTool(tool, method, path)
-                : !McpWriteEndpointMap.IsWriteEndpoint(method, path);
+                : McpReadEndpointPolicy.IsReadAllowed(method, path);
             if (!allowed)
             {
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;

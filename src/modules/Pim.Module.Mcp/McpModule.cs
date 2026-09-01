@@ -135,18 +135,13 @@ public class McpModule : IModule
         });
     }
 
-    /// <summary>Client IP honoring a single X-Forwarded-For hop (reverse proxy deployments).</summary>
+    /// <summary>
+    /// Client IP for the /verify throttle. UseForwardedHeaders (KnownProxies=127.0.0.1/::1) has
+    /// already rewritten RemoteIpAddress when behind a trusted reverse proxy, so parsing a raw
+    /// X-Forwarded-For header here would only open the throttle to header spoofing.
+    /// </summary>
     private static string ClientIp(HttpContext context)
-    {
-        var forwarded = context.Request.Headers["X-Forwarded-For"].ToString();
-        if (!string.IsNullOrWhiteSpace(forwarded))
-        {
-            var first = forwarded.Split(',')[0].Trim();
-            if (first.Length > 0)
-                return first;
-        }
-        return context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-    }
+        => context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
     public Task InitializeAsync(IServiceProvider serviceProvider)
         => Task.CompletedTask;
@@ -168,16 +163,20 @@ internal sealed class VerifyThrottle
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, List<DateTimeOffset>> _failures = new();
     private readonly TimeSpan _window;
     private readonly int _maxFailures;
+    private readonly int _sweepThreshold;
 
-    public VerifyThrottle(int maxFailures = 20, TimeSpan? window = null)
+    public VerifyThrottle(int maxFailures = 20, TimeSpan? window = null, int sweepThreshold = 1000)
     {
         _maxFailures = maxFailures;
         _window = window ?? TimeSpan.FromMinutes(5);
+        _sweepThreshold = sweepThreshold;
     }
 
     public bool Allow(string ip)
     {
         var now = DateTimeOffset.UtcNow;
+        if (_failures.Count > _sweepThreshold)
+            Sweep(now);
         if (!_failures.TryGetValue(ip, out var list))
             return true;
         lock (list)
@@ -186,6 +185,19 @@ internal sealed class VerifyThrottle
             if (list.Count == 0)
                 _failures.TryRemove(ip, out _);
             return list.Count < _maxFailures;
+        }
+    }
+
+    private void Sweep(DateTimeOffset now)
+    {
+        foreach (var pair in _failures)
+        {
+            lock (pair.Value)
+            {
+                pair.Value.RemoveAll(t => now - t > _window);
+                if (pair.Value.Count == 0)
+                    _failures.TryRemove(pair.Key, out _);
+            }
         }
     }
 
