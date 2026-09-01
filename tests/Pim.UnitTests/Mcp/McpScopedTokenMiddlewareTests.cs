@@ -68,4 +68,24 @@ public sealed class McpScopedTokenMiddlewareTests
         Assert.Equal(403, await RunAsync("create_task", "DELETE", "/api/v1/calendar/tasks/x"));
         Assert.Equal(200, await RunAsync("delete_event", "DELETE", "/api/v1/calendar/events/x"));
     }
+
+    [Fact]
+    public async Task UnknownTool_IsDeniedExplicitly()
+    {
+        // Forged/unknown tool names must not fall back to the read policy.
+        Assert.Equal(403, await RunAsync("bogus_tool", "GET", "/api/v1/calendar/tasks"));
+        Assert.Equal(403, await RunAsync("bogus_tool", "POST", "/api/v1/calendar/tasks"));
+    }
+
+    [Fact]
+    public async Task ReadToken_AllowsRootHealth()
+    {
+        Assert.Equal(200, await RunAsync("get_system_health", "GET", "/health"));
+    }
+
+    [Fact]
+    public async Task WriteToken_TrailingSlash_IsNormalized()
+    {
+        Assert.Equal(200, await RunAsync("create_task", "POST", "/api/v1/calendar/tasks/"));
+    }
 }

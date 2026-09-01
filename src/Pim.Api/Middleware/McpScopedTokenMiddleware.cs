@@ -26,18 +26,29 @@ public sealed class McpScopedTokenMiddleware
         if (tool is not null)
         {
             var method = context.Request.Method;
-            var path = context.Request.Path.Value ?? string.Empty;
+            var path = (context.Request.Path.Value ?? string.Empty).TrimEnd('/');
+            // Unknown/forged tool names are denied explicitly rather than falling back to the read policy.
+            if (!McpToolCatalog.Contains(tool))
+            {
+                await DenyAsync(context, tool, method, path);
+                return;
+            }
             var allowed = McpToolCatalog.IsWrite(tool)
                 ? McpWriteEndpointMap.IsAllowedForTool(tool, method, path)
                 : McpReadEndpointPolicy.IsReadAllowed(method, path);
             if (!allowed)
             {
-                context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                await context.Response.WriteAsJsonAsync(ApiResponse<string>.Error(40302, $"mcp scope denied: {tool} cannot call {method} {path}"));
+                await DenyAsync(context, tool, method, path);
                 return;
             }
         }
 
         await _next(context);
+    }
+
+    private static async Task DenyAsync(HttpContext context, string tool, string method, string path)
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await context.Response.WriteAsJsonAsync(ApiResponse<string>.Error(40302, $"mcp scope denied: {tool} cannot call {method} {path}"));
     }
 }

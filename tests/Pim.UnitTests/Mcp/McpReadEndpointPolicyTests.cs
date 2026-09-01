@@ -16,6 +16,12 @@ public sealed class McpReadEndpointPolicyTests
     }
 
     [Fact]
+    public void ReadTokens_AllowRootHealthProbe()
+    {
+        Assert.True(McpReadEndpointPolicy.IsReadAllowed("GET", "/health"));
+    }
+
+    [Fact]
     public void ReadTokens_AllowReadSemanticPosts()
     {
         Assert.True(McpReadEndpointPolicy.IsReadAllowed("POST", "/api/v1/calendar/data-center/query"));

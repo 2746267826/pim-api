@@ -30,7 +30,11 @@ public static class McpReadEndpointPolicy
         var normalizedMethod = method.ToUpperInvariant();
         var normalizedPath = path.TrimEnd('/');
         if (normalizedMethod == "GET")
-            return normalizedPath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase);
+        {
+            // All GETs under the API plus the root health probe.
+            return normalizedPath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase)
+                || normalizedPath.Equals("/health", StringComparison.OrdinalIgnoreCase);
+        }
         if (normalizedMethod == "POST")
         {
             foreach (var pattern in ReadPostRegexes)
