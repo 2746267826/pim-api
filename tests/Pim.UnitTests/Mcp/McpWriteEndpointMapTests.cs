@@ -18,7 +18,8 @@ public sealed class McpWriteEndpointMapTests
         {
             var spec = McpToolTable.TryGet(tool)
                 ?? throw new Xunit.Sdk.XunitException($"write tool {tool} missing from McpToolTable");
-            var path = spec.Route;
+            // Concrete path like the executor's BuildPath output (params replaced), not the template.
+            var path = System.Text.RegularExpressions.Regex.Replace(spec.Route, @"\{[^}]+\}", "dummy-id");
             Assert.True(McpWriteEndpointMap.IsAllowedForTool(tool, spec.Method, path),
                 $"{tool}: {spec.Method} {path} not allowed by McpWriteEndpointMap");
         }

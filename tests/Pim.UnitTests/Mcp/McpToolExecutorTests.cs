@@ -139,7 +139,6 @@ public sealed class McpToolExecutorTests : IDisposable
             Arguments = args ?? new Dictionary<string, JsonElement>(),
         }, CancellationToken.None);
         var text = Assert.IsType<TextContentBlock>(Assert.Single(result.Content)).Text;
-        Console.WriteLine("EXECUTOR DEBUG [" + name + "]: " + text);
         return JsonNode.Parse(text);
     }
 

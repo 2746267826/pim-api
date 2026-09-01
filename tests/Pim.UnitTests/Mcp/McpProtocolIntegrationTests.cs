@@ -173,7 +173,6 @@ public sealed class McpProtocolIntegrationTests : IClassFixture<WebApplicationFa
         }));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var raw = await response.Content.ReadAsStringAsync();
-        Console.WriteLine("UNKNOWN RAW: " + raw[..Math.Min(500, raw.Length)]);
         Assert.Contains("Unknown tool", raw);
     }
 
