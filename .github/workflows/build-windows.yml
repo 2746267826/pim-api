@@ -144,6 +144,32 @@ jobs:
           }
           if (-not (Test-Path "publish/fix-keystats-session.ps1")) { throw "fix-keystats-session.ps1 not in publish" }
 
+      - name: Setup Node for browser extension
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: pim-watcher-web/package-lock.json
+
+      - name: Build and include Browser Extension
+        shell: pwsh
+        run: |
+          Push-Location "$env:GITHUB_WORKSPACE/pim-watcher-web"
+          npm ci
+          if ($LASTEXITCODE -ne 0) { Write-Error "npm ci failed"; exit 1 }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { Write-Error "browser extension build failed"; exit 1 }
+          $dest = "$env:GITHUB_WORKSPACE/src/client-windows/publish/browser-extension"
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Recurse -Force "dist/*" $dest
+          Compress-Archive -Path "$dest/*" -DestinationPath "$env:GITHUB_WORKSPACE/src/client-windows/publish/browser-extension.zip" -Force
+          Write-Host "Browser extension packaged to $dest"
+          Get-ChildItem $dest | Format-List
+          Pop-Location
+          if (-not (Test-Path "publish/browser-extension/manifest.json")) { Write-Error "browser extension manifest missing in publish"; exit 1 }
+          if (-not (Test-Path "publish/browser-extension/background/main.js")) { Write-Error "browser extension background missing"; exit 1 }
+
       - name: Write version file for reference
         shell: bash
         run: echo "${{ steps.ver.outputs.version }}" > publish/VERSION
