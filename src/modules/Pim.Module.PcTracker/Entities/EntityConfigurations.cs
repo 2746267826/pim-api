@@ -292,7 +292,11 @@ public class TrackerEventEntityConfiguration : IEntityTypeConfiguration<TrackerE
             .HasDatabaseName("idx_tracker_events_event_type");
         builder.HasIndex(e => e.IsIdle)
             .HasDatabaseName("idx_tracker_events_is_idle");
-        builder.HasIndex(e => new { e.DeviceId, e.Timestamp, e.Duration, e.EventType, e.AppName })
+        builder.HasIndex(e => e.Browser)
+            .HasDatabaseName("idx_tracker_events_browser");
+        builder.HasIndex(e => e.InstanceId)
+            .HasDatabaseName("idx_tracker_events_instance");
+        builder.HasIndex(e => new { e.DeviceId, e.Timestamp, e.Duration, e.EventType, e.AppName, e.Browser, e.InstanceId })
             .IsUnique()
             .HasDatabaseName("ux_tracker_events_dedup");
     }
