@@ -33,6 +33,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "client-windows", "client-wi
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pim.Client.Core", "src\client-windows\Pim.Client.Core\Pim.Client.Core.csproj", "{DEA6D44B-BC61-45C2-9E46-314A1380676B}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Pim.Module.Mcp", "src\modules\Pim.Module.Mcp\Pim.Module.Mcp.csproj", "{C75631E8-1561-468E-AD91-7D4865F8C687}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -175,6 +177,18 @@ Global
 		{DEA6D44B-BC61-45C2-9E46-314A1380676B}.Release|x64.Build.0 = Release|Any CPU
 		{DEA6D44B-BC61-45C2-9E46-314A1380676B}.Release|x86.ActiveCfg = Release|Any CPU
 		{DEA6D44B-BC61-45C2-9E46-314A1380676B}.Release|x86.Build.0 = Release|Any CPU
+		{C75631E8-1561-468E-AD91-7D4865F8C687}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C75631E8-1561-468E-AD91-7D4865F8C687}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C75631E8-1561-468E-AD91-7D4865F8C687}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C75631E8-1561-468E-AD91-7D4865F8C687}.Debug|x64.Build.0 = Debug|Any CPU
+		{C75631E8-1561-468E-AD91-7D4865F8C687}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C75631E8-1561-468E-AD91-7D4865F8C687}.Debug|x86.Build.0 = Debug|Any CPU
+		{C75631E8-1561-468E-AD91-7D4865F8C687}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C75631E8-1561-468E-AD91-7D4865F8C687}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C75631E8-1561-468E-AD91-7D4865F8C687}.Release|x64.ActiveCfg = Release|Any CPU
+		{C75631E8-1561-468E-AD91-7D4865F8C687}.Release|x64.Build.0 = Release|Any CPU
+		{C75631E8-1561-468E-AD91-7D4865F8C687}.Release|x86.ActiveCfg = Release|Any CPU
+		{C75631E8-1561-468E-AD91-7D4865F8C687}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -193,5 +207,6 @@ Global
 		{3587D481-E50F-43D3-8865-757E6641FCC7} = {EC447DCF-ABFA-6E24-52A5-D7FD48A5C558}
 		{E4D81090-A16A-E700-5441-8675874EAEB2} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{DEA6D44B-BC61-45C2-9E46-314A1380676B} = {E4D81090-A16A-E700-5441-8675874EAEB2}
+		{C75631E8-1561-468E-AD91-7D4865F8C687} = {EC447DCF-ABFA-6E24-52A5-D7FD48A5C558}
 	EndGlobalSection
 EndGlobal
