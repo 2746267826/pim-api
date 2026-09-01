@@ -75,8 +75,17 @@ public sealed class McpClientServiceTests : IDisposable
     [Fact]
     public async Task VerifyAsync_UnknownToken_Returns401()
     {
-        var outcome = await _service.VerifyAsync("pim_mcp_doesnotexist", null, null);
+        var outcome = await _service.VerifyAsync("pim_mcp_doesnotexist", "get_tasks", null);
         Assert.Equal(401, outcome.HttpStatus);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_MissingTool_Returns400()
+    {
+        var created = await _service.CreateAsync("NoTool", _owner);
+        var outcome = await _service.VerifyAsync(created.Token, null, null);
+        Assert.Equal(400, outcome.HttpStatus);
+        Assert.Equal("tool is required", outcome.Error);
     }
 
     [Fact]
@@ -84,7 +93,7 @@ public sealed class McpClientServiceTests : IDisposable
     {
         var created = await _service.CreateAsync("Revoked", _owner);
         await _service.RevokeAsync(created.Client.Id, _owner);
-        var outcome = await _service.VerifyAsync(created.Token, null, null);
+        var outcome = await _service.VerifyAsync(created.Token, "get_tasks", null);
         Assert.Equal(401, outcome.HttpStatus);
     }
 
@@ -209,6 +218,22 @@ public sealed class McpClientServiceTests : IDisposable
         Assert.Equal(101, dto.Permissions["read"].Count);
         Assert.True(dto.Permissions["read"]["get_tasks"]);
         Assert.True(dto.Permissions["write"]["create_task"]);
+        // Unlisted write tools keep their previous value (not wiped).
+        Assert.Equal(50, dto.Permissions["write"].Count);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_PartialPermission_KeepsOtherKeysInSameSection()
+    {
+        var created = await _service.CreateAsync("Partial2", _owner);
+        var singleKey = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, bool>>
+        {
+            ["read"] = new() { ["get_events"] = false },
+        };
+        var dto = await _service.UpdateAsync(created.Client.Id, null, singleKey, _owner);
+        Assert.False(dto.Permissions["read"]["get_events"]);
+        Assert.True(dto.Permissions["read"]["get_tasks"]);
+        Assert.Equal(101, dto.Permissions["read"].Count);
     }
 
     private sealed class StubHostEnvironment : IHostEnvironment

@@ -896,6 +896,8 @@ async def _call_api_multipart(
     _retry_on_401: bool = True,
 ) -> Any:
     """Multipart/form-data upload (import_ics, upload_file, upload_quick_note_attachment)."""
+    # Note: the 401 auto-refresh branch below is stdio-only. In HTTP mode _get_token()
+    # never returns an env/file token, so the refresh path is effectively skipped.
     token = _get_token()
     if not token:
         return {
@@ -3170,7 +3172,7 @@ async def create_category(
     appPattern: str,
     categoryName: str,
     color: str,
-    priority: int,
+    priority: Optional[int] = None,
 ) -> Any:
     """Create a PC activity category (maps an app pattern to a category). Requires write permission create_category."""
     for f in ("appPattern", "categoryName", "color"):
@@ -3252,23 +3254,33 @@ _register_write_tool_names(
 
 # ---------- entrypoint ----------
 class _RequireBearer:
-    """Starlette middleware: in HTTP mode reject any /mcp request without an Authorization: Bearer header."""
+    """Starlette middleware: in HTTP mode reject any MCP request without an Authorization: Bearer header.
+
+    OPTIONS (CORS preflight) is allowed through. The guard only applies to the configured MCP
+    path, leaving room for future non-MCP endpoints. Unauthorized responses are JSON
+    `{code: 40101, message: ...}` matching the API error envelope.
+    """
 
     def __init__(self, app: Any) -> None:
         self.app = app
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] == "http":
-            headers = {
-                k.decode("latin-1").lower(): v.decode("latin-1")
-                for k, v in scope.get("headers", [])
-            }
-            if not headers.get("authorization", "").strip().lower().startswith("bearer "):
-                from starlette.responses import PlainTextResponse
+        if scope["type"] == "http" and scope.get("path", "").startswith(_MCP_PATH):
+            method = (scope.get("method") or "").upper()
+            if method != "OPTIONS":
+                headers = {
+                    k.decode("latin-1").lower(): v.decode("latin-1")
+                    for k, v in scope.get("headers", [])
+                }
+                if not headers.get("authorization", "").strip().lower().startswith("bearer "):
+                    from starlette.responses import JSONResponse
 
-                response = PlainTextResponse("missing bearer token", status_code=401)
-                await response(scope, receive, send)
-                return
+                    response = JSONResponse(
+                        {"code": 40101, "message": "missing bearer token", "data": None},
+                        status_code=401,
+                    )
+                    await response(scope, receive, send)
+                    return
         await self.app(scope, receive, send)
 
 

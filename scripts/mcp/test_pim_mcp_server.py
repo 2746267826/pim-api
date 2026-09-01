@@ -134,9 +134,26 @@ def test_require_bearer_rejects_missing_header():
             raise AssertionError("inner app must not run")
 
     mw = s._RequireBearer(Inner())
-    asyncio.run(mw({"type": "http", "headers": []}, None, send))
+    asyncio.run(mw({"type": "http", "path": "/mcp", "method": "POST", "headers": []}, None, send))
     starts = [m for m in sent if m["type"] == "http.response.start"]
     assert starts and starts[0]["status"] == 401
+
+
+def test_require_bearer_allows_options():
+    import asyncio
+
+    ran = []
+
+    async def send(message):
+        pass
+
+    class Inner:
+        async def __call__(self, scope, receive, send):
+            ran.append(True)
+
+    mw = s._RequireBearer(Inner())
+    asyncio.run(mw({"type": "http", "path": "/mcp", "method": "OPTIONS", "headers": []}, None, send))
+    assert ran == [True]
 
 
 def test_wrapped_tool_returns_401_when_no_request_token():
