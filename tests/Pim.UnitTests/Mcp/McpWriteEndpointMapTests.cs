@@ -10,13 +10,19 @@ public sealed class McpWriteEndpointMapTests
     public void EveryWriteTool_HasAnAllowedEndpoint()
     {
         var tools = McpToolCatalog.WriteTools.Select(t => t.Name).ToList();
+        Assert.Equal(50, tools.Count);
+
+        // Every write tool must be reachable through its McpToolTable route with the mapped
+        // endpoint (IsAllowedForTool must accept the exact route the executor dispatches to).
         foreach (var tool in tools)
         {
-            // IsAllowedForTool needs a concrete method+path; just assert the map knows the tool
-            // by checking a representative endpoint through IsWriteEndpoint for its group.
-            Assert.True(tools.Contains(tool));
+            var spec = McpToolTable.TryGet(tool)
+                ?? throw new Xunit.Sdk.XunitException($"write tool {tool} missing from McpToolTable");
+            // Concrete path like the executor's BuildPath output (params replaced), not the template.
+            var path = System.Text.RegularExpressions.Regex.Replace(spec.Route, @"\{[^}]+\}", "dummy-id");
+            Assert.True(McpWriteEndpointMap.IsAllowedForTool(tool, spec.Method, path),
+                $"{tool}: {spec.Method} {path} not allowed by McpWriteEndpointMap");
         }
-        Assert.Equal(50, tools.Count);
     }
 
     [Fact]

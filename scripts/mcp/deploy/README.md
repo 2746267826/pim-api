@@ -1,7 +1,9 @@
 # PIM MCP Server 生产部署（HTTP / Streamable HTTP）
 
-本目录提供 issue #178 的部署模板：systemd 单元 + OpenResty 反代片段。
-部署完成后 `https://home.hsww.party:15858/mcp` 即为可用的 MCP Streamable HTTP 端点。
+> ⚠️ **已废弃（2026-09-01）**：MCP Server 已集成进 Pim.Api（.NET 8）进程内，
+> `/mcp` Streamable HTTP 端点随 API 直接对外，**不再需要 Python 进程 / systemd 单元**。
+> 仅 `openresty-mcp.conf` 仍需使用（`proxy_pass` 已指向 Pim.Api，不再指向 8080）。
+> 本 README 保留作历史参考。
 
 ## 前置条件
 

@@ -25,6 +25,7 @@ public class McpModule : IModule
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
         services.AddScoped<McpClientService>();
+        services.AddPimMcp(configuration);
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)

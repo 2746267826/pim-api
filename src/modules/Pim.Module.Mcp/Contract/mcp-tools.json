@@ -1,0 +1,4932 @@
+[
+ {
+  "name": "get_calendar_layers",
+  "description": "Get calendar layers (events+tasks+habits) overlay. Default layers=all when omitted. Covers full time range with timezone-aware day slicing. Useful for 'today what's up' view. Returns CalendarLayerResponse.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "layers": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Layers"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    },
+    "redactUrls": {
+     "default": true,
+     "title": "Redacturls",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_calendar_layersArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "query_data_center",
+  "description": "Universal query for calendar data center (read semantic POST). Supports search/objectType/source filters with pagination. Returns DataCenterQueryResponse.",
+  "inputSchema": {
+   "properties": {
+    "search": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Search"
+    },
+    "objectType": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Objecttype"
+    },
+    "source": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Source"
+    },
+    "pendingOnly": {
+     "default": false,
+     "title": "Pendingonly",
+     "type": "boolean"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "title": "query_data_centerArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "preview_data_center_batch",
+  "description": "Preview data-center batch operation (read-only, does not execute). Returns risk level, affected count, summary.",
+  "inputSchema": {
+   "properties": {
+    "action": {
+     "title": "Action",
+     "type": "string"
+    },
+    "objects": {
+     "items": {
+      "additionalProperties": true,
+      "type": "object"
+     },
+     "title": "Objects",
+     "type": "array"
+    },
+    "reason": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Reason"
+    }
+   },
+   "required": [
+    "action",
+    "objects"
+   ],
+   "title": "preview_data_center_batchArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_data_center_audit_export",
+  "description": "Export audit log for data center in time range. Returns AuditExportResponse.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Start"
+    },
+    "end": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "End"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "title": "get_data_center_audit_exportArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "preview_data_center_restore",
+  "description": "Preview restore from audit version (read-only, does not restore). Returns RestorePreview.",
+  "inputSchema": {
+   "properties": {
+    "auditVersionId": {
+     "title": "Auditversionid",
+     "type": "string"
+    },
+    "reason": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Reason"
+    }
+   },
+   "required": [
+    "auditVersionId"
+   ],
+   "title": "preview_data_center_restoreArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_projects",
+  "description": "List domain projects. Returns DomainProject[].",
+  "inputSchema": {
+   "properties": {
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_projectsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_task_books",
+  "description": "List task books. Returns TaskBook[].",
+  "inputSchema": {
+   "properties": {
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_task_booksArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_habits",
+  "description": "List habit routines. Optional time filter. Returns HabitRoutine[].",
+  "inputSchema": {
+   "properties": {
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    },
+    "start": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Start"
+    },
+    "end": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "End"
+    }
+   },
+   "title": "get_habitsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_availability_windows",
+  "description": "List availability windows. Returns AvailabilityWindow[]. If start/end omitted, returns all.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Start"
+    },
+    "end": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "End"
+    }
+   },
+   "title": "get_availability_windowsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_reminders",
+  "description": "List reminders. Optional time range filter (applied locally if API ignores). Returns Reminder[].",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Start"
+    },
+    "end": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "End"
+    }
+   },
+   "title": "get_remindersArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_reminder_delivery_log",
+  "description": "Get reminder delivery log. Returns ReminderDelivery[].",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Start"
+    },
+    "end": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "End"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_reminder_delivery_logArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_reports",
+  "description": "List report artifacts. Optional time range. Returns ReportArtifact[].",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Start"
+    },
+    "end": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "End"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_reportsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_report",
+  "description": "Get single report artifact by id. Returns ReportArtifact.",
+  "inputSchema": {
+   "properties": {
+    "report_id": {
+     "title": "Report Id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "report_id"
+   ],
+   "title": "get_reportArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_calendars",
+  "description": "List all calendars. Returns Calendar[].",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_calendarsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_events",
+  "description": "List calendar events with optional time range and calendar filter. Core query. Returns Event[] (PagedResult when page params sent).",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Start"
+    },
+    "end": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "End"
+    },
+    "calendarId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Calendarid"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    },
+    "redactUrls": {
+     "default": true,
+     "title": "Redacturls",
+     "type": "boolean"
+    }
+   },
+   "title": "get_eventsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_tasks",
+  "description": "List tasks filtered by status and calendar. Returns Task[] (PagedResult when filters present).",
+  "inputSchema": {
+   "properties": {
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    },
+    "calendarId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Calendarid"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_tasksArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_task_segments",
+  "description": "List execution segments for a task. Returns TaskExecutionSegment[].",
+  "inputSchema": {
+   "properties": {
+    "task_id": {
+     "title": "Task Id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "task_id"
+   ],
+   "title": "get_task_segmentsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_recycle_bin",
+  "description": "List recycle-bin items. Optional type filter (calendar/event/task). Returns RecycleBinItem[].",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Start"
+    },
+    "end": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "End"
+    },
+    "type": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Type"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_recycle_binArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "preview_recycle_bin_restore",
+  "description": "Preview recycle-bin restore (read-only, does not restore). Returns RestorePreview.",
+  "inputSchema": {
+   "properties": {
+    "type": {
+     "title": "Type",
+     "type": "string"
+    },
+    "id": {
+     "title": "Id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "type",
+    "id"
+   ],
+   "title": "preview_recycle_bin_restoreArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_export_ics",
+  "description": "Export ICS text for events in range. Returns ics text. calendarId filters by calendar (best-effort), ids is comma-separated event ids.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "calendarId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Calendarid"
+    },
+    "ids": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Ids"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_export_icsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_outlook_settings",
+  "description": "Get Outlook sync settings (read-only). Returns OutlookSettingsResponse.",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_outlook_settingsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_outlook_sync_batches",
+  "description": "List Outlook sync batches. Returns SyncBatch[] with pagination.",
+  "inputSchema": {
+   "properties": {
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_outlook_sync_batchesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_outlook_local_data_preview",
+  "description": "Preview local Outlook data counts (read-only). Returns Preview with binding/calendar/event counts.",
+  "inputSchema": {
+   "properties": {
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_outlook_local_data_previewArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_event_by_id",
+  "description": "Get single event by id. Tries direct fetch, falls back to filtered list. Returns Event. Note: fallback scans 730-day window page 1 only; if not found try broader search via search_pim.",
+  "inputSchema": {
+   "properties": {
+    "event_id": {
+     "title": "Event Id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "event_id"
+   ],
+   "title": "get_event_by_idArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_task_by_id",
+  "description": "Get single task by id. Falls back to filtered list if direct endpoint missing. Returns Task. Fallback limited to page 1.",
+  "inputSchema": {
+   "properties": {
+    "task_id": {
+     "title": "Task Id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "task_id"
+   ],
+   "title": "get_task_by_idArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_habit_occurrences",
+  "description": "List occurrences for a habit in range. Returns Occurrence[]. Uses data-center query as primary (no dedicated GET).",
+  "inputSchema": {
+   "properties": {
+    "habit_id": {
+     "title": "Habit Id",
+     "type": "string"
+    },
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    }
+   },
+   "required": [
+    "habit_id",
+    "start",
+    "end"
+   ],
+   "title": "get_habit_occurrencesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_schedule_preview",
+  "description": "Get schedule preview (read-only). Returns SchedulePlan. If taskIds omitted, previews all pending tasks.",
+  "inputSchema": {
+   "properties": {
+    "taskIds": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Taskids"
+    }
+   },
+   "title": "get_schedule_previewArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_calendar_by_id",
+  "description": "Get single calendar by id (via list filter). Returns Calendar.",
+  "inputSchema": {
+   "properties": {
+    "calendar_id": {
+     "title": "Calendar Id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "calendar_id"
+   ],
+   "title": "get_calendar_by_idArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_task_checklist",
+  "description": "Get checklist items for a task. Returns ChecklistItem[]. Best-effort (no dedicated GET).",
+  "inputSchema": {
+   "properties": {
+    "task_id": {
+     "title": "Task Id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "task_id"
+   ],
+   "title": "get_task_checklistArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "search_calendar_events",
+  "description": "Search calendar events by keyword with optional time range. Returns Event[]. Uses /calendar/events?search and falls back to /search.",
+  "inputSchema": {
+   "properties": {
+    "q": {
+     "title": "Q",
+     "type": "string"
+    },
+    "start": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Start"
+    },
+    "end": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "End"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "q"
+   ],
+   "title": "search_calendar_eventsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "search_calendar_tasks",
+  "description": "Search calendar tasks by keyword with optional time range. Returns Task[].",
+  "inputSchema": {
+   "properties": {
+    "q": {
+     "title": "Q",
+     "type": "string"
+    },
+    "start": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Start"
+    },
+    "end": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "End"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "q"
+   ],
+   "title": "search_calendar_tasksArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_summary",
+  "description": "Get PC summary for a day. Returns PcSummaryResponse. date format YYYY-MM-DD.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "title": "Date",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "date"
+   ],
+   "title": "get_pc_summaryArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_detail",
+  "description": "Get PC detail records with filters. Returns TypedDetailQueryResponse. Supports redactUrls for url hashing.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Date"
+    },
+    "dateFrom": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Datefrom"
+    },
+    "dateTo": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Dateto"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    },
+    "redactUrls": {
+     "default": true,
+     "title": "Redacturls",
+     "type": "boolean"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_pc_detailArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_timeline",
+  "description": "Get PC timeline v1 (raw). Returns TimelineItem[] for a day.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "title": "Date",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "date"
+   ],
+   "title": "get_pc_timelineArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_timeline_v2",
+  "description": "Get PC timeline v2 (smoothed with classification). Returns TimelineV2Item[]. Preferred over v1.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "title": "Date",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    },
+    "redactUrls": {
+     "default": true,
+     "title": "Redacturls",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "date"
+   ],
+   "title": "get_pc_timeline_v2Arguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_heatmap",
+  "description": "Get PC heatmap grid. Returns HeatmapGridResponse. dimension=day.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "dimension": {
+     "default": "day",
+     "title": "Dimension",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_pc_heatmapArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_activity_analysis",
+  "description": "Get PC activity analysis for a day with blockMinutes (15/30/60). Returns PcActivityAnalysisResponse.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "title": "Date",
+     "type": "string"
+    },
+    "blockMinutes": {
+     "default": 60,
+     "title": "Blockminutes",
+     "type": "integer"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "date"
+   ],
+   "title": "get_pc_activity_analysisArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_quality",
+  "description": "Get PC data quality report. Returns PcQualityResponse. Supports single date or range.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Date"
+    },
+    "dateFrom": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Datefrom"
+    },
+    "dateTo": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Dateto"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "title": "get_pc_qualityArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_aw_heatmap",
+  "description": "Get PC active-window heatmap (raw). Returns HeatmapBucket[].",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_pc_aw_heatmapArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_keystats_range",
+  "description": "Get PC keystats range. Returns KeystatsSummary[] per day.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_pc_keystats_rangeArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_focus_blocks",
+  "description": "Get PC focus blocks (deep work sessions) for range. Core for weekly report. Returns PcFocusBlocksResponse.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_pc_focus_blocksArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_app_usage",
+  "description": "Get PC app usage aggregation. Returns PcAppUsageResponse sorted by duration.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    },
+    "limit": {
+     "default": 20,
+     "title": "Limit",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_pc_app_usageArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_late_night",
+  "description": "Get PC late-night usage aggregation. Returns PcLateNightResponse.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_pc_late_nightArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_category_distribution",
+  "description": "Get PC category time distribution for range. Returns PcCategoryDistributionResponse.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_pc_category_distributionArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_categories",
+  "description": "List PC app category rules (flat). Returns AppCategoryRule[].",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_pc_categoriesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_category_tree",
+  "description": "Get PC category tree (hierarchical). Returns CategoryTreeNode[].",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_pc_category_treeArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_category_dictionary",
+  "description": "Get PC category dictionary (flat list with metadata). Returns CategoryDictionaryItemDto[].",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_pc_category_dictionaryArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_productivity_dashboard",
+  "description": "Get PC productivity dashboard for a day. Returns ProductivityDashboardDto.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "title": "Date",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "date"
+   ],
+   "title": "get_pc_productivity_dashboardArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_pc_productivity_range",
+  "description": "Get PC productivity range (weekly). Returns DailyProductivityDto[] per day.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_pc_productivity_rangeArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_classification_rules",
+  "description": "List PC activity classification rules. Returns ActivityClassificationRuleDto[].",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_classification_rulesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_classification_suggestions",
+  "description": "List classification suggestions for a day. Returns ActivityClassificationSuggestionDto[].",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "title": "Date",
+     "type": "string"
+    }
+   },
+   "required": [
+    "date"
+   ],
+   "title": "get_classification_suggestionsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_classification_queue",
+  "description": "Get classification labeling queue. Returns ActivityLabelingQueueResponse.",
+  "inputSchema": {
+   "properties": {
+    "limit": {
+     "default": 20,
+     "title": "Limit",
+     "type": "integer"
+    },
+    "mode": {
+     "default": "queue",
+     "title": "Mode",
+     "type": "string"
+    }
+   },
+   "title": "get_classification_queueArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_classification_project_tags_recent",
+  "description": "Get recent project tags for classification. Returns string[].",
+  "inputSchema": {
+   "properties": {
+    "limit": {
+     "default": 10,
+     "title": "Limit",
+     "type": "integer"
+    }
+   },
+   "title": "get_classification_project_tags_recentArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_app_knowledge_apps",
+  "description": "List app-knowledge apps. Returns AppKnowledgeAppDto[] with optional search.",
+  "inputSchema": {
+   "properties": {
+    "search": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Search"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_app_knowledge_appsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_app_knowledge_contexts",
+  "description": "Get contexts for an app-knowledge app. Returns AppKnowledgeContextDto[].",
+  "inputSchema": {
+   "properties": {
+    "appId": {
+     "title": "Appid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "appId"
+   ],
+   "title": "get_app_knowledge_contextsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_app_signatures",
+  "description": "List app signatures (process -> app mapping). Returns AppSignatureDto[].",
+  "inputSchema": {
+   "properties": {
+    "search": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Search"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 50,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_app_signaturesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "lookup_app_signature",
+  "description": "Lookup app signature by process name. Returns AppSignatureDto or 404.",
+  "inputSchema": {
+   "properties": {
+    "processName": {
+     "title": "Processname",
+     "type": "string"
+    }
+   },
+   "required": [
+    "processName"
+   ],
+   "title": "lookup_app_signatureArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_classification_settings",
+  "description": "Get classification settings. Returns ActivityClassificationSettingsDto.",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_classification_settingsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_summary",
+  "description": "Get mobile usage summary for a day (separate from timeline). Returns MobileUsageSummaryResponse.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "title": "Date",
+     "type": "string"
+    },
+    "deviceId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Deviceid"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "date"
+   ],
+   "title": "get_mobile_summaryArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_timeline",
+  "description": "Get mobile timeline for a day (app usage sessions). Returns MobileTimelineResponse.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "title": "Date",
+     "type": "string"
+    },
+    "deviceId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Deviceid"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    },
+    "redactUrls": {
+     "default": true,
+     "title": "Redacturls",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "date"
+   ],
+   "title": "get_mobile_timelineArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_location_history",
+  "description": "Get mobile location history in range. Returns MobileLocationHistoryResponse with points.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Start"
+    },
+    "end": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "End"
+    },
+    "maxAccuracyMeters": {
+     "default": 50,
+     "title": "Maxaccuracymeters",
+     "type": "number"
+    },
+    "deviceId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Deviceid"
+    }
+   },
+   "title": "get_mobile_location_historyArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_location_latest",
+  "description": "Get latest mobile location point. Returns single point (history with latest).",
+  "inputSchema": {
+   "properties": {
+    "maxAccuracyMeters": {
+     "default": 50,
+     "title": "Maxaccuracymeters",
+     "type": "number"
+    },
+    "deviceId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Deviceid"
+    }
+   },
+   "title": "get_mobile_location_latestArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_location_tracks",
+  "description": "Get mobile location tracks (clustered). Returns MobileLocationTrackDto[].",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    },
+    "maxAccuracyMeters": {
+     "default": 50,
+     "title": "Maxaccuracymeters",
+     "type": "number"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_mobile_location_tracksArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_location_overview",
+  "description": "Get mobile location overview (distance, stay, movement). Returns MobileLocationAnalyticsOverviewResponse.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_mobile_location_overviewArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_location_frequent_places",
+  "description": "Get frequent places derived from location. Returns MobileFrequentPlacesResponse.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_mobile_location_frequent_placesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_location_movement_stats",
+  "description": "Get movement stats (speed, distance, active time). Returns MobileMovementStatsResponse.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_mobile_location_movement_statsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_quality",
+  "description": "Get mobile collection quality for a day. Returns MobileQualityResponse.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "title": "Date",
+     "type": "string"
+    },
+    "deviceId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Deviceid"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "date"
+   ],
+   "title": "get_mobile_qualityArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_analytics_overview",
+  "description": "Get mobile analytics overview (usage). Core for weekly report. Returns MobileAnalyticsOverviewResponse.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_mobile_analytics_overviewArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_analytics_heatmap",
+  "description": "Get mobile analytics heatmap (hourly). Returns MobileHeatmapBucketDto[].",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_mobile_analytics_heatmapArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_analytics_charts",
+  "description": "Get mobile analytics charts data. Returns MobileAnalyticsChartDto[].",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_mobile_analytics_chartsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_timeline_blocks",
+  "description": "Get mobile timeline blocks (aggregated sessions). Returns MobileTimelineBlockPageDto.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "title": "Start",
+     "type": "string"
+    },
+    "end": {
+     "title": "End",
+     "type": "string"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "title": "get_mobile_timeline_blocksArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_devices",
+  "description": "List mobile devices (simple). Returns MobileDeviceDto[].",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_mobile_devicesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_devices_manage",
+  "description": "List mobile devices with management info, optional sortBy. Returns DeviceListDto[].",
+  "inputSchema": {
+   "properties": {
+    "sortBy": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Sortby"
+    }
+   },
+   "title": "get_mobile_devices_manageArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_apps_catalog_overrides",
+  "description": "List mobile app catalog overrides. Returns MobileAppCatalogOverrideDto[].",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_mobile_apps_catalog_overridesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_apps_category_rules",
+  "description": "List mobile app category rules. Returns MobileAppCategoryRuleDto[].",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_mobile_apps_category_rulesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_mobile_goals",
+  "description": "List mobile usage goals. Returns MobileUsageGoalDto[].",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_mobile_goalsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_quick_notes",
+  "description": "List quick notes with optional status and search. Returns PagedResult<QuickNoteListItemDto>.",
+  "inputSchema": {
+   "properties": {
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    },
+    "search": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Search"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_quick_notesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_quick_note",
+  "description": "Get single quick note by id. Returns QuickNoteDetailDto.",
+  "inputSchema": {
+   "properties": {
+    "note_id": {
+     "title": "Note Id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "note_id"
+   ],
+   "title": "get_quick_noteArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_quick_note_attachment_meta",
+  "description": "Get quick note attachment metadata (not binary). Returns download info meta. If API streams binary, returns headers only.",
+  "inputSchema": {
+   "properties": {
+    "attachment_id": {
+     "title": "Attachment Id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "attachment_id"
+   ],
+   "title": "get_quick_note_attachment_metaArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_file_providers",
+  "description": "List file providers (e.g. Nextcloud). Returns FileProviderDto[].",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_file_providersArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_files",
+  "description": "List files with optional folder. Returns FileListResponse (paged).",
+  "inputSchema": {
+   "properties": {
+    "folderId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Folderid"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    },
+    "redactUrls": {
+     "default": true,
+     "title": "Redacturls",
+     "type": "boolean"
+    }
+   },
+   "title": "get_filesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_file",
+  "description": "Get single file item by id. Returns FileItemDto.",
+  "inputSchema": {
+   "properties": {
+    "file_id": {
+     "title": "File Id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "file_id"
+   ],
+   "title": "get_fileArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_file_versions",
+  "description": "List versions for a file. Returns FileVersion[].",
+  "inputSchema": {
+   "properties": {
+    "file_id": {
+     "title": "File Id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "file_id"
+   ],
+   "title": "get_file_versionsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_file_trash",
+  "description": "List file trash items. Returns ProviderTrashItem[].",
+  "inputSchema": {
+   "properties": {
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_file_trashArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "search_files",
+  "description": "Search files (fulltext + semantic). Core for RAG. Returns FileSearchResponse (paged).",
+  "inputSchema": {
+   "properties": {
+    "q": {
+     "title": "Q",
+     "type": "string"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "q"
+   ],
+   "title": "search_filesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_file_suggestions",
+  "description": "List file organization suggestions. Returns FileSuggestion[].",
+  "inputSchema": {
+   "properties": {
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_file_suggestionsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_file_open_link",
+  "description": "Get open link for a file (WebDAV/Nextcloud). Returns {openLink}. Note: may contain url, hashed if redactUrls implicit. Call with redact handling.",
+  "inputSchema": {
+   "properties": {
+    "file_id": {
+     "title": "File Id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "file_id"
+   ],
+   "title": "get_file_open_linkArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_today_sections",
+  "description": "Get today sections registry (all sections for a day). Returns TodaySectionRegistryDto. date YYYY-MM-DD or omit for today.",
+  "inputSchema": {
+   "properties": {
+    "date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Date"
+    },
+    "timezone": {
+     "default": "Asia/Shanghai",
+     "title": "Timezone",
+     "type": "string"
+    }
+   },
+   "title": "get_today_sectionsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_today_section",
+  "description": "Get single today section by id. Returns TodaySectionDto.",
+  "inputSchema": {
+   "properties": {
+    "sectionId": {
+     "title": "Sectionid",
+     "type": "string"
+    },
+    "date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Date"
+    }
+   },
+   "required": [
+    "sectionId"
+   ],
+   "title": "get_today_sectionArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "search_pim",
+  "description": "Global search across PIM (events, tasks, notes, files). Returns PagedResult<SearchResult>. type comma-separated e.g. 'event,task,note,file'.",
+  "inputSchema": {
+   "properties": {
+    "q": {
+     "title": "Q",
+     "type": "string"
+    },
+    "type": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Type"
+    },
+    "limit": {
+     "default": 20,
+     "title": "Limit",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "q"
+   ],
+   "title": "search_pimArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_system_status",
+  "description": "Get system status (overall). Returns StatusResponse. Maps to GET /status.",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_system_statusArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_system_health",
+  "description": "Get health check. Returns {status, timestamp}. Maps to GET /health (allow anonymous but we pass token).",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_system_healthArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_status_summary",
+  "description": "Get status summary (counts). Returns SummaryResponse. Maps to GET /status/summary.",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_status_summaryArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_ai_status",
+  "description": "Get AI gateway status. Returns {enabled, model, health}. Maps to GET /ai/status.",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_ai_statusArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_ai_requests",
+  "description": "List AI requests with filters. Returns PagedResult<AiRequest>.",
+  "inputSchema": {
+   "properties": {
+    "from_time": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "From Time"
+    },
+    "to": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "To"
+    },
+    "module": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Module"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    },
+    "page": {
+     "default": 1,
+     "title": "Page",
+     "type": "integer"
+    },
+    "pageSize": {
+     "default": 20,
+     "title": "Pagesize",
+     "type": "integer"
+    }
+   },
+   "title": "get_ai_requestsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_ai_usage_summary",
+  "description": "Get AI usage summary in range. Returns {totalRequests, tokens, cost}. Maps to GET /ai/usage/summary?from&to.",
+  "inputSchema": {
+   "properties": {
+    "from_time": {
+     "title": "From Time",
+     "type": "string"
+    },
+    "to": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "To"
+    }
+   },
+   "required": [
+    "from_time"
+   ],
+   "title": "get_ai_usage_summaryArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_audit_timeline",
+  "description": "Get audit timeline for an object. Returns AuditVersion[] for objectType/objectId.",
+  "inputSchema": {
+   "properties": {
+    "objectType": {
+     "title": "Objecttype",
+     "type": "string"
+    },
+    "objectId": {
+     "title": "Objectid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "objectType",
+    "objectId"
+   ],
+   "title": "get_audit_timelineArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_audit_export",
+  "description": "Export audit log in range (operations). Returns AuditExport.",
+  "inputSchema": {
+   "properties": {
+    "start": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Start"
+    },
+    "end": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "End"
+    }
+   },
+   "title": "get_audit_exportArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_confirmations_pending",
+  "description": "List pending confirmations needing human approval. Returns OperationConfirmationDto[].",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_confirmations_pendingArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_endpoints",
+  "description": "List registered endpoints/clients. Returns EndpointDto[].",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_endpointsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "get_version",
+  "description": "Get API version info. Returns {version, gitSha, buildTime}. Maps to GET /api/version.",
+  "inputSchema": {
+   "properties": {},
+   "title": "get_versionArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_event",
+  "description": "Create a calendar event. Requires write permission create_event. Returns the created EventResponse.",
+  "inputSchema": {
+   "properties": {
+    "calendarId": {
+     "title": "Calendarid",
+     "type": "string"
+    },
+    "title": {
+     "title": "Title",
+     "type": "string"
+    },
+    "dtStart": {
+     "title": "Dtstart",
+     "type": "string"
+    },
+    "dtEnd": {
+     "title": "Dtend",
+     "type": "string"
+    },
+    "description": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Description"
+    },
+    "location": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Location"
+    },
+    "rRule": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Rrule"
+    },
+    "uid": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Uid"
+    },
+    "isAllDay": {
+     "default": false,
+     "title": "Isallday",
+     "type": "boolean"
+    },
+    "timeZoneId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Timezoneid"
+    },
+    "showAs": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Showas"
+    },
+    "importance": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Importance"
+    },
+    "sensitivity": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Sensitivity"
+    },
+    "categories": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Categories"
+    },
+    "isReminderOn": {
+     "default": false,
+     "title": "Isreminderon",
+     "type": "boolean"
+    },
+    "reminderMinutesBeforeStart": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Reminderminutesbeforestart"
+    },
+    "organizer": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Organizer"
+    },
+    "attendees": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Attendees"
+    },
+    "isOnlineMeeting": {
+     "default": false,
+     "title": "Isonlinemeeting",
+     "type": "boolean"
+    },
+    "onlineMeetingProvider": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Onlinemeetingprovider"
+    },
+    "onlineMeetingUrl": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Onlinemeetingurl"
+    },
+    "externalLink": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Externallink"
+    }
+   },
+   "required": [
+    "calendarId",
+    "title",
+    "dtStart",
+    "dtEnd"
+   ],
+   "title": "create_eventArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "update_event",
+  "description": "Update a calendar event. scope=This/Series with recurrenceId updates repeating events. Requires write permission update_event.",
+  "inputSchema": {
+   "properties": {
+    "eventId": {
+     "title": "Eventid",
+     "type": "string"
+    },
+    "calendarId": {
+     "title": "Calendarid",
+     "type": "string"
+    },
+    "title": {
+     "title": "Title",
+     "type": "string"
+    },
+    "dtStart": {
+     "title": "Dtstart",
+     "type": "string"
+    },
+    "dtEnd": {
+     "title": "Dtend",
+     "type": "string"
+    },
+    "scope": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Scope"
+    },
+    "recurrenceId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Recurrenceid"
+    },
+    "originalEventId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Originaleventid"
+    },
+    "description": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Description"
+    },
+    "location": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Location"
+    },
+    "rRule": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Rrule"
+    },
+    "isAllDay": {
+     "anyOf": [
+      {
+       "type": "boolean"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Isallday"
+    },
+    "timeZoneId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Timezoneid"
+    },
+    "showAs": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Showas"
+    },
+    "importance": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Importance"
+    },
+    "sensitivity": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Sensitivity"
+    },
+    "categories": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Categories"
+    },
+    "isReminderOn": {
+     "anyOf": [
+      {
+       "type": "boolean"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Isreminderon"
+    },
+    "reminderMinutesBeforeStart": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Reminderminutesbeforestart"
+    }
+   },
+   "required": [
+    "eventId",
+    "calendarId",
+    "title",
+    "dtStart",
+    "dtEnd"
+   ],
+   "title": "update_eventArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "delete_event",
+  "description": "Delete a calendar event (moves to recycle bin). scope=This/Series for repeating events. Requires write permission delete_event.",
+  "inputSchema": {
+   "properties": {
+    "eventId": {
+     "title": "Eventid",
+     "type": "string"
+    },
+    "scope": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Scope"
+    },
+    "recurrenceId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Recurrenceid"
+    },
+    "originalEventId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Originaleventid"
+    }
+   },
+   "required": [
+    "eventId"
+   ],
+   "title": "delete_eventArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "restore_event",
+  "description": "Restore a deleted event from the recycle bin. Requires write permission restore_event.",
+  "inputSchema": {
+   "properties": {
+    "eventId": {
+     "title": "Eventid",
+     "type": "string"
+    },
+    "restoreAsCopy": {
+     "default": false,
+     "title": "Restoreascopy",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "eventId"
+   ],
+   "title": "restore_eventArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "batch_delete_events",
+  "description": "Batch delete events by ids (move to recycle bin). Requires write permission batch_delete_events.",
+  "inputSchema": {
+   "properties": {
+    "ids": {
+     "items": {
+      "type": "string"
+     },
+     "title": "Ids",
+     "type": "array"
+    }
+   },
+   "required": [
+    "ids"
+   ],
+   "title": "batch_delete_eventsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_task",
+  "description": "Create a task. estimatedDuration/minimumSegment use formats like '1h30m'. Requires write permission create_task.",
+  "inputSchema": {
+   "properties": {
+    "title": {
+     "title": "Title",
+     "type": "string"
+    },
+    "priority": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Priority"
+    },
+    "calendarId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Calendarid"
+    },
+    "description": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Description"
+    },
+    "estimatedDuration": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Estimatedduration"
+    },
+    "minimumSegment": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Minimumsegment"
+    },
+    "due": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Due"
+    },
+    "dtStart": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Dtstart"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    },
+    "plannedEnd": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Plannedend"
+    }
+   },
+   "required": [
+    "title"
+   ],
+   "title": "create_taskArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "update_task",
+  "description": "Update a task (status/priority/due dates). Requires write permission update_task.",
+  "inputSchema": {
+   "properties": {
+    "taskId": {
+     "title": "Taskid",
+     "type": "string"
+    },
+    "title": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Title"
+    },
+    "priority": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Priority"
+    },
+    "calendarId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Calendarid"
+    },
+    "description": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Description"
+    },
+    "estimatedDuration": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Estimatedduration"
+    },
+    "minimumSegment": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Minimumsegment"
+    },
+    "due": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Due"
+    },
+    "dtStart": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Dtstart"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    },
+    "plannedEnd": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Plannedend"
+    }
+   },
+   "required": [
+    "taskId"
+   ],
+   "title": "update_taskArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "delete_task",
+  "description": "Delete a task (moves to recycle bin). Requires write permission delete_task.",
+  "inputSchema": {
+   "properties": {
+    "taskId": {
+     "title": "Taskid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "taskId"
+   ],
+   "title": "delete_taskArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "restore_task",
+  "description": "Restore a deleted task from the recycle bin. Requires write permission restore_task.",
+  "inputSchema": {
+   "properties": {
+    "taskId": {
+     "title": "Taskid",
+     "type": "string"
+    },
+    "restoreAsCopy": {
+     "default": false,
+     "title": "Restoreascopy",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "taskId"
+   ],
+   "title": "restore_taskArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "move_task",
+  "description": "Move a task (change project or ordering). duration is a TimeSpan string like '01:30:00'. Requires write permission move_task.",
+  "inputSchema": {
+   "properties": {
+    "taskId": {
+     "title": "Taskid",
+     "type": "string"
+    },
+    "scheduledStart": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Scheduledstart"
+    },
+    "duration": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Duration"
+    },
+    "newSortOrder": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Newsortorder"
+    },
+    "plannedEnd": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Plannedend"
+    }
+   },
+   "required": [
+    "taskId"
+   ],
+   "title": "move_taskArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "plan_task",
+  "description": "Schedule a task onto the calendar (which day it will be done). Requires write permission plan_task.",
+  "inputSchema": {
+   "properties": {
+    "taskId": {
+     "title": "Taskid",
+     "type": "string"
+    },
+    "plannedStart": {
+     "title": "Plannedstart",
+     "type": "string"
+    },
+    "plannedEnd": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Plannedend"
+    },
+    "estimatedDuration": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Estimatedduration"
+    }
+   },
+   "required": [
+    "taskId",
+    "plannedStart"
+   ],
+   "title": "plan_taskArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_task_segment",
+  "description": "Add an execution segment (a concrete time block) to a task. Requires write permission create_task_segment.",
+  "inputSchema": {
+   "properties": {
+    "taskId": {
+     "title": "Taskid",
+     "type": "string"
+    },
+    "startsAt": {
+     "title": "Startsat",
+     "type": "string"
+    },
+    "endsAt": {
+     "title": "Endsat",
+     "type": "string"
+    },
+    "status": {
+     "title": "Status",
+     "type": "string"
+    },
+    "source": {
+     "title": "Source",
+     "type": "string"
+    },
+    "planningReason": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Planningreason"
+    }
+   },
+   "required": [
+    "taskId",
+    "startsAt",
+    "endsAt",
+    "status",
+    "source"
+   ],
+   "title": "create_task_segmentArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "delete_task_segment",
+  "description": "Delete a task execution segment. Requires write permission delete_task_segment.",
+  "inputSchema": {
+   "properties": {
+    "taskId": {
+     "title": "Taskid",
+     "type": "string"
+    },
+    "segmentId": {
+     "title": "Segmentid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "taskId",
+    "segmentId"
+   ],
+   "title": "delete_task_segmentArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "add_task_checklist_item",
+  "description": "Add a checklist item to a task. Requires write permission add_task_checklist_item.",
+  "inputSchema": {
+   "properties": {
+    "taskId": {
+     "title": "Taskid",
+     "type": "string"
+    },
+    "title": {
+     "title": "Title",
+     "type": "string"
+    },
+    "sortOrder": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Sortorder"
+    }
+   },
+   "required": [
+    "taskId",
+    "title"
+   ],
+   "title": "add_task_checklist_itemArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "batch_delete_tasks",
+  "description": "Batch delete tasks by ids (move to recycle bin). Requires write permission batch_delete_tasks.",
+  "inputSchema": {
+   "properties": {
+    "ids": {
+     "items": {
+      "type": "string"
+     },
+     "title": "Ids",
+     "type": "array"
+    }
+   },
+   "required": [
+    "ids"
+   ],
+   "title": "batch_delete_tasksArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "batch_update_tasks",
+  "description": "Batch update tasks (status/priority/calendar). At least one of status/priority/calendarId is required. Requires write permission batch_update_tasks.",
+  "inputSchema": {
+   "properties": {
+    "ids": {
+     "items": {
+      "type": "string"
+     },
+     "title": "Ids",
+     "type": "array"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    },
+    "priority": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Priority"
+    },
+    "calendarId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Calendarid"
+    }
+   },
+   "required": [
+    "ids"
+   ],
+   "title": "batch_update_tasksArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_task_book",
+  "description": "Create a task book (a container for tasks). Requires write permission create_task_book.",
+  "inputSchema": {
+   "properties": {
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "domainProjectId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Domainprojectid"
+    },
+    "kind": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Kind"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "title": "create_task_bookArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_project",
+  "description": "Create a domain project (a top-level domain for tasks). Requires write permission create_project.",
+  "inputSchema": {
+   "properties": {
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "description": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Description"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "title": "create_projectArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "schedule_tasks",
+  "description": "Run the scheduling engine to place tasks onto the calendar. Requires write permission schedule_tasks.",
+  "inputSchema": {
+   "properties": {
+    "taskIds": {
+     "items": {
+      "type": "string"
+     },
+     "title": "Taskids",
+     "type": "array"
+    }
+   },
+   "required": [
+    "taskIds"
+   ],
+   "title": "schedule_tasksArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_reminder",
+  "description": "Create a reminder for a related object (e.g. a task). Requires write permission create_reminder.",
+  "inputSchema": {
+   "properties": {
+    "relatedObjectType": {
+     "title": "Relatedobjecttype",
+     "type": "string"
+    },
+    "relatedObjectId": {
+     "title": "Relatedobjectid",
+     "type": "string"
+    },
+    "title": {
+     "title": "Title",
+     "type": "string"
+    },
+    "scheduledAt": {
+     "title": "Scheduledat",
+     "type": "string"
+    },
+    "body": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Body"
+    },
+    "triggerReason": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Triggerreason"
+    },
+    "riskLevel": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Risklevel"
+    },
+    "channels": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Channels"
+    },
+    "doNotDisturbStart": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Donotdisturbstart"
+    },
+    "doNotDisturbEnd": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Donotdisturbend"
+    }
+   },
+   "required": [
+    "relatedObjectType",
+    "relatedObjectId",
+    "title",
+    "scheduledAt"
+   ],
+   "title": "create_reminderArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "snooze_reminder",
+  "description": "Snooze a reminder (defaults to +15 minutes). Requires write permission snooze_reminder.",
+  "inputSchema": {
+   "properties": {
+    "reminderId": {
+     "title": "Reminderid",
+     "type": "string"
+    },
+    "scheduledAt": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Scheduledat"
+    }
+   },
+   "required": [
+    "reminderId"
+   ],
+   "title": "snooze_reminderArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "dismiss_reminder",
+  "description": "Dismiss/close a reminder. Requires write permission dismiss_reminder.",
+  "inputSchema": {
+   "properties": {
+    "reminderId": {
+     "title": "Reminderid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "reminderId"
+   ],
+   "title": "dismiss_reminderArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_habit",
+  "description": "Create a habit routine. Requires write permission create_habit.",
+  "inputSchema": {
+   "properties": {
+    "title": {
+     "title": "Title",
+     "type": "string"
+    },
+    "description": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Description"
+    },
+    "cadence": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Cadence"
+    },
+    "source": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Source"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    },
+    "ruleJson": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Rulejson"
+    }
+   },
+   "required": [
+    "title"
+   ],
+   "title": "create_habitArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_habit_occurrence",
+  "description": "Log a habit occurrence (check-in). Requires write permission create_habit_occurrence.",
+  "inputSchema": {
+   "properties": {
+    "habitId": {
+     "title": "Habitid",
+     "type": "string"
+    },
+    "startsAt": {
+     "title": "Startsat",
+     "type": "string"
+    },
+    "endsAt": {
+     "title": "Endsat",
+     "type": "string"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    },
+    "source": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Source"
+    }
+   },
+   "required": [
+    "habitId",
+    "startsAt",
+    "endsAt"
+   ],
+   "title": "create_habit_occurrenceArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_availability_window",
+  "description": "Create an availability window (a block of free time usable for scheduling). Requires write permission create_availability_window.",
+  "inputSchema": {
+   "properties": {
+    "title": {
+     "title": "Title",
+     "type": "string"
+    },
+    "startsAt": {
+     "title": "Startsat",
+     "type": "string"
+    },
+    "endsAt": {
+     "title": "Endsat",
+     "type": "string"
+    },
+    "kind": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Kind"
+    },
+    "source": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Source"
+    }
+   },
+   "required": [
+    "title",
+    "startsAt",
+    "endsAt"
+   ],
+   "title": "create_availability_windowArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "import_ics",
+  "description": "Import an ICS calendar file (pass the raw ICS text). Requires write permission import_ics.",
+  "inputSchema": {
+   "properties": {
+    "icsContent": {
+     "title": "Icscontent",
+     "type": "string"
+    },
+    "calendarId": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Calendarid"
+    }
+   },
+   "required": [
+    "icsContent"
+   ],
+   "title": "import_icsArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_calendar",
+  "description": "Create a calendar. Requires write permission create_calendar.",
+  "inputSchema": {
+   "properties": {
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "color": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Color"
+    },
+    "kind": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Kind"
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "title": "create_calendarArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "update_calendar",
+  "description": "Update a calendar. Requires write permission update_calendar.",
+  "inputSchema": {
+   "properties": {
+    "calendarId": {
+     "title": "Calendarid",
+     "type": "string"
+    },
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "color": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Color"
+    },
+    "kind": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Kind"
+    }
+   },
+   "required": [
+    "calendarId",
+    "name"
+   ],
+   "title": "update_calendarArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "delete_calendar",
+  "description": "Delete a calendar (recycle bin). Requires write permission delete_calendar.",
+  "inputSchema": {
+   "properties": {
+    "calendarId": {
+     "title": "Calendarid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "calendarId"
+   ],
+   "title": "delete_calendarArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "restore_calendar",
+  "description": "Restore a deleted calendar from the recycle bin. Requires write permission restore_calendar.",
+  "inputSchema": {
+   "properties": {
+    "calendarId": {
+     "title": "Calendarid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "calendarId"
+   ],
+   "title": "restore_calendarArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_quick_note",
+  "description": "Create a quick note. Requires write permission create_quick_note.",
+  "inputSchema": {
+   "properties": {
+    "contentMarkdown": {
+     "title": "Contentmarkdown",
+     "type": "string"
+    },
+    "source": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Source"
+    },
+    "attachmentIds": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Attachmentids"
+    }
+   },
+   "required": [
+    "contentMarkdown"
+   ],
+   "title": "create_quick_noteArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "update_quick_note",
+  "description": "Update a quick note (content/status/attachments). Requires write permission update_quick_note.",
+  "inputSchema": {
+   "properties": {
+    "noteId": {
+     "title": "Noteid",
+     "type": "string"
+    },
+    "contentMarkdown": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Contentmarkdown"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    },
+    "attachmentIds": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Attachmentids"
+    }
+   },
+   "required": [
+    "noteId"
+   ],
+   "title": "update_quick_noteArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "delete_quick_note",
+  "description": "Delete a quick note. Requires write permission delete_quick_note.",
+  "inputSchema": {
+   "properties": {
+    "noteId": {
+     "title": "Noteid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "noteId"
+   ],
+   "title": "delete_quick_noteArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "archive_quick_note",
+  "description": "Archive a quick note. Requires write permission archive_quick_note.",
+  "inputSchema": {
+   "properties": {
+    "noteId": {
+     "title": "Noteid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "noteId"
+   ],
+   "title": "archive_quick_noteArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "restore_quick_note",
+  "description": "Restore an archived quick note (default status 'inbox'). Requires write permission restore_quick_note.",
+  "inputSchema": {
+   "properties": {
+    "noteId": {
+     "title": "Noteid",
+     "type": "string"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    }
+   },
+   "required": [
+    "noteId"
+   ],
+   "title": "restore_quick_noteArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "process_quick_note",
+  "description": "Process a quick note through AI/rules (sets status to processed). Requires write permission process_quick_note.",
+  "inputSchema": {
+   "properties": {
+    "noteId": {
+     "title": "Noteid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "noteId"
+   ],
+   "title": "process_quick_noteArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "upload_quick_note_attachment",
+  "description": "Upload an attachment for a quick note (base64 content). Returns attachment id to reference in create/update note. Requires write permission upload_quick_note_attachment.",
+  "inputSchema": {
+   "properties": {
+    "fileContentBase64": {
+     "title": "Filecontentbase64",
+     "type": "string"
+    },
+    "fileName": {
+     "title": "Filename",
+     "type": "string"
+    }
+   },
+   "required": [
+    "fileContentBase64",
+    "fileName"
+   ],
+   "title": "upload_quick_note_attachmentArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "delete_quick_note_attachment",
+  "description": "Delete a quick note attachment. Requires write permission delete_quick_note_attachment.",
+  "inputSchema": {
+   "properties": {
+    "attachmentId": {
+     "title": "Attachmentid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "attachmentId"
+   ],
+   "title": "delete_quick_note_attachmentArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "upload_file",
+  "description": "Upload a file to a provider path (base64 content). Requires write permission upload_file.",
+  "inputSchema": {
+   "properties": {
+    "providerId": {
+     "title": "Providerid",
+     "type": "string"
+    },
+    "path": {
+     "title": "Path",
+     "type": "string"
+    },
+    "fileContentBase64": {
+     "title": "Filecontentbase64",
+     "type": "string"
+    },
+    "fileName": {
+     "title": "Filename",
+     "type": "string"
+    }
+   },
+   "required": [
+    "providerId",
+    "path",
+    "fileContentBase64",
+    "fileName"
+   ],
+   "title": "upload_fileArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "move_file",
+  "description": "Move a file to a new path. Requires write permission move_file.",
+  "inputSchema": {
+   "properties": {
+    "fileId": {
+     "title": "Fileid",
+     "type": "string"
+    },
+    "destinationPath": {
+     "title": "Destinationpath",
+     "type": "string"
+    }
+   },
+   "required": [
+    "fileId",
+    "destinationPath"
+   ],
+   "title": "move_fileArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "rename_file",
+  "description": "Rename a file. Requires write permission rename_file.",
+  "inputSchema": {
+   "properties": {
+    "fileId": {
+     "title": "Fileid",
+     "type": "string"
+    },
+    "name": {
+     "title": "Name",
+     "type": "string"
+    }
+   },
+   "required": [
+    "fileId",
+    "name"
+   ],
+   "title": "rename_fileArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "delete_file",
+  "description": "Delete a file (moves to trash). Requires write permission delete_file.",
+  "inputSchema": {
+   "properties": {
+    "fileId": {
+     "title": "Fileid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "fileId"
+   ],
+   "title": "delete_fileArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "restore_file",
+  "description": "Restore a file from trash. trashId identifies the trash entry. Requires write permission restore_file.",
+  "inputSchema": {
+   "properties": {
+    "fileId": {
+     "title": "Fileid",
+     "type": "string"
+    },
+    "trashId": {
+     "title": "Trashid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "fileId",
+    "trashId"
+   ],
+   "title": "restore_fileArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "index_file",
+  "description": "Trigger file indexing for RAG search. Requires write permission index_file.",
+  "inputSchema": {
+   "properties": {
+    "fileId": {
+     "title": "Fileid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "fileId"
+   ],
+   "title": "index_fileArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_category",
+  "description": "Create a PC activity category (maps an app pattern to a category). Requires write permission create_category.",
+  "inputSchema": {
+   "properties": {
+    "appPattern": {
+     "title": "Apppattern",
+     "type": "string"
+    },
+    "categoryName": {
+     "title": "Categoryname",
+     "type": "string"
+    },
+    "color": {
+     "title": "Color",
+     "type": "string"
+    },
+    "priority": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Priority"
+    }
+   },
+   "required": [
+    "appPattern",
+    "categoryName",
+    "color"
+   ],
+   "title": "create_categoryArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "update_categories_order",
+  "description": "Reorder PC categories. items: [{id, parentId?, sortOrder}]. Requires write permission update_categories_order.",
+  "inputSchema": {
+   "properties": {
+    "items": {
+     "items": {
+      "additionalProperties": true,
+      "type": "object"
+     },
+     "title": "Items",
+     "type": "array"
+    }
+   },
+   "required": [
+    "items"
+   ],
+   "title": "update_categories_orderArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "delete_category",
+  "description": "Delete a PC category. Requires write permission delete_category.",
+  "inputSchema": {
+   "properties": {
+    "categoryId": {
+     "title": "Categoryid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "categoryId"
+   ],
+   "title": "delete_categoryArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "seed_categories",
+  "description": "Seed default PC categories. Requires write permission seed_categories.",
+  "inputSchema": {
+   "properties": {},
+   "title": "seed_categoriesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "create_mobile_goal",
+  "description": "Create a mobile usage goal (daily limit). Requires write permission create_mobile_goal.",
+  "inputSchema": {
+   "properties": {
+    "limitSeconds": {
+     "title": "Limitseconds",
+     "type": "integer"
+    },
+    "scope": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Scope"
+    },
+    "packageName": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Packagename"
+    },
+    "lifeCategory": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lifecategory"
+    },
+    "label": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Label"
+    },
+    "isEnabled": {
+     "default": true,
+     "title": "Isenabled",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "limitSeconds"
+   ],
+   "title": "create_mobile_goalArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "delete_mobile_goal",
+  "description": "Delete a mobile usage goal. Requires write permission delete_mobile_goal.",
+  "inputSchema": {
+   "properties": {
+    "goalId": {
+     "title": "Goalid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "goalId"
+   ],
+   "title": "delete_mobile_goalArguments",
+   "type": "object"
+  }
+ }
+]

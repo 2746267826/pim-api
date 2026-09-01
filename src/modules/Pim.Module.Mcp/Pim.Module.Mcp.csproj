@@ -5,8 +5,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\Pim.Core\Pim.Core.csproj" />
     <ProjectReference Include="..\..\Pim.Infrastructure\Pim.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Contract\mcp-tools.json" />
   </ItemGroup>
 
   <PropertyGroup>
