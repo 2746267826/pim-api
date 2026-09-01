@@ -32,9 +32,17 @@ public static class McpServerBootstrap
 
             // Bearer guard (Python _RequireBearer parity): any request on the MCP path without
             // an Authorization: Bearer header is rejected with 401 JSON — OPTIONS passes for CORS.
+            // Also normalizes /mcp/ → 308 to /mcp (preserving method + body) before routing,
+            // since the SDK's /mcp route matches trailing slashes too.
             app.Use(async (context, next) =>
             {
                 var path = context.Request.Path.Value ?? string.Empty;
+                if (string.Equals(path, mcpPath + "/", StringComparison.OrdinalIgnoreCase))
+                {
+                    context.Response.StatusCode = StatusCodes.Status308PermanentRedirect;
+                    context.Response.Headers.Location = mcpPath;
+                    return;
+                }
                 var isMcpPath = string.Equals(path, mcpPath, StringComparison.OrdinalIgnoreCase)
                     || path.StartsWith(mcpPath + "/", StringComparison.OrdinalIgnoreCase);
                 if (isMcpPath
@@ -48,10 +56,6 @@ public static class McpServerBootstrap
                 }
                 await next();
             });
-
-            // Trailing-slash normalization: 308 preserves method + body (301 would rewrite POST to GET).
-            app.MapMethods(mcpPath + "/", new[] { "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD" },
-                (HttpContext context) => Results.Redirect(mcpPath, permanent: true, preserveMethod: true));
 
             // Streamable HTTP endpoint: GET = SSE event stream, POST = JSON-RPC.
             app.MapMcp(mcpPath);

@@ -26,6 +26,7 @@ public sealed class McpToolExecutor
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        PropertyNameCaseInsensitive = true,
     };
 
     private static readonly Lazy<McpToolContract[]> Contract = new(LoadContract);
@@ -87,7 +88,7 @@ public sealed class McpToolExecutor
             return validationError;
 
         var accessToken = await ResolveAccessTokenAsync(spec.Name, args, ct);
-        if (accessToken is null)
+        if (accessToken is null && spec.Kind is not (McpToolKind.Health or McpToolKind.Version))
         {
             return _httpContext is null
                 ? Error("missing bearer token: call MCP with Authorization: Bearer <PIM JWT>. Obtain token via POST /api/v1/auth/login {\"username\",\"password\"} -> accessToken", 401)
@@ -299,7 +300,8 @@ public sealed class McpToolExecutor
             case McpToolKind.ExportIcs:
                 return await ExportIcsAsync(spec, args, accessToken, ct);
             default:
-                return await CallAsync(spec, args, accessToken, spec.RedactUrls, ct);
+                var redact = spec.RedactUrls && !(args.TryGetPropertyValue("redactUrls", out var redactArg) && redactArg is JsonValue redactValue && redactValue.TryGetValue<bool>(out var redactBool) && !redactBool);
+                return await CallAsync(spec, args, accessToken, redact, ct);
         }
     }
 
@@ -393,12 +395,12 @@ public sealed class McpToolExecutor
                     continue;
                 bodyObject[property.Key] = property.Value.DeepClone();
             }
+            if (spec.Kind == McpToolKind.SchedulePreview)
+            {
+                // Python: body = {"taskIds": taskIds or []} — always present.
+                bodyObject["taskIds"] = bodyObject.TryGetPropertyValue("taskIds", out var ids) && ids is not null ? ids : new JsonArray();
+            }
             body = bodyObject;
-        }
-        else if (spec.Kind == McpToolKind.SchedulePreview)
-        {
-            // Python: body = {"taskIds": taskIds or []} — always present.
-            body = new JsonObject { ["taskIds"] = args.TryGetPropertyValue("taskIds", out var ids) && ids is not null ? ids.DeepClone() : new JsonArray() };
         }
 
         return (string.Join('&', queryParts), body);
@@ -454,18 +456,25 @@ public sealed class McpToolExecutor
 
     private async Task<JsonNode?> CallMultipartAsync(McpToolSpec spec, JsonObject args, string accessToken, CancellationToken ct)
     {
-        // Decode base64 content (Python _b64_to_bytes).
-        if (!args.TryGetPropertyValue("fileContentBase64", out var b64Node) || b64Node is null)
-            return Error("fileContentBase64 is required", 400);
-        var b64 = GetString(b64Node);
+        if (!args.TryGetPropertyValue(spec.MultipartContentParam, out var contentNode) || contentNode is null)
+            return Error($"{spec.MultipartContentParam} is required", 400);
+        var contentParamValue = GetString(contentNode);
         byte[] content;
-        try
+        if (spec.MultipartContentParam == "icsContent")
         {
-            content = Convert.FromBase64String(b64 ?? string.Empty);
+            // import_ics passes raw ICS text (Python: icsContent.encode("utf-8")).
+            content = Encoding.UTF8.GetBytes(contentParamValue ?? string.Empty);
         }
-        catch (FormatException)
+        else
         {
-            return Error("fileContentBase64 must be valid base64", 400);
+            try
+            {
+                content = Convert.FromBase64String(contentParamValue ?? string.Empty);
+            }
+            catch (FormatException)
+            {
+                return Error("fileContentBase64 must be valid base64", 400);
+            }
         }
 
         var fileName = spec.FileName;
@@ -483,7 +492,7 @@ public sealed class McpToolExecutor
 
         foreach (var property in args)
         {
-            if (property.Value is null || property.Key == "fileContentBase64" || property.Key == "fileName")
+            if (property.Value is null || property.Key == spec.MultipartContentParam || property.Key == "fileName")
                 continue;
             if (spec.Route.Contains($"{{{property.Key}}}", StringComparison.Ordinal))
                 continue;

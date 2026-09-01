@@ -94,6 +94,9 @@ public sealed record McpToolSpec
     public string FileField { get; init; } = "file";
     public string? FileName { get; init; }
 
+    /// <summary>Multipart body source parameter: base64-decoded bytes (uploads) or raw text (import_ics).</summary>
+    public string MultipartContentParam { get; init; } = "fileContentBase64";
+
     /// <summary>Write-tool arguments that must be non-empty ("X is required" errors).</summary>
     public IReadOnlyList<string> Required { get; init; } = Array.Empty<string>();
 
@@ -259,7 +262,7 @@ public static class McpToolTable
             W("create_habit_occurrence", "POST", "/api/v1/calendar/habits/{habitId}/occurrences", req: R("habitId", "startsAt", "endsAt")),
 
             W("create_availability_window", "POST", "/api/v1/calendar/availability", req: R("title", "startsAt", "endsAt")),
-            W("import_ics", "POST", "/api/v1/calendar/import-ics", req: R("icsContent"), multipart: true, fileName: "import.ics"),
+            W("import_ics", "POST", "/api/v1/calendar/import-ics", req: R("icsContent"), multipart: true, fileName: "import.ics", multipartContentParam: "icsContent"),
             W("create_calendar", "POST", "/api/v1/calendar/calendars", req: R("name")),
             W("update_calendar", "PUT", "/api/v1/calendar/calendars/{calendarId}", req: R("calendarId", "name")),
             W("delete_calendar", "DELETE", "/api/v1/calendar/calendars/{calendarId}", req: R("calendarId")),
@@ -339,7 +342,8 @@ public static class McpToolTable
         string[]? req = null,
         bool multipart = false,
         string? fileName = null,
-        bool noBody = false)
+        bool noBody = false,
+        string multipartContentParam = "fileContentBase64")
         => new()
         {
             Name = name,
@@ -351,5 +355,6 @@ public static class McpToolTable
             Multipart = multipart,
             FileName = fileName,
             NoBody = noBody,
+            MultipartContentParam = multipartContentParam,
         };
 }

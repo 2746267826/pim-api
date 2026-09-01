@@ -58,7 +58,11 @@ public sealed class McpInProcessDispatcher : HttpMessageHandler
                 context.Request.Headers[contentHeader.Key] = contentHeader.Value.ToArray();
             }
 
-            context.Request.Body = await request.Content.ReadAsStreamAsync(cancellationToken);
+            // Buffer the body once: ReadAsStreamAsync on buffered content types hands back the
+            // content's own stream, and disposing it would break HttpClient's later content
+            // buffering ("Cannot access a closed Stream").
+            var bodyBytes = await request.Content.ReadAsByteArrayAsync(cancellationToken);
+            context.Request.Body = new MemoryStream(bodyBytes, writable: false);
         }
         else
         {
@@ -72,19 +76,35 @@ public sealed class McpInProcessDispatcher : HttpMessageHandler
         await _pipeline(context);
 
         var response = new HttpResponseMessage((HttpStatusCode)context.Response.StatusCode);
+        // Copy the buffered body out before the MemoryStream is disposed by the using block.
+        response.Content = new ByteArrayContent(responseBody.ToArray());
         foreach (var header in context.Response.Headers)
         {
-            if (!response.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray()))
-                response.Content.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
+            var values = header.Value.ToArray();
+            // Content headers must live on response.Content so content-type sniffing works.
+            if (IsContentHeader(header.Key))
+                response.Content.Headers.TryAddWithoutValidation(header.Key, values);
+            else
+                response.Headers.TryAddWithoutValidation(header.Key, values);
         }
-
-        responseBody.Position = 0;
-        response.Content = new StreamContent(responseBody);
         if (context.Response.ContentLength is { } length)
             response.Content.Headers.ContentLength = length;
 
         return response;
     }
+
+    private static bool IsContentHeader(string name)
+        => name.StartsWith("Content-", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Content-Length", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Content-Type", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Content-Disposition", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Content-Encoding", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Content-Language", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Content-Location", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Content-Range", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Allow", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Expires", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(name, "Last-Modified", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>
