@@ -1,17 +1,23 @@
-name: MCP
+name: Build MCP
 
-# MCP server 的独立轻量 CI（issues #178/#179 引入）。
-# ci.yml 的路径过滤不含 scripts/mcp/**，此前 MCP 改动无任何 CI 覆盖；
-# 本工作流独立于 ci.yml，不会触发重型平台构建（infra 过滤仅匹配 ci.yml 本身）。
-# 矩阵同时覆盖 mcp SDK 1.x 与 2.x，防止 #179 类兼容性回归。
+# MCP server 构建（issues #178/#179 引入）。
+# 由 ci.yml 以 workflow_call 调用：矩阵测试兼容 mcp SDK 1.x/2.x，通过后打包
+# pim-mcp-server-<version>.tar.gz（pim_mcp_server.py + deploy/ 模板）上传 artifact，
+# 与其他平台一样跟随主版本线 release；本次未构建时由 release job 复用上一个 release 的产物。
+# workflow_dispatch 可用于手动触发调试（version 留空则自动生成 dev 版本号）。
 
 on:
-  push:
-    branches: [master]
-    paths: ['scripts/mcp/**', 'docs/mcp.md']
-  pull_request:
-    branches: [master]
-    paths: ['scripts/mcp/**', 'docs/mcp.md']
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Display version (empty = resolve locally for debug)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -50,3 +56,40 @@ jobs:
 
       - name: HTTP integration smoke
         run: python scripts/mcp/integration_http_smoke.py
+
+  package:
+    needs: test
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version if needed
+        id: ver
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-$(date +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package MCP server artifact
+        shell: bash
+        run: |
+          STAGE=$(mktemp -d)
+          mkdir -p "$STAGE/mcp"
+          cp scripts/mcp/pim_mcp_server.py "$STAGE/mcp/"
+          cp -r scripts/mcp/deploy "$STAGE/mcp/"
+          cd "$STAGE"
+          tar czf "pim-mcp-server-${{ steps.ver.outputs.version }}.tar.gz" mcp/
+          cp "pim-mcp-server-${{ steps.ver.outputs.version }}.tar.gz" "$GITHUB_WORKSPACE/"
+          cd "$GITHUB_WORKSPACE"
+          ls -la "pim-mcp-server-${{ steps.ver.outputs.version }}.tar.gz"
+
+      - name: Upload MCP artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: pim-mcp-server-${{ steps.ver.outputs.version }}
+          path: pim-mcp-server-${{ steps.ver.outputs.version }}.tar.gz
+          if-no-files-found: error
