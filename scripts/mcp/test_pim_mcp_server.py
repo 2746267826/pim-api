@@ -160,7 +160,7 @@ def test_wrapped_tool_returns_401_when_no_request_token():
     import asyncio
 
     s._wrap_tools_for_http()  # idempotent; simulates the HTTP-mode wrap
-    result = asyncio.run(s.mcp._tool_manager.call_tool("create_task", {"title": "x"}))
+    result = asyncio.run(s._test_call_tool("create_task", {"title": "x"}))
     assert isinstance(result, dict)
     assert result.get("code") == 401
     assert "missing bearer token" in result.get("error", "")
@@ -180,7 +180,7 @@ def test_wrapper_enforces_permission_denied(monkeypatch):
     monkeypatch.setattr(s, "_call_verify", fake_verify)
     s._wrap_tools_for_http()
 
-    denied = asyncio.run(s.mcp._tool_manager.call_tool("create_task", {"title": "x"}))
+    denied = asyncio.run(s._test_call_tool("create_task", {"title": "x"}))
     assert denied.get("code") == 403
     assert "permission denied: create_task" in denied.get("error", "")
 
@@ -200,7 +200,7 @@ def test_wrapper_allowed_tool_passes_through(monkeypatch):
     monkeypatch.setattr(s, "_call_api", fake_call_api)
     s._wrap_tools_for_http()
 
-    result = asyncio.run(s.mcp._tool_manager.call_tool("create_task", {"title": "hello"}))
+    result = asyncio.run(s._test_call_tool("create_task", {"title": "hello"}))
     assert result.get("code") == 0
     assert result["data"]["path"] == "/api/v1/calendar/tasks"
     assert result["data"]["body"]["title"] == "hello"

@@ -1,0 +1,38 @@
+# PIM MCP Server systemd 单元（生产部署模板，issue #178）
+#
+# 安装：
+#   sudo cp scripts/mcp/deploy/pim-mcp.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pim-mcp
+# 状态/日志：
+#   systemctl status pim-mcp
+#   journalctl -u pim-mcp -f
+#
+# 按实际环境调整 User/Group/WorkingDirectory/ExecStart 路径。
+
+[Unit]
+Description=PIM MCP Server (Streamable HTTP)
+Documentation=https://github.com/2746267826/pim-platform/blob/master/docs/mcp.md
+After=network.target
+
+[Service]
+Type=simple
+User=pim
+Group=pim
+WorkingDirectory=/opt/pim
+# Pim.Api 内网地址（MCP server 必须与 Pim.Api 同网，勿公网暴露）
+Environment=PIM_API_URL=http://127.0.0.1:5858
+# HTTP 模式（Streamable HTTP）
+Environment=PIM_MCP_TRANSPORT=http
+Environment=PIM_MCP_HOST=0.0.0.0
+Environment=PIM_MCP_PORT=8080
+Environment=PIM_MCP_PATH=/mcp
+ExecStart=/usr/bin/python3 /opt/pim/scripts/mcp/pim_mcp_server.py
+Restart=always
+RestartSec=3
+TimeoutStartSec=30
+# 文件上传（QuickNotes/Files 工具）需要足够内存；按实际调整
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

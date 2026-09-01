@@ -1,0 +1,52 @@
+name: MCP
+
+# MCP server 的独立轻量 CI（issues #178/#179 引入）。
+# ci.yml 的路径过滤不含 scripts/mcp/**，此前 MCP 改动无任何 CI 覆盖；
+# 本工作流独立于 ci.yml，不会触发重型平台构建（infra 过滤仅匹配 ci.yml 本身）。
+# 矩阵同时覆盖 mcp SDK 1.x 与 2.x，防止 #179 类兼容性回归。
+
+on:
+  push:
+    branches: [master]
+    paths: ['scripts/mcp/**', 'docs/mcp.md']
+  pull_request:
+    branches: [master]
+    paths: ['scripts/mcp/**', 'docs/mcp.md']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: mcp SDK ${{ matrix.sdk }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: ['1.x', '2.x']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          if [ "${{ matrix.sdk }}" = "1.x" ]; then
+            python -m pip install --quiet "mcp==1.*" uvicorn pytest httpx
+          else
+            # 2.x：刻意不装 httpx，让脚本的 httpx2 回退分支（issue #179 修复点）在 CI 真实执行；
+            # httpx2 显式安装，避免依赖 mcp 的传递依赖变动导致 CI 不稳定
+            python -m pip install --quiet "mcp>=2,<3" httpx2 uvicorn pytest
+          fi
+
+      - name: Self-check (--check)
+        run: python scripts/mcp/pim_mcp_server.py --check
+
+      - name: Unit tests
+        run: python -m pytest scripts/mcp/test_pim_mcp_server.py -q
+
+      - name: HTTP integration smoke
+        run: python scripts/mcp/integration_http_smoke.py

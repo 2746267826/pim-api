@@ -36,15 +36,25 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-import httpx
-
 try:
-    from mcp.server.fastmcp import FastMCP
-except ImportError:
+    import httpx
+except ImportError:  # mcp>=2 不再安装 httpx；httpx2 为兼容后继（drop-in）
     try:
-        from mcp.server.mcpserver import MCPServer as FastMCP  # type: ignore  # mcp 2.x
+        import httpx2 as httpx  # type: ignore
     except ImportError:
-        from mcp.server.fastmcp import FastMCP  # type: ignore
+        raise ImportError(
+            "pim_mcp_server.py needs an HTTP client: run `pip install httpx` "
+            "(or `pip install httpx2` when using mcp>=2)"
+        )
+
+# 先探测 v2 的 mcpserver：v2 下 fastmcp 模块已删除（import 即 ModuleNotFoundError）；
+# 若未来 v2 提供 fastmcp 兼容 shim，此顺序仍能正确判定 v2（v1 不存在 mcpserver 模块）。
+try:
+    from mcp.server.mcpserver import MCPServer as FastMCP  # type: ignore  # mcp 2.x
+    _MCP_SDK_V2 = True
+except ImportError:
+    from mcp.server.fastmcp import FastMCP
+    _MCP_SDK_V2 = False
 
 PIM_API_URL = os.getenv("PIM_API_URL", "http://127.0.0.1:5858").rstrip("/")
 DEFAULT_TIMEZONE = "Asia/Shanghai"
@@ -81,7 +91,11 @@ _token_file_lock = threading.Lock()
 _refresh_lock = asyncio.Lock()
 _refresh_inflight: Optional[asyncio.Future] = None
 
-mcp = FastMCP("pim-mcp-server", host=_MCP_HOST, port=_MCP_PORT, streamable_http_path=_MCP_PATH)
+if _MCP_SDK_V2:
+    # mcp 2.x: transport 参数从构造器移到了 run()/streamable_http_app()（见 _build_http_app）
+    mcp = FastMCP("pim-mcp-server")
+else:
+    mcp = FastMCP("pim-mcp-server", host=_MCP_HOST, port=_MCP_PORT, streamable_http_path=_MCP_PATH)
 
 
 # ---------- HTTP mode: per-request identity via /api/v1/mcp/verify ----------
@@ -97,6 +111,13 @@ _current_identity: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvar
     "pim_mcp_identity", default=None
 )
 
+# HTTP 模式：_RequireBearer 中间件从 ASGI scope 捕获的请求头。
+# mcp>=2 移除了 mcp.get_context()，无法再从工具内读取 HTTP 头，故改为中间件经
+# ContextVar 传递（v1 仍保留 get_context() 兜底）。
+_http_request_headers: contextvars.ContextVar[Optional[Dict[str, str]]] = contextvars.ContextVar(
+    "pim_mcp_http_headers", default=None
+)
+
 # Set of write tool names (Phase 3). Read tools are everything else.
 _WRITE_TOOL_NAMES: set = set()
 
@@ -109,18 +130,24 @@ def _get_raw_request_token() -> Optional[str]:
     """Extract the raw Bearer token from the current HTTP request (mcp_token or user JWT)."""
     if not _http_mode():
         return None
-    try:
-        ctx = mcp.get_context()
-        rc = ctx.request_context
-        if rc is None:
+    headers = _http_request_headers.get()
+    if headers:
+        auth = headers.get("authorization", "")
+        return _strip_bearer(auth) if auth else None
+    if not _MCP_SDK_V2:
+        try:
+            ctx = mcp.get_context()
+            rc = ctx.request_context
+            if rc is None:
+                return None
+            req = rc.request
+            auth = getattr(req, "headers", None).get("authorization", "")
+        except Exception:
             return None
-        req = rc.request
-        auth = getattr(req, "headers", None).get("authorization", "")
-    except Exception:
-        return None
-    if not auth:
-        return None
-    return _strip_bearer(auth)
+        if not auth:
+            return None
+        return _strip_bearer(auth)
+    return None
 
 
 async def _call_verify(raw_token: str, tool: Optional[str], params_summary: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -194,6 +221,7 @@ def _wrap_tools_for_http() -> None:
             try:
                 return await _orig(**kwargs)
             finally:
+                # 同样用 Token 回退（勿用 set(None)），保持与其他 ContextVar 一致
                 _current_identity.reset(reset)
 
         tool.fn = wrapped
@@ -214,6 +242,18 @@ def _list_tools_meta() -> List[Dict[str, str]]:
         {"name": t.name, "group": "write" if t.name in _WRITE_TOOL_NAMES else "read"}
         for t in mcp._tool_manager.list_tools()  # noqa: SLF001
     ]
+
+
+def _test_call_tool(name: str, args: Dict[str, Any]) -> Any:
+    """Test helper: invoke a registered tool via the SDK tool manager (mcp 1.x/2.x agnostic).
+
+    mcp 2.x 的 ToolManager.call_tool 强制要求 context 参数；v1 可选。统一显式传入。
+    """
+    if _MCP_SDK_V2:
+        from mcp.server.mcpserver import Context  # type: ignore
+    else:
+        from mcp.server.fastmcp import Context  # type: ignore
+    return mcp._tool_manager.call_tool(name, args, context=Context())
 
 
 # ---------- helpers: auth, time, pagination, redaction, api ----------
@@ -3270,11 +3310,11 @@ class _RequireBearer:
         is_mcp_path = path == _MCP_PATH or path.startswith(_MCP_PATH + "/")
         if scope["type"] == "http" and is_mcp_path:
             method = (scope.get("method") or "").upper()
+            headers = {
+                k.decode("latin-1").lower(): v.decode("latin-1")
+                for k, v in scope.get("headers", [])
+            }
             if method != "OPTIONS":
-                headers = {
-                    k.decode("latin-1").lower(): v.decode("latin-1")
-                    for k, v in scope.get("headers", [])
-                }
                 if not headers.get("authorization", "").strip().lower().startswith("bearer "):
                     from starlette.responses import JSONResponse
 
@@ -3284,12 +3324,24 @@ class _RequireBearer:
                     )
                     await response(scope, receive, send)
                     return
+            # 透传给工具调用（mcp>=2 无 mcp.get_context()，见 _get_raw_request_token）。
+            # 必须用 set 返回的 Token 回退（勿用 set(None)），保证任务上下文不串扰。
+            token = _http_request_headers.set(headers)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                _http_request_headers.reset(token)
+            return
         await self.app(scope, receive, send)
 
 
 def _build_http_app() -> Any:
     """Starlette app for HTTP mode with a bearer-required guard in front of FastMCP."""
-    app = mcp.streamable_http_app()
+    if _MCP_SDK_V2:
+        # mcp 2.x: streamable_http_path 从构造器移到 app 方法
+        app = mcp.streamable_http_app(streamable_http_path=_MCP_PATH)
+    else:
+        app = mcp.streamable_http_app()
     return _RequireBearer(app)
 
 

@@ -13,7 +13,10 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import httpx
+try:
+    import httpx
+except ImportError:  # mcp>=2 环境不带 httpx；httpx2 为兼容后继
+    import httpx2 as httpx  # type: ignore
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -80,11 +83,23 @@ class MockPimHandler(BaseHTTPRequestHandler):
 
 async def main():
     mock = ThreadingHTTPServer(("127.0.0.1", MOCK_PORT), MockPimHandler)
-    mock_port = mock.server_address[1]
     threading.Thread(target=mock.serve_forever, daemon=True).start()
     MOCK["token"] = "pim_mcp_smoketoken"
     MOCK["deny_tool"] = "create_task"
+    server = None
+    try:
+        server = await _run_http_smoke()
+        await _run_stdio_smoke()
+        print("ALL SMOKE PASSED")
+    finally:
+        # 异常路径也回收端口/进程，避免 CI 资源残留
+        if server is not None:
+            server.should_exit = True
+        mock.shutdown()
+        mock.server_close()
 
+
+async def _run_http_smoke():
     import uvicorn
     import pim_mcp_server as s
 
@@ -95,7 +110,14 @@ async def main():
     threading.Thread(target=server.run, daemon=True).start()
 
     from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    auth_headers = {"Authorization": f"Bearer {MOCK['token']}"}
+    try:
+        from mcp.client.streamable_http import streamablehttp_client  # mcp 1.x
+        client_kwargs = {"headers": auth_headers}
+    except ImportError:
+        from mcp.client.streamable_http import streamable_http_client as streamablehttp_client  # mcp 2.x
+        from mcp.client.streamable_http import create_mcp_http_client
+        client_kwargs = {"http_client": create_mcp_http_client(headers=auth_headers)}
 
     url = f"http://127.0.0.1:{MCP_PORT}/mcp"
 
@@ -110,7 +132,11 @@ async def main():
         raise RuntimeError("MCP server did not come up")
 
     async def run_client():
-        async with streamablehttp_client(url, headers={"Authorization": f"Bearer {MOCK['token']}"}) as (read, write, _):
+        async with streamablehttp_client(url, **client_kwargs) as streams:
+            if len(streams) == 2:  # mcp 2.x: (read_stream, write_stream)
+                read, write = streams
+            else:  # mcp 1.x: (read, write, get_session_id)
+                read, write, _ = streams
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools = await session.list_tools()
@@ -128,8 +154,29 @@ async def main():
                 print("SMOKE PASSED")
 
     await asyncio.wait_for(run_client(), timeout=30)
-    server.should_exit = True
-    mock.shutdown()
+    return server
+
+
+async def _run_stdio_smoke():
+    # stdio 模式端到端（issue #179：mcp>=2 下 stdio 也必须可用）。
+    # 绝对路径启动子进程（不依赖 CWD）；环境只白名单必要变量，避免继承 HTTP 模式配置。
+    from mcp import ClientSession as StdioSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    server_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pim_mcp_server.py")
+    stdio_env = {"PIM_MCP_TRANSPORT": "stdio", "PIM_API_URL": "http://127.0.0.1:5858", "PIM_ACCESS_TOKEN": "dummy"}
+    params = StdioServerParameters(command=sys.executable, args=[server_path], env=stdio_env)
+
+    async def run_stdio():
+        async with stdio_client(params) as (read, write):
+            async with StdioSession(read, write) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+                assert len(tools.tools) == 151, f"expected 151 stdio tools, got {len(tools.tools)}"
+                print(f"stdio tools listed: {len(tools.tools)}")
+
+    await asyncio.wait_for(run_stdio(), timeout=30)
+    print("STDIO SMOKE PASSED")
 
 
 if __name__ == "__main__":
