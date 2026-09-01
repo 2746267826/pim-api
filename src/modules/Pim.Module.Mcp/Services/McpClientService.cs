@@ -102,16 +102,25 @@ public sealed class McpClientService
         if (permissions is not null)
         {
             // Merge per key so partial updates never wipe other tools in the same section.
+            // The merged result replaces the dictionary REFERENCE: with the jsonb value
+            // converter, EF only persists the change when the snapshot comparison sees a
+            // different value — in-place mutation of a tracked dictionary is invisible to
+            // the change tracker and would silently drop the update on real databases.
+            var merged = entity.Permissions.ToDictionary(
+                kv => kv.Key,
+                kv => new Dictionary<string, bool>(kv.Value, StringComparer.Ordinal),
+                StringComparer.Ordinal);
             foreach (var section in SanitizePermissions(permissions))
             {
-                if (!entity.Permissions.TryGetValue(section.Key, out var existing))
+                if (!merged.TryGetValue(section.Key, out var existing))
                 {
                     existing = new Dictionary<string, bool>(StringComparer.Ordinal);
-                    entity.Permissions[section.Key] = existing;
+                    merged[section.Key] = existing;
                 }
                 foreach (var (toolName, enabled) in section.Value)
                     existing[toolName] = enabled;
             }
+            entity.Permissions = merged;
         }
 
         await _db.SaveChangesAsync(ct);

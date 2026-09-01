@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Pim.Module.Mcp.Services;
@@ -15,6 +16,11 @@ public sealed class McpInProcessDispatcher : HttpMessageHandler
 {
     private RequestDelegate? _pipeline;
     private IServiceProvider? _rootServices;
+
+    private sealed class RequestBodyDetectionFeature(bool canHaveBody) : IHttpRequestBodyDetectionFeature
+    {
+        public bool CanHaveBody { get; } = canHaveBody;
+    }
 
     /// <summary>Captured once by the host bootstrap after the full pipeline is built.</summary>
     public void Initialize(RequestDelegate pipeline, IServiceProvider rootServices)
@@ -36,6 +42,10 @@ public sealed class McpInProcessDispatcher : HttpMessageHandler
         var context = new DefaultHttpContext();
         context.RequestServices = scope.ServiceProvider;
         context.Request.Method = request.Method.Method;
+        // The server normally registers this feature; without it the JSON body binder in
+        // RequestDelegateFactory skips reading the request body entirely.
+        context.Features.Set<IHttpRequestBodyDetectionFeature>(
+            new RequestBodyDetectionFeature(canHaveBody: request.Content is not null));
 
         var uri = request.RequestUri
             ?? throw new InvalidOperationException("In-process MCP requests must carry an absolute request URI.");
@@ -73,7 +83,22 @@ public sealed class McpInProcessDispatcher : HttpMessageHandler
         context.Response.Body = responseBody;
         context.Response.StatusCode = StatusCodes.Status200OK;
 
-        await _pipeline(context);
+        // The server's HttpContextFactory normally populates IHttpContextAccessor for the
+        // ambient request; in-process dispatch must do it explicitly or ICurrentUserService
+        // (and any auth-derived logic) sees no user ("未登录").
+        var accessor = scope.ServiceProvider.GetService<IHttpContextAccessor>();
+        var previousContext = accessor?.HttpContext;
+        if (accessor is not null)
+            accessor.HttpContext = context;
+        try
+        {
+            await _pipeline(context);
+        }
+        finally
+        {
+            if (accessor is not null)
+                accessor.HttpContext = previousContext;
+        }
 
         var response = new HttpResponseMessage((HttpStatusCode)context.Response.StatusCode);
         // Copy the buffered body out before the MemoryStream is disposed by the using block.
@@ -113,6 +138,7 @@ public sealed class McpInProcessDispatcher : HttpMessageHandler
 /// </summary>
 public sealed class McpInProcessClient
 {
+    private const int MaxRedirects = 10;
     private readonly HttpClient _client;
 
     public McpInProcessClient(McpInProcessDispatcher dispatcher, TimeSpan? timeout = null)
@@ -124,6 +150,52 @@ public sealed class McpInProcessClient
         };
     }
 
-    public Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-        => _client.SendAsync(request, ct);
+    /// <summary>
+    /// Sends a request following redirects like httpx (the Python reference followed them by
+    /// default). Redirect handling lives in HttpClientHandler, which custom handlers replace,
+    /// so it is re-implemented here: up to <see cref="MaxRedirects"/> hops, POST→GET on
+    /// 301/302/303, headers re-sent on same-origin hops (Authorization dropped cross-origin).
+    /// </summary>
+    public async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        var current = request;
+        var baseAddress = _client.BaseAddress ?? throw new InvalidOperationException("BaseAddress is required for in-process dispatch.");
+
+        for (var hop = 0; hop <= MaxRedirects; hop++)
+        {
+            var response = await _client.SendAsync(current, ct);
+            var status = (int)response.StatusCode;
+            if (status < 300 || status >= 400 || response.Headers.Location is not { } location)
+                return response;
+
+            if (hop == MaxRedirects)
+                return response;
+
+            var nextUri = location.IsAbsoluteUri
+                ? location
+                : new Uri(baseAddress, location);
+
+            var nextMethod = current.Method;
+            if (status == 303 || (current.Method == HttpMethod.Post && status is 301 or 302))
+                nextMethod = HttpMethod.Get;
+
+            var next = new HttpRequestMessage(nextMethod, nextUri);
+            if (current.Content is not null && nextMethod == current.Method)
+                next.Content = current.Content;
+            else
+                current.Content?.Dispose();
+
+            var sameOrigin = string.Equals(baseAddress.GetLeftPart(UriPartial.Authority), nextUri.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase);
+            foreach (var header in current.Headers)
+            {
+                if (header.Key == "Authorization" && !sameOrigin)
+                    continue;
+                next.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+
+            current = next;
+        }
+
+        throw new InvalidOperationException("Unreachable: redirect loop bounded by MaxRedirects.");
+    }
 }

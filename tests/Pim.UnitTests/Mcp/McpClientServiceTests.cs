@@ -243,4 +243,30 @@ public sealed class McpClientServiceTests : IDisposable
         public string ContentRootPath { get; set; } = "";
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
+    public async Task UpdateAsync_PermissionChanges_PersistToStore()
+    {
+        // Regression: in-place dictionary mutation is invisible to the EF change tracker
+        // (jsonb value converter compares snapshots), so permission updates silently
+        // dropped on real databases. A fresh context must observe the update.
+        var created = await _service.CreateAsync("Persist", _owner);
+        var payload = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, bool>>
+        {
+            ["write"] = new() { ["create_task"] = true },
+            ["read"] = new() { ["get_events"] = false },
+        };
+        await _service.UpdateAsync(created.Client.Id, null, payload, _owner);
+
+        var freshOptions = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(_db.Database.GetDbConnection().Database)
+            .Options;
+        using var fresh = new PimDbContext(freshOptions);
+        var stored = await fresh.Set<Pim.Module.Mcp.Entities.McpClientEntity>()
+            .SingleAsync(e => e.Id == created.Client.Id);
+        Assert.True(stored.Permissions["write"]["create_task"]);
+        Assert.False(stored.Permissions["read"]["get_events"]);
+        Assert.True(stored.Permissions["read"]["get_tasks"], "unlisted tools must keep prior values");
+    }
+
+
 }
+
