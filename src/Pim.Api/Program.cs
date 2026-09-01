@@ -14,8 +14,13 @@ using Pim.Core.Caching;
 using Pim.Core.Today;
 using Pim.Infrastructure.Extensions;
 using Pim.Infrastructure.Operations;
+using Pim.Module.Mcp.Services;
 using Serilog;
 using Serilog.Formatting.Compact;
+
+// --mcp-stdio: dedicated local-process MCP stdio server. Stdout carries ONLY the MCP
+// protocol, so console logs must go to stderr (serilog text writer sink) in that mode.
+var isMcpStdio = args.Contains("--mcp-stdio", StringComparer.Ordinal);
 
 Log.Logger = new LoggerConfiguration()
     .MinimumLevel.Debug()
@@ -27,6 +32,23 @@ Log.Logger = new LoggerConfiguration()
         retainedFileCountLimit: LoggingConfig.ResolveRetainedFileCount(
             Environment.GetEnvironmentVariable("PIM_LOG_RETAINED_FILES")))
     .CreateLogger();
+
+if (isMcpStdio)
+{
+    // stdio mode: stdout carries ONLY the MCP protocol. Swap the console sink to stderr
+    // (the file sink above remains for ops forensics).
+    Log.CloseAndFlush();
+    Log.Logger = new LoggerConfiguration()
+        .MinimumLevel.Debug()
+        .Enrich.FromLogContext()
+        .Enrich.WithProperty("Service", "pim-api")
+        .WriteTo.TextWriter(new CompactJsonFormatter(), Console.Error)
+        .WriteTo.File(new CompactJsonFormatter(), "/data/pim/logs/pim-api-.jsonl",
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: LoggingConfig.ResolveRetainedFileCount(
+                Environment.GetEnvironmentVariable("PIM_LOG_RETAINED_FILES")))
+        .CreateLogger();
+}
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog();
@@ -256,6 +278,16 @@ app.MapMethods("/api/{*path}", new[] { "GET", "POST", "PUT", "DELETE", "PATCH", 
 
 // SPA fallback: non-API routes serve index.html (React Router handles routing)
 app.MapFallbackToFile("index.html").AllowAnonymous();
+
+if (isMcpStdio)
+{
+    // Dedicated local-process MCP stdio server (Claude Code / Codex mcp.json).
+    await McpServerBootstrap.RunStdioAsync(app);
+    return;
+}
+
+// In-process MCP server: captures the pipeline, maps /mcp (bearer guard + 308 + MapMcp).
+McpServerBootstrap.ConfigureHttp(app);
 
 app.Run();
 

@@ -19,6 +19,7 @@
     <PackageReference Include="Npgquery" Version="1.1.0" />
     <PackageReference Include="Npgsql" Version="8.0.6" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.TextWriter" Version="3.0.0" />
     <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
   </ItemGroup>
 
