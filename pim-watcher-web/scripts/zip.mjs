@@ -44,13 +44,17 @@ await new Promise((resolve, reject) => {
   output.on('error', reject)
   archive.on('error', reject)
   archive.pipe(output)
-  const filesPromise = collect('dist', 'dist')
-  filesPromise.then((files) => {
-    for (const f of files) {
-      if (f === 'pim-browser-extension.zip') continue
-      archive.file(join('dist', f), { name: f })
+  void (async () => {
+    try {
+      const files = await collect('dist', 'dist')
+      for (const f of files) {
+        if (f === 'pim-browser-extension.zip') continue
+        archive.file(join('dist', f), { name: f })
+      }
+      await archive.finalize()
+    } catch (e) {
+      reject(e)
     }
-    return archive.finalize()
-  })
+  })()
 })
 console.log(`Created ${OUT}`)
