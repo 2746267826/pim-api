@@ -341,12 +341,7 @@ cd src/client-android
 
 ## TODO / Roadmap
 
-- [ ] MCP 写入能力 — 设计已就绪，待 Phase 3 按需开放，需 scope + 二次确认。候选：
-  - Calendar: `create_event`, `update_event`, `create_task`, `update_task`, `create_reminder`
-  - QuickNotes: `create_quick_note`, `update_quick_note`
-  - Files: `upload_file`（暂缓，涉二进制与存储）
-  - Mobile/PC: 不开放写入（采集由端侧完成）
-  - Outlook: 全量不开放（涉 OAuth 与外部写回）
+- [x] MCP 写入能力 — Phase 3 已交付：50 写入工具（Calendar 30 / QuickNotes 8 / Files 6 / PcTracker 4 / Mobile 2）+ Streamable HTTP 多客户端 + 客户端级 Token + 工具级权限（读 101/写 50 开关）+ WebUI MCP 管理页。接入见 [docs/mcp.md](docs/mcp.md)。
 
 ## 开发指南
 
