@@ -59,6 +59,12 @@ export const getHeartbeatData = (): Promise<HeartbeatData | undefined> =>
 export const setHeartbeatData = (heartbeatData: HeartbeatData) =>
   browser.storage.local.set({ heartbeatData })
 
+// -- Persistent instance id (unique per extension install) --------------------
+
+export const getStoredInstanceId = (): Promise<string | undefined> =>
+  browser.storage.local.get('instanceId').then((r) => r.instanceId as string | undefined)
+export const setStoredInstanceId = (instanceId: string) => browser.storage.local.set({ instanceId })
+
 // -- Browser name cache (used by helpers.getBrowser) -------------------------
 
 type BrowserName = string
