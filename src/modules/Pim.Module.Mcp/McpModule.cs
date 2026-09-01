@@ -106,7 +106,7 @@ public class McpModule : IModule
             HttpContext httpContext,
             CancellationToken ct) =>
         {
-            var ip = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            var ip = ClientIp(httpContext);
             if (!_verifyThrottle.Allow(ip))
                 return Results.Json(ApiResponse<string>.Error(42901, "too many attempts"), statusCode: StatusCodes.Status429TooManyRequests);
 
@@ -115,10 +115,15 @@ public class McpModule : IModule
                 ? auth[7..].Trim()
                 : string.Empty;
             if (string.IsNullOrWhiteSpace(token))
+            {
+                _verifyThrottle.RecordFailure(ip);
                 return Results.Json(ApiResponse<string>.Error(40101, "missing bearer token"), statusCode: StatusCodes.Status401Unauthorized);
+            }
 
             var outcome = await service.VerifyAsync(token, request.Tool, request.ParamsSummary, ct);
-            if (outcome.HttpStatus != 0)
+            // Count auth failures (401/403) and malformed-credential spam, but not pure
+            // parameter errors (400) so a buggy client cannot burn the budget.
+            if (outcome.HttpStatus is 401 or 403)
                 _verifyThrottle.RecordFailure(ip);
             return outcome.HttpStatus switch
             {
@@ -128,6 +133,19 @@ public class McpModule : IModule
                 _ => Results.Ok(ApiResponse<McpVerifyResult>.Ok(outcome.Result!)),
             };
         });
+    }
+
+    /// <summary>Client IP honoring a single X-Forwarded-For hop (reverse proxy deployments).</summary>
+    private static string ClientIp(HttpContext context)
+    {
+        var forwarded = context.Request.Headers["X-Forwarded-For"].ToString();
+        if (!string.IsNullOrWhiteSpace(forwarded))
+        {
+            var first = forwarded.Split(',')[0].Trim();
+            if (first.Length > 0)
+                return first;
+        }
+        return context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
     }
 
     public Task InitializeAsync(IServiceProvider serviceProvider)
@@ -165,6 +183,8 @@ internal sealed class VerifyThrottle
         lock (list)
         {
             list.RemoveAll(t => now - t > _window);
+            if (list.Count == 0)
+                _failures.TryRemove(ip, out _);
             return list.Count < _maxFailures;
         }
     }

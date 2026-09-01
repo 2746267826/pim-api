@@ -3265,7 +3265,9 @@ class _RequireBearer:
         self.app = app
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] == "http" and scope.get("path", "").startswith(_MCP_PATH):
+        path = scope.get("path", "")
+        is_mcp_path = path == _MCP_PATH or path.startswith(_MCP_PATH + "/") or path.startswith(_MCP_PATH + "?")
+        if scope["type"] == "http" and is_mcp_path:
             method = (scope.get("method") or "").upper()
             if method != "OPTIONS":
                 headers = {

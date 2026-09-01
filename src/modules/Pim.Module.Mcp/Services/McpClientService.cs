@@ -166,7 +166,7 @@ public sealed class McpClientService
             return McpVerifyOutcome.Unauthorized();
 
         if (!McpToolCatalog.Contains(tool!))
-            return McpVerifyOutcome.Forbidden(tool!);
+            return McpVerifyOutcome.InvalidRequest($"unknown tool: {tool}");
         var isWrite = McpToolCatalog.IsWrite(tool!);
         var section = isWrite ? "write" : "read";
         var map = client.Permissions.TryGetValue(section, out var m) ? m : new Dictionary<string, bool>();
@@ -177,7 +177,19 @@ public sealed class McpClientService
         var user = await _db.Users.AsNoTracking().FirstOrDefaultAsync(u => u.Id == client.CreatedBy, ct);
         if (user is null || !user.IsActive)
             return McpVerifyOutcome.Unauthorized();
-        var accessToken = _jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
+        // Issue a short-lived JWT scoped to this exact tool (claim mcp_tool) and client
+        // (claim mcp_client_id). The McpScopedTokenMiddleware rejects reuse against any
+        // other REST endpoint, so a read-tool token can never drive a write.
+        var accessToken = _jwt.GenerateScopedAccessToken(
+            user.Id,
+            user.Username,
+            user.Role,
+            new Dictionary<string, string>
+            {
+                ["mcp_tool"] = tool!,
+                ["mcp_client_id"] = client.Id.ToString(),
+            },
+            TimeSpan.FromMinutes(2));
 
         // Atomically bump connection stats. InMemory provider (tests) does not support
         // ExecuteUpdateAsync, so fall back to a tracked read-modify-write there.

@@ -165,6 +165,7 @@ app.UseCors();
 app.UseAuthentication();
 app.UseMiddleware<OpsRateLimitMiddleware>();
 app.UseMiddleware<OpsKeyMiddleware>();
+app.UseMiddleware<McpScopedTokenMiddleware>();
 app.UseAuthorization();
 try
 {
