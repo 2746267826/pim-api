@@ -20,7 +20,10 @@ public sealed class McpProtocolIntegrationTests : IClassFixture<WebApplicationFa
     private readonly WebApplicationFactory<Program> _factory;
 
     public McpProtocolIntegrationTests(WebApplicationFactory<Program> factory)
-        => _factory = factory;
+        // DisableHangfire like the other full-app factory tests: CI has no Postgres, and the
+        // Hangfire background server cannot stop cleanly when its storage is unreachable
+        // (factory disposal then fails and every test in the class reports a cleanup failure).
+        => _factory = factory.WithWebHostBuilder(b => b.UseSetting("DisableHangfire", "true"));
 
     private HttpClient CreateClient() => _factory.CreateClient();
 
