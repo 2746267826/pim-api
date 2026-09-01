@@ -28,19 +28,15 @@ public static class McpServerFactory
             sp.GetRequiredService<IOptions<McpOptions>>().Value.DispatchTimeout));
         services.AddSingleton<McpStdioTokenSource>();
 
-        var options = new McpOptions();
-        configuration.GetSection(McpOptions.SectionName).Bind(options);
-
+        // Session mode stays Stateless (SDK default, required for 2025-03-26 streamable HTTP);
+        // WithHttpTransport is also the registration marker MapMcp requires.
         services.AddMcpServer(server =>
         {
             server.ServerInfo = new Implementation { Name = ServerName, Version = ServerVersion };
             server.Capabilities = new ServerCapabilities { Tools = new ToolsCapability() };
             server.Handlers.ListToolsHandler = ListTools;
             server.Handlers.CallToolHandler = CallTool;
-        }).WithHttpTransport(transport =>
-        {
-            transport.IdleTimeout = options.IdleTimeout;
-        });
+        }).WithHttpTransport(_ => { });
 
         return services;
     }

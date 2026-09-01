@@ -14,9 +14,6 @@ public sealed class McpOptions
     /// <summary>Streamable HTTP endpoint path. Default <c>/mcp</c> (matches Hermes config and the retired Python service).</summary>
     public string Path { get; set; } = "/mcp";
 
-    /// <summary>Streamable HTTP session idle timeout before the server prunes the session.</summary>
-    public TimeSpan IdleTimeout { get; set; } = TimeSpan.FromMinutes(30);
-
     /// <summary>Per-call HTTP timeout for in-process REST dispatch (upper bound safety net).</summary>
     public TimeSpan DispatchTimeout { get; set; } = TimeSpan.FromSeconds(60);
 }
