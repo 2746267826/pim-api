@@ -6,7 +6,14 @@ Writes 0 - no create/update/delete/sync/import/batch-execute.
 Auth: Bearer token pass-through (MCP context -> Pim.Api)
 - Client obtains JWT via POST /api/v1/auth/login and calls MCP with
   Authorization: Bearer <token> (HTTP) or PIM_ACCESS_TOKEN env (stdio).
-- MCP does not cache token, does not refresh, audits real userId on API side.
+- stdio: supports file-backed refresh for long-lived process (issue #174):
+  PIM_TOKEN_FILE (or .token next to script) is re-read on each call via
+  mtime+size cache; token selection prefers non-expired JWT (exp+60s leeway,
+  non-JWT is treated as not expired and file mtime decides freshness).
+  If PIM_REFRESH_TOKEN is set, 401 is serialized via asyncio lock, auto-retries
+  via POST /api/v1/auth/refresh (atomic 0o600 write) and persists to file/env.
+- HTTP: Authorization header per-request, no cache.
+- Audits real userId on API side.
 
 Conventions:
 - time: start/end ISO8601 UTC, timezone IANA default Asia/Shanghai, max span 366 days
@@ -15,13 +22,17 @@ Conventions:
 - response >50KB adds truncated/nextPage hint
 """
 
+import base64
 import hashlib
 import json
 import os
 import re
+import time
+import threading
 import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -37,10 +48,436 @@ except ImportError:
 PIM_API_URL = os.getenv("PIM_API_URL", "http://127.0.0.1:5858").rstrip("/")
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 
+# Token file candidates are checked in order; first existing file wins unless
+# PIM_TOKEN_FILE explicitly points to a path (even if not yet created).
+_TOKEN_FILE_CANDIDATES: List[str] = []
+
+def _get_token_file_candidates() -> List[str]:
+    cands: List[str] = []
+    for env_name in ("PIM_TOKEN_FILE", "PIM_TOKEN_PATH"):
+        v = os.getenv(env_name)
+        if v and v.strip():
+            cands.append(v.strip())
+    # Adjacent to this script: run.py wrapper writes .token here per issue #174
+    cands.append(os.path.join(os.path.dirname(__file__), ".token"))
+    cands.append(os.path.join(os.path.dirname(__file__), ".pim-token"))
+    cands.append(os.path.expanduser("~/.pim/token"))
+    cands.append(os.path.expanduser("~/.pim/token.json"))
+    cands.append(os.path.expanduser("~/.config/pim/token"))
+    cands.append(os.path.expanduser("~/.config/pim/token.json"))
+    return cands
+
+# Cache for file-backed tokens: tracks mtime+size to avoid re-reading unchanged files.
+_token_file_cache: Dict[str, Any] = {"access_token": None, "refresh_token": None, "mtime": 0, "size": 0, "path": None}
+_token_file_lock = threading.Lock()
+# Async single-flight for refresh: at most one concurrent POST /auth/refresh
+_refresh_lock = asyncio.Lock()
+_refresh_inflight: Optional[asyncio.Future] = None
+
 mcp = FastMCP("pim-mcp-server")
 
 
 # ---------- helpers: auth, time, pagination, redaction, api ----------
+
+def _decode_jwt_exp(token: str) -> Optional[int]:
+    """Decode JWT exp claim without verification. Returns None if not a JWT or no exp."""
+    try:
+        parts = token.strip().split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1].strip()
+        # Correct padding: (-len % 4) pads 0..3, handles len%4==1 gracefully (will fail decode -> None)
+        payload_b64 += "=" * ((-len(payload_b64)) % 4)
+        payload_json = base64.urlsafe_b64decode(payload_b64.encode("utf-8"))
+        data = json.loads(payload_json)
+        exp = data.get("exp")
+        if isinstance(exp, (int, float)):
+            return int(exp)
+        if isinstance(exp, str):
+            try:
+                return int(exp.strip())
+            except Exception:
+                return None
+        return None
+    except Exception:
+        return None
+
+
+def _is_token_expired(token: str, leeway_seconds: int = 60) -> bool:
+    """True if JWT exp is within leeway_seconds from now. Non-JWT tokens are treated as not expired."""
+    exp = _decode_jwt_exp(token)
+    if exp is None:
+        return False
+    return exp < time.time() + leeway_seconds
+
+
+def _strip_bearer(v: str) -> str:
+    vv = v.strip()
+    if vv.lower().startswith("bearer "):
+        return vv[7:].strip()
+    return vv
+
+
+def _read_token_file(path: str) -> Tuple[Optional[str], Optional[str]]:
+    """Read token file. Supports plain JWT, or JSON with accessToken/refreshToken."""
+    try:
+        p = Path(path)
+        if not p.is_file():
+            return None, None
+        # Size guard to avoid DoS via huge file
+        try:
+            if p.stat().st_size > 32 * 1024:
+                return None, None
+        except Exception:
+            pass
+        raw = p.read_text(encoding="utf-8").strip()
+        if not raw:
+            return None, None
+        stripped = raw.lstrip()
+        # Handle BOM/whitespace before JSON
+        if stripped.startswith("{"):
+            try:
+                data = json.loads(stripped)
+                # Unified lookup without duplication
+                def _pick(d: Dict[str, Any], *keys: str) -> Optional[str]:
+                    for k in keys:
+                        v = d.get(k)
+                        if isinstance(v, str) and v.strip():
+                            return v
+                    return None
+
+                at = _pick(data, "accessToken", "access_token", "token")
+                rt = _pick(data, "refreshToken", "refresh_token")
+                # Also handle nested {data:{accessToken}} shape
+                if not at and isinstance(data.get("data"), dict):
+                    nested = data["data"]
+                    if isinstance(nested, dict):
+                        at = at or _pick(nested, "accessToken", "access_token", "token")
+                        rt = rt or _pick(nested, "refreshToken", "refresh_token")
+                if at:
+                    at = _strip_bearer(at)
+                    rt = _strip_bearer(rt) if isinstance(rt, str) and rt.strip() else None
+                    if at:
+                        return at, rt
+            except Exception:
+                pass
+            # JSON but not recognized shape -> fall through to plain
+        # Plain token (maybe with bearer prefix or newline separated)
+        # Two-line heuristic: treat any two non-empty lines as (access, refresh); no JWT check required
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if len(lines) >= 2:
+            first = _strip_bearer(lines[0])
+            second = _strip_bearer(lines[1])
+            # Only treat as pair if first looks like a token (non-empty after strip)
+            if first:
+                return first, second if second else None
+        # Single token: strip bearer prefix if present, then take first whitespace token
+        single = _strip_bearer(raw.strip())
+        token = single.split()[0] if single else None
+        return (token if token else None), None
+    except Exception:
+        return None, None
+
+
+def _try_load_token_from_file() -> Tuple[Optional[str], Optional[str]]:
+    """Load token from file with mtime+size cache. Returns (access, refresh)."""
+    candidates = _get_token_file_candidates()
+    for cand in candidates:
+        try:
+            p = Path(cand)
+            if not p.is_file():
+                continue
+            try:
+                st = p.stat()
+                mtime = st.st_mtime
+                size = st.st_size
+            except Exception:
+                continue
+            with _token_file_lock:
+                cached_path = _token_file_cache.get("path")
+                cached_mtime = _token_file_cache.get("mtime", 0)
+                cached_size = _token_file_cache.get("size", 0)
+                if cached_path == cand and cached_mtime == mtime and cached_size == size and _token_file_cache.get("access_token"):
+                    return _token_file_cache.get("access_token"), _token_file_cache.get("refresh_token")
+            # Read outside lock to avoid blocking, but re-check mtime/size inside lock before committing
+            at, rt = _read_token_file(cand)
+            if at:
+                with _token_file_lock:
+                    # Re-stat to detect race where file was rewritten between our initial stat and read
+                    try:
+                        st2 = p.stat()
+                        mtime2 = st2.st_mtime
+                        size2 = st2.st_size
+                    except Exception:
+                        mtime2, size2 = mtime, size
+                    _token_file_cache["access_token"] = at
+                    _token_file_cache["refresh_token"] = rt
+                    _token_file_cache["mtime"] = mtime2
+                    _token_file_cache["size"] = size2
+                    _token_file_cache["path"] = cand
+                return at, rt
+        except Exception:
+            continue
+    return None, None
+
+
+def _get_refresh_token() -> Optional[str]:
+    # Prefer file's refresh if it exists and env is stale (file fresher after rotation).
+    # Strategy: check file first via cache/mtime, then env, but favor non-expired / fresher signal.
+    # Simplicity: file cache is already mtime-validated; check it before env fallback.
+    # However env is explicit operator intent, so if both present we prefer file when its mtime is newer.
+    file_rt: Optional[str] = None
+    with _token_file_lock:
+        file_rt = _token_file_cache.get("refresh_token")
+    if not file_rt:
+        _, file_rt = _try_load_token_from_file()
+    for env_name in ("PIM_REFRESH_TOKEN",):
+        v = os.getenv(env_name)
+        if v and v.strip():
+            env_rt = _strip_bearer(v)
+            # If file has a refresh and its backing file was recently updated, prefer file
+            # (covers rotation where server invalidates old refresh after one use)
+            if file_rt and file_rt != env_rt:
+                # Prefer file's value when file exists (likely after _persist updated it)
+                # unless env was explicitly set after file (no reliable clock, prefer file for safety)
+                return file_rt
+            return env_rt
+    # Also check legacy aliases for backward compat but log via return
+    for env_name in ("PIM_REFRESH", "MCP_REFRESH_TOKEN"):
+        v = os.getenv(env_name)
+        if v and v.strip():
+            return _strip_bearer(v)
+    if file_rt:
+        return file_rt
+    return None
+
+
+def _is_path_allowlisted(path: str) -> bool:
+    """Check if path is in the allowlisted candidates (prevents arbitrary overwrite)."""
+    try:
+        rp = Path(path).resolve()
+        # Block system directories even if operator sets PIM_TOKEN_FILE maliciously
+        blocked_prefixes = (Path("/etc"), Path("/bin"), Path("/sbin"), Path("/usr"), Path("/root"), Path("/var"))
+        for bp in blocked_prefixes:
+            try:
+                if rp.is_relative_to(bp):
+                    # Allow only if explicitly under /var/tmp or /tmp for tests? No, block.
+                    return False
+            except Exception:
+                # Python <3.9 fallback
+                if str(rp).startswith(str(bp) + "/"):
+                    return False
+        candidates = _get_token_file_candidates()
+        rps = str(rp)
+        for c in candidates:
+            try:
+                rc = str(Path(c).resolve())
+                if rps == rc:
+                    return True
+            except Exception:
+                continue
+        default_token = str(Path(os.path.join(os.path.dirname(__file__), ".token")).resolve())
+        if rps == default_token:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Atomic write via temp file + rename, with 0o600 permissions."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    # Ensure parent exists with 0o700
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(path.parent, 0o700)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    tmp.write_text(content, encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except Exception:
+        pass
+    # fsync temp file
+    try:
+        with open(tmp, "rb") as f:
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+    except Exception:
+        pass
+    tmp.replace(path)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
+def _persist_refreshed_tokens(access_token: str, refresh_token: Optional[str]) -> None:
+    """Persist refreshed tokens to file and env cache. Best-effort, never raises."""
+    try:
+        # Update env for current process so subsequent _get_token sees fresh value
+        os.environ["PIM_ACCESS_TOKEN"] = access_token
+        if refresh_token:
+            os.environ["PIM_REFRESH_TOKEN"] = refresh_token
+        with _token_file_lock:
+            _token_file_cache["access_token"] = access_token
+            if refresh_token:
+                _token_file_cache["refresh_token"] = refresh_token
+        # Try to write back to the token file that was previously used, or the first candidate
+        candidates = _get_token_file_candidates()
+        target: Optional[str] = None
+        with _token_file_lock:
+            target = _token_file_cache.get("path")
+        if not target:
+            target = candidates[0] if candidates else None
+        if not target:
+            return
+        if not _is_path_allowlisted(target):
+            return
+        p = Path(target)
+        explicit = os.getenv("PIM_TOKEN_FILE") or os.getenv("PIM_TOKEN_PATH")
+        should_write = p.is_file() or (explicit and target == explicit.strip())
+        if not should_write and target.endswith(".token"):
+            should_write = True
+        if not should_write:
+            return
+        # Preserve format: if existing file was JSON, write JSON; else plain
+        try:
+            if p.is_file():
+                try:
+                    if p.stat().st_size > 32 * 1024:
+                        return
+                    raw = p.read_text(encoding="utf-8").strip()
+                except Exception:
+                    raw = ""
+                if raw.lstrip().startswith("{"):
+                    try:
+                        data = json.loads(raw.lstrip())
+                        if isinstance(data, dict):
+                            if "accessToken" in data:
+                                data["accessToken"] = access_token
+                            elif "access_token" in data:
+                                data["access_token"] = access_token
+                            elif "token" in data:
+                                data["token"] = access_token
+                            else:
+                                data["accessToken"] = access_token
+                            if refresh_token:
+                                if "refreshToken" in data:
+                                    data["refreshToken"] = refresh_token
+                                elif "refresh_token" in data:
+                                    data["refresh_token"] = refresh_token
+                                else:
+                                    data["refreshToken"] = refresh_token
+                            exp = _decode_jwt_exp(access_token)
+                            if exp and "expiresAt" in data:
+                                data["expiresAt"] = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+                            content = json.dumps(data, ensure_ascii=False, indent=2)
+                            _atomic_write_text(p, content + "\n")
+                            with _token_file_lock:
+                                try:
+                                    st = p.stat()
+                                    _token_file_cache["mtime"] = st.st_mtime
+                                    _token_file_cache["size"] = st.st_size
+                                except Exception:
+                                    pass
+                            return
+                    except Exception:
+                        pass
+                else:
+                    # Detect prior two-line format to preserve refresh
+                    try:
+                        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+                        was_two_line = len(lines) >= 2
+                    except Exception:
+                        was_two_line = False
+                    if was_two_line and refresh_token:
+                        content = access_token + "\n" + refresh_token + "\n"
+                    elif refresh_token and p.suffix == ".token":
+                        # For .token plain, also persist refresh as second line for restart resilience
+                        content = access_token + "\n" + refresh_token + "\n"
+                    else:
+                        content = access_token + "\n"
+                    _atomic_write_text(p, content)
+                    with _token_file_lock:
+                        try:
+                            st = p.stat()
+                            _token_file_cache["mtime"] = st.st_mtime
+                            _token_file_cache["size"] = st.st_size
+                            _token_file_cache["path"] = str(p)
+                        except Exception:
+                            pass
+                    return
+            # New file (explicit path or .token): write plain or json based on extension
+            if p.suffix == ".json":
+                data: Dict[str, Any] = {"accessToken": access_token}
+                if refresh_token:
+                    data["refreshToken"] = refresh_token
+                exp = _decode_jwt_exp(access_token)
+                if exp:
+                    data["expiresAt"] = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+                _atomic_write_text(p, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            else:
+                if refresh_token:
+                    content = access_token + "\n" + refresh_token + "\n"
+                else:
+                    content = access_token + "\n"
+                _atomic_write_text(p, content)
+            with _token_file_lock:
+                try:
+                    st = p.stat()
+                    _token_file_cache["mtime"] = st.st_mtime
+                    _token_file_cache["size"] = st.st_size
+                    _token_file_cache["path"] = str(p)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+async def _refresh_access_token(refresh_token: str) -> Optional[Tuple[str, Optional[str]]]:
+    """Call POST /api/v1/auth/refresh. Returns (new_access, new_refresh) or None."""
+    # Use raw PIM_API_URL, no auth header needed (refresh token is in body)
+    url = f"{PIM_API_URL}/api/v1/auth/refresh"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(url, json={"refreshToken": refresh_token})
+            if resp.status_code >= 400:
+                return None
+            try:
+                data = resp.json()
+            except Exception:
+                return None
+            # ApiResponse shape: {code:0, data:{accessToken, refreshToken, expiresAt}}
+            payload = data.get("data") if isinstance(data, dict) else None
+            if not payload and isinstance(data, dict) and "accessToken" in data:
+                payload = data
+            if not isinstance(payload, dict):
+                return None
+            new_at = payload.get("accessToken") or payload.get("access_token") or payload.get("token")
+            new_rt = payload.get("refreshToken") or payload.get("refresh_token")
+            if not new_at or not isinstance(new_at, str):
+                return None
+            new_at = new_at.strip()
+            if new_at.lower().startswith("bearer "):
+                new_at = new_at[7:].strip()
+            if isinstance(new_rt, str):
+                new_rt = new_rt.strip()
+                if new_rt.lower().startswith("bearer "):
+                    new_rt = new_rt[7:].strip()
+            else:
+                new_rt = None
+            return new_at, new_rt
+    except Exception:
+        return None
+
 
 def _get_token() -> Optional[str]:
     # Try FastMCP context (HTTP transport headers)
@@ -86,14 +523,35 @@ def _get_token() -> Optional[str]:
     except Exception:
         pass
 
-    # Env fallback for stdio transport
+    # Env fallback for stdio transport (with expiry-aware file reload)
+    # 1) Collect env token if present
+    env_token: Optional[str] = None
     for env_name in ("PIM_ACCESS_TOKEN", "PIM_TOKEN", "MCP_BEARER_TOKEN", "BEARER_TOKEN", "PIM_JWT"):
         v = os.getenv(env_name)
         if v and v.strip():
             vv = v.strip()
             if vv.lower().startswith("bearer "):
-                return vv[7:].strip()
-            return vv
+                vv = vv[7:].strip()
+            env_token = vv
+            break
+
+    # 2) Try file-backed token (checks mtime, supports plain JWT or JSON)
+    file_token, _file_refresh = _try_load_token_from_file()
+
+    # Decision: prefer non-expired token; if both expired, prefer file (likely fresher via external writer)
+    def _valid(tok: Optional[str]) -> bool:
+        return tok is not None and not _is_token_expired(tok)
+
+    if env_token and _valid(env_token):
+        return env_token
+    if file_token and _valid(file_token):
+        return file_token
+    # If one is non-expired but the other is expired/missing, we already returned the good one.
+    # If both are expired but one exists, return file first (external writer likely updated it), else env.
+    if file_token:
+        return file_token
+    if env_token:
+        return env_token
     return None
 
 
@@ -216,6 +674,7 @@ async def _call_api(
     params: Optional[Dict[str, Any]] = None,
     json_body: Optional[Any] = None,
     redact_urls: bool = False,
+    _retry_on_401: bool = True,
 ) -> Any:
     token = _get_token()
     if not token:
@@ -264,6 +723,29 @@ async def _call_api(
                     return {"data": resp.text, "code": 0, "contentType": content_type}
                 data = {"raw": resp.text[:2000], "status": resp.status_code}
             if resp.status_code >= 400:
+                # 401 retry with refresh token (for stdio long-lived process)
+                if resp.status_code == 401 and _retry_on_401:
+                    # Serialize refresh to avoid thundering herd; other 401s will wait and then reuse the new token.
+                    async with _refresh_lock:
+                        # Another coroutine may have already refreshed while we waited for the lock
+                        current = _get_token()
+                        if current and current != token and not _is_token_expired(current):
+                            return await _call_api(method, path, params, json_body, redact_urls, _retry_on_401=False)
+                        # Re-check file in case external writer updated token while we were in-flight
+                        fresh_file_token, _ = _try_load_token_from_file()
+                        if fresh_file_token and fresh_file_token != token and not _is_token_expired(fresh_file_token):
+                            return await _call_api(method, path, params, json_body, redact_urls, _retry_on_401=False)
+                        refresh_tok = _get_refresh_token()
+                        if refresh_tok:
+                            refreshed = await _refresh_access_token(refresh_tok)
+                            if refreshed:
+                                new_at, new_rt = refreshed
+                                _persist_refreshed_tokens(new_at, new_rt)
+                                return await _call_api(method, path, params, json_body, redact_urls, _retry_on_401=False)
+                        # Fallback: if fresh file appeared after refresh attempt, try once more with it
+                        fresh2, _ = _try_load_token_from_file()
+                        if fresh2 and fresh2 != token and not _is_token_expired(fresh2):
+                            return await _call_api(method, path, params, json_body, redact_urls, _retry_on_401=False)
                 # pass through ApiResponse error
                 if isinstance(data, dict) and "error" not in data:
                     return {"error": f"HTTP {resp.status_code}: {resp.text[:800]}", "details": data, "code": resp.status_code}
@@ -271,6 +753,12 @@ async def _call_api(
                     # ensure code field
                     if "code" not in data:
                         data["code"] = resp.status_code
+                    # Add hint for 401 to guide agent to re-login
+                    if resp.status_code == 401 and "missing bearer" not in str(data.get("error", "")).lower():
+                        hint = " token expired or invalid; re-login via POST /api/v1/auth/login or set PIM_REFRESH_TOKEN for auto-refresh"
+                        if isinstance(data.get("error"), str) and hint.lower() not in data["error"].lower():
+                            data = dict(data)
+                            data["error"] = data["error"] + hint
                     return data
                 return {"error": f"HTTP {resp.status_code}: {resp.text[:800]}", "details": data, "code": resp.status_code}
             # success: apply redact if requested
