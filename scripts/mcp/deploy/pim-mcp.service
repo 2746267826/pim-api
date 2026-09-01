@@ -1,5 +1,8 @@
 # PIM MCP Server systemd 单元（生产部署模板，issue #178）
 #
+# ⚠️ 已废弃（2026-09-01）：MCP Server 已集成进 Pim.Api 进程内，本单元不再需要。
+# 保留仅作历史参考；删除与否见仓库维护决策（工单 pim-mcp-inline-20260901）。
+#
 # 安装：
 #   sudo cp scripts/mcp/deploy/pim-mcp.service /etc/systemd/system/
 #   sudo systemctl daemon-reload

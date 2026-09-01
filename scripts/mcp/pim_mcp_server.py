@@ -1,5 +1,9 @@
 """
 PIM MCP v3 - Read + Write server for AI Agent
+
+DEPRECATED (2026-09-01): MCP Server 已集成进 Pim.Api（.NET 8）进程内（/mcp + --mcp-stdio），
+本脚本退役，仅保留为行为基准（工具契约/参数/返回形状以本文件为参考）。
+
 Exposes 151 tools: 101 read-only (Calendar / PcTracker / Mobile / QuickNotes / Files / Core/Infra)
 plus 50 write tools (Calendar 30 + QuickNotes 8 + Files 6 + PcTracker 4 + Mobile 2).
 
