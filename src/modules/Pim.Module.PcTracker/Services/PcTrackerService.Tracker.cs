@@ -156,6 +156,10 @@ public partial class PcTrackerService
         existing.LastError = req.LastError;
         existing.BrowserConnected = req.BrowserConnected;
         existing.BrowserHeartbeatAgeSeconds = req.BrowserHeartbeatAgeSeconds;
+        existing.SiteConnected = req.SiteConnected;
+        existing.SiteLastEventAgeSeconds = req.SiteLastEventAgeSeconds;
+        existing.SiteEventsUploaded = req.SiteEventsUploaded;
+        existing.SiteLastError = req.SiteLastError;
         existing.ReportedAt = now;
         existing.UpdatedAt = now;
 

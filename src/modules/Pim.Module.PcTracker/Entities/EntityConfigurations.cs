@@ -334,3 +334,33 @@ public class PcSuggestionFeedbackEntityConfiguration : IEntityTypeConfiguration<
         builder.HasIndex(e => e.Action).HasDatabaseName("ix_pc_suggestion_feedback_action");
     }
 }
+
+public class PcBrowserSiteDailyEntityConfiguration : IEntityTypeConfiguration<PcBrowserSiteDailyEntity>
+{
+    public void Configure(EntityTypeBuilder<PcBrowserSiteDailyEntity> builder)
+    {
+        // ux_pc_browser_site_daily 由 PcTrackerSchemaInitializer 维护
+        builder.HasIndex(e => e.DeviceId)
+            .HasDatabaseName("ix_pc_browser_site_daily_device");
+        builder.HasIndex(e => e.Date)
+            .HasDatabaseName("ix_pc_browser_site_daily_date");
+    }
+}
+
+public class PcBrowserSiteTickEntityConfiguration : IEntityTypeConfiguration<PcBrowserSiteTickEntity>
+{
+    public void Configure(EntityTypeBuilder<PcBrowserSiteTickEntity> builder)
+    {
+        builder.HasIndex(e => new { e.DeviceId, e.Date })
+            .HasDatabaseName("ix_pc_browser_site_tick_device_date");
+        builder.HasIndex(e => e.StartUtc)
+            .HasDatabaseName("ix_pc_browser_site_tick_start");
+    }
+}
+
+public class PcBrowserSiteMetaEntityConfiguration : IEntityTypeConfiguration<PcBrowserSiteMetaEntity>
+{
+    public void Configure(EntityTypeBuilder<PcBrowserSiteMetaEntity> builder)
+    {
+    }
+}

@@ -43,7 +43,11 @@ public record TrackerHealthRequest(
     long UploadFailures,
     string? LastError,
     bool BrowserConnected,
-    double? BrowserHeartbeatAgeSeconds
+    double? BrowserHeartbeatAgeSeconds,
+    bool SiteConnected = false,
+    double? SiteLastEventAgeSeconds = null,
+    long SiteEventsUploaded = 0,
+    string? SiteLastError = null
 );
 
 public record BrowserHeartbeatDto(
