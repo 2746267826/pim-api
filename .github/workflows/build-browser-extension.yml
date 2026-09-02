@@ -18,6 +18,14 @@ on:
       git_sha_short:
         required: true
         type: string
+      extension_repo:
+        required: false
+        type: string
+        default: '2746267826/tracker-web'
+      extension_ref:
+        required: false
+        type: string
+        default: 'master'
   workflow_dispatch:
     inputs:
       version:
@@ -36,6 +44,14 @@ on:
       git_sha_short:
         required: false
         default: ''
+      extension_repo:
+        description: 'Browser extension source repository'
+        required: false
+        default: '2746267826/tracker-web'
+      extension_ref:
+        description: 'Browser extension ref (branch or tag)'
+        required: false
+        default: 'master'
 
 jobs:
   build:
@@ -59,36 +75,50 @@ jobs:
             bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"
           fi
 
+      # 浏览器插件源码在独立 fork 仓库（2746267826/tracker-web，PIM Browser
+      # Watcher）；本仓库的 pim-watcher-web 目录已移除。
+      - name: Checkout browser extension source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.extension_repo || '2746267826/tracker-web' }}
+          ref: ${{ inputs.extension_ref || 'master' }}
+          path: .browser-extension-src
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: pim-watcher-web/package-lock.json
+          cache-dependency-path: .browser-extension-src/package-lock.json
 
       - name: Install dependencies
-        working-directory: pim-watcher-web
+        working-directory: .browser-extension-src
         run: npm ci
 
+      - name: Typecheck extension
+        working-directory: .browser-extension-src
+        run: npm run compile
+
       - name: Build extension
-        working-directory: pim-watcher-web
+        working-directory: .browser-extension-src
         run: npm run build
 
       - name: Verify build output
         run: |
-          ls -R pim-watcher-web/dist
-          test -f pim-watcher-web/dist/manifest.json || { echo "manifest.json missing"; exit 1; }
-          test -f pim-watcher-web/dist/background/main.js || { echo "dist/background/main.js missing"; exit 1; }
+          test -f .browser-extension-src/build/manifest.json || { echo "manifest.json missing"; exit 1; }
+          test -f .browser-extension-src/build/src/background/main.js || { echo "build/src/background/main.js missing"; exit 1; }
+          test -f .browser-extension-src/build/media/logo/logo-128.png || { echo "logo missing"; exit 1; }
+          grep -q '<all_urls>' .browser-extension-src/build/manifest.json || { echo "host_permissions <all_urls> missing (cf. PR #184 regression)"; exit 1; }
+          node -e "const m=require('./.browser-extension-src/build/manifest.json'); if(m.manifest_version!==3||!m.action?.default_popup||!m.options_ui?.page){console.error('manifest incomplete',m);process.exit(1)}"
 
       - name: Package extension
-        working-directory: pim-watcher-web
         run: |
-          mkdir -p build/artifacts
-          cd dist && zip -r "../build/artifacts/pim-browser-extension-v${{ steps.ver.outputs.artifact_slug }}.zip" . > /dev/null
-          ls -lh ../build/artifacts/*.zip
+          mkdir -p artifacts
+          cd .browser-extension-src/build && zip -FS -r "../../artifacts/pim-browser-extension-v${{ steps.ver.outputs.artifact_slug }}.zip" . > /dev/null
+          ls -lh ../../artifacts/*.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: pim-browser-extension-v${{ steps.ver.outputs.artifact_slug }}
-          path: pim-watcher-web/build/artifacts/*.zip
+          path: artifacts/*.zip
           if-no-files-found: error

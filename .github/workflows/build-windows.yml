@@ -18,6 +18,14 @@ on:
       git_sha_short:
         required: true
         type: string
+      extension_repo:
+        required: false
+        type: string
+        default: '2746267826/tracker-web'
+      extension_ref:
+        required: false
+        type: string
+        default: 'master'
   workflow_dispatch:
     inputs:
       version:
@@ -36,6 +44,14 @@ on:
       git_sha_short:
         required: false
         default: ''
+      extension_repo:
+        description: 'Browser extension source repository'
+        required: false
+        default: '2746267826/tracker-web'
+      extension_ref:
+        description: 'Browser extension ref (branch or tag)'
+        required: false
+        default: 'master'
 
 jobs:
   build:
@@ -144,32 +160,45 @@ jobs:
           }
           if (-not (Test-Path "publish/fix-keystats-session.ps1")) { throw "fix-keystats-session.ps1 not in publish" }
 
+      - name: Checkout browser extension source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.extension_repo || '2746267826/tracker-web' }}
+          ref: ${{ inputs.extension_ref || 'master' }}
+          path: .browser-extension-src
+
       - name: Setup Node for browser extension
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: pim-watcher-web/package-lock.json
+          cache-dependency-path: .browser-extension-src/package-lock.json
 
+      # 浏览器插件源码在独立 fork 仓库（2746267826/tracker-web，PIM Browser
+      # Watcher）。此处 checkout 指定 ref 构建并打进 Windows 安装器。
       - name: Build and include Browser Extension
         shell: pwsh
         run: |
-          Push-Location "$env:GITHUB_WORKSPACE/pim-watcher-web"
+          Push-Location "$env:GITHUB_WORKSPACE/.browser-extension-src"
           npm ci
           if ($LASTEXITCODE -ne 0) { Write-Error "npm ci failed"; exit 1 }
+          npm run compile
+          if ($LASTEXITCODE -ne 0) { Write-Error "browser extension typecheck failed"; exit 1 }
           npm run build
           if ($LASTEXITCODE -ne 0) { Write-Error "browser extension build failed"; exit 1 }
+          $manifest = Get-Content build/manifest.json -Raw | ConvertFrom-Json
+          if ($manifest.background.type -ne "module") { Write-Warning "manifest background.type != module" }
+          if ($manifest.host_permissions -notcontains "<all_urls>") { Write-Error "host_permissions <all_urls> missing (cf. pim-platform PR #184 regression)"; exit 1 }
           $dest = "$env:GITHUB_WORKSPACE/src/client-windows/publish/browser-extension"
           if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          Copy-Item -Recurse -Force "dist/*" $dest
+          Copy-Item -Recurse -Force "build/*" $dest
           Compress-Archive -Path "$dest/*" -DestinationPath "$env:GITHUB_WORKSPACE/src/client-windows/publish/browser-extension.zip" -Force
-          Write-Host "Browser extension packaged to $dest"
-          Get-ChildItem $dest | Format-List
+          Write-Host "Browser extension ($($manifest.name) v$($manifest.version)) packaged to $dest"
           Pop-Location
           $checkDest = "$env:GITHUB_WORKSPACE/src/client-windows/publish/browser-extension"
           if (-not (Test-Path "$checkDest/manifest.json")) { Write-Error "browser extension manifest missing in publish"; exit 1 }
-          if (-not (Test-Path "$checkDest/background/main.js")) { Write-Error "browser extension background missing"; exit 1 }
+          if (-not (Test-Path "$checkDest/src/background/main.js")) { Write-Error "browser extension background missing"; exit 1 }
 
       - name: Write version file for reference
         shell: bash
