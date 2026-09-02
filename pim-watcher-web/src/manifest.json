@@ -9,6 +9,7 @@
   "permissions": ["tabs", "alarms", "storage", "notifications"],
   "host_permissions": ["http://localhost:15601/*"],
   "background": {
-    "service_worker": "background/main.js"
+    "service_worker": "background/main.js",
+    "type": "module"
   }
 }
