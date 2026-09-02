@@ -6,10 +6,26 @@
   "icons": {
     "128": "logo-128.png"
   },
-  "permissions": ["tabs", "alarms", "storage", "notifications"],
-  "host_permissions": ["http://localhost:15601/*"],
+  "permissions": [
+    "tabs",
+    "alarms",
+    "storage",
+    "notifications",
+    "offscreen",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://localhost:15601/*",
+    "http://*/*",
+    "https://*/*"
+  ],
   "background": {
     "service_worker": "background/main.js",
     "type": "module"
+  },
+  "action": {
+    "default_icon": {
+      "128": "logo-128.png"
+    }
   }
 }
