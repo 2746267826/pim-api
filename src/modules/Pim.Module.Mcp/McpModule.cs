@@ -93,6 +93,9 @@ public class McpModule : IModule
             return Results.NoContent();
         });
 
+        mgmt.MapGet("/activity", () =>
+            Results.Ok(ApiResponse<IReadOnlyList<McpActivityEntry>>.Ok(McpToolExecutor.GetRecentActivity())));
+
         mgmt.MapGet("/catalog", (
             [FromServices] McpClientService service) =>
             Results.Ok(ApiResponse<McpCatalogDto>.Ok(service.Catalog())));

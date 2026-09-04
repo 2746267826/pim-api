@@ -11,7 +11,8 @@ public sealed record TaskBookDto(
     Guid? DomainProjectId,
     string Name,
     string Kind,
-    string Status);
+    string Status,
+    int TaskCount = 0);
 
 public sealed record TaskChecklistItemDto(
     Guid Id,

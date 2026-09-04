@@ -181,6 +181,23 @@ public class CalendarModule : IModule
             Results.Created($"/api/v1/calendar/tasks/{id}/checklist",
                 ApiResponse<object>.Ok(await svc.AddChecklistItemAsync(id, req, ct))));
 
+        group.MapPut("/tasks/{id:guid}/checklist/{itemId:guid}", async (
+            Guid id,
+            Guid itemId,
+            [FromBody] UpdateTaskChecklistItemRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(
+                await svc.UpdateChecklistItemAsync(id, itemId, req, ct))));
+
+        group.MapDelete("/tasks/{id:guid}/checklist/{itemId:guid}", async (
+            Guid id,
+            Guid itemId,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(
+                await svc.DeleteChecklistItemAsync(id, itemId, ct))));
+
         group.MapGet("/habits", async (
             [FromServices] PlanningModelService svc,
             CancellationToken ct) =>

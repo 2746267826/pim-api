@@ -241,12 +241,33 @@ public class PlanningModelService
     public async Task<IReadOnlyList<TaskBookDto>> ListTaskBooksAsync(CancellationToken ct = default)
     {
         var userId = UserId;
-        return await _db.Set<TaskBookEntity>()
+        var books = await _db.Set<TaskBookEntity>()
             .AsNoTracking()
             .Where(b => b.UserId == userId)
             .OrderBy(b => b.Name)
-            .Select(b => new TaskBookDto(b.Id, b.DomainProjectId, b.Name, b.Kind, b.Status))
             .ToListAsync(ct);
+
+        var counts = await _db.Set<TaskEntity>()
+            .AsNoTracking()
+            .Where(t => t.UserId == userId
+                && t.TaskBookId != null
+                && t.DeletedAt == null)
+            .GroupBy(t => t.TaskBookId)
+            .Select(g => new { g.Key, Count = g.Count() })
+            .ToListAsync(ct);
+        var countsByBook = counts
+            .Where(g => g.Key.HasValue)
+            .ToDictionary(g => g.Key!.Value, g => g.Count);
+
+        return books
+            .Select(b => new TaskBookDto(
+                b.Id,
+                b.DomainProjectId,
+                b.Name,
+                b.Kind,
+                b.Status,
+                countsByBook.GetValueOrDefault(b.Id)))
+            .ToList();
     }
 
     public async Task<TaskBookDto> CreateTaskBookAsync(
@@ -306,6 +327,56 @@ public class PlanningModelService
         _db.Set<TaskChecklistItemEntity>().Add(entity);
         await _db.SaveChangesAsync(ct);
         return new TaskChecklistItemDto(entity.Id, entity.TaskId, entity.Title, entity.IsDone, entity.SortOrder);
+    }
+
+    public async Task<TaskChecklistItemDto> UpdateChecklistItemAsync(
+        Guid taskId,
+        Guid itemId,
+        UpdateTaskChecklistItemRequest request,
+        CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var task = await GetTaskAsync(taskId, userId, ct);
+        var item = await _db.Set<TaskChecklistItemEntity>()
+            .FirstOrDefaultAsync(i => i.Id == itemId
+                && i.TaskId == task.Id
+                && i.UserId == userId
+                && i.DeletedAt == null, ct)
+            ?? throw new DomainException(02037, "Checklist item does not exist");
+
+        if (request.Title is not null)
+        {
+            ValidateRequired(request.Title, "Checklist title", 255);
+            item.Title = request.Title.Trim();
+        }
+
+        if (request.IsDone.HasValue)
+            item.IsDone = request.IsDone.Value;
+
+        item.UpdatedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return new TaskChecklistItemDto(item.Id, item.TaskId, item.Title, item.IsDone, item.SortOrder);
+    }
+
+    public async Task<string> DeleteChecklistItemAsync(
+        Guid taskId,
+        Guid itemId,
+        CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var task = await GetTaskAsync(taskId, userId, ct);
+        var item = await _db.Set<TaskChecklistItemEntity>()
+            .FirstOrDefaultAsync(i => i.Id == itemId
+                && i.TaskId == task.Id
+                && i.UserId == userId
+                && i.DeletedAt == null, ct)
+            ?? throw new DomainException(02037, "Checklist item does not exist");
+
+        var now = DateTimeOffset.UtcNow;
+        item.DeletedAt = now;
+        item.UpdatedAt = now;
+        await _db.SaveChangesAsync(ct);
+        return taskId.ToString();
     }
 
     public async Task<IReadOnlyList<HabitRoutineDto>> ListHabitsAsync(CancellationToken ct = default)

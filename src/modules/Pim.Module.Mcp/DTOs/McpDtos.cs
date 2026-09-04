@@ -49,3 +49,12 @@ public sealed record McpVerifyResult(
     Dictionary<string, Dictionary<string, bool>> Permissions,
     string AccessToken,
     bool IsWrite);
+
+/// <summary>In-memory record of recent MCP tool calls, kept for the WebUI activity view.</summary>
+public sealed record McpActivityEntry(
+    DateTimeOffset Timestamp,
+    string ClientName,
+    string ToolName,
+    int StatusCode,
+    long DurationMs,
+    string ArgumentsSummary);

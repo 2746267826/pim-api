@@ -1022,10 +1022,12 @@ public class CalendarService
         {
             UserId = UserId,
             CalendarId = request.CalendarId,
+            TaskBookId = request.TaskBookId,
             Uid = Guid.NewGuid().ToString() + "@pim",
             Title = request.Title,
             Description = request.Description,
             Priority = request.Priority,
+            PercentComplete = request.PercentComplete ?? 0,
             Due = due,
             EstimatedDuration = estimatedDuration,
             MinimumSegment = minimumSegment,
@@ -1075,6 +1077,9 @@ public class CalendarService
         if (request.PlannedEnd.HasValue)
             task.PlannedEnd = finalEnd;
         task.CalendarId = request.CalendarId;
+        if (request.TaskBookId.HasValue)
+            task.TaskBookId = request.TaskBookId;
+        task.PercentComplete = request.PercentComplete ?? task.PercentComplete;
         if (finalStart.HasValue || request.CalendarId.HasValue)
             task.IsInbox = false;
         if (request.Status is not null)
@@ -1377,7 +1382,7 @@ public class CalendarService
             FormatDuration(t.EstimatedDuration),
             FormatDuration(t.MinimumSegment),
             t.DtStart, t.Due, t.Status, t.IsInbox, t.SortOrder,
-            t.SubTasks.Select(MapTask).ToList(), t.PlannedEnd);
+            t.SubTasks.Select(MapTask).ToList(), t.PlannedEnd, t.TaskBookId, t.PercentComplete);
 
     // 真库回放修复：确保周期展开按 Asia/Shanghai 本地日期去重，避免跨时区重复
     private static DateTimeOffset NormalizeRecurrenceStart(DateTimeOffset start, TimeZoneInfo? tz = null)
