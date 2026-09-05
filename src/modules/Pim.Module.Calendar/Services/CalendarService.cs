@@ -1008,6 +1008,13 @@ public class CalendarService
                 ?? throw new DomainException(02003, "日历不存在");
         }
 
+        if (request.TaskBookId.HasValue)
+        {
+            var book = await _db.Set<TaskBookEntity>()
+                .FirstOrDefaultAsync(b => b.Id == request.TaskBookId.Value && b.UserId == UserId, ct)
+                ?? throw new DomainException(02003, "任务本不存在");
+        }
+
         var due = NormalizeToUtc(request.Due);
         var dtStart = NormalizeToUtc(request.DtStart);
         var plannedEnd = NormalizeToUtc(request.PlannedEnd);
@@ -1078,7 +1085,12 @@ public class CalendarService
             task.PlannedEnd = finalEnd;
         task.CalendarId = request.CalendarId;
         if (request.TaskBookId.HasValue)
-            task.TaskBookId = request.TaskBookId;
+        {
+            var book = await _db.Set<TaskBookEntity>()
+                .FirstOrDefaultAsync(b => b.Id == request.TaskBookId.Value && b.UserId == UserId, ct)
+                ?? throw new DomainException(02003, "任务本不存在");
+        }
+        task.TaskBookId = request.TaskBookId;
         task.PercentComplete = request.PercentComplete ?? task.PercentComplete;
         if (finalStart.HasValue || request.CalendarId.HasValue)
             task.IsInbox = false;

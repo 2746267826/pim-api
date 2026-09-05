@@ -93,8 +93,13 @@ public class McpModule : IModule
             return Results.NoContent();
         });
 
-        mgmt.MapGet("/activity", () =>
-            Results.Ok(ApiResponse<IReadOnlyList<McpActivityEntry>>.Ok(McpToolExecutor.GetRecentActivity())));
+        mgmt.MapGet("/activity", (
+            [FromServices] ICurrentUserService currentUser) =>
+        {
+            if (currentUser.UserId is not { } userId)
+                return Results.Unauthorized();
+            return Results.Ok(ApiResponse<IReadOnlyList<McpActivityEntry>>.Ok(McpToolExecutor.GetRecentActivity(userId)));
+        });
 
         mgmt.MapGet("/catalog", (
             [FromServices] McpClientService service) =>

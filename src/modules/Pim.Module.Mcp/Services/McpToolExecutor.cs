@@ -42,6 +42,7 @@ public sealed class McpToolExecutor
     private readonly McpStdioTokenSource _stdioTokenSource;
     private readonly HttpContext? _httpContext;
     private string? _lastClientName;
+    private Guid? _lastOwnerUserId;
 
     public McpToolExecutor(
         McpClientService verifyService,
@@ -59,8 +60,11 @@ public sealed class McpToolExecutor
     public static IReadOnlyList<McpToolContract> ToolContract => Contract.Value;
 
     /// <summary>Read-only snapshot of recent tool calls, newest first.</summary>
-    public static IReadOnlyList<McpActivityEntry> GetRecentActivity()
-        => RecentActivity.OrderByDescending(e => e.Timestamp).ToList();
+    public static IReadOnlyList<McpActivityEntry> GetRecentActivity(Guid ownerUserId)
+        => RecentActivity
+            .Where(e => e.OwnerUserId == ownerUserId)
+            .OrderByDescending(e => e.Timestamp)
+            .ToList();
 
     public async ValueTask<CallToolResult> ExecuteAsync(
         CallToolRequestParams requestParams,
@@ -80,6 +84,7 @@ public sealed class McpToolExecutor
         try
         {
             result = await ExecuteSpecAsync(spec, args, ct);
+            RecordActivity(startedAt, toolName, 200, args);
         }
         catch (McpToolAuthException auth)
         {
@@ -95,7 +100,6 @@ public sealed class McpToolExecutor
             result = new JsonObject { ["error"] = $"request failed: {ex.Message}", ["code"] = 500 };
             RecordActivity(startedAt, toolName, 500, args);
         }
-        RecordActivity(startedAt, toolName, 200, args);
         return ToToolResult(result);
     }
 
@@ -114,7 +118,8 @@ public sealed class McpToolExecutor
             toolName,
             statusCode,
             durationMs,
-            summary));
+            summary,
+            _lastOwnerUserId));
         while (RecentActivity.Count > MaxActivityEntries)
         {
             if (!RecentActivity.TryDequeue(out _))
@@ -290,6 +295,7 @@ public sealed class McpToolExecutor
         if (outcome.HttpStatus != 0)
             throw new McpToolAuthException(outcome.HttpStatus, outcome.Error ?? "unauthorized");
         _lastClientName = outcome.Result?.ClientName;
+        _lastOwnerUserId = outcome.Result?.UserId;
         return outcome.Result?.AccessToken;
     }
 

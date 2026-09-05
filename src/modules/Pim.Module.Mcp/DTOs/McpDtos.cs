@@ -57,4 +57,5 @@ public sealed record McpActivityEntry(
     string ToolName,
     int StatusCode,
     long DurationMs,
-    string ArgumentsSummary);
+    string ArgumentsSummary,
+    Guid? OwnerUserId = null);
