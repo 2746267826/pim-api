@@ -207,6 +207,34 @@ public class ReminderServiceTests
             ScheduledAt: null), CancellationToken.None));
     }
 
+    [Fact]
+    public async Task HardAction_CaseInsensitive_Matches()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+        var highRisk = await service.CreateAsync(Request("High", "L3ExternalSourceOrWriteback"), CancellationToken.None);
+
+        // "Confirm" 大写应被视为非 allow 动作 → OpenDetailRequired
+        var result = await service.HandleActionAsync(highRisk.Id, "Confirm", CancellationToken.None);
+
+        Assert.Equal("OpenDetailRequired", result.Kind);
+        Assert.Contains("/confirmations/", result.DetailUrl);
+    }
+
+    [Fact]
+    public async Task LowAction_CaseInsensitive_Executes()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+        var lowRisk = await service.CreateAsync(Request("Low", "L1LowRiskAction"), CancellationToken.None);
+
+        // "Dismiss" 大写应视为 dismiss → Dismissed
+        var result = await service.HandleActionAsync(lowRisk.Id, "Dismiss", CancellationToken.None);
+
+        Assert.Equal("Executed", result.Kind);
+        Assert.Equal("Dismissed", result.Status);
+    }
+
     private static CreateReminderRequest Request(string title, string risk)
         => new(
             "confirmation",

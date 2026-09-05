@@ -97,7 +97,7 @@ public sealed class ReminderService
         CancellationToken ct = default)
     {
         var reminder = await LoadAsync(id, ct);
-        var normalizedAction = Normalize(action, "open");
+        var normalizedAction = Normalize(action, "open").ToLowerInvariant();
         if (HighRiskLevels.Contains(reminder.RiskLevel)
             && normalizedAction is not "open" and not "snooze" and not "dismiss")
         {
