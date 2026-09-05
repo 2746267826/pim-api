@@ -102,6 +102,7 @@ public sealed class ReminderService
             && normalizedAction is not "open" and not "snooze" and not "dismiss")
         {
             await RecordDeliveryAsync(reminder, "Web", "OpenDetailRequired", normalizedAction, ct);
+            await _db.SaveChangesAsync(ct);
             return new ReminderActionResponse("OpenDetailRequired", reminder.Status, DetailUrl(reminder));
         }
 

@@ -56,6 +56,10 @@ public class ReminderServiceTests
         Assert.Equal("Dismissed", lowAction.Status);
         Assert.Equal("OpenDetailRequired", highAction.Kind);
         Assert.Contains("/confirmations/", highAction.DetailUrl);
+        var highRiskDeliveries = await db.Set<ReminderDeliveryEntity>()
+            .Where(d => d.ReminderId == highRisk.Id)
+            .ToListAsync(CancellationToken.None);
+        Assert.Contains(highRiskDeliveries, d => d.Status == "OpenDetailRequired");
     }
 
     [Fact]
