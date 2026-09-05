@@ -56,6 +56,50 @@ public class ReminderServiceTests
         Assert.Contains("/confirmations/", highAction.DetailUrl);
     }
 
+    [Fact]
+    public async Task CreateAsync_OmittedOptionalFields_SucceedsWithDefaults()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        var reminder = await service.CreateAsync(new CreateReminderRequest(
+            RelatedObjectType: "task",
+            RelatedObjectId: Guid.NewGuid(),
+            Title: "MCP reminder without channels",
+            Body: null!,
+            TriggerReason: null!,
+            RiskLevel: null!,
+            Channels: null!,
+            DoNotDisturbStart: null,
+            DoNotDisturbEnd: null,
+            ScheduledAt: DateTimeOffset.Parse("2026-09-07T12:00:00Z")), CancellationToken.None);
+
+        Assert.Equal("MCP reminder without channels", reminder.Title);
+        Assert.Empty(reminder.Channels);
+        Assert.Equal("Open", reminder.Status);
+    }
+
+    [Fact]
+    public async Task CreateAsync_EmptyChannels_NormalizesToEmptyArray()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        var reminder = await service.CreateAsync(new CreateReminderRequest(
+            RelatedObjectType: "task",
+            RelatedObjectId: Guid.NewGuid(),
+            Title: "Reminder with empty channels",
+            Body: "Body",
+            TriggerReason: "test",
+            RiskLevel: null!,
+            Channels: [],
+            DoNotDisturbStart: null,
+            DoNotDisturbEnd: null,
+            ScheduledAt: DateTimeOffset.Parse("2026-09-07T12:00:00Z")), CancellationToken.None);
+
+        Assert.Empty(reminder.Channels);
+    }
+
     private static CreateReminderRequest Request(string title, string risk)
         => new(
             "confirmation",

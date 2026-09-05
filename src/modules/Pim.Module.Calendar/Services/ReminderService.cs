@@ -40,10 +40,10 @@ public sealed class ReminderService
             RelatedObjectType = Normalize(request.RelatedObjectType, "object"),
             RelatedObjectId = request.RelatedObjectId,
             Title = request.Title.Trim(),
-            Body = request.Body,
-            TriggerReason = request.TriggerReason,
+            Body = NormalizeText(request.Body),
+            TriggerReason = NormalizeText(request.TriggerReason),
             RiskLevel = Normalize(request.RiskLevel, "L1LowRiskAction"),
-            ChannelsJson = JsonSerializer.Serialize(request.Channels.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), JsonOptions),
+            ChannelsJson = JsonSerializer.Serialize(NormalizeChannels(request.Channels), JsonOptions),
             DoNotDisturbStart = request.DoNotDisturbStart,
             DoNotDisturbEnd = request.DoNotDisturbEnd,
             ScheduledAt = request.ScheduledAt.ToUniversalTime(),
@@ -218,6 +218,18 @@ public sealed class ReminderService
             return [];
         }
     }
+
+    private static string[] NormalizeChannels(IReadOnlyList<string>? channels)
+        => channels is null
+            ? []
+            : channels
+                .Where(c => !string.IsNullOrWhiteSpace(c))
+                .Select(c => c.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+    private static string NormalizeText(string? value)
+        => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
 
     private static string DetailUrl(ReminderEntity reminder)
         => reminder.RelatedObjectType.Equals("confirmation", StringComparison.OrdinalIgnoreCase)
