@@ -79,6 +79,8 @@ public class ReminderServiceTests
         Assert.Empty(reminder.TriggerReason);
         Assert.Equal("L1LowRiskAction", reminder.RiskLevel);
         Assert.Empty(reminder.Channels);
+        Assert.Null(reminder.DoNotDisturbStart);
+        Assert.Null(reminder.DoNotDisturbEnd);
         Assert.Equal("Open", reminder.Status);
     }
 
