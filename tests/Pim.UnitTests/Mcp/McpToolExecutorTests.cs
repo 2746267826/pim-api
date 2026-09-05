@@ -668,4 +668,52 @@ public sealed class McpToolExecutorTests : IDisposable
         Assert.Contains("ids=cal-1", request.Query);
         Assert.Contains("calendarId=cal-1", request.Query);
     }
+
+    [Fact]
+    public async Task CreateReminder_OmittedOptionalChannels_SendsBodyWithoutChannelsAndSucceeds()
+    {
+        // Issue #196 regression: Hermes 等 MCP 客户端不传 channels/body/triggerReason 时，
+        // Python 参考实现经 _clean_params 过滤掉 None 值，body 中不出现这些字段；
+        // 服务端 CreateReminderRequest 若以非空类型强绑定，null 将触发 NRE -> 500/1001。
+        CreateExecutor(withWritePermission: true);
+        _routes["POST /api/v1/calendar/reminders"] = new(200, "{\"code\":0,\"data\":{\"id\":\"r1\"}}");
+        var result = await CallTool("create_reminder", new Dictionary<string, JsonElement>
+        {
+            ["relatedObjectType"] = Json("\"task\""),
+            ["relatedObjectId"] = Json("\"4e2e35a7-4488-4c12-b455-a7b41b728e85\""),
+            ["title"] = Json("\"【测试】提醒权限验证\""),
+            ["scheduledAt"] = Json("\"2026-09-06T12:00:00Z\""),
+        });
+
+        Assert.Equal(0, result!["code"]!.GetValue<int>());
+        var request = Assert.Single(_requests);
+        var body = JsonNode.Parse(request.Body!)!.AsObject();
+        Assert.Equal("task", body["relatedObjectType"]!.GetValue<string>());
+        Assert.Equal("2026-09-06T12:00:00Z", body["scheduledAt"]!.GetValue<string>());
+        Assert.DoesNotContain("channels", body);
+        Assert.DoesNotContain("body", body);
+        Assert.DoesNotContain("triggerReason", body);
+    }
+
+    [Fact]
+    public async Task CreateReminder_WithChannels_PreservesChannelsArray()
+    {
+        CreateExecutor(withWritePermission: true);
+        _routes["POST /api/v1/calendar/reminders"] = new(200, "{\"code\":0,\"data\":{\"id\":\"r2\"}}");
+        await CallTool("create_reminder", new Dictionary<string, JsonElement>
+        {
+            ["relatedObjectType"] = Json("\"task\""),
+            ["relatedObjectId"] = Json("\"4e2e35a7-4488-4c12-b455-a7b41b728e85\""),
+            ["title"] = Json("\"with channels\""),
+            ["scheduledAt"] = Json("\"2026-09-06T12:00:00Z\""),
+            ["channels"] = Json("[\"web\",\"desktop\"]"),
+            ["riskLevel"] = Json("\"LOW\""),
+        });
+
+        var request = Assert.Single(_requests);
+        var body = JsonNode.Parse(request.Body!)!.AsObject();
+        Assert.Equal("web", body["channels"]![0]!.GetValue<string>());
+        Assert.Equal("desktop", body["channels"]![1]!.GetValue<string>());
+        Assert.Equal("LOW", body["riskLevel"]!.GetValue<string>());
+    }
 }

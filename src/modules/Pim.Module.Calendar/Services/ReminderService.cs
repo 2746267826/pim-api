@@ -34,19 +34,23 @@ public sealed class ReminderService
         CancellationToken ct = default)
     {
         ValidateRequired(request.Title, "Reminder title", 255);
+        if (request.RelatedObjectId == Guid.Empty)
+            throw new DomainException(02043, "RelatedObjectId must be a valid GUID.");
+        if (request.ScheduledAt is null)
+            throw new DomainException(02044, "ScheduledAt is required.");
         var entity = new ReminderEntity
         {
             UserId = UserId,
             RelatedObjectType = Normalize(request.RelatedObjectType, "object"),
             RelatedObjectId = request.RelatedObjectId,
             Title = request.Title.Trim(),
-            Body = request.Body,
-            TriggerReason = request.TriggerReason,
+            Body = NormalizeText(request.Body),
+            TriggerReason = NormalizeText(request.TriggerReason),
             RiskLevel = Normalize(request.RiskLevel, "L1LowRiskAction"),
-            ChannelsJson = JsonSerializer.Serialize(request.Channels.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), JsonOptions),
+            ChannelsJson = JsonSerializer.Serialize(NormalizeChannels(request.Channels), JsonOptions),
             DoNotDisturbStart = request.DoNotDisturbStart,
             DoNotDisturbEnd = request.DoNotDisturbEnd,
-            ScheduledAt = request.ScheduledAt.ToUniversalTime(),
+            ScheduledAt = request.ScheduledAt!.Value.ToUniversalTime(),
             Status = "Open",
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
@@ -93,11 +97,12 @@ public sealed class ReminderService
         CancellationToken ct = default)
     {
         var reminder = await LoadAsync(id, ct);
-        var normalizedAction = Normalize(action, "open");
+        var normalizedAction = Normalize(action, "open").ToLowerInvariant();
         if (HighRiskLevels.Contains(reminder.RiskLevel)
             && normalizedAction is not "open" and not "snooze" and not "dismiss")
         {
             await RecordDeliveryAsync(reminder, "Web", "OpenDetailRequired", normalizedAction, ct);
+            await _db.SaveChangesAsync(ct);
             return new ReminderActionResponse("OpenDetailRequired", reminder.Status, DetailUrl(reminder));
         }
 
@@ -218,6 +223,18 @@ public sealed class ReminderService
             return [];
         }
     }
+
+    private static string[] NormalizeChannels(IReadOnlyList<string>? channels)
+        => channels is null
+            ? []
+            : channels
+                .Where(c => !string.IsNullOrWhiteSpace(c))
+                .Select(c => c.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+    private static string NormalizeText(string? value)
+        => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
 
     private static string DetailUrl(ReminderEntity reminder)
         => reminder.RelatedObjectType.Equals("confirmation", StringComparison.OrdinalIgnoreCase)

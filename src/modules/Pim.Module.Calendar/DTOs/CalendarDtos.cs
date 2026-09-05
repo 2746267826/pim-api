@@ -569,13 +569,13 @@ public record CreateReminderRequest(
     string RelatedObjectType,
     Guid RelatedObjectId,
     string Title,
-    string Body,
-    string TriggerReason,
-    string RiskLevel,
-    IReadOnlyList<string> Channels,
+    string? Body,
+    string? TriggerReason,
+    string? RiskLevel,
+    IReadOnlyList<string>? Channels,
     string? DoNotDisturbStart,
     string? DoNotDisturbEnd,
-    DateTimeOffset ScheduledAt
+    DateTimeOffset? ScheduledAt
 );
 
 public record ReminderResponse(

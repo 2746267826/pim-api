@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.DTOs;
@@ -54,6 +56,183 @@ public class ReminderServiceTests
         Assert.Equal("Dismissed", lowAction.Status);
         Assert.Equal("OpenDetailRequired", highAction.Kind);
         Assert.Contains("/confirmations/", highAction.DetailUrl);
+        var highRiskDeliveries = await db.Set<ReminderDeliveryEntity>()
+            .Where(d => d.ReminderId == highRisk.Id)
+            .ToListAsync(CancellationToken.None);
+        Assert.Contains(highRiskDeliveries, d => d.Status == "OpenDetailRequired");
+    }
+
+    [Fact]
+    public async Task CreateAsync_OmittedOptionalFields_SucceedsWithDefaults()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        var reminder = await service.CreateAsync(new CreateReminderRequest(
+            RelatedObjectType: "task",
+            RelatedObjectId: Guid.NewGuid(),
+            Title: "MCP reminder without channels",
+            Body: null!,
+            TriggerReason: null!,
+            RiskLevel: null!,
+            Channels: null!,
+            DoNotDisturbStart: null,
+            DoNotDisturbEnd: null,
+            ScheduledAt: DateTimeOffset.Parse("2026-09-07T12:00:00Z")), CancellationToken.None);
+
+        Assert.Equal("MCP reminder without channels", reminder.Title);
+        Assert.Empty(reminder.Body);
+        Assert.Empty(reminder.TriggerReason);
+        Assert.Equal("L1LowRiskAction", reminder.RiskLevel);
+        Assert.Empty(reminder.Channels);
+        Assert.Null(reminder.DoNotDisturbStart);
+        Assert.Null(reminder.DoNotDisturbEnd);
+        Assert.Equal("Open", reminder.Status);
+    }
+
+    [Fact]
+    public async Task CreateAsync_EmptyChannels_NormalizesToEmptyArray()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        var reminder = await service.CreateAsync(new CreateReminderRequest(
+            RelatedObjectType: "task",
+            RelatedObjectId: Guid.NewGuid(),
+            Title: "Reminder with empty channels",
+            Body: "Body",
+            TriggerReason: "test",
+            RiskLevel: null!,
+            Channels: [],
+            DoNotDisturbStart: null,
+            DoNotDisturbEnd: null,
+            ScheduledAt: DateTimeOffset.Parse("2026-09-07T12:00:00Z")), CancellationToken.None);
+
+        Assert.Empty(reminder.Channels);
+    }
+
+    [Fact]
+    public async Task CreateAsync_JsonBodyWithOmittedOptionalFields_BindsNullAndSucceeds()
+    {
+        // Contract-level regression (issue #196): MCP 转发层在 Python _clean_params 语义下
+        // 不会发送 channels/body/triggerReason/riskLevel；ASP.NET Json 绑定对缺失字段得到
+        // null 而非报错。此测试模拟该绑定形态（Web 命名策略），确保服务层 null-safe。
+        var json = """
+            {
+              "relatedObjectType": "task",
+              "relatedObjectId": "4e2e35a7-4488-4c12-b455-a7b41b728e85",
+              "title": "MCP reminder without channels",
+              "scheduledAt": "2026-09-07T12:00:00Z"
+            }
+            """;
+
+        var request = JsonSerializer.Deserialize<CreateReminderRequest>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? throw new InvalidOperationException("deserialization failed");
+        Assert.Null(request.Body);
+        Assert.Null(request.TriggerReason);
+        Assert.Null(request.RiskLevel);
+        Assert.Null(request.Channels);
+
+        await using var db = CreateDb();
+        var service = CreateService(db);
+        var reminder = await service.CreateAsync(request, CancellationToken.None);
+
+        Assert.Equal("MCP reminder without channels", reminder.Title);
+        Assert.Empty(reminder.Body);
+        Assert.Empty(reminder.TriggerReason);
+        Assert.Equal("L1LowRiskAction", reminder.RiskLevel);
+        Assert.Empty(reminder.Channels);
+        Assert.Equal("Open", reminder.Status);
+    }
+
+    [Fact]
+    public async Task CreateAsync_BlankAndDuplicateChannels_NormalizesAndDedupes()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        var reminder = await service.CreateAsync(new CreateReminderRequest(
+            RelatedObjectType: "task",
+            RelatedObjectId: Guid.NewGuid(),
+            Title: "Dedupe channels",
+            Body: "Body",
+            TriggerReason: "test",
+            RiskLevel: "LOW",
+            Channels: ["web", "WEB", "  ", "desktop"],
+            DoNotDisturbStart: null,
+            DoNotDisturbEnd: null,
+            ScheduledAt: DateTimeOffset.Parse("2026-09-07T12:00:00Z")), CancellationToken.None);
+
+        Assert.Equal(2, reminder.Channels.Count);
+        Assert.Contains(reminder.Channels, c => c.Equals("web", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(reminder.Channels, c => c.Equals("desktop", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(reminder.Channels, c => string.IsNullOrWhiteSpace(c));
+    }
+
+    [Fact]
+    public async Task CreateAsync_GuidEmptyRelatedObject_Rejects()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        await Assert.ThrowsAsync<DomainException>(() => service.CreateAsync(new CreateReminderRequest(
+            RelatedObjectType: "task",
+            RelatedObjectId: Guid.Empty,
+            Title: "Invalid reminder",
+            Body: "Body",
+            TriggerReason: "test",
+            RiskLevel: "L1LowRiskAction",
+            Channels: ["Web"],
+            DoNotDisturbStart: null,
+            DoNotDisturbEnd: null,
+            ScheduledAt: DateTimeOffset.Parse("2026-09-07T12:00:00Z")), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task CreateAsync_MissingScheduledAt_Rejects()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        await Assert.ThrowsAsync<DomainException>(() => service.CreateAsync(new CreateReminderRequest(
+            RelatedObjectType: "task",
+            RelatedObjectId: Guid.NewGuid(),
+            Title: "Reminder without scheduledAt",
+            Body: "Body",
+            TriggerReason: "test",
+            RiskLevel: "L1LowRiskAction",
+            Channels: ["Web"],
+            DoNotDisturbStart: null,
+            DoNotDisturbEnd: null,
+            ScheduledAt: null), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task HardAction_CaseInsensitive_Matches()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+        var highRisk = await service.CreateAsync(Request("High", "L3ExternalSourceOrWriteback"), CancellationToken.None);
+
+        // 高风险 + 大写 "Dismiss"：修复前误升级为 OpenDetailRequired，修复后应正确 Dismissed（RED 鉴别力）
+        var result = await service.HandleActionAsync(highRisk.Id, "Dismiss", CancellationToken.None);
+
+        Assert.Equal("Executed", result.Kind);
+        Assert.Equal("Dismissed", result.Status);
+    }
+
+    [Fact]
+    public async Task LowAction_CaseInsensitive_Executes()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+        var lowRisk = await service.CreateAsync(Request("Low", "L1LowRiskAction"), CancellationToken.None);
+
+        // "Dismiss" 大写应视为 dismiss → Dismissed
+        var result = await service.HandleActionAsync(lowRisk.Id, "Dismiss", CancellationToken.None);
+
+        Assert.Equal("Executed", result.Kind);
+        Assert.Equal("Dismissed", result.Status);
     }
 
     private static CreateReminderRequest Request(string title, string risk)
