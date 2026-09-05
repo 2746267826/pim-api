@@ -34,6 +34,8 @@ public sealed class ReminderService
         CancellationToken ct = default)
     {
         ValidateRequired(request.Title, "Reminder title", 255);
+        if (request.RelatedObjectId == Guid.Empty)
+            throw new DomainException(02043, "RelatedObjectId must be a valid GUID.");
         var entity = new ReminderEntity
         {
             UserId = UserId,

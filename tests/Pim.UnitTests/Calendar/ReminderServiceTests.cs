@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.DTOs;
@@ -162,6 +163,25 @@ public class ReminderServiceTests
         Assert.Contains(reminder.Channels, c => c.Equals("web", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(reminder.Channels, c => c.Equals("desktop", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(reminder.Channels, c => string.IsNullOrWhiteSpace(c));
+    }
+
+    [Fact]
+    public async Task CreateAsync_GuidEmptyRelatedObject_Rejects()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        await Assert.ThrowsAsync<DomainException>(() => service.CreateAsync(new CreateReminderRequest(
+            RelatedObjectType: "task",
+            RelatedObjectId: Guid.Empty,
+            Title: "Invalid reminder",
+            Body: "Body",
+            TriggerReason: "test",
+            RiskLevel: "L1LowRiskAction",
+            Channels: ["Web"],
+            DoNotDisturbStart: null,
+            DoNotDisturbEnd: null,
+            ScheduledAt: DateTimeOffset.Parse("2026-09-07T12:00:00Z")), CancellationToken.None));
     }
 
     private static CreateReminderRequest Request(string title, string risk)
