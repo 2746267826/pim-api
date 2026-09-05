@@ -75,6 +75,9 @@ public class ReminderServiceTests
             ScheduledAt: DateTimeOffset.Parse("2026-09-07T12:00:00Z")), CancellationToken.None);
 
         Assert.Equal("MCP reminder without channels", reminder.Title);
+        Assert.Empty(reminder.Body);
+        Assert.Empty(reminder.TriggerReason);
+        Assert.Equal("L1LowRiskAction", reminder.RiskLevel);
         Assert.Empty(reminder.Channels);
         Assert.Equal("Open", reminder.Status);
     }
@@ -98,6 +101,30 @@ public class ReminderServiceTests
             ScheduledAt: DateTimeOffset.Parse("2026-09-07T12:00:00Z")), CancellationToken.None);
 
         Assert.Empty(reminder.Channels);
+    }
+
+    [Fact]
+    public async Task CreateAsync_BlankAndDuplicateChannels_NormalizesAndDedupes()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        var reminder = await service.CreateAsync(new CreateReminderRequest(
+            RelatedObjectType: "task",
+            RelatedObjectId: Guid.NewGuid(),
+            Title: "Dedupe channels",
+            Body: "Body",
+            TriggerReason: "test",
+            RiskLevel: "LOW",
+            Channels: ["web", "WEB", "  ", "desktop"],
+            DoNotDisturbStart: null,
+            DoNotDisturbEnd: null,
+            ScheduledAt: DateTimeOffset.Parse("2026-09-07T12:00:00Z")), CancellationToken.None);
+
+        Assert.Equal(2, reminder.Channels.Count);
+        Assert.Contains(reminder.Channels, c => c.Equals("web", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(reminder.Channels, c => c.Equals("desktop", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(reminder.Channels, c => string.IsNullOrWhiteSpace(c));
     }
 
     private static CreateReminderRequest Request(string title, string risk)
