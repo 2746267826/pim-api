@@ -36,6 +36,8 @@ public sealed class ReminderService
         ValidateRequired(request.Title, "Reminder title", 255);
         if (request.RelatedObjectId == Guid.Empty)
             throw new DomainException(02043, "RelatedObjectId must be a valid GUID.");
+        if (request.ScheduledAt is null)
+            throw new DomainException(02044, "ScheduledAt is required.");
         var entity = new ReminderEntity
         {
             UserId = UserId,
@@ -48,7 +50,7 @@ public sealed class ReminderService
             ChannelsJson = JsonSerializer.Serialize(NormalizeChannels(request.Channels), JsonOptions),
             DoNotDisturbStart = request.DoNotDisturbStart,
             DoNotDisturbEnd = request.DoNotDisturbEnd,
-            ScheduledAt = request.ScheduledAt.ToUniversalTime(),
+            ScheduledAt = request.ScheduledAt!.Value.ToUniversalTime(),
             Status = "Open",
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow

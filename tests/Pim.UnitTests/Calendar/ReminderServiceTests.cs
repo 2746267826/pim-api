@@ -184,6 +184,25 @@ public class ReminderServiceTests
             ScheduledAt: DateTimeOffset.Parse("2026-09-07T12:00:00Z")), CancellationToken.None));
     }
 
+    [Fact]
+    public async Task CreateAsync_MissingScheduledAt_Rejects()
+    {
+        await using var db = CreateDb();
+        var service = CreateService(db);
+
+        await Assert.ThrowsAsync<DomainException>(() => service.CreateAsync(new CreateReminderRequest(
+            RelatedObjectType: "task",
+            RelatedObjectId: Guid.NewGuid(),
+            Title: "Reminder without scheduledAt",
+            Body: "Body",
+            TriggerReason: "test",
+            RiskLevel: "L1LowRiskAction",
+            Channels: ["Web"],
+            DoNotDisturbStart: null,
+            DoNotDisturbEnd: null,
+            ScheduledAt: null), CancellationToken.None));
+    }
+
     private static CreateReminderRequest Request(string title, string risk)
         => new(
             "confirmation",

@@ -575,7 +575,7 @@ public record CreateReminderRequest(
     IReadOnlyList<string>? Channels,
     string? DoNotDisturbStart,
     string? DoNotDisturbEnd,
-    DateTimeOffset ScheduledAt
+    DateTimeOffset? ScheduledAt
 );
 
 public record ReminderResponse(
