@@ -214,11 +214,11 @@ public class ReminderServiceTests
         var service = CreateService(db);
         var highRisk = await service.CreateAsync(Request("High", "L3ExternalSourceOrWriteback"), CancellationToken.None);
 
-        // "Confirm" 大写应被视为非 allow 动作 → OpenDetailRequired
-        var result = await service.HandleActionAsync(highRisk.Id, "Confirm", CancellationToken.None);
+        // 高风险 + 大写 "Dismiss"：修复前误升级为 OpenDetailRequired，修复后应正确 Dismissed（RED 鉴别力）
+        var result = await service.HandleActionAsync(highRisk.Id, "Dismiss", CancellationToken.None);
 
-        Assert.Equal("OpenDetailRequired", result.Kind);
-        Assert.Contains("/confirmations/", result.DetailUrl);
+        Assert.Equal("Executed", result.Kind);
+        Assert.Equal("Dismissed", result.Status);
     }
 
     [Fact]
