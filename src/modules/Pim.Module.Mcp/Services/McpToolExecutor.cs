@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -22,6 +24,10 @@ public sealed class McpToolExecutor
     private const long TruncationBytes = 50 * 1024;
     private const int MaxTimeSpanDays = 366;
     private const int ParamsSummaryMaxChars = 500;
+    private const int ActivityParamsSummaryMaxChars = 120;
+    private const int MaxActivityEntries = 100;
+
+    private static readonly ConcurrentQueue<McpActivityEntry> RecentActivity = new();
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -35,6 +41,8 @@ public sealed class McpToolExecutor
     private readonly McpInProcessClient _client;
     private readonly McpStdioTokenSource _stdioTokenSource;
     private readonly HttpContext? _httpContext;
+    private string? _lastClientName;
+    private Guid? _lastOwnerUserId;
 
     public McpToolExecutor(
         McpClientService verifyService,
@@ -51,24 +59,37 @@ public sealed class McpToolExecutor
     /// <summary>Loaded 151-tool contract (name/description/inputSchema) from the embedded JSON.</summary>
     public static IReadOnlyList<McpToolContract> ToolContract => Contract.Value;
 
+    /// <summary>Read-only snapshot of recent tool calls, newest first.</summary>
+    public static IReadOnlyList<McpActivityEntry> GetRecentActivity(Guid ownerUserId)
+        => RecentActivity
+            .Where(e => e.OwnerUserId == ownerUserId)
+            .OrderByDescending(e => e.Timestamp)
+            .ToList();
+
     public async ValueTask<CallToolResult> ExecuteAsync(
         CallToolRequestParams requestParams,
         CancellationToken ct)
     {
+        var startedAt = Stopwatch.GetTimestamp();
         var toolName = requestParams.Name;
+        var args = ToJsonObject(requestParams.Arguments);
         var spec = McpToolTable.TryGet(toolName);
         if (spec is null)
+        {
+            RecordActivity(startedAt, toolName, 500, args);
             throw new McpException($"Unknown tool: {toolName}");
+        }
 
-        var args = ToJsonObject(requestParams.Arguments);
         JsonNode? result;
         try
         {
             result = await ExecuteSpecAsync(spec, args, ct);
+            RecordActivity(startedAt, toolName, 200, args);
         }
         catch (McpToolAuthException auth)
         {
             result = new JsonObject { ["error"] = auth.Message, ["code"] = auth.HttpStatus };
+            RecordActivity(startedAt, toolName, auth.HttpStatus, args);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -77,8 +98,33 @@ public sealed class McpToolExecutor
         catch (Exception ex)
         {
             result = new JsonObject { ["error"] = $"request failed: {ex.Message}", ["code"] = 500 };
+            RecordActivity(startedAt, toolName, 500, args);
         }
         return ToToolResult(result);
+    }
+
+    private void RecordActivity(long startedAt, string toolName, int statusCode, JsonObject? args)
+    {
+        var summary = args is null || args.Count == 0
+            ? string.Empty
+            : JsonSerializer.Serialize(args, SerializerOptions);
+        if (summary.Length > ActivityParamsSummaryMaxChars)
+            summary = summary[..ActivityParamsSummaryMaxChars];
+
+        var durationMs = (long)Math.Round(Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
+        RecentActivity.Enqueue(new McpActivityEntry(
+            DateTimeOffset.UtcNow,
+            _lastClientName ?? _httpContext?.User?.Identity?.Name ?? "unknown",
+            toolName,
+            statusCode,
+            durationMs,
+            summary,
+            _lastOwnerUserId));
+        while (RecentActivity.Count > MaxActivityEntries)
+        {
+            if (!RecentActivity.TryDequeue(out _))
+                break;
+        }
     }
 
     private async Task<JsonNode?> ExecuteSpecAsync(McpToolSpec spec, JsonObject args, CancellationToken ct)
@@ -248,6 +294,8 @@ public sealed class McpToolExecutor
         var outcome = await _verifyService.VerifyAsync(rawToken!, toolName, summary, ct);
         if (outcome.HttpStatus != 0)
             throw new McpToolAuthException(outcome.HttpStatus, outcome.Error ?? "unauthorized");
+        _lastClientName = outcome.Result?.ClientName;
+        _lastOwnerUserId = outcome.Result?.UserId;
         return outcome.Result?.AccessToken;
     }
 

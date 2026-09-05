@@ -158,7 +158,9 @@ public record CreateTaskRequest(
     DateTimeOffset? Due,
     DateTimeOffset? DtStart,
     string? Status = null,
-    DateTimeOffset? PlannedEnd = null
+    DateTimeOffset? PlannedEnd = null,
+    Guid? TaskBookId = null,
+    int? PercentComplete = null
 );
 
 public record UpdateTaskRequest(
@@ -171,7 +173,9 @@ public record UpdateTaskRequest(
     DateTimeOffset? Due,
     DateTimeOffset? DtStart,
     string? Status = null,
-    DateTimeOffset? PlannedEnd = null
+    DateTimeOffset? PlannedEnd = null,
+    Guid? TaskBookId = null,
+    int? PercentComplete = null
 );
 
 public record TaskResponse(
@@ -181,7 +185,9 @@ public record TaskResponse(
     DateTimeOffset? DtStart, DateTimeOffset? Due,
     string Status, bool IsInbox, int SortOrder,
     List<TaskResponse> SubTasks,
-    DateTimeOffset? PlannedEnd = null
+    DateTimeOffset? PlannedEnd = null,
+    Guid? TaskBookId = null,
+    int PercentComplete = 0
 );
 
 public record MoveTaskRequest(
@@ -335,6 +341,11 @@ public record CreateTaskBookRequest(
 public record AddTaskChecklistItemRequest(
     [Required][MaxLength(255)] string Title,
     int? SortOrder = null
+);
+
+public record UpdateTaskChecklistItemRequest(
+    string? Title = null,
+    bool? IsDone = null
 );
 
 public record CreateHabitRequest(
