@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -103,6 +104,40 @@ public class ReminderServiceTests
             ScheduledAt: DateTimeOffset.Parse("2026-09-07T12:00:00Z")), CancellationToken.None);
 
         Assert.Empty(reminder.Channels);
+    }
+
+    [Fact]
+    public async Task CreateAsync_JsonBodyWithOmittedOptionalFields_BindsNullAndSucceeds()
+    {
+        // Contract-level regression (issue #196): MCP 转发层在 Python _clean_params 语义下
+        // 不会发送 channels/body/triggerReason/riskLevel；ASP.NET Json 绑定对缺失字段得到
+        // null 而非报错。此测试模拟该绑定形态（Web 命名策略），确保服务层 null-safe。
+        var json = """
+            {
+              "relatedObjectType": "task",
+              "relatedObjectId": "4e2e35a7-4488-4c12-b455-a7b41b728e85",
+              "title": "MCP reminder without channels",
+              "scheduledAt": "2026-09-07T12:00:00Z"
+            }
+            """;
+
+        var request = JsonSerializer.Deserialize<CreateReminderRequest>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? throw new InvalidOperationException("deserialization failed");
+        Assert.Null(request.Body);
+        Assert.Null(request.TriggerReason);
+        Assert.Null(request.RiskLevel);
+        Assert.Null(request.Channels);
+
+        await using var db = CreateDb();
+        var service = CreateService(db);
+        var reminder = await service.CreateAsync(request, CancellationToken.None);
+
+        Assert.Equal("MCP reminder without channels", reminder.Title);
+        Assert.Empty(reminder.Body);
+        Assert.Empty(reminder.TriggerReason);
+        Assert.Equal("L1LowRiskAction", reminder.RiskLevel);
+        Assert.Empty(reminder.Channels);
+        Assert.Equal("Open", reminder.Status);
     }
 
     [Fact]
