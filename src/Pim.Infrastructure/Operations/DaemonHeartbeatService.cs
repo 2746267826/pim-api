@@ -23,19 +23,15 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         CancellationToken ct = default)
     {
         var statusJson = NormalizeStatusJson(request.StatusJson);
-        var entity = await _db.DaemonHeartbeats
-            .SingleOrDefaultAsync(d =>
-                d.DeviceId == request.DeviceId
-                && d.DaemonKind == request.DaemonKind,
-                ct);
+        var entity = await FindLatestDeviceEntityAsync(request.DeviceId, request.DaemonKind, ct);
 
         var isNew = entity is null;
         if (entity is null)
         {
             entity = new DaemonHeartbeatEntity
             {
-                DeviceId = request.DeviceId,
-                DaemonKind = request.DaemonKind
+                DeviceId = Truncate(request.DeviceId, 128) ?? string.Empty,
+                DaemonKind = Truncate(request.DaemonKind, 32) ?? "windows"
             };
             _db.DaemonHeartbeats.Add(entity);
         }
@@ -46,18 +42,19 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException) when (isNew)
+        catch (DbUpdateException)
         {
             _db.ChangeTracker.Clear();
-            entity = await _db.DaemonHeartbeats
-                .SingleOrDefaultAsync(d =>
-                    d.DeviceId == request.DeviceId
-                    && d.DaemonKind == request.DaemonKind,
-                    ct);
+            entity = await FindLatestDeviceEntityAsync(request.DeviceId, request.DaemonKind, ct);
 
             if (entity is null)
             {
-                throw;
+                entity = new DaemonHeartbeatEntity
+                {
+                    DeviceId = Truncate(request.DeviceId, 128) ?? string.Empty,
+                    DaemonKind = Truncate(request.DaemonKind, 32) ?? "windows"
+                };
+                _db.DaemonHeartbeats.Add(entity);
             }
 
             Apply(request, statusJson, entity);
@@ -80,26 +77,21 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         {
             var existing = await _db.DaemonHeartbeats
                 .AsNoTracking()
-                .SingleOrDefaultAsync(d =>
-                    d.DeviceId == request.DeviceId
-                    && d.DaemonKind == request.DaemonKind,
-                    ct);
+                .Where(d => d.DeviceId == request.DeviceId && d.DaemonKind == request.DaemonKind)
+                .OrderByDescending(d => d.ReceivedAt)
+                .FirstOrDefaultAsync(ct);
             return existing is null ? null : Map(existing);
         }
 
-        var entity = await _db.DaemonHeartbeats
-            .SingleOrDefaultAsync(d =>
-                d.DeviceId == request.DeviceId
-                && d.DaemonKind == request.DaemonKind,
-                ct);
+        var entity = await FindLatestDeviceEntityAsync(request.DeviceId, request.DaemonKind, ct);
 
         var isNew = entity is null;
         if (entity is null)
         {
             entity = new DaemonHeartbeatEntity
             {
-                DeviceId = request.DeviceId,
-                DaemonKind = request.DaemonKind
+                DeviceId = Truncate(request.DeviceId, 128) ?? string.Empty,
+                DaemonKind = Truncate(request.DaemonKind, 32) ?? "windows"
             };
             _db.DaemonHeartbeats.Add(entity);
         }
@@ -110,18 +102,19 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         {
             await _db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException) when (isNew)
+        catch (DbUpdateException)
         {
             _db.ChangeTracker.Clear();
-            entity = await _db.DaemonHeartbeats
-                .SingleOrDefaultAsync(d =>
-                    d.DeviceId == request.DeviceId
-                    && d.DaemonKind == request.DaemonKind,
-                    ct);
+            entity = await FindLatestDeviceEntityAsync(request.DeviceId, request.DaemonKind, ct);
 
             if (entity is null)
             {
-                throw;
+                entity = new DaemonHeartbeatEntity
+                {
+                    DeviceId = Truncate(request.DeviceId, 128) ?? string.Empty,
+                    DaemonKind = Truncate(request.DaemonKind, 32) ?? "windows"
+                };
+                _db.DaemonHeartbeats.Add(entity);
             }
 
             ApplyPlannedOffline(request, entity, isNew: false);
@@ -129,6 +122,28 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         }
 
         return Map(entity);
+    }
+
+    private async Task<DaemonHeartbeatEntity?> FindLatestDeviceEntityAsync(
+        string deviceId,
+        string daemonKind,
+        CancellationToken ct)
+    {
+        var matches = await _db.DaemonHeartbeats
+            .Where(d => d.DeviceId == deviceId && d.DaemonKind == daemonKind)
+            .OrderByDescending(d => d.ReceivedAt)
+            .ToListAsync(ct);
+
+        if (matches.Count == 0) return null;
+
+        var latest = matches[0];
+        if (matches.Count > 1)
+        {
+            // 自愈清理：清除历史并发或脏数据产生的重复旧行，保留最新的一条
+            _db.DaemonHeartbeats.RemoveRange(matches.Skip(1));
+        }
+
+        return latest;
     }
 
     public async Task<DaemonHeartbeatDto?> GetLatestAsync(string deviceId, CancellationToken ct = default)
@@ -211,14 +226,14 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         string statusJson,
         DaemonHeartbeatEntity entity)
     {
-        entity.Version = request.Version;
-        entity.ServerUrl = request.ServerUrl;
+        entity.Version = Truncate(request.Version, 64) ?? string.Empty;
+        entity.ServerUrl = Truncate(request.ServerUrl, 512) ?? string.Empty;
         entity.LastSuccessfulUploadAt = request.LastSuccessfulUploadAt;
         entity.LastAttemptedUploadAt = request.LastAttemptedUploadAt;
         entity.LastError = request.LastError;
         entity.UploadQueueCount = request.UploadQueueCount;
-        entity.ActivityWatchState = request.ActivityWatchState.ToString();
-        entity.KeyStatsState = request.KeyStatsState.ToString();
+        entity.ActivityWatchState = Truncate(request.ActivityWatchState.ToString(), 32) ?? DaemonSourceState.Unknown.ToString();
+        entity.KeyStatsState = Truncate(request.KeyStatsState.ToString(), 32) ?? DaemonSourceState.Unknown.ToString();
         entity.CollectionPaused = request.CollectionPaused;
         entity.StatusJson = statusJson;
         entity.ReceivedAt = _timeProvider.GetUtcNow();

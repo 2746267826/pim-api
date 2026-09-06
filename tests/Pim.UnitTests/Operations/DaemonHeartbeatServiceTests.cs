@@ -308,4 +308,78 @@ public class DaemonHeartbeatServiceTests
         Assert.Null(row.PlannedOfflineAt);
         Assert.Null(row.OfflineReason);
     }
+
+    [Fact]
+    public async Task UpsertAsync_WhenDuplicateRowsExist_HealsDuplicatesAndUpdatesLatestWithout500()
+    {
+        await using var db = CreateDb();
+        // 模拟生产环境无唯一索引时并发插入产生的重复脏数据
+        db.DaemonHeartbeats.Add(new DaemonHeartbeatEntity
+        {
+            DeviceId = "PC-1",
+            DaemonKind = "windows",
+            Version = "1.0.0",
+            ReceivedAt = FixedNow.AddMinutes(-30)
+        });
+        db.DaemonHeartbeats.Add(new DaemonHeartbeatEntity
+        {
+            DeviceId = "PC-1",
+            DaemonKind = "windows",
+            Version = "1.0.1",
+            ReceivedAt = FixedNow.AddMinutes(-10)
+        });
+        await db.SaveChangesAsync();
+
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        var req = new DaemonHeartbeatRequest(
+            "PC-1",
+            "windows",
+            "1.0.2",
+            "http://127.0.0.1:5858",
+            FixedNow,
+            FixedNow,
+            null,
+            0,
+            DaemonSourceState.Available,
+            DaemonSourceState.Available,
+            false,
+            "{}");
+
+        // 在修复前，SingleOrDefaultAsync 会抛出 InvalidOperationException: Sequence contains more than one element
+        var result = await service.UpsertAsync(req, CancellationToken.None);
+
+        Assert.Equal("1.0.2", result.Version);
+        var remaining = await db.DaemonHeartbeats.Where(d => d.DeviceId == "PC-1" && d.DaemonKind == "windows").ToListAsync();
+        Assert.Single(remaining);
+        Assert.Equal("1.0.2", remaining[0].Version);
+        Assert.Equal(FixedNow, remaining[0].ReceivedAt);
+    }
+
+    [Fact]
+    public async Task UpsertAsync_WhenVersionOrUrlTooLong_TruncatesSafely()
+    {
+        await using var db = CreateDb();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        var longVersion = new string('v', 100); // MaxLength is 64
+        var longUrl = "http://example.com/" + new string('a', 600); // MaxLength is 512
+
+        var req = new DaemonHeartbeatRequest(
+            "PC-1",
+            "windows",
+            longVersion,
+            longUrl,
+            null,
+            null,
+            null,
+            0,
+            DaemonSourceState.Available,
+            DaemonSourceState.Available,
+            false,
+            "{}");
+
+        var result = await service.UpsertAsync(req, CancellationToken.None);
+
+        Assert.Equal(64, result.Version.Length);
+        Assert.Equal(512, result.ServerUrl.Length);
+    }
 }

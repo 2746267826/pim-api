@@ -29,6 +29,15 @@ public class ExceptionMiddleware
             var response = ApiResponse<string>.Error(ex.ErrorCode, ex.Message);
             await context.Response.WriteAsync(JsonSerializer.Serialize(response));
         }
+        catch (BadHttpRequestException ex)
+        {
+            var correlationId = context.Items[CorrelationIdMiddleware.HeaderName]?.ToString();
+            _logger.LogWarning(ex, "Bad HTTP request with correlation id {CorrelationId}: {Message}", correlationId, ex.Message);
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            context.Response.ContentType = "application/json";
+            var response = ApiResponse<string>.Error(40000, $"请求参数格式无效: {ex.Message}");
+            await context.Response.WriteAsync(JsonSerializer.Serialize(response));
+        }
         catch (Exception ex)
         {
             var correlationId = context.Items[CorrelationIdMiddleware.HeaderName]?.ToString();
