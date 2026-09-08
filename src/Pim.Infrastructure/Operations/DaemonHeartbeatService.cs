@@ -168,6 +168,19 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         return entity is null ? null : Map(entity);
     }
 
+    public async Task<IReadOnlyList<DaemonHeartbeatDto>> ListAsync(CancellationToken ct = default)
+    {
+        var entities = await _db.DaemonHeartbeats
+            .AsNoTracking()
+            .OrderByDescending(d => d.ReceivedAt)
+            .ToListAsync(ct);
+
+        return entities
+            .GroupBy(d => new { d.DeviceId, d.DaemonKind })
+            .Select(g => Map(g.First()))
+            .ToList();
+    }
+
     private static DaemonHeartbeatDto Map(DaemonHeartbeatEntity entity)
     {
         return new DaemonHeartbeatDto(

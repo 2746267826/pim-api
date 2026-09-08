@@ -382,4 +382,23 @@ public class DaemonHeartbeatServiceTests
         Assert.Equal(64, result.Version.Length);
         Assert.Equal(512, result.ServerUrl.Length);
     }
+    [Fact]
+    public async Task ListAsync_ReturnsLatestPerDeviceAndKind()
+    {
+        await using var db = CreateDb();
+        db.DaemonHeartbeats.AddRange(
+            new DaemonHeartbeatEntity { DeviceId = "PC-1", DaemonKind = "windows", Version = "1.0.0", ReceivedAt = FixedNow.AddMinutes(-20) },
+            new DaemonHeartbeatEntity { DeviceId = "PC-1", DaemonKind = "windows", Version = "1.0.1", ReceivedAt = FixedNow.AddMinutes(-5) },
+            new DaemonHeartbeatEntity { DeviceId = "PC-2", DaemonKind = "windows", Version = "2.0.0", ReceivedAt = FixedNow.AddMinutes(-1) },
+            new DaemonHeartbeatEntity { DeviceId = "MOBILE-1", DaemonKind = "android", Version = "1.0.0", ReceivedAt = FixedNow }
+        );
+        await db.SaveChangesAsync();
+
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        var list = await service.ListAsync();
+
+        Assert.Equal(3, list.Count);
+        var pc1 = Assert.Single(list, d => d.DeviceId == "PC-1" && d.DaemonKind == "windows");
+        Assert.Equal("1.0.1", pc1.Version);
+    }
 }

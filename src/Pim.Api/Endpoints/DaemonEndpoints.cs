@@ -26,5 +26,13 @@ public static class DaemonEndpoints
             var result = await heartbeats.RecordPlannedOfflineAsync(request, ct);
             return Results.Ok(ApiResponse<DaemonHeartbeatDto?>.Ok(result));
         });
+
+        group.MapGet("/heartbeats", async (
+            IDaemonHeartbeatService heartbeats,
+            CancellationToken ct) =>
+        {
+            var result = await heartbeats.ListAsync(ct);
+            return Results.Ok(ApiResponse<IReadOnlyList<DaemonHeartbeatDto>>.Ok(result));
+        });
     }
 }

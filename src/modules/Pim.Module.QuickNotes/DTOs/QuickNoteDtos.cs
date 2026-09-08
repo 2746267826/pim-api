@@ -10,7 +10,8 @@ public sealed record QuickNoteListItemDto(
     int AttachmentCount,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? ArchivedAt);
+    DateTimeOffset? ArchivedAt,
+    IReadOnlyList<QuickNoteAttachmentDto>? Attachments = null);
 
 public sealed record QuickNoteAttachmentDto(
     Guid Id,

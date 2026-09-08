@@ -207,6 +207,49 @@ public class SystemStatusServiceTests
         Assert.Equal("online", daemon.Details["daemonState"]);
     }
 
+    [Fact]
+    public async Task GetDetailAsync_MultipleWindowsDevices_OneHealthyOneOffline_ReturnsHealthy()
+    {
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        await using var db = new PimDbContext(options);
+        db.DaemonHeartbeats.AddRange(
+            new DaemonHeartbeatEntity
+            {
+                DeviceId = "pc-primary",
+                DaemonKind = "windows",
+                Version = "1.0.0",
+                ServerUrl = "http://127.0.0.1:5858",
+                ActivityWatchState = DaemonSourceState.Available.ToString(),
+                KeyStatsState = DaemonSourceState.Available.ToString(),
+                StatusJson = "{}",
+                ReceivedAt = FixedNow.AddMinutes(-1)
+            },
+            new DaemonHeartbeatEntity
+            {
+                DeviceId = "pc-secondary",
+                DaemonKind = "windows",
+                Version = "1.0.0",
+                ServerUrl = "http://127.0.0.1:5858",
+                ActivityWatchState = DaemonSourceState.Available.ToString(),
+                KeyStatsState = DaemonSourceState.Available.ToString(),
+                StatusJson = "{}",
+                ReceivedAt = FixedNow.AddHours(-2)
+            }
+        );
+        await db.SaveChangesAsync();
+
+        var service = CreateService(db, new FakeBackgroundJobStatusService());
+        var detail = await service.GetDetailAsync();
+
+        var daemon = Assert.Single(detail.Components, c => c.Key == "windows-daemon");
+        Assert.Equal(PimHealthStatus.Healthy, daemon.Status);
+        Assert.Contains("运行中", daemon.Message);
+        Assert.Equal("2", daemon.Details["deviceCount"]);
+    }
+
     private sealed class FakeBackgroundJobStatusService : IBackgroundJobStatusService
     {
         public Task<BackgroundJobSummaryDto> GetSummaryAsync(CancellationToken ct = default)

@@ -97,14 +97,14 @@ public sealed class SystemStatusService : ISystemStatusService
 
     private async Task<StatusComponentDto> BuildWindowsDaemonComponentAsync(DateTimeOffset checkedAt, CancellationToken ct)
     {
-        DaemonHeartbeatEntity? heartbeat;
+        List<DaemonHeartbeatEntity> heartbeats;
         try
         {
-            heartbeat = await _db.DaemonHeartbeats
+            heartbeats = await _db.DaemonHeartbeats
                 .AsNoTracking()
                 .Where(d => d.DaemonKind == "windows")
                 .OrderByDescending(d => d.ReceivedAt)
-                .FirstOrDefaultAsync(ct);
+                .ToListAsync(ct);
         }
         catch (Exception ex)
         {
@@ -121,7 +121,7 @@ public sealed class SystemStatusService : ISystemStatusService
                 });
         }
 
-        if (heartbeat is null)
+        if (heartbeats.Count == 0)
         {
             return new StatusComponentDto(
                 "windows-daemon",
@@ -133,31 +133,92 @@ public sealed class SystemStatusService : ISystemStatusService
                 new Dictionary<string, string>());
         }
 
-        var lifecycle = DaemonLifecycleClassifier.Classify(heartbeat, checkedAt);
-        var details = new Dictionary<string, string>
+        var latestPerDevice = heartbeats
+            .GroupBy(h => h.DeviceId)
+            .Select(g => g.First())
+            .ToList();
+
+        var classified = latestPerDevice
+            .Select(h => (Heartbeat: h, Lifecycle: DaemonLifecycleClassifier.Classify(h, checkedAt)))
+            .ToList();
+
+        if (latestPerDevice.Count == 1)
         {
-            ["deviceId"] = heartbeat.DeviceId,
-            ["version"] = heartbeat.Version,
-            ["receivedAt"] = heartbeat.ReceivedAt.ToString("O"),
-            ["activityWatch"] = heartbeat.ActivityWatchState,
-            ["keyStats"] = heartbeat.KeyStatsState,
-            ["daemonState"] = lifecycle.State
+            var single = classified[0];
+            var details = new Dictionary<string, string>
+            {
+                ["deviceId"] = single.Heartbeat.DeviceId,
+                ["version"] = single.Heartbeat.Version,
+                ["receivedAt"] = single.Heartbeat.ReceivedAt.ToString("O"),
+                ["activityWatch"] = single.Heartbeat.ActivityWatchState,
+                ["keyStats"] = single.Heartbeat.KeyStatsState,
+                ["daemonState"] = single.Lifecycle.State
+            };
+
+            if (single.Lifecycle.PlannedOfflineAt is not null)
+            {
+                details["plannedOfflineAt"] = single.Lifecycle.PlannedOfflineAt;
+                details["offlineReason"] = single.Lifecycle.OfflineReason ?? "";
+            }
+
+            return new StatusComponentDto(
+                "windows-daemon",
+                "Windows 守护程序",
+                StatusComponentKind.Daemon,
+                single.Lifecycle.Status,
+                single.Lifecycle.Message,
+                checkedAt,
+                details);
+        }
+
+        var hasHealthy = classified.Any(c => c.Lifecycle.Status == PimHealthStatus.Healthy);
+        var allPlannedOffline = classified.All(c => c.Lifecycle.State == "planned-offline");
+        var primary = classified.OrderByDescending(c => c.Heartbeat.ReceivedAt).First();
+
+        PimHealthStatus overallStatus;
+        string overallMessage;
+
+        if (hasHealthy)
+        {
+            overallStatus = PimHealthStatus.Healthy;
+            overallMessage = $"Windows 守护程序运行中（{classified.Count} 台已注册设备）。";
+        }
+        else if (allPlannedOffline)
+        {
+            overallStatus = PimHealthStatus.Healthy;
+            overallMessage = "所有 Windows 设备均处于计划离线状态。";
+        }
+        else
+        {
+            overallStatus = primary.Lifecycle.Status == PimHealthStatus.Critical ? PimHealthStatus.Warning : primary.Lifecycle.Status;
+            overallMessage = primary.Lifecycle.Message;
+        }
+
+        var multiDetails = new Dictionary<string, string>
+        {
+            ["deviceCount"] = classified.Count.ToString(),
+            ["deviceId"] = primary.Heartbeat.DeviceId,
+            ["version"] = primary.Heartbeat.Version,
+            ["receivedAt"] = primary.Heartbeat.ReceivedAt.ToString("O"),
+            ["activityWatch"] = primary.Heartbeat.ActivityWatchState,
+            ["keyStats"] = primary.Heartbeat.KeyStatsState,
+            ["daemonState"] = primary.Lifecycle.State
         };
 
-        if (lifecycle.PlannedOfflineAt is not null)
+        if (primary.Lifecycle.PlannedOfflineAt is not null)
         {
-            details["plannedOfflineAt"] = lifecycle.PlannedOfflineAt;
-            details["offlineReason"] = lifecycle.OfflineReason ?? "";
+            multiDetails["plannedOfflineAt"] = primary.Lifecycle.PlannedOfflineAt;
+            multiDetails["offlineReason"] = primary.Lifecycle.OfflineReason ?? "";
         }
 
         return new StatusComponentDto(
             "windows-daemon",
             "Windows 守护程序",
             StatusComponentKind.Daemon,
-            lifecycle.Status,
-            lifecycle.Message,
+            overallStatus,
+            overallMessage,
             checkedAt,
-            details);
+            multiDetails);
     }
 
     private async Task<StatusComponentDto> BuildBackgroundJobsComponentAsync(CancellationToken ct)

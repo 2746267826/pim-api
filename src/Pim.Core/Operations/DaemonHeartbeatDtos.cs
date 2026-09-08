@@ -43,4 +43,5 @@ public interface IDaemonHeartbeatService
     Task<DaemonHeartbeatDto?> RecordPlannedOfflineAsync(PlannedOfflineRequest request, CancellationToken ct = default);
     Task<DaemonHeartbeatDto?> GetLatestAsync(string deviceId, CancellationToken ct = default);
     Task<DaemonHeartbeatDto?> GetLatestWindowsAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<DaemonHeartbeatDto>> ListAsync(CancellationToken ct = default);
 }
