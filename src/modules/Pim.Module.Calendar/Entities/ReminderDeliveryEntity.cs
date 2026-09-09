@@ -1,10 +1,12 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Calendar.Entities;
 
 [Table("reminder_deliveries")]
-public class ReminderDeliveryEntity
+public class ReminderDeliveryEntity : IUserOwnedEntity
 {
     [Key][Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
     [Column("reminder_id")] public Guid ReminderId { get; set; }

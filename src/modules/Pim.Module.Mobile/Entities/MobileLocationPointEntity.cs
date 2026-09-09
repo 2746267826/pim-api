@@ -1,10 +1,12 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Mobile.Entities;
 
 [Table("mobile_location_points")]
-public sealed class MobileLocationPointEntity
+public sealed class MobileLocationPointEntity : IUserOwnedEntity
 {
     [Key]
     [Column("id")]

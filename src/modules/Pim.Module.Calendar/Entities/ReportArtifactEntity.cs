@@ -5,7 +5,7 @@ using Pim.Core.Data;
 namespace Pim.Module.Calendar.Entities;
 
 [Table("report_artifacts")]
-public class ReportArtifactEntity : ISoftDeletable
+public class ReportArtifactEntity : ISoftDeletable, IUserOwnedEntity
 {
     [Key][Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
     [Column("user_id")] public Guid UserId { get; set; }

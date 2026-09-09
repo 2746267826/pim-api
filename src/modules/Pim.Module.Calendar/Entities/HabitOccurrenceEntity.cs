@@ -5,7 +5,7 @@ using Pim.Core.Data;
 namespace Pim.Module.Calendar.Entities;
 
 [Table("habit_occurrences")]
-public class HabitOccurrenceEntity : ISoftDeletable
+public class HabitOccurrenceEntity : ISoftDeletable, IUserOwnedEntity
 {
     [Key][Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
     [Column("habit_routine_id")] public Guid HabitRoutineId { get; set; }

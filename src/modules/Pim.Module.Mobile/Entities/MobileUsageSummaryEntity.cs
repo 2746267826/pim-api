@@ -1,10 +1,12 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Mobile.Entities;
 
 [Table("mobile_usage_summaries")]
-public sealed class MobileUsageSummaryEntity
+public sealed class MobileUsageSummaryEntity : IUserOwnedEntity
 {
     [Key]
     [Column("id")]

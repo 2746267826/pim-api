@@ -5,7 +5,7 @@ using Pim.Core.Data;
 namespace Pim.Module.Calendar.Entities;
 
 [Table("tasks")]
-public class TaskEntity : ISoftDeletable
+public class TaskEntity : ISoftDeletable, IUserOwnedEntity
 {
     [Key][Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
     [Column("user_id")] public Guid UserId { get; set; }

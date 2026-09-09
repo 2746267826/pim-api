@@ -2,10 +2,12 @@ using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using Pim.Module.Mobile.DTOs;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Mobile.Entities;
 
 [Table("mobile_timeline_blocks")]
-public sealed class MobileTimelineBlockEntity
+public sealed class MobileTimelineBlockEntity : IUserOwnedEntity
 {
     [Key]
     [Column("id")]

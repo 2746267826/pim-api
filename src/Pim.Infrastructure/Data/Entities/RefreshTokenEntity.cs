@@ -1,10 +1,12 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
+using Pim.Core.Data;
+
 namespace Pim.Infrastructure.Data.Entities;
 
 [Table("refresh_tokens")]
-public class RefreshTokenEntity
+public class RefreshTokenEntity : IUserOwnedEntity
 {
     [Key][Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
     [Column("user_id")] public Guid UserId { get; set; }

@@ -2,10 +2,12 @@ using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using Pim.Module.Mobile.DTOs;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Mobile.Entities;
 
 [Table("mobile_app_catalog_overrides")]
-public sealed class MobileAppCatalogOverrideEntity
+public sealed class MobileAppCatalogOverrideEntity : IUserOwnedEntity
 {
     [Key]
     [Column("id")]

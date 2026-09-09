@@ -2,10 +2,12 @@ using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using Pim.Module.Mobile.DTOs;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Mobile.Entities;
 
 [Table("mobile_usage_aggregates")]
-public sealed class MobileUsageAggregateEntity
+public sealed class MobileUsageAggregateEntity : IUserOwnedEntity
 {
     [Key]
     [Column("id")]

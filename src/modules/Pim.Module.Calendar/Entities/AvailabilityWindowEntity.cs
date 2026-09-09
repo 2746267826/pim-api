@@ -5,7 +5,7 @@ using Pim.Core.Data;
 namespace Pim.Module.Calendar.Entities;
 
 [Table("availability_windows")]
-public class AvailabilityWindowEntity : ISoftDeletable
+public class AvailabilityWindowEntity : ISoftDeletable, IUserOwnedEntity
 {
     [Key][Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
     [Column("user_id")] public Guid UserId { get; set; }

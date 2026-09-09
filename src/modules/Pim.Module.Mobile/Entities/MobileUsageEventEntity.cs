@@ -1,10 +1,12 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Mobile.Entities;
 
 [Table("mobile_usage_events")]
-public sealed class MobileUsageEventEntity
+public sealed class MobileUsageEventEntity : IUserOwnedEntity
 {
     [Key]
     [Column("id")]

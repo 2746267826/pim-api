@@ -21,7 +21,7 @@ public static class QuickNoteSources
 }
 
 [Table("quick_notes")]
-public class QuickNoteEntity : ISoftDeletable
+public class QuickNoteEntity : ISoftDeletable, IUserOwnedEntity
 {
     [Key]
     [Column("id")]

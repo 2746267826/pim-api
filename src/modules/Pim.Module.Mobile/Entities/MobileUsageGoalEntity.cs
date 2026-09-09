@@ -2,10 +2,12 @@ using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using Pim.Module.Mobile.DTOs;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Mobile.Entities;
 
 [Table("mobile_usage_goals")]
-public sealed class MobileUsageGoalEntity
+public sealed class MobileUsageGoalEntity : IUserOwnedEntity
 {
     [Key]
     [Column("id")]

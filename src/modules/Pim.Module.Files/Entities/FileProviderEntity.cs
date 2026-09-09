@@ -1,6 +1,8 @@
+using Pim.Core.Data;
+
 namespace Pim.Module.Files.Entities;
 
-public sealed class FileProviderEntity
+public sealed class FileProviderEntity : IUserOwnedEntity
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid UserId { get; set; }

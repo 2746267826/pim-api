@@ -5,7 +5,7 @@ using Pim.Core.Data;
 namespace Pim.Module.QuickNotes.Entities;
 
 [Table("quick_note_attachments")]
-public class QuickNoteAttachmentEntity : ISoftDeletable
+public class QuickNoteAttachmentEntity : ISoftDeletable, IUserOwnedEntity
 {
     [Key]
     [Column("id")]

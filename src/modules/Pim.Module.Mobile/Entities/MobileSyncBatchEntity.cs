@@ -1,10 +1,12 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Mobile.Entities;
 
 [Table("mobile_sync_batches")]
-public sealed class MobileSyncBatchEntity
+public sealed class MobileSyncBatchEntity : IUserOwnedEntity
 {
     [Key]
     [Column("id")]

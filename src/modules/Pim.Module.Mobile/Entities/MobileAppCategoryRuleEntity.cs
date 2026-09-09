@@ -2,10 +2,12 @@ using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using Pim.Module.Mobile.DTOs;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Mobile.Entities;
 
 [Table("mobile_app_category_rules")]
-public sealed class MobileAppCategoryRuleEntity
+public sealed class MobileAppCategoryRuleEntity : IUserOwnedEntity
 {
     [Key]
     [Column("id")]

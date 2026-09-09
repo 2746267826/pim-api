@@ -1,10 +1,12 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Calendar.Entities;
 
 [Table("outlook_operation_executions")]
-public sealed class OutlookOperationExecutionEntity
+public sealed class OutlookOperationExecutionEntity : IUserOwnedEntity
 {
     [Key, Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
     [Column("confirmation_id")] public Guid ConfirmationId { get; set; }

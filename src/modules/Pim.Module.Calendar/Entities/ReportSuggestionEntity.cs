@@ -1,10 +1,12 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Calendar.Entities;
 
 [Table("report_suggestions")]
-public class ReportSuggestionEntity
+public class ReportSuggestionEntity : IUserOwnedEntity
 {
     [Key][Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
     [Column("report_id")] public Guid ReportId { get; set; }

@@ -1,10 +1,12 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Mobile.Entities;
 
 [Table("mobile_app_catalog")]
-public sealed class MobileAppCatalogEntity
+public sealed class MobileAppCatalogEntity : IUserOwnedEntity
 {
     [Key]
     [Column("id")]

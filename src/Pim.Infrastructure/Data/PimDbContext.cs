@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Pim.Core.Data;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Audit;
+using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Endpoints;
 
@@ -40,7 +41,19 @@ public class PimDbContext : DbContext
         }
     }
 
-    public PimDbContext(DbContextOptions<PimDbContext> options) : base(options) { }
+    private readonly ICurrentUserService? _currentUser;
+
+    /// <summary>
+    /// 当前用户 Id。null 表示系统上下文（后台任务、启动引导、集成测试手工构造），
+    /// 此时按用户隔离的全局查询过滤器自动不生效。
+    /// </summary>
+    public Guid? CurrentUserId => _currentUser?.UserId;
+
+    public PimDbContext(DbContextOptions<PimDbContext> options, ICurrentUserService? currentUser = null)
+        : base(options)
+    {
+        _currentUser = currentUser;
+    }
 
     public DbSet<UserEntity> Users => Set<UserEntity>();
     public DbSet<RefreshTokenEntity> RefreshTokens => Set<RefreshTokenEntity>();
@@ -202,6 +215,57 @@ public class PimDbContext : DbContext
         {
             modelBuilder.ApplyConfigurationsFromAssembly(assembly);
         }
+
+        ApplyUserIsolationFilters(modelBuilder);
+    }
+
+    /// <summary>
+    /// 为所有实现 <see cref="IUserOwnedEntity"/> 的实体追加按用户隔离的全局查询过滤器：
+    /// <c>e =&gt; CurrentUserId == null || e.UserId == CurrentUserId</c>。
+    /// 与实体已有的软删等过滤器以 AND 组合，而非覆盖。
+    /// </summary>
+    private void ApplyUserIsolationFilters(ModelBuilder modelBuilder)
+    {
+        foreach (var entityType in modelBuilder.Model.GetEntityTypes())
+        {
+            var clrType = entityType.ClrType;
+            if (!typeof(IUserOwnedEntity).IsAssignableFrom(clrType)) continue;
+
+            var parameter = System.Linq.Expressions.Expression.Parameter(clrType, "e");
+            var userId = System.Linq.Expressions.Expression.Property(parameter, nameof(IUserOwnedEntity.UserId));
+            var currentUserId = System.Linq.Expressions.Expression.Property(
+                System.Linq.Expressions.Expression.Constant(this), nameof(CurrentUserId));
+            // e => CurrentUserId == null || (Guid?)e.UserId == CurrentUserId
+            // 注意：比较在 Guid? 侧进行，避免 InMemory 提供程序对 (Guid)null 求值抛 "Nullable object must have a value"
+            var noUser = System.Linq.Expressions.Expression.Equal(
+                currentUserId, System.Linq.Expressions.Expression.Constant(null, typeof(Guid?)));
+            var match = System.Linq.Expressions.Expression.Equal(
+                System.Linq.Expressions.Expression.Convert(userId, typeof(Guid?)), currentUserId);
+            var isolation = (System.Linq.Expressions.LambdaExpression)System.Linq.Expressions.Expression.Lambda(
+                System.Linq.Expressions.Expression.OrElse(noUser, match), parameter);
+
+            var existing = entityType.GetQueryFilter();
+            entityType.SetQueryFilter(existing is null ? isolation : CombineFilters(existing, isolation));
+        }
+    }
+
+    private static System.Linq.Expressions.LambdaExpression CombineFilters(
+        System.Linq.Expressions.LambdaExpression first,
+        System.Linq.Expressions.LambdaExpression second)
+    {
+        var parameter = System.Linq.Expressions.Expression.Parameter(first.Parameters[0].Type, "e");
+        var firstBody = new ParameterReplacer(first.Parameters[0], parameter).Visit(first.Body);
+        var secondBody = new ParameterReplacer(second.Parameters[0], parameter).Visit(second.Body);
+        return System.Linq.Expressions.Expression.Lambda(
+            System.Linq.Expressions.Expression.AndAlso(firstBody!, secondBody!), parameter);
+    }
+
+    private sealed class ParameterReplacer(
+        System.Linq.Expressions.ParameterExpression from,
+        System.Linq.Expressions.ParameterExpression to) : System.Linq.Expressions.ExpressionVisitor
+    {
+        protected override System.Linq.Expressions.Expression VisitParameter(
+            System.Linq.Expressions.ParameterExpression node) => node == from ? to : node;
     }
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)

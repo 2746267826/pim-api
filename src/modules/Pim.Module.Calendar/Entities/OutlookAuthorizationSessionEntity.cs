@@ -1,10 +1,12 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
+using Pim.Core.Data;
+
 namespace Pim.Module.Calendar.Entities;
 
 [Table("outlook_authorization_sessions")]
-public sealed class OutlookAuthorizationSessionEntity
+public sealed class OutlookAuthorizationSessionEntity : IUserOwnedEntity
 {
     [Key, Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
     [Column("user_id")] public Guid UserId { get; set; }

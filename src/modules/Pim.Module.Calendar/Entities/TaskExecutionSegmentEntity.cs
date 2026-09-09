@@ -5,7 +5,7 @@ using Pim.Core.Data;
 namespace Pim.Module.Calendar.Entities;
 
 [Table("task_execution_segments")]
-public class TaskExecutionSegmentEntity : ISoftDeletable
+public class TaskExecutionSegmentEntity : ISoftDeletable, IUserOwnedEntity
 {
     [Key][Column("id")] public Guid Id { get; set; } = Guid.NewGuid();
     [Column("task_id")] public Guid TaskId { get; set; }
