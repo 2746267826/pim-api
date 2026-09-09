@@ -222,6 +222,22 @@ catch (Exception ex)
     Log.Warning(ex, "Database migration failed; the API will start but database-dependent endpoints may not work.");
 }
 
+// Admin bootstrap: 已部署系统升级后若无任何管理员，自动将最早注册的有效用户提升为管理员（幂等）
+try
+{
+    using (var scope = app.Services.CreateScope())
+    {
+        var db = scope.ServiceProvider.GetRequiredService<Pim.Infrastructure.Data.PimDbContext>();
+        var promoted = await Pim.Infrastructure.Auth.AdminBootstrap.EnsureAdminExistsAsync(db, CancellationToken.None);
+        if (promoted is not null)
+            Log.Warning("系统中没有管理员账号：已自动将最早注册的有效用户 {UserId} 提升为管理员（admin）", promoted);
+    }
+}
+catch (Exception ex)
+{
+    Log.Warning(ex, "Admin bootstrap failed; the API will start but admin-only endpoints may be unreachable.");
+}
+
 // Health check endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTimeOffset.UtcNow })).AllowAnonymous();
 
@@ -235,6 +251,7 @@ app.MapVersionEndpoints();
 
 // Auth endpoints (before modules so they're not auth-protected)
 app.MapAuthEndpoints();
+app.MapAdminEndpoints();
 
 // Search endpoint (uses ISearchProvider from modules)
 app.MapSearchEndpoints();

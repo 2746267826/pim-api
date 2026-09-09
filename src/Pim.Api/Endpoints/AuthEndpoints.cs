@@ -48,13 +48,16 @@ public static class AuthEndpoints
             if (await db.Users.AnyAsync(u => u.Email == normalizedEmail, ct))
                 return Results.Conflict(ApiResponse<string>.Error(01004, "邮箱已存在"));
 
+            // 首个注册用户自动成为管理员（users 表为空时）
+            var role = await AdminBootstrap.DetermineRegistrationRoleAsync(db, ct);
+
             var user = new UserEntity
             {
                 Username = username,
                 Email = normalizedEmail,
                 PasswordHash = PasswordHasher.Hash(request.Password),
                 DisplayName = displayName,
-                Role = "user"
+                Role = role
             };
 
             db.Users.Add(user);
@@ -65,6 +68,15 @@ public static class AuthEndpoints
             catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pg && pg.SqlState == "23505")
             {
                 return Results.Conflict(ApiResponse<string>.Error(01003, "用户名已存在或邮箱已存在"));
+            }
+
+            // 并发首注册保护：若竞争中已有更早的管理员，当前用户降级为普通用户
+            if (role == AdminBootstrap.AdminRole &&
+                !await AdminBootstrap.ConfirmFirstAdminAsync(db, user.Id, user.CreatedAt, ct))
+            {
+                user.Role = AdminBootstrap.UserRole;
+                user.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(ct);
             }
 
             var accessToken = jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
@@ -121,6 +133,12 @@ public static class AuthEndpoints
             stepSw.Restart();
             var passwordValid = user is not null && PasswordHasher.Verify(request.Password, user.PasswordHash);
             var bcryptMs = stepSw.ElapsedMilliseconds;
+
+            if (passwordValid && user is not null && !user.IsActive)
+            {
+                logger.LogInformation("Login blocked for disabled account '{User}'", request.Username);
+                return Results.Json(ApiResponse<string>.Error(40030, "账号已停用，请联系管理员"), statusCode: 403);
+            }
 
             if (!passwordValid)
             {
@@ -191,7 +209,7 @@ public static class AuthEndpoints
             stored.RevokedAt = DateTimeOffset.UtcNow;
 
             var user = await db.Users.FindAsync(new object[] { stored.UserId }, ct);
-            if (user is null) return Results.Unauthorized();
+            if (user is null || !user.IsActive) return Results.Unauthorized();
 
             var accessToken = jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
             var newRefreshToken = jwt.GenerateRefreshToken();
@@ -213,5 +231,21 @@ public static class AuthEndpoints
                 DateTimeOffset.UtcNow.AddMinutes(15),
                 new UserInfo(user.Id, user.Username, user.DisplayName!, user.Role))));
         });
+
+        // 当前登录用户信息（前端刷新页面后恢复用户名与角色）
+        group.MapGet("/me", async (
+            PimDbContext db,
+            ICurrentUserService currentUser,
+            CancellationToken ct) =>
+        {
+            if (currentUser.UserId is not Guid userId)
+                return Results.Unauthorized();
+
+            var user = await db.Users.FindAsync(new object[] { userId }, ct);
+            if (user is null || !user.IsActive) return Results.Unauthorized();
+
+            return Results.Ok(ApiResponse<UserInfo>.Ok(
+                new UserInfo(user.Id, user.Username, user.DisplayName!, user.Role)));
+        }).RequireAuthorization();
     }
 }

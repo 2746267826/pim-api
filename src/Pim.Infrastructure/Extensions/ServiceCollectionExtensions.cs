@@ -82,6 +82,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<JwtService>();
         services.AddHttpContextAccessor();
         services.AddScoped<ICurrentUserService, CurrentUserService>();
+        services.AddScoped<IAdminUserService, AdminUserService>();
 
         // Storage (optional — skip if MinIO is not configured)
         var minioEndpoint = configuration["Minio:Endpoint"];
