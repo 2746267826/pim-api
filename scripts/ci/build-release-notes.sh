@@ -65,12 +65,19 @@ if [[ -z "$PREV_SHA" ]]; then
   FROM_TAG="(initial)"
 fi
 
+TO_SHA="HEAD"
+if [[ -n "$TO_TAG" ]] && git rev-parse "${TO_TAG}^{commit}" >/dev/null 2>&1; then
+  TO_SHA="$(git rev-parse "${TO_TAG}^{commit}")"
+fi
+
 # 2. Collect merged PR numbers in the window, ordered by merge commit time
-#    (merge commits only; squash merges are not used in this repo)
-PR_NUMBERS="$(git log --format='%ct %s' "${PREV_SHA}..HEAD" \
-  | { grep 'Merge pull request #[0-9]' || true; } \
+#    Supports both merge commits ("Merge pull request #123 ...") and squash
+#    merges ("... (#123)"). Uses --first-parent so we only inspect commits that
+#    landed directly on the release branch and avoid internal branch commits.
+PR_NUMBERS="$(git log --first-parent --format='%ct %s' "${PREV_SHA}..${TO_SHA}" \
   | sort -n \
-  | sed -E 's/^[0-9]+ Merge pull request #([0-9]+).*/\1/' \
+  | sed -nE -e 's/^[0-9]+ Merge pull request #([0-9]+).*/\1/p' \
+            -e 's/^[0-9]+ .*\(\#([0-9]+)\)[[:space:]]*$/\1/p' \
   | awk '!seen[$0]++')"
 
 # 3. Render the changelog
@@ -78,16 +85,23 @@ PR_NUMBERS="$(git log --format='%ct %s' "${PREV_SHA}..HEAD" \
   echo "## What's Changed / 更新内容"
   echo ""
 
-  if [[ -z "$PR_NUMBERS" ]]; then
+  PRODUCED_ANY=false
+  if [[ -n "$PR_NUMBERS" ]]; then
+    while IFS= read -r N; do
+      [[ -z "$N" ]] && continue
+      PR_JSON="$(gh pr view "$N" --repo "$REPO" --json number,title,body,url,mergedAt 2>/dev/null || true)"
+      if [[ -n "$PR_JSON" ]]; then
+        echo "$PR_JSON" | "$PYTHON_BIN" "$PARSER"
+        PRODUCED_ANY=true
+      fi
+    done <<< "$PR_NUMBERS"
+  fi
+
+  if [[ "$PRODUCED_ANY" != "true" ]]; then
     echo "No merged pull requests in this window (direct commits only):"
     echo ""
-    git log --format='- %h %s' "${PREV_SHA}..HEAD"
+    git log --first-parent --format='- %h %s' "${PREV_SHA}..${TO_SHA}"
     echo ""
-  else
-    while IFS= read -r N; do
-      gh pr view "$N" --repo "$REPO" --json number,title,body,url,mergedAt \
-        | "$PYTHON_BIN" "$PARSER"
-    done <<< "$PR_NUMBERS"
   fi
 
   # Full changelog / compare link
