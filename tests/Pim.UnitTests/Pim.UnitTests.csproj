@@ -25,6 +25,11 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="8.0.0" />
+    <!-- 供 Compile Link 引入的 Pim.Client.App/Services/Logger.cs 编译（与 Pim.Client.App 同版本） -->
+    <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
+    <PackageReference Include="Serilog.Sinks.Debug" Version="3.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+    <PackageReference Include="System.Threading.AccessControl" Version="8.0.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -43,6 +48,9 @@
   <ItemGroup>
     <Compile Include="..\..\src\client-windows\Pim.Client.Core\Services\UpdateChecker.cs" Link="ClientWindows\UpdateChecker.cs" />
     <Compile Include="..\..\src\client-windows\Pim.Client.App\TrayIcon.BuildMenu.cs" Link="ClientWindows\TrayIcon.BuildMenu.cs" />
+    <Compile Include="..\..\src\client-windows\Pim.Client.App\Services\BootstrapLog.cs" Link="ClientWindows\BootstrapLog.cs" />
+    <Compile Include="..\..\src\client-windows\Pim.Client.App\Services\Logger.cs" Link="ClientWindows\Logger.cs" />
+    <Compile Include="..\..\src\client-windows\Pim.Client.App\Services\SingleInstanceGuard.cs" Link="ClientWindows\SingleInstanceGuard.cs" />
   </ItemGroup>
 
   <ItemGroup>
