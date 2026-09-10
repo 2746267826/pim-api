@@ -1,0 +1,82 @@
+{
+  "title": "PIM Overview",
+  "uid": "pim-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "API 请求速率 / Request rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(http_requests_received_total[5m])) by (code)", "legendFormat": "{{code}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "API 延迟 p95 / Latency p95",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "守护进程心跳新鲜度（秒）/ Daemon heartbeat freshness",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "pim_daemon_heartbeat_freshness_seconds", "legendFormat": "{{device}} / {{kind}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 600 } ] } }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "title": "Hangfire 后台任务 / Background jobs",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "pim_hangfire_jobs", "legendFormat": "{{state}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "AI 网关请求 / AI gateway requests",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "sum(rate(pim_ai_requests_total[5m])) by (status)", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "依赖健康检查 / Dependency health",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "aspnetcore_healthcheck_status", "legendFormat": "{{name}}", "instant": true }
+      ],
+      "fieldConfig": { "defaults": { "mappings": [ { "type": "value", "options": { "0": { "text": "Unhealthy", "color": "red" }, "0.5": { "text": "Degraded", "color": "yellow" }, "1": { "text": "Healthy", "color": "green" } } } ] }, "overrides": [] }
+    },
+    {
+      "id": 7,
+      "title": "应用日志 / Logs (Loki)",
+      "type": "logs",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
+      "datasource": { "type": "loki", "uid": "Loki" },
+      "targets": [
+        { "expr": "{app=\"pim-api\"}" }
+      ]
+    }
+  ]
+}

@@ -1,7 +1,10 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
+using Pim.Infrastructure.Auth;
+using Pim.Infrastructure.Metrics;
 
 namespace Pim.Infrastructure.Ai;
 
@@ -9,9 +12,19 @@ public sealed class AiGateway(
     IOptions<AiOptions> options,
     IAiChatClientFactory chatClientFactory,
     IAiSchemaRegistry schemaRegistry,
-    IAiRequestLogWriter logWriter) : IAiGateway
+    IAiRequestLogWriter logWriter,
+    ICurrentUserService? currentUser = null) : IAiGateway
 {
     public async Task<AiResult> CompleteAsync(AiGatewayRequest request, CancellationToken ct = default)
+    {
+        var sw = Stopwatch.StartNew();
+        var result = await CompleteCoreAsync(request, ct);
+        PimMetrics.AiRequests.WithLabels(request.Module, result.Status.ToString()).Inc();
+        PimMetrics.AiRequestDuration.WithLabels(request.Module).Observe(sw.Elapsed.TotalSeconds);
+        return result;
+    }
+
+    private async Task<AiResult> CompleteCoreAsync(AiGatewayRequest request, CancellationToken ct = default)
     {
         var ai = options.Value;
         var model = request.Model ?? ai.DefaultModel;
@@ -306,7 +319,7 @@ public sealed class AiGateway(
     {
         var ai = options.Value;
         return new AiRequestLogWriteModel(
-            UserId: null,
+            UserId: currentUser?.UserId,
             request.Module,
             request.Purpose,
             request.SourceObjectType,
@@ -359,7 +372,7 @@ public sealed class AiGateway(
         var now = DateTimeOffset.UtcNow;
         var ai = options.Value;
         return await logWriter.WriteAsync(new AiRequestLogWriteModel(
-            null,
+            currentUser?.UserId,
             request.Module,
             request.Purpose,
             request.SourceObjectType,

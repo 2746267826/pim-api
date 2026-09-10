@@ -1,0 +1,73 @@
+groups:
+  - name: pim-availability
+    rules:
+      - alert: PimApiDown
+        expr: up{job="pim-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PIM API 不可达"
+          description: "Prometheus 已连续 2 分钟无法抓取 PIM API 指标。"
+
+      - alert: PimHttp5xxSpike
+        expr: sum(rate(http_requests_received_total{code=~"5.."}[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PIM API 5xx 错误率升高"
+          description: "最近 5 分钟 5xx 速率超过 0.5/s。"
+
+      - alert: PimDatabaseDown
+        expr: aspnetcore_healthcheck_status{name="database"} < 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PIM 数据库不可用"
+          description: "database 健康检查持续失败（aspnetcore_healthcheck_status < 1）。"
+
+  - name: pim-daemons
+    rules:
+      - alert: PimDaemonHeartbeatStale
+        expr: pim_daemon_heartbeat_freshness_seconds > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "守护进程心跳断流：{{ $labels.device }} / {{ $labels.kind }}"
+          description: "设备 {{ $labels.device }} 的 {{ $labels.kind }} 守护进程已超过 10 分钟无心跳。"
+
+  - name: pim-background-jobs
+    rules:
+      - alert: PimHangfireBacklog
+        expr: pim_hangfire_jobs{state="enqueued"} > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Hangfire 队列积压"
+          description: "待执行后台任务超过 100 条且持续 10 分钟。"
+
+      - alert: PimHangfireFailedJobs
+        expr: pim_hangfire_jobs{state="failed"} > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Hangfire 存在失败任务"
+          description: "失败任务数持续大于 0，请到 /hangfire 面板排查。"
+
+  - name: pim-ai
+    rules:
+      - alert: PimAiErrorRateHigh
+        expr: |
+          sum(rate(pim_ai_requests_total{status=~"Failed|TimedOut"}[15m]))
+            / clamp_min(sum(rate(pim_ai_requests_total[15m])), 0.001) > 0.05
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "AI 网关错误率超过 5%"
+          description: "最近 15 分钟 AI 调用失败/超时占比过高，检查 LiteLLM 网关与模型可用性。"

@@ -40,6 +40,8 @@ services:
       - Qdrant__BaseUrl=http://qdrant:6333
       - Qdrant__Url=http://qdrant:6333
       - Qdrant__Collection=pim_file_chunks
+      - PIM_OPS_KEY=${PIM_OPS_KEY:-}
+      - LOKI_URL=${LOKI_URL:-}
     volumes:
       - pim_data:/data
       - ./keys:/data/keys:ro
@@ -52,6 +54,52 @@ services:
         condition: service_started
       qdrant:
         condition: service_started
+    networks:
+      - pim-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    profiles: ["observability"]
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./deploy/prometheus/ops_token:/etc/prometheus/ops_token:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - pim-api
+    networks:
+      - pim-net
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    profiles: ["observability"]
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - pim-net
+
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    profiles: ["observability"]
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
     networks:
       - pim-net
 
@@ -209,6 +257,9 @@ volumes:
   nextcloud_data:
   nextcloud_db_data:
   qdrant_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
 
 networks:
   pim-net:
