@@ -60,6 +60,17 @@ public class HangfireJobStatusServiceTests
         Assert.Equal("后台任务状态不可用。", summary.Message);
     }
 
+    [Fact]
+    public async Task GetSummaryAsync_WhenHangfireUnconfigured_ReturnsWarningDegraded()
+    {
+        var service = new HangfireJobStatusService(new NoopHangfireMonitoringClient());
+
+        var summary = await service.GetSummaryAsync();
+
+        Assert.Equal(PimHealthStatus.Warning, summary.Status);
+        Assert.Contains("降级模式", summary.Message);
+    }
+
     private sealed class FakeHangfireMonitoringClient : IHangfireMonitoringClient
     {
         private readonly HangfireMonitoringSnapshot _snapshot;

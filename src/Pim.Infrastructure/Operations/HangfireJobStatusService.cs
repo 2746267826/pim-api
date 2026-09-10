@@ -1,9 +1,15 @@
 using Hangfire;
 using Pim.Core.Operations;
+using Pim.Infrastructure.Metrics;
 
 namespace Pim.Infrastructure.Operations;
 
-public sealed record HangfireMonitoringSnapshot(int Processing, int Enqueued, int Scheduled, int Failed);
+public sealed record HangfireMonitoringSnapshot(
+    int Processing,
+    int Enqueued,
+    int Scheduled,
+    int Failed,
+    bool IsConfigured = true);
 
 public interface IHangfireMonitoringClient
 {
@@ -12,7 +18,7 @@ public interface IHangfireMonitoringClient
 
 public sealed class NoopHangfireMonitoringClient : IHangfireMonitoringClient
 {
-    public HangfireMonitoringSnapshot GetSnapshot() => new(0, 0, 0, 0);
+    public HangfireMonitoringSnapshot GetSnapshot() => new(0, 0, 0, 0, IsConfigured: false);
 }
 
 public sealed class HangfireMonitoringClient : IHangfireMonitoringClient
@@ -20,7 +26,7 @@ public sealed class HangfireMonitoringClient : IHangfireMonitoringClient
     public HangfireMonitoringSnapshot GetSnapshot()
     {
         if (JobStorage.Current == null)
-            return new HangfireMonitoringSnapshot(0, 0, 0, 0);
+            return new HangfireMonitoringSnapshot(0, 0, 0, 0, IsConfigured: false);
         var monitoringApi = JobStorage.Current.GetMonitoringApi();
         var queues = monitoringApi.Queues();
         var processing = monitoringApi.ProcessingCount();
@@ -32,7 +38,8 @@ public sealed class HangfireMonitoringClient : IHangfireMonitoringClient
             (int)processing,
             (int)enqueued,
             (int)scheduled,
-            (int)failed);
+            (int)failed,
+            IsConfigured: true);
     }
 }
 
@@ -52,6 +59,31 @@ public sealed class HangfireJobStatusService : IBackgroundJobStatusService
         try
         {
             var snapshot = _monitoringClient.GetSnapshot();
+
+            if (!snapshot.IsConfigured)
+            {
+                return Task.FromResult(new BackgroundJobSummaryDto(
+                    PimHealthStatus.Warning,
+                    0,
+                    0,
+                    0,
+                    0,
+                    _timeProvider.GetUtcNow(),
+                    "后台任务服务未配置或已禁用（降级模式运行）。"));
+            }
+
+            // 同步暴露 Hangfire 队列指标
+            try
+            {
+                PimMetrics.HangfireJobs.WithLabels("processing").Set(snapshot.Processing);
+                PimMetrics.HangfireJobs.WithLabels("enqueued").Set(snapshot.Enqueued);
+                PimMetrics.HangfireJobs.WithLabels("scheduled").Set(snapshot.Scheduled);
+                PimMetrics.HangfireJobs.WithLabels("failed").Set(snapshot.Failed);
+            }
+            catch
+            {
+                // metrics export should never break status query
+            }
 
             return Task.FromResult(new BackgroundJobSummaryDto(
                 MapFailedCountToStatus(snapshot.Failed),

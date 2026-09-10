@@ -289,7 +289,7 @@ app.MapMetrics("/metrics").AddEndpointFilter(async (context, next) =>
     if (validator.HasKeys && validator.IsValid(key))
         return await next(context);
 
-    return Results.Json(new { code = 40101, message = "MetricsAuthRequired" }, statusCode: 401);
+    return Results.Text("{\"code\":40101,\"message\":\"MetricsAuthRequired\"}", "application/json", statusCode: 401);
 });
 
 // Ops endpoints
@@ -326,16 +326,32 @@ catch (Exception ex)
 {
     Log.Warning(ex, "Module initialization failed; the API will start but module endpoints may not work.");
 }
-try
+var hangfireDisabled = bool.TryParse(builder.Configuration["DisableHangfire"], out var hd) && hd;
+var dbConn = builder.Configuration.GetConnectionString("DefaultConnection");
+var hangfireEnabled = !hangfireDisabled && !string.IsNullOrWhiteSpace(dbConn);
+
+if (!hangfireEnabled)
 {
-    RecurringJob.AddOrUpdate<Stage0DiagnosticJob>(
-        "stage0-diagnostic",
-        job => job.RunAsync(),
-        Cron.Hourly);
+    Log.Warning("Hangfire background jobs are unconfigured/disabled; running in degraded mode without background scheduling.");
 }
-catch (Exception ex)
+else
 {
-    Log.Warning(ex, "Failed to register Hangfire diagnostic recurring job.");
+    try
+    {
+        RecurringJob.AddOrUpdate<Stage0DiagnosticJob>(
+            "stage0-diagnostic",
+            job => job.RunAsync(CancellationToken.None),
+            Cron.Hourly);
+
+        RecurringJob.AddOrUpdate<HeartbeatStaleInspectionJob>(
+            "heartbeat-stale-inspection",
+            job => job.RunAsync(CancellationToken.None),
+            "*/5 * * * *");
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Failed to register Hangfire recurring jobs.");
+    }
 }
 
 // 白屏修复 #2：未匹配的 /api/* 返回 JSON 404，避免落入 SPA fallback 返回 index.html 导致前端 Unexpected token '<'

@@ -1,3 +1,4 @@
+using Pim.Infrastructure.Operations;
 using System.Reflection;
 using System.Globalization;
 using Microsoft.AspNetCore.Builder;
@@ -45,6 +46,8 @@ public sealed class MobileModule : IModule
         services.AddScoped<MobileUsageAggregationService>();
         services.AddScoped<MobileTimelineBlockService>();
         services.AddScoped<DeviceManagementService>();
+        services.AddScoped<MobileSyncBacklogInspector>();
+        services.AddScoped<IDataQualityInspector, MobileSyncBacklogInspector>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)

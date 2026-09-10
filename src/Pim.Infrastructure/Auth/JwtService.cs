@@ -22,26 +22,43 @@ public class JwtService : IDisposable
         _rsa = RSA.Create();
         _logger = logger;
 
+        var isDevOrTest = environment.IsDevelopment() || environment.EnvironmentName == "Test";
         var keyPath = configuration["Jwt:PrivateKeyPath"];
+        var keyLoaded = false;
+
         if (!string.IsNullOrEmpty(keyPath) && File.Exists(keyPath))
         {
-            _rsa.ImportFromPem(File.ReadAllText(keyPath));
+            try
+            {
+                _rsa.ImportFromPem(File.ReadAllText(keyPath));
+                keyLoaded = true;
+            }
+            catch (Exception ex) when (isDevOrTest)
+            {
+                _logger.LogWarning(ex,
+                    "Failed to read JWT private key from '{KeyPath}'. Falling back to ephemeral key in {Env} environment.",
+                    keyPath, environment.EnvironmentName);
+            }
         }
-        else if (environment.IsDevelopment())
+
+        if (!keyLoaded)
         {
-            var keySize = _rsa.KeySize;
-            _logger.LogWarning(
-                "JWT private key file not found at '{KeyPath}'. Using ephemeral in-memory RSA key ({KeySize} bits). "
-                + "All tokens will be invalidated on application restart. "
-                + "RSA init took {ElapsedMs}ms. "
-                + "Set Jwt:PrivateKeyPath in configuration for production environments.",
-                keyPath, keySize, sw.ElapsedMilliseconds);
-        }
-        else
-        {
-            throw new InvalidOperationException(
-                $"JWT private key file not found at '{keyPath}'. "
-                + "Set Jwt:PrivateKeyPath in configuration to a valid PEM file path.");
+            if (isDevOrTest)
+            {
+                var keySize = _rsa.KeySize;
+                _logger.LogWarning(
+                    "JWT private key file not found or inaccessible at '{KeyPath}'. Using ephemeral in-memory RSA key ({KeySize} bits). "
+                    + "All tokens will be invalidated on application restart. "
+                    + "RSA init took {ElapsedMs}ms. "
+                    + "Set Jwt:PrivateKeyPath in configuration for production environments.",
+                    keyPath, keySize, sw.ElapsedMilliseconds);
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    $"JWT private key file not found at '{keyPath}'. "
+                    + "Set Jwt:PrivateKeyPath in configuration to a valid PEM file path.");
+            }
         }
     }
 

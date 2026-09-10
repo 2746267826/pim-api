@@ -1,3 +1,4 @@
+using Pim.Infrastructure.Operations;
 using System.Reflection;
 using System.Globalization;
 using Hangfire;
@@ -48,6 +49,8 @@ public class PcTrackerModule : IModule
         services.AddScoped<PcActivityAggregationService>();
         services.AddScoped<PcClassificationBackfillService>();
         services.AddScoped<PcClassificationSnapshotJob>();
+        services.AddScoped<PcTrackerUntaggedInspector>();
+        services.AddScoped<IDataQualityInspector, PcTrackerUntaggedInspector>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)

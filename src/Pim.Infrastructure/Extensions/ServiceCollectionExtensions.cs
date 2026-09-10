@@ -69,6 +69,11 @@ public static class ServiceCollectionExtensions
             services.AddScoped<IHangfireMonitoringClient, HangfireMonitoringClient>();
         }
         services.AddScoped<IBackgroundJobStatusService, HangfireJobStatusService>();
+        services.AddScoped<HeartbeatFreshnessInspector>();
+        services.AddScoped<IDataQualityInspector, HeartbeatFreshnessInspector>();
+        services.AddScoped<AiGatewayQualityInspector>();
+        services.AddScoped<IDataQualityInspector, AiGatewayQualityInspector>();
+        services.AddScoped<HeartbeatStaleInspectionJob>();
         services.AddScoped<Stage0DiagnosticJob>();
         var dataProtectionKeysPath = configuration["DataProtection:KeysPath"]
             ?? "/data/keys/data-protection";

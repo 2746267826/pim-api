@@ -559,10 +559,10 @@ public class InfrastructureCoverageTests : ServiceTestBase
     public async Task Stage0DiagnosticJob_Runs()
     {
         var logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<Stage0DiagnosticJob>.Instance;
-        var job = new Stage0DiagnosticJob(logger);
-        await job.RunAsync();
-        // no exception means success
-        Assert.True(true);
+        var auditLogs = new StubAuditLogService();
+        var job = new Stage0DiagnosticJob(Array.Empty<IDataQualityInspector>(), auditLogs, logger);
+        var results = await job.RunAsync();
+        Assert.NotNull(results);
     }
 
     [Fact]
@@ -747,5 +747,15 @@ public class InfrastructureCoverageTests : ServiceTestBase
     private sealed class ThrowingHangfireClient : IHangfireMonitoringClient
     {
         public HangfireMonitoringSnapshot GetSnapshot() => throw new InvalidOperationException("fail");
+    }
+    private sealed class StubAuditLogService : Pim.Core.Operations.IAuditLogService
+    {
+        public Task<Pim.Core.Operations.AuditLogDto> RecordAsync(Pim.Core.Operations.CreateAuditLogRequest request, CancellationToken ct = default)
+        {
+            return Task.FromResult(new Pim.Core.Operations.AuditLogDto(
+                Guid.NewGuid(), request.UserId, request.ActorType, request.Action,
+                request.ResourceType, request.ResourceId, request.Source, request.Result,
+                request.CorrelationId, DateTimeOffset.UtcNow));
+        }
     }
 }
