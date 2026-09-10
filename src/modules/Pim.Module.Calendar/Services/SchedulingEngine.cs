@@ -31,14 +31,36 @@ public class SchedulingEngine
             .Where(e => e.Calendar.UserId == userId)
             .ToListAsync(ct);
 
+        var now = DateTimeOffset.UtcNow;
+        var searchEnd = now.AddDays(14);
+
         var tasksToSchedule = tasks.Select(t => new TaskToSchedule(
             t.Id, t.Title, t.Priority,
             t.EstimatedDuration ?? TimeSpan.FromHours(1),
             t.MinimumSegment, t.Due, 1.0)).ToList();
 
         var busySlots = events.Select(e => new BusySlot(e.DtStart, e.DtEnd)).ToList();
-        var now = DateTimeOffset.UtcNow;
-        var searchEnd = now.AddDays(14);
+
+        // 可用时段参与排程：非 available 类型直接视为忙时；
+        // 若用户定义了 available 窗口，则窗口之外的时间一律不可排程。
+        var windows = await _db.Set<AvailabilityWindowEntity>()
+            .Where(w => w.UserId == userId && w.DeletedAt == null && w.EndsAt > now)
+            .ToListAsync(ct);
+
+        busySlots.AddRange(windows
+            .Where(w => !string.Equals(w.Kind, "available", StringComparison.OrdinalIgnoreCase))
+            .Select(w => new BusySlot(w.StartsAt, w.EndsAt)));
+
+        var available = windows
+            .Where(w => string.Equals(w.Kind, "available", StringComparison.OrdinalIgnoreCase))
+            .Select(w => new TimeSlot(w.StartsAt < now ? now : w.StartsAt, w.EndsAt > searchEnd ? searchEnd : w.EndsAt))
+            .Where(s => s.End > s.Start)
+            .OrderBy(s => s.Start)
+            .ToList();
+        if (available.Count > 0)
+        {
+            busySlots.AddRange(InvertAvailableWindows(available, now, searchEnd));
+        }
 
         var weights = await GetUserWeightsAsync(userId);
 
@@ -51,6 +73,26 @@ public class SchedulingEngine
         }
 
         return solutions;
+    }
+
+    /// <summary>把 [start, end) 内未被 available 窗口覆盖的部分转成忙时。</summary>
+    internal static List<BusySlot> InvertAvailableWindows(
+        List<TimeSlot> available, DateTimeOffset start, DateTimeOffset end)
+    {
+        var busy = new List<BusySlot>();
+        var cursor = start;
+        foreach (var window in available)
+        {
+            if (window.Start > cursor)
+                busy.Add(new BusySlot(cursor, window.Start));
+            if (window.End > cursor)
+                cursor = window.End;
+            if (cursor >= end)
+                break;
+        }
+        if (cursor < end)
+            busy.Add(new BusySlot(cursor, end));
+        return busy;
     }
 
     private async Task<Dictionary<string, double>> GetUserWeightsAsync(Guid userId)

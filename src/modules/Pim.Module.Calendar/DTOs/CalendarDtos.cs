@@ -380,6 +380,26 @@ public record CreateAiPlanningPlaceholderRequest(
     [MaxLength(40)] string? Source = null
 );
 
+public record GenerateAiPlanRequest(
+    [Range(1, 30)] int? HorizonDays = null,
+    IReadOnlyList<Guid>? TaskIds = null
+);
+
+/// <summary>排程建议视图（含状态与来源），用于工作台 AI 规划面板。</summary>
+public record AiPlanPlaceholderViewDto(
+    Guid Id,
+    string Title,
+    DateTimeOffset StartsAt,
+    DateTimeOffset EndsAt,
+    string Reason,
+    string Status,
+    string Source,
+    Guid? ConfirmationId);
+
+public record GenerateAiPlanResponse(
+    string Source,
+    IReadOnlyList<AiPlanPlaceholderViewDto> Placeholders);
+
 public record CalendarLayerQuery(
     DateTimeOffset Start,
     DateTimeOffset End,

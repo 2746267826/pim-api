@@ -237,11 +237,29 @@ public class CalendarModule : IModule
             Results.Created("/api/v1/calendar/ai-placeholders",
                 ApiResponse<object>.Ok(await svc.CreateAiPlaceholderAsync(req, ct))));
 
+        group.MapGet("/ai-placeholders", async (
+            [FromQuery] string? status,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ListAiPlaceholdersAsync(status, ct))));
+
+        group.MapPost("/ai-placeholders/generate", async (
+            [FromBody] GenerateAiPlanRequest? req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.GenerateAiPlanAsync(req ?? new GenerateAiPlanRequest(), ct))));
+
         group.MapPost("/ai-placeholders/{id:guid}/confirm", async (
             Guid id,
             [FromServices] PlanningModelService svc,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<object>.Ok(await svc.ConfirmAiPlaceholderAsync(id, ct))));
+
+        group.MapPost("/ai-placeholders/{id:guid}/dismiss", async (
+            Guid id,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.DismissAiPlaceholderAsync(id, ct))));
 
         group.MapGet("/reminders", async (
             [FromServices] ReminderService svc,

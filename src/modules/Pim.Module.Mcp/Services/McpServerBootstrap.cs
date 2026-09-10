@@ -59,6 +59,11 @@ public static class McpServerBootstrap
 
             // Streamable HTTP endpoint: GET = SSE event stream, POST = JSON-RPC.
             app.MapMcp(mcpPath);
+
+            // Session-less GET / unhandled /mcp requests must never fall through to SPA HTML
+            app.MapMethods(mcpPath, new[] { "GET", "DELETE", "PATCH" }, () =>
+                Results.BadRequest(new { code = 40001, message = "Session ID or valid JSON-RPC payload required for MCP endpoint" }))
+                .AllowAnonymous();
         }
 
         // Capture the final pipeline (includes /mcp endpoints above) for in-process dispatch.

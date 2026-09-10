@@ -360,9 +360,6 @@ app.MapMethods("/api/{*path}", new[] { "GET", "POST", "PUT", "DELETE", "PATCH", 
     Results.NotFound(new { code = 404, message = $"接口不存在: {ctx.Request.Path}", data = (object?)null, timestamp = DateTimeOffset.UtcNow }))
     .AllowAnonymous();
 
-// SPA fallback: non-API routes serve index.html (React Router handles routing)
-app.MapFallbackToFile("index.html").AllowAnonymous();
-
 if (isMcpStdio)
 {
     // Dedicated local-process MCP stdio server (Claude Code / Codex mcp.json).
@@ -372,6 +369,9 @@ if (isMcpStdio)
 
 // In-process MCP server: captures the pipeline, maps /mcp (bearer guard + 308 + MapMcp).
 McpServerBootstrap.ConfigureHttp(app);
+
+// SPA fallback: non-API routes serve index.html (React Router handles routing)
+app.MapFallbackToFile("index.html").AllowAnonymous();
 
 app.Run();
 

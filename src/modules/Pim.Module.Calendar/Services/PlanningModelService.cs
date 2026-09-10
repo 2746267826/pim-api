@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Core.Planning;
@@ -34,17 +35,20 @@ public class PlanningModelService
     private readonly ICurrentUserService _currentUser;
     private readonly IOperationConfirmationService? _confirmationService;
     private readonly RecurrenceService _recurrence;
+    private readonly IAiGateway? _aiGateway;
 
     public PlanningModelService(
         PimDbContext db,
         ICurrentUserService currentUser,
         IOperationConfirmationService? confirmationService = null,
-        RecurrenceService? recurrence = null)
+        RecurrenceService? recurrence = null,
+        IAiGateway? aiGateway = null)
     {
         _db = db;
         _currentUser = currentUser;
         _confirmationService = confirmationService;
         _recurrence = recurrence ?? new RecurrenceService(NullLogger<RecurrenceService>.Instance);
+        _aiGateway = aiGateway;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "Login required");
@@ -525,6 +529,249 @@ public class PlanningModelService
         return MapAiPlaceholder(entity);
     }
 
+    /// <summary>列出当前用户的排程建议（默认仅 Suggested 状态）。</summary>
+    public async Task<IReadOnlyList<AiPlanPlaceholderViewDto>> ListAiPlaceholdersAsync(
+        string? status, CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var query = _db.Set<AiPlanningPlaceholderEntity>()
+            .Where(p => p.UserId == userId);
+        if (!string.IsNullOrWhiteSpace(status))
+            query = query.Where(p => p.Status == status);
+        else
+            query = query.Where(p => p.Status == "Suggested");
+
+        var items = await query
+            .OrderBy(p => p.StartsAt)
+            .Take(50)
+            .ToListAsync(ct);
+        return items.Select(MapAiPlaceholderView).ToList();
+    }
+
+    /// <summary>忽略一条排程建议（不进入确认流）。</summary>
+    public async Task<AiPlanPlaceholderViewDto> DismissAiPlaceholderAsync(
+        Guid id, CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var placeholder = await _db.Set<AiPlanningPlaceholderEntity>()
+            .FirstOrDefaultAsync(p => p.Id == id && p.UserId == userId, ct)
+            ?? throw new DomainException(02033, "AI placeholder does not exist");
+
+        if (placeholder.Status is "Suggested" or "Dismissed")
+        {
+            placeholder.Status = "Dismissed";
+            placeholder.UpdatedAt = DateTimeOffset.UtcNow;
+            await _db.SaveChangesAsync(ct);
+        }
+        return MapAiPlaceholderView(placeholder);
+    }
+
+    /// <summary>
+    /// 生成排程建议：优先调用 AI 网关（AI 关闭、调用失败或输出非法时回退规则引擎）。
+    /// 建议一律为 Suggested 状态，经既有确认流写回日历——AI 只提建议，不碰核心事实。
+    /// </summary>
+    public async Task<GenerateAiPlanResponse> GenerateAiPlanAsync(
+        GenerateAiPlanRequest request, CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var horizonDays = Math.Clamp(request.HorizonDays ?? 7, 1, 30);
+        var now = DateTimeOffset.UtcNow;
+        var horizonEnd = now.AddDays(horizonDays);
+
+        var tasksQuery = _db.Set<TaskEntity>()
+            .Where(t => t.UserId == userId
+                        && t.EstimatedDuration.HasValue
+                        && t.CompletedAt == null
+                        && t.DeletedAt == null
+                        && t.Status != "CANCELLED");
+        if (request.TaskIds is { Count: > 0 })
+            tasksQuery = tasksQuery.Where(t => request.TaskIds.Contains(t.Id));
+
+        var tasks = await tasksQuery
+            .OrderByDescending(t => t.Priority)
+            .ThenBy(t => t.Due)
+            .Take(10)
+            .ToListAsync(ct);
+
+        if (tasks.Count == 0)
+            return new GenerateAiPlanResponse("none", []);
+
+        if (_aiGateway is not null)
+        {
+            var aiResult = await TryGenerateWithAiAsync(userId, tasks, now, horizonEnd, ct);
+            if (aiResult is not null)
+                return aiResult;
+        }
+
+        return await GenerateWithEngineAsync(userId, tasks, ct);
+    }
+
+    private async Task<GenerateAiPlanResponse?> TryGenerateWithAiAsync(
+        Guid userId, List<TaskEntity> tasks, DateTimeOffset now, DateTimeOffset horizonEnd,
+        CancellationToken ct)
+    {
+        var windows = await _db.Set<AvailabilityWindowEntity>()
+            .Where(w => w.UserId == userId && w.DeletedAt == null && w.EndsAt > now)
+            .OrderBy(w => w.StartsAt)
+            .Take(30)
+            .ToListAsync(ct);
+        var events = await _db.Set<EventEntity>()
+            .Where(e => e.Calendar.UserId == userId && e.DtEnd > now && e.DtStart < horizonEnd)
+            .OrderBy(e => e.DtStart)
+            .Take(30)
+            .ToListAsync(ct);
+
+        var payload = new
+        {
+            now,
+            horizonEnd,
+            tasks = tasks.Select(t => new
+            {
+                t.Title,
+                durationMinutes = (int)(t.EstimatedDuration ?? TimeSpan.FromHours(1)).TotalMinutes,
+                t.Priority,
+                t.Due
+            }),
+            availableWindows = windows
+                .Where(w => string.Equals(w.Kind, "available", StringComparison.OrdinalIgnoreCase))
+                .Select(w => new { w.StartsAt, w.EndsAt }),
+            busyEvents = events.Select(e => new { e.DtStart, e.DtEnd })
+        };
+
+        AiResult result;
+        try
+        {
+            result = await _aiGateway!.CompleteAsync(new AiGatewayRequest(
+                Module: "calendar",
+                Purpose: "calendar.ai_plan",
+                SourceObjectType: "user",
+                SourceObjectId: userId.ToString(),
+                Messages:
+                [
+                    new AiMessage(AiMessageRole.System,
+                        "你是排程助手。根据用户的待办任务、可用时段与已有日程，给出排程建议。"
+                        + "只输出一个 JSON 数组，不要输出其他任何文字。数组元素形如 "
+                        + "{\"title\":\"任务标题\",\"start\":\"ISO8601 开始\",\"end\":\"ISO8601 结束\",\"reason\":\"一句话理由\"}。"
+                        + "规则：start/end 必须在 now 与 horizonEnd 之间、避开 busyEvents、"
+                        + "若给了 availableWindows 则只能排在窗口内、end 必须晚于 start、最多 10 条。"),
+                    new AiMessage(AiMessageRole.User, JsonSerializer.Serialize(payload))
+                ],
+                Model: null,
+                SchemaName: null,
+                SchemaVersion: null,
+                MaxOutputTokens: 2000,
+                MaxAttempts: 2,
+                Metadata: new Dictionary<string, string> { ["endpoint"] = "calendar/ai-placeholders/generate" }), ct);
+        }
+        catch
+        {
+            return null;
+        }
+
+        if (result.Status != AiRequestStatus.Succeeded || string.IsNullOrWhiteSpace(result.ResponseText))
+            return null;
+
+        var items = ParseAiPlanJson(result.ResponseText, now, horizonEnd);
+        if (items.Count == 0)
+            return null;
+
+        var created = await PersistPlaceholdersAsync(userId, items, "ai", ct);
+        return new GenerateAiPlanResponse("ai", created);
+    }
+
+    /// <summary>防御式解析 AI 输出：定位首个 [ 与末个 ]，逐条校验时间与条数。</summary>
+    internal static List<AiPlanItem> ParseAiPlanJson(string text, DateTimeOffset now, DateTimeOffset horizonEnd)
+    {
+        var startIdx = text.IndexOf('[');
+        var endIdx = text.LastIndexOf(']');
+        if (startIdx < 0 || endIdx <= startIdx)
+            return [];
+
+        var items = new List<AiPlanItem>();
+        try
+        {
+            using var doc = JsonDocument.Parse(text[startIdx..(endIdx + 1)]);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+                return [];
+
+            foreach (var el in doc.RootElement.EnumerateArray())
+            {
+                if (!el.TryGetProperty("title", out var titleEl) || titleEl.ValueKind != JsonValueKind.String)
+                    continue;
+                var hasStart = el.TryGetProperty("start", out var startEl) || el.TryGetProperty("startsAt", out startEl);
+                var hasEnd = el.TryGetProperty("end", out var endEl) || el.TryGetProperty("endsAt", out endEl);
+                if (!hasStart || !hasEnd)
+                    continue;
+                if (!DateTimeOffset.TryParse(startEl.GetString(), out var startAt)
+                    || !DateTimeOffset.TryParse(endEl.GetString(), out var endAt))
+                    continue;
+                if (endAt <= startAt)
+                    continue;
+                if (startAt < now.AddHours(-1) || endAt > horizonEnd.AddDays(1))
+                    continue;
+
+                var title = titleEl.GetString()?.Trim();
+                if (string.IsNullOrEmpty(title) || title.Length > 255)
+                    continue;
+                var reason = el.TryGetProperty("reason", out var reasonEl) && reasonEl.ValueKind == JsonValueKind.String
+                    ? reasonEl.GetString() ?? "AI 排程建议"
+                    : "AI 排程建议";
+                items.Add(new AiPlanItem(title, startAt, endAt, reason));
+                if (items.Count >= 10) break;
+            }
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+        return items;
+    }
+
+    private async Task<GenerateAiPlanResponse> GenerateWithEngineAsync(
+        Guid userId, List<TaskEntity> tasks, CancellationToken ct)
+    {
+        var engine = new SchedulingEngine(_db);
+        var solutions = await engine.GeneratePlansAsync(userId, tasks.Select(t => t.Id).ToList(), ct);
+        var solution = solutions.FirstOrDefault(s => s.AlgorithmName.Contains("greedy", StringComparison.OrdinalIgnoreCase))
+                       ?? solutions.FirstOrDefault();
+        if (solution is null || solution.Slots.Count == 0)
+            return new GenerateAiPlanResponse("none", []);
+
+        var items = solution.Slots.Take(10)
+            .Select(s => new AiPlanItem(s.Title, s.Start, s.End, $"规则引擎建议（{solution.AlgorithmName}）"))
+            .ToList();
+        var created = await PersistPlaceholdersAsync(userId, items, "rule-engine", ct);
+        return new GenerateAiPlanResponse("rule-engine", created);
+    }
+
+    private async Task<IReadOnlyList<AiPlanPlaceholderViewDto>> PersistPlaceholdersAsync(
+        Guid userId, List<AiPlanItem> items, string source, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var created = new List<AiPlanPlaceholderViewDto>();
+        foreach (var item in items)
+        {
+            var entity = new AiPlanningPlaceholderEntity
+            {
+                UserId = userId,
+                Title = item.Title,
+                StartsAt = item.StartsAt.ToUniversalTime(),
+                EndsAt = item.EndsAt.ToUniversalTime(),
+                Reason = item.Reason,
+                Source = source,
+                Status = "Suggested",
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+            _db.Set<AiPlanningPlaceholderEntity>().Add(entity);
+            created.Add(MapAiPlaceholderView(entity));
+        }
+        await _db.SaveChangesAsync(ct);
+        return created;
+    }
+
+    internal sealed record AiPlanItem(string Title, DateTimeOffset StartsAt, DateTimeOffset EndsAt, string Reason);
+
     public async Task<OperationConfirmationDto> ConfirmAiPlaceholderAsync(
         Guid id,
         CancellationToken ct = default)
@@ -759,6 +1006,17 @@ public class PlanningModelService
             entity.StartsAt,
             entity.EndsAt,
             entity.Reason,
+            entity.ConfirmationId);
+
+    private static AiPlanPlaceholderViewDto MapAiPlaceholderView(AiPlanningPlaceholderEntity entity)
+        => new(
+            entity.Id,
+            entity.Title,
+            entity.StartsAt,
+            entity.EndsAt,
+            entity.Reason,
+            entity.Status,
+            entity.Source,
             entity.ConfirmationId);
 
     private static TaskExecutionSegmentResponse MapSegment(TaskExecutionSegmentEntity segment, string taskTitle)
