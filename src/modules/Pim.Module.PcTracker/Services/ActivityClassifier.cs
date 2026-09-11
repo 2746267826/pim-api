@@ -69,17 +69,20 @@ public static class ActivityClassifier
 
     private static AppSignatureEntity? MatchAppSignature(string appName, IEnumerable<AppSignatureEntity> signatures)
     {
+        if (string.IsNullOrWhiteSpace(appName))
+            return null;
+
         var normalized = appName.Trim().ToLowerInvariant();
         var list = signatures as IList<AppSignatureEntity> ?? signatures.ToList();
 
         // Exact
-        var sig = list.FirstOrDefault(s => s.ProcessName.ToLowerInvariant() == normalized);
+        var sig = list.FirstOrDefault(s => string.Equals(s.ProcessName, normalized, StringComparison.OrdinalIgnoreCase));
         if (sig is not null) return sig;
 
         // .exe suffix
-        if (!normalized.EndsWith(".exe"))
+        if (!normalized.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
         {
-            sig = list.FirstOrDefault(s => s.ProcessName.ToLowerInvariant() == normalized + ".exe");
+            sig = list.FirstOrDefault(s => string.Equals(s.ProcessName, normalized + ".exe", StringComparison.OrdinalIgnoreCase));
             if (sig is not null) return sig;
         }
 
@@ -89,13 +92,20 @@ public static class ActivityClassifier
             sig = list.FirstOrDefault(s =>
             {
                 var pattern = s.ProcessName;
-                if (!pattern.Contains('*') && !pattern.Contains('?'))
+                if (string.IsNullOrWhiteSpace(pattern) || (!pattern.Contains('*') && !pattern.Contains('?')))
                     return false;
-                var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
-                    .Replace(@"\*", ".*")
-                    .Replace(@"\?", ".") + "$";
-                return System.Text.RegularExpressions.Regex.IsMatch(candidate, regex,
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                try
+                {
+                    var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+                        .Replace(@"\*", ".*")
+                        .Replace(@"\?", ".") + "$";
+                    return System.Text.RegularExpressions.Regex.IsMatch(candidate, regex,
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(50));
+                }
+                catch
+                {
+                    return false;
+                }
             });
             if (sig is not null) return sig;
         }

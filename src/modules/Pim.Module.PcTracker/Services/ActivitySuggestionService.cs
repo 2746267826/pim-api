@@ -143,7 +143,9 @@ public class ActivitySuggestionService
             .ToHashSet();
 
         var categories = await _db.Set<PcCategoryEntity>().ToListAsync(ct);
-        var categoriesByName = categories.ToDictionary(c => c.Name, StringComparer.OrdinalIgnoreCase);
+        var categoriesByName = categories
+            .GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
         var result = new List<ActivityClassificationSuggestionV2Dto>();
         foreach (var entity in entities)

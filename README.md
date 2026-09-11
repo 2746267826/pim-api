@@ -391,7 +391,7 @@ PIM 提供企业级的生产可观测性基础设施，详细运维指南见 [do
 
 仓库预置了完整的监控配置资产：
 - **Prometheus 告警规则**：`deploy/prometheus/alerts.yml`，预定义 `PimApiDown`、`PimDatabaseDown`、`PimDaemonHeartbeatStale`、`PimHangfireBacklog`、`PimAiErrorRateHigh`、`PimHttp5xxSpike` 等核心告警规则。
-- **Grafana 监控看板**：`deploy/grafana/dashboards/pim-platform-overview.json`，一键导入即刻呈现 API 性能、后台任务健康与客户端活跃全景。
+- **Grafana 监控看板**：`deploy/grafana/dashboards/pim-overview.json`，一键导入即刻呈现 API 性能、后台任务健康与客户端活跃全景。
 - **Loki 日志管道**：配置 `LOKI_URL`（如 `http://loki:3100`）环境变量后，Serilog 自动启用 Loki 接收器进行结构化集中日志推送。
 
 ## 配置参考

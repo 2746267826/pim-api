@@ -204,7 +204,10 @@ public class AppSignatureService
         int imported = 0;
         int updated = 0;
         var existingList = await _db.Set<AppSignatureEntity>().ToListAsync(ct);
-        var existingDict = existingList.ToDictionary(x => x.ProcessName.ToLowerInvariant(), StringComparer.OrdinalIgnoreCase);
+        var existingDict = existingList
+            .Where(x => !string.IsNullOrWhiteSpace(x.ProcessName))
+            .GroupBy(x => x.ProcessName.Trim().ToLowerInvariant(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
         foreach (var req in signatures)
         {

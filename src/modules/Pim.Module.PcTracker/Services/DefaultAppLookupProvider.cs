@@ -39,11 +39,18 @@ public class DefaultAppLookupProvider : IAppLookupProvider
             clean = clean[..^4];
         }
 
+        if (string.IsNullOrWhiteSpace(clean))
+        {
+            return Task.FromResult<AppLookupResult?>(null);
+        }
+
+        var displayName = clean.Length == 1 ? char.ToUpper(clean[0]).ToString() : char.ToUpper(clean[0]) + clean[1..];
+
         // Mock/Extensible online response pattern:
         // Returns inferred result with source="online" and appropriate confidence
         var result = new AppLookupResult(
             ProcessName: processName,
-            DisplayName: char.ToUpper(clean[0]) + clean[1..],
+            DisplayName: displayName,
             CategoryPath: "其他",
             Productivity: "neutral",
             Description: $"Online identified application: {clean}",

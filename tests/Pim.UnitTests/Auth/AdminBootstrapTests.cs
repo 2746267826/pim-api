@@ -72,6 +72,23 @@ public class AdminBootstrapTests
     }
 
     [Fact]
+    public async Task ConfirmFirstAdmin_SimultaneousCreation_TieBreaker()
+    {
+        await using var db = NewDb();
+        var ts = DateTimeOffset.UtcNow;
+        var u1 = NewUser("u1", role: "admin", createdAt: ts);
+        var u2 = NewUser("u2", role: "admin", createdAt: ts);
+        // Ensure deterministic ordering for IDs
+        var lowerIdUser = u1.Id.CompareTo(u2.Id) < 0 ? u1 : u2;
+        var higherIdUser = u1.Id.CompareTo(u2.Id) < 0 ? u2 : u1;
+        db.Users.AddRange(lowerIdUser, higherIdUser);
+        await db.SaveChangesAsync();
+
+        Assert.True(await AdminBootstrap.ConfirmFirstAdminAsync(db, lowerIdUser.Id, lowerIdUser.CreatedAt, CancellationToken.None));
+        Assert.False(await AdminBootstrap.ConfirmFirstAdminAsync(db, higherIdUser.Id, higherIdUser.CreatedAt, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task EnsureAdminExists_NoUsers_ReturnsNull()
     {
         await using var db = NewDb();
@@ -120,15 +137,30 @@ public class AdminBootstrapTests
     }
 
     [Fact]
-    public async Task EnsureAdminExists_ExistingAdmin_NoOp()
+    public async Task EnsureAdminExists_ExistingActiveAdmin_NoOp()
     {
         await using var db = NewDb();
-        var admin = NewUser("boss", role: "admin");
+        var admin = NewUser("boss", role: "admin", isActive: true);
         db.Users.Add(admin);
         await db.SaveChangesAsync();
 
         Assert.Null(await AdminBootstrap.EnsureAdminExistsAsync(db, CancellationToken.None));
         Assert.Equal(1, await db.Users.CountAsync(u => u.Role == "admin"));
+    }
+
+    [Fact]
+    public async Task EnsureAdminExists_WhenOnlyInactiveAdminExists_PromotesEarliestActiveUser()
+    {
+        await using var db = NewDb();
+        var disabledAdmin = NewUser("deadboss", role: "admin", isActive: false, createdAt: DateTimeOffset.UtcNow.AddDays(-20));
+        var activeUser = NewUser("activeuser", role: "user", isActive: true, createdAt: DateTimeOffset.UtcNow.AddDays(-10));
+        db.Users.AddRange(disabledAdmin, activeUser);
+        await db.SaveChangesAsync();
+
+        var promoted = await AdminBootstrap.EnsureAdminExistsAsync(db, CancellationToken.None);
+
+        Assert.Equal(activeUser.Id, promoted);
+        Assert.Equal("admin", (await db.Users.FindAsync(activeUser.Id))!.Role);
     }
 
     [Fact]

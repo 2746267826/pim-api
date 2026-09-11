@@ -63,12 +63,12 @@ public sealed class AdminUserService(PimDbContext db, IAuditLogService auditLog)
         if (target.Role == newRole)
             return AdminUserActionResult.Success(ToDto(target));
 
-        // 降级管理员时，必须至少保留另一名管理员
+        // 降级管理员时，必须至少保留另一名有效管理员
         if (target.Role == AdminBootstrap.AdminRole && newRole == AdminBootstrap.UserRole)
         {
-            var otherAdmins = await db.Users.CountAsync(
-                u => u.Role == AdminBootstrap.AdminRole && u.Id != targetUserId, ct);
-            if (otherAdmins == 0)
+            var otherActiveAdmins = await db.Users.CountAsync(
+                u => u.Role == AdminBootstrap.AdminRole && u.IsActive && u.Id != targetUserId, ct);
+            if (otherActiveAdmins == 0)
                 return AdminUserActionResult.Fail(AdminUserActionStatus.LastAdminProtected);
         }
 
@@ -93,7 +93,7 @@ public sealed class AdminUserService(PimDbContext db, IAuditLogService auditLog)
             return AdminUserActionResult.Success(ToDto(target));
 
         // 停用管理员时，必须至少保留另一名有效管理员
-        if (!isActive && target.Role == AdminBootstrap.AdminRole)
+        if (!isActive && target.Role == AdminBootstrap.AdminRole && target.IsActive)
         {
             var otherActiveAdmins = await db.Users.CountAsync(
                 u => u.Role == AdminBootstrap.AdminRole && u.IsActive && u.Id != targetUserId, ct);

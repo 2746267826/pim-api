@@ -7,6 +7,7 @@ using Pim.Infrastructure.Endpoints;
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Files.Entities;
 using Pim.Module.Mobile.Entities;
+using Pim.Module.PcTracker.Entities;
 using Pim.Module.QuickNotes.Entities;
 using Xunit;
 
@@ -35,6 +36,7 @@ public class UserIsolationFilterTests
         PimDbContext.RegisterModuleAssembly(typeof(EventEntity).Assembly);
         PimDbContext.RegisterModuleAssembly(typeof(MobileLocationPointEntity).Assembly);
         PimDbContext.RegisterModuleAssembly(typeof(FileProviderEntity).Assembly);
+        PimDbContext.RegisterModuleAssembly(typeof(PcCategoryEntity).Assembly);
     }
 
     private static readonly Guid UserA = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");

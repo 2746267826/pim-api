@@ -77,6 +77,21 @@ public class AdminUserServiceTests
     }
 
     [Fact]
+    public async Task ChangeRole_DemoteAdmin_WhenOnlyInactiveAdminExists_Protected()
+    {
+        await using var db = NewDb();
+        var admin = NewUser("boss", role: "admin", isActive: true);
+        var inactiveAdmin = NewUser("exboss", role: "admin", isActive: false);
+        db.Users.AddRange(admin, inactiveAdmin);
+        await db.SaveChangesAsync();
+
+        var result = await NewService(db).ChangeRoleAsync(admin.Id, admin.Id, "user", CancellationToken.None);
+
+        Assert.Equal(AdminUserActionStatus.LastAdminProtected, result.Status);
+        Assert.Equal("admin", (await db.Users.FindAsync(admin.Id))!.Role);
+    }
+
+    [Fact]
     public async Task ChangeRole_DemoteLastAdmin_Protected()
     {
         await using var db = NewDb();

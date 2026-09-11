@@ -262,4 +262,82 @@ public class PcTrackerClassificationV2Tests
         var fetched = await service.GetGoalsAsync(CancellationToken.None);
         Assert.Equal(6.5, fetched.DailyProductiveHours);
     }
+
+    [Theory]
+    [InlineData(".exe")]
+    [InlineData("   .exe   ")]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task DefaultAppLookupProvider_EmptyOrExeOnly_ReturnsNullSafely(string input)
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["AppLookup:Enabled"] = "true" })
+            .Build();
+        var logger = NullLogger<DefaultAppLookupProvider>.Instance;
+        var provider = new DefaultAppLookupProvider(config, logger);
+
+        var result = await provider.LookupAsync(input);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task DefaultAppLookupProvider_SingleCharacterName_FormatsCorrectly()
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["AppLookup:Enabled"] = "true" })
+            .Build();
+        var logger = NullLogger<DefaultAppLookupProvider>.Instance;
+        var provider = new DefaultAppLookupProvider(config, logger);
+
+        var result = await provider.LookupAsync("a.exe");
+        Assert.NotNull(result);
+        Assert.Equal("A", result.DisplayName);
+    }
+
+    [Fact]
+    public void ActivityClassifier_AppSignature_HandlesNullAndWildcards()
+    {
+        var signatures = new List<AppSignatureEntity>
+        {
+            new() { ProcessName = "code*.exe", DisplayName = "VS Code Pattern", CategoryPath = CategoryLegacyMapper.ProgrammingTinkering, Confidence = 0.95 },
+            new() { ProcessName = "notepad.exe", DisplayName = "Notepad", CategoryPath = CategoryLegacyMapper.Documents, Confidence = 0.9 }
+        };
+
+        var ctxNull = new ActivityClassificationContext("window", "", null, null, null, null, null, null, null);
+        var resNull = ActivityClassifier.Classify(ctxNull, Array.Empty<ActivityCategoryRuleEntity>(), appSignatures: signatures);
+        Assert.NotEqual("signature", resNull.Source);
+
+        var ctxWildcard = new ActivityClassificationContext("window", "Code-Insiders", null, null, null, null, null, null, null);
+        var resWildcard = ActivityClassifier.Classify(ctxWildcard, Array.Empty<ActivityCategoryRuleEntity>(), appSignatures: signatures);
+        Assert.Equal("signature", resWildcard.Source);
+        Assert.Equal(CategoryLegacyMapper.ProgrammingTinkering, resWildcard.CategoryName);
+    }
+
+    [Fact]
+    public async Task ActivitySuggestionService_DuplicateCategoryNames_DoesNotThrow()
+    {
+        using var db = CreateInMemoryDb();
+        db.Set<PcCategoryEntity>().AddRange(
+            new PcCategoryEntity { Id = Guid.NewGuid(), Name = "开发", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow },
+            new PcCategoryEntity { Id = Guid.NewGuid(), Name = "开发", CreatedAt = DateTime.UtcNow, UpdatedAt = DateTime.UtcNow }
+        );
+        db.Set<ActivityClassificationSuggestionEntity>().Add(new ActivityClassificationSuggestionEntity
+        {
+            Id = Guid.NewGuid(),
+            ClusterKey = "app:testdupe.exe",
+            SampleCount = 5,
+            TotalDurationSeconds = 600,
+            Status = "pending",
+            CurrentCategory = "其他",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+
+        var appSigSvc = new AppSignatureService(db);
+        var svc = new ActivitySuggestionService(db, appSigSvc);
+
+        var suggestions = await svc.GetSuggestionsV2Async(CancellationToken.None);
+        Assert.NotNull(suggestions);
+    }
 }

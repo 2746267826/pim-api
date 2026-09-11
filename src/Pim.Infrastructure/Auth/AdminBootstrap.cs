@@ -24,18 +24,18 @@ public static class AdminBootstrap
     public static async Task<bool> ConfirmFirstAdminAsync(PimDbContext db, Guid userId, DateTimeOffset userCreatedAt, CancellationToken ct)
     {
         var olderAdminExists = await db.Users.AnyAsync(
-            u => u.Role == AdminRole && u.Id != userId && u.CreatedAt < userCreatedAt, ct);
+            u => u.Role == AdminRole && u.Id != userId && (u.CreatedAt < userCreatedAt || (u.CreatedAt == userCreatedAt && u.Id.CompareTo(userId) < 0)), ct);
         return !olderAdminExists;
     }
 
     /// <summary>
     /// 启动引导（幂等）：无管理员时提升最早注册的活跃用户。
-    /// 返回被提升的用户 Id；无需处理（已有管理员或无用户）时返回 null。
+    /// 返回被提升的用户 Id；无需处理（已有活跃管理员或无活跃用户）时返回 null。
     /// </summary>
     public static async Task<Guid?> EnsureAdminExistsAsync(PimDbContext db, CancellationToken ct)
     {
-        var hasAdmin = await db.Users.AnyAsync(u => u.Role == AdminRole, ct);
-        if (hasAdmin) return null;
+        var hasActiveAdmin = await db.Users.AnyAsync(u => u.Role == AdminRole && u.IsActive, ct);
+        if (hasActiveAdmin) return null;
 
         var earliest = await db.Users
             .Where(u => u.IsActive)

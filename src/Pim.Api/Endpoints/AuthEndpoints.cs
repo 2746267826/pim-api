@@ -140,7 +140,7 @@ public static class AuthEndpoints
                 return Results.Json(ApiResponse<string>.Error(40030, "账号已停用，请联系管理员"), statusCode: 403);
             }
 
-            if (!passwordValid)
+            if (!passwordValid || user is null)
             {
                 db.LoginAttempts.Add(new LoginAttemptEntity
                 {
