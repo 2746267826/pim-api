@@ -228,3 +228,36 @@ public record AppKnowledgeSuggestionApplyDto(
     Guid AuditId,
     string SuggestionStatus,
     string Message);
+
+public record ActivityClassificationSuggestionV2Dto(
+    Guid Id,
+    string ClusterKey,
+    string? ProcessName,
+    string? Domain,
+    string? AppDisplayName,
+    string? AppIcon,
+    string? CurrentCategory,
+    string? RecommendedCategoryName,
+    Guid? RecommendedCategoryId,
+    string? RecommendedProductivity,
+    double Confidence,
+    string RecognitionSource,
+    bool IsOnlineLookup,
+    double TotalDurationSeconds,
+    int SampleCount,
+    string Status,
+    DateTimeOffset CreatedAt);
+
+public record BatchAcceptItem(
+    Guid SuggestionId,
+    Guid? CategoryId,
+    string? CategoryName,
+    bool CreateRule = true);
+
+public record BatchAcceptSuggestionsRequest(
+    IReadOnlyList<BatchAcceptItem> Items);
+
+public record BatchAcceptResultDto(
+    int AcceptedCount,
+    int RulesCreatedCount,
+    int FailuresCount);

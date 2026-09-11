@@ -46,6 +46,8 @@ public class DailyProductivityDto
     public double ProductiveRatio { get; set; }
 }
 
+public record LookupAppSignatureRequest(string ProcessName);
+
 public class ProductivityGoalDto
 {
     public double DailyProductiveHours { get; set; } = 5.0;
@@ -67,6 +69,7 @@ public class TimelineV2Item
     public DateTime Start { get; set; }
     public DateTime End { get; set; }
     public string AppName { get; set; } = string.Empty;
+    public string? AppDisplayName { get; set; }
     public string? WindowTitle { get; set; }
     public string CategoryName { get; set; } = string.Empty;
     public string? CategoryColor { get; set; }

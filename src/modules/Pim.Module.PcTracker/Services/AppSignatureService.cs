@@ -8,10 +8,12 @@ namespace Pim.Module.PcTracker.Services;
 public class AppSignatureService
 {
     private readonly PimDbContext _db;
+    private readonly IAppLookupProvider? _lookupProvider;
 
-    public AppSignatureService(PimDbContext db)
+    public AppSignatureService(PimDbContext db, IAppLookupProvider? lookupProvider = null)
     {
         _db = db;
+        _lookupProvider = lookupProvider;
     }
 
     public async Task<List<AppSignatureDto>> GetAllAsync(string? search, CancellationToken ct)
@@ -186,6 +188,98 @@ public class AppSignatureService
         }
 
         return entity;
+    }
+
+
+    public async Task<List<AppSignatureDto>> ExportAsync(CancellationToken ct)
+    {
+        return await _db.Set<AppSignatureEntity>()
+            .OrderBy(x => x.ProcessName)
+            .Select(x => ToDto(x))
+            .ToListAsync(ct);
+    }
+
+    public async Task<(int imported, int updated)> ImportAsync(IEnumerable<SaveAppSignatureRequest> signatures, CancellationToken ct)
+    {
+        int imported = 0;
+        int updated = 0;
+        var existingList = await _db.Set<AppSignatureEntity>().ToListAsync(ct);
+        var existingDict = existingList.ToDictionary(x => x.ProcessName.ToLowerInvariant(), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var req in signatures)
+        {
+            if (string.IsNullOrWhiteSpace(req.ProcessName) || string.IsNullOrWhiteSpace(req.DisplayName))
+                continue;
+
+            var key = req.ProcessName.Trim().ToLowerInvariant();
+            if (existingDict.TryGetValue(key, out var existing))
+            {
+                existing.DisplayName = req.DisplayName;
+                existing.CategoryPath = req.CategoryPath;
+                existing.Productivity = req.Productivity;
+                existing.Description = req.Description;
+                existing.UpdatedAt = DateTimeOffset.UtcNow;
+                updated++;
+            }
+            else
+            {
+                var newEntity = new AppSignatureEntity
+                {
+                    Id = Guid.NewGuid(),
+                    ProcessName = req.ProcessName.Trim(),
+                    DisplayName = req.DisplayName.Trim(),
+                    CategoryPath = req.CategoryPath,
+                    Productivity = req.Productivity ?? "neutral",
+                    Description = req.Description,
+                    Source = "imported",
+                    Confidence = 1.0,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                };
+                _db.Set<AppSignatureEntity>().Add(newEntity);
+                existingDict[key] = newEntity;
+                imported++;
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return (imported, updated);
+    }
+
+    public async Task<AppSignatureDto?> LookupOnlineAsync(string processName, CancellationToken ct)
+    {
+        var local = await LookupByProcessNameAsync(processName, ct);
+        if (local is not null)
+            return local;
+
+        if (_lookupProvider is not null && _lookupProvider.IsEnabled)
+        {
+            var online = await _lookupProvider.LookupAsync(processName, ct);
+            if (online is not null)
+            {
+                // Save to app signatures as online-discovered
+                var entity = new AppSignatureEntity
+                {
+                    Id = Guid.NewGuid(),
+                    ProcessName = online.ProcessName,
+                    DisplayName = online.DisplayName,
+                    CategoryPath = online.CategoryPath,
+                    Productivity = online.Productivity ?? "neutral",
+                    Description = online.Description,
+                    Icon = online.Icon,
+                    Confidence = online.Confidence,
+                    Source = online.Source,
+                    LastSeenAt = DateTimeOffset.UtcNow,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                };
+                _db.Set<AppSignatureEntity>().Add(entity);
+                await _db.SaveChangesAsync(ct);
+                return ToDto(entity);
+            }
+        }
+
+        return null;
     }
 
     internal static AppSignatureDto ToDto(AppSignatureEntity e) => new(

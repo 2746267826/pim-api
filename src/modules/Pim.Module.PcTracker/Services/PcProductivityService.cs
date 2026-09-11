@@ -62,7 +62,8 @@ public class PcProductivityService
             });
         }
 
-        var targetHours = 5.0;
+        var goal = await GetGoalsAsync(ct);
+        var targetHours = goal.DailyProductiveHours;
         return new ProductivityDashboardDto
         {
             TodayScore = todayTotal > 0 ? Math.Round(todayProductive / todayTotal * 100, 1) : 0,
@@ -72,6 +73,45 @@ public class PcProductivityService
             TargetHours = targetHours,
             GoalMet = todayProductive / 60.0 >= targetHours,
             WeeklyTrend = weeklyTrend
+        };
+    }
+
+
+    public async Task<ProductivityGoalDto> GetGoalsAsync(CancellationToken ct)
+    {
+        var settings = await _db.Set<ActivityClassificationSettingsEntity>()
+            .FirstOrDefaultAsync(s => s.SettingsKey == "default", ct);
+        return new ProductivityGoalDto
+        {
+            DailyProductiveHours = settings?.DailyProductiveHoursGoal ?? 5.0
+        };
+    }
+
+    public async Task<ProductivityGoalDto> UpdateGoalsAsync(ProductivityGoalDto req, CancellationToken ct)
+    {
+        var settings = await _db.Set<ActivityClassificationSettingsEntity>()
+            .FirstOrDefaultAsync(s => s.SettingsKey == "default", ct);
+        if (settings is null)
+        {
+            settings = new ActivityClassificationSettingsEntity
+            {
+                SettingsKey = "default",
+                DailyProductiveHoursGoal = Math.Max(0.5, Math.Min(24.0, req.DailyProductiveHours)),
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            };
+            _db.Set<ActivityClassificationSettingsEntity>().Add(settings);
+        }
+        else
+        {
+            settings.DailyProductiveHoursGoal = Math.Max(0.5, Math.Min(24.0, req.DailyProductiveHours));
+            settings.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return new ProductivityGoalDto
+        {
+            DailyProductiveHours = settings.DailyProductiveHoursGoal
         };
     }
 
@@ -156,7 +196,13 @@ public class PcProductivityService
             .OrderBy(c => c.StartedAt)
             .ToListAsync(ct);
 
-        // 裁剪起止到业务日内并过滤 0 时长，保证 Start/End 与 Duration 一致
+        var signatures = await _db.Set<AppSignatureEntity>()
+            .Select(s => new { s.ProcessName, s.DisplayName })
+            .ToListAsync(ct);
+        var sigTuples = signatures.Select(s => (s.ProcessName, s.DisplayName)).ToList();
+        var appKeys = items.Select(c => c.RecordKey).Distinct().ToList();
+        var displayNames = AppSignatureMatcher.ResolveDisplayNames(appKeys, sigTuples);
+
         return items.Select(c =>
             {
                 var overlapStart = c.StartedAt > dayStart ? c.StartedAt : dayStart;
@@ -170,6 +216,7 @@ public class PcProductivityService
                 Start = x.overlapStart.DateTime,
                 End = x.overlapEnd.DateTime,
                 AppName = x.c.RecordKey,
+                AppDisplayName = displayNames.TryGetValue(x.c.RecordKey, out var dName) ? dName : x.c.RecordKey,
                 WindowTitle = null,
                 CategoryName = x.c.CategoryName ?? "其他",
                 CategoryColor = x.c.CategoryColor ?? "#64748b",

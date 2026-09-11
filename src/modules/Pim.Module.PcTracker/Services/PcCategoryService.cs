@@ -135,18 +135,38 @@ public class PcCategoryService
 
     public async Task SeedDefaultsAsync(CancellationToken ct)
     {
-        var categories = CategoryLegacyMapper.UnifiedCategoryNames
-            .Select((name, index) => new PcCategoryEntity
-            {
-                Id = Guid.Parse($"20000000-0000-0000-0000-{index + 1:D12}"),
-                Name = name,
-                Color = CategoryLegacyMapper.UnifiedColors[name],
-                Icon = CategoryLegacyMapper.UnifiedIcons[name],
-                Productivity = "neutral",
-                SortOrder = (name == CategoryLegacyMapper.Other ? 99 : 10 * (index + 1)),
-                IsBuiltin = true
-            })
-            .ToList();
+        var rootWorkId = Guid.Parse("20000000-0000-0000-0000-000000000001");
+        var rootLearnId = Guid.Parse("20000000-0000-0000-0000-000000000002");
+        var rootVideoId = Guid.Parse("20000000-0000-0000-0000-000000000003");
+        var rootChatId = Guid.Parse("20000000-0000-0000-0000-000000000004");
+        var rootDocsId = Guid.Parse("20000000-0000-0000-0000-000000000005");
+        var rootGameId = Guid.Parse("20000000-0000-0000-0000-000000000006");
+        var rootOtherId = Guid.Parse("20000000-0000-0000-0000-000000000007");
+
+        var categories = new List<PcCategoryEntity>
+        {
+            new() { Id = rootWorkId, Name = CategoryLegacyMapper.ProgrammingTinkering, Color = "#6B5EE4", Icon = "💻", Productivity = "productive", SortOrder = 10, IsBuiltin = true },
+            new() { Id = rootLearnId, Name = CategoryLegacyMapper.Learning, Color = "#14b8a6", Icon = "📚", Productivity = "productive", SortOrder = 20, IsBuiltin = true },
+            new() { Id = rootVideoId, Name = CategoryLegacyMapper.Video, Color = "#F97316", Icon = "📺", Productivity = "distracting", SortOrder = 30, IsBuiltin = true },
+            new() { Id = rootChatId, Name = CategoryLegacyMapper.Chat, Color = "#3B82F6", Icon = "💬", Productivity = "neutral", SortOrder = 40, IsBuiltin = true },
+            new() { Id = rootDocsId, Name = CategoryLegacyMapper.Documents, Color = "#F59E0B", Icon = "📄", Productivity = "productive", SortOrder = 50, IsBuiltin = true },
+            new() { Id = rootGameId, Name = CategoryLegacyMapper.Gaming, Color = "#F43F5E", Icon = "🎮", Productivity = "distracting", SortOrder = 60, IsBuiltin = true },
+            new() { Id = rootOtherId, Name = CategoryLegacyMapper.Other, Color = "#64748b", Icon = "📋", Productivity = "neutral", SortOrder = 99, IsBuiltin = true },
+
+            // Subcategories under ProgrammingTinkering
+            new() { Id = Guid.Parse("20000000-0000-0000-0000-000000000101"), ParentId = rootWorkId, Name = "前端", Color = "#818cf8", Icon = "🌐", Productivity = "productive", SortOrder = 11, IsBuiltin = true },
+            new() { Id = Guid.Parse("20000000-0000-0000-0000-000000000102"), ParentId = rootWorkId, Name = "后端", Color = "#6366f1", Icon = "⚙️", Productivity = "productive", SortOrder = 12, IsBuiltin = true },
+            new() { Id = Guid.Parse("20000000-0000-0000-0000-000000000103"), ParentId = rootWorkId, Name = "运维", Color = "#4f46e5", Icon = "☸️", Productivity = "productive", SortOrder = 13, IsBuiltin = true },
+            new() { Id = Guid.Parse("20000000-0000-0000-0000-000000000104"), ParentId = rootWorkId, Name = "设计", Color = "#a855f7", Icon = "🎨", Productivity = "productive", SortOrder = 14, IsBuiltin = true },
+
+            // Subcategories under Gaming
+            new() { Id = Guid.Parse("20000000-0000-0000-0000-000000000601"), ParentId = rootGameId, Name = "单机游戏", Color = "#fb7185", Icon = "🕹️", Productivity = "distracting", SortOrder = 61, IsBuiltin = true },
+            new() { Id = Guid.Parse("20000000-0000-0000-0000-000000000602"), ParentId = rootGameId, Name = "网络游戏", Color = "#e11d48", Icon = "⚔️", Productivity = "distracting", SortOrder = 62, IsBuiltin = true },
+
+            // Subcategories under Documents
+            new() { Id = Guid.Parse("20000000-0000-0000-0000-000000000501"), ParentId = rootDocsId, Name = "办公", Color = "#fbbf24", Icon = "📑", Productivity = "productive", SortOrder = 51, IsBuiltin = true },
+            new() { Id = Guid.Parse("20000000-0000-0000-0000-000000000502"), ParentId = rootDocsId, Name = "笔记与知识库", Color = "#d97706", Icon = "📓", Productivity = "productive", SortOrder = 52, IsBuiltin = true }
+        };
 
         var existingCategories = await _db.Set<PcCategoryEntity>()
             .Select(category => new { category.Id, category.Name })

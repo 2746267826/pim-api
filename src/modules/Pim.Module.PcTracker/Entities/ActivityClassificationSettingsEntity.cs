@@ -17,6 +17,9 @@ public class ActivityClassificationSettingsEntity
     [Column("recommended_minimum_classification_duration_minutes")]
     public int RecommendedMinimumClassificationDurationMinutes { get; set; } = 5;
 
+    [Column("daily_productive_hours_goal")]
+    public double DailyProductiveHoursGoal { get; set; } = 5.0;
+
     [Column("created_at")]
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 

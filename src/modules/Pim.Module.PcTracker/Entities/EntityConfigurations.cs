@@ -315,3 +315,22 @@ public class TrackerHealthEntityConfiguration : IEntityTypeConfiguration<Tracker
             .HasDatabaseName("ix_pc_tracker_health_device_reported");
     }
 }
+
+public class PcSuggestionFeedbackEntityConfiguration : IEntityTypeConfiguration<PcSuggestionFeedbackEntity>
+{
+    public void Configure(EntityTypeBuilder<PcSuggestionFeedbackEntity> builder)
+    {
+        builder.ToTable("pc_suggestion_feedback");
+        builder.Property(e => e.Id).HasColumnName("id").HasDefaultValueSql("gen_random_uuid()");
+        builder.Property(e => e.ProcessName).HasColumnName("process_name").HasMaxLength(256);
+        builder.Property(e => e.Domain).HasColumnName("domain").HasMaxLength(512);
+        builder.Property(e => e.SuggestedCategoryId).HasColumnName("suggested_category_id");
+        builder.Property(e => e.AcceptedCategoryId).HasColumnName("accepted_category_id");
+        builder.Property(e => e.Action).HasColumnName("action").HasMaxLength(32).IsRequired();
+        builder.Property(e => e.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("NOW()");
+
+        builder.HasIndex(e => e.ProcessName).HasDatabaseName("ix_pc_suggestion_feedback_process");
+        builder.HasIndex(e => e.Domain).HasDatabaseName("ix_pc_suggestion_feedback_domain");
+        builder.HasIndex(e => e.Action).HasDatabaseName("ix_pc_suggestion_feedback_action");
+    }
+}

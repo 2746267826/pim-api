@@ -50,6 +50,7 @@ public class PcTrackerModule : IModule
         services.AddScoped<PcClassificationBackfillService>();
         services.AddScoped<PcClassificationSnapshotJob>();
         services.AddScoped<PcTrackerUntaggedInspector>();
+        services.AddSingleton<IAppLookupProvider, DefaultAppLookupProvider>();
         services.AddScoped<IDataQualityInspector, PcTrackerUntaggedInspector>();
     }
 
@@ -309,6 +310,14 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<List<ActivityClassificationRuleDto>>.Ok(rules));
         });
 
+        readGroup.MapGet("/classification/suggestions/v2", async (
+            [FromServices] ActivitySuggestionService suggestionService,
+            CancellationToken ct) =>
+        {
+            var suggestions = await suggestionService.GetSuggestionsV2Async(ct);
+            return Results.Ok(ApiResponse<List<ActivityClassificationSuggestionV2Dto>>.Ok(suggestions));
+        });
+
         readGroup.MapGet("/classification/suggestions", async (
             [FromQuery] string? date,
             [FromServices] PcTrackerService pcTrackerService,
@@ -565,6 +574,17 @@ public class PcTrackerModule : IModule
             }
         });
 
+        writeGroup.MapPost("/classification/suggestions/batch-accept", async (
+            [FromBody] BatchAcceptSuggestionsRequest req,
+            [FromServices] ActivitySuggestionService suggestionService,
+            [FromServices] IAggregateResultCache cache,
+            CancellationToken ct) =>
+        {
+            var result = await suggestionService.BatchAcceptAsync(req, ct);
+            cache.EvictByPrefix("/api/v1/pc/");
+            return Results.Ok(ApiResponse<BatchAcceptResultDto>.Ok(result));
+        });
+
         writeGroup.MapPost("/classification/suggestions/{id:guid}/reject", async (
             Guid id,
             [FromServices] ActivitySuggestionService suggestionService,
@@ -780,6 +800,34 @@ public class PcTrackerModule : IModule
         {
             var list = await svc.GetAllAsync(search, ct);
             return Results.Ok(ApiResponse<List<AppSignatureDto>>.Ok(list));
+        });
+
+        kbRead.MapGet("/export", async (
+            [FromServices] AppSignatureService svc,
+            CancellationToken ct) =>
+        {
+            var data = await svc.ExportAsync(ct);
+            return Results.Ok(ApiResponse<List<AppSignatureDto>>.Ok(data));
+        });
+
+        kbWrite.MapPost("/import", async (
+            [FromBody] List<SaveAppSignatureRequest> req,
+            [FromServices] AppSignatureService svc,
+            CancellationToken ct) =>
+        {
+            var (imported, updated) = await svc.ImportAsync(req, ct);
+            return Results.Ok(ApiResponse<object>.Ok(new { imported, updated }));
+        });
+
+        kbWrite.MapPost("/lookup", async (
+            [FromBody] LookupAppSignatureRequest req,
+            [FromServices] AppSignatureService svc,
+            CancellationToken ct) =>
+        {
+            var result = await svc.LookupOnlineAsync(req.ProcessName, ct);
+            if (result is null)
+                return Results.NotFound(ApiResponse<string>.Error(404, "未找到应用签名"));
+            return Results.Ok(ApiResponse<AppSignatureDto>.Ok(result));
         });
 
         kbRead.MapGet("/count", async (
@@ -1092,6 +1140,25 @@ public class PcTrackerModule : IModule
         });
 
         // === Phase 2: 时间线 v2 ===
+        readGroup.MapGet("/productivity/goals", async (
+            [FromServices] PcProductivityService svc,
+            CancellationToken ct) =>
+        {
+            var goal = await svc.GetGoalsAsync(ct);
+            return Results.Ok(ApiResponse<ProductivityGoalDto>.Ok(goal));
+        });
+
+        writeGroup.MapPut("/productivity/goals", async (
+            [FromBody] ProductivityGoalDto req,
+            [FromServices] PcProductivityService svc,
+            [FromServices] IAggregateResultCache cache,
+            CancellationToken ct) =>
+        {
+            var goal = await svc.UpdateGoalsAsync(req, ct);
+            cache.EvictByPrefix("/api/v1/pc/");
+            return Results.Ok(ApiResponse<ProductivityGoalDto>.Ok(goal));
+        });
+
         readGroup.MapGet("/timeline/v2", async (
             [FromQuery] string? date,
             [FromServices] PcProductivityService svc,

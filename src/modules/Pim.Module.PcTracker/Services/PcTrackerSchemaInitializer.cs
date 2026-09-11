@@ -177,6 +177,7 @@ ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS record_key_vers
 ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS record_key_stability VARCHAR(16) NOT NULL DEFAULT 'low';
 ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS source_type VARCHAR(32) NOT NULL DEFAULT 'fallback';
 ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS source_bucket_ids JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE pc_activity_classification_settings ADD COLUMN IF NOT EXISTS daily_productive_hours_goal DOUBLE PRECISION NOT NULL DEFAULT 5.0;
 ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS interpretation_version VARCHAR(32) NOT NULL DEFAULT 'interpreted-aw-v1';
 CREATE INDEX IF NOT EXISTS ix_pc_activity_classifications_record_key_version
     ON pc_activity_classifications (record_key_version);
@@ -460,7 +461,53 @@ INSERT INTO pc_app_signatures (process_name, display_name, category_path, produc
 ('snippingtool.exe', '截图工具', '文档', 'neutral', 'Windows 截图工具', 'builtin', '📸', 0.99),
 ('magnify.exe', '放大镜', '文档', 'neutral', 'Windows 放大镜工具', 'builtin', '🔍', 0.99),
 ('osk.exe', '屏幕键盘', '文档', 'neutral', 'Windows 屏幕键盘', 'builtin', '⌨️', 0.99),
-('stikynot.exe', '便签', '文档', 'neutral', 'Windows 便签', 'builtin', '📌', 0.99)
+('stikynot.exe', '便签', '文档', 'neutral', 'Windows 便签', 'builtin', '📌', 0.99),
+-- Extended Development / DevOps / Utilities
+('postman.exe', 'Postman', '编程/折腾', 'productive', 'API 接口测试工具', 'builtin', '🚀', 0.99),
+('insomnia.exe', 'Insomnia', '编程/折腾', 'productive', 'REST/GraphQL 客户端', 'builtin', '🌙', 0.99),
+('wireshark.exe', 'Wireshark', '编程/折腾', 'productive', '网络封包分析工具', 'builtin', '🦈', 0.99),
+('charles.exe', 'Charles', '编程/折腾', 'productive', 'HTTP 抓包代理工具', 'builtin', '🏺', 0.99),
+('fiddler.exe', 'Fiddler', '编程/折腾', 'productive', 'Web 调试抓包工具', 'builtin', '🎻', 0.99),
+('sourcetree.exe', 'SourceTree', '编程/折腾', 'productive', 'Git 图形化客户端', 'builtin', '🌳', 0.99),
+('fork.exe', 'Fork', '编程/折腾', 'productive', '快速 Git 客户端', 'builtin', '🍴', 0.99),
+('gitkraken.exe', 'GitKraken', '编程/折腾', 'productive', '跨平台 Git 客户端', 'builtin', '🐙', 0.99),
+('sublime_merge.exe', 'Sublime Merge', '编程/折腾', 'productive', 'Git 客户端', 'builtin', '🔀', 0.99),
+('navicat.exe', 'Navicat', '编程/折腾', 'productive', '数据库开发工具', 'builtin', '🗄️', 0.99),
+('tableplus.exe', 'TablePlus', '编程/折腾', 'productive', '现代轻量数据库工具', 'builtin', '🗄️', 0.99),
+('mongodbcompass.exe', 'MongoDB Compass', '编程/折腾', 'productive', 'MongoDB 可视化工具', 'builtin', '🍃', 0.99),
+('redisinsight.exe', 'Redis Insight', '编程/折腾', 'productive', 'Redis 可视化管理', 'builtin', '⚡', 0.99),
+('clash-verge.exe', 'Clash Verge', '编程/折腾', 'neutral', '网络代理客户端', 'builtin', '🐱', 0.99),
+('v2rayn.exe', 'v2rayN', '编程/折腾', 'neutral', '代理网络客户端', 'builtin', '🌐', 0.99),
+-- Extended Creative & Media
+('davinci.exe', 'DaVinci Resolve', '编程/折腾', 'productive', '专业视频剪辑与调色', 'builtin', '🎬', 0.99),
+('audacity.exe', 'Audacity', '编程/折腾', 'productive', '音频编辑录音软件', 'builtin', '🎧', 0.99),
+('inkscape.exe', 'Inkscape', '编程/折腾', 'productive', '开源矢量绘图软件', 'builtin', '🎨', 0.99),
+('krita.exe', 'Krita', '编程/折腾', 'productive', '数字绘画软件', 'builtin', '🎨', 0.99),
+('obs64.exe', 'OBS Studio', '编程/折腾', 'productive', '视频直播录制软件', 'builtin', '🎥', 0.99),
+('capcut.exe', '剪映', '编程/折腾', 'productive', '视频剪辑软件', 'builtin', '✂️', 0.99),
+-- Extended Office & Knowledge
+('joplin.exe', 'Joplin', '文档', 'productive', '安全开源笔记', 'builtin', '📓', 0.99),
+('zotero.exe', 'Zotero', '学习', 'productive', '文献管理工具', 'builtin', '📚', 0.99),
+('calibre.exe', 'Calibre', '学习', 'neutral', '电子书管理阅读', 'builtin', '📖', 0.99),
+('koodo-reader.exe', 'Koodo Reader', '学习', 'neutral', '开源电子书阅读器', 'builtin', '📖', 0.99),
+('xmind.exe', 'XMind', '文档', 'productive', '思维导图软件', 'builtin', '🧠', 0.99),
+('feishu.exe', '飞书', '聊天', 'productive', '企业协同办公套件', 'builtin', '🕊️', 0.99),
+('Lark.exe', '飞书 / Lark', '聊天', 'productive', '企业协同平台', 'builtin', '🕊️', 0.99),
+-- Extended Utilities & System
+('rufus.exe', 'Rufus', '编程/折腾', 'neutral', 'USB 启动盘制作工具', 'builtin', '💾', 0.99),
+('balena-etcher.exe', 'balenaEtcher', '编程/折腾', 'neutral', '系统镜像烧录工具', 'builtin', '💾', 0.99),
+('cpu-z.exe', 'CPU-Z', '编程/折腾', 'neutral', '硬件检测工具', 'builtin', '⚙️', 0.99),
+('gpu-z.exe', 'GPU-Z', '编程/折腾', 'neutral', '显卡检测工具', 'builtin', '⚙️', 0.99),
+('geek.exe', 'Geek Uninstaller', '编程/折腾', 'neutral', '强力卸载工具', 'builtin', '🧹', 0.99),
+-- Extended Games
+('Cyberpunk2077.exe', '赛博朋克 2077', '游戏', 'distracting', '开放世界角色扮演游戏', 'builtin', '🎮', 0.99),
+('cs2.exe', 'Counter-Strike 2', '游戏', 'distracting', 'FPS 射击竞技游戏', 'builtin', '🔫', 0.99),
+('dota2.exe', 'Dota 2', '游戏', 'distracting', 'MOBA 竞技游戏', 'builtin', '🎮', 0.99),
+('Overwatch.exe', '守望先锋', '游戏', 'distracting', '团队射击游戏', 'builtin', '🎮', 0.99),
+('BlackMythWukong.exe', '黑神话：悟空', '游戏', 'distracting', '西游题材动作 RPG', 'builtin', '🐵', 0.99),
+('bwp-Win64-Shipping.exe', '黑神话：悟空', '游戏', 'distracting', '西游题材动作 RPG', 'builtin', '🐵', 0.99),
+('Palworld.exe', '幻兽帕鲁', '游戏', 'distracting', '开放世界生存制作游戏', 'builtin', '🐾', 0.99),
+('Pal-Win64-Shipping.exe', '幻兽帕鲁', '游戏', 'distracting', '开放世界生存制作游戏', 'builtin', '🐾', 0.99)
 ON CONFLICT (process_name) DO NOTHING;
 
 -- Builtin activity category rules (unified 7-category names; browser rule removed per §0.3)
@@ -493,6 +540,21 @@ WHERE NOT EXISTS (
 );
 
 -- Phase 2: pc_categories (hierarchical classification tree)
+
+-- Phase 3: pc_suggestion_feedback
+CREATE TABLE IF NOT EXISTS pc_suggestion_feedback (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    process_name VARCHAR(256),
+    domain VARCHAR(512),
+    suggested_category_id UUID,
+    accepted_category_id UUID,
+    action VARCHAR(32) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_pc_suggestion_feedback_process ON pc_suggestion_feedback(process_name);
+CREATE INDEX IF NOT EXISTS ix_pc_suggestion_feedback_domain ON pc_suggestion_feedback(domain);
+CREATE INDEX IF NOT EXISTS ix_pc_suggestion_feedback_action ON pc_suggestion_feedback(action);
+
 CREATE TABLE IF NOT EXISTS pc_categories (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     parent_id UUID REFERENCES pc_categories(id) ON DELETE RESTRICT,

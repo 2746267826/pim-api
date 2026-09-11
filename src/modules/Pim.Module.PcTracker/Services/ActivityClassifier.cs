@@ -13,7 +13,8 @@ public static class ActivityClassifier
         ActivityClassificationContext context,
         IReadOnlyCollection<ActivityCategoryRuleEntity> rules,
         ILogger? logger = null,
-        IReadOnlyDictionary<Guid, string>? categoryNamesById = null)
+        IReadOnlyDictionary<Guid, string>? categoryNamesById = null,
+        IReadOnlyCollection<AppSignatureEntity>? appSignatures = null)
     {
         var activeRules = (rules ?? Array.Empty<ActivityCategoryRuleEntity>())
             .Where(rule => string.Equals(rule.Status, "active", StringComparison.OrdinalIgnoreCase))
@@ -21,16 +22,85 @@ public static class ActivityClassifier
             .OrderByDescending(rule => rule.Priority)
             .ToArray();
 
-        if (TryClassifyWithRules(context, activeRules.Where(rule => !IsDeferredFallbackRule(rule)), out var result, logger, categoryNamesById))
+        // 1. User manual rules (non-builtin active rules)
+        var userRules = activeRules.Where(r => !string.Equals(r.Source, "builtin", StringComparison.OrdinalIgnoreCase));
+        if (TryClassifyWithRules(context, userRules, out var result, logger, categoryNamesById))
             return result;
 
+        // 2. App signatures matching (priority over builtin rules and heuristics)
+        if (appSignatures is not null && appSignatures.Count > 0)
+        {
+            var appCandidate = context.AppName;
+            if (!string.IsNullOrWhiteSpace(appCandidate))
+            {
+                var sig = MatchAppSignature(appCandidate, appSignatures);
+                if (sig is not null && !string.IsNullOrWhiteSpace(sig.CategoryPath))
+                {
+                    var catPart = sig.CategoryPath.Split("/")[0].Trim();
+                    var unified = CategoryLegacyMapper.MapToUnified(catPart);
+                    var color = CategoryLegacyMapper.UnifiedColors.TryGetValue(unified, out var col) ? col : "#64748b";
+                    return new ActivityClassificationResult(
+                        unified,
+                        color,
+                        null,
+                        sig.Confidence,
+                        "signature",
+                        $"匹配应用知识库签名：{sig.DisplayName}");
+                }
+            }
+        }
+
+        // 3. Other active non-deferred rules (builtin standard rules)
+        var standardBuiltinRules = activeRules
+            .Where(r => string.Equals(r.Source, "builtin", StringComparison.OrdinalIgnoreCase) && !IsDeferredFallbackRule(r));
+        if (TryClassifyWithRules(context, standardBuiltinRules, out result, logger, categoryNamesById))
+            return result;
+
+        // 4. Domain & Heuristics
         var heuristicResult = ClassifyWithHeuristics(context);
         if (heuristicResult is not null)
             return heuristicResult;
 
+        // 5. Deferred fallback rules & Final Fallback
         return TryClassifyWithRules(context, activeRules.Where(IsDeferredFallbackRule), out result, logger, categoryNamesById)
             ? result
             : ActivityClassificationResult.Fallback();
+    }
+
+    private static AppSignatureEntity? MatchAppSignature(string appName, IEnumerable<AppSignatureEntity> signatures)
+    {
+        var normalized = appName.Trim().ToLowerInvariant();
+        var list = signatures as IList<AppSignatureEntity> ?? signatures.ToList();
+
+        // Exact
+        var sig = list.FirstOrDefault(s => s.ProcessName.ToLowerInvariant() == normalized);
+        if (sig is not null) return sig;
+
+        // .exe suffix
+        if (!normalized.EndsWith(".exe"))
+        {
+            sig = list.FirstOrDefault(s => s.ProcessName.ToLowerInvariant() == normalized + ".exe");
+            if (sig is not null) return sig;
+        }
+
+        // Glob wildcard pattern
+        foreach (var candidate in new[] { normalized, normalized + ".exe" })
+        {
+            sig = list.FirstOrDefault(s =>
+            {
+                var pattern = s.ProcessName;
+                if (!pattern.Contains('*') && !pattern.Contains('?'))
+                    return false;
+                var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+                    .Replace(@"\*", ".*")
+                    .Replace(@"\?", ".") + "$";
+                return System.Text.RegularExpressions.Regex.IsMatch(candidate, regex,
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            });
+            if (sig is not null) return sig;
+        }
+
+        return null;
     }
 
     private static bool TryClassifyWithRules(

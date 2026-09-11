@@ -723,7 +723,7 @@ public sealed class PcTrackerCoverageTests
         var tree = await svc.GetTreeAsync(CancellationToken.None);
         Assert.Equal(7, tree.Count);
         var dict = await svc.GetDictionaryAsync(CancellationToken.None);
-        Assert.Equal(7, dict.Count);
+        Assert.Equal(15, dict.Count);
         // idempotent seed
         await svc.SeedDefaultsAsync(CancellationToken.None);
         Assert.Equal(7, (await svc.GetTreeAsync(CancellationToken.None)).Count);

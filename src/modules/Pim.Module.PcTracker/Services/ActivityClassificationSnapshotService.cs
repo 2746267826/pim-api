@@ -49,11 +49,12 @@ public class ActivityClassificationSnapshotService
         var categoryNamesById = await _db.Set<PcCategoryEntity>()
             .Select(category => new { category.Id, category.Name })
             .ToDictionaryAsync(item => item.Id, item => item.Name, ct);
+        var appSignatures = await _db.Set<AppSignatureEntity>().ToListAsync(ct);
 
         foreach (var keyedRecord in keyedRecords)
         {
             var record = keyedRecord.Record;
-            var classification = ActivityClassifier.Classify(ToContext(record), rules, _logger, categoryNamesById);
+            var classification = ActivityClassifier.Classify(ToContext(record), rules, _logger, categoryNamesById, appSignatures);
 
             if (!snapshots.TryGetValue(keyedRecord.RecordKey, out var snapshot)
                 && !newSnapshots.TryGetValue(keyedRecord.RecordKey, out snapshot))
