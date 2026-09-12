@@ -63,8 +63,10 @@ public sealed class AdminUserService(PimDbContext db, IAuditLogService auditLog)
         if (target.Role == newRole)
             return AdminUserActionResult.Success(ToDto(target));
 
-        // 降级管理员时，必须至少保留另一名有效管理员
-        if (target.Role == AdminBootstrap.AdminRole && newRole == AdminBootstrap.UserRole)
+        // 降级管理员时，必须至少保留另一名有效管理员。
+        // 仅当目标本身是「有效管理员」时降级才会减少有效管理员数量；
+        // 目标已是停用状态时不减少，因此不应以 LastAdminProtected 拒绝（与 SetActiveAsync 一致）。
+        if (target.IsActive && target.Role == AdminBootstrap.AdminRole && newRole == AdminBootstrap.UserRole)
         {
             var otherActiveAdmins = await db.Users.CountAsync(
                 u => u.Role == AdminBootstrap.AdminRole && u.IsActive && u.Id != targetUserId, ct);
@@ -92,8 +94,10 @@ public sealed class AdminUserService(PimDbContext db, IAuditLogService auditLog)
         if (target.IsActive == isActive)
             return AdminUserActionResult.Success(ToDto(target));
 
-        // 停用管理员时，必须至少保留另一名有效管理员
-        if (!isActive && target.Role == AdminBootstrap.AdminRole && target.IsActive)
+        // 停用管理员时，必须至少保留另一名有效管理员。
+        // 上面的 `target.IsActive == isActive` 提前返回已保证此处 target.IsActive 为 true，
+        // 因此无需再重复判断目标的有效状态。
+        if (!isActive && target.Role == AdminBootstrap.AdminRole)
         {
             var otherActiveAdmins = await db.Users.CountAsync(
                 u => u.Role == AdminBootstrap.AdminRole && u.IsActive && u.Id != targetUserId, ct);

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Module.QuickNotes;
@@ -22,6 +23,9 @@ public class QuickNoteEndpointPathTests
     public async Task MapEndpoints_RegistersExpectedAuthorizedRoutes()
     {
         var builder = WebApplication.CreateBuilder();
+        // 绑定临时端口（:0 由 OS 分配）。xUnit 会并行运行不同测试类，若沿用 Kestrel 默认的
+        // http://localhost:5000，本测试与 StatsCoverageTests 会互相抢占同一端口而随机失败。
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Services.AddAuthorization();
         using var app = builder.Build();
 

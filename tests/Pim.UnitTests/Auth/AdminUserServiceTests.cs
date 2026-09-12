@@ -92,6 +92,24 @@ public class AdminUserServiceTests
     }
 
     [Fact]
+    public async Task ChangeRole_DemoteInactiveLastAdmin_Succeeds()
+    {
+        // 目标本身就是「已停用」的管理员，降级它不会减少有效管理员数量
+        // （它本来就不是有效管理员），因此不应以 LastAdminProtected 拒绝。
+        await using var db = NewDb();
+        var inactiveAdmin = NewUser("deadboss", role: "admin", isActive: false);
+        var activeUser = NewUser("activeuser", role: "user", isActive: true);
+        db.Users.AddRange(inactiveAdmin, activeUser);
+        await db.SaveChangesAsync();
+
+        var result = await NewService(db).ChangeRoleAsync(
+            activeUser.Id, inactiveAdmin.Id, "user", CancellationToken.None);
+
+        Assert.Equal(AdminUserActionStatus.Ok, result.Status);
+        Assert.Equal("user", (await db.Users.FindAsync(inactiveAdmin.Id))!.Role);
+    }
+
+    [Fact]
     public async Task ChangeRole_DemoteLastAdmin_Protected()
     {
         await using var db = NewDb();

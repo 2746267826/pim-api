@@ -172,17 +172,7 @@ public class AppSignatureService
             var all = await _db.Set<AppSignatureEntity>().ToListAsync(ct);
             foreach (var candidateName in new[] { normalizedName, normalizedName + ".exe" })
             {
-                entity = all.FirstOrDefault(sig =>
-                {
-                    var pattern = sig.ProcessName;
-                    if (!pattern.Contains('*') && !pattern.Contains('?'))
-                        return false;
-                    var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
-                        .Replace("\\*", ".*")
-                        .Replace("\\?", ".") + "$";
-                    return System.Text.RegularExpressions.Regex.IsMatch(candidateName, regex,
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                });
+                entity = all.FirstOrDefault(sig => AppSignatureGlobMatcher.IsWildcardMatch(sig.ProcessName, candidateName));
                 if (entity is not null) break;
             }
         }

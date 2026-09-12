@@ -207,6 +207,9 @@ public class StatsCoverageTests
 
         // MapEndpoints registers /api/v1/stats/upload with authorization
         var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
+        // 绑定临时端口（:0 由 OS 分配）。xUnit 会并行运行不同测试类，若沿用 Kestrel 默认的
+        // http://localhost:5000，本测试与 QuickNoteEndpointPathTests 会互相抢占同一端口而随机失败。
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Services.AddAuthorization();
         using var app = builder.Build();
         new Pim.Module.Stats.StatsModule().MapEndpoints(app);

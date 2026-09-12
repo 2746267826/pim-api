@@ -38,16 +38,7 @@ public static class AppSignatureMatcher
                 foreach (var candidateName in new[] { normalized, normalized + ".exe" })
                 {
                     signature = signatureList.FirstOrDefault(s =>
-                    {
-                        var pattern = s.ProcessName;
-                        if (!pattern.Contains('*') && !pattern.Contains('?'))
-                            return false;
-                        var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
-                            .Replace("\\*", ".*")
-                            .Replace("\\?", ".") + "$";
-                        return System.Text.RegularExpressions.Regex.IsMatch(candidateName, regex,
-                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    });
+                        AppSignatureGlobMatcher.IsWildcardMatch(s.ProcessName, candidateName));
                     if (signature.ProcessName is not null)
                         break;
                 }

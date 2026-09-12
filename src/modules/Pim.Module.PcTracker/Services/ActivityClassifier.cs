@@ -89,24 +89,7 @@ public static class ActivityClassifier
         // Glob wildcard pattern
         foreach (var candidate in new[] { normalized, normalized + ".exe" })
         {
-            sig = list.FirstOrDefault(s =>
-            {
-                var pattern = s.ProcessName;
-                if (string.IsNullOrWhiteSpace(pattern) || (!pattern.Contains('*') && !pattern.Contains('?')))
-                    return false;
-                try
-                {
-                    var regex = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
-                        .Replace(@"\*", ".*")
-                        .Replace(@"\?", ".") + "$";
-                    return System.Text.RegularExpressions.Regex.IsMatch(candidate, regex,
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(50));
-                }
-                catch
-                {
-                    return false;
-                }
-            });
+            sig = list.FirstOrDefault(s => AppSignatureGlobMatcher.IsWildcardMatch(s.ProcessName, candidate));
             if (sig is not null) return sig;
         }
 
