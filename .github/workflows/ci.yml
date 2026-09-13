@@ -23,6 +23,20 @@ permissions:
   packages: write
   pull-requests: read
 
+# Serialize runs per ref. Two PRs merged a minute apart start two CI runs that
+# publish releases: run B must not be able to look at run A's half-finished
+# release as "the previous release" (and vice versa). Queued runs wait for the
+# running one instead of cancelling it, so a finished build is never thrown
+# away. PR runs get their own group per PR ref and are unaffected.
+#
+# Note: GitHub keeps only ONE pending run per concurrency group - a third fast
+# push can displace a still-pending run. That is why the changed-component
+# filters below diff against the last release tag instead of the previous push:
+# whatever the displaced run would have built is picked up by the surviving run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   resolve-version:
     runs-on: ubuntu-latest
@@ -67,22 +81,41 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Resolve the PREVIOUS release by version number (not by release creation
+      # time) and hand it to the path filters below.
+      #
       # First-ever master push: no release exists yet, so no artifacts can be
       # copied from a previous release - force a full build instead.
       - id: rel
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="$(gh release list --limit 1 --json tagName -q '.[0].tagName // empty' 2>/dev/null || true)"
+          TAG="$(bash "$GITHUB_WORKSPACE/scripts/ci/latest-release-tag.sh" \
+            --repo "$GITHUB_REPOSITORY" || true)"
           if [[ -n "$TAG" ]]; then
+            echo "previous_tag=$TAG" >> "$GITHUB_OUTPUT"
             echo "has_release=true" >> "$GITHUB_OUTPUT"
           else
+            echo "previous_tag=" >> "$GITHUB_OUTPUT"
             echo "has_release=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "Previous release: ${TAG:-(none)}"
 
+      # Diff base = the previous release tag, i.e. "what changed since the last
+      # thing we published" instead of "what changed in this push".
+      #
+      # Why: a burst of merges can displace a still-pending run (see the
+      # concurrency block), and a run can also be cancelled by hand or fail
+      # before its release job. Diffing against the last release guarantees the
+      # surviving run rebuilds every component that changed since then, instead
+      # of silently carrying over a stale asset for a component that did change.
+      # In the normal case (one merge per release) both diffs are identical.
+      #
+      # `base` is ignored for pull_request events, so PR checks are unchanged.
       - id: filter
         uses: dorny/paths-filter@v3
         with:
+          base: ${{ steps.rel.outputs.previous_tag }}
           filters: |
             api:
               - 'src/Pim.Api/**'
@@ -365,15 +398,40 @@ jobs:
           merge-multiple: true
           path: release-assets
 
+      # Previous release, used for asset carry-over AND for the changelog
+      # window. Resolved once, by version number, excluding this run's own tag
+      # (on a re-run the tag already exists and must not be seen as "previous").
+      - name: Resolve previous release tag
+        if: steps.decide.outputs.do_release == 'true'
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$(bash "$GITHUB_WORKSPACE/scripts/ci/latest-release-tag.sh" \
+            --repo "$GITHUB_REPOSITORY" \
+            --exclude "v${{ needs.resolve-version.outputs.version }}" || true)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Previous release: ${TAG:-(none)}"
+          if [[ -n "$TAG" ]]; then
+            # Carried-over assets and the changelog window are both defined as
+            # "the diff between TAG and this release". If TAG is not an ancestor
+            # of HEAD that comparison is meaningless - which is exactly how a
+            # release ends up advertising a commit it did not build - so fail
+            # loudly instead of publishing a misleading release.
+            git merge-base --is-ancestor "$TAG" HEAD \
+              || { echo "::error::$TAG is not an ancestor of HEAD; refusing to publish a release built on an incomparable base" >&2; exit 1; }
+          fi
+
       # For components that were not rebuilt this run, reuse the asset from the
-      # latest release as-is (same file name and version number - the artifact
+      # previous release as-is (same file name and version number - the artifact
       # version stays consistent with its content).
       - name: Fill missing assets from last release
         if: steps.decide.outputs.do_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          PREVIOUS_TAG: ${{ steps.prev.outputs.tag }}
         run: |
-          TAG="$(gh release list --limit 1 --json tagName -q '.[0].tagName // empty' 2>/dev/null || true)"
+          TAG="$PREVIOUS_TAG"
           copy_if_missing() {
             local pattern="$1"
             if ! ls release-assets/${pattern} >/dev/null 2>&1; then
@@ -419,10 +477,18 @@ jobs:
         id: notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same window as the carried-over assets: merged PRs between the
+          # previous release and this one.
+          PREVIOUS_TAG: ${{ steps.prev.outputs.tag }}
         run: |
+          FROM_ARGS=()
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            FROM_ARGS+=(--from-tag "$PREVIOUS_TAG")
+          fi
           NOTES="$(bash scripts/ci/build-release-notes.sh \
             --repo "${{ github.repository }}" \
-            --to-tag "v${{ needs.resolve-version.outputs.version }}")"
+            --to-tag "v${{ needs.resolve-version.outputs.version }}" \
+            "${FROM_ARGS[@]}")"
           echo "notes<<EOF" >> "$GITHUB_OUTPUT"
           echo "$NOTES" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -432,6 +498,12 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.resolve-version.outputs.version }}
+          # Pin the tag to the commit this run actually built. Without it the
+          # release API creates the tag wherever the default branch points at
+          # tag-creation time, so a slower run can end up tagged with a commit
+          # it never built (observed: v2026.09.488 was tagged 70f5ec44 while it
+          # built 8b7adb6d, which also broke the changelog window).
+          target_commitish: ${{ github.sha }}
           name: v${{ needs.resolve-version.outputs.version }}
           body: ${{ steps.notes.outputs.notes }}
           files: |

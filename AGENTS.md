@@ -50,6 +50,12 @@ Apply this policy at the start of every session/task:
 - PRs without these sections still merge, but their release entry falls back to a bare title link — filling them in keeps the changelog useful.
 - Docs-only merges skip all platform builds and do not produce a GitHub Release (path-filtered); the sections above are still expected for accurate history.
 
+## Release Publishing
+
+- CI runs are serialized per ref (`concurrency`). When several PRs merge within minutes, the later run waits for the earlier one instead of publishing a competing release; the later run is therefore always the latest one.
+- Component builds and the changelog window are both diffed against the previous release tag ("what changed since the last thing we published"), so every release contains all component changes since then. Components that did not change carry over from the previous release with their original file names.
+- The release tag is pinned to the commit the run built (`target_commitish: github.sha`). Re-running an older CI run builds nothing (its diff against a newer release tag is empty) and therefore does not republish a release.
+
 ## Parallel Agent Workflow
 
 - Prefer multiple subagents for independent investigation, implementation, review, and verification work when tasks can safely run in parallel.
