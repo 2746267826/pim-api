@@ -102,7 +102,7 @@ public sealed class OpsLogsService
         else
         {
             if (!Directory.Exists(_logDir)) return new OpsLogsResult(Array.Empty<string>(), false, null);
-            var all = Directory.GetFiles(_logDir, "*.jsonl").OrderBy(f => f).ToList();
+            var all = Directory.GetFiles(_logDir, "*.jsonl").OrderBy(f => f, StringComparer.Ordinal).ToList();
             filesToScan = all;
             if (cursorFile != null)
             {

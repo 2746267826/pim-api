@@ -30,6 +30,13 @@ var isMcpStdio = args.Contains("--mcp-stdio", StringComparer.Ordinal);
 var lokiUrl = Environment.GetEnvironmentVariable("LOKI_URL")
     ?? Environment.GetEnvironmentVariable("Loki__Url");
 
+var retainedFiles = LoggingConfig.ResolveRetainedFileCount(
+    Environment.GetEnvironmentVariable("PIM_LOG_RETAINED_FILES"));
+var fileSizeLimitBytes = LoggingConfig.ResolveFileSizeLimitBytes(
+    Environment.GetEnvironmentVariable("PIM_LOG_FILE_SIZE_LIMIT_BYTES"));
+var rollOnFileSizeLimit = LoggingConfig.ResolveRollOnFileSizeLimit(
+    Environment.GetEnvironmentVariable("PIM_LOG_ROLL_ON_FILE_SIZE_LIMIT"), fileSizeLimitBytes);
+
 static Serilog.LoggerConfiguration WithLoki(Serilog.LoggerConfiguration cfg, string? url)
     => string.IsNullOrWhiteSpace(url)
         ? cfg
@@ -42,8 +49,9 @@ Log.Logger = WithLoki(new LoggerConfiguration()
     .WriteTo.Console(new CompactJsonFormatter())
     .WriteTo.File(new CompactJsonFormatter(), "/data/pim/logs/pim-api-.jsonl",
         rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: LoggingConfig.ResolveRetainedFileCount(
-            Environment.GetEnvironmentVariable("PIM_LOG_RETAINED_FILES"))), lokiUrl)
+        fileSizeLimitBytes: fileSizeLimitBytes,
+        rollOnFileSizeLimit: rollOnFileSizeLimit,
+        retainedFileCountLimit: retainedFiles), lokiUrl)
     .CreateLogger();
 
 if (isMcpStdio)
@@ -58,8 +66,9 @@ if (isMcpStdio)
         .WriteTo.TextWriter(new CompactJsonFormatter(), Console.Error)
         .WriteTo.File(new CompactJsonFormatter(), "/data/pim/logs/pim-api-.jsonl",
             rollingInterval: RollingInterval.Day,
-            retainedFileCountLimit: LoggingConfig.ResolveRetainedFileCount(
-                Environment.GetEnvironmentVariable("PIM_LOG_RETAINED_FILES"))), lokiUrl)
+            fileSizeLimitBytes: fileSizeLimitBytes,
+            rollOnFileSizeLimit: rollOnFileSizeLimit,
+            retainedFileCountLimit: retainedFiles), lokiUrl)
         .CreateLogger();
 }
 

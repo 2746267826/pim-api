@@ -419,7 +419,9 @@ PIM 提供企业级的生产可观测性基础设施，详细运维指南见 [do
 | `NEXTCLOUD_PUBLIC_BASE_URL` / `NEXTCLOUD_INTERNAL_BASE_URL` | Nextcloud 对接 | 否 |
 | `ONLYOFFICE_PUBLIC_URL` / `ONLYOFFICE_JWT_SECRET` | OnlyOffice 在线编辑 | 否 |
 | `QDRANT_BASE_URL` | Qdrant 向量库 | 否 |
-| `PIM_LOG_RETAINED_FILES` | 日志保留份数（默认 2） | 否 |
+| `PIM_LOG_RETAINED_FILES` | 日志保留份数（默认 2；按分卷数淘汰） | 否 |
+| `PIM_LOG_FILE_SIZE_LIMIT_BYTES` | 单个日志文件大小上限字节数（默认 `1073741824` 即 1 GiB，`0` / `unlimited` 为不限） | 否 |
+| `PIM_LOG_ROLL_ON_FILE_SIZE_LIMIT` | 达到大小上限时是否滚动为新分卷（默认 `true`） | 否 |
 | `TZ` | 时区（默认 Asia/Shanghai，compose 预设） | 否 |
 
 ### 容器内预设（compose 已配好，一般无需改动）
