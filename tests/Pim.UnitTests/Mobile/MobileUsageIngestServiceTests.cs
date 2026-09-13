@@ -356,6 +356,69 @@ public sealed class MobileUsageIngestServiceTests
     }
 
     [Fact]
+    public async Task IngestAsync_SkipsDuplicateEventsAcrossBatches_EvenWhenCollectedAtOrRawJsonDiffer()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = new MobileUsageIngestService(
+            db,
+            MobileTestHelpers.CurrentUser(),
+            new MobileSessionInterpreter(db),
+            MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-06T12:00:00Z")));
+
+        var start = DateTimeOffset.Parse("2026-07-06T08:00:00Z");
+        var end = DateTimeOffset.Parse("2026-07-06T09:00:00Z");
+        var eventTime = start.AddMinutes(5);
+
+        var firstRequest = new MobileUsageEventsUploadRequest(
+            "android-main",
+            "batch-1",
+            start,
+            end,
+            [],
+            [
+                new MobileUsageEventDto(
+                    "com.example.messages",
+                    "USER_INTERACTION",
+                    eventTime,
+                    "MainActivity",
+                    start.AddMinutes(6),
+                    "{\"event\":\"tap1\"}",
+                    "item-1")
+            ],
+            []);
+
+        var secondRequest = new MobileUsageEventsUploadRequest(
+            "android-main",
+            "batch-2",
+            start,
+            end,
+            [],
+            [
+                new MobileUsageEventDto(
+                    "com.example.messages",
+                    "USER_INTERACTION",
+                    eventTime,
+                    "MainActivity",
+                    start.AddMinutes(15),
+                    "{\"event\":\"tap2\"}",
+                    "item-2")
+            ],
+            []);
+
+        var first = await service.IngestAsync(firstRequest, CancellationToken.None);
+        var second = await service.IngestAsync(secondRequest, CancellationToken.None);
+
+        Assert.Equal(1, first.AcceptedCount);
+        Assert.Equal(0, first.SkippedCount);
+        Assert.Equal(0, second.AcceptedCount);
+        Assert.Equal(1, second.SkippedCount);
+        var skippedItem = Assert.Single(second.ItemResults);
+        Assert.Equal("skipped", skippedItem.Outcome);
+        Assert.Equal("duplicate", skippedItem.Code);
+        Assert.Equal(1, await db.Set<MobileUsageEventEntity>().CountAsync());
+    }
+
+    [Fact]
     public async Task IngestAsync_SkipsDuplicateEventsWithNullClassName()
     {
         await using var db = MobileTestHelpers.CreateDb();

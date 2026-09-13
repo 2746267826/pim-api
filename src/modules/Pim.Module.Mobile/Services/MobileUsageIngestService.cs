@@ -230,10 +230,10 @@ public sealed class MobileUsageIngestService
                         && e.EventTimestampUtc >= chunkFirst
                         && e.EventTimestampUtc <= chunkLast
                         && chunkPackages.Contains(e.PackageName))
-                    .Select(e => new { e.PackageName, e.EventType, e.EventTimestampUtc, e.ClassName, e.CollectedAtUtc, e.RawJson })
+                    .Select(e => new { e.PackageName, e.EventType, e.EventTimestampUtc, e.ClassName })
                     .ToListAsync(ct);
                 foreach (var e in existingChunk)
-                    knownKeys.Add(new EventKey(e.PackageName, e.EventType, e.EventTimestampUtc, NormalizeClassName(e.ClassName), e.CollectedAtUtc, ComputeRawJsonHash(e.RawJson)));
+                    knownKeys.Add(new EventKey(e.PackageName, e.EventType, e.EventTimestampUtc.ToUniversalTime(), NormalizeClassName(e.ClassName)));
             }
         }
 
@@ -554,25 +554,18 @@ public sealed class MobileUsageIngestService
     private static string NormalizeClassName(string? value)
         => value ?? string.Empty;
 
-    private static string ComputeRawJsonHash(string? value)
-        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonOrDefault(value)))).ToLowerInvariant();
-
     private sealed record EventKey(
         string PackageName,
         string EventType,
         DateTimeOffset EventTimestampUtc,
-        string ClassName,
-        DateTimeOffset CollectedAtUtc,
-        string RawHash)
+        string ClassName)
     {
         public static EventKey From(MobileUsageEventDto usageEvent)
             => new(
                 usageEvent.PackageName,
                 usageEvent.EventType,
-                usageEvent.EventTimestampUtc,
-                NormalizeClassName(usageEvent.ClassName),
-                usageEvent.CollectedAtUtc,
-                ComputeRawJsonHash(usageEvent.RawJson));
+                usageEvent.EventTimestampUtc.ToUniversalTime(),
+                NormalizeClassName(usageEvent.ClassName));
     }
 
     private sealed record ValidationError(string Code, string Message);

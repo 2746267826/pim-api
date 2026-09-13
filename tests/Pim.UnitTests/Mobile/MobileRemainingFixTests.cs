@@ -144,9 +144,9 @@ public sealed class MobileRemainingFixTests
         Assert.Contains("open_session", block.QualityFlags);
     }
 
-    // PIM-018 idempotency with CollectedAtUtc and RawJson hash
+    // PIM-018 / Issue #215 idempotency: natural key (PackageName, EventType, EventTimestampUtc, ClassName) defines uniqueness matching DB constraint
     [Fact]
-    public async Task PIM018_Idempotency_DifferentCollectedAtIsNotDuplicate()
+    public async Task PIM018_Idempotency_DifferentCollectedAtIsDuplicate()
     {
         await using var db = MobileTestHelpers.CreateDb();
         var service = new MobileUsageIngestService(db, MobileTestHelpers.CurrentUser(), new MobileSessionInterpreter(db), MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-06T12:00:00Z")));
@@ -160,13 +160,14 @@ public sealed class MobileRemainingFixTests
         var r1 = await service.IngestAsync(req1, CancellationToken.None);
         var r2 = await service.IngestAsync(req2, CancellationToken.None);
         Assert.Equal(1, r1.AcceptedCount);
-        Assert.Equal(1, r2.AcceptedCount);
-        Assert.DoesNotContain(r2.ItemResults, x => x.Outcome == "skipped");
-        Assert.Equal(2, await db.Set<MobileUsageEventEntity>().CountAsync());
+        Assert.Equal(0, r2.AcceptedCount);
+        Assert.Equal(1, r2.SkippedCount);
+        Assert.Contains(r2.ItemResults, x => x.Outcome == "skipped" && x.Code == "duplicate");
+        Assert.Equal(1, await db.Set<MobileUsageEventEntity>().CountAsync());
     }
 
     [Fact]
-    public async Task PIM018_Idempotency_DifferentRawJsonIsNotDuplicate()
+    public async Task PIM018_Idempotency_DifferentRawJsonIsDuplicate()
     {
         await using var db = MobileTestHelpers.CreateDb();
         var service = new MobileUsageIngestService(db, MobileTestHelpers.CurrentUser(), new MobileSessionInterpreter(db), MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-06T12:00:00Z")));
@@ -181,7 +182,10 @@ public sealed class MobileRemainingFixTests
         var r1 = await service.IngestAsync(req1, CancellationToken.None);
         var r2 = await service.IngestAsync(req2, CancellationToken.None);
         Assert.Equal(1, r1.AcceptedCount);
-        Assert.Equal(1, r2.AcceptedCount);
+        Assert.Equal(0, r2.AcceptedCount);
+        Assert.Equal(1, r2.SkippedCount);
+        Assert.Contains(r2.ItemResults, x => x.Outcome == "skipped" && x.Code == "duplicate");
+        Assert.Equal(1, await db.Set<MobileUsageEventEntity>().CountAsync());
     }
 
     // PIM-019/020 validation
