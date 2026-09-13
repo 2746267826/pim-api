@@ -181,6 +181,25 @@ public sealed class MobileUsageAggregationServiceTests
         });
     }
 
+    [Fact]
+    public async Task GetOverviewAsync_CapsFallbackSummaryToWindowDuration_WhenDatabaseContainsExcessiveHistoricalDuration()
+    {
+        var now = DateTimeOffset.Parse("2026-07-08T10:00:00Z");
+        await using var db = MobileTestHelpers.CreateDb();
+        var start = DateTimeOffset.Parse("2026-07-06T13:00:00Z");
+        var end = DateTimeOffset.Parse("2026-07-06T13:15:00Z"); // 15 minutes = 900s
+        db.Set<MobileUsageSummaryEntity>().Add(SeedSummary("com.ss.android.ugc.aweme", start, end, 7200));
+        await db.SaveChangesAsync();
+
+        var service = CreateService(db, now);
+
+        var overview = await service.GetOverviewAsync(new MobileAnalyticsQueryRequest(
+            DateTimeOffset.Parse("2026-07-06T00:00:00Z"),
+            DateTimeOffset.Parse("2026-07-07T00:00:00Z")), CancellationToken.None);
+
+        Assert.Equal(900, overview.TotalForegroundSeconds);
+    }
+
     private static MobileUsageSummaryEntity SeedSummary(
         string packageName,
         DateTimeOffset start,

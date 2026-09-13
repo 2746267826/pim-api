@@ -241,6 +241,29 @@ public sealed class MobileTimelineBlockServiceTests
     }
 
     [Fact]
+    public async Task GetBlocksAsync_CapsExcessiveHistoricalFallbackSummaryToWindowDuration()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        db.Set<MobileAppCatalogEntity>().Add(Catalog("com.tencent.mobileqq", "QQ", "聊天"));
+        db.Set<MobileAppCatalogOverrideEntity>().Add(Override("com.tencent.mobileqq", "聊天"));
+        db.Set<MobileUsageSummaryEntity>().Add(Summary(
+            "com.tencent.mobileqq",
+            DateTimeOffset.Parse("2026-07-07T09:00:00Z"),
+            DateTimeOffset.Parse("2026-07-07T10:00:00Z"),
+            7200));
+        await db.SaveChangesAsync();
+
+        var page = await Service(db).GetBlocksAsync(Query(
+            start: DateTimeOffset.Parse("2026-07-07T09:30:00Z"),
+            end: DateTimeOffset.Parse("2026-07-07T10:00:00Z"),
+            source: "fallback"), CancellationToken.None);
+
+        var block = Assert.Single(page.Items);
+        Assert.Equal(1800, block.ForegroundSeconds);
+        Assert.Equal(1800, block.SourceMix!["fallback"]);
+    }
+
+    [Fact]
     public async Task Drilldown_ReconstructsBlockSessionsAndReturnsSessionEventsForCurrentUser()
     {
         await using var db = MobileTestHelpers.CreateDb();

@@ -173,18 +173,23 @@ public sealed class MobileUsageQueryService
             .ToList();
 
         var fallbackItems = fallbackRows
-            .Select(s => new MobileTimelineItemDto(
-                s.Id.ToString("N"),
-                "fallback",
-                s.DeviceId,
-                s.PackageName,
-                DisplayName(appCatalog, s.PackageName),
-                s.WindowStartUtc,
-                s.WindowEndUtc,
-                Math.Max(0, s.TotalTimeVisibleMs / 1000),
-                "fallback",
-                0.6,
-                "汇总数据"))
+            .Select(s =>
+            {
+                var windowMs = Math.Max(0, (s.WindowEndUtc - s.WindowStartUtc).TotalMilliseconds);
+                var effectiveMs = Math.Min(s.TotalTimeVisibleMs, (long)windowMs);
+                return new MobileTimelineItemDto(
+                    s.Id.ToString("N"),
+                    "fallback",
+                    s.DeviceId,
+                    s.PackageName,
+                    DisplayName(appCatalog, s.PackageName),
+                    s.WindowStartUtc,
+                    s.WindowEndUtc,
+                    Math.Max(0, effectiveMs / 1000),
+                    "fallback",
+                    0.6,
+                    "汇总数据");
+            })
             .ToList();
 
         var items = sessionItems

@@ -770,7 +770,8 @@ public sealed class MobileUsageAggregationService
             return Math.Max(0, totalVisibleMs / 1000);
 
         var ratio = Math.Clamp(overlapMs / sourceMs, 0, 1);
-        return Math.Max(0, Convert.ToInt64(Math.Floor(totalVisibleMs * ratio / 1000)));
+        var effectiveTotalMs = Math.Min(totalVisibleMs, (long)Math.Max(0, sourceMs));
+        return Math.Max(0, Convert.ToInt64(Math.Floor(effectiveTotalMs * ratio / 1000)));
     }
 
     private static async Task<List<MobileUsageSummaryEntity>> DeduplicateFallbackSummariesAsync(
