@@ -114,7 +114,7 @@ public sealed class MobileUsageIngestServiceTests
     }
 
     [Fact]
-    public async Task IngestAsync_ExecutionStrategyRetryRechecksPersistedBatch()
+    public async Task IngestAsync_ExecutionStrategyRetryTakesOverOwnPendingBatch()
     {
         MobileTestHelpers.RegisterMobileModule();
         var strategyState = new RetryExecutionStrategyState();
@@ -133,10 +133,13 @@ public sealed class MobileUsageIngestServiceTests
 
             Assert.Equal(1, strategyState.RetryableExceptionsObserved);
             Assert.Equal(1, db.TransientFailuresThrown);
-            var persistedWinner = Assert.Single(result.ItemResults);
-            Assert.Equal("persisted-strategy-winner", persistedWinner.ClientItemKey);
-            Assert.Equal(1, result.AcceptedCount);
+            // 重试接管"本次请求自己留下的 pending 批次"并幂等重跑，而不是把 pending 当成并发重投跳过（#243）
+            Assert.Equal(4, result.AcceptedCount);
+            Assert.Equal(4, result.ItemResults.Count);
             Assert.Equal(1, await db.Set<MobileSyncBatchEntity>().CountAsync());
+            var batch = await db.Set<MobileSyncBatchEntity>().SingleAsync();
+            Assert.Equal(MobileSyncBatchStatus.Completed, batch.Status);
+            Assert.Equal(4, batch.AcceptedCount);
             Assert.Equal(2, await db.Set<MobileUsageEventEntity>().CountAsync());
             Assert.Equal(1, await db.Set<MobileUsageSummaryEntity>().CountAsync());
             Assert.Equal(1, await db.Set<MobileAppCatalogEntity>().CountAsync());
@@ -288,7 +291,11 @@ public sealed class MobileUsageIngestServiceTests
         Assert.Equal(0, first.FailedCount);
         Assert.Equal(first.ItemResults, second.ItemResults);
         var batch = await db.Set<MobileSyncBatchEntity>().SingleAsync();
-        Assert.Equal(2, batch.AcceptedCount);
+        // accepted_count 覆盖该批全部被接受的条目（元数据 + 事件 + 汇总），而不只是 usage-event（#243）
+        Assert.Equal(4, batch.AcceptedCount);
+        Assert.Equal(0, batch.RejectedCount);
+        Assert.Equal(0, batch.SkippedCount);
+        Assert.Equal(MobileSyncBatchStatus.Completed, batch.Status);
     }
 
     [Fact]
@@ -312,7 +319,11 @@ public sealed class MobileUsageIngestServiceTests
             service.IngestAsync(request, CancellationToken.None));
 
         db.ChangeTracker.Clear();
-        Assert.Empty(await db.Set<MobileSyncBatchEntity>().ToListAsync());
+        // 失败的批次不再"消失"：它以 pending 落库，让积压监控/质量面板能发现未完成的同步（#243）。
+        // 客户端的下一次重投会接管它（租约过期后）并把状态推进到终态。
+        var batch = await db.Set<MobileSyncBatchEntity>().SingleAsync();
+        Assert.Equal(MobileSyncBatchStatus.Pending, batch.Status);
+        Assert.Null(batch.CompletedAtUtc);
     }
 
     [Fact]

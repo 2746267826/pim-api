@@ -123,6 +123,38 @@ public sealed class DeviceManagementServiceTests
     }
 
     [Fact]
+    public async Task DeleteAsync_BlocksWhileABatchIsStillBeingProcessedRecently()
+    {
+        await using var ctx = await DeviceManagementTestDb.CreateAsync();
+        var db = ctx.Db;
+        SeedDevice(db, TargetDeviceId, Now);
+        SeedPendingBatch(db, TargetDeviceId, "batch-in-flight", Now.AddMinutes(-5));
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<Pim.Core.Exceptions.DomainException>(
+            () => service.DeleteAsync(TargetDeviceId, CancellationToken.None));
+
+        Assert.Equal(04002, ex.ErrorCode);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_IgnoresAbandonedPendingBatchSoDeviceStaysDeletable()
+    {
+        await using var ctx = await DeviceManagementTestDb.CreateAsync();
+        var db = ctx.Db;
+        SeedDevice(db, TargetDeviceId, Now);
+        // 中断上传留下的 pending 行（#243）：超过"还在动"窗口后不得再阻塞删除
+        SeedPendingBatch(db, TargetDeviceId, "batch-abandoned", Now.AddHours(-3));
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        await service.DeleteAsync(TargetDeviceId, CancellationToken.None);
+
+        Assert.Empty(await db.Set<MobileDeviceEntity>().Where(d => d.DeviceId == TargetDeviceId).ToListAsync());
+    }
+
+    [Fact]
     public void MergeAndDelete_StartTheirUserTransactionsThroughTheConfiguredExecutionStrategy()
     {
         var source = File.ReadAllText(FindRepositoryFile(
@@ -578,6 +610,21 @@ public sealed class DeviceManagementServiceTests
             AcceptedCount = 1,
             Status = "completed",
             CompletedAtUtc = windowStart.AddMinutes(15),
+        });
+
+    private static void SeedPendingBatch(PimDbContext db, string deviceId, string batchId, DateTimeOffset createdAt)
+        => db.Set<MobileSyncBatchEntity>().Add(new MobileSyncBatchEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = deviceId,
+            BatchId = batchId,
+            WindowStartUtc = createdAt.AddMinutes(-15),
+            WindowEndUtc = createdAt,
+            AcceptedCount = 0,
+            Status = MobileSyncBatchStatus.Pending,
+            ErrorJson = "{}",
+            CreatedAt = createdAt,
+            CompletedAtUtc = null,
         });
 
     private static void SeedTimelineBlock(PimDbContext db, string deviceId, DateTimeOffset start)

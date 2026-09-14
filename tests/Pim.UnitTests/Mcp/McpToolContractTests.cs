@@ -74,6 +74,25 @@ public sealed class McpToolContractTests
     }
 
     [Fact]
+    public void Contract_MobileDayToolsDoNotExposeTimezone()
+    {
+        // #239 / EPIC #254 D-1：业务日固定为 Asia/Shanghai 04:00 起算，
+        // 按日接口不再接受调用方传时区（声明了却静默忽略比不声明更坏）。
+        string[] dayTools = ["get_mobile_summary", "get_mobile_timeline", "get_mobile_quality"];
+        var byName = McpToolExecutor.ToolContract.ToDictionary(t => t.Name, StringComparer.Ordinal);
+
+        foreach (var name in dayTools)
+        {
+            var spec = McpToolTable.TryGet(name)!;
+            Assert.DoesNotContain("timezone", spec.QueryParams);
+            Assert.False(
+                byName[name].InputSchema.GetProperty("properties").TryGetProperty("timezone", out _),
+                $"{name} must not declare a timezone argument");
+            Assert.Contains("date", spec.QueryParams);
+        }
+    }
+
+    [Fact]
     public void Contract_SchemaSpotChecks()
     {
         var byName = McpToolExecutor.ToolContract.ToDictionary(t => t.Name, StringComparer.Ordinal);

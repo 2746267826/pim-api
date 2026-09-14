@@ -285,6 +285,7 @@ public sealed record MobileSyncBatchSummaryDto(
     string Status,
     int AcceptedEventCount,
     int SkippedEventCount,
+    int RejectedItemCount,
     int AcceptedLocationCount,
     int RejectedLocationCount,
     string? ErrorMessage);
@@ -382,3 +383,20 @@ public sealed record MobileQualityIssueDto(
     string ComponentKey,
     string Message,
     string? NextStep);
+
+/// <summary>
+/// 待补应用元数据的包清单（#245）。用于让客户端/回填任务知道"该补哪些包"，
+/// 而不是只拿到一个口径漂移的数字。
+/// </summary>
+public sealed record MobileMissingAppMetadataResponse(
+    string? DeviceId,
+    DateTimeOffset RangeStartUtc,
+    DateTimeOffset RangeEndUtc,
+    int MissingPackageCount,
+    IReadOnlyList<MissingAppMetadataPackageDto> Packages);
+
+public sealed record MissingAppMetadataPackageDto(
+    string PackageName,
+    int EventCount,
+    DateTimeOffset? LastUsedAtUtc,
+    long ForegroundMs);

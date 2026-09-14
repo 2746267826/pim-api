@@ -23,6 +23,9 @@ src/Pim.Api/wwwroot/
 ## Local tooling and generated state
 .dotnet-appdata/
 .dotnet-home/
+.dotnet-tools/
+.npm-cache/
+.e2e/
 .worktrees/
 .opencode-session/
 .superpowers/brainstorm/

@@ -337,10 +337,25 @@ public sealed class DeviceManagementService
 
         var device = await _db.Set<MobileDeviceEntity>().SingleOrDefaultAsync(d => d.UserId == userId && d.DeviceId == deviceId, ct)
             ?? throw new DomainException(04004, "设备不存在");
-        var syncing = await _db.Set<MobileSyncBatchEntity>().AnyAsync(b => b.UserId == userId && b.DeviceId == deviceId && b.Status == "syncing", ct);
-        if (syncing) throw new DomainException(04002, "设备正在同步，禁止删除");
 
         await using var tx = _db.Database.IsRelational() ? await _db.Database.BeginTransactionAsync(ct) : null;
+
+        // 只拦截"最近还在处理"的批次：中断的上传会留下 pending 行（#243），
+        // 若把它当成永久"正在同步"，设备将永远无法删除。
+        // 检查放在事务内、删除之前，尽量收窄"检查完就有新上传开始"的窗口；
+        // 时间比较放在内存里做：SQLite（部分测试用）不支持 DateTimeOffset 的服务器端比较。
+        var activeSince = _timeProvider.GetUtcNow() - MobileSyncBatchStatus.ActiveWindow;
+        var activeBatchCreatedAt = await _db.Set<MobileSyncBatchEntity>()
+            .Where(b => b.UserId == userId
+                && b.DeviceId == deviceId
+                && (b.Status == MobileSyncBatchStatus.Pending
+                    || b.Status == "processing"
+                    || b.Status == "syncing"))
+            .Select(b => b.CreatedAt)
+            .ToListAsync(ct);
+        if (activeBatchCreatedAt.Any(createdAt => createdAt >= activeSince))
+            throw new DomainException(04002, "设备正在同步，禁止删除");
+
         await _db.Set<MobileUsageEventEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
         await _db.Set<MobileUsageSessionEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
         await _db.Set<MobileUsageSummaryEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);

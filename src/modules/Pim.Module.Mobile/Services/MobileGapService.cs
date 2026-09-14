@@ -55,6 +55,8 @@ public sealed class MobileGapService
             })
             .ToListAsync(ct);
 
+        // 覆盖判据只看"这个批次到底有没有失败条目"，不看批次状态字符串（#242）：
+        // 历史上条目级拒绝会把批次标成 completed-with-errors，从而让已成功入库的整段时段被持续回报为缺口。
         var completedBatchWindows = await _db.Set<MobileSyncBatchEntity>()
             .AsNoTracking()
             .Where(b => b.UserId == userId
@@ -62,7 +64,8 @@ public sealed class MobileGapService
                 && b.WindowEndUtc > start
                 && b.WindowStartUtc < end
                 && b.FailedCount == 0
-                && b.Status == "completed")
+                && (b.Status == MobileSyncBatchStatus.Completed
+                    || b.Status == MobileSyncBatchStatus.LegacyCompletedWithErrors))
             .Select(b => new CoverageWindow(b.WindowStartUtc, b.WindowEndUtc))
             .ToListAsync(ct);
 

@@ -57,6 +57,35 @@ public sealed class MobileEndpointTests
             metadata => metadata is IAuthorizeData));
     }
 
+    /// <summary>
+    /// #239 / EPIC #254 D-1：按日接口的 date 必须解析为业务日窗口
+    /// [D 04:00, D+1 04:00)（Asia/Shanghai），而不是 UTC 自然日。
+    /// </summary>
+    [Fact]
+    public void BuildSummaryQuery_ParsesDateAsShanghaiBusinessDay()
+    {
+        var query = MobileModule.BuildSummaryQuery("android-main", "2026-09-13", null, null);
+
+        Assert.Equal("android-main", query.DeviceId);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-12T20:00:00Z"), query.RangeStartUtc);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-13T20:00:00Z"), query.RangeEndUtc);
+    }
+
+    [Fact]
+    public void BuildSummaryQuery_FallsBackToExplicitRangeWhenDateIsMissingOrInvalid()
+    {
+        var start = DateTimeOffset.Parse("2026-09-13T01:00:00Z");
+        var end = DateTimeOffset.Parse("2026-09-13T05:00:00Z");
+
+        var missingDate = MobileModule.BuildSummaryQuery("android-main", null, start, end);
+        Assert.Equal(start, missingDate.RangeStartUtc);
+        Assert.Equal(end, missingDate.RangeEndUtc);
+
+        var invalidDate = MobileModule.BuildSummaryQuery("android-main", "13/09/2026", start, end);
+        Assert.Equal(start, invalidDate.RangeStartUtc);
+        Assert.Equal(end, invalidDate.RangeEndUtc);
+    }
+
     [Fact]
     public void MobileServices_RegisterLocationAnalyticsServices()
     {

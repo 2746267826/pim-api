@@ -10,7 +10,13 @@ namespace Pim.Module.Mobile.Services;
 public sealed class MobileSyncBacklogInspector : IDataQualityInspector
 {
     private static readonly TimeSpan OverdueThreshold = TimeSpan.FromMinutes(30);
-    private static readonly string[] ActiveStatuses = ["pending", "processing", "syncing"];
+
+    /// <summary>
+    /// 处理中的状态词表。写入侧在开始处理前先落一条 <c>pending</c> 批次（#243），
+    /// 因此"上传中断 / 进程崩溃 / 长时间未完成"在这里是可见的，而不是永远查不到。
+    /// </summary>
+    private static readonly string[] ActiveStatuses =
+        [MobileSyncBatchStatus.Pending, "processing", "syncing"];
 
     private readonly PimDbContext _db;
     private readonly ILogger<MobileSyncBacklogInspector> _logger;

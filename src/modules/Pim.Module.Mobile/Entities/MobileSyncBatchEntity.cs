@@ -32,6 +32,14 @@ public sealed class MobileSyncBatchEntity : IUserOwnedEntity
     [Column("accepted_count")]
     public int AcceptedCount { get; set; }
 
+    /// <summary>条目级校验拒绝数（如零时长汇总 #240）；不再影响批次状态（#241）。</summary>
+    [Column("rejected_count")]
+    public int RejectedCount { get; set; }
+
+    /// <summary>重复/无需处理而被跳过的条目数（#243）。</summary>
+    [Column("skipped_count")]
+    public int SkippedCount { get; set; }
+
     [Column("failed_count")]
     public int FailedCount { get; set; }
 

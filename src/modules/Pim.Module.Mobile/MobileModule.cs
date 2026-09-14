@@ -1,6 +1,5 @@
 using Pim.Infrastructure.Operations;
 using System.Reflection;
-using System.Globalization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -237,6 +236,21 @@ public sealed class MobileModule : IModule
             CancellationToken ct) =>
             Results.Ok(ApiResponse<MobileLocationSegmentPointPageDto>.Ok(await service.GetSegmentPointsAsync(segmentId, query.ToRequest(), ct))));
 
+        group.MapGet("/apps/missing-metadata", async (
+            [FromQuery] string? deviceId,
+            [FromQuery] DateTimeOffset? rangeStartUtc,
+            [FromQuery] DateTimeOffset? rangeEndUtc,
+            [FromQuery] int? limit,
+            [FromServices] MobileQualityService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileMissingAppMetadataResponse>.Ok(
+                await service.GetMissingAppMetadataAsync(
+                    rangeStartUtc,
+                    rangeEndUtc,
+                    deviceId,
+                    limit ?? 200,
+                    ct))));
+
         group.MapGet("/quality", async (
             [FromQuery] string? date,
             [FromQuery] string? deviceId,
@@ -451,20 +465,22 @@ public sealed class MobileModule : IModule
     private sealed record DeviceRenameRequest(string DisplayName);
     public sealed record DeviceMergeRequest(IReadOnlyList<string> SourceDeviceIds, string TargetDeviceId);
 
-    private static MobileSummaryQuery BuildSummaryQuery(
+    /// <summary>
+    /// 把按日接口的 <c>date</c> 解析为统一业务日窗口（EPIC #254 · D-1）：
+    /// 业务日 D = <c>[D 04:00, D+1 04:00)</c>（Asia/Shanghai，左闭右开）。
+    /// 调用方不再传时区，日界只有一条线（数据字段 / 接口窗口 / 页面展示共用）。
+    /// </summary>
+    public static MobileSummaryQuery BuildSummaryQuery(
         string? deviceId,
         string? date,
         DateTimeOffset? rangeStartUtc,
         DateTimeOffset? rangeEndUtc)
     {
-        if (string.IsNullOrWhiteSpace(date))
+        if (!BusinessDay.TryParseDate(date, out var day))
             return new MobileSummaryQuery(deviceId, rangeStartUtc, rangeEndUtc);
 
-        if (!DateOnly.TryParse(date, CultureInfo.InvariantCulture, DateTimeStyles.None, out var day))
-            return new MobileSummaryQuery(deviceId, rangeStartUtc, rangeEndUtc);
-
-        var start = new DateTimeOffset(day.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-        return new MobileSummaryQuery(deviceId, start, start.AddDays(1));
+        var (start, end) = BusinessDay.GetRangeUtc(day);
+        return new MobileSummaryQuery(deviceId, start, end);
     }
 }
 

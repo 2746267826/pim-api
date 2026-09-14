@@ -179,15 +179,15 @@ public static class McpToolTable
             S("get_classification_settings", "GET", "/api/v1/pc/classification/settings"),
 
             // ===================== Mobile reads (18) =====================
-            S("get_mobile_summary", "GET", "/api/v1/mobile/summary", Q("date", "deviceId", "timezone")),
-            S("get_mobile_timeline", "GET", "/api/v1/mobile/timeline", Q("date", "deviceId", "timezone"), redact: true),
+            S("get_mobile_summary", "GET", "/api/v1/mobile/summary", Q("date", "deviceId")),
+            S("get_mobile_timeline", "GET", "/api/v1/mobile/timeline", Q("date", "deviceId"), redact: true),
             S("get_mobile_location_history", "GET", "/api/v1/mobile/location/history", Q("start", "end", "maxAccuracyMeters", "deviceId")),
             S("get_mobile_location_latest", "GET", "/api/v1/mobile/location/history", Q("maxAccuracyMeters", "deviceId"), kind: McpToolKind.MobileLocationLatest),
             S("get_mobile_location_tracks", "GET", "/api/v1/mobile/location/analytics/tracks", Q("start=rangeStartUtc", "end=rangeEndUtc", "timezone", "maxAccuracyMeters")),
             S("get_mobile_location_overview", "GET", "/api/v1/mobile/location/analytics/overview", Q("start=rangeStartUtc", "end=rangeEndUtc", "timezone")),
             S("get_mobile_location_frequent_places", "GET", "/api/v1/mobile/location/analytics/frequent-places", Q("start=rangeStartUtc", "end=rangeEndUtc", "timezone")),
             S("get_mobile_location_movement_stats", "GET", "/api/v1/mobile/location/analytics/movement-stats", Q("start=rangeStartUtc", "end=rangeEndUtc", "timezone")),
-            S("get_mobile_quality", "GET", "/api/v1/mobile/quality", Q("date", "deviceId", "timezone")),
+            S("get_mobile_quality", "GET", "/api/v1/mobile/quality", Q("date", "deviceId")),
             S("get_mobile_analytics_overview", "GET", "/api/v1/mobile/analytics/overview", Q("start=rangeStartUtc", "end=rangeEndUtc", "timezone")),
             S("get_mobile_analytics_heatmap", "GET", "/api/v1/mobile/analytics/heatmap", Q("start=rangeStartUtc", "end=rangeEndUtc", "timezone")),
             S("get_mobile_analytics_charts", "GET", "/api/v1/mobile/analytics/charts", Q("start=rangeStartUtc", "end=rangeEndUtc", "timezone")),

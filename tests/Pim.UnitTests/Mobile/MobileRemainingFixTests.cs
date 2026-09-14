@@ -188,9 +188,11 @@ public sealed class MobileRemainingFixTests
         Assert.Equal(1, await db.Set<MobileUsageEventEntity>().CountAsync());
     }
 
-    // PIM-019/020 validation
+    // PIM-019/020 validation —— #240 后的口径：
+    // 零时长是"该窗口无使用"（跳过，不是非法数据）；超过窗口/超过 8h 的时长按上限裁剪入库并打标记，
+    // 不再整条拒绝（整条拒绝会让汇总覆盖率退化为"有使用的包"）。
     [Fact]
-    public async Task PIM019_020_InvalidDurationsAreRejected()
+    public async Task PIM019_020_ZeroDurationIsSkippedAndOverWindowDurationIsClamped()
     {
         await using var db = MobileTestHelpers.CreateDb();
         var service = new MobileUsageIngestService(db, MobileTestHelpers.CurrentUser(), new MobileSessionInterpreter(db), MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-06T12:00:00Z")));
@@ -206,8 +208,38 @@ public sealed class MobileRemainingFixTests
         var exceed8h = new MobileUsageSummaryDto("com.example.app", longWindowStart, longWindowEnd, 9L * 60 * 60 * 1000, longWindowEnd, "usage-stats-fallback", "{}");
         var req = new MobileUsageEventsUploadRequest("android-main", "batch-invalid-dur", start, end, [], [], [zero, exceedWindow, exceed8h]);
         var result = await service.IngestAsync(req, CancellationToken.None);
-        Assert.Equal(3, result.RejectedCount);
-        Assert.All(result.ItemResults, r => Assert.Equal("invalid-duration", r.Code));
+
+        Assert.Equal(0, result.RejectedCount);
+        var skipped = Assert.Single(result.ItemResults, r => r.Outcome == "skipped");
+        Assert.Equal("no-usage", skipped.Code);
+        Assert.Equal(2, result.AcceptedCount);
+
+        var stored = await db.Set<MobileUsageSummaryEntity>().ToListAsync();
+        Assert.Equal(2, stored.Count);
+        // 超过窗口 → 裁剪到窗口长度（1 小时）
+        var clampedToWindow = Assert.Single(stored, s => s.WindowStartUtc == start);
+        Assert.Equal(3600 * 1000L, clampedToWindow.TotalTimeVisibleMs);
+        // 超过 8h → 裁剪到 8h（INV-M16）
+        var clampedToEightHours = Assert.Single(stored, s => s.WindowStartUtc == longWindowStart);
+        Assert.Equal(8L * 60 * 60 * 1000, clampedToEightHours.TotalTimeVisibleMs);
+        Assert.All(stored, s => Assert.Contains("duration-clamped", s.QualityFlagsJson));
+    }
+
+    [Fact]
+    public async Task Summary_NegativeDurationIsStillRejected()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = new MobileUsageIngestService(db, MobileTestHelpers.CurrentUser(), new MobileSessionInterpreter(db), MobileTestHelpers.Time(DateTimeOffset.Parse("2026-07-06T12:00:00Z")));
+        var start = DateTimeOffset.Parse("2026-07-06T08:00:00Z");
+        var end = DateTimeOffset.Parse("2026-07-06T09:00:00Z");
+        var negative = new MobileUsageSummaryDto("com.example.app", start, end, -1, end, "usage-stats-fallback", "{}");
+        var req = new MobileUsageEventsUploadRequest("android-main", "batch-negative-dur", start, end, [], [], [negative]);
+
+        var result = await service.IngestAsync(req, CancellationToken.None);
+
+        var rejected = Assert.Single(result.ItemResults, r => r.Outcome == "rejected");
+        Assert.Equal("invalid-duration", rejected.Code);
+        Assert.Empty(await db.Set<MobileUsageSummaryEntity>().ToListAsync());
     }
 
     // PIM-021 jump flag in overview qualityFlags

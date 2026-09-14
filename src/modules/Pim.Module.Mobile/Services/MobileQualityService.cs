@@ -11,6 +11,18 @@ namespace Pim.Module.Mobile.Services;
 public sealed class MobileQualityService
 {
     private static readonly TimeSpan StaleHeartbeatAge = TimeSpan.FromMinutes(30);
+
+    /// <summary>汇总滞后告警线：2 个窗口 = 4 小时（EPIC #254 阈值 T3）。</summary>
+    private static readonly TimeSpan StaleSummaryLag = TimeSpan.FromHours(4);
+
+    /// <summary>汇总断流红线：超过 1 天没有新汇总，且事件仍在入库。</summary>
+    private static readonly TimeSpan BrokenSummaryLag = TimeSpan.FromHours(24);
+
+    /// <summary>批次积压线：pending 超过 30 分钟仍未完成视为卡住（与 MobileSyncBacklogInspector 一致）。</summary>
+    private static readonly TimeSpan StalledBatchAge = TimeSpan.FromMinutes(30);
+
+    /// <summary>质量报告里内联展示的待补包名样例数量。</summary>
+    private const int MissingPackageSampleSize = 10;
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly TimeProvider _timeProvider;
@@ -55,13 +67,13 @@ public sealed class MobileQualityService
                 .OrderByDescending(h => h.ReceivedAt)
                 .FirstOrDefaultAsync(ct);
 
-        var eventPackages = await _db.Set<MobileUsageEventEntity>()
+        var eventRows = await _db.Set<MobileUsageEventEntity>()
             .AsNoTracking()
             .Where(e => e.UserId == userId
                 && (normalizedDeviceId == null || e.DeviceId == normalizedDeviceId)
                 && e.EventTimestampUtc >= rangeStart
                 && e.EventTimestampUtc < rangeEnd)
-            .Select(e => e.PackageName)
+            .Select(e => new { e.PackageName, e.EventTimestampUtc })
             .ToListAsync(ct);
 
         var summaryRows = await _db.Set<MobileUsageSummaryEntity>()
@@ -73,7 +85,22 @@ public sealed class MobileQualityService
             .Select(s => new { s.PackageName, s.SourceKind })
             .ToListAsync(ct);
 
-        var eventCount = eventPackages.Count;
+        // 汇总新鲜度：以"所选窗口的结束时刻"为评估点，取该时刻之前最后一条汇总（#244）。
+        // 用全局最新汇总会让历史范围被"未来的汇总"掩盖，用范围内最新汇总又会在汇总被裁剪时误报，
+        // 以窗口结束时刻为界同时避免这两种错误。
+        var evaluationEnd = rangeEnd > checkedAt ? checkedAt : rangeEnd;
+        var latestSummaryWindowEndUtc = await _db.Set<MobileUsageSummaryEntity>()
+            .AsNoTracking()
+            .Where(s => s.UserId == userId
+                && (normalizedDeviceId == null || s.DeviceId == normalizedDeviceId)
+                && s.WindowEndUtc <= evaluationEnd)
+            .MaxAsync(s => (DateTimeOffset?)s.WindowEndUtc, ct);
+        var hasEverReceivedSummary = await _db.Set<MobileUsageSummaryEntity>()
+            .AsNoTracking()
+            .AnyAsync(s => s.UserId == userId
+                && (normalizedDeviceId == null || s.DeviceId == normalizedDeviceId), ct);
+
+        var eventCount = eventRows.Count;
         var fallbackSummaryCount = summaryRows.Count(s => IsFallbackSource(s.SourceKind));
 
         var batchRows = await _db.Set<MobileSyncBatchEntity>()
@@ -92,29 +119,53 @@ public sealed class MobileQualityService
                 && p.RecordedAtUtc < rangeEnd)
             .ToListAsync(ct);
 
-        var usedPackages = eventPackages
+        var usedPackages = eventRows
+            .Select(e => e.PackageName)
             .Concat(summaryRows.Select(s => s.PackageName))
             .Where(packageName => !string.IsNullOrWhiteSpace(packageName))
             .Distinct(StringComparer.Ordinal)
             .ToArray();
-        var appMetadataPackages = await _db.Set<MobileAppCatalogEntity>()
+        var deviceCatalogPackages = await _db.Set<MobileAppCatalogEntity>()
             .AsNoTracking()
             .Where(a => a.UserId == userId
                 && (normalizedDeviceId == null || a.DeviceId == normalizedDeviceId))
             .Select(a => a.PackageName)
             .ToListAsync(ct);
-        var missingAppMetadataCount = usedPackages
-            .Except(appMetadataPackages, StringComparer.Ordinal)
-            .Count();
+
+        // "缺元数据"必须是同一口径相减（#245）：两边都按"该用户的包"算，
+        // 否则数字随所选范围与设备漂移，也无法回答"该补哪些包"。
+        var catalogPackagesAnyDevice = await _db.Set<MobileAppCatalogEntity>()
+            .AsNoTracking()
+            .Where(a => a.UserId == userId)
+            .Select(a => a.PackageName)
+            .Distinct()
+            .ToListAsync(ct);
+        var missingAppMetadataPackages = usedPackages
+            .Except(catalogPackagesAnyDevice, StringComparer.Ordinal)
+            .OrderBy(packageName => packageName, StringComparer.Ordinal)
+            .ToArray();
 
         var issues = new List<MobileQualityIssueDto>();
         var components = new List<MobileQualityComponentDto>
         {
             CheckHeartbeat(heartbeat, checkedAt, issues),
-            CheckUsage(eventCount, fallbackSummaryCount, checkedAt, issues),
+            CheckUsage(
+                eventCount,
+                fallbackSummaryCount,
+                evaluationEnd,
+                latestSummaryWindowEndUtc,
+                hasEverReceivedSummary,
+                checkedAt,
+                issues),
             CheckSync(batchRows, checkedAt, issues),
             CheckLocation(locationRows, checkedAt, issues),
-            CheckAppMetadata(appMetadataPackages.Count, usedPackages.Length, missingAppMetadataCount, checkedAt, issues)
+            CheckAppMetadata(
+                deviceCatalogPackages.Distinct(StringComparer.Ordinal).Count(),
+                catalogPackagesAnyDevice.Count,
+                usedPackages.Length,
+                missingAppMetadataPackages,
+                checkedAt,
+                issues)
         };
 
         var overall = components
@@ -223,11 +274,15 @@ public sealed class MobileQualityService
     private static MobileQualityComponentDto CheckUsage(
         int eventCount,
         int fallbackSummaryCount,
+        DateTimeOffset evaluationEnd,
+        DateTimeOffset? latestSummaryWindowEndUtc,
+        bool hasEverReceivedSummary,
         DateTimeOffset checkedAt,
         List<MobileQualityIssueDto> issues)
     {
         var status = PimHealthStatus.Healthy;
         var message = "移动使用事件采集正常。";
+        var summaryLagHours = string.Empty;
 
         if (eventCount == 0 && fallbackSummaryCount == 0)
         {
@@ -240,7 +295,49 @@ public sealed class MobileQualityService
                 message,
                 "确认 Android 使用情况访问权限已开启并重新同步。"));
         }
-        else if (fallbackSummaryCount > 0)
+        else if (eventCount > 0)
+        {
+            // 有事件却没有（新鲜）汇总 = 汇总链路断流，此前被当作"采集正常"（#244）。
+            var lag = latestSummaryWindowEndUtc is null
+                ? (TimeSpan?)null
+                : evaluationEnd - latestSummaryWindowEndUtc.Value;
+            summaryLagHours = lag is null
+                ? string.Empty
+                : Math.Round(Math.Max(0, lag.Value.TotalHours), 1).ToString("0.0");
+            var isStale = latestSummaryWindowEndUtc is null || lag > StaleSummaryLag;
+            // 从未收到过任何汇总时只报警告：这类设备可能只是"窗口内一直有事件、用不到兜底汇总"，
+            // 还没有足够证据说明汇总链路坏掉了。
+            var isBroken = latestSummaryWindowEndUtc is null
+                ? hasEverReceivedSummary
+                : lag > BrokenSummaryLag;
+
+            if (isBroken)
+            {
+                status = PimHealthStatus.Critical;
+                message = $"移动使用汇总已断流约 {summaryLagHours} 小时（事件仍在入库）。";
+                issues.Add(new MobileQualityIssueDto(
+                    "mobile-usage-summary-stale",
+                    PimHealthStatus.Critical,
+                    "mobile-usage-coverage",
+                    message,
+                    "检查 Android App 的兜底汇总采集与上传是否仍在运行后重新同步。"));
+            }
+            else if (isStale)
+            {
+                status = PimHealthStatus.Warning;
+                message = latestSummaryWindowEndUtc is null
+                    ? "所选范围内有使用事件，但尚未收到对应的 UsageStats 兜底汇总。"
+                    : $"移动使用汇总已滞后约 {summaryLagHours} 小时（事件仍在入库）。";
+                issues.Add(new MobileQualityIssueDto(
+                    "mobile-usage-summary-stale",
+                    PimHealthStatus.Warning,
+                    "mobile-usage-coverage",
+                    message,
+                    "检查 Android App 的兜底汇总采集与上传是否仍在运行后重新同步。"));
+            }
+        }
+
+        if (fallbackSummaryCount > 0 && status == PimHealthStatus.Healthy)
         {
             status = PimHealthStatus.Warning;
             message = eventCount == 0
@@ -263,7 +360,10 @@ public sealed class MobileQualityService
             new Dictionary<string, string>
             {
                 ["eventCount"] = eventCount.ToString(),
-                ["fallbackSummaryCount"] = fallbackSummaryCount.ToString()
+                ["fallbackSummaryCount"] = fallbackSummaryCount.ToString(),
+                ["evaluationEndAt"] = evaluationEnd.ToString("O"),
+                ["latestSummaryAt"] = latestSummaryWindowEndUtc?.ToString("O") ?? string.Empty,
+                ["summaryLagHours"] = summaryLagHours
             });
     }
 
@@ -294,28 +394,53 @@ public sealed class MobileQualityService
                 });
         }
 
-        var failedBatchCount = batches.Count(b => b.FailedCount > 0
-            || !string.Equals(b.Status, "completed", StringComparison.OrdinalIgnoreCase));
+        var failedBatchCount = batches.Count(b => MobileSyncBatchStatus.IsFailed(b.FailedCount, b.Status));
+        var stalledBatchCount = batches.Count(b =>
+            MobileSyncBatchStatus.IsActive(b.Status) && checkedAt - b.CreatedAt > StalledBatchAge);
+        var rejectedItemCount = batches.Sum(b => b.RejectedCount);
+
         if (failedBatchCount > 0)
         {
             issues.Add(new MobileQualityIssueDto(
                 "mobile-sync-failed-batch",
                 PimHealthStatus.Warning,
                 "mobile-sync",
-                "存在失败或未完成的移动同步批次。",
+                "存在失败的移动同步批次。",
                 "查看 Android App 日志和服务器连接状态后重新同步。"));
         }
+
+        if (stalledBatchCount > 0)
+        {
+            // 未完成批次以前根本不可见（写入侧只写 completed / completed-with-errors，#243）。
+            issues.Add(new MobileQualityIssueDto(
+                "mobile-sync-stalled-batch",
+                PimHealthStatus.Warning,
+                "mobile-sync",
+                "存在长时间未完成的移动同步批次。",
+                "确认 Android App 的上传没有被中断，然后重新同步。"));
+        }
+
+        var status = failedBatchCount > 0 || stalledBatchCount > 0
+            ? PimHealthStatus.Warning
+            : PimHealthStatus.Healthy;
+        var message = failedBatchCount > 0
+            ? "存在失败的移动同步批次。"
+            : stalledBatchCount > 0
+                ? "存在长时间未完成的移动同步批次。"
+                : "移动同步批次正常。";
 
         return Component(
             "mobile-sync",
             "移动同步批次",
-            failedBatchCount > 0 ? PimHealthStatus.Warning : PimHealthStatus.Healthy,
-            failedBatchCount > 0 ? "存在失败或未完成的移动同步批次。" : "移动同步批次正常。",
+            status,
+            message,
             checkedAt,
             new Dictionary<string, string>
             {
                 ["batchCount"] = batches.Count.ToString(),
                 ["failedBatchCount"] = failedBatchCount.ToString(),
+                ["stalledBatchCount"] = stalledBatchCount.ToString(),
+                ["rejectedCount"] = rejectedItemCount.ToString(),
                 ["acceptedCount"] = batches.Sum(b => b.AcceptedCount).ToString()
             });
     }
@@ -372,25 +497,31 @@ public sealed class MobileQualityService
     }
 
     private static MobileQualityComponentDto CheckAppMetadata(
-        int appMetadataCount,
+        int deviceCatalogPackageCount,
+        int catalogPackageCount,
         int usedPackageCount,
-        int missingAppMetadataCount,
+        IReadOnlyList<string> missingPackages,
         DateTimeOffset checkedAt,
         List<MobileQualityIssueDto> issues)
     {
-        if (appMetadataCount == 0 || missingAppMetadataCount > 0)
+        var missingCount = missingPackages.Count;
+        // 判据用"全设备口径"的目录数：missing 集合也是全设备口径（#245），
+        // 否则"本设备无目录行、别的设备有"会被判成 Unknown。
+        if (catalogPackageCount == 0 || missingCount > 0)
         {
             issues.Add(new MobileQualityIssueDto(
                 "mobile-app-metadata-missing",
-                missingAppMetadataCount > 0 ? PimHealthStatus.Warning : PimHealthStatus.Unknown,
+                missingCount > 0 ? PimHealthStatus.Warning : PimHealthStatus.Unknown,
                 "mobile-app-metadata",
-                "Android 应用元数据不完整。",
-                "重新同步 Android 使用记录以上传应用元数据。"));
+                missingCount > 0
+                    ? $"所选范围内有 {missingCount} 个应用缺少元数据。"
+                    : "Android 应用元数据不完整。",
+                "调用 /api/v1/mobile/apps/missing-metadata 取回待补包名，重新同步以补上应用元数据。"));
         }
 
-        var status = missingAppMetadataCount > 0
+        var status = missingCount > 0
             ? PimHealthStatus.Warning
-            : appMetadataCount == 0
+            : catalogPackageCount == 0
                 ? PimHealthStatus.Unknown
                 : PimHealthStatus.Healthy;
 
@@ -402,11 +533,85 @@ public sealed class MobileQualityService
             checkedAt,
             new Dictionary<string, string>
             {
-                ["appMetadataCount"] = appMetadataCount.ToString(),
+                ["appMetadataCount"] = deviceCatalogPackageCount.ToString(),
+                ["catalogPackageCount"] = catalogPackageCount.ToString(),
                 ["usedPackageCount"] = usedPackageCount.ToString(),
-                ["missingAppMetadataCount"] = missingAppMetadataCount.ToString()
+                ["missingAppMetadataCount"] = missingCount.ToString(),
+                ["missingPackages"] = string.Join(",", missingPackages.Take(MissingPackageSampleSize))
             });
     }
+
+    /// <summary>
+    /// 待补元数据的包清单（#245）：服务端提供"该补哪些包"的口径，
+    /// 供客户端或回填任务按需索取，而不是只给一个会漂移的数字。
+    /// </summary>
+    public async Task<MobileMissingAppMetadataResponse> GetMissingAppMetadataAsync(
+        DateTimeOffset? rangeStartUtc,
+        DateTimeOffset? rangeEndUtc,
+        string? deviceId = null,
+        int limit = 200,
+        CancellationToken ct = default)
+    {
+        var userId = MobileUserContext.RequireUserId(_currentUser);
+        var rangeEnd = rangeEndUtc ?? _timeProvider.GetUtcNow();
+        var rangeStart = rangeStartUtc ?? rangeEnd.AddDays(-1);
+        if (rangeEnd < rangeStart)
+            (rangeStart, rangeEnd) = (rangeEnd, rangeStart);
+        var take = Math.Clamp(limit, 1, 1000);
+        var normalizedDeviceId = string.IsNullOrWhiteSpace(deviceId) ? null : deviceId;
+
+        var eventRows = await _db.Set<MobileUsageEventEntity>()
+            .AsNoTracking()
+            .Where(e => e.UserId == userId
+                && (normalizedDeviceId == null || e.DeviceId == normalizedDeviceId)
+                && e.EventTimestampUtc >= rangeStart
+                && e.EventTimestampUtc < rangeEnd)
+            .Select(e => new { e.PackageName, e.EventTimestampUtc })
+            .ToListAsync(ct);
+
+        var summaryRows = await _db.Set<MobileUsageSummaryEntity>()
+            .AsNoTracking()
+            .Where(s => s.UserId == userId
+                && (normalizedDeviceId == null || s.DeviceId == normalizedDeviceId)
+                && s.WindowEndUtc > rangeStart
+                && s.WindowStartUtc < rangeEnd)
+            .Select(s => new { s.PackageName, s.TotalTimeVisibleMs })
+            .ToListAsync(ct);
+
+        var catalogPackages = await _db.Set<MobileAppCatalogEntity>()
+            .AsNoTracking()
+            .Where(a => a.UserId == userId)
+            .Select(a => a.PackageName)
+            .Distinct()
+            .ToListAsync(ct);
+
+        var used = eventRows
+            .Select(e => new UsageRow(e.PackageName, e.EventTimestampUtc, 0))
+            .Concat(summaryRows.Select(s => new UsageRow(s.PackageName, null, s.TotalTimeVisibleMs)))
+            .Where(row => !string.IsNullOrWhiteSpace(row.PackageName))
+            .ToList();
+
+        var packages = used
+            .GroupBy(row => row.PackageName, StringComparer.Ordinal)
+            .Where(group => !catalogPackages.Contains(group.Key, StringComparer.Ordinal))
+            .Select(group => new MissingAppMetadataPackageDto(
+                group.Key,
+                group.Count(row => row.LastUsedAtUtc is not null),
+                group.Max(row => row.LastUsedAtUtc),
+                group.Sum(row => row.ForegroundMs)))
+            .OrderByDescending(item => item.ForegroundMs)
+            .ThenBy(item => item.PackageName, StringComparer.Ordinal)
+            .ToList();
+
+        return new MobileMissingAppMetadataResponse(
+            normalizedDeviceId,
+            rangeStart,
+            rangeEnd,
+            packages.Count,
+            packages.Take(take).ToList());
+    }
+
+    private sealed record UsageRow(string PackageName, DateTimeOffset? LastUsedAtUtc, long ForegroundMs);
 
     private static MobileQualityComponentDto Component(
         string key,

@@ -13,6 +13,18 @@ namespace Pim.Module.Mobile.Services;
 
 public sealed class MobileUsageIngestService
 {
+    /// <summary>
+    /// 允许"接管"未完成批次的租约时长：超过它说明上一个处理者已经不在了（进程崩溃 / 请求中断），
+    /// 而不是并发重投。租约内同一 batchId 的重投直接回放已持久化结果（#243）。
+    /// </summary>
+    private static readonly TimeSpan PendingBatchLease = TimeSpan.FromMinutes(2);
+
+    private const long MaxSummaryWindowMs = 8L * 60 * 60 * 1000;
+
+    /// <summary>汇总时长超过窗口（或超过 8h 上限）时按窗口裁剪入库，并打上该标记（#240 / INV-M16）。</summary>
+    private const string DurationClampedFlags = "[\"duration-clamped\"]";
+    private const string EmptyFlags = "[]";
+
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly MobileSessionInterpreter _sessionInterpreter;
@@ -39,36 +51,29 @@ public sealed class MobileUsageIngestService
     {
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var strategy = _db.Database.CreateExecutionStrategy();
+        var attemptState = new IngestAttemptState();
         return await strategy.ExecuteAsync(
-            token => IngestAttemptAsync(userId, request, token),
+            token => IngestAttemptAsync(userId, request, attemptState, token),
             ct);
     }
 
     private async Task<MobileUsageIngestResult> IngestAttemptAsync(
         Guid userId,
         MobileUsageEventsUploadRequest request,
+        IngestAttemptState attemptState,
         CancellationToken ct)
     {
         _db.ChangeTracker.Clear();
-        var existingBatch = await _db.Set<MobileSyncBatchEntity>()
-            .AsNoTracking()
-            .SingleOrDefaultAsync(b => b.UserId == userId
-                && b.DeviceId == request.DeviceId
-                && b.BatchId == request.BatchId, ct);
+        var existingBatch = await FindBatchAsync(userId, request, ct);
 
-        if (existingBatch is not null)
+        if (existingBatch is not null && MobileSyncBatchStatus.IsTerminal(existingBatch.Status))
             return BuildPersistedResult(existingBatch);
 
-        IDbContextTransaction? transaction = null;
-        try
+        var now = _timeProvider.GetUtcNow();
+        MobileSyncBatchEntity batch;
+        if (existingBatch is null)
         {
-            if (_db.Database.IsRelational())
-                transaction = await _db.Database.BeginTransactionAsync(ct);
-
-            var now = _timeProvider.GetUtcNow();
-            var itemResults = new List<MobileIngestItemResult>();
-            var batchErrors = new List<string>();
-            var batch = new MobileSyncBatchEntity
+            batch = new MobileSyncBatchEntity
             {
                 UserId = userId,
                 DeviceId = request.DeviceId,
@@ -76,11 +81,58 @@ public sealed class MobileUsageIngestService
                 WindowStartUtc = request.WindowStartUtc,
                 WindowEndUtc = request.WindowEndUtc,
                 AcceptedCount = 0,
+                RejectedCount = 0,
+                SkippedCount = 0,
                 FailedCount = 0,
-                Status = "completed",
+                Status = MobileSyncBatchStatus.Pending,
+                ErrorJson = "{}",
                 CreatedAt = now,
-                CompletedAtUtc = now
+                CompletedAtUtc = null
             };
+            _db.Set<MobileSyncBatchEntity>().Add(batch);
+            // 在写库之前就认领：执行策略重试时它才知道这条 pending 批次是自己的，可以接管重跑。
+            attemptState.OwnedPendingBatchId = batch.Id;
+
+            // 先把 pending 行落库（独立提交，不参与下面的事务）：
+            // 上传中断 / 进程崩溃留下的批次必须能被积压监控与质量面板看见（#243）。
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException) when (!ct.IsCancellationRequested)
+            {
+                // 并发重投：另一个请求先插入了同一批次，回放它的结果。
+                _db.ChangeTracker.Clear();
+                var winner = await FindBatchAsync(userId, request, ct);
+                if (winner is null)
+                    throw;
+
+                return BuildPersistedResult(winner);
+            }
+        }
+        else if (existingBatch.Id == attemptState.OwnedPendingBatchId)
+        {
+            // 本次请求自己的重试（执行策略重跑）：直接接管。
+            batch = existingBatch;
+        }
+        else if (await TryClaimStalePendingBatchAsync(existingBatch, now, ct) is { } claimed)
+        {
+            // 上一个处理者已经消失（租约过期），原子认领后幂等重跑。
+            batch = claimed;
+        }
+        else
+        {
+            // 同一 batchId 仍在处理中：不重复处理，回放当前已持久化的结果。
+            return BuildPersistedResult(existingBatch);
+        }
+
+        IDbContextTransaction? transaction = null;
+        try
+        {
+            if (_db.Database.IsRelational())
+                transaction = await _db.Database.BeginTransactionAsync(ct);
+
+            var itemResults = new List<MobileIngestItemResult>();
 
             foreach (var app in request.Apps)
                 itemResults.Add(await UpsertAppAsync(userId, request.DeviceId, app, now, ct));
@@ -91,17 +143,9 @@ public sealed class MobileUsageIngestService
                 itemResults.Add(await UpsertSummaryAsync(userId, request.DeviceId, summary, now, ct));
 
             var result = BuildResult(batch.BatchId, itemResults);
-            batch.AcceptedCount = result.ItemResults.Count(item =>
-                item.EntityType == "usage-event" && item.Outcome == "accepted");
-            batch.FailedCount = result.FailedCount;
-            batch.Status = result.RejectedCount > 0 || result.FailedCount > 0
-                ? "completed-with-errors"
-                : "completed";
-            batch.ErrorJson = MobileSyncBatchEnvelopeCodec.Serialize(
-                result.ItemResults,
-                batchErrors);
 
-            await _db.SaveChangesAsync(ct);
+            // 派生工作（会话重建 / 派生表标记）先跑，成功之后才把批次推进到终态：
+            // 中途失败时批次保持 pending（"上传中断"信号），而不是先宣告完成再回滚（#243）。
             await _sessionInterpreter.RebuildSessionsAsync(
                 userId,
                 request.DeviceId,
@@ -114,11 +158,25 @@ public sealed class MobileUsageIngestService
                 request.WindowEndUtc,
                 ct);
 
-            _db.Set<MobileSyncBatchEntity>().Add(batch);
+            // accepted_count 反映该批全部被接受的条目（事件 / 元数据 / 汇总），
+            // 而不是只有 usage-event —— 否则 2298 个批次显示 accepted_count = 0（#243）。
+            batch.AcceptedCount = result.AcceptedCount;
+            batch.RejectedCount = result.RejectedCount;
+            batch.SkippedCount = result.SkippedCount;
+            batch.FailedCount = result.FailedCount;
+            batch.Status = result.FailedCount > 0
+                ? MobileSyncBatchStatus.Failed
+                : MobileSyncBatchStatus.Completed;
+            batch.CompletedAtUtc = now;
+            batch.ErrorJson = MobileSyncBatchEnvelopeCodec.Serialize(
+                result.ItemResults,
+                BuildBatchErrors(result.ItemResults));
+
             await _db.SaveChangesAsync(ct);
             if (transaction is not null)
                 await transaction.CommitAsync(ct);
 
+            attemptState.OwnedPendingBatchId = null;
             return result;
         }
         catch (DbUpdateException) when (!ct.IsCancellationRequested)
@@ -127,12 +185,10 @@ public sealed class MobileUsageIngestService
             transaction = null;
             _db.ChangeTracker.Clear();
 
-            var persistedWinner = await _db.Set<MobileSyncBatchEntity>()
-                .AsNoTracking()
-                .SingleOrDefaultAsync(b => b.UserId == userId
-                    && b.DeviceId == request.DeviceId
-                    && b.BatchId == request.BatchId, ct);
-            if (persistedWinner is null)
+            // 只有当"另一路写入真的把这个批次跑完"时才算并发胜者；
+            // 否则（例如事件唯一约束冲突）必须原样抛出，不能把失败伪装成"回放成功"。
+            var persistedWinner = await FindBatchAsync(userId, request, ct);
+            if (persistedWinner is null || !MobileSyncBatchStatus.IsTerminal(persistedWinner.Status))
                 throw;
 
             return BuildPersistedResult(persistedWinner);
@@ -149,6 +205,58 @@ public sealed class MobileUsageIngestService
             if (transaction is not null)
                 await transaction.DisposeAsync();
         }
+    }
+
+    private async Task<MobileSyncBatchEntity?> FindBatchAsync(
+        Guid userId,
+        MobileUsageEventsUploadRequest request,
+        CancellationToken ct)
+        => await _db.Set<MobileSyncBatchEntity>()
+            .SingleOrDefaultAsync(b => b.UserId == userId
+                && b.DeviceId == request.DeviceId
+                && b.BatchId == request.BatchId, ct);
+
+    /// <summary>
+    /// 原子认领一条"上一个处理者已经消失"的 pending 批次：把租约刷新到现在。
+    /// 只有刷新成功（受影响行数 = 1）的请求才会继续处理，因此两个并发重投不会同时重跑同一批；
+    /// 刷新也顺带让积压巡检与设备删除守卫看到"这次尝试是什么时候开始的"。
+    /// 仍在租约内（或已被别的请求认领）时返回 null。
+    /// </summary>
+    private async Task<MobileSyncBatchEntity?> TryClaimStalePendingBatchAsync(
+        MobileSyncBatchEntity batch,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var cutoff = now - PendingBatchLease;
+        if (batch.CreatedAt > cutoff)
+            return null;
+
+        if (!_db.Database.IsRelational())
+        {
+            // 内存库没有并发写入，刷新租约即可。
+            batch.CreatedAt = now;
+            await _db.SaveChangesAsync(ct);
+            return batch;
+        }
+
+        FormattableString claim = $@"
+            UPDATE mobile_sync_batches
+               SET created_at = {now}
+             WHERE id = {batch.Id}
+               AND status = {MobileSyncBatchStatus.Pending}
+               AND created_at <= {cutoff};";
+        var claimed = await _db.Database.ExecuteSqlInterpolatedAsync(claim, ct);
+        if (claimed == 0)
+            return null;
+
+        _db.ChangeTracker.Clear();
+        return await _db.Set<MobileSyncBatchEntity>().SingleOrDefaultAsync(b => b.Id == batch.Id, ct);
+    }
+
+    private sealed class IngestAttemptState
+    {
+        /// <summary>本次请求自己插入的 pending 批次 Id（执行策略重试时用于接管）。</summary>
+        public Guid? OwnedPendingBatchId { get; set; }
     }
 
     private async Task<MobileIngestItemResult> UpsertAppAsync(
@@ -298,6 +406,22 @@ public sealed class MobileUsageIngestService
         if (validation is not null)
             return Rejected(clientItemKey, "usage-summary", validation);
 
+        // 零时长 = 该包在这个窗口内没有前台使用，是合法输入而不是非法数据（#240）：
+        // 整条拒绝会让汇总覆盖率从"全部包"退化为"有使用的包"，还会把批次打成异常。
+        if (summary.TotalTimeVisibleMs <= 0)
+            return Item(
+                clientItemKey,
+                "usage-summary",
+                "skipped",
+                "no-usage",
+                "No foreground usage in this window.");
+
+        var windowMs = (long)(summary.WindowEndUtc - summary.WindowStartUtc).TotalMilliseconds;
+        var effectiveMs = Math.Min(summary.TotalTimeVisibleMs, Math.Min(windowMs, MaxSummaryWindowMs));
+        var qualityFlags = effectiveMs < summary.TotalTimeVisibleMs
+            ? DurationClampedFlags
+            : EmptyFlags;
+
         var entity = _db.Set<MobileUsageSummaryEntity>().Local
             .SingleOrDefault(s => s.UserId == userId
                 && s.DeviceId == deviceId
@@ -313,7 +437,7 @@ public sealed class MobileUsageIngestService
                 && s.WindowEndUtc == summary.WindowEndUtc
                 && s.SourceKind == summary.SourceKind, ct);
 
-        if (entity is not null && SummaryMatches(entity, summary))
+        if (entity is not null && SummaryMatches(entity, summary, effectiveMs, qualityFlags))
             return Item(clientItemKey, "usage-summary", "skipped", "duplicate", "Duplicate item.");
 
         if (entity is null)
@@ -331,10 +455,10 @@ public sealed class MobileUsageIngestService
             _db.Set<MobileUsageSummaryEntity>().Add(entity);
         }
 
-        entity.TotalTimeVisibleMs = summary.TotalTimeVisibleMs;
+        entity.TotalTimeVisibleMs = effectiveMs;
         entity.LastTimeUsedUtc = summary.LastTimeUsedUtc;
         entity.RawJson = JsonOrDefault(summary.RawJson);
-        entity.QualityFlagsJson = "[]";
+        entity.QualityFlagsJson = qualityFlags;
         entity.UpdatedAt = now;
         return Item(clientItemKey, "usage-summary", "accepted", "accepted", "Accepted.");
     }
@@ -359,8 +483,8 @@ public sealed class MobileUsageIngestService
             : new MobileUsageIngestResult(
                 batch.BatchId,
                 batch.AcceptedCount,
-                0,
-                0,
+                batch.SkippedCount,
+                batch.RejectedCount,
                 batch.FailedCount,
                 []);
 
@@ -479,15 +603,46 @@ public sealed class MobileUsageIngestService
             || summary.WindowEndUtc == default
             || summary.WindowEndUtc <= summary.WindowStartUtc)
             return new ValidationError("invalid-time", "Summary window end must follow its start.");
-        if (summary.TotalTimeVisibleMs <= 0)
-            return new ValidationError("invalid-duration", "Foreground duration must be positive and within window.");
-        if (summary.TotalTimeVisibleMs > (summary.WindowEndUtc - summary.WindowStartUtc).TotalMilliseconds)
-            return new ValidationError("invalid-duration", "Foreground duration exceeds window duration.");
-        if (summary.TotalTimeVisibleMs > 8L * 60 * 60 * 1000)
-            return new ValidationError("invalid-duration", "Foreground duration exceeds 8 hours.");
+        if (summary.TotalTimeVisibleMs < 0)
+            return new ValidationError("invalid-duration", "Foreground duration must not be negative.");
         if (string.IsNullOrWhiteSpace(summary.SourceKind) || summary.SourceKind.Length > 64)
             return new ValidationError("invalid-source-kind", "Source kind is required and must not exceed 64 characters.");
         return ValidateJson(summary.RawJson);
+    }
+
+    /// <summary>
+    /// 批次级错误摘要（#243）：让"批次失败/有条目被拒"有可读原因，
+    /// 而不是让调用方去展开上千条 ItemResults。
+    /// </summary>
+    private static List<string> BuildBatchErrors(IReadOnlyList<MobileIngestItemResult> itemResults)
+    {
+        var errors = new List<string>();
+
+        var failed = itemResults.Where(item => item.Outcome == "failed").ToList();
+        if (failed.Count > 0)
+        {
+            var reasons = failed
+                .Select(item => item.Message)
+                .Where(message => !string.IsNullOrWhiteSpace(message))
+                .Distinct(StringComparer.Ordinal)
+                .Take(3);
+            errors.Add($"failed: {failed.Count} item(s). {string.Join(" ", reasons)}".TrimEnd());
+        }
+
+        var rejectedGroups = itemResults
+            .Where(item => item.Outcome == "rejected")
+            .GroupBy(item => new { item.EntityType, item.Code })
+            .OrderByDescending(group => group.Count());
+        foreach (var group in rejectedGroups)
+        {
+            var sample = group
+                .Select(item => item.Message)
+                .FirstOrDefault(message => !string.IsNullOrWhiteSpace(message));
+            errors.Add(
+                $"rejected: {group.Count()} {group.Key.EntityType} item(s) [{group.Key.Code}] {sample}".TrimEnd());
+        }
+
+        return errors;
     }
 
     private static ValidationError? ValidatePackageName(string packageName)
@@ -524,11 +679,15 @@ public sealed class MobileUsageIngestService
             && entity.LastUpdateTimeUtc == app.LastUpdateTimeUtc
             && entity.RawJson == JsonOrDefault(app.RawJson);
 
-    private static bool SummaryMatches(MobileUsageSummaryEntity entity, MobileUsageSummaryDto summary)
-        => entity.TotalTimeVisibleMs == summary.TotalTimeVisibleMs
+    private static bool SummaryMatches(
+        MobileUsageSummaryEntity entity,
+        MobileUsageSummaryDto summary,
+        long effectiveMs,
+        string qualityFlags)
+        => entity.TotalTimeVisibleMs == effectiveMs
             && entity.LastTimeUsedUtc == summary.LastTimeUsedUtc
             && entity.RawJson == JsonOrDefault(summary.RawJson)
-            && entity.QualityFlagsJson == "[]";
+            && entity.QualityFlagsJson == qualityFlags;
 
     private async Task MarkAffectedAnalyticsStaleAsync(
         MobileUsageEventsUploadRequest request,

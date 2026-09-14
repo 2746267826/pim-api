@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Common;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
@@ -51,8 +52,7 @@ public sealed class MobileUsageQueryService
         var fallbackSeconds = fallbackMs / 1000;
         var appSwitchCount = sessionCounts.Values.Sum();
         var appsUsed = packageNames.Length;
-        var failedBatchCount = batches.Count(b => !string.Equals(b.Status, "completed", StringComparison.OrdinalIgnoreCase)
-            || b.FailedCount > 0);
+        var failedBatchCount = batches.Count(b => MobileSyncBatchStatus.IsFailed(b.FailedCount, b.Status));
 
         var ranking = summaryRows
             .GroupBy(s => s.PackageName)
@@ -90,7 +90,8 @@ public sealed class MobileUsageQueryService
                 b.CompletedAtUtc ?? b.CreatedAt,
                 b.Status,
                 b.AcceptedCount,
-                0,
+                b.SkippedCount,
+                b.RejectedCount,
                 locationPoints.Count(p => p.DeviceId == b.DeviceId
                     && p.RecordedAtUtc >= b.WindowStartUtc
                     && p.RecordedAtUtc < b.WindowEndUtc
@@ -318,7 +319,7 @@ public sealed class MobileUsageQueryService
     }
 
     private static string DateLabel(MobileSummaryQuery query)
-        => (query.RangeStartUtc ?? DateTimeOffset.UtcNow).UtcDateTime.ToString("yyyy-MM-dd");
+        => BusinessDay.FormatDate(BusinessDay.GetBusinessDate(query.RangeStartUtc ?? DateTimeOffset.UtcNow));
 
     private static string DisplayName(IReadOnlyDictionary<string, MobileAppCatalogEntity> apps, string packageName)
         => apps.TryGetValue(packageName, out var app) && !string.IsNullOrWhiteSpace(app.DisplayName)
@@ -330,7 +331,7 @@ public sealed class MobileUsageQueryService
 
     private static List<MobileUsageSummaryEntity> DeduplicateSummaries(List<MobileUsageSummaryEntity> summaries)
     {
-        var shanghai = ResolveShanghaiTimeZone();
+        var shanghai = BusinessDay.TimeZone;
         return summaries
             .GroupBy(s =>
             {
@@ -340,12 +341,5 @@ public sealed class MobileUsageQueryService
             })
             .Select(g => g.OrderByDescending(s => s.TotalTimeVisibleMs).First())
             .ToList();
-    }
-
-    private static TimeZoneInfo ResolveShanghaiTimeZone()
-    {
-        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"); }
-        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
-        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
     }
 }

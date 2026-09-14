@@ -883,11 +883,23 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector
 
         await using var cmd = conn.CreateCommand();
         cmd.CommandTimeout = 15;
-        cmd.CommandText = """
-            SELECT batch_id, status, failed_count, accepted_count 
-            FROM mobile_sync_batches 
-            ORDER BY created_at DESC;
-            """;
+        // 计数必须与写入侧口径一致（#241 / #243）：accepted 统计全部被接受条目，
+        // rejected / skipped 是条目级结果，不能一律当成 0，否则"只含拒绝/跳过条目的合法批次"
+        // 会被规则 3（虚假完成）误判。
+        // 对尚未跑完迁移的库（新增列还不存在）退化为只读旧列，规则 1/2 仍然有效。
+        var hasItemCounts = await ColumnExistsAsync(conn, "mobile_sync_batches", "rejected_count", ct)
+            && await ColumnExistsAsync(conn, "mobile_sync_batches", "skipped_count", ct);
+        cmd.CommandText = hasItemCounts
+            ? """
+              SELECT batch_id, status, failed_count, accepted_count, rejected_count, skipped_count
+              FROM mobile_sync_batches 
+              ORDER BY created_at DESC;
+              """
+            : """
+              SELECT batch_id, status, failed_count, accepted_count, 0, 0
+              FROM mobile_sync_batches 
+              ORDER BY created_at DESC;
+              """;
 
         var batches = new List<BatchSyncStatusRecord>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -897,14 +909,17 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector
             string status = reader.GetString(1);
             int failed = reader.GetInt32(2);
             int accepted = reader.GetInt32(3);
+            int rejected = reader.GetInt32(4);
+            int skipped = reader.GetInt32(5);
             batches.Add(new BatchSyncStatusRecord
             {
                 BatchId = batchId,
                 Status = status,
-                TotalCount = accepted + failed,
+                TotalCount = accepted + failed + rejected + skipped,
                 AcceptedCount = accepted,
                 FailedCount = failed,
-                RejectedCount = 0
+                RejectedCount = rejected,
+                SkippedCount = skipped
             });
         }
 
@@ -1002,6 +1017,26 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector
             await using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = 5;
             cmd.CommandText = $"SELECT 1 FROM \"{tableName}\" LIMIT 0;";
+            await cmd.ExecuteNonQueryAsync(ct);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static async Task<bool> ColumnExistsAsync(
+        DbConnection conn,
+        string tableName,
+        string columnName,
+        CancellationToken ct)
+    {
+        try
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandTimeout = 5;
+            cmd.CommandText = $"SELECT \"{columnName}\" FROM \"{tableName}\" LIMIT 0;";
             await cmd.ExecuteNonQueryAsync(ct);
             return true;
         }

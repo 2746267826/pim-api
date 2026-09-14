@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
+using Pim.Core.Common;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
@@ -568,7 +569,7 @@ public sealed class MobileUsageAggregationService
                 && (context.DeviceId == null || batch.DeviceId == context.DeviceId)
                 && batch.WindowStartUtc < context.Range.RangeEndUtc
                 && batch.WindowEndUtc > context.Range.RangeStartUtc
-                && (batch.FailedCount > 0 || batch.Status != "completed"), ct);
+                && (batch.FailedCount > 0 || batch.Status == MobileSyncBatchStatus.Failed), ct);
     }
 
     private async Task<DateTimeOffset?> LastSyncAtAsync(MobileAnalyticsQueryContext context, CancellationToken ct)
@@ -779,7 +780,7 @@ public sealed class MobileUsageAggregationService
         CancellationToken ct)
     {
         var summaries = await query.ToListAsync(ct);
-        var shanghai = ResolveShanghaiTimeZone();
+        var shanghai = BusinessDay.TimeZone;
         return summaries
             .GroupBy(s =>
             {
@@ -789,13 +790,6 @@ public sealed class MobileUsageAggregationService
             })
             .Select(group => group.OrderByDescending(s => s.TotalTimeVisibleMs).First())
             .ToList();
-    }
-
-    private static TimeZoneInfo ResolveShanghaiTimeZone()
-    {
-        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"); }
-        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
-        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
     }
 
     private static string FirstNonBlank(params string?[] values)

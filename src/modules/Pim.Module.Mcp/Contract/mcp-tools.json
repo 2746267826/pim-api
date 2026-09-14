@@ -1676,11 +1676,6 @@
      ],
      "default": null,
      "title": "Deviceid"
-    },
-    "timezone": {
-     "default": "Asia/Shanghai",
-     "title": "Timezone",
-     "type": "string"
     }
    },
    "required": [
@@ -1710,11 +1705,6 @@
      ],
      "default": null,
      "title": "Deviceid"
-    },
-    "timezone": {
-     "default": "Asia/Shanghai",
-     "title": "Timezone",
-     "type": "string"
     },
     "redactUrls": {
      "default": true,
@@ -1940,11 +1930,6 @@
      ],
      "default": null,
      "title": "Deviceid"
-    },
-    "timezone": {
-     "default": "Asia/Shanghai",
-     "title": "Timezone",
-     "type": "string"
     }
    },
    "required": [

@@ -70,6 +70,7 @@ public sealed class MobileWebContractTests
                     0,
                     0,
                     0,
+                    0,
                     null)
             ],
             0));

@@ -944,7 +944,8 @@ public static class DataReliabilityInvariants
                 }
             }
             // 3. 处理计数全为 0 却标为已完成 (虚假完成 / 空转批次)
-            else if ((b.TotalCount == 0 || (b.AcceptedCount == 0 && b.FailedCount == 0 && b.RejectedCount == 0)) && b.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
+            //    注意 skipped 也是"处理过"的条目：只含重复条目的批次是合法完成（#243）。
+            else if ((b.TotalCount == 0 || (b.AcceptedCount == 0 && b.FailedCount == 0 && b.RejectedCount == 0 && b.SkippedCount == 0)) && b.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
             {
                 totalViolations++;
                 if (samples.Count < opt.MaxSampleCount)
