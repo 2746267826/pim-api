@@ -2,12 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Bogus;
+using Pim.Core.Invariants;
 
 namespace Pim.UnitTests.Harness.Generators;
 
 /// <summary>
 /// 多设备重复上报生成器
 /// 覆盖：同一用户多设备、同时段双设备上报、旧设备停更、新设备无数据
+/// 现已扩展支持 S6 (INV-P20: 设备离线声明与断档) 与 S7 (INV-P21: 时间线 >15 分钟空洞标记)
 /// </summary>
 public static class MultiDeviceGenerator
 {
@@ -55,7 +57,6 @@ public static class MultiDeviceGenerator
         foreach (var device in devices)
         {
             var list = new List<(string, DateTimeOffset, DateTimeOffset)>();
-            // 同一时间段完全重叠，并增加随机抖动
             for (int i = 0; i < 5; i++)
             {
                 var pkg = faker.PickRandom(Packages);
@@ -88,7 +89,6 @@ public static class MultiDeviceGenerator
             active.Add((faker.PickRandom(Packages), start, end));
             stale.Add((faker.PickRandom(Packages), start, end));
         }
-        // stale device只有上午数据，active全天
         for (int i = 0; i < 5; i++)
         {
             var start = noon.AddSeconds(faker.Random.Int(0, 40000));
@@ -118,7 +118,7 @@ public static class MultiDeviceGenerator
             main.Add((faker.PickRandom(Packages), start, end));
         }
         result["android-main"] = main;
-        result["android-new"] = new List<(string, DateTimeOffset, DateTimeOffset)>(); // 无数据
+        result["android-new"] = new List<(string, DateTimeOffset, DateTimeOffset)>();
         return result;
     }
 
@@ -147,5 +147,158 @@ public static class MultiDeviceGenerator
         var pre = perDevice.ToDictionary(kv => kv.Key, kv => kv.Value.Count);
         var total = pre.Values.Sum();
         return (pre, total);
+    }
+
+    /// <summary>
+    /// S6 (INV-P20): 生成无声明空档轨迹（>30分钟空档无关机/睡眠声明，或上传滞后p99>30分钟）
+    /// 最小可复现样例：10:30 到 11:30 存在 60 分钟空档且无任何关机声明
+    /// </summary>
+    public static DeviceActivityTrace GenerateS6UndeclaredGapTrace(int seed = 42, bool byUploadLag = false)
+    {
+        const string deviceId = "device_s6_undeclared";
+        var baseTime = new DateTime(2026, 7, 6, 10, 0, 0, DateTimeKind.Utc);
+
+        if (byUploadLag)
+        {
+            // 上传滞后超过 30 分钟 (例如 45 分钟滞后)
+            return new DeviceActivityTrace
+            {
+                DeviceId = deviceId,
+                EventTimes = new List<DateTime> { baseTime, baseTime.AddMinutes(5), baseTime.AddMinutes(10) },
+                Declarations = new List<OfflineDeclaration>(),
+                UploadLagSamples = new List<(DateTime, DateTime)>
+                {
+                    (baseTime, baseTime.AddMinutes(45)),
+                    (baseTime.AddMinutes(5), baseTime.AddMinutes(50)),
+                    (baseTime.AddMinutes(10), baseTime.AddMinutes(55))
+                }
+            };
+        }
+
+        return new DeviceActivityTrace
+        {
+            DeviceId = deviceId,
+            // 10:00, 10:30, 然后断档到 11:30 (60分钟空档 > 30分钟)
+            EventTimes = new List<DateTime>
+            {
+                baseTime,
+                baseTime.AddMinutes(30),
+                baseTime.AddMinutes(90),
+                baseTime.AddMinutes(120)
+            },
+            Declarations = new List<OfflineDeclaration>(), // 空声明列表 -> 触发无声明空档
+            UploadLagSamples = new List<(DateTime, DateTime)>
+            {
+                (baseTime, baseTime.AddMinutes(1)),
+                (baseTime.AddMinutes(30), baseTime.AddMinutes(31))
+            }
+        };
+    }
+
+    /// <summary>
+    /// S6 (INV-P20): 生成合规设备轨迹（空档伴随明确关机声明，上传滞后极低）（绿尺子基线）
+    /// </summary>
+    public static DeviceActivityTrace GenerateS6DeclaredGapTrace(int seed = 42)
+    {
+        const string deviceId = "device_s6_declared";
+        var baseTime = new DateTime(2026, 7, 6, 10, 0, 0, DateTimeKind.Utc);
+
+        return new DeviceActivityTrace
+        {
+            DeviceId = deviceId,
+            EventTimes = new List<DateTime>
+            {
+                baseTime,
+                baseTime.AddMinutes(30),
+                baseTime.AddMinutes(90),
+                baseTime.AddMinutes(120)
+            },
+            Declarations = new List<OfflineDeclaration>
+            {
+                // 声明了关机/睡眠状态，涵盖 10:30 到 11:30 的空档
+                new()
+                {
+                    DeviceId = deviceId,
+                    StartTime = baseTime.AddMinutes(30),
+                    EndTime = baseTime.AddMinutes(90),
+                    Reason = "system_shutdown"
+                }
+            },
+            UploadLagSamples = new List<(DateTime, DateTime)>
+            {
+                (baseTime, baseTime.AddMinutes(1)),
+                (baseTime.AddMinutes(30), baseTime.AddMinutes(31)),
+                (baseTime.AddMinutes(90), baseTime.AddMinutes(91))
+            }
+        };
+    }
+
+    /// <summary>
+    /// S7 (INV-P21): 生成未标记的 >15 分钟时间线空洞（违规）
+    /// 最小可复现样例：两个正常事件间隔 40 分钟，且中间没有任何 gap 标记区间
+    /// </summary>
+    public static List<TimelineInterval> GenerateS7UnmarkedGapIntervals(int seed = 42)
+    {
+        const string deviceId = "device_s7_unmarked";
+        var baseTime = new DateTime(2026, 7, 6, 9, 0, 0, DateTimeKind.Utc);
+
+        return new List<TimelineInterval>
+        {
+            new()
+            {
+                DeviceId = deviceId,
+                StartTime = baseTime,
+                EndTime = baseTime.AddMinutes(30),
+                IsGap = false,
+                EventType = "window"
+            },
+            // 09:30 到 10:10 存在 40 分钟空洞，且未被标记
+            new()
+            {
+                DeviceId = deviceId,
+                StartTime = baseTime.AddMinutes(70),
+                EndTime = baseTime.AddMinutes(100),
+                IsGap = false,
+                EventType = "window"
+            }
+        };
+    }
+
+    /// <summary>
+    /// S7 (INV-P21): 生成已正确标记为 gap 的时间线区间（合规数据，绿尺子基线）
+    /// </summary>
+    public static List<TimelineInterval> GenerateS7MarkedGapIntervals(int seed = 42)
+    {
+        const string deviceId = "device_s7_marked";
+        var baseTime = new DateTime(2026, 7, 6, 9, 0, 0, DateTimeKind.Utc);
+
+        return new List<TimelineInterval>
+        {
+            new()
+            {
+                DeviceId = deviceId,
+                StartTime = baseTime,
+                EndTime = baseTime.AddMinutes(30),
+                IsGap = false,
+                EventType = "window"
+            },
+            // 09:30 到 10:10 的 40 分钟空洞被明确标记为 gap
+            new()
+            {
+                DeviceId = deviceId,
+                StartTime = baseTime.AddMinutes(30),
+                EndTime = baseTime.AddMinutes(70),
+                IsGap = true,
+                EventType = "gap"
+            },
+            new()
+            {
+                DeviceId = deviceId,
+                StartTime = baseTime.AddMinutes(70),
+                EndTime = baseTime.AddMinutes(100),
+                IsGap = false,
+                EventType = "window"
+            }
+        };
     }
 }
