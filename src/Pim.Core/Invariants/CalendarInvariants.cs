@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace Pim.UnitTests.Harness.Invariants;
+namespace Pim.Core.Invariants;
 
 /// <summary>
 /// 日历模块不变量定义
@@ -15,7 +15,7 @@ public static class CalendarInvariants
     /// threshold: expectedCount 按 RRULE 推导（COUNT / UNTIL / 间隔折算）；tolerance: 0 允许遗漏 0 条，超过即 FAIL
     /// 不变量: |expanded.Count - expectedCount| <= tolerance (tolerance=0)
     /// </summary>
-    public static (bool pass, string detail) CheckRecurrenceExpansionCompleteness(
+    public static InvariantResult CheckRecurrenceExpansionCompleteness(
         List<DateTimeOffset> expandedOccurrences,
         int expectedCount,
         int tolerance = 0)
@@ -51,7 +51,7 @@ public static class CalendarInvariants
     /// threshold: maxLeadMinutes 默认 10080 分钟（7天）为最大提前量；tolerance: 1秒 允许舍入误差
     /// 不变量: eventStart - maxLead - tolerance <= reminderTime <= eventStart + tolerance
     /// </summary>
-    public static (bool pass, string detail) CheckReminderTiming(
+    public static InvariantResult CheckReminderTiming(
         List<(DateTimeOffset eventStart, DateTimeOffset reminderTime)> reminders,
         double maxLeadMinutes = 10080,
         double toleranceSeconds = 1.0)
@@ -83,7 +83,7 @@ public static class CalendarInvariants
     /// threshold: overlapThresholdSeconds = 60秒（小于60秒的重叠视为容差不算冲突）；tolerance: 0 误报/漏报 0 条
     /// 不变量: overlap > threshold => conflictReported == true; overlap <= threshold => conflictReported == false
     /// </summary>
-    public static (bool pass, string detail) CheckOutlookConflictDetection(
+    public static InvariantResult CheckOutlookConflictDetection(
         List<(DateTimeOffset start, DateTimeOffset end, bool conflictReported)> events,
         double overlapThresholdSeconds = 60.0,
         int tolerance = 0)
@@ -148,7 +148,7 @@ public static class CalendarInvariants
     /// threshold: reportTotal 为汇总侧声明的总值；tolerance: 明细条数 * 1秒（每条允许1秒舍入）
     /// 不变量: |sum(details) - reportTotal| <= tolerance
     /// </summary>
-    public static (bool pass, string detail) CheckReportSumEqualsDetail(
+    public static InvariantResult CheckReportSumEqualsDetail(
         List<double> detailSeconds,
         double reportTotalSeconds,
         double perItemToleranceSeconds = 1.0)
@@ -170,7 +170,7 @@ public static class CalendarInvariants
     /// threshold: exceptionCount 期望覆盖数 == occurrences 中 IsException==true 的数量；tolerance: 0 条重复/遗漏
     /// 不变量: overlay 后总实例数 == 原展开数 - 被覆盖数 + 例外数，且无重复 recurrenceId
     /// </summary>
-    public static (bool pass, string detail) CheckRecurrenceExceptionOverlay(
+    public static InvariantResult CheckRecurrenceExceptionOverlay(
         List<(string recurrenceId, DateTimeOffset originalStart, bool isException, DateTimeOffset? exceptionStart)> occurrences,
         int tolerance = 0)
     {
@@ -209,7 +209,7 @@ public static class CalendarInvariants
     /// threshold: taskDurationSeconds 为任务声明总时长；tolerance: 1秒 * 分段数（每段允许1秒舍入）
     /// 不变量: 0 &lt;= segment.duration &lt;= taskDuration 且 |sum(segments) - taskDuration| &lt;= tolerance 且段间无重叠
     /// </summary>
-    public static (bool pass, string detail) CheckTaskSegmentCoverage(
+    public static InvariantResult CheckTaskSegmentCoverage(
         List<(DateTimeOffset start, DateTimeOffset end)> segments,
         double taskDurationSeconds,
         double perSegmentToleranceSeconds = 1.0)
@@ -255,7 +255,7 @@ public static class CalendarInvariants
     /// threshold: maxDurationSeconds 默认 86400秒（24小时）为单事件最大允许；tolerance: 1秒 允许舍入
     /// 不变量: -tolerance &lt;= durationSeconds &lt;= maxDuration + tolerance
     /// </summary>
-    public static (bool pass, string detail) CheckEventDurationBounds(
+    public static InvariantResult CheckEventDurationBounds(
         List<(string eventId, DateTimeOffset start, DateTimeOffset end)> events,
         double maxDurationSeconds = 86400.0,
         double toleranceSeconds = 1.0)
@@ -277,7 +277,7 @@ public static class CalendarInvariants
     /// threshold: expectedUniqueCount == distinct GraphEventId 数量；tolerance: 0 重复 0 条幽灵
     /// 不变量: distinct(GraphEventId) == total && ghostCount == 0
     /// </summary>
-    public static (bool pass, string detail) CheckCalendarDeduplication(
+    public static InvariantResult CheckCalendarDeduplication(
         List<(string graphEventId, string recurrenceId, DateTimeOffset start)> viewEvents,
         HashSet<string>? knownGraphIds = null,
         int tolerance = 0)
@@ -314,7 +314,7 @@ public static class CalendarInvariants
     /// threshold: durationSeconds 通过 (end - start).TotalSeconds 推导；tolerance: 1秒 允许夏令时/舍入误差
     /// 不变量: |convertedDuration - originalDuration| &lt;= tolerance 且 start/end Offset 与 timeZoneId 匹配（±1小时容差）
     /// </summary>
-    public static (bool pass, string detail) CheckTimezoneConsistency(
+    public static InvariantResult CheckTimezoneConsistency(
         List<(string eventId, DateTimeOffset start, DateTimeOffset end, string timeZoneId)> events,
         double toleranceSeconds = 1.0)
     {
@@ -355,7 +355,7 @@ public static class CalendarInvariants
     /// threshold: window 外事件数阈值 0；tolerance: 0 条窗口外，1秒 边界容差（事件恰好在边界上算相交）
     /// 不变量: viewEvents.All(e =&gt; e.end &gt; windowStart - tolerance &amp;&amp; e.start &lt; windowEnd + tolerance) 且超出数为 0
     /// </summary>
-    public static (bool pass, string detail) CheckViewWindowFiltering(
+    public static InvariantResult CheckViewWindowFiltering(
         List<(string eventId, DateTimeOffset start, DateTimeOffset end)> viewEvents,
         DateTimeOffset windowStart,
         DateTimeOffset windowEnd,

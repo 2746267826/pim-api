@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace Pim.UnitTests.Harness.Invariants;
+namespace Pim.Core.Invariants;
 
 /// <summary>
 /// 手机时间类不变量定义
@@ -16,7 +16,7 @@ public static class MobileTimeInvariants
     /// INV-M01: 单设备单小时去重后时长 <= 3600秒 * (1 + 容差)
     /// 容差5%给四舍五入和边界重叠
     /// </summary>
-    public static (bool pass, string detail) CheckSingleHourCap(
+    public static InvariantResult CheckSingleHourCap(
         Dictionary<int, double> hourBuckets, double tolerance = 0.05)
     {
         var maxAllowed = 3600.0 * (1 + tolerance);
@@ -36,7 +36,7 @@ public static class MobileTimeInvariants
     /// <summary>
     /// INV-M02: 单设备单天去重后时长 <= 86400秒 * (1 + 容差)
     /// </summary>
-    public static (bool pass, string detail) CheckSingleDayCap(
+    public static InvariantResult CheckSingleDayCap(
         Dictionary<string, double> dailyTotals, double tolerance = 0.05)
     {
         var maxAllowed = 86400.0 * (1 + tolerance);
@@ -56,7 +56,7 @@ public static class MobileTimeInvariants
     /// <summary>
     /// INV-M03: 总时长 <= 查询区间长度
     /// </summary>
-    public static (bool pass, string detail) CheckTotalNotExceedRange(
+    public static InvariantResult CheckTotalNotExceedRange(
         double totalSeconds, TimeSpan queryRange)
     {
         var maxAllowed = queryRange.TotalSeconds;
@@ -73,7 +73,7 @@ public static class MobileTimeInvariants
     /// <summary>
     /// INV-M04: 小时桶之和 == 总时长（误差 <= 1秒 * 桶数量）
     /// </summary>
-    public static (bool pass, string detail) CheckBucketsSumEqualTotal(
+    public static InvariantResult CheckBucketsSumEqualTotal(
         Dictionary<int, double> hourBuckets, double totalSeconds, int bucketCount)
     {
         var bucketSum = hourBuckets.Values.Sum();
@@ -91,7 +91,7 @@ public static class MobileTimeInvariants
     /// <summary>
     /// INV-M05: 分类桶之和 == 总时长（误差 <= 1秒 * 分类数）
     /// </summary>
-    public static (bool pass, string detail) CheckCategoryBucketsSumEqualTotal(
+    public static InvariantResult CheckCategoryBucketsSumEqualTotal(
         Dictionary<string, double> categoryBuckets, double totalSeconds)
     {
         var categorySum = categoryBuckets.Values.Sum();
@@ -109,7 +109,7 @@ public static class MobileTimeInvariants
     /// <summary>
     /// INV-M06: fallback summary 按小时去重后，同一app同一小时只取一条
     /// </summary>
-    public static (bool pass, string detail) CheckDeduplicatedSummaries(
+    public static InvariantResult CheckDeduplicatedSummaries(
         List<(string packageName, int hour, double totalTimeMs)> summaries)
     {
         var duplicates = summaries
@@ -129,7 +129,7 @@ public static class MobileTimeInvariants
     /// <summary>
     /// INV-M07: 非负约束 - 所有时长 >= 0
     /// </summary>
-    public static (bool pass, string detail) CheckNonNegative(
+    public static InvariantResult CheckNonNegative(
         Dictionary<int, double> hourBuckets)
     {
         var negatives = hourBuckets.Where(kv => kv.Value < 0).ToList();
@@ -145,7 +145,7 @@ public static class MobileTimeInvariants
     /// <summary>
     /// INV-M08: 单session时长 <= 24小时（标记为异常的阈值）
     /// </summary>
-    public static (bool pass, string detail) CheckSingleSessionCap(
+    public static InvariantResult CheckSingleSessionCap(
         List<(string packageName, double durationMs)> sessions,
         double maxDurationMs = 8 * 3600 * 1000) // 8小时
     {
@@ -165,7 +165,7 @@ public static class MobileTimeInvariants
     /// <summary>
     /// INV-M09: 所有App分类必须在预定义的LifeCategories内
     /// </summary>
-    public static (bool pass, string detail) CheckValidCategories(
+    public static InvariantResult CheckValidCategories(
         Dictionary<string, string> appCategories)
     {
         var validCategories = new HashSet<string>
@@ -193,7 +193,7 @@ public static class MobileTimeInvariants
     /// INV-M10: Session DurationMs 一致性 - DurationMs == (EndUtc - StartUtc).TotalMilliseconds 容差1ms
     /// 不变量: |durationMs - (end-start).TotalMilliseconds| <= 1
     /// </summary>
-    public static (bool pass, string detail) CheckSessionDurationConsistency(
+    public static InvariantResult CheckSessionDurationConsistency(
         List<(string packageName, DateTimeOffset start, DateTimeOffset? end, long durationMs)> sessions)
     {
         foreach (var s in sessions)
@@ -211,7 +211,7 @@ public static class MobileTimeInvariants
     /// INV-M11: Prorated fallback 秒数不超过原始 TotalTimeVisibleMs/1000
     /// 不变量: proratedSeconds <= originalMs/1000 + 1
     /// </summary>
-    public static (bool pass, string detail) CheckProratedNotExceedOriginal(
+    public static InvariantResult CheckProratedNotExceedOriginal(
         List<(string packageName, long totalTimeVisibleMs, long proratedSeconds)> summaries)
     {
         foreach (var s in summaries)
@@ -228,7 +228,7 @@ public static class MobileTimeInvariants
     /// 不变量: 0 <= completeness <= 1
     /// 容差: 允许浮点误差1e-9
     /// </summary>
-    public static (bool pass, string detail) CheckCompletenessRange(double completeness)
+    public static InvariantResult CheckCompletenessRange(double completeness)
     {
         if (completeness < -1e-9 || completeness > 1.0 + 1e-9)
             return (false, $"INV-M12 FAIL: completeness {completeness:F3} out of [0,1]");
@@ -239,7 +239,7 @@ public static class MobileTimeInvariants
     /// INV-M13: TopApps 排行按前景时长降序
     /// 不变量: ranking[i].seconds >= ranking[i+1].seconds for all i
     /// </summary>
-    public static (bool pass, string detail) CheckRankingMonotonic(
+    public static InvariantResult CheckRankingMonotonic(
         List<(string packageName, double foregroundSeconds)> ranking)
     {
         for (int i = 1; i < ranking.Count; i++)
@@ -254,7 +254,7 @@ public static class MobileTimeInvariants
     /// INV-M14: 每小时去重后秒数不超过桶长度（3600s）且非负
     /// 不变量: 0 <= bucketSeconds <= bucketDurationSeconds * 1.05
     /// </summary>
-    public static (bool pass, string detail) CheckBucketSecondsBounded(
+    public static InvariantResult CheckBucketSecondsBounded(
         Dictionary<string, double> bucketSeconds, double bucketDurationSeconds = 3600.0, double tolerance = 0.05)
     {
         var maxAllowed = bucketDurationSeconds * (1 + tolerance);
@@ -272,7 +272,7 @@ public static class MobileTimeInvariants
     /// INV-M15: DailyAverage 一致性 - dailyAverage * dayCount 接近 total
     /// 不变量: |dailyAverage * dayCount - total| <= dayCount * 1
     /// </summary>
-    public static (bool pass, string detail) CheckDailyAverageConsistency(long totalSeconds, long dailyAverageSeconds, int dayCount)
+    public static InvariantResult CheckDailyAverageConsistency(long totalSeconds, long dailyAverageSeconds, int dayCount)
     {
         if (dayCount <= 0) return (true, "INV-M15 PASS");
         var expected = dailyAverageSeconds * dayCount;
@@ -287,7 +287,7 @@ public static class MobileTimeInvariants
     /// INV-M16: TotalTimeVisibleMs 非负且单条不超过8小时 (阈值来源: MobileUsageAggregationService 异常过滤 8h)
     /// 不变量: 0 <= totalTimeVisibleMs <= 8*3600*1000
     /// </summary>
-    public static (bool pass, string detail) CheckTotalTimeVisibleMsBounded(
+    public static InvariantResult CheckTotalTimeVisibleMsBounded(
         List<(string packageName, long totalTimeVisibleMs)> summaries, long maxMs = 8L * 3600 * 1000)
     {
         foreach (var s in summaries)
@@ -305,7 +305,7 @@ public static class MobileTimeInvariants
     /// 不变量: sourceKind ∈ {queryUsageStats, fallback, summary, usage-stats-fallback, ...} 且长度 (0,64]
     /// 阈值: 长度>0 && <=64 且匹配白名单或含 fallback/summary/events
     /// </summary>
-    public static (bool pass, string detail) CheckSourceKindValid(List<string> sourceKinds)
+    public static InvariantResult CheckSourceKindValid(List<string> sourceKinds)
     {
         var valid = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {

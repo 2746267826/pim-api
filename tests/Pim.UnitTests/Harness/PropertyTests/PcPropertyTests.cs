@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Pim.Module.PcTracker.Services;
 using Pim.UnitTests.Harness.Generators;
-using Pim.UnitTests.Harness.Invariants;
+using Pim.Core.Invariants;
 using Xunit;
 
 namespace Pim.UnitTests.Harness.PropertyTests;

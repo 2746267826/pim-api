@@ -1,3 +1,4 @@
+using Pim.Core.Invariants;
 using Hangfire;
 using Hangfire.PostgreSql;
 using Microsoft.AspNetCore.DataProtection;
@@ -73,6 +74,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IDataQualityInspector, HeartbeatFreshnessInspector>();
         services.AddScoped<AiGatewayQualityInspector>();
         services.AddScoped<IDataQualityInspector, AiGatewayQualityInspector>();
+        services.Configure<InvariantOptions>(configuration.GetSection("Invariants"));
+        services.AddScoped<DataReliabilityQualityInspector>();
+        services.AddScoped<IDataQualityInspector, DataReliabilityQualityInspector>();
         services.AddScoped<HeartbeatStaleInspectionJob>();
         services.AddScoped<Stage0DiagnosticJob>();
         var dataProtectionKeysPath = configuration["DataProtection:KeysPath"]

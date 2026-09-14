@@ -4,7 +4,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using Pim.UnitTests.Harness.Generators;
-using Pim.UnitTests.Harness.Invariants;
+using Pim.Core.Invariants;
 using Xunit;
 
 namespace Pim.UnitTests.Harness.PropertyTests;

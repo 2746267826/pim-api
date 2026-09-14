@@ -4,7 +4,7 @@ using System.Linq;
 using Pim.Module.Mobile.Entities;
 using Pim.Module.Mobile.Services;
 using Pim.Module.PcTracker.Services;
-using Pim.UnitTests.Harness.Invariants;
+using Pim.Core.Invariants;
 using Xunit;
 
 namespace Pim.UnitTests.Harness;

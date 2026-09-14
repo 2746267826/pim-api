@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace Pim.UnitTests.Harness.Invariants;
+namespace Pim.Core.Invariants;
 
 /// <summary>
 /// 统计与 Today 模块不变量定义
@@ -15,7 +15,7 @@ public static class StatsAndTodayInvariants
     /// threshold: 重复数阈值 0，tolerance: 0 条重复即 FAIL
     /// 不变量: distinct(Id) == total && distinct(Kind) 按需唯一（同一 Kind 仅1个 SectionId）
     /// </summary>
-    public static (bool pass, string detail) CheckTodaySectionDedup(
+    public static InvariantResult CheckTodaySectionDedup(
         List<(string id, string kind)> sections,
         int tolerance = 0)
     {
@@ -43,7 +43,7 @@ public static class StatsAndTodayInvariants
     /// threshold: [0,100] 闭区间，tolerance: 1e-9 浮点误差
     /// 不变量: 0 &lt;= healthScore &lt;= 100 且 score-&gt;status 映射单调（Critical &lt; Warning &lt; Healthy）
     /// </summary>
-    public static (bool pass, string detail) CheckHealthScoreRange(
+    public static InvariantResult CheckHealthScoreRange(
         List<(string component, double score, string status)> components,
         double tolerance = 1e-9)
     {
@@ -74,7 +74,7 @@ public static class StatsAndTodayInvariants
     /// threshold: status ∈ {available, normal, empty, warning, critical, unavailable}，tolerance: 0 非法值
     /// 不变量: status in whitelist && (status==unavailable =&gt; error != null)
     /// </summary>
-    public static (bool pass, string detail) CheckTodaySectionStatusValid(
+    public static InvariantResult CheckTodaySectionStatusValid(
         List<(string id, string status, string? errorCode)> sections)
     {
         var valid = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -98,7 +98,7 @@ public static class StatsAndTodayInvariants
     /// threshold: totalSeconds 误差 1秒*桶数，appCount 误差 0；tolerance: 每桶 1秒
     /// 不变量: |sum(buckets) - overviewTotal| &lt;= tolerance && appCount == distinctPackages
     /// </summary>
-    public static (bool pass, string detail) CheckStatsAggregationConsistency(
+    public static InvariantResult CheckStatsAggregationConsistency(
         double overviewTotalSeconds,
         Dictionary<string, double> bucketsByKey,
         int overviewAppCount,
@@ -124,7 +124,7 @@ public static class StatsAndTodayInvariants
     /// threshold: 严重度排序 Healthy(0) &lt; Unknown(1) &lt; Warning(2) &lt; Critical(3)，tolerance: 0 偏差
     /// 不变量: overallSeverity == max(componentSeverity)
     /// </summary>
-    public static (bool pass, string detail) CheckHealthAggregationSeverity(
+    public static InvariantResult CheckHealthAggregationSeverity(
         string overallStatus,
         List<(string component, string status)> components)
     {
@@ -155,7 +155,7 @@ public static class StatsAndTodayInvariants
     /// threshold: maxLatencyMs 默认 2000ms（Today 首屏 SLA），tolerance: 0 条超时即 FAIL；P95 tolerance 100ms 抖动
     /// 不变量: ∀s: s.latencyMs &lt;= maxLatencyMs + toleranceP95 && avgLatency &lt;= maxLatencyMs
     /// </summary>
-    public static (bool pass, string detail) CheckTodayLatency(
+    public static InvariantResult CheckTodayLatency(
         List<(string sectionId, double latencyMs)> sections,
         double maxLatencyMs = 2000.0,
         double p95ToleranceMs = 100.0)
@@ -187,7 +187,7 @@ public static class StatsAndTodayInvariants
     /// threshold: expectedDayCount = ceil((queryEnd - queryStart).TotalDays)，tolerance: 1天（允许时区边界/半开区间误差）
     /// 不变量: |heatmapDayCount - expected| &lt;= tolerance && |trendDayCount - expected| &lt;= tolerance
     /// </summary>
-    public static (bool pass, string detail) CheckStatsWindowCompleteness(
+    public static InvariantResult CheckStatsWindowCompleteness(
         DateTimeOffset queryStart,
         DateTimeOffset queryEnd,
         int heatmapDayCount,

@@ -5,7 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using Pim.UnitTests.Harness.Generators;
-using Pim.UnitTests.Harness.Invariants;
+using Pim.Core.Invariants;
 using Pim.UnitTests.Harness.RealDb;
 using Xunit;
 

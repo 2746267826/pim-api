@@ -4,7 +4,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Pim.UnitTests.Harness.Invariants;
+namespace Pim.Core.Invariants;
 
 /// <summary>
 /// 文件模块不变量定义
@@ -17,7 +17,7 @@ public static class FilesInvariants
     /// threshold: 重复 PointId 数阈值 0，tolerance: 0 条重复即 FAIL
     /// 不变量: distinct(PointId) == total && 重复提交后 chunkCount 不增长
     /// </summary>
-    public static (bool pass, string detail) CheckIndexingDedup(
+    public static InvariantResult CheckIndexingDedup(
         List<(Guid fileItemId, Guid versionId, int chunkIndex, string pointId)> chunks,
         int tolerance = 0)
     {
@@ -55,7 +55,7 @@ public static class FilesInvariants
     /// 不变量: vector.Length == 384 && (|norm - 1| &lt;= 0.01 || norm == 0)
     /// 阈值来源: HashingFileEmbeddingService.DefaultDimensions / OpenAiFileEmbeddingService Dimensions
     /// </summary>
-    public static (bool pass, string detail) CheckEmbeddingDimensions(
+    public static InvariantResult CheckEmbeddingDimensions(
         List<float[]> vectors,
         int expectedDimensions = 384,
         double normTolerance = 0.01)
@@ -81,7 +81,7 @@ public static class FilesInvariants
     /// threshold: billedTokens / billedCost 阈值 0，tolerance: 0 允许计费 0 条超限
     /// 不变量: disabled => billedTokens == 0 && billedCost == 0
     /// </summary>
-    public static (bool pass, string detail) CheckDisabledPathNotBilled(
+    public static InvariantResult CheckDisabledPathNotBilled(
         List<(string path, bool isDisabled, int billedTokens, double billedCost)> items,
         int tolerance = 0)
     {
@@ -101,7 +101,7 @@ public static class FilesInvariants
     /// threshold: 哈希失配数阈值 0，tolerance: 0 条失配即 FAIL
     /// 不变量: hex(SHA256(chunk.Text)) == chunk.TextHash
     /// </summary>
-    public static (bool pass, string detail) CheckChunkHashConsistency(
+    public static InvariantResult CheckChunkHashConsistency(
         List<(string text, string textHash)> chunks,
         int tolerance = 0)
     {
@@ -126,7 +126,7 @@ public static class FilesInvariants
     /// threshold: 数量差异阈值 0，tolerance: 0 条差异即 FAIL
     /// 不变量: countAfter == countBefore && setAfter == setBefore
     /// </summary>
-    public static (bool pass, string detail) CheckIndexIdempotency(
+    public static InvariantResult CheckIndexIdempotency(
         int countBefore,
         int countAfter,
         HashSet<string> hashesBefore,
@@ -153,7 +153,7 @@ public static class FilesInvariants
     /// threshold: minScore 默认 0.30（Qdrant 余弦相似度最低可信分），tolerance: 1e-9 浮点误差
     /// 不变量: ∀r: minScore - tolerance &lt;= r.score &lt;= 1 + tolerance 且 ranking[i].score &gt;= ranking[i+1].score - tolerance
     /// </summary>
-    public static (bool pass, string detail) CheckSearchRelevanceThreshold(
+    public static InvariantResult CheckSearchRelevanceThreshold(
         List<(string pointId, double score)> results,
         double minScore = 0.30,
         double tolerance = 1e-9)
@@ -176,7 +176,7 @@ public static class FilesInvariants
     /// threshold: 重复/倒序数阈值 0，tolerance: 0 条倒序/重复即 FAIL，createdAt 允许 1秒 容差
     /// 不变量: distinct(versionNumber) == count && versionNumber 单调递增 && createdAt 单调不减（tolerance 1s）
     /// </summary>
-    public static (bool pass, string detail) CheckFileVersionMonotonic(
+    public static InvariantResult CheckFileVersionMonotonic(
         List<(Guid fileItemId, int versionNumber, DateTimeOffset createdAt)> versions,
         double toleranceSeconds = 1.0)
     {

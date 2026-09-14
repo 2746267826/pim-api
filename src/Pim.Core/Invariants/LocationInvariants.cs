@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace Pim.UnitTests.Harness.Invariants;
+namespace Pim.Core.Invariants;
 
 /// <summary>
 /// 定位类不变量定义
@@ -15,7 +15,7 @@ public static class LocationInvariants
     /// INV-L01: 两点间速度 <= 350km/h（高铁上限）
     /// 转换: 350km/h ≈ 97.2m/s
     /// </summary>
-    public static (bool pass, string detail) CheckSpeedCap(
+    public static InvariantResult CheckSpeedCap(
         List<(double lat, double lon, double speedMps)> points,
         double maxSpeedMps = 97.2)
     {
@@ -35,7 +35,7 @@ public static class LocationInvariants
     /// <summary>
     /// INV-L02: GPS坐标在合理范围内（中国境内）
     /// </summary>
-    public static (bool pass, string detail) CheckValidChinaCoordinates(
+    public static InvariantResult CheckValidChinaCoordinates(
         List<(double lat, double lon)> points)
     {
         var violations = points
@@ -54,7 +54,7 @@ public static class LocationInvariants
     /// <summary>
     /// INV-L03: 水平精度 > 0 且 < 1000米
     /// </summary>
-    public static (bool pass, string detail) CheckValidAccuracy(
+    public static InvariantResult CheckValidAccuracy(
         List<double> accuracyMeters)
     {
         var violations = accuracyMeters
@@ -73,7 +73,7 @@ public static class LocationInvariants
     /// <summary>
     /// INV-L04: 海拔在合理范围内（-500m 到 9000m）
     /// </summary>
-    public static (bool pass, string detail) CheckValidAltitude(
+    public static InvariantResult CheckValidAltitude(
         List<double> altitudes)
     {
         var violations = altitudes
@@ -92,7 +92,7 @@ public static class LocationInvariants
     /// <summary>
     /// INV-L05: 时间戳递增（轨迹点按时间排序）
     /// </summary>
-    public static (bool pass, string detail) CheckTimestampsMonotonic(
+    public static InvariantResult CheckTimestampsMonotonic(
         List<DateTimeOffset> timestamps)
     {
         for (int i = 1; i < timestamps.Count; i++)
@@ -109,7 +109,7 @@ public static class LocationInvariants
     /// <summary>
     /// INV-L06: 常去地点数量 >= 0 且不为null
     /// </summary>
-    public static (bool pass, string detail) CheckFrequentPlacesNonNegative(
+    public static InvariantResult CheckFrequentPlacesNonNegative(
         int frequentPlaceCount)
     {
         if (frequentPlaceCount < 0)
@@ -123,7 +123,7 @@ public static class LocationInvariants
     /// <summary>
     /// INV-L07: 噪声底限不应被异常值拉高到 > 100米
     /// </summary>
-    public static (bool pass, string detail) CheckNoiseFloorReasonable(
+    public static InvariantResult CheckNoiseFloorReasonable(
         double noiseFloorMeters, double maxReasonable = 100.0)
     {
         if (noiseFloorMeters > maxReasonable)
@@ -137,7 +137,7 @@ public static class LocationInvariants
     /// <summary>
     /// INV-L08: DBSCAN聚类数 >= 0，且每个聚类至少2个点
     /// </summary>
-    public static (bool pass, string detail) CheckClusterValidity(
+    public static InvariantResult CheckClusterValidity(
         List<List<(double lat, double lon)>> clusters)
     {
         var invalidClusters = clusters.Where(c => c.Count < 2).ToList();
@@ -155,7 +155,7 @@ public static class LocationInvariants
     /// INV-L09: 地理边界框有效性 - minLat <= maxLat 且 minLon <= maxLon 且在地球范围内
     /// 不变量: minLat <= maxLat, minLon <= maxLon, 范围在 [-90,90]x[-180,180]
     /// </summary>
-    public static (bool pass, string detail) CheckBoundsValidity(
+    public static InvariantResult CheckBoundsValidity(
         double minLat, double maxLat, double minLon, double maxLon)
     {
         if (minLat > maxLat + 1e-9)
@@ -171,7 +171,7 @@ public static class LocationInvariants
     /// INV-L10: 总里程非负且不超过速度上限*时间
     /// 不变量: 0 <= distance <= 97.2 * durationSeconds + 1e-6
     /// </summary>
-    public static (bool pass, string detail) CheckDistanceBounded(
+    public static InvariantResult CheckDistanceBounded(
         double distanceMeters, double durationSeconds, double maxSpeedMps = 97.2)
     {
         if (distanceMeters < -1e-9)
@@ -186,7 +186,7 @@ public static class LocationInvariants
     /// INV-L11: 轨迹段速度非负且合理 - 单段平均速度 <=350km/h
     /// 不变量: 0 <= avgSpeed <= 97.2
     /// </summary>
-    public static (bool pass, string detail) CheckSegmentSpeedValid(
+    public static InvariantResult CheckSegmentSpeedValid(
         List<(double distanceMeters, double durationSeconds, double avgSpeedMps)> segments,
         double maxSpeedMps = 97.2)
     {
@@ -207,7 +207,7 @@ public static class LocationInvariants
     /// INV-L12: 轨迹点去重后数量 <= 原始数量且访问天数 <= 区间天数
     /// 不变量: distinctDays <= totalDays
     /// </summary>
-    public static (bool pass, string detail) CheckVisitDayCountBounded(
+    public static InvariantResult CheckVisitDayCountBounded(
         int visitDayCount, int totalDayCount)
     {
         if (visitDayCount < 0)
@@ -221,7 +221,7 @@ public static class LocationInvariants
     /// INV-L13: 单点段质量标记包含 single-point
     /// 不变量: count==1 => qualityFlags contains "single-point"
     /// </summary>
-    public static (bool pass, string detail) CheckSinglePointQualityFlag(
+    public static InvariantResult CheckSinglePointQualityFlag(
         List<(int pointCount, List<string> qualityFlags)> segments)
     {
         foreach (var seg in segments)
@@ -238,7 +238,7 @@ public static class LocationInvariants
     /// INV-L14: 轨迹间隙超过2小时应分轨
     /// 不变量: 同一track内相邻点间隔 <=7200s
     /// </summary>
-    public static (bool pass, string detail) CheckTrackGapThreshold(
+    public static InvariantResult CheckTrackGapThreshold(
         List<List<DateTimeOffset>> tracks, double maxGapSeconds = 7200.0)
     {
         foreach (var track in tracks)
@@ -258,7 +258,7 @@ public static class LocationInvariants
     /// INV-L15: 常去地点半径 0-500米且点数≥10（阈值来源: MobileFrequentPlaceService BaseEps 75m, MaxEps 150m, MinPoints 10）
     /// 不变量: 0 <= radius <=500 && pointCount >=10
     /// </summary>
-    public static (bool pass, string detail) CheckFrequentPlaceRadius(
+    public static InvariantResult CheckFrequentPlaceRadius(
         List<(double radiusMeters, int pointCount)> places)
     {
         foreach (var p in places)
@@ -275,7 +275,7 @@ public static class LocationInvariants
     /// INV-L16: 家唯一性 - 最多1个 IsHome=true 且若有则为夜间点最多簇
     /// 不变量: homeCount <=1
     /// </summary>
-    public static (bool pass, string detail) CheckHomeUniqueness(int homeCount)
+    public static InvariantResult CheckHomeUniqueness(int homeCount)
     {
         if (homeCount < 0 || homeCount > 1)
             return (false, $"INV-L16 FAIL: homeCount {homeCount} not in [0,1]");
@@ -286,7 +286,7 @@ public static class LocationInvariants
     /// INV-L17: 轨迹分段 move/stay 互斥且覆盖所有点
     /// 不变量: stayCount + moveCount == totalSegments 且 stay/move 至少其一 >0 当点数>1
     /// </summary>
-    public static (bool pass, string detail) CheckSegmentKindCoverage(int stayCount, int moveCount, int totalSegments, int pointCount)
+    public static InvariantResult CheckSegmentKindCoverage(int stayCount, int moveCount, int totalSegments, int pointCount)
     {
         if (stayCount + moveCount != totalSegments)
             return (false, $"INV-L17 FAIL: stay {stayCount}+move {moveCount} != total {totalSegments}");

@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace Pim.UnitTests.Harness.Invariants;
+namespace Pim.Core.Invariants;
 
 /// <summary>
 /// PC时间类不变量定义
@@ -12,7 +12,7 @@ public static class PcTimeInvariants
     /// <summary>
     /// INV-P01: PC每日window事件总时长 <= 24小时 * (1 + 容差)
     /// </summary>
-    public static (bool pass, string detail) CheckDailyWindowCap(
+    public static InvariantResult CheckDailyWindowCap(
         Dictionary<string, double> dailyWindowSeconds, double tolerance = 0.05)
     {
         var maxAllowed = 86400.0 * (1 + tolerance);
@@ -33,7 +33,7 @@ public static class PcTimeInvariants
     /// INV-P02: afk + window 不应重叠计算
     /// 总时长 = window时长（不含afk）
     /// </summary>
-    public static (bool pass, string detail) CheckAfkWindowNoOverlap(
+    public static InvariantResult CheckAfkWindowNoOverlap(
         double totalWindowSeconds, double totalAfkSeconds, double tolerance = 0.05)
     {
         // 如果afk和window被串行相加，总时长会远超24小时
@@ -51,7 +51,7 @@ public static class PcTimeInvariants
     /// <summary>
     /// INV-P03: RecordKey 必须能映射到有效的AppName
     /// </summary>
-    public static (bool pass, string detail) CheckRecordKeyMapping(
+    public static InvariantResult CheckRecordKeyMapping(
         Dictionary<string, string> recordKeyToAppName)
     {
         var unmapped = recordKeyToAppName
@@ -70,7 +70,7 @@ public static class PcTimeInvariants
     /// <summary>
     /// INV-P04: 业务日统一（按04:00切割，而非UTC 00:00）
     /// </summary>
-    public static (bool pass, string detail) CheckBusinessDayConsistency(
+    public static InvariantResult CheckBusinessDayConsistency(
         List<(DateTimeOffset start, DateTimeOffset end, string businessDay)> sessions,
         int businessDayStartHour = 4)
     {
@@ -102,7 +102,7 @@ public static class PcTimeInvariants
     /// <summary>
     /// INV-P05: afk事件duration不应为负数
     /// </summary>
-    public static (bool pass, string detail) CheckAfkNonNegative(
+    public static InvariantResult CheckAfkNonNegative(
         List<(string appName, double afkDurationSeconds)> afkEvents)
     {
         var negatives = afkEvents.Where(e => e.afkDurationSeconds < 0).ToList();
@@ -118,7 +118,7 @@ public static class PcTimeInvariants
     /// <summary>
     /// INV-P06: 分类规则唯一约束 - 同一processName不能有冲突规则
     /// </summary>
-    public static (bool pass, string detail) CheckClassificationUniqueness(
+    public static InvariantResult CheckClassificationUniqueness(
         List<(string processName, string categoryName)> rules)
     {
         var duplicates = rules
@@ -141,7 +141,7 @@ public static class PcTimeInvariants
     /// INV-P07: 单个window事件时长封顶3600秒，去重后总时长应基于封顶值计算
     /// 不变量: cappedDuration = min(duration,3600) 且总和满足 P01
     /// </summary>
-    public static (bool pass, string detail) CheckWindowDurationCapped(
+    public static InvariantResult CheckWindowDurationCapped(
         List<double> windowDurations, double capSeconds = 3600.0)
     {
         var violations = windowDurations.Where(d => d > capSeconds + 1e-9).ToList();
@@ -154,7 +154,7 @@ public static class PcTimeInvariants
     /// INV-P08: 专注块最小时长 >=10分钟，合并间隔 <=5分钟
     /// 不变量: blockDurationMinutes >=10 且 gapMinutes <=5
     /// </summary>
-    public static (bool pass, string detail) CheckFocusBlockValidity(
+    public static InvariantResult CheckFocusBlockValidity(
         List<(DateTimeOffset start, DateTimeOffset end)> blocks, double minMinutes = 10.0, double maxGapMinutes = 5.0)
     {
         foreach (var b in blocks)
@@ -179,7 +179,7 @@ public static class PcTimeInvariants
     /// INV-P09: 深夜使用时长每业务日 <= 270分钟（23:30-04:00 = 270m）
     /// 不变量: lateNightMinutes <=270
     /// </summary>
-    public static (bool pass, string detail) CheckLateNightCap(
+    public static InvariantResult CheckLateNightCap(
         Dictionary<string, int> lateNightMinutesPerDay, int maxMinutes = 270)
     {
         var violations = lateNightMinutesPerDay.Where(kv => kv.Value > maxMinutes).ToList();
@@ -195,7 +195,7 @@ public static class PcTimeInvariants
     /// INV-P10: App使用时长 percentage 在 [0,100] 且分组后最大100
     /// 不变量: 0 <= percentage <=100
     /// </summary>
-    public static (bool pass, string detail) CheckAppUsagePercentage(
+    public static InvariantResult CheckAppUsagePercentage(
         List<(string app, double percentage)> appUsages)
     {
         foreach (var u in appUsages)
@@ -213,7 +213,7 @@ public static class PcTimeInvariants
     /// INV-P11: 分类分布 percentage 之和 接近100%（与C05一致但针对PC）
     /// 不变量: |sum -100| <=1
     /// </summary>
-    public static (bool pass, string detail) CheckCategoryDistributionSum(
+    public static InvariantResult CheckCategoryDistributionSum(
         List<(string category, double percentage)> categories)
     {
         if (categories.Count == 0) return (true, "INV-P11 PASS");
@@ -228,7 +228,7 @@ public static class PcTimeInvariants
     /// INV-P12: App名称归一化 - 去除.exe后缀且小写
     /// 不变量: normalized == lower && !ends with .exe
     /// </summary>
-    public static (bool pass, string detail) CheckAppNameNormalized(
+    public static InvariantResult CheckAppNameNormalized(
         Dictionary<string, string> originalToNormalized)
     {
         foreach (var kv in originalToNormalized)
@@ -249,7 +249,7 @@ public static class PcTimeInvariants
     /// 不变量: 0 <= intensity <=5 且与 activeMinutes 映射一致
     /// 强度映射: 0->0m,1->(0,5],2->(5,15],3->(15,30],4->(30,45],5->(45,60]
     /// </summary>
-    public static (bool pass, string detail) CheckHeatmapIntensityValid(
+    public static InvariantResult CheckHeatmapIntensityValid(
         List<(int activeMinutes, int intensity)> buckets)
     {
         foreach (var b in buckets)
@@ -275,7 +275,7 @@ public static class PcTimeInvariants
     /// INV-P14: Timeline 去重后时间单调且 DurationMinutes 与时间差一致 (阈值1e-6)
     /// 不变量: End > Start 且 DurationMinutes == (End-Start).TotalMinutes ±0.001
     /// </summary>
-    public static (bool pass, string detail) CheckTimelineDurationConsistency(
+    public static InvariantResult CheckTimelineDurationConsistency(
         List<(DateTimeOffset start, DateTimeOffset end, double durationMinutes)> items)
     {
         for (int i = 0; i < items.Count; i++)
@@ -297,7 +297,7 @@ public static class PcTimeInvariants
     /// 不变量: color.Length==7 && '#' + 6 hex digits
     /// 阈值来源: PcActivityAggregationService.IsValidHexColor
     /// </summary>
-    public static (bool pass, string detail) CheckCategoryColorValid(List<string> colors)
+    public static InvariantResult CheckCategoryColorValid(List<string> colors)
     {
         foreach (var c in colors)
         {

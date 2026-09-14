@@ -5,7 +5,7 @@ using Pim.Module.Mobile.Entities;
 using Pim.Module.Mobile.Services;
 using Pim.Module.PcTracker.Services;
 using Pim.UnitTests.Harness.Generators;
-using Pim.UnitTests.Harness.Invariants;
+using Pim.Core.Invariants;
 using Pim.UnitTests.Mobile;
 using Xunit;
 
