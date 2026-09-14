@@ -5,22 +5,19 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 ## Communication And Planning
 
 - Communicate with the user in Simplified Chinese by default.
-- When writing a plan, state the final objective at the top of the plan. If Goal mode is available in the current environment, create or update a Goal using that same objective.
 - For user-facing UI, default visible text to Simplified Chinese. Keep code identifiers, API names, logs, protocol fields, and third-party product names in English unless localization is explicitly part of the task.
 
 ## Start Of Every Session
 
 - Run `git status --short --branch` before changing files.
-- Run `git fetch --all --prune` before deciding whether `master` is current.
-- If `master` is behind `origin/master`, pull before making new work unless the user explicitly asks otherwise.
-- Move the main workspace to the latest `origin/master` at the start of every conversation (see the branch/worktree policy below), unless the user explicitly asks to base work on another branch (e.g. a handoff task). The main workspace is for read-only investigation; all file-changing work happens in worktrees.
-- Baseline reads must reflect the latest `origin/master`. If the main workspace is stale (checked out on a non-`master` branch, has dirty files, or is behind the remote), never use it as the baseline — read via `git show origin/master:<path>` or an up-to-date worktree instead; reading stale main-workspace files as a baseline is a bug and can silently revert newer merged work when the file is later rewritten. Targeted reads are exempt and read their own target: PR reviews inspect the PR head/diff, L2 handoffs inspect their source branch, and local uncommitted changes are read as-is — always compare such targets against the latest `origin/master`.
+- Run `git fetch --all --prune`; if `master` is behind `origin/master`, pull before making new work unless the user explicitly asks otherwise.
+- Move the main workspace to the latest `origin/master` at the start of every conversation, unless the user explicitly asks to base work on another branch (e.g. a handoff task). The main workspace is for read-only investigation; all file-changing work happens in worktrees — see the branch and worktree policy below.
 - Note existing dirty files and do not revert or overwrite work you did not create.
 
 ## Branch, PR, And GitHub Actions Workflow
 
 - All file-changing work must happen on a non-`master` branch.
-- Create branches with an `{agent}-{os}/{topic}` prefix (e.g. `reasonix-win/location-fix`, `claude-linux/api-build`) unless the user asks for another branch name. `agent` is the AI agent's name, `os` is the operating system the agent runs on (`win` or `linux`), and `topic` is a short kebab-case English summary of the branch's purpose.
+- Create branches with an `{agent}-{os}/{topic}` prefix (e.g. `antigravity-linux/location-fix`, `xiaoi-linux/ci-release-serialization`) unless the user asks for another branch name. `agent` is the AI agent's name, `os` is the operating system the agent runs on (`win` or `linux`), and `topic` is a short kebab-case English summary of the branch's purpose. Branches opened automatically by tooling (e.g. `task/<n>`) do not follow this scheme.
 - Make focused commits at suitable checkpoints. Push the working branch to GitHub when creating a PR, enabling CI visibility, handing work off, or preserving a useful checkpoint.
 - Open a pull request for all file-changing work.
 - After opening or updating a PR, wait for triggered GitHub Actions checks and confirm they pass before calling the task complete.
@@ -29,7 +26,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - Write PR titles and descriptions in both English and Simplified Chinese.
 - Create git worktrees under a single short root directory per platform, never scattered across filesystem roots:
   - **Windows**: `C:\pim-wt\{topic}`. Use short directory names (topic only, ≤ 12 chars) to avoid Windows MAX_PATH issues from long nested paths.
-  - **Linux (incl. opencode container)**: `/workspace/pim-wt/{topic}` — persistent bind mount that survives container rebuilds. **Never use `/tmp`** (wiped on rebuild, losing in-progress work). No MAX_PATH constraint, but keep names short for consistency.
+  - **Linux (codeg workspace)**: `/home/coder/workspace/pim-wt/{topic}`. **Never use `/tmp`** (wiped on rebuild, losing in-progress work). No MAX_PATH constraint, but keep names short for consistency. Other Linux agents use `pim-wt/{topic}` under their own persistent work directory.
 
 ### Branch And Worktree Policy (L0/L1/L2)
 
@@ -50,17 +47,6 @@ Apply this policy at the start of every session/task:
 - PRs without these sections still merge, but their release entry falls back to a bare title link — filling them in keeps the changelog useful.
 - Docs-only merges skip all platform builds and do not produce a GitHub Release (path-filtered); the sections above are still expected for accurate history.
 
-## Release Publishing
-
-- CI runs are serialized per ref (`concurrency`). When several PRs merge within minutes, the later run waits for the earlier one instead of publishing a competing release; the later run is therefore always the latest one.
-- Component builds and the changelog window are both diffed against the previous release tag ("what changed since the last thing we published"), so every release contains all component changes since then. Components that did not change carry over from the previous release with their original file names.
-- The release tag is pinned to the commit the run built (`target_commitish: github.sha`). Re-running an older CI run builds nothing (its diff against a newer release tag is empty) and therefore does not republish a release.
-
-## Parallel Agent Workflow
-
-- Prefer multiple subagents for independent investigation, implementation, review, and verification work when tasks can safely run in parallel.
-- Do not use subagents for tightly coupled edits where coordination overhead would create risk.
-
 ## During Work
 
 - Keep generated outputs out of commits: `bin/`, `obj/`, `build/`, `build/artifacts/` (docker image tarballs), `dist/`, `publish/PimDaemon/`, `publish/*.zip`, `.dotnet-*`, `.superpowers/brainstorm/`, npm caches, and API `wwwroot` build artifacts.
@@ -79,7 +65,6 @@ Apply this policy at the start of every session/task:
 
 - Do not claim the branch is complete.
 - Commit only if the failure is clearly unrelated and document the exact failure in the final response.
-- Leave enough status detail for the next conversation to continue without rediscovering the same state.
 
 ## Working Practices (derived from session experience)
 
@@ -101,26 +86,12 @@ Apply this policy at the start of every session/task:
 
 ### Collaboration
 
-- **C1. Maximize parallelism, serialize writes.** Read/investigation/review tasks run in parallel; file-writing tasks serialize or declare non-overlapping paths.
+- **C1. Maximize parallelism, serialize writes.** Read/investigation/review tasks run in parallel; file-writing tasks serialize or declare non-overlapping paths. Do not use subagents for tightly coupled edits where coordination overhead would create risk.
 - **C2. Leave resumable state when interrupted.** End sessions by stating the current step and what the next agent should do first.
 
-## Production Log Access
+## Production Database And Logs
 
-生产服务器日志通过受限 SSH 只读访问，封装为 `production-log-reader` skill。
-
-- **密钥位置**: `.reasonix/production-log-key`（私钥，已生成）和 `.reasonix/production-log-key.pub`（公钥，用于服务器配置）
-- **服务器端**: 在 Ubuntu 生产服务器上部署 `.reasonix/skills/production-log-reader/scripts/log-reader.sh` 到 `/usr/local/bin/pim-log-reader.sh`，使用 `setup-server.sh` 参考脚本完成配置
-- **安全限制**: 每次 SSH 会话最多 10MB，每条命令最多 200 行，仅允许读取 `/data/pim/logs/*.jsonl` 和 systemd journal，禁止路径穿越
-- **前置条件**: 服务器 SSH 主机密钥已确认、公钥已配置到 `authorized_keys` 的 `command=` 限制中
-- **使用方式**: 调用 `production-log-reader` skill 或直接执行 `ssh -i .reasonix/production-log-key logreader@<server-ip> <command>`
-- **配置简化**: 建议在 `~/.ssh/config` 中添加 `Host pim-log-prod` 别名
-
-### Repository gates (verified baselines)
-
-| Gate | Command | Baseline |
-|---|---|---|
-| Backend | `dotnet test Pim.sln --no-restore` | 1092–1377 passing |
-| Android unit | `gradlew :app:testDebugUnitTest` | 1224 tests |
-| Android instrumented | `gradlew :app:connectedDebugAndroidTest` (local emulator; CI has none) | 64/device |
-| Web | `npm run build`, vitest, Playwright | visual scenarios |
-| Ship | bilingual commit, push, wait for CI green | — |
+- Production runs on the home Docker host: the API in the `pim-pim-1` container, the database `pim_prod` in the 1Panel PostgreSQL container (`127.0.0.1:5432`).
+- **Never point an agent session at `pim_prod`.** Work that needs real data uses the mirrored database `pim_test`, restored from a `pim_prod` snapshot (`pg_dump -Fc` → `pg_restore`) with credentials and personal tokens sanitized. The mirror is disposable and safe to mutate; its contents are "as of the snapshot time", so never write results back to production.
+- Production logs are JSONL files inside the running container — `/data/pim/logs/pim-api-<YYYYMMDD>[_NNN].jsonl` (Serilog compact JSON; `@t` is UTC, and files roll at ~1 GB so the newest data may live in a `_NNN` file). Read them with `docker exec pim-pim-1 tail` / `grep`; `docker logs` only carries startup and crash output.
+- Never copy production dumps, log extracts, or credentials into a PR, an issue, or any artifact.
