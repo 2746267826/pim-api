@@ -749,6 +749,16 @@ public partial class PcTrackerService
         return new DateTimeOffset(utc, TimeSpan.Zero);
     }
 
+    public static DateTime GetBusinessDayForTimestamp(DateTimeOffset ts)
+    {
+        var timeZone = ResolveBusinessDayTimeZone();
+        var local = TimeZoneInfo.ConvertTime(ts, timeZone);
+        var date = local.Date;
+        if (local.Hour < BusinessDayStartHour)
+            date = date.AddDays(-1);
+        return date;
+    }
+
     private static TimeZoneInfo ResolveBusinessDayTimeZone()
     {
         const string primary = "Asia/Shanghai";

@@ -264,14 +264,5 @@ public class PcProductivityService
         return new DateTimeOffset(utc, TimeSpan.Zero);
     }
 
-    private static DateTime BusinessDayForTimestamp(DateTimeOffset ts)
-    {
-        var tz = ResolveBusinessDayTimeZone();
-        var local = TimeZoneInfo.ConvertTime(ts, tz).Date;
-        // 04:00 边界：local 04:00 前归前一日
-        var localDt = TimeZoneInfo.ConvertTime(ts, tz);
-        if (localDt.Hour < BusinessDayStartHour)
-            local = local.AddDays(-1);
-        return local;
-    }
+    private static DateTime BusinessDayForTimestamp(DateTimeOffset ts) => PcTrackerService.GetBusinessDayForTimestamp(ts);
 }

@@ -53,6 +53,7 @@ public partial class PcTrackerService
             var browserNorm = NormalizeBrowser(e.Browser, nameof(req));
             var instanceIdNorm = NormalizeInstanceId(e.InstanceId, nameof(req));
 
+            var canonicalBusinessDate = GetBusinessDayForTimestamp(timestamp);
             var rawJson = e.RawJson is null ? "{}" : JsonSerializer.Serialize(e.RawJson, ApiJsonSerializerOptions);
 
             entities.Add(new TrackerEventEntity
@@ -80,7 +81,7 @@ public partial class PcTrackerService
                 InstanceId = instanceIdNorm,
                 RawJson = rawJson,
                 CreatedAt = now,
-                Date = date.Date
+                Date = canonicalBusinessDate
             });
         }
 
