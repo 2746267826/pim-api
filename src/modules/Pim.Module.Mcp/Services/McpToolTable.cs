@@ -153,7 +153,7 @@ public static class McpToolTable
             S("get_pc_summary", "GET", "/api/v1/pc/summary", Q("date", "timezone")),
             S("get_pc_detail", "GET", "/api/v1/pc/detail", Q("dateFrom", "dateTo", "date", "timezone", "page", "pageSize"), redact: true),
             S("get_pc_timeline", "GET", "/api/v1/pc/aw/timeline", Q("date", "timezone")),
-            S("get_pc_timeline_v2", "GET", "/api/v1/pc/timeline/v2", Q("date", "timezone"), redact: true),
+            S("get_pc_timeline_v2", "GET", "/api/v1/pc/timeline/v2", Q("date"), redact: true),
             S("get_pc_heatmap", "GET", "/api/v1/pc/heatmap/grid", Q("start", "end", "dimension", "timezone"), dateSpan: true),
             S("get_pc_activity_analysis", "GET", "/api/v1/pc/activity-analysis", Q("date", "blockMinutes", "timezone")),
             S("get_pc_quality", "GET", "/api/v1/pc/quality", Q("date", "dateFrom", "dateTo", "timezone")),

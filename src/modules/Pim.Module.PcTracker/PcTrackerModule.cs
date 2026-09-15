@@ -1167,7 +1167,9 @@ public class PcTrackerModule : IModule
             [FromQuery] bool force = false,
             CancellationToken ct = default) =>
         {
-            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
+            var d = svc.ResolveBusinessDay(date is not null
+                ? DateTime.Parse(date, CultureInfo.InvariantCulture)
+                : null);
             var result = await cache.GetOrCreateAsync(
                 AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("date", d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
                 force,

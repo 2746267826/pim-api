@@ -50,6 +50,20 @@ public class ActivityClassificationEntity
     [Column("ended_at")]
     public DateTimeOffset EndedAt { get; set; }
 
+    /// <summary>该快照归属的应用进程名（#235）。历史行可能为空，读时按原生事件兜底。</summary>
+    [Column("app_name")]
+    [MaxLength(256)]
+    public string? AppName { get; set; }
+
+    /// <summary>应用显示名（#235）。为空时由 <c>pc_app_signatures</c> 签名表匹配。</summary>
+    [Column("app_display_name")]
+    [MaxLength(256)]
+    public string? AppDisplayName { get; set; }
+
+    /// <summary>窗口标题（#235）。为空时按时间重叠从原生 window 事件兜底。</summary>
+    [Column("window_title")]
+    public string? WindowTitle { get; set; }
+
     [Column("category_name")]
     [MaxLength(64)]
     public string CategoryName { get; set; } = "其他";

@@ -206,6 +206,23 @@ public class ActivityClassificationSnapshotService
         snapshot.InterpretationVersion = record.InterpretationVersion ?? "interpreted-aw-v1";
         snapshot.StartedAt = keyedRecord.StartedAt;
         snapshot.EndedAt = keyedRecord.EndedAt;
+
+        // #235：把应用身份一并落库，使时间线 v2 不必再从 record_key 反推应用名。
+        // 受保护快照（人工/纠正）同样刷新这些字段——它们描述的是「记录来源」，不随分类结论变化。
+        snapshot.AppName = Truncate(record.AppName ?? record.BrowserAppName, 256);
+        snapshot.AppDisplayName = Truncate(record.DisplayName, 256);
+        snapshot.WindowTitle = Truncate(record.BrowserWindowTitle ?? record.Title, null);
+    }
+
+    /// <summary>按列宽截断（列宽为 null 表示不限长，如 window_title）。</summary>
+    private static string? Truncate(string? value, int? maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+        var trimmed = value.Trim();
+        if (maxLength is int limit && trimmed.Length > limit)
+            return trimmed[..limit];
+        return trimmed;
     }
 
     private static bool IsProtectedSnapshot(ActivityClassificationEntity snapshot) =>

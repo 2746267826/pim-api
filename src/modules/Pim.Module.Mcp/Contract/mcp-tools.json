@@ -1110,16 +1110,11 @@
  },
  {
   "name": "get_pc_timeline_v2",
-  "description": "Get PC timeline v2 (smoothed with classification). Returns TimelineV2Item[]. Preferred over v1.",
+  "description": "Get PC timeline v2 (smoothed with classification). The business day is [D 04:00, D+1 04:00) Asia/Shanghai and is fixed server-side, so no timezone argument is accepted. Blocks are non-overlapping and timestamps carry +08:00 offsets. Returns TimelineV2Item[]. Preferred over v1.",
   "inputSchema": {
    "properties": {
     "date": {
      "title": "Date",
-     "type": "string"
-    },
-    "timezone": {
-     "default": "Asia/Shanghai",
-     "title": "Timezone",
      "type": "string"
     },
     "redactUrls": {

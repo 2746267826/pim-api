@@ -66,8 +66,12 @@ public class ProductivityDashboardDto
 
 public class TimelineV2Item
 {
-    public DateTime Start { get; set; }
-    public DateTime End { get; set; }
+    /// <summary>业务日内的绝对时刻，序列化为带 +08:00 偏移的 ISO-8601（#236）。</summary>
+    public DateTimeOffset Start { get; set; }
+
+    /// <summary>业务日内的绝对时刻，序列化为带 +08:00 偏移的 ISO-8601（#236）。</summary>
+    public DateTimeOffset End { get; set; }
+
     public string AppName { get; set; } = string.Empty;
     public string? AppDisplayName { get; set; }
     public string? WindowTitle { get; set; }

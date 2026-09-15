@@ -64,6 +64,51 @@ public class ActivityClassificationSnapshotServiceTests
     }
 
     [Fact]
+    public async Task EnsureClassificationsAsync_PersistsAppIdentityForTimeline()
+    {
+        // #235：应用名 / 显示名 / 窗口标题必须随快照落库，
+        // 否则时间线 v2 只能拿 record_key（pc-fallback-v1:<hash>）当应用名展示。
+        using var db = CreateDb();
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
+        var record = NewRecord("Code.exe", "PcProductivityService.cs");
+
+        await service.EnsureClassificationsAsync(
+            [record],
+            [NewRule("Code is programming", "\u7f16\u7a0b")],
+            null,
+            CancellationToken.None);
+
+        var snapshot = await db.Set<ActivityClassificationEntity>().SingleAsync();
+        Assert.Equal("Code.exe", snapshot.AppName);
+        Assert.Equal("Code.exe", snapshot.AppDisplayName);
+        Assert.Equal("PcProductivityService.cs", snapshot.WindowTitle);
+    }
+
+    [Fact]
+    public async Task EnsureClassificationsAsync_PrefersBrowserWindowTitleWhenPresent()
+    {
+        // 浏览器页面记录：窗口标题取 BrowserWindowTitle，应用名回退到 BrowserAppName。
+        using var db = CreateDb();
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
+        var record = NewRecord("chrome.exe", "Tag") with
+        {
+            AppName = null,
+            BrowserAppName = "chrome.exe",
+            BrowserWindowTitle = "PIM 文档 - Google Chrome"
+        };
+
+        await service.EnsureClassificationsAsync(
+            [record],
+            [NewRule("chrome is browsing", "\u6d4f\u89c8")],
+            null,
+            CancellationToken.None);
+
+        var snapshot = await db.Set<ActivityClassificationEntity>().SingleAsync();
+        Assert.Equal("chrome.exe", snapshot.AppName);
+        Assert.Equal("PIM 文档 - Google Chrome", snapshot.WindowTitle);
+    }
+
+    [Fact]
     public async Task EnsureClassificationsAsync_UpdatesExistingSnapshotForSameRecordKey()
     {
         using var db = CreateDb();

@@ -179,6 +179,11 @@ ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS source_type VAR
 ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS source_bucket_ids JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE pc_activity_classification_settings ADD COLUMN IF NOT EXISTS daily_productive_hours_goal DOUBLE PRECISION NOT NULL DEFAULT 5.0;
 ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS interpretation_version VARCHAR(32) NOT NULL DEFAULT 'interpreted-aw-v1';
+-- #235 时间线 v2 应用身份：快照落库时记录来源记录的进程名 / 显示名 / 窗口标题，
+-- 避免时间线只能拿 record_key（pc-fallback-v1:<hash>）当应用名展示。历史行为空，读时按原生事件兜底。
+ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS app_name VARCHAR(256);
+ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS app_display_name VARCHAR(256);
+ALTER TABLE pc_activity_classifications ADD COLUMN IF NOT EXISTS window_title TEXT;
 CREATE INDEX IF NOT EXISTS ix_pc_activity_classifications_record_key_version
     ON pc_activity_classifications (record_key_version);
 CREATE INDEX IF NOT EXISTS ix_pc_activity_classifications_source_type
