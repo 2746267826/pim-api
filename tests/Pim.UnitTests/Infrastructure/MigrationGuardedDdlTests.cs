@@ -165,6 +165,39 @@ public class MigrationGuardedDdlTests
         // 双引号标识符里的 -- 不能被当成行注释而把后面的 DDL 吞掉。
         AssertFlagged("ALTER TABLE demo ADD COLUMN \"we--ird\" int;");
         AssertFlagged("ALTER TABLE demo ADD COLUMN \"a/*b\" int;");
+        // 行注释不能吃掉下一行的 DDL（这正是不该漏报的场景）。
+        AssertFlagged("-- 注释\nALTER TABLE demo ADD COLUMN b int;");
+        // 转义单引号之后的 DDL 仍要被检查。
+        AssertFlagged("CREATE TABLE IF NOT EXISTS demo (a text DEFAULT 'it''s'); ALTER TABLE demo ADD c int;");
+    }
+
+    /// <summary>
+    /// 注释剥离的边界回归：这些样例锁住「字符串感知」的实现，避免退回简单正则后
+    /// 出现「把真实 DDL 当注释剥掉」的漏报。
+    /// </summary>
+    [Fact]
+    public void StripSqlComments_IsStringAware()
+    {
+        // 行注释整条剥掉；换行保留。
+        Assert.DoesNotContain("CREATE", StripSqlComments("-- CREATE INDEX ux ON demo (a);"), StringComparison.Ordinal);
+        // 块注释整条剥掉。
+        Assert.DoesNotContain("ALTER", StripSqlComments("/* ALTER TABLE demo ADD c int; */"), StringComparison.Ordinal);
+        // 未闭合块注释把后面全部当注释（不会误报为 DDL）。
+        Assert.DoesNotContain("ALTER", StripSqlComments("/* ALTER TABLE demo ADD c int;"), StringComparison.Ordinal);
+        // 注释后的 DDL 必须保留下来。
+        Assert.Contains("ALTER", StripSqlComments("/* note */ ALTER TABLE demo ADD c int;"), StringComparison.Ordinal);
+        Assert.Contains("ALTER", StripSqlComments("-- note\nALTER TABLE demo ADD c int;"), StringComparison.Ordinal);
+
+        // 单引号字符串里的注释符是数据，不能被剥掉。
+        Assert.Contains("'--'", StripSqlComments("SELECT '--';"), StringComparison.Ordinal);
+        Assert.Contains("'/*'", StripSqlComments("SELECT '/*';"), StringComparison.Ordinal);
+        // 转义引号 '' 不结束字符串。
+        Assert.Contains("'it''s--still'", StripSqlComments("SELECT 'it''s--still';"), StringComparison.Ordinal);
+
+        // $1 这类参数占位符不是 dollar-quote 定界符，后面的 DDL 不能被吞掉。
+        Assert.Contains("ALTER", StripSqlComments("SELECT $1; ALTER TABLE demo ADD c int;"), StringComparison.Ordinal);
+        // dollar-quoted 块的内容会真实执行，必须保留以便继续检查。
+        Assert.Contains("INDEX", StripSqlComments("DO $$ BEGIN CREATE INDEX ux ON demo (a); END $$;"), StringComparison.Ordinal);
     }
 
     /// <summary>
