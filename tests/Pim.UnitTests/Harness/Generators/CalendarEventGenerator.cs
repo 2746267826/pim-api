@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using Bogus;
+using Pim.UnitTests.Harness.RealDb;
 
 namespace Pim.UnitTests.Harness.Generators;
 
@@ -201,68 +201,12 @@ public static class CalendarEventGenerator
     /// </summary>
     public static List<CalendarEvent> FromDb(int seed = 42)
     {
-        try
-        {
-            var sampled = TrySampleFromDb(50);
-            if (sampled != null && sampled.Count > 0)
-                return sampled;
-        }
-        catch
-        {
-            // ignore and fallback
-        }
-
-        // fallback to deterministic synthetic
+        // 真库采样（历史上通过 `docker exec ... psql -d pim_prod` 直连生产容器）已移除：
+        // 1. 测试采样不应该依赖硬编码的生产容器，也不应该把生产数据带进测试；
+        // 2. 该路径对数据库错误一律回退合成数据，会把"口令错误/库不存在/权限不足"伪装成正常回退。
+        // 需要真库属性的场景走 `PimDbFixture`（PIM_TEST_CONN）驱动的 RealDb 用例；
+        // 这里保持确定性合成数据，保证离线与 CI 可复现。
         return Generate(50, seed);
-    }
-
-    private static List<CalendarEvent>? TrySampleFromDb(int count)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo("docker",
-                $"exec 1Panel-postgresql-rIyE psql -U pim -d pim_prod -t -A -F\",\" -c \"SELECT id, graph_event_id, title, start_utc, end_utc, timezone, rrule, is_all_day, calendar_id, organizer_email FROM calendar_events ORDER BY random() LIMIT {count}\"")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            };
-            using var proc = Process.Start(psi);
-            if (proc == null) return null;
-            var output = proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit(5000);
-            if (proc.ExitCode != 0 || string.IsNullOrWhiteSpace(output)) return null;
-            var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            var faker = new Faker("zh_CN");
-            faker.Random = new Randomizer(42);
-            var list = new List<CalendarEvent>();
-            foreach (var line in lines)
-            {
-                var parts = line.Split(',');
-                if (parts.Length < 5) continue;
-                if (!DateTimeOffset.TryParse(parts[3], out var start)) continue;
-                if (!DateTimeOffset.TryParse(parts[4], out var end)) end = start;
-                var tz = parts.Length > 5 && !string.IsNullOrWhiteSpace(parts[5]) ? parts[5] : "UTC";
-                var rrule = parts.Length > 6 && !string.IsNullOrWhiteSpace(parts[6]) ? parts[6] : null;
-                var isAllDay = parts.Length > 7 && bool.TryParse(parts[7], out var ad) && ad;
-                list.Add(new CalendarEvent(
-                    parts[0],
-                    parts.Length > 1 ? parts[1] : Guid.NewGuid().ToString("N"),
-                    parts.Length > 2 ? parts[2] : faker.Lorem.Word(),
-                    start,
-                    end,
-                    tz,
-                    rrule,
-                    isAllDay,
-                    parts.Length > 8 ? parts[8] : Guid.NewGuid().ToString("N"),
-                    parts.Length > 9 ? parts[9] : faker.Internet.Email()));
-            }
-            return list.Count > 0 ? list : null;
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     private static TimeSpan TimeZoneOffset(string tz, Faker faker)

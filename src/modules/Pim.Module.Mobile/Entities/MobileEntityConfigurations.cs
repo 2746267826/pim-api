@@ -95,6 +95,9 @@ public sealed class MobileLocationPointEntityConfiguration : IEntityTypeConfigur
         builder.Property(e => e.Quality).HasDefaultValue("usable");
         builder.Property(e => e.RawJson).HasDefaultValue("{}");
         builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        // 天然键（#246）：同一设备、同一时刻、同一坐标只允许一行。
+        // 否则客户端重试/批量补传会静默叠加重复点，污染停留判定、里程与常去地点。
+        builder.HasIndex(e => new { e.UserId, e.DeviceId, e.RecordedAtUtc, e.Latitude, e.Longitude }).IsUnique();
         builder.HasIndex(e => new { e.UserId, e.DeviceId, e.RecordedAtUtc });
         builder.HasIndex(e => new { e.UserId, e.Quality, e.RecordedAtUtc });
     }
@@ -177,6 +180,7 @@ public sealed class MobileTimelineBlockEntityConfiguration : IEntityTypeConfigur
 {
     public void Configure(EntityTypeBuilder<MobileTimelineBlockEntity> builder)
     {
+        builder.Property(e => e.BlockId).HasDefaultValue(string.Empty);
         builder.Property(e => e.Timezone).HasDefaultValue(MobileAnalyticsDefaults.DefaultTimezone);
         builder.Property(e => e.LifeCategory).HasDefaultValue(MobileLifeCategories.Uncategorized);
         builder.Property(e => e.TopAppsJson).HasDefaultValue("[]");
@@ -189,6 +193,19 @@ public sealed class MobileTimelineBlockEntityConfiguration : IEntityTypeConfigur
         builder.HasIndex(e => new { e.UserId, e.LifeCategory, e.StartUtc });
         builder.HasIndex(e => new { e.UserId, e.LocalDate });
         builder.HasIndex(e => new { e.UserId, e.IsStale });
+    }
+}
+
+public sealed class MobileAnalyticsMaterializationEntityConfiguration
+    : IEntityTypeConfiguration<MobileAnalyticsMaterializationEntity>
+{
+    public void Configure(EntityTypeBuilder<MobileAnalyticsMaterializationEntity> builder)
+    {
+        builder.Property(e => e.Timezone).HasDefaultValue(MobileAnalyticsDefaults.DefaultTimezone);
+        builder.Property(e => e.GeneratedAt).HasDefaultValueSql("now()");
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        builder.Property(e => e.UpdatedAt).HasDefaultValueSql("now()");
+        builder.HasIndex(e => new { e.UserId, e.DeviceId, e.CoveredFromUtc, e.CoveredToUtc }).IsUnique();
     }
 }
 

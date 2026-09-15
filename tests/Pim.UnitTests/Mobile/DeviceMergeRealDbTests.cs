@@ -4,13 +4,14 @@ using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
 using Pim.Module.Mobile.Entities;
 using Pim.Module.Mobile.Services;
+using Pim.UnitTests.Harness.RealDb;
 using Xunit;
 
 namespace Pim.UnitTests.Mobile;
 
 /// <summary>
-/// 真库端到端验证（issue #230 / #231）。连不上 PostgreSQL 时跳过而非失败，
-/// 与仓库既有 RealDb 测试（<c>PcTrackerDedupRealDbTests</c>）保持一致。
+/// 真库端到端验证（issue #230 / #231）。无 PostgreSQL（或未设置 <c>PIM_TEST_CONN</c>）时
+/// 用 <c>Skip.If</c> 显式跳过，报告显示 Skipped；源码里不内置口令。
 ///
 /// 覆盖两件 SQLite 覆盖不了的事：
 /// 1. 用生产同款配置 <c>EnableRetryOnFailure(3)</c>（NpgsqlRetryingExecutionStrategy）跑合并，
@@ -23,12 +24,6 @@ namespace Pim.UnitTests.Mobile;
 [Trait("DataSource", "RealDb")]
 public sealed class DeviceMergeRealDbTests
 {
-    private const string DefaultConnStr =
-        "Host=127.0.0.1;Database=pim;Username=opencode;Password=62f0a50bb963bb648f8e400399def95a;CommandTimeout=60";
-
-    private static string ConnStr =>
-        Environment.GetEnvironmentVariable("PIM_TEST_CONN") ?? DefaultConnStr;
-
     private static readonly string[] DeviceScopedTables =
     [
         "mobile_devices",
@@ -39,6 +34,8 @@ public sealed class DeviceMergeRealDbTests
         "mobile_location_points",
         "mobile_sync_batches",
         "mobile_timeline_blocks",
+        "mobile_usage_aggregates",
+        "mobile_analytics_materializations",
     ];
 
     private const string TargetDeviceId = "android-e2e-target";
@@ -47,20 +44,21 @@ public sealed class DeviceMergeRealDbTests
     private static readonly Guid UserId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-09-13T02:00:00Z");
 
-    [Fact]
+    [SkippableFact]
     public async Task MergeAsync_WithProductionRetryStrategy_MovesEverythingAndKeepsAppNamesResolvable()
     {
+        var connStr = RealDbTestConnection.Require();
         MobileTestHelpers.RegisterMobileModule();
 
-        await using var admin = new NpgsqlConnection(ConnStr);
-        if (!await TryOpenAsync(admin)) return;
+        await using var admin = new NpgsqlConnection(connStr);
+        await admin.OpenAsync();
 
         var schema = $"test_device_merge_{Guid.NewGuid():N}";
         try
         {
-            if (!await TryCreateSchemaAsync(admin, schema)) return;
+            await CreateSchemaAsync(admin, schema);
 
-            var searchPathConn = new NpgsqlConnectionStringBuilder(ConnStr) { SearchPath = schema }.ConnectionString;
+            var searchPathConn = new NpgsqlConnectionStringBuilder(connStr) { SearchPath = schema }.ConnectionString;
             var options = new DbContextOptionsBuilder<PimDbContext>()
                 .UseNpgsql(searchPathConn, npgsql => npgsql.EnableRetryOnFailure(3))
                 .Options;
@@ -102,43 +100,25 @@ public sealed class DeviceMergeRealDbTests
         }
         finally
         {
-            await using var cleanup = new NpgsqlConnection(ConnStr);
+            await using var cleanup = new NpgsqlConnection(connStr);
             await cleanup.OpenAsync();
             await using var drop = new NpgsqlCommand($"DROP SCHEMA IF EXISTS \"{schema}\" CASCADE", cleanup);
             await drop.ExecuteNonQueryAsync();
         }
     }
 
-    private static async Task<bool> TryOpenAsync(NpgsqlConnection conn)
+    private static async Task CreateSchemaAsync(NpgsqlConnection conn, string schema)
     {
-        try
-        {
-            await conn.OpenAsync();
-            return true;
-        }
-        catch (Exception ex) when (IsServerUnreachable(ex))
-        {
-            // CI 无 PostgreSQL：跳过而非失败。认证/权限/库不存在等配置错误不在此列，
-            // 必须让用例失败，否则会掩盖「连上了但连错了库」这类问题。
-            return false;
-        }
-    }
-
-    private static bool IsServerUnreachable(Exception ex)
-        => ex is System.Net.Sockets.SocketException or TimeoutException
-            || ex.InnerException is System.Net.Sockets.SocketException or TimeoutException;
-
-    private static async Task<bool> TryCreateSchemaAsync(NpgsqlConnection conn, string schema)
-    {
-        // 先显式确认目标库里有可借用的表结构；只有「缺表」才跳过，
-        // 其余异常（权限、磁盘、SQL 形状错误）必须让用例失败，不能变成静默绿灯。
+        // 先显式确认目标库里有可借用的表结构；「缺表」说明这台机器没有可用的真库数据
+        // （例如 CI），按 Skip 处理；其余异常（权限、磁盘、SQL 形状错误）必须让用例失败。
         await using (var probe = new NpgsqlCommand(
             "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
             "WHERE n.nspname = 'public' AND c.relname = ANY(@tables)", conn))
         {
             probe.Parameters.AddWithValue("tables", DeviceScopedTables);
             var found = Convert.ToInt64(await probe.ExecuteScalarAsync() ?? 0L);
-            if (found < DeviceScopedTables.Length) return false;
+            Skip.If(found < DeviceScopedTables.Length,
+                "RealDb 缺少移动端表结构（未指向已迁移的库），跳过测试。");
         }
 
         await using (var create = new NpgsqlCommand($"CREATE SCHEMA \"{schema}\"", conn))
@@ -151,8 +131,6 @@ public sealed class DeviceMergeRealDbTests
                 $"CREATE TABLE \"{schema}\".\"{table}\" (LIKE public.\"{table}\" INCLUDING ALL)", conn);
             await copy.ExecuteNonQueryAsync();
         }
-
-        return true;
     }
 
     /// <summary>
@@ -164,21 +142,22 @@ public sealed class DeviceMergeRealDbTests
     /// catalog 有 144 个包名重复）。只按 device_id 整体改写的实现在这里会撞唯一索引报 23505，
     /// 用户看到的仍然是 HTTP 500。
     /// </summary>
-    [Fact]
+    [SkippableFact]
     public async Task MergeAsync_OnProductionShapedData_ResolvesCrossDeviceDuplicateKeys()
     {
+        var connStr = RealDbTestConnection.Require();
         MobileTestHelpers.RegisterMobileModule();
 
-        await using var admin = new NpgsqlConnection(ConnStr);
-        if (!await TryOpenAsync(admin)) return;
+        await using var admin = new NpgsqlConnection(connStr);
+        await admin.OpenAsync();
 
         var schema = $"test_device_merge_real_{Guid.NewGuid():N}";
         try
         {
-            if (!await TryCreateSchemaAsync(admin, schema)) return;
-            if (!await TryCopyBusiestUserAsync(admin, schema)) return;
+            await CreateSchemaAsync(admin, schema);
+            await CopyBusiestUserAsync(admin, schema);
 
-            var searchPathConn = new NpgsqlConnectionStringBuilder(ConnStr) { SearchPath = schema }.ConnectionString;
+            var searchPathConn = new NpgsqlConnectionStringBuilder(connStr) { SearchPath = schema }.ConnectionString;
             var options = new DbContextOptionsBuilder<PimDbContext>()
                 .UseNpgsql(searchPathConn, npgsql => npgsql.EnableRetryOnFailure(3))
                 .Options;
@@ -233,7 +212,7 @@ public sealed class DeviceMergeRealDbTests
         }
         finally
         {
-            await using var cleanup = new NpgsqlConnection(ConnStr);
+            await using var cleanup = new NpgsqlConnection(connStr);
             await cleanup.OpenAsync();
             await using var drop = new NpgsqlCommand($"DROP SCHEMA IF EXISTS \"{schema}\" CASCADE", cleanup);
             await drop.ExecuteNonQueryAsync();
@@ -264,16 +243,16 @@ public sealed class DeviceMergeRealDbTests
             .Distinct()
             .CountAsync();
 
-    /// <summary>把真实库中「设备数最多」的那个用户的移动端数据复制进临时 schema；库中没有数据时返回 false。</summary>
-    private static async Task<bool> TryCopyBusiestUserAsync(NpgsqlConnection conn, string schema)
+    /// <summary>把真实库中「设备数最多」的那个用户的移动端数据复制进临时 schema；库中没有数据时 Skip。</summary>
+    private static async Task CopyBusiestUserAsync(NpgsqlConnection conn, string schema)
     {
         Guid userId;
         await using (var pick = new NpgsqlCommand(
             "SELECT user_id FROM public.mobile_devices GROUP BY user_id ORDER BY count(*) DESC LIMIT 1", conn))
         {
             var result = await pick.ExecuteScalarAsync();
-            if (result is not Guid picked) return false;
-            userId = picked;
+            Skip.If(result is not Guid, "RealDb 里没有移动端设备数据，跳过生产形状用例。");
+            userId = (Guid)result!;
         }
 
         // 复制过程中的异常不吞：拷不动就让用例失败，否则它会静默绿灯。
@@ -285,8 +264,6 @@ public sealed class DeviceMergeRealDbTests
             copy.Parameters.AddWithValue("userId", userId);
             await copy.ExecuteNonQueryAsync();
         }
-
-        return true;
     }
 
     private static async Task SeedAsync(PimDbContext db)

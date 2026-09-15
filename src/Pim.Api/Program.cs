@@ -233,20 +233,48 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 
 // Apply database migrations. Existing EnsureCreated databases are adopted before Migrate().
+//
+// 迁移失败默认必须显式失败退出（非零退出码），由编排层重启：
+// 只记 Warning 继续启动会让进程以"半套 schema"对外服务（后续读写全部 500），
+// 而且从启动日志里看不出根因是 schema；DB 慢启动的顾虑由有限次重试覆盖。
+// 唯一的例外是无数据库的宿主测试（WebApplicationFactory）——它们用
+// Database:Migrations:FailFast=false 显式声明"接受无迁移运行"，生产配置不设该项即为默认的失败退出。
+var failFastOnMigrationFailure = app.Configuration.GetValue("Database:Migrations:FailFast", true);
 try
 {
     using (var scope = app.Services.CreateScope())
     {
         var adoption = scope.ServiceProvider.GetRequiredService<Pim.Infrastructure.Data.PimMigrationAdoptionService>();
-        await adoption.AdoptExistingSchemaAsync();
-
         var db = scope.ServiceProvider.GetRequiredService<Pim.Infrastructure.Data.PimDbContext>();
-        await db.Database.MigrateAsync();
+        await Pim.Infrastructure.Data.PimDatabaseMigrationRetry.ExecuteAsync(
+            async ct =>
+            {
+                await adoption.AdoptExistingSchemaAsync(ct);
+                await db.Database.MigrateAsync(ct);
+            },
+            onRetry: (ex, attempt) =>
+            {
+                Log.Warning(
+                    ex,
+                    "数据库迁移第 {Attempt}/{MaxAttempts} 次失败，{DelaySeconds}s 后重试（等待 DB 就绪）。",
+                    attempt,
+                    Pim.Infrastructure.Data.PimDatabaseMigrationRetry.DefaultMaxAttempts,
+                    Pim.Infrastructure.Data.PimDatabaseMigrationRetry.DefaultDelay.TotalSeconds);
+                return Task.CompletedTask;
+            });
     }
+}
+catch (Exception ex) when (failFastOnMigrationFailure)
+{
+    Log.Fatal(ex, "数据库迁移失败：进程退出，避免以未完成迁移的 schema 提供服务。");
+    await Log.CloseAndFlushAsync();
+    return 1;
 }
 catch (Exception ex)
 {
-    Log.Warning(ex, "Database migration failed; the API will start but database-dependent endpoints may not work.");
+    Log.Error(
+        ex,
+        "数据库迁移失败：Database:Migrations:FailFast=false，进程继续启动但 schema 可能不完整（仅用于无数据库的宿主测试）。");
 }
 
 // Admin bootstrap: 已部署系统升级后若无任何管理员，自动将最早注册的有效用户提升为管理员（幂等）
@@ -373,7 +401,7 @@ if (isMcpStdio)
 {
     // Dedicated local-process MCP stdio server (Claude Code / Codex mcp.json).
     await McpServerBootstrap.RunStdioAsync(app);
-    return;
+    return 0;
 }
 
 // In-process MCP server: captures the pipeline, maps /mcp (bearer guard + 308 + MapMcp).
@@ -383,5 +411,8 @@ McpServerBootstrap.ConfigureHttp(app);
 app.MapFallbackToFile("index.html").AllowAnonymous();
 
 app.Run();
+
+// 迁移失败路径会 return 1（见上），因此这里显式返回 0。
+return 0;
 
 public partial class Program { }

@@ -36,11 +36,73 @@ public sealed class MobileAppClassificationService
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var packageName = NormalizePackageName(input.PackageName);
         var latestMetadata = await LoadLatestMetadataAsync(userId, packageName, ct);
-        var displayName = ResolveDisplayName(null, latestMetadata, input, packageName);
+        var overrideEntity = await LoadOverrideAsync(userId, packageName, ct);
+        var userRules = await LoadEnabledRulesAsync(userId, ct);
+        return Classify(input, packageName, latestMetadata, overrideEntity, userRules);
+    }
 
-        var overrideEntity = await _db.Set<MobileAppCatalogOverrideEntity>()
-            .AsNoTracking()
-            .SingleOrDefaultAsync(o => o.UserId == userId && o.PackageName == packageName, ct);
+    public Task<IReadOnlyDictionary<string, MobileAppClassificationResult>> ClassifyManyAsync(
+        IReadOnlyCollection<string> packageNames,
+        CancellationToken ct = default)
+        => ClassifyManyAsync(
+            packageNames
+                .Where(packageName => !string.IsNullOrWhiteSpace(packageName))
+                .Select(packageName => new MobileAppClassificationInput(packageName))
+                .ToList(),
+            ct);
+
+    /// <summary>
+    /// 一次为多个包名分类（#247）。分析端点此前对每个包各查 2~3 次库
+    /// （元数据 + 覆盖 + 规则），单次请求放大到数百条 SQL；
+    /// 这里把三类数据各查一次，其余在内存中完成。
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, MobileAppClassificationResult>> ClassifyManyAsync(
+        IReadOnlyCollection<MobileAppClassificationInput> inputs,
+        CancellationToken ct = default)
+    {
+        var results = new Dictionary<string, MobileAppClassificationResult>(StringComparer.OrdinalIgnoreCase);
+        var normalized = inputs
+            .Where(input => !string.IsNullOrWhiteSpace(input.PackageName))
+            .GroupBy(input => NormalizePackageName(input.PackageName), StringComparer.Ordinal)
+            .Select(group => group.First())
+            .ToList();
+        if (normalized.Count == 0)
+            return results;
+
+        var userId = MobileUserContext.RequireUserId(_currentUser);
+        var packageNames = normalized.Select(input => NormalizePackageName(input.PackageName)).ToList();
+        var metadata = await LoadLatestMetadataBatchAsync(userId, packageNames, ct);
+        var overrides = await LoadOverridesBatchAsync(userId, packageNames, ct);
+        var userRules = await LoadEnabledRulesAsync(userId, ct);
+
+        foreach (var input in normalized)
+        {
+            var packageName = NormalizePackageName(input.PackageName);
+            var result = Classify(
+                input,
+                packageName,
+                metadata.GetValueOrDefault(packageName),
+                overrides.GetValueOrDefault(packageName),
+                userRules);
+            results[packageName] = result;
+            // 调用方通常按原始包名回查（大小写/空白可能不同），两种键都登记。
+            results[input.PackageName] = result;
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// 纯内存判定（无 IO）：元数据/覆盖/规则都已由调用方加载好。
+    /// </summary>
+    private static MobileAppClassificationResult Classify(
+        MobileAppClassificationInput input,
+        string packageName,
+        MobileAppCatalogEntity? latestMetadata,
+        MobileAppCatalogOverrideEntity? overrideEntity,
+        IReadOnlyList<MobileAppCategoryRuleEntity> userRules)
+    {
+        var displayName = ResolveDisplayName(null, latestMetadata, input, packageName);
 
         if (overrideEntity is not null)
         {
@@ -54,7 +116,6 @@ public sealed class MobileAppClassificationService
                 latestMetadata is not null);
         }
 
-        var userRules = await LoadEnabledRulesAsync(userId, ct);
         if (TryClassifyWithRules(packageName, displayName, userRules, out var ruleResult))
             return BuildRuleResult(packageName, displayName, latestMetadata, input, ruleResult);
 
@@ -118,6 +179,57 @@ public sealed class MobileAppClassificationService
             latestMetadata is not null);
     }
 
+    private async Task<MobileAppCatalogOverrideEntity?> LoadOverrideAsync(
+        Guid userId,
+        string packageName,
+        CancellationToken ct)
+        => await _db.Set<MobileAppCatalogOverrideEntity>()
+            .AsNoTracking()
+            .SingleOrDefaultAsync(o => o.UserId == userId && o.PackageName == packageName, ct);
+
+    /// <summary>
+    /// 一次读出所有包名的最新元数据。排序与 <see cref="LoadLatestMetadataAsync"/> 完全一致，
+    /// 再在内存里按包名取第一条，保证批量与单包结果逐字段相同。
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, MobileAppCatalogEntity>> LoadLatestMetadataBatchAsync(
+        Guid userId,
+        IReadOnlyCollection<string> packageNames,
+        CancellationToken ct)
+    {
+        var names = packageNames.ToList();
+        var rows = await _db.Set<MobileAppCatalogEntity>()
+            .AsNoTracking()
+            .Where(app => app.UserId == userId && names.Contains(app.PackageName))
+            .OrderByDescending(app => app.UpdatedAt)
+            .ThenByDescending(app => app.LastUpdateTimeUtc)
+            .ThenByDescending(app => app.CreatedAt)
+            .ThenBy(app => app.DeviceId)
+            .ToListAsync(ct);
+
+        var result = new Dictionary<string, MobileAppCatalogEntity>(StringComparer.Ordinal);
+        foreach (var row in rows)
+        {
+            if (!result.ContainsKey(row.PackageName))
+                result[row.PackageName] = row;
+        }
+
+        return result;
+    }
+
+    private async Task<IReadOnlyDictionary<string, MobileAppCatalogOverrideEntity>> LoadOverridesBatchAsync(
+        Guid userId,
+        IReadOnlyCollection<string> packageNames,
+        CancellationToken ct)
+    {
+        var names = packageNames.ToList();
+        var rows = await _db.Set<MobileAppCatalogOverrideEntity>()
+            .AsNoTracking()
+            .Where(o => o.UserId == userId && names.Contains(o.PackageName))
+            .ToListAsync(ct);
+
+        return rows.ToDictionary(row => row.PackageName, StringComparer.Ordinal);
+    }
+
     private async Task<MobileAppCatalogEntity?> LoadLatestMetadataAsync(
         Guid userId,
         string packageName,
@@ -163,7 +275,7 @@ public sealed class MobileAppClassificationService
         return false;
     }
 
-    private MobileAppClassificationResult BuildRuleResult(
+    private static MobileAppClassificationResult BuildRuleResult(
         string packageName,
         string displayName,
         MobileAppCatalogEntity? latestMetadata,

@@ -14,23 +14,14 @@ namespace Pim.UnitTests.Harness.RealDb;
 /// </summary>
 public sealed class PcTrackerDedupRealDbTests
 {
-    // 与仓库既有 PimDbFixture 一致：本地开发库默认凭据，CI 通过环境变量注入。
-    private const string DefaultConnStr = "Host=127.0.0.1;Database=pim;Username=opencode;Password=62f0a50bb963bb648f8e400399def95a;CommandTimeout=30";
-
-    private static string ConnStr =>
-        Environment.GetEnvironmentVariable("PIM_TEST_CONN") ?? DefaultConnStr;
-
-    [Fact]
+    [SkippableFact]
     [Trait("DataSource", "RealDb")]
     public async Task DedupIndex_Coalesce_PreservesNullDedupSemantics()
     {
-        await using var conn = new NpgsqlConnection(ConnStr);
-        try { await conn.OpenAsync(); }
-        catch
-        {
-            // CI 无 Postgres：与仓库既有 RealDb 测试一致，直接跳过而非 Fail。
-            return;
-        }
+        // 只读 PIM_TEST_CONN；未设置或不可达时显式 Skip（CI 显示 Skipped，而不是静默通过）。
+        var connStr = RealDbTestConnection.Require();
+        await using var conn = new NpgsqlConnection(connStr);
+        await conn.OpenAsync();
 
         var schema = $"test_tracker_dedup_{Guid.NewGuid():N}";
         try

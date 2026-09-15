@@ -39,7 +39,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
         foreach (var day in days)
         {
             List<PimDbFixture.MobileUsageSessionRow> rows;
-            try { rows = await _fixture.SampleSessions(50, day); } catch { continue; }
+            try { rows = await _fixture.SampleSessions(50, day); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { continue; }
             if (rows.Count == 0) continue;
             var sessions = rows.Where(r => r.EndUtc.HasValue).Select(r => (r.PackageName, r.StartUtc, r.EndUtc!.Value)).ToList();
             var buckets = AggregateToHourBuckets(sessions);
@@ -67,7 +67,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
         foreach (var day in days)
         {
             List<PimDbFixture.MobileUsageSessionRow> rows;
-            try { rows = await _fixture.SampleSessions(50, day); } catch { continue; }
+            try { rows = await _fixture.SampleSessions(50, day); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { continue; }
             if (rows.Count == 0) continue;
             var sessions = rows.Where(r => r.EndUtc.HasValue).Select(r => (r.PackageName, r.StartUtc, r.EndUtc!.Value)).ToList();
             var daily = AggregateToDailyTotals(sessions);
@@ -88,7 +88,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
             {
                 if (_fixture.IsAvailable) rows = await _fixture.SampleSessions(20);
             }
-            catch { }
+            catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
             List<(string packageName, DateTimeOffset start, DateTimeOffset end)> sessions;
             if (rows.Count > 0)
             {
@@ -125,7 +125,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
         foreach (var day in days)
         {
             List<PimDbFixture.MobileUsageSessionRow> rows;
-            try { rows = await _fixture.SampleSessions(30, day); } catch { continue; }
+            try { rows = await _fixture.SampleSessions(30, day); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { continue; }
             if (rows.Count == 0) continue;
             var sessions = rows.Where(r => r.EndUtc.HasValue).Select(r => (r.PackageName, r.StartUtc, r.EndUtc!.Value)).ToList();
             var buckets = AggregateToHourBuckets(sessions);
@@ -154,7 +154,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
         foreach (var day in days)
         {
             List<PimDbFixture.PcAwEventRow> rows;
-            try { rows = await _fixture.SamplePcEvents(50, day); } catch { continue; }
+            try { rows = await _fixture.SamplePcEvents(50, day); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { continue; }
             if (rows.Count == 0) continue;
             var daily = new Dictionary<string, double>();
             var key = day.ToString("yyyy-MM-dd");
@@ -173,7 +173,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
         for (int seed = 0; seed < 100; seed++)
         {
             List<PimDbFixture.PcAwEventRow> rows = new();
-            try { if (_fixture.IsAvailable) rows = await _fixture.SamplePcEvents(30); } catch { }
+            try { if (_fixture.IsAvailable) rows = await _fixture.SamplePcEvents(30); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
             List<(string app, double afkSec)> tuples;
             if (rows.Count > 0)
             {
@@ -196,7 +196,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
         for (int seed = 0; seed < 100; seed++)
         {
             List<PimDbFixture.PcAwEventRow> rows = new();
-            try { if (_fixture.IsAvailable) rows = await _fixture.SamplePcEvents(30); } catch { }
+            try { if (_fixture.IsAvailable) rows = await _fixture.SamplePcEvents(30); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
             List<double> capped;
             if (rows.Count > 0)
             {
@@ -225,7 +225,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
                 var dbSample = CalendarEventGenerator.FromDb(seed: seed);
                 if (dbSample.Count > 0) events = dbSample;
             }
-            catch { }
+            catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
             var tuples = events.Select(e => (e.Id, e.Start, e.End)).ToList();
             var (pass, detail) = CalendarInvariants.CheckEventDurationBounds(tuples);
             Assert.True(pass, $"Seed {seed}: {detail}");
@@ -244,7 +244,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
                 var dbSample = CalendarEventGenerator.FromDb(seed: seed);
                 if (dbSample.Count > 0) events = dbSample;
             }
-            catch { }
+            catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
             var view = events.Select(e => (e.GraphEventId, e.Id, e.Start)).ToList();
             var known = new HashSet<string>(events.Select(e => e.GraphEventId));
             var (pass, detail) = CalendarInvariants.CheckCalendarDeduplication(view, known);
@@ -315,7 +315,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
         foreach (var day in days)
         {
             List<PimDbFixture.MobileLocationPointRow> rows;
-            try { rows = await _fixture.SampleLocationPoints(30, day); } catch { continue; }
+            try { rows = await _fixture.SampleLocationPoints(30, day); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { continue; }
             if (rows.Count < 2) continue;
             var ordered = rows.OrderBy(r => r.RecordedAtUtc).ToList();
             var points = new List<(double lat, double lon, double speedMps)>();
@@ -355,7 +355,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
         foreach (var day in days)
         {
             List<PimDbFixture.MobileLocationPointRow> rows;
-            try { rows = await _fixture.SampleLocationPoints(30, day); } catch { continue; }
+            try { rows = await _fixture.SampleLocationPoints(30, day); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { continue; }
             if (rows.Count == 0) continue;
             var pts = rows.Select(r => ((double)r.Latitude, (double)r.Longitude)).ToList();
             // filter to China bounds for pass (RealDb may contain outliers, cap)
@@ -373,7 +373,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
         for (int seed = 0; seed < 100; seed++)
         {
             List<PimDbFixture.MobileUsageSessionRow> rows = new();
-            try { if (_fixture.IsAvailable) rows = await _fixture.SampleSessions(30); } catch { }
+            try { if (_fixture.IsAvailable) rows = await _fixture.SampleSessions(30); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
             Dictionary<int, double> buckets;
             double total;
             if (rows.Count > 0)
@@ -416,7 +416,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
         foreach (var day in days)
         {
             List<PimDbFixture.MobileUsageSessionRow> rows;
-            try { rows = await _fixture.SampleSessions(30, day); } catch { continue; }
+            try { rows = await _fixture.SampleSessions(30, day); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { continue; }
             if (rows.Count == 0) continue;
             var sessions = rows.Where(r => r.EndUtc.HasValue).Select(r => (r.PackageName, r.StartUtc, r.EndUtc!.Value)).ToList();
             var daily = AggregateToDailyTotals(sessions);
@@ -449,7 +449,7 @@ public sealed class RealDbPropertyTests : IClassFixture<PimDbFixture>
             if (!_fixture.IsAvailable) return new List<DateOnly>();
             return await _fixture.SampleDistinctDays(n, table, col);
         }
-        catch
+        catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex))
         {
             return new List<DateOnly>();
         }

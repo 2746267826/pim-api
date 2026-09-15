@@ -4,47 +4,77 @@ using Pim.Module.Mobile.Entities;
 
 namespace Pim.Module.Mobile.Services;
 
+/// <summary>
+/// 会话重建结果。删除数与创建数可用于判断一次重建的规模（重复上传同一窗口时应为 0 次调用，见 #248）。
+/// </summary>
+public sealed record MobileSessionRebuildResult(int DeletedCount, int CreatedCount)
+{
+    public static readonly MobileSessionRebuildResult None = new(0, 0);
+}
+
 public sealed class MobileSessionInterpreter
 {
     private readonly PimDbContext _db;
+    private readonly TimeProvider _timeProvider;
 
-    public MobileSessionInterpreter(PimDbContext db)
+    public MobileSessionInterpreter(PimDbContext db, TimeProvider? timeProvider = null)
     {
         _db = db;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
-    public async Task RebuildSessionsAsync(
+    /// <summary>
+    /// 重建 [rangeStartUtc, rangeEndUtc] 窗口内的会话。
+    ///
+    /// 删除与重建必须使用同一口径（#248）：删除按"与窗口重叠"（闭区间）命中会话，
+    /// 重建则从被删会话中最早的开始时间起读事件 —— 起点落在窗口之外的会话因此也能被完整重建，
+    /// 而不是"删掉却建不回来"（旧实现只读窗口内的事件，造成会话静默丢失）。
+    /// </summary>
+    public async Task<MobileSessionRebuildResult> RebuildSessionsAsync(
         Guid userId,
         string deviceId,
         DateTimeOffset rangeStartUtc,
         DateTimeOffset rangeEndUtc,
         CancellationToken ct = default)
     {
+        // 反向窗口没有可表达的重建语义：宁可什么都不做，也不能先删后建不回来。
+        if (rangeEndUtc < rangeStartUtc)
+            return MobileSessionRebuildResult.None;
+
         var existing = await _db.Set<MobileUsageSessionEntity>()
             .Where(s => s.UserId == userId
                 && s.DeviceId == deviceId
-                && s.StartUtc < rangeEndUtc
-                && (s.EndUtc == null || s.EndUtc > rangeStartUtc))
+                && s.StartUtc <= rangeEndUtc
+                && (s.EndUtc == null || s.EndUtc >= rangeStartUtc))
             .ToListAsync(ct);
-        _db.Set<MobileUsageSessionEntity>().RemoveRange(existing);
+
+        // 重建起点取被删会话的最早开始时间：每个被删会话的起点事件都落在 [重建起点, 窗口末端] 内，
+        // 因此"删掉的每一条都能原样建回来"。没有会话可删时退化为窗口起点。
+        var rebuildStartUtc = existing.Count == 0
+            ? rangeStartUtc
+            : existing.Min(session => session.StartUtc);
+
+        if (existing.Count > 0)
+            _db.Set<MobileUsageSessionEntity>().RemoveRange(existing);
 
         var events = await _db.Set<MobileUsageEventEntity>()
             .AsNoTracking()
             .Where(e => e.UserId == userId
                 && e.DeviceId == deviceId
-                && e.EventTimestampUtc >= rangeStartUtc
+                && e.EventTimestampUtc >= rebuildStartUtc
                 && e.EventTimestampUtc <= rangeEndUtc)
             .OrderBy(e => e.EventTimestampUtc)
             .ThenBy(e => e.Id)
             .ToListAsync(ct);
 
         MobileUsageEventEntity? open = null;
+        var created = new List<MobileUsageSessionEntity>();
         foreach (var usageEvent in events)
         {
             if (IsForeground(usageEvent.EventType))
             {
                 if (open is not null)
-                    AddSession(open, usageEvent.EventTimestampUtc, "[\"closed-by-app-switch\"]");
+                    created.Add(AddSession(open, usageEvent.EventTimestampUtc, "[\"closed-by-app-switch\"]"));
 
                 open = usageEvent;
                 continue;
@@ -54,18 +84,19 @@ public sealed class MobileSessionInterpreter
                 && open is not null
                 && string.Equals(open.PackageName, usageEvent.PackageName, StringComparison.Ordinal))
             {
-                AddSession(open, usageEvent.EventTimestampUtc, "[]");
+                created.Add(AddSession(open, usageEvent.EventTimestampUtc, "[]"));
                 open = null;
             }
         }
 
         if (open is not null)
-            AddSession(open, rangeEndUtc, "[\"open-ended\"]");
+            created.Add(AddSession(open, rangeEndUtc, "[\"open-ended\"]"));
 
         await _db.SaveChangesAsync(ct);
+        return new MobileSessionRebuildResult(existing.Count, created.Count);
     }
 
-    private void AddSession(MobileUsageEventEntity startEvent, DateTimeOffset endUtc, string qualityFlagsJson)
+    private MobileUsageSessionEntity AddSession(MobileUsageEventEntity startEvent, DateTimeOffset endUtc, string qualityFlagsJson)
     {
         // 跨天/0ms/1ms边界：确保 EndUtc 合法且 DurationMs 精确
         if (endUtc < startEvent.EventTimestampUtc)
@@ -81,7 +112,7 @@ public sealed class MobileSessionInterpreter
         if (duration > 8L * 3600 * 1000 && !flags.Contains("anomalous_duration", StringComparison.OrdinalIgnoreCase))
             flags = flags == "[]" ? "[\"anomalous_duration\"]" : flags.TrimEnd(']') + ",\"anomalous_duration\"]";
 
-        _db.Set<MobileUsageSessionEntity>().Add(new MobileUsageSessionEntity
+        var session = new MobileUsageSessionEntity
         {
             UserId = startEvent.UserId,
             DeviceId = startEvent.DeviceId,
@@ -90,8 +121,10 @@ public sealed class MobileSessionInterpreter
             EndUtc = endUtc,
             DurationMs = duration,
             QualityFlagsJson = flags,
-            CreatedAt = DateTimeOffset.UtcNow
-        });
+            CreatedAt = _timeProvider.GetUtcNow()
+        };
+        _db.Set<MobileUsageSessionEntity>().Add(session);
+        return session;
     }
 
     private static bool IsForeground(string eventType)

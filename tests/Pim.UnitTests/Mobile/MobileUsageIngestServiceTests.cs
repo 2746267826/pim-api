@@ -650,6 +650,144 @@ public sealed class MobileUsageIngestServiceTests
         Assert.True(await db.Set<MobileTimelineBlockEntity>().AnyAsync(row => row.IsStale));
     }
 
+    [Fact]
+    public async Task IngestAsync_RebuildsSessionsFromTheBatchsOwnEvents()
+    {
+        // #248：重建会话读的是数据库快照。批次自己的事件必须先落库，
+        // 否则本批的事件要等到"下一条批次"才会进入会话，形成永远落后一批的静默缺口。
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = CreateService(db);
+        var request = UploadRequest("batch-own-events", "Messages") with { Apps = [], FallbackSummaries = [] };
+
+        await service.IngestAsync(request, CancellationToken.None);
+
+        var session = Assert.Single(await db.Set<MobileUsageSessionEntity>().ToListAsync());
+        Assert.Equal("com.example.messages", session.PackageName);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-06T08:05:00Z"), session.StartUtc);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-06T08:25:00Z"), session.EndUtc);
+    }
+
+    [Fact]
+    public async Task IngestAsync_DoesNotRebuildSessionsWhenTheBatchAddsNoNewEvents()
+    {
+        // #248：补偿批重复上传同一窗口时，事件集没有变化 => 会话不变。
+        // 重建会把窗口内的会话整批删除重建，因此必须跳过，否则同一份数据被反复重写上百次。
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = CreateService(db);
+        var first = UploadRequest("batch-first", "Messages") with { Apps = [], FallbackSummaries = [] };
+        await service.IngestAsync(first, CancellationToken.None);
+
+        var session = await db.Set<MobileUsageSessionEntity>().SingleAsync();
+        var sessionId = session.Id;
+        var createdAt = session.CreatedAt;
+
+        var compensation = first with { ClientBatchId = "batch-compensation" };
+        var result = await service.IngestAsync(compensation, CancellationToken.None);
+        db.ChangeTracker.Clear();
+
+        Assert.Equal(2, result.SkippedCount);
+        Assert.Equal(0, result.AcceptedCount);
+        var after = await db.Set<MobileUsageSessionEntity>().SingleAsync();
+        Assert.Equal(sessionId, after.Id);
+        Assert.Equal(createdAt, after.CreatedAt);
+    }
+
+    [Fact]
+    public async Task IngestAsync_KeepsEarlierSessionWhenALaterWindowOverlapsOnlyItsTail()
+    {
+        // #248：起点在上一批窗口内的会话，遇到下一批"只重叠尾部"的窗口时不能被删掉后丢失。
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = CreateService(db);
+        var start = DateTimeOffset.Parse("2026-07-06T08:00:00Z");
+        var foreground = new MobileUsageEventDto(
+            "com.example.messages",
+            "MOVE_TO_FOREGROUND",
+            start.AddMinutes(5),
+            "MainActivity",
+            start.AddMinutes(6),
+            "{}",
+            "item-fg");
+
+        var firstBatch = new MobileUsageEventsUploadRequest(
+            "android-main",
+            "batch-a",
+            start,
+            start.AddMinutes(15),
+            [],
+            [foreground],
+            []);
+        await service.IngestAsync(firstBatch, CancellationToken.None);
+        var firstSession = Assert.Single(await db.Set<MobileUsageSessionEntity>().ToListAsync());
+        Assert.Equal(start.AddMinutes(5), firstSession.StartUtc);
+        Assert.Equal(start.AddMinutes(15), firstSession.EndUtc);
+
+        var chatForeground = new MobileUsageEventDto(
+            "com.example.chat",
+            "MOVE_TO_FOREGROUND",
+            start.AddMinutes(20),
+            "ChatActivity",
+            start.AddMinutes(21),
+            "{}",
+            "item-chat");
+        var secondBatch = new MobileUsageEventsUploadRequest(
+            "android-main",
+            "batch-b",
+            start.AddMinutes(10),
+            start.AddMinutes(45),
+            [],
+            [chatForeground],
+            []);
+        await service.IngestAsync(secondBatch, CancellationToken.None);
+
+        var sessions = await db.Set<MobileUsageSessionEntity>().OrderBy(s => s.StartUtc).ToListAsync();
+        Assert.Equal(2, sessions.Count);
+        Assert.Equal("com.example.messages", sessions[0].PackageName);
+        Assert.Equal(start.AddMinutes(5), sessions[0].StartUtc);
+        Assert.Equal(start.AddMinutes(20), sessions[0].EndUtc);
+        Assert.Contains("closed-by-app-switch", sessions[0].QualityFlagsJson);
+        Assert.Equal("com.example.chat", sessions[1].PackageName);
+        Assert.Equal(start.AddMinutes(20), sessions[1].StartUtc);
+    }
+
+    [Fact]
+    public async Task IngestAsync_RebuildsWhenALaterBatchWidensTheWindowOfAnOpenSession()
+    {
+        // 评审 #1：事件集没变、但窗口更宽时，上一批按"窗口末端封口"的开放会话必须重新封口。
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = CreateService(db);
+        var start = DateTimeOffset.Parse("2026-07-06T08:00:00Z");
+        var foreground = new MobileUsageEventDto(
+            "com.example.messages",
+            "MOVE_TO_FOREGROUND",
+            start.AddMinutes(5),
+            "MainActivity",
+            start.AddMinutes(6),
+            "{}",
+            "item-fg");
+
+        var firstBatch = new MobileUsageEventsUploadRequest(
+            "android-main",
+            "batch-open-1",
+            start,
+            start.AddMinutes(15),
+            [],
+            [foreground],
+            []);
+        await service.IngestAsync(firstBatch, CancellationToken.None);
+        var firstSession = Assert.Single(await db.Set<MobileUsageSessionEntity>().ToListAsync());
+        Assert.Equal(start.AddMinutes(15), firstSession.EndUtc);
+        Assert.Contains("open-ended", firstSession.QualityFlagsJson);
+
+        // 同一事件、窗口扩到 12:00：事件全部命中重复，但会话必须跟着变宽。
+        var widenedBatch = firstBatch with { ClientBatchId = "batch-open-2", SourceWindowEndUtc = start.AddHours(4) };
+        var second = await service.IngestAsync(widenedBatch, CancellationToken.None);
+
+        Assert.Equal(0, second.AcceptedCount);
+        Assert.Equal(1, second.SkippedCount);
+        var session = Assert.Single(await db.Set<MobileUsageSessionEntity>().ToListAsync());
+        Assert.Equal(start.AddHours(4), session.EndUtc);
+    }
+
     private static MobileUsageEventsUploadRequest UploadRequest(
         string batchId,
         string appName,

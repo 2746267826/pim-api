@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using Bogus;
+using Pim.UnitTests.Harness.RealDb;
 
 namespace Pim.UnitTests.Harness.Generators;
 
@@ -185,61 +185,12 @@ public static class FileCorpusGenerator
     /// </summary>
     public static List<FileEntry> FromDb(int seed = 42)
     {
-        try
-        {
-            var sampled = TrySampleFromDb(50);
-            if (sampled != null && sampled.Count > 0)
-                return sampled;
-        }
-        catch
-        {
-            // fallback
-        }
+        // 真库采样（历史上通过 `docker exec ... psql -d pim_prod` 直连生产容器）已移除：
+        // 1. 测试采样不应该依赖硬编码的生产容器，也不应该把生产数据带进测试；
+        // 2. 该路径对数据库错误一律回退合成数据，会把"口令错误/库不存在/权限不足"伪装成正常回退。
+        // 需要真库属性的场景走 `PimDbFixture`（PIM_TEST_CONN）驱动的 RealDb 用例；
+        // 这里保持确定性合成数据，保证离线与 CI 可复现。
         return Generate(50, seed);
-    }
-
-    private static List<FileEntry>? TrySampleFromDb(int count)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo("docker",
-                $"exec 1Panel-postgresql-rIyE psql -U pim -d pim_prod -t -A -F\",\" -c \"SELECT id, file_name, file_path, size_bytes, hash, owner_id, created_at, mime_type FROM files ORDER BY random() LIMIT {count}\"")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            };
-            using var proc = Process.Start(psi);
-            if (proc == null) return null;
-            var output = proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit(5000);
-            if (proc.ExitCode != 0 || string.IsNullOrWhiteSpace(output)) return null;
-            var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            var faker = new Faker("zh_CN");
-            faker.Random = new Randomizer(42);
-            var list = new List<FileEntry>();
-            foreach (var line in lines)
-            {
-                var parts = line.Split(',');
-                if (parts.Length < 4) continue;
-                var id = parts[0];
-                var name = parts.Length > 1 ? parts[1] : faker.System.FileName();
-                var path = parts.Length > 2 ? parts[2] : $"/{name}";
-                long.TryParse(parts.Length > 3 ? parts[3] : "0", out var size);
-                var hash = parts.Length > 4 ? parts[4] : faker.Random.Hash(32);
-                var owner = parts.Length > 5 ? parts[5] : faker.Random.Guid().ToString("N");
-                DateTimeOffset.TryParse(parts.Length > 6 ? parts[6] : null, out var created);
-                if (created == default) created = DateTimeOffset.UtcNow;
-                var mime = parts.Length > 7 ? parts[7] : "application/octet-stream";
-                var depth = path.Count(c => c == '/');
-                list.Add(new FileEntry(id, name, path, size, hash, owner, created, mime, depth));
-            }
-            return list.Count > 0 ? list : null;
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     private static string BuildNestedPath(Faker faker, string fileName, int depth)

@@ -44,6 +44,7 @@ public sealed class MobileModule : IModule
         services.AddScoped<MobileUsageGoalService>();
         services.AddScoped<MobileUsageAggregationService>();
         services.AddScoped<MobileTimelineBlockService>();
+        services.AddScoped<MobileAnalyticsMaterializationService>();
         services.AddScoped<DeviceManagementService>();
         services.AddScoped<MobileSyncBacklogInspector>();
         services.AddScoped<IDataQualityInspector, MobileSyncBacklogInspector>();
@@ -108,6 +109,13 @@ public sealed class MobileModule : IModule
             [FromServices] MobileLocationService service,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<MobileLocationPointDto>.Ok(await service.SubmitAsync(request, ct))));
+
+        // 批量补传通道（#246）：客户端积压时一次请求上传多个点，逐条返回结果。
+        group.MapPost("/location/points/batch", async (
+            [FromBody] MobileLocationPointsUploadRequest request,
+            [FromServices] MobileLocationService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileLocationPointsUploadResult>.Ok(await service.SubmitBatchAsync(request, ct))));
 
         group.MapGet("/summary", async (
             [FromQuery] string? date,
@@ -492,6 +500,7 @@ public static class MobileEndpointPaths
     public const string SyncGaps = $"{Root}/sync/gaps";
     public const string UsageEvents = $"{Root}/usage/events";
     public const string LocationPoints = $"{Root}/location/points";
+    public const string LocationPointsBatch = $"{Root}/location/points/batch";
     public const string Summary = $"{Root}/summary";
     public const string Timeline = $"{Root}/timeline";
     public const string LocationHistory = $"{Root}/location/history";

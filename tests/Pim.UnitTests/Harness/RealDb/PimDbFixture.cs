@@ -12,26 +12,45 @@ namespace Pim.UnitTests.Harness.RealDb;
 /// </summary>
 public sealed class PimDbFixture : IAsyncLifetime
 {
-    private const string ConnStr = "Host=127.0.0.1;Database=pim;Username=opencode;Password=62f0a50bb963bb648f8e400399def95a;CommandTimeout=30";
+    // 只读环境变量，不内置口令；未设置时视为不可用（用例自行跳过）。
+    private static string? ConnStr => Environment.GetEnvironmentVariable("PIM_TEST_CONN");
     private NpgsqlConnection? _conn;
     public bool IsAvailable { get; private set; }
 
     public async Task InitializeAsync()
     {
+        var connStr = ConnStr;
+        if (string.IsNullOrWhiteSpace(connStr))
+        {
+            IsAvailable = false;
+            System.Console.WriteLine("[PimDbFixture] PIM_TEST_CONN 未设置，跳过 RealDb 回放用例。");
+            return;
+        }
+
         try
         {
-            _conn = new NpgsqlConnection(ConnStr);
+            _conn = new NpgsqlConnection(connStr);
             await _conn.OpenAsync();
             // 探活：查 mobile_usage_sessions 至少1条
             await using var cmd = new NpgsqlCommand("SELECT 1 FROM mobile_usage_sessions LIMIT 1", _conn);
             await cmd.ExecuteScalarAsync();
             IsAvailable = true;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex))
         {
+            // 只有"服务器不可达"才是环境缺失：让用例跳过。
             IsAvailable = false;
-            // 不抛异常，让测试 Skip
-            System.Console.WriteLine($"[PimDbFixture] DB unavailable, will Skip RealDb tests: {ex.Message}");
+            System.Console.WriteLine($"[PimDbFixture] DB unreachable, will Skip RealDb tests: {ex.Message}");
+        }
+        // 其余数据库异常（28P01 口令错误、3D000 库不存在、42501 权限不足、缺表…）不捕获：
+        // 配置错误必须让用例失败，不能被伪装成"跳过的回放"（评审第六轮 Important）。
+        finally
+        {
+            if (!IsAvailable && _conn is not null)
+            {
+                await _conn.DisposeAsync();
+                _conn = null;
+            }
         }
     }
 

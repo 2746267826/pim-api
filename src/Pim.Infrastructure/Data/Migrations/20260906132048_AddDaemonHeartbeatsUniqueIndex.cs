@@ -10,9 +10,10 @@ namespace Pim.Infrastructure.Data.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropIndex(
-                name: "ux_tracker_events_dedup",
-                table: "pc_tracker_events");
+            // 该索引由 PcTrackerSchemaInitializer 的幂等 SQL 创建，不在 EF 模型里：
+            // 全新库上它还不存在，EF 生成的 DROP INDEX 会直接失败并中断整条迁移链
+            // （Program.cs 会吞掉异常并继续启动，结果是"库只有一半 schema"）。
+            migrationBuilder.Sql(@"DROP INDEX IF EXISTS ux_tracker_events_dedup;");
 
             migrationBuilder.AddColumn<string>(
                 name: "browser",

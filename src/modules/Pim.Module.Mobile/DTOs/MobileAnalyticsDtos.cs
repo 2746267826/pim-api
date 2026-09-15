@@ -7,6 +7,9 @@ public static class MobileAnalyticsDefaults
     public const int MaxPageSize = 200;
     public const int DefaultShortEventThresholdSeconds = 1;
 
+    /// <summary>物化表 <c>mobile_usage_aggregates</c> 使用的粒度。</summary>
+    public const string HourGranularity = "hour";
+
     public static IReadOnlyList<string> LifeCategories => MobileLifeCategories.All;
 }
 

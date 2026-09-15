@@ -180,6 +180,8 @@ public sealed class DeviceManagementServiceTests
         SeedLocation(db, SourceDeviceA, Now.AddDays(-60));
         SeedBatch(db, SourceDeviceA, "batch-a", Now.AddDays(-60));
         SeedTimelineBlock(db, SourceDeviceA, Now.AddDays(-60));
+        SeedAggregate(db, SourceDeviceA, Now.AddDays(-60));
+        SeedMaterialization(db, SourceDeviceA, Now.AddDays(-60));
         SeedCatalog(db, SourceDeviceA, "com.old.app", "Old App", "tools", Now.AddDays(-60));
         await db.SaveChangesAsync();
         var service = CreateService(db);
@@ -192,7 +194,12 @@ public sealed class DeviceManagementServiceTests
         Assert.Single(await db.Set<MobileUsageSummaryEntity>().Where(e => e.DeviceId == TargetDeviceId).ToListAsync());
         Assert.Single(await db.Set<MobileLocationPointEntity>().Where(e => e.DeviceId == TargetDeviceId).ToListAsync());
         Assert.Single(await db.Set<MobileSyncBatchEntity>().Where(e => e.DeviceId == TargetDeviceId).ToListAsync());
-        Assert.Single(await db.Set<MobileTimelineBlockEntity>().Where(e => e.DeviceId == TargetDeviceId).ToListAsync());
+        // 派生数据（块 / 聚合 / 物化覆盖）在合并后一律丢弃而不是改写 device_id（#247）：
+        // 两张派生表都有 (user, device, ...) 唯一索引，两台设备同桶的行直接改写会撞唯一索引；
+        // 而且合并后必须重新物化，留着旧行会让读路径拿到混合设备的缓存。
+        Assert.Empty(await db.Set<MobileTimelineBlockEntity>().ToListAsync());
+        Assert.Empty(await db.Set<MobileUsageAggregateEntity>().ToListAsync());
+        Assert.Empty(await db.Set<MobileAnalyticsMaterializationEntity>().ToListAsync());
         var catalog = await db.Set<MobileAppCatalogEntity>().SingleAsync();
         Assert.Equal(TargetDeviceId, catalog.DeviceId);
         Assert.Equal("com.old.app", catalog.PackageName);
@@ -514,6 +521,8 @@ public sealed class DeviceManagementServiceTests
         if (await db.Set<MobileLocationPointEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("locations");
         if (await db.Set<MobileSyncBatchEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("batches");
         if (await db.Set<MobileTimelineBlockEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("timeline");
+        if (await db.Set<MobileUsageAggregateEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("aggregates");
+        if (await db.Set<MobileAnalyticsMaterializationEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("materialization");
         if (await db.Set<MobileAppCatalogEntity>().AnyAsync(e => e.DeviceId == deviceId)) hits.Add("catalog");
         return hits;
     }
@@ -531,6 +540,35 @@ public sealed class DeviceManagementServiceTests
             AppVersion = "2026.09.504",
             RegisteredAtUtc = lastSeen,
             LastSeenAtUtc = lastSeen,
+        });
+
+    private static void SeedAggregate(PimDbContext db, string deviceId, DateTimeOffset start)
+        => db.Set<MobileUsageAggregateEntity>().Add(new MobileUsageAggregateEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = deviceId,
+            Granularity = MobileAnalyticsDefaults.HourGranularity,
+            BucketStartUtc = start,
+            BucketEndUtc = start.AddHours(1),
+            PackageName = "com.old.app",
+            DisplayName = "Old App",
+            LifeCategory = MobileLifeCategories.Uncategorized,
+            ForegroundSeconds = 60,
+            CreatedAt = start,
+            UpdatedAt = start
+        });
+
+    private static void SeedMaterialization(PimDbContext db, string deviceId, DateTimeOffset start)
+        => db.Set<MobileAnalyticsMaterializationEntity>().Add(new MobileAnalyticsMaterializationEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = deviceId,
+            Timezone = MobileAnalyticsDefaults.DefaultTimezone,
+            CoveredFromUtc = start,
+            CoveredToUtc = start.AddDays(1),
+            GeneratedAt = start,
+            CreatedAt = start,
+            UpdatedAt = start
         });
 
     private static void SeedCatalog(

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Common;
 using Pim.Infrastructure.Auth;
@@ -117,7 +117,7 @@ public sealed class MobileUsageAggregationService
             _ => TimeSpan.FromHours(1)
         };
 
-        var buckets = SplitRowsIntoBuckets(await LoadRowsAsync(context, ct), timeZoneInfo, bucketSize, context.Granularity).ToList();
+        var buckets = await ResolveHourBucketsAsync(context, timeZoneInfo, bucketSize, ct);
         // Cap by bucket total (not per LifeCategory) and use real DST-aware cap
         var totalsByBucket = buckets
             .GroupBy(row => new { row.BucketStartUtc, row.BucketEndUtc, row.LocalDate, row.LocalHour })
@@ -382,10 +382,13 @@ public sealed class MobileUsageAggregationService
         TimeZoneInfo timeZoneInfo,
         TimeSpan bucketSize,
         string granularity)
-        => rows.SelectMany(row => SplitRowIntoBuckets(row, timeZoneInfo, bucketSize, granularity)).ToList();
+        => rows
+            .SelectMany((row, index) => SplitRowIntoBuckets(row, index, timeZoneInfo, bucketSize, granularity))
+            .ToList();
 
     private static IEnumerable<UsageBucketRow> SplitRowIntoBuckets(
         UsageRow row,
+        int sourceRowIndex,
         TimeZoneInfo timeZoneInfo,
         TimeSpan bucketSize,
         string granularity)
@@ -470,7 +473,8 @@ public sealed class MobileUsageAggregationService
                 row.Source,
                 row.IsSystemNoise,
                 row.IsStale,
-                row.QualityFlags);
+                row.QualityFlags,
+                sourceRowIndex);
         }
     }
 
@@ -505,33 +509,170 @@ public sealed class MobileUsageAggregationService
         return new DateTimeOffset(utc, TimeSpan.Zero);
     }
 
+    /// <summary>
+    /// 小时桶的来源（#247②）：能命中物化表就直接读表，否则按老路径在线计算。
+    /// 物化数据只在与请求区间逐刻相等、时区一致、且没有失效标记时才使用。
+    /// </summary>
+    private async Task<IReadOnlyList<UsageBucketRow>> ResolveHourBucketsAsync(
+        MobileAnalyticsQueryContext context,
+        TimeZoneInfo timeZoneInfo,
+        TimeSpan bucketSize,
+        CancellationToken ct)
+    {
+        if (MobileAnalyticsMaterializationGate.CanServeHeatmap(context, bucketSize))
+        {
+            var materialized = await TryLoadMaterializedBucketsAsync(context, ct);
+            if (materialized is not null)
+                return materialized;
+        }
+
+        return SplitRowsIntoBuckets(await LoadRowsAsync(context, ct), timeZoneInfo, bucketSize, context.Granularity);
+    }
+
+    private async Task<IReadOnlyList<UsageBucketRow>?> TryLoadMaterializedBucketsAsync(
+        MobileAnalyticsQueryContext context,
+        CancellationToken ct)
+    {
+        var userId = MobileUserContext.RequireUserId(_currentUser);
+        var deviceId = context.DeviceId!;
+        var timezone = context.Range.Timezone;
+
+        if (!await MobileAnalyticsMaterializationGate.IsCoveredAsync(
+                _db,
+                userId,
+                deviceId,
+                timezone,
+                context.Range.RangeStartUtc,
+                context.Range.RangeEndUtc,
+                MobileAnalyticsSurface.Aggregates,
+                ct))
+            return null;
+
+        var query = _db.Set<MobileUsageAggregateEntity>()
+            .AsNoTracking()
+            .Where(row => row.UserId == userId
+                && row.DeviceId == deviceId
+                && row.Granularity == MobileAnalyticsDefaults.HourGranularity
+                && row.Timezone == timezone
+                && row.BucketStartUtc < context.Range.RangeEndUtc
+                && row.BucketEndUtc > context.Range.RangeStartUtc);
+
+        if (!context.IncludeSystemNoise)
+            query = query.Where(row => !row.IsSystemNoise);
+        if (!string.IsNullOrWhiteSpace(context.LifeCategory))
+            query = query.Where(row => row.LifeCategory == context.LifeCategory);
+        if (!string.IsNullOrWhiteSpace(context.PackageName))
+            query = query.Where(row => row.PackageName == context.PackageName);
+
+        var rows = await query.ToListAsync(ct);
+        var timeZoneInfo = _queryService.ResolveTimezone(timezone);
+
+        return rows
+            .Select(row => new UsageBucketRow(
+                row.DeviceId,
+                row.PackageName,
+                row.DisplayName,
+                row.LifeCategory,
+                row.BucketStartUtc,
+                row.BucketEndUtc,
+                MobileAnalyticsBucketLocal.LocalDate(row.BucketStartUtc, timeZoneInfo),
+                MobileAnalyticsBucketLocal.LocalHour(row.BucketStartUtc, timeZoneInfo, context.Granularity),
+                row.ForegroundSeconds,
+                row.Source,
+                row.IsSystemNoise,
+                row.IsStale,
+                MobileAnalyticsJson.DeserializeFlags(row.QualityFlagsJson),
+                0))
+            .ToList();
+    }
+
+    /// <summary>
+    /// 物化服务复用同一套桶计算（#247②），避免"线上计算"与"落库"两套口径漂移。
+    /// 使用最大化口径：包含系统噪音、最短时长取默认阈值、不按分类/包过滤、
+    /// 因此端点带着分类/包过滤请求时仍可复用（这些过滤是逐行的）。
+    /// </summary>
+    internal async Task<IReadOnlyList<UsageBucketRow>> BuildHourBucketsAsync(
+        string deviceId,
+        DateTimeOffset rangeStartUtc,
+        DateTimeOffset rangeEndUtc,
+        CancellationToken ct = default)
+    {
+        var context = _queryService.Normalize(new MobileAnalyticsQueryRequest(
+            rangeStartUtc,
+            rangeEndUtc,
+            MobileAnalyticsDefaults.DefaultTimezone,
+            deviceId,
+            LifeCategory: null,
+            PackageName: null,
+            Source: null,
+            IncludeSystemNoise: true,
+            MinDurationSeconds: MobileAnalyticsDefaults.DefaultShortEventThresholdSeconds,
+            Granularity: MobileAnalyticsDefaults.HourGranularity));
+        var timeZoneInfo = _queryService.ResolveTimezone(context.Range.Timezone);
+        return SplitRowsIntoBuckets(
+            await LoadRowsAsync(context, ct),
+            timeZoneInfo,
+            TimeSpan.FromHours(1),
+            MobileAnalyticsDefaults.HourGranularity);
+    }
+
     private async Task<IReadOnlyDictionary<string, Classification>> LoadClassificationsAsync(
         Guid userId,
         IReadOnlyCollection<string> packageNames,
         CancellationToken ct)
     {
         var result = new Dictionary<string, Classification>(StringComparer.OrdinalIgnoreCase);
-        foreach (var packageName in packageNames)
+        if (packageNames.Count == 0)
+            return result;
+
+        // #247：一次批量分类（3 条查询）替代原来的每包 2~3 次查询。
+        // 修复前单次 /analytics/charts 会打出 686 条 DbCommand，其中绝大多数来自这里。
+        if (_classificationService is not null)
         {
-            if (_classificationService is not null)
+            var classified = await _classificationService.ClassifyManyAsync(packageNames, ct);
+            foreach (var packageName in packageNames)
             {
-                var classified = await _classificationService.ClassifyAsync(packageName, ct);
+                var classification = classified.GetValueOrDefault(packageName)
+                    ?? new MobileAppClassificationResult(
+                        packageName,
+                        packageName,
+                        MobileLifeCategories.Uncategorized,
+                        false,
+                        false,
+                        "fallback");
                 result[packageName] = new Classification(
-                    classified.DisplayName,
-                    classified.LifeCategory,
-                    classified.IsSystemNoise,
-                    classified.HasMetadata);
-                continue;
+                    classification.DisplayName,
+                    classification.LifeCategory,
+                    classification.IsSystemNoise,
+                    classification.HasMetadata);
             }
 
-            var appOverride = await _db.Set<MobileAppCatalogOverrideEntity>()
-                .AsNoTracking()
-                .SingleOrDefaultAsync(item => item.UserId == userId && item.PackageName == packageName, ct);
-            var app = await _db.Set<MobileAppCatalogEntity>()
-                .AsNoTracking()
-                .Where(item => item.UserId == userId && item.PackageName == packageName)
-                .OrderByDescending(item => item.UpdatedAt)
-                .FirstOrDefaultAsync(ct);
+            return result;
+        }
+
+        // 没有分类服务时的兜底（部分测试/最小宿主）：同样按批读取，避免 N+1。
+        var names = packageNames.Distinct(StringComparer.Ordinal).ToList();
+        var overrides = await _db.Set<MobileAppCatalogOverrideEntity>()
+            .AsNoTracking()
+            .Where(item => item.UserId == userId && names.Contains(item.PackageName))
+            .ToListAsync(ct);
+        var apps = await _db.Set<MobileAppCatalogEntity>()
+            .AsNoTracking()
+            .Where(item => item.UserId == userId && names.Contains(item.PackageName))
+            .OrderByDescending(item => item.UpdatedAt)
+            .ToListAsync(ct);
+        var overrideByPackage = overrides.ToDictionary(item => item.PackageName, StringComparer.OrdinalIgnoreCase);
+        var appByPackage = new Dictionary<string, MobileAppCatalogEntity>(StringComparer.OrdinalIgnoreCase);
+        foreach (var app in apps)
+        {
+            if (!appByPackage.ContainsKey(app.PackageName))
+                appByPackage[app.PackageName] = app;
+        }
+
+        foreach (var packageName in packageNames)
+        {
+            overrideByPackage.TryGetValue(packageName, out var appOverride);
+            appByPackage.TryGetValue(packageName, out var app);
             var builtIn = BuiltIn(packageName);
             var displayName = FirstNonBlank(appOverride?.DisplayNameOverride, app?.DisplayName, builtIn.DisplayName, packageName);
             var lifeCategory = FirstNonBlank(appOverride?.LifeCategory, builtIn.LifeCategory, MapAndroidCategory(app?.Category), MobileLifeCategories.Uncategorized);
@@ -808,7 +949,8 @@ public sealed class MobileUsageAggregationService
         bool IsStale,
         IReadOnlyList<string> QualityFlags);
 
-    private sealed record UsageBucketRow(
+    /// <summary>物化服务复用同一行结构（#247②），因此对程序集内可见。</summary>
+    internal sealed record UsageBucketRow(
         string DeviceId,
         string PackageName,
         string DisplayName,
@@ -821,7 +963,8 @@ public sealed class MobileUsageAggregationService
         string Source,
         bool IsSystemNoise,
         bool IsStale,
-        IReadOnlyList<string> QualityFlags);
+        IReadOnlyList<string> QualityFlags,
+        int SourceRowIndex);
 
     private sealed record Classification(
         string DisplayName,

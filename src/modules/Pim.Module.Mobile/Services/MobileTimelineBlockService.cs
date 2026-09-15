@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -36,7 +36,7 @@ public sealed class MobileTimelineBlockService
         CancellationToken ct = default)
     {
         var context = Normalize(request);
-        var ordered = (await BuildBlocksAsync(context, ct))
+        var ordered = (await ResolveBlocksAsync(context, ct))
             .OrderByDescending(block => block.StartUtc)
             .ThenBy(block => block.Id, StringComparer.Ordinal)
             .ToList();
@@ -147,6 +147,104 @@ public sealed class MobileTimelineBlockService
                 e.ClassName,
                 e.RawJson))
             .ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// 块的来源（#247②）：与请求区间逐刻相等、形状可复现、且没有失效标记时直接读物化表，
+    /// 否则走在线计算。
+    /// </summary>
+    private async Task<IReadOnlyList<ComputedBlock>> ResolveBlocksAsync(
+        MobileAnalyticsQueryContext context,
+        CancellationToken ct)
+    {
+        if (MobileAnalyticsMaterializationGate.CanServeBlocks(context))
+        {
+            var materialized = await TryLoadMaterializedBlocksAsync(context, ct);
+            if (materialized is not null)
+                return materialized;
+        }
+
+        return await BuildBlocksAsync(context, ct);
+    }
+
+    private async Task<IReadOnlyList<ComputedBlock>?> TryLoadMaterializedBlocksAsync(
+        MobileAnalyticsQueryContext context,
+        CancellationToken ct)
+    {
+        var userId = MobileUserContext.RequireUserId(_currentUser);
+        var deviceId = context.DeviceId!;
+        var timezone = context.Range.Timezone;
+
+        if (!await MobileAnalyticsMaterializationGate.IsCoveredAsync(
+                _db,
+                userId,
+                deviceId,
+                timezone,
+                context.Range.RangeStartUtc,
+                context.Range.RangeEndUtc,
+                MobileAnalyticsSurface.TimelineBlocks,
+                ct))
+            return null;
+
+        var rows = await _db.Set<MobileTimelineBlockEntity>()
+            .AsNoTracking()
+            .Where(row => row.UserId == userId
+                && row.DeviceId == deviceId
+                && row.Timezone == timezone
+                && row.StartUtc < context.Range.RangeEndUtc
+                && row.EndUtc > context.Range.RangeStartUtc)
+            .ToListAsync(ct);
+        var timeZoneInfo = new MobileAnalyticsQueryService(_timeProvider).ResolveTimezone(timezone);
+
+        return rows
+            .OrderBy(row => row.StartUtc)
+            .ThenBy(row => row.Id)
+            .Select(row => new ComputedBlock(
+                row.BlockId,
+                row.StartUtc,
+                new MobileTimelineBlockDto(
+                    row.BlockId,
+                    row.StartUtc,
+                    row.EndUtc,
+                    FormatLocal(row.StartUtc, timeZoneInfo),
+                    FormatLocal(row.EndUtc, timeZoneInfo),
+                    row.LifeCategory,
+                    row.ForegroundSeconds,
+                    row.SessionCount,
+                    row.AppCount,
+                    MobileAnalyticsJson.DeserializeTopApps(row.TopAppsJson),
+                    MobileAnalyticsJson.DeserializeFlags(row.QualityFlagsJson),
+                    MobileAnalyticsJson.DeserializeSourceMix(row.SourceMixJson),
+                    row.IncludesSystemNoise),
+                []))
+            .ToList();
+    }
+
+    private static string FormatLocal(DateTimeOffset value, TimeZoneInfo timeZoneInfo)
+        => TimeZoneInfo.ConvertTime(value, timeZoneInfo)
+            .ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// 物化服务使用（#247②）：按"默认 UI 形状"计算窗口内的块
+    /// （不按分类/包过滤、不含系统噪音、最短时长取默认阈值），与在线计算的默认请求逐字段一致。
+    /// </summary>
+    internal async Task<IReadOnlyList<ComputedBlock>> BuildBlocksAsync(
+        string deviceId,
+        DateTimeOffset rangeStartUtc,
+        DateTimeOffset rangeEndUtc,
+        CancellationToken ct = default)
+    {
+        var context = Normalize(new MobileAnalyticsQueryRequest(
+            rangeStartUtc,
+            rangeEndUtc,
+            MobileAnalyticsDefaults.DefaultTimezone,
+            deviceId,
+            LifeCategory: null,
+            PackageName: null,
+            Source: null,
+            IncludeSystemNoise: false,
+            MinDurationSeconds: MobileAnalyticsDefaults.DefaultShortEventThresholdSeconds));
+        return await BuildBlocksAsync(context, ct);
     }
 
     private async Task<IReadOnlyList<ComputedBlock>> BuildBlocksAsync(
@@ -374,15 +472,23 @@ public sealed class MobileTimelineBlockService
         CancellationToken ct)
     {
         var results = new Dictionary<string, AppClassification>(StringComparer.OrdinalIgnoreCase);
+        // #247：批量分类（3 条查询）替代每包 2~3 次查询的 N+1。
+        var inputs = packageNames
+            .Select(packageName =>
+            {
+                catalog.TryGetValue(packageName, out var app);
+                return new MobileAppClassificationInput(
+                    packageName,
+                    app?.DisplayName,
+                    app?.Category,
+                    app?.InstallerPackage,
+                    app?.IsSystemApp);
+            })
+            .ToList();
+        var classified = await _classificationService!.ClassifyManyAsync(inputs, ct);
         foreach (var packageName in packageNames)
         {
-            catalog.TryGetValue(packageName, out var app);
-            var result = await _classificationService!.ClassifyAsync(new MobileAppClassificationInput(
-                packageName,
-                app?.DisplayName,
-                app?.Category,
-                app?.InstallerPackage,
-                app?.IsSystemApp), ct);
+            var result = classified[packageName];
             results[packageName] = new AppClassification(
                 result.DisplayName,
                 result.LifeCategory,
@@ -576,7 +682,7 @@ public sealed class MobileTimelineBlockService
     private static string FirstNonBlank(params string?[] values)
         => values.First(value => !string.IsNullOrWhiteSpace(value))!.Trim();
 
-    private sealed record TimelineItem(
+    internal sealed record TimelineItem(
         string Id,
         string Kind,
         string DeviceId,
@@ -600,7 +706,7 @@ public sealed class MobileTimelineBlockService
             => new(packageName, MobileLifeCategories.Uncategorized, false);
     }
 
-    private sealed record ComputedBlock(
+    internal sealed record ComputedBlock(
         string Id,
         DateTimeOffset StartUtc,
         MobileTimelineBlockDto Dto,

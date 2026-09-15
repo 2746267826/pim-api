@@ -30,19 +30,22 @@ public sealed class MobileUsageIngestService
     private readonly MobileSessionInterpreter _sessionInterpreter;
     private readonly TimeProvider _timeProvider;
     private readonly MobileAppCatalogOverrideService? _catalogOverrideService;
+    private readonly MobileAnalyticsMaterializationService? _materializationService;
 
     public MobileUsageIngestService(
         PimDbContext db,
         ICurrentUserService currentUser,
         MobileSessionInterpreter sessionInterpreter,
         TimeProvider timeProvider,
-        MobileAppCatalogOverrideService? catalogOverrideService = null)
+        MobileAppCatalogOverrideService? catalogOverrideService = null,
+        MobileAnalyticsMaterializationService? materializationService = null)
     {
         _db = db;
         _currentUser = currentUser;
         _sessionInterpreter = sessionInterpreter;
         _timeProvider = timeProvider;
         _catalogOverrideService = catalogOverrideService;
+        _materializationService = materializationService;
     }
 
     public async Task<MobileUsageIngestResult> IngestAsync(
@@ -144,19 +147,43 @@ public sealed class MobileUsageIngestService
 
             var result = BuildResult(batch.BatchId, itemResults);
 
-            // 派生工作（会话重建 / 派生表标记）先跑，成功之后才把批次推进到终态：
+            // 先落库再派生：会话重建读的是数据库快照，事件不先 flush 的话，
+            // 本批自己的事件永远不会参与本次重建（只能等下一批，形成"永远落后一批"的会话缺口，#248）。
+            await _db.SaveChangesAsync(ct);
+
+            // 事件集不变 => 会话不变。补偿批重复上传同一窗口时（#248 的 102 个补偿批），
+            // 这里直接跳过"整窗口删除 + 重建"，避免把同一份派生数据反复重写上百万行。
+            // 例外：窗口比上一批更宽时，上一批按"窗口末端封口"的开放会话会被重新封口 ——
+            // 事件没变但会话结束时间会变，这种窗口扩展必须重建（评审 #1）。
+            if (HasNewUsageEvents(result) || await HasExtendableOpenSessionAsync(userId, request, ct))
+            {
+                await _sessionInterpreter.RebuildSessionsAsync(
+                    userId,
+                    request.DeviceId,
+                    request.WindowStartUtc,
+                    request.WindowEndUtc,
+                    ct);
+            }
+
+            // 派生工作（会话重建 / 派生表标记 / 物化）先跑，成功之后才把批次推进到终态：
             // 中途失败时批次保持 pending（"上传中断"信号），而不是先宣告完成再回滚（#243）。
-            await _sessionInterpreter.RebuildSessionsAsync(
-                userId,
-                request.DeviceId,
-                request.WindowStartUtc,
-                request.WindowEndUtc,
-                ct);
             await MarkAffectedAnalyticsStaleAsync(
                 request,
                 request.WindowStartUtc,
                 request.WindowEndUtc,
                 ct);
+
+            // 把该窗口的派生分析数据落库（#247②）：块与聚合不再只存在于请求期间的在线计算里。
+            // 只有本批真的写入了条目（事件/汇总/元数据）时才重算 —— 重复补偿批仍然跳过。
+            if (_materializationService is not null && result.AcceptedCount > 0)
+            {
+                await _materializationService.MaterializeAsync(
+                    userId,
+                    request.DeviceId,
+                    request.WindowStartUtc,
+                    request.WindowEndUtc,
+                    ct);
+            }
 
             // accepted_count 反映该批全部被接受的条目（事件 / 元数据 / 汇总），
             // 而不是只有 usage-event —— 否则 2298 个批次显示 accepted_count = 0（#243）。
@@ -510,6 +537,40 @@ public sealed class MobileUsageIngestService
         string code,
         string message)
         => new(clientItemKey, entityType, outcome, code, message);
+
+    /// <summary>
+    /// 窗口内是否存在"按更早窗口末端封口、且会被本窗口延长"的开放会话。
+    /// 这类会话只由窗口边界决定，事件集不变也会变，因此不能跳过重建。
+    ///
+    /// 注意：quality_flags_json 是 jsonb 列，字符串匹配必须在内存里做
+    /// （服务端会生成 `jsonb ~~ unknown` 而报 42883）。
+    /// </summary>
+    private async Task<bool> HasExtendableOpenSessionAsync(
+        Guid userId,
+        MobileUsageEventsUploadRequest request,
+        CancellationToken ct)
+    {
+        var candidates = await _db.Set<MobileUsageSessionEntity>()
+            .AsNoTracking()
+            .Where(session => session.UserId == userId
+                && session.DeviceId == request.DeviceId
+                && session.StartUtc <= request.WindowEndUtc
+                && session.EndUtc != null
+                && session.EndUtc >= request.WindowStartUtc
+                && session.EndUtc < request.WindowEndUtc)
+            .Select(session => session.QualityFlagsJson)
+            .ToListAsync(ct);
+
+        return candidates.Any(flags => flags.Contains("open-ended", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// 本批是否写入了新的使用事件。会话只由事件派生，因此没有新事件时无需重建会话（#248）。
+    /// </summary>
+    private static bool HasNewUsageEvents(MobileUsageIngestResult result)
+        => result.ItemResults.Any(item =>
+            string.Equals(item.EntityType, "usage-event", StringComparison.Ordinal)
+            && string.Equals(item.Outcome, "accepted", StringComparison.Ordinal));
 
     private static MobileIngestItemResult Rejected(
         string clientItemKey,

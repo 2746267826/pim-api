@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -20,7 +20,7 @@ public class UserIsolationE2ETests
     private static WebApplicationFactory<Program> CreateFactory(string dbName)
         => new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
-            b.UseSetting("DisableHangfire", "true");
+            b.UseSetting("DisableHangfire", "true").UseSetting("Database:Migrations:FailFast", "false");
             b.UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz");
             b.ConfigureServices(services =>
             {

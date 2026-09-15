@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
@@ -213,7 +213,20 @@ public sealed class DeviceManagementService
         await _db.Set<MobileUsageSummaryEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
         await _db.Set<MobileLocationPointEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
         await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
-        await _db.Set<MobileTimelineBlockEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+        // 派生数据（块 / 聚合 / 物化覆盖）在合并后一律丢弃，等下一次上传重新物化（#247）：
+        // 1. 块与聚合分别有 (user, device, ...) 唯一索引，两台设备同桶/同分类的行直接改写
+        //    device_id 会撞唯一索引，让合并在生产上 500；
+        // 2. 合并后源与目标的数据已经混在一起，旧的派生行（含设备维度）不再可信；
+        // 3. 覆盖记录必须与派生行同时失效，否则读路径会把"已被删掉的派生数据"当成新鲜缓存。
+        foreach (var device in new[] { sourceDeviceId, targetDeviceId })
+        {
+            await _db.Set<MobileTimelineBlockEntity>()
+                .Where(e => e.UserId == userId && e.DeviceId == device).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileUsageAggregateEntity>()
+                .Where(e => e.UserId == userId && e.DeviceId == device).ExecuteDeleteAsync(ct);
+            await _db.Set<MobileAnalyticsMaterializationEntity>()
+                .Where(e => e.UserId == userId && e.DeviceId == device).ExecuteDeleteAsync(ct);
+        }
     }
 
     /// <summary>
@@ -362,6 +375,8 @@ public sealed class DeviceManagementService
         await _db.Set<MobileLocationPointEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
         await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
         await _db.Set<MobileTimelineBlockEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+        await _db.Set<MobileUsageAggregateEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+        await _db.Set<MobileAnalyticsMaterializationEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
         // 设备的 App 名称库条目必须一起删除，否则会留下指向已删除 device_id 的孤儿行（issue #231）。
         await _db.Set<MobileAppCatalogEntity>().Where(c => c.UserId == userId && c.DeviceId == deviceId).ExecuteDeleteAsync(ct);
         await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && d.DeviceId == deviceId).ExecuteDeleteAsync(ct);

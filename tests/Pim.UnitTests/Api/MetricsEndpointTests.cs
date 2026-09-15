@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Headers;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -15,7 +15,7 @@ public class MetricsEndpointTests
     private static WebApplicationFactory<Program> CreateFactory(bool withOpsKey)
         => new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
-            b.UseSetting("DisableHangfire", "true");
+            b.UseSetting("DisableHangfire", "true").UseSetting("Database:Migrations:FailFast", "false");
             b.UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz");
             if (withOpsKey) b.UseSetting("PIM_OPS_KEY", "test-ops-key");
         });

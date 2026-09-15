@@ -13,6 +13,14 @@ public sealed class MobileTimelineBlockEntity : IUserOwnedEntity
     [Column("id")]
     public Guid Id { get; set; } = Guid.NewGuid();
 
+    /// <summary>
+    /// 端点返回给客户端的块 Id（由块内明细 Id 编码，见 MobileTimelineBlockService）。
+    /// 物化后必须原样回放，否则 timeline-blocks/{blockId}/sessions 无法再解析出明细。
+    /// </summary>
+    [Column("block_id")]
+    [MaxLength(8192)]
+    public string BlockId { get; set; } = string.Empty;
+
     [Column("user_id")]
     public Guid UserId { get; set; }
 

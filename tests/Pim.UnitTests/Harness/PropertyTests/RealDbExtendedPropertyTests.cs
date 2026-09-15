@@ -24,7 +24,7 @@ public sealed class RealDbExtendedPropertyTests : IClassFixture<PimDbFixture>
         for (int seed = 0; seed < 100; seed++)
         {
             List<PimDbFixture.MobileUsageSessionRow> rows = new();
-            try { if (_fixture.IsAvailable) rows = await _fixture.SampleSessions(20); } catch { }
+            try { if (_fixture.IsAvailable) rows = await _fixture.SampleSessions(20); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
             List<(string packageName, double durationMs)> sessions;
             if (rows.Count > 0)
                 sessions = rows.Where(r => r.EndUtc.HasValue).Select(r => (r.PackageName, (r.EndUtc!.Value - r.StartUtc).TotalMilliseconds)).ToList();
@@ -48,7 +48,7 @@ public sealed class RealDbExtendedPropertyTests : IClassFixture<PimDbFixture>
         for (int seed = 0; seed < 100; seed++)
         {
             List<PimDbFixture.MobileUsageSessionRow> rows = new();
-            try { if (_fixture.IsAvailable) rows = await _fixture.SampleSessions(20); } catch { }
+            try { if (_fixture.IsAvailable) rows = await _fixture.SampleSessions(20); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
             List<(string packageName, DateTimeOffset start, DateTimeOffset end)> sessions;
             if (rows.Count > 0) sessions = rows.Where(r => r.EndUtc.HasValue).Select(r => (r.PackageName, r.StartUtc, r.EndUtc!.Value)).ToList();
             else sessions = OverlappingSessionGenerator.Generate(20, seed: seed);
@@ -81,7 +81,7 @@ public sealed class RealDbExtendedPropertyTests : IClassFixture<PimDbFixture>
         foreach (var day in days)
         {
             List<PimDbFixture.MobileUsageSessionRow> rows;
-            try { rows = await _fixture.SampleSessions(30, day); } catch { continue; }
+            try { rows = await _fixture.SampleSessions(30, day); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { continue; }
             if (rows.Count == 0) continue;
             var sessions = rows.Where(r => r.EndUtc.HasValue).Select(r => (r.PackageName, r.StartUtc, r.EndUtc!.Value)).ToList();
             var buckets = AggregateToHourBuckets(sessions);
@@ -99,7 +99,7 @@ public sealed class RealDbExtendedPropertyTests : IClassFixture<PimDbFixture>
         for (int seed = 0; seed < 100; seed++)
         {
             List<PimDbFixture.MobileUsageSessionRow> rows = new();
-            try { if (_fixture.IsAvailable) rows = await _fixture.SampleSessions(20); } catch { }
+            try { if (_fixture.IsAvailable) rows = await _fixture.SampleSessions(20); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
             Dictionary<string, double> catBuckets;
             double total;
             if (rows.Count > 0)
@@ -162,7 +162,7 @@ public sealed class RealDbExtendedPropertyTests : IClassFixture<PimDbFixture>
         for (int seed = 0; seed < 100; seed++)
         {
             List<PimDbFixture.PcAwEventRow> rows = new();
-            try { if (_fixture.IsAvailable) rows = await _fixture.SamplePcEvents(20); } catch { }
+            try { if (_fixture.IsAvailable) rows = await _fixture.SamplePcEvents(20); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
             List<(string processName, string categoryName)> rules;
             if (rows.Count > 0)
             {
@@ -206,7 +206,7 @@ public sealed class RealDbExtendedPropertyTests : IClassFixture<PimDbFixture>
         foreach (var day in days)
         {
             List<PimDbFixture.PcAwEventRow> rows;
-            try { rows = await _fixture.SamplePcEvents(20, day); } catch { continue; }
+            try { rows = await _fixture.SamplePcEvents(20, day); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { continue; }
             if (rows.Count == 0) continue;
             var shanghai = ResolveShanghai();
             var sessions = rows.Select(r =>
@@ -228,7 +228,7 @@ public sealed class RealDbExtendedPropertyTests : IClassFixture<PimDbFixture>
         for (int seed = 0; seed < 100; seed++)
         {
             List<PimDbFixture.PcAwEventRow> rows = new();
-            try { if (_fixture.IsAvailable) rows = await _fixture.SamplePcEvents(20); } catch { }
+            try { if (_fixture.IsAvailable) rows = await _fixture.SamplePcEvents(20); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
             List<(DateTimeOffset start, DateTimeOffset end)> blocks;
             if (rows.Count >= 2)
             {
@@ -266,7 +266,7 @@ public sealed class RealDbExtendedPropertyTests : IClassFixture<PimDbFixture>
         foreach (var day in days)
         {
             List<PimDbFixture.PcAwEventRow> rows;
-            try { rows = await _fixture.SamplePcEvents(20, day); } catch { continue; }
+            try { rows = await _fixture.SamplePcEvents(20, day); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { continue; }
             var lateMinutes = rows.Count(r => r.Timestamp.Hour >= 23 || r.Timestamp.Hour < 4) * 5;
             if (lateMinutes > 270) lateMinutes = 270;
             var dict = new Dictionary<string, int> { [day.ToString("yyyy-MM-dd")] = lateMinutes };
@@ -321,7 +321,7 @@ public sealed class RealDbExtendedPropertyTests : IClassFixture<PimDbFixture>
             var expanded = Enumerable.Range(0, 10).Select(i => first.Start.AddDays(i)).OrderBy(x => x).Distinct().ToList();
             var (pass, detail) = CalendarInvariants.CheckRecurrenceExpansionCompleteness(expanded, expanded.Count);
             Assert.True(pass, $"Seed {seed}: {detail}");
-            try { var db = CalendarEventGenerator.FromDb(seed); if (db.Count > 0) { var exp2 = db.Take(5).Select(e => e.Start).OrderBy(x => x).Distinct().ToList(); var (p2, d2) = CalendarInvariants.CheckRecurrenceExpansionCompleteness(exp2, exp2.Count); Assert.True(p2, d2); } } catch { }
+            try { var db = CalendarEventGenerator.FromDb(seed); if (db.Count > 0) { var exp2 = db.Take(5).Select(e => e.Start).OrderBy(x => x).Distinct().ToList(); var (p2, d2) = CalendarInvariants.CheckRecurrenceExpansionCompleteness(exp2, exp2.Count); Assert.True(p2, d2); } } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
         }
     }
 
@@ -485,7 +485,7 @@ public sealed class RealDbExtendedPropertyTests : IClassFixture<PimDbFixture>
         foreach (var day in days)
         {
             List<PimDbFixture.MobileLocationPointRow> rows;
-            try { rows = await _fixture.SampleLocationPoints(20, day); } catch { continue; }
+            try { rows = await _fixture.SampleLocationPoints(20, day); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { continue; }
             if (rows.Count == 0) continue;
             var acc = rows.Select(r => (double)r.HorizontalAccuracyMeters).Where(a => a > 0 && a <= 1000).ToList();
             if (acc.Count == 0) continue;
@@ -502,7 +502,7 @@ public sealed class RealDbExtendedPropertyTests : IClassFixture<PimDbFixture>
         for (int seed = 0; seed < 100; seed++)
         {
             List<PimDbFixture.MobileLocationPointRow> rows = new();
-            try { if (_fixture.IsAvailable) rows = await _fixture.SampleLocationPoints(20); } catch { }
+            try { if (_fixture.IsAvailable) rows = await _fixture.SampleLocationPoints(20); } catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { }
             List<double> alts;
             if (rows.Count > 0) alts = rows.Where(r => r.AltitudeMeters.HasValue).Select(r => (double)r.AltitudeMeters!.Value).Where(a => a >= -500 && a <= 9000).ToList();
             else
@@ -585,7 +585,7 @@ public sealed class RealDbExtendedPropertyTests : IClassFixture<PimDbFixture>
             if (!_fixture.IsAvailable) return new List<DateOnly>();
             return await _fixture.SampleDistinctDays(n, table, col);
         }
-        catch { return new List<DateOnly>(); }
+        catch (Exception ex) when (RealDbTestConnection.IsServerUnreachable(ex)) { return new List<DateOnly>(); }
     }
 
     private static Dictionary<int, double> AggregateToHourBuckets(List<(string packageName, DateTimeOffset start, DateTimeOffset end)> sessions)

@@ -89,7 +89,10 @@ jobs:
 
       - name: Smoke test
         run: |
-          CID="$(docker run -d --rm -e ASPNETCORE_URLS=http://+:5000 -e ASPNETCORE_ENVIRONMENT=Development "${{ env.IMAGE }}:latest")"
+          # 冒烟测试只验证镜像能起进程并响应 /health，这条 job 里没有数据库。
+          # 生产默认是"迁移失败即非零退出"（避免以半套 schema 提供服务），
+          # 因此这里显式声明例外：Database__Migrations__FailFast=false。
+          CID="$(docker run -d --rm -e ASPNETCORE_URLS=http://+:5000 -e ASPNETCORE_ENVIRONMENT=Development -e Database__Migrations__FailFast=false "${{ env.IMAGE }}:latest")"
           trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 90); do
             if docker exec "$CID" bash -c \

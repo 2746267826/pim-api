@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using Bogus;
 using Pim.Core.Invariants;
+using Pim.UnitTests.Harness.RealDb;
 
 namespace Pim.UnitTests.Harness.Generators;
 
@@ -383,59 +383,12 @@ public static class PcActivityStreamGenerator
     /// </summary>
     public static List<PcActivity> FromDb(int seed = 42)
     {
-        try
-        {
-            var sampled = TrySampleFromDb(50);
-            if (sampled != null && sampled.Count > 0)
-                return sampled;
-        }
-        catch
-        {
-            // fallback
-        }
+        // 真库采样（历史上通过 `docker exec ... psql -d pim_prod` 直连生产容器）已移除：
+        // 1. 测试采样不应该依赖硬编码的生产容器，也不应该把生产数据带进测试；
+        // 2. 该路径对数据库错误一律回退合成数据，会把"口令错误/库不存在/权限不足"伪装成正常回退。
+        // 需要真库属性的场景走 `PimDbFixture`（PIM_TEST_CONN）驱动的 RealDb 用例；
+        // 这里保持确定性合成数据，保证离线与 CI 可复现。
         return Generate(50, seed);
     }
 
-    private static List<PcActivity>? TrySampleFromDb(int count)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo("docker",
-                $"exec 1Panel-postgresql-rIyE psql -U pim -d pim_prod -t -A -F\",\" -c \"SELECT device_id, timestamp, duration, app_name, window_title, afk_status, record_key, classification, event_type FROM pc_aw_events ORDER BY random() LIMIT {count}\"")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            };
-            using var proc = Process.Start(psi);
-            if (proc == null) return null;
-            var output = proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit(5000);
-            if (proc.ExitCode != 0 || string.IsNullOrWhiteSpace(output)) return null;
-            var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            var faker = new Faker("zh_CN");
-            faker.Random = new Randomizer(42);
-            var list = new List<PcActivity>();
-            foreach (var line in lines)
-            {
-                var parts = line.Split(',');
-                if (parts.Length < 3) continue;
-                var device = parts[0];
-                if (!DateTimeOffset.TryParse(parts[1], out var ts)) continue;
-                if (!double.TryParse(parts[2], out var dur)) dur = 0;
-                var app = parts.Length > 3 ? parts[3] : faker.PickRandom(Apps);
-                var title = parts.Length > 4 && !string.IsNullOrWhiteSpace(parts[4]) ? parts[4] : null;
-                var afk = parts.Length > 5 && !string.IsNullOrWhiteSpace(parts[5]) ? parts[5] : "active";
-                var key = parts.Length > 6 && !string.IsNullOrWhiteSpace(parts[6]) ? parts[6] : $"{faker.Random.Hash(8)}_{ts.ToUnixTimeSeconds()}";
-                var cls = parts.Length > 7 && !string.IsNullOrWhiteSpace(parts[7]) ? parts[7] : "unknown";
-                var evt = parts.Length > 8 && !string.IsNullOrWhiteSpace(parts[8]) ? parts[8] : "window";
-                list.Add(new PcActivity(device, ts, dur, app, title, afk, key, cls, evt));
-            }
-            return list.Count > 0 ? list : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
 }

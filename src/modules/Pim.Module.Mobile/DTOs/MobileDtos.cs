@@ -204,6 +204,19 @@ public sealed record MobileLocationPointRequest(
     public bool IsMock => false;
 }
 
+public sealed record MobileLocationPointsUploadRequest(
+    IReadOnlyList<MobileLocationPointRequest> Points);
+
+/// <summary>
+/// 批量定位点上传结果（#246）。逐条返回结果，让客户端积压时能一次补传并把
+/// "已接受 / 重复 / 被拒"映射回本地队列，而不是一次请求一个点。
+/// </summary>
+public sealed record MobileLocationPointsUploadResult(
+    int AcceptedCount,
+    int SkippedCount,
+    int RejectedCount,
+    IReadOnlyList<MobileIngestItemResult> ItemResults);
+
 public sealed record MobileLocationPointDto(
     Guid Id,
     string DeviceId,

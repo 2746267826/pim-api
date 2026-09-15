@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -212,6 +212,9 @@ public sealed class MobileAppCatalogOverrideService
             aggregateCount++;
         }
 
+        // 块只把前 5 个应用写进 TopAppsJson，第 6 个及以后应用的分类变化同样会改变
+        // 块的分类/时长归属，因此这里不能按包名筛选，只能保守地把窗口内的块整体标失效
+        // （评审 #4：把"展示用 top-5"当成依赖关系会漏标）。
         var candidateBlocks = await _db.Set<MobileTimelineBlockEntity>()
             .Where(block => block.UserId == userId
                 && block.StartUtc < rangeEndUtc
@@ -219,8 +222,7 @@ public sealed class MobileAppCatalogOverrideService
             .ToListAsync(ct);
 
         var timelineCount = 0;
-        foreach (var block in candidateBlocks.Where(block => !block.IsStale
-            && TopAppsJsonContainsPackage(block.TopAppsJson, normalizedPackageName)))
+        foreach (var block in candidateBlocks.Where(block => !block.IsStale))
         {
             block.IsStale = true;
             block.UpdatedAt = now;
@@ -304,62 +306,6 @@ public sealed class MobileAppCatalogOverrideService
         return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
     }
 
-    private static bool TopAppsJsonContainsPackage(string json, string packageName)
-    {
-        if (string.IsNullOrWhiteSpace(json) || string.IsNullOrWhiteSpace(packageName))
-            return false;
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var element in doc.RootElement.EnumerateArray())
-                {
-                    if (element.ValueKind == JsonValueKind.String)
-                    {
-                        if (string.Equals(element.GetString(), packageName, StringComparison.OrdinalIgnoreCase))
-                            return true;
-                    }
-                    else if (element.ValueKind == JsonValueKind.Object)
-                    {
-                        foreach (var prop in element.EnumerateObject())
-                        {
-                            if (prop.NameEquals("packageName"u8) || prop.NameEquals("PackageName"u8) || string.Equals(prop.Name, "package_name", StringComparison.OrdinalIgnoreCase))
-                            {
-                                if (prop.Value.ValueKind == JsonValueKind.String
-                                    && string.Equals(prop.Value.GetString(), packageName, StringComparison.OrdinalIgnoreCase))
-                                    return true;
-                            }
-                        }
-                    }
-                }
-
-                return false;
-            }
-
-            if (doc.RootElement.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var prop in doc.RootElement.EnumerateObject())
-                {
-                    if (prop.NameEquals("packageName"u8) || prop.NameEquals("PackageName"u8) || string.Equals(prop.Name, "package_name", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (prop.Value.ValueKind == JsonValueKind.String
-                            && string.Equals(prop.Value.GetString(), packageName, StringComparison.OrdinalIgnoreCase))
-                            return true;
-                    }
-                }
-            }
-
-            return false;
-        }
-        catch (JsonException ex)
-        {
-            // Keep not stale on malformed JSON but retain observability for diagnostics
-            System.Diagnostics.Debug.WriteLine($"TopAppsJson parse failed for package '{packageName}': {ex.Message}");
-            return false;
-        }
-    }
 }
 
 public sealed record MobileAnalyticsStaleMarkResult(int AggregatesMarked, int TimelineBlocksMarked);

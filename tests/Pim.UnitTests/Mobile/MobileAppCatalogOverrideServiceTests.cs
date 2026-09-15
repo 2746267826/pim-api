@@ -113,7 +113,7 @@ public sealed class MobileAppCatalogOverrideServiceTests
     }
 
     [Fact]
-    public async Task MarkAnalyticsStaleAsync_MarksAffectedAggregatesAndTimelineBlocksForPackageAndRange()
+    public async Task MarkAnalyticsStaleAsync_MarksAggregatesOfThePackageAndAllBlocksInRange()
     {
         await using var db = MobileTestHelpers.CreateDb();
         var service = Service(db);
@@ -133,13 +133,18 @@ public sealed class MobileAppCatalogOverrideServiceTests
         var result = await service.MarkAnalyticsStaleAsync("com.example.app", start, end);
 
         Assert.Equal(1, result.AggregatesMarked);
-        Assert.Equal(1, result.TimelineBlocksMarked);
+        // 聚合行有 package_name 列，可以精确标记；块只存 top-5 应用，第 6 个及以后应用的
+        // 分类变化同样影响块，因此窗口内的块整体标记为失效（评审 #4）。
+        Assert.Equal(2, result.TimelineBlocksMarked);
         Assert.Equal(1, await db.Set<MobileUsageAggregateEntity>()
             .CountAsync(a => a.PackageName == "com.example.app" && a.IsStale));
-        Assert.Equal(1, await db.Set<MobileTimelineBlockEntity>()
-            .CountAsync(t => t.TopAppsJson.Contains("com.example.app") && t.IsStale));
+        Assert.Equal(2, await db.Set<MobileTimelineBlockEntity>()
+            .CountAsync(t => t.IsStale));
         Assert.False(await db.Set<MobileUsageAggregateEntity>()
             .AnyAsync(a => a.PackageName == "com.other.app" && a.IsStale));
+        // 窗口之外的块不受影响
+        Assert.False(await db.Set<MobileTimelineBlockEntity>()
+            .AnyAsync(t => t.StartUtc == start.AddDays(-2) && t.IsStale));
     }
 
     private static MobileAppCatalogOverrideService Service(DbContext db)

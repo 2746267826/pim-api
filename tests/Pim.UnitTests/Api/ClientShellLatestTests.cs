@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -14,7 +14,7 @@ using Xunit;
 public class ClientShellLatestTests : IClassFixture<WebApplicationFactory<Program>>
 {
     private readonly WebApplicationFactory<Program> _factory;
-    public ClientShellLatestTests(WebApplicationFactory<Program> f) => _factory = f.WithWebHostBuilder(b => b.UseSetting("ShellClient:WindowsVersion", "1.2.3").UseSetting("ShellClient:WindowsUrl", "https://example.com/win.zip").UseSetting("ShellClient:AndroidVersion", "1.2.4").UseSetting("ShellClient:AndroidUrl", "https://example.com/app.apk").UseSetting("DisableHangfire", "true").UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz"));
+    public ClientShellLatestTests(WebApplicationFactory<Program> f) => _factory = f.WithWebHostBuilder(b => b.UseSetting("ShellClient:WindowsVersion", "1.2.3").UseSetting("ShellClient:WindowsUrl", "https://example.com/win.zip").UseSetting("ShellClient:AndroidVersion", "1.2.4").UseSetting("ShellClient:AndroidUrl", "https://example.com/app.apk").UseSetting("DisableHangfire", "true").UseSetting("Database:Migrations:FailFast", "false").UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz"));
 
     private sealed class FakeHandler : HttpMessageHandler
     {
@@ -39,7 +39,9 @@ public class ClientShellLatestTests : IClassFixture<WebApplicationFactory<Progra
     [Fact]
     public async Task Latest_WithoutConfig_ReturnsEmptyVersions()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b => b.UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz"));
+        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b => b
+            .UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz")
+            .UseSetting("Database:Migrations:FailFast", "false"));
         var client = factory.CreateClient();
         var resp = await client.GetAsync("/api/client/shell/latest");
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
