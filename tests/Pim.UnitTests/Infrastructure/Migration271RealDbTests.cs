@@ -166,7 +166,16 @@ public sealed class Migration271RealDbTests
             _db = db;
         }
 
-        /// <summary>无 PostgreSQL（未设置 PIM_TEST_CONN 或连不上）时抛 SkipException 跳过。</summary>
+        /// <summary>
+        /// 无 PostgreSQL（未设置 PIM_TEST_CONN 或连不上）时抛 SkipException 跳过。
+        ///
+        /// <para>
+        /// 前置条件：<c>PIM_TEST_CONN</c> 指向的账号需要 <c>CREATEDB</c> 权限（本用例会在每次运行时
+        /// 建一个一次性库并在结束时删掉），且服务端为 PostgreSQL 13+（清理用
+        /// <c>DROP DATABASE ... WITH (FORCE)</c>）。条件不满足时用例会失败而不是静默通过，
+        /// 以免把环境问题伪装成绿色。
+        /// </para>
+        /// </summary>
         public static async Task<TempMigrationDatabase> CreateAsync()
         {
             var connStr = RealDbTestConnection.Require();
