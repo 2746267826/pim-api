@@ -3,6 +3,7 @@ using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
+using Pim.Infrastructure.Operations;
 using Pim.Module.Mobile.DTOs;
 using Pim.Module.Mobile.Entities;
 
@@ -26,12 +27,14 @@ public sealed class MobileQualityService
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly TimeProvider _timeProvider;
+    private readonly IDataReliabilityGate? _dataReliabilityGate;
 
-    public MobileQualityService(PimDbContext db, ICurrentUserService currentUser, TimeProvider timeProvider)
+    public MobileQualityService(PimDbContext db, ICurrentUserService currentUser, TimeProvider timeProvider, IDataReliabilityGate? dataReliabilityGate = null)
     {
         _db = db;
         _currentUser = currentUser;
         _timeProvider = timeProvider;
+        _dataReliabilityGate = dataReliabilityGate;
     }
 
     public async Task<MobileQualityResponse> GetQualityAsync(
@@ -167,6 +170,7 @@ public sealed class MobileQualityService
                 checkedAt,
                 issues)
         };
+        AddDataReliabilityGate(components, issues, new[] { "S4", "S10", "S11", "S12" }, checkedAt);
 
         var overall = components
             .Select(component => component.Status)
@@ -186,6 +190,59 @@ public sealed class MobileQualityService
                 .Distinct(StringComparer.Ordinal)
                 .Cast<string>()
                 .ToList());
+    }
+
+    /// <summary>
+    /// 把数据可信度尺子接入质量报告（#260 第 4 点）：尺子红，报告不得绿。
+    /// 只做附加：新增一个 component 与对应 issue，整体状态由既有"取最严"聚合自然降级；
+    /// 尺子尚未体检或结果过期时给出 Unknown 组件与明确文案，绝不静默判健康。
+    /// </summary>
+    private void AddDataReliabilityGate(
+        List<MobileQualityComponentDto> components,
+        List<MobileQualityIssueDto> issues,
+        IReadOnlyList<string> ruleCodes,
+        DateTimeOffset checkedAt)
+    {
+        if (_dataReliabilityGate is null)
+        {
+            return;
+        }
+
+        var verdict = _dataReliabilityGate.Evaluate(ruleCodes);
+
+        components.Add(new MobileQualityComponentDto(
+            "data_reliability",
+            "数据可信度尺子",
+            verdict.Status,
+            verdict.Message,
+            checkedAt,
+            new Dictionary<string, string>
+            {
+                ["redRules"] = string.Join(",", verdict.RedRules),
+                ["yellowRules"] = string.Join(",", verdict.YellowRules),
+                ["unknownRules"] = string.Join(",", verdict.UnknownRules),
+                ["inspectedAtUtc"] = verdict.InspectedAtUtc?.ToString("O") ?? string.Empty
+            }));
+
+        foreach (var code in verdict.RedRules)
+        {
+            issues.Add(new MobileQualityIssueDto(
+                code,
+                PimHealthStatus.Critical,
+                "data_reliability",
+                $"{code} 数据可信度尺子报红：{verdict.Message}",
+                "打开「设置 → 数据可信度」查看违规样例与存量趋势"));
+        }
+
+        foreach (var code in verdict.YellowRules)
+        {
+            issues.Add(new MobileQualityIssueDto(
+                code,
+                PimHealthStatus.Warning,
+                "data_reliability",
+                $"{code} 数据可信度尺子报黄：{verdict.Message}",
+                null));
+        }
     }
 
     private static MobileQualityComponentDto CheckHeartbeat(

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -85,12 +86,20 @@ public class DataReliabilityQualityInspectorTests
 
         Assert.False(result.IsHealthy);
         Assert.Equal(13, result.IssueCount);
-        Assert.Contains("S1_INV-P16", result.Details.Keys);
-        Assert.Contains("S13_INV-P22", result.Details.Keys);
-        foreach (var kvp in result.Details)
+
+        // Details 是可空属性：先钉住再取值，后续断言就不会踩空。
+        Assert.NotNull(result.Details);
+        var details = result.Details!;
+        Assert.Contains("S1_INV-P16", details.Keys);
+        Assert.Contains("S13_INV-P22", details.Keys);
+
+        // 13 条尺子的结论必须全部是"未知"，绝不亮假绿灯（summary 是聚合行，不参与该断言）。
+        foreach (var kvp in details.Where(entry => entry.Key != "summary"))
         {
             Assert.StartsWith("⚪ UNKNOWN", kvp.Value);
         }
+
+        Assert.Equal("0 Red, 0 Yellow, 0 Green, 13 Unknown", details["summary"]);
     }
 
     [Fact]
@@ -158,11 +167,190 @@ public class DataReliabilityQualityInspectorTests
         Assert.Contains(executedSqlList, sql => sql.Contains("((timestamp AT TIME ZONE 'Asia/Shanghai') - interval '4 hours')::date"));
 
         // 5. 必须覆盖 S1 到 S13 的所有判据键
+        Assert.NotNull(result.Details);
         for (int i = 1; i <= 13; i++)
         {
             var keyPrefix = $"S{i}_";
-            Assert.Contains(result.Details.Keys, k => k.StartsWith(keyPrefix));
+            Assert.Contains(result.Details!.Keys, k => k.StartsWith(keyPrefix));
         }
+    }
+
+    private static readonly DateTimeOffset ReportNow = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+
+    private static DataReliabilityQualityInspector CreateRecordingInspector(RecordingDbConnection conn)
+    {
+        var optionsBuilder = new DbContextOptionsBuilder<PimDbContext>();
+        optionsBuilder.UseNpgsql(conn);
+        var db = new PimDbContext(optionsBuilder.Options);
+        return new DataReliabilityQualityInspector(
+            db,
+            Options.Create(new InvariantOptions()),
+            NullLogger<DataReliabilityQualityInspector>.Instance);
+    }
+
+    /// <summary>
+    /// 结构化报告（#260）：13 条尺子齐全，且每条都带有前端要展示的判据/阈值/理由/关联 issue 与分档计数。
+    /// 样例不得超过 T7 的 10 条上限。
+    /// </summary>
+    [Fact]
+    public async Task InspectReportAsync_ReturnsThirteenStructuredRules()
+    {
+        var inspector = CreateRecordingInspector(new RecordingDbConnection());
+
+        var report = await inspector.InspectReportAsync(ReportNow);
+
+        Assert.Equal(13, report.Rules.Count);
+        Assert.Equal(13, report.RedCount + report.YellowCount + report.GreenCount + report.UnknownCount);
+        Assert.Equal(report.Rules.Select(rule => rule.Code).OrderBy(code => code.Length).ThenBy(code => code),
+            report.Rules.Select(rule => rule.Code).OrderBy(code => code.Length).ThenBy(code => code));
+
+        foreach (var rule in report.Rules)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(rule.Threshold), $"{rule.Code} 缺阈值");
+            Assert.False(string.IsNullOrWhiteSpace(rule.Criterion), $"{rule.Code} 缺判据原文");
+            Assert.False(string.IsNullOrWhiteSpace(rule.Rationale), $"{rule.Code} 缺设定理由");
+            Assert.True(rule.Samples.Count <= new InvariantOptions().MaxSampleCount, $"{rule.Code} 样例超过上限");
+            Assert.InRange(rule.NewViolations + rule.HistoricalViolations, 0, rule.TotalViolations);
+            Assert.Contains(rule.Status, new[] { "red", "yellow", "green", "unknown" });
+            Assert.False(string.IsNullOrWhiteSpace(rule.StatusLabel));
+        }
+
+        // 能判定出状态的尺子必须给出当前值；未知的尺子不得把"违规数 0"伪装成测量值。
+        Assert.All(report.Rules.Where(rule => rule.Status != "unknown"), rule => Assert.NotNull(rule.CurrentValue));
+        Assert.All(
+            report.Rules.Where(rule => rule.Status == "unknown" && rule.CurrentValueUnit == "条"),
+            rule => Assert.Null(rule.CurrentValue));
+
+        // 总览状态必须与逐条结论自洽（红 > 黄 > 未知 > 绿）。
+        var expectedOverall = report.RedCount > 0
+            ? "red"
+            : report.YellowCount > 0
+                ? "yellow"
+                : report.UnknownCount > 0
+                    ? "unknown"
+                    : "green";
+        Assert.Equal(expectedOverall, report.Status);
+    }
+
+    [Fact]
+    public async Task InspectReportAsync_AllDatabaseAccessIsReadOnly()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateRecordingInspector(conn);
+
+        await inspector.InspectReportAsync(ReportNow);
+        await inspector.GetViolationsAsync("S1", 50);
+
+        Assert.NotEmpty(conn.ExecutedCommands);
+
+        // 关键字必须按词边界匹配：created_at / updated_at 是列名，不能误判为写操作。
+        var writeKeyword = new System.Text.RegularExpressions.Regex(
+            @"\b(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|COPY|GRANT|VACUUM|REINDEX)\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        foreach (var sql in conn.ExecutedCommands)
+        {
+            var match = writeKeyword.Match(sql);
+            Assert.False(match.Success, $"体检链路出现了写操作 {match.Value}: {sql}");
+            Assert.Contains("SELECT", sql, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    /// <summary>13 个取数 SQL 都必须在数据库侧被限行（#260 验收标准 2：单条尺子查询有上限保护）。</summary>
+    [Fact]
+    public async Task InspectReportAsync_BoundsEveryScan()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateRecordingInspector(conn);
+
+        await inspector.InspectReportAsync(ReportNow);
+
+        // 只要求"会把多行拉进内存"的查询带上 LIMIT；count(*)/sum() 这类单值聚合天然只有一行结果。
+        var scans = conn.ExecutedCommands
+            .Where(sql => sql.Contains("FROM pc_tracker_events", StringComparison.OrdinalIgnoreCase)
+                || sql.Contains("FROM mobile_", StringComparison.OrdinalIgnoreCase)
+                || sql.Contains("FROM pc_tracker_health", StringComparison.OrdinalIgnoreCase))
+            .Where(sql => !System.Text.RegularExpressions.Regex.IsMatch(
+                sql,
+                @"SELECT\s+(count|COALESCE\s*\(\s*SUM|SUM)\s*\(",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+            .ToList();
+
+        Assert.NotEmpty(scans);
+        Assert.All(scans, sql => Assert.Contains("LIMIT", sql, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// 回归防线：所有取数 SQL 都必须真正完成字符串插值。
+    /// 漏写 `$` 的原始字符串会把 `{options.MaxScanRows + 1}` 原样发给 PostgreSQL（42601 语法错误），
+    /// 而在 mock 连接下不会报错，只有实机体检才会暴露 —— 这里用断言把它挡在 CI 里。
+    /// </summary>
+    [Fact]
+    public async Task InspectReportAsync_NeverSendsUninterpolatedPlaceholders()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateRecordingInspector(conn);
+
+        await inspector.InspectReportAsync(ReportNow);
+        await inspector.GetViolationsAsync("S1", 5);
+
+        foreach (var sql in conn.ExecutedCommands)
+        {
+            Assert.DoesNotContain("{options.", sql);
+            Assert.DoesNotContain("{thresholdSeconds", sql);
+            Assert.DoesNotContain("{max", sql);
+        }
+    }
+
+    /// <summary>
+    /// 回归防线：SQL 里出现的每一个 @参数都必须真的被绑定过。
+    /// 漏绑会让 PostgreSQL 抛 42883/42P02，而在 mock 连接下静默通过 —— 只有实机体检才暴露。
+    /// </summary>
+    [Fact]
+    public async Task InspectReportAsync_BindsEveryReferencedParameter()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateRecordingInspector(conn);
+
+        await inspector.InspectReportAsync(ReportNow);
+        await inspector.GetViolationsAsync("S1", 5);
+
+        Assert.NotEmpty(conn.ExecutedCommands);
+        Assert.Equal(conn.ExecutedCommands.Count, conn.ExecutedParameterNames.Count);
+
+        for (int i = 0; i < conn.ExecutedCommands.Count; i++)
+        {
+            var sql = conn.ExecutedCommands[i];
+            var bound = conn.ExecutedParameterNames[i].Select(name => name.TrimStart('@')).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (System.Text.RegularExpressions.Match match in
+                System.Text.RegularExpressions.Regex.Matches(sql, @"@([A-Za-z_][A-Za-z0-9_]*)"))
+            {
+                Assert.True(bound.Contains(match.Groups[1].Value),
+                    $"SQL 引用了未绑定的参数 {match.Value}: {sql}");
+            }
+        }
+    }
+
+    /// <summary>体检窗口必须来自调用方传入的时钟，不得依赖数据库 NOW()（否则结论随库时钟漂移）。</summary>
+    [Fact]
+    public async Task InspectReportAsync_DoesNotRelyOnTheDatabaseClock()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateRecordingInspector(conn);
+
+        await inspector.InspectReportAsync(ReportNow);
+
+        Assert.All(conn.ExecutedCommands, sql =>
+            Assert.DoesNotContain("NOW()", sql, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task GetViolationsAsync_UnknownRule_Throws()
+    {
+        var inspector = CreateRecordingInspector(new RecordingDbConnection());
+
+        await Assert.ThrowsAsync<ArgumentException>(() => inspector.GetViolationsAsync("S99", 10));
     }
 
     #region Mock ADO.NET Infrastructure for Offline Verification
@@ -173,6 +361,10 @@ public class DataReliabilityQualityInspectorTests
 
         public List<string> ExecutedCommands { get; } = new();
 
+        /// <summary>每条语句执行时已绑定的参数名（用于验证 SQL 里的 @xxx 都真的被绑定了）。</summary>
+        public List<IReadOnlyList<string>> ExecutedParameterNames { get; } = new();
+
+        [AllowNull]
         public override string ConnectionString { get; set; } = "Host=mock;Database=mock";
         public override string Database => "mock";
         public override string DataSource => "mock";
@@ -219,39 +411,46 @@ public class DataReliabilityQualityInspectorTests
         public override void Cancel() { }
         protected override DbParameter CreateDbParameter() => new DummyParameter();
 
-        protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
+        private void Record()
         {
             _connection.ExecutedCommands.Add(CommandText);
+            _connection.ExecutedParameterNames.Add(
+                Parameters.Cast<DbParameter>().Select(parameter => parameter.ParameterName).ToList());
+        }
+
+        protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
+        {
+            Record();
             return new EmptyDbDataReader();
         }
 
         protected override Task<DbDataReader> ExecuteDbDataReaderAsync(CommandBehavior behavior, CancellationToken cancellationToken)
         {
-            _connection.ExecutedCommands.Add(CommandText);
+            Record();
             return Task.FromResult<DbDataReader>(new EmptyDbDataReader());
         }
 
         public override int ExecuteNonQuery()
         {
-            _connection.ExecutedCommands.Add(CommandText);
+            Record();
             return 1;
         }
 
         public override Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken)
         {
-            _connection.ExecutedCommands.Add(CommandText);
+            Record();
             return Task.FromResult(1);
         }
 
         public override object? ExecuteScalar()
         {
-            _connection.ExecutedCommands.Add(CommandText);
+            Record();
             return 0L;
         }
 
         public override Task<object?> ExecuteScalarAsync(CancellationToken cancellationToken)
         {
-            _connection.ExecutedCommands.Add(CommandText);
+            Record();
             return Task.FromResult<object?>(0L);
         }
 

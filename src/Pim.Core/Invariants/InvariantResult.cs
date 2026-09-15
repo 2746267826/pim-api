@@ -15,6 +15,16 @@ public enum InvariantStatus
 }
 
 /// <summary>
+/// 一条违规的结构化引用（#261 下钻「导出完整违规清单」用）：ID + 业务时间 + 设备 + 关键字段。
+/// 与 <see cref="InvariantResult.Samples"/> 在同一处违规分支里生成，因此导出与判据永远不会漂移。
+/// </summary>
+public sealed record InvariantViolation(
+    string Id,
+    string DeviceId,
+    DateTime OccurredAtUtc,
+    IReadOnlyDictionary<string, string> Fields);
+
+/// <summary>
 /// 不变量判定统一返回结果结构。
 /// 同时支持单条判定（(pass, detail) 解构与隐式转换）与设置页/CI体检场景（统计量、样例、时间范围、回退标注、四态区分、覆盖层级）。
 /// </summary>
@@ -27,6 +37,9 @@ public sealed class InvariantResult
     public int NewViolations { get; init; } = 0;
     public int HistoricalViolations { get; init; } = 0;
     public IReadOnlyList<string> Samples { get; init; } = Array.Empty<string>();
+
+    /// <summary>结构化违规清单（数量受 <see cref="InvariantOptions.MaxSampleCount"/> 约束）。</summary>
+    public IReadOnlyList<InvariantViolation> Violations { get; init; } = Array.Empty<InvariantViolation>();
     public DateTime? EarliestOccurrence { get; init; }
     public DateTime? LatestOccurrence { get; init; }
     public bool ThresholdFallback { get; init; } = false;
@@ -122,7 +135,8 @@ public sealed class InvariantResult
         string? thresholdNote = null,
         bool thresholdFallback = false,
         bool isWarning = false,
-        string? coveredLayers = null)
+        string? coveredLayers = null,
+        IReadOnlyList<InvariantViolation>? violations = null)
     {
         string fullDetail = detail;
         if (samples != null && samples.Count > 0)
@@ -139,6 +153,7 @@ public sealed class InvariantResult
             NewViolations = newViolations,
             HistoricalViolations = historicalViolations,
             Samples = samples ?? Array.Empty<string>(),
+            Violations = violations ?? Array.Empty<InvariantViolation>(),
             EarliestOccurrence = earliestOccurrence,
             LatestOccurrence = latestOccurrence,
             ThresholdNote = thresholdNote,

@@ -14,11 +14,13 @@ public sealed class PcTrackerQualityService
     private static readonly TimeSpan StaleBucketAge = TimeSpan.FromHours(24);
     private readonly PimDbContext _db;
     private readonly TimeProvider _timeProvider;
+    private readonly IDataReliabilityGate? _dataReliabilityGate;
 
-    public PcTrackerQualityService(PimDbContext db, TimeProvider timeProvider)
+    public PcTrackerQualityService(PimDbContext db, TimeProvider timeProvider, IDataReliabilityGate? dataReliabilityGate = null)
     {
         _db = db;
         _timeProvider = timeProvider;
+        _dataReliabilityGate = dataReliabilityGate;
     }
 
     public async Task<PcQualityResponse> GetQualityAsync(DateTime? date, DateTime? dateFrom, DateTime? dateTo, CancellationToken ct)
@@ -58,6 +60,7 @@ public sealed class PcTrackerQualityService
             CheckDaemon(heartbeat, checkedAt, issues),
             CheckTimeline(events, samples, issues)
         };
+        AddDataReliabilityGate(components, issues, new[] { "S1", "S2", "S3", "S5", "S6", "S7", "S8", "S13" });
 
         var overallStatus = components
             .Select(c => c.Status)
@@ -77,6 +80,57 @@ public sealed class PcTrackerQualityService
                 .Distinct(StringComparer.Ordinal)
                 .Cast<string>()
                 .ToList());
+    }
+
+    /// <summary>
+    /// 把数据可信度尺子接入质量报告（#260 第 4 点）：尺子红，报告不得绿。
+    /// 只做附加：新增一个 component 与对应 issue，整体状态由既有"取最严"聚合自然降级；
+    /// 尺子尚未体检或结果过期时给出 Unknown 组件与明确文案，绝不静默判健康。
+    /// </summary>
+    private void AddDataReliabilityGate(
+        List<PcQualityComponentDto> components,
+        List<PcQualityIssueDto> issues,
+        IReadOnlyList<string> ruleCodes)
+    {
+        if (_dataReliabilityGate is null)
+        {
+            return;
+        }
+
+        var verdict = _dataReliabilityGate.Evaluate(ruleCodes);
+
+        components.Add(new PcQualityComponentDto(
+            "data_reliability",
+            "数据可信度尺子",
+            verdict.Status,
+            verdict.Message,
+            new Dictionary<string, string>
+            {
+                ["redRules"] = string.Join(",", verdict.RedRules),
+                ["yellowRules"] = string.Join(",", verdict.YellowRules),
+                ["unknownRules"] = string.Join(",", verdict.UnknownRules),
+                ["inspectedAtUtc"] = verdict.InspectedAtUtc?.ToString("O") ?? string.Empty
+            }));
+
+        foreach (var code in verdict.RedRules)
+        {
+            issues.Add(new PcQualityIssueDto(
+                code,
+                PimHealthStatus.Critical,
+                "data_reliability",
+                $"{code} 数据可信度尺子报红：{verdict.Message}",
+                "打开「设置 → 数据可信度」查看违规样例与存量趋势"));
+        }
+
+        foreach (var code in verdict.YellowRules)
+        {
+            issues.Add(new PcQualityIssueDto(
+                code,
+                PimHealthStatus.Warning,
+                "data_reliability",
+                $"{code} 数据可信度尺子报黄：{verdict.Message}",
+                null));
+        }
     }
 
     private static (DateTimeOffset Start, DateTimeOffset End) GetRange(DateTime? date, DateTime? dateFrom, DateTime? dateTo)

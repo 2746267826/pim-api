@@ -73,6 +73,18 @@ public sealed class InvariantOptions
     public int MaxSampleCount { get; set; } = 10;
 
     /// <summary>
+    /// 单条尺子取数时允许扫描的最大行数，默认 20000。
+    /// 每条查询按业务时间倒序取该上限 + 1 行，命中上限时在结论中显式标注"结果可能不完整"，避免无界扫描拖垮库。
+    /// </summary>
+    public int MaxScanRows { get; set; } = 20000;
+
+    /// <summary>
+    /// 单次体检的总超时（秒），默认 60。
+    /// 超时后未跑完的尺子一律记为 Unknown（绝不亮假绿灯），不得阻塞正常请求。
+    /// </summary>
+    public int InspectionTimeoutSeconds { get; set; } = 60;
+
+    /// <summary>
     /// S5: 时钟超前容差，单位：分钟，默认 5.0
     /// </summary>
     public double ClockSkewToleranceMinutes { get; set; } = 5.0;
@@ -107,6 +119,8 @@ public sealed class InvariantOptions
         if (CoverageYellowRatio <= 0 || CoverageYellowRatio > 1.0) errors.Add("CoverageYellowRatio must be in (0, 1.0]");
         if (CoverageRedRatio > CoverageYellowRatio) errors.Add("CoverageRedRatio cannot be greater than CoverageYellowRatio");
         if (MaxSampleCount <= 0) errors.Add("MaxSampleCount must be > 0");
+        if (MaxScanRows <= 0) errors.Add("MaxScanRows must be > 0");
+        if (InspectionTimeoutSeconds <= 0) errors.Add("InspectionTimeoutSeconds must be > 0");
         if (ClockSkewToleranceMinutes < 0) errors.Add("ClockSkewToleranceMinutes must be >= 0");
         if (TimelineGapThresholdMinutes <= 0) errors.Add("TimelineGapThresholdMinutes must be > 0");
         if (Tolerance < 0) errors.Add("Tolerance must be >= 0");

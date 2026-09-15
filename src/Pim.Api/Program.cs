@@ -347,6 +347,7 @@ app.MapStatusEndpoints();
 app.MapDaemonEndpoints();
 app.MapEndpointEndpoints();
 app.MapOperationsEndpoints();
+app.MapDataReliabilityEndpoints();
 app.MapTodayEndpoints();
 app.MapAiEndpoints();
 app.MapClientShell();

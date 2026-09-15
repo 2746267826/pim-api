@@ -15,8 +15,20 @@ using Xunit.Abstractions;
 
 namespace Pim.UnitTests.Invariants;
 
+/// <summary>
+/// 真库体检回放：连上"生产形状"的镜像库跑一次完整取数，验证 13 条尺子都能落到真实数据上。
+/// 连接串只来自环境变量（源码不内置口令），拿不到就 <see cref="Skip"/> 显式跳过；
+/// 连接串里出现 <c>pim_prod</c> 会被断言直接拦下（AGENTS.md 硬规则，不靠注释约束）。
+/// </summary>
 public class LiveDbQualityInspectionTests
 {
+    private static readonly string[] AllRuleKeys =
+    {
+        "S1_INV-P16", "S2_INV-P17", "S3_INV-P18", "S4_INV-C18", "S5_INV-P19",
+        "S6_INV-P20", "S7_INV-P21", "S8_INV-C19", "S9_INV-C20", "S10_INV-C21",
+        "S11_INV-M21", "S12_INV-M22", "S13_INV-P22"
+    };
+
     private readonly ITestOutputHelper _output;
 
     public LiveDbQualityInspectionTests(ITestOutputHelper output)
@@ -40,6 +52,9 @@ public class LiveDbQualityInspectionTests
         string? workingConnStr = null;
         foreach (var connString in connectionStrings)
         {
+            // AGENTS.md 硬规则：绝不连接生产库。硬规则必须由代码执行，而不是靠注释提醒。
+            Assert.DoesNotContain("pim_prod", connString, StringComparison.OrdinalIgnoreCase);
+
             try
             {
                 await using var testConn = new NpgsqlConnection(connString);
@@ -77,7 +92,10 @@ public class LiveDbQualityInspectionTests
         _output.WriteLine($"Message: {result.Message}");
         _output.WriteLine($"Details Count: {result.Details.Count}");
 
-        foreach (var kvp in result.Details)
+        // Details 是可空属性：先钉住再取值，缺键/空值都给出可定位的失败信息，而不是 NullReferenceException。
+        Assert.NotNull(result.Details);
+        var details = result.Details!;
+        foreach (var kvp in details)
         {
             _output.WriteLine($"[{kvp.Key}] => {kvp.Value}");
         }
@@ -96,20 +114,12 @@ public class LiveDbQualityInspectionTests
         // S11: 🔴 FAIL (102 个批次语义不自洽)
         // S12: 🔴 FAIL (mobile_timeline_blocks 与 mobile_usage_aggregates 均 0 行)
 
-        Assert.Contains("S1_INV-P16", result.Details.Keys);
-        Assert.Contains("S2_INV-P17", result.Details.Keys);
-        Assert.Contains("S3_INV-P18", result.Details.Keys);
-        Assert.Contains("S4_INV-C18", result.Details.Keys);
-        Assert.Contains("S5_INV-P19", result.Details.Keys);
-        Assert.Contains("S6_INV-P20", result.Details.Keys);
-        Assert.Contains("S7_INV-P21", result.Details.Keys);
-        Assert.Contains("S8_INV-C19", result.Details.Keys);
-        Assert.Contains("S8_INV-C19_covered_layers", result.Details.Keys);
-        Assert.Contains("S9_INV-C20", result.Details.Keys);
-        Assert.Contains("S10_INV-C21", result.Details.Keys);
-        Assert.Contains("S11_INV-M21", result.Details.Keys);
-        Assert.Contains("S12_INV-M22", result.Details.Keys);
-        Assert.Contains("S13_INV-P22", result.Details.Keys);
+        foreach (var key in AllRuleKeys)
+        {
+            RequireDetail(details, key);
+        }
+
+        RequireDetail(details, "S8_INV-C19_covered_layers");
 
         // 期望结论来自"生产形状数据"。镜像/开发库缺失部分数据时，对应项会返回 UNKNOWN
         // （取数失败），这时既不能判红也不能判绿 —— 因此逐项接受"期望状态 或 UNKNOWN"，
@@ -134,7 +144,7 @@ public class LiveDbQualityInspectionTests
         var unavailable = new List<string>();
         foreach (var (key, expected) in expectations)
         {
-            var actual = result.Details[key];
+            var actual = RequireDetail(details, key);
             if (!expected.StartsWith("⚪ UNKNOWN", StringComparison.Ordinal)
                 && actual.StartsWith("⚪ UNKNOWN", StringComparison.Ordinal))
             {
@@ -145,7 +155,7 @@ public class LiveDbQualityInspectionTests
             Assert.StartsWith(expected, actual);
         }
 
-        Assert.Equal("DataField", result.Details["S8_INV-C19_covered_layers"]);
+        Assert.Equal("DataField", RequireDetail(details, "S8_INV-C19_covered_layers"));
         Assert.True(result.IssueCount > 0, "生产形状数据上必须检出问题，不能是假绿灯");
         Assert.True(
             unavailable.Count <= 2,
@@ -153,5 +163,42 @@ public class LiveDbQualityInspectionTests
         _output.WriteLine(
             $"数据不可判（UNKNOWN）的项：{unavailable.Count}"
             + (unavailable.Count == 0 ? string.Empty : $" -> {string.Join(" | ", unavailable)}"));
+
+        // summary 必须与逐条状态自洽，不能出现"面板红、汇总绿"。
+        var statusCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var key in AllRuleKeys)
+        {
+            var status = ReadStatus(RequireDetail(details, key));
+            statusCounts[status] = statusCounts.GetValueOrDefault(status) + 1;
+        }
+
+        Assert.Equal(
+            $"{statusCounts.GetValueOrDefault("Red")} Red, {statusCounts.GetValueOrDefault("Yellow")} Yellow, "
+            + $"{statusCounts.GetValueOrDefault("Green")} Green, {statusCounts.GetValueOrDefault("Unknown")} Unknown",
+            RequireDetail(details, "summary"));
+
+        // 结构化报告（设置页「数据可信度」面板的数据来源）也必须能落到真库上：
+        // 13 条尺子齐全、S2 拿得到三态分布、每条都有阈值文案。
+        var report = await inspector.InspectReportAsync(DateTimeOffset.UtcNow);
+        Assert.Equal(13, report.Rules.Count);
+        Assert.Single(report.Rules, rule => rule.Code == "S2" && rule.ThreeState != null);
+        Assert.All(report.Rules, rule => Assert.False(string.IsNullOrWhiteSpace(rule.Threshold)));
+    }
+
+    /// <summary>取一条必须存在的详情；缺失或为空时报出"缺哪个键、实际有哪些键"，便于定位。</summary>
+    private static string RequireDetail(IReadOnlyDictionary<string, string> details, string key)
+    {
+        Assert.True(details.ContainsKey(key), $"体检结果缺少详情键 {key}；实际键：{string.Join(", ", details.Keys)}");
+        var value = details[key];
+        Assert.False(string.IsNullOrWhiteSpace(value), $"体检结果的 {key} 详情为空");
+        return value;
+    }
+
+    private static string ReadStatus(string detail)
+    {
+        if (detail.StartsWith("🔴", StringComparison.Ordinal)) return "Red";
+        if (detail.StartsWith("🟡", StringComparison.Ordinal)) return "Yellow";
+        if (detail.StartsWith("🟢", StringComparison.Ordinal)) return "Green";
+        return "Unknown";
     }
 }

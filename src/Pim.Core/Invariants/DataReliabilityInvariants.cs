@@ -21,6 +21,202 @@ public static class DataReliabilityInvariants
 
     #region S1–S5: 尺子组一 · 数据自洽
 
+    /// <summary>构造违规结构化字段表（键固定英文，供导出与下钻展示）。</summary>
+    private static IReadOnlyDictionary<string, string> Fields(params (string Key, string? Value)[] pairs)
+    {
+        var fields = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (key, value) in pairs)
+        {
+            fields[key] = value ?? string.Empty;
+        }
+
+        return fields;
+    }
+
+    /// <summary>把可能是 Unspecified/Local 的时间统一成 UTC，避免导出出现时区漂移。</summary>
+    private static DateTime ToUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+    };
+
+    /// <summary>
+    /// 把"按设备分别判定"的多份结论合并成一条尺子结论（S6 这类需要逐设备核对声明的尺子使用）。
+    /// 语义：任一台设备报红即整条报红；没有红线但有设备无法判定（数据源缺失 / 未接线）则整条记未知
+    /// ——不能因为"其它设备都通过"就替没数据的设备背书；只有全部通过才算通过。
+    /// </summary>
+    /// <param name="invariantCode">尺子的不变量编号，例如 <c>INV-P20</c>，只用于拼装结论文案。</param>
+    /// <param name="perDeviceResults">每台设备各自的判定结果。</param>
+    /// <param name="options">阈值配置（只用于样例数量上限）。</param>
+    public static InvariantResult CombineDeviceVerdicts(
+        string invariantCode,
+        IReadOnlyList<InvariantResult> perDeviceResults,
+        InvariantOptions? options = null)
+    {
+        var (opt, fallback, note) = InvariantOptions.Resolve(options);
+        var results = perDeviceResults ?? Array.Empty<InvariantResult>();
+
+        if (results.Count == 0 || results.All(result => result.Status == InvariantStatus.Unknown))
+        {
+            return InvariantResult.Unknown($"{invariantCode} UNKNOWN: 数据源为空或未接线", note, fallback);
+        }
+
+        var failed = results.Where(result => result.Status == InvariantStatus.Fail).ToList();
+        if (failed.Count > 0)
+        {
+            var samples = failed.SelectMany(result => result.Samples).Take(opt.MaxSampleCount).ToList();
+            var violations = failed.SelectMany(result => result.Violations).Take(opt.MaxSampleCount).ToList();
+            var earliestOccurrences = failed
+                .Select(result => result.EarliestOccurrence)
+                .Where(value => value.HasValue)
+                .Select(value => value!.Value)
+                .ToList();
+            var latestOccurrences = failed
+                .Select(result => result.LatestOccurrence)
+                .Where(value => value.HasValue)
+                .Select(value => value!.Value)
+                .ToList();
+
+            int total = failed.Sum(result => result.TotalViolations);
+            int newCount = failed.Sum(result => result.NewViolations);
+            int historical = failed.Sum(result => result.HistoricalViolations);
+
+            return InvariantResult.Failure(
+                $"{invariantCode} FAIL: 检测到 {total} 处违规（覆盖 {failed.Count} 台设备）",
+                total,
+                newCount,
+                historical,
+                samples,
+                earliestOccurrences.Count > 0 ? earliestOccurrences.Min() : null,
+                latestOccurrences.Count > 0 ? latestOccurrences.Max() : null,
+                note,
+                fallback,
+                violations: violations);
+        }
+
+        if (results.Any(result => result.Status == InvariantStatus.Unknown))
+        {
+            return InvariantResult.Unknown($"{invariantCode} UNKNOWN: 部分设备无数据可判定", note, fallback);
+        }
+
+        return InvariantResult.Success($"{invariantCode} PASS: 全部 {results.Count} 台设备均通过", note, fallback);
+    }
+
+    /// <summary>
+    /// 业务键的不可逆摘要（SHA-256 前 16 个十六进制字符）。
+    /// 业务键本身可能包含经纬度等精确个人数据，判据内部照常按原键分组，但对外只暴露摘要。
+    /// </summary>
+    private static string ObfuscateBusinessKey(string businessKey) =>
+        Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(businessKey)))[..16];
+
+    /// <summary>S11 结构化违规引用：批次号 + 语义不自洽的原因。</summary>
+    private static InvariantViolation BatchViolation(BatchSyncStatusRecord batch, string reason) =>
+        new(
+            Id: batch.BatchId,
+            DeviceId: string.Empty,
+            OccurredAtUtc: DateTime.MinValue,
+            Fields: Fields(
+                ("status", batch.Status),
+                ("failedCount", batch.FailedCount.ToString()),
+                ("acceptedCount", batch.AcceptedCount.ToString()),
+                ("rejectedCount", batch.RejectedCount.ToString()),
+                ("skippedCount", batch.SkippedCount.ToString()),
+                ("reason", reason)));
+
+    /// <summary>
+    /// S2 (INV-P17): 超长事件的三态分布。
+    /// 判定顺序必须与 <see cref="CheckS2_OverlongEventEvidence"/> 完全一致：
+    /// 先排除"明确的空档"，再看操作活跃（键鼠输入密度 ≥ T1a），再看观看活跃（媒体活动），
+    /// 三者都不满足归入"疑似未收尾"。
+    /// 只统计时长超过 T1b 超长线的事件；空输入返回全 0，不抛异常。
+    /// 目的：让设置页一眼看出"有多少时长其实是没人收尾的挂机时间"（EPIC #254 §5、#260 §3）。
+    /// </summary>
+    public static S2ThreeStateDistribution ClassifyS2ThreeStates(
+        IEnumerable<LongEventCandidate> events,
+        InvariantOptions? options = null)
+    {
+        var (opt, _, _) = InvariantOptions.Resolve(options);
+
+        double inputActiveSeconds = 0;
+        double mediaActiveSeconds = 0;
+        double suspectedUnclosedSeconds = 0;
+        double declaredGapSeconds = 0;
+        int inputActiveCount = 0;
+        int mediaActiveCount = 0;
+        int suspectedUnclosedCount = 0;
+
+        foreach (var candidate in events ?? Array.Empty<LongEventCandidate>())
+        {
+            var durationMinutes = (candidate.EndTime - candidate.StartTime).TotalMinutes;
+            if (durationMinutes <= opt.LongEventThresholdMinutes)
+            {
+                continue;
+            }
+
+            var durationSeconds = Math.Max(0, durationMinutes * 60);
+
+            // 态 3: 明确的空档 —— 它本来就声明"这里没有人"，不属于活跃时长。
+            if (candidate.IsGapOrOffline || IsDeclaredGapEventType(candidate.EventType))
+            {
+                declaredGapSeconds += durationSeconds;
+                continue;
+            }
+
+            // 态 1: 操作活跃
+            double inputDensity = (candidate.Keystrokes + candidate.MouseClicks) / durationMinutes;
+            if (inputDensity >= opt.MinInputDensityPerMinute)
+            {
+                inputActiveSeconds += durationSeconds;
+                inputActiveCount++;
+                continue;
+            }
+
+            // 态 2: 观看活跃
+            if (candidate.IsMediaActive || candidate.IsAudible)
+            {
+                mediaActiveSeconds += durationSeconds;
+                mediaActiveCount++;
+                continue;
+            }
+
+            suspectedUnclosedSeconds += durationSeconds;
+            suspectedUnclosedCount++;
+        }
+
+        return new S2ThreeStateDistribution(
+            InputActiveSeconds: inputActiveSeconds,
+            MediaActiveSeconds: mediaActiveSeconds,
+            SuspectedUnclosedSeconds: suspectedUnclosedSeconds,
+            TotalSeconds: inputActiveSeconds + mediaActiveSeconds + suspectedUnclosedSeconds,
+            InputActiveCount: inputActiveCount,
+            MediaActiveCount: mediaActiveCount,
+            SuspectedUnclosedCount: suspectedUnclosedCount,
+            DeclaredGapSeconds: declaredGapSeconds);
+    }
+
+    /// <summary>事件类型是否属于"缺数据"类（gap / sleep / shutdown / offline）。</summary>
+    private static bool IsDeclaredGapEventType(string? eventType)
+    {
+        if (string.IsNullOrEmpty(eventType))
+        {
+            return false;
+        }
+
+        return eventType.Contains("gap", StringComparison.OrdinalIgnoreCase)
+            || eventType.Contains("sleep", StringComparison.OrdinalIgnoreCase)
+            || eventType.Contains("shutdown", StringComparison.OrdinalIgnoreCase)
+            || eventType.Contains("offline", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 把违规分档写成一句人话，例如"新增 3 / 存量 11"，供体检接口与质量报告共用。
+    /// </summary>
+    public static string DescribeViolationSplit(InvariantResult result) =>
+        $"新增 {result.NewViolations} / 存量 {result.HistoricalViolations}";
+
     /// <summary>
     /// S1 (INV-P16): 同类型事件不重叠
     /// 判据: 同设备、同事件类型的事件区间两两不相交（不存在 A.start &lt; B.end &amp;&amp; B.start &lt; A.end）。
@@ -48,6 +244,7 @@ public static class DataReliabilityInvariants
         int newViolations = 0;
         int historicalViolations = 0;
         var samples = new List<string>();
+        var violations = new List<InvariantViolation>();
         DateTime? earliest = null;
         DateTime? latest = null;
 
@@ -78,6 +275,17 @@ public static class DataReliabilityInvariants
                         if (samples.Count < opt.MaxSampleCount)
                         {
                             samples.Add($"Device={a.DeviceId}, Type={a.EventType}: [{a.StartTime:yyyy-MM-dd HH:mm:ss} ~ {a.EndTime:yyyy-MM-dd HH:mm:ss}] overlaps with [{b.StartTime:yyyy-MM-dd HH:mm:ss} ~ {b.EndTime:yyyy-MM-dd HH:mm:ss}] (New={isNew})");
+                            violations.Add(new InvariantViolation(
+                                Id: string.IsNullOrEmpty(a.EventId) ? $"{a.DeviceId}:{a.StartTime:O}" : a.EventId,
+                                DeviceId: a.DeviceId,
+                                OccurredAtUtc: ToUtc(a.StartTime),
+                                Fields: Fields(
+                                    ("eventType", a.EventType),
+                                    ("startUtc", ToUtc(a.StartTime).ToString("O")),
+                                    ("endUtc", ToUtc(a.EndTime).ToString("O")),
+                                    ("overlapWithId", b.EventId),
+                                    ("overlapSeconds", (overlapEnd - b.StartTime).TotalSeconds.ToString("F0")),
+                                    ("isNew", isNew ? "true" : "false"))));
                         }
                     }
                 }
@@ -95,7 +303,8 @@ public static class DataReliabilityInvariants
                 earliest,
                 latest,
                 note,
-                fallback);
+                fallback,
+                violations: violations);
         }
 
         return InvariantResult.Success("INV-P16 PASS: 无同类型事件重叠", note, fallback);
@@ -130,6 +339,7 @@ public static class DataReliabilityInvariants
         int newViolations = 0;
         int historicalViolations = 0;
         var samples = new List<string>();
+        var violations = new List<InvariantViolation>();
         DateTime? earliest = null;
         DateTime? latest = null;
 
@@ -141,13 +351,9 @@ public static class DataReliabilityInvariants
                 continue; // 不属于超长事件，通过
             }
 
-            // 三态判定
+            // 三态判定（与 ClassifyS2ThreeStates 共用同一套口径）
             // 态 3: 明确的空档
-            if (e.IsGapOrOffline ||
-                e.EventType.Contains("gap", StringComparison.OrdinalIgnoreCase) ||
-                e.EventType.Contains("sleep", StringComparison.OrdinalIgnoreCase) ||
-                e.EventType.Contains("shutdown", StringComparison.OrdinalIgnoreCase) ||
-                e.EventType.Contains("offline", StringComparison.OrdinalIgnoreCase))
+            if (e.IsGapOrOffline || IsDeclaredGapEventType(e.EventType))
             {
                 continue;
             }
@@ -176,6 +382,18 @@ public static class DataReliabilityInvariants
             if (samples.Count < opt.MaxSampleCount)
             {
                 samples.Add($"Device={e.DeviceId}, Event={e.EventId ?? e.EventType}, App={e.AppName ?? "N/A"}, Duration={durationMinutes:F1}m > {opt.LongEventThresholdMinutes:F1}m: 疑似未收尾 (无操作密度[{inputDensity:F2}/min < {opt.MinInputDensityPerMinute:F1}], 无媒体活动, 非明确空档)");
+                violations.Add(new InvariantViolation(
+                    Id: string.IsNullOrEmpty(e.EventId) ? $"{e.DeviceId}:{e.StartTime:O}" : e.EventId,
+                    DeviceId: e.DeviceId,
+                    OccurredAtUtc: ToUtc(e.StartTime),
+                    Fields: Fields(
+                        ("eventType", e.EventType),
+                        ("app", e.AppName),
+                        ("startUtc", ToUtc(e.StartTime).ToString("O")),
+                        ("endUtc", ToUtc(e.EndTime).ToString("O")),
+                        ("durationMinutes", durationMinutes.ToString("F1")),
+                        ("inputDensityPerMinute", inputDensity.ToString("F2")),
+                        ("isNew", isNew ? "true" : "false"))));
             }
         }
 
@@ -190,7 +408,8 @@ public static class DataReliabilityInvariants
                 earliest,
                 latest,
                 note,
-                fallback);
+                fallback,
+                violations: violations);
         }
 
         return InvariantResult.Success("INV-P17 PASS: 所有超长事件均有合规的活动证据或为明确空档", note, fallback);
@@ -325,6 +544,7 @@ public static class DataReliabilityInvariants
         int totalViolations = 0;
         int warningCount = 0;
         var samples = new List<string>();
+        var violations = new List<InvariantViolation>();
 
         foreach (var d in list.OrderByDescending(d => d.ActiveDurationSeconds))
         {
@@ -334,6 +554,16 @@ public static class DataReliabilityInvariants
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Date={d.Date}, Device={d.DeviceId}: 合并活跃={d.ActiveDurationSeconds / 3600.0:F2}h (去重重叠 {d.OverlapRemovedSeconds / 3600.0:F2}h), Idle={d.IdleSeconds / 3600.0:F2}h, Gap={d.GapSeconds / 3600.0:F2}h, 剔除疑似未收尾={d.SuspectedUnclosedSeconds / 3600.0:F2}h > 硬上限 {opt.MaxDailyActiveHours:F1}h");
+                    violations.Add(new InvariantViolation(
+                        Id: $"{d.DeviceId}:{d.Date}",
+                        DeviceId: d.DeviceId,
+                        OccurredAtUtc: ResolveBusinessDayStartUtc(d.Date),
+                        Fields: Fields(
+                            ("date", d.Date),
+                            ("activeHours", (d.ActiveDurationSeconds / 3600.0).ToString("F2")),
+                            ("idleHours", (d.IdleSeconds / 3600.0).ToString("F2")),
+                            ("gapHours", (d.GapSeconds / 3600.0).ToString("F2")),
+                            ("suspectedUnclosedHours", (d.SuspectedUnclosedSeconds / 3600.0).ToString("F2")))));
                 }
             }
             else if (d.ActiveDurationSeconds > warningSeconds)
@@ -361,7 +591,8 @@ public static class DataReliabilityInvariants
                 null,
                 null,
                 note,
-                fallback);
+                fallback,
+                violations: violations);
         }
 
         if (warningCount > 0)
@@ -408,6 +639,7 @@ public static class DataReliabilityInvariants
         int newViolations = 0;
         int historicalViolations = 0;
         var samples = new List<string>();
+        var violations = new List<InvariantViolation>();
         DateTime? earliest = null;
         DateTime? latest = null;
 
@@ -431,7 +663,16 @@ public static class DataReliabilityInvariants
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     var first = g.First();
-                    samples.Add($"Domain={first.Domain}, Device={first.DeviceId}, Key={first.UniqueKey}: 重复出现 {count} 次");
+                    // 业务键里可能含经纬度（定位域），样例与导出只输出不可逆摘要，避免把精确坐标带出去。
+                    string opaqueKey = ObfuscateBusinessKey(first.UniqueKey);
+                    samples.Add($"Domain={first.Domain}, Device={first.DeviceId}, KeyDigest={opaqueKey}: 重复出现 {count} 次");
+                    violations.Add(new InvariantViolation(
+                        Id: opaqueKey,
+                        DeviceId: first.DeviceId,
+                        OccurredAtUtc: ToUtc(first.Timestamp),
+                        Fields: Fields(
+                            ("domain", first.Domain),
+                            ("duplicateCount", count.ToString()))));
                 }
             }
         }
@@ -447,7 +688,8 @@ public static class DataReliabilityInvariants
                 earliest,
                 latest,
                 note,
-                fallback);
+                fallback,
+                violations: violations);
         }
 
         return InvariantResult.Success("INV-C18 PASS: 业务键唯一无重复", note, fallback);
@@ -479,6 +721,7 @@ public static class DataReliabilityInvariants
         int newViolations = 0;
         int historicalViolations = 0;
         var samples = new List<string>();
+        var violations = new List<InvariantViolation>();
         DateTime? earliest = null;
         DateTime? latest = null;
 
@@ -497,6 +740,13 @@ public static class DataReliabilityInvariants
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Device={item.DeviceId}, Event={item.EventId}: EventTime={item.EventTime:yyyy-MM-dd HH:mm:ss} 超前 ReceivedTime={item.ServerReceivedTime:yyyy-MM-dd HH:mm:ss} 达到 {skewSeconds / 60.0:F1}m > 容差 {opt.ClockSkewToleranceMinutes:F1}m");
+                    violations.Add(new InvariantViolation(
+                        Id: string.IsNullOrEmpty(item.EventId) ? $"{item.DeviceId}:{item.EventTime:O}" : item.EventId,
+                        DeviceId: item.DeviceId,
+                        OccurredAtUtc: ToUtc(item.EventTime),
+                        Fields: Fields(
+                            ("serverReceivedUtc", ToUtc(item.ServerReceivedTime).ToString("O")),
+                            ("skewMinutes", (skewSeconds / 60.0).ToString("F1")))));
                 }
             }
         }
@@ -514,7 +764,8 @@ public static class DataReliabilityInvariants
                 latest,
                 note,
                 fallback,
-                isWarning: isWarning);
+                isWarning: isWarning,
+                violations: violations);
         }
 
         return InvariantResult.Success("INV-P19 PASS: 所有事件时间戳均在合理时钟容差范围内", note, fallback);
@@ -548,6 +799,7 @@ public static class DataReliabilityInvariants
 
         int totalViolations = 0;
         var samples = new List<string>();
+        var violations = new List<InvariantViolation>();
 
         // 1. 检查事件之间的空档是否被声明覆盖
         var sortedTimes = trace.EventTimes.OrderBy(t => t).ToList();
@@ -570,6 +822,15 @@ public static class DataReliabilityInvariants
                     if (samples.Count < opt.MaxSampleCount)
                     {
                         samples.Add($"Device={trace.DeviceId}: [{t1:yyyy-MM-dd HH:mm:ss} ~ {t2:yyyy-MM-dd HH:mm:ss}] 存在 {gapMinutes:F1}m 无声明空档 (> {gapThresholdMinutes:F1}m)");
+                        violations.Add(new InvariantViolation(
+                            Id: $"{trace.DeviceId}:undeclared-gap:{i}",
+                            DeviceId: trace.DeviceId,
+                            OccurredAtUtc: ToUtc(t1),
+                            Fields: Fields(
+                                ("kind", "undeclared-gap"),
+                                ("gapStartUtc", ToUtc(t1).ToString("O")),
+                                ("gapEndUtc", ToUtc(t2).ToString("O")),
+                                ("gapMinutes", gapMinutes.ToString("F1")))));
                     }
                 }
             }
@@ -593,6 +854,17 @@ public static class DataReliabilityInvariants
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Device={trace.DeviceId}: 上传滞后 p99={p99Lag:F1}m 超过阈值 {p99LagMinutesThreshold:F1}m");
+                    var worst = trace.UploadLagSamples
+                        .OrderByDescending(s => (s.CreatedAt - s.EventTime).TotalMinutes)
+                        .First();
+                    violations.Add(new InvariantViolation(
+                        Id: $"{trace.DeviceId}:upload-lag-p99",
+                        DeviceId: trace.DeviceId,
+                        OccurredAtUtc: ToUtc(worst.EventTime),
+                        Fields: Fields(
+                            ("kind", "upload-lag-p99"),
+                            ("p99LagMinutes", p99Lag.ToString("F1")),
+                            ("worstLagMinutes", Math.Max(0, (worst.CreatedAt - worst.EventTime).TotalMinutes).ToString("F1")))));
                 }
             }
         }
@@ -608,7 +880,8 @@ public static class DataReliabilityInvariants
                 null,
                 null,
                 note,
-                fallback);
+                fallback,
+                violations: violations);
         }
 
         return InvariantResult.Success("INV-P20 PASS: 设备无声明空档与上传延迟均在指标内", note, fallback);
@@ -635,6 +908,7 @@ public static class DataReliabilityInvariants
 
         int totalViolations = 0;
         var samples = new List<string>();
+        var violations = new List<InvariantViolation>();
 
         for (int i = 0; i < list.Count - 1; i++)
         {
@@ -650,6 +924,14 @@ public static class DataReliabilityInvariants
                     if (samples.Count < opt.MaxSampleCount)
                     {
                         samples.Add($"Device={a.DeviceId}: [{a.EndTime:yyyy-MM-dd HH:mm:ss} ~ {b.StartTime:yyyy-MM-dd HH:mm:ss}] 存在 {holeMinutes:F1}m 未标记空洞 (> {thresholdMinutes:F1}m)");
+                        violations.Add(new InvariantViolation(
+                            Id: $"{a.DeviceId}:unmarked-hole:{i}",
+                            DeviceId: a.DeviceId,
+                            OccurredAtUtc: ToUtc(a.EndTime),
+                            Fields: Fields(
+                                ("holeStartUtc", ToUtc(a.EndTime).ToString("O")),
+                                ("holeEndUtc", ToUtc(b.StartTime).ToString("O")),
+                                ("holeMinutes", holeMinutes.ToString("F1")))));
                     }
                 }
             }
@@ -666,7 +948,8 @@ public static class DataReliabilityInvariants
                 null,
                 null,
                 note,
-                fallback);
+                fallback,
+                violations: violations);
         }
 
         return InvariantResult.Success("INV-P21 PASS: 所有 >15m 空洞均已妥善标记为 gap 事件", note, fallback);
@@ -696,6 +979,7 @@ public static class DataReliabilityInvariants
 
         int totalViolations = 0;
         var violationSamples = new List<string>();
+        var violations = new List<InvariantViolation>();
         bool hasQueryWindow = false;
         bool hasPageDisplay = false;
 
@@ -715,6 +999,18 @@ public static class DataReliabilityInvariants
                 if (violationSamples.Count < opt.MaxSampleCount)
                 {
                     violationSamples.Add($"EventUtc={s.EventTimeUtc:yyyy-MM-dd HH:mm:ss}, Expected={expectedBusinessDay} | Field={s.DataFieldDateBucket}({b1}), Query={s.QueryWindowDate ?? "N/A"}({b2}), Page={s.PageDisplayDate ?? "N/A"}({b3})");
+                    violations.Add(new InvariantViolation(
+                        Id: string.IsNullOrEmpty(s.EventId)
+                            ? $"{s.TableName ?? "unknown"}:{ToUtc(s.EventTimeUtc):O}"
+                            : s.EventId,
+                        DeviceId: s.TableName ?? string.Empty,
+                        OccurredAtUtc: ToUtc(s.EventTimeUtc),
+                        Fields: Fields(
+                            ("table", s.TableName),
+                            ("expectedDate", expectedBusinessDay),
+                            ("fieldDate", s.DataFieldDateBucket),
+                            ("queryWindowDate", s.QueryWindowDate),
+                            ("pageDisplayDate", s.PageDisplayDate))));
                 }
             }
         }
@@ -745,7 +1041,8 @@ public static class DataReliabilityInvariants
                 note,
                 fallback,
                 isWarning: false,
-                coveredLayers: coveredLayers);
+                coveredLayers: coveredLayers,
+                violations: violations);
         }
 
         string passMsg = isAllThreeLayers
@@ -767,6 +1064,26 @@ public static class DataReliabilityInvariants
             : shanghaiTime.Date;
 
         return businessDate.ToString("yyyy-MM-dd");
+    }
+
+    /// <summary>
+    /// 业务日字符串（YYYY-MM-DD）对应的起点（北京时间当天 04:00）的 UTC 时刻。
+    /// 解析失败时返回 <see cref="DateTime.MinValue"/>，调用方不得据此做时间比较。
+    /// </summary>
+    public static DateTime ResolveBusinessDayStartUtc(string businessDate)
+    {
+        if (!DateTime.TryParseExact(
+                businessDate,
+                "yyyy-MM-dd",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None,
+                out var parsed))
+        {
+            return DateTime.MinValue;
+        }
+
+        var shanghaiLocal = DateTime.SpecifyKind(parsed.Date.AddHours(4), DateTimeKind.Unspecified);
+        return TimeZoneInfo.ConvertTimeToUtc(shanghaiLocal, ShanghaiTimeZone);
     }
 
     /// <summary>
@@ -818,7 +1135,8 @@ public static class DataReliabilityInvariants
                     null,
                     note,
                     fallback,
-                    isWarning: false);
+                    isWarning: false,
+                    violations: new[] { CoverageViolation(report, ratio) });
             }
         }
         else if (ratio < opt.CoverageYellowRatio)
@@ -836,12 +1154,25 @@ public static class DataReliabilityInvariants
                     null,
                     note,
                     fallback,
-                    isWarning: true);
+                    isWarning: true,
+                    violations: new[] { CoverageViolation(report, ratio) });
             }
         }
 
         return InvariantResult.Success($"INV-C20 PASS: 覆盖率 {(ratio * 100.0):F1}% 与健康信号 '{report.ReportedStatus}' 自洽", note, fallback);
     }
+
+    /// <summary>S9 结构化违规引用：覆盖率与"被报成正常"的状态（聚合粒度，时间取体检窗口的近似起点）。</summary>
+    private static InvariantViolation CoverageViolation(CoverageSignalReport report, double ratio) =>
+        new(
+            Id: report.DeviceId,
+            DeviceId: report.DeviceId,
+            OccurredAtUtc: DateTime.MinValue,
+            Fields: Fields(
+                ("coverage", (ratio * 100.0).ToString("F1")),
+                ("reportedStatus", report.ReportedStatus),
+                ("validDataSeconds", report.ValidDataDurationSeconds.ToString("F0")),
+                ("onlineSeconds", report.OnlineDurationSeconds.ToString("F0"))));
 
     #endregion
 
@@ -867,6 +1198,7 @@ public static class DataReliabilityInvariants
 
         int totalViolations = 0;
         var samples = new List<string>();
+        var violations = new List<InvariantViolation>();
 
         foreach (var r in list)
         {
@@ -876,6 +1208,13 @@ public static class DataReliabilityInvariants
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Task={r.TaskName}, ExecutedAt={r.ExecutedAt:yyyy-MM-dd HH:mm:ss}: 可处理数据 {r.AvailableDataCount} 条但产出 0 行 (静默空转)");
+                    violations.Add(new InvariantViolation(
+                        Id: r.TaskName,
+                        DeviceId: string.Empty,
+                        OccurredAtUtc: ToUtc(r.ExecutedAt),
+                        Fields: Fields(
+                            ("availableDataCount", r.AvailableDataCount.ToString()),
+                            ("outputCount", r.OutputCount.ToString()))));
                 }
             }
         }
@@ -891,7 +1230,8 @@ public static class DataReliabilityInvariants
                 null,
                 null,
                 note,
-                fallback);
+                fallback,
+                violations: violations);
         }
 
         return InvariantResult.Success("INV-C21 PASS: 后台任务均有真实产出或无待处理数据", note, fallback);
@@ -919,6 +1259,7 @@ public static class DataReliabilityInvariants
 
         int totalViolations = 0;
         var samples = new List<string>();
+        var violations = new List<InvariantViolation>();
 
         foreach (var b in list)
         {
@@ -932,6 +1273,7 @@ public static class DataReliabilityInvariants
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Batch={b.BatchId}: FailedCount=0 但状态被标为 '{b.Status}' (应为 completed 或 rejected 语义)");
+                    violations.Add(BatchViolation(b, "failed-without-failure"));
                 }
             }
             // 2. 有失败却标为已完成
@@ -941,6 +1283,7 @@ public static class DataReliabilityInvariants
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Batch={b.BatchId}: FailedCount={b.FailedCount} > 0 但状态被标为 'completed'");
+                    violations.Add(BatchViolation(b, "completed-with-failures"));
                 }
             }
             // 3. 处理计数全为 0 却标为已完成 (虚假完成 / 空转批次)
@@ -951,6 +1294,7 @@ public static class DataReliabilityInvariants
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Batch={b.BatchId}: 处理计数为 0 (accepted=0, failed=0) 却被标为 'completed' (虚假完成/空转批次)");
+                    violations.Add(BatchViolation(b, "empty-run-completed"));
                 }
             }
         }
@@ -966,7 +1310,8 @@ public static class DataReliabilityInvariants
                 null,
                 null,
                 note,
-                fallback);
+                fallback,
+                violations: violations);
         }
 
         return InvariantResult.Success("INV-M21 PASS: 所有批次状态与其失败/拒绝计数语义一致", note, fallback);
@@ -992,6 +1337,7 @@ public static class DataReliabilityInvariants
 
         int totalViolations = 0;
         var samples = new List<string>();
+        var violations = new List<InvariantViolation>();
 
         foreach (var t in list)
         {
@@ -1003,6 +1349,14 @@ public static class DataReliabilityInvariants
                     if (samples.Count < opt.MaxSampleCount)
                     {
                         samples.Add($"Table={t.TableName}: 最近24h存在源数据 {t.SourceDataCountLast24H} 条，派生表行数却为 0 且未声明在线计算");
+                        violations.Add(new InvariantViolation(
+                            Id: t.TableName,
+                            DeviceId: string.Empty,
+                            OccurredAtUtc: DateTime.MinValue,
+                            Fields: Fields(
+                                ("sourceDataCountLast24H", t.SourceDataCountLast24H.ToString()),
+                                ("derivedRowCount", t.DerivedRowCount.ToString()),
+                                ("isExplicitOnlineCalculation", "false"))));
                     }
                 }
             }
@@ -1019,7 +1373,8 @@ public static class DataReliabilityInvariants
                 null,
                 null,
                 note,
-                fallback);
+                fallback,
+                violations: violations);
         }
 
         return InvariantResult.Success("INV-M22 PASS: 派生表正常更新或已明确声明在线计算", note, fallback);
@@ -1047,6 +1402,7 @@ public static class DataReliabilityInvariants
 
         int totalViolations = 0;
         var samples = new List<string>();
+        var violations = new List<InvariantViolation>();
 
         foreach (var g in groups)
         {
@@ -1058,6 +1414,14 @@ public static class DataReliabilityInvariants
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Device={g.Key.DeviceId}, Hour={g.Key.Hour:yyyy-MM-dd HH:00}: 检测到 {instanceIds.Count} 个不同实例ID ({string.Join(", ", instanceIds)})");
+                    violations.Add(new InvariantViolation(
+                        Id: $"{g.Key.DeviceId}:{g.Key.Hour:yyyy-MM-ddTHH}:00Z",
+                        DeviceId: g.Key.DeviceId,
+                        OccurredAtUtc: g.Key.Hour,
+                        Fields: Fields(
+                            ("kind", "instance-id-conflict"),
+                            ("hourUtc", g.Key.Hour.ToString("O")),
+                            ("instanceIds", string.Join(", ", instanceIds)))));
                 }
                 continue;
             }
@@ -1071,6 +1435,14 @@ public static class DataReliabilityInvariants
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Device={g.Key.DeviceId}, Hour={g.Key.Hour:yyyy-MM-dd HH:00}: 检测到 {phases.Count} 个互斥轮询相位并发交错 ({string.Join(", ", phases)}s)");
+                    violations.Add(new InvariantViolation(
+                        Id: $"{g.Key.DeviceId}:{g.Key.Hour:yyyy-MM-ddTHH}:00Z",
+                        DeviceId: g.Key.DeviceId,
+                        OccurredAtUtc: g.Key.Hour,
+                        Fields: Fields(
+                            ("kind", "phase-conflict"),
+                            ("hourUtc", g.Key.Hour.ToString("O")),
+                            ("phases", string.Join(", ", phases)))));
                 }
             }
         }
@@ -1086,7 +1458,8 @@ public static class DataReliabilityInvariants
                 null,
                 null,
                 note,
-                fallback);
+                fallback,
+                violations: violations);
         }
 
         return InvariantResult.Success("INV-P22 PASS: 每台设备均保持唯一样本采集实例流", note, fallback);

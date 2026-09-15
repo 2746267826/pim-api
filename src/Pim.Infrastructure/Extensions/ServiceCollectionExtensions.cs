@@ -76,7 +76,12 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IDataQualityInspector, AiGatewayQualityInspector>();
         services.Configure<InvariantOptions>(configuration.GetSection("Invariants"));
         services.AddScoped<DataReliabilityQualityInspector>();
-        services.AddScoped<IDataQualityInspector, DataReliabilityQualityInspector>();
+        services.AddScoped<IDataQualityInspector>(sp => sp.GetRequiredService<DataReliabilityQualityInspector>());
+        services.AddScoped<IDataReliabilityReportInspector>(sp => sp.GetRequiredService<DataReliabilityQualityInspector>());
+        services.AddScoped<IDataReliabilityViolationExporter>(sp => sp.GetRequiredService<DataReliabilityQualityInspector>());
+        services.AddSingleton<IDataReliabilityInspectionStore, InMemoryDataReliabilityInspectionStore>();
+        services.AddSingleton<IDataReliabilityInspectionRunner, DataReliabilityInspectionRunner>();
+        services.AddSingleton<IDataReliabilityGate, DataReliabilityGate>();
         services.AddScoped<HeartbeatStaleInspectionJob>();
         services.AddScoped<Stage0DiagnosticJob>();
         var dataProtectionKeysPath = configuration["DataProtection:KeysPath"]
