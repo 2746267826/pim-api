@@ -141,15 +141,31 @@ public sealed class Migration271RealDbTests
     {
         await using var database = await TempMigrationDatabase.CreateAsync();
 
-        // 先跑到 #271 之前的迁移，再删掉该迁移本会依赖的两张表。
+        // 先跑到 #271 之前的迁移，再删掉该迁移原实现会依赖的两张表：
+        // daemon_heartbeats（原来要 DELETE + CREATE UNIQUE INDEX）与 pc_tracker_events
+        // （原来要 ADD COLUMN + CREATE INDEX，且它是运行时 initializer 才建的、此刻本就不存在）。
         await database.MigrateToAsync(LastAppliedBeforeFailing);
-        await database.ExecuteAsync("DROP TABLE IF EXISTS daemon_heartbeats CASCADE;");
+        await database.ExecuteAsync(
+            "DROP TABLE IF EXISTS daemon_heartbeats CASCADE; "
+            + "DROP TABLE IF EXISTS pc_tracker_events CASCADE;");
 
         Assert.False(await database.TableExistsAsync("daemon_heartbeats"));
+        Assert.False(await database.TableExistsAsync(TrackerTable));
 
         var error = await Record.ExceptionAsync(database.MigrateAsync);
         Assert.Null(error);
         Assert.True(await database.HasMigrationAsync(FailingMigrationId));
+
+        // 空迁移不得有副作用：缺的表在迁移后仍然缺失（它们由 Stage0 / 运行时 initializer 负责，
+        // 不由这条迁移越俎代庖地补建）。
+        Assert.False(await database.TableExistsAsync("daemon_heartbeats"));
+        Assert.False(await database.TableExistsAsync(TrackerTable));
+
+        // 随后运行时 initializer 仍然能把这些对象正常建出来（真实启动顺序的收尾）。
+        await database.RunPcTrackerSchemaInitializerAsync();
+        Assert.True(await database.TableExistsAsync(TrackerTable));
+        Assert.True(await database.ColumnExistsAsync(TrackerTable, "browser"));
+        Assert.True(await database.IndexExistsAsync("ux_tracker_events_dedup"));
     }
 
     /// <summary>一次性临时库 + 真实迁移链（用 <c>MigrateAsync</c> 而非 EnsureCreated）。</summary>

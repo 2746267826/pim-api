@@ -106,15 +106,19 @@ public class MigrationGuardedDdlTests
     [Fact]
     public void RawSqlDdlInMigrations_IsGuardedWithIfExists()
     {
-        var migrator = LoadMigrations();
-        var sqlBlocks = migrator
+        var migrations = LoadMigrations();
+        var sqlBlocks = migrations
             .SelectMany(m => SqlBlocks(m).Select(sql => (m.GetType().Name, Sql: sql)))
             .ToList();
 
-        // 扫描面自检：仓库里确实有裸 SQL 可扫，否则下面的断言毫无意义。
+        // 扫描面自检：必须真的读到了 DDL，否则下面的断言毫无意义（读法失效时会静默变绿）。
         Assert.True(
             sqlBlocks.Count > 0,
             "一条裸 SQL 都没读到，门禁已退化为恒真断言（SqlOperation.Sql 的读法可能失效了）");
+        Assert.True(
+            sqlBlocks.Any(block => Regex.IsMatch(
+                StripSqlComments(block.Sql), @"\b(CREATE|ALTER|DROP)\b", RegexOptions.IgnoreCase)),
+            "读到的裸 SQL 里没有任何 CREATE/ALTER/DROP，门禁实际没在检查 DDL");
 
         var unguarded = new List<string>();
         foreach (var (migrationName, sql) in sqlBlocks)
@@ -153,6 +157,14 @@ public class MigrationGuardedDdlTests
         AssertFlagged("DROP INDEX ux_demo;");
         AssertFlagged("ALTER TABLE demo DROP COLUMN b;");
         AssertFlagged("ALTER TABLE demo ADD CONSTRAINT fk FOREIGN KEY (a) REFERENCES x (id);");
+
+        // 注释剥离必须是「字符串感知」的：注释里的 DDL 不算数，字符串里的注释符也不算注释。
+        AssertUnflagged("/* CREATE INDEX ux_demo ON demo (a); */");
+        AssertUnflagged("CREATE TABLE IF NOT EXISTS demo (a int DEFAULT '--');");
+        AssertUnflagged("CREATE TABLE IF NOT EXISTS demo (a text DEFAULT '/*');");
+        // 双引号标识符里的 -- 不能被当成行注释而把后面的 DDL 吞掉。
+        AssertFlagged("ALTER TABLE demo ADD COLUMN \"we--ird\" int;");
+        AssertFlagged("ALTER TABLE demo ADD COLUMN \"a/*b\" int;");
     }
 
     /// <summary>
@@ -258,30 +270,62 @@ public class MigrationGuardedDdlTests
         RegexOptions.IgnoreCase);
 
     /// <summary>
-    /// 结构化 DDL 的目标表与操作名。直接用操作对象的 <c>Table</c> 属性取值，
-    /// 因此位置参数/命名参数/字符串重载三种写法都能覆盖（正则扫源码会漏掉位置参数）。
+    /// 结构化 DDL 的目标表与操作名。
+    ///
+    /// <para>
+    /// 用反射读取操作对象上的所有 <c>Table</c> / <c>PrincipalTable</c> 属性，
+    /// 而不是硬编码操作类型清单：EF 新增操作类型（<c>RenameColumnOperation</c>、
+    /// <c>AddPrimaryKeyOperation</c>、<c>DropTableOperation</c>、外键的 <c>PrincipalTable</c>…）
+    /// 时会自动纳入，不会留下「清单没跟上」的漏报。
+    /// </para>
+    ///
+    /// <para>
+    /// 同时天然覆盖位置参数/命名参数/字符串重载三种写法 —— 门禁读的是操作对象，
+    /// 而不是源码里的参数名（正则扫源码会整条漏掉 <c>AddColumn&lt;T&gt;("col", "table")</c>）。
+    /// </para>
     /// </summary>
     private static IEnumerable<(string Table, string Operation)> StructuredDdlTargets(Migration migration)
     {
         foreach (var operation in migration.UpOperations)
         {
             // CreateTable 自己就是建表，不参与「是否操作了别人表」的判定。
-            var table = operation switch
+            if (operation is CreateTableOperation)
             {
-                AddColumnOperation op => op.Table,
-                DropColumnOperation op => op.Table,
-                AlterColumnOperation op => op.Table,
-                CreateIndexOperation op => op.Table,
-                DropIndexOperation op => op.Table,
-                RenameIndexOperation op => op.Table,
-                AddForeignKeyOperation op => op.Table,
-                DropForeignKeyOperation op => op.Table,
-                _ => null,
-            };
+                continue;
+            }
 
-            if (!string.IsNullOrWhiteSpace(table))
+            foreach (var table in TableTargetsOf(operation))
             {
                 yield return (table, operation.GetType().Name);
+            }
+        }
+    }
+
+    /// <summary>读取操作对象上所有指向表名的属性（<c>Table</c>、<c>PrincipalTable</c>…）。</summary>
+    private static IEnumerable<string> TableTargetsOf(MigrationOperation operation)
+    {
+        var type = operation.GetType();
+        var isTableLevelOperation = type.Name.EndsWith("TableOperation", StringComparison.Ordinal);
+
+        foreach (var property in type.GetProperties())
+        {
+            if (property.PropertyType != typeof(string))
+            {
+                continue;
+            }
+
+            // 表级操作（DropTableOperation / RenameTableOperation…）用 Name 表示目标表；
+            // 其余操作要的是 Table / PrincipalTable / *Table 这类属性。
+            var isTableProperty = property.Name.EndsWith("Table", StringComparison.Ordinal);
+            var isTableName = isTableLevelOperation && property.Name == "Name";
+            if (!isTableProperty && !isTableName)
+            {
+                continue;
+            }
+
+            if (property.GetValue(operation) is string value && !string.IsNullOrWhiteSpace(value))
+            {
+                yield return value;
             }
         }
     }
@@ -296,12 +340,150 @@ public class MigrationGuardedDdlTests
     /// <summary>
     /// 去掉 SQL 注释再匹配：否则注释里出现的 "CREATE INDEX ..." 会被误判成真实 DDL
     /// （迁移里写「不要用 CREATE INDEX」的说明是很自然的事）。
+    ///
+    /// <para>
+    /// 按字符扫描而不是直接上正则：单引号字符串里的 <c>--</c> 或 <c>/*</c> 是数据、不是注释
+    /// （例如 <c>DEFAULT '--'</c>），双引号标识符与 <c>$$ … $$</c> 里的内容同样要按原样保留。
+    /// 早期版本用纯正则会把这些情况误剥，导致漏报。
+    /// </para>
     /// </summary>
-    private static string StripSqlComments(string sql) =>
-        BlockCommentPattern.Replace(LineCommentPattern.Replace(sql, " "), " ");
+    private static string StripSqlComments(string sql)
+    {
+        var result = new System.Text.StringBuilder(sql.Length);
+        var inSingle = false;
+        var inDouble = false;
+        var dollarTag = (string?)null;
 
-    private static readonly Regex LineCommentPattern = new(@"--[^\n]*", RegexOptions.Compiled);
-    private static readonly Regex BlockCommentPattern = new(@"/\*.*?\*/", RegexOptions.Compiled | RegexOptions.Singleline);
+        for (var i = 0; i < sql.Length; i++)
+        {
+            var c = sql[i];
+
+            // dollar-quoted 块（$$ … $$ 或 $tag$ … $tag$）整体保留。
+            if (dollarTag is not null)
+            {
+                if (sql.AsSpan(i).StartsWith(dollarTag, StringComparison.Ordinal))
+                {
+                    result.Append(dollarTag);
+                    i += dollarTag.Length - 1;
+                    dollarTag = null;
+                }
+                else
+                {
+                    result.Append(c);
+                }
+
+                continue;
+            }
+
+            if (inSingle)
+            {
+                result.Append(c);
+                if (c == '\'')
+                {
+                    // '' 是转义的引号，不算结束。
+                    if (i + 1 < sql.Length && sql[i + 1] == '\'')
+                    {
+                        result.Append('\'');
+                        i++;
+                    }
+                    else
+                    {
+                        inSingle = false;
+                    }
+                }
+
+                continue;
+            }
+
+            if (inDouble)
+            {
+                result.Append(c);
+                if (c == '"')
+                {
+                    inDouble = false;
+                }
+
+                continue;
+            }
+
+            switch (c)
+            {
+                case '\'':
+                    inSingle = true;
+                    result.Append(c);
+                    break;
+
+                case '"':
+                    inDouble = true;
+                    result.Append(c);
+                    break;
+
+                case '$':
+                    var tag = MatchDollarTag(sql, i);
+                    if (tag is not null)
+                    {
+                        dollarTag = tag;
+                        result.Append(tag);
+                        i += tag.Length - 1;
+                    }
+                    else
+                    {
+                        result.Append(c);
+                    }
+
+                    break;
+
+                case '-' when i + 1 < sql.Length && sql[i + 1] == '-':
+                    // 行注释：跳到行尾（保留换行以维持行号）。
+                    while (i < sql.Length && sql[i] != '\n')
+                    {
+                        i++;
+                    }
+
+                    if (i < sql.Length)
+                    {
+                        result.Append('\n');
+                    }
+
+                    break;
+
+                case '/' when i + 1 < sql.Length && sql[i + 1] == '*':
+                    i += 2;
+                    while (i + 1 < sql.Length && !(sql[i] == '*' && sql[i + 1] == '/'))
+                    {
+                        if (sql[i] == '\n')
+                        {
+                            result.Append('\n');
+                        }
+
+                        i++;
+                    }
+
+                    i++;
+                    break;
+
+                default:
+                    result.Append(c);
+                    break;
+            }
+        }
+
+        return result.ToString();
+    }
+
+    /// <summary>在 <paramref name="index"/> 处匹配 <c>$$</c> / <c>$tag$</c> 定界符，不匹配则返回 null。</summary>
+    private static string? MatchDollarTag(string sql, int index)
+    {
+        var end = sql.IndexOf('$', index + 1);
+        if (end < 0)
+        {
+            return null;
+        }
+
+        var tag = sql[index..(end + 1)];
+        // 标签只能是字母/下划线，且不能含空白或引号。
+        return tag[1..^1].All(ch => char.IsLetterOrDigit(ch) || ch == '_') ? tag : null;
+    }
 
     /// <summary>
     /// 裸 SQL 里出现即视为「缺守卫」的 DDL 形态。
