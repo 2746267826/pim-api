@@ -303,7 +303,18 @@ public class MigrationGuardedDdlTests
     private static readonly Regex LineCommentPattern = new(@"--[^\n]*", RegexOptions.Compiled);
     private static readonly Regex BlockCommentPattern = new(@"/\*.*?\*/", RegexOptions.Compiled | RegexOptions.Singleline);
 
-    /// <summary>裸 SQL 里出现即视为「缺守卫」的 DDL 形态。</summary>
+    /// <summary>
+    /// 裸 SQL 里出现即视为「缺守卫」的 DDL 形态。
+    ///
+    /// <para>
+    /// <c>ALTER TABLE … ALTER COLUMN …</c> 有意<b>不</b>在此列：它没有 <c>IF EXISTS</c> 语法，
+    /// 但 <c>SET DEFAULT</c> / <c>DROP DEFAULT</c> / <c>SET NOT NULL</c> 本身就天然幂等
+    /// （重复执行同一个 SET 是 no-op），迁移 <c>20260705122322</c> 大量使用这类语句且工作正常。
+    /// 会因重复执行而中断的是「创建/删除对象」与「加列」——那些都在下面的清单里。
+    /// <c>ALTER COLUMN … TYPE</c> 会重写表、重复执行代价高但不会失败，属于性能问题而非
+    /// 「中断迁移链」的缺陷，故一并放行。
+    /// </para>
+    /// </summary>
     private static readonly (Regex Pattern, string Label)[] UnguardedDdlPatterns =
     [
         (new Regex(@"\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)", RegexOptions.IgnoreCase), "CREATE TABLE"),
