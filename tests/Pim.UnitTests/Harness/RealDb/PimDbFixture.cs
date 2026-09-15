@@ -187,13 +187,13 @@ public sealed class PimDbFixture : IAsyncLifetime
     public sealed record PcAwEventRow(string DeviceId, DateTimeOffset Timestamp, double Duration, string EventType, string? AppName, string? WindowTitle, string? AfkStatus);
     public sealed record MobileLocationPointRow(string UserId, string DeviceId, DateTimeOffset RecordedAtUtc, decimal Latitude, decimal Longitude, decimal HorizontalAccuracyMeters, string? Provider, string? Source, decimal? AltitudeMeters);
 
-    private sealed class SkipException : Exception
+    private sealed class SkipException : Xunit.SkipException
     {
         public SkipException(string message) : base(message) { }
     }
 }
 
-public sealed class SkipException : Exception
+public sealed class SkipException : Xunit.SkipException
 {
     public SkipException(string message) : base(message) { }
 }

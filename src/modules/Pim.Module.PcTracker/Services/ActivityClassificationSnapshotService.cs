@@ -76,6 +76,12 @@ public class ActivityClassificationSnapshotService
                 continue;
             }
 
+            if (auditId is null && snapshots.ContainsKey(keyedRecord.RecordKey))
+            {
+                classifiedRecords[record] = ToClassificationResult(snapshot);
+                continue;
+            }
+
             ApplySnapshot(snapshot, keyedRecord, classification, auditId, now);
             classifiedRecords[record] = classification;
         }

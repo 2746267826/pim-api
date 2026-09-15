@@ -60,6 +60,8 @@ public sealed class PcClassificationBackfillService
             var endUtc = ToBusinessDayStartUtc(day.AddDays(1), timeZone);
 
             var hasEvents = await _db.Set<AwEventEntity>()
+                .AnyAsync(e => e.Duration > 0 && e.Timestamp >= startUtc && e.Timestamp < endUtc, ct)
+                || await _db.Set<TrackerEventEntity>()
                 .AnyAsync(e => e.Duration > 0 && e.Timestamp >= startUtc && e.Timestamp < endUtc, ct);
             if (!hasEvents)
                 continue;
@@ -70,7 +72,25 @@ public sealed class PcClassificationBackfillService
                 var snapshotCount = await _db.Set<ActivityClassificationEntity>()
                     .CountAsync(snapshot => snapshot.StartedAt >= startUtc && snapshot.StartedAt < endUtc, ct);
                 if (snapshotCount > 0)
-                    continue;
+                {
+                    var earliestSnapshotStart = await _db.Set<ActivityClassificationEntity>()
+                        .Where(s => s.StartedAt >= startUtc && s.StartedAt < endUtc)
+                        .MinAsync(s => (DateTimeOffset?)s.StartedAt, ct);
+
+                    var latestSnapshotEnd = await _db.Set<ActivityClassificationEntity>()
+                        .Where(s => s.StartedAt >= startUtc && s.StartedAt < endUtc)
+                        .MaxAsync(s => (DateTimeOffset?)s.EndedAt, ct);
+
+                    var hasUncoveredEvents = (latestSnapshotEnd is not null && (
+                            await _db.Set<TrackerEventEntity>().AnyAsync(e => e.Duration > 0 && e.Timestamp >= latestSnapshotEnd && e.Timestamp < endUtc, ct) ||
+                            await _db.Set<AwEventEntity>().AnyAsync(e => e.Duration > 0 && e.Timestamp >= latestSnapshotEnd && e.Timestamp < endUtc, ct)))
+                        || (earliestSnapshotStart is not null && (
+                            await _db.Set<TrackerEventEntity>().AnyAsync(e => e.Duration > 0 && e.Timestamp >= startUtc && e.Timestamp < earliestSnapshotStart, ct) ||
+                            await _db.Set<AwEventEntity>().AnyAsync(e => e.Duration > 0 && e.Timestamp >= startUtc && e.Timestamp < earliestSnapshotStart, ct)));
+
+                    if (!hasUncoveredEvents)
+                        continue;
+                }
             }
 
             var before = await _db.Set<ActivityClassificationEntity>().CountAsync(ct);

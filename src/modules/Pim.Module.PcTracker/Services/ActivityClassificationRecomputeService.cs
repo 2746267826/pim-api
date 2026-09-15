@@ -318,14 +318,24 @@ public class ActivityClassificationRecomputeService
         IReadOnlyCollection<ActivityCategoryRuleEntity> rules,
         CancellationToken ct)
     {
-        var events = await _db.Set<AwEventEntity>()
+        var awEvents = await _db.Set<AwEventEntity>()
             .Where(e => e.Duration > 0)
             .Where(e => e.Timestamp >= startUtc && e.Timestamp < endUtc)
             .OrderBy(e => e.Timestamp)
             .ThenBy(e => e.Id)
             .ToListAsync(ct);
 
-        return BrowserPageTimelineBuilder.BuildInterpretedAwRecords(events, rules);
+        var trackerEvents = await _db.Set<TrackerEventEntity>()
+            .Where(e => e.Duration > 0)
+            .Where(e => e.Timestamp >= startUtc && e.Timestamp < endUtc)
+            .OrderBy(e => e.Timestamp)
+            .ThenBy(e => e.Id)
+            .ToListAsync(ct);
+
+        var records = new List<PcDetailRecord>();
+        records.AddRange(BrowserPageTimelineBuilder.BuildInterpretedAwRecords(awEvents, rules));
+        records.AddRange(TrackerPageTimelineBuilder.BuildInterpretedRecords(trackerEvents, rules));
+        return records.OrderBy(r => r.Start, StringComparer.Ordinal).ToList();
     }
 
     private ActivityClassificationAuditEntity CreatePcAudit(

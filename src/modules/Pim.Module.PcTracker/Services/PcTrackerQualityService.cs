@@ -11,6 +11,17 @@ namespace Pim.Module.PcTracker.Services;
 
 public sealed class PcTrackerQualityService
 {
+    /// <summary>
+    /// ActivityWatch (AW) 退役切换基准时间（2026-09-01 Asia/Shanghai）。
+    /// 当查询时间窗口起点 rangeStart >= AwRetirementDate 时，质检全面转向原生采集事件（TrackerEventEntity），
+    /// 不再要求 AW Bucket 和 AW Event 存在，避免报告假阳性告警。跨退役窗口（rangeStart < AwRetirementDate）
+    /// 仍保留对历史 AW 采集组件的检查。
+    /// ActivityWatch retirement cutoff date (2026-09-01 Asia/Shanghai).
+    /// When rangeStart >= AwRetirementDate, quality checks exclusively rely on native tracker events
+    /// without requiring AW buckets or events, preventing false-positive alarms. Windows spanning
+    /// prior to the retirement date (rangeStart < AwRetirementDate) retain checks for legacy AW components.
+    /// </summary>
+    public static readonly DateTimeOffset AwRetirementDate = new(2026, 9, 1, 0, 0, 0, TimeSpan.FromHours(8));
     private static readonly TimeSpan StaleBucketAge = TimeSpan.FromHours(24);
     private readonly PimDbContext _db;
     private readonly TimeProvider _timeProvider;
@@ -27,12 +38,19 @@ public sealed class PcTrackerQualityService
     {
         var checkedAt = _timeProvider.GetUtcNow();
         var (rangeStart, rangeEnd) = GetRange(date, dateFrom, dateTo);
+        var isPostAw = rangeStart >= AwRetirementDate;
 
         var buckets = await _db.Set<AwBucketEntity>()
             .AsNoTracking()
             .ToListAsync(ct);
 
         var events = await _db.Set<AwEventEntity>()
+            .AsNoTracking()
+            .Where(e => e.Timestamp >= rangeStart && e.Timestamp < rangeEnd)
+            .OrderBy(e => e.Timestamp)
+            .ToListAsync(ct);
+
+        var trackerEvents = await _db.Set<TrackerEventEntity>()
             .AsNoTracking()
             .Where(e => e.Timestamp >= rangeStart && e.Timestamp < rangeEnd)
             .OrderBy(e => e.Timestamp)
@@ -52,14 +70,23 @@ public sealed class PcTrackerQualityService
             .FirstOrDefaultAsync(ct);
 
         var issues = new List<PcQualityIssueDto>();
-        var components = new List<PcQualityComponentDto>
+        var components = new List<PcQualityComponentDto>();
+
+        if (!isPostAw)
         {
-            CheckBuckets(buckets, checkedAt, issues),
-            CheckEvents(events, issues),
-            CheckKeystats(samples, issues),
-            CheckDaemon(heartbeat, checkedAt, issues),
-            CheckTimeline(events, samples, issues)
-        };
+            components.Add(CheckBuckets(buckets, checkedAt, issues));
+            components.Add(CheckEvents(events, issues));
+        }
+
+        if (isPostAw || trackerEvents.Count > 0)
+        {
+            components.Add(CheckTrackerEvents(trackerEvents, issues));
+        }
+
+        components.Add(CheckKeystats(samples, issues));
+        components.Add(CheckDaemon(heartbeat, checkedAt, isPostAw, issues));
+        components.Add(CheckTimeline(events, trackerEvents, samples, isPostAw, issues));
+
         AddDataReliabilityGate(components, issues, new[] { "S1", "S2", "S3", "S5", "S6", "S7", "S8", "S13" });
 
         var overallStatus = components
@@ -275,6 +302,110 @@ public sealed class PcTrackerQualityService
         return BuildComponent("aw-events", "ActivityWatch 事件", componentIssues, details);
     }
 
+    private static PcQualityComponentDto CheckTrackerEvents(
+        IReadOnlyCollection<TrackerEventEntity> events,
+        List<PcQualityIssueDto> issues)
+    {
+        var componentIssues = new List<PcQualityIssueDto>();
+        var overlappingCount = 0;
+
+        if (events.Count == 0)
+        {
+            componentIssues.Add(new PcQualityIssueDto(
+                "missing-tracker-events",
+                PimHealthStatus.Warning,
+                "tracker-events",
+                "所选范围内没有采集到原生追踪事件。",
+                "确认原生追踪器正在运行并上传数据。"));
+        }
+        else
+        {
+            if (!events.Any(IsTrackerWindowEvent))
+            {
+                componentIssues.Add(new PcQualityIssueDto(
+                    "missing-tracker-window-events",
+                    PimHealthStatus.Warning,
+                    "tracker-events",
+                    "所选范围内没有采集到原生窗口事件。",
+                    "确认原生窗口监视器正在运行。"));
+            }
+
+            foreach (var group in events.GroupBy(e => (e.DeviceId, e.EventType)))
+            {
+                DateTimeOffset? lastEnd = null;
+                foreach (var evt in group.OrderBy(e => e.Timestamp))
+                {
+                    if (evt.Duration <= 0) continue;
+                    var currentStart = evt.Timestamp;
+                    var currentEnd = evt.Timestamp.AddSeconds(evt.Duration);
+                    if (lastEnd is not null && currentStart.AddSeconds(1) < lastEnd.Value)
+                    {
+                        overlappingCount++;
+                    }
+                    if (lastEnd is null || currentEnd > lastEnd.Value)
+                    {
+                        lastEnd = currentEnd;
+                    }
+                }
+            }
+
+            if (overlappingCount > 0)
+            {
+                componentIssues.Add(new PcQualityIssueDto(
+                    "tracker-events-overlapping",
+                    MajoritySeverity(overlappingCount, events.Count),
+                    "tracker-events",
+                    "部分原生追踪事件存在时间区间重叠。",
+                    "检查追踪器事件切割与去重逻辑。"));
+            }
+
+            var excessiveDurationCount = events.Count(e => !e.IsIdle && e.Duration > 7200);
+            if (excessiveDurationCount > 0)
+            {
+                componentIssues.Add(new PcQualityIssueDto(
+                    "tracker-events-excessive-duration",
+                    PimHealthStatus.Warning,
+                    "tracker-events",
+                    "检测到异常超长的活动事件（超过2小时未切分）。",
+                    "确认追踪器心跳切分逻辑正常运作。"));
+            }
+
+            var missingAppCount = events.Count(e => IsTrackerWindowEvent(e) && string.IsNullOrWhiteSpace(e.AppName) && string.IsNullOrWhiteSpace(e.ExePath));
+            if (missingAppCount > 0)
+            {
+                componentIssues.Add(new PcQualityIssueDto(
+                    "tracker-events-missing-metadata",
+                    MajoritySeverity(missingAppCount, events.Count),
+                    "tracker-events",
+                    "部分原生追踪窗口事件缺少应用程序元数据。",
+                    "检查追踪器进程名与窗口信息提取。"));
+            }
+
+            var invalidJsonCount = events.Count(e => !string.IsNullOrEmpty(e.RawJson) && !IsValidJson(e.RawJson));
+            if (invalidJsonCount > 0)
+            {
+                componentIssues.Add(new PcQualityIssueDto(
+                    "tracker-events-invalid-raw-json",
+                    MajoritySeverity(invalidJsonCount, events.Count),
+                    "tracker-events",
+                    "部分原生追踪事件包含无效 raw_json。",
+                    "检查追踪器序列化逻辑。"));
+            }
+        }
+
+        issues.AddRange(componentIssues);
+        var details = new Dictionary<string, string>
+        {
+            ["eventCount"] = events.Count.ToString(),
+            ["windowEventCount"] = events.Count(IsTrackerWindowEvent).ToString(),
+            ["idleEventCount"] = events.Count(e => e.IsIdle || string.Equals(e.EventType, "idle", StringComparison.OrdinalIgnoreCase)).ToString(),
+            ["overlappingCount"] = overlappingCount.ToString(),
+            ["excessiveDurationCount"] = events.Count(e => !e.IsIdle && e.Duration > 7200).ToString()
+        };
+
+        return BuildComponent("tracker-events", "PC 原生追踪事件", componentIssues, details);
+    }
+
     private static PcQualityComponentDto CheckKeystats(
         IReadOnlyCollection<KeystatsSampleEntity> samples,
         List<PcQualityIssueDto> issues)
@@ -349,6 +480,7 @@ public sealed class PcTrackerQualityService
     private static PcQualityComponentDto CheckDaemon(
         DaemonHeartbeatEntity? heartbeat,
         DateTimeOffset checkedAt,
+        bool isPostAw,
         List<PcQualityIssueDto> issues)
     {
         var componentIssues = new List<PcQualityIssueDto>();
@@ -432,7 +564,10 @@ public sealed class PcTrackerQualityService
                 "确认 Windows 守护程序可以访问 API。"));
         }
 
-        if (IsSourceUnavailable(heartbeat.ActivityWatchState) || IsSourceUnavailable(heartbeat.KeyStatsState))
+        var isAwUnavailable = !isPostAw && IsSourceUnavailable(heartbeat.ActivityWatchState);
+        var isKeyStatsUnavailable = IsSourceUnavailable(heartbeat.KeyStatsState);
+
+        if (isAwUnavailable || isKeyStatsUnavailable)
         {
             componentIssues.Add(new PcQualityIssueDto(
                 "daemon-source-unavailable",
@@ -447,25 +582,31 @@ public sealed class PcTrackerQualityService
     }
 
     private static PcQualityComponentDto CheckTimeline(
-        IReadOnlyCollection<AwEventEntity> events,
+        IReadOnlyCollection<AwEventEntity> awEvents,
+        IReadOnlyCollection<TrackerEventEntity> trackerEvents,
         IReadOnlyCollection<KeystatsSampleEntity> samples,
+        bool isPostAw,
         List<PcQualityIssueDto> issues)
     {
         var componentIssues = new List<PcQualityIssueDto>();
-        var hasActivityWatchEvents = events.Count > 0;
+        var hasActivityEvents = awEvents.Count > 0 || trackerEvents.Count > 0;
         var hasKeystatsSamples = samples.Count > 0;
         var hasKeystatsDeltaPair = samples
             .GroupBy(s => s.PimDeviceId)
             .Any(g => g.Count() >= 2);
 
-        if (!hasActivityWatchEvents || !hasKeystatsSamples)
+        if (!hasActivityEvents || !hasKeystatsSamples)
         {
+            var nextStep = isPostAw
+                ? "先处理原生追踪器和 KeyStats 采集问题。"
+                : "先处理 ActivityWatch 和 KeyStats 采集问题。";
+
             componentIssues.Add(new PcQualityIssueDto(
                 "timeline-inputs-incomplete",
                 PimHealthStatus.Warning,
                 "interpreted-timeline",
                 "所选范围内用于解释时间线的输入不完整。",
-                "先处理 ActivityWatch 和 KeyStats 采集问题。"));
+                nextStep));
         }
         else if (!hasKeystatsDeltaPair)
         {
@@ -480,7 +621,9 @@ public sealed class PcTrackerQualityService
         issues.AddRange(componentIssues);
         var details = new Dictionary<string, string>
         {
-            ["hasActivityWatchEvents"] = hasActivityWatchEvents.ToString(),
+            ["hasActivityEvents"] = hasActivityEvents.ToString(),
+            ["hasActivityWatchEvents"] = (awEvents.Count > 0).ToString(),
+            ["hasTrackerEvents"] = (trackerEvents.Count > 0).ToString(),
             ["hasKeystatsSamples"] = hasKeystatsSamples.ToString(),
             ["hasKeystatsDeltaPair"] = hasKeystatsDeltaPair.ToString()
         };
@@ -498,6 +641,9 @@ public sealed class PcTrackerQualityService
     private static bool IsAfkEvent(AwEventEntity e)
         => string.Equals(e.EventType, "afk", StringComparison.OrdinalIgnoreCase)
             || string.Equals(e.BucketType, "afkstatus", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsTrackerWindowEvent(TrackerEventEntity e)
+        => string.Equals(e.EventType, "window", StringComparison.OrdinalIgnoreCase);
 
     private static PimHealthStatus MajoritySeverity(int count, int total)
         => count > total / 2 ? PimHealthStatus.Critical : PimHealthStatus.Warning;
