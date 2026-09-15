@@ -198,6 +198,21 @@ public class MigrationGuardedDdlTests
         Assert.Contains("ALTER", StripSqlComments("SELECT $1; ALTER TABLE demo ADD c int;"), StringComparison.Ordinal);
         // dollar-quoted 块的内容会真实执行，必须保留以便继续检查。
         Assert.Contains("INDEX", StripSqlComments("DO $$ BEGIN CREATE INDEX ux ON demo (a); END $$;"), StringComparison.Ordinal);
+
+        // 引号转义后的注释仍要被剥掉：即 "a""b" 与 'a''b' 都必须被当作「一个字面引号」，
+        // 否则解析器会以为自己还在字符串/标识符里，把后面的注释当成正文，造成漏报。
+        foreach (var prefix in new[]
+                 {
+                     "ALTER TABLE demo ADD COLUMN \"a\"\"b\" int;",
+                     "ALTER TABLE demo ADD COLUMN c text DEFAULT 'a''b';",
+                 })
+        {
+            var line = StripSqlComments(prefix + " -- CREATE INDEX ux_demo ON demo (a);");
+            Assert.DoesNotContain("CREATE INDEX", line, StringComparison.Ordinal);
+
+            var block = StripSqlComments(prefix + " /* CREATE INDEX ux_demo ON demo (a); */");
+            Assert.DoesNotContain("CREATE INDEX", block, StringComparison.Ordinal);
+        }
     }
 
     /// <summary>
@@ -433,7 +448,18 @@ public class MigrationGuardedDdlTests
                 result.Append(c);
                 if (c == '"')
                 {
-                    inDouble = false;
+                    // 与单引号同理："" 是转义的双引号（表示标识符里的一个字面 "），不算结束。
+                    // 即使不处理，成对的 "" 也只是「关了又开」、净状态相同；这里显式处理是为了
+                    // 让意图清楚，并避免将来有人把它简化成单次 toggle 时踩坑。
+                    if (i + 1 < sql.Length && sql[i + 1] == '"')
+                    {
+                        result.Append('"');
+                        i++;
+                    }
+                    else
+                    {
+                        inDouble = false;
+                    }
                 }
 
                 continue;
