@@ -82,6 +82,40 @@ public class MigrationGuardedDdlTests
             + Environment.NewLine + string.Join(Environment.NewLine, offenders));
     }
 
+    /// <summary>
+    /// 扫描器必须真的能读全三种字面量写法的 SQL，否则上面那条门禁只是「什么都没扫到」的
+    /// 恒真断言。逐字字符串 <c>@"..."</c> 尤其重要：历史修复
+    /// <c>migrationBuilder.Sql(@"DROP INDEX IF EXISTS ...")</c> 用的就是它，
+    /// 而只认三引号的实现在这里会静默放过。
+    /// </summary>
+    [Fact]
+    public void RawSqlScanner_FindsEveryStringLiteralForm()
+    {
+        // 用转义写法拼样本：三引号里再嵌三引号无法编译（CS9000）。
+        var source = string.Join(
+            '\n',
+            "migrationBuilder.Sql(\"\"\"",
+            "    CREATE TABLE demo (a int);",
+            "    \"\"\");",
+            string.Empty,
+            "migrationBuilder.Sql(@\"DROP INDEX ux_demo;\");",
+            string.Empty,
+            "migrationBuilder.Sql(\"ALTER TABLE demo ADD COLUMN b int;\");");
+
+        var statements = RawSqlStatements(source).Select(s => s.Statement).ToList();
+
+        Assert.Equal(3, statements.Count);
+        Assert.Contains(statements, s => s.Contains("CREATE TABLE", StringComparison.Ordinal));
+        Assert.Contains(statements, s => s.Contains("DROP INDEX ux_demo;", StringComparison.Ordinal));
+        Assert.Contains(statements, s => s.Contains("ALTER TABLE demo ADD COLUMN b int;", StringComparison.Ordinal));
+
+        // 逐字字符串里的 "" 是转义双引号，收尾判定不能被它提前截断。
+        var withEscapedQuote = "migrationBuilder.Sql(@\"CREATE INDEX ix ON demo (\"\"a\"\");\");";
+        var escaped = RawSqlStatements(withEscapedQuote).Select(s => s.Statement).ToList();
+        Assert.Single(escaped);
+        Assert.Contains("\"a\"", escaped[0], StringComparison.Ordinal);
+    }
+
     [Fact]
     public void RawSqlDdlInMigrations_IsGuardedWithIfExists()
     {
@@ -100,6 +134,12 @@ public class MigrationGuardedDdlTests
                 }
             }
         }
+
+        // 扫描面自检：仓库里确实有裸 SQL DDL 可扫（没有的话下面那条断言毫无意义）。
+        var scanned = EnumerateMigrationSources()
+            .SelectMany(source => RawSqlStatements(source.Source))
+            .Count(statement => Regex.IsMatch(statement.Statement, @"\b(CREATE|ALTER|DROP)\b", RegexOptions.IgnoreCase));
+        Assert.True(scanned > 0, "扫描器一条 DDL 都没读到，门禁已退化为恒真断言");
 
         Assert.True(
             unguarded.Count == 0,
@@ -269,54 +309,129 @@ public class MigrationGuardedDdlTests
     /// <summary>
     /// 取出 <c>migrationBuilder.Sql(...)</c> 的字符串实参，按分号切成语句并给出源码行号。
     /// 行号按「语句结束的分号所在行」计，便于直接跳到文件里对应位置。
+    ///
+    /// <para>
+    /// 必须同时支持仓库里出现过的三种字面量写法，否则门禁会因为「扫不到 SQL」而静默失效：
+    /// 原样字符串 <c>"""..."""</c> / <c>"..."</c>，以及逐字字符串 <c>@"..."</c>（历史修复
+    /// <c>DROP INDEX IF EXISTS</c> 用的就是这一种）。
+    /// 逐字字符串里的 <c>""</c> 是转义的双引号，收尾判定要跳过它。
+    /// </para>
     /// </summary>
     private static IEnumerable<(int Line, string Statement)> RawSqlStatements(string source)
     {
         foreach (Match match in RawSqlCallPattern.Matches(source))
         {
-            var delimiter = match.Groups["d"].Value;
             var start = match.Index + match.Length;
-            var end = source.IndexOf(delimiter, start, StringComparison.Ordinal);
-            if (end < 0)
+
+            if (match.Groups["triple"].Success)
             {
-                continue;
-            }
-
-            var body = source[start..end];
-            var statementStart = 0;
-            var line = source[..start].Count(c => c == '\n') + 1;
-
-            for (var i = 0; i < body.Length; i++)
-            {
-                if (body[i] == '\n')
-                {
-                    line++;
-                }
-
-                if (body[i] != ';')
+                var end = source.IndexOf("\"\"\"", start, StringComparison.Ordinal);
+                if (end < 0)
                 {
                     continue;
                 }
 
-                var statement = body[statementStart..(i + 1)].Trim();
-                if (statement.Length > 0)
+                foreach (var statement in EnumerateSqlStatements(source[start..end], LineAt(source, start)))
                 {
-                    yield return (line, statement);
+                    yield return statement;
                 }
 
-                statementStart = i + 1;
+                continue;
             }
 
-            var tail = body[statementStart..].Trim();
-            if (tail.Length > 0)
+            var verbatim = match.Groups["verbatim"].Success;
+            var close = FindStringLiteralEnd(source, start, verbatim);
+            if (close < 0)
             {
-                yield return (line, tail);
+                continue;
+            }
+
+            var text = source[start..close];
+            if (verbatim)
+            {
+                text = text.Replace("\"\"", "\"", StringComparison.Ordinal);
+            }
+
+            foreach (var statement in EnumerateSqlStatements(text, LineAt(source, start)))
+            {
+                yield return statement;
             }
         }
     }
 
+    /// <summary>
+    /// 找到字符串字面量的结束引号位置（不含引号本身）。
+    /// 逐字字符串里 <c>""</c> 表示一个字面双引号，要成对跳过；普通字符串里 <c>\"</c> 是转义。
+    /// </summary>
+    private static int FindStringLiteralEnd(string source, int start, bool verbatim)
+    {
+        for (var i = start; i < source.Length; i++)
+        {
+            if (source[i] == '\\' && !verbatim)
+            {
+                i++;
+                continue;
+            }
+
+            if (source[i] != '"')
+            {
+                continue;
+            }
+
+            if (verbatim && i + 1 < source.Length && source[i + 1] == '"')
+            {
+                i++;
+                continue;
+            }
+
+            return i;
+        }
+
+        return -1;
+    }
+
+    private static int LineAt(string source, int index) => source[..index].Count(c => c == '\n') + 1;
+
+    /// <summary>把 SQL 文本按分号切成语句，行号从 <paramref name="startLine"/> 起算。</summary>
+    private static IEnumerable<(int Line, string Statement)> EnumerateSqlStatements(string body, int startLine)
+    {
+        var statementStart = 0;
+        var line = startLine;
+
+        for (var i = 0; i < body.Length; i++)
+        {
+            if (body[i] == '\n')
+            {
+                line++;
+            }
+
+            if (body[i] != ';')
+            {
+                continue;
+            }
+
+            var statement = body[statementStart..(i + 1)].Trim();
+            if (statement.Length > 0)
+            {
+                yield return (line, statement);
+            }
+
+            statementStart = i + 1;
+        }
+
+        var tail = body[statementStart..].Trim();
+        if (tail.Length > 0)
+        {
+            yield return (line, tail);
+        }
+    }
+
+    /// <summary>
+    /// 匹配 <c>migrationBuilder.Sql(</c> 之后的字符串起始标记。三种写法互斥、按长到短排：
+    /// 三引号 <c>"""</c> → 逐字 <c>@"</c> → 普通 <c>"</c>。
+    /// </summary>
     private static readonly Regex RawSqlCallPattern = new(
-        @"migrationBuilder\.Sql\(\s*(?<d>@?""""|@?"")",
+        "migrationBuilder\\.Sql\\(\\s*(?:(?<triple>\"\"\")|(?<verbatim>@\")|(?<plain>\"))",
         RegexOptions.IgnoreCase);
 
     /// <summary>按花括号平衡取出方法体。</summary>
