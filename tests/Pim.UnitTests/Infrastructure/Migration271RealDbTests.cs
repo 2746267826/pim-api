@@ -131,6 +131,27 @@ public sealed class Migration271RealDbTests
         Assert.True(await database.IsUniqueIndexAsync("IX_daemon_heartbeats_device_id_daemon_kind"));
     }
 
+    /// <summary>
+    /// 缺表状态（评审提出的失败向量）：迁移历史显示 Stage0 已应用，但 <c>daemon_heartbeats</c>
+    /// 被人工/异常流程删掉了。修复前这条迁移的 <c>DELETE FROM daemon_heartbeats</c> 与
+    /// <c>CREATE UNIQUE INDEX</c> 会以 42P01 中断启动；修复后整条迁移不碰任何对象，必须安全通过。
+    /// </summary>
+    [SkippableFact]
+    public async Task Migration_WhenRuntimeOwnedTablesAreMissing_StillCompletes()
+    {
+        await using var database = await TempMigrationDatabase.CreateAsync();
+
+        // 先跑到 #271 之前的迁移，再删掉该迁移本会依赖的两张表。
+        await database.MigrateToAsync(LastAppliedBeforeFailing);
+        await database.ExecuteAsync("DROP TABLE IF EXISTS daemon_heartbeats CASCADE;");
+
+        Assert.False(await database.TableExistsAsync("daemon_heartbeats"));
+
+        var error = await Record.ExceptionAsync(database.MigrateAsync);
+        Assert.Null(error);
+        Assert.True(await database.HasMigrationAsync(FailingMigrationId));
+    }
+
     /// <summary>一次性临时库 + 真实迁移链（用 <c>MigrateAsync</c> 而非 EnsureCreated）。</summary>
     private sealed class TempMigrationDatabase : IAsyncDisposable
     {
@@ -174,6 +195,9 @@ public sealed class Migration271RealDbTests
         /// <summary>走真实生产路径（<c>ExecuteSqlRawAsync</c>）执行运行时 schema initializer。</summary>
         public Task RunPcTrackerSchemaInitializerAsync() =>
             new Pim.Module.PcTracker.Services.PcTrackerSchemaInitializer(_db).InitializeAsync();
+
+        /// <summary>执行任意 SQL（用于构造缺表等异常库状态）。</summary>
+        public Task ExecuteAsync(string sql) => _db.Database.ExecuteSqlRawAsync(sql);
 
         public async Task<bool> HasMigrationAsync(string migrationId)
         {

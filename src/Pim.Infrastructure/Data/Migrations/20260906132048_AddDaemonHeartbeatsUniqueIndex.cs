@@ -5,75 +5,58 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace Pim.Infrastructure.Data.Migrations
 {
     /// <summary>
-    /// 守护进程心跳唯一索引 + PC 追踪器 browser/instance_id 列（PIM-199 / issue #271）。
+    /// 历史空迁移：本迁移要建的对象全部由别处负责，自身不再做任何 schema 变更
+    /// （PIM-199 / issue #271）。
     ///
     /// <para>
-    /// <b>本迁移必须整体可重复执行</b>：它要创建的对象在「已经跑过运行时初始化」的存量库上全部已存在，
-    /// 而这条迁移又从未成功写入 <c>__EFMigrationsHistory</c>。一旦某条语句不是幂等的，升级启动就会
-    /// 撞 42701（列已存在）/42P07（对象已存在），Program.cs 的 fail-fast 让进程退出、supervisord
-    /// 反复拉起 —— 这就是 #271 里 API 永远不健康的原因。
+    /// 它原本想做的四件事，今天都已经有明确且更早/更可靠的归属，重复执行只会互相打架：
     /// </para>
-    /// <list type="bullet">
+    /// <list type="number">
     ///   <item><description>
-    ///     <c>pc_tracker_events</c> 及其 browser/instance_id 列、两个索引 <b>不在 EF 模型里</b>，
-    ///     由运行时 <c>PcTrackerSchemaInitializer</c> 的幂等 SQL 维护（该 initializer 在模块初始化时
-    ///     执行，也就是在本迁移<b>之后</b>）。因此全新库上这张表此刻还不存在，语句必须能安全跳过，
-    ///     而不能让 42P01 中断整条迁移链。
+    ///     <c>IX_daemon_heartbeats_device_id_daemon_kind</c>（唯一）由 Stage0 迁移
+    ///     <c>20260524170037_Stage0OperationsTables</c> 创建，且<b>从第一版起就是 unique</b>；
+    ///     Stage0 在迁移链里永远先于本迁移执行，所以这里的 CREATE 在<b>任何库上都会撞 42P07</b>。
     ///   </description></item>
     ///   <item><description>
-    ///     <c>IX_daemon_heartbeats_device_id_daemon_kind</c> 已由 Stage0 迁移
-    ///     （<c>20260524170037_Stage0OperationsTables</c>）以同名唯一索引建出，这里只做「确保存在」。
+    ///     <c>pc_tracker_events</c> 及其 browser/instance_id 列、<c>idx_tracker_events_browser</c>/
+    ///     <c>idx_tracker_events_instance</c> 索引由运行时 <c>PcTrackerSchemaInitializer</c> 的幂等
+    ///     SQL 维护，<b>不在 EF 模型里</b>；该 initializer 每次启动都执行（在迁移之后），
+    ///     是这些对象的唯一所有者。EF 迁移去碰别人的表，正是 #271 的根因。
+    ///   </description></item>
+    ///   <item><description>
+    ///     清理 daemon_heartbeats 重复行是<b>死代码</b>：唯一索引自 Stage0 起就存在，
+    ///     该表从未出现过 <c>(device_id, daemon_kind)</c> 重复行，因此这句 DELETE 永远是 no-op。
     ///   </description></item>
     /// </list>
+    ///
+    /// <para>
+    /// #271 的事故正是「把这些语句写成非幂等」导致的：存量库上 ADD COLUMN browser 撞 42701、
+    /// 全新库上 pc_tracker_events 尚不存在而撞 42P01，两者都会让启动迁移失败 → <c>Log.Fatal</c>
+    /// 退出 → supervisord 反复拉起，API 永远不健康。改成空实现后，这条迁移对任何库状态都是
+    /// 安全 no-op，只留下「已应用」这一历史标记。
+    /// </para>
+    ///
+    /// <para>
+    /// 保留本类（而不是删除迁移文件）是为了不破坏已应用过它的库的
+    /// <c>__EFMigrationsHistory</c> 及其迁移 ID 顺序。
+    /// </para>
     /// </summary>
     public partial class AddDaemonHeartbeatsUniqueIndex : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            // pc_tracker_events 归运行时 initializer 所有：表在全新库上尚不存在（用 to_regclass 判空跳过），
-            // 在存量库上列/索引已由 initializer 建好（用 IF NOT EXISTS 把重复创建降级为 no-op）。
-            // to_regclass 与下面的 DDL 一样不带 schema 前缀：本仓库所有迁移（含 __EFMigrationsHistory）
-            // 都按 search_path 解析表名，两处写法一致才能保证「判空的那张表」就是「要改的那张表」。
-            // 注意：这里不再 DROP ux_tracker_events_dedup —— 该索引同样是 initializer 的
-            // COALESCE 表达式索引（见 #173），删掉它只会短暂失去去重保护，而不是去掉反而让本迁移
-            // 对「不由自己拥有的对象」保持只读。
-            migrationBuilder.Sql("""
-                DO $pim271$
-                BEGIN
-                    IF to_regclass('pc_tracker_events') IS NOT NULL THEN
-                        ALTER TABLE pc_tracker_events ADD COLUMN IF NOT EXISTS browser character varying(16);
-                        ALTER TABLE pc_tracker_events ADD COLUMN IF NOT EXISTS instance_id character varying(128);
-                        CREATE INDEX IF NOT EXISTS idx_tracker_events_browser ON pc_tracker_events (browser);
-                        CREATE INDEX IF NOT EXISTS idx_tracker_events_instance ON pc_tracker_events (instance_id);
-                    END IF;
-                END
-                $pim271$;
-                """);
-
-            // PIM-199: 清理历史重复脏行并补齐唯一索引。
-            // 唯一索引在 Stage0 迁移里就已建出，所以存量库上 CREATE 会撞 42P07 —— 用 IF NOT EXISTS
-            // 幂等化；DELETE 本身重复执行是安全的（第一次清干净后就没有可删的行）。
-            migrationBuilder.Sql("""
-                DELETE FROM daemon_heartbeats a USING daemon_heartbeats b
-                WHERE a.device_id = b.device_id
-                  AND a.daemon_kind = b.daemon_kind
-                  AND (a.received_at < b.received_at OR (a.received_at = b.received_at AND a.id < b.id));
-
-                CREATE UNIQUE INDEX IF NOT EXISTS "IX_daemon_heartbeats_device_id_daemon_kind"
-                    ON daemon_heartbeats (device_id, daemon_kind);
-                """);
+            // 有意为空：见类型注释。所有目标对象均由 Stage0 迁移或运行时
+            // PcTrackerSchemaInitializer 拥有，重复创建只会撞 42701/42P07/42P01。
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            // 有意为空：本迁移的每一条语句都只是「确保对象存在」，且这些对象分别由 Stage0 迁移
-            // （daemon_heartbeats 唯一索引）与运行时 PcTrackerSchemaInitializer（pc_tracker_events
-            // 的列与索引）拥有。回滚时删掉它们既不属于本迁移的职责，也会让追踪器历史数据
-            // （browser/instance_id）不可逆丢失；而 initializer 每次启动都会幂等地把 schema 收敛回
-            // 期望状态。这里因此不做任何破坏性操作（原实现会删列并重建一个不带 COALESCE 的
-            // ux_tracker_events_dedup —— 那正是 #173 修掉的 NULL 去重回归）。
+            // 有意为空：本迁移不创建任何对象，回滚自然也不该删除任何对象。
+            // 原实现会删掉 tracker 的 browser/instance_id 列（不可逆的数据丢失），
+            // 并重建一个不带 COALESCE 的 ux_tracker_events_dedup（回归 #173 的 NULL 去重缺陷），
+            // 且这些对象本来就不归本迁移所有。
         }
     }
 }
