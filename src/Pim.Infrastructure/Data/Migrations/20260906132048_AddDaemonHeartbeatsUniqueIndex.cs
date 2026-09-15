@@ -33,13 +33,15 @@ namespace Pim.Infrastructure.Data.Migrations
         {
             // pc_tracker_events 归运行时 initializer 所有：表在全新库上尚不存在（用 to_regclass 判空跳过），
             // 在存量库上列/索引已由 initializer 建好（用 IF NOT EXISTS 把重复创建降级为 no-op）。
+            // to_regclass 与下面的 DDL 一样不带 schema 前缀：本仓库所有迁移（含 __EFMigrationsHistory）
+            // 都按 search_path 解析表名，两处写法一致才能保证「判空的那张表」就是「要改的那张表」。
             // 注意：这里不再 DROP ux_tracker_events_dedup —— 该索引同样是 initializer 的
-            // COALESCE 表达式索引（见 #173），删掉它只会短暂失去去重保护，而不去掉反而让本迁移
+            // COALESCE 表达式索引（见 #173），删掉它只会短暂失去去重保护，而不是去掉反而让本迁移
             // 对「不由自己拥有的对象」保持只读。
             migrationBuilder.Sql("""
                 DO $pim271$
                 BEGIN
-                    IF to_regclass('public.pc_tracker_events') IS NOT NULL THEN
+                    IF to_regclass('pc_tracker_events') IS NOT NULL THEN
                         ALTER TABLE pc_tracker_events ADD COLUMN IF NOT EXISTS browser character varying(16);
                         ALTER TABLE pc_tracker_events ADD COLUMN IF NOT EXISTS instance_id character varying(128);
                         CREATE INDEX IF NOT EXISTS idx_tracker_events_browser ON pc_tracker_events (browser);

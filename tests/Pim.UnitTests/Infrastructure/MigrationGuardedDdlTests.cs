@@ -90,9 +90,10 @@ public class MigrationGuardedDdlTests
         {
             foreach (var (line, statement) in RawSqlStatements(source))
             {
+                var code = StripSqlComments(statement);
                 foreach (var (pattern, label) in UnguardedDdlPatterns)
                 {
-                    if (pattern.IsMatch(statement))
+                    if (pattern.IsMatch(code))
                     {
                         unguarded.Add($"{file}:{line} [{label}] {Truncate(statement)}");
                     }
@@ -106,19 +107,70 @@ public class MigrationGuardedDdlTests
             + Environment.NewLine + string.Join(Environment.NewLine, unguarded));
 
         // 反向验证：规则确实认得出来未加守卫的写法，不是恒真的空断言。
-        Assert.Matches(UnguardedDdlPatterns[1].Pattern, "CREATE UNIQUE INDEX ux_demo ON demo (a);");
-        Assert.DoesNotMatch(UnguardedDdlPatterns[1].Pattern, "CREATE UNIQUE INDEX IF NOT EXISTS ux_demo ON demo (a);");
-        Assert.Matches(UnguardedDdlPatterns[2].Pattern, "ALTER TABLE demo ADD COLUMN b int;");
-        Assert.DoesNotMatch(UnguardedDdlPatterns[2].Pattern, "ALTER TABLE demo ADD COLUMN IF NOT EXISTS b int;");
+        AssertUnflagged("CREATE UNIQUE INDEX IF NOT EXISTS ux_demo ON demo (a);");
+        AssertUnflagged("CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_demo ON demo (a);");
+        AssertUnflagged("CREATE TABLE IF NOT EXISTS demo (a int);");
+        AssertUnflagged("ALTER TABLE demo ADD COLUMN IF NOT EXISTS b int;");
+        AssertUnflagged("ALTER TABLE demo ADD IF NOT EXISTS b int;");
+        AssertUnflagged("DROP INDEX IF EXISTS ux_demo;");
+        AssertUnflagged("ALTER TABLE demo DROP COLUMN IF EXISTS b;");
+        AssertUnflagged("-- CREATE INDEX ux_demo ON demo (a);");
+
+        AssertFlagged("CREATE UNIQUE INDEX ux_demo ON demo (a);");
+        AssertFlagged("CREATE TABLE demo (a int);");
+        AssertFlagged("ALTER TABLE demo ADD COLUMN b int;");
+        // PostgreSQL 里 COLUMN 关键字可省略：省略写法同样必须被拦住。
+        AssertFlagged("ALTER TABLE demo ADD b int;");
+        AssertFlagged("DROP INDEX ux_demo;");
+        AssertFlagged("ALTER TABLE demo DROP COLUMN b;");
+        AssertFlagged("ALTER TABLE demo ADD CONSTRAINT fk FOREIGN KEY (a) REFERENCES x (id);");
     }
+
+    /// <summary>断言某条 SQL 在门禁下「干净」（没有命中任何未加守卫的 DDL 形态）。</summary>
+    private static void AssertUnflagged(string statement)
+    {
+        var hit = UnguardedDdlPatterns
+            .Where(entry => entry.Pattern.IsMatch(StripSqlComments(statement)))
+            .Select(entry => entry.Label)
+            .ToList();
+
+        Assert.True(
+            hit.Count == 0,
+            $"该语句本应视为已加守卫，却被判为违规（{string.Join(", ", hit)}）：{statement}");
+    }
+
+    /// <summary>断言某条 SQL 会命中门禁（证明规则不是恒假的空断言）。</summary>
+    private static void AssertFlagged(string statement)
+    {
+        Assert.True(
+            UnguardedDdlPatterns.Any(entry => entry.Pattern.IsMatch(StripSqlComments(statement))),
+            $"该语句本应被判为「缺守卫」，却漏过了门禁：{statement}");
+    }
+
+    /// <summary>
+    /// 去掉 SQL 注释再匹配：否则注释里出现的 "CREATE INDEX ..." 会被误判成真实 DDL
+    /// （迁移里写「不要用 CREATE INDEX」的说明是很自然的事）。
+    /// </summary>
+    private static string StripSqlComments(string sql) =>
+        BlockCommentPattern.Replace(LineCommentPattern.Replace(sql, " "), " ");
+
+    private static readonly Regex LineCommentPattern = new(@"--[^\n]*", RegexOptions.Compiled);
+    private static readonly Regex BlockCommentPattern = new(@"/\*.*?\*/", RegexOptions.Compiled | RegexOptions.Singleline);
 
     /// <summary>裸 SQL 里出现即视为「缺守卫」的 DDL 形态。</summary>
     private static readonly (Regex Pattern, string Label)[] UnguardedDdlPatterns =
     [
         (new Regex(@"\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)", RegexOptions.IgnoreCase), "CREATE TABLE"),
-        (new Regex(@"\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?!IF\s+NOT\s+EXISTS\b)", RegexOptions.IgnoreCase), "CREATE INDEX"),
-        (new Regex(@"\bADD\s+COLUMN\s+(?!IF\s+NOT\s+EXISTS\b)", RegexOptions.IgnoreCase), "ADD COLUMN"),
+        (new Regex(
+            // CONCURRENTLY 写在 IF NOT EXISTS 之前，必须放进同一个前瞻里判断：
+            // 若把它写成前面一个可选分组，正则回溯会绕过前瞻、把合法写法误判成违规。
+            @"\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?!(?:CONCURRENTLY\s+)?IF\s+NOT\s+EXISTS\b)",
+            RegexOptions.IgnoreCase), "CREATE INDEX"),
+        (new Regex(
+            @"\bALTER\s+TABLE\s+\S+\s+ADD\s+(?!COLUMN\s+IF\s+NOT\s+EXISTS\b)(?!IF\s+NOT\s+EXISTS\b)(?!CONSTRAINT\b)",
+            RegexOptions.IgnoreCase), "ADD COLUMN"),
         (new Regex(@"\bDROP\s+(?:TABLE|INDEX)\s+(?!IF\s+EXISTS\b)", RegexOptions.IgnoreCase), "DROP TABLE/INDEX"),
+        (new Regex(@"\bDROP\s+COLUMN\s+(?!IF\s+EXISTS\b)", RegexOptions.IgnoreCase), "DROP COLUMN"),
         (new Regex(@"\bADD\s+CONSTRAINT\s+(?!IF\s+NOT\s+EXISTS\b)", RegexOptions.IgnoreCase), "ADD CONSTRAINT"),
     ];
 
