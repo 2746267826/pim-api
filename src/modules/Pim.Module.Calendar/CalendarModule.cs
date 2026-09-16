@@ -836,6 +836,16 @@ public class CalendarModule : IModule
             Results.Ok(ApiResponse<IReadOnlyList<OutlookCalendarBindingResponse>>.Ok(
                 await syncSvc.DiscoverAsync(currentUser.UserId!.Value, ct))));
 
+        // Read-only listing of the stored bindings. Discovery is a manual action that hits Graph;
+        // this one only reads the database, so the sync page can refresh remote_state
+        // (e.g. a calendar that automatic sync just marked 缺失) without triggering a discovery.
+        group.MapGet("/outlook/calendars", async (
+            [FromServices] ICurrentUserService currentUser,
+            [FromServices] OutlookCalendarSyncService syncSvc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<OutlookCalendarBindingResponse>>.Ok(
+                await syncSvc.ListCalendarsAsync(currentUser.UserId!.Value, ct))));
+
         group.MapPut("/outlook/calendars/selection", async (
             [FromBody] UpdateCalendarSelectionRequest req,
             [FromServices] ICurrentUserService currentUser,
@@ -1184,6 +1194,7 @@ public static class CalendarEndpointPaths
     public const string OutlookSync = "/api/v1/calendar/outlook/sync";
     public const string OutlookSyncBatches = "/api/v1/calendar/outlook/sync/batches";
     public const string OutlookCheck = "/api/v1/calendar/outlook/check";
+    public const string OutlookCalendars = "/api/v1/calendar/outlook/calendars";
     public const string OutlookCalendarsDiscover = "/api/v1/calendar/outlook/calendars/discover";
     public const string OutlookCalendarsSelection = "/api/v1/calendar/outlook/calendars/selection";
     public const string OutlookEventsWriteback = "/api/v1/calendar/outlook/events/writeback";

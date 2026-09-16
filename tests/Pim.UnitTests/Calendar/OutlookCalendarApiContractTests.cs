@@ -314,8 +314,42 @@ public sealed class OutlookCalendarApiContractTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// End-to-end (#272/#273): a calendar deleted on the Outlook side must be marked 缺失 via the
-    /// public API, stop blocking other calendars, and still be retryable over HTTP — while its
+    /// The sync page refreshes the binding list after a sync without triggering discovery, so the
+    /// 缺失 tag is visible without a manual 发现日历. This endpoint must be a read-only GET that
+    /// does not call Graph and must not leak another user's bindings.
+    /// </summary>
+    [Fact]
+    public async Task GetCalendars_ReturnsStoredBindingsWithoutCallingGraph()
+    {
+        await SeedConnectedAsync();
+        SeedGraphCalendars();
+        await _client.PostAsync("/api/v1/calendar/outlook/calendars/discover", null);
+
+        var handler = _app.Services.GetRequiredService<ContractGraphHandler>();
+        var requestsBefore = handler.Requests.Count;
+
+        var resp = await _client.GetAsync("/api/v1/calendar/outlook/calendars");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var api = await resp.Content.ReadFromJsonAsync<ApiResponse<OutlookCalendarBindingResponse[]>>();
+        var binding = Assert.Single(api!.Data!);
+        Assert.Equal("cal-1", binding.GraphCalendarId);
+        Assert.Equal("active", binding.RemoteState);
+
+        // Read-only: no Graph traffic.
+        Assert.Equal(requestsBefore, handler.Requests.Count);
+
+        // The stored state is what the page renders; flip it and re-read.
+        var stored = await _db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.GraphCalendarId == "cal-1");
+        stored.RemoteState = "remote-missing";
+        await _db.SaveChangesAsync();
+
+        var after = await _client.GetAsync("/api/v1/calendar/outlook/calendars");
+        var afterApi = await after.Content.ReadFromJsonAsync<ApiResponse<OutlookCalendarBindingResponse[]>>();
+        Assert.Equal("remote-missing", Assert.Single(afterApi!.Data!).RemoteState);
+    }
+
+    /// <summary>
+    /// End-to-end (#272/#273): a calendar deleted on the Outlook side must be marked 缺失 via the    /// public API, stop blocking other calendars, and still be retryable over HTTP — while its
     /// local events are preserved. Regression guard for the 02009 dead-end where the retry of a
     /// remote-missing binding was rejected before reaching Graph.
     /// </summary>

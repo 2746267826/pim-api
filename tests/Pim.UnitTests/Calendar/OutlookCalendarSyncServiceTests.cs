@@ -4831,6 +4831,40 @@ public sealed class OutlookCalendarSyncServiceTests
         Assert.Null(reloaded.LastErrorMessage);
     }
 
+    /// <summary>
+    /// The explicit-request exemption must be limited to <c>remote-missing</c> (the one state with a
+    /// recovery path). A binding deliberately switched off must NOT become syncable just because its
+    /// id was passed in the request.
+    /// </summary>
+    [Theory]
+    [InlineData("paused")]
+    [InlineData("inactive")]
+    [InlineData("some-future-state")]
+    public async Task SyncAsync_ExplicitRequestForNonRecoverableState_IsStillRejected(string remoteState)
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (_, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+
+        var binding = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId);
+        binding.RemoteState = remoteState;
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 9, 16, 10, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var ex = await Assert.ThrowsAsync<DomainException>(() =>
+            service.SyncAsync(
+                UserId,
+                new OutlookSyncRequest("normal", CalendarBindingIds: new[] { bindingId }),
+                CancellationToken.None));
+
+        Assert.Equal(02009, ex.ErrorCode);
+        Assert.Empty(handler.Requests);
+    }
+
     // ===== Review follow-up (#273): the per-calendar retry path after a 404 =====
 
     /// <summary>
@@ -4900,6 +4934,8 @@ public sealed class OutlookCalendarSyncServiceTests
         // cal-healthy is processed first (lower id), then the gone calendar 404s again.
         handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
         handler.Enqueue(HttpStatusCode.NotFound, "{\"error\":{\"code\":\"ErrorItemNotFound\"}}");
+        // Confirmation GET for the gone calendar: still absent, so it stays remote-missing.
+        handler.Enqueue(HttpStatusCode.NotFound, "{\"error\":{\"code\":\"ErrorItemNotFound\"}}");
         var graph = CreateGraphClient(handler);
         var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 9, 16, 10, 0, 0, TimeSpan.Zero) };
         var service = CreateService(db, graph, time);
@@ -4911,14 +4947,21 @@ public sealed class OutlookCalendarSyncServiceTests
             CancellationToken.None);
 
         // Crucially: no 02009, and the healthy calendar is still synced.
-        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(3, handler.Requests.Count);
         Assert.Contains("cal-healthy", handler.Requests[0].RequestUri!.ToString());
         Assert.Contains("cal-gone", handler.Requests[1].RequestUri!.ToString());
+        // The third call is the confirmation GET, so the decision was actually confirmed.
+        Assert.Contains("/cal-gone?", handler.Requests[2].RequestUri!.ToString());
 
         var healthy = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == healthyId);
         Assert.Equal("active", healthy.RemoteState);
         Assert.Equal("partial", response.Status);
         Assert.Equal(1, response.FailureCount);
+
+        // The gone calendar stays missing (confirmed), rather than silently reverting to active.
+        var gone = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == missingId);
+        Assert.Equal("remote-missing", gone.RemoteState);
+        Assert.Equal("404", gone.LastErrorCode);
     }
 
     /// <summary>

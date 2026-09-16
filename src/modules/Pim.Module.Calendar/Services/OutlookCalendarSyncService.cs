@@ -429,6 +429,10 @@ public sealed class OutlookCalendarSyncService
         // user asking for that very calendar again ("重试", 深度同步 after restoring it on the
         // Outlook side), so a remote-missing one must stay reachable - otherwise the request
         // is rejected with 02009 and the calendar can never leave remote-missing.
+        //
+        // Only remote-missing is exempt: it is the one state with a defined recovery path.
+        // Paused/unknown states (and anything added later) stay excluded, so an explicit id
+        // cannot be used to sync a binding that is deliberately switched off.
         var explicitlyRequestedIds = request.CalendarBindingIds is { Count: > 0 }
             ? request.CalendarBindingIds.ToList()
             : null;
@@ -436,7 +440,9 @@ public sealed class OutlookCalendarSyncService
         var bindings = await _db.Set<OutlookCalendarBindingEntity>()
             .Where(b => b.ConnectionId == connection.Id && b.IsSelected
                 && (b.RemoteState == "active"
-                    || (explicitlyRequestedIds != null && explicitlyRequestedIds.Contains(b.Id))))
+                    || (b.RemoteState == "remote-missing"
+                        && explicitlyRequestedIds != null
+                        && explicitlyRequestedIds.Contains(b.Id))))
             .OrderBy(b => b.Id)
             .ToListAsync(ct);
 
