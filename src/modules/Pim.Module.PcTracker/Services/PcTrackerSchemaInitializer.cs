@@ -644,6 +644,46 @@ CREATE INDEX IF NOT EXISTS ix_pc_tracker_health_device_id ON pc_tracker_health(d
 CREATE INDEX IF NOT EXISTS ix_pc_tracker_health_reported_at ON pc_tracker_health(reported_at);
 CREATE INDEX IF NOT EXISTS ix_pc_tracker_health_device_reported ON pc_tracker_health(device_id, reported_at);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_tracker_health_device ON pc_tracker_health(device_id);
+ALTER TABLE pc_tracker_health ADD COLUMN IF NOT EXISTS site_connected BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE pc_tracker_health ADD COLUMN IF NOT EXISTS site_last_event_age_seconds DOUBLE PRECISION;
+ALTER TABLE pc_tracker_health ADD COLUMN IF NOT EXISTS site_events_uploaded BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE pc_tracker_health ADD COLUMN IF NOT EXISTS site_last_error TEXT;
+
+-- Browser site channel (Time Tracker fork): 域名级每日聚合 / 时段 / 站点元数据
+CREATE TABLE IF NOT EXISTS pc_browser_site_daily (
+    id BIGSERIAL PRIMARY KEY,
+    device_id VARCHAR(64) NOT NULL,
+    date VARCHAR(10) NOT NULL,
+    host VARCHAR(253) NOT NULL,
+    focus_ms BIGINT NOT NULL DEFAULT 0,
+    visit_count BIGINT NOT NULL DEFAULT 0,
+    run_ms BIGINT NOT NULL DEFAULT 0,
+    media_ms BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_browser_site_daily ON pc_browser_site_daily(device_id, date, host);
+CREATE INDEX IF NOT EXISTS ix_pc_browser_site_daily_device ON pc_browser_site_daily(device_id);
+CREATE INDEX IF NOT EXISTS ix_pc_browser_site_daily_date ON pc_browser_site_daily(date);
+CREATE TABLE IF NOT EXISTS pc_browser_site_tick (
+    id BIGSERIAL PRIMARY KEY,
+    device_id VARCHAR(64) NOT NULL,
+    host VARCHAR(253) NOT NULL,
+    date VARCHAR(10) NOT NULL,
+    start_utc TIMESTAMPTZ NOT NULL,
+    duration_ms BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS ix_pc_browser_site_tick_device_date ON pc_browser_site_tick(device_id, date);
+CREATE INDEX IF NOT EXISTS ix_pc_browser_site_tick_start ON pc_browser_site_tick(start_utc);
+CREATE TABLE IF NOT EXISTS pc_browser_site_meta (
+    host VARCHAR(253) PRIMARY KEY,
+    alias VARCHAR(256),
+    icon_url VARCHAR(512),
+    cate VARCHAR(128),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """;
 
     private readonly PimDbContext _db;

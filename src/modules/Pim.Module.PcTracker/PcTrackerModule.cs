@@ -128,6 +128,16 @@ public class PcTrackerModule : IModule
             }
         });
 
+        readGroup.MapGet("/tracker/health/latest", async (
+            [FromServices] PcTrackerService svc,
+            CancellationToken ct) =>
+        {
+            var health = await svc.GetLatestTrackerHealthAsync(ct);
+            if (health is null)
+                return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
+            return Results.Ok(ApiResponse<TrackerHealthEntity>.Ok(health));
+        });
+
         readGroup.MapGet("/tracker/health", async (
             [FromQuery] string deviceId,
             [FromServices] PcTrackerService svc,
@@ -139,6 +149,92 @@ public class PcTrackerModule : IModule
             if (health is null)
                 return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
             return Results.Ok(ApiResponse<TrackerHealthEntity>.Ok(health));
+        });
+
+        // —— 站点级数据（Time Tracker fork 通道） ——
+        writeGroup.MapPost("/browser-tt/upload", async (
+            [FromBody] SiteEventsUploadRequest req,
+            [FromServices] PcBrowserSiteService svc,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var count = await svc.UploadAsync(req, ct);
+                return Results.Ok(ApiResponse<int>.Ok(count));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        writeGroup.MapPost("/browser-tt/import", async (
+            [FromBody] SiteImportRequest req,
+            [FromServices] PcBrowserSiteService svc,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var result = await svc.ImportAsync(req, ct);
+                return Results.Ok(ApiResponse<SiteImportResultDto>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        readGroup.MapGet("/browser-tt/daily", async (
+            [FromQuery] string? date,
+            [FromQuery] string? from,
+            [FromQuery] string? to,
+            [FromServices] PcBrowserSiteService svc,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var rows = await svc.GetDailyAsync(new SiteDailyQuery { Date = date, From = from, To = to }, ct);
+                return Results.Ok(ApiResponse<List<SiteDailyRowDto>>.Ok(rows));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        readGroup.MapGet("/browser-tt/timeline", async (
+            [FromQuery] string date,
+            [FromServices] PcBrowserSiteService svc,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var rows = await svc.GetTimelineAsync(date, ct);
+                return Results.Ok(ApiResponse<List<SiteTimelineRowDto>>.Ok(rows));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        readGroup.MapGet("/browser-tt/summary", async (
+            [FromQuery] string? date,
+            [FromQuery] string? from,
+            [FromQuery] string? to,
+            [FromServices] PcBrowserSiteService svc,
+            CancellationToken ct) =>
+        {
+            try
+            {
+                var (f, t) = date is not null ? (date, date) : (from, to);
+                var summary = await svc.GetSummaryAsync(f, t, ct);
+                return Results.Ok(ApiResponse<SiteSummaryDto>.Ok(summary));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
         });
 
         readGroup.MapGet("/summary", async (

@@ -156,6 +156,10 @@ public partial class PcTrackerService
         existing.LastError = req.LastError;
         existing.BrowserConnected = req.BrowserConnected;
         existing.BrowserHeartbeatAgeSeconds = req.BrowserHeartbeatAgeSeconds;
+        existing.SiteConnected = req.SiteConnected;
+        existing.SiteLastEventAgeSeconds = req.SiteLastEventAgeSeconds;
+        existing.SiteEventsUploaded = req.SiteEventsUploaded;
+        existing.SiteLastError = req.SiteLastError;
         existing.ReportedAt = now;
         existing.UpdatedAt = now;
 
@@ -188,6 +192,14 @@ public partial class PcTrackerService
     {
         return await _db.Set<TrackerHealthEntity>()
             .FirstOrDefaultAsync(x => x.DeviceId == deviceId, ct);
+    }
+
+    /// <summary>最近一次上报的采集健康（跨设备取最新），供 Web 状态页展示。</summary>
+    public async Task<TrackerHealthEntity?> GetLatestTrackerHealthAsync(CancellationToken ct)
+    {
+        return await _db.Set<TrackerHealthEntity>()
+            .OrderByDescending(x => x.ReportedAt)
+            .FirstOrDefaultAsync(ct);
     }
 
     public async Task<List<TrackerEventEntity>> QueryTrackerEventsAsync(string deviceId, DateTime from, DateTime to, CancellationToken ct)

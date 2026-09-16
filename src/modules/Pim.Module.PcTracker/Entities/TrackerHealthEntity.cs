@@ -18,6 +18,10 @@ public class TrackerHealthEntity
     [Column("last_error")] public string? LastError { get; set; }
     [Column("browser_connected")] public bool BrowserConnected { get; set; }
     [Column("browser_heartbeat_age_seconds")] public double? BrowserHeartbeatAgeSeconds { get; set; }
+    [Column("site_connected")] public bool SiteConnected { get; set; }
+    [Column("site_last_event_age_seconds")] public double? SiteLastEventAgeSeconds { get; set; }
+    [Column("site_events_uploaded")] public long SiteEventsUploaded { get; set; }
+    [Column("site_last_error")] public string? SiteLastError { get; set; }
     [Column("reported_at")] public DateTimeOffset ReportedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("updated_at")] public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
