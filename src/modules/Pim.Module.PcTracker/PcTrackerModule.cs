@@ -30,6 +30,7 @@ public class PcTrackerModule : IModule
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
         services.AddScoped<PcTrackerService>();
         services.AddScoped<PcTrackerQualityService>();
+        services.AddScoped<PcBrowserSiteService>();
         services.AddScoped<ActivitySuggestionService>();
         services.AddScoped<ActivityClassificationSnapshotService>();
         services.AddScoped<ActivityClassificationRecomputeService>();
