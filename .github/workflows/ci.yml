@@ -265,8 +265,12 @@ jobs:
       artifact_slug: ${{ needs.resolve-version.outputs.artifact_slug }}
       assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
       git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
-      extension_repo: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.repo || '2746267826/tracker-web' }}
-      extension_ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.tag || 'master' }}
+      # dispatch 来自哪个插件仓库，就把它指向新 tag；另一个保持默认分支。
+      # URL 级与站点级插件是两个不同仓库，必须分别解析。
+      extension_repo: ${{ github.event_name == 'repository_dispatch' && !contains(github.event.client_payload.repo, 'time-tracker') && github.event.client_payload.repo || '2746267826/tracker-web' }}
+      extension_ref: ${{ github.event_name == 'repository_dispatch' && !contains(github.event.client_payload.repo, 'time-tracker') && github.event.client_payload.tag || 'master' }}
+      site_extension_repo: ${{ github.event_name == 'repository_dispatch' && contains(github.event.client_payload.repo, 'time-tracker') && github.event.client_payload.repo || '2746267826/time-tracker-4-browser' }}
+      site_extension_ref: ${{ github.event_name == 'repository_dispatch' && contains(github.event.client_payload.repo, 'time-tracker') && github.event.client_payload.tag || 'main' }}
 
   build-android:
     needs: [resolve-version, changes]
@@ -315,6 +319,8 @@ jobs:
       git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
       extension_repo: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.repo || '2746267826/tracker-web' }}
       extension_ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.tag || 'master' }}
+      # 站点级插件（time-tracker fork）也会打 tag 并发 dispatch，用 kind 区分产物校验
+      extension_kind: ${{ github.event_name == 'repository_dispatch' && (contains(github.event.client_payload.repo, 'time-tracker') && 'site' || 'url') || 'url' }}
 
   build-docker:
     needs: [resolve-version, changes]

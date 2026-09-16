@@ -26,6 +26,14 @@ on:
         required: false
         type: string
         default: 'master'
+      site_extension_repo:
+        required: false
+        type: string
+        default: '2746267826/time-tracker-4-browser'
+      site_extension_ref:
+        required: false
+        type: string
+        default: 'main'
   workflow_dispatch:
     inputs:
       version:
@@ -52,6 +60,14 @@ on:
         description: 'Browser extension ref (branch or tag)'
         required: false
         default: 'master'
+      site_extension_repo:
+        description: 'Site-level extension source repository'
+        required: false
+        default: '2746267826/time-tracker-4-browser'
+      site_extension_ref:
+        description: 'Site-level extension ref (branch or tag)'
+        required: false
+        default: 'main'
 
 jobs:
   build:
@@ -160,45 +176,60 @@ jobs:
           }
           if (-not (Test-Path "publish/fix-keystats-session.ps1")) { throw "fix-keystats-session.ps1 not in publish" }
 
-      - name: Checkout browser extension source
+      # URL 级插件（2746267826/tracker-web，PIM Browser Watcher）
+      - name: Checkout URL-level extension source
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.extension_repo || '2746267826/tracker-web' }}
           ref: ${{ inputs.extension_ref || 'master' }}
-          path: .browser-extension-src
+          path: .extension-url
 
-      - name: Setup Node for browser extension
+      # 站点级插件（2746267826/time-tracker-4-browser，Time Tracker PIM fork）
+      - name: Checkout site-level extension source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.site_extension_repo || '2746267826/time-tracker-4-browser' }}
+          ref: ${{ inputs.site_extension_ref || 'main' }}
+          path: .extension-site
+
+      - name: Setup Node for browser extensions
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: .browser-extension-src/package-lock.json
 
-      # 浏览器插件源码在独立 fork 仓库（2746267826/tracker-web，PIM Browser
-      # Watcher）。此处 checkout 指定 ref 构建并打进 Windows 安装器。
-      - name: Build and include Browser Extension
-        shell: pwsh
+      # 两个 fork 的产物目录与依赖安装方式不同（build/ + lockfile vs
+      # dist_prod/ + pure-install），统一交给自适应脚本处理。
+      - name: Build URL-level extension
+        shell: bash
+        working-directory: ${{ github.workspace }}
         run: |
-          Push-Location "$env:GITHUB_WORKSPACE/.browser-extension-src"
-          npm ci
-          if ($LASTEXITCODE -ne 0) { Write-Error "npm ci failed"; exit 1 }
-          npm run compile
-          if ($LASTEXITCODE -ne 0) { Write-Error "browser extension typecheck failed"; exit 1 }
-          npm run build
-          if ($LASTEXITCODE -ne 0) { Write-Error "browser extension build failed"; exit 1 }
-          $manifest = Get-Content build/manifest.json -Raw | ConvertFrom-Json
-          if ($manifest.background.type -ne "module") { Write-Warning "manifest background.type != module" }
-          if ($manifest.host_permissions -notcontains "<all_urls>") { Write-Error "host_permissions <all_urls> missing (cf. pim-platform PR #184 regression)"; exit 1 }
-          $dest = "$env:GITHUB_WORKSPACE/src/client-windows/publish/browser-extension"
-          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          Copy-Item -Recurse -Force "build/*" $dest
-          Compress-Archive -Path "$dest/*" -DestinationPath "$env:GITHUB_WORKSPACE/src/client-windows/publish/browser-extension.zip" -Force
-          Write-Host "Browser extension ($($manifest.name) v$($manifest.version)) packaged to $dest"
-          Pop-Location
-          $checkDest = "$env:GITHUB_WORKSPACE/src/client-windows/publish/browser-extension"
-          if (-not (Test-Path "$checkDest/manifest.json")) { Write-Error "browser extension manifest missing in publish"; exit 1 }
-          if (-not (Test-Path "$checkDest/src/background/main.js")) { Write-Error "browser extension background missing"; exit 1 }
+          node scripts/ci/build-browser-extension.mjs \
+            --src .extension-url \
+            --out src/client-windows/publish/browser-extension \
+            --zip src/client-windows/publish/browser-extension.zip \
+            --kind url
+
+      - name: Build site-level extension
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          node scripts/ci/build-browser-extension.mjs \
+            --src .extension-site \
+            --out src/client-windows/publish/browser-extension-site \
+            --zip src/client-windows/publish/browser-extension-site.zip \
+            --kind site
+
+      - name: Verify packaged extensions
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          test -f src/client-windows/publish/browser-extension/manifest.json \
+            || { echo "URL-level extension manifest missing"; exit 1; }
+          test -f src/client-windows/publish/browser-extension/src/background/main.js \
+            || { echo "URL-level extension background missing"; exit 1; }
+          test -f src/client-windows/publish/browser-extension-site/manifest.json \
+            || { echo "site-level extension manifest missing"; exit 1; }
+          echo "Both extensions staged for the installer"
 
       - name: Write version file for reference
         shell: bash
