@@ -128,6 +128,16 @@ public class PcTrackerModule : IModule
             }
         });
 
+        readGroup.MapGet("/tracker/health/latest", async (
+            [FromServices] PcTrackerService svc,
+            CancellationToken ct) =>
+        {
+            var health = await svc.GetLatestTrackerHealthAsync(ct);
+            if (health is null)
+                return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
+            return Results.Ok(ApiResponse<TrackerHealthEntity>.Ok(health));
+        });
+
         readGroup.MapGet("/tracker/health", async (
             [FromQuery] string deviceId,
             [FromServices] PcTrackerService svc,
