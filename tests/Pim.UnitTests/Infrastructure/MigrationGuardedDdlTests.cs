@@ -84,6 +84,28 @@ public class MigrationGuardedDdlTests
         var positional = new PositionalArgumentMigration();
         var targeted = StructuredDdlTargets(positional).Select(t => t.Table).ToList();
         Assert.Contains("runtime_owned_table", targeted);
+
+        // 覆盖自检：表级操作的重命名（NewName）也算操作了那张表。
+        var renaming = new RenameTableProbeMigration().UpOperations
+            .SelectMany(TableTargetsOf)
+            .ToList();
+        Assert.Contains("renamed_runtime_table", renaming);
+        // 反向：索引/约束的 NewName 不是表名，不能产生假阳性。
+        Assert.DoesNotContain("renamed_index", renaming);
+    }
+
+    /// <summary>探针：表级重命名的 NewName 必须被当作表名。</summary>
+    private sealed class RenameTableProbeMigration : Migration
+    {
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.RenameTable("runtime_owned_table", null, "renamed_runtime_table", null);
+            migrationBuilder.RenameIndex("ix_old", "renamed_index", "some_table");
+        }
+
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+        }
     }
 
     /// <summary>
@@ -361,8 +383,8 @@ public class MigrationGuardedDdlTests
     /// <para>
     /// 只有两类属性可能是表名：<c>Table</c> / <c>PrincipalTable</c>（各类列/索引/外键操作），
     /// 以及表级操作（<c>DropTableOperation</c>/<c>RenameTableOperation</c>/<c>AlterTableOperation</c>…）
-    /// 的 <c>Name</c>。其余操作的 <c>Name</c> 是索引名、约束名、序列名或 schema 名，
-    /// 不能被当成表名（否则会产生假阳性）。
+    /// 的 <c>Name</c> 与 <c>NewName</c>（重命名的目标表）。其余操作的 <c>Name</c> / <c>NewName</c>
+    /// 是索引名、约束名、序列名或 schema 名，不能被当成表名（否则会产生假阳性）。
     /// </para>
     /// </summary>
     private static IEnumerable<string> TableTargetsOf(MigrationOperation operation)
@@ -378,7 +400,10 @@ public class MigrationGuardedDdlTests
             }
 
             var isTableProperty = property.Name.EndsWith("Table", StringComparison.Ordinal);
-            var isTableName = isTableLevelOperation && property.Name == "Name";
+            // 表级操作的 Name 是源表、NewName 是重命名后的目标表，两者都是表；
+            // 限定在 *TableOperation 内可避免把 RenameIndexOperation.NewName 这类索引名误判成表。
+            var isTableName = isTableLevelOperation
+                && (property.Name == "Name" || property.Name == "NewName");
             if (!isTableProperty && !isTableName)
             {
                 continue;
