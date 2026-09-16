@@ -41,7 +41,13 @@ jobs:
           fi
       - uses: actions/setup-java@v4
         with: { distribution: 'temurin', java-version: '21' }
+      # setup-android@v3 会执行 `sdkmanager "tools"`，该包在 cmdline-tools 16+
+      # 已被移除，导致 job 在编译前就失败。runner 镜像已预置 SDK，这里只做
+      # 环境变量导出，不再触发自动安装。
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+          log-accepted-android-sdk-licenses: false
       - name: Install Android SDK packages (if missing)
         run: |
           if [ ! -d "$ANDROID_HOME/platforms/android-36.1" ]; then
