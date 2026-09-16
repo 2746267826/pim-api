@@ -342,14 +342,29 @@ public class MigrationGuardedDdlTests
                 continue;
             }
 
+            // 去重：外键操作同时有 Table（子表）与 PrincipalTable（父表），
+            // 两者都要检查，但同一张表只报一次，避免错误信息里出现重复行。
+            var reported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var table in TableTargetsOf(operation))
             {
-                yield return (table, operation.GetType().Name);
+                if (reported.Add(table))
+                {
+                    yield return (table, operation.GetType().Name);
+                }
             }
         }
     }
 
-    /// <summary>读取操作对象上所有指向表名的属性（<c>Table</c>、<c>PrincipalTable</c>…）。</summary>
+    /// <summary>
+    /// 读取操作对象上所有指向表名的属性。
+    ///
+    /// <para>
+    /// 只有两类属性可能是表名：<c>Table</c> / <c>PrincipalTable</c>（各类列/索引/外键操作），
+    /// 以及表级操作（<c>DropTableOperation</c>/<c>RenameTableOperation</c>/<c>AlterTableOperation</c>…）
+    /// 的 <c>Name</c>。其余操作的 <c>Name</c> 是索引名、约束名、序列名或 schema 名，
+    /// 不能被当成表名（否则会产生假阳性）。
+    /// </para>
+    /// </summary>
     private static IEnumerable<string> TableTargetsOf(MigrationOperation operation)
     {
         var type = operation.GetType();
@@ -362,8 +377,6 @@ public class MigrationGuardedDdlTests
                 continue;
             }
 
-            // 表级操作（DropTableOperation / RenameTableOperation…）用 Name 表示目标表；
-            // 其余操作要的是 Table / PrincipalTable / *Table 这类属性。
             var isTableProperty = property.Name.EndsWith("Table", StringComparison.Ordinal);
             var isTableName = isTableLevelOperation && property.Name == "Name";
             if (!isTableProperty && !isTableName)
