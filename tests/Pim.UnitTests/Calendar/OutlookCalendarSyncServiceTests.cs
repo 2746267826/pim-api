@@ -4714,4 +4714,111 @@ public sealed class OutlookCalendarSyncServiceTests
         Assert.Equal("Test Event", stored.Title);
         Assert.Equal("Old.pdf", Assert.Single(EventFieldCodec.DeserializeAttachments(stored.AttachmentReferencesJson)).Name);
     }
+
+    [Fact]
+    public async Task SyncAsync_RemoteCalendarNotFound_MarksBindingRemoteMissingAndSafeError()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.NotFound, "{\"error\":{\"code\":\"ErrorItemNotFound\",\"message\":\"The specified object was not found in the store.\"}}");
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 9, 16, 10, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("failed", response.Status);
+
+        var binding = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId);
+        Assert.Equal("remote-missing", binding.RemoteState);
+        Assert.Equal("404", binding.LastErrorCode);
+        Assert.Equal("Graph 404", binding.LastErrorMessage);
+
+        // Local calendar and events must remain preserved (not silently deleted)
+        var calendar = await db.Set<CalendarEntity>().FirstAsync(c => c.Id == calId);
+        Assert.NotNull(calendar);
+        Assert.Null(calendar.DeletedAt);
+
+        // Subsequent sync must skip the remote-missing calendar
+        var response2 = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+        Assert.Equal("completed", response2.Status);
+    }
+
+    [Fact]
+    public async Task SyncAsync_MultipleBindings_OneReturns404_OthersSucceed_OnlyMissingBindingMarkedRemoteMissing()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var bindingId1 = Guid.Parse("10000000-0000-0000-0000-000000000001");
+        var calId1 = Guid.Parse("20000000-0000-0000-0000-000000000001");
+        await SeedBindingWithFixedIdsAsync(db, UserId, ConnectionId, "cal-1", calId1, bindingId1);
+
+        var bindingId2 = Guid.Parse("10000000-0000-0000-0000-000000000002");
+        var calId2 = Guid.Parse("20000000-0000-0000-0000-000000000002");
+        await SeedBindingWithFixedIdsAsync(db, UserId, ConnectionId, "cal-2", calId2, bindingId2);
+
+        var handler = new ScriptedHttpMessageHandler();
+        // cal-1 returns 404
+        handler.Enqueue(HttpStatusCode.NotFound, "{\"error\":{\"code\":\"ErrorItemNotFound\"}}");
+        // cal-2 returns OK with events
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 9, 16, 10, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        Assert.Equal("partial", response.Status);
+
+        var b1 = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId1);
+        Assert.Equal("remote-missing", b1.RemoteState);
+        Assert.Equal("404", b1.LastErrorCode);
+        Assert.Equal("Graph 404", b1.LastErrorMessage);
+
+        var b2 = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId2);
+        Assert.Equal("active", b2.RemoteState);
+        Assert.Null(b2.LastErrorCode);
+        Assert.Null(b2.LastErrorMessage);
+
+        // Next sync: cal-1 is skipped, cal-2 syncs normally
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
+        var response2 = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+        Assert.Equal("completed", response2.Status);
+    }
+
+    [Fact]
+    public async Task DiscoverAsync_WhenMissingCalendarReappears_RestoresRemoteStateToActiveAndClearsLastError()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "reappeared-cal");
+        var binding = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId);
+        binding.RemoteState = "remote-missing";
+        binding.LastErrorCode = "404";
+        binding.LastErrorMessage = "Graph 404";
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        // groups: empty
+        handler.Enqueue(HttpStatusCode.OK, "{\"value\":[]}");
+        // root calendars: contains reappeared-cal
+        handler.Enqueue(HttpStatusCode.OK, "{\"value\":[{\"id\":\"reappeared-cal\",\"name\":\"Reappeared\",\"color\":\"auto\",\"isDefaultCalendar\":true,\"canEdit\":true,\"owner\":{\"name\":\"Me\",\"address\":\"me@example.com\"}}]}");
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 9, 16, 10, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var result = await service.DiscoverAsync(UserId, CancellationToken.None);
+
+        var discovered = Assert.Single(result);
+        Assert.Equal("active", discovered.RemoteState);
+        Assert.Null(discovered.LastError);
+
+        var reloaded = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId);
+        Assert.Equal("active", reloaded.RemoteState);
+        Assert.Null(reloaded.LastErrorCode);
+        Assert.Null(reloaded.LastErrorMessage);
+    }
 }

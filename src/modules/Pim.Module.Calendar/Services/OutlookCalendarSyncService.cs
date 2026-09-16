@@ -133,6 +133,8 @@ public sealed class OutlookCalendarSyncService
                 binding.CanEdit = ReadBool(item, "canEdit");
                 binding.CanViewPrivateItems = ReadBool(item, "canViewPrivateItems");
                 binding.RemoteState = "active";
+                binding.LastErrorCode = null;
+                binding.LastErrorMessage = null;
                 binding.LastDiscoveryAt = now;
                 binding.UpdatedAt = now;
 
@@ -170,6 +172,8 @@ public sealed class OutlookCalendarSyncService
             if (!seenBindingIds.Contains(existing.Id))
             {
                 existing.RemoteState = "remote-missing";
+                existing.LastErrorCode = "404";
+                existing.LastErrorMessage = "Graph 404";
                 existing.UpdatedAt = now;
             }
         }
@@ -591,6 +595,14 @@ public sealed class OutlookCalendarSyncService
                     state.Failures.Add(new SyncFailureSummary(null, null, code, msg));
                     state.Steps.Add(new OutlookSyncStep(binding.Id.ToString(), "failed", msg, now));
                     state.Status = state.ProgressMade ? "partial" : "failed";
+                    binding.LastErrorCode = code;
+                    binding.LastErrorMessage = msg;
+                    binding.UpdatedAt = now;
+
+                    if (ex.StatusCode == HttpStatusCode.NotFound)
+                    {
+                        binding.RemoteState = "remote-missing";
+                    }
                 }
                 catch (Exception ex)
                 {
