@@ -425,20 +425,30 @@ public sealed class OutlookCalendarSyncService
             request = request with { CalendarBindingIds = retryableIds };
         }
 
+        // A plain sync only walks active bindings. An explicitly requested binding is the
+        // user asking for that very calendar again ("重试", 深度同步 after restoring it on the
+        // Outlook side), so a remote-missing one must stay reachable - otherwise the request
+        // is rejected with 02009 and the calendar can never leave remote-missing.
+        var explicitlyRequestedIds = request.CalendarBindingIds is { Count: > 0 }
+            ? request.CalendarBindingIds.ToList()
+            : null;
+
         var bindings = await _db.Set<OutlookCalendarBindingEntity>()
-            .Where(b => b.ConnectionId == connection.Id && b.IsSelected && b.RemoteState == "active")
+            .Where(b => b.ConnectionId == connection.Id && b.IsSelected
+                && (b.RemoteState == "active"
+                    || (explicitlyRequestedIds != null && explicitlyRequestedIds.Contains(b.Id))))
             .OrderBy(b => b.Id)
             .ToListAsync(ct);
 
-        if (request.CalendarBindingIds is { Count: > 0 })
+        if (explicitlyRequestedIds is not null)
         {
             var bindingIds = bindings.Select(b => b.Id).ToHashSet();
-            foreach (var id in request.CalendarBindingIds)
+            foreach (var id in explicitlyRequestedIds)
             {
                 if (!bindingIds.Contains(id))
                     throw new DomainException(02009, "指定的日历绑定 ID 无效或未选中。");
             }
-            bindings = bindings.Where(b => request.CalendarBindingIds.Contains(b.Id)).ToList();
+            bindings = bindings.Where(b => explicitlyRequestedIds.Contains(b.Id)).ToList();
         }
 
         var semaphore = ConnectionLocks.GetOrAdd(connection.Id, _ => new SemaphoreSlim(1, 1));
@@ -465,7 +475,53 @@ public sealed class OutlookCalendarSyncService
         }
     }
 
+    /// <summary>
+    /// A 404 during event sync is not proof that the calendar was deleted: it can come from a
+    /// single failed page/skiptoken while the calendar itself is fine. Ask Graph for the
+    /// calendar resource before parking the binding as <c>remote-missing</c> (a sticky state
+    /// the user can only clear by manually re-discovering calendars).
+    ///
+    /// This runs inside the <c>catch (GraphRequestException)</c> handler, so it must not leak
+    /// new exception types: a reauth thrown here would bypass the sibling catch clauses and
+    /// leave the batch stuck in <c>running</c>. Anything we cannot confirm keeps the binding
+    /// active, which is exactly the pre-existing behaviour.
+    /// </summary>
+    private async Task<bool> IsCalendarConfirmedMissingAsync(
+        OutlookConnectionEntity connection,
+        OutlookCalendarBindingEntity binding,
+        CancellationToken ct)
+    {
+        try
+        {
+            var calendar = await _graph.GetCalendarAsync(connection.Id, binding.GraphCalendarId, ct);
+            if (calendar is not null)
+                return false;
+
+            _logger.LogWarning(
+                "确认绑定 {BindingId} 的远端日历 {GraphCalendarId} 已不存在，标记为 remote-missing。",
+                binding.Id,
+                binding.GraphCalendarId);
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Cannot confirm - stay conservative and keep the binding active. Reauth is
+            // intentionally swallowed here; the next Graph call reports it through the
+            // normal path instead of corrupting this batch's bookkeeping.
+            _logger.LogWarning(
+                ex,
+                "无法确认绑定 {BindingId} 的远端日历状态，保持 active。",
+                binding.Id);
+            return false;
+        }
+    }
+
     private sealed record EventChangeSummary(string EventId, string? Title, string Action);
+
     private sealed record SyncFailureSummary(string? EventId, string? Title, string Code, string Message);
 
     private sealed class BindingSyncState
@@ -599,7 +655,8 @@ public sealed class OutlookCalendarSyncService
                     binding.LastErrorMessage = msg;
                     binding.UpdatedAt = now;
 
-                    if (ex.StatusCode == HttpStatusCode.NotFound)
+                    if (ex.StatusCode == HttpStatusCode.NotFound
+                        && await IsCalendarConfirmedMissingAsync(connection, binding, ct))
                     {
                         binding.RemoteState = "remote-missing";
                     }
@@ -865,6 +922,10 @@ public sealed class OutlookCalendarSyncService
             {
                 binding.LastErrorCode = null;
                 binding.LastErrorMessage = null;
+                // The calendar answered again, so it exists remotely: leave remote-missing,
+                // otherwise it stays excluded from every later sync and stays labelled 缺失.
+                if (binding.RemoteState == "remote-missing")
+                    binding.RemoteState = "active";
                 binding.UpdatedAt = now;
             }
 
