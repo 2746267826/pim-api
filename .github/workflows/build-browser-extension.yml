@@ -26,6 +26,10 @@ on:
         required: false
         type: string
         default: 'master'
+      extension_kind:
+        required: false
+        type: string
+        default: 'url'
   workflow_dispatch:
     inputs:
       version:
@@ -52,6 +56,10 @@ on:
         description: 'Browser extension ref (branch or tag)'
         required: false
         default: 'master'
+      extension_kind:
+        description: 'Extension kind: url (tracker-web) or site (time-tracker fork)'
+        required: false
+        default: 'url'
 
 jobs:
   build:
@@ -75,8 +83,7 @@ jobs:
             bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"
           fi
 
-      # 浏览器插件源码在独立 fork 仓库（2746267826/tracker-web，PIM Browser
-      # Watcher）；本仓库的 pim-watcher-web 目录已移除。
+      # 浏览器插件源码在独立 fork 仓库，按 dispatch payload / 默认值检出。
       - name: Checkout browser extension source
         uses: actions/checkout@v4
         with:
@@ -87,34 +94,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: .browser-extension-src/package-lock.json
 
-      - name: Install dependencies
-        working-directory: .browser-extension-src
-        run: npm ci
-
-      - name: Typecheck extension
-        working-directory: .browser-extension-src
-        run: npm run compile
-
-      - name: Build extension
-        working-directory: .browser-extension-src
-        run: npm run build
-
-      - name: Verify build output
+      # 产物目录与依赖安装方式在两个 fork 之间不同（tracker-web: build/ + lockfile；
+      # time-tracker-4-browser: dist_prod/ 且上游不提交 lockfile），统一由自适应
+      # 脚本处理并做产物校验。
+      - name: Install dependencies and build extension
+        working-directory: ${{ github.workspace }}
         run: |
-          test -f .browser-extension-src/build/manifest.json || { echo "manifest.json missing"; exit 1; }
-          test -f .browser-extension-src/build/src/background/main.js || { echo "build/src/background/main.js missing"; exit 1; }
-          test -f .browser-extension-src/build/media/logo/logo-128.png || { echo "logo missing"; exit 1; }
-          grep -q '<all_urls>' .browser-extension-src/build/manifest.json || { echo "host_permissions <all_urls> missing (cf. PR #184 regression)"; exit 1; }
-          node -e "const m=require('./.browser-extension-src/build/manifest.json'); if(m.manifest_version!==3||!m.action?.default_popup||!m.options_ui?.page){console.error('manifest incomplete',m);process.exit(1)}"
+          node scripts/ci/build-browser-extension.mjs \
+            --src .browser-extension-src \
+            --out artifacts/staging \
+            --zip artifacts/pim-browser-extension-v${{ steps.ver.outputs.artifact_slug }}.zip \
+            --kind ${{ inputs.extension_kind || 'url' }}
 
-      - name: Package extension
+      - name: Verify artifact
         run: |
-          mkdir -p artifacts
-          cd .browser-extension-src/build && zip -FS -r "../../artifacts/pim-browser-extension-v${{ steps.ver.outputs.artifact_slug }}.zip" . > /dev/null
-          ls -lh ../../artifacts/*.zip
+          ls -lh artifacts/*.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
