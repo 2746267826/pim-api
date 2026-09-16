@@ -313,6 +313,122 @@ public sealed class OutlookCalendarApiContractTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.BadRequest, syncResp.StatusCode);
     }
 
+    /// <summary>
+    /// The sync page refreshes the binding list after a sync without triggering discovery, so the
+    /// 缺失 tag is visible without a manual 发现日历. This endpoint must be a read-only GET that
+    /// does not call Graph and must not leak another user's bindings.
+    /// </summary>
+    [Fact]
+    public async Task GetCalendars_ReturnsStoredBindingsWithoutCallingGraph()
+    {
+        await SeedConnectedAsync();
+        SeedGraphCalendars();
+        await _client.PostAsync("/api/v1/calendar/outlook/calendars/discover", null);
+
+        var handler = _app.Services.GetRequiredService<ContractGraphHandler>();
+        var requestsBefore = handler.Requests.Count;
+
+        var resp = await _client.GetAsync("/api/v1/calendar/outlook/calendars");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var api = await resp.Content.ReadFromJsonAsync<ApiResponse<OutlookCalendarBindingResponse[]>>();
+        var binding = Assert.Single(api!.Data!);
+        Assert.Equal("cal-1", binding.GraphCalendarId);
+        Assert.Equal("active", binding.RemoteState);
+
+        // Read-only: no Graph traffic.
+        Assert.Equal(requestsBefore, handler.Requests.Count);
+
+        // The stored state is what the page renders; flip it and re-read.
+        var stored = await _db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.GraphCalendarId == "cal-1");
+        stored.RemoteState = "remote-missing";
+        await _db.SaveChangesAsync();
+
+        var after = await _client.GetAsync("/api/v1/calendar/outlook/calendars");
+        var afterApi = await after.Content.ReadFromJsonAsync<ApiResponse<OutlookCalendarBindingResponse[]>>();
+        Assert.Equal("remote-missing", Assert.Single(afterApi!.Data!).RemoteState);
+    }
+
+    /// <summary>
+    /// End-to-end (#272/#273): a calendar deleted on the Outlook side must be marked 缺失 via the    /// public API, stop blocking other calendars, and still be retryable over HTTP — while its
+    /// local events are preserved. Regression guard for the 02009 dead-end where the retry of a
+    /// remote-missing binding was rejected before reaching Graph.
+    /// </summary>
+    [Fact]
+    public async Task Sync_RemoteDeletedCalendar_MarksMissingAndRemainsRetryableOverHttp()
+    {
+        await SeedConnectedAsync();
+        SeedGraphCalendars();
+        await _client.PostAsync("/api/v1/calendar/outlook/calendars/discover", null);
+
+        var binding = await _db.Set<OutlookCalendarBindingEntity>()
+            .FirstAsync(b => b.GraphCalendarId == "cal-1");
+
+        var localEvent = new EventEntity
+        {
+            CalendarId = binding.PimCalendarId,
+            Title = "幽灵日程",
+            Source = "outlook",
+            DtStart = DateTimeOffset.UtcNow.AddDays(1),
+            DtEnd = DateTimeOffset.UtcNow.AddDays(1).AddHours(1),
+            OutlookCalendarBindingId = binding.Id
+        };
+        _db.Set<EventEntity>().Add(localEvent);
+        await _db.SaveChangesAsync();
+
+        // Calendar is gone on the Graph side: the event page 404s and the confirmation GET agrees.
+        var handler = _app.Services.GetRequiredService<ContractGraphHandler>();
+        QueueNotFound(handler);
+        QueueNotFound(handler);
+
+        var syncResp = await _client.PostAsJsonAsync("/api/v1/calendar/outlook/sync",
+            new OutlookSyncRequest(Mode: "normal"));
+        Assert.Equal(HttpStatusCode.OK, syncResp.StatusCode);
+        var api = await syncResp.Content.ReadFromJsonAsync<ApiResponse<OutlookSyncBatchResponse>>();
+        Assert.Equal("failed", api!.Data!.Status);
+        Assert.Equal(1, api.Data.FailureCount);
+
+        var refreshed = await _db.Set<OutlookCalendarBindingEntity>().AsNoTracking()
+            .FirstAsync(b => b.Id == binding.Id);
+        Assert.Equal("remote-missing", refreshed.RemoteState);
+        Assert.Equal("404", refreshed.LastErrorCode);
+        Assert.Equal("Graph 404", refreshed.LastErrorMessage);
+
+        // Local data must survive (issue #272 requirement).
+        var kept = await _db.Set<EventEntity>().AsNoTracking()
+            .FirstOrDefaultAsync(e => e.Id == localEvent.Id);
+        Assert.NotNull(kept);
+        Assert.Null(kept!.DeletedAt);
+
+        // The UI shows this entry as failed and offers 重试; that request must NOT 400.
+        QueueCalendarView(handler);
+        var retryResp = await _client.PostAsJsonAsync("/api/v1/calendar/outlook/sync",
+            new OutlookSyncRequest(Mode: "normal", RetryOfBatchId: api.Data.Id,
+                CalendarBindingIds: new[] { binding.Id }));
+        Assert.Equal(HttpStatusCode.OK, retryResp.StatusCode);
+
+        var retryApi = await retryResp.Content.ReadFromJsonAsync<ApiResponse<OutlookSyncBatchResponse>>();
+        Assert.Equal("completed", retryApi!.Data!.Status);
+
+        var recovered = await _db.Set<OutlookCalendarBindingEntity>().AsNoTracking()
+            .FirstAsync(b => b.Id == binding.Id);
+        Assert.Equal("active", recovered.RemoteState);
+        Assert.Null(recovered.LastErrorCode);
+    }
+
+    private static void QueueNotFound(ContractGraphHandler handler)
+        => handler.QueueResponse(new HttpResponseMessage(HttpStatusCode.NotFound)
+        {
+            Content = new StringContent("""{"error":{"code":"ErrorItemNotFound"}}""",
+                System.Text.Encoding.UTF8, "application/json")
+        });
+
+    private static void QueueCalendarView(ContractGraphHandler handler)
+        => handler.QueueResponse(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"value":[]}""",
+                System.Text.Encoding.UTF8, "application/json")
+        });
+
     [Fact]
     public async Task Sync_CancelBatch_SetsCancelRequested()
     {

@@ -78,6 +78,17 @@ public sealed class GraphCalendarClient
             $"{GraphBase}me/calendars?$select=id,name,color,owner,isDefaultCalendar,canEdit,canViewPrivateItems",
             ct);
 
+    /// <summary>
+    /// Returns null when the calendar itself is gone from the mailbox (404 on the calendar
+    /// resource), and throws for every other failure. Used to confirm that a 404 seen while
+    /// paging calendar events really means "the calendar was deleted" instead of a transient
+    /// failure of one page/skiptoken.
+    /// </summary>
+    public Task<JsonElement?> GetCalendarAsync(Guid connectionId, string calendarId, CancellationToken ct)
+        => ReadSingleAsync(connectionId, token => BuildGet(
+            $"me/calendars/{EscapeDataString(calendarId)}?$select=id,name,isDefaultCalendar",
+            token), ct, allowNull: true);
+
     public IAsyncEnumerable<GraphPage> GetCalendarViewAsync(
         Guid connectionId, string calendarId,
         DateTimeOffset start, DateTimeOffset end, CancellationToken ct)
