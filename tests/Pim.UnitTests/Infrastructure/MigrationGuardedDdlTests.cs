@@ -92,6 +92,37 @@ public class MigrationGuardedDdlTests
         Assert.Contains("renamed_runtime_table", renaming);
         // 反向：索引/约束的 NewName 不是表名，不能产生假阳性。
         Assert.DoesNotContain("renamed_index", renaming);
+
+        // 覆盖自检：CreateTable 内嵌外键指向的父表也要被检查
+        // （对运行时 initializer 所有的表建外键，同样会在缺表时撞 42P01）。
+        var nestedFk = StructuredDdlTargets(new NestedForeignKeyProbeMigration())
+            .Select(t => t.Table)
+            .ToList();
+        Assert.Contains("runtime_owned_parent", nestedFk);
+    }
+
+    /// <summary>探针：CreateTable 内嵌外键的 PrincipalTable 必须被当作待检查的表。</summary>
+    private sealed class NestedForeignKeyProbeMigration : Migration
+    {
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.CreateTable(
+                name: "probe_child_table",
+                columns: table => new { id = table.Column<Guid>(nullable: false) },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_probe_child_table", x => x.id);
+                    table.ForeignKey(
+                        name: "FK_probe_child_table_runtime_owned_parent_id",
+                        column: x => x.id,
+                        principalTable: "runtime_owned_parent",
+                        principalColumn: "id");
+                });
+        }
+
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+        }
     }
 
     /// <summary>探针：表级重命名的 NewName 必须被当作表名。</summary>
@@ -220,6 +251,20 @@ public class MigrationGuardedDdlTests
         Assert.Contains("ALTER", StripSqlComments("SELECT $1; ALTER TABLE demo ADD c int;"), StringComparison.Ordinal);
         // dollar-quoted 块的内容会真实执行，必须保留以便继续检查。
         Assert.Contains("INDEX", StripSqlComments("DO $$ BEGIN CREATE INDEX ux ON demo (a); END $$;"), StringComparison.Ordinal);
+
+        // E'...' 是 PostgreSQL 转义字符串，反斜杠转义引号不结束字符串（评审给出的最小复现）。
+        // 不处理的话，E'foo\' 会在未转义的引号处提前结束，紧随的 /* 被当成块注释起点，
+        // 把后面真实的 DDL 整段吞掉（漏报）。
+        Assert.Contains(
+            "CREATE INDEX",
+            StripSqlComments(@"SELECT E'foo\'/*'; CREATE INDEX ux_demo ON demo (a);"),
+            StringComparison.Ordinal);
+        // 普通字符串里反斜杠不是转义符（standard_conforming_strings=on），
+        // 所以 'foo\' 在反斜杠后即结束，后续注释仍要被剥掉。
+        Assert.DoesNotContain(
+            "CREATE INDEX",
+            StripSqlComments(@"SELECT 'foo\'; -- CREATE INDEX ux_demo ON demo (a);"),
+            StringComparison.Ordinal);
 
         // 引号转义后的注释仍要被剥掉：即 "a""b" 与 'a''b' 都必须被当作「一个字面引号」，
         // 否则解析器会以为自己还在字符串/标识符里，把后面的注释当成正文，造成漏报。
@@ -358,16 +403,19 @@ public class MigrationGuardedDdlTests
     {
         foreach (var operation in migration.UpOperations)
         {
-            // CreateTable 自己就是建表，不参与「是否操作了别人表」的判定。
-            if (operation is CreateTableOperation)
-            {
-                continue;
-            }
+            // CreateTable 自己就是建表，源表不参与「是否操作了别人表」的判定；
+            // 但它内嵌的外键（ForeignKeys[].PrincipalTable）指向的父表仍要检查 ——
+            // 对运行时 initializer 所有的表建外键，同样会在缺表时撞 42P01。
+            var targets = operation is CreateTableOperation createTable
+                ? createTable.ForeignKeys
+                    .Select(fk => fk.PrincipalTable)
+                    .Where(t => !string.IsNullOrWhiteSpace(t))
+                : TableTargetsOf(operation);
 
             // 去重：外键操作同时有 Table（子表）与 PrincipalTable（父表），
             // 两者都要检查，但同一张表只报一次，避免错误信息里出现重复行。
             var reported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var table in TableTargetsOf(operation))
+            foreach (var table in targets)
             {
                 if (reported.Add(table))
                 {
@@ -438,6 +486,7 @@ public class MigrationGuardedDdlTests
         var result = new System.Text.StringBuilder(sql.Length);
         var inSingle = false;
         var inDouble = false;
+        var isEscapeString = false;
         var dollarTag = (string?)null;
 
         for (var i = 0; i < sql.Length; i++)
@@ -463,6 +512,15 @@ public class MigrationGuardedDdlTests
 
             if (inSingle)
             {
+                // E'...' 里反斜杠是转义符：E'foo\'bar' 中的 \' 不结束字符串。
+                // 不处理的话会把后面的真实 DDL 当成字符串内容吞掉（漏报）。
+                if (isEscapeString && c == '\\' && i + 1 < sql.Length)
+                {
+                    result.Append(c).Append(sql[i + 1]);
+                    i++;
+                    continue;
+                }
+
                 result.Append(c);
                 if (c == '\'')
                 {
@@ -475,6 +533,7 @@ public class MigrationGuardedDdlTests
                     else
                     {
                         inSingle = false;
+                        isEscapeString = false;
                     }
                 }
 
@@ -507,6 +566,9 @@ public class MigrationGuardedDdlTests
             {
                 case '\'':
                     inSingle = true;
+                    // E'...'（PostgreSQL 转义字符串）里反斜杠是转义符；普通 '...' 里不是
+                    // （standard_conforming_strings=on 时反斜杠就是普通字符）。
+                    isEscapeString = i > 0 && (sql[i - 1] == 'E' || sql[i - 1] == 'e');
                     result.Append(c);
                     break;
 
