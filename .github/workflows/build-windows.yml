@@ -203,20 +203,32 @@ jobs:
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
-          node scripts/ci/build-browser-extension.mjs             --src .extension-url             --out src/client-windows/publish/browser-extension             --zip src/client-windows/publish/browser-extension.zip             --kind url
+          node scripts/ci/build-browser-extension.mjs \
+            --src .extension-url \
+            --out src/client-windows/publish/browser-extension \
+            --zip src/client-windows/publish/browser-extension.zip \
+            --kind url
 
       - name: Build site-level extension
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
-          node scripts/ci/build-browser-extension.mjs             --src .extension-site             --out src/client-windows/publish/browser-extension-site             --zip src/client-windows/publish/browser-extension-site.zip             --kind site
+          node scripts/ci/build-browser-extension.mjs \
+            --src .extension-site \
+            --out src/client-windows/publish/browser-extension-site \
+            --zip src/client-windows/publish/browser-extension-site.zip \
+            --kind site
 
       - name: Verify packaged extensions
         shell: bash
+        working-directory: ${{ github.workspace }}
         run: |
-          test -f src/client-windows/publish/browser-extension/manifest.json             || { echo "URL-level extension manifest missing"; exit 1; }
-          test -f src/client-windows/publish/browser-extension/src/background/main.js             || { echo "URL-level extension background missing"; exit 1; }
-          test -f src/client-windows/publish/browser-extension-site/manifest.json             || { echo "site-level extension manifest missing"; exit 1; }
+          test -f src/client-windows/publish/browser-extension/manifest.json \
+            || { echo "URL-level extension manifest missing"; exit 1; }
+          test -f src/client-windows/publish/browser-extension/src/background/main.js \
+            || { echo "URL-level extension background missing"; exit 1; }
+          test -f src/client-windows/publish/browser-extension-site/manifest.json \
+            || { echo "site-level extension manifest missing"; exit 1; }
           echo "Both extensions staged for the installer"
 
       - name: Write version file for reference
