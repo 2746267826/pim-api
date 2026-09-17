@@ -1075,10 +1075,15 @@ public partial class PcTrackerService
                 .ToList());
     }
 
+    /// <summary>
+    /// 主要应用排行（#301）。份额口径 = (按键+点击) ÷ 全部(按键+点击)，即占总量占比，
+    /// 各项合计 ≈100%。原实现除以第一名按键数，使第一名恒为 100%，其余为「相对第一名」的比例。
+    /// 排序口径保持不变（按键+点击 降序）。
+    /// </summary>
     private static List<AppRankingItem> BuildAppRanking(KeystatsDailyEntity? keystats)
     {
         if (keystats is null) return new();
-        var maxAppKeys = keystats.AppBreakdowns.Any() ? keystats.AppBreakdowns.Max(a => a.KeyPresses) : 1;
+        var totalInteractions = keystats.AppBreakdowns.Sum(a => (double)a.KeyPresses + TotalClicks(a));
         return keystats.AppBreakdowns
             .OrderByDescending(a => a.KeyPresses + a.LeftClicks + a.RightClicks)
             .Select(a => new AppRankingItem(
@@ -1087,15 +1092,16 @@ public partial class PcTrackerService
                 a.KeyPresses,
                 TotalClicks(a),
                 a.ScrollDistance,
-                maxAppKeys > 0 ? (double)a.KeyPresses / maxAppKeys : 0))
+                totalInteractions > 0 ? (a.KeyPresses + TotalClicks(a)) / totalInteractions : 0))
             .ToList();
     }
 
+    /// <summary>主要应用排行（采样回退路径），份额口径同 <see cref="BuildAppRanking"/>。</summary>
     private static List<AppRankingItem> BuildAppRankingFromSample(KeystatsSampleEntity? sample)
     {
         if (sample is null) return new();
         var appStats = ParseAppStats(sample.AppStatsJson);
-        var maxAppKeys = appStats.Any() ? appStats.Max(a => a.KeyPresses) : 1;
+        var totalInteractions = appStats.Sum(a => (double)a.KeyPresses + TotalClicks(a));
         return appStats
             .OrderByDescending(a => a.KeyPresses + a.LeftClicks + a.RightClicks)
             .Select(a => new AppRankingItem(
@@ -1104,7 +1110,7 @@ public partial class PcTrackerService
                 a.KeyPresses,
                 TotalClicks(a),
                 a.ScrollDistance,
-                maxAppKeys > 0 ? (double)a.KeyPresses / maxAppKeys : 0))
+                totalInteractions > 0 ? (a.KeyPresses + TotalClicks(a)) / totalInteractions : 0))
             .ToList();
     }
 

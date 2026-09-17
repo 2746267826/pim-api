@@ -179,11 +179,17 @@ public sealed class PcTrackerCoverageTests
     {
         await using var db = ServiceTestBase.CreateDb();
         db.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity { Id = Guid.NewGuid(), RecordKey = "kn", RecordType = "window", DeviceId = "pc-1", StartedAt = DayStart.AddHours(7), EndedAt = DayStart.AddHours(6), CategoryName = "工作", CategoryColor = "#10b981", Confidence = 0.9, Source = "rule", ClassifierVersion = "v1", ClassifiedAt = DateTimeOffset.UtcNow });
+        // 同一业务日内另有一条合法记录，用于确认坏记录不会污染好记录
+        db.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity { Id = Guid.NewGuid(), RecordKey = "ok", RecordType = "window", DeviceId = "pc-1", StartedAt = DayStart.AddHours(6), EndedAt = DayStart.AddHours(6).AddMinutes(10), CategoryName = "编程", CategoryColor = "#10b981", Confidence = 0.9, Source = "rule", ClassifierVersion = "v1", ClassifiedAt = DateTimeOffset.UtcNow });
         await db.SaveChangesAsync();
         var svc = ServiceTestBase.CreatePcAggregationService(db);
         var res = await svc.GetCategoryDistributionAsync(new PcAggregationQuery(TestDate.ToString("yyyy-MM-dd"), null, null, null), CancellationToken.None);
-        Assert.Single(res.Items);
-        Assert.Equal(0, res.Items[0].Minutes);
+
+        // #301：结束早于开始的畸形记录被丢弃（不再伪造一个 0 分钟的分类条目），
+        // 且绝不产生负分钟数、不影响同日合法记录。
+        Assert.DoesNotContain(res.Items, x => x.CategoryName == "工作");
+        Assert.All(res.Items, x => Assert.True(x.Minutes >= 0, $"分类 {x.CategoryName} 出现负分钟数 {x.Minutes}"));
+        Assert.InRange(res.Items.Sum(x => x.Minutes), 9, 11);
     }
 
     // === PcTrackerQualityService branches ===
