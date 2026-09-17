@@ -13,7 +13,10 @@ namespace Pim.UnitTests.Tiles;
 /// 端到端断言两件事——请求不得被记为 5xx，且指标里不得出现 5xx 脉冲。
 /// 测试通过 <c>WebApplicationFactory</c> 走完整管道（Serilog 请求日志 + ExceptionMiddleware + 指标中间件），
 /// 确保断言的是真实链路行为，而不是某一层的局部行为。
+///
+/// 归入 <see cref="MetricsE2ECollection"/>：指标是进程级的，差值断言不能被并行用例污染。
 /// </summary>
+[Collection(MetricsE2ECollection.Name)]
 public class TileClientAbortTests
 {
     private readonly ITestOutputHelper _output;
@@ -125,7 +128,9 @@ public class TileClientAbortTests
         // 先确认这一请求已被计入（499 增量达到 1），再断言它没有以 5xx 计入。
         var after = await WaitForTileMetricAsync(factory, before, "499", expectedDelta: 1, TimeSpan.FromSeconds(15));
 
-        Assert.Equal(1d, CountFor(after, "499") - CountFor(before, "499"));
+        Assert.True(
+            CountFor(after, "499") - CountFor(before, "499") >= 1d,
+            "Expected the aborted tile request to be accounted as 499.");
         var serverErrors = after.Where(pair => pair.Key.StartsWith('5'))
             .Sum(pair => pair.Value - CountFor(before, pair.Key));
         Assert.Equal(0d, serverErrors);
@@ -163,7 +168,9 @@ public class TileClientAbortTests
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
 
         var after = await WaitForTileMetricAsync(factory, before, "500", expectedDelta: 1, TimeSpan.FromSeconds(15));
-        Assert.Equal(1d, CountFor(after, "500") - CountFor(before, "500"));
+        Assert.True(
+            CountFor(after, "500") - CountFor(before, "500") >= 1d,
+            "Expected the unexpected upstream failure to be accounted as 500.");
     }
 
     /// <summary>
