@@ -70,6 +70,37 @@ public class TileClientAbortTests
         => metrics.TryGetValue(code, out var value) ? value : 0d;
 
     /// <summary>
+    /// 轮询直到指定状态码的增量达到期望值。
+    ///
+    /// 指标是在请求收尾的 finally 里写入的，与"客户端收到取消/响应"之间存在极短的竞态窗口，
+    /// 固定 sleep 要么拖慢用例、要么在高负载 CI 上偶发读到旧快照。这里改成轮询，
+    /// 并且把"该请求已被计入"当作后续断言的前提条件 —— 只有确认请求已结算，
+    /// "没有出现 5xx" 才是有意义的结论，否则可能只是尚未写入。
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, double>> WaitForTileMetricAsync(
+        WebApplicationFactory<Program> factory,
+        IReadOnlyDictionary<string, double> before,
+        string code,
+        double expectedDelta,
+        TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        IReadOnlyDictionary<string, double> current = before;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            current = await TileMetricsAsync(factory);
+            if (CountFor(current, code) - CountFor(before, code) >= expectedDelta)
+                return current;
+
+            await Task.Delay(100);
+        }
+
+        Assert.Fail($"Timed out waiting for tile metric code=\"{code}\" to increase by {expectedDelta} within {timeout}.");
+        return current;
+    }
+
+    /// <summary>
     /// 客户端中断时，日志与指标都不得出现 5xx。
     /// 期望状态码是 499（nginx 惯例的 Client Closed Request）：Serilog 默认分级"&gt;499 才算 Error"，
     /// 因此 499 不会落成 Error 级请求日志，也不会命中 `code=~"5.."` 的 5xx 告警规则。
@@ -91,14 +122,13 @@ public class TileClientAbortTests
         cts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => requestTask);
 
-        // 指标在请求收尾时写入，等一小会儿避免读到尚未结算的快照。
-        await Task.Delay(TimeSpan.FromSeconds(1));
-        var after = await TileMetricsAsync(factory);
+        // 先确认这一请求已被计入（499 增量达到 1），再断言它没有以 5xx 计入。
+        var after = await WaitForTileMetricAsync(factory, before, "499", expectedDelta: 1, TimeSpan.FromSeconds(15));
 
+        Assert.Equal(1d, CountFor(after, "499") - CountFor(before, "499"));
         var serverErrors = after.Where(pair => pair.Key.StartsWith('5'))
             .Sum(pair => pair.Value - CountFor(before, pair.Key));
         Assert.Equal(0d, serverErrors);
-        Assert.Equal(1d, CountFor(after, "499") - CountFor(before, "499"));
     }
 
     /// <summary>
@@ -132,10 +162,40 @@ public class TileClientAbortTests
         var response = await client.GetAsync("/api/v1/tiles/9/1/1.png");
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
 
-        await Task.Delay(TimeSpan.FromSeconds(1));
-        var after = await TileMetricsAsync(factory);
-
+        var after = await WaitForTileMetricAsync(factory, before, "500", expectedDelta: 1, TimeSpan.FromSeconds(15));
         Assert.Equal(1d, CountFor(after, "500") - CountFor(before, "500"));
+    }
+
+    /// <summary>
+    /// 指标中间件被移到异常中间件外侧（早于 UseRouting）后，`endpoint` 标签仍须正确填充。
+    /// prometheus-net 靠自身的 CaptureRouteDataMiddleware 捕获路由数据，但这是**外部依赖的行为**，
+    /// 一旦其版本行为变化，指标会静默退化成 endpoint=""，Grafana 按 endpoint 聚合的面板随之失效。
+    /// 这里显式守住该契约。
+    /// </summary>
+    [Fact]
+    public async Task Tile_metric_keeps_endpoint_label_after_middleware_reorder()
+    {
+        var cacheDir = Path.Combine(Path.GetTempPath(), "pim-tile-abort-" + Guid.NewGuid().ToString("N"));
+        using var factory = CreateFactory(cacheDir, new StaticStatusHandler(HttpStatusCode.OK));
+        var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-PIM-Ops-Key", "test-ops-key");
+
+        await client.GetAsync("/api/v1/tiles/9/3/3.png");
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+        while (DateTime.UtcNow < deadline)
+        {
+            var text = await client.GetStringAsync("/metrics");
+            var labelled = text.Split('\n').Any(line =>
+                line.StartsWith("http_requests_received_total", StringComparison.Ordinal)
+                && line.Contains("endpoint=\"/api/v1/tiles/{z}/{x}/{y}.png\"", StringComparison.Ordinal));
+            if (labelled)
+                return;
+
+            await Task.Delay(100);
+        }
+
+        Assert.Fail("Tile requests never appeared with a non-empty endpoint label after the metrics middleware reorder.");
     }
 
     private sealed class HangingHandler(TaskCompletionSource enteredUpstream) : HttpMessageHandler
