@@ -113,10 +113,29 @@ public class ActivityClassificationSnapshotService
             try
             {
                 await _db.SaveChangesAsync(ct);
+                if (attempt > 0)
+                {
+                    _logger.LogInformation(
+                        "Classification snapshot batch saved after {Attempt}/{Max} attempts (record_key contention). keys={KeyCount}",
+                        attempt + 1,
+                        MaxUniqueViolationRetries,
+                        keys.Count);
+                }
+
                 return;
             }
-            catch (DbUpdateException ex) when (IsPostgreSqlUniqueViolation(ex) && attempt < MaxUniqueViolationRetries - 1)
+            catch (DbUpdateException ex) when (IsPostgreSqlUniqueViolation(ex))
             {
+                if (attempt >= MaxUniqueViolationRetries - 1)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Classification snapshot batch kept hitting the record_key unique constraint after {Max} attempts; giving up. keys={KeyCount}",
+                        MaxUniqueViolationRetries,
+                        keys.Count);
+                    throw;
+                }
+
                 var tracked = _db.ChangeTracker.Entries<ActivityClassificationEntity>()
                     .Where(entry => entry.State == EntityState.Added)
                     .ToList();
@@ -132,10 +151,23 @@ public class ActivityClassificationSnapshotService
                     .Where(entry => existingKeys.Contains(entry.Entity.RecordKey))
                     .ToList();
                 if (duplicates.Count == 0)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Classification snapshot batch hit the record_key unique constraint but no concurrent duplicate was found among tracked entities; rethrowing. keys={KeyCount}",
+                        keys.Count);
                     throw;
+                }
 
                 foreach (var entry in duplicates)
                     entry.State = EntityState.Detached;
+
+                _logger.LogWarning(
+                    "Classification snapshot batch hit the record_key unique constraint on attempt {Attempt}/{Max}; detached {DuplicateCount} concurrently written duplicates and retrying. keys={KeyCount}",
+                    attempt + 1,
+                    MaxUniqueViolationRetries,
+                    duplicates.Count,
+                    keys.Count);
             }
         }
     }
