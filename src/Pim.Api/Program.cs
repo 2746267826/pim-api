@@ -206,13 +206,19 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
     KnownNetworks = { new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("127.0.0.1"), 32), new Microsoft.AspNetCore.HttpOverrides.IPNetwork(System.Net.IPAddress.Parse("::1"), 128) }
 });
 app.UseMiddleware<CorrelationIdMiddleware>();
+// 指标中间件必须挂在 ExceptionMiddleware 外侧（此处）：它在请求结束时按响应上的
+// StatusCode 打标签，而异常是在 ExceptionMiddleware 里才被转成 502/500 的。
+// 顺序反了的话，异常请求在采样时状态码还是默认的 200 —— 5xx 永远不会进入
+// http_requests_received_total，PimHttp5xxSpike 告警也就永远不会触发（issue #299）。
+// 路由数据由 prometheus-net 的 CaptureRouteDataMiddleware 自行捕获，因此此处
+// 早于 UseRouting 不影响 endpoint 标签。
+app.UseHttpMetrics();
 app.UseSerilogRequestLogging(options =>
 {
     options.MessageTemplate = "{RemoteIpAddress} {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.000} ms";
 });
 app.UseMiddleware<ExceptionMiddleware>();
 app.UseCors();
-app.UseHttpMetrics();
 app.UseAuthentication();
 app.UseMiddleware<OpsRateLimitMiddleware>();
 app.UseMiddleware<OpsKeyMiddleware>();
