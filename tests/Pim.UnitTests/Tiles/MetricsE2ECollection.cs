@@ -11,8 +11,9 @@ namespace Pim.UnitTests.Tiles;
 /// 就会污染 before/after 差值，造成随机失败。
 ///
 /// <see cref="CollectionDefinitionAttribute.DisableParallelization"/> 让本 collection
-/// 不与其它 collection 并行，从而保证差值断言可复现。
-/// 新增"读取 /metrics 并比较增量"的用例时，请一并加入本 collection。
+/// 不与**其它 collection** 并行（xUnit 2.8.1 语义：本 collection 独占执行，
+/// 它不是程序集级锁，也保护不了**没有**加入本 collection 的同路由用例）。
+/// 因此新增"读取 /metrics 并比较增量"且命中同一路由的用例时，必须一并加入本 collection。
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class MetricsE2ECollection
