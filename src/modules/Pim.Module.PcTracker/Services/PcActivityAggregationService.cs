@@ -167,32 +167,6 @@ public sealed class PcActivityAggregationService
 
     // === 分类分布 ===
 
-    /// <summary>
-    /// 参与分类分布统计的记录类型优先级（#301）：数值越大越优先，同一时刻只归属优先者。
-    /// <para>
-    /// 快照由相互重叠的采集事件派生（前台窗口 / 网页记录覆盖 input-minute 微记录，
-    /// 而 gap / idle 是「无活动」时段），因此必须先按优先级消解重叠再统计：
-    /// 前台窗口记录 &gt; 网页记录 &gt; 输入分钟记录。
-    /// </para>
-    /// <para>
-    /// gap / idle / afk 等「未活动」类型不在此表内 —— 它们完全不进入分类分布
-    /// （既不出现在结果列表，也不计入百分比分母）。
-    /// </para>
-    /// </summary>
-    private static readonly Dictionary<string, int> CategoryRecordTypePriority = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["window"] = 3,
-        ["currentwindow"] = 3,
-        ["web-page"] = 2,
-        ["input-minute"] = 1,
-    };
-
-    /// <summary>「未活动」记录类型：不参与分类分布（#301）。</summary>
-    private static readonly HashSet<string> InactiveRecordTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "gap", "idle", "afk",
-    };
-
     public async Task<PcCategoryDistributionResponse> GetCategoryDistributionAsync(PcAggregationQuery query, CancellationToken ct)
     {
         var window = ResolveWindow(query);
@@ -200,42 +174,48 @@ public sealed class PcActivityAggregationService
             .Where(s => s.StartedAt < window.EndUtc && s.EndedAt > window.StartUtc)
             .ToListAsync(ct);
 
-        // 1) 单条先按上限截断（防止采集异常值），再按业务日窗口裁剪；
-        //    跨天记录因此按与窗口的重叠部分自然分摊到两天。
-        var intervals = new List<CategoryInterval>();
+        // 1) 未活动类型（gap / idle / afk）完全不参与统计
+        // 2) 每条记录先按 3600s 上限得到「计入总量」，并记录其相对原始时长的分摊比例。
+        //    这样既保留原口径（跨天记录按与窗口的重叠比例分摊 capped 总量），
+        //    又能让下面的重叠消解在**去重后的片段**上按同一比例还原分钟数 ——
+        //    只做「截断到 cap 再裁剪」会低估跨业务日的长记录（review 发现）。
+        var candidates = new List<PcActivityOverlapResolver.Candidate>();
+        var scales = new Dictionary<int, double>();
+        var metadata = new List<(string Category, string Color)>();
+
         foreach (var s in snapshots)
         {
-            if (InactiveRecordTypes.Contains(s.RecordType))
+            if (PcActivityOverlapResolver.IsInactive(s.RecordType))
                 continue;
 
-            var cappedEnd = s.StartedAt.AddSeconds(MaxEventDurationSeconds);
-            var rawEnd = s.EndedAt < cappedEnd ? s.EndedAt : cappedEnd;
             var start = s.StartedAt > window.StartUtc ? s.StartedAt : window.StartUtc;
-            var end = rawEnd < window.EndUtc ? rawEnd : window.EndUtc;
+            var end = s.EndedAt < window.EndUtc ? s.EndedAt : window.EndUtc;
             if (end <= start)
                 continue;
 
-            intervals.Add(new CategoryInterval(
-                start,
-                end,
-                s.CategoryName,
-                ResolveCategoryColor(s.CategoryName, new[] { s.CategoryColor }),
-                RecordTypePriority(s.RecordType),
-                s.Confidence,
-                s.RecordKey));
+            var rawSeconds = (s.EndedAt - s.StartedAt).TotalSeconds;
+            var cappedTotal = Math.Min(rawSeconds, MaxEventDurationSeconds);
+            var scale = rawSeconds > 0 ? cappedTotal / rawSeconds : 0;
+
+            var index = candidates.Count;
+            candidates.Add(new PcActivityOverlapResolver.Candidate(start, end, s.RecordType, s.Confidence, s.RecordKey));
+            scales[index] = scale;
+            metadata.Add((s.CategoryName, ResolveCategoryColor(s.CategoryName, new[] { s.CategoryColor })));
         }
 
-        // 2) 扫描线消解重叠：同一时刻只归属一个分类（#301）
-        var segments = ResolveCategorySegments(intervals);
+        // 3) 扫描线消解重叠：同一时刻只归属一个分类（#301）
+        var segments = PcActivityOverlapResolver.Resolve(candidates);
 
-        // 3) 按分类汇总去重后的分钟数
+        // 4) 按分类汇总去重后的分钟数（按各记录的 cap 分摊比例还原）
         var groups = segments
-            .GroupBy(s => s.CategoryName, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(s => metadata[s.WinnerIndex].Category, StringComparer.OrdinalIgnoreCase)
             .Select(g => new
             {
                 Category = g.Key,
-                Seconds = g.Sum(s => (s.End - s.Start).TotalSeconds),
-                Color = g.Select(s => s.Color).FirstOrDefault(c => IsValidHexColor(c)) ?? DefaultCategoryColor,
+                Seconds = g.Sum(s => (s.End - s.Start).TotalSeconds * scales[s.WinnerIndex]),
+                Color = g
+                    .Select(s => metadata[s.WinnerIndex].Color)
+                    .FirstOrDefault(IsValidHexColor) ?? DefaultCategoryColor,
             })
             .OrderByDescending(x => x.Seconds)
             .ThenBy(x => x.Category, StringComparer.OrdinalIgnoreCase)
@@ -250,148 +230,25 @@ public sealed class PcActivityAggregationService
                 return new PcCategoryDistributionItem(g.Category, g.Color, minutes, percentage);
             })
             .ToList();
-        // 百分比和校正：确保四舍五入后和为100（INV-P11/C05要求 |sum-100|<=1）
+        // 百分比和校正：确保四舍五入后和为100（INV-P11/C05要求 |sum-100|<=1）。
+        // 误差只补给「非零项」并把结果夹到 >=0，避免出现 -0.1% 这类无意义数值（review 发现）。
         if (items.Count > 0)
         {
             var sumPct = items.Sum(i => i.Percentage);
             var diff = Math.Round(100.0 - sumPct, 1);
             if (Math.Abs(diff) > 0.05 && Math.Abs(diff) <= 1.0)
             {
-                var idx = items.Count - 1;
-                var last = items[idx];
-                items[idx] = new PcCategoryDistributionItem(last.CategoryName, last.Color, last.Minutes, Math.Round(last.Percentage + diff, 1));
+                var idx = items.FindLastIndex(i => i.Percentage > 0);
+                if (idx >= 0)
+                {
+                    var last = items[idx];
+                    var corrected = Math.Max(0, Math.Round(last.Percentage + diff, 1));
+                    items[idx] = new PcCategoryDistributionItem(last.CategoryName, last.Color, last.Minutes, corrected);
+                }
             }
         }
 
         return new PcCategoryDistributionResponse(items);
-    }
-
-    /// <summary>窗口内的一个分类区间（已裁剪、已 cap），带优先级用于重叠消解。</summary>
-    private readonly record struct CategoryInterval(
-        DateTimeOffset Start,
-        DateTimeOffset End,
-        string CategoryName,
-        string Color,
-        int Priority,
-        double Confidence,
-        string StableKey);
-
-    /// <summary>消解后互不重叠的分类时段。</summary>
-    private readonly record struct CategorySegment(
-        DateTimeOffset Start,
-        DateTimeOffset End,
-        string CategoryName,
-        string Color);
-
-    private static int RecordTypePriority(string recordType)
-        => CategoryRecordTypePriority.TryGetValue(recordType, out var priority) ? priority : 1;
-
-    /// <summary>
-    /// 扫描线消解重叠的分类区间（#301）：把输入按端点切成互不重叠的半开段
-    /// <c>[start, end)</c>，每段归属唯一胜出分类。
-    /// <para>
-    /// 胜出顺序：<b>记录类型优先级高者 → 置信度高者 → 原始时区长者 → 稳定键序小者</b>
-    /// （末项保证结果确定、可复现）。相邻且归属相同的段合并。
-    /// </para>
-    /// <para>
-    /// 结果保证：段按 start 升序、两两不重叠，且时长合计 ≤ 输入区间的并集跨度，
-    /// 因此单日分类合计不会超过 24 小时物理上限。
-    /// </para>
-    /// </summary>
-    private static List<CategorySegment> ResolveCategorySegments(List<CategoryInterval> intervals)
-    {
-        var ordered = new List<int>(intervals.Count);
-        var boundaries = new List<DateTimeOffset>(intervals.Count * 2);
-        for (var i = 0; i < intervals.Count; i++)
-        {
-            if (intervals[i].End <= intervals[i].Start)
-                continue;
-            ordered.Add(i);
-            boundaries.Add(intervals[i].Start);
-            boundaries.Add(intervals[i].End);
-        }
-
-        if (ordered.Count == 0)
-            return [];
-
-        ordered.Sort((left, right) =>
-        {
-            var byStart = intervals[left].Start.CompareTo(intervals[right].Start);
-            if (byStart != 0) return byStart;
-            var byEnd = intervals[left].End.CompareTo(intervals[right].End);
-            return byEnd != 0 ? byEnd : left.CompareTo(right);
-        });
-        boundaries.Sort();
-
-        var segments = new List<CategorySegment>();
-        var active = new List<int>();
-        var next = 0;
-
-        for (var i = 0; i < boundaries.Count - 1; i++)
-        {
-            var cursor = boundaries[i];
-
-            active.RemoveAll(index => intervals[index].End <= cursor);
-            while (next < ordered.Count && intervals[ordered[next]].Start <= cursor)
-            {
-                active.Add(ordered[next]);
-                next++;
-            }
-
-            var segmentEnd = boundaries[i + 1];
-            if (segmentEnd <= cursor || active.Count == 0)
-                continue;
-
-            var winner = SelectCategoryWinner(intervals, active);
-            AppendCategorySegment(segments, new CategorySegment(
-                cursor, segmentEnd, intervals[winner].CategoryName, intervals[winner].Color));
-        }
-
-        return segments;
-    }
-
-    private static int SelectCategoryWinner(List<CategoryInterval> intervals, List<int> active)
-    {
-        var best = active[0];
-        for (var i = 1; i < active.Count; i++)
-        {
-            var challenger = active[i];
-            if (IsBetterCategory(intervals[challenger], intervals[best]))
-                best = challenger;
-        }
-        return best;
-    }
-
-    private static bool IsBetterCategory(in CategoryInterval challenger, in CategoryInterval incumbent)
-    {
-        if (challenger.Priority != incumbent.Priority)
-            return challenger.Priority > incumbent.Priority;
-
-        if (challenger.Confidence != incumbent.Confidence)
-            return challenger.Confidence > incumbent.Confidence;
-
-        var challengerTicks = (challenger.End - challenger.Start).Ticks;
-        var incumbentTicks = (incumbent.End - incumbent.Start).Ticks;
-        if (challengerTicks != incumbentTicks)
-            return challengerTicks > incumbentTicks;
-
-        return string.CompareOrdinal(challenger.StableKey, incumbent.StableKey) < 0;
-    }
-
-    /// <summary>相邻且归属同一分类的段合并（例如高优先记录打断后重新接上）。</summary>
-    private static void AppendCategorySegment(List<CategorySegment> segments, CategorySegment segment)
-    {
-        if (segments.Count > 0)
-        {
-            var last = segments[^1];
-            if (string.Equals(last.CategoryName, segment.CategoryName, StringComparison.OrdinalIgnoreCase)
-                && last.End == segment.Start)
-            {
-                segments[^1] = last with { End = segment.End };
-                return;
-            }
-        }
-        segments.Add(segment);
     }
 
     /// <summary>分类颜色兜底：快照 CategoryColor 合法（# + 6 位十六进制）→ 用之；

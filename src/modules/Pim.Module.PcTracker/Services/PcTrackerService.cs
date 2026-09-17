@@ -1085,7 +1085,9 @@ public partial class PcTrackerService
         if (keystats is null) return new();
         var totalInteractions = keystats.AppBreakdowns.Sum(a => (double)a.KeyPresses + TotalClicks(a));
         return keystats.AppBreakdowns
-            .OrderByDescending(a => a.KeyPresses + a.LeftClicks + a.RightClicks)
+            // 排序口径 = 份额口径（按键 + 全部点击），不能只算左右键，
+            // 否则中键 / 侧键较多的应用排名与显示的百分比自相矛盾（review 发现）。
+            .OrderByDescending(a => a.KeyPresses + TotalClicks(a))
             .Select(a => new AppRankingItem(
                 a.AppName,
                 a.DisplayName,
@@ -1103,7 +1105,7 @@ public partial class PcTrackerService
         var appStats = ParseAppStats(sample.AppStatsJson);
         var totalInteractions = appStats.Sum(a => (double)a.KeyPresses + TotalClicks(a));
         return appStats
-            .OrderByDescending(a => a.KeyPresses + a.LeftClicks + a.RightClicks)
+            .OrderByDescending(a => a.KeyPresses + TotalClicks(a))
             .Select(a => new AppRankingItem(
                 a.AppName,
                 a.DisplayName,

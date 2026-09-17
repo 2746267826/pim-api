@@ -362,7 +362,7 @@ public sealed class PcCategoryDistributionOverlapTests
         Assert.InRange(res.AppRanking.Sum(a => a.Share) * 100, 99.0, 101.0);
     }
 
-    /// <summary>排序口径保持不变：按键+点击 降序。</summary>
+    /// <summary>排序口径保持不变：按键+点击 降序（含中键 / 侧键，与份额口径一致）。</summary>
     [Fact]
     public async Task AppRanking_KeepsKeysPlusClicksDescendingOrder()
     {
@@ -375,6 +375,182 @@ public sealed class PcCategoryDistributionOverlapTests
 
         var weights = res.AppRanking.Select(a => a.KeyPresses + a.TotalClicks).ToList();
         Assert.Equal(weights.OrderByDescending(w => w).ToList(), weights);
+    }
+
+    /// <summary>
+    /// 排序必须计入**全部**点击类型（含中键 / 侧键），否则排名与显示的百分比自相矛盾
+    /// （review 发现的 Important）。
+    /// </summary>
+    [Fact]
+    public async Task AppRanking_SortIncludesMiddleAndSideClicks()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        db.Set<KeystatsDailyEntity>().Add(new KeystatsDailyEntity
+        {
+            DeviceId = "pc-1",
+            SnapshotDate = TestDate.Date,
+            KeyPresses = 1000,
+            LeftClicks = 0,
+            RightClicks = 0,
+            MiddleClicks = 0,
+            SideBackClicks = 0,
+            SideForwardClicks = 0,
+            MouseDistance = 0,
+            ScrollDistance = 0,
+            PeakKps = 1,
+            PeakCps = 1,
+            CreatedAt = DateTimeOffset.UtcNow,
+            KeyCounts = new List<KeystatsKeyCountEntity>(),
+            AppBreakdowns = new List<KeystatsAppBreakdownEntity>
+            {
+                // 只看左右键：left(10) 领先；计入侧键后 right(10+200) 才是第一
+                new() { AppName = "left.exe", DisplayName = "Left", KeyPresses = 100, LeftClicks = 10, RightClicks = 0, MiddleClicks = 0, SideBackClicks = 0, SideForwardClicks = 0, ScrollDistance = 0 },
+                new() { AppName = "side.exe", DisplayName = "Side", KeyPresses = 100, LeftClicks = 0, RightClicks = 0, MiddleClicks = 0, SideBackClicks = 150, SideForwardClicks = 50, ScrollDistance = 0 },
+            }
+        });
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcTrackerService(db);
+        var res = await svc.GetSummaryAsync(TestDate, CancellationToken.None);
+
+        Assert.Equal("side.exe", res.AppRanking[0].AppName);
+    }
+
+    /// <summary>
+    /// 跨业务日的长记录仍按「cap 后按重叠比例分摊」计入，不得因裁剪顺序而低估
+    /// （review 发现的 Important）。
+    /// <para>
+    /// 记录北京 03:00–05:00（原始 7200s，cap 后 3600s）；业务日 9/17 窗口从 04:00 起，
+    /// 与窗口重叠 3600s → 按比例计入 3600 × (3600/7200) = 1800s = 30 分钟。
+    /// 修复前「先截断到 cap 再裁剪」会得到 0 分钟（截断终点恰落在窗口起点）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task CategoryDistribution_LongRecordSpanningBusinessDay_IsProratedNotDropped()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("long-cross", Beijing(17, 3), Beijing(17, 5), "编程/折腾"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcAggregationService(db);
+        var res = await svc.GetCategoryDistributionAsync(new PcAggregationQuery("2026-09-17", null, null, null), CancellationToken.None);
+
+        Assert.InRange(Get(res, "编程/折腾").Minutes, 29, 31);
+    }
+
+    /// <summary>超过 3600s 上限的记录按上限计入（既有 cap 口径保持）。</summary>
+    [Fact]
+    public async Task CategoryDistribution_RecordExceedingCap_IsCapped()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 北京 10:00-14:00（240 分钟）→ cap 到 60 分钟
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("too-long", Beijing(17, 10), Beijing(17, 14), "编程/折腾"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcAggregationService(db);
+        var res = await svc.GetCategoryDistributionAsync(new PcAggregationQuery("2026-09-17", null, null, null), CancellationToken.None);
+
+        Assert.InRange(Get(res, "编程/折腾").Minutes, 59, 61);
+    }
+
+    /// <summary>百分比校正不得产生负数（review 发现的 Minor）。</summary>
+    [Fact]
+    public async Task CategoryDistribution_PercentageCorrection_NeverProducesNegative()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 构造四舍五入后合计略超 100 的分布，触发校正逻辑
+        var cases = new (string Category, int Minutes)[]
+        {
+            ("A", 731), ("B", 580), ("C", 129), ("D", 0),
+        };
+        var start = Beijing(17, 8);
+        foreach (var (category, minutes) in cases)
+        {
+            if (minutes <= 0) continue;
+            for (var chunk = 0; chunk < minutes; chunk += 60)
+            {
+                var length = Math.Min(60, minutes - chunk);
+                db.Set<ActivityClassificationEntity>().Add(Snapshot(
+                    $"k-{category}-{chunk}",
+                    start.AddMinutes(chunk),
+                    start.AddMinutes(chunk + length),
+                    category));
+            }
+        }
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcAggregationService(db);
+        var res = await svc.GetCategoryDistributionAsync(new PcAggregationQuery("2026-09-17", null, null, null), CancellationToken.None);
+
+        Assert.All(res.Items, i => Assert.True(i.Percentage >= 0, $"分类 {i.CategoryName} 百分比为负：{i.Percentage}"));
+        Assert.InRange(res.Items.Sum(i => i.Percentage), 99.0, 101.0);
+    }
+
+    // ================= review 修复：生产力统计复用同一套去重 =================
+
+    /// <summary>
+    /// 生产力 dashboard 不再逐条累加重叠记录（review 发现的 Important）：
+    /// 总和不得超过 24 小时，且 productive + distracting + neutral = total。
+    /// </summary>
+    [Fact]
+    public async Task ProductivityDashboard_OverlappingRecords_TotalNeverExceeds24Hours()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 大量互相重叠的「编程」（productive）与「游戏」（distracting）记录
+        var random = new Random(20260917);
+        for (var i = 0; i < 120; i++)
+        {
+            var offset = random.Next(0, 600);
+            var length = random.Next(10, 120);
+            var category = i % 2 == 0 ? "编程/折腾" : "游戏";
+            db.Set<ActivityClassificationEntity>().Add(Snapshot(
+                $"p-{i}",
+                Beijing(17, 8).AddMinutes(offset),
+                Beijing(17, 8).AddMinutes(offset + length),
+                category));
+        }
+        await db.SaveChangesAsync();
+
+        var svc = new PcProductivityService(db, ServiceTestBase.Time(Beijing(17, 20)));
+        var res = await svc.GetDashboardAsync(TestDate, CancellationToken.None);
+
+        var totalHours = res.ProductiveHours + res.DistractingHours + res.NeutralHours;
+        Assert.True(totalHours <= 24.0, $"生产力合计 {totalHours} 小时超过 24 小时物理上限");
+        Assert.InRange(res.TodayScore, 0, 100);
+    }
+
+    /// <summary>同一时刻只归属一个生产力档位：重叠的 productive / distracting 不得都计入。</summary>
+    [Fact]
+    public async Task ProductivityDashboard_OverlappingDifferentBuckets_OneInstantCountsOnce()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 编程 10:00-11:00（productive, window 高置信）
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("prod", Beijing(17, 10), Beijing(17, 11), "编程/折腾", "window", 0.9));
+        // 游戏 10:00-11:00（重叠，input-minute 低置信）→ 应被 window 覆盖
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("dist", Beijing(17, 10), Beijing(17, 11), "游戏", "input-minute", 0.2));
+        await db.SaveChangesAsync();
+
+        var svc = new PcProductivityService(db, ServiceTestBase.Time(Beijing(17, 20)));
+        var res = await svc.GetDashboardAsync(TestDate, CancellationToken.None);
+
+        Assert.InRange(res.ProductiveHours, 0.9, 1.1);
+        Assert.InRange(res.DistractingHours, 0.0, 0.05);
+    }
+
+    /// <summary>gap / idle 不参与生产力统计。</summary>
+    [Fact]
+    public async Task ProductivityDashboard_GapAndIdle_AreExcluded()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("prod", Beijing(17, 10), Beijing(17, 11), "编程/折腾"));
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("gap", Beijing(17, 4), Beijing(17, 9), "游戏", "gap"));
+        await db.SaveChangesAsync();
+
+        var svc = new PcProductivityService(db, ServiceTestBase.Time(Beijing(17, 20)));
+        var res = await svc.GetDashboardAsync(TestDate, CancellationToken.None);
+
+        Assert.InRange(res.ProductiveHours, 0.9, 1.1);
+        Assert.InRange(res.DistractingHours, 0.0, 0.05);
     }
 
     /// <summary>无按键点击数据时份额为 0，不得除零。</summary>
