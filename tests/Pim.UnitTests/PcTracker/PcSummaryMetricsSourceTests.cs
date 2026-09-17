@@ -325,6 +325,147 @@ public sealed class PcSummaryMetricsSourceTests
         Assert.Equal(0, res.Metrics.ActiveAppCount);
     }
 
+    // ================= review 修复：业务日裁剪 / 闲置并集 / 来源去重 =================
+
+    /// <summary>
+    /// 记录时长必须裁剪到业务日窗口：业务日最后一分钟开始的长事件不得把越界时间计入，
+    /// 否则单日合计会突破 24 小时（review 发现的 Important）。
+    /// </summary>
+    [Fact]
+    public async Task GetSummary_EventExtendingPastBusinessDayEnd_IsClippedToWindow()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 业务日 7/7 = 北京 [7/7 04:00, 7/8 04:00)。北京 7/8 03:50 起 60 分钟 → 只有 10 分钟在窗口内。
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(8, 3, 50), 3600, "code.exe"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcTrackerService(db);
+        var res = await svc.GetSummaryAsync(TestDate, CancellationToken.None);
+
+        Assert.Equal("10m", res.Metrics!.TotalRecordedDuration);
+    }
+
+    /// <summary>单日记录时长合计不超过 24 小时物理上限。</summary>
+    [Fact]
+    public async Task GetSummary_ManyLongEvents_RecordedDurationNeverExceeds24Hours()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 每 10 分钟起一条 3600 秒事件，铺满整个业务日
+        for (var i = 0; i < 144; i++)
+        {
+            db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(7, 4).AddMinutes(i * 10), 3600, "code.exe"));
+        }
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcTrackerService(db);
+        var res = await svc.GetSummaryAsync(TestDate, CancellationToken.None);
+
+        // 解析 "24h" / "23h 50m" 形式，断言不超过 24h
+        Assert.StartsWith("2", res.Metrics!.TotalRecordedDuration);
+        Assert.DoesNotContain("25h", res.Metrics.TotalRecordedDuration);
+    }
+
+    /// <summary>
+    /// 闲置时长取 AW afk 与 tracker idle 的**区间并集**（review 发现的 Important）：
+    /// 两路覆盖同一时段时不得重复相加。
+    /// </summary>
+    [Fact]
+    public async Task GetSummary_OverlappingAwAfkAndTrackerIdle_CountedOnce()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // AW afk：北京 10:00-11:00（60 分钟）
+        db.Set<AwEventEntity>().Add(new AwEventEntity
+        {
+            DeviceId = "pc-1",
+            Timestamp = Beijing(7, 10),
+            Duration = 3600,
+            EventType = "afk",
+            AfkStatus = "afk",
+            DataJson = "{}",
+            BucketType = "afk",
+            CreatedAt = Beijing(7, 10),
+            UpdatedAt = Beijing(7, 10),
+        });
+        // tracker idle：北京 10:30-11:30（与 AW 重叠 30 分钟）
+        db.Set<TrackerEventEntity>().Add(TrackerEvent("idle", Beijing(7, 10, 30), 3600));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcTrackerService(db);
+        var res = await svc.GetSummaryAsync(TestDate, CancellationToken.None);
+
+        // 并集 10:00-11:30 = 90 分钟；直接相加会得到 120 分钟
+        Assert.Equal("1h 30m", res.Metrics!.IdleDuration);
+    }
+
+    /// <summary>同一来源内部重叠的 idle 事件同样只算一次。</summary>
+    [Fact]
+    public async Task GetSummary_OverlappingTrackerIdleEvents_CountedOnce()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        db.Set<TrackerEventEntity>().Add(TrackerEvent("idle", Beijing(7, 10), 3600));
+        db.Set<TrackerEventEntity>().Add(TrackerEvent("idle", Beijing(7, 10, 30), 3600));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcTrackerService(db);
+        var res = await svc.GetSummaryAsync(TestDate, CancellationToken.None);
+
+        Assert.Equal("1h 30m", res.Metrics!.IdleDuration);
+    }
+
+    /// <summary>
+    /// 两路来源记录同一条底层事件时（迁移期双写 / 重复上传）按「应用+时刻+时长」去重，
+    /// 避免会话与应用切换计数被放大（review 发现的 Important）。
+    /// </summary>
+    [Fact]
+    public async Task GetSummary_DuplicateEventAcrossSources_DoesNotInflateAppSwitchCount()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // code.exe 10:00-10:10；firefox 10:10-10:20
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(7, 10), 600, "code.exe"));
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(7, 10, 10), 600, "firefox.exe"));
+        // 同一事件被 AW 也记录一遍（时刻 / 时长 / 应用完全相同）
+        db.Set<AwEventEntity>().Add(new AwEventEntity
+        {
+            DeviceId = "pc-1",
+            Timestamp = Beijing(7, 10),
+            Duration = 600,
+            EventType = "window",
+            AppName = "code.exe",
+            AppNameNormalized = "code.exe",
+            WindowTitle = "dup",
+            DataJson = "{}",
+            BucketType = "currentwindow",
+            CreatedAt = Beijing(7, 10),
+            UpdatedAt = Beijing(7, 10),
+        });
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcTrackerService(db);
+        var res = await svc.GetSummaryAsync(TestDate, CancellationToken.None);
+
+        // 去重后 code → firefox 只有 1 次切换（不去重会算 2 次）
+        Assert.Equal(1, res.Metrics!.AppSwitchCount);
+        // 记录时长仍是并集 20 分钟
+        Assert.Equal("20m", res.Metrics.TotalRecordedDuration);
+    }
+
+    /// <summary>应用名大小写不同不应误计为一次切换。</summary>
+    [Fact]
+    public async Task GetSummary_AppNameCaseChange_IsNotCountedAsSwitch()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(7, 10), 600, "Code.exe"));
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(7, 10, 10), 600, "code.exe"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcTrackerService(db);
+        var res = await svc.GetSummaryAsync(TestDate, CancellationToken.None);
+
+        Assert.Equal(0, res.Metrics!.AppSwitchCount);
+        // 大小写不同的同一应用只算一个
+        Assert.Equal(1, res.Metrics.ActiveAppCount);
+    }
+
     // ================= 业务日边界 =================
 
     /// <summary>业务日窗口 [D 04:00, D+1 04:00)：北京 03:30 属前一业务日，不计入本日。</summary>
