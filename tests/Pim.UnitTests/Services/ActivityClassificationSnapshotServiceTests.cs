@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
@@ -135,6 +136,69 @@ public class ActivityClassificationSnapshotServiceTests
         var snapshot = Assert.Single(snapshots);
         Assert.Equal("\u529e\u516c", snapshot.CategoryName);
         Assert.Equal(auditId, snapshot.AuditId);
+    }
+
+    [Fact]
+    public async Task EnsureClassificationsAsync_RetriesRepeatedUniqueRacesForMixedUpdatesAndInserts()
+    {
+        var databaseName = Guid.NewGuid().ToString();
+        using (var seedDb = CreateDb(databaseName))
+        {
+            var existingRecord = NewRecord("Code.exe", "existing.cs");
+            seedDb.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity
+            {
+                Id = Guid.NewGuid(),
+                RecordKey = ActivityClassificationRecordKey.FromRecord(existingRecord),
+                RecordType = existingRecord.RecordType,
+                DeviceId = existingRecord.DeviceId,
+                SourceEventIdsJson = ActivityClassificationRecordKey.SourceEventIdsJson(existingRecord),
+                StartedAt = DateTimeOffset.Parse(existingRecord.Start),
+                EndedAt = DateTimeOffset.Parse(existingRecord.End!),
+                CategoryName = "旧分类",
+                CategoryColor = "#64748b",
+                Source = "fallback",
+                Explanation = "seed"
+            });
+            await seedDb.SaveChangesAsync();
+        }
+
+        using var db = CreateDbWithRepeatedClassificationInsertRace(databaseName);
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
+        var existing = NewRecord("Code.exe", "existing.cs");
+        var insertOne = NewRecord("Code.exe", "new-one.cs");
+        var insertTwo = NewRecord("Code.exe", "new-two.cs");
+        var auditId = Guid.NewGuid();
+
+        var classified = await service.EnsureClassificationsAsync(
+            [existing, insertOne, insertTwo],
+            [NewRule("Code is programming", "编程")],
+            auditId,
+            CancellationToken.None);
+
+        Assert.Equal(3, classified.Count);
+        Assert.All(classified, record => Assert.Equal("编程", record.CategoryName));
+        Assert.Equal(3, await db.Set<ActivityClassificationEntity>().CountAsync());
+        Assert.Equal("编程", await db.Set<ActivityClassificationEntity>()
+            .Where(snapshot => snapshot.RecordKey == ActivityClassificationRecordKey.FromRecord(existing))
+            .Select(snapshot => snapshot.CategoryName)
+            .SingleAsync());
+        Assert.Equal(3, db.SaveAttemptCount);
+    }
+
+    [Fact]
+    public async Task EnsureClassificationsAsync_PropagatesUnrelatedDatabaseFailure()
+    {
+        using var db = CreateDbWithUnrelatedClassificationSaveFailure();
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
+
+        var exception = await Assert.ThrowsAsync<DbUpdateException>(() => service.EnsureClassificationsAsync(
+            [NewRecord("Code.exe", "unrelated-failure.cs")],
+            [NewRule("Code is programming", "编程")],
+            Guid.NewGuid(),
+            CancellationToken.None));
+
+        Assert.Contains("unrelated", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(1, db.SaveAttemptCount);
     }
 
     [Fact]
@@ -362,13 +426,34 @@ public class ActivityClassificationSnapshotServiceTests
     }
 
     private static PimDbContext CreateDb()
+        => CreateDb(Guid.NewGuid().ToString());
+
+    private static PimDbContext CreateDb(string databaseName)
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(ActivityClassificationEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(databaseName)
+            .Options;
+
+        return new PimDbContext(options);
+    }
+
+    private static RacePimDbContext CreateDbWithRepeatedClassificationInsertRace(string databaseName)
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(ActivityClassificationEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(databaseName)
+            .Options;
+        return new RacePimDbContext(options);
+    }
+
+    private static UnrelatedFailurePimDbContext CreateDbWithUnrelatedClassificationSaveFailure()
     {
         PimDbContext.RegisterModuleAssembly(typeof(ActivityClassificationEntity).Assembly);
         var options = new DbContextOptionsBuilder<PimDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
-
-        return new PimDbContext(options);
+        return new UnrelatedFailurePimDbContext(options);
     }
 
     private static PcDetailRecord NewRecord(string appName, string title) =>
@@ -433,4 +518,70 @@ public class ActivityClassificationSnapshotServiceTests
             Confidence = 0.95,
             Explanation = "Matched test rule."
         };
+
+    private sealed class RacePimDbContext : PimDbContext
+    {
+        private readonly DbContextOptions<PimDbContext> _options;
+
+        public RacePimDbContext(DbContextOptions<PimDbContext> options)
+            : base(options)
+        {
+            _options = options;
+        }
+
+        public int SaveAttemptCount { get; private set; }
+
+        public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        {
+            SaveAttemptCount++;
+            var pending = ChangeTracker.Entries<ActivityClassificationEntity>()
+                .Where(entry => entry.State == EntityState.Added)
+                .OrderBy(entry => entry.Entity.RecordKey, StringComparer.Ordinal)
+                .FirstOrDefault();
+
+            if (SaveAttemptCount <= 2 && pending is not null)
+            {
+                await using var competingDb = new PimDbContext(_options);
+                var now = DateTimeOffset.UtcNow;
+                competingDb.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity
+                {
+                    Id = Guid.NewGuid(),
+                    RecordKey = pending.Entity.RecordKey,
+                    RecordType = pending.Entity.RecordType,
+                    DeviceId = pending.Entity.DeviceId,
+                    SourceEventIdsJson = pending.Entity.SourceEventIdsJson,
+                    StartedAt = pending.Entity.StartedAt,
+                    EndedAt = pending.Entity.EndedAt,
+                    CategoryName = "竞争写入",
+                    CategoryColor = "#64748b",
+                    Source = "fallback",
+                    Explanation = "competing writer",
+                    ClassifiedAt = now
+                });
+                await competingDb.SaveChangesAsync(cancellationToken);
+                throw new DbUpdateException(
+                    "Simulated activity classification unique race.",
+                    new PostgresException("duplicate key", "ERROR", "ERROR", "23505"));
+            }
+
+            return await base.SaveChangesAsync(cancellationToken);
+        }
+    }
+
+    private sealed class UnrelatedFailurePimDbContext : PimDbContext
+    {
+        public UnrelatedFailurePimDbContext(DbContextOptions<PimDbContext> options)
+            : base(options)
+        {
+        }
+
+        public int SaveAttemptCount { get; private set; }
+
+        public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        {
+            SaveAttemptCount++;
+            throw new DbUpdateException("Simulated unrelated database failure.",
+                new PostgresException("deadlock", "ERROR", "ERROR", "40P01"));
+        }
+    }
 }

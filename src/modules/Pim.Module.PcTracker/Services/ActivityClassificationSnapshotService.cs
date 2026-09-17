@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
@@ -9,6 +10,7 @@ namespace Pim.Module.PcTracker.Services;
 public class ActivityClassificationSnapshotService
 {
     public const string ClassifierVersion = "local-v1";
+    private const int MaxUniqueViolationRetries = 5;
 
     private readonly PimDbContext _db;
     private readonly ILogger<ActivityClassificationSnapshotService> _logger;
@@ -101,47 +103,52 @@ public class ActivityClassificationSnapshotService
 
     /// <summary>
     /// 并发防护：后台定时补齐与页面触发的 ensure 可能同时插入同一 record_key，
-    /// PG 唯一索引会让后提交方抛 DbUpdateException。此处重查该批 keys、剔除他方已写入的
-    /// 重复实体后重试一次；仅当确实存在重复键时才重试（其他更新异常原样抛出），
-    /// 重试再失败抛原始异常。
+    /// PG 唯一索引会让后提交方抛 DbUpdateException。每轮重查该批 keys、剔除他方已写入的
+    /// 重复实体后重试；仅处理 PostgreSQL 唯一键冲突，其他数据库异常原样抛出。
     /// </summary>
     private async Task SaveWithUniqueKeyRetryAsync(List<string> keys, CancellationToken ct)
     {
-        try
+        for (var attempt = 0; ; attempt++)
         {
-            await _db.SaveChangesAsync(ct);
-        }
-        catch (DbUpdateException original)
-        {
-            var tracked = _db.ChangeTracker.Entries<ActivityClassificationEntity>()
-                .Where(entry => entry.State == EntityState.Added)
-                .ToList();
-
-            var existingKeys = new HashSet<string>(
-                await _db.Set<ActivityClassificationEntity>()
-                    .Where(entity => keys.Contains(entity.RecordKey))
-                    .Select(entity => entity.RecordKey)
-                    .ToListAsync(ct),
-                StringComparer.Ordinal);
-
-            var duplicates = tracked
-                .Where(entry => existingKeys.Contains(entry.Entity.RecordKey))
-                .ToList();
-            if (duplicates.Count == 0)
-                throw;
-
-            foreach (var entry in duplicates)
-                entry.State = EntityState.Detached;
-
             try
             {
                 await _db.SaveChangesAsync(ct);
+                return;
             }
-            catch
+            catch (DbUpdateException ex) when (IsPostgreSqlUniqueViolation(ex) && attempt < MaxUniqueViolationRetries - 1)
             {
-                throw original;
+                var tracked = _db.ChangeTracker.Entries<ActivityClassificationEntity>()
+                    .Where(entry => entry.State == EntityState.Added)
+                    .ToList();
+
+                var existingKeys = new HashSet<string>(
+                    await _db.Set<ActivityClassificationEntity>()
+                        .Where(entity => keys.Contains(entity.RecordKey))
+                        .Select(entity => entity.RecordKey)
+                        .ToListAsync(ct),
+                    StringComparer.Ordinal);
+
+                var duplicates = tracked
+                    .Where(entry => existingKeys.Contains(entry.Entity.RecordKey))
+                    .ToList();
+                if (duplicates.Count == 0)
+                    throw;
+
+                foreach (var entry in duplicates)
+                    entry.State = EntityState.Detached;
             }
         }
+    }
+
+    private static bool IsPostgreSqlUniqueViolation(DbUpdateException exception)
+    {
+        for (Exception? current = exception.InnerException; current is not null; current = current.InnerException)
+        {
+            if (current is PostgresException postgresException)
+                return postgresException.SqlState == PostgresErrorCodes.UniqueViolation;
+        }
+
+        return false;
     }
 
     private static bool TryCreateKeyedRecord(PcDetailRecord record, out KeyedRecord? keyedRecord)
