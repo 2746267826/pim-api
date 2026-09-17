@@ -11,6 +11,7 @@ using Pim.Api.Modules.ClientShell;
 using Pim.Api.Services;
 using Pim.Api.Search;
 using Pim.Api.Today;
+using Pim.Api.Tiles;
 using Pim.Core.Caching;
 using Pim.Core.Today;
 using Pim.Infrastructure.Extensions;
@@ -178,6 +179,7 @@ builder.Services.AddSingleton<SqlAstValidator>();
 builder.Services.AddScoped<OpsDbService>();
 builder.Services.AddSingleton<OpsRateLimiter>();
 builder.Services.AddClientShell(builder.Configuration);
+builder.Services.AddTileServices(builder.Configuration);
 builder.Services.AddMemoryCache();
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
 {
@@ -351,6 +353,7 @@ app.MapDataReliabilityEndpoints();
 app.MapTodayEndpoints();
 app.MapAiEndpoints();
 app.MapClientShell();
+app.MapTileEndpoints();
 
 // Module endpoints
 moduleRegistry.MapAllEndpoints(app);

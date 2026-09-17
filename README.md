@@ -266,7 +266,7 @@ npm --prefix src/client-web run dev
 - **SSL**：证书 `fullchain.pem` / `privkey.pem`。
 - **WebSocket / SSE**：`Upgrade` / `Connection` 必须透传（OnlyOffice 在线编辑及 MCP Streamable HTTP 流式传输依赖）。
 - **上传体积**：`client_max_body_size 500M`。
-- **路径转发**：`/` 与 `/api/` 转发到 API，`/mcp` 保持长连接；地图瓦片另需补充 `/tiles` 反代 OpenStreetMap 瓦片服务。
+- **路径转发**：`/`、`/api/` 与 `/mcp` 转发到 API；地图瓦片由 API 的 `/api/v1/tiles/{z}/{x}/{y}.png` 服务端拉取并缓存。生产机原有 `/tiles` nginx 反代配置需由运维单独移除，本仓库不修改生产配置。
 
 ### 备份与恢复
 
