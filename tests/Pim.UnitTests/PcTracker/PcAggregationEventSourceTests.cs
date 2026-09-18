@@ -168,6 +168,151 @@ public sealed class PcAggregationEventSourceTests
         Assert.True(day.HadActivity);
     }
 
+    // ================= review 修复：长事件不截断、跨业务日边界不漏算 =================
+
+    /// <summary>
+    /// 单条事件超过 1 小时不得被截断（review 发现 Important）：聚合端点原用 3600s 上限，
+    /// 而镜像中 tracker 存在 4170s / 9560s 的合法前台窗口事件，会与概览指标口径不一致。
+    /// </summary>
+    [Fact]
+    public async Task FocusBlocks_EventLongerThanOneHour_IsNotTruncatedToSixtyMinutes()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 北京 10:00 起 90 分钟
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 10), 5400, "code.exe"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcAggregationService(db);
+        var res = await svc.GetFocusBlocksAsync(Day(), CancellationToken.None);
+
+        var block = Assert.Single(res.Items);
+        Assert.InRange(block.DurationMinutes, 89, 91);
+    }
+
+    /// <summary>应用时长同样不得把超过 1 小时的事件截断到 60 分钟。</summary>
+    [Fact]
+    public async Task AppUsage_EventLongerThanOneHour_IsNotTruncated()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 10), 5400, "code.exe"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcAggregationService(db);
+        var res = await svc.GetAppUsageAsync(Day(), null, CancellationToken.None);
+
+        var app = Assert.Single(res.Items);
+        Assert.InRange(app.TotalMinutes, 89, 91);
+        Assert.InRange(res.TotalMinutes, 89, 91);
+    }
+
+    /// <summary>
+    /// 起点在业务日窗口之前、但延伸进窗口的事件必须计入（review 发现 Important）：
+    /// 只按「起点落在窗口内」筛选会整条丢弃（镜像中有 26 条 AW window 跨 04:00 边界）。
+    /// </summary>
+    [Fact]
+    public async Task FocusBlocks_EventStartingBeforeBusinessDay_IsClippedNotDropped()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 北京 9/17 03:30 起 60 分钟 → 业务日 9/17 只应计入 04:00-04:30 共 30 分钟。
+        // 用 ≥10 分钟的专注块下限保证这条记录会形成块。
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 3, 30), 3600, "code.exe"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcAggregationService(db);
+        var res = await svc.GetFocusBlocksAsync(new PcAggregationQuery("2026-09-17", null, null, null), CancellationToken.None);
+
+        var block = Assert.Single(res.Items);
+        Assert.InRange(block.DurationMinutes, 29, 31);
+    }
+
+    /// <summary>起点越界的事件不得把整条时长都算进本业务日（裁剪后合计不超过窗口）。</summary>
+    [Fact]
+    public async Task AppUsage_EventStartingBeforeBusinessDay_CountsOnlyClippedPart()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 3, 30), 3600, "code.exe"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcAggregationService(db);
+        var res = await svc.GetAppUsageAsync(new PcAggregationQuery("2026-09-17", null, null, null), null, CancellationToken.None);
+
+        Assert.InRange(res.TotalMinutes, 29, 31);
+    }
+
+    /// <summary>完全落在窗口之外（更早）的事件仍不应计入。</summary>
+    [Fact]
+    public async Task FocusBlocks_EventEntirelyBeforeBusinessDay_IsIgnored()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 北京 9/17 02:00 起 30 分钟，完全在业务日 04:00 之前
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 2), 1800, "code.exe"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcAggregationService(db);
+        var res = await svc.GetFocusBlocksAsync(new PcAggregationQuery("2026-09-17", null, null, null), CancellationToken.None);
+
+        Assert.Empty(res.Items);
+    }
+
+    // ================= review 修复：热力图网格同样跟随数据源 =================
+
+    /// <summary>
+    /// 通用热力图网格（PC 记录页 / MCP get_pc_heatmap）原只读 pc_aw_events，
+    /// tracker-only 日期 24 个桶全为 0（实测 283 条 tracker window 事件仍显示 0），
+    /// 与同页其它区块自相矛盾（review 发现 Important）。
+    /// </summary>
+    [Fact]
+    public async Task HeatmapGrid_TrackerEventsOnly_CountsEvents()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 10), 600, "code.exe"));
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 10, 30), 600, "code.exe"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcTrackerService(db);
+        var res = await svc.GetHeatmapGridAsync(new DateTime(2026, 9, 17), new DateTime(2026, 9, 17), "hour", CancellationToken.None);
+
+        var row = Assert.Single(res.Grid);
+        Assert.Equal(24, row.Count);
+        Assert.Equal(2, row.Sum(b => b.TotalEvents));
+    }
+
+    /// <summary>两路来源覆盖同一时段时，热力图事件数不重复计数。</summary>
+    [Fact]
+    public async Task HeatmapGrid_DuplicateAcrossSources_CountedOnce()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 10), 600, "code.exe"));
+        db.Set<AwEventEntity>().Add(AwWindow(Beijing(17, 10), 600, "code.exe"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcTrackerService(db);
+        var res = await svc.GetHeatmapGridAsync(new DateTime(2026, 9, 17), new DateTime(2026, 9, 17), "hour", CancellationToken.None);
+
+        var row = Assert.Single(res.Grid);
+        Assert.Equal(2, row.Sum(b => b.TotalEvents));
+    }
+
+    /// <summary>gap / idle 不属于前台窗口，不计入热力图事件数。</summary>
+    [Fact]
+    public async Task HeatmapGrid_GapAndIdle_AreExcluded()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 10), 600, "code.exe"));
+        db.Set<TrackerEventEntity>().Add(new TrackerEventEntity
+        {
+            DeviceId = "pc-1", Timestamp = Beijing(17, 11), Duration = 600,
+            EventType = "gap", CreatedAt = Beijing(17, 11), Date = new DateTime(2026, 9, 17),
+        });
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcTrackerService(db);
+        var res = await svc.GetHeatmapGridAsync(new DateTime(2026, 9, 17), new DateTime(2026, 9, 17), "hour", CancellationToken.None);
+
+        var row = Assert.Single(res.Grid);
+        Assert.Equal(1, row.Sum(b => b.TotalEvents));
+    }
+
     // ================= 无数据时保持为空 =================
 
     [Fact]

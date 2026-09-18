@@ -17,7 +17,19 @@ public sealed class PcActivityAggregationService
     private const int LateNightStartMinute = 30;
     private const int BlockMergeGapMinutes = 5;
     private const int MinFocusBlockMinutes = 10;
-    private const double MaxEventDurationSeconds = 3600;
+    /// <summary>
+    /// 分类快照的单条时长上限（秒）：3600s。这是分类分布的既有口径（#301 明确保留
+    /// 「先 cap 再按重叠比例分摊」），不要与下面的窗口事件上限混用。
+    /// </summary>
+    private const double MaxClassificationDurationSeconds = 3600;
+
+    /// <summary>
+    /// 前台窗口事件（AW / 原生 tracker）的单条时长上限（秒）。取一个业务日的长度：
+    /// 它只用于防止异常值溢出，不构成低估 —— 区间随后都裁剪到业务日窗口，合计天然不超过 24 小时。
+    /// 原先与分类快照共用 3600s，会把合法长事件截断（实测 tracker 存在 4170s / 9560s 的
+    /// 前台窗口事件），也与概览指标的口径不一致（#303 review）。
+    /// </summary>
+    private const double MaxWindowEventSeconds = 24 * 60 * 60;
     private const double MinAppDurationSeconds = 60;
     private const int DefaultAppUsageLimit = 8;
     private const int MaxAppUsageLimit = 50;
@@ -174,7 +186,7 @@ public sealed class PcActivityAggregationService
             .Select(g => new
             {
                 Category = g.Key,
-                Seconds = g.Sum(s => OverlapSeconds(s, window.StartUtc, window.EndUtc, MaxEventDurationSeconds)),
+                Seconds = g.Sum(s => OverlapSeconds(s, window.StartUtc, window.EndUtc, MaxClassificationDurationSeconds)),
                 Color = ResolveCategoryColor(g.Key, g.Select(s => s.CategoryColor))
             })
             .OrderByDescending(x => x.Seconds)
@@ -294,18 +306,22 @@ public sealed class PcActivityAggregationService
     /// </summary>
     private async Task<List<AggregationEvent>> LoadWindowEventsAsync(PcQueryWindow window, CancellationToken ct)
     {
+        // 按**区间重叠**查询，而不是「起点落在窗口内」：窗口开始前开始、但延伸进窗口的
+        // 长事件同样属于该业务日，只按起点筛选会整条丢弃（#303 review；镜像中有 26 条
+        // AW window 事件跨 04:00 边界）。
+        var windowStart = window.StartUtc.AddSeconds(-MaxWindowEventSeconds);
         var awEvents = await _db.Set<AwEventEntity>()
             .Where(e => e.EventType == "window"
                 && (e.AfkStatus == null || e.AfkStatus != "afk")
                 && e.Duration > 0
-                && e.Timestamp >= window.StartUtc
+                && e.Timestamp >= windowStart
                 && e.Timestamp < window.EndUtc)
             .Select(e => new { e.Timestamp, e.Duration, e.AppName, e.AppNameNormalized })
             .ToListAsync(ct);
         var trackerEvents = await _db.Set<TrackerEventEntity>()
             .Where(e => e.EventType == "window"
                 && e.Duration > 0
-                && e.Timestamp >= window.StartUtc
+                && e.Timestamp >= windowStart
                 && e.Timestamp < window.EndUtc)
             .Select(e => new { e.Timestamp, e.Duration, e.AppName })
             .ToListAsync(ct);
@@ -318,9 +334,18 @@ public sealed class PcActivityAggregationService
             var normalized = AppNameNormalizer.Normalize(appName);
             if (string.IsNullOrWhiteSpace(normalized))
                 return;
-            if (!seen.Add((timestamp.UtcTicks, (long)Math.Round(duration * 1000), normalized.ToLowerInvariant())))
+
+            // 裁剪到业务日窗口：跨入 / 跨出的部分不计入本日。
+            var cappedEnd = timestamp.AddSeconds(Math.Min(duration, MaxWindowEventSeconds));
+            var start = timestamp > window.StartUtc ? timestamp : window.StartUtc;
+            var end = cappedEnd < window.EndUtc ? cappedEnd : window.EndUtc;
+            if (end <= start)
                 return;
-            result.Add(new AggregationEvent(timestamp, duration, normalized));
+
+            var clippedSeconds = (end - start).TotalSeconds;
+            if (!seen.Add((start.UtcTicks, (long)Math.Round(clippedSeconds * 1000), normalized.ToLowerInvariant())))
+                return;
+            result.Add(new AggregationEvent(start, clippedSeconds, normalized));
         }
 
         foreach (var e in awEvents)
@@ -416,7 +441,7 @@ public sealed class PcActivityAggregationService
         foreach (var e in sortedEvents)
         {
             var s = e.Timestamp;
-            var en = e.Timestamp.AddSeconds(Math.Min(e.Duration, MaxEventDurationSeconds));
+            var en = e.Timestamp.AddSeconds(Math.Min(e.Duration, MaxWindowEventSeconds));
             if (result.Count == 0)
             {
                 result.Add((s, en));
@@ -442,11 +467,11 @@ public sealed class PcActivityAggregationService
         if (filtered.Count == 0) return 0;
         double total = 0;
         var curStart = filtered[0].Timestamp;
-        var curEnd = filtered[0].Timestamp.AddSeconds(Math.Min(filtered[0].Duration, MaxEventDurationSeconds));
+        var curEnd = filtered[0].Timestamp.AddSeconds(Math.Min(filtered[0].Duration, MaxWindowEventSeconds));
         for (var i = 1; i < filtered.Count; i++)
         {
             var s = filtered[i].Timestamp;
-            var en = filtered[i].Timestamp.AddSeconds(Math.Min(filtered[i].Duration, MaxEventDurationSeconds));
+            var en = filtered[i].Timestamp.AddSeconds(Math.Min(filtered[i].Duration, MaxWindowEventSeconds));
             if (s <= curEnd)
             {
                 if (en > curEnd) curEnd = en;

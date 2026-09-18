@@ -685,16 +685,30 @@ public partial class PcTrackerService
             var daily = keystats.FirstOrDefault(x => x.SnapshotDate == targetDate);
             var dayStart = BusinessDayStart(targetDate);
             var dayEnd = dayStart.AddDays(1);
+            // #303：与概览指标同一口径 —— 合并 AW 与原生 tracker 的 window 事件。
+            // 只读 pc_aw_events 时，tracker-only 日期 24 个桶全为 0（实测 283 条 tracker
+            // window 事件却显示 0 事件），而同一页面其它区块有数据，自相矛盾。
             var awEvents = await _db.Set<AwEventEntity>()
                 .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd && e.EventType == "window")
+                .Select(e => new { e.Timestamp, e.Duration, e.AppName, e.AppNameNormalized })
+                .ToListAsync(ct);
+            var trackerHeatmapEvents = await _db.Set<TrackerEventEntity>()
+                .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd && e.EventType == "window")
+                .Select(e => new { e.Timestamp, e.Duration, e.AppName })
                 .ToListAsync(ct);
 
-            var totalAwEvents = awEvents.Count;
+            var hourEvents = awEvents
+                .Select(e => (Timestamp: e.Timestamp, App: NormalizeMetricApp(e.AppNameNormalized ?? e.AppName)))
+                .Concat(trackerHeatmapEvents.Select(e => (Timestamp: e.Timestamp, App: NormalizeMetricApp(e.AppName))))
+                .Where(e => !string.IsNullOrWhiteSpace(e.App))
+                .ToList();
+
+            var totalAwEvents = hourEvents.Count;
             var row = Enumerable.Range(0, 24).Select(h =>
             {
                 var bucketStart = dayStart.AddHours(h);
                 var bucketEnd = bucketStart.AddHours(1);
-                var eventCount = awEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
+                var eventCount = hourEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
                 var keyCount = daily is not null && daily.KeyPresses > 0
                     ? totalAwEvents > 0 ? (int)((double)daily.KeyPresses * eventCount / totalAwEvents) : (int)(daily.KeyPresses / 24.0)
                     : 0;
@@ -1500,6 +1514,10 @@ public partial class PcTrackerService
                 .FirstOrDefault()?.App ?? "-",
             totalClicks > 0 ? Math.Round((double)keyPresses / totalClicks, 2) : 0);
     }
+
+    /// <summary>热力图事件的应用名归一（#303）：与概览指标一致，去掉 .exe 等噪声后缀。</summary>
+    private static string NormalizeMetricApp(string? appName)
+        => AppNameNormalizer.Normalize(appName);
 
     private static string FormatDuration(double minutes)
     {
