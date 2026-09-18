@@ -537,6 +537,100 @@ public sealed class PcCategoryDistributionOverlapTests
         Assert.InRange(res.DistractingHours, 0.0, 0.05);
     }
 
+    // ================= review 修复：两个 resolver 口径必须一致 =================
+
+    /// <summary>
+    /// 分类分布/生产力用的 <see cref="PcActivityOverlapResolver"/> 与时间线 v2 用的
+    /// <see cref="PcTimelineOverlapResolver"/> 必须对同一输入给出同一胜者
+    /// （review 发现两套规则曾分别以「记录类型优先级」和「置信度」为首要键）。
+    /// </summary>
+    [Fact]
+    public void Resolvers_AgreeOnWinnerForSameInput()
+    {
+        var start = Beijing(17, 10);
+        var end = Beijing(17, 11);
+
+        // A：window（高优先级）但低置信；B：web-page（低优先级）但高置信
+        var shared = new List<PcActivityOverlapResolver.Candidate>
+        {
+            new(start, end, "window", 0.2, "key-a"),
+            new(start, end, "web-page", 0.9, "key-b"),
+        };
+        var timeline = new List<PcTimelineOverlapResolver.Candidate>
+        {
+            new(start, end, 0.2, "key-a", "window"),
+            new(start, end, 0.9, "key-b", "web-page"),
+        };
+
+        var sharedWinner = Assert.Single(PcActivityOverlapResolver.Resolve(shared)).WinnerIndex;
+        var timelineWinner = Assert.Single(PcTimelineOverlapResolver.Resolve(timeline, TimeSpan.Zero)).WinnerIndex;
+
+        Assert.Equal(sharedWinner, timelineWinner);
+        // 记录类型优先级是首要键 → window 胜出
+        Assert.Equal(0, sharedWinner);
+    }
+
+    /// <summary>时间线候选不带记录类型时退化为「置信度 → 时长 → 稳定键」，保持其历史行为。</summary>
+    [Fact]
+    public void TimelineResolver_WithoutRecordType_FallsBackToConfidence()
+    {
+        var start = Beijing(17, 10);
+        var end = Beijing(17, 11);
+        var candidates = new List<PcTimelineOverlapResolver.Candidate>
+        {
+            new(start, end, 0.2, "key-a"),
+            new(start, end, 0.9, "key-b"),
+        };
+
+        var winner = Assert.Single(PcTimelineOverlapResolver.Resolve(candidates, TimeSpan.Zero)).WinnerIndex;
+        Assert.Equal(1, winner); // 置信度 0.9 者胜
+    }
+
+    /// <summary>
+    /// 长区间查询不得退化为逐日全量扫描（review 发现的 Important）：
+    /// 365 天范围 + 大量记录必须能在合理时间内完成。
+    /// </summary>
+    [Fact]
+    public async Task ProductivityRange_LongRange_CompletesQuickly()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 60 天、每天 120 条记录（共 7200 条），查询 365 天
+        var day = new DateTime(2026, 1, 1);
+        for (var d = 0; d < 60; d++)
+        {
+            for (var i = 0; i < 120; i++)
+            {
+                var start = new DateTimeOffset(day.AddDays(d).AddHours(8).AddMinutes(i * 5), TimeSpan.FromHours(8));
+                db.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity
+                {
+                    Id = Guid.NewGuid(),
+                    RecordKey = $"perf-{d}-{i}",
+                    RecordType = "window",
+                    DeviceId = "pc-1",
+                    StartedAt = start.ToUniversalTime(),
+                    EndedAt = start.AddMinutes(5).ToUniversalTime(),
+                    CategoryName = i % 2 == 0 ? "编程/折腾" : "游戏",
+                    CategoryColor = "#10b981",
+                    Confidence = 0.8,
+                    Source = "rule",
+                    ClassifierVersion = "v1",
+                    ClassifiedAt = DateTimeOffset.UtcNow,
+                });
+            }
+        }
+        await db.SaveChangesAsync();
+
+        var svc = new PcProductivityService(db, ServiceTestBase.Time(new DateTimeOffset(2026, 6, 1, 12, 0, 0, TimeSpan.Zero)));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var res = await svc.GetRangeAsync(new DateTime(2026, 1, 1), new DateTime(2026, 12, 31), CancellationToken.None);
+        sw.Stop();
+
+        Assert.NotEmpty(res);
+        // 逐日全量扫描会是 365 × 7200 ≈ 260 万次候选构造；建索引后远低于此。
+        Assert.True(sw.ElapsedMilliseconds < 15_000,
+            $"365 天区间查询耗时 {sw.ElapsedMilliseconds}ms，疑似仍为逐日全量扫描");
+    }
+
     /// <summary>gap / idle 不参与生产力统计。</summary>
     [Fact]
     public async Task ProductivityDashboard_GapAndIdle_AreExcluded()

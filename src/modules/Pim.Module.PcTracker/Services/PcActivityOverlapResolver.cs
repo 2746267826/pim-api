@@ -64,6 +64,34 @@ public static class PcActivityOverlapResolver
             : 1;
 
     /// <summary>
+    /// 统一的胜出判定（<b>全仓库唯一口径</b>）：记录类型优先级高 → 置信度高 →
+    /// 原始时区长 → 稳定键序小（确定性兜底）。
+    /// <para>
+    /// 分类分布、生产力统计与时间线 v2 共用本判定，避免同一时刻在不同接口归属不同分类
+    /// （review 发现：两套 resolver 曾分别以「优先级」和「置信度」为首要键）。
+    /// <paramref name="recordType"/> 为空表示调用方没有类型信息，此时退化为
+    /// 「置信度 → 时长 → 稳定键」——与该场景原有的历史行为一致。
+    /// </para>
+    /// </summary>
+    public static bool Beats(
+        string? challengerRecordType, double challengerConfidence, TimeSpan challengerDuration, string challengerStableKey,
+        string? incumbentRecordType, double incumbentConfidence, TimeSpan incumbentDuration, string incumbentStableKey)
+    {
+        var challengerPriority = PriorityOf(challengerRecordType);
+        var incumbentPriority = PriorityOf(incumbentRecordType);
+        if (challengerPriority != incumbentPriority)
+            return challengerPriority > incumbentPriority;
+
+        if (challengerConfidence != incumbentConfidence)
+            return challengerConfidence > incumbentConfidence;
+
+        if (challengerDuration.Ticks != incumbentDuration.Ticks)
+            return challengerDuration.Ticks > incumbentDuration.Ticks;
+
+        return string.CompareOrdinal(challengerStableKey, incumbentStableKey) < 0;
+    }
+
+    /// <summary>
     /// 把候选区间消解为互不重叠的时间块（按 start 升序）。
     /// 零长 / 负长区间被丢弃；结果保证 <c>segments[i].Start &gt;= segments[i-1].End</c>。
     /// </summary>
@@ -132,22 +160,9 @@ public static class PcActivityOverlapResolver
     }
 
     private static bool IsBetter(in Candidate challenger, in Candidate incumbent)
-    {
-        var challengerPriority = PriorityOf(challenger.RecordType);
-        var incumbentPriority = PriorityOf(incumbent.RecordType);
-        if (challengerPriority != incumbentPriority)
-            return challengerPriority > incumbentPriority;
-
-        if (challenger.Confidence != incumbent.Confidence)
-            return challenger.Confidence > incumbent.Confidence;
-
-        var challengerTicks = (challenger.End - challenger.Start).Ticks;
-        var incumbentTicks = (incumbent.End - incumbent.Start).Ticks;
-        if (challengerTicks != incumbentTicks)
-            return challengerTicks > incumbentTicks;
-
-        return string.CompareOrdinal(challenger.StableKey, incumbent.StableKey) < 0;
-    }
+        => Beats(
+            challenger.RecordType, challenger.Confidence, challenger.End - challenger.Start, challenger.StableKey,
+            incumbent.RecordType, incumbent.Confidence, incumbent.End - incumbent.Start, incumbent.StableKey);
 
     /// <summary>相邻且归属相同的段合并（例如高优先记录打断后重新接上）。</summary>
     private static void Append(List<Segment> segments, Segment segment)

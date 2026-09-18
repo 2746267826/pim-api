@@ -155,11 +155,35 @@ public class PcProductivityService
         }
 
         // #301：逐日复用同一套重叠消解，避免「逐条相加」把重叠时段重复计入。
-        // O(D * N)，D 为查询天数、N 为窗口内记录数；跨天记录由消解时按日裁剪自然分摊。
+        // 先把记录按业务日建索引（一条跨天记录通常只落入 1-2 天），再逐日消解：
+        // 若直接对每天扫描全部记录会退化为 O(D × N log N)，长区间（如 365 天）不可接受（review 发现）。
+        var byDay = new Dictionary<DateTime, List<ActivityClassificationEntity>>();
+        foreach (var day in acc.Keys)
+            byDay[day] = new List<ActivityClassificationEntity>();
+
+        foreach (var c in classifications)
+        {
+            if (PcActivityOverlapResolver.IsInactive(c.RecordType) || c.EndedAt <= c.StartedAt)
+                continue;
+
+            var startDay = BusinessDayForTimestamp(c.StartedAt);
+            var endDay = BusinessDayForTimestamp(c.EndedAt.AddTicks(-1));
+            if (endDay < startDate || startDay > endDate)
+                continue;
+            if (startDay < startDate) startDay = startDate;
+            if (endDay > endDate) endDay = endDate;
+
+            for (var day = startDay; day <= endDay; day = day.AddDays(1))
+            {
+                if (byDay.TryGetValue(day, out var bucket))
+                    bucket.Add(c);
+            }
+        }
+
         foreach (var day in acc.Keys.ToList())
         {
             var bounds = dayBounds[day];
-            var resolved = ResolveProductivityMinutes(classifications, bounds.Start, bounds.End);
+            var resolved = ResolveProductivityMinutes(byDay[day], bounds.Start, bounds.End);
             acc[day] = (resolved.Productive, resolved.Distracting, resolved.Neutral);
         }
 
@@ -265,7 +289,7 @@ public class PcProductivityService
         // #237：扫描线消解重叠，保证结果按 start 升序且两两不重叠
         var segments = PcTimelineOverlapResolver.Resolve(
             clipped
-                .Select(x => new PcTimelineOverlapResolver.Candidate(x.Start, x.End, x.Entity.Confidence, x.Entity.RecordKey))
+                .Select(x => new PcTimelineOverlapResolver.Candidate(x.Start, x.End, x.Entity.Confidence, x.Entity.RecordKey, x.Entity.RecordType))
                 .ToList(),
             MinTimelineSegment);
 

@@ -30,11 +30,16 @@ public static class PcTimelineOverlapResolver
 {
     /// <summary>一个待消解的候选区间（通常是业务日内与快照相交的部分）。</summary>
     /// <param name="StableKey">稳定且<b>批次内唯一</b>的键（时间线场景为 record_key），用于让胜出规则成为全序。</param>
+    /// <param name="RecordType">
+    /// 记录类型（window / web-page / input-minute …），参与统一胜出判定的首要键。
+    /// 省略（<c>null</c>）表示调用方无类型信息，此时退化为「置信度 → 时长 → 稳定键」。
+    /// </param>
     public readonly record struct Candidate(
         DateTimeOffset Start,
         DateTimeOffset End,
         double Confidence,
-        string StableKey);
+        string StableKey,
+        string? RecordType = null);
 
     /// <summary>消解后的互不重叠时间块；<see cref="WinnerIndex"/> 指向输入候选的下标。</summary>
     public readonly record struct Segment(DateTimeOffset Start, DateTimeOffset End, int WinnerIndex);
@@ -108,18 +113,19 @@ public static class PcTimelineOverlapResolver
         return best;
     }
 
+    /// <summary>
+    /// 胜出规则委托给 <see cref="PcActivityOverlapResolver.Beats"/>（全仓库唯一口径）：
+    /// 记录类型优先级 → 置信度 → 原始时长 → 稳定键序。
+    /// <para>
+    /// 时间线候选不携带记录类型（传 <c>null</c>），此时优先级相同，退化为
+    /// 「置信度 → 时长 → 稳定键」，与该路径原有的历史行为一致；同时保证
+    /// 分类分布 / 生产力 / 时间线对同一时刻给出一致的归属（review 发现）。
+    /// </para>
+    /// </summary>
     private static bool IsBetter(in Candidate challenger, in Candidate incumbent)
-    {
-        if (challenger.Confidence != incumbent.Confidence)
-            return challenger.Confidence > incumbent.Confidence;
-
-        var challengerTicks = (challenger.End - challenger.Start).Ticks;
-        var incumbentTicks = (incumbent.End - incumbent.Start).Ticks;
-        if (challengerTicks != incumbentTicks)
-            return challengerTicks > incumbentTicks;
-
-        return string.CompareOrdinal(challenger.StableKey, incumbent.StableKey) < 0;
-    }
+        => PcActivityOverlapResolver.Beats(
+            challenger.RecordType, challenger.Confidence, challenger.End - challenger.Start, challenger.StableKey,
+            incumbent.RecordType, incumbent.Confidence, incumbent.End - incumbent.Start, incumbent.StableKey);
 
     /// <summary>相邻且归属相同的段合并（例如高置信块被低置信块打断后重新接上）。</summary>
     private static void Append(List<Segment> pieces, Segment segment)
