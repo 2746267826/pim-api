@@ -117,9 +117,11 @@ public static class PcTimelineOverlapResolver
     /// 胜出规则委托给 <see cref="PcActivityOverlapResolver.Beats"/>（全仓库唯一口径）：
     /// 记录类型优先级 → 置信度 → 原始时长 → 稳定键序。
     /// <para>
-    /// 时间线候选不携带记录类型（传 <c>null</c>），此时优先级相同，退化为
-    /// 「置信度 → 时长 → 稳定键」，与该路径原有的历史行为一致；同时保证
-    /// 分类分布 / 生产力 / 时间线对同一时刻给出一致的归属（review 发现）。
+    /// 服务路径（<see cref="PcProductivityService.GetTimelineV2Async"/>）会传入
+    /// <see cref="Candidate.RecordType"/>，因此按「类型优先级优先」判定 —— 这与分类分布 /
+    /// 生产力统计一致，同一时刻在三个接口归属同一分类（review 要求的一致性）。
+    /// 只有调用方**省略** <c>RecordType</c>（旧式直接调用）时才退化为
+    /// 「置信度 → 时长 → 稳定键」。
     /// </para>
     /// </summary>
     private static bool IsBetter(in Candidate challenger, in Candidate incumbent)

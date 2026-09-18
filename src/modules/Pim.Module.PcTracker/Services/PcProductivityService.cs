@@ -21,6 +21,16 @@ public class PcProductivityService
     private readonly PimDbContext _db;
     private readonly TimeProvider _timeProvider;
 
+    /// <summary>
+    /// 上一次 <see cref="GetRangeAsync"/> 调用中，逐日消解阶段累计扫描的记录条数（诊断用）。
+    /// <para>
+    /// 用于以**确定性**方式锁定「按业务日建索引」这一实现约束：若退化为逐日全量扫描，
+    /// 该计数会按查询天数成倍放大（365 天 × 全部记录），而不是只统计有数据的那些天。
+    /// 仅供测试与诊断，不参与业务逻辑。
+    /// </para>
+    /// </summary>
+    internal int LastRangeScannedRecordCount { get; private set; }
+
     public PcProductivityService(PimDbContext db, TimeProvider? timeProvider = null)
     {
         _db = db;
@@ -180,10 +190,13 @@ public class PcProductivityService
             }
         }
 
+        LastRangeScannedRecordCount = 0;
         foreach (var day in acc.Keys.ToList())
         {
             var bounds = dayBounds[day];
-            var resolved = ResolveProductivityMinutes(byDay[day], bounds.Start, bounds.End);
+            var dayRecords = byDay[day];
+            LastRangeScannedRecordCount += dayRecords.Count;
+            var resolved = ResolveProductivityMinutes(dayRecords, bounds.Start, bounds.End);
             acc[day] = (resolved.Productive, resolved.Distracting, resolved.Neutral);
         }
 

@@ -9,6 +9,12 @@
     <ProjectReference Include="..\..\Pim.Infrastructure\Pim.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 让测试可以断言内部诊断计数器（如 GetRangeAsync 的逐日候选构造次数），
+         以便用**确定性**方式锁定性能相关的实现约束，而不是依赖墙钟阈值。 -->
+    <InternalsVisibleTo Include="Pim.UnitTests" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
