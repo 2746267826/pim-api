@@ -631,6 +631,61 @@ public sealed class PcCategoryDistributionOverlapTests
             $"365 天区间查询耗时 {sw.ElapsedMilliseconds}ms，疑似仍为逐日全量扫描");
     }
 
+    /// <summary>
+    /// review 复核：GetRangeAsync 改为按业务日建索引后，逐日结果必须与
+    /// GetDashboardAsync（对单日扫描全量记录）完全一致 —— 否则日期分桶引入偏差。
+    /// 覆盖完全落在日内、跨 04:00 边界、以及极短记录。
+    /// </summary>
+    [Fact]
+    public async Task ProductivityRange_MatchesDashboardForSameDay()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 完全落在业务日内
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("in-day", Beijing(17, 10), Beijing(17, 11), "编程/折腾"));
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("in-day-2", Beijing(17, 11), Beijing(17, 12), "游戏"));
+        // 跨 04:00 边界：9/17 03:30 - 9/17 04:30（前一日 30 分钟 + 当日 30 分钟）
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("cross", Beijing(17, 3, 30), Beijing(17, 4, 30), "文档"));
+        // 极短记录
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("tiny", Beijing(17, 15), Beijing(17, 15, 0, 5), "学习"));
+        await db.SaveChangesAsync();
+
+        var svc = new PcProductivityService(db, ServiceTestBase.Time(Beijing(17, 20)));
+        var dashboard = await svc.GetDashboardAsync(TestDate, CancellationToken.None);
+        var range = await svc.GetRangeAsync(TestDate, TestDate, CancellationToken.None);
+
+        var day = Assert.Single(range);
+        // Dashboard 把小时舍入到 1 位、Range 把分钟舍入到 1 位，两者存在最多约 3 分钟的
+        // 双重舍入差，因此用容差比较（口径一致性，而非位级相等）。
+        Assert.InRange(day.ProductiveMinutes, dashboard.ProductiveHours * 60 - 3, dashboard.ProductiveHours * 60 + 3);
+        Assert.InRange(day.DistractingMinutes, dashboard.DistractingHours * 60 - 3, dashboard.DistractingHours * 60 + 3);
+        Assert.InRange(day.NeutralMinutes, dashboard.NeutralHours * 60 - 3, dashboard.NeutralHours * 60 + 3);
+        Assert.Equal(dashboard.TodayScore, day.ProductiveRatio * 100, 1);
+    }
+
+    /// <summary>多日区间内，每一天的结果都与该日的 dashboard 一致（跨日记录不被漏算或重复计入）。</summary>
+    [Fact]
+    public async Task ProductivityRange_MultiDay_EachDayMatchesDashboard()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("d16", Beijing(16, 10), Beijing(16, 11), "编程/折腾"));
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("d17", Beijing(17, 10), Beijing(17, 11), "游戏"));
+        // 跨 9/16 → 9/17 业务日边界
+        db.Set<ActivityClassificationEntity>().Add(Snapshot("cross", Beijing(17, 3, 30), Beijing(17, 4, 30), "文档"));
+        await db.SaveChangesAsync();
+
+        var svc = new PcProductivityService(db, ServiceTestBase.Time(Beijing(17, 20)));
+        var range = await svc.GetRangeAsync(new DateTime(2026, 9, 16), new DateTime(2026, 9, 17), CancellationToken.None);
+
+        foreach (var day in range)
+        {
+            var date = DateTime.Parse(day.Date, System.Globalization.CultureInfo.InvariantCulture);
+            var dashboard = await svc.GetDashboardAsync(date, CancellationToken.None);
+            Assert.InRange(day.ProductiveMinutes, dashboard.ProductiveHours * 60 - 3, dashboard.ProductiveHours * 60 + 3);
+            Assert.InRange(day.DistractingMinutes, dashboard.DistractingHours * 60 - 3, dashboard.DistractingHours * 60 + 3);
+            Assert.InRange(day.NeutralMinutes, dashboard.NeutralHours * 60 - 3, dashboard.NeutralHours * 60 + 3);
+        }
+    }
+
     /// <summary>gap / idle 不参与生产力统计。</summary>
     [Fact]
     public async Task ProductivityDashboard_GapAndIdle_AreExcluded()
