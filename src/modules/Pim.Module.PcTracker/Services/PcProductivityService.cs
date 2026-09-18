@@ -21,6 +21,16 @@ public class PcProductivityService
     private readonly PimDbContext _db;
     private readonly TimeProvider _timeProvider;
 
+    /// <summary>
+    /// 上一次 <see cref="GetRangeAsync"/> 调用中，逐日消解阶段累计扫描的记录条数（诊断用）。
+    /// <para>
+    /// 用于以**确定性**方式锁定「按业务日建索引」这一实现约束：若退化为逐日全量扫描，
+    /// 该计数会按查询天数成倍放大（365 天 × 全部记录），而不是只统计有数据的那些天。
+    /// 仅供测试与诊断，不参与业务逻辑。
+    /// </para>
+    /// </summary>
+    internal int LastRangeScannedRecordCount { get; private set; }
+
     public PcProductivityService(PimDbContext db, TimeProvider? timeProvider = null)
     {
         _db = db;
@@ -50,13 +60,11 @@ public class PcProductivityService
         var todayStartUtc = BusinessDayStart(targetDate);
         var todayEndUtc = BusinessDayStart(targetDate.AddDays(1));
 
-        double OverlapMin(ActivityClassificationEntity c, DateTimeOffset s, DateTimeOffset e)
-            => OverlapSeconds(c, s, e) / 60.0;
-
-        var todayProductive = classifications.Where(c => GetProductivity(c.CategoryName) == "productive").Sum(c => OverlapMin(c, todayStartUtc, todayEndUtc));
-        var todayDistracting = classifications.Where(c => GetProductivity(c.CategoryName) == "distracting").Sum(c => OverlapMin(c, todayStartUtc, todayEndUtc));
-        var todayNeutral = classifications.Where(c => GetProductivity(c.CategoryName) == "neutral").Sum(c => OverlapMin(c, todayStartUtc, todayEndUtc));
-        var todayTotal = todayProductive + todayDistracting + todayNeutral;
+        // #301：与分类分布共用同一套重叠消解，避免同一时刻被计入多个生产力档位。
+        var todayBuckets = ResolveProductivityMinutes(classifications, todayStartUtc, todayEndUtc);
+        var todayProductive = todayBuckets.Productive;
+        var todayDistracting = todayBuckets.Distracting;
+        var todayNeutral = todayBuckets.Neutral;
 
         var weeklyTrend = new List<DailyProductivityDto>();
         for (int i = 0; i < 7; i++)
@@ -64,9 +72,10 @@ public class PcProductivityService
             var day = weekStart.AddDays(i);
             var ds = BusinessDayStart(day);
             var de = BusinessDayStart(day.AddDays(1));
-            var p = classifications.Where(c => GetProductivity(c.CategoryName) == "productive").Sum(c => OverlapMin(c, ds, de));
-            var d = classifications.Where(c => GetProductivity(c.CategoryName) == "distracting").Sum(c => OverlapMin(c, ds, de));
-            var n = classifications.Where(c => GetProductivity(c.CategoryName) == "neutral").Sum(c => OverlapMin(c, ds, de));
+            var buckets = ResolveProductivityMinutes(classifications, ds, de);
+            var p = buckets.Productive;
+            var d = buckets.Distracting;
+            var n = buckets.Neutral;
             var t = p + d + n;
             weeklyTrend.Add(new DailyProductivityDto
             {
@@ -78,6 +87,8 @@ public class PcProductivityService
                 ProductiveRatio = t > 0 ? Math.Round(p / t, 4) : 0
             });
         }
+
+        var todayTotal = todayProductive + todayDistracting + todayNeutral;
 
         var goal = await GetGoalsAsync(ct);
         var targetHours = goal.DailyProductiveHours;
@@ -153,30 +164,40 @@ public class PcProductivityService
             dayBounds[day] = (BusinessDayStart(day), BusinessDayStart(day.AddDays(1)));
         }
 
-        // O(N * span) 而非 O(N*D)：仅遍历事件实际跨越的业务日（通常 1-2 天）
+        // #301：逐日复用同一套重叠消解，避免「逐条相加」把重叠时段重复计入。
+        // 先把记录按业务日建索引（一条跨天记录通常只落入 1-2 天），再逐日消解：
+        // 若直接对每天扫描全部记录会退化为 O(D × N log N)，长区间（如 365 天）不可接受（review 发现）。
+        var byDay = new Dictionary<DateTime, List<ActivityClassificationEntity>>();
+        foreach (var day in acc.Keys)
+            byDay[day] = new List<ActivityClassificationEntity>();
+
         foreach (var c in classifications)
         {
-            var prod = GetProductivity(c.CategoryName);
+            if (PcActivityOverlapResolver.IsInactive(c.RecordType) || c.EndedAt <= c.StartedAt)
+                continue;
+
             var startDay = BusinessDayForTimestamp(c.StartedAt);
-            var endDay = c.EndedAt > c.StartedAt
-                ? BusinessDayForTimestamp(c.EndedAt.AddTicks(-1))
-                : startDay;
-            if (endDay < startDate || startDay > endDate) continue;
+            var endDay = BusinessDayForTimestamp(c.EndedAt.AddTicks(-1));
+            if (endDay < startDate || startDay > endDate)
+                continue;
             if (startDay < startDate) startDay = startDate;
             if (endDay > endDate) endDay = endDate;
 
             for (var day = startDay; day <= endDay; day = day.AddDays(1))
             {
-                if (!dayBounds.TryGetValue(day, out var bounds)) continue;
-                var sec = OverlapSeconds(c, bounds.Start, bounds.End);
-                if (sec <= 0) continue;
-                var min = sec / 60.0;
-                var cur = acc[day];
-                if (prod == "productive") cur.p += min;
-                else if (prod == "distracting") cur.d += min;
-                else cur.n += min;
-                acc[day] = cur;
+                if (byDay.TryGetValue(day, out var bucket))
+                    bucket.Add(c);
             }
+        }
+
+        LastRangeScannedRecordCount = 0;
+        foreach (var day in acc.Keys.ToList())
+        {
+            var bounds = dayBounds[day];
+            var dayRecords = byDay[day];
+            LastRangeScannedRecordCount += dayRecords.Count;
+            var resolved = ResolveProductivityMinutes(dayRecords, bounds.Start, bounds.End);
+            acc[day] = (resolved.Productive, resolved.Distracting, resolved.Neutral);
         }
 
         // Return only days that have any activity (preserves previous grouping semantics) but with prorated splits
@@ -200,6 +221,55 @@ public class PcProductivityService
             });
         }
         return result;
+    }
+
+    /// <summary>
+    /// 把一个业务日窗口内的分类记录消解为互不重叠的时段，再按生产力档位汇总分钟数（#301）。
+    /// <para>
+    /// 分类快照彼此重叠（前台窗口记录覆盖 input-minute 微记录），逐条相加会让同一时刻
+    /// 同时计入多个档位、并让总时长超过 24 小时；这里复用分类分布的同一套优先级消解，
+    /// 保证「同一时刻只归属一个分类」。
+    /// </para>
+    /// <para>「未活动」类型（gap / idle / afk）不参与生产力统计。</para>
+    /// </summary>
+    private (double Productive, double Distracting, double Neutral) ResolveProductivityMinutes(
+        IReadOnlyList<ActivityClassificationEntity> classifications,
+        DateTimeOffset dayStart,
+        DateTimeOffset dayEnd)
+    {
+        var candidates = new List<PcActivityOverlapResolver.Candidate>();
+        var productivities = new List<string>();
+
+        foreach (var c in classifications)
+        {
+            if (PcActivityOverlapResolver.IsInactive(c.RecordType))
+                continue;
+
+            var start = c.StartedAt > dayStart ? c.StartedAt : dayStart;
+            var end = c.EndedAt < dayEnd ? c.EndedAt : dayEnd;
+            if (end <= start)
+                continue;
+
+            candidates.Add(new PcActivityOverlapResolver.Candidate(start, end, c.RecordType, c.Confidence, c.RecordKey));
+            productivities.Add(GetProductivity(c.CategoryName));
+        }
+
+        if (candidates.Count == 0)
+            return (0, 0, 0);
+
+        double productive = 0, distracting = 0, neutral = 0;
+        foreach (var segment in PcActivityOverlapResolver.Resolve(candidates))
+        {
+            var minutes = (segment.End - segment.Start).TotalMinutes;
+            switch (productivities[segment.WinnerIndex])
+            {
+                case "productive": productive += minutes; break;
+                case "distracting": distracting += minutes; break;
+                default: neutral += minutes; break;
+            }
+        }
+
+        return (productive, distracting, neutral);
     }
 
     public async Task<List<TimelineV2Item>> GetTimelineV2Async(DateTime date, CancellationToken ct)
@@ -232,7 +302,7 @@ public class PcProductivityService
         // #237：扫描线消解重叠，保证结果按 start 升序且两两不重叠
         var segments = PcTimelineOverlapResolver.Resolve(
             clipped
-                .Select(x => new PcTimelineOverlapResolver.Candidate(x.Start, x.End, x.Entity.Confidence, x.Entity.RecordKey))
+                .Select(x => new PcTimelineOverlapResolver.Candidate(x.Start, x.End, x.Entity.Confidence, x.Entity.RecordKey, x.Entity.RecordType))
                 .ToList(),
             MinTimelineSegment);
 

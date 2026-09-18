@@ -167,34 +167,54 @@ public sealed class PcActivityAggregationService
             .Where(s => s.StartedAt < window.EndUtc && s.EndedAt > window.StartUtc)
             .ToListAsync(ct);
 
-        // cap 按事件总时长先 cap 再按 overlap 比例分摊，避免跨天分片各自 cap 导致膨胀
-        static double OverlapSeconds(ActivityClassificationEntity s, DateTimeOffset start, DateTimeOffset end, double cap)
+        // 1) 未活动类型（gap / idle / afk）完全不参与统计
+        // 2) 每条记录先按 3600s 上限得到「计入总量」，并记录其相对原始时长的分摊比例。
+        //    这样既保留原口径（跨天记录按与窗口的重叠比例分摊 capped 总量），
+        //    又能让下面的重叠消解在**去重后的片段**上按同一比例还原分钟数 ——
+        //    只做「截断到 cap 再裁剪」会低估跨业务日的长记录（review 发现）。
+        var candidates = new List<PcActivityOverlapResolver.Candidate>();
+        var scales = new Dictionary<int, double>();
+        var metadata = new List<(string Category, string Color)>();
+
+        foreach (var s in snapshots)
         {
-            var totalSeconds = (s.EndedAt - s.StartedAt).TotalSeconds;
-            if (totalSeconds <= 0) return 0;
-            var cappedTotal = Math.Min(totalSeconds, cap);
-            var overlapStart = s.StartedAt > start ? s.StartedAt : start;
-            var overlapEnd = s.EndedAt < end ? s.EndedAt : end;
-            var overlapSeconds = Math.Max(0, (overlapEnd - overlapStart).TotalSeconds);
-            if (overlapSeconds <= 0) return 0;
-            // 按重叠占比分摊 capped 总量
-            return cappedTotal * (overlapSeconds / totalSeconds);
+            if (PcActivityOverlapResolver.IsInactive(s.RecordType))
+                continue;
+
+            var start = s.StartedAt > window.StartUtc ? s.StartedAt : window.StartUtc;
+            var end = s.EndedAt < window.EndUtc ? s.EndedAt : window.EndUtc;
+            if (end <= start)
+                continue;
+
+            var rawSeconds = (s.EndedAt - s.StartedAt).TotalSeconds;
+            var cappedTotal = Math.Min(rawSeconds, MaxClassificationDurationSeconds);
+            var scale = rawSeconds > 0 ? cappedTotal / rawSeconds : 0;
+
+            var index = candidates.Count;
+            candidates.Add(new PcActivityOverlapResolver.Candidate(start, end, s.RecordType, s.Confidence, s.RecordKey));
+            scales[index] = scale;
+            metadata.Add((s.CategoryName, ResolveCategoryColor(s.CategoryName, new[] { s.CategoryColor })));
         }
 
-        var groups = snapshots
-            .GroupBy(s => s.CategoryName, StringComparer.OrdinalIgnoreCase)
+        // 3) 扫描线消解重叠：同一时刻只归属一个分类（#301）
+        var segments = PcActivityOverlapResolver.Resolve(candidates);
+
+        // 4) 按分类汇总去重后的分钟数（按各记录的 cap 分摊比例还原）
+        var groups = segments
+            .GroupBy(s => metadata[s.WinnerIndex].Category, StringComparer.OrdinalIgnoreCase)
             .Select(g => new
             {
                 Category = g.Key,
-                Seconds = g.Sum(s => OverlapSeconds(s, window.StartUtc, window.EndUtc, MaxClassificationDurationSeconds)),
-                Color = ResolveCategoryColor(g.Key, g.Select(s => s.CategoryColor))
+                Seconds = g.Sum(s => (s.End - s.Start).TotalSeconds * scales[s.WinnerIndex]),
+                Color = g
+                    .Select(s => metadata[s.WinnerIndex].Color)
+                    .FirstOrDefault(IsValidHexColor) ?? DefaultCategoryColor,
             })
             .OrderByDescending(x => x.Seconds)
             .ThenBy(x => x.Category, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         var totalSeconds = groups.Sum(g => g.Seconds);
-        var totalMinutes = (int)Math.Round(totalSeconds / 60.0);
         var items = groups
             .Select(g =>
             {
@@ -203,16 +223,21 @@ public sealed class PcActivityAggregationService
                 return new PcCategoryDistributionItem(g.Category, g.Color, minutes, percentage);
             })
             .ToList();
-        // 百分比和校正：确保四舍五入后和为100（INV-P11/C05要求 |sum-100|<=1）
+        // 百分比和校正：确保四舍五入后和为100（INV-P11/C05要求 |sum-100|<=1）。
+        // 误差只补给「非零项」并把结果夹到 >=0，避免出现 -0.1% 这类无意义数值（review 发现）。
         if (items.Count > 0)
         {
             var sumPct = items.Sum(i => i.Percentage);
             var diff = Math.Round(100.0 - sumPct, 1);
             if (Math.Abs(diff) > 0.05 && Math.Abs(diff) <= 1.0)
             {
-                var idx = items.Count - 1;
-                var last = items[idx];
-                items[idx] = new PcCategoryDistributionItem(last.CategoryName, last.Color, last.Minutes, Math.Round(last.Percentage + diff, 1));
+                var idx = items.FindLastIndex(i => i.Percentage > 0);
+                if (idx >= 0)
+                {
+                    var last = items[idx];
+                    var corrected = Math.Max(0, Math.Round(last.Percentage + diff, 1));
+                    items[idx] = new PcCategoryDistributionItem(last.CategoryName, last.Color, last.Minutes, corrected);
+                }
             }
         }
 
