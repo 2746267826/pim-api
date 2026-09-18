@@ -67,16 +67,23 @@ public sealed class PcTrackerCoverageTests
         var res = await svc.GetFocusBlocksAsync(new PcAggregationQuery(TestDate.ToString("yyyy-MM-dd"), null, null, null), CancellationToken.None);
         Assert.Empty(res.Items);
     }
-    [Fact] public async Task Agg_FocusBlocks_DurationCappedAt3600()
+    /// <summary>
+    /// #303：窗口事件的单条上限改为「业务日长度」的溢出保护（原 3600s 会把合法长事件截断，
+    /// 实测 tracker 存在 4170s / 9560s 的前台窗口事件），块时长改为按业务日窗口裁剪。
+    /// </summary>
+    [Fact] public async Task Agg_FocusBlocks_LongWindowEventIsClippedNotCappedAt3600()
     {
         await using var db = ServiceTestBase.CreateDb();
+        // 6:00 起 7200s（至 8:00） + 7:05 起 600s（至 7:15）；两条同应用且间隙 5 分钟内
+        // → 合并为一个块，块时长按「末结束 − 首开始」= 6:00-8:00 = 120 分钟。
+        // 旧口径：首条 cap 到 3600s（至 7:00），块为 6:00-7:15 = 75 分钟。
         db.Set<AwEventEntity>().Add(Win("code.exe", DayStart.AddHours(6), 7200));
         db.Set<AwEventEntity>().Add(Win("code.exe", DayStart.AddHours(7).AddMinutes(5), 600));
         await db.SaveChangesAsync();
         var svc = ServiceTestBase.CreatePcAggregationService(db);
         var res = await svc.GetFocusBlocksAsync(new PcAggregationQuery(TestDate.ToString("yyyy-MM-dd"), null, null, null), CancellationToken.None);
         Assert.Single(res.Items);
-        Assert.Equal(70, res.Items[0].DurationMinutes);
+        Assert.Equal(120, res.Items[0].DurationMinutes);
     }
     [Fact] public async Task Agg_FocusBlocks_ShortBlocksFiltered()
     {
@@ -179,11 +186,17 @@ public sealed class PcTrackerCoverageTests
     {
         await using var db = ServiceTestBase.CreateDb();
         db.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity { Id = Guid.NewGuid(), RecordKey = "kn", RecordType = "window", DeviceId = "pc-1", StartedAt = DayStart.AddHours(7), EndedAt = DayStart.AddHours(6), CategoryName = "工作", CategoryColor = "#10b981", Confidence = 0.9, Source = "rule", ClassifierVersion = "v1", ClassifiedAt = DateTimeOffset.UtcNow });
+        // 同一业务日内另有一条合法记录，用于确认坏记录不会污染好记录
+        db.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity { Id = Guid.NewGuid(), RecordKey = "ok", RecordType = "window", DeviceId = "pc-1", StartedAt = DayStart.AddHours(6), EndedAt = DayStart.AddHours(6).AddMinutes(10), CategoryName = "编程", CategoryColor = "#10b981", Confidence = 0.9, Source = "rule", ClassifierVersion = "v1", ClassifiedAt = DateTimeOffset.UtcNow });
         await db.SaveChangesAsync();
         var svc = ServiceTestBase.CreatePcAggregationService(db);
         var res = await svc.GetCategoryDistributionAsync(new PcAggregationQuery(TestDate.ToString("yyyy-MM-dd"), null, null, null), CancellationToken.None);
-        Assert.Single(res.Items);
-        Assert.Equal(0, res.Items[0].Minutes);
+
+        // #301：结束早于开始的畸形记录被丢弃（不再伪造一个 0 分钟的分类条目），
+        // 且绝不产生负分钟数、不影响同日合法记录。
+        Assert.DoesNotContain(res.Items, x => x.CategoryName == "工作");
+        Assert.All(res.Items, x => Assert.True(x.Minutes >= 0, $"分类 {x.CategoryName} 出现负分钟数 {x.Minutes}"));
+        Assert.InRange(res.Items.Sum(x => x.Minutes), 9, 11);
     }
 
     // === PcTrackerQualityService branches ===

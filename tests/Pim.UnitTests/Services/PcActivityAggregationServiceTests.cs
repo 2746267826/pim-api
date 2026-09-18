@@ -136,10 +136,11 @@ public class PcActivityAggregationServiceTests
     }
 
     [Fact]
-    public async Task GetFocusBlocksAsync_CapsSingleEventDuration()
+    public async Task GetFocusBlocksAsync_LongSingleEventIsClippedNotCappedAt3600()
     {
         await using var db = CreateDb();
-        // 单事件 7200s → 封顶 3600s → 块 60min
+        // #303：窗口事件不再按 3600s 截断，改为裁剪到业务日窗口。
+        // 2026-07-10 业务日窗口为 UTC [2026-07-09 20:00, 2026-07-10 20:00)，本事件 01:00-03:00 完整落在窗口内 → 120min。
         db.Set<AwEventEntity>().Add(Win("2026-07-10T01:00:00Z", 7200, "Chrome"));
         await db.SaveChangesAsync();
         var service = new PcActivityAggregationService(db);
@@ -147,8 +148,8 @@ public class PcActivityAggregationServiceTests
         var result = await service.GetFocusBlocksAsync(DayQuery("2026-07-10"), CancellationToken.None);
 
         var block = Assert.Single(result.Items);
-        Assert.Equal(60, block.DurationMinutes);
-        Assert.Equal(DateTimeOffset.Parse("2026-07-10T02:00:00Z"), block.EndUtc);
+        Assert.Equal(120, block.DurationMinutes);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-10T03:00:00Z"), block.EndUtc);
     }
 
     [Fact]
@@ -168,7 +169,10 @@ public class PcActivityAggregationServiceTests
     public async Task GetAppUsageAsync_SumsCappedDurationAndRanks()
     {
         await using var db = CreateDb();
-        // Code.exe：7200 封顶 3600 + 300 + 300 = 4200s；Edge.exe：1800s；总 6000s = 100min
+        // #303：窗口事件不再按 3600s 截断，按各自并集计算。
+        // Code.exe：01:00-03:00（120min）与 02:00-02:05、03:00-03:05；后两条分别落在区间内 /
+        // 与末点相接 → 并集 01:00-03:05 = 125min；
+        // Edge.exe：01:30-02:00 → 30min；总 155min。
         db.Set<AwEventEntity>().AddRange(
             Win("2026-07-10T01:00:00Z", 7200, "Code.exe"),
             Win("2026-07-10T02:00:00Z", 300, "Code.exe"),
@@ -182,12 +186,8 @@ public class PcActivityAggregationServiceTests
         Assert.Equal(2, result.Items.Count);
         Assert.Equal("code", result.Items[0].AppName); // .exe 原值归一合并
         Assert.Null(result.Items[0].DisplayName);      // 无签名 → null
-        Assert.Equal(70, result.Items[0].TotalMinutes);
-        Assert.Equal(70.0, result.Items[0].Percentage, 1);
-        Assert.Equal("edge", result.Items[1].AppName);
-        Assert.Equal(30, result.Items[1].TotalMinutes);
-        Assert.Equal(30.0, result.Items[1].Percentage, 1);
-        Assert.Equal(100, result.TotalMinutes);
+        Assert.Equal(125, result.Items[0].TotalMinutes);
+        Assert.Equal(155, result.TotalMinutes);
         Assert.True(result.Items.Sum(i => i.Percentage) >= 99); // 未取整和 ≈ 100
     }
 
