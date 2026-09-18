@@ -355,15 +355,20 @@ public partial class PcTrackerService
             .Select(e => new { e.Timestamp, e.Duration, e.EventType, e.AppName })
             .Concat(trackerEvents.Select(e => new { e.Timestamp, e.Duration, EventType = e.EventType, e.AppName }))
             .ToList();
-        var nonWebEvents = awEvents
-            .Where(e => e.EventType != "web")
-            .ToList();
         var windowEvents = awEvents
             .Where(e => e.EventType == "window")
             .ToList();
         var trackerWindowEvents = trackerEvents
             .Where(e => e.EventType == "window")
             .ToList();
+        // #303：派生指标（记录时长 / 会话 / 应用数 / 最专注 / 闲置）改为读取**当前实际在用的数据源**。
+        // pc_aw_events 在原生 tracker 切换后已停止写入（最后一条 2026-08-31），只读它会让这组指标恒为空；
+        // 这里以 AW window 事件并上 pc_tracker_events 的 window 事件作为统一的「前台窗口」口径，
+        // 裁剪到业务日窗口后按「应用 + 时刻 + 时长」去重，避免两路来源把同一事件算两遍。
+        var metricWindowEvents = DeduplicateMetricWindowEvents(
+            BuildMetricWindowEvents(windowEvents, trackerWindowEvents, dayStart, dayEnd));
+        // 闲置时长同样跟随数据源：AW 的 afk 事件 + tracker 的 idle 事件，取区间并集。
+        var idleMinutes = ComputeIdleMinutes(awEvents, trackerEvents, dayStart, dayEnd);
 
         var heatmap = BuildHourlyHeatmapCombined(dayStart, windowEvents, trackerWindowEvents);
         var awRecords = await BuildInterpretedAwDetailRecordsAsync(awEvents, ct);
@@ -377,14 +382,15 @@ public partial class PcTrackerService
         timeline = _timelineSmoothing.Smooth(
             timeline,
             settings.RecommendedMinimumClassificationDurationMinutes).ToList();
+        var sessions = BuildSessions(metricWindowEvents);
 
         return new PcSummaryResponse(
             keystats is not null ? BuildKeystatsSummary(keystats) : BuildKeystatsSummaryFromSample(keystatsSample),
             heatmap,
             keystats is not null ? BuildAppRanking(keystats) : BuildAppRankingFromSample(keystatsSample),
             timeline,
-            BuildSessions(windowEvents),
-            ComputeDerivedMetrics(keystats, keystatsSample, nonWebEvents),
+            sessions,
+            ComputeDerivedMetrics(keystats, keystatsSample, metricWindowEvents, sessions.Count, idleMinutes),
             await GetCategorySummariesAsync(date, ct));
     }
 
@@ -679,16 +685,36 @@ public partial class PcTrackerService
             var daily = keystats.FirstOrDefault(x => x.SnapshotDate == targetDate);
             var dayStart = BusinessDayStart(targetDate);
             var dayEnd = dayStart.AddDays(1);
+            // #303：与概览指标同一口径 —— 合并 AW 与原生 tracker 的 window 事件。
+            // 只读 pc_aw_events 时，tracker-only 日期 24 个桶全为 0（实测 283 条 tracker
+            // window 事件却显示 0 事件），而同一页面其它区块有数据，自相矛盾。
             var awEvents = await _db.Set<AwEventEntity>()
                 .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd && e.EventType == "window")
+                .Select(e => new { e.Timestamp, e.Duration, e.AppName, e.AppNameNormalized })
+                .ToListAsync(ct);
+            var trackerHeatmapEvents = await _db.Set<TrackerEventEntity>()
+                .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd && e.EventType == "window")
+                .Select(e => new { e.Timestamp, e.Duration, e.AppName })
                 .ToListAsync(ct);
 
-            var totalAwEvents = awEvents.Count;
+            // 跨来源去重（#303 review）：同一条底层事件可能同时存在于 AW 与 tracker
+            // （迁移期双写 / 重复上传）。不去重会让事件数与 keyCount 的分母一起翻倍。
+            // 键取「原始时刻 + 原始时长 + 归一化应用名」，与概览指标同一口径。
+            var seenEvents = new HashSet<(long Ticks, long DurationMs, string App)>();
+            var hourEvents = awEvents
+                .Select(e => (e.Timestamp, e.Duration, App: NormalizeMetricApp(e.AppNameNormalized ?? e.AppName)))
+                .Concat(trackerHeatmapEvents.Select(e => (e.Timestamp, e.Duration, App: NormalizeMetricApp(e.AppName))))
+                .Where(e => !string.IsNullOrWhiteSpace(e.App))
+                .Where(e => seenEvents.Add((e.Timestamp.UtcTicks, (long)Math.Round(e.Duration * 1000), e.App.ToLowerInvariant())))
+                .Select(e => (e.Timestamp, e.App))
+                .ToList();
+
+            var totalAwEvents = hourEvents.Count;
             var row = Enumerable.Range(0, 24).Select(h =>
             {
                 var bucketStart = dayStart.AddHours(h);
                 var bucketEnd = bucketStart.AddHours(1);
-                var eventCount = awEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
+                var eventCount = hourEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
                 var keyCount = daily is not null && daily.KeyPresses > 0
                     ? totalAwEvents > 0 ? (int)((double)daily.KeyPresses * eventCount / totalAwEvents) : (int)(daily.KeyPresses / 24.0)
                     : 0;
@@ -1256,17 +1282,152 @@ public partial class PcTrackerService
         return rules.FirstOrDefault(r => r.CategoryName == categoryName)?.Color ?? "#8B5CF6";
     }
 
-    private static List<WorkSessionItem> BuildSessions(List<AwEventEntity> events)
+    /// <summary>
+    /// 指标口径下的一个「前台窗口」区间（#303）。AW (<c>pc_aw_events</c>) 与原生 tracker
+    /// (<c>pc_tracker_events</c>) 两路 window 事件在参与会话 / 记录时长计算前归一为该形状，
+    /// 使派生指标不再依赖某一特定数据源。
+    /// </summary>
+    private readonly record struct MetricWindowEvent(string AppName, DateTimeOffset Timestamp, double Duration)
     {
-        var windowEvents = events.Where(e => e.AppName is not null).OrderBy(e => e.Timestamp).ToList();
-        if (windowEvents.Count == 0) return new();
+        public DateTimeOffset End => Timestamp.AddSeconds(Math.Min(Duration, MaxMetricEventSeconds));
+    }
+
+    /// <summary>
+    /// 单条指标事件的时长上限（秒）。取一个业务日的长度：它只用于防止异常值导致
+    /// <see cref="DateTimeOffset.AddSeconds"/> 溢出，**不**构成低估 ——
+    /// 所有区间随后都会裁剪到业务日窗口，合计天然不超过 24 小时。
+    /// 刻意不采用 3600s：镜像库中存在 101 条超过 1 小时的合法前台窗口事件
+    /// （最长约 10 小时），按 1 小时截断会明显低估真实使用时长。
+    /// </summary>
+    private const double MaxMetricEventSeconds = 24 * 60 * 60;
+
+    /// <summary>
+    /// 把两路前台窗口事件（AW + 原生 tracker）归一为指标口径的区间序列（#303）。
+    /// 仅取 window 事件：gap / idle / web-page 不属于「前台窗口」，不应计入记录时长与应用统计。
+    /// <para>
+    /// 区间会裁剪到业务日窗口 <c>[dayStart, dayEnd)</c>：事件起点在窗口内但终点越界时
+    /// （业务日最后一分钟开始的长事件），越界部分不计入，否则单日合计会突破 24 小时。
+    /// </para>
+    /// </summary>
+    private static List<MetricWindowEvent> BuildMetricWindowEvents(
+        IReadOnlyList<AwEventEntity> awWindowEvents,
+        IReadOnlyList<TrackerEventEntity> trackerWindowEvents,
+        DateTimeOffset dayStart,
+        DateTimeOffset dayEnd)
+    {
+        var result = new List<MetricWindowEvent>(awWindowEvents.Count + trackerWindowEvents.Count);
+        foreach (var e in awWindowEvents)
+        {
+            if (e.Duration > 0 && !string.IsNullOrWhiteSpace(e.AppName))
+                AddClipped(result, e.AppName!, e.Timestamp, e.Timestamp.AddSeconds(Math.Min(e.Duration, MaxMetricEventSeconds)), dayStart, dayEnd);
+        }
+        foreach (var e in trackerWindowEvents)
+        {
+            if (e.Duration > 0 && !string.IsNullOrWhiteSpace(e.AppName))
+                AddClipped(result, e.AppName!, e.Timestamp, e.Timestamp.AddSeconds(Math.Min(e.Duration, MaxMetricEventSeconds)), dayStart, dayEnd);
+        }
+        return result;
+    }
+
+    /// <summary>把 <c>[start, end)</c> 裁剪到业务日窗口后追加；完全落在窗口外则丢弃。</summary>
+    private static void AddClipped(
+        List<MetricWindowEvent> target,
+        string appName,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        DateTimeOffset dayStart,
+        DateTimeOffset dayEnd)
+    {
+        var clippedStart = start > dayStart ? start : dayStart;
+        var clippedEnd = end < dayEnd ? end : dayEnd;
+        if (clippedEnd <= clippedStart)
+            return;
+
+        target.Add(new MetricWindowEvent(appName, clippedStart, (clippedEnd - clippedStart).TotalSeconds));
+    }
+
+    /// <summary>
+    /// 闲置时长（分钟）：AW 的 <c>afk</c> 事件（AfkStatus == "afk"）并上 tracker 的 <c>idle</c> 事件。
+    /// <para>
+    /// 两路来源各自可能内部重叠、交叉来源也可能覆盖同一分钟（迁移期），因此这里先归一为区间、
+    /// 裁剪到业务日窗口，再取<b>并集</b>求和 —— 直接相加会把重叠时段算两遍。
+    /// </para>
+    /// </summary>
+    private static double ComputeIdleMinutes(
+        IReadOnlyList<AwEventEntity> awEvents,
+        IReadOnlyList<TrackerEventEntity> trackerEvents,
+        DateTimeOffset dayStart,
+        DateTimeOffset dayEnd)
+    {
+        var intervals = new List<(DateTimeOffset Start, DateTimeOffset End)>();
+        foreach (var e in awEvents)
+        {
+            if (e.EventType != "afk" || e.AfkStatus != "afk" || e.Duration <= 0)
+                continue;
+            AddClippedInterval(intervals, e.Timestamp, e.Timestamp.AddSeconds(Math.Min(e.Duration, MaxMetricEventSeconds)), dayStart, dayEnd);
+        }
+        foreach (var e in trackerEvents)
+        {
+            if (!string.Equals(e.EventType, "idle", StringComparison.OrdinalIgnoreCase) || e.Duration <= 0)
+                continue;
+            AddClippedInterval(intervals, e.Timestamp, e.Timestamp.AddSeconds(Math.Min(e.Duration, MaxMetricEventSeconds)), dayStart, dayEnd);
+        }
+
+        return MergeIntervals(intervals).Sum(m => (m.End - m.Start).TotalMinutes);
+    }
+
+    private static void AddClippedInterval(
+        List<(DateTimeOffset Start, DateTimeOffset End)> target,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        DateTimeOffset dayStart,
+        DateTimeOffset dayEnd)
+    {
+        var clippedStart = start > dayStart ? start : dayStart;
+        var clippedEnd = end < dayEnd ? end : dayEnd;
+        if (clippedEnd > clippedStart)
+            target.Add((clippedStart, clippedEnd));
+    }
+
+    /// <summary>
+    /// 指标事件流去重（#303）：AW 与原生 tracker 可能记录同一条底层事件（迁移期双写、
+    /// 重复上传）。同一应用、同一时刻、同一时长的事件只保留一条，避免会话 / 应用切换
+    /// 等「按条计数」的指标被两路来源放大。
+    /// </summary>
+    private static List<MetricWindowEvent> DeduplicateMetricWindowEvents(List<MetricWindowEvent> events)
+    {
+        var seen = new HashSet<(long Ticks, long DurationMs, string App)>();
+        var result = new List<MetricWindowEvent>(events.Count);
+        foreach (var e in events)
+        {
+            var key = (e.Timestamp.UtcTicks, (long)Math.Round(e.Duration * 1000), e.AppName.ToLowerInvariant());
+            if (seen.Add(key))
+                result.Add(e);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 会话切分（#303）：输入必须已是去重后的指标事件流，否则 AW / tracker 的重叠事件
+    /// 会放大 <see cref="WorkSessionItem.AppSwitchCount"/> 并干扰「主应用」判定。
+    /// 切分规则保持不变：间隙 &gt; 15 分钟开新会话，会话时长 ≥ 5 分钟才计入。
+    /// </summary>
+    private static List<WorkSessionItem> BuildSessions(IReadOnlyList<MetricWindowEvent> windowEvents)
+    {
+        var ordered = windowEvents
+            .Where(e => !string.IsNullOrWhiteSpace(e.AppName))
+            .OrderBy(e => e.Timestamp)
+            .ThenBy(e => e.End)
+            .ThenBy(e => e.AppName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (ordered.Count == 0) return new();
 
         var result = new List<WorkSessionItem>();
-        var sessionStart = windowEvents[0].Timestamp;
+        var sessionStart = ordered[0].Timestamp;
         var sessionEnd = sessionStart;
-        var appCounts = new Dictionary<string, int>();
+        var appCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var ev in windowEvents)
+        foreach (var ev in ordered)
         {
             var gap = (ev.Timestamp - sessionEnd).TotalMinutes;
             if (gap > 15)
@@ -1277,54 +1438,92 @@ public partial class PcTrackerService
                 appCounts.Clear();
             }
 
-            sessionEnd = ev.Timestamp.AddSeconds(ev.Duration);
-            appCounts[ev.AppName!] = appCounts.GetValueOrDefault(ev.AppName!) + 1;
+            if (ev.End > sessionEnd)
+                sessionEnd = ev.End;
+            appCounts[ev.AppName] = appCounts.GetValueOrDefault(ev.AppName) + 1;
         }
         result.Add(MakeSession(sessionStart, sessionEnd, appCounts));
 
         return result.Where(s => s.DurationMinutes >= 5).ToList();
     }
 
+    /// <summary>
+    /// 记录时长 = 窗口区间的**并集**（#303）。原实现取「首个事件起点 → 末个事件终点」的跨度，
+    /// 会把中间的空档也算成记录时间；合并重叠后求和既不会把 AW / tracker 两路重叠时段算两遍，
+    /// 也保证单日结果不超过 24 小时物理上限。
+    /// </summary>
+    private static double MergedRecordedMinutes(IReadOnlyList<MetricWindowEvent> windowEvents)
+    {
+        if (windowEvents.Count == 0) return 0;
+
+        var merged = MergeIntervals(windowEvents.Select(e => (e.Timestamp, e.End)).ToList());
+        return merged.Sum(m => (m.End - m.Start).TotalMinutes);
+    }
+
     private static DerivedMetrics ComputeDerivedMetrics(
         KeystatsDailyEntity? keystats,
         KeystatsSampleEntity? keystatsSample,
-        List<AwEventEntity> awEvents)
+        IReadOnlyList<MetricWindowEvent> windowEvents,
+        int sessionCount,
+        double idleMinutes)
     {
-        var windowEvents = awEvents.Where(e => e.EventType == "window" && e.AppName is not null).ToList();
-        var afkEvents = awEvents.Where(e => e.EventType == "afk").ToList();
-        var totalRecorded = windowEvents.Count > 0
-            ? (windowEvents.Max(e => e.Timestamp.AddSeconds(e.Duration)) - windowEvents.Min(e => e.Timestamp)).TotalMinutes
-            : 0;
-        var idleMin = afkEvents.Where(e => e.AfkStatus == "afk").Sum(e => Math.Min(e.Duration, 3600)) / 60;
-        var sessions = BuildSessions(windowEvents);
+        var totalRecorded = MergedRecordedMinutes(windowEvents);
+        var idleMin = idleMinutes;
         var keyPresses = keystats?.KeyPresses ?? keystatsSample?.KeyPresses ?? 0;
         var totalClicks = keystats is not null
             ? TotalClicks(keystats)
             : keystatsSample is not null ? TotalClicks(keystatsSample) : 0;
         var activeInputMin = keyPresses > 0 ? Math.Max(1, keyPresses / 30.0) : 0;
 
+        // 应用切换按**去重后**的事件流计数，且应用名大小写不敏感比较
+        // （与应用聚合的 OrdinalIgnoreCase 口径一致，避免 "Code.exe" → "code.exe" 被误计为切换）。
         var appSwitchCount = 0;
         string? previousApp = null;
-        foreach (var ev in windowEvents.OrderBy(e => e.Timestamp))
+        foreach (var ev in windowEvents
+                     .Where(e => !string.IsNullOrWhiteSpace(e.AppName))
+                     .OrderBy(e => e.Timestamp)
+                     .ThenBy(e => e.End)
+                     .ThenBy(e => e.AppName, StringComparer.OrdinalIgnoreCase))
         {
-            if (ev.AppName is not null && previousApp is not null && ev.AppName != previousApp)
+            if (previousApp is not null && !string.Equals(ev.AppName, previousApp, StringComparison.OrdinalIgnoreCase))
                 appSwitchCount++;
             previousApp = ev.AppName;
         }
+
+        // 活跃应用与「最专注」按应用各自的**去重后时长**聚合（#303）：
+        // 同一应用的多条重叠/连续事件不应因条数多寡或单条最长而胜出，
+        // 而应按真实占用时间比较，口径与「记录时长」的并集算法一致。
+        var appSeconds = windowEvents
+            .Where(e => !string.IsNullOrWhiteSpace(e.AppName))
+            .GroupBy(e => e.AppName!, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new
+            {
+                App = g.Key,
+                Seconds = MergeIntervals(g.Select(e => (e.Timestamp, e.End)).ToList())
+                    .Sum(m => (m.End - m.Start).TotalSeconds)
+            })
+            .ToList();
 
         return new DerivedMetrics(
             FormatDuration(totalRecorded),
             FormatDuration(activeInputMin),
             FormatDuration(idleMin),
-            sessions.Count,
-            windowEvents.Select(e => e.AppName).Distinct().Count(),
+            sessionCount,
+            appSeconds.Count,
             keyPresses,
             totalClicks,
             appSwitchCount,
             totalRecorded > 0 ? Math.Round(appSwitchCount / totalRecorded * 10, 1) : 0,
-            windowEvents.OrderByDescending(e => e.Duration).FirstOrDefault()?.AppName ?? "-",
+            appSeconds
+                .OrderByDescending(a => a.Seconds)
+                .ThenBy(a => a.App, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault()?.App ?? "-",
             totalClicks > 0 ? Math.Round((double)keyPresses / totalClicks, 2) : 0);
     }
+
+    /// <summary>热力图事件的应用名归一（#303）：与概览指标一致，去掉 .exe 等噪声后缀。</summary>
+    private static string NormalizeMetricApp(string? appName)
+        => AppNameNormalizer.Normalize(appName);
 
     private static string FormatDuration(double minutes)
     {

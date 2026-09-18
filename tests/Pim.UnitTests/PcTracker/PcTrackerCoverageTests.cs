@@ -67,16 +67,23 @@ public sealed class PcTrackerCoverageTests
         var res = await svc.GetFocusBlocksAsync(new PcAggregationQuery(TestDate.ToString("yyyy-MM-dd"), null, null, null), CancellationToken.None);
         Assert.Empty(res.Items);
     }
-    [Fact] public async Task Agg_FocusBlocks_DurationCappedAt3600()
+    /// <summary>
+    /// #303：窗口事件的单条上限改为「业务日长度」的溢出保护（原 3600s 会把合法长事件截断，
+    /// 实测 tracker 存在 4170s / 9560s 的前台窗口事件），块时长改为按业务日窗口裁剪。
+    /// </summary>
+    [Fact] public async Task Agg_FocusBlocks_LongWindowEventIsClippedNotCappedAt3600()
     {
         await using var db = ServiceTestBase.CreateDb();
+        // 6:00 起 7200s（至 8:00） + 7:05 起 600s（至 7:15）；两条同应用且间隙 5 分钟内
+        // → 合并为一个块，块时长按「末结束 − 首开始」= 6:00-8:00 = 120 分钟。
+        // 旧口径：首条 cap 到 3600s（至 7:00），块为 6:00-7:15 = 75 分钟。
         db.Set<AwEventEntity>().Add(Win("code.exe", DayStart.AddHours(6), 7200));
         db.Set<AwEventEntity>().Add(Win("code.exe", DayStart.AddHours(7).AddMinutes(5), 600));
         await db.SaveChangesAsync();
         var svc = ServiceTestBase.CreatePcAggregationService(db);
         var res = await svc.GetFocusBlocksAsync(new PcAggregationQuery(TestDate.ToString("yyyy-MM-dd"), null, null, null), CancellationToken.None);
         Assert.Single(res.Items);
-        Assert.Equal(70, res.Items[0].DurationMinutes);
+        Assert.Equal(120, res.Items[0].DurationMinutes);
     }
     [Fact] public async Task Agg_FocusBlocks_ShortBlocksFiltered()
     {
