@@ -697,10 +697,16 @@ public partial class PcTrackerService
                 .Select(e => new { e.Timestamp, e.Duration, e.AppName })
                 .ToListAsync(ct);
 
+            // 跨来源去重（#303 review）：同一条底层事件可能同时存在于 AW 与 tracker
+            // （迁移期双写 / 重复上传）。不去重会让事件数与 keyCount 的分母一起翻倍。
+            // 键取「原始时刻 + 原始时长 + 归一化应用名」，与概览指标同一口径。
+            var seenEvents = new HashSet<(long Ticks, long DurationMs, string App)>();
             var hourEvents = awEvents
-                .Select(e => (Timestamp: e.Timestamp, App: NormalizeMetricApp(e.AppNameNormalized ?? e.AppName)))
-                .Concat(trackerHeatmapEvents.Select(e => (Timestamp: e.Timestamp, App: NormalizeMetricApp(e.AppName))))
+                .Select(e => (e.Timestamp, e.Duration, App: NormalizeMetricApp(e.AppNameNormalized ?? e.AppName)))
+                .Concat(trackerHeatmapEvents.Select(e => (e.Timestamp, e.Duration, App: NormalizeMetricApp(e.AppName))))
                 .Where(e => !string.IsNullOrWhiteSpace(e.App))
+                .Where(e => seenEvents.Add((e.Timestamp.UtcTicks, (long)Math.Round(e.Duration * 1000), e.App.ToLowerInvariant())))
+                .Select(e => (e.Timestamp, e.App))
                 .ToList();
 
             var totalAwEvents = hourEvents.Count;

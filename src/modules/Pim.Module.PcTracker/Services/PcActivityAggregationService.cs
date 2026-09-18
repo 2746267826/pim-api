@@ -335,17 +335,22 @@ public sealed class PcActivityAggregationService
             if (string.IsNullOrWhiteSpace(normalized))
                 return;
 
+            // 去重键基于**原始**事件身份（时刻 / 时长 / 应用），而不是裁剪后的区间：
+            // 裁剪结果只反映「落在本业务日内的部分」，两条原始身份不同的长事件可能裁剪出
+            // 完全相同的键而互相吞掉（当前各端点都是并集口径，故数值暂不可见，但键本身
+            // 不应依赖裁剪结果）；同时与概览指标 / 热力图的去重口径保持一致（#303 review）。
+            var cappedSeconds = Math.Min(duration, MaxWindowEventSeconds);
+            if (!seen.Add((timestamp.UtcTicks, (long)Math.Round(cappedSeconds * 1000), normalized.ToLowerInvariant())))
+                return;
+
             // 裁剪到业务日窗口：跨入 / 跨出的部分不计入本日。
-            var cappedEnd = timestamp.AddSeconds(Math.Min(duration, MaxWindowEventSeconds));
+            var cappedEnd = timestamp.AddSeconds(cappedSeconds);
             var start = timestamp > window.StartUtc ? timestamp : window.StartUtc;
             var end = cappedEnd < window.EndUtc ? cappedEnd : window.EndUtc;
             if (end <= start)
                 return;
 
-            var clippedSeconds = (end - start).TotalSeconds;
-            if (!seen.Add((start.UtcTicks, (long)Math.Round(clippedSeconds * 1000), normalized.ToLowerInvariant())))
-                return;
-            result.Add(new AggregationEvent(start, clippedSeconds, normalized));
+            result.Add(new AggregationEvent(start, (end - start).TotalSeconds, normalized));
         }
 
         foreach (var e in awEvents)

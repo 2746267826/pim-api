@@ -277,13 +277,32 @@ public sealed class PcAggregationEventSourceTests
         Assert.Equal(2, row.Sum(b => b.TotalEvents));
     }
 
-    /// <summary>两路来源覆盖同一时段时，热力图事件数不重复计数。</summary>
+    /// <summary>
+    /// 两路来源记录同一条底层事件时（迁移期双写 / 重复上传），热力图只应计一次 ——
+    /// 否则事件数与 keyCount 的分母会一起翻倍（#303 review）。
+    /// </summary>
     [Fact]
     public async Task HeatmapGrid_DuplicateAcrossSources_CountedOnce()
     {
         await using var db = ServiceTestBase.CreateDb();
         db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 10), 600, "code.exe"));
         db.Set<AwEventEntity>().Add(AwWindow(Beijing(17, 10), 600, "code.exe"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcTrackerService(db);
+        var res = await svc.GetHeatmapGridAsync(new DateTime(2026, 9, 17), new DateTime(2026, 9, 17), "hour", CancellationToken.None);
+
+        var row = Assert.Single(res.Grid);
+        Assert.Equal(1, row.Sum(b => b.TotalEvents));
+    }
+
+    /// <summary>热力图只统计窗口事件：两路来源的不同事件正常累加。</summary>
+    [Fact]
+    public async Task HeatmapGrid_DistinctEventsAcrossSources_AreBothCounted()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 10), 600, "code.exe"));
+        db.Set<AwEventEntity>().Add(AwWindow(Beijing(17, 11), 600, "code.exe"));
         await db.SaveChangesAsync();
 
         var svc = ServiceTestBase.CreatePcTrackerService(db);
@@ -311,6 +330,43 @@ public sealed class PcAggregationEventSourceTests
 
         var row = Assert.Single(res.Grid);
         Assert.Equal(1, row.Sum(b => b.TotalEvents));
+    }
+
+    /// <summary>
+    /// 跨业务日边界的长事件：两条不同起点的长事件各自裁剪后，本业务日内的覆盖应是它们的**并集**
+    /// （04:00–07:30 = 210 分钟），不能被裁剪逻辑漏算或重复计入。
+    /// </summary>
+    [Fact]
+    public async Task AppUsage_LongEventsClippedToBusinessDay_UnionIsCorrect()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 业务日 9/17 窗口 = 北京 [9/17 04:00, 9/18 04:00)
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 2), 4 * 3600, "code.exe"));      // 覆盖 04:00-06:00
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 3, 30), 4 * 3600, "code.exe")); // 覆盖 04:00-07:30
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcAggregationService(db);
+        var res = await svc.GetAppUsageAsync(new PcAggregationQuery("2026-09-17", null, null, null), null, CancellationToken.None);
+
+        Assert.InRange(res.TotalMinutes, 209, 211);
+    }
+
+    /// <summary>
+    /// 预裁剪时长的长事件也要被正确裁剪到业务日：起点在 04:00 前、时长跨越整个上午时，
+    /// 本日只应计入窗口内的部分，不得把窗口外时间算进来。
+    /// </summary>
+    [Fact]
+    public async Task AppUsage_EventSpanningBeyondWindow_CountsOnlyInWindowPart()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        // 北京 9/17 02:00 起 8h（至 10:00）；业务日 04:00 起 → 本日应计 04:00-10:00 = 360 分钟
+        db.Set<TrackerEventEntity>().Add(TrackerWindow(Beijing(17, 2), 8 * 3600, "code.exe"));
+        await db.SaveChangesAsync();
+
+        var svc = ServiceTestBase.CreatePcAggregationService(db);
+        var res = await svc.GetAppUsageAsync(new PcAggregationQuery("2026-09-17", null, null, null), null, CancellationToken.None);
+
+        Assert.InRange(res.TotalMinutes, 359, 361);
     }
 
     // ================= 无数据时保持为空 =================
