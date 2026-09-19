@@ -173,15 +173,24 @@ public sealed class GapClassificationTests
     }
 
     [Fact]
-    public void SchemaSql_DisablesLegacyUnknownMigrationRules()
+    public void SchemaSql_DisablesLegacyUnknownRulesByConditionNotName()
     {
         // 生产库里已经存在该规则（active），必须有一条幂等 SQL 把它停用，
         // 否则仅改播种逻辑对存量数据库无效。
+        //
+        // 识别**按规则语义**（条件里 appNameNormalized equals unknown）而不是只按规则名：
+        // 历史迁移的名称变体（大小写 / .exe / 空格）都要覆盖，同时不误伤恰好同名的其它规则
+        //（review 发现只匹配精确名称会漏掉变体、并可能误停用户规则）。
         var sql = PcTrackerSchemaInitializer.SchemaSql.Replace("\r\n", "\n", StringComparison.Ordinal);
 
-        Assert.Contains("Migrated app rule: unknown", sql);
         Assert.Contains("UPDATE pc_activity_category_rules", sql);
         Assert.Contains("status = 'disabled'", sql);
+        Assert.Contains("conditions_json -> 'all' -> 0 ->> 'value'", sql);
+        Assert.Contains("= 'appNameNormalized'", sql);
+        // 名称变体归一化：去 .exe、去空格、转小写后再比较
+        Assert.Contains("lower(trim(regexp_replace(", sql);
+        // 不能只按规则名匹配（那会漏掉未知变体）
+        Assert.DoesNotContain("WHERE rule_name = 'Migrated app rule: unknown'", sql);
     }
 
     [Fact]
@@ -191,7 +200,9 @@ public sealed class GapClassificationTests
         // 避免「插入时 ON CONFLICT DO NOTHING 跳过、清理又漏掉」的空窗。
         var normalized = PcTrackerSchemaInitializer.SchemaSql.Replace("\r\n", "\n", StringComparison.Ordinal);
 
-        var cleanupIndex = normalized.IndexOf("Migrated app rule: unknown", StringComparison.Ordinal);
+        var cleanupIndex = normalized.IndexOf(
+            "UPDATE pc_activity_category_rules",
+            StringComparison.Ordinal);
         var insertIndex = normalized.IndexOf(
             "'Migrated app rule: ' || app_pattern",
             StringComparison.Ordinal);
@@ -323,5 +334,170 @@ public sealed class GapClassificationTests
         Assert.DoesNotContain(res, item => item.CategoryName == "游戏");
         // 10:00-10:30 只有空档覆盖 → 不应产出任何块
         Assert.DoesNotContain(res, item => item.Start == Beijing(7, 10));
+    }
+
+    // ================= 4. 历史数据：存量错误分类必须被重写 =================
+
+    /// <summary>构造一条 gap 分类记录（模拟 #331 修复前被写成「游戏」的存量行）。</summary>
+    private static PcDetailRecord GapRecord(string deviceId = "device-1")
+        => new(
+            "gap",
+            "2026-07-07T02:00:00Z",
+            "2026-07-07T02:30:00Z",
+            1800,
+            deviceId,
+            null,
+            null,
+            "游戏",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null);
+
+    [Fact]
+    public async Task EnsureClassificationsAsync_RewritesLegacyInactiveSnapshotOnNormalBackfill()
+    {
+        // #331 的历史数据风险：常规 detail/backfill 走的是 auditId == null 的分支，
+        // 旧实现在该分支直接沿用已有快照，于是生产库里已经写成「游戏」的 gap 行
+        // 永远不会被纠正（只修了新数据）。这里锁定：非应用记录必须按新口径重写。
+        using var db = MobileTestHelpersBridge.CreateDb();
+        var snapshotService = new ActivityClassificationSnapshotService(
+            db,
+            NullLogger<ActivityClassificationSnapshotService>.Instance);
+
+        var record = GapRecord();
+        var recordKey = ActivityClassificationRecordKey.FromRecord(record);
+
+        // 存量快照：旧规则判成「游戏」，source=rule
+        db.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity
+        {
+            Id = Guid.NewGuid(),
+            RecordKey = recordKey,
+            RecordType = "gap",
+            DeviceId = "device-1",
+            StartedAt = DateTimeOffset.Parse("2026-07-07T02:00:00Z"),
+            EndedAt = DateTimeOffset.Parse("2026-07-07T02:30:00Z"),
+            CategoryName = "游戏",
+            CategoryColor = "#F43F5E",
+            Confidence = 0.95,
+            Source = "rule",
+            ClassifierVersion = "local-v1",
+            ClassifiedAt = DateTimeOffset.Parse("2026-07-07T03:00:00Z")
+        });
+        await db.SaveChangesAsync();
+
+        // auditId: null == 常规补齐路径
+        var classified = await snapshotService.EnsureClassificationsAsync(
+            [record],
+            [],
+            auditId: null,
+            CancellationToken.None);
+
+        Assert.Equal(ActivityClassificationResult.InactiveCategoryName, classified[0].CategoryName);
+
+        var rewritten = await db.Set<ActivityClassificationEntity>().SingleAsync();
+        Assert.Equal(ActivityClassificationResult.InactiveCategoryName, rewritten.CategoryName);
+        Assert.Equal("inactive", rewritten.Source);
+    }
+
+    [Fact]
+    public async Task EnsureClassificationsAsync_KeepsProtectedInactiveSnapshot()
+    {
+        // 人工纠正过的空档分类必须保留：重写历史不能覆盖人的判断。
+        using var db = MobileTestHelpersBridge.CreateDb();
+        var snapshotService = new ActivityClassificationSnapshotService(
+            db,
+            NullLogger<ActivityClassificationSnapshotService>.Instance);
+
+        var record = GapRecord();
+        db.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity
+        {
+            Id = Guid.NewGuid(),
+            RecordKey = ActivityClassificationRecordKey.FromRecord(record),
+            RecordType = "gap",
+            DeviceId = "device-1",
+            StartedAt = DateTimeOffset.Parse("2026-07-07T02:00:00Z"),
+            EndedAt = DateTimeOffset.Parse("2026-07-07T02:30:00Z"),
+            CategoryName = "学习",
+            CategoryColor = "#14b8a6",
+            Confidence = 0.99,
+            Source = "manual",
+            ClassifierVersion = "local-v1",
+            ClassifiedAt = DateTimeOffset.Parse("2026-07-07T03:00:00Z")
+        });
+        await db.SaveChangesAsync();
+
+        await snapshotService.EnsureClassificationsAsync([record], [], null, CancellationToken.None);
+
+        var kept = await db.Set<ActivityClassificationEntity>().SingleAsync();
+        Assert.Equal("学习", kept.CategoryName);
+        Assert.Equal("manual", kept.Source);
+    }
+
+    [Fact]
+    public async Task EnsureClassificationsAsync_LeavesActiveSnapshotsUntouchedOnBackfill()
+    {
+        // 回归保护：重写只针对非应用记录，普通应用记录的存量快照仍按原逻辑沿用
+        // （避免把每次 backfill 都变成全量重分类）。
+        using var db = MobileTestHelpersBridge.CreateDb();
+        var snapshotService = new ActivityClassificationSnapshotService(
+            db,
+            NullLogger<ActivityClassificationSnapshotService>.Instance);
+
+        var record = new PcDetailRecord(
+            "window",
+            "2026-07-07T02:00:00Z",
+            "2026-07-07T02:30:00Z",
+            1800,
+            "device-1",
+            "Code.exe",
+            "Code.exe",
+            "文档",
+            "Program.cs",
+            null,
+            null,
+            null,
+            null,
+            null,
+            null);
+
+        db.Set<ActivityClassificationEntity>().Add(new ActivityClassificationEntity
+        {
+            Id = Guid.NewGuid(),
+            RecordKey = ActivityClassificationRecordKey.FromRecord(record),
+            RecordType = "window",
+            DeviceId = "device-1",
+            StartedAt = DateTimeOffset.Parse("2026-07-07T02:00:00Z"),
+            EndedAt = DateTimeOffset.Parse("2026-07-07T02:30:00Z"),
+            CategoryName = "文档",
+            CategoryColor = "#F59E0B",
+            Confidence = 0.9,
+            Source = "rule",
+            ClassifierVersion = "local-v1",
+            ClassifiedAt = DateTimeOffset.Parse("2026-07-07T03:00:00Z")
+        });
+        await db.SaveChangesAsync();
+
+        await snapshotService.EnsureClassificationsAsync([record], [], null, CancellationToken.None);
+
+        var kept = await db.Set<ActivityClassificationEntity>().SingleAsync();
+        Assert.Equal("文档", kept.CategoryName);
+        Assert.Equal("rule", kept.Source);
+    }
+}
+
+/// <summary>InMemory 库工厂：本文件同时用到 PcTracker 与 Mobile 实体配置。</summary>
+internal static class MobileTestHelpersBridge
+{
+    public static PimDbContext CreateDb()
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(ActivityClassificationEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase($"gap-{Guid.NewGuid()}")
+            .Options;
+        return new PimDbContext(options);
     }
 }

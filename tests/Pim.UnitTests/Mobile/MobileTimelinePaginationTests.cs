@@ -204,6 +204,47 @@ public sealed class MobileTimelinePaginationTests
     }
 
     [Fact]
+    public async Task GetTimelineAsync_PagesMergeBothSourcesIntoSingleOrderedStream()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        // 两个来源各自 640 条、时间交错：合并流共 1280 条。
+        SeedSessions(db, 640);
+        SeedFallbackSummaries(db, 640);
+
+        var service = Service(db);
+        var page1 = await service.GetTimelineAsync(Query(page: 1, pageSize: 500), CancellationToken.None);
+        var page2 = await service.GetTimelineAsync(Query(page: 2, pageSize: 500), CancellationToken.None);
+        var page3 = await service.GetTimelineAsync(Query(page: 3, pageSize: 500), CancellationToken.None);
+
+        // 总数是**合并流**的 1280，不是任一来源的 640
+        Assert.Equal(1280, page1.TotalCount);
+        Assert.Equal(640, page1.SessionTotalCount);
+        Assert.Equal(640, page1.FallbackTotalCount);
+
+        Assert.Equal(500, page1.Items.Count);
+        Assert.Equal(500, page2.Items.Count);
+        Assert.Equal(280, page3.Items.Count);
+        Assert.True(page1.HasMore);
+        Assert.True(page2.HasMore);
+        Assert.False(page3.HasMore);
+
+        // 每页至多 pageSize 条（旧实现两个列表各自 Take，单页最多 2×pageSize）
+        Assert.All(new[] { page1, page2, page3 }, page => Assert.True(page.Items.Count <= 500));
+
+        // 逐页拼接后全天有序 —— 旧实现两个列表独立分页会让第 2 页的会话早于第 1 页的汇总
+        var all = page1.Items.Concat(page2.Items).Concat(page3.Items).ToList();
+        Assert.Equal(1280, all.Select(item => item.Id).Distinct(StringComparer.Ordinal).Count());
+        var starts = all.Select(item => item.Start).ToList();
+        Assert.Equal(starts.OrderBy(value => value).ToList(), starts);
+
+        // Sessions / FallbackSummaries 是当前页按来源的切分，与 Items 完全一致
+        Assert.Equal(page1.Items.Count, page1.Sessions.Count + page1.FallbackSummaries.Count);
+        Assert.Equal(
+            page1.Items.OrderBy(i => i.Id, StringComparer.Ordinal).Select(i => i.Id),
+            page1.Sessions.Concat(page1.FallbackSummaries).OrderBy(i => i.Id, StringComparer.Ordinal).Select(i => i.Id));
+    }
+
+    [Fact]
     public async Task GetTimelineAsync_PagesFallbackSummariesWithTheirOwnTotal()
     {
         await using var db = MobileTestHelpers.CreateDb();
@@ -215,11 +256,31 @@ public sealed class MobileTimelinePaginationTests
 
         Assert.Equal(500, page1.FallbackSummaries.Count);
         Assert.Equal(640, page1.FallbackTotalCount);
+        Assert.Equal(640, page1.TotalCount);
         Assert.True(page1.HasMore);
 
         Assert.Equal(140, page2.FallbackSummaries.Count);
         Assert.Equal(640, page2.FallbackTotalCount);
         Assert.False(page2.HasMore);
+    }
+
+    [Fact]
+    public async Task GetTimelineAsync_HugePageNumberReturnsEmptyPageWithoutOverflow()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        SeedSessions(db, 10);
+
+        // page=int.MaxValue 时 (page-1)*pageSize 会溢出 int 变成负数，
+        // 在 PostgreSQL 上会因负 OFFSET 直接报错 —— 必须返回空页而不是异常。
+        var response = await Service(db).GetTimelineAsync(
+            Query(page: int.MaxValue, pageSize: MobileTimelinePagination.MaxPageSize),
+            CancellationToken.None);
+
+        Assert.Empty(response.Items);
+        Assert.Empty(response.Sessions);
+        Assert.Equal(10, response.TotalCount);
+        Assert.False(response.HasMore);
+        Assert.False(response.Truncated);
     }
 
     [Fact]
@@ -251,6 +312,7 @@ public sealed class MobileTimelinePaginationTests
         Assert.Empty(response.Sessions);
         Assert.Empty(response.Items);
         Assert.Equal(0, response.TotalCount);
+        Assert.Equal(0, response.SessionTotalCount);
         Assert.Equal(0, response.FallbackTotalCount);
         Assert.False(response.HasMore);
         Assert.False(response.Truncated);

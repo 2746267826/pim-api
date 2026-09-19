@@ -123,7 +123,6 @@ public sealed class MobileUsageQueryService
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var page = MobileTimelinePagination.ClampPage(query.Page);
         var pageSize = MobileTimelinePagination.ClampPageSize(query.PageSize);
-        var skip = (page - 1) * pageSize;
 
         var sessions = _db.Set<MobileUsageSessionEntity>()
             .AsNoTracking()
@@ -140,13 +139,6 @@ public sealed class MobileUsageQueryService
         // 旧实现在这里硬编码 Take(500) 且不报告总数，导致下午/晚间数据静默丢失。
         var sessionTotal = await sessions.CountAsync(ct);
 
-        var sessionRows = await sessions
-            .OrderBy(s => s.StartUtc)
-            .ThenBy(s => s.Id)
-            .Skip(skip)
-            .Take(pageSize)
-            .ToListAsync(ct);
-
         var summaries = _db.Set<MobileUsageSummaryEntity>()
             .AsNoTracking()
             .Where(s => s.UserId == userId);
@@ -160,63 +152,62 @@ public sealed class MobileUsageQueryService
         var fallbackQuery = WhereFallbackSummaries(summaries);
         var fallbackTotal = await fallbackQuery.CountAsync(ct);
 
-        var fallbackRows = await fallbackQuery
-            .OrderBy(s => s.WindowStartUtc)
-            .ThenBy(s => s.Id)
-            .Skip(skip)
-            .Take(pageSize)
-            .ToListAsync(ct);
+        // 会话与 fallback 汇总在时间上交错，必须作为**同一条合并流**分页：
+        // 若两者各自 Skip/Take，第 2 页的会话可能早于第 1 页的汇总，
+        // 客户端逐页拼接会得到乱序时间线（review 发现）。
+        var totalCount = sessionTotal + fallbackTotal;
 
-        var packageNames = sessionRows.Select(s => s.PackageName)
-            .Concat(fallbackRows.Select(s => s.PackageName))
+        // skip 用 long 计算：page 来自查询串，int 溢出会变成负 OFFSET，
+        // 在 PostgreSQL 上直接报错而不是返回空页（review 发现）。
+        var skip = ((long)page - 1) * pageSize;
+        if (skip >= totalCount)
+        {
+            return new MobileTimelineResponse(
+                DateLabel(query.RangeStartUtc),
+                query.DeviceId,
+                _timeProvider.GetUtcNow(),
+                [],
+                [],
+                [],
+                page,
+                pageSize,
+                totalCount,
+                sessionTotal,
+                fallbackTotal,
+                false,
+                false);
+        }
+
+        // 合并流的前 skip+pageSize 行必然落在「两个来源各自前 skip+pageSize 行」的并集内，
+        // 因此只需从每个来源取这么多行，在内存里归并后再切片 —— 结果与
+        // 「UNION ALL 后统一 ORDER BY 再 OFFSET/LIMIT」等价，但不用把全天数据读进来，
+        // 也避开了 EF 无法把跨实体类型的 UNION 翻译成 SQL 的限制。
+        var mergedBudget = skip + pageSize;
+        var mergedRows = await LoadMergedRowsAsync(sessions, fallbackQuery, mergedBudget, ct);
+
+        var packageNames = mergedRows
+            .Select(row => row.PackageName)
             .Distinct()
             .ToArray();
         var appCatalog = await AppCatalog(userId, query.DeviceId, packageNames, ct);
 
-        var sessionItems = sessionRows
-            .Select(s => new MobileTimelineItemDto(
-                s.Id.ToString("N"),
-                "session",
-                s.DeviceId,
-                s.PackageName,
-                DisplayName(appCatalog, s.PackageName),
-                s.StartUtc,
-                s.EndUtc,
-                Math.Max(0, (s.DurationMs ?? DurationMs(s.StartUtc, s.EndUtc)) / 1000),
-                "events",
-                1,
-                string.Empty))
+        var pageItems = mergedRows
+            .Skip((int)skip)
+            .Take(pageSize)
+            .Select(row => ToTimelineItem(row, appCatalog))
             .ToList();
 
-        var fallbackItems = fallbackRows
-            .Select(s =>
-            {
-                var windowMs = Math.Max(0, (s.WindowEndUtc - s.WindowStartUtc).TotalMilliseconds);
-                var effectiveMs = Math.Min(s.TotalTimeVisibleMs, (long)windowMs);
-                return new MobileTimelineItemDto(
-                    s.Id.ToString("N"),
-                    "fallback",
-                    s.DeviceId,
-                    s.PackageName,
-                    DisplayName(appCatalog, s.PackageName),
-                    s.WindowStartUtc,
-                    s.WindowEndUtc,
-                    Math.Max(0, effectiveMs / 1000),
-                    "fallback",
-                    0.6,
-                    "汇总数据");
-            })
+        // 向后兼容：老客户端只读 sessions / fallbackSummaries。
+        // 两者都是**当前页**的子集，与 items 完全一致，不再各自独立分页。
+        var sessionItems = pageItems
+            .Where(item => string.Equals(item.Kind, "session", StringComparison.Ordinal))
+            .ToList();
+        var fallbackItems = pageItems
+            .Where(item => string.Equals(item.Kind, "fallback", StringComparison.Ordinal))
             .ToList();
 
-        var items = sessionItems
-            .Concat(fallbackItems)
-            .OrderBy(item => item.Start)
-            .ThenBy(item => item.PackageName)
-            .ToList();
-
-        // #330：截断必须显式声明。两个列表各自分页，任一还有剩余都算「还有更多」。
-        var hasMore = sessionTotal > skip + sessionRows.Count
-            || fallbackTotal > skip + fallbackRows.Count;
+        // 合并流分页后，hasMore 只有一个含义：后面还有页。
+        var hasMore = skip + pageItems.Count < totalCount;
 
         return new MobileTimelineResponse(
             DateLabel(query.RangeStartUtc),
@@ -224,13 +215,116 @@ public sealed class MobileUsageQueryService
             _timeProvider.GetUtcNow(),
             sessionItems,
             fallbackItems,
-            items,
+            pageItems,
             page,
             pageSize,
+            totalCount,
             sessionTotal,
             fallbackTotal,
             hasMore,
             hasMore);
+    }
+
+    /// <summary>
+    /// 合并流的中间投影：会话与 fallback 汇总投影成同一形状，才能在同一条流里排序分页。
+    /// </summary>
+    private sealed record TimelineRow(
+        Guid Id,
+        string Kind,
+        string DeviceId,
+        string PackageName,
+        DateTimeOffset Start,
+        DateTimeOffset? End,
+        long? DurationMs);
+
+    /// <summary>
+    /// 按时间归并两个来源、取前 <paramref name="budget"/> 行。
+    /// <para>
+    /// 两个来源各自只取前 <paramref name="budget"/> 行：合并流的前 budget 行必然落在
+    /// 这个并集内（任一来源排在第 budget 名之后的行，前面已有该来源的 budget 行，
+    /// 不可能进入全局前 budget）。因此结果与「UNION ALL 后统一排序再切片」等价，
+    /// 但只需读取 O(budget) 行，而不是把全天数据物化进内存。
+    /// </para>
+    /// </summary>
+    private static async Task<List<TimelineRow>> LoadMergedRowsAsync(
+        IQueryable<MobileUsageSessionEntity> sessions,
+        IQueryable<MobileUsageSummaryEntity> fallbackSummaries,
+        long budget,
+        CancellationToken ct)
+    {
+        var take = (int)Math.Min(budget, int.MaxValue);
+
+        var sessionRows = await sessions
+            .OrderBy(s => s.StartUtc)
+            .ThenBy(s => s.Id)
+            .Take(take)
+            .Select(s => new TimelineRow(
+                s.Id,
+                "session",
+                s.DeviceId,
+                s.PackageName,
+                s.StartUtc,
+                s.EndUtc,
+                s.DurationMs))
+            .ToListAsync(ct);
+
+        var fallbackRows = await fallbackSummaries
+            .OrderBy(s => s.WindowStartUtc)
+            .ThenBy(s => s.Id)
+            .Take(take)
+            .Select(s => new TimelineRow(
+                s.Id,
+                "fallback",
+                s.DeviceId,
+                s.PackageName,
+                s.WindowStartUtc,
+                s.WindowEndUtc,
+                s.TotalTimeVisibleMs))
+            .ToListAsync(ct);
+
+        return sessionRows
+            .Concat(fallbackRows)
+            .OrderBy(row => row.Start)
+            .ThenBy(row => row.Id)
+            .ToList();
+    }
+
+    private static MobileTimelineItemDto ToTimelineItem(
+        TimelineRow row,
+        IReadOnlyDictionary<string, MobileAppCatalogEntity> appCatalog)
+    {
+        if (string.Equals(row.Kind, "session", StringComparison.Ordinal))
+        {
+            var durationMs = row.DurationMs ?? DurationMs(row.Start, row.End);
+            return new MobileTimelineItemDto(
+                row.Id.ToString("N"),
+                "session",
+                row.DeviceId,
+                row.PackageName,
+                DisplayName(appCatalog, row.PackageName),
+                row.Start,
+                row.End,
+                Math.Max(0, durationMs / 1000),
+                "events",
+                1,
+                string.Empty);
+        }
+
+        // fallback 汇总：可见时长不能超过声明的窗口长度，否则会虚报使用时间。
+        var windowMs = Math.Max(0, (row.End!.Value - row.Start).TotalMilliseconds);
+        var effectiveMs = Math.Min(row.DurationMs ?? 0, (long)windowMs);
+        return new MobileTimelineItemDto(
+            row.Id.ToString("N"),
+            "fallback",
+            row.DeviceId,
+            row.PackageName,
+            DisplayName(appCatalog, row.PackageName),
+            row.Start,
+            row.End,
+            Math.Max(0, effectiveMs / 1000),
+            "fallback",
+            0.6,
+            "汇总数据");
     }
 
     private async Task<Dictionary<string, MobileAppCatalogEntity>> AppCatalog(

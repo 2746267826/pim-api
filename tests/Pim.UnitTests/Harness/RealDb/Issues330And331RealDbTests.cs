@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.Entities;
+using Pim.Module.Mobile.Entities;
 using Pim.Module.PcTracker.Services;
 using Xunit;
 using MobileTimelinePagination = Pim.Module.Mobile.DTOs.MobileTimelinePagination;
@@ -33,6 +34,7 @@ public sealed class Issues330And331RealDbTests
     private static PimDbContext CreateContext(string connectionString)
     {
         PimDbContext.RegisterModuleAssembly(typeof(ActivityClassificationEntity).Assembly);
+        PimDbContext.RegisterModuleAssembly(typeof(MobileUsageSummaryEntity).Assembly);
         var options = new DbContextOptionsBuilder<PimDbContext>()
             .UseNpgsql(connectionString)
             .Options;
@@ -112,6 +114,91 @@ public sealed class Issues330And331RealDbTests
             legacyVisible < total,
             $"最繁忙业务日 {busiestDay:yyyy-MM-dd} 共 {total} 条，旧实现只能看到 {legacyVisible} 条");
         Assert.True(total > 0);
+    }
+
+    [SkippableFact]
+    public async Task MobileTimeline_MergedPagination_OnPostgres_IsOrderedAndComplete()
+    {
+        // InMemory 不能验证 EF 对这种跨来源归并查询的 SQL 翻译，
+        // 这里在真 PostgreSQL 上跑一遍：分页必须能在库里执行、且逐页拼接后全天有序无重无漏。
+        var connectionString = RealDbTestConnection.Require();
+        await using var db = CreateContext(connectionString);
+
+        // 找一个既有会话又有 fallback 汇总的业务日
+        var day = await db.Set<MobileUsageSummaryEntity>()
+            .AsNoTracking()
+            .Where(s => s.SourceKind.ToLower().Contains("fallback") || s.SourceKind.ToLower().Contains("summary"))
+            .OrderByDescending(s => s.WindowStartUtc)
+            .Select(s => s.WindowStartUtc)
+            .FirstOrDefaultAsync(CancellationToken.None);
+
+        Skip.If(day == default, "镜像库没有 fallback 汇总数据，跳过。");
+
+        var userId = await db.Set<MobileUsageSummaryEntity>()
+            .AsNoTracking()
+            .Where(s => s.WindowStartUtc == day)
+            .Select(s => s.UserId)
+            .FirstAsync(CancellationToken.None);
+        var deviceId = await db.Set<MobileUsageSummaryEntity>()
+            .AsNoTracking()
+            .Where(s => s.WindowStartUtc == day)
+            .Select(s => s.DeviceId)
+            .FirstAsync(CancellationToken.None);
+
+        // 业务日窗口（Asia/Shanghai 04:00 起算）→ 用 UTC 表示，Npgsql 只接受 offset 0。
+        var localDay = day.ToOffset(TimeSpan.FromHours(8)).Date;
+        var rangeStart = new DateTimeOffset(localDay.AddHours(4), TimeSpan.FromHours(8)).ToUniversalTime();
+        var rangeEnd = rangeStart.AddDays(1);
+
+        var service = new Pim.Module.Mobile.Services.MobileUsageQueryService(
+            db,
+            new StubCurrentUser(userId),
+            TimeProvider.System);
+
+        const int pageSize = 200;
+        var collected = new List<string>();
+        var page = 1;
+        var total = -1;
+
+        // 逐页翻到底（有上限保护，避免镜像数据异常时死循环）
+        while (page <= 200)
+        {
+            var response = await service.GetTimelineAsync(
+                new Pim.Module.Mobile.DTOs.MobileTimelineQuery(deviceId, rangeStart, rangeEnd, page, pageSize),
+                CancellationToken.None);
+
+            if (total < 0)
+                total = response.TotalCount;
+            else
+                Assert.Equal(total, response.TotalCount);
+
+            Assert.True(response.Items.Count <= pageSize, "单页不得超过 pageSize");
+
+            // 当前页内部必须有序
+            var starts = response.Items.Select(i => i.Start).ToList();
+            Assert.Equal(starts.OrderBy(v => v).ToList(), starts);
+
+            collected.AddRange(response.Items.Select(i => i.Id));
+
+            if (!response.HasMore)
+            {
+                Assert.False(response.Truncated);
+                break;
+            }
+
+            Assert.True(response.Truncated);
+            page++;
+        }
+
+        // 全天无重复、无遗漏
+        Assert.Equal(total, collected.Count);
+        Assert.Equal(total, collected.Distinct(StringComparer.Ordinal).Count());
+    }
+
+    private sealed class StubCurrentUser(Guid userId) : Pim.Infrastructure.Auth.ICurrentUserService
+    {
+        public Guid? UserId { get; } = userId;
+        public string? Role => "user";
     }
 
     // ================= #331：空档不得判成应用类别 =================

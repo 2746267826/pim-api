@@ -378,16 +378,19 @@ public sealed record MobileTimelineItemDto(
 
 /// <summary>
 /// 手机端时间线（#330）。<see cref="Sessions"/> / <see cref="FallbackSummaries"/> /
-/// <see cref="Items"/> 三者都只包含<b>当前页</b>的数据。
+/// <see cref="Items"/> 三者都只包含<b>当前页</b>的数据，且描述的是同一批行：
+/// 会话与 fallback 汇总按时间合并成一条流后统一分页，因此
+/// <c>Items</c> 全天有序、逐页拼接不会乱序，另两个数组只是按来源做的切分。
 /// <para>
 /// 分页与截断字段为向后兼容的新增字段：旧客户端只读 <c>sessions</c> / <c>items</c>
 /// 仍能正常工作（不传 <c>page</c> 时默认返回第一页，且默认页大小已覆盖绝大多数业务日）；
 /// 新调用方必须检查 <see cref="HasMore"/> / <see cref="Truncated"/>，不能假设拿到的是全天数据。
 /// </para>
 /// </summary>
-/// <param name="TotalCount">当前查询范围内 sessions 的总条数（不受分页影响）。</param>
-/// <param name="FallbackTotalCount">当前查询范围内 fallbackSummaries 的总条数（不受分页影响）。</param>
-/// <param name="HasMore">是否还有下一页（sessions 与 fallbackSummaries 任一未取完即为 true）。</param>
+/// <param name="TotalCount">合并流（sessions + fallbackSummaries）的总条数，分页以此为基准。</param>
+/// <param name="SessionTotalCount">仅 sessions 的总条数。</param>
+/// <param name="FallbackTotalCount">仅 fallbackSummaries 的总条数。</param>
+/// <param name="HasMore">后面是否还有下一页。与 <see cref="Truncated"/> 同义。</param>
 /// <param name="Truncated">
 /// 本页是否因分页上限而丢弃了数据。含义与 <see cref="HasMore"/> 一致，
 /// 但对调用方更直白：true 表示「你看到的不是全部」。
@@ -402,6 +405,7 @@ public sealed record MobileTimelineResponse(
     int Page = 1,
     int PageSize = MobileTimelinePagination.DefaultPageSize,
     int TotalCount = 0,
+    int SessionTotalCount = 0,
     int FallbackTotalCount = 0,
     bool HasMore = false,
     bool Truncated = false);

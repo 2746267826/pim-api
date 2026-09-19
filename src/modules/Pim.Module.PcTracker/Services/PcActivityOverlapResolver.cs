@@ -38,6 +38,12 @@ public static class PcActivityOverlapResolver
         "gap", "idle", "afk",
     };
 
+    /// <summary>
+    /// 「未活动」记录类型清单（#331），供需要在 SQL 侧过滤的调用方复用，
+    /// 避免各处再各自硬编码一份而分叉。大小写不敏感。
+    /// </summary>
+    public static IReadOnlyCollection<string> InactiveRecordTypes => InactiveTypes;
+
     /// <summary>一个待消解的分类区间。</summary>
     /// <param name="StableKey">
     /// 稳定且<b>批次内唯一</b>的键（分类记录场景为 <c>record_key</c>，该列有唯一索引
