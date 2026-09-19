@@ -299,6 +299,16 @@ public sealed class CalendarRecycleBinService
 
         ClearDelete(calendar, now);
 
+        // #309 需求 6：随 Outlook 删除而进回收站的日历，恢复后转为 PIM 本地日历——
+        // 它与 Outlook 已脱钩（绑定行已删除），恢复出来就是可编辑/可删除的本地数据。
+        // 这里把 Source 改回 manual 以免后续逻辑继续把它当作外部来源。
+        var outlivedBinding = await _db.Set<OutlookCalendarBindingEntity>()
+            .AnyAsync(b => b.PimCalendarId == calendar.Id, ct);
+        if (!outlivedBinding && calendar.Source.StartsWith("outlook", StringComparison.OrdinalIgnoreCase))
+        {
+            calendar.Source = "manual";
+        }
+
         if (deletedOperationId.HasValue)
         {
             if (calendar.Kind == "task")
@@ -330,6 +340,14 @@ public sealed class CalendarRecycleBinService
 
                 foreach (var evt in events)
                 {
+                    // #309 需求 6：随 Outlook 删除的日程恢复后是本地数据，必须同时脱离
+                    // Outlook 来源语义——否则「Outlook 来源」仍会触发外部来源的确认等级、
+                    // 附件走 Graph 下载分支、数据体检把它计为外部数据等行为。
+                    if (string.Equals(evt.DeletedByOperationKind, OutlookCalendarSyncService.MirrorDeleteOperationKind, StringComparison.Ordinal))
+                    {
+                        evt.Source = "manual";
+                    }
+
                     ClearDelete(evt, now);
                     affectedIds.Add(evt.Id);
                 }

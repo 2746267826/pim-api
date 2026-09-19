@@ -30,6 +30,10 @@ on:
         required: false
         type: string
         default: 'url'
+      extension_browser:
+        required: false
+        type: string
+        default: 'chrome'
   workflow_dispatch:
     inputs:
       version:
@@ -60,6 +64,10 @@ on:
         description: 'Extension kind: url (tracker-web) or site (time-tracker fork)'
         required: false
         default: 'url'
+      extension_browser:
+        description: 'Target browser: chrome (MV3) or firefox (MV2)'
+        required: false
+        default: 'chrome'
 
 jobs:
   build:
@@ -98,22 +106,45 @@ jobs:
       # 产物目录与依赖安装方式在两个 fork 之间不同（tracker-web: build/ + lockfile；
       # time-tracker-4-browser: dist_prod/ 且上游不提交 lockfile），统一由自适应
       # 脚本处理并做产物校验。
+      # #312：Chrome 与 Firefox 是两个独立产物——Firefox 无法运行 MV3 service
+      # worker 构建，因此必须分别构建、分别校验、分别作为发布资产。
+      - name: Test cross-platform packaging scripts
+        working-directory: ${{ github.workspace }}
+        run: |
+          node --test scripts/ci/test-zip-writer.mjs
+          node --test scripts/ci/test-verify-extension-zips.mjs
+
       - name: Install dependencies and build extension
         working-directory: ${{ github.workspace }}
         run: |
+          # Chrome 保持原有资产名（pim-browser-extension-v*.zip）以兼容既有链接；
+          # Firefox 增加 -firefox- 中缀，两者都落在 pim-browser-extension-*.zip 家族内。
+          BROWSER="${{ inputs.extension_browser || 'chrome' }}"
+          if [ "$BROWSER" = "firefox" ]; then
+            ASSET="artifacts/pim-browser-extension-firefox-v${{ steps.ver.outputs.artifact_slug }}.zip"
+          else
+            ASSET="artifacts/pim-browser-extension-v${{ steps.ver.outputs.artifact_slug }}.zip"
+          fi
           node scripts/ci/build-browser-extension.mjs \
             --src .browser-extension-src \
             --out artifacts/staging \
-            --zip artifacts/pim-browser-extension-v${{ steps.ver.outputs.artifact_slug }}.zip \
-            --kind ${{ inputs.extension_kind || 'url' }}
+            --zip "$ASSET" \
+            --kind ${{ inputs.extension_kind || 'url' }} \
+            --browser "$BROWSER"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+        id: build
 
+      # 规范归档自检：条目名不得含反斜杠、manifest 引用齐全、目标浏览器与版本一致（#312）。
       - name: Verify artifact
         run: |
           ls -lh artifacts/*.zip
+          node "${{ github.workspace }}/scripts/ci/verify-extension-zips.mjs" \
+            "${{ steps.build.outputs.asset }}:${{ inputs.extension_browser || 'chrome' }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: pim-browser-extension-v${{ steps.ver.outputs.artifact_slug }}
+          # 两个目标跑同一个可复用工作流，artifact 名必须区分，否则同名上传会互相覆盖。
+          name: pim-browser-extension-${{ inputs.extension_browser || 'chrome' }}-v${{ steps.ver.outputs.artifact_slug }}
           path: artifacts/*.zip
           if-no-files-found: error

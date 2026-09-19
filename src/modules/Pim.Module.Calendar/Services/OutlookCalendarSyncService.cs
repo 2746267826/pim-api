@@ -16,6 +16,12 @@ public sealed class OutlookCalendarSyncService
     private const string AttachmentHydrationPendingState = "attachments-pending";
     private const string AttachmentHydratedEmptyState = "attachments-hydrated-empty";
 
+    /// <summary>
+    /// 跟随删除（远端日历消失）使用的操作类型。与手动删除日历的 <c>calendar-book</c> 区分开，
+    /// 便于回收站/审计区分数据来源（#309 需求 4 的"留痕"）。
+    /// </summary>
+    public const string MirrorDeleteOperationKind = "outlook-remote-missing";
+
     private static readonly Dictionary<string, string> GraphColorToHex = new(StringComparer.OrdinalIgnoreCase)
     {
         ["lightBlue"] = "#69AFE5",
@@ -167,14 +173,16 @@ public sealed class OutlookCalendarSyncService
             seenBindingIds.Add(binding.Id);
         }
 
+        // #309：本轮发现中没出现的绑定即"远端已删除"。发现是列全量日历（不是分页窗口），
+        // 未见即确认缺失，按镜像语义连同日程移入回收站；绑定行一并删除，条目不再残留在
+        // 「日历选择」列表里。DiscoverAsync 全程成功才会走到这里（失败会抛异常回滚），
+        // 因此不存在"部分结果导致误删"的风险。
+        var operationId = Guid.NewGuid();
         foreach (var existing in existingBindings)
         {
             if (!seenBindingIds.Contains(existing.Id))
             {
-                existing.RemoteState = "remote-missing";
-                existing.LastErrorCode = "404";
-                existing.LastErrorMessage = "Graph 404";
-                existing.UpdatedAt = now;
+                await MirrorDeleteCalendarAsync(existing, operationId, now, ct);
             }
         }
 
@@ -541,11 +549,77 @@ public sealed class OutlookCalendarSyncService
         public int SuccessfulPages { get; set; }
         public string Status { get; set; } = "running";
         public bool ProgressMade { get; set; }
+
+        /// <summary>
+        /// #309：该日历被确认为远端缺失，本地日历连同全部日程已移入回收站。
+        /// 与 <see cref="Failure"/> 互斥——这是一次成功的跟随删除，不是失败。
+        /// </summary>
+        public bool MirrorDeleted { get; set; }
+        public int MirrorDeletedEventCount { get; set; }
+
         public List<EventChangeSummary> Changes { get; } = new();
         public List<SyncFailureSummary> Failures { get; } = new();
         public List<OutlookSyncStep> Steps { get; } = new();
 
         public BindingSyncState(OutlookCalendarBindingEntity binding) => Binding = binding;
+    }
+
+    /// <summary>
+    /// 跟随删除（镜像删除）：Outlook 端已确认删除的日历，连同其下全部日程一起移入回收站。
+    ///
+    /// #309 明确变更了 #272 的取舍——PIM 展示的 Outlook 日程必须是 Outlook 的镜像，源头
+    /// 删除即跟随删除（回收站兜底可恢复）。这里刻意不做任何例外判断：只读日历（生日/节假日）、
+    /// 在 PIM 有过本地改动或有附件引用的日程，同样一并删除（issue 需求 2）。
+    ///
+    /// 同时把日程与 Outlook 脱钩（清空 binding/connection/event id）：这样回收站恢复出来的
+    /// 是一份普通的本地日程，Outlook 端之后重建同名日历也不会与这些旧数据回链（需求 6）。
+    /// </summary>
+    private async Task<int> MirrorDeleteCalendarAsync(
+        OutlookCalendarBindingEntity binding,
+        Guid operationId,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var events = await _db.Set<EventEntity>()
+            .Where(e => e.CalendarId == binding.PimCalendarId)
+            .ToListAsync(ct);
+
+        foreach (var evt in events)
+        {
+            evt.DeletedAt = now;
+            evt.DeletedByOperationId = operationId;
+            evt.DeletedByOperationKind = MirrorDeleteOperationKind;
+            evt.UpdatedAt = now;
+            evt.OutlookCalendarBindingId = null;
+            evt.OutlookConnectionId = null;
+            evt.OutlookEventId = null;
+            evt.OutlookSeriesMasterId = null;
+            evt.OutlookChangeKey = null;
+            evt.OutlookEtag = null;
+            evt.OutlookSyncState = null;
+            evt.LastSeenSyncGeneration = null;
+        }
+
+        var calendar = await _db.Set<CalendarEntity>()
+            .FirstOrDefaultAsync(c => c.Id == binding.PimCalendarId, ct);
+        if (calendar is not null)
+        {
+            calendar.DeletedAt = now;
+            calendar.DeletedByOperationId = operationId;
+            calendar.DeletedByOperationKind = MirrorDeleteOperationKind;
+            calendar.UpdatedAt = now;
+        }
+
+        // 绑定行本身要删掉：否则「日历选择」会继续残留一条「缺失」条目（需求 4）。
+        _db.Set<OutlookCalendarBindingEntity>().Remove(binding);
+
+        _logger.LogWarning(
+            "日历 {CalendarName}（绑定 {BindingId}）在 Outlook 端已确认删除，已连同 {EventCount} 条日程移入回收站。",
+            binding.Name,
+            binding.Id,
+            events.Count);
+
+        return events.Count;
     }
 
     private async Task<OutlookSyncBatchResponse> RunSyncInternalAsync(
@@ -614,8 +688,46 @@ public sealed class OutlookCalendarSyncService
         var reauthEncountered = false;
         var canceled = false;
 
+        // #309 需求 5：清理存量。旧策略下已被标记为 remote-missing 的绑定（生产上为
+        // 「课程表26-27秋」138 条与「兼容性测试」262 条）不会被常规同步选中（筛选只取
+        // active），因此必须在这里单独收口，否则它们会永远留在库里。
+        //
+        // 这些绑定早前已经过确认缺失，无需再向 Graph 复核。显式请求（重试/深度同步）里的
+        // 绑定不在此处处理：那是用户在主动确认该日历是否回来了，交给下面的常规流程
+        // ——成功则转回 active，失败则走 404 复核后跟随删除。
+        var explicitIds = bindings.Select(b => b.Id).ToHashSet();
+        var legacyMissing = (await _db.Set<OutlookCalendarBindingEntity>()
+                .Where(b => b.ConnectionId == connection.Id && b.RemoteState == "remote-missing")
+                .ToListAsync(ct))
+            .Where(b => !explicitIds.Contains(b.Id))
+            .ToList();
+
         try
         {
+            if (legacyMissing.Count > 0)
+            {
+                var mirrorDeletedAt = _timeProvider.GetUtcNow();
+                var legacyOperationId = Guid.NewGuid();
+                foreach (var stale in legacyMissing)
+                {
+                    var mirroredEvents = await MirrorDeleteCalendarAsync(stale, legacyOperationId, mirrorDeletedAt, ct);
+                    var staleState = new BindingSyncState(stale)
+                    {
+                        MirrorDeleted = true,
+                        MirrorDeletedEventCount = mirroredEvents,
+                        Status = "completed"
+                    };
+                    staleState.Deleted += mirroredEvents;
+                    staleState.Steps.Add(new OutlookSyncStep(
+                        stale.Id.ToString(),
+                        "mirror-deleted",
+                        $"已随 Outlook 删除，移入回收站 {mirroredEvents} 条日程",
+                        mirrorDeletedAt));
+                    states.Add(staleState);
+                }
+                await _db.SaveChangesAsync(ct);
+            }
+
             foreach (var binding in bindings)
             {
                 if (reauthEncountered)
@@ -664,7 +776,21 @@ public sealed class OutlookCalendarSyncService
                     if (ex.StatusCode == HttpStatusCode.NotFound
                         && await IsCalendarConfirmedMissingAsync(connection, binding, ct))
                     {
-                        binding.RemoteState = "remote-missing";
+                        // #309：确认缺失即跟随删除。这不是一次同步失败——用户要的结果
+                        // （日历从 PIM 消失、进回收站）已经达成，因此清掉失败计数，
+                        // 否则批次会被判成 partial/failed 并提示用户"重试无效"。
+                        var mirroredEvents = await MirrorDeleteCalendarAsync(binding, batch.Id, now, ct);
+                        state.MirrorDeleted = true;
+                        state.MirrorDeletedEventCount = mirroredEvents;
+                        state.Failure = 0;
+                        state.Failures.Clear();
+                        state.Deleted += mirroredEvents;
+                        state.Status = "completed";
+                        state.Steps[^1] = new OutlookSyncStep(
+                            binding.Id.ToString(),
+                            "mirror-deleted",
+                            $"已随 Outlook 删除，移入回收站 {mirroredEvents} 条日程",
+                            now);
                     }
                 }
                 catch (Exception ex)
@@ -741,6 +867,9 @@ public sealed class OutlookCalendarSyncService
                 bindingId = s.Binding.Id.ToString(),
                 calendarName = s.Binding.Name,
                 status = s.Status,
+                // #309：前端据此把「跟随删除」与普通同步结果区分开，文案才说得清楚
+                // （只靠 status 区分不了——跟随删除是一次 completed）。
+                mirrorDeleted = s.MirrorDeleted,
                 readCount = s.Read,
                 createdCount = s.Created,
                 updatedCount = s.Updated,

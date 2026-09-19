@@ -617,7 +617,7 @@ public sealed class OutlookCalendarSyncServiceTests
     }
 
     [Fact]
-    public async Task Discovery_MarksOldBindingsRemoteMissingAfterSuccess()
+    public async Task Discovery_MirrorDeletesOldBindingsAfterSuccess()
     {
         var db = CreateDb();
         await SeedConnectionAsync(db, UserId);
@@ -635,6 +635,8 @@ public sealed class OutlookCalendarSyncServiceTests
         };
         db.Set<OutlookCalendarBindingEntity>().Add(oldBinding);
         await db.SaveChangesAsync();
+        await SeedEventAsync(db, cal.Id, oldBinding.Id, "old-event-1");
+        await SeedEventAsync(db, cal.Id, oldBinding.Id, "old-event-2");
 
         // Discovery returns no calendars (empty groups + empty root)
         handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
@@ -643,19 +645,82 @@ public sealed class OutlookCalendarSyncServiceTests
         var service = CreateService(db, graph);
         var result = await service.DiscoverAsync(UserId, CancellationToken.None);
 
-        // Old binding still appears in result but with remote-missing state
-        var old = Assert.Single(result);
-        Assert.Equal("old-cal", old.GraphCalendarId);
-        Assert.Equal("remote-missing", old.RemoteState);
+        // #309：未在发现结果中出现的日历即远端已删除 → 跟随删除，条目从列表中消失。
+        Assert.Empty(result);
+        Assert.False(await db.Set<OutlookCalendarBindingEntity>().AnyAsync(b => b.Id == oldBinding.Id));
 
-        var binding = await db.Set<OutlookCalendarBindingEntity>()
+        // 日历与其下全部日程一并进入回收站。
+        var calendar = await db.Set<CalendarEntity>()
+            .IgnoreQueryFilters().FirstAsync(c => c.Id == cal.Id);
+        Assert.NotNull(calendar.DeletedAt);
+        Assert.Equal("outlook-remote-missing", calendar.DeletedByOperationKind);
+
+        var events = await db.Set<EventEntity>()
             .IgnoreQueryFilters()
-            .FirstAsync(b => b.Id == oldBinding.Id);
-        Assert.Equal("remote-missing", binding.RemoteState);
+            .Where(e => e.CalendarId == cal.Id)
+            .ToListAsync();
+        Assert.Equal(2, events.Count);
+        Assert.All(events, e => Assert.NotNull(e.DeletedAt));
+        Assert.All(events, e => Assert.Equal(calendar.DeletedByOperationId, e.DeletedByOperationId));
 
-        // Calendar and events should still exist
-        var calendar = await db.Set<CalendarEntity>().FirstAsync(c => c.Id == cal.Id);
-        Assert.NotNull(calendar);
+        // 日程已与 Outlook 脱钩，恢复出来即为本地数据（需求 6）。
+        Assert.All(events, e => Assert.Null(e.OutlookEventId));
+        Assert.All(events, e => Assert.Null(e.OutlookCalendarBindingId));
+        Assert.All(events, e => Assert.Null(e.OutlookConnectionId));
+    }
+
+    [Fact]
+    public async Task Discovery_DeletesUnseenCalendarIncludingReadOnlyAndLocallyEditedEvents()
+    {
+        // 需求 2：删除范围无例外——只读日历（生日/节假日）与在 PIM 有过本地改动的日程
+        // 同样一并删除，不做任何"保护性"跳过。
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+
+        var readonlyCal = new CalendarEntity { UserId = UserId, Name = "生日", Source = "outlook" };
+        db.Set<CalendarEntity>().Add(readonlyCal);
+        await db.SaveChangesAsync();
+        var binding = new OutlookCalendarBindingEntity
+        {
+            ConnectionId = ConnectionId, PimCalendarId = readonlyCal.Id,
+            GraphCalendarId = "birthdays", Name = "生日", IsSelected = true,
+            CanEdit = false,
+        };
+        db.Set<OutlookCalendarBindingEntity>().Add(binding);
+        await db.SaveChangesAsync();
+
+        // 一条"在 PIM 有过本地改动"的日程：本地标题已被改写、并带附件引用。
+        var locallyEdited = new EventEntity
+        {
+            CalendarId = readonlyCal.Id,
+            Uid = "local-edit@pim",
+            Title = "我改过的标题",
+            DtStart = FixedNow,
+            DtEnd = FixedNow.AddHours(1),
+            Source = "outlook",
+            OutlookEventId = "ro-event-1",
+            OutlookCalendarBindingId = binding.Id,
+            OutlookConnectionId = ConnectionId,
+            AttachmentReferencesJson = """[{"kind":"pimFile","fileId":"f1"}]""",
+        };
+        db.Set<EventEntity>().Add(locallyEdited);
+        await db.SaveChangesAsync();
+
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        var service = CreateService(db, graph);
+        await service.DiscoverAsync(UserId, CancellationToken.None);
+
+        var stored = await db.Set<EventEntity>()
+            .IgnoreQueryFilters().FirstAsync(e => e.Id == locallyEdited.Id);
+        Assert.NotNull(stored.DeletedAt);
+
+        var storedCal = await db.Set<CalendarEntity>()
+            .IgnoreQueryFilters().FirstAsync(c => c.Id == readonlyCal.Id);
+        Assert.NotNull(storedCal.DeletedAt);
     }
 
     [Fact]
@@ -4738,25 +4803,32 @@ public sealed class OutlookCalendarSyncServiceTests
 
         var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
 
-        Assert.Equal("failed", response.Status);
+        // #309：确认缺失即跟随删除，这是一次成功的结果（不是失败）。
+        Assert.Equal("completed", response.Status);
+        Assert.Equal(0, response.FailureCount);
 
-        var binding = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId);
-        Assert.Equal("remote-missing", binding.RemoteState);
-        Assert.Equal("404", binding.LastErrorCode);
-        Assert.Equal("Graph 404", binding.LastErrorMessage);
+        // 绑定行已删除：条目不再残留在「日历选择」列表中。
+        Assert.False(await db.Set<OutlookCalendarBindingEntity>().AnyAsync(b => b.Id == bindingId));
 
-        // Local calendar and events must remain preserved (not silently deleted)
-        var calendar = await db.Set<CalendarEntity>().FirstAsync(c => c.Id == calId);
-        Assert.NotNull(calendar);
-        Assert.Null(calendar.DeletedAt);
+        // 本地日历连同日程一起进入回收站（软删，可恢复）。
+        var calendar = await db.Set<CalendarEntity>()
+            .IgnoreQueryFilters().FirstAsync(c => c.Id == calId);
+        Assert.NotNull(calendar.DeletedAt);
+        Assert.Equal("outlook-remote-missing", calendar.DeletedByOperationKind);
 
-        // Subsequent sync must skip the remote-missing calendar
+        // 同步历史留下一条说明（需求 4 的"留痕"）。
+        var batch = await LatestBatchAsync(db);
+        var mirrorStep = Assert.Single(response.Steps, s => s.Status == "mirror-deleted");
+        Assert.Equal("已随 Outlook 删除，移入回收站 0 条日程", mirrorStep.Detail);
+        Assert.Contains("mirror-deleted", batch.StepsJson);
+
+        // 后续同步不再有该日历来处理。
         var response2 = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
         Assert.Equal("completed", response2.Status);
     }
 
     [Fact]
-    public async Task SyncAsync_MultipleBindings_OneReturns404_OthersSucceed_OnlyMissingBindingMarkedRemoteMissing()
+    public async Task SyncAsync_MultipleBindings_OneReturns404_OthersSucceed_GoneOneMirrorDeleted()
     {
         var db = CreateDb();
         await SeedConnectionAsync(db, UserId);
@@ -4780,19 +4852,25 @@ public sealed class OutlookCalendarSyncServiceTests
 
         var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
 
-        Assert.Equal("partial", response.Status);
+        // #309：缺失的那个被跟随删除（成功），健康的那个照常同步 → 整批完成、无失败。
+        Assert.Equal("completed", response.Status);
+        Assert.Equal(0, response.FailureCount);
 
-        var b1 = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId1);
-        Assert.Equal("remote-missing", b1.RemoteState);
-        Assert.Equal("404", b1.LastErrorCode);
-        Assert.Equal("Graph 404", b1.LastErrorMessage);
+        // 缺失日历的绑定行被移除、日历进回收站。
+        Assert.False(await db.Set<OutlookCalendarBindingEntity>().AnyAsync(b => b.Id == bindingId1));
+        var goneCalendar = await db.Set<CalendarEntity>()
+            .IgnoreQueryFilters().FirstAsync(c => c.Id == calId1);
+        Assert.NotNull(goneCalendar.DeletedAt);
 
+        // 健康日历完全不受影响。
         var b2 = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId2);
         Assert.Equal("active", b2.RemoteState);
         Assert.Null(b2.LastErrorCode);
         Assert.Null(b2.LastErrorMessage);
+        var healthyCalendar = await db.Set<CalendarEntity>().FirstAsync(c => c.Id == calId2);
+        Assert.Null(healthyCalendar.DeletedAt);
 
-        // Next sync: cal-1 is skipped, cal-2 syncs normally
+        // Next sync: only cal-2 remains and syncs normally.
         handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
         var response2 = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
         Assert.Equal("completed", response2.Status);
@@ -4865,54 +4943,112 @@ public sealed class OutlookCalendarSyncServiceTests
         Assert.Empty(handler.Requests);
     }
 
-    // ===== Review follow-up (#273): the per-calendar retry path after a 404 =====
+    // ===== #309: the 404 path now mirror-deletes instead of parking the binding =====
 
     /// <summary>
-    /// A 404 turns the binding into <c>remote-missing</c>, and the frontend "重试" button then
-    /// retries that very binding. The retry request is rejected before it reaches Graph because
-    /// the binding selection only includes <c>RemoteState == "active"</c>, so the user gets a
-    /// 400 and the sync-history entry stays "failed" forever.
+    /// #309 需求 5：存量收口。旧策略遗留下来的 <c>remote-missing</c> 绑定不会被常规同步选中
+    /// （筛选只取 active），也不会再收到 404，因此必须在同步里单独清理——它们早已被确认缺失，
+    /// 清理时不应再向 Graph 发任何请求。
     /// </summary>
     [Fact]
-    public async Task Retry_AfterBindingWasMarkedRemoteMissing_ShouldRunInsteadOfRejectingBindingId()
+    public async Task SyncAsync_LegacyRemoteMissingStock_IsMirrorDeletedWithoutGraphCall()
     {
         var db = CreateDb();
         await SeedConnectionAsync(db, UserId);
-        var (_, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "course-cal");
+        await SeedEventAsync(db, calId, bindingId, "course-event-1");
+        await SeedEventAsync(db, calId, bindingId, "course-event-2");
+
+        // 存量状态：旧版本判定缺失后留下的 remote-missing。
+        var legacy = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId);
+        legacy.RemoteState = "remote-missing";
+        legacy.LastErrorCode = "404";
+        legacy.LastErrorMessage = "Graph 404";
+        await db.SaveChangesAsync();
 
         var handler = new ScriptedHttpMessageHandler();
-        handler.Enqueue(HttpStatusCode.NotFound, "{\"error\":{\"code\":\"ErrorItemNotFound\"}}");
-        // Confirmation GET: the calendar is really gone.
-        handler.Enqueue(HttpStatusCode.NotFound, "{\"error\":{\"code\":\"ErrorItemNotFound\"}}");
         var graph = CreateGraphClient(handler);
-        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 9, 16, 10, 0, 0, TimeSpan.Zero) };
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 9, 18, 10, 0, 0, TimeSpan.Zero) };
         var service = CreateService(db, graph, time);
 
-        var first = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
-        Assert.Equal("failed", first.Status);
+        var response = await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
 
-        var binding = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId);
-        Assert.Equal("remote-missing", binding.RemoteState);
+        Assert.Equal("completed", response.Status);
+        // 存量早已确认缺失，无需再向 Graph 复核。
+        Assert.Empty(handler.Requests);
 
-        // The UI retries exactly the entry that just failed.
-        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
-        var retried = await service.SyncAsync(
-            UserId,
-            new OutlookSyncRequest("normal", RetryOfBatchId: first.Id, CalendarBindingIds: new[] { bindingId }),
-            CancellationToken.None);
+        // 绑定行消失（不再残留「缺失」条目），日历与 2 条日程进回收站。
+        Assert.False(await db.Set<OutlookCalendarBindingEntity>().AnyAsync(b => b.Id == bindingId));
+        var calendar = await db.Set<CalendarEntity>()
+            .IgnoreQueryFilters().FirstAsync(c => c.Id == calId);
+        Assert.NotNull(calendar.DeletedAt);
 
-        Assert.Equal("completed", retried.Status);
-        Assert.Equal(0, retried.FailureCount);
+        var events = await db.Set<EventEntity>()
+            .IgnoreQueryFilters()
+            .Where(e => e.CalendarId == calId)
+            .ToListAsync();
+        Assert.Equal(2, events.Count);
+        Assert.All(events, e => Assert.NotNull(e.DeletedAt));
+
+        var mirrorStep = Assert.Single(response.Steps, s => s.Status == "mirror-deleted");
+        Assert.Equal("已随 Outlook 删除，移入回收站 2 条日程", mirrorStep.Detail);
+        var batch = await LatestBatchAsync(db);
+        Assert.Contains("mirror-deleted", batch.StepsJson);
+
+        // 前端靠这个字段把「跟随删除」与普通 completed 结果区分开（否则只会显示
+        // 一个看不出所以然的 completed）。这里锁定它的存在与取值。
+        Assert.Contains("\"mirrorDeleted\":true", batch.PerCalendarJson);
+        Assert.Contains("\"deletedCount\":2", batch.PerCalendarJson);
     }
 
     /// <summary>
-    /// "深度同步" / "强制获取全部日程" send the checked binding ids explicitly. A binding that was
-    /// marked <c>remote-missing</c> keeps <c>IsSelected=true</c>, so it is part of that list and the
-    /// whole request used to be rejected with 02009 — breaking deep sync for every other calendar too.
-    /// It must instead run, fail only for the gone calendar, and leave the healthy one working.
+    /// 存量清理不能误伤用户正在显式操作的绑定：显式请求（「重试」/深度同步）意味着用户正在
+    /// 确认该日历是否回来了，必须交给常规流程——成功则转回 active，而不是被当成存量直接删除。
     /// </summary>
     [Fact]
-    public async Task DeepMode_WithRemoteMissingSelectedBinding_ShouldNotFailWholeRequest()
+    public async Task SyncAsync_ExplicitlyRequestedLegacyRemoteMissingBinding_IsSyncedNotStockDeleted()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-restored");
+
+        var legacy = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId);
+        legacy.RemoteState = "remote-missing";
+        legacy.LastErrorCode = "404";
+        legacy.LastErrorMessage = "Graph 404";
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        // 用户在 Outlook 端把它恢复了：这次真的能读到事件。
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
+        var graph = CreateGraphClient(handler);
+        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 9, 18, 10, 0, 0, TimeSpan.Zero) };
+        var service = CreateService(db, graph, time);
+
+        var response = await service.SyncAsync(
+            UserId,
+            new OutlookSyncRequest("normal", CalendarBindingIds: new[] { bindingId }),
+            CancellationToken.None);
+
+        Assert.Equal("completed", response.Status);
+        Assert.Single(handler.Requests);
+
+        // 绑定回到 active，日历没有被删除。
+        var reloaded = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId);
+        Assert.Equal("active", reloaded.RemoteState);
+        Assert.Null(reloaded.LastErrorCode);
+        var calendar = await db.Set<CalendarEntity>().FirstAsync(c => c.Id == calId);
+        Assert.Null(calendar.DeletedAt);
+    }
+
+    /// <summary>
+    /// "深度同步" / "强制获取全部日程" send the checked binding ids explicitly. A legacy
+    /// <c>remote-missing</c> binding keeps <c>IsSelected=true</c>, so it is part of that list.
+    /// The whole request must not be rejected with 02009: the healthy calendar still syncs, and the
+    /// gone one is mirror-deleted after its 404 is confirmed.
+    /// </summary>
+    [Fact]
+    public async Task DeepMode_WithLegacyRemoteMissingSelectedBinding_ShouldNotFailWholeRequest()
     {
         var db = CreateDb();
         await SeedConnectionAsync(db, UserId);
@@ -4934,7 +5070,7 @@ public sealed class OutlookCalendarSyncServiceTests
         // cal-healthy is processed first (lower id), then the gone calendar 404s again.
         handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
         handler.Enqueue(HttpStatusCode.NotFound, "{\"error\":{\"code\":\"ErrorItemNotFound\"}}");
-        // Confirmation GET for the gone calendar: still absent, so it stays remote-missing.
+        // Confirmation GET for the gone calendar: still absent, so it is mirror-deleted.
         handler.Enqueue(HttpStatusCode.NotFound, "{\"error\":{\"code\":\"ErrorItemNotFound\"}}");
         var graph = CreateGraphClient(handler);
         var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 9, 16, 10, 0, 0, TimeSpan.Zero) };
@@ -4955,50 +5091,11 @@ public sealed class OutlookCalendarSyncServiceTests
 
         var healthy = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == healthyId);
         Assert.Equal("active", healthy.RemoteState);
-        Assert.Equal("partial", response.Status);
-        Assert.Equal(1, response.FailureCount);
 
-        // The gone calendar stays missing (confirmed), rather than silently reverting to active.
-        var gone = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == missingId);
-        Assert.Equal("remote-missing", gone.RemoteState);
-        Assert.Equal("404", gone.LastErrorCode);
-    }
-
-    /// <summary>
-    /// A targeted retry of a calendar the user restored on the Outlook side really fetches events
-    /// again, so the binding has to leave <c>remote-missing</c> — otherwise it stays excluded from
-    /// every later sync and the recovery path silently does nothing.
-    /// </summary>
-    [Fact]
-    public async Task SyncAsync_PreviouslyRemoteMissingBindingSucceeds_RestoresActiveState()
-    {
-        var db = CreateDb();
-        await SeedConnectionAsync(db, UserId);
-        var (_, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-restored");
-
-        var binding = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId);
-        binding.RemoteState = "remote-missing";
-        binding.LastErrorCode = "404";
-        binding.LastErrorMessage = "Graph 404";
-        await db.SaveChangesAsync();
-
-        var handler = new ScriptedHttpMessageHandler();
-        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1));
-        var graph = CreateGraphClient(handler);
-        var time = new StubTimeProvider { UtcNowValue = new DateTimeOffset(2026, 9, 16, 10, 0, 0, TimeSpan.Zero) };
-        var service = CreateService(db, graph, time);
-
-        var response = await service.SyncAsync(
-            UserId,
-            new OutlookSyncRequest("normal", CalendarBindingIds: new[] { bindingId }),
-            CancellationToken.None);
-
+        // #309：缺失日历被跟随删除，整批因此没有失败项。
         Assert.Equal("completed", response.Status);
-
-        var reloaded = await db.Set<OutlookCalendarBindingEntity>().FirstAsync(b => b.Id == bindingId);
-        Assert.Equal("active", reloaded.RemoteState);
-        Assert.Null(reloaded.LastErrorCode);
-        Assert.Null(reloaded.LastErrorMessage);
+        Assert.Equal(0, response.FailureCount);
+        Assert.False(await db.Set<OutlookCalendarBindingEntity>().AnyAsync(b => b.Id == missingId));
     }
 
     /// <summary>

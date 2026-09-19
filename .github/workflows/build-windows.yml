@@ -199,7 +199,9 @@ jobs:
 
       # 两个 fork 的产物目录与依赖安装方式不同（build/ + lockfile vs
       # dist_prod/ + pure-install），统一交给自适应脚本处理。
-      - name: Build URL-level extension
+      # 每个插件同时产出 Chrome（MV3）与 Firefox（MV2）两份：Firefox 无法运行
+      # MV3 service worker 构建，只发 Chrome 版本等于 Firefox 用户没有可用产物（#312）。
+      - name: Build URL-level extension (Chrome)
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
@@ -207,9 +209,21 @@ jobs:
             --src .extension-url \
             --out src/client-windows/publish/browser-extension \
             --zip src/client-windows/publish/browser-extension.zip \
-            --kind url
+            --kind url \
+            --browser chrome
 
-      - name: Build site-level extension
+      - name: Build URL-level extension (Firefox)
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          node scripts/ci/build-browser-extension.mjs \
+            --src .extension-url \
+            --out src/client-windows/publish/browser-extension-firefox \
+            --zip src/client-windows/publish/browser-extension-firefox.zip \
+            --kind url \
+            --browser firefox
+
+      - name: Build site-level extension (Chrome)
         shell: bash
         working-directory: ${{ github.workspace }}
         run: |
@@ -217,7 +231,27 @@ jobs:
             --src .extension-site \
             --out src/client-windows/publish/browser-extension-site \
             --zip src/client-windows/publish/browser-extension-site.zip \
-            --kind site
+            --kind site \
+            --browser chrome
+
+      - name: Build site-level extension (Firefox)
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          node scripts/ci/build-browser-extension.mjs \
+            --src .extension-site \
+            --out src/client-windows/publish/browser-extension-site-firefox \
+            --zip src/client-windows/publish/browser-extension-site-firefox.zip \
+            --kind site \
+            --browser firefox
+
+      # 打包器自身的行为回归（条目名必须是规范 `/`，不得出现 `\`）。
+      - name: Test cross-platform packaging scripts
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          node --test scripts/ci/test-zip-writer.mjs
+          node --test scripts/ci/test-verify-extension-zips.mjs
 
       - name: Verify packaged extensions
         shell: bash
@@ -229,7 +263,18 @@ jobs:
             || { echo "URL-level extension background missing"; exit 1; }
           test -f src/client-windows/publish/browser-extension-site/manifest.json \
             || { echo "site-level extension manifest missing"; exit 1; }
-          echo "Both extensions staged for the installer"
+          for f in browser-extension-firefox browser-extension-site-firefox; do
+            test -d "src/client-windows/publish/$f" || { echo "$f staging dir missing"; exit 1; }
+          done
+          # 四个 zip 都要是规范归档、manifest 引用齐全、且目标浏览器与 manifest
+          # 版本一致。校验逻辑自带回归测试（test-verify-extension-zips.mjs），
+          # 且用 Node 解析而非平台工具，Windows runner 上同样可靠。
+          node scripts/ci/verify-extension-zips.mjs \
+            src/client-windows/publish/browser-extension.zip:chrome \
+            src/client-windows/publish/browser-extension-firefox.zip:firefox \
+            src/client-windows/publish/browser-extension-site.zip:chrome \
+            src/client-windows/publish/browser-extension-site-firefox.zip:firefox
+          echo "All extensions staged for the installer"
 
       - name: Write version file for reference
         shell: bash
