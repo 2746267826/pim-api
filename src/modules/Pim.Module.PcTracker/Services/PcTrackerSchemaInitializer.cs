@@ -524,6 +524,21 @@ INSERT INTO pc_activity_category_rules (rule_name, scope, category_name, project
 ('Builtin: Office apps', 'activity', '文档', NULL, '#F59E0B', 300, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"containsAny","value":["winword","excel","powerpnt","notion","obsidian","typora"]}}]}}'::jsonb, 0.85, 'Builtin office rule.'),
 ('Builtin: File managers', 'activity', '文档', NULL, '#F59E0B', 300, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"containsAny","value":["explorer","everything","totalcommander"]}}]}}'::jsonb, 0.85, 'Builtin file rule.')
 ON CONFLICT DO NOTHING;
+-- #331：#301 之后仍然每天产生约 10 小时假「游戏」的规则级根因。
+-- pc_app_categories 迁移把 app_pattern='unknown' 也搬成了一条 active 规则：
+--   {{"all":[{{"field":"appNameNormalized","op":"equals","value":"unknown"}}]}} -> 游戏
+--   (confidence 0.95, priority + 1000)
+-- 而 AppNameNormalizer 对「无应用身份」一律归一化为字面量 "unknown"，
+-- 于是所有 gap / idle / afk 记录都命中它变成「游戏」。
+-- 「认不出 → 游戏」是错误映射，且分类器已对非应用记录短路（见 ActivityClassifier），
+-- 这里再把存量规则停用，保证已经播种过的库也不会继续污染。
+UPDATE pc_activity_category_rules
+SET status = 'disabled',
+    updated_at = NOW(),
+    explanation = COALESCE(explanation, '') || ' [disabled by #331: unknown must not map to an activity category]'
+WHERE rule_name = 'Migrated app rule: unknown'
+  AND status = 'active';
+
 INSERT INTO pc_activity_category_rules (rule_name, scope, category_name, project_tag, color, priority, source, status, conditions_json, confidence, explanation)
 SELECT
     'Migrated app rule: ' || app_pattern,
@@ -542,7 +557,9 @@ WHERE NOT EXISTS (
     SELECT 1
     FROM pc_activity_category_rules r
     WHERE r.rule_name = 'Migrated app rule: ' || pc_app_categories.app_pattern
-);
+)
+-- #331：unknown 是「没有应用身份」的哨兵值，不是应用名，永远不迁移成应用规则。
+AND lower(regexp_replace(app_pattern, '\.exe$', '', 'i')) <> 'unknown';
 
 -- Phase 2: pc_categories (hierarchical classification tree)
 

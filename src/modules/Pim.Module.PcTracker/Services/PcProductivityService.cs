@@ -290,6 +290,13 @@ public class PcProductivityService
         var clipped = new List<ClippedSnapshot>(items.Count);
         foreach (var entity in items)
         {
+            // #331：gap / idle / afk 表示「这里没有人」，不是应用使用行为。
+            // 它们没有应用身份，若继续当普通候选参与消解，就会被渲染成
+            // pc-fallback-v1:<hash> 伪应用块（生产实测单日 161 块、全部标「游戏」）。
+            // 与分类分布 / 生产力统计（#301）保持同一口径：空档不进入时间线。
+            if (PcActivityOverlapResolver.IsInactive(entity.RecordType))
+                continue;
+
             var start = entity.StartedAt > dayStart ? entity.StartedAt : dayStart;
             var end = entity.EndedAt < dayEnd ? entity.EndedAt : dayEnd;
             if (end <= start)

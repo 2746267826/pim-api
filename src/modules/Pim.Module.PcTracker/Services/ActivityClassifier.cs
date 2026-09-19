@@ -16,6 +16,14 @@ public static class ActivityClassifier
         IReadOnlyDictionary<Guid, string>? categoryNamesById = null,
         IReadOnlyCollection<AppSignatureEntity>? appSignatures = null)
     {
+        // #331：gap / idle / afk 表示「这里没有人」，不是某次应用使用行为。
+        // 它们的应用身份必然缺失（AppNameNormalizer 归一化为 "unknown"），
+        // 若照常走规则匹配，就会命中 `appNameNormalized equals "unknown"` 这类
+        // 兜底规则（生产库中被迁移成「游戏」），把每天约 10 小时空档算成游戏。
+        // 因此在任何规则 / 签名 / 启发式判定之前短路，明确给出「未活动」结论。
+        if (PcActivityOverlapResolver.IsInactive(context.RecordType))
+            return ActivityClassificationResult.Inactive();
+
         var activeRules = (rules ?? Array.Empty<ActivityCategoryRuleEntity>())
             .Where(rule => string.Equals(rule.Status, "active", StringComparison.OrdinalIgnoreCase))
             .Where(CanClassifyActivity)

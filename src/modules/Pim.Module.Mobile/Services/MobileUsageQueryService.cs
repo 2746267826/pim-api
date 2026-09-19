@@ -104,7 +104,7 @@ public sealed class MobileUsageQueryService
             .ToList();
 
         return new MobileUsageSummaryResponse(
-            DateLabel(query),
+            DateLabel(query.RangeStartUtc),
             query.DeviceId,
             _timeProvider.GetUtcNow(),
             totalSeconds,
@@ -118,9 +118,13 @@ public sealed class MobileUsageQueryService
             failedBatchCount);
     }
 
-    public async Task<MobileTimelineResponse> GetTimelineAsync(MobileSummaryQuery query, CancellationToken ct = default)
+    public async Task<MobileTimelineResponse> GetTimelineAsync(MobileTimelineQuery query, CancellationToken ct = default)
     {
         var userId = MobileUserContext.RequireUserId(_currentUser);
+        var page = MobileTimelinePagination.ClampPage(query.Page);
+        var pageSize = MobileTimelinePagination.ClampPageSize(query.PageSize);
+        var skip = (page - 1) * pageSize;
+
         var sessions = _db.Set<MobileUsageSessionEntity>()
             .AsNoTracking()
             .Where(s => s.UserId == userId);
@@ -132,9 +136,15 @@ public sealed class MobileUsageQueryService
         if (query.RangeEndUtc is not null)
             sessions = sessions.Where(s => s.StartUtc < query.RangeEndUtc);
 
+        // #330：先取总数再分页，让调用方能判断「是否还有数据」——
+        // 旧实现在这里硬编码 Take(500) 且不报告总数，导致下午/晚间数据静默丢失。
+        var sessionTotal = await sessions.CountAsync(ct);
+
         var sessionRows = await sessions
             .OrderBy(s => s.StartUtc)
-            .Take(500)
+            .ThenBy(s => s.Id)
+            .Skip(skip)
+            .Take(pageSize)
             .ToListAsync(ct);
 
         var summaries = _db.Set<MobileUsageSummaryEntity>()
@@ -147,9 +157,14 @@ public sealed class MobileUsageQueryService
         if (query.RangeEndUtc is not null)
             summaries = summaries.Where(s => s.WindowStartUtc < query.RangeEndUtc);
 
-        var fallbackRows = await WhereFallbackSummaries(summaries)
+        var fallbackQuery = WhereFallbackSummaries(summaries);
+        var fallbackTotal = await fallbackQuery.CountAsync(ct);
+
+        var fallbackRows = await fallbackQuery
             .OrderBy(s => s.WindowStartUtc)
-            .Take(500)
+            .ThenBy(s => s.Id)
+            .Skip(skip)
+            .Take(pageSize)
             .ToListAsync(ct);
 
         var packageNames = sessionRows.Select(s => s.PackageName)
@@ -199,13 +214,23 @@ public sealed class MobileUsageQueryService
             .ThenBy(item => item.PackageName)
             .ToList();
 
+        // #330：截断必须显式声明。两个列表各自分页，任一还有剩余都算「还有更多」。
+        var hasMore = sessionTotal > skip + sessionRows.Count
+            || fallbackTotal > skip + fallbackRows.Count;
+
         return new MobileTimelineResponse(
-            DateLabel(query),
+            DateLabel(query.RangeStartUtc),
             query.DeviceId,
             _timeProvider.GetUtcNow(),
             sessionItems,
             fallbackItems,
-            items);
+            items,
+            page,
+            pageSize,
+            sessionTotal,
+            fallbackTotal,
+            hasMore,
+            hasMore);
     }
 
     private async Task<Dictionary<string, MobileAppCatalogEntity>> AppCatalog(
@@ -318,8 +343,11 @@ public sealed class MobileUsageQueryService
         return Math.Max(0, Math.Round(dataScore - issuePenalty, 2));
     }
 
-    private static string DateLabel(MobileSummaryQuery query)
-        => BusinessDay.FormatDate(BusinessDay.GetBusinessDate(query.RangeStartUtc ?? DateTimeOffset.UtcNow));
+    /// <summary>
+    /// 业务日标签。汇总与时间线共用（#330 起两者的查询类型不同，但日期口径必须一致）。
+    /// </summary>
+    private static string DateLabel(DateTimeOffset? rangeStartUtc)
+        => BusinessDay.FormatDate(BusinessDay.GetBusinessDate(rangeStartUtc ?? DateTimeOffset.UtcNow));
 
     private static string DisplayName(IReadOnlyDictionary<string, MobileAppCatalogEntity> apps, string packageName)
         => apps.TryGetValue(packageName, out var app) && !string.IsNullOrWhiteSpace(app.DisplayName)
