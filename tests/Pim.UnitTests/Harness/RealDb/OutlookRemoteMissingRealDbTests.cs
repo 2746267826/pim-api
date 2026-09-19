@@ -179,8 +179,18 @@ public sealed class OutlookRemoteMissingRealDbTests
         }
     }
 
+    /// <summary>
+    /// #309 需求 5（真库）：旧策略遗留的 <c>remote-missing</c> 存量，在常规同步中必须被
+    /// 「跟随删除」清掉——绑定行消失、日历与全部日程进入回收站、凭证留痕。
+    ///
+    /// 为什么必须用真库：存量清理走的是 <c>UPDATE calendars/events</c> + <c>DELETE
+    /// outlook_calendar_bindings</c>，其中 events 上还有
+    /// <c>(outlook_calendar_binding_id, outlook_event_id)</c> 的唯一索引（带 <c>deleted_at IS NULL</c>
+    /// 过滤）与到 bindings 的外键。InMemory provider 不校验这些约束，只有 Npgsql 能证明
+    /// "先脱钩、再删除绑定"的顺序真的可行。
+    /// </summary>
     [SkippableFact]
-    public async Task RealDb_PlainSync_SkipsRemoteMissingButKeepsLocalData()
+    public async Task RealDb_PlainSync_MirrorDeletesLegacyRemoteMissingStockIntoRecycleBin()
     {
         var (db, admin, schema) = await OpenAsync();
         var now = new DateTimeOffset(2026, 9, 16, 10, 0, 0, TimeSpan.Zero);
@@ -191,16 +201,24 @@ public sealed class OutlookRemoteMissingRealDbTests
             var userId = await db.Set<OutlookConnectionEntity>()
                 .Where(c => c.Id == binding.ConnectionId).Select(c => c.UserId).SingleAsync();
 
-            // The ghost calendar still owns local events - the issue demands they survive.
-            var ghost = new EventEntity
+            var calendarId = binding.PimCalendarId;
+            var events = new List<EventEntity>();
+            for (var i = 0; i < 3; i++)
             {
-                CalendarId = binding.PimCalendarId,
-                Title = "幽灵日程",
-                Source = "outlook",
-                DtStart = now.AddDays(1),
-                DtEnd = now.AddDays(1).AddHours(1)
-            };
-            db.Set<EventEntity>().Add(ghost);
+                events.Add(new EventEntity
+                {
+                    CalendarId = calendarId,
+                    Uid = $"ghost-{i}@pim",
+                    Title = $"幽灵日程 {i}",
+                    Source = "outlook",
+                    DtStart = now.AddDays(1 + i),
+                    DtEnd = now.AddDays(1 + i).AddHours(1),
+                    OutlookCalendarBindingId = binding.Id,
+                    OutlookConnectionId = binding.ConnectionId,
+                    OutlookEventId = $"ghost-event-{i}",
+                });
+            }
+            db.Set<EventEntity>().AddRange(events);
             await db.SaveChangesAsync();
 
             var handler = new ScriptedHttpMessageHandler();
@@ -209,18 +227,137 @@ public sealed class OutlookRemoteMissingRealDbTests
             var response = await service.SyncAsync(userId, new OutlookSyncRequest("normal"), CancellationToken.None);
 
             Assert.Equal("completed", response.Status);
-            Assert.Empty(handler.Requests); // the gone calendar is no longer retried
+            Assert.Empty(handler.Requests); // 存量早已确认缺失，清理不需要 Graph 往返
 
-            var kept = await db.Set<EventEntity>()
-                .IgnoreQueryFilters()
-                .FirstOrDefaultAsync(e => e.Id == ghost.Id);
-            Assert.NotNull(kept);
-            Assert.Null(kept!.DeletedAt);
+            // 绑定行被删除：条目不再残留在「日历选择」列表中。
+            Assert.False(await db.Set<OutlookCalendarBindingEntity>().AnyAsync(b => b.Id == binding.Id));
+
+            // 日历进回收站。
+            var deletedCalendar = await db.Set<CalendarEntity>()
+                .IgnoreQueryFilters().AsNoTracking().FirstAsync(c => c.Id == calendarId);
+            Assert.NotNull(deletedCalendar.DeletedAt);
+            Assert.Equal("outlook-remote-missing", deletedCalendar.DeletedByOperationKind);
+            Assert.NotNull(deletedCalendar.DeletedByOperationId);
+
+            // 全部日程一并进回收站，且与 Outlook 脱钩（需求 6：恢复出来即本地数据）。
+            var deletedEvents = await db.Set<EventEntity>()
+                .IgnoreQueryFilters().AsNoTracking()
+                .Where(e => e.CalendarId == calendarId)
+                .ToListAsync();
+            Assert.Equal(3, deletedEvents.Count);
+            Assert.All(deletedEvents, e => Assert.NotNull(e.DeletedAt));
+            Assert.All(deletedEvents, e => Assert.Equal(deletedCalendar.DeletedByOperationId, e.DeletedByOperationId));
+            Assert.All(deletedEvents, e => Assert.Null(e.OutlookEventId));
+            Assert.All(deletedEvents, e => Assert.Null(e.OutlookCalendarBindingId));
+            Assert.All(deletedEvents, e => Assert.Null(e.OutlookConnectionId));
+
+            // 默认过滤器下不可见。
+            Assert.False(await db.Set<CalendarEntity>().AnyAsync(c => c.Id == calendarId));
+            Assert.Empty(await db.Set<EventEntity>().Where(e => e.CalendarId == calendarId).ToListAsync());
+
+            // 回收站里能看到这 1 个日历 + 3 条日程。
+            var recycleBin = await db.Set<CalendarEntity>()
+                .IgnoreQueryFilters().AsNoTracking()
+                .Where(c => c.DeletedAt != null)
+                .ToListAsync();
+            Assert.Contains(recycleBin, c => c.Id == calendarId);
         }
         finally
         {
             await DropAsync(admin, schema);
             await admin.DisposeAsync();
         }
+    }
+
+    /// <summary>
+    /// #309 需求 6（真库）：回收站恢复出来的日历必须是可用的本地日历——绑定已删除、Source 转
+    /// manual、日程的 Outlook 标识已清空，且恢复后再同步不会把它重新拉回 Outlook 绑定。
+    /// </summary>
+    [SkippableFact]
+    public async Task RealDb_RestoredMirrorDeletedCalendar_BecomesPlainLocalData()
+    {
+        var (db, admin, schema) = await OpenAsync();
+        var now = new DateTimeOffset(2026, 9, 16, 10, 0, 0, TimeSpan.Zero);
+        try
+        {
+            await using var _ = db;
+            var (_, binding) = await SeedMissingBindingAsync(db);
+            var userId = await db.Set<OutlookConnectionEntity>()
+                .Where(c => c.Id == binding.ConnectionId).Select(c => c.UserId).SingleAsync();
+            var calendarId = binding.PimCalendarId;
+
+            var ghost = new EventEntity
+            {
+                CalendarId = calendarId,
+                Uid = "ghost-0@pim",
+                Title = "幽灵日程",
+                Source = "outlook",
+                DtStart = now.AddDays(1),
+                DtEnd = now.AddDays(1).AddHours(1),
+                OutlookCalendarBindingId = binding.Id,
+                OutlookConnectionId = binding.ConnectionId,
+                OutlookEventId = "ghost-event",
+            };
+            db.Set<EventEntity>().Add(ghost);
+            await db.SaveChangesAsync();
+
+            var service = BuildService(db, new ScriptedHttpMessageHandler(), now);
+            await service.SyncAsync(userId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+            // 走真实回收站服务恢复（需要 ICurrentUserService / 审计）。
+            var currentUser = new FixedCurrentUser(userId);
+            var audit = new CalendarAuditWriter(new NullAuditLogService());
+            var recycleBin = new CalendarRecycleBinService(db, currentUser, audit);
+
+            var result = await recycleBin.RestoreAsync(
+                "calendar", calendarId, new CalendarRestoreRequest(), CancellationToken.None);
+
+            Assert.Equal(2, result.AffectedCount); // 日历 + 1 条日程
+
+            var restoredCalendar = await db.Set<CalendarEntity>().AsNoTracking()
+                .FirstAsync(c => c.Id == calendarId);
+            Assert.Null(restoredCalendar.DeletedAt);
+            Assert.Equal("manual", restoredCalendar.Source);
+            Assert.Null(restoredCalendar.DeletedByOperationId);
+
+            var restoredEvent = await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == ghost.Id);
+            Assert.Null(restoredEvent.DeletedAt);
+            Assert.Null(restoredEvent.OutlookEventId);
+            Assert.Null(restoredEvent.OutlookCalendarBindingId);
+            Assert.Null(restoredEvent.OutlookConnectionId);
+
+            // 没有绑定行残留在自己身上（恢复后是纯本地数据）。
+            Assert.False(await db.Set<OutlookCalendarBindingEntity>()
+                .AnyAsync(b => b.PimCalendarId == calendarId));
+        }
+        finally
+        {
+            await DropAsync(admin, schema);
+            await admin.DisposeAsync();
+        }
+    }
+
+    private sealed class FixedCurrentUser(Guid userId) : Pim.Infrastructure.Auth.ICurrentUserService
+    {
+        public Guid? UserId { get; } = userId;
+        public string? Role => "user";
+    }
+
+    private sealed class NullAuditLogService : Pim.Core.Operations.IAuditLogService
+    {
+        public Task<Pim.Core.Operations.AuditLogDto> RecordAsync(
+            Pim.Core.Operations.CreateAuditLogRequest request,
+            CancellationToken ct = default)
+            => Task.FromResult(new Pim.Core.Operations.AuditLogDto(
+                Guid.NewGuid(),
+                request.UserId,
+                request.ActorType,
+                request.Action,
+                request.ResourceType,
+                request.ResourceId,
+                request.Source,
+                request.Result,
+                null,
+                DateTimeOffset.UtcNow));
     }
 }
