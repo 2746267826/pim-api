@@ -106,7 +106,9 @@ public class TodaySectionServiceTests
         Assert.Equal(TodaySectionStatuses.Unavailable, section.Status);
         Assert.NotNull(section.Error);
         Assert.Equal("section_unavailable", section.Error.Code);
-        Assert.Equal("此今日模块暂时不可用。", section.Error.Message);
+        // 兜底文案附带脱敏后的异常类型（不含异常消息），便于区分故障类别（issue #313）。
+        Assert.StartsWith("此今日模块暂时不可用。", section.Error.Message);
+        Assert.Contains("InvalidOperationException", section.Error.Message);
         Assert.DoesNotContain("boom", section.Error.Message);
     }
 

@@ -1,3 +1,4 @@
+using Pim.Core.Common;
 using Pim.Core.Operations;
 using Pim.Core.Today;
 using Pim.Infrastructure.Auth;
@@ -55,11 +56,11 @@ public sealed class CalendarScheduleTodaySectionProvider(CalendarService calenda
 
     public async Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
     {
-        var start = LocalMidnight(query.Date);
-        var end = start.AddDays(1);
+        var start = TodaySectionWindows.GetStartUtc(query.Date);
+        var end = TodaySectionWindows.GetEndUtc(query.Date);
         var events = await calendarService.GetEventsAsync(start, end, ct);
         var tasks = await calendarService.GetTasksAsync(null, ct);
-        var shanghai = ResolveShanghaiTimeZone();
+        var shanghai = BusinessDay.TimeZone;
         var scheduledTasks = tasks
             .Where(t => !string.Equals(t.Status, "COMPLETED", StringComparison.OrdinalIgnoreCase))
             .Where(t => t.DtStart is not null && DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(t.DtStart.Value, shanghai).Date) == query.Date)
@@ -76,19 +77,6 @@ public sealed class CalendarScheduleTodaySectionProvider(CalendarService calenda
         => TodaySectionProviderResult.Build(SectionId, Kind, status, data, links);
 
     private static IReadOnlyList<TodayLinkDto> Details(string href) => TodaySectionProviderResult.Details(href);
-
-    private static DateTimeOffset LocalMidnight(DateOnly date)
-    {
-        var local = date.ToDateTime(TimeOnly.MinValue);
-        return new DateTimeOffset(local, TimeZoneInfo.Local.GetUtcOffset(local));
-    }
-
-    private static TimeZoneInfo ResolveShanghaiTimeZone()
-    {
-        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"); }
-        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
-        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
-    }
 }
 
 public sealed class CalendarTasksTodaySectionProvider(CalendarService calendarService) : ITodaySectionProvider
@@ -149,9 +137,7 @@ public sealed class CalendarHabitsTodaySectionProvider(PlanningModelService plan
 
     internal static CalendarLayerQuery LayerQuery(TodayQuery query, string layer)
     {
-        var start = query.Date.ToDateTime(TimeOnly.MinValue);
-        var offset = TimeZoneInfo.Local.GetUtcOffset(start);
-        var from = new DateTimeOffset(start, offset);
+        var from = TodaySectionWindows.GetStartUtc(query.Date);
         return new CalendarLayerQuery(from, from.AddDays(1), [layer]);
     }
 }
@@ -262,7 +248,7 @@ public sealed class ReportsAvailableTodaySectionProvider(ReportService reportSer
     public async Task<TodaySectionDto> BuildAsync(TodayQuery query, CancellationToken ct)
     {
         var reports = await reportService.ListAsync(ct);
-        var shanghai2 = ResolveShanghaiTimeZone();
+        var shanghai2 = BusinessDay.TimeZone;
         var available = reports
             .Where(r => string.Equals(r.Status, "Active", StringComparison.OrdinalIgnoreCase))
             .Where(r => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(r.GeneratedAt, shanghai2).Date) == query.Date)
@@ -275,13 +261,6 @@ public sealed class ReportsAvailableTodaySectionProvider(ReportService reportSer
             available.Count == 0 ? TodaySectionStatuses.Empty : TodaySectionStatuses.Normal,
             new ReportsAvailableTodayData(available.Count, available),
             TodaySectionProviderResult.Details("/reports"));
-    }
-
-    private static TimeZoneInfo ResolveShanghaiTimeZone()
-    {
-        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"); }
-        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
-        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
     }
 }
 
@@ -402,6 +381,19 @@ public sealed class ClassificationSuggestionsTodaySectionProvider(ActivitySugges
     }
 }
 
+// 「今日」各区块的按日查询窗口统一为 Asia/Shanghai 日历日 [当日 00:00, 次日 00:00)，并归一为 UTC：
+// Npgsql 对 timestamp with time zone 仅接受 offset 0（UTC）的 DateTimeOffset 参数（issue #313）。
+internal static class TodaySectionWindows
+{
+    public static DateTimeOffset GetStartUtc(DateOnly date)
+    {
+        var local = date.ToDateTime(TimeOnly.MinValue);
+        return new DateTimeOffset(local, BusinessDay.TimeZone.GetUtcOffset(local)).ToUniversalTime();
+    }
+
+    public static DateTimeOffset GetEndUtc(DateOnly date) => GetStartUtc(date.AddDays(1));
+}
+
 internal static class TodaySectionProviderResult
 {
     public static TodaySectionDto Build(
@@ -423,11 +415,4 @@ internal static class TodaySectionProviderResult
             PimHealthStatus.Critical => TodaySectionStatuses.Critical,
             _ => TodaySectionStatuses.Unavailable
         };
-
-    private static TimeZoneInfo ResolveShanghaiTimeZone()
-    {
-        try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"); }
-        catch (TimeZoneNotFoundException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
-        catch (InvalidTimeZoneException) { return TimeZoneInfo.FindSystemTimeZoneById("China Standard Time"); }
-    }
 }
