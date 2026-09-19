@@ -32,16 +32,22 @@ public class ExceptionMiddleware
         }
         catch (OneDriveGraphException ex)
         {
-            // Graph 侧失败映射为上游语义，而不是 500：404 透传、429 透传、其余按上游错误 502
+            // Graph 侧失败映射为上游语义，而不是 500：404/429 透传、其余按上游错误 502。
+            // 细节（含上游错误体）只进日志；给客户端的是通用文案（复审 M-3）
+            _logger.LogWarning(ex, "OneDrive Graph call failed with status {StatusCode}", ex.StatusCode);
             var status = ex.StatusCode switch
             {
                 404 => StatusCodes.Status404NotFound,
                 429 => StatusCodes.Status429TooManyRequests,
                 _ => StatusCodes.Status502BadGateway,
             };
+            if (status == StatusCodes.Status429TooManyRequests && ex.RetryAfterSeconds is { } retry)
+            {
+                context.Response.Headers.RetryAfter = retry.ToString();
+            }
             context.Response.StatusCode = status;
             context.Response.ContentType = "application/json";
-            var response = ApiResponse<string>.Error(5390, $"OneDrive 服务暂时不可用：{ex.Message}");
+            var response = ApiResponse<string>.Error(5390, "OneDrive 服务暂时不可用，请稍后重试");
             await context.Response.WriteAsync(JsonSerializer.Serialize(response));
         }
         catch (BadHttpRequestException ex)

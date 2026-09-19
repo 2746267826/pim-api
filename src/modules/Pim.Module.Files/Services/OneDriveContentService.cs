@@ -101,7 +101,8 @@ public sealed class OneDriveContentService
         EnsureNotSensitive(item);
         EnsureTextEditable(item);
         var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
-        var content = await DownloadSmallOrThrowAsync(token, item, MaxTextBytes, ct);
+        // 上限与保存一致（4MB）：否则 2–4MB 文件「能保存不能读」（复审 I-2）
+        var content = await DownloadSmallOrThrowAsync(token, item, MaxSaveBytes, ct);
         return new OneDriveTextContent(
             Encoding.UTF8.GetString(content.Bytes),
             NormalizeContentType(content.ContentType) ?? item.MimeType,
@@ -161,7 +162,7 @@ public sealed class OneDriveContentService
             ?? throw new DomainException(5104, "快照不存在");
 
         var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
-        var current = await DownloadSmallOrThrowAsync(token, item, MaxTextBytes, ct);
+        var current = await DownloadSmallOrThrowAsync(token, item, MaxSaveBytes, ct);
         await CreateSnapshotAsync(item, current.Bytes, current.ContentType, "pre-restore", ct);
 
         await _client.PutSmallContentAsync(token, item.ExternalFileId, Encoding.UTF8.GetBytes(snapshot.Content), snapshot.MimeType ?? "text/plain", ct);
@@ -180,6 +181,7 @@ public sealed class OneDriveContentService
         if (item.Provider is null
             || item.Provider.UserId != UserId
             || item.Provider.Provider != "onedrive"
+            || item.Provider.Status != "connected"
             || item.IsDeleted)
         {
             throw new DomainException(5104, "文件不存在");
