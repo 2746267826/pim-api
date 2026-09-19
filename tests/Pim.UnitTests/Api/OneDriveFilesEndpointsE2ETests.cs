@@ -81,8 +81,11 @@ public class OneDriveFilesEndpointsE2ETests
         public Task<OneDriveSmallContent?> DownloadSmallAsync(string accessToken, string itemId, long maxBytes, CancellationToken ct = default)
         {
             DownloadSmallCalls.Add((accessToken, itemId, maxBytes));
-            return Task.FromResult<OneDriveSmallContent?>(new("e2e 文本内容"u8.ToArray(), "text/plain"));
+            return Task.FromResult<OneDriveSmallContent?>(SmallContent ?? new("e2e 文本内容"u8.ToArray(), "text/plain"));
         }
+
+        /// <summary>DownloadSmallAsync 的返回内容；null 时用默认的 "e2e 文本内容"。</summary>
+        public OneDriveSmallContent? SmallContent { get; set; }
 
         public Task PutSmallContentAsync(string accessToken, string itemId, byte[] bytes, string contentType, CancellationToken ct = default)
         {

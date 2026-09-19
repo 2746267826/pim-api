@@ -4721,21 +4721,16 @@
  },
  {
   "name": "restore_file",
-  "description": "Restore a file from trash. trashId identifies the trash entry. Requires write permission restore_file.",
+  "description": "Restore a PIM-soft-deleted OneDrive file. fileId is the PIM file item id; the item is restored only if it still exists in OneDrive (personal OneDrive has no recycle-bin API, so a file already removed from OneDrive cannot be restored). Requires write permission restore_file.",
   "inputSchema": {
    "properties": {
     "fileId": {
      "title": "Fileid",
      "type": "string"
-    },
-    "trashId": {
-     "title": "Trashid",
-     "type": "string"
     }
    },
    "required": [
-    "fileId",
-    "trashId"
+    "fileId"
    ],
    "title": "restore_fileArguments",
    "type": "object"

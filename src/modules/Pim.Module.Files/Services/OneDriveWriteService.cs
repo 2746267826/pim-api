@@ -25,6 +25,7 @@ public sealed class OneDriveWriteService
     private readonly OneDriveTokenService _tokens;
     private readonly ICurrentUserService _currentUser;
     private readonly IAuditLogService _auditLog;
+    private readonly SensitivePathPolicy _sensitivePolicy;
     private readonly ILogger<OneDriveWriteService>? _logger;
     private readonly TimeProvider _clock;
 
@@ -34,6 +35,7 @@ public sealed class OneDriveWriteService
         OneDriveTokenService tokens,
         ICurrentUserService currentUser,
         IAuditLogService auditLog,
+        SensitivePathPolicy? sensitivePolicy = null,
         ILogger<OneDriveWriteService>? logger = null,
         TimeProvider? clock = null)
     {
@@ -42,6 +44,7 @@ public sealed class OneDriveWriteService
         _tokens = tokens;
         _currentUser = currentUser;
         _auditLog = auditLog;
+        _sensitivePolicy = sensitivePolicy ?? new SensitivePathPolicy(null);
         _logger = logger;
         _clock = clock ?? TimeProvider.System;
     }
@@ -51,6 +54,12 @@ public sealed class OneDriveWriteService
     public async Task<OneDriveWriteResult> MoveAsync(Guid itemId, string destinationFolderPath, CancellationToken ct = default)
     {
         var (item, provider) = await LoadConnectedItemAsync(itemId, ct);
+        // 根项不可移动：Path="/" 会让子孙前缀改写退化成「匹配全部项」（复审 I-12）。
+        if (item.Path == "/")
+        {
+            throw new DomainException(5337, "不能移动 OneDrive 根目录");
+        }
+
         var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
 
         var folder = await ResolveFolderAsync(provider.Id, destinationFolderPath, ct)
@@ -59,12 +68,22 @@ public sealed class OneDriveWriteService
         {
             throw new DomainException(5337, "不能把文件夹移动到自身");
         }
+        // 目标是自己子孙时，Graph 会拒绝，但本地已按新前缀改写过子孙 Path，会造成永久错乱；
+        // 因此必须在调用 Graph 之前拦下（复审 I-12）。
+        if (item.ItemType == "folder"
+            && folder.Path.StartsWith(item.Path.TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new DomainException(5337, "不能把文件夹移动到自己的子目录");
+        }
 
         var newId = await _client.PatchItemAsync(token, item.ExternalFileId, null, folder.ExternalFileId, ct);
         var newPath = (folder.Path == "/" ? string.Empty : folder.Path) + "/" + item.Name;
+        var oldPath = item.Path;
         item.ParentExternalFileId = folder.ExternalFileId;
         item.Path = newPath;
         item.SyncedAt = _clock.GetUtcNow();
+        // 目录移动后，子孙的 Path 必须跟着改写，否则树/搜索/敏感路径判断全部失准（复审 I-6）
+        await UpdateDescendantPathsAsync(provider.Id, oldPath, newPath, ct);
         await _db.SaveChangesAsync(ct);
         await RecordAuditAsync("files.onedrive.move", item.Id, ct);
         return new OneDriveWriteResult(item.Id, newPath);
@@ -78,13 +97,23 @@ public sealed class OneDriveWriteService
         }
 
         var (item, provider) = await LoadConnectedItemAsync(itemId, ct);
+        // 根项（Path="/"）不可重命名：其 Name 与 Path 无关（Path 就是 "/"，不含名字），
+        // 用 `Path[..^oldName.Length]` 反推前缀会越界抛 ArgumentOutOfRangeException（复审 I-12）。
+        if (item.Path == "/")
+        {
+            throw new DomainException(5338, "不能重命名 OneDrive 根目录");
+        }
+
         var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
 
         await _client.PatchItemAsync(token, item.ExternalFileId, newName.Trim(), null, ct);
         var oldName = item.Name;
+        var oldPath = item.Path;
         item.Name = newName.Trim();
         item.Path = item.Path[..^oldName.Length] + item.Name;
         item.SyncedAt = _clock.GetUtcNow();
+        // 目录改名后子孙 Path 同样要跟着改（复审 I-6）
+        await UpdateDescendantPathsAsync(provider.Id, oldPath, item.Path, ct);
         await _db.SaveChangesAsync(ct);
         await RecordAuditAsync("files.onedrive.rename", item.Id, ct);
         return new OneDriveWriteResult(item.Id, item.Path);
@@ -93,14 +122,70 @@ public sealed class OneDriveWriteService
     public async Task DeleteToTrashAsync(Guid itemId, CancellationToken ct = default)
     {
         var (item, provider) = await LoadConnectedItemAsync(itemId, ct);
+        // 删除根项会把整盘软删，且远端 DELETE 根没有任何意义（复审 I-12）。
+        if (item.Path == "/")
+        {
+            throw new DomainException(5337, "不能删除 OneDrive 根目录");
+        }
+
         var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
 
         // Graph DELETE 把文件移入 OneDrive 自身回收站；本地软删提供 PIM 回收站语义
         await _client.DeleteItemAsync(token, item.ExternalFileId, ct);
+        var now = _clock.GetUtcNow();
         item.IsDeleted = true;
-        item.DeletedAt = _clock.GetUtcNow();
+        item.DeletedAt = now;
+        // 目录被删时子孙在远端已随父项一起进回收站，本地必须一并软删，
+        // 否则树里会留下「父目录已删、子项仍可见」的悬空节点（复审 I-6）
+        await MarkDescendantsDeletedAsync(provider.Id, item.Path, now, ct);
         await _db.SaveChangesAsync(ct);
         await RecordAuditAsync("files.onedrive.delete_to_trash", item.Id, ct);
+    }
+
+    /// <summary>把 oldPath 前缀下的子孙 Path 前缀替换为 newPath（目录移动/改名后调用）。</summary>
+    private async Task UpdateDescendantPathsAsync(
+        Guid providerId,
+        string oldPath,
+        string newPath,
+        CancellationToken ct)
+    {
+        var prefix = oldPath.TrimEnd('/') + "/";
+        var descendants = await _db.Set<FileItemEntity>()
+            .Where(row => row.ProviderId == providerId
+                && row.Path.StartsWith(prefix)
+                && !row.IsDeleted)
+            .ToListAsync(ct);
+        if (descendants.Count == 0)
+        {
+            return;
+        }
+
+        var now = _clock.GetUtcNow();
+        foreach (var descendant in descendants)
+        {
+            descendant.Path = newPath.TrimEnd('/') + descendant.Path[oldPath.TrimEnd('/').Length..];
+            descendant.SyncedAt = now;
+        }
+    }
+
+    /// <summary>软删 folderPath 下的全部子孙（目录删除后调用）。</summary>
+    private async Task MarkDescendantsDeletedAsync(
+        Guid providerId,
+        string folderPath,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var prefix = folderPath.TrimEnd('/') + "/";
+        var descendants = await _db.Set<FileItemEntity>()
+            .Where(row => row.ProviderId == providerId
+                && row.Path.StartsWith(prefix)
+                && !row.IsDeleted)
+            .ToListAsync(ct);
+        foreach (var descendant in descendants)
+        {
+            descendant.IsDeleted = true;
+            descendant.DeletedAt = now;
+        }
     }
 
     /// <summary>
@@ -147,13 +232,22 @@ public sealed class OneDriveWriteService
             throw new DomainException(5309, "文件名不能为空且不能包含 /");
         }
 
+        // 边读边计数：不能先 CopyToAsync 全量读进内存再判上限，
+        // 否则超大 multipart 请求会在检查前就把内存吃光（复审 I-11）。
         using var buffer = new MemoryStream();
-        await content.CopyToAsync(buffer, ct);
-        var bytes = buffer.ToArray();
-        if (bytes.Length > OneDriveContentService.MaxSaveBytes)
+        var chunk = new byte[81920];
+        int read;
+        while ((read = await content.ReadAsync(chunk, ct)) > 0)
         {
-            throw new DomainException(5331, $"上传文件超过 {OneDriveContentService.MaxSaveBytes / 1024 / 1024}MB，请使用 OneDrive 客户端");
+            if (buffer.Length + read > OneDriveContentService.MaxSaveBytes)
+            {
+                throw new DomainException(5331, $"上传文件超过 {OneDriveContentService.MaxSaveBytes / 1024 / 1024}MB，请使用 OneDrive 客户端");
+            }
+
+            buffer.Write(chunk, 0, read);
         }
+
+        var bytes = buffer.ToArray();
 
         var (provider, folder) = await LoadConnectedProviderAsync(ct);
         var folderPath = await EnsureFolderExistsAsync(provider, destinationFolderPath, ct);
@@ -196,9 +290,20 @@ public sealed class OneDriveWriteService
     public async Task<string> GetWebUrlAsync(Guid itemId, CancellationToken ct = default)
     {
         var (item, provider) = await LoadConnectedItemAsync(itemId, ct);
+        // webUrl 是内容出口：敏感路径必须与其他出口（content/thumbnail/preview/text/
+        // read_file_text）同样拦截，否则 /Secrets/* 可以借 open-link 拿到直通链接（复审 I-1）。
+        EnsureNotSensitive(item);
         var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
         var webUrl = await _client.GetItemWebUrlAsync(token, item.ExternalFileId, ct);
         return webUrl ?? throw new DomainException(5333, "OneDrive 暂未返回网页地址，请稍后重试");
+    }
+
+    private void EnsureNotSensitive(FileItemEntity item)
+    {
+        if (_sensitivePolicy.IsProtected(item.Path))
+        {
+            throw new DomainException(40303, "敏感路径受保护，不允许该操作");
+        }
     }
 
     private async Task<(FileItemEntity Item, FileProviderEntity Provider)> LoadConnectedItemAsync(Guid itemId, CancellationToken ct)

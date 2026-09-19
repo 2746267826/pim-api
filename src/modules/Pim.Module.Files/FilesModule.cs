@@ -52,12 +52,25 @@ public sealed class FilesModule : IModule
         services.AddSingleton<SensitivePathPolicy>();
         services.AddSingleton<OneDriveSyncGate>();
         services.AddSingleton<OneDriveTokenCache>();
+        services.AddSingleton<OneDriveTransientRateLimiter>();
+        services.AddScoped<OneDriveTextExtractor>(sp => new OneDriveTextExtractor(
+            // pdf 等非文本类型只能靠 Tika；不传的话 read_file_text 对 pdf 永远报「不支持」
+            sp.GetService<IFileTextExtractionService>(),
+            sp.GetService<ILogger<OneDriveTextExtractor>>()));
         services.AddScoped<OneDriveContentService>();
-        services.AddHttpClient<OneDriveGraphClient>(client =>
+        services.AddScoped<OneDriveWriteService>();
+        // OneDriveGraphClient 的构造函数收的是 IHttpClientFactory + IConfiguration（它自己
+        // CreateClient("onedrive-graph")），不能注册成 AddHttpClient<T> 的类型化客户端：
+        // ActivatorUtilities 要求类型化客户端的构造函数能接收 HttpClient，这里的构造函数没有
+        // 这个参数位，解析时会抛「A suitable constructor ... could not be located」，
+        // 进而让所有 OneDrive 服务（绑定/同步/内容/写）全部 500。
+        // 正确做法：注册类型本身 + 用同名命名客户端承载超时策略（复审 C-1）。
+        services.AddHttpClient(OneDriveGraphClient.HttpClientName, client =>
         {
             // Graph 挂起时不占满默认 100s 请求周期（复审 M-11）
             client.Timeout = TimeSpan.FromSeconds(30);
         });
+        services.AddScoped<OneDriveGraphClient>();
         services.AddScoped<IOneDriveGraphClient>(sp => sp.GetRequiredService<OneDriveGraphClient>());
         services.AddScoped<OneDriveTokenService>();
         services.AddScoped<OneDriveBindingService>();
@@ -110,6 +123,9 @@ public sealed class FilesModule : IModule
         group.MapPut("/items/{id:guid}/text", OneDriveSaveTextAsync);
         group.MapGet("/items/{id:guid}/snapshots", OneDriveListSnapshotsAsync);
         group.MapPost("/items/{id:guid}/snapshots/{snapshotId:guid}/restore", OneDriveRestoreSnapshotAsync);
+        // read_file_text（MCP）与 item 级恢复此前只有处理器、没有路由，工具调用恒 404（复审 C-3/C-4）
+        group.MapGet("/items/{id:guid}/extracted-text", OneDriveReadTextAsync);
+        group.MapPost("/items/{id:guid}/restore", OneDriveRestoreItemAsync);
         group.MapPost("/items/{id:guid}/index", IndexItemAsync);
         group.MapGet("/search", SearchAsync);
         group.MapGet("/suggestions", ListSuggestionsAsync);
@@ -375,7 +391,10 @@ public sealed class FilesModule : IModule
         if (await IsOneDriveItemAsync(db, id, ct))
         {
             await oneDriveWrite.DeleteToTrashAsync(id, ct);
-            return Results.Ok(ApiResponse<string>.Ok("已删除（文件移入 OneDrive 回收站，PIM 内可尝试恢复）"));
+            // 个人版没有回收站 API（设计 §14-V5），Graph DELETE 后远端即不可见，
+            // 因此不能承诺「可恢复」——诚实说明可在 OneDrive 网页回收站自行还原（复审 I-7）。
+            return Results.Ok(ApiResponse<string>.Ok(
+                "已删除（已移入 OneDrive 回收站；如需还原请在 OneDrive 网页版操作）"));
         }
 
         await service.DeleteAsync(id, ct);

@@ -219,8 +219,8 @@ public static class McpToolCatalog
         AddW(tools, "files", "upload_file", "Upload a file to a provider path.");
         AddW(tools, "files", "move_file", "Move a file to another path.");
         AddW(tools, "files", "rename_file", "Rename a file.");
-        AddW(tools, "files", "delete_file", "Delete a file (to trash).");
-        AddW(tools, "files", "restore_file", "Restore a file from trash.");
+        AddW(tools, "files", "delete_file", "Delete a file (moves it to the OneDrive recycle bin and soft-deletes it in PIM).");
+        AddW(tools, "files", "restore_file", "Restore a PIM-soft-deleted file; only possible while the file still exists in OneDrive.");
         AddW(tools, "files", "index_file", "DEPRECATED: file indexing is retired in files v2; requests return an explicit error.");
 
         // PcTracker 分类 4

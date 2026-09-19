@@ -102,4 +102,84 @@ public class OneDriveTextExtractorTests
             return Task.FromResult(transform(reader.ReadToEnd()));
         }
     }
+
+    // ===================== P4a 复审加固 =====================
+
+    /// <summary>
+    /// 损坏的 docx（不是合法 zip）必须给明确的领域错误 5336，
+    /// 而不是让 <see cref="InvalidDataException"/> 冒泡成 500。
+    /// </summary>
+    [Fact]
+    public async Task CorruptDocx_ReturnsDomainError_NotInvalidDataException()
+    {
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => _extractor.ExtractAsync("not-a-zip-at-all"u8.ToArray(), "broken.docx", null, maxBytes: 1024));
+        Assert.Equal(5336, error.ErrorCode);
+    }
+
+    /// <summary>合法 zip 但缺少 word/document.xml（例如其实是 xlsx 改名）→ 5336。</summary>
+    [Fact]
+    public async Task Docx_WithoutDocumentXml_ReturnsDomainError()
+    {
+        var bytes = ZipWith(("xl/workbook.xml", "<workbook/>"));
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => _extractor.ExtractAsync(bytes, "actually-xlsx.docx", null, maxBytes: 1024));
+        Assert.Equal(5336, error.ErrorCode);
+    }
+
+    /// <summary>
+    /// zip 炸弹：条目声明的解压体积超过上限时，必须在解压前就拒绝，
+    /// 而不是把内容全部读进内存（否则几 KB 的文件能打爆进程）。
+    /// </summary>
+    [Fact]
+    public async Task Docx_ZipBombEntry_IsRejectedBeforeDecompression()
+    {
+        // 高压缩比条目：1 亿个 'a' 压成几十 KB。
+        using var buffer = new MemoryStream();
+        using (var archive = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var entry = archive.CreateEntry("word/document.xml", CompressionLevel.Optimal);
+            using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
+            var chunk = new string('a', 1024 * 1024);
+            for (var i = 0; i < 100; i++)
+            {
+                writer.Write(chunk);
+            }
+        }
+
+        var bytes = buffer.ToArray();
+        Assert.True(bytes.Length < 5 * 1024 * 1024, $"测试前提：压缩后应远小于解压体积，实际 {bytes.Length}");
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => _extractor.ExtractAsync(bytes, "bomb.docx", null, maxBytes: 1024));
+        Assert.Equal(5336, error.ErrorCode);
+    }
+
+    /// <summary>XML 实体的文本必须解码：&amp;amp; 应呈现为 &amp;，而不是原样的 &amp;amp;。</summary>
+    [Fact]
+    public async Task Docx_DecodesXmlEntities()
+    {
+        var bytes = MinimalDocxWithText("A &amp; B &lt;tag&gt;");
+        var result = await _extractor.ExtractAsync(bytes, "entities.docx", null, maxBytes: 4096);
+
+        Assert.Contains("A & B <tag>", result.Content);
+        Assert.DoesNotContain("&amp;", result.Content);
+    }
+
+    /// <summary>
+    /// 按字节截断不能切出半个多字节字符（否则尾部出现 U+FFFD 替换字符）。
+    /// 用多字节中文构造：每个字符 3 字节，故意把上限设在字符中间。
+    /// </summary>
+    [Fact]
+    public async Task Truncation_DoesNotSplitMultibyteCharacter()
+    {
+        var text = string.Concat(Enumerable.Repeat("中", 100)); // 300 字节
+        var result = await _extractor.ExtractAsync(Encoding.UTF8.GetBytes(text), "cn.txt", "text/plain", maxBytes: 10);
+
+        Assert.True(result.Truncated);
+        Assert.DoesNotContain('\uFFFD', result.Content);
+        // 10 字节的边界回退到 9（3 个完整中文字符）
+        Assert.Equal("中中中", result.Content);
+        Assert.Equal(300, result.SourceBytes);
+    }
 }
