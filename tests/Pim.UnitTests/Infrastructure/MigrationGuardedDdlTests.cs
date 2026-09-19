@@ -44,6 +44,9 @@ public class MigrationGuardedDdlTests
     /// <summary>issue #271 的肇因迁移：修复后必须是空实现（全部对象另有归属）。</summary>
     private const string Issue271Migration = "AddDaemonHeartbeatsUniqueIndex";
 
+    /// <summary>issue #320 的快照同步迁移：必须保持空实现（12 个对象归运行时 initializer）。</summary>
+    private const string Issue320Migration = "SyncPcTrackerModelSnapshot";
+
     /// <summary>
     /// 允许对「非迁移所有表」做结构化 DDL 的显式豁免；<b>只减不增</b>。
     /// 空字典本身就是期望状态：#271 修好后不应再有任何一张这类表被迁移碰。
@@ -320,6 +323,36 @@ public class MigrationGuardedDdlTests
         Assert.DoesNotContain(
             migration.DownOperations.OfType<SqlOperation>(),
             op => Regex.IsMatch(StripSqlComments(op.Sql ?? string.Empty), @"\bDROP\s+COLUMN\b", RegexOptions.IgnoreCase));
+    }
+
+    /// <summary>
+    /// #320 的定点回归：快照同步迁移必须保持空实现。
+    ///
+    /// <para>
+    /// 它存在的唯一意义是把 <c>PimDbContextModelSnapshot</c>/Designer 与当前模型对齐
+    /// （PcTracker 的 8 列 + 4 表归运行时 <c>PcTrackerSchemaInitializer</c> 幂等维护、
+    /// 不该出现在任何迁移里）。若有人重新生成迁移并保留生成的 DDL，存量库上会撞
+    /// 42701/42P07 启动即失败（#271 同款）。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Issue320Migration_StaysEmpty()
+    {
+        var migration = LoadMigrations()
+            .SingleOrDefault(m => m.GetType().Name == Issue320Migration);
+
+        Assert.NotNull(migration);
+
+        Assert.True(
+            migration!.UpOperations.Count == 0,
+            $"{Issue320Migration} 的 Up 必须为空（issue #320）：漂移的 12 个对象由运行时 "
+            + "PcTrackerSchemaInitializer 幂等维护，迁移里的 CREATE TABLE/ADD COLUMN 会在存量库上"
+            + "撞 42P07/42701 启动即失败。实际操作："
+            + string.Join(", ", migration.UpOperations.Select(op => op.GetType().Name)));
+
+        Assert.True(
+            migration.DownOperations.Count == 0,
+            $"{Issue320Migration} 的 Down 必须为空：本迁移不创建任何对象，回滚自然不该删除任何对象。");
     }
 
     /// <summary>断言某条 SQL 在门禁下「干净」。</summary>

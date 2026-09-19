@@ -12,8 +12,8 @@ using Pim.Infrastructure.Data;
 namespace Pim.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(PimDbContext))]
-    [Migration("20260919092837_AddFileTextSnapshots")]
-    partial class AddFileTextSnapshots
+    [Migration("20260919110327_SyncPcTrackerModelSnapshot")]
+    partial class SyncPcTrackerModelSnapshot
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
