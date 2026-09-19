@@ -20,7 +20,7 @@ namespace Pim.UnitTests.Api;
 /// </summary>
 public class OneDriveFilesEndpointsE2ETests
 {
-    private sealed class E2EGraphClient : IOneDriveGraphClient
+    public sealed class E2EGraphClient : IOneDriveGraphClient
     {
         public OneDriveTokenResult Token { get; set; } = new("e2e-access", "e2e-refresh", 3600, "Files.ReadWrite.All");
         public OneDriveDriveInfo Drive { get; set; } = new("drive-e2e", "personal", 1000, 2000);
@@ -56,9 +56,43 @@ public class OneDriveFilesEndpointsE2ETests
 
         public Task<OneDriveDeltaPage> GetDeltaPageAsync(string accessToken, string url, CancellationToken ct = default)
             => Task.FromResult(DeltaPage);
+
+        public List<(string AccessToken, string ItemId)> DownloadUrlCalls { get; } = [];
+        public List<(string AccessToken, string ItemId, long MaxBytes)> DownloadSmallCalls { get; } = [];
+        public List<(string AccessToken, string ItemId, byte[] Bytes, string ContentType)> PutCalls { get; } = [];
+        public List<(string AccessToken, string ItemId)> PreviewCalls { get; } = [];
+        public List<string> TextContents { get; } = [];
+
+        public Task<string?> GetDownloadUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
+        {
+            DownloadUrlCalls.Add((accessToken, itemId));
+            return Task.FromResult<string?>("https://dl.e2e.example.com/x?tempauth=e2e");
+        }
+
+        public Task<string?> GetThumbnailUrlAsync(string accessToken, string itemId, string size, CancellationToken ct = default)
+            => Task.FromResult<string?>("https://thumb.e2e.example.com/medium");
+
+        public Task<string?> GetPreviewUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
+        {
+            PreviewCalls.Add((accessToken, itemId));
+            return Task.FromResult<string?>("https://preview.e2e.example.com/embed");
+        }
+
+        public Task<OneDriveSmallContent?> DownloadSmallAsync(string accessToken, string itemId, long maxBytes, CancellationToken ct = default)
+        {
+            DownloadSmallCalls.Add((accessToken, itemId, maxBytes));
+            return Task.FromResult<OneDriveSmallContent?>(new("e2e 文本内容"u8.ToArray(), "text/plain"));
+        }
+
+        public Task PutSmallContentAsync(string accessToken, string itemId, byte[] bytes, string contentType, CancellationToken ct = default)
+        {
+            PutCalls.Add((accessToken, itemId, bytes, contentType));
+            TextContents.Add(System.Text.Encoding.UTF8.GetString(bytes));
+            return Task.CompletedTask;
+        }
     }
 
-    private static WebApplicationFactory<Program> CreateFactory(string dbName, E2EGraphClient graph)
+    internal static WebApplicationFactory<Program> CreateFactory(string dbName, E2EGraphClient graph)
         => new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseSetting("DisableHangfire", "true").UseSetting("Database:Migrations:FailFast", "false");
@@ -73,7 +107,7 @@ public class OneDriveFilesEndpointsE2ETests
             });
         });
 
-    private static async Task<string> RegisterAndGetTokenAsync(HttpClient client, string username)
+    internal static async Task<string> RegisterAndGetTokenAsync(HttpClient client, string username)
     {
         var resp = await client.PostAsJsonAsync("/api/v1/auth/register", new
         {
@@ -87,7 +121,7 @@ public class OneDriveFilesEndpointsE2ETests
         return doc.RootElement.GetProperty("data").GetProperty("accessToken").GetString()!;
     }
 
-    private static HttpClient Authed(WebApplicationFactory<Program> factory, string token)
+    internal static HttpClient Authed(WebApplicationFactory<Program> factory, string token)
     {
         var c = factory.CreateClient();
         c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -207,7 +241,7 @@ public class OneDriveFilesEndpointsE2ETests
             (await user.PostAsync($"/api/v1/files/providers/{providerId}/sync", null)).StatusCode);
     }
 
-    private static async Task<Guid> GetSingleProviderIdAsync(WebApplicationFactory<Program> factory)
+    internal static async Task<Guid> GetSingleProviderIdAsync(WebApplicationFactory<Program> factory)
     {
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();

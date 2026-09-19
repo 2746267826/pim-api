@@ -51,6 +51,30 @@ public interface IOneDriveGraphClient
     Task<OneDriveAccountInfo> GetMeAsync(string accessToken, CancellationToken ct = default);
 
     Task<OneDriveDeltaPage> GetDeltaPageAsync(string accessToken, string url, CancellationToken ct = default);
+
+    /// <summary>预授权短时效下载直链；Graph 未返回时为 null。</summary>
+    Task<string?> GetDownloadUrlAsync(string accessToken, string itemId, CancellationToken ct = default);
+
+    /// <summary>缩略图直链；该文件类型不支持（404）时为 null。</summary>
+    Task<string?> GetThumbnailUrlAsync(string accessToken, string itemId, string size, CancellationToken ct = default);
+
+    /// <summary>Office/PDF 网页预览 embed 地址（POST /preview，无副作用）。</summary>
+    Task<string?> GetPreviewUrlAsync(string accessToken, string itemId, CancellationToken ct = default);
+
+    /// <summary>小文件瞬态下载；404 返回 null，超过 maxBytes 抛 OneDriveContentTooLargeException。</summary>
+    Task<OneDriveSmallContent?> DownloadSmallAsync(string accessToken, string itemId, long maxBytes, CancellationToken ct = default);
+
+    /// <summary>小文件简单上传（≤4MB 场景）。</summary>
+    Task PutSmallContentAsync(string accessToken, string itemId, byte[] bytes, string contentType, CancellationToken ct = default);
+}
+
+public sealed record OneDriveSmallContent(byte[] Bytes, string? ContentType);
+
+/// <summary>瞬态下载内容超过允许上限。</summary>
+public sealed class OneDriveContentTooLargeException(long actualBytes)
+    : Exception($"OneDrive content exceeds the allowed size: {actualBytes} bytes")
+{
+    public long ActualBytes { get; } = actualBytes;
 }
 
 public static class OneDriveAuth

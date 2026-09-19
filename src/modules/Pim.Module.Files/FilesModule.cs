@@ -49,6 +49,8 @@ public sealed class FilesModule : IModule
         services.AddScoped<IFileProviderAdapter>(sp => sp.GetRequiredService<NextcloudFileProviderAdapter>());
 
         // OneDrive（Graph 直链版，见 designs/onedrive-files-v2.md）
+        services.AddSingleton<SensitivePathPolicy>();
+        services.AddScoped<OneDriveContentService>();
         services.AddHttpClient<OneDriveGraphClient>();
         services.AddScoped<IOneDriveGraphClient>(sp => sp.GetRequiredService<OneDriveGraphClient>());
         services.AddScoped<OneDriveTokenService>();
@@ -95,6 +97,13 @@ public sealed class FilesModule : IModule
         group.MapGet("/items/{id:guid}/versions/{versionId:guid}/download", DownloadVersionAsync);
         group.MapPost("/items/{id:guid}/versions/{versionId:guid}/restore-preview", PreviewVersionRestoreAsync);
         group.MapPost("/items/{id:guid}/versions/{versionId:guid}/restore", RestoreVersionAsync);
+        group.MapGet("/items/{id:guid}/content", OneDriveContentAsync);
+        group.MapGet("/items/{id:guid}/thumbnail", OneDriveThumbnailAsync);
+        group.MapGet("/items/{id:guid}/preview-url", OneDrivePreviewUrlAsync);
+        group.MapGet("/items/{id:guid}/text", OneDriveGetTextAsync);
+        group.MapPut("/items/{id:guid}/text", OneDriveSaveTextAsync);
+        group.MapGet("/items/{id:guid}/snapshots", OneDriveListSnapshotsAsync);
+        group.MapPost("/items/{id:guid}/snapshots/{snapshotId:guid}/restore", OneDriveRestoreSnapshotAsync);
         group.MapPost("/items/{id:guid}/index", IndexItemAsync);
         group.MapGet("/search", SearchAsync);
         group.MapGet("/suggestions", ListSuggestionsAsync);
@@ -133,6 +142,57 @@ public sealed class FilesModule : IModule
                 exception,
                 "Failed to schedule the recurring OneDrive sync job.");
         }
+    }
+
+    private static async Task<IResult> OneDriveContentAsync(
+        Guid id,
+        [FromServices] OneDriveContentService service,
+        CancellationToken ct)
+        => Results.Redirect(await service.GetContentLinkAsync(id, ct));
+
+    private static async Task<IResult> OneDriveThumbnailAsync(
+        Guid id,
+        [FromQuery] string? size,
+        [FromServices] OneDriveContentService service,
+        CancellationToken ct)
+        => Results.Redirect(await service.GetThumbnailLinkAsync(id, string.IsNullOrWhiteSpace(size) ? "medium" : size, ct));
+
+    private static async Task<IResult> OneDrivePreviewUrlAsync(
+        Guid id,
+        [FromServices] OneDriveContentService service,
+        CancellationToken ct)
+        => Results.Ok(ApiResponse<OneDriveLinkDto>.Ok(new OneDriveLinkDto(await service.GetPreviewLinkAsync(id, ct))));
+
+    private static async Task<IResult> OneDriveGetTextAsync(
+        Guid id,
+        [FromServices] OneDriveContentService service,
+        CancellationToken ct)
+        => Results.Ok(ApiResponse<OneDriveTextDto>.Ok(OneDriveTextDto.From(await service.GetTextAsync(id, ct))));
+
+    private static async Task<IResult> OneDriveSaveTextAsync(
+        Guid id,
+        [FromBody] SaveOneDriveTextRequest request,
+        [FromServices] OneDriveContentService service,
+        CancellationToken ct)
+    {
+        await service.SaveTextAsync(id, request.Content, ct);
+        return Results.Ok(ApiResponse<bool>.Ok(true));
+    }
+
+    private static async Task<IResult> OneDriveListSnapshotsAsync(
+        Guid id,
+        [FromServices] OneDriveContentService service,
+        CancellationToken ct)
+        => Results.Ok(ApiResponse<IReadOnlyList<FileTextSnapshotDto>>.Ok(await service.ListSnapshotsAsync(id, ct)));
+
+    private static async Task<IResult> OneDriveRestoreSnapshotAsync(
+        Guid id,
+        Guid snapshotId,
+        [FromServices] OneDriveContentService service,
+        CancellationToken ct)
+    {
+        await service.RestoreSnapshotAsync(id, snapshotId, ct);
+        return Results.Ok(ApiResponse<bool>.Ok(true));
     }
 
     private static async Task<IResult> StartOneDriveBindingAsync(

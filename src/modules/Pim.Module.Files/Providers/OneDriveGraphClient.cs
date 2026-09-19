@@ -1,4 +1,6 @@
+using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -116,6 +118,90 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
             items,
             ReadNullableString(json, "@odata.nextLink"),
             ReadNullableString(json, "@odata.deltaLink"));
+    }
+
+    public async Task<string?> GetDownloadUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
+    {
+        var json = await GetGraphJsonAsync(
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}?$select=id,@microsoft.graph.downloadUrl",
+            accessToken, ct);
+        return ReadNullableString(json, "@microsoft.graph.downloadUrl");
+    }
+
+    public async Task<string?> GetThumbnailUrlAsync(string accessToken, string itemId, string size, CancellationToken ct = default)
+    {
+        try
+        {
+            var json = await GetGraphJsonAsync(
+                $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}/thumbnails/0/{Uri.EscapeDataString(size)}",
+                accessToken, ct);
+            return ReadNullableString(json, "url");
+        }
+        catch (OneDriveGraphException exception) when (exception.StatusCode is 404 or 400)
+        {
+            // 该类型不支持缩略图属正常情况
+            return null;
+        }
+    }
+
+    public async Task<string?> GetPreviewUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}/preview");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var response = await Http.SendAsync(request, ct);
+        var json = await ReadJsonAsync(response, ct);
+        return ReadNullableString(json, "getUrl");
+    }
+
+    public async Task<OneDriveSmallContent?> DownloadSmallAsync(string accessToken, string itemId, long maxBytes, CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}/content");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await Http.SendAsync(request, ct);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            throw CreateGraphException(response, body);
+        }
+
+        var declaredLength = response.Content.Headers.ContentLength;
+        if (declaredLength is { } length && length > maxBytes)
+        {
+            throw new OneDriveContentTooLargeException(length);
+        }
+
+        var bytes = await response.Content.ReadAsByteArrayAsync(ct);
+        if (bytes.Length > maxBytes)
+        {
+            throw new OneDriveContentTooLargeException(bytes.Length);
+        }
+
+        return new OneDriveSmallContent(bytes, response.Content.Headers.ContentType?.ToString());
+    }
+
+    public async Task PutSmallContentAsync(string accessToken, string itemId, byte[] bytes, string contentType, CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Put,
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}/content");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = new ByteArrayContent(bytes);
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+        using var response = await Http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            throw CreateGraphException(response, body);
+        }
     }
 
     private HttpClient Http => _httpClientFactory.CreateClient(HttpClientName);
