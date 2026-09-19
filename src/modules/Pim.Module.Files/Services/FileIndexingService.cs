@@ -31,8 +31,11 @@ public sealed class FileIndexingService(
     IFileEmbeddingService embeddings,
     IFileVectorStore vectorStore,
     IConfiguration? configuration = null,
-    ILogger<FileIndexingService>? logger = null)
+    ILogger<FileIndexingService>? logger = null,
+    SensitivePathPolicy? sensitivePathPolicy = null)
 {
+    private readonly SensitivePathPolicy _sensitivePathPolicy = sensitivePathPolicy ?? new SensitivePathPolicy(configuration);
+
     private static readonly HashSet<string> SupportedMimeTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "text/plain",
@@ -229,7 +232,11 @@ public sealed class FileIndexingService(
             .Take(20)
             .ToListAsync(ct);
 
-        return entities.Select(MapFileItem).ToList();
+        // 敏感路径文件不进搜索结果（§13：与直链/文本出口一致）
+        return entities
+            .Where(item => !_sensitivePathPolicy.IsProtected(item.Path))
+            .Select(MapFileItem)
+            .ToList();
     }
 
     private async Task<FileItemEntity> LoadItemAsync(

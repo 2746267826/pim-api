@@ -186,6 +186,49 @@ public class OneDriveBindingServiceTests
     }
 
     [Fact]
+    public async Task BindingStatus_SlowDown_ReportsPollIntervalHint()
+    {
+        await using var db = CreateDb();
+        var graph = new FakeOneDriveGraphClient
+        {
+            PollException = new OneDriveGraphException(400, null, "slow_down; please retry with increasing interval"),
+        };
+        var service = CreateService(db, graph);
+        var start = await service.StartBindingAsync(UserId, "cid-1");
+
+        var status = await service.GetBindingStatusAsync(UserId, start.ProviderId);
+
+        Assert.Equal("pending", status.Status);
+        Assert.Equal(7, status.PollIntervalSeconds);
+    }
+
+    [Fact]
+    public async Task BindingStatus_RebindDuringPoll_DiscardsStaleResult()
+    {
+        await using var db = CreateDb();
+        var graph = new FakeOneDriveGraphClient();
+        // Graph 往返期间模拟「重新绑定」：轮询发生时偷换设备码（复审 I3）
+        graph.OnPollAsync = () =>
+        {
+            var provider = db.Set<FileProviderEntity>().Single();
+            provider.DeviceCodeEncrypted = Encoding.UTF8.GetBytes("protected::new-device-code");
+            provider.UserCode = "NEW-CODE";
+            db.SaveChanges();
+        };
+        var service = CreateService(db, graph);
+        var start = await service.StartBindingAsync(UserId, "cid-1");
+
+        var status = await service.GetBindingStatusAsync(UserId, start.ProviderId);
+
+        // 旧设备码的授权结果必须作废，绑定保持 pending 等待新设备码
+        Assert.Equal("pending", status.Status);
+        var provider = await db.Set<FileProviderEntity>().SingleAsync(p => p.Id == start.ProviderId);
+        Assert.Equal("pending", provider.Status);
+        Assert.Null(provider.RefreshTokenEncrypted);
+        Assert.NotNull(provider.DeviceCodeEncrypted);
+    }
+
+    [Fact]
     public async Task Disconnect_RemovesProviderAndItsItems()
     {
         await using var db = CreateDb();

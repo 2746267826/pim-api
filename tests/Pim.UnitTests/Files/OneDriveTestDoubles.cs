@@ -30,6 +30,7 @@ internal sealed class FakeOneDriveGraphClient : IOneDriveGraphClient
 
     public Exception? PollException { get; set; }
     public Exception? RefreshException { get; set; }
+    public Action? OnPollAsync { get; set; }
 
     public Task<OneDriveDeviceCodeStart> RequestDeviceCodeAsync(string clientId, CancellationToken ct = default)
         => Task.FromResult(DeviceCode);
@@ -37,6 +38,7 @@ internal sealed class FakeOneDriveGraphClient : IOneDriveGraphClient
     public Task<OneDriveTokenResult> PollDeviceCodeAsync(string clientId, string deviceCode, CancellationToken ct = default)
     {
         PollCalls++;
+        OnPollAsync?.Invoke();
         if (PollException is not null) throw PollException;
         return Task.FromResult(Token);
     }

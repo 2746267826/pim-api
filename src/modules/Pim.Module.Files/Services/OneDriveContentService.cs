@@ -99,6 +99,7 @@ public sealed class OneDriveContentService
         var (item, provider) = await LoadOwnedItemAsync(itemId, ct);
         EnsureDownloadable(item);
         EnsureNotSensitive(item);
+        EnsureTextEditable(item);
         var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
         var content = await DownloadSmallOrThrowAsync(token, item, MaxTextBytes, ct);
         return new OneDriveTextContent(
@@ -108,12 +109,13 @@ public sealed class OneDriveContentService
             Truncated: false);
     }
 
-    public async Task SaveTextAsync(Guid itemId, string content, CancellationToken ct = default)
+    public async Task SaveTextAsync(Guid itemId, string? content, CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrEmpty(content);
+        ArgumentNullException.ThrowIfNull(content);
         var (item, provider) = await LoadOwnedItemAsync(itemId, ct);
         EnsureDownloadable(item);
         EnsureNotSensitive(item);
+        EnsureTextEditable(item);
 
         var newBytes = Encoding.UTF8.GetBytes(content);
         if (newBytes.Length > MaxSaveBytes)
@@ -121,9 +123,10 @@ public sealed class OneDriveContentService
             throw new DomainException(5331, $"内容超过 {MaxSaveBytes / 1024 / 1024}MB，请在 OneDrive 中编辑");
         }
 
-        // 编辑前快照当前内容（个人版版本 API 不确定的兜底，见设计文档 §8）
+        // 编辑前快照当前内容（个人版版本 API 不确定的兜底，见设计文档 §8）。
+        // 上限与保存一致（4MB）：只按 2MB 截断会让 2–4MB 的文件永远无法保存
         var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
-        var current = await DownloadSmallOrThrowAsync(token, item, MaxTextBytes, ct);
+        var current = await DownloadSmallOrThrowAsync(token, item, MaxSaveBytes, ct);
         await CreateSnapshotAsync(item, current.Bytes, current.ContentType, "pre-edit", ct);
 
         var mimeType = NormalizeContentType(current.ContentType) ?? item.MimeType ?? "text/plain";
@@ -136,12 +139,15 @@ public sealed class OneDriveContentService
 
     public async Task<IReadOnlyList<FileTextSnapshotDto>> ListSnapshotsAsync(Guid itemId, CancellationToken ct = default)
     {
-        await LoadOwnedItemAsync(itemId, ct);
+        var (item, _) = await LoadOwnedItemAsync(itemId, ct);
+        // 快照含全文，敏感路径必须与其他出口同样拦截（复审 C2）
+        EnsureNotSensitive(item);
         return await _db.Set<FileTextSnapshotEntity>()
             .Where(snapshot => snapshot.ItemId == itemId)
             .OrderByDescending(snapshot => snapshot.CreatedAt)
             .Select(snapshot => new FileTextSnapshotDto(
-                snapshot.Id, snapshot.Path, snapshot.Name, snapshot.Content,
+                snapshot.Id, snapshot.Path, snapshot.Name,
+                snapshot.Content.Length > 64 ? snapshot.Content.Substring(0, 64) : snapshot.Content,
                 snapshot.ByteSize, snapshot.Reason, snapshot.CreatedAt))
             .ToListAsync(ct);
     }
@@ -189,6 +195,26 @@ public sealed class OneDriveContentService
             throw new DomainException(5332, "文件夹没有可下载内容");
         }
     }
+
+    private void EnsureTextEditable(FileItemEntity item)
+    {
+        var mime = item.MimeType ?? string.Empty;
+        var name = item.Name.ToLowerInvariant();
+        var textMime = mime.StartsWith("text/", StringComparison.OrdinalIgnoreCase)
+            || mime.Contains("json", StringComparison.OrdinalIgnoreCase)
+            || mime.Contains("xml", StringComparison.OrdinalIgnoreCase)
+            || mime.Contains("yaml", StringComparison.OrdinalIgnoreCase);
+        var textExt = TextEditableExtensions.Any(ext => name.EndsWith(ext, StringComparison.OrdinalIgnoreCase));
+        if (!textMime && !textExt)
+        {
+            throw new DomainException(5332, "该文件不是文本类型");
+        }
+    }
+
+    private static readonly string[] TextEditableExtensions =
+    [
+        ".txt", ".md", ".markdown", ".json", ".csv", ".log", ".yml", ".yaml", ".xml",
+    ];
 
     private void EnsureNotSensitive(FileItemEntity item)
     {

@@ -21,10 +21,12 @@ public sealed class OneDriveSyncService
     private const string RootParentPath = "/drive";
     private const int ThrottleRetryBudget = 3;
     private const int MaxPages = 100_000;
+    private const int MaxAuthRefreshes = 5;
 
     private readonly PimDbContext _db;
     private readonly IOneDriveGraphClient _client;
     private readonly OneDriveTokenService _tokens;
+    private readonly OneDriveSyncGate _gate;
     private readonly ILogger<OneDriveSyncService>? _logger;
     private readonly TimeProvider _clock;
 
@@ -33,11 +35,13 @@ public sealed class OneDriveSyncService
         IOneDriveGraphClient client,
         OneDriveTokenService tokens,
         ILogger<OneDriveSyncService>? logger = null,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null,
+        OneDriveSyncGate? gate = null)
     {
         _db = db;
         _client = client;
         _tokens = tokens;
+        _gate = gate ?? new OneDriveSyncGate();
         _logger = logger;
         _clock = clock ?? TimeProvider.System;
     }
@@ -55,6 +59,26 @@ public sealed class OneDriveSyncService
             throw new DomainException(5321, "OneDrive 尚未完成绑定");
         }
 
+        if (!_gate.TryEnter(providerId))
+        {
+            throw new DomainException(5335, "该绑定正在同步中，请稍后再试");
+        }
+
+        try
+        {
+            return await SyncCoreAsync(provider, providerId, ct);
+        }
+        finally
+        {
+            _gate.Exit(providerId);
+        }
+    }
+
+    private async Task<OneDriveSyncResult> SyncCoreAsync(
+        FileProviderEntity provider,
+        Guid providerId,
+        CancellationToken ct)
+    {
         var now = _clock.GetUtcNow();
         var accessToken = await _tokens.GetAccessTokenAsync(providerId, ct);
 
@@ -64,7 +88,7 @@ public sealed class OneDriveSyncService
 
         var url = string.IsNullOrEmpty(provider.DeltaLink) ? DefaultDeltaUrl : provider.DeltaLink!;
         var fullRecrawl = false;
-        var refreshedForAuth = false;
+        var authRefreshes = 0;
         var pagesProcessed = 0;
         long itemsApplied = 0;
         long itemsDeleted = 0;
@@ -95,10 +119,11 @@ public sealed class OneDriveSyncService
                     provider.DeltaResetAt = now;
                     continue;
                 }
-                catch (OneDriveGraphException exception) when (exception.StatusCode == 401 && !refreshedForAuth)
+                catch (OneDriveGraphException exception) when (exception.StatusCode == 401 && authRefreshes < MaxAuthRefreshes)
                 {
-                    // 首次全量可能爬取超过 token 有效期：刷新一次后重试当前页
-                    refreshedForAuth = true;
+                    // 首次全量可能爬取超过 token 有效期：失效缓存并重新刷新后重试当前页（上限内允许多次）
+                    authRefreshes++;
+                    _tokens.InvalidateCached(providerId);
                     accessToken = await _tokens.GetAccessTokenAsync(providerId, ct);
                     continue;
                 }
@@ -158,12 +183,24 @@ public sealed class OneDriveSyncService
                 providerId, pagesProcessed, itemsApplied, itemsDeleted, fullRecrawl);
             return new OneDriveSyncResult(pagesProcessed, (int)itemsApplied, (int)itemsDeleted, fullRecrawl);
         }
+        catch (DbUpdateConcurrencyException)
+        {
+            // provider 已被断开删除：原异常已无意义，向上报明确的领域错误
+            throw new DomainException(5320, "OneDrive 绑定不存在");
+        }
         catch (Exception exception)
         {
-            provider.SyncStatus = "error";
-            provider.LastError = exception.Message;
-            provider.UpdatedAt = _clock.GetUtcNow();
-            await _db.SaveChangesAsync(ct);
+            try
+            {
+                provider.SyncStatus = "error";
+                provider.LastError = exception.Message;
+                provider.UpdatedAt = _clock.GetUtcNow();
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // 写回失败同样源于绑定已删除
+            }
             throw;
         }
     }

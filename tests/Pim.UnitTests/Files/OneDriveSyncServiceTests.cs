@@ -80,14 +80,16 @@ public class OneDriveSyncServiceTests
     private static OneDriveSyncService CreateService(
         PimDbContext db,
         FakeOneDriveGraphClient graph,
-        ISecretProtector? protector = null)
+        ISecretProtector? protector = null,
+        OneDriveSyncGate? gate = null)
     {
         return new OneDriveSyncService(
             db,
             graph,
             new OneDriveTokenService(db, graph, protector ?? new TestSecretProtector(), clock: new FixedClock(Now)),
             NullLogger<OneDriveSyncService>.Instance,
-            new FixedClock(Now));
+            new FixedClock(Now),
+            gate);
     }
 
     [Fact]
@@ -314,6 +316,47 @@ public class OneDriveSyncServiceTests
 
         var first = graph.DeltaRequests[0];
         Assert.Contains("$deltatoken=cursor", first.Url);
+    }
+
+    [Fact]
+    public async Task ConcurrentSync_SecondAttempt_ThrowsBusy()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db);
+        var graph = new FakeOneDriveGraphClient();
+        graph.DeltaScript.Enqueue(OneDriveDeltaPageFactory.Page(
+            OneDriveDeltaPageFactory.File("file-1", "a.txt")));
+        var gate = new OneDriveSyncGate();
+        var service = CreateService(db, graph, gate: gate);
+
+        // 占住互斥量（模拟另一个同步在跑）
+        Assert.True(gate.TryEnter(provider.Id));
+        var error = await Assert.ThrowsAsync<DomainException>(() => service.SyncAsync(provider.Id));
+        Assert.Equal(5335, error.ErrorCode);
+
+        // 释放后恢复可用
+        gate.Exit(provider.Id);
+        await service.SyncAsync(provider.Id);
+        Assert.Equal(1, await db.Set<FileItemEntity>().CountAsync());
+    }
+
+    [Fact]
+    public async Task Multiple401s_RefreshEachTime_UntilSuccess()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db);
+        var graph = new FakeOneDriveGraphClient();
+        graph.DeltaScript.Enqueue(new OneDriveGraphException(401, null, "token expired"));
+        graph.DeltaScript.Enqueue(new OneDriveGraphException(401, null, "token expired again"));
+        graph.DeltaScript.Enqueue(OneDriveDeltaPageFactory.Page(
+            OneDriveDeltaPageFactory.File("file-1", "a.txt")));
+        var service = CreateService(db, graph);
+
+        var result = await service.SyncAsync(provider.Id);
+
+        Assert.Equal(1, result.ItemsApplied);
+        Assert.Equal(3, graph.DeltaRequests.Count);
+        Assert.Equal(graph.DeltaRequests[0].Url, graph.DeltaRequests[2].Url);
     }
 
     [Fact]

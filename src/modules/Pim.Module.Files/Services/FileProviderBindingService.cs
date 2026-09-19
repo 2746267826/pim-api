@@ -90,6 +90,11 @@ public sealed class FileProviderBindingService
     public async Task<FileProviderTestDto> TestProviderAsync(Guid providerId, CancellationToken ct = default)
     {
         var provider = await LoadProviderAsync(providerId, ct);
+        if (provider.Provider == "onedrive")
+        {
+            throw new DomainException(5334, "OneDrive 绑定无需连接测试");
+        }
+
         var result = await _adapter.TestConnectionAsync(ToConnection(provider), ct);
         provider.Status = result.Success ? "connected" : "error";
         provider.LastError = result.ErrorMessage;
@@ -103,6 +108,12 @@ public sealed class FileProviderBindingService
     public async Task<FileProviderConnection> GetConnectionAsync(Guid providerId, CancellationToken ct = default)
     {
         var provider = await LoadProviderAsync(providerId, ct);
+        if (provider.Provider == "onedrive")
+        {
+            // OneDrive 走 Graph 直链体系；遗留 WebDAV 端点对其不可用（否则 Unprotect("") 直接 500）
+            throw new DomainException(5334, "OneDrive 文件暂不支持该操作（写能力将在后续版本提供）");
+        }
+
         return ToConnection(provider);
     }
 

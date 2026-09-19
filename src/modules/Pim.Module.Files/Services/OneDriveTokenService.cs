@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -11,7 +10,9 @@ using Pim.Module.Files.Providers;
 namespace Pim.Module.Files.Services;
 
 /// <summary>
-/// OneDrive access token 获取：内存缓存 + 过期前刷新；refresh token 只以密文落库。
+/// OneDrive access token 获取：共享内存缓存（单例，跨请求生效）+ 过期前刷新；
+/// refresh token 只以密文落库。刷新在每 provider 锁内串行，锁内重读数据库现值，
+/// 避免 Graph 轮换 refresh token 后并发刷新者用旧值覆盖或误置 expired（复审 I2）。
 /// 刷新失败（invalid_grant 等）会把绑定状态置为 expired，引导用户重新绑定。
 /// </summary>
 public sealed class OneDriveTokenService
@@ -21,30 +22,39 @@ public sealed class OneDriveTokenService
     private readonly PimDbContext _db;
     private readonly IOneDriveGraphClient _client;
     private readonly ISecretProtector _protector;
+    private readonly OneDriveTokenCache _cache;
     private readonly ILogger<OneDriveTokenService>? _logger;
     private readonly TimeProvider _clock;
-    private readonly ConcurrentDictionary<Guid, (string AccessToken, DateTimeOffset ExpiresAt)> _memoryCache = new();
 
     public OneDriveTokenService(
         PimDbContext db,
         IOneDriveGraphClient client,
         ISecretProtector protector,
         ILogger<OneDriveTokenService>? logger = null,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null,
+        OneDriveTokenCache? cache = null)
     {
         _db = db;
         _client = client;
         _protector = protector;
+        _cache = cache ?? new OneDriveTokenCache();
         _logger = logger;
         _clock = clock ?? TimeProvider.System;
     }
 
     public async Task<string> GetAccessTokenAsync(Guid providerId, CancellationToken ct = default)
     {
-        if (_memoryCache.TryGetValue(providerId, out var cached)
-            && cached.ExpiresAt > _clock.GetUtcNow().AddSeconds(ExpiryBufferSeconds))
+        var now = _clock.GetUtcNow();
+        if (_cache.TryGetValid(providerId, now.AddSeconds(ExpiryBufferSeconds), out var cachedToken))
         {
-            return cached.AccessToken;
+            return cachedToken;
+        }
+
+        using var refreshScope = await _cache.EnterRefreshAsync(providerId, ct);
+        if (_cache.TryGetValid(providerId, now.AddSeconds(ExpiryBufferSeconds), out cachedToken))
+        {
+            // 等锁期间别的请求已完成刷新
+            return cachedToken;
         }
 
         var provider = await _db.Set<FileProviderEntity>().SingleOrDefaultAsync(p => p.Id == providerId, ct)
@@ -53,6 +63,9 @@ public sealed class OneDriveTokenService
         {
             throw new DomainException(5321, "OneDrive 未绑定或绑定不完整");
         }
+
+        // 拿到锁后重读数据库现值：并发赢家可能已轮换 refresh token 并落库
+        await _db.Entry(provider).ReloadAsync(ct);
 
         var refreshToken = _protector.Unprotect(Encoding.UTF8.GetString(provider.RefreshTokenEncrypted));
         OneDriveTokenResult refreshed;
@@ -65,7 +78,7 @@ public sealed class OneDriveTokenService
             provider.Status = "expired";
             provider.UpdatedAt = _clock.GetUtcNow();
             await _db.SaveChangesAsync(ct);
-            _memoryCache.TryRemove(providerId, out _);
+            _cache.Invalidate(providerId);
             throw new DomainException(5322, "OneDrive 授权已失效，请重新绑定");
         }
 
@@ -76,13 +89,13 @@ public sealed class OneDriveTokenService
         await _db.SaveChangesAsync(ct);
 
         var accessToken = refreshed.AccessToken;
-        _memoryCache[providerId] = (accessToken, _clock.GetUtcNow().AddSeconds(refreshed.ExpiresIn));
+        _cache.Set(providerId, accessToken, _clock.GetUtcNow().AddSeconds(refreshed.ExpiresIn));
         _logger?.LogDebug("OneDrive access token refreshed for provider {ProviderId}", providerId);
         return accessToken;
     }
 
     public void InvalidateCached(Guid providerId)
     {
-        _memoryCache.TryRemove(providerId, out _);
+        _cache.Invalidate(providerId);
     }
 }

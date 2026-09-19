@@ -337,6 +337,50 @@ public class OneDriveContentServiceTests
     }
 
     [Fact]
+    public async Task ListSnapshots_OnSensitivePath_Blocked()
+    {
+        await using var db = CreateDb();
+        var (_, item) = SeedFile(db, path: "/Secrets/密钥.txt");
+        db.Set<FileTextSnapshotEntity>().Add(new FileTextSnapshotEntity
+        {
+            UserId = UserId, ItemId = item.Id, ExternalFileId = "item-1",
+            Path = "/工作/a.txt", Name = "a.txt", Content = "旧全文",
+            ByteSize = 9, Reason = "pre-edit", CreatedAt = Now,
+        });
+        db.SaveChanges();
+        var service = CreateService(db, new FakeOneDriveGraphClient());
+
+        // 文件后来被移动到敏感路径：快照出口同样拦截（复审 C2）
+        var error = await Assert.ThrowsAsync<DomainException>(() => service.ListSnapshotsAsync(item.Id));
+        Assert.Equal(40303, error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task SaveText_EmptyContent_Allowed()
+    {
+        await using var db = CreateDb();
+        var (_, item) = SeedFile(db);
+        var graph = new FakeOneDriveGraphClient { SmallContent = new OneDriveSmallContent("旧"u8.ToArray(), "text/plain") };
+        var service = CreateService(db, graph);
+
+        await service.SaveTextAsync(item.Id, string.Empty);
+
+        var put = Assert.Single(graph.PutCalls);
+        Assert.Empty(put.Bytes);
+    }
+
+    [Fact]
+    public async Task GetText_NonTextFile_Blocked()
+    {
+        await using var db = CreateDb();
+        var (_, item) = SeedFile(db, mime: "image/png", path: "/图片.png");
+        var service = CreateService(db, new FakeOneDriveGraphClient());
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => service.GetTextAsync(item.Id));
+        Assert.Equal(5332, error.ErrorCode);
+    }
+
+    [Fact]
     public async Task Operations_OnOtherUsersItem_Throw()
     {
         await using var db = CreateDb();
