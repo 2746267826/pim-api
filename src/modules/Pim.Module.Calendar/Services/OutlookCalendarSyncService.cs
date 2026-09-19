@@ -421,6 +421,15 @@ public sealed class OutlookCalendarSyncService
     }
 
     // ===== Connection-level lock =====
+    //
+    // 这是**单进程内**的互斥：同一 connection 的并发同步会被串行化，避免两个同步同时
+    // 读到同一批绑定再各自写回。同步与 #309 的存量清理都在这个锁内执行。
+    //
+    // 已知限制（#309 评审确认，非本次引入）：它是进程内静态对象，跨 API 实例不生效，
+    // 理论上多实例部署时可能出现「实例 A 正在同步某绑定，实例 B 把它当存量清理」。
+    // 消除它需要数据库级行锁（SELECT ... FOR UPDATE）或持久化同步锁，属于既有的并发
+    // 模型改动，超出本 issue 范围；当前部署为单实例 API。本实现已尽量收窄窗口：存量清理
+    // 只处理进入同步时读到的、且不在本次显式请求内的绑定。
 
     private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> ConnectionLocks = new();
 
