@@ -3599,6 +3599,17 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.ToTable("file_text_snapshots", (string)null);
                 });
 
+            modelBuilder.Entity("Pim.Module.Files.Entities.FileTextSnapshotEntity", b =>
+                {
+                    b.HasOne("Pim.Module.Files.Entities.FileItemEntity", "Item")
+                        .WithMany()
+                        .HasForeignKey("ItemId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Item");
+                });
+
             modelBuilder.Entity("Pim.Module.Files.Entities.FileSuggestionEntity", b =>
                 {
                     b.Property<Guid>("Id")

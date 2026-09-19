@@ -159,6 +159,18 @@ public class FileIndexingServiceTests
         Assert.Equal("hybrid", vectorStore.LastSearchMode);
     }
 
+    [Fact]
+    public async Task SearchAsync_FiltersOutSensitivePathItems()
+    {
+        await using var db = CreateDb();
+        await SeedFileWithCurrentVersionAsync(db, path: "/Secrets/密钥.txt", name: "密钥.txt");
+        var service = CreateService(db, new FakeFileProviderAdapter(), new FakeFileVectorStore(), extractedText: "text");
+
+        var result = await service.SearchAsync(new Pim.Module.Files.DTOs.FileSearchQuery("密钥", "keyword"));
+
+        Assert.Empty(result.Items);
+    }
+
     private static PimDbContext CreateDb()
     {
         PimDbContext.RegisterModuleAssembly(typeof(FileProviderEntity).Assembly);

@@ -19,7 +19,8 @@ public sealed record OneDriveBindingStatusResult(
     string? AccountName,
     string? UserCode,
     string? VerificationUri,
-    DateTimeOffset? DeviceCodeExpiresAt);
+    DateTimeOffset? DeviceCodeExpiresAt,
+    int? PollIntervalSeconds = null);
 
 /// <summary>
 /// OneDrive 绑定流程：设备码启动 / 状态轮询（poll-on-demand）/ 断开清理。
@@ -82,7 +83,15 @@ public sealed class OneDriveBindingService
         provider.SyncStatus = "idle";
         provider.LastError = null;
         provider.UpdatedAt = now;
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // 并发双击绕过查询预检，撞 (user_id, provider, base_url, username) 唯一索引
+            throw new DomainException(5326, "绑定创建冲突，请重试");
+        }
 
         _logger?.LogInformation("OneDrive binding started for user {UserId}", userId);
         return new OneDriveBindingStartResult(provider.Id, deviceCode.UserCode, deviceCode.VerificationUri, deviceCode.ExpiresIn);
@@ -109,12 +118,27 @@ public sealed class OneDriveBindingService
                 "expired", null, null, null, provider.UserCode, provider.VerificationUri, provider.DeviceCodeExpiresAt);
         }
 
-        var deviceCode = _protector.Unprotect(Encoding.UTF8.GetString(provider.DeviceCodeEncrypted));
+        var deviceCodeBytes = provider.DeviceCodeEncrypted;
+        var deviceCode = _protector.Unprotect(Encoding.UTF8.GetString(deviceCodeBytes));
         try
         {
             var token = await _client.PollDeviceCodeAsync(provider.ClientId ?? string.Empty, deviceCode, ct);
             var drive = await _client.GetDriveAsync(token.AccessToken, ct);
             var me = await _client.GetMeAsync(token.AccessToken, ct);
+
+            // 守卫：Graph 往返期间若发生重新绑定（设备码已换），本轮结果作废，
+            // 否则旧凭据会覆盖新一轮绑定并清空新设备码（复审 I3）
+            var fresh = await _db.Set<FileProviderEntity>()
+                .AsNoTracking()
+                .Where(row => row.Id == providerId)
+                .Select(row => new { row.Status, row.DeviceCodeEncrypted })
+                .SingleAsync(ct);
+            if (fresh.Status != "pending" || fresh.DeviceCodeEncrypted is null
+                || !fresh.DeviceCodeEncrypted.AsSpan().SequenceEqual(deviceCodeBytes))
+            {
+                return new OneDriveBindingStatusResult(
+                    "pending", null, null, null, provider.UserCode, provider.VerificationUri, provider.DeviceCodeExpiresAt);
+            }
 
             var now = _clock.GetUtcNow();
             provider.Status = "connected";
@@ -147,8 +171,10 @@ public sealed class OneDriveBindingService
             }
             if (detail.Contains("slow_down", StringComparison.OrdinalIgnoreCase))
             {
+                // RFC 8628：要求客户端降低轮询频率
                 return new OneDriveBindingStatusResult(
-                    "pending", null, null, null, provider.UserCode, provider.VerificationUri, provider.DeviceCodeExpiresAt);
+                    "pending", null, null, null, provider.UserCode, provider.VerificationUri, provider.DeviceCodeExpiresAt,
+                    PollIntervalSeconds: 7);
             }
             if (detail.Contains("expired_token", StringComparison.OrdinalIgnoreCase))
             {

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Api.Middleware;
 using Pim.Core.Common;
 using Pim.Core.Exceptions;
+using Pim.Module.Files.Providers;
 using Xunit;
 
 namespace Pim.UnitTests.Api;
@@ -31,6 +32,24 @@ public class ExceptionMiddlewareTests
         Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
         var response = await ReadResponseAsync(context);
         Assert.Equal(errorCode, response.Code);
+    }
+
+    [Theory]
+    [InlineData(404, 404)]
+    [InlineData(429, 429)]
+    [InlineData(401, 502)]
+    [InlineData(500, 502)]
+    public async Task InvokeAsync_MapsOneDriveGraphExceptionsToUpstreamSemantics(int graphStatus, int expected)
+    {
+        var context = new DefaultHttpContext();
+        context.Response.Body = new MemoryStream();
+        var middleware = new ExceptionMiddleware(
+            _ => throw new OneDriveGraphException(graphStatus, null, "graph down"),
+            NullLogger<ExceptionMiddleware>.Instance);
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(expected, context.Response.StatusCode);
     }
 
     [Fact]

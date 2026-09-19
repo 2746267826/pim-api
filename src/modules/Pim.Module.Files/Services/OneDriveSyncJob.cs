@@ -35,6 +35,7 @@ public sealed class OneDriveSyncJob
 
         foreach (var providerId in providerIds)
         {
+            db.ChangeTracker.Clear();
             try
             {
                 await syncService.SyncAsync(providerId);

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Pim.Api.Infrastructure;
 using Pim.Core.Common;
 using Pim.Core.Exceptions;
+using Pim.Module.Files.Providers;
 
 namespace Pim.Api.Middleware;
 
@@ -27,6 +28,20 @@ public class ExceptionMiddleware
             context.Response.StatusCode = ResolveDomainStatusCode(ex.ErrorCode);
             context.Response.ContentType = "application/json";
             var response = ApiResponse<string>.Error(ex.ErrorCode, ex.Message);
+            await context.Response.WriteAsync(JsonSerializer.Serialize(response));
+        }
+        catch (OneDriveGraphException ex)
+        {
+            // Graph 侧失败映射为上游语义，而不是 500：404 透传、429 透传、其余按上游错误 502
+            var status = ex.StatusCode switch
+            {
+                404 => StatusCodes.Status404NotFound,
+                429 => StatusCodes.Status429TooManyRequests,
+                _ => StatusCodes.Status502BadGateway,
+            };
+            context.Response.StatusCode = status;
+            context.Response.ContentType = "application/json";
+            var response = ApiResponse<string>.Error(5390, $"OneDrive 服务暂时不可用：{ex.Message}");
             await context.Response.WriteAsync(JsonSerializer.Serialize(response));
         }
         catch (BadHttpRequestException ex)

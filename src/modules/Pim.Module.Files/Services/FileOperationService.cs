@@ -208,7 +208,7 @@ public sealed class FileOperationService(
         var userId = UserId;
         var providerIds = await db.Set<FileProviderEntity>()
             .AsNoTracking()
-            .Where(provider => provider.UserId == userId)
+            .Where(provider => provider.UserId == userId && provider.Provider != "onedrive")
             .OrderBy(provider => provider.CreatedAt)
             .ThenBy(provider => provider.Id)
             .Select(provider => provider.Id)
