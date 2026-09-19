@@ -39,3 +39,9 @@ public sealed record OneDriveTextDto(string Content, string? MimeType, long Size
 }
 
 public sealed record SaveOneDriveTextRequest(string Content);
+
+public sealed record OneDriveWriteResultDto(Guid ItemId, string Path)
+{
+    public static OneDriveWriteResultDto From(OneDriveWriteResult result)
+        => new(result.ItemId, result.Path);
+}

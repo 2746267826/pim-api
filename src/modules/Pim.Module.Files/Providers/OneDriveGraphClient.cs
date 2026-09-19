@@ -204,6 +204,61 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
         }
     }
 
+    public async Task<string> PatchItemAsync(string accessToken, string itemId, string? newName, string? newParentId, CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object>();
+        if (newName is not null) body["name"] = newName;
+        if (newParentId is not null)
+        {
+            body["parentReference"] = new Dictionary<string, object> { ["id"] = newParentId };
+        }
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Patch,
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = new StringContent(JsonSerializer.Serialize(body, JsonOptions), Encoding.UTF8, "application/json");
+        using var response = await Http.SendAsync(request, ct);
+        var json = await ReadJsonAsync(response, ct);
+        return ReadRequiredString(json, "id");
+    }
+
+    public async Task DeleteItemAsync(string accessToken, string itemId, CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Delete,
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await Http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.NotFound)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            throw CreateGraphException(response, body);
+        }
+    }
+
+    public async Task<string> PutNewFileByPathAsync(string accessToken, string itemPath, byte[] bytes, string contentType, CancellationToken ct = default)
+    {
+        var normalized = itemPath.TrimStart('/');
+        using var request = new HttpRequestMessage(
+            HttpMethod.Put,
+            $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}:/content");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = new ByteArrayContent(bytes);
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+        using var response = await Http.SendAsync(request, ct);
+        var json = await ReadJsonAsync(response, ct);
+        return ReadRequiredString(json, "id");
+    }
+
+    public async Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
+    {
+        var json = await GetGraphJsonAsync(
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}?$select=id,webUrl",
+            accessToken, ct);
+        return ReadNullableString(json, "webUrl");
+    }
+
     private HttpClient Http => _httpClientFactory.CreateClient(HttpClientName);
 
     private string TokenEndpoint(string segment)

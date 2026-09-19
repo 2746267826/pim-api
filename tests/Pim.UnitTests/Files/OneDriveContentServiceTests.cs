@@ -79,7 +79,9 @@ public class OneDriveContentServiceTests
     private static OneDriveContentService CreateService(
         PimDbContext db,
         FakeOneDriveGraphClient graph,
-        string[]? sensitivePatterns = null)
+        string[]? sensitivePatterns = null,
+        OneDriveTransientRateLimiter? rateLimiter = null,
+        StubAuditLog? auditLog = null)
     {
         Microsoft.Extensions.Configuration.IConfiguration? config = null;
         if (sensitivePatterns is not null)
@@ -95,7 +97,9 @@ public class OneDriveContentServiceTests
             new StubCurrentUser(UserId),
             new SensitivePathPolicy(config),
             NullLogger<OneDriveContentService>.Instance,
-            new FixedClock(Now));
+            new FixedClock(Now),
+            rateLimiter: rateLimiter ?? new OneDriveTransientRateLimiter(new FixedClock(Now)),
+            auditLog: auditLog);
     }
 
     [Fact]
@@ -378,6 +382,38 @@ public class OneDriveContentServiceTests
 
         var error = await Assert.ThrowsAsync<DomainException>(() => service.GetTextAsync(item.Id));
         Assert.Equal(5332, error.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ReadText_Extracts_Audits_AndEnforcesRateLimit()
+    {
+        await using var db = CreateDb();
+        var (_, item) = SeedFile(db);
+        var graph = new FakeOneDriveGraphClient { SmallContent = new OneDriveSmallContent("文档内容"u8.ToArray(), "text/plain") };
+        var limiter = new OneDriveTransientRateLimiter(new FixedClock(Now), limit: 2);
+        var audit = new StubAuditLog();
+        var service = CreateService(db, graph, rateLimiter: limiter, auditLog: audit);
+
+        var first = await service.ReadTextAsync(item.Id, null);
+        var second = await service.ReadTextAsync(item.Id, null);
+        Assert.Equal("文档内容", first.Content);
+        Assert.Equal(12, second.Size); // 「文档内容」UTF-8 = 12 字节
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => service.ReadTextAsync(item.Id, null));
+        Assert.Equal(5341, error.ErrorCode);
+        Assert.Equal(2, audit.Actions.Count);
+        Assert.All(audit.Actions, action => Assert.Equal("files.read_text", action));
+    }
+
+    [Fact]
+    public async Task ReadText_OnSensitivePath_Blocked()
+    {
+        await using var db = CreateDb();
+        var (_, item) = SeedFile(db, path: "/Secrets/密钥.txt");
+        var service = CreateService(db, new FakeOneDriveGraphClient());
+
+        var error = await Assert.ThrowsAsync<DomainException>(() => service.ReadTextAsync(item.Id, null));
+        Assert.Equal(40303, error.ErrorCode);
     }
 
     [Fact]

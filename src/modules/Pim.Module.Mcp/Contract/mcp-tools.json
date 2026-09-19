@@ -2290,7 +2290,7 @@
  },
  {
   "name": "search_files",
-  "description": "Search files (fulltext + semantic). Core for RAG. Returns FileSearchResponse (paged).",
+  "description": "Search files (metadata only: name/folder/path).",
   "inputSchema": {
    "properties": {
     "q": {
@@ -2312,6 +2312,28 @@
     "q"
    ],
    "title": "search_filesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "read_file_text",
+  "description": "Read a text-extractable OneDrive file's content (txt/md/docx/pptx; transient, never stored). Sensitive paths are rejected.",
+  "inputSchema": {
+   "properties": {
+    "file_id": {
+     "title": "File Id",
+     "type": "string"
+    },
+    "maxBytes": {
+     "default": 65536,
+     "title": "Maxbytes",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "file_id"
+   ],
+   "title": "read_file_textArguments",
    "type": "object"
   }
  },

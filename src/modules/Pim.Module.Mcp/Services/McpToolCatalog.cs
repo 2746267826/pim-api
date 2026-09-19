@@ -137,7 +137,8 @@ public static class McpToolCatalog
         Add(tools, "files", "get_file", "Get file metadata.");
         Add(tools, "files", "get_file_versions", "File versions.");
         Add(tools, "files", "get_file_trash", "File trash.");
-        Add(tools, "files", "search_files", "Search files.");
+        Add(tools, "files", "search_files", "Search files (metadata only).");
+        Add(tools, "files", "read_file_text", "Read a text-extractable file's content (docx/pptx/text; transient, not stored).");
         Add(tools, "files", "get_file_suggestions", "File suggestions.");
         Add(tools, "files", "get_file_open_link", "Build file open link.");
 

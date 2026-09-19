@@ -239,6 +239,15 @@ public class FileEndpointPathTests
         builder.Services.AddScoped<FileProviderBindingService>();
         builder.Services.AddScoped<FileOperationService>();
         builder.Services.AddSingleton<IFileProviderAdapter>(adapter);
+        builder.Services.AddSingleton<SensitivePathPolicy>();
+        builder.Services.AddSingleton<OneDriveSyncGate>();
+        builder.Services.AddSingleton<OneDriveTokenCache>();
+        builder.Services.AddSingleton<OneDriveTransientRateLimiter>();
+        builder.Services.AddSingleton<IOneDriveGraphClient>(new global::Pim.UnitTests.Files.FakeOneDriveGraphClient());
+        builder.Services.AddScoped<OneDriveTokenService>();
+        builder.Services.AddScoped<OneDriveWriteService>();
+        builder.Services.AddScoped<OneDriveTextExtractor>();
+        builder.Services.AddScoped<OneDriveContentService>();
 
         var app = builder.Build();
         new FilesModule().MapEndpoints(app);

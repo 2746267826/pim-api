@@ -66,6 +66,18 @@ public interface IOneDriveGraphClient
 
     /// <summary>小文件简单上传（≤4MB 场景）。</summary>
     Task PutSmallContentAsync(string accessToken, string itemId, byte[] bytes, string contentType, CancellationToken ct = default);
+
+    /// <summary>重命名/移动（PATCH name / parentReference），返回 driveItem id。</summary>
+    Task<string> PatchItemAsync(string accessToken, string itemId, string? newName, string? newParentId, CancellationToken ct = default);
+
+    /// <summary>删除（进 OneDrive 回收站）；404 视为已删除，不报错。</summary>
+    Task DeleteItemAsync(string accessToken, string itemId, CancellationToken ct = default);
+
+    /// <summary>按路径简单上传新文件（PUT /drive/root:{path}:/content），返回 driveItem id。</summary>
+    Task<string> PutNewFileByPathAsync(string accessToken, string itemPath, byte[] bytes, string contentType, CancellationToken ct = default);
+
+    /// <summary>项的 OneDrive 网页地址（webUrl）。</summary>
+    Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default);
 }
 
 public sealed record OneDriveSmallContent(byte[] Bytes, string? ContentType);

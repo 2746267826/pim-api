@@ -90,6 +90,27 @@ public class OneDriveFilesEndpointsE2ETests
             TextContents.Add(System.Text.Encoding.UTF8.GetString(bytes));
             return Task.CompletedTask;
         }
+
+        public List<(string AccessToken, string ItemId, string? NewName, string? NewParentId)> PatchCalls { get; } = [];
+        public List<(string AccessToken, string ItemId)> DeleteCalls { get; } = [];
+
+        public Task<string> PatchItemAsync(string accessToken, string itemId, string? newName, string? newParentId, CancellationToken ct = default)
+        {
+            PatchCalls.Add((accessToken, itemId, newName, newParentId));
+            return Task.FromResult(itemId);
+        }
+
+        public Task DeleteItemAsync(string accessToken, string itemId, CancellationToken ct = default)
+        {
+            DeleteCalls.Add((accessToken, itemId));
+            return Task.CompletedTask;
+        }
+
+        public Task<string> PutNewFileByPathAsync(string accessToken, string itemPath, byte[] bytes, string contentType, CancellationToken ct = default)
+            => Task.FromResult("new-uploaded-item");
+
+        public Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
+            => Task.FromResult<string?>("https://onedrive.live.com/redir?resid=x");
     }
 
     internal static WebApplicationFactory<Program> CreateFactory(string dbName, E2EGraphClient graph)

@@ -84,6 +84,7 @@ internal sealed class FakeOneDriveGraphClient : IOneDriveGraphClient
     public Task<string?> GetDownloadUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
     {
         DownloadUrlCalls.Add((accessToken, itemId));
+        if (DownloadUrlException is not null) throw DownloadUrlException;
         return Task.FromResult(DownloadUrl);
     }
 
@@ -112,6 +113,34 @@ internal sealed class FakeOneDriveGraphClient : IOneDriveGraphClient
         PutCalls.Add((accessToken, itemId, bytes, contentType));
         return Task.CompletedTask;
     }
+
+    public List<(string AccessToken, string ItemId, string? NewName, string? NewParentId)> PatchCalls { get; } = [];
+    public List<(string AccessToken, string ItemId)> DeleteCalls { get; } = [];
+    public string? WebUrl { get; set; } = "https://onedrive.live.com/redir?resid=x";
+    public string NewItemId { get; set; } = "new-item-id";
+    public Exception? DownloadUrlException { get; set; }
+    public List<(string AccessToken, string ItemPath, byte[] Bytes, string ContentType)> PutNewFileCalls { get; } = [];
+
+    public Task<string> PatchItemAsync(string accessToken, string itemId, string? newName, string? newParentId, CancellationToken ct = default)
+    {
+        PatchCalls.Add((accessToken, itemId, newName, newParentId));
+        return Task.FromResult(itemId);
+    }
+
+    public Task DeleteItemAsync(string accessToken, string itemId, CancellationToken ct = default)
+    {
+        DeleteCalls.Add((accessToken, itemId));
+        return Task.CompletedTask;
+    }
+
+    public Task<string> PutNewFileByPathAsync(string accessToken, string itemPath, byte[] bytes, string contentType, CancellationToken ct = default)
+    {
+        PutNewFileCalls.Add((accessToken, itemPath, bytes, contentType));
+        return Task.FromResult(NewItemId);
+    }
+
+    public Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
+        => Task.FromResult(WebUrl);
 }
 
 internal static class OneDriveDeltaPageFactory

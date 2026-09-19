@@ -210,6 +210,7 @@ public static class McpToolTable
             S("get_file_versions", "GET", "/api/v1/files/items/{file_id}/versions"),
             S("get_file_trash", "GET", "/api/v1/files/trash", Q("page", "pageSize")),
             S("search_files", "GET", "/api/v1/files/search", Q("q", "page", "pageSize")),
+            S("read_file_text", "GET", "/api/v1/files/items/{file_id}/extracted-text", Q("maxBytes")),
             S("get_file_suggestions", "GET", "/api/v1/files/suggestions", Q("page", "pageSize")),
             S("get_file_open_link", "GET", "/api/v1/files/items/{file_id}/open-link", kind: McpToolKind.FileOpenLink),
 
@@ -280,7 +281,7 @@ public static class McpToolTable
             W("move_file", "POST", "/api/v1/files/items/{fileId}/move", req: R("fileId", "destinationPath")),
             W("rename_file", "POST", "/api/v1/files/items/{fileId}/rename", req: R("fileId", "name")),
             W("delete_file", "DELETE", "/api/v1/files/items/{fileId}", req: R("fileId")),
-            W("restore_file", "POST", "/api/v1/files/trash/{fileId}/restore", query: Q("trashId"), req: R("fileId", "trashId")),
+            W("restore_file", "POST", "/api/v1/files/items/{file_id}/restore", req: R("file_id")),
             W("index_file", "POST", "/api/v1/files/items/{fileId}/index", req: R("fileId")),
 
             // ===================== PcTracker writes (4) =====================
