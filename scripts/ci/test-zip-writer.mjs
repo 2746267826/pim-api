@@ -17,7 +17,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { crc32, listFilesRecursive, readZipEntryNames, toEntryName, writeZipFromDirectory } from './zip-writer.mjs'
+import { crc32, listFilesRecursive, readZipEntryNames, readZipEntry, toEntryName, writeZipFromDirectory } from './zip-writer.mjs'
 
 function makeTree() {
   const root = mkdtempSync(join(tmpdir(), 'pim-zip-'))
@@ -96,31 +96,31 @@ test('解包后内容与目录结构往返一致（含中文文件名）', () =>
   const root = makeTree()
   const zipDir = mkdtempSync(join(tmpdir(), 'pim-zipout-'))
   const zipPath = join(zipDir, 'browser-extension.zip')
-  const extractDir = mkdtempSync(join(tmpdir(), 'pim-zipextract-'))
   try {
     writeZipFromDirectory(root, zipPath)
-    execFileSync('unzip', ['-q', zipPath, '-d', extractDir], { encoding: 'utf8' })
 
-    const manifest = JSON.parse(readFileSync(join(extractDir, 'manifest.json'), 'utf8'))
+    // 按 zip 规范自带的 UTF-8 标志位读取条目内容，而不是 shell 调用 `unzip`：
+    // `unzip` 是否还原非 ASCII 名字取决于运行环境的 locale（CI 上常见 C locale，
+    // 会把中文条目名写成乱码）。浏览器/规范实现按 UTF-8 解释，这里与之一致。
+    const manifest = JSON.parse(readZipEntry(zipPath, 'manifest.json').toString('utf8'))
     assert.equal(manifest.manifest_version, 2)
     assert.equal(manifest.name, '测试插件')
 
     assert.equal(
-      readFileSync(join(extractDir, 'src', 'background', 'main.js'), 'utf8'),
+      readZipEntry(zipPath, 'src/background/main.js').toString('utf8'),
       readFileSync(join(root, 'src', 'background', 'main.js'), 'utf8'),
     )
     assert.equal(
-      readFileSync(join(extractDir, 'media', '说明.txt'), 'utf8'),
+      readZipEntry(zipPath, 'media/说明.txt').toString('utf8'),
       readFileSync(join(root, 'media', '说明.txt'), 'utf8'),
     )
     assert.deepEqual(
-      readFileSync(join(extractDir, 'media', 'logo', 'logo-128.png')),
+      readZipEntry(zipPath, 'media/logo/logo-128.png'),
       readFileSync(join(root, 'media', 'logo', 'logo-128.png')),
     )
   } finally {
     rmSync(root, { recursive: true, force: true })
     rmSync(zipDir, { recursive: true, force: true })
-    rmSync(extractDir, { recursive: true, force: true })
   }
 })
 
@@ -138,8 +138,7 @@ test('大文件走 deflate 且往返无损', () => {
     assert.equal(result.entryCount, 1)
     assert.ok(result.bytes < payload.length / 10, `压缩无效：${result.bytes} bytes`)
 
-    execFileSync('unzip', ['-q', zipPath, '-d', extractDir], { encoding: 'utf8' })
-    assert.equal(readFileSync(join(extractDir, 'bundle.js'), 'utf8'), payload)
+    assert.equal(readZipEntry(zipPath, 'bundle.js').toString('utf8'), payload)
   } finally {
     rmSync(root, { recursive: true, force: true })
     rmSync(zipDir, { recursive: true, force: true })

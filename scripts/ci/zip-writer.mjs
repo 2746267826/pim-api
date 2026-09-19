@@ -19,7 +19,7 @@
  */
 import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join, posix, relative, sep } from 'node:path'
-import { deflateRawSync } from 'node:zlib'
+import { deflateRawSync, inflateRawSync } from 'node:zlib'
 
 const CRC_TABLE = (() => {
   const table = new Int32Array(256)
@@ -232,4 +232,66 @@ export function readZipEntryNames(zipPath) {
   }
 
   return names
+}
+
+/**
+ * 读取单个条目的原始内容（支持 store / deflate）。
+ *
+ * 之所以不 shell 调用 `unzip` 取内容：`unzip` 是否按 UTF-8 还原非 ASCII 条目名取决于
+ * 运行环境的 locale（CI 上常见 C locale，会把中文名写成乱码），而 zip 规范用的是
+ * 条目自带的 UTF-8 标志位——自己解析才与浏览器行为一致、也与环境无关。
+ */
+export function readZipEntry(zipPath, wantedName) {
+  const buffer = readFileSync(zipPath)
+
+  let eocd = -1
+  for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 22 - 0xffff); i--) {
+    if (buffer.readUInt32LE(i) === SIG_EOCD) {
+      eocd = i
+      break
+    }
+  }
+  if (eocd < 0) throw new Error(`${zipPath} is not a zip archive (no EOCD record found)`)
+
+  const entryCount = buffer.readUInt16LE(eocd + 10)
+  let cursor = buffer.readUInt32LE(eocd + 16)
+
+  for (let i = 0; i < entryCount; i++) {
+    if (buffer.readUInt32LE(cursor) !== SIG_CENTRAL_HEADER) {
+      throw new Error(`${zipPath} has a corrupt central directory at offset ${cursor}`)
+    }
+    const method = buffer.readUInt16LE(cursor + 10)
+    const compressedSize = buffer.readUInt32LE(cursor + 20)
+    const nameLength = buffer.readUInt16LE(cursor + 28)
+    const extraLength = buffer.readUInt16LE(cursor + 30)
+    const commentLength = buffer.readUInt16LE(cursor + 32)
+    const localOffset = buffer.readUInt32LE(cursor + 42)
+    const name = buffer.toString('utf8', cursor + 46, cursor + 46 + nameLength)
+
+    if (name.replace(/\\/g, '/') === wantedName) {
+      if (buffer.readUInt32LE(localOffset) !== SIG_LOCAL_HEADER) {
+        throw new Error(`${zipPath} has a corrupt local header for ${name}`)
+      }
+      const localNameLength = buffer.readUInt16LE(localOffset + 26)
+      const localExtraLength = buffer.readUInt16LE(localOffset + 28)
+      const dataStart = localOffset + 30 + localNameLength + localExtraLength
+      const payload = buffer.subarray(dataStart, dataStart + compressedSize)
+      if (method === METHOD_STORE) return payload
+      if (method === METHOD_DEFLATE) return inflateRawSync(payload)
+      throw new Error(`${zipPath} uses unsupported compression method ${method} for ${name}`)
+    }
+
+    cursor += 46 + nameLength + extraLength + commentLength
+  }
+
+  throw new Error(`${zipPath}: entry not found: ${wantedName}`)
+}
+
+/** 读取条目名 → 内容（便于整包比对）。 */
+export function readZipEntries(zipPath) {
+  const entries = new Map()
+  for (const name of readZipEntryNames(zipPath)) {
+    entries.set(name, readZipEntry(zipPath, name))
+  }
+  return entries
 }

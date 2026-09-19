@@ -670,6 +670,178 @@ public sealed class OutlookCalendarSyncServiceTests
     }
 
     [Fact]
+    public async Task Discovery_MirrorDeletesRecurringSeriesMastersAndExceptions()
+    {
+        // 需求 2：删除范围无例外——重复日程的 master 与 exception 也必须一并删除，
+        // 且它们之间的 SeriesMasterId 自引用不能让删除半途而废。
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+
+        var cal = new CalendarEntity { UserId = UserId, Name = "重复日程日历", Source = "outlook" };
+        db.Set<CalendarEntity>().Add(cal);
+        await db.SaveChangesAsync();
+        var binding = new OutlookCalendarBindingEntity
+        {
+            ConnectionId = ConnectionId, PimCalendarId = cal.Id,
+            GraphCalendarId = "recurring-cal", Name = "重复日程日历", IsSelected = true
+        };
+        db.Set<OutlookCalendarBindingEntity>().Add(binding);
+        await db.SaveChangesAsync();
+
+        var master = new EventEntity
+        {
+            CalendarId = cal.Id,
+            Uid = "master@pim",
+            Title = "每周例会",
+            DtStart = FixedNow,
+            DtEnd = FixedNow.AddHours(1),
+            Source = "outlook",
+            OutlookEventId = "master-event",
+            OutlookCalendarBindingId = binding.Id,
+            OutlookConnectionId = ConnectionId,
+            IsSeriesMaster = true,
+            RRule = "FREQ=WEEKLY",
+        };
+        db.Set<EventEntity>().Add(master);
+        await db.SaveChangesAsync();
+
+        var exception = new EventEntity
+        {
+            CalendarId = cal.Id,
+            Uid = "exception@pim",
+            Title = "每周例会（改期）",
+            DtStart = FixedNow.AddDays(7),
+            DtEnd = FixedNow.AddDays(7).AddHours(1),
+            Source = "outlook",
+            OutlookEventId = "exception-event",
+            OutlookCalendarBindingId = binding.Id,
+            OutlookConnectionId = ConnectionId,
+            IsException = true,
+            SeriesMasterId = master.Id,
+            RecurrenceId = FixedNow.AddDays(7).ToString("O"),
+        };
+        db.Set<EventEntity>().Add(exception);
+        await db.SaveChangesAsync();
+
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        var service = CreateService(db, graph);
+        await service.DiscoverAsync(UserId, CancellationToken.None);
+
+        var stored = await db.Set<EventEntity>()
+            .IgnoreQueryFilters()
+            .Where(e => e.CalendarId == cal.Id)
+            .ToListAsync();
+        Assert.Equal(2, stored.Count);
+        Assert.All(stored, e => Assert.NotNull(e.DeletedAt));
+        Assert.All(stored, e => Assert.Equal("outlook-remote-missing", e.DeletedByOperationKind));
+        // 两条日程同属一次删除操作，回收站恢复时才能整单还原。
+        Assert.Single(stored.Select(e => e.DeletedByOperationId).Distinct());
+    }
+
+    [Fact]
+    public async Task Discovery_MirrorDeleteKeepsAlreadyDeletedEventsUntouched()
+    {
+        // 需求 2/3：已经手工删过、正躺在回收站里的日程不能被"重新删一次"——
+        // 否则它的 DeletedAt/操作归属会被覆盖，用户原来的回收站条目会串味。
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+
+        var cal = new CalendarEntity { UserId = UserId, Name = "混合日历", Source = "outlook" };
+        db.Set<CalendarEntity>().Add(cal);
+        await db.SaveChangesAsync();
+        var binding = new OutlookCalendarBindingEntity
+        {
+            ConnectionId = ConnectionId, PimCalendarId = cal.Id,
+            GraphCalendarId = "mixed-cal", Name = "混合日历", IsSelected = true
+        };
+        db.Set<OutlookCalendarBindingEntity>().Add(binding);
+        await db.SaveChangesAsync();
+
+        var manualDeleteAt = FixedNow.AddDays(-3);
+        var manualOperationId = Guid.NewGuid();
+        var alreadyDeleted = new EventEntity
+        {
+            CalendarId = cal.Id,
+            Uid = "manual-del@pim",
+            Title = "早已手工删除",
+            DtStart = FixedNow,
+            DtEnd = FixedNow.AddHours(1),
+            Source = "outlook",
+            OutlookEventId = "manual-del-event",
+            OutlookCalendarBindingId = binding.Id,
+            OutlookConnectionId = ConnectionId,
+            DeletedAt = manualDeleteAt,
+            DeletedByOperationId = manualOperationId,
+            DeletedByOperationKind = "single-event",
+        };
+        db.Set<EventEntity>().Add(alreadyDeleted);
+        var activeEvent = new EventEntity
+        {
+            CalendarId = cal.Id,
+            Uid = "still-active@pim",
+            Title = "仍然活跃",
+            DtStart = FixedNow,
+            DtEnd = FixedNow.AddHours(1),
+            Source = "outlook",
+            OutlookEventId = "still-active",
+            OutlookCalendarBindingId = binding.Id,
+            OutlookConnectionId = ConnectionId,
+        };
+        db.Set<EventEntity>().Add(activeEvent);
+        await db.SaveChangesAsync();
+
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        var service = CreateService(db, graph);
+        await service.DiscoverAsync(UserId, CancellationToken.None);
+
+        var storedManual = await db.Set<EventEntity>()
+            .IgnoreQueryFilters().FirstAsync(e => e.Id == alreadyDeleted.Id);
+        Assert.Equal(manualDeleteAt, storedManual.DeletedAt);
+        Assert.Equal(manualOperationId, storedManual.DeletedByOperationId);
+        Assert.Equal("single-event", storedManual.DeletedByOperationKind);
+
+        var storedActive = await db.Set<EventEntity>()
+            .IgnoreQueryFilters().FirstAsync(e => e.Id == activeEvent.Id);
+        Assert.NotNull(storedActive.DeletedAt);
+        Assert.Equal("outlook-remote-missing", storedActive.DeletedByOperationKind);
+        // 该日程已被跟随删除，Outlook 标识已清空（需求 6：恢复后即本地数据）。
+        Assert.Null(storedActive.OutlookEventId);
+    }
+
+    [Fact]
+    public async Task Discovery_MirrorDeleteCalendarWithNoEventsStillRemovesBindingAndCalendar()
+    {
+        // 空日历（无日程）同样要跟随删除：绑定消失、日历进回收站。
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "empty-cal");
+
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        var service = CreateService(db, graph);
+        var result = await service.DiscoverAsync(UserId, CancellationToken.None);
+
+        Assert.Empty(result);
+        Assert.False(await db.Set<OutlookCalendarBindingEntity>().AnyAsync(b => b.Id == bindingId));
+        var calendar = await db.Set<CalendarEntity>()
+            .IgnoreQueryFilters().FirstAsync(c => c.Id == calId);
+        Assert.NotNull(calendar.DeletedAt);
+        Assert.Equal("outlook-remote-missing", calendar.DeletedByOperationKind);
+    }
+
+    [Fact]
     public async Task Discovery_DeletesUnseenCalendarIncludingReadOnlyAndLocallyEditedEvents()
     {
         // 需求 2：删除范围无例外——只读日历（生日/节假日）与在 PIM 有过本地改动的日程

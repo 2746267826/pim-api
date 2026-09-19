@@ -435,8 +435,14 @@ public sealed class OutlookCalendarSyncService
 
         // A plain sync only walks active bindings. An explicitly requested binding is the
         // user asking for that very calendar again ("重试", 深度同步 after restoring it on the
-        // Outlook side), so a remote-missing one must stay reachable - otherwise the request
-        // is rejected with 02009 and the calendar can never leave remote-missing.
+        // Outlook side), so a legacy remote-missing one must stay reachable - otherwise the
+        // request is rejected with 02009 and a calendar the user just restored on the Outlook
+        // side could never be picked back up.
+        //
+        // Since #309 a binding is no longer parked in remote-missing: a confirmed-missing
+        // calendar is mirror-deleted (binding row removed) in the same round. The exemption
+        // below therefore only matters for stock written by older versions, and it is what
+        // lets requirement 5 skip those rows when the user is explicitly asking for them.
         //
         // Only remote-missing is exempt: it is the one state with a defined recovery path.
         // Paused/unknown states (and anything added later) stay excluded, so an explicit id
@@ -492,8 +498,8 @@ public sealed class OutlookCalendarSyncService
     /// <summary>
     /// A 404 during event sync is not proof that the calendar was deleted: it can come from a
     /// single failed page/skiptoken while the calendar itself is fine. Ask Graph for the
-    /// calendar resource before parking the binding as <c>remote-missing</c> (a sticky state
-    /// the user can only clear by manually re-discovering calendars).
+    /// calendar resource before acting on the 404; only a confirmed absence triggers the
+    /// #309 mirror-delete (calendar + all its events into the recycle bin).
     ///
     /// This runs inside the <c>catch (GraphRequestException)</c> handler, so it must not leak
     /// new exception types: a reauth thrown here would bypass the sibling catch clauses and

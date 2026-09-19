@@ -16,54 +16,8 @@
  *   node scripts/ci/verify-extension-zips.mjs \
  *     publish/browser-extension.zip:chrome publish/browser-extension-firefox.zip:firefox
  */
-import { existsSync, readFileSync } from 'node:fs'
-import { inflateRawSync } from 'node:zlib'
-import { readZipEntryNames } from './zip-writer.mjs'
-
-const SIG_LOCAL = 0x04034b50
-const SIG_CENTRAL = 0x02014b50
-const SIG_EOCD = 0x06054b50
-
-/** 从已读入内存的 zip 中取出单个条目的内容（只处理 store / deflate）。 */
-function readZipEntry(buffer, wantedName) {
-  let eocd = -1
-  for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 22 - 0xffff); i--) {
-    if (buffer.readUInt32LE(i) === SIG_EOCD) {
-      eocd = i
-      break
-    }
-  }
-  if (eocd < 0) throw new Error('no EOCD record')
-
-  const entryCount = buffer.readUInt16LE(eocd + 10)
-  let cursor = buffer.readUInt32LE(eocd + 16)
-
-  for (let i = 0; i < entryCount; i++) {
-    if (buffer.readUInt32LE(cursor) !== SIG_CENTRAL) throw new Error('corrupt central directory')
-    const method = buffer.readUInt16LE(cursor + 10)
-    const compressedSize = buffer.readUInt32LE(cursor + 20)
-    const nameLength = buffer.readUInt16LE(cursor + 28)
-    const extraLength = buffer.readUInt16LE(cursor + 30)
-    const commentLength = buffer.readUInt16LE(cursor + 32)
-    const localOffset = buffer.readUInt32LE(cursor + 42)
-    const name = buffer.toString('utf8', cursor + 46, cursor + 46 + nameLength)
-
-    if (name.replace(/\\/g, '/') === wantedName) {
-      if (buffer.readUInt32LE(localOffset) !== SIG_LOCAL) throw new Error('corrupt local header')
-      const localNameLength = buffer.readUInt16LE(localOffset + 26)
-      const localExtraLength = buffer.readUInt16LE(localOffset + 28)
-      const dataStart = localOffset + 30 + localNameLength + localExtraLength
-      const payload = buffer.subarray(dataStart, dataStart + compressedSize)
-      if (method === 0) return payload
-      if (method === 8) return inflateRawSync(payload)
-      throw new Error(`unsupported compression method ${method}`)
-    }
-
-    cursor += 46 + nameLength + extraLength + commentLength
-  }
-
-  throw new Error(`entry not found: ${wantedName}`)
-}
+import { existsSync } from 'node:fs'
+import { readZipEntry, readZipEntryNames } from './zip-writer.mjs'
 
 /** 校验单个归档；返回该归档的问题列表（空数组表示通过）。 */
 export function verifyArchive(zipPath, browser = 'chrome') {
@@ -95,7 +49,7 @@ export function verifyArchive(zipPath, browser = 'chrome') {
   // 2. manifest 的引用必须在包内存在（Firefox 报"损坏"就是因为这里对不上）。
   let manifest
   try {
-    manifest = JSON.parse(readZipEntry(readFileSync(zipPath), 'manifest.json').toString('utf8'))
+    manifest = JSON.parse(readZipEntry(zipPath, 'manifest.json').toString('utf8'))
   } catch (error) {
     problems.push(`${zipPath}: manifest.json is not valid JSON (${error.message})`)
     return problems
