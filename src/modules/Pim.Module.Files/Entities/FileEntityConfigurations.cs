@@ -20,6 +20,20 @@ public sealed class FileProviderEntityConfiguration : IEntityTypeConfiguration<F
         builder.Property(e => e.LastError).HasColumnName("last_error");
         builder.Property(e => e.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("now()");
         builder.Property(e => e.UpdatedAt).HasColumnName("updated_at").HasDefaultValueSql("now()");
+        builder.Property(e => e.ClientId).HasColumnName("client_id").HasMaxLength(255);
+        builder.Property(e => e.DriveId).HasColumnName("drive_id").HasMaxLength(255);
+        builder.Property(e => e.AccountId).HasColumnName("account_id").HasMaxLength(255);
+        builder.Property(e => e.AccountName).HasColumnName("account_name").HasMaxLength(255);
+        builder.Property(e => e.DeltaLink).HasColumnName("delta_link");
+        builder.Property(e => e.DeltaResetAt).HasColumnName("delta_reset_at");
+        builder.Property(e => e.RefreshTokenEncrypted).HasColumnName("refresh_token_encrypted");
+        builder.Property(e => e.TokenExpiresAt).HasColumnName("token_expires_at");
+        builder.Property(e => e.SyncStatus).HasColumnName("sync_status").HasMaxLength(32).HasDefaultValue("idle");
+        builder.Property(e => e.SyncedItemCount).HasColumnName("synced_item_count").HasDefaultValue(0);
+        builder.Property(e => e.DeviceCodeEncrypted).HasColumnName("device_code_encrypted");
+        builder.Property(e => e.UserCode).HasColumnName("user_code").HasMaxLength(32);
+        builder.Property(e => e.VerificationUri).HasColumnName("verification_uri").HasMaxLength(512);
+        builder.Property(e => e.DeviceCodeExpiresAt).HasColumnName("device_code_expires_at");
         builder.HasIndex(e => new { e.UserId, e.Provider, e.BaseUrl, e.Username }).IsUnique();
         builder.HasIndex(e => new { e.UserId, e.Status });
     }

@@ -1,0 +1,128 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
+using Pim.Module.Files.Providers;
+
+namespace Pim.UnitTests.Files;
+
+/// <summary>
+/// 可编程的 IOneDriveGraphClient 测试替身：按脚本依次抛异常/返回页，并记录调用。
+/// </summary>
+internal sealed class FakeOneDriveGraphClient : IOneDriveGraphClient
+{
+    public OneDriveDeviceCodeStart DeviceCode { get; set; } = new(
+        "device-code", "USER-CODE", "https://www.microsoft.com/link", 900);
+
+    public OneDriveTokenResult Token { get; set; } = new(
+        "access-token", "refresh-token", 3600, "Files.ReadWrite.All offline_access");
+
+    public OneDriveDriveInfo Drive { get; set; } = new("drive-1", "personal", 378_000_000_000, 1_100_000_000_000);
+
+    public OneDriveAccountInfo Me { get; set; } = new("acc-1", "Test User");
+
+    /// <summary>GetDeltaPageAsync 的脚本：元素为页或要抛出的异常。</summary>
+    public Queue<object> DeltaScript { get; } = new();
+
+    public List<(string? AccessToken, string Url)> DeltaRequests { get; } = [];
+
+    public int PollCalls { get; private set; }
+    public int RefreshCalls { get; private set; }
+
+    public Exception? PollException { get; set; }
+    public Exception? RefreshException { get; set; }
+
+    public Task<OneDriveDeviceCodeStart> RequestDeviceCodeAsync(string clientId, CancellationToken ct = default)
+        => Task.FromResult(DeviceCode);
+
+    public Task<OneDriveTokenResult> PollDeviceCodeAsync(string clientId, string deviceCode, CancellationToken ct = default)
+    {
+        PollCalls++;
+        if (PollException is not null) throw PollException;
+        return Task.FromResult(Token);
+    }
+
+    public Task<OneDriveTokenResult> RefreshAsync(string clientId, string refreshToken, CancellationToken ct = default)
+    {
+        RefreshCalls++;
+        if (RefreshException is not null) throw RefreshException;
+        return Task.FromResult(Token with { AccessToken = $"access-token-{RefreshCalls}" });
+    }
+
+    public Task<OneDriveDriveInfo> GetDriveAsync(string accessToken, CancellationToken ct = default)
+        => Task.FromResult(Drive);
+
+    public Task<OneDriveAccountInfo> GetMeAsync(string accessToken, CancellationToken ct = default)
+        => Task.FromResult(Me);
+
+    public Task<OneDriveDeltaPage> GetDeltaPageAsync(string accessToken, string url, CancellationToken ct = default)
+    {
+        DeltaRequests.Add((accessToken, url));
+        if (DeltaScript.Count == 0)
+            return Task.FromResult(new OneDriveDeltaPage([], null, "https://graph.microsoft.com/v1.0/me/drive/root/delta?$deltatoken=done"));
+        var step = DeltaScript.Dequeue();
+        if (step is Exception error) throw error;
+        return Task.FromResult((OneDriveDeltaPage)step);
+    }
+}
+
+internal static class OneDriveDeltaPageFactory
+{
+    public static OneDriveDeltaItem Folder(string id, string name, string? parentId = null, string? parentPath = null, string? ctag = "folder-ctag")
+        => new(id, parentId, parentPath ?? "/drive/root:", name, IsFolder: true, IsRemoved: false,
+            Size: null, MimeType: null, Ctag: ctag, ModifiedAt: DateTimeOffset.Parse("2026-09-01T08:00:00Z"));
+
+    public static OneDriveDeltaItem File(
+        string id,
+        string name,
+        long size = 1024,
+        string? mimeType = "text/plain",
+        string? parentId = null,
+        string? parentPath = null,
+        string? ctag = "file-ctag")
+        => new(id, parentId, parentPath ?? "/drive/root:", name, IsFolder: false, IsRemoved: false,
+            Size: size, MimeType: mimeType, Ctag: ctag, ModifiedAt: DateTimeOffset.Parse("2026-09-02T09:30:00Z"));
+
+    public static OneDriveDeltaItem Removed(string id)
+        => new(id, null, null, "gone", IsFolder: false, IsRemoved: true,
+            Size: null, MimeType: null, Ctag: null, ModifiedAt: DateTimeOffset.Parse("2026-09-03T10:00:00Z"));
+
+    public static OneDriveDeltaPage Page(params OneDriveDeltaItem[] items)
+        => new(items, null, $"https://graph.microsoft.com/v1.0/me/drive/root/delta?$deltatoken=done-{Guid.NewGuid():N}");
+
+    public static OneDriveDeltaPage NextPage(params OneDriveDeltaItem[] items)
+        => new(items, $"https://graph.microsoft.com/v1.0/me/drive/root/delta?$skiptoken=next-{Guid.NewGuid():N}", null);
+}
+
+/// <summary>针对 OneDriveGraphClient 原始 HTTP 行为的桩 Handler。</summary>
+internal sealed class StubHttpHandler : HttpMessageHandler
+{
+    public required Func<HttpRequestMessage, HttpResponseMessage> Responder { get; init; }
+
+    public List<(string Method, string Url, string? Body, string? Authorization)> Requests { get; } = [];
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        var body = request.Content is null
+            ? null
+            : request.Content.ReadAsStringAsync(ct).GetAwaiter().GetResult();
+        Requests.Add((
+            request.Method.Method,
+            request.RequestUri?.ToString() ?? "",
+            body,
+            request.Headers.Authorization?.ToString()));
+        return Task.FromResult(Responder(request));
+    }
+
+    public static HttpResponseMessage Json(int statusCode, object payload, IDictionary<string, string>? headers = null)
+    {
+        var response = new HttpResponseMessage((HttpStatusCode)statusCode)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
+        };
+        foreach (var (key, value) in headers ?? new Dictionary<string, string>())
+        {
+            response.Headers.TryAddWithoutValidation(key, value);
+        }
+        return response;
+    }
+}

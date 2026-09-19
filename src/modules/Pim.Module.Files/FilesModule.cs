@@ -1,8 +1,10 @@
 using System.Reflection;
+using Hangfire;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -10,8 +12,10 @@ using Pim.Core.Common;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Modules;
+using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Files.DTOs;
+using Pim.Module.Files.Entities;
 using Pim.Module.Files.Providers;
 using Pim.Module.Files.Services;
 
@@ -43,6 +47,14 @@ public sealed class FilesModule : IModule
         services.AddHttpClient<QdrantFileVectorStore>();
         services.AddScoped<IFileVectorStore>(sp => sp.GetRequiredService<QdrantFileVectorStore>());
         services.AddScoped<IFileProviderAdapter>(sp => sp.GetRequiredService<NextcloudFileProviderAdapter>());
+
+        // OneDrive（Graph 直链版，见 designs/onedrive-files-v2.md）
+        services.AddHttpClient<OneDriveGraphClient>();
+        services.AddScoped<IOneDriveGraphClient>(sp => sp.GetRequiredService<OneDriveGraphClient>());
+        services.AddScoped<OneDriveTokenService>();
+        services.AddScoped<OneDriveBindingService>();
+        services.AddScoped<OneDriveSyncService>();
+        services.AddScoped<OneDriveSyncJob>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -59,6 +71,10 @@ public sealed class FilesModule : IModule
             [FromServices] FileProviderBindingService service,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<FileProviderDto>.Ok(await service.BindNextcloudAsync(request, ct))));
+
+        group.MapPost("/providers/onedrive", StartOneDriveBindingAsync);
+        group.MapGet("/providers/{id:guid}/binding-status", GetOneDriveBindingStatusAsync);
+        group.MapDelete("/providers/{id:guid}", DisconnectProviderAsync);
 
         group.MapPost("/providers/{id:guid}/test", async (
             Guid id,
@@ -87,20 +103,93 @@ public sealed class FilesModule : IModule
         group.MapGet("/items/{id:guid}/open-link", BuildOpenLinkAsync);
     }
 
-    public Task InitializeAsync(IServiceProvider serviceProvider)
+    public async Task InitializeAsync(IServiceProvider serviceProvider)
     {
         var registry = serviceProvider.GetService<IAiSchemaRegistry>();
         if (registry is not null)
             FileAiService.RegisterSchemas(registry);
 
-        return Task.CompletedTask;
+        var jobClient = serviceProvider.GetService<IBackgroundJobClient>();
+        var recurringJobs = serviceProvider.GetService<IRecurringJobManager>();
+        var logger = serviceProvider.GetService<ILogger<FilesModule>>();
+        if (jobClient is null || recurringJobs is null)
+        {
+            logger?.LogWarning(
+                "Background job infrastructure is not available; OneDrive scheduled sync is disabled.");
+            return;
+        }
+
+        try
+        {
+            jobClient.Enqueue<OneDriveSyncJob>(job => job.RunAllAsync());
+            recurringJobs.AddOrUpdate<OneDriveSyncJob>(
+                "onedrive-files-sync",
+                job => job.RunAllAsync(),
+                "*/20 * * * *");
+        }
+        catch (Exception exception)
+        {
+            logger?.LogWarning(
+                exception,
+                "Failed to schedule the recurring OneDrive sync job.");
+        }
     }
+
+    private static async Task<IResult> StartOneDriveBindingAsync(
+        [FromBody] StartOneDriveBindingRequest request,
+        [FromServices] OneDriveBindingService service,
+        [FromServices] ICurrentUserService currentUser,
+        CancellationToken ct)
+        => Results.Ok(ApiResponse<OneDriveBindingStartDto>.Ok(OneDriveBindingStartDto.From(
+            await service.StartBindingAsync(RequireUserId(currentUser), request.ClientId, ct))));
+
+    private static async Task<IResult> GetOneDriveBindingStatusAsync(
+        Guid id,
+        [FromServices] OneDriveBindingService service,
+        [FromServices] ICurrentUserService currentUser,
+        CancellationToken ct)
+        => Results.Ok(ApiResponse<OneDriveBindingStatusDto>.Ok(OneDriveBindingStatusDto.From(
+            await service.GetBindingStatusAsync(RequireUserId(currentUser), id, ct))));
+
+    private static async Task<IResult> DisconnectProviderAsync(
+        Guid id,
+        [FromServices] OneDriveBindingService service,
+        [FromServices] OneDriveTokenService tokens,
+        [FromServices] ICurrentUserService currentUser,
+        CancellationToken ct)
+    {
+        await service.DisconnectAsync(RequireUserId(currentUser), id, ct);
+        tokens.InvalidateCached(id);
+        return Results.Ok(ApiResponse<bool>.Ok(true));
+    }
+
+    private static Guid RequireUserId(ICurrentUserService currentUser)
+        => currentUser.UserId ?? throw new DomainException(01002, "Login required");
 
     private static async Task<IResult> SyncProviderAsync(
         Guid id,
         [FromServices] FileOperationService service,
+        [FromServices] OneDriveSyncService oneDriveService,
+        [FromServices] PimDbContext db,
         CancellationToken ct)
-        => Results.Ok(ApiResponse<IReadOnlyList<FileItemDto>>.Ok(await service.SyncProviderAsync(id, ct)));
+    {
+        // 全局用户过滤器保证只能看到自己的 provider
+        var provider = await db.Set<FileProviderEntity>()
+            .AsNoTracking()
+            .Where(item => item.Id == id)
+            .Select(item => new { item.Provider })
+            .FirstOrDefaultAsync();
+        if (provider is null)
+            throw new DomainException(5104, "文件来源不存在");
+
+        if (provider.Provider == "onedrive")
+        {
+            var result = await oneDriveService.SyncAsync(id, ct);
+            return Results.Ok(ApiResponse<OneDriveSyncResultDto>.Ok(OneDriveSyncResultDto.From(result)));
+        }
+
+        return Results.Ok(ApiResponse<IReadOnlyList<FileItemDto>>.Ok(await service.SyncProviderAsync(id, ct)));
+    }
 
     private static async Task<IResult> ListItemsAsync(
         [FromQuery] string? path,
