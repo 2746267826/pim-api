@@ -211,12 +211,54 @@ public sealed class OneDriveWriteService
             throw new DomainException(5340, "文件已从 OneDrive 删除，无法恢复");
         }
 
+        // 目录的子孙是随父目录一起级联软删的，恢复时必须整树恢复，
+        // 否则会出现「父目录可见、子项仍是删除态」的残缺树（复审 NEW-4）。
+        // 只恢复 DeletedAt 与父目录**完全相同**的子孙：那是同一次级联的标记，
+        // 早先被单独删除的子项（DeletedAt 不同）不应被顺带复活。
+        var cascadeDeletedAt = item.DeletedAt;
+        var restoredCount = 1;
+        if (item.ItemType == "folder" && cascadeDeletedAt is { } cascadeAt)
+        {
+            restoredCount += await RestoreCascadeDescendantsAsync(provider.Id, item.Path, cascadeAt, ct);
+        }
+
         item.IsDeleted = false;
         item.DeletedAt = null;
         item.SyncedAt = _clock.GetUtcNow();
         await _db.SaveChangesAsync(ct);
         await RecordAuditAsync("files.onedrive.restore", item.Id, ct);
+        _logger?.LogInformation(
+            "OneDrive restore: item {ItemId} restored with {Descendants} cascade descendant(s)",
+            item.Id, restoredCount - 1);
         return new OneDriveWriteResult(item.Id, item.Path);
+    }
+
+    /// <summary>
+    /// 恢复随 <paramref name="folderPath"/> 同一次级联删除的子孙（DeletedAt 精确匹配）。
+    /// 返回恢复的行数。
+    /// </summary>
+    private async Task<int> RestoreCascadeDescendantsAsync(
+        Guid providerId,
+        string folderPath,
+        DateTimeOffset cascadeDeletedAt,
+        CancellationToken ct)
+    {
+        var prefix = folderPath.TrimEnd('/') + "/";
+        var descendants = await _db.Set<FileItemEntity>()
+            .Where(row => row.ProviderId == providerId
+                && row.Path.StartsWith(prefix)
+                && row.IsDeleted
+                && row.DeletedAt == cascadeDeletedAt)
+            .ToListAsync(ct);
+        var now = _clock.GetUtcNow();
+        foreach (var descendant in descendants)
+        {
+            descendant.IsDeleted = false;
+            descendant.DeletedAt = null;
+            descendant.SyncedAt = now;
+        }
+
+        return descendants.Count;
     }
 
     /// <summary>小文件上传（≤4MB）：上传到目标路径并立即收敛本地元数据。</summary>

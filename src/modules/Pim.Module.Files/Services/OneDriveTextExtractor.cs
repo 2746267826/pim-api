@@ -26,11 +26,21 @@ public sealed partial class OneDriveTextExtractor(
     public const long HardMaxBytes = 1024 * 1024;
 
     /// <summary>
-    /// zip 解包的单条目上限（防 zip 炸弹）：docx/pptx 是 zip，
+    /// 单个 zip 条目的解压上限（防 zip 炸弹）：docx/pptx 是 zip，
     /// 恶意构造的条目可以解出远大于源文件的体积。压缩包本身已被 1MB 上限约束，
     /// 这里再对单条目设 64MB 上限，避免解压放大打爆内存。
     /// </summary>
     public const long MaxZipEntryBytes = 64 * 1024 * 1024;
+
+    /// <summary>
+    /// 整个压缩包的**累计**解压上限。只限制单条目是不够的：pptx 会遍历全部
+    /// <c>ppt/slides/*.xml</c>，攻击者可以用一个 &lt;1MB 的包塞进大量「各自低于单条目上限」
+    /// 的条目，累计解压到 GB 级，绕过单条目检查造成内存/CPU DoS（复审 NEW-1）。
+    /// </summary>
+    public const long MaxZipTotalBytes = 128 * 1024 * 1024;
+
+    /// <summary>单个压缩包最多处理的条目数（同样是防「大量小条目」的 DoS）。</summary>
+    public const int MaxZipEntries = 4096;
 
     private static readonly HashSet<string> PlainTextExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -120,6 +130,7 @@ public sealed partial class OneDriveTextExtractor(
     /// <summary>pptx：ppt/slides/slideN.xml 的 a:t 节点按页串联。</summary>
     private static byte[] ExtractPptx(byte[] bytes)
     {
+        using var budget = new ZipReadBudget();
         using var archive = OpenArchive(bytes);
         var slideEntries = archive.Entries
             .Where(entry => entry.FullName.StartsWith("ppt/slides/slide", StringComparison.OrdinalIgnoreCase)
@@ -132,7 +143,8 @@ public sealed partial class OneDriveTextExtractor(
         var lines = new List<string>();
         foreach (var slide in slideEntries)
         {
-            var xml = ReadEntryText(slide);
+            budget.CountEntry();
+            var xml = ReadEntryText(slide, budget);
             lines.Add(DecodeXmlText(
                 string.Concat(RegexTextRun().Matches(xml).Select(m => m.Groups["t"].Value))));
         }
@@ -141,10 +153,11 @@ public sealed partial class OneDriveTextExtractor(
 
     private static byte[] ExtractZipEntryText(byte[] bytes, string entryName, Func<string, string> transform)
     {
+        using var budget = new ZipReadBudget();
         using var archive = OpenArchive(bytes);
         var entry = archive.GetEntry(entryName)
             ?? throw new DomainException(5336, "文件结构异常，无法抽取文本");
-        return Encoding.UTF8.GetBytes(transform(ReadEntryText(entry)));
+        return Encoding.UTF8.GetBytes(transform(ReadEntryText(entry, budget)));
     }
 
     /// <summary>
@@ -164,31 +177,71 @@ public sealed partial class OneDriveTextExtractor(
     }
 
     /// <summary>
-    /// 读取 zip 条目文本，带解压体积上限：docx/pptx 的压缩比可以极高，
-    /// 若不限制，几 KB 的恶意文件能解出 GB 级内容打爆内存（zip 炸弹，复审 I-4）。
+    /// 读取 zip 条目文本。三重防护：
+    /// 单条目声明体积、单条目实际读取量，以及**整个压缩包累计解压量**——
+    /// 只查单条目会被「大量各自合规的小条目」绕过（复审 NEW-1）。
+    /// 另外，压缩数据本身损坏时 <c>entry.Open()</c>/<c>Read</c> 也会抛
+    /// <see cref="InvalidDataException"/>（不只是构造 ZipArchive 时），
+    /// 必须一并转成 5336，否则仍是 500（复审 NEW-2）。
     /// </summary>
-    private static string ReadEntryText(ZipArchiveEntry entry)
+    private static string ReadEntryText(ZipArchiveEntry entry, ZipReadBudget budget)
     {
         if (entry.Length > MaxZipEntryBytes)
         {
             throw new DomainException(5336, "文件解压后过大，无法抽取文本");
         }
 
-        using var stream = entry.Open();
-        using var buffer = new MemoryStream();
-        var chunk = new byte[81920];
-        int read;
-        while ((read = stream.Read(chunk, 0, chunk.Length)) > 0)
+        try
         {
-            if (buffer.Length + read > MaxZipEntryBytes)
+            using var stream = entry.Open();
+            using var buffer = new MemoryStream();
+            var chunk = new byte[81920];
+            int read;
+            while ((read = stream.Read(chunk, 0, chunk.Length)) > 0)
+            {
+                if (buffer.Length + read > MaxZipEntryBytes)
+                {
+                    throw new DomainException(5336, "文件解压后过大，无法抽取文本");
+                }
+
+                budget.Consume(read);
+                buffer.Write(chunk, 0, read);
+            }
+
+            return Encoding.UTF8.GetString(buffer.ToArray());
+        }
+        catch (InvalidDataException)
+        {
+            throw new DomainException(5336, "文件结构异常，无法抽取文本");
+        }
+    }
+
+    /// <summary>整个压缩包的累计解压预算与条目数预算（防多条目 zip 炸弹）。</summary>
+    private sealed class ZipReadBudget : IDisposable
+    {
+        private long _totalBytes;
+        private int _entries;
+
+        public void Consume(int bytes)
+        {
+            _totalBytes += bytes;
+            if (_totalBytes > MaxZipTotalBytes)
             {
                 throw new DomainException(5336, "文件解压后过大，无法抽取文本");
             }
-
-            buffer.Write(chunk, 0, read);
         }
 
-        return Encoding.UTF8.GetString(buffer.ToArray());
+        public void CountEntry()
+        {
+            if (++_entries > MaxZipEntries)
+            {
+                throw new DomainException(5336, "压缩包条目过多，无法抽取文本");
+            }
+        }
+
+        public void Dispose()
+        {
+        }
     }
 
     /// <summary>

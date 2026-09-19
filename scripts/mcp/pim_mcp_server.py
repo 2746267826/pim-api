@@ -3188,13 +3188,11 @@ async def delete_file(fileId: str) -> Any:
 
 
 @mcp.tool()
-async def restore_file(fileId: str, trashId: str) -> Any:
-    """Restore a file from trash. trashId identifies the trash entry. Requires write permission restore_file."""
+async def restore_file(fileId: str) -> Any:
+    """Restore a PIM-soft-deleted OneDrive file. Only possible while the file still exists in OneDrive. Requires write permission restore_file."""
     if not fileId:
         return {"error": "fileId is required", "code": 400}
-    if not trashId:
-        return {"error": "trashId is required", "code": 400}
-    return await _call_api("POST", f"/api/v1/files/trash/{fileId}/restore", params={"trashId": trashId})
+    return await _call_api("POST", f"/api/v1/files/items/{fileId}/restore")
 
 
 @mcp.tool()

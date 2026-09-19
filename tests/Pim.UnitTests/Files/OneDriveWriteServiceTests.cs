@@ -27,6 +27,17 @@ public class OneDriveWriteServiceTests
         public override DateTimeOffset GetUtcNow() => now;
     }
 
+    /// <summary>
+    /// 每次读取都前进 1 秒的时钟：级联恢复依赖「同一次删除的子孙 DeletedAt 完全相同」，
+    /// 用恒定时钟无法区分两次独立删除，会掩盖/伪造时序相关的行为（仓库 B1 纪律）。
+    /// </summary>
+    private sealed class AdvancingClock(DateTimeOffset start) : TimeProvider
+    {
+        private DateTimeOffset _now = start;
+
+        public override DateTimeOffset GetUtcNow() => _now = _now.AddSeconds(1);
+    }
+
     private sealed class TestSecretProtector : ISecretProtector
     {
         public string Protect(string plaintext) => $"protected::{plaintext}";
@@ -99,7 +110,8 @@ public class OneDriveWriteServiceTests
         PimDbContext db,
         FakeOneDriveGraphClient graph,
         StubAuditLog? audit = null,
-        SensitivePathPolicy? sensitivePolicy = null)
+        SensitivePathPolicy? sensitivePolicy = null,
+        TimeProvider? clock = null)
         => new(
             db,
             graph,
@@ -108,7 +120,7 @@ public class OneDriveWriteServiceTests
             audit ?? new StubAuditLog(),
             sensitivePolicy: sensitivePolicy,
             logger: NullLogger<OneDriveWriteService>.Instance,
-            clock: new FixedClock(Now));
+            clock: clock ?? new FixedClock(Now));
 
     [Fact]
     public async Task Move_PatchesGraphParent_AndConvergesLocalPath()
@@ -467,6 +479,60 @@ public class OneDriveWriteServiceTests
         Assert.Equal(5337, error.ErrorCode);
         // 关键：Graph 不应被调用（否则远端已移动、本地却抛错，两边不一致）
         Assert.Empty(graph.PatchCalls);
+    }
+
+    // ===================== P4a 复审：目录级联恢复 =====================
+
+    /// <summary>
+    /// 目录的子孙是随父目录级联软删的，恢复目录必须整树恢复，
+    /// 否则出现「父目录可见、子项仍是删除态」的残缺树（复审 NEW-4）。
+    /// </summary>
+    [Fact]
+    public async Task RestoreFolder_RestoresCascadeDeletedDescendants()
+    {
+        await using var db = CreateDb();
+        var (provider, _, folder) = SeedTree(db);
+        var (sub, file) = SeedDescendants(db, provider, folder);
+        var service = CreateService(db, new FakeOneDriveGraphClient());
+
+        await service.DeleteToTrashAsync(folder.Id);
+        Assert.True(sub.IsDeleted);
+        Assert.True(file.IsDeleted);
+
+        await service.RestoreAsync(folder.Id);
+
+        Assert.False(folder.IsDeleted);
+        Assert.False(sub.IsDeleted, "级联删除的子目录应随父目录一起恢复");
+        Assert.False(file.IsDeleted, "级联删除的子文件应随父目录一起恢复");
+        Assert.Null(sub.DeletedAt);
+        Assert.Null(file.DeletedAt);
+    }
+
+    /// <summary>
+    /// 早先被单独删除的子项（DeletedAt 与父目录级联时间不同）不应被父目录恢复顺带复活。
+    /// </summary>
+    [Fact]
+    public async Task RestoreFolder_DoesNotResurrectIndependentlyDeletedDescendant()
+    {
+        await using var db = CreateDb();
+        var (provider, _, folder) = SeedTree(db);
+        var (sub, file) = SeedDescendants(db, provider, folder);
+        // 用前进时钟：两次删除才能拿到不同的 DeletedAt，本用例才有区分能力
+        var service = CreateService(db, new FakeOneDriveGraphClient(), clock: new AdvancingClock(Now));
+
+        // 先把子文件单独删掉（时间戳与随后的目录级联删除不同）
+        await service.DeleteToTrashAsync(file.Id);
+        var independentDeletedAt = file.DeletedAt;
+
+        // 再删父目录（级联软删剩余的 sub）
+        await service.DeleteToTrashAsync(folder.Id);
+        Assert.NotEqual(independentDeletedAt, sub.DeletedAt);
+
+        await service.RestoreAsync(folder.Id);
+
+        Assert.False(folder.IsDeleted);
+        Assert.False(sub.IsDeleted, "级联删除的子目录应恢复");
+        Assert.True(file.IsDeleted, "早先被单独删除的子文件不应被顺带复活");
     }
 }
 
