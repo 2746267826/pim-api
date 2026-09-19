@@ -133,7 +133,15 @@ public sealed class FileProviderBindingService
             provider.LastSyncAt,
             provider.LastError,
             provider.CreatedAt,
-            provider.UpdatedAt);
+            provider.UpdatedAt,
+            provider.ClientId,
+            provider.DriveId,
+            provider.AccountId,
+            provider.AccountName,
+            provider.SyncStatus,
+            provider.SyncedItemCount,
+            provider.DeltaResetAt,
+            provider.TokenExpiresAt);
 
     private static string NormalizeRequired(string? value, string label)
     {
