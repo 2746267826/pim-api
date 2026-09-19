@@ -51,9 +51,17 @@ internal sealed class TempMigrationDatabase : IAsyncDisposable
         await admin.OpenAsync();
 
         var database = $"{databaseNamePrefix}_{Guid.NewGuid():N}";
-        await using (var create = new NpgsqlCommand($"CREATE DATABASE \"{database}\"", admin))
+        try
         {
-            await create.ExecuteNonQueryAsync();
+            await using (var create = new NpgsqlCommand($"CREATE DATABASE \"{database}\"", admin))
+            {
+                await create.ExecuteNonQueryAsync();
+            }
+        }
+        catch
+        {
+            await admin.DisposeAsync();
+            throw;
         }
 
         var scoped = new NpgsqlConnectionStringBuilder(connStr) { Database = database }.ConnectionString;

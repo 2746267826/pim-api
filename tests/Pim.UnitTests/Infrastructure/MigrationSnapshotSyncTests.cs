@@ -58,16 +58,17 @@ public sealed class MigrationSnapshotSyncTests
         "pc_suggestion_feedback",
     ];
 
-    /// <summary>Pim.Api 实际引用的模块（Pim.Api.csproj / ModuleRegistry 的 DLL 发现范围）。</summary>
-    private static readonly string[] ProductionModules =
-    [
-        "Calendar",
-        "Files",
-        "Mcp",
-        "Mobile",
-        "PcTracker",
-        "QuickNotes",
-    ];
+    /// <summary>
+    /// Pim.Api 实际引用的模块，从 <c>Pim.Api.csproj</c> 的程序集引用动态推导，
+    /// 避免手工镜像清单在新模块接入后失真（失真 = 新模块的漂移被静默过滤）。
+    /// </summary>
+    private static readonly string[] ProductionModules = typeof(Pim.Api.ModuleRegistry).Assembly
+        .GetReferencedAssemblies()
+        .Select(a => a.Name)
+        .Where(name => name is not null && name.StartsWith("Pim.Module.", StringComparison.Ordinal))
+        .Select(name => name["Pim.Module.".Length..])
+        .OrderBy(name => name, StringComparer.Ordinal)
+        .ToArray();
 
     [Fact]
     public void ModelSnapshot_IsInSyncWithCurrentModel()
@@ -130,6 +131,11 @@ public sealed class MigrationSnapshotSyncTests
     [Fact]
     public void SnapshotModelLookup_FindKnownObjects()
     {
+        // 生产范围推导自 Pim.Api 的程序集引用：推导失效（空集）会让 diff 护栏静默放行，
+        // 必须在这里大声失败。
+        Assert.NotEmpty(ProductionModules);
+        Assert.Contains("PcTracker", ProductionModules);
+
         using var db = CreateDbContext();
 
         var snapshotModel = GetSnapshotModel(db);

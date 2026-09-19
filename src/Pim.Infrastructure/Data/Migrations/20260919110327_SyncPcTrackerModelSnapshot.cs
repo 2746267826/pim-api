@@ -26,9 +26,10 @@ namespace Pim.Infrastructure.Data.Migrations
     /// </para>
     ///
     /// <para>
-    /// 本次快照还顺带修复了 <c>file_text_snapshots</c> 实体块在 #321 手工剔除漂移对象时被削坏的
-    /// 问题（快照里只剩 <c>ToTable</c>，列与外键全丢；真实迁移 <c>20260919092837_AddFileTextSnapshots</c>
-    /// 是完整的，所有库上 FK 都已存在，因此生成的 <c>AddForeignKey</c> 同样必须剔除，不能执行）。
+    /// 本次快照还顺带修复了 <c>file_text_snapshots</c> 实体块丢失外键导航行的问题
+    /// （#321 手工剔除时连快照里的 <c>b.HasOne(...).HasForeignKey(...)</c> 一起删了；
+    /// 真实迁移 <c>20260919092837_AddFileTextSnapshots</c> 在 CreateTable 里内联建了 FK，
+    /// 所有库上都已存在，因此同步时生成的 <c>AddForeignKey</c> 同样必须剔除，不能执行）。
     /// </para>
     ///
     /// <para>
