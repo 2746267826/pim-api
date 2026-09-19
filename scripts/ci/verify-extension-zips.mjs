@@ -17,6 +17,8 @@
  *     publish/browser-extension.zip:chrome publish/browser-extension-firefox.zip:firefox
  */
 import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { readZipEntry, readZipEntryNames } from './zip-writer.mjs'
 
 /** 校验单个归档；返回该归档的问题列表（空数组表示通过）。 */
@@ -83,7 +85,21 @@ export function verifyArchive(zipPath, browser = 'chrome') {
 }
 
 // 作为脚本直接运行时才读参数（被 import 时只暴露 verifyArchive）。
-if (import.meta.url === `file://${process.argv[1]}`) {
+//
+// 不能用 `import.meta.url === \`file://${process.argv[1]}\`` 判断：Windows 上
+// process.argv[1] 是 `D:\a\...`，拼出来是 `file://D:\a\...`，永远不等于
+// `file:///D:/a/...`，脚本会静默什么都不做并退出 0——校验在 Windows 上形同虚设。
+// 用 fileURLToPath 归一化后比较真实路径。
+const invokedDirectly = (() => {
+  if (!process.argv[1]) return false
+  try {
+    return resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1])
+  } catch {
+    return false
+  }
+})()
+
+if (invokedDirectly) {
   const specs = process.argv.slice(2)
   if (specs.length === 0) {
     console.error('usage: verify-extension-zips.mjs <zip>[:chrome|firefox] ...')

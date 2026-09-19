@@ -30,16 +30,22 @@ for (let i = 2; i < process.argv.length; i += 2) {
   args.set(process.argv[i].replace(/^--/, ''), process.argv[i + 1])
 }
 
-const src = resolve(args.get('src') ?? '')
-const out = resolve(args.get('out') ?? '')
-const zipPath = resolve(args.get('zip') ?? '')
-const kind = args.get('kind') ?? 'url'
-const browser = (args.get('browser') ?? 'chrome').toLowerCase()
-
-if (!src || !out || !zipPath) {
+// 注意：必须先校验原始值再 resolve——`resolve('')` 会返回当前工作目录（非空），
+// 直接 resolve 会让「缺少 --src」这种调用悄悄跑到 cwd 上而不是报错。
+const rawSrc = args.get('src') ?? ''
+const rawOut = args.get('out') ?? ''
+const rawZip = args.get('zip') ?? ''
+if (!rawSrc || !rawOut || !rawZip) {
   console.error('usage: --src <dir> --out <dir> --zip <path> [--kind url|site] [--browser chrome|firefox]')
   process.exit(2)
 }
+
+const src = resolve(rawSrc)
+const out = resolve(rawOut)
+const zipPath = resolve(rawZip)
+const kind = args.get('kind') ?? 'url'
+const browser = (args.get('browser') ?? 'chrome').toLowerCase()
+
 if (browser !== 'chrome' && browser !== 'firefox') {
   console.error(`unsupported --browser '${browser}' (expected chrome or firefox)`)
   process.exit(2)
