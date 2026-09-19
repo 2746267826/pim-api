@@ -433,4 +433,60 @@ public sealed class MobileSyncBatchSemanticsTests
         Assert.Empty(result.ItemResults);
         Assert.Empty(await db.Set<MobileUsageEventEntity>().ToListAsync());
     }
+
+    // ===================== 空载上传（EPIC #254 S11 空转批次） =====================
+
+    [Fact]
+    public async Task Ingest_EmptyRequest_DoesNotCreateBatchRow()
+    {
+        // 空载上传（无任何条目）不产生批次行：它没有可处理的数据，其窗口也不构成覆盖；
+        // 否则会再次制造 9-14 前的"全零 completed"空转批次（S11 存量 2299 条的来源）。
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = IngestService(db);
+        var start = Now.AddHours(-2);
+        var request = new MobileUsageEventsUploadRequest(
+            "android-main",
+            "batch-empty-noop",
+            start,
+            start.AddHours(1),
+            [],
+            [],
+            []);
+
+        var result = await service.IngestAsync(request, CancellationToken.None);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(0, result.SkippedCount);
+        Assert.Equal(0, result.RejectedCount);
+        Assert.Equal(0, result.FailedCount);
+        Assert.Empty(result.ItemResults);
+        Assert.False(await db.Set<MobileSyncBatchEntity>().AnyAsync(), "空载上传不得创建批次行");
+    }
+
+    [Fact]
+    public async Task Ingest_SkippedOnlyRequest_StillCreatesCompletedBatch()
+    {
+        // 只含"无需处理"条目（零时长汇总 → skipped）的批次是合法完成（#243 / S11）：
+        // 仍创建批次行且 skipped_count > 0，既不触发空转判据，也如实覆盖其窗口（缺口判定联动）。
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = IngestService(db);
+        var start = Now.AddHours(-2);
+        var request = new MobileUsageEventsUploadRequest(
+            "android-main",
+            "batch-skipped-only",
+            start,
+            start.AddHours(1),
+            [],
+            [],
+            [new MobileUsageSummaryDto("com.example.app", start, start.AddHours(1), 0, start, "usage-stats-fallback", "{}")]);
+
+        var result = await service.IngestAsync(request, CancellationToken.None);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.SkippedCount);
+        var batch = await db.Set<MobileSyncBatchEntity>().SingleAsync();
+        Assert.Equal(MobileSyncBatchStatus.Completed, batch.Status);
+        Assert.Equal(1, batch.SkippedCount);
+        Assert.Equal(0, batch.FailedCount);
+    }
 }

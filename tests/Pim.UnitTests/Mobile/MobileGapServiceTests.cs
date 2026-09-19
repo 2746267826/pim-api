@@ -140,4 +140,42 @@ public sealed class MobileGapServiceTests
 
         Assert.Empty(response.Windows);
     }
+
+    [Fact]
+    public async Task GetGapsAsync_SkippedOnlyBatchCoversItsWindow()
+    {
+        // S5/S6 覆盖联动对照（EPIC #254 S11 空转批次）：
+        // 写入侧修复后，空载上传不再产生批次行（真无数据窗口如实报缺口）；
+        // 但"只含跳过条目"的合法批次（skipped_count > 0，#243）仍覆盖其窗口——
+        // 普通空闲窗口（有零时长汇总被跳过）不会因此变成覆盖漏洞。
+        // 历史"全零空载行"的覆盖语义由既有用例 GetGapsAsync_TreatsCompletedEmptyBatchAsCovered 守护（数据侧不回填不清理）。
+        var now = DateTimeOffset.Parse("2026-07-06T12:00:00Z");
+        await using var db = MobileTestHelpers.CreateDb();
+        db.Set<MobileSyncBatchEntity>().Add(new MobileSyncBatchEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = "android-main",
+            BatchId = "batch-skipped-only",
+            WindowStartUtc = DateTimeOffset.Parse("2026-07-06T00:00:00Z"),
+            WindowEndUtc = now,
+            AcceptedCount = 0,
+            FailedCount = 0,
+            RejectedCount = 0,
+            SkippedCount = 3,
+            Status = "completed",
+            ErrorJson = "{}",
+            CreatedAt = now.AddMinutes(-5),
+            CompletedAtUtc = now.AddMinutes(-4)
+        });
+        await db.SaveChangesAsync();
+        var service = new MobileGapService(db, MobileTestHelpers.CurrentUser(), MobileTestHelpers.Time(now));
+
+        var response = await service.GetGapsAsync(new MobileGapRequest(
+            "android-main",
+            DateTimeOffset.Parse("2026-07-06T00:00:00Z"),
+            now,
+            "{\"usageEvents\":true}"), CancellationToken.None);
+
+        Assert.Empty(response.Windows);
+    }
 }

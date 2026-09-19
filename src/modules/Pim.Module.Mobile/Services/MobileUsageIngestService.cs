@@ -67,6 +67,12 @@ public sealed class MobileUsageIngestService
         CancellationToken ct)
     {
         _db.ChangeTracker.Clear();
+        // 空载上传（无任何条目）不创建批次行（EPIC #254 S11 空转批次）：
+        // 它没有可处理的数据，其窗口也不构成任何"覆盖"——批次行的覆盖语义只属于真实处理过的窗口。
+        // 零计数结果保持与客户端的既有响应契约，客户端无需为此重试。
+        if (request.Apps.Count == 0 && request.Events.Count == 0 && request.Summaries.Count == 0)
+            return new MobileUsageIngestResult(request.BatchId, 0, 0, 0, 0, []);
+
         var existingBatch = await FindBatchAsync(userId, request, ct);
 
         if (existingBatch is not null && MobileSyncBatchStatus.IsTerminal(existingBatch.Status))
