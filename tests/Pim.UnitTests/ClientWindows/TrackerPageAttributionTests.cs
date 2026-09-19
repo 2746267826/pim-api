@@ -240,28 +240,46 @@ public sealed class TrackerPageAttributionTests
     [Fact]
     public void HeartbeatMatchesWindowTitle_ShortTitleCollisions_DoNotMatch()
     {
-        // #310 评审：前缀比较在短标题上没有区分度——"新" 会跟任何以它开头的标题撞上。
-        // 短标题必须全等，否则会把无关窗口错认成同一个标签页。
+        // #310 评审：纯前缀比较在短标题上没有区分度——"新" 会跟任何以它开头的标题撞上。
+        // 规则收紧为「短段必须后跟分隔符才是独立单元」，因此这类撞车必须被拒绝。
         Assert.False(TrackerSessionManager.HeartbeatMatchesWindowTitle(
             GithubHeartbeat(tabTitle: "新"), "新标签页 - Google Chrome"));
         Assert.False(TrackerSessionManager.HeartbeatMatchesWindowTitle(
-            GithubHeartbeat(tabTitle: "首页"), "首页 - 我的博客"));
-        // 完全相同的短标题仍然算匹配（同一标签页）。
+            GithubHeartbeat(tabTitle: "收件箱"), "收件箱管理后台 - Microsoft Edge"));
+    }
+
+    [Fact]
+    public void HeartbeatMatchesWindowTitle_ShortTitleFollowedBySeparator_StillMatches()
+    {
+        // 反向要求（不能因为收紧而丢掉真实页面记录）：短标签页标题 + 浏览器后缀
+        // 是正常形态，必须继续归属成功。
+        Assert.True(TrackerSessionManager.HeartbeatMatchesWindowTitle(
+            GithubHeartbeat(tabTitle: "首页"), "首页 - Google Chrome"));
+        Assert.True(TrackerSessionManager.HeartbeatMatchesWindowTitle(
+            GithubHeartbeat(tabTitle: "登录"), "登录 | 某某系统"));
+        // 完全相同的短标题同样算匹配。
         Assert.True(TrackerSessionManager.HeartbeatMatchesWindowTitle(
             GithubHeartbeat(tabTitle: "新标签页"), "新标签页"));
     }
 
     [Fact]
-    public void HeartbeatMatchesWindowTitle_DifferentPagesSharingLongPrefix_StillMatches()
+    public void HeartbeatMatchesWindowTitle_TruncatedWindowTitleWithoutEllipsis_Matches()
     {
-        // 记录当前（有界前缀带来的）已知局限：两个不同页面只要前 32 字符相同，
-        // 就会被认为同源。这是"容忍 Windows 截断标题"换来的代价；真正的精确关联
-        // 需要按 instanceId/HWND 分桶存放心跳（见 TrackerSessionManager 类注释）。
-        // 这里显式固化该行为，避免以后被误当成"匹配完全精确"。
-        var heartbeat = GithubHeartbeat(tabTitle: "A".PadRight(40, 'A') + "-tab-1");
-        var otherTab = "A".PadRight(40, 'A') + "-tab-2";
+        // Windows 截断可能不带省略号：窗口标题是心跳标题的严格前缀时也要能匹配。
+        Assert.True(TrackerSessionManager.HeartbeatMatchesWindowTitle(
+            GithubHeartbeat(tabTitle: "修复远程缺失日历 · Issue #272"),
+            "修复远程缺失日历 · Issue #27"));
+    }
 
-        Assert.True(TrackerSessionManager.HeartbeatMatchesWindowTitle(heartbeat, otherTab));
+    [Fact]
+    public void HeartbeatMatchesWindowTitle_MuchLongerTabTitle_Matches()
+    {
+        // 心跳标题与窗口标题只有共同前缀且都够长时视为同源（固化已知局限：
+        // 精确区分需要 instanceId/HWND，见 TrackerSessionManager 类注释）。
+        var heartbeat = GithubHeartbeat(tabTitle: "后台管理系统的用户权限配置页面");
+        var samePrefix = "后台管理系统的用户权限配置页面 - 另一个标签页标题";
+
+        Assert.True(TrackerSessionManager.HeartbeatMatchesWindowTitle(heartbeat, samePrefix));
     }
 
     [Theory]
