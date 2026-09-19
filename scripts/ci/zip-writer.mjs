@@ -84,6 +84,11 @@ export function writeZipFromDirectory(sourceDir, zipPath, options = {}) {
   // 排序保证同样的输入产生逐字节一致的归档（便于比对与缓存）。
   const files = listFilesRecursive(sourceDir).sort()
 
+  // Zip32 边界：显式报错而不是让 writeUInt* 抛出难懂的 range error（#312 评审）。
+  if (files.length > 0xffff) {
+    throw new Error(`too many entries for a Zip32 archive: ${files.length} (max 65535)`)
+  }
+
   const central = []
   const chunks = []
   let offset = 0
@@ -187,6 +192,10 @@ export function writeZipFromDirectory(sourceDir, zipPath, options = {}) {
   eocd.writeUInt16LE(0, 20) // comment length
   pushBuffer(eocd)
 
+  if (offset > 0xffffffff) {
+    throw new Error(`archive is too large for Zip32: ${offset} bytes (max 4294967295)`)
+  }
+
   const archive = Buffer.concat(chunks)
   writeFileSync(zipPath, archive)
 
@@ -197,51 +206,21 @@ export function writeZipFromDirectory(sourceDir, zipPath, options = {}) {
   }
 }
 
-/**
- * 读取 zip 中央目录里的条目名（只解析元数据，不解压数据）。
- *
- * 用 Node 自己解析而不是 shell 调用 `unzip`：Windows runner 上并不保证有 `unzip`，
- * 而「校验 Windows 构建链产物」恰恰是本 issue 的重点，校验逻辑不能依赖平台工具（#312）。
- */
-export function readZipEntryNames(zipPath) {
-  const buffer = readFileSync(zipPath)
-
-  // 从尾部往前找 EOCD（注释最长 65535 字节）。
-  let eocd = -1
-  for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 22 - 0xffff); i--) {
-    if (buffer.readUInt32LE(i) === SIG_EOCD) {
-      eocd = i
-      break
-    }
-  }
-  if (eocd < 0) throw new Error(`${zipPath} is not a zip archive (no EOCD record found)`)
-
-  const entryCount = buffer.readUInt16LE(eocd + 10)
-  let cursor = buffer.readUInt32LE(eocd + 16)
-  const names = []
-
-  for (let i = 0; i < entryCount; i++) {
-    if (buffer.readUInt32LE(cursor) !== SIG_CENTRAL_HEADER) {
-      throw new Error(`${zipPath} has a corrupt central directory at offset ${cursor}`)
-    }
-    const nameLength = buffer.readUInt16LE(cursor + 28)
-    const extraLength = buffer.readUInt16LE(cursor + 30)
-    const commentLength = buffer.readUInt16LE(cursor + 32)
-    names.push(buffer.toString('utf8', cursor + 46, cursor + 46 + nameLength))
-    cursor += 46 + nameLength + extraLength + commentLength
-  }
-
-  return names
-}
 
 /**
- * 读取单个条目的原始内容（支持 store / deflate）。
+ * 完整解析 zip（不做任何"只看元数据"的捷径），供校验器使用。
  *
- * 之所以不 shell 调用 `unzip` 取内容：`unzip` 是否按 UTF-8 还原非 ASCII 条目名取决于
- * 运行环境的 locale（CI 上常见 C locale，会把中文名写成乱码），而 zip 规范用的是
- * 条目自带的 UTF-8 标志位——自己解析才与浏览器行为一致、也与环境无关。
+ * 必须完整校验的原因（#312 评审）：只读中央目录的条目名无法发现归档损坏——
+ * 把 manifest 的 CRC 改成 0，纯元数据校验照样通过，于是损坏的产物会被发出去。
+ * 这里逐项校验：
+ *   - EOCD 与中央目录结构、条目数一致；
+ *   - 每个条目本地头签名、名称与中央目录一致；
+ *   - 未压缩大小与 CRC32 与实际解压结果吻合；
+ *   - 数据不越界（防止截断归档或伪造大小）。
+ *
+ * Zip64（条目数 > 65535 或大小/偏移 ≥ 4GiB）会显式报错而不是静默给出错误结果。
  */
-export function readZipEntry(zipPath, wantedName) {
+export function inspectZip(zipPath) {
   const buffer = readFileSync(zipPath)
 
   let eocd = -1
@@ -253,45 +232,131 @@ export function readZipEntry(zipPath, wantedName) {
   }
   if (eocd < 0) throw new Error(`${zipPath} is not a zip archive (no EOCD record found)`)
 
+  const diskNumber = buffer.readUInt16LE(eocd + 4)
+  const centralDisk = buffer.readUInt16LE(eocd + 6)
   const entryCount = buffer.readUInt16LE(eocd + 10)
-  let cursor = buffer.readUInt32LE(eocd + 16)
+  const centralSize = buffer.readUInt32LE(eocd + 12)
+  const centralOffset = buffer.readUInt32LE(eocd + 16)
+
+  if (diskNumber !== 0 || centralDisk !== 0) {
+    throw new Error(`${zipPath}: multi-disk archives are not supported`)
+  }
+  if (centralOffset === 0xffffffff || centralSize === 0xffffffff || entryCount === 0xffff) {
+    throw new Error(`${zipPath}: Zip64 archives are not supported (and must not be produced here)`)
+  }
+  if (centralOffset + centralSize > buffer.length) {
+    throw new Error(`${zipPath}: central directory extends past the end of the file (truncated archive)`)
+  }
+
+  const entries = []
+  let cursor = centralOffset
 
   for (let i = 0; i < entryCount; i++) {
-    if (buffer.readUInt32LE(cursor) !== SIG_CENTRAL_HEADER) {
-      throw new Error(`${zipPath} has a corrupt central directory at offset ${cursor}`)
+    if (cursor + 46 > buffer.length || buffer.readUInt32LE(cursor) !== SIG_CENTRAL_HEADER) {
+      throw new Error(`${zipPath}: corrupt central directory at offset ${cursor}`)
     }
+
+    const flags = buffer.readUInt16LE(cursor + 8)
     const method = buffer.readUInt16LE(cursor + 10)
+    const crcExpected = buffer.readUInt32LE(cursor + 16)
     const compressedSize = buffer.readUInt32LE(cursor + 20)
+    const uncompressedSize = buffer.readUInt32LE(cursor + 24)
     const nameLength = buffer.readUInt16LE(cursor + 28)
     const extraLength = buffer.readUInt16LE(cursor + 30)
     const commentLength = buffer.readUInt16LE(cursor + 32)
     const localOffset = buffer.readUInt32LE(cursor + 42)
     const name = buffer.toString('utf8', cursor + 46, cursor + 46 + nameLength)
 
-    if (name.replace(/\\/g, '/') === wantedName) {
-      if (buffer.readUInt32LE(localOffset) !== SIG_LOCAL_HEADER) {
-        throw new Error(`${zipPath} has a corrupt local header for ${name}`)
-      }
-      const localNameLength = buffer.readUInt16LE(localOffset + 26)
-      const localExtraLength = buffer.readUInt16LE(localOffset + 28)
-      const dataStart = localOffset + 30 + localNameLength + localExtraLength
-      const payload = buffer.subarray(dataStart, dataStart + compressedSize)
-      if (method === METHOD_STORE) return payload
-      if (method === METHOD_DEFLATE) return inflateRawSync(payload)
-      throw new Error(`${zipPath} uses unsupported compression method ${method} for ${name}`)
+    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff || localOffset === 0xffffffff) {
+      throw new Error(`${zipPath}: entry ${name} uses Zip64 fields, which are not supported`)
     }
+
+    // --- 本地头必须与中央目录一致 ---
+    if (localOffset + 30 > buffer.length || buffer.readUInt32LE(localOffset) !== SIG_LOCAL_HEADER) {
+      throw new Error(`${zipPath}: entry ${name} has a corrupt local header at offset ${localOffset}`)
+    }
+    const localMethod = buffer.readUInt16LE(localOffset + 8)
+    const localNameLength = buffer.readUInt16LE(localOffset + 26)
+    const localExtraLength = buffer.readUInt16LE(localOffset + 28)
+    const localName = buffer.toString('utf8', localOffset + 30, localOffset + 30 + localNameLength)
+
+    if (localName !== name) {
+      throw new Error(`${zipPath}: entry name mismatch between local header (${localName}) and central directory (${name})`)
+    }
+    if (localMethod !== method) {
+      throw new Error(`${zipPath}: entry ${name} declares conflicting compression methods`)
+    }
+
+    const dataStart = localOffset + 30 + localNameLength + localExtraLength
+    const dataEnd = dataStart + compressedSize
+    if (dataEnd > buffer.length) {
+      throw new Error(`${zipPath}: entry ${name} data extends past the end of the file (truncated archive)`)
+    }
+
+    const payload = buffer.subarray(dataStart, dataEnd)
+    let content
+    if (method === METHOD_STORE) {
+      content = payload
+    } else if (method === METHOD_DEFLATE) {
+      try {
+        content = inflateRawSync(payload)
+      } catch (error) {
+        throw new Error(`${zipPath}: entry ${name} cannot be decompressed (${error.message})`)
+      }
+    } else {
+      throw new Error(`${zipPath}: entry ${name} uses unsupported compression method ${method}`)
+    }
+
+    // --- 数据完整性：大小与 CRC 必须都对得上 ---
+    if (content.length !== uncompressedSize) {
+      throw new Error(
+        `${zipPath}: entry ${name} size mismatch (declared ${uncompressedSize}, actual ${content.length})`,
+      )
+    }
+    const actualCrc = crc32(content)
+    if (actualCrc !== crcExpected) {
+      throw new Error(
+        `${zipPath}: entry ${name} CRC mismatch (declared ${crcExpected.toString(16)}, actual ${actualCrc.toString(16)})`,
+      )
+    }
+
+    entries.push({
+      name,
+      flags,
+      method,
+      content,
+      compressedSize,
+      uncompressedSize,
+      localOffset,
+    })
 
     cursor += 46 + nameLength + extraLength + commentLength
   }
 
-  throw new Error(`${zipPath}: entry not found: ${wantedName}`)
+  if (cursor - centralOffset !== centralSize) {
+    throw new Error(
+      `${zipPath}: central directory size mismatch (declared ${centralSize}, actual ${cursor - centralOffset})`,
+    )
+  }
+
+  return { entries, entryNames: entries.map((entry) => entry.name) }
 }
 
-/** 读取条目名 → 内容（便于整包比对）。 */
+/** 条目名列表（校验/调用方常用）。 */
+export function readZipEntryNames(zipPath) {
+  return inspectZip(zipPath).entryNames
+}
+
+/** 读取单个条目的内容（会校验 CRC 与大小）。 */
+export function readZipEntry(zipPath, wantedName) {
+  const { entries } = inspectZip(zipPath)
+  const entry = entries.find((e) => e.name.replace(/\\/g, '/') === wantedName)
+  if (!entry) throw new Error(`${zipPath}: entry not found: ${wantedName}`)
+  return entry.content
+}
+
+/** 读取全部条目名 → 内容。 */
 export function readZipEntries(zipPath) {
-  const entries = new Map()
-  for (const name of readZipEntryNames(zipPath)) {
-    entries.set(name, readZipEntry(zipPath, name))
-  }
-  return entries
+  const { entries } = inspectZip(zipPath)
+  return new Map(entries.map((entry) => [entry.name, entry.content]))
 }

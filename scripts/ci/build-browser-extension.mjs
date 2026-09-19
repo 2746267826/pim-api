@@ -170,7 +170,12 @@ if (browser === 'firefox') {
     console.error('manifest options_ui.page missing')
     process.exit(1)
   }
-} else {
+}
+
+// The site-level reporter guard is independent of the target browser: a Firefox
+// build of the Time Tracker fork without the PIM reporting hook is just as
+// useless as a Chrome one, so it must not be skipped by the Firefox branch above.
+if (kind === 'site') {
   // Time Tracker fork: assert the PIM reporting hook is actually bundled.
   // Bundle layout differs between upstream majors, so scan every JS file
   // produced by the build rather than assuming one filename.

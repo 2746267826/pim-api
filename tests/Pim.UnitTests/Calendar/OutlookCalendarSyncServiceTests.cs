@@ -670,6 +670,42 @@ public sealed class OutlookCalendarSyncServiceTests
     }
 
     [Fact]
+    public async Task Discovery_RecordsMirrorDeleteInSyncHistory()
+    {
+        // 需求 4「留痕」：发现路径（不是同步 404 路径）也必须留下同步历史，
+        // 否则用户只会看到日历凭空消失（#312 评审指出）。
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        var graph = CreateGraphClient(handler);
+
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "trail-cal");
+        await SeedEventAsync(db, calId, bindingId, "trail-event-1");
+
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+        handler.Enqueue(HttpStatusCode.OK, """{"value":[]}""");
+
+        var time = new StubTimeProvider { UtcNowValue = FixedNow };
+        var service = CreateService(db, graph, time);
+        await service.DiscoverAsync(UserId, CancellationToken.None);
+
+        var batch = await LatestBatchAsync(db);
+        Assert.Equal("completed", batch.Status);
+        Assert.Equal(0, batch.FailureCount);
+
+        // 中文会以 \uXXXX 形式落进 jsonb，因此反序列化后断言而不是比对原始 JSON 文本。
+        var steps = JsonSerializer.Deserialize<List<OutlookSyncStep>>(batch.StepsJson)!;
+        var step = Assert.Single(steps, s => s.Status == "mirror-deleted");
+        Assert.Contains("移入回收站 1 条日程", step.Detail);
+
+        // 前端按 perCalendar 的 mirrorDeleted 标志渲染提示，必须与同步路径一致。
+        using var perCalendar = JsonDocument.Parse(batch.PerCalendarJson);
+        var entry = Assert.Single(perCalendar.RootElement.EnumerateArray());
+        Assert.True(entry.GetProperty("mirrorDeleted").GetBoolean());
+        Assert.Equal(1, entry.GetProperty("deletedCount").GetInt32());
+    }
+
+    [Fact]
     public async Task Discovery_MirrorDeletesRecurringSeriesMastersAndExceptions()
     {
         // 需求 2：删除范围无例外——重复日程的 master 与 exception 也必须一并删除，
@@ -743,10 +779,12 @@ public sealed class OutlookCalendarSyncServiceTests
     }
 
     [Fact]
-    public async Task Discovery_MirrorDeleteKeepsAlreadyDeletedEventsUntouched()
+    public async Task Discovery_MirrorDeletePreservesProvenanceOfAlreadyDeletedEventsButClearsOutlookLinkage()
     {
         // 需求 2/3：已经手工删过、正躺在回收站里的日程不能被"重新删一次"——
         // 否则它的 DeletedAt/操作归属会被覆盖，用户原来的回收站条目会串味。
+        // 但它的 Outlook 标识必须清空：绑定行即将被删除，留着就是悬空引用
+        // （#312 评审指出），且单独恢复出来时也不该再是 Outlook 日程。
         var db = CreateDb();
         await SeedConnectionAsync(db, UserId);
         var handler = new ScriptedHttpMessageHandler();
@@ -807,6 +845,11 @@ public sealed class OutlookCalendarSyncServiceTests
         Assert.Equal(manualDeleteAt, storedManual.DeletedAt);
         Assert.Equal(manualOperationId, storedManual.DeletedByOperationId);
         Assert.Equal("single-event", storedManual.DeletedByOperationKind);
+        // 但 Outlook 脱钩字段必须清掉（绑定行已删除，不能留悬空引用）。
+        Assert.Null(storedManual.OutlookEventId);
+        Assert.Null(storedManual.OutlookCalendarBindingId);
+        Assert.Null(storedManual.OutlookConnectionId);
+        Assert.Equal("manual", storedManual.Source);
 
         var storedActive = await db.Set<EventEntity>()
             .IgnoreQueryFilters().FirstAsync(e => e.Id == activeEvent.Id);

@@ -185,12 +185,13 @@ public sealed class TrackerPageAttributionTests
         var mgr = new TrackerSessionManager(new TrackerConfig());
 
         // 用户点开新页面：先看到标题变化（心跳还是上一页的），随后扩展上报新页面。
-        mgr.HandleWindowChange(Window("chrome", "旧页面 - Google Chrome"), T0);
-        mgr.HandleWindowChange(Window("chrome", "新页面 - Google Chrome"), T0.AddSeconds(10));
+        // 标题保持现实长度——短标题现在要求全等（见 HeartbeatMatchesWindowTitle）。
+        mgr.HandleWindowChange(Window("chrome", "修复远程缺失日历 · Issue #272 - 旧"), T0);
+        mgr.HandleWindowChange(Window("chrome", "修复远程缺失日历 · Issue #272 - Google Chrome"), T0.AddSeconds(10));
         var placeholder = Assert.Single(mgr.Current!.PageVisits);
         Assert.Null(placeholder.Url);
 
-        mgr.UpdateBrowserHeartbeat(GithubHeartbeat(tabTitle: "新页面"));
+        mgr.UpdateBrowserHeartbeat(GithubHeartbeat(tabTitle: "修复远程缺失日历 · Issue #272"));
 
         // 占位 visit 被就地补齐，而不是关闭后另开一条（否则每次标题变化都会把
         // 页面时间线切成碎片）。
@@ -234,6 +235,33 @@ public sealed class TrackerPageAttributionTests
         var windowTitle = "校园网IPv6专用浏览器方案 - 收集箱 - Obsidian 知…";
 
         Assert.True(TrackerSessionManager.HeartbeatMatchesWindowTitle(heartbeat, windowTitle));
+    }
+
+    [Fact]
+    public void HeartbeatMatchesWindowTitle_ShortTitleCollisions_DoNotMatch()
+    {
+        // #310 评审：前缀比较在短标题上没有区分度——"新" 会跟任何以它开头的标题撞上。
+        // 短标题必须全等，否则会把无关窗口错认成同一个标签页。
+        Assert.False(TrackerSessionManager.HeartbeatMatchesWindowTitle(
+            GithubHeartbeat(tabTitle: "新"), "新标签页 - Google Chrome"));
+        Assert.False(TrackerSessionManager.HeartbeatMatchesWindowTitle(
+            GithubHeartbeat(tabTitle: "首页"), "首页 - 我的博客"));
+        // 完全相同的短标题仍然算匹配（同一标签页）。
+        Assert.True(TrackerSessionManager.HeartbeatMatchesWindowTitle(
+            GithubHeartbeat(tabTitle: "新标签页"), "新标签页"));
+    }
+
+    [Fact]
+    public void HeartbeatMatchesWindowTitle_DifferentPagesSharingLongPrefix_StillMatches()
+    {
+        // 记录当前（有界前缀带来的）已知局限：两个不同页面只要前 32 字符相同，
+        // 就会被认为同源。这是"容忍 Windows 截断标题"换来的代价；真正的精确关联
+        // 需要按 instanceId/HWND 分桶存放心跳（见 TrackerSessionManager 类注释）。
+        // 这里显式固化该行为，避免以后被误当成"匹配完全精确"。
+        var heartbeat = GithubHeartbeat(tabTitle: "A".PadRight(40, 'A') + "-tab-1");
+        var otherTab = "A".PadRight(40, 'A') + "-tab-2";
+
+        Assert.True(TrackerSessionManager.HeartbeatMatchesWindowTitle(heartbeat, otherTab));
     }
 
     [Theory]

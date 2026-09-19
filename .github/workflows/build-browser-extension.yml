@@ -113,6 +113,7 @@ jobs:
         run: |
           node --test scripts/ci/test-zip-writer.mjs
           node --test scripts/ci/test-verify-extension-zips.mjs
+          node --test scripts/ci/test-site-reporter-guard.mjs
 
       - name: Install dependencies and build extension
         working-directory: ${{ github.workspace }}

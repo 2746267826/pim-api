@@ -177,13 +177,72 @@ public sealed class OutlookCalendarSyncService
         // 未见即确认缺失，按镜像语义连同日程移入回收站；绑定行一并删除，条目不再残留在
         // 「日历选择」列表里。DiscoverAsync 全程成功才会走到这里（失败会抛异常回滚），
         // 因此不存在"部分结果导致误删"的风险。
+        //
+        // 需求 4 的「留痕」要求两条确认路径都留下同步历史。发现路径原先没有任何记录，
+        // 用户只会看到日历"凭空消失"（#312 评审指出）。这里补一条 status=mirror-deleted
+        // 的批次，字段口径与 404 路径一致，前端因此能原样渲染提示。
+        var mirrorDeleted = new List<(OutlookCalendarBindingEntity Binding, int EventCount)>();
         var operationId = Guid.NewGuid();
         foreach (var existing in existingBindings)
         {
             if (!seenBindingIds.Contains(existing.Id))
             {
-                await MirrorDeleteCalendarAsync(existing, operationId, now, ct);
+                var eventCount = await MirrorDeleteCalendarAsync(existing, operationId, now, ct);
+                mirrorDeleted.Add((existing, eventCount));
             }
+        }
+
+        if (mirrorDeleted.Count > 0)
+        {
+            var steps = mirrorDeleted
+                .Select(m => new OutlookSyncStep(
+                    m.Binding.GraphCalendarId,
+                    "mirror-deleted",
+                    $"{m.Binding.Name}：已随 Outlook 删除，移入回收站 {m.EventCount} 条日程",
+                    now))
+                .ToList();
+
+            var perCalendar = mirrorDeleted
+                .Select(m => (object)new
+                {
+                    bindingId = m.Binding.Id.ToString(),
+                    calendarName = m.Binding.Name,
+                    status = "completed",
+                    mirrorDeleted = true,
+                    readCount = 0,
+                    createdCount = 0,
+                    updatedCount = 0,
+                    deletedCount = m.EventCount,
+                    failureCount = 0,
+                    changes = Array.Empty<object>(),
+                    failures = Array.Empty<object>(),
+                    retryOfBatchId = (string?)null
+                })
+                .ToList();
+
+            _db.Set<OutlookSyncBatchEntity>().Add(new OutlookSyncBatchEntity
+            {
+                UserId = userId,
+                ConnectionId = connection.Id,
+                Mode = "discover",
+                Status = "completed",
+                ReadCount = 0,
+                CreatedCount = 0,
+                UpdatedCount = 0,
+                ConflictCount = 0,
+                ConfirmationCount = 0,
+                FailureCount = 0,
+                StartedAt = now,
+                FinishedAt = now,
+                UpdatedAt = now,
+                RequestedWindowStart = null,
+                RequestedWindowEnd = null,
+                RequestedCalendarIdsJson = JsonSerializer.Serialize(
+                    mirrorDeleted.Select(m => m.Binding.Id.ToString()).ToList()),
+                StepsJson = JsonSerializer.Serialize(steps),
+                PerCalendarJson = JsonSerializer.Serialize(perCalendar),
+                ErrorsJson = "[]",
+            });
         }
 
         await _db.SaveChangesAsync(ct);
@@ -586,15 +645,27 @@ public sealed class OutlookCalendarSyncService
         DateTimeOffset now,
         CancellationToken ct)
     {
+        // IgnoreQueryFilters：必须连**已经软删**的日程一起处理。它们同样挂着 Outlook
+        // 标识，而绑定行马上要被删除——留着就是指向已删绑定的悬空引用（#312 评审指出）。
         var events = await _db.Set<EventEntity>()
+            .IgnoreQueryFilters()
             .Where(e => e.CalendarId == binding.PimCalendarId)
             .ToListAsync(ct);
 
+        var newlyDeleted = 0;
         foreach (var evt in events)
         {
-            evt.DeletedAt = now;
-            evt.DeletedByOperationId = operationId;
-            evt.DeletedByOperationKind = MirrorDeleteOperationKind;
+            // 早已在回收站里的日程（用户之前单独删过）不重写它的删除归属：
+            // 覆盖会把它挪进本次操作，破坏用户原回收站条目的语义与单独恢复能力。
+            // 但 Outlook 标识必须清掉——否则单独恢复出来仍是一个"半脱钩"的日程。
+            if (evt.DeletedAt is null)
+            {
+                evt.DeletedAt = now;
+                evt.DeletedByOperationId = operationId;
+                evt.DeletedByOperationKind = MirrorDeleteOperationKind;
+                newlyDeleted++;
+            }
+
             evt.UpdatedAt = now;
             evt.OutlookCalendarBindingId = null;
             evt.OutlookConnectionId = null;
@@ -604,6 +675,8 @@ public sealed class OutlookCalendarSyncService
             evt.OutlookEtag = null;
             evt.OutlookSyncState = null;
             evt.LastSeenSyncGeneration = null;
+            if (evt.Source.StartsWith("outlook", StringComparison.OrdinalIgnoreCase))
+                evt.Source = "manual";
         }
 
         var calendar = await _db.Set<CalendarEntity>()
@@ -623,9 +696,9 @@ public sealed class OutlookCalendarSyncService
             "日历 {CalendarName}（绑定 {BindingId}）在 Outlook 端已确认删除，已连同 {EventCount} 条日程移入回收站。",
             binding.Name,
             binding.Id,
-            events.Count);
+            newlyDeleted);
 
-        return events.Count;
+        return newlyDeleted;
     }
 
     private async Task<OutlookSyncBatchResponse> RunSyncInternalAsync(
