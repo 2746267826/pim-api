@@ -136,8 +136,9 @@ public sealed class OneDriveBindingService
             if (fresh.Status != "pending" || fresh.DeviceCodeEncrypted is null
                 || !fresh.DeviceCodeEncrypted.AsSpan().SequenceEqual(deviceCodeBytes))
             {
+                // 设备码已被重绑替换：丢弃本轮结果，且不回传已作废的旧码（复审 M-2）
                 return new OneDriveBindingStatusResult(
-                    "pending", null, null, null, provider.UserCode, provider.VerificationUri, provider.DeviceCodeExpiresAt);
+                    "pending", null, null, null, null, null, null);
             }
 
             var now = _clock.GetUtcNow();
@@ -155,7 +156,16 @@ public sealed class OneDriveBindingService
             provider.DeviceCodeExpiresAt = null;
             provider.LastError = null;
             provider.UpdatedAt = now;
-            await _db.SaveChangesAsync(ct);
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // 守卫检查与保存之间的窗口（复审 I-4 残余）：按未确认处理
+                return new OneDriveBindingStatusResult(
+                    "pending", null, null, null, null, null, null);
+            }
 
             _logger?.LogInformation("OneDrive binding connected for user {UserId}", userId);
             return new OneDriveBindingStatusResult(
@@ -176,7 +186,8 @@ public sealed class OneDriveBindingService
                     "pending", null, null, null, provider.UserCode, provider.VerificationUri, provider.DeviceCodeExpiresAt,
                     PollIntervalSeconds: 7);
             }
-            if (detail.Contains("expired_token", StringComparison.OrdinalIgnoreCase))
+            if (detail.Contains("expired_token", StringComparison.OrdinalIgnoreCase)
+                || detail.Contains("authorization_expired", StringComparison.OrdinalIgnoreCase))
             {
                 provider.Status = "expired";
                 provider.UpdatedAt = _clock.GetUtcNow();

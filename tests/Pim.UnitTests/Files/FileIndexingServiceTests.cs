@@ -144,19 +144,14 @@ public class FileIndexingServiceTests
         db.Set<FileChunkEntity>().Add(chunk);
         await db.SaveChangesAsync();
         var vectorStore = new FakeFileVectorStore();
-        vectorStore.SearchHits =
-        [
-            new FileChunkSearchHit(chunk.Id, item.Id, item.CurrentVersionId.Value, 0.75m)
-        ];
         var service = CreateService(db, new FakeFileProviderAdapter(), vectorStore, extractedText: "text");
 
+        // v2 决策 D3：搜索 = 仅元数据；语义/向量档位已摘除（无 Qdrant 部署不再 500）
         var result = await service.SearchAsync(new Pim.Module.Files.DTOs.FileSearchQuery("budget", "hybrid"));
 
         Assert.Single(result.Items);
-        Assert.Single(result.Chunks);
-        Assert.Equal(chunk.Id, result.Chunks[0].ChunkId);
-        Assert.Equal(UserId, vectorStore.LastSearchUserId);
-        Assert.Equal("hybrid", vectorStore.LastSearchMode);
+        Assert.Empty(result.Chunks);
+        Assert.Equal(0, vectorStore.SearchCallCount);
     }
 
     [Fact]
@@ -313,6 +308,7 @@ public class FileIndexingServiceTests
         public int DeleteFileVectorsCallCount { get; private set; }
         public Guid? LastDeletedFileItemId { get; private set; }
         public Guid? LastSearchUserId { get; private set; }
+        public int SearchCallCount { get; private set; }
         public string? LastSearchMode { get; private set; }
 
         public Task EnsureCollectionAsync(CancellationToken ct = default)
@@ -340,6 +336,7 @@ public class FileIndexingServiceTests
             string? mode,
             CancellationToken ct = default)
         {
+            SearchCallCount++;
             LastSearchUserId = userId;
             LastSearchMode = mode;
             return Task.FromResult(SearchHits);

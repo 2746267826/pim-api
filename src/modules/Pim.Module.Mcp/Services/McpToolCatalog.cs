@@ -220,7 +220,7 @@ public static class McpToolCatalog
         AddW(tools, "files", "rename_file", "Rename a file.");
         AddW(tools, "files", "delete_file", "Delete a file (to trash).");
         AddW(tools, "files", "restore_file", "Restore a file from trash.");
-        AddW(tools, "files", "index_file", "Trigger file indexing (RAG).");
+        AddW(tools, "files", "index_file", "DEPRECATED: file indexing is retired in files v2; requests return an explicit error.");
 
         // PcTracker 分类 4
         AddW(tools, "pctracker.categories", "create_category", "Create a PC activity category.");

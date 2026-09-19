@@ -208,7 +208,7 @@ public class OneDriveContentServiceTests
         Assert.False(text.Truncated);
         Assert.Equal("text/plain", text.MimeType);
         Assert.Equal(12L, text.Size);
-        Assert.Equal(2L * 1024 * 1024, graph.DownloadSmallCalls.Single().MaxBytes);
+        Assert.Equal(4L * 1024 * 1024, graph.DownloadSmallCalls.Single().MaxBytes);
     }
 
     [Fact]

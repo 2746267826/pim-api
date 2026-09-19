@@ -144,6 +144,16 @@ public sealed class FileIndexingService(
             await db.SaveChangesAsync(ct);
             return MapJob(job);
         }
+        catch (DomainException ex)
+        {
+            // 领域错误也要落终态，否则作业永久停在 running（复审 B-M2）
+            logger?.LogWarning(ex, "文件索引被拒绝 fileItemId={FileItemId} stage={Stage}", item.Id, job.Stage);
+            job.Status = "failed";
+            job.LastError = ex.Message;
+            job.FinishedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+            throw;
+        }
         catch (Exception ex) when (ex is not DomainException)
         {
             logger?.LogError(ex, "文件索引失败 fileItemId={FileItemId} stage={Stage}", item.Id, job.Stage);
@@ -163,52 +173,17 @@ public sealed class FileIndexingService(
         if (string.IsNullOrWhiteSpace(search))
             return new FileSearchResultDto([], []);
 
+        // 文件模块 v2（designs/onedrive-files-v2.md 决策 D3）：搜索 = 仅元数据。
+        // 语义/向量档位与 Qdrant 依赖整体摘除——无 Qdrant 的生产部署此前在此必 500，
+        // 且 mode=hybrid 会让 MCP search_files 绕过敏感路径预算（chunk.Text 全文）。
         var mode = string.IsNullOrWhiteSpace(query.Mode)
             ? "hybrid"
             : query.Mode.Trim().ToLowerInvariant();
         if (mode is not ("keyword" or "semantic" or "hybrid"))
             mode = "hybrid";
 
-        var includeKeyword = mode is "keyword" or "hybrid";
-        var includeSemantic = mode is "semantic" or "hybrid";
-
-        var items = includeKeyword
-            ? await SearchItemsAsync(search, ct)
-            : [];
-        var chunkHits = new List<FileChunkSearchHitDto>();
-
-        if (includeSemantic)
-        {
-            var vector = await embeddings.EmbedAsync(search, ct);
-            var hits = await vectorStore.SearchAsync(vector, UserId, mode, ct);
-            var hitScores = hits.ToDictionary(hit => hit.ChunkId, hit => hit.Score);
-            var hitOrder = hits
-                .Select((hit, index) => new { hit.ChunkId, Index = index })
-                .ToDictionary(hit => hit.ChunkId, hit => hit.Index);
-            var hitIds = hits.Select(hit => hit.ChunkId).ToHashSet();
-            var chunks = await db.Set<FileChunkEntity>()
-                .AsNoTracking()
-                .Include(chunk => chunk.FileItem)
-                .ThenInclude(item => item!.Provider)
-                .Where(chunk =>
-                    hitIds.Contains(chunk.Id)
-                    && chunk.FileItem != null
-                    && chunk.FileItem.Provider != null
-                    && chunk.FileItem.Provider.UserId == UserId
-                    && !chunk.FileItem.IsDeleted)
-                .ToListAsync(ct);
-
-            chunkHits.AddRange(chunks
-                .OrderBy(chunk => hitOrder[chunk.Id])
-                .Select(chunk => new FileChunkSearchHitDto(
-                    chunk.Id,
-                    chunk.FileItemId,
-                    chunk.VersionId,
-                    chunk.Text,
-                    hitScores[chunk.Id])));
-        }
-
-        return new FileSearchResultDto(items, chunkHits);
+        var items = await SearchItemsAsync(search, ct);
+        return new FileSearchResultDto(items, []);
     }
 
     private async Task<IReadOnlyList<FileItemDto>> SearchItemsAsync(string search, CancellationToken ct)
@@ -229,13 +204,15 @@ public sealed class FileIndexingService(
             .OrderBy(item => item.ItemType == "folder" ? 0 : 1)
             .ThenBy(item => item.Name.ToLower())
             .ThenBy(item => item.Id)
-            .Take(20)
+            // 超量取回：敏感过滤在内存进行，避免敏感项吃掉结果预算（复审 I-3）
+            .Take(60)
             .ToListAsync(ct);
 
         // 敏感路径文件不进搜索结果（§13：与直链/文本出口一致）
         return entities
             .Where(item => !_sensitivePathPolicy.IsProtected(item.Path))
             .Select(MapFileItem)
+            .Take(20)
             .ToList();
     }
 

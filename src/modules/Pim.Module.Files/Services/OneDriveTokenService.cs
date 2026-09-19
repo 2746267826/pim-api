@@ -51,9 +51,10 @@ public sealed class OneDriveTokenService
         }
 
         using var refreshScope = await _cache.EnterRefreshAsync(providerId, ct);
+        now = _clock.GetUtcNow();
         if (_cache.TryGetValid(providerId, now.AddSeconds(ExpiryBufferSeconds), out cachedToken))
         {
-            // 等锁期间别的请求已完成刷新
+            // 等锁期间别的请求已完成刷新（用等锁后的时钟判断，复审 M-1）
             return cachedToken;
         }
 
@@ -66,6 +67,11 @@ public sealed class OneDriveTokenService
 
         // 拿到锁后重读数据库现值：并发赢家可能已轮换 refresh token 并落库
         await _db.Entry(provider).ReloadAsync(ct);
+        if (provider.Status != "connected" || provider.RefreshTokenEncrypted is not { Length: > 0 })
+        {
+            // Reload 后绑定可能已被重绑（凭据置空）或失效（复审 I-1），不能用旧值续跑
+            throw new DomainException(5321, "OneDrive 绑定状态已变化，请刷新后重试");
+        }
 
         var refreshToken = _protector.Unprotect(Encoding.UTF8.GetString(provider.RefreshTokenEncrypted));
         OneDriveTokenResult refreshed;
