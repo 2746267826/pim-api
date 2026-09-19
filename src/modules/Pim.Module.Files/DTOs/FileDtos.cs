@@ -12,7 +12,15 @@ public sealed record FileProviderDto(
     DateTimeOffset? LastSyncAt,
     string? LastError,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? ClientId = null,
+    string? DriveId = null,
+    string? AccountId = null,
+    string? AccountName = null,
+    string SyncStatus = "idle",
+    long SyncedItemCount = 0,
+    DateTimeOffset? DeltaResetAt = null,
+    DateTimeOffset? TokenExpiresAt = null);
 
 public sealed record BindNextcloudProviderRequest(
     string BaseUrl,
