@@ -1,18 +1,13 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Pim.Infrastructure.Data;
-using Pim.Module.Calendar;
-using Pim.Module.Files;
-using Pim.Module.Mcp;
-using Pim.Module.Mobile;
-using Pim.Module.PcTracker;
-using Pim.Module.QuickNotes;
 using Xunit;
 
 namespace Pim.UnitTests.InfrastructureCoverage;
@@ -64,8 +59,8 @@ public sealed class MigrationSnapshotSyncTests
     /// </summary>
     private static readonly string[] ProductionModules = typeof(Pim.Api.ModuleRegistry).Assembly
         .GetReferencedAssemblies()
-        .Select(a => a.Name)
-        .Where(name => name is not null && name.StartsWith("Pim.Module.", StringComparison.Ordinal))
+        .Select(a => a.Name!)
+        .Where(name => name.StartsWith("Pim.Module.", StringComparison.Ordinal))
         .Select(name => name["Pim.Module.".Length..])
         .OrderBy(name => name, StringComparer.Ordinal)
         .ToArray();
@@ -83,6 +78,22 @@ public sealed class MigrationSnapshotSyncTests
 
         var snapshotTables = ProductionTableNames(snapshotModel);
         var targetTables = ProductionTableNames(targetModel);
+
+        // 哨兵：目标模型必须真的包含全部生产模块的实体。模型缓存按
+        // ModuleAssemblySignature 隔离、模块列表只增不减，正常情况下恒成立；
+        // 若因任何原因拿到「部分加载」的陈旧模型，这里大声失败，
+        // 而不是让它以一条莫名的 diff（如幽灵 DropForeignKey）出现。
+        var targetNamespaces = targetModel.GetEntityTypes()
+            .Select(e => e.ClrType.Namespace ?? string.Empty)
+            .ToHashSet(StringComparer.Ordinal);
+        var missingModules = ProductionModules
+            .Where(m => !targetNamespaces.Contains($"Pim.Module.{m}"))
+            .Where(m => !targetNamespaces.Any(ns => ns.StartsWith($"Pim.Module.{m}.", StringComparison.Ordinal)))
+            .ToList();
+        Assert.True(
+            missingModules.Count == 0,
+            "目标模型缺少生产模块的实体：" + string.Join(", ", missingModules)
+            + "（模型缓存或模块注册异常，diff 断言不可信）");
 
         var operations = db.GetService<IMigrationsModelDiffer>()
             .GetDifferences(snapshotModel.GetRelationalModel(), targetModel.GetRelationalModel())
@@ -163,14 +174,13 @@ public sealed class MigrationSnapshotSyncTests
     private static PimDbContext CreateDbContext()
     {
         // 与生产一致：Pim.Api 通过 ModuleRegistry 从其输出目录加载 Pim.Module.*.dll，
-        // 而 Pim.Api.csproj 只引用这 6 个模块（Stats 未被引用、不在生产/design-time 模型里）。
-        // dotnet ef 的 design-time 模型也是这个集合，快照必须与它对齐。
-        PimDbContext.RegisterModuleAssembly(typeof(CalendarModule).Assembly);
-        PimDbContext.RegisterModuleAssembly(typeof(FilesModule).Assembly);
-        PimDbContext.RegisterModuleAssembly(typeof(McpModule).Assembly);
-        PimDbContext.RegisterModuleAssembly(typeof(MobileModule).Assembly);
-        PimDbContext.RegisterModuleAssembly(typeof(PcTrackerModule).Assembly);
-        PimDbContext.RegisterModuleAssembly(typeof(QuickNotesModule).Assembly);
+        // 而 Pim.Api.csproj 只引用 ProductionModules 这几个模块（Stats 未被引用、不在生产
+        // /design-time 模型里）。这里按同一来源动态加载，与 dotnet ef 的 design-time 模型
+        // 集合严格同源 —— 新模块接入 Pim.Api 后若忘同步快照，这里 fail-loud 而非静默绿。
+        foreach (var moduleName in ProductionModules)
+        {
+            PimDbContext.RegisterModuleAssembly(Assembly.Load($"Pim.Module.{moduleName}"));
+        }
 
         // 连接串不会真的被使用：模型与 diff 都在内存里构建，不访问数据库。
         return new PimDbContext(new DbContextOptionsBuilder<PimDbContext>()
@@ -250,6 +260,7 @@ public sealed class MigrationSnapshotSyncTests
         CreateIndexOperation createIndex => [createIndex.Table],
         DropIndexOperation dropIndex => [dropIndex.Table],
         AddForeignKeyOperation addForeignKey => [addForeignKey.Table, addForeignKey.PrincipalTable!],
+        DropForeignKeyOperation dropForeignKey => [dropForeignKey.Table],
         AddPrimaryKeyOperation addPrimaryKey => [addPrimaryKey.Table],
         _ => null,
     };
@@ -265,6 +276,7 @@ public sealed class MigrationSnapshotSyncTests
         CreateIndexOperation createIndex => $"CreateIndex {createIndex.Table} ({string.Join(", ", createIndex.Columns)})",
         DropIndexOperation dropIndex => $"DropIndex {dropIndex.Table} {dropIndex.Name}",
         AddForeignKeyOperation addForeignKey => $"AddForeignKey {addForeignKey.Table} -> {addForeignKey.PrincipalTable}",
+        DropForeignKeyOperation dropForeignKey => $"DropForeignKey {dropForeignKey.Table} {dropForeignKey.Name}",
         AddPrimaryKeyOperation addPrimaryKey => $"AddPrimaryKey {addPrimaryKey.Table}",
         _ => operation.GetType().Name,
     };
