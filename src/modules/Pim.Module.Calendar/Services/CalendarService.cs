@@ -101,7 +101,7 @@ public class CalendarService
     }
 
     // --- Events ---
-    public async Task<List<EventResponse>> GetEventsAsync(
+    public virtual async Task<List<EventResponse>> GetEventsAsync(
         DateTimeOffset start, DateTimeOffset end, CancellationToken ct)
     {
         var minValidDate = DateTimeOffset.MinValue.AddYears(100);

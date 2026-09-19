@@ -70,6 +70,8 @@ public sealed class TodaySectionService
         {
             _logger.LogWarning(ex, "Today section provider {SectionId} failed.", provider.SectionId);
 
+            // 响应只暴露脱敏后的异常类型（不含异常消息，避免泄漏内部细节），
+            // 让用户/排查者能区分故障类别；完整原因仍在日志中（issue #313）。
             return new TodaySectionDto(
                 provider.SectionId,
                 provider.Kind,
@@ -79,7 +81,7 @@ public sealed class TodaySectionService
                 [],
                 new TodaySectionErrorDto(
                     "section_unavailable",
-                    "此今日模块暂时不可用。"));
+                    $"此今日模块暂时不可用。（异常类型：{ex.GetType().Name}）"));
         }
     }
 

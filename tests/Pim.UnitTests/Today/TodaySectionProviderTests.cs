@@ -44,15 +44,16 @@ public class TodaySectionProviderTests
     }
 
     [Fact]
-    public async Task CalendarScheduleProvider_UsesLocalDateWindow()
+    public async Task CalendarScheduleProvider_UsesShanghaiDayWindow()
     {
         var (db, userId) = CreateDb();
         var calendarService = CreateCalendarService(db, userId);
         var calendar = await calendarService.CreateCalendarAsync(
             new CreateCalendarRequest("Work", "#3B82F6"),
             CancellationToken.None);
-        var earlyToday = LocalOffsetTime(2026, 5, 25, 0, 30);
-        var nextDay = LocalOffsetTime(2026, 5, 26, 0, 30);
+        // 2026-05-25 00:30 / 2026-05-26 00:30（Asia/Shanghai），与测试机器时区无关。
+        var earlyToday = new DateTimeOffset(2026, 5, 24, 16, 30, 0, TimeSpan.Zero);
+        var nextDay = new DateTimeOffset(2026, 5, 25, 16, 30, 0, TimeSpan.Zero);
         var includedEvent = await calendarService.CreateEventAsync(
             new CreateEventRequest(calendar.Id, "Early today", null, null, earlyToday, earlyToday.AddMinutes(30), null),
             CancellationToken.None);
@@ -66,6 +67,38 @@ public class TodaySectionProviderTests
         var data = Assert.IsType<CalendarScheduleTodayData>(section.Data);
         Assert.Contains(data.Events, e => e.Id == includedEvent.Id);
         Assert.DoesNotContain(data.Events, e => e.Id == excludedEvent.Id);
+    }
+
+    [Fact]
+    public async Task CalendarScheduleProvider_NormalizesDayWindowToUtc()
+    {
+        var (db, userId) = CreateDb();
+        var calendarService = new WindowCapturingCalendarService(db, userId);
+        var provider = new CalendarScheduleTodaySectionProvider(calendarService);
+
+        await provider.BuildAsync(Query(), CancellationToken.None);
+
+        Assert.Equal(1, calendarService.CallCount);
+        // Npgsql 仅接受 offset 0（UTC）的 DateTimeOffset 参数（issue #313）。
+        Assert.Equal(TimeSpan.Zero, calendarService.CapturedStart.Offset);
+        Assert.Equal(TimeSpan.Zero, calendarService.CapturedEnd.Offset);
+        // 2026-05-25 的上海当日窗口：[2026-05-24 16:00Z, 2026-05-25 16:00Z)。
+        Assert.Equal(new DateTimeOffset(2026, 5, 24, 16, 0, 0, TimeSpan.Zero), calendarService.CapturedStart);
+        Assert.Equal(new DateTimeOffset(2026, 5, 25, 16, 0, 0, TimeSpan.Zero), calendarService.CapturedEnd);
+    }
+
+    [Fact]
+    public void CalendarHabitsLayerQuery_NormalizesDayWindowToUtc()
+    {
+        var query = new TodayQuery(new DateOnly(2026, 5, 25), new DateOnly(2026, 5, 25));
+
+        var layerQuery = CalendarHabitsTodaySectionProvider.LayerQuery(query, "habits");
+
+        Assert.Equal(["habits"], layerQuery.Layers);
+        Assert.Equal(TimeSpan.Zero, layerQuery.Start.Offset);
+        Assert.Equal(TimeSpan.Zero, layerQuery.End.Offset);
+        Assert.Equal(new DateTimeOffset(2026, 5, 24, 16, 0, 0, TimeSpan.Zero), layerQuery.Start);
+        Assert.Equal(new DateTimeOffset(2026, 5, 25, 16, 0, 0, TimeSpan.Zero), layerQuery.End);
     }
 
     [Fact]
@@ -180,13 +213,26 @@ public class TodaySectionProviderTests
         Assert.Equal(1, data.PendingCount);
     }
 
-    private static TodayQuery Query() => new(new DateOnly(2026, 5, 25), new DateOnly(2026, 5, 25));
-
-    private static DateTimeOffset LocalOffsetTime(int year, int month, int day, int hour, int minute)
+    [Fact]
+    public async Task CalendarLayerProviders_BuildWithPlanningService()
     {
-        var local = new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Unspecified);
-        return new DateTimeOffset(local, TimeZoneInfo.Local.GetUtcOffset(local));
+        var (db, userId) = CreateDb();
+        var planningService = new PlanningModelService(db, new FixedCurrentUserService(userId));
+        var query = Query();
+
+        var habits = await new CalendarHabitsTodaySectionProvider(planningService).BuildAsync(query, CancellationToken.None);
+        var availability = await new CalendarAvailabilityTodaySectionProvider(planningService).BuildAsync(query, CancellationToken.None);
+        var aiPlaceholders = await new CalendarAiPlaceholdersTodaySectionProvider(planningService).BuildAsync(query, CancellationToken.None);
+
+        Assert.Equal("calendar.habits", habits.Id);
+        Assert.Equal(TodaySectionStatuses.Empty, habits.Status);
+        Assert.Equal("calendar.availability", availability.Id);
+        Assert.Equal(TodaySectionStatuses.Empty, availability.Status);
+        Assert.Equal("calendar.ai_placeholders", aiPlaceholders.Id);
+        Assert.Equal(TodaySectionStatuses.Empty, aiPlaceholders.Status);
     }
+
+    private static TodayQuery Query() => new(new DateOnly(2026, 5, 25), new DateOnly(2026, 5, 25));
 
     private static (PimDbContext Db, Guid UserId) CreateDb(bool registerPc = false)
     {
@@ -209,6 +255,25 @@ public class TodaySectionProviderTests
             db,
             new FixedCurrentUserService(userId),
             new RecurrenceService(NullLogger<RecurrenceService>.Instance));
+
+    private sealed class WindowCapturingCalendarService(PimDbContext db, Guid userId) : CalendarService(
+        db,
+        new FixedCurrentUserService(userId),
+        new RecurrenceService(NullLogger<RecurrenceService>.Instance))
+    {
+        public int CallCount { get; private set; }
+        public DateTimeOffset CapturedStart { get; private set; }
+        public DateTimeOffset CapturedEnd { get; private set; }
+
+        public override Task<List<EventResponse>> GetEventsAsync(
+            DateTimeOffset start, DateTimeOffset end, CancellationToken ct)
+        {
+            CallCount++;
+            CapturedStart = start;
+            CapturedEnd = end;
+            return Task.FromResult(new List<EventResponse>());
+        }
+    }
 
     private static PcTrackerService CreatePcTrackerService(PimDbContext db)
         => new(
