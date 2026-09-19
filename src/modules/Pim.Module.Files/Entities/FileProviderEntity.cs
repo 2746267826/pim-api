@@ -33,6 +33,8 @@ public sealed class FileProviderEntity : IUserOwnedEntity
 
     /// <summary>idle | syncing | error（同步健康状态，区别于绑定状态 Status）。</summary>
     public string SyncStatus { get; set; } = "idle";
+
+    /// <summary>最近一次同步处理的变更条数（进度可见用，非树总量）。</summary>
     public long SyncedItemCount { get; set; }
 
     /// <summary>绑定等待期临时持有的加密设备码；绑定完成后即清除。</summary>

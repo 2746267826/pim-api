@@ -317,6 +317,42 @@ public class OneDriveSyncServiceTests
     }
 
     [Fact]
+    public async Task Gone410_OnDefaultStartUrl_FailsInsteadOfInfiniteLoop()
+    {
+        await using var db = CreateDb();
+        SeedProvider(db, deltaLink: null); // 首次全量，起点即默认 URL
+        var graph = new FakeOneDriveGraphClient();
+        graph.DeltaScript.Enqueue(new OneDriveGraphException(410, null, "resyncRequired"));
+        var service = CreateService(db, graph);
+
+        await Assert.ThrowsAsync<OneDriveGraphException>(() => service.SyncAsync(
+            db.Set<FileProviderEntity>().Single().Id));
+        // 只请求了一次，没有循环
+        Assert.Single(graph.DeltaRequests);
+    }
+
+    [Fact]
+    public async Task Unauthorized401_MidCrawl_RefreshesTokenAndRetriesSameUrl()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, deltaLink: "https://graph.microsoft.com/v1.0/me/drive/root/delta?$deltatoken=cursor");
+        var graph = new FakeOneDriveGraphClient();
+        graph.DeltaScript.Enqueue(new OneDriveGraphException(401, null, "token expired"));
+        graph.DeltaScript.Enqueue(OneDriveDeltaPageFactory.Page(
+            OneDriveDeltaPageFactory.File("file-1", "a.txt")));
+        var service = CreateService(db, graph);
+
+        var result = await service.SyncAsync(provider.Id);
+
+        Assert.Equal(1, result.ItemsApplied);
+        // 401 后用同一 URL 重试
+        Assert.Equal(2, graph.DeltaRequests.Count);
+        Assert.Equal(graph.DeltaRequests[0].Url, graph.DeltaRequests[1].Url);
+        var updated = await db.Set<FileProviderEntity>().SingleAsync(p => p.Id == provider.Id);
+        Assert.Equal("idle", updated.SyncStatus);
+    }
+
+    [Fact]
     public async Task Sync_MarksSyncing_WhileRunning_AndIdleAfter()
     {
         await using var db = CreateDb();

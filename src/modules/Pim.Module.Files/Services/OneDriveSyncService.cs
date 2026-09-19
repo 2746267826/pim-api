@@ -64,6 +64,7 @@ public sealed class OneDriveSyncService
 
         var url = string.IsNullOrEmpty(provider.DeltaLink) ? DefaultDeltaUrl : provider.DeltaLink!;
         var fullRecrawl = false;
+        var refreshedForAuth = false;
         var pagesProcessed = 0;
         long itemsApplied = 0;
         long itemsDeleted = 0;
@@ -82,10 +83,23 @@ public sealed class OneDriveSyncService
                 }
                 catch (OneDriveGraphException exception) when (exception.StatusCode == (int)HttpStatusCode.Gone)
                 {
-                    // 游标失效：从头全量重扫，重扫结束后按 LastSeenAt 清理缺失项
+                    // 游标失效：从头全量重扫，重扫结束后按 LastSeenAt 清理缺失项。
+                    // 护栏：默认起点就 410（或重扫中再次 410）说明 Graph 行为异常，直接失败避免无限循环。
+                    if (fullRecrawl || url == DefaultDeltaUrl)
+                    {
+                        throw;
+                    }
+
                     url = DefaultDeltaUrl;
                     fullRecrawl = true;
                     provider.DeltaResetAt = now;
+                    continue;
+                }
+                catch (OneDriveGraphException exception) when (exception.StatusCode == 401 && !refreshedForAuth)
+                {
+                    // 首次全量可能爬取超过 token 有效期：刷新一次后重试当前页
+                    refreshedForAuth = true;
+                    accessToken = await _tokens.GetAccessTokenAsync(providerId, ct);
                     continue;
                 }
                 catch (OneDriveGraphException exception) when (exception.StatusCode == 429)
@@ -102,17 +116,8 @@ public sealed class OneDriveSyncService
                 }
 
                 pagesProcessed++;
-                foreach (var change in page.Items)
-                {
-                    if (change.IsRemoved)
-                    {
-                        itemsDeleted += await SoftDeleteAsync(providerId, change.Id, now, ct);
-                        continue;
-                    }
-
-                    await UpsertAsync(providerId, change, now, ct);
-                    itemsApplied++;
-                }
+                itemsDeleted += await ApplyPageAsync(providerId, page.Items, now, ct);
+                itemsApplied += page.Items.Count(change => !change.IsRemoved);
 
                 provider.SyncedItemCount = itemsApplied;
                 provider.UpdatedAt = now;
@@ -133,6 +138,11 @@ public sealed class OneDriveSyncService
             if (fullRecrawl)
             {
                 itemsDeleted += await SoftDeleteStaleAsync(providerId, now, ct);
+                if (finalDeltaLink is null)
+                {
+                    // 旧游标已被证明失效：重扫未走到 deltaLink 时不能保留，否则下轮从头再扫
+                    provider.DeltaLink = null;
+                }
             }
 
             provider.DeltaLink = finalDeltaLink ?? provider.DeltaLink;
@@ -158,22 +168,77 @@ public sealed class OneDriveSyncService
         }
     }
 
-    private async Task<long> SoftDeleteAsync(Guid providerId, string externalId, DateTimeOffset now, CancellationToken ct)
+    /// <summary>按页批量应用变更：一次查询页内全部既有行，内存合并后单次保存（首扫数万项的性能关键）。</summary>
+    private async Task<long> ApplyPageAsync(
+        Guid providerId,
+        IReadOnlyList<OneDriveDeltaItem> changes,
+        DateTimeOffset now,
+        CancellationToken ct)
     {
-        var items = await _db.Set<FileItemEntity>()
-            .Where(item => item.ProviderId == providerId && item.ExternalFileId == externalId && !item.IsDeleted)
-            .ToListAsync(ct);
-        foreach (var item in items)
+        var upserts = new List<OneDriveDeltaItem>();
+        var removalIds = new List<string>();
+        foreach (var change in changes)
         {
-            item.IsDeleted = true;
-            item.DeletedAt = now;
+            if (change.IsRemoved)
+            {
+                removalIds.Add(change.Id);
+            }
+            else
+            {
+                upserts.Add(change);
+            }
+        }
+
+        var ids = upserts.Select(change => change.Id).Concat(removalIds).ToList();
+        var existing = ids.Count == 0
+            ? new Dictionary<string, FileItemEntity>(StringComparer.Ordinal)
+            : (await _db.Set<FileItemEntity>()
+                    .Where(item => item.ProviderId == providerId && ids.Contains(item.ExternalFileId))
+                    .ToListAsync(ct))
+                .ToDictionary(item => item.ExternalFileId, StringComparer.Ordinal);
+
+        foreach (var change in upserts)
+        {
+            var path = DerivePath(change.ParentPath, change.Name);
+            if (!existing.TryGetValue(change.Id, out var item))
+            {
+                item = new FileItemEntity
+                {
+                    ProviderId = providerId,
+                    ExternalFileId = change.Id,
+                    CreatedAt = now,
+                };
+                _db.Set<FileItemEntity>().Add(item);
+                existing[change.Id] = item;
+            }
+
+            item.ParentExternalFileId = change.ParentId;
+            item.Path = path;
+            item.Name = change.Name;
+            item.ItemType = change.IsFolder ? "folder" : "file";
+            item.MimeType = change.MimeType;
+            item.Size = change.Size;
+            item.Etag = change.Ctag;
+            item.IsDeleted = false;
+            item.DeletedAt = null;
+            item.LastSeenAt = now;
+            item.ModifiedAt = change.ModifiedAt == DateTimeOffset.UnixEpoch ? item.CreatedAt : change.ModifiedAt;
             item.SyncedAt = now;
         }
-        if (items.Count > 0)
+
+        long deleted = 0;
+        foreach (var id in removalIds)
         {
-            await _db.SaveChangesAsync(ct);
+            if (existing.TryGetValue(id, out var item) && !item.IsDeleted)
+            {
+                item.IsDeleted = true;
+                item.DeletedAt = now;
+                item.SyncedAt = now;
+                deleted++;
+            }
         }
-        return items.Count;
+
+        return deleted;
     }
 
     private async Task<long> SoftDeleteStaleAsync(Guid providerId, DateTimeOffset syncStart, CancellationToken ct)
@@ -194,39 +259,6 @@ public sealed class OneDriveSyncService
             await _db.SaveChangesAsync(ct);
         }
         return stale.Count;
-    }
-
-    private async Task UpsertAsync(Guid providerId, OneDriveDeltaItem change, DateTimeOffset now, CancellationToken ct)
-    {
-        var item = await _db.Set<FileItemEntity>()
-            .SingleOrDefaultAsync(
-                existing => existing.ProviderId == providerId && existing.ExternalFileId == change.Id,
-                ct);
-        var path = DerivePath(change.ParentPath, change.Name);
-        if (item is null)
-        {
-            item = new FileItemEntity
-            {
-                ProviderId = providerId,
-                ExternalFileId = change.Id,
-                CreatedAt = now,
-            };
-            _db.Set<FileItemEntity>().Add(item);
-        }
-
-        item.ParentExternalFileId = change.ParentId;
-        item.Path = path;
-        item.Name = change.Name;
-        item.ItemType = change.IsFolder ? "folder" : "file";
-        item.MimeType = change.MimeType;
-        item.Size = change.Size;
-        item.Etag = change.Ctag;
-        item.IsDeleted = false;
-        item.DeletedAt = null;
-        item.LastSeenAt = now;
-        item.ModifiedAt = change.ModifiedAt == DateTimeOffset.UnixEpoch ? item.CreatedAt : change.ModifiedAt;
-        item.SyncedAt = now;
-        await _db.SaveChangesAsync(ct);
     }
 
     internal static string DerivePath(string? parentPath, string name)
