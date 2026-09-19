@@ -73,7 +73,18 @@ test('打包产物条目名不含反斜杠（#312 核心缺陷）', () => {
   }
 })
 
-test('unzip 能识别为完整归档、无分隔符告警（issue 里的实测工具）', () => {
+// `unzip` 只是"外部工具也能读"的佐证，不是核心断言（核心断言走上面的规范解析）。
+// Windows runner 上它来自 Git for Windows，不保证处处存在；缺失时跳过而不是误报失败。
+const hasUnzip = (() => {
+  try {
+    execFileSync('unzip', ['-v'], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+})()
+
+test('unzip 能识别为完整归档、无分隔符告警（issue 里的实测工具）', { skip: !hasUnzip && 'unzip not available on this platform' }, () => {
   const root = makeTree()
   const zipPath = join(mkdtempSync(join(tmpdir(), 'pim-zipout-')), 'browser-extension.zip')
   try {

@@ -11,12 +11,16 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { verifyArchive } from './verify-extension-zips.mjs'
 import { writeZipFromDirectory } from './zip-writer.mjs'
 
-const REPO_ROOT = new URL('../..', import.meta.url).pathname
+// 必须用 fileURLToPath 而不是 URL.pathname：在 Windows 上 pathname 会给出
+// `/D:/a/...`，再交给 path.join 就变成 `D:\D:\a\...`（CI 上实测报
+// "Cannot find module 'D:\D:\a\...'")。
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 function makeExtension({ browser }) {
   const root = mkdtempSync(join(tmpdir(), 'pim-ext-'))
