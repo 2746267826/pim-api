@@ -355,7 +355,10 @@ public class DataReliabilityGeneratorAssertionTests
         var result = DataReliabilityInvariants.CheckS11_StatusSemantics(inconsistentBatches);
 
         Assert.False(result.Pass, "[INV-M21] Invariant S11 must fail when batch status contradicts item-level counts");
+        Assert.True(result.IsFail, "[INV-M21] 混合新增与存量违规时必须保持红尺（不得降级为黄）");
         Assert.True(result.TotalViolations > 0, "[INV-M21] TotalViolations must be greater than 0");
+        Assert.Equal(1, result.NewViolations);
+        Assert.Equal(1, result.HistoricalViolations);
         Assert.Contains("INV-M21", result.Detail);
     }
 

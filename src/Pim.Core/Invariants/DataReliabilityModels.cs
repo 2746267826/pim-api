@@ -203,6 +203,8 @@ public sealed class BatchSyncStatusRecord
     public int RejectedCount { get; set; }
     /// <summary>重复/无需处理而被跳过的条目数（#243）；"只含跳过条目"的批次不是空转批次。</summary>
     public int SkippedCount { get; set; }
+    /// <summary>批次窗口起点（业务时间，UTC）。T4 新增/存量分档以此为界；缺省 MinValue 一律视为存量。</summary>
+    public DateTime WindowStartUtc { get; set; }
     public int TotalCount { get; set; }
 }
 

@@ -102,11 +102,12 @@ public class DataReliabilityGroupThreeTests
                 FailedCount = 0,
                 RejectedCount = 10,
                 TotalCount = 100,
-                Status = "failed"
+                Status = "failed",
+                WindowStartUtc = _baseUtc.AddHours(-1)
             }
         };
 
-        var result = DataReliabilityInvariants.CheckS11_StatusSemantics(batches);
+        var result = DataReliabilityInvariants.CheckS11_StatusSemantics(batches, referenceTimeUtc: _baseUtc);
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -125,11 +126,12 @@ public class DataReliabilityGroupThreeTests
                 FailedCount = 0,
                 RejectedCount = 10,
                 TotalCount = 100,
-                Status = "completed"
+                Status = "completed",
+                WindowStartUtc = _baseUtc.AddHours(-1)
             }
         };
 
-        var result = DataReliabilityInvariants.CheckS11_StatusSemantics(batches);
+        var result = DataReliabilityInvariants.CheckS11_StatusSemantics(batches, referenceTimeUtc: _baseUtc);
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -147,14 +149,128 @@ public class DataReliabilityGroupThreeTests
                 FailedCount = 5,
                 RejectedCount = 0,
                 TotalCount = 100,
-                Status = "completed"
+                Status = "completed",
+                WindowStartUtc = _baseUtc.AddHours(-1)
             }
         };
 
-        var result = DataReliabilityInvariants.CheckS11_StatusSemantics(batches);
+        var result = DataReliabilityInvariants.CheckS11_StatusSemantics(batches, referenceTimeUtc: _baseUtc);
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S11_StockOnlyViolation_TurnsYellowWithHistoricalCount()
+    {
+        // T4: 窗口起点在 24h 之外 → 存量欠账，只计数不报警（黄线），新增必须为 0
+        var batches = new List<BatchSyncStatusRecord>
+        {
+            new()
+            {
+                BatchId = "BATCH-OLD",
+                FailedCount = 0,
+                RejectedCount = 10,
+                TotalCount = 100,
+                Status = "failed",
+                WindowStartUtc = _baseUtc.AddHours(-25)
+            }
+        };
+
+        var result = DataReliabilityInvariants.CheckS11_StatusSemantics(batches, referenceTimeUtc: _baseUtc);
+
+        Assert.False(result.Pass);
+        Assert.True(result.IsWarning);
+        Assert.Equal(1, result.TotalViolations);
+        Assert.Equal(0, result.NewViolations);
+        Assert.Equal(1, result.HistoricalViolations);
+        Assert.Contains("存量 1", result.Detail);
+    }
+
+    [Fact]
+    public void S11_NewViolation_TurnsRedWithNewCount()
+    {
+        // T4: 窗口起点在 24h 之内 → 新增违规，保持红尺
+        var batches = new List<BatchSyncStatusRecord>
+        {
+            new()
+            {
+                BatchId = "BATCH-NEW",
+                FailedCount = 0,
+                RejectedCount = 10,
+                TotalCount = 100,
+                Status = "failed",
+                WindowStartUtc = _baseUtc.AddHours(-1)
+            }
+        };
+
+        var result = DataReliabilityInvariants.CheckS11_StatusSemantics(batches, referenceTimeUtc: _baseUtc);
+
+        Assert.False(result.Pass);
+        Assert.True(result.IsFail);
+        Assert.Equal(1, result.TotalViolations);
+        Assert.Equal(1, result.NewViolations);
+        Assert.Equal(0, result.HistoricalViolations);
+        Assert.Contains("新增 1", result.Detail);
+    }
+
+    [Fact]
+    public void S11_MixedViolations_BucketedByWindowStart()
+    {
+        // 历史空转批次（存量）+ 今天的 failed 误标（新增）：按窗口起点分档、互不混淆
+        var batches = new List<BatchSyncStatusRecord>
+        {
+            new()
+            {
+                BatchId = "BATCH-EMPTY-RUN",
+                AcceptedCount = 0,
+                FailedCount = 0,
+                RejectedCount = 0,
+                SkippedCount = 0,
+                TotalCount = 0,
+                Status = "completed",
+                WindowStartUtc = _baseUtc.AddDays(-30)
+            },
+            new()
+            {
+                BatchId = "BATCH-NEW-FAILED",
+                FailedCount = 0,
+                RejectedCount = 10,
+                TotalCount = 100,
+                Status = "failed",
+                WindowStartUtc = _baseUtc.AddHours(-2)
+            }
+        };
+
+        var result = DataReliabilityInvariants.CheckS11_StatusSemantics(batches, referenceTimeUtc: _baseUtc);
+
+        Assert.False(result.Pass);
+        Assert.True(result.IsFail);
+        Assert.Equal(2, result.TotalViolations);
+        Assert.Equal(1, result.NewViolations);
+        Assert.Equal(1, result.HistoricalViolations);
+    }
+
+    [Fact]
+    public void S11_ViolationOccurredAt_UsesWindowStart()
+    {
+        // 下钻导出（#261）的违规业务时间必须取窗口起点，而不是 MinValue 占位
+        var windowStart = _baseUtc.AddDays(-30);
+        var batches = new List<BatchSyncStatusRecord>
+        {
+            new()
+            {
+                BatchId = "BATCH-EMPTY-RUN",
+                TotalCount = 0,
+                Status = "completed",
+                WindowStartUtc = windowStart
+            }
+        };
+
+        var result = DataReliabilityInvariants.CheckS11_StatusSemantics(batches, referenceTimeUtc: _baseUtc);
+
+        var violation = Assert.Single(result.Violations);
+        Assert.Equal(windowStart, violation.OccurredAtUtc);
     }
 
     #endregion

@@ -226,9 +226,10 @@ public static class RealDataSampler
     /// </summary>
     public static List<BatchSyncStatusRecord> GenerateS11StatusInconsistencyRecords(int seed = 42)
     {
+        var now = DateTime.UtcNow;
         return new List<BatchSyncStatusRecord>
         {
-            // 冲突1: 仅被拒但标记为 failed
+            // 冲突1: 仅被拒但标记为 failed（窗口在 24h 内 → T4 新增）
             new()
             {
                 BatchId = "batch_s11_rejected_marked_failed",
@@ -236,9 +237,10 @@ public static class RealDataSampler
                 AcceptedCount = 80,
                 RejectedCount = 20,
                 FailedCount = 0,
-                Status = "failed"
+                Status = "failed",
+                WindowStartUtc = now.AddHours(-1)
             },
-            // 冲突2: 存在真实系统级失败但标记为 completed
+            // 冲突2: 存在真实系统级失败但标记为 completed（窗口在 24h 外 → T4 存量）
             new()
             {
                 BatchId = "batch_s11_failed_marked_completed",
@@ -246,7 +248,8 @@ public static class RealDataSampler
                 AcceptedCount = 40,
                 RejectedCount = 0,
                 FailedCount = 10,
-                Status = "completed"
+                Status = "completed",
+                WindowStartUtc = now.AddDays(-30)
             }
         };
     }
