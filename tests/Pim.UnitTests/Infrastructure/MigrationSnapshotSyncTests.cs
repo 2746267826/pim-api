@@ -200,15 +200,23 @@ public sealed class MigrationSnapshotSyncTests
             snapshotTables.Contains(table) || targetTables.Contains(table)) ?? true;
     }
 
-    /// <summary>生产模型里的表名：核心程序集实体 + Pim.Api 实际引用的 6 个模块。</summary>
+    /// <summary>生产模型里的表名：核心程序集 + Pim.Api 实际引用的 6 个模块（白名单制，
+    /// 排除测试程序集里自造的实体 —— 例如模型缓存金丝雀 model_cache_canaries）。</summary>
+    private static readonly string[] ProductionNamespaces =
+    [
+        "Pim.Infrastructure.",
+        "Pim.Core.",
+        "Pim.Api.",
+        ..ProductionModules.Select(m => $"Pim.Module.{m}."),
+    ];
+
     private static HashSet<string> ProductionTableNames(IModel model)
     {
         var tables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var entityType in model.GetEntityTypes())
         {
             var ns = entityType.ClrType.Namespace ?? string.Empty;
-            var isProduction = !ns.StartsWith("Pim.Module.", StringComparison.Ordinal)
-                || ProductionModules.Any(m => ns.StartsWith($"Pim.Module.{m}.", StringComparison.Ordinal));
+            var isProduction = ProductionNamespaces.Any(p => ns == p.TrimEnd('.') || ns.StartsWith(p, StringComparison.Ordinal));
             if (isProduction && entityType.GetTableName() is { } table)
             {
                 tables.Add(table);
