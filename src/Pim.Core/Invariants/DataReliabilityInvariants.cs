@@ -112,12 +112,12 @@ public static class DataReliabilityInvariants
             System.Security.Cryptography.SHA256.HashData(
                 System.Text.Encoding.UTF8.GetBytes(businessKey)))[..16];
 
-    /// <summary>S11 结构化违规引用：批次号 + 语义不自洽的原因。</summary>
+    /// <summary>S11 结构化违规引用：批次号 + 语义不自洽的原因（业务时间取窗口起点）。</summary>
     private static InvariantViolation BatchViolation(BatchSyncStatusRecord batch, string reason) =>
         new(
             Id: batch.BatchId,
             DeviceId: string.Empty,
-            OccurredAtUtc: DateTime.MinValue,
+            OccurredAtUtc: ToUtc(batch.WindowStartUtc),
             Fields: Fields(
                 ("status", batch.Status),
                 ("failedCount", batch.FailedCount.ToString()),
@@ -1242,12 +1242,16 @@ public static class DataReliabilityInvariants
     /// 判据: 批次状态与其内部失败/拒绝计数必须逻辑自洽：
     ///   1. failed_count = 0 的批次不得处于 failed / completed-with-errors 状态
     ///   2. failed_count &gt; 0 的批次不得处于 completed 状态
+    ///   3. 处理计数（accepted/failed/rejected/skipped）全为 0 的批次不得处于 completed（虚假完成/空转批次）
     /// 阈值: 违规批次数 = 0。
+    /// 新增/存量（T4）: 按窗口起点 window_start_utc 分档——落在最近 RecentWindowHours（默认 24h）内为新增，
+    /// 其余为存量；仅有存量违规时降级为黄线警告（存量只计数不报警）。缺省窗口起点一律视为存量。
     /// 为什么是这个阈值: 客户端条目级校验拒绝（如零时长过滤）被误当成整批失败，会导致质量面板误报同步失败并引导用户无意义重试。
     /// </summary>
     public static InvariantResult CheckS11_StatusSemantics(
         IEnumerable<BatchSyncStatusRecord> batches,
-        InvariantOptions? options = null)
+        InvariantOptions? options = null,
+        DateTime? referenceTimeUtc = null)
     {
         var (opt, fallback, note) = InvariantOptions.Resolve(options);
 
@@ -1257,7 +1261,12 @@ public static class DataReliabilityInvariants
             return InvariantResult.Unknown("INV-M21 UNKNOWN: 数据源为空或未接线", note, fallback);
         }
 
+        var now = referenceTimeUtc ?? DateTime.UtcNow;
+        var cutoff = now.AddHours(-opt.RecentWindowHours);
+
         int totalViolations = 0;
+        int newViolations = 0;
+        int historicalViolations = 0;
         var samples = new List<string>();
         var violations = new List<InvariantViolation>();
 
@@ -1270,6 +1279,7 @@ public static class DataReliabilityInvariants
             if (b.FailedCount == 0 && isFailedStatus)
             {
                 totalViolations++;
+                if (ToUtc(b.WindowStartUtc) >= cutoff) newViolations++; else historicalViolations++;
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Batch={b.BatchId}: FailedCount=0 但状态被标为 '{b.Status}' (应为 completed 或 rejected 语义)");
@@ -1280,6 +1290,7 @@ public static class DataReliabilityInvariants
             else if (b.FailedCount > 0 && b.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
             {
                 totalViolations++;
+                if (ToUtc(b.WindowStartUtc) >= cutoff) newViolations++; else historicalViolations++;
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Batch={b.BatchId}: FailedCount={b.FailedCount} > 0 但状态被标为 'completed'");
@@ -1291,6 +1302,7 @@ public static class DataReliabilityInvariants
             else if ((b.TotalCount == 0 || (b.AcceptedCount == 0 && b.FailedCount == 0 && b.RejectedCount == 0 && b.SkippedCount == 0)) && b.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
             {
                 totalViolations++;
+                if (ToUtc(b.WindowStartUtc) >= cutoff) newViolations++; else historicalViolations++;
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Batch={b.BatchId}: 处理计数为 0 (accepted=0, failed=0) 却被标为 'completed' (虚假完成/空转批次)");
@@ -1301,16 +1313,18 @@ public static class DataReliabilityInvariants
 
         if (totalViolations > 0)
         {
+            bool isWarning = newViolations == 0 && historicalViolations > 0;
             return InvariantResult.Failure(
-                $"INV-M21 FAIL: 检测到 {totalViolations} 个批次状态语义与计数指标不自洽",
+                $"INV-M21 {(isWarning ? "WARN" : "FAIL")}: 检测到 {totalViolations} 个批次状态语义与计数指标不自洽 (新增 {newViolations}, 存量 {historicalViolations})",
                 totalViolations,
-                totalViolations,
-                0,
+                newViolations,
+                historicalViolations,
                 samples,
                 null,
                 null,
                 note,
                 fallback,
+                isWarning: isWarning,
                 violations: violations);
         }
 

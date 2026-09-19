@@ -1417,15 +1417,17 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         // 对尚未跑完迁移的库（新增列还不存在）退化为只读旧列，规则 1/2 仍然有效。
         var hasItemCounts = await ColumnExistsAsync(conn, "mobile_sync_batches", "rejected_count", context.Ct)
             && await ColumnExistsAsync(conn, "mobile_sync_batches", "skipped_count", context.Ct);
+        // 窗口起点是批次"业务时间"（T4）：新增/存量分档必须用它，而不是入库时间 created_at——
+        // 否则积压补传的历史窗口会被误算成新增（EPIC #254 T4）。
         cmd.CommandText = hasItemCounts
             ? $"""
-              SELECT batch_id, status, failed_count, accepted_count, rejected_count, skipped_count
+              SELECT batch_id, status, failed_count, accepted_count, rejected_count, skipped_count, window_start_utc
               FROM mobile_sync_batches
               ORDER BY created_at DESC
               LIMIT {context.Options.MaxScanRows + 1};
               """
             : $"""
-              SELECT batch_id, status, failed_count, accepted_count, 0, 0
+              SELECT batch_id, status, failed_count, accepted_count, 0, 0, window_start_utc
               FROM mobile_sync_batches
               ORDER BY created_at DESC
               LIMIT {context.Options.MaxScanRows + 1};
@@ -1441,6 +1443,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             int accepted = reader.GetInt32(3);
             int rejected = reader.GetInt32(4);
             int skipped = reader.GetInt32(5);
+            DateTime windowStartUtc = reader.GetDateTime(6);
             batches.Add(new BatchSyncStatusRecord
             {
                 BatchId = batchId,
@@ -1449,7 +1452,8 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                 AcceptedCount = accepted,
                 FailedCount = failed,
                 RejectedCount = rejected,
-                SkippedCount = skipped
+                SkippedCount = skipped,
+                WindowStartUtc = windowStartUtc
             });
         }
 
@@ -1461,7 +1465,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (batches.Count == 0)
             return InvariantResult.Unknown("INV-M21 UNKNOWN: mobile_sync_batches 中无批次记录");
 
-        return DataReliabilityInvariants.CheckS11_StatusSemantics(batches, context.Options);
+        return DataReliabilityInvariants.CheckS11_StatusSemantics(batches, context.Options, context.NowUtc);
     }
 
     private async Task<InvariantResult> CheckS12Async(DbConnection conn, RuleCheckContext context)
