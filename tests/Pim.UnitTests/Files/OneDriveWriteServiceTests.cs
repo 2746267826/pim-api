@@ -534,6 +534,59 @@ public class OneDriveWriteServiceTests
         Assert.False(sub.IsDeleted, "级联删除的子目录应恢复");
         Assert.True(file.IsDeleted, "早先被单独删除的子文件不应被顺带复活");
     }
+
+    /// <summary>
+    /// 远端已删除的子孙不应被「复活」：否则本地出现一批访问即 404 的幽灵行（复审 N3-3）。
+    /// </summary>
+    [Fact]
+    public async Task RestoreFolder_KeepsDescendantsThatAreGoneFromOneDriveDeleted()
+    {
+        await using var db = CreateDb();
+        var (provider, _, folder) = SeedTree(db);
+        var (sub, file) = SeedDescendants(db, provider, folder);
+        var graph = new FakeOneDriveGraphClient();
+        var service = CreateService(db, graph, clock: new AdvancingClock(Now));
+
+        await service.DeleteToTrashAsync(folder.Id);
+
+        // 远端：父目录仍在，但子文件已被真删
+        graph.MissingItemIds.Add(file.ExternalFileId);
+
+        await service.RestoreAsync(folder.Id);
+
+        Assert.False(folder.IsDeleted);
+        Assert.False(sub.IsDeleted, "远端仍存在的子目录应恢复");
+        Assert.True(file.IsDeleted, "远端已消失的子文件必须保持删除态，不能复活");
+        Assert.NotNull(file.DeletedAt);
+    }
+
+    /// <summary>
+    /// 历史数据（父目录 IsDeleted=true 但 DeletedAt=null）恢复目录时，
+    /// 不能静默跳过整棵子树——否则用户看到父目录可见、子项永久消失（复审 N3-2）。
+    /// </summary>
+    [Fact]
+    public async Task RestoreFolder_WithLegacyNullDeletedAt_StillRestoresDescendants()
+    {
+        await using var db = CreateDb();
+        var (provider, _, folder) = SeedTree(db);
+        var (sub, file) = SeedDescendants(db, provider, folder);
+        var service = CreateService(db, new FakeOneDriveGraphClient());
+
+        // 模拟历史行：父子都是删除态，但 DeletedAt 为 null（早于该字段落库）
+        folder.IsDeleted = true;
+        folder.DeletedAt = null;
+        sub.IsDeleted = true;
+        sub.DeletedAt = null;
+        file.IsDeleted = true;
+        file.DeletedAt = null;
+        await db.SaveChangesAsync();
+
+        await service.RestoreAsync(folder.Id);
+
+        Assert.False(folder.IsDeleted);
+        Assert.False(sub.IsDeleted, "历史数据也应整树恢复，不能静默跳过");
+        Assert.False(file.IsDeleted);
+    }
 }
 
 internal sealed class StubAuditLog : IAuditLogService

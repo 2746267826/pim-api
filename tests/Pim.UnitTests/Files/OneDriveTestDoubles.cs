@@ -85,8 +85,17 @@ internal sealed class FakeOneDriveGraphClient : IOneDriveGraphClient
     {
         DownloadUrlCalls.Add((accessToken, itemId));
         if (DownloadUrlException is not null) throw DownloadUrlException;
+        // 按 item 维度模拟「远端已删除」：恢复流程会逐个校验子孙是否仍在 OneDrive
+        if (MissingItemIds.Contains(itemId))
+        {
+            throw new OneDriveGraphException(404, null, $"Graph 404：{itemId} not found");
+        }
+
         return Task.FromResult(DownloadUrl);
     }
+
+    /// <summary>这些 item 在远端已不存在（GetDownloadUrlAsync 抛 404）。</summary>
+    public HashSet<string> MissingItemIds { get; } = new(StringComparer.Ordinal);
 
     public Task<string?> GetThumbnailUrlAsync(string accessToken, string itemId, string size, CancellationToken ct = default)
     {

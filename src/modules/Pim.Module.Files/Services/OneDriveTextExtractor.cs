@@ -132,7 +132,10 @@ public sealed partial class OneDriveTextExtractor(
     {
         using var budget = new ZipReadBudget();
         using var archive = OpenArchive(bytes);
-        var slideEntries = archive.Entries
+        // 条目数按**整包**计数（含非 slide 条目），否则一个塞满无关条目的包可以绕过上限（复审 N3-4）
+        var allEntries = GuardZip(() => archive.Entries.ToList());
+        budget.CountEntries(allEntries.Count);
+        var slideEntries = allEntries
             .Where(entry => entry.FullName.StartsWith("ppt/slides/slide", StringComparison.OrdinalIgnoreCase)
                 && entry.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
             // 按幻灯片序号排序：字符串排序会把 slide10 排在 slide2 前面，
@@ -140,10 +143,10 @@ public sealed partial class OneDriveTextExtractor(
             .OrderBy(entry => SlideNumber(entry.FullName))
             .ThenBy(entry => entry.FullName, StringComparer.OrdinalIgnoreCase)
             .ToList();
+
         var lines = new List<string>();
         foreach (var slide in slideEntries)
         {
-            budget.CountEntry();
             var xml = ReadEntryText(slide, budget);
             lines.Add(DecodeXmlText(
                 string.Concat(RegexTextRun().Matches(xml).Select(m => m.Groups["t"].Value))));
@@ -155,7 +158,9 @@ public sealed partial class OneDriveTextExtractor(
     {
         using var budget = new ZipReadBudget();
         using var archive = OpenArchive(bytes);
-        var entry = archive.GetEntry(entryName)
+        // 枚举/取条目同样可能因中央目录惰性解析而抛 InvalidDataException，必须并入统一映射（复审 N3-1）
+        budget.CountEntries(GuardZip(() => archive.Entries.Count));
+        var entry = GuardZip(() => archive.GetEntry(entryName))
             ?? throw new DomainException(5336, "文件结构异常，无法抽取文本");
         return Encoding.UTF8.GetBytes(transform(ReadEntryText(entry, budget)));
     }
@@ -177,6 +182,24 @@ public sealed partial class OneDriveTextExtractor(
     }
 
     /// <summary>
+    /// 把 zip 相关的惰性解析异常（损坏的中央目录 / 条目元数据）统一映射为 5336。
+    /// <see cref="ZipArchive"/> 的 <c>Entries</c>/<c>GetEntry</c>/<c>entry.Length</c> 都是惰性求值，
+    /// 损坏数据会在**访问时**才抛 <see cref="InvalidDataException"/>，只包住构造函数是不够的（复审 N3-1）。
+    /// 注意只捕获 <see cref="InvalidDataException"/>，<see cref="DomainException"/> 必须原样传播。
+    /// </summary>
+    private static T GuardZip<T>(Func<T> action)
+    {
+        try
+        {
+            return action();
+        }
+        catch (InvalidDataException)
+        {
+            throw new DomainException(5336, "文件结构异常，无法抽取文本");
+        }
+    }
+
+    /// <summary>
     /// 读取 zip 条目文本。三重防护：
     /// 单条目声明体积、单条目实际读取量，以及**整个压缩包累计解压量**——
     /// 只查单条目会被「大量各自合规的小条目」绕过（复审 NEW-1）。
@@ -186,14 +209,15 @@ public sealed partial class OneDriveTextExtractor(
     /// </summary>
     private static string ReadEntryText(ZipArchiveEntry entry, ZipReadBudget budget)
     {
-        if (entry.Length > MaxZipEntryBytes)
+        // entry.Length 也是惰性读取的元数据，损坏条目会在此抛 InvalidDataException（复审 N3-1）
+        if (GuardZip(() => entry.Length) > MaxZipEntryBytes)
         {
             throw new DomainException(5336, "文件解压后过大，无法抽取文本");
         }
 
         try
         {
-            using var stream = entry.Open();
+            using var stream = GuardZip(entry.Open);
             using var buffer = new MemoryStream();
             var chunk = new byte[81920];
             int read;
@@ -220,7 +244,6 @@ public sealed partial class OneDriveTextExtractor(
     private sealed class ZipReadBudget : IDisposable
     {
         private long _totalBytes;
-        private int _entries;
 
         public void Consume(int bytes)
         {
@@ -231,9 +254,10 @@ public sealed partial class OneDriveTextExtractor(
             }
         }
 
-        public void CountEntry()
+        /// <summary>按**整包**条目数计一次账（含非目标条目），避免用无关条目绕过上限。</summary>
+        public void CountEntries(int count)
         {
-            if (++_entries > MaxZipEntries)
+            if (count > MaxZipEntries)
             {
                 throw new DomainException(5336, "压缩包条目过多，无法抽取文本");
             }

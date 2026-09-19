@@ -215,11 +215,13 @@ public sealed class OneDriveWriteService
         // 否则会出现「父目录可见、子项仍是删除态」的残缺树（复审 NEW-4）。
         // 只恢复 DeletedAt 与父目录**完全相同**的子孙：那是同一次级联的标记，
         // 早先被单独删除的子项（DeletedAt 不同）不应被顺带复活。
+        // 父目录 DeletedAt 为 null（历史数据）时退回「整棵子树一起恢复」，
+        // 而不是静默什么都不做——否则用户会看到父目录可见、子项永久消失（复审 N3-2）。
         var cascadeDeletedAt = item.DeletedAt;
         var restoredCount = 1;
-        if (item.ItemType == "folder" && cascadeDeletedAt is { } cascadeAt)
+        if (item.ItemType == "folder")
         {
-            restoredCount += await RestoreCascadeDescendantsAsync(provider.Id, item.Path, cascadeAt, ct);
+            restoredCount += await RestoreCascadeDescendantsAsync(provider.Id, item.Path, cascadeDeletedAt, token, ct);
         }
 
         item.IsDeleted = false;
@@ -234,31 +236,82 @@ public sealed class OneDriveWriteService
     }
 
     /// <summary>
-    /// 恢复随 <paramref name="folderPath"/> 同一次级联删除的子孙（DeletedAt 精确匹配）。
-    /// 返回恢复的行数。
+    /// 恢复随 <paramref name="folderPath"/> 同一次级联删除的子孙。
+    ///
+    /// 两条规则：
+    /// 1. <paramref name="cascadeDeletedAt"/> 有值时只恢复 DeletedAt 精确匹配的子孙
+    ///    （同一次级联的标记；早先被单独删除的子项不复活）。为 null（历史数据）时
+    ///    退回整棵子树，避免静默不恢复。
+    /// 2. 恢复前逐个校验子孙在 OneDrive 仍在：远端已删除的项保持删除态，
+    ///    否则本地会「复活」一批访问即 404 的幽灵行（复审 N3-3）。
+    /// 返回真正恢复的行数。
     /// </summary>
     private async Task<int> RestoreCascadeDescendantsAsync(
         Guid providerId,
         string folderPath,
-        DateTimeOffset cascadeDeletedAt,
+        DateTimeOffset? cascadeDeletedAt,
+        string token,
         CancellationToken ct)
     {
         var prefix = folderPath.TrimEnd('/') + "/";
-        var descendants = await _db.Set<FileItemEntity>()
+        var query = _db.Set<FileItemEntity>()
             .Where(row => row.ProviderId == providerId
                 && row.Path.StartsWith(prefix)
-                && row.IsDeleted
-                && row.DeletedAt == cascadeDeletedAt)
-            .ToListAsync(ct);
-        var now = _clock.GetUtcNow();
+                && row.IsDeleted);
+        if (cascadeDeletedAt is { } cascadeAt)
+        {
+            query = query.Where(row => row.DeletedAt == cascadeAt);
+        }
+
+        var descendants = await query.ToListAsync(ct);
+        if (descendants.Count == 0)
+        {
+            return 0;
+        }
+
+        // 目录内的项数量可观时会放大 Graph 调用，但仍以正确性优先：
+        // 只有确认远端存在的项才恢复，其余保持删除态。
+        var missingRemote = new List<FileItemEntity>();
         foreach (var descendant in descendants)
+        {
+            var existsRemotely = await RemoteItemExistsAsync(token, descendant.ExternalFileId, ct);
+            if (!existsRemotely)
+            {
+                missingRemote.Add(descendant);
+            }
+        }
+
+        var restorable = descendants.Except(missingRemote).ToList();
+        var now = _clock.GetUtcNow();
+        foreach (var descendant in restorable)
         {
             descendant.IsDeleted = false;
             descendant.DeletedAt = null;
             descendant.SyncedAt = now;
         }
 
-        return descendants.Count;
+        if (missingRemote.Count > 0)
+        {
+            _logger?.LogInformation(
+                "OneDrive restore: {Missing} of {Total} descendants are gone from OneDrive and stay deleted",
+                missingRemote.Count, descendants.Count);
+        }
+
+        return restorable.Count;
+    }
+
+    /// <summary>远端项是否仍存在（404 视为不存在，其他错误向上抛）。</summary>
+    private async Task<bool> RemoteItemExistsAsync(string token, string externalFileId, CancellationToken ct)
+    {
+        try
+        {
+            await _client.GetDownloadUrlAsync(token, externalFileId, ct);
+            return true;
+        }
+        catch (OneDriveGraphException exception) when (exception.StatusCode == 404)
+        {
+            return false;
+        }
     }
 
     /// <summary>小文件上传（≤4MB）：上传到目标路径并立即收敛本地元数据。</summary>

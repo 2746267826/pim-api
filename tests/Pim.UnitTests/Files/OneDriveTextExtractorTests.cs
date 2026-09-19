@@ -197,8 +197,7 @@ public class OneDriveTextExtractorTests
     /// <summary>压缩数据损坏（非 zip 头损坏）也必须给 5336，而不是 500。</summary>
     [Fact]
     public async Task Docx_CorruptEntryData_ReturnsDomainError()
-    {
-        // 先造一个合法 docx，再把 word/document.xml 的压缩数据字节打乱：
+    {        // 先造一个合法 docx，再把 word/document.xml 的压缩数据字节打乱：
         // zip 中央目录仍可解析，但读取该条目时会抛 InvalidDataException。
         var valid = MinimalDocxWithText("原始内容");
         using var buffer = new MemoryStream();
@@ -231,6 +230,37 @@ public class OneDriveTextExtractorTests
         }
 
         Assert.NotEmpty(valid);
+    }
+
+    /// <summary>
+    /// 条目数上限必须按**整包**计：只统计选中的 slide 时，一个塞满无关条目的包可以绕过上限
+    /// （复审 N3-4）。这里构造只含一个 slide、但总条目数超限的 pptx。
+    /// </summary>
+    [Fact]
+    public async Task Pptx_TooManyIrrelevantEntries_IsRejectedByArchiveWideEntryBudget()
+    {
+        using var buffer = new MemoryStream();
+        using (var archive = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            // 1 个有效 slide + 远超上限的无关条目
+            var slide = archive.CreateEntry("ppt/slides/slide1.xml", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(slide.Open(), Encoding.UTF8))
+            {
+                writer.Write("<a:t>唯一一页</a:t>");
+            }
+
+            for (var i = 0; i < OneDriveTextExtractor.MaxZipEntries + 10; i++)
+            {
+                var filler = archive.CreateEntry($"ppt/media/blob{i}.bin", CompressionLevel.NoCompression);
+                using var stream = filler.Open();
+                stream.WriteByte(0x00);
+            }
+        }
+
+        var bytes = buffer.ToArray();
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => _extractor.ExtractAsync(bytes, "many-entries.pptx", null, maxBytes: 1024));
+        Assert.Equal(5336, error.ErrorCode);
     }
 
     private static int IndexOf(byte[] haystack, byte[] needle)
