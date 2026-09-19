@@ -63,6 +63,53 @@ internal sealed class FakeOneDriveGraphClient : IOneDriveGraphClient
         if (step is Exception error) throw error;
         return Task.FromResult((OneDriveDeltaPage)step);
     }
+
+    // ---- P2：直链 / 缩略图 / 预览 / 小文件读写 ----
+
+    public string? DownloadUrl { get; set; } = "https://my.microsoftpersonalcontent.com/dl?tempauth=xyz";
+    public string? ThumbnailUrl { get; set; } = "https://my.microsoftpersonalcontent.com/thumb?tempauth=t";
+    public string? PreviewUrl { get; set; } = "https://www.onedrive.com/preview?resid=x";
+    public OneDriveSmallContent? SmallContent { get; set; } = new("hello"u8.ToArray(), "text/plain");
+    public Exception? DownloadSmallException { get; set; }
+    public Exception? ThumbnailException { get; set; }
+
+    public List<(string AccessToken, string ItemId)> DownloadUrlCalls { get; } = [];
+    public List<(string AccessToken, string ItemId, string Size)> ThumbnailCalls { get; } = [];
+    public List<(string AccessToken, string ItemId)> PreviewCalls { get; } = [];
+    public List<(string AccessToken, string ItemId, long MaxBytes)> DownloadSmallCalls { get; } = [];
+    public List<(string AccessToken, string ItemId, byte[] Bytes, string ContentType)> PutCalls { get; } = [];
+
+    public Task<string?> GetDownloadUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
+    {
+        DownloadUrlCalls.Add((accessToken, itemId));
+        return Task.FromResult(DownloadUrl);
+    }
+
+    public Task<string?> GetThumbnailUrlAsync(string accessToken, string itemId, string size, CancellationToken ct = default)
+    {
+        ThumbnailCalls.Add((accessToken, itemId, size));
+        if (ThumbnailException is not null) throw ThumbnailException;
+        return Task.FromResult(ThumbnailUrl);
+    }
+
+    public Task<string?> GetPreviewUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
+    {
+        PreviewCalls.Add((accessToken, itemId));
+        return Task.FromResult(PreviewUrl);
+    }
+
+    public Task<OneDriveSmallContent?> DownloadSmallAsync(string accessToken, string itemId, long maxBytes, CancellationToken ct = default)
+    {
+        DownloadSmallCalls.Add((accessToken, itemId, maxBytes));
+        if (DownloadSmallException is not null) throw DownloadSmallException;
+        return Task.FromResult(SmallContent);
+    }
+
+    public Task PutSmallContentAsync(string accessToken, string itemId, byte[] bytes, string contentType, CancellationToken ct = default)
+    {
+        PutCalls.Add((accessToken, itemId, bytes, contentType));
+        return Task.CompletedTask;
+    }
 }
 
 internal static class OneDriveDeltaPageFactory

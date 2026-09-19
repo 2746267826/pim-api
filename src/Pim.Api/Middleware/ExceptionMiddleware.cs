@@ -92,7 +92,7 @@ public class ExceptionMiddleware
     {
         40401 or 4004 or 4006 or 5104 or 5300 or 5304 or 5305 => StatusCodes.Status404NotFound,
         40101 => StatusCodes.Status401Unauthorized,
-        40301 or 40302 => StatusCodes.Status403Forbidden,
+        40301 or 40302 or 40303 => StatusCodes.Status403Forbidden,
         42901 => StatusCodes.Status429TooManyRequests,
         50301 => StatusCodes.Status503ServiceUnavailable,
         _ => StatusCodes.Status400BadRequest

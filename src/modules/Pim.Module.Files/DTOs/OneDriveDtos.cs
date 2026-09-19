@@ -29,3 +29,13 @@ public sealed record OneDriveSyncResultDto(int PagesProcessed, int ItemsApplied,
     public static OneDriveSyncResultDto From(OneDriveSyncResult result)
         => new(result.PagesProcessed, result.ItemsApplied, result.ItemsDeleted, result.FullRecrawl);
 }
+
+public sealed record OneDriveLinkDto(string Url);
+
+public sealed record OneDriveTextDto(string Content, string? MimeType, long Size, bool Truncated)
+{
+    public static OneDriveTextDto From(OneDriveTextContent content)
+        => new(content.Content, content.MimeType, content.Size, content.Truncated);
+}
+
+public sealed record SaveOneDriveTextRequest(string Content);

@@ -197,3 +197,29 @@ public sealed class FileSuggestionEntityConfiguration : IEntityTypeConfiguration
         builder.HasIndex(e => e.AiRequestLogId);
     }
 }
+
+public sealed class FileTextSnapshotEntityConfiguration : IEntityTypeConfiguration<FileTextSnapshotEntity>
+{
+    public void Configure(EntityTypeBuilder<FileTextSnapshotEntity> builder)
+    {
+        builder.ToTable("file_text_snapshots");
+        builder.Property(e => e.Id).HasColumnName("id");
+        builder.Property(e => e.UserId).HasColumnName("user_id");
+        builder.Property(e => e.ProviderId).HasColumnName("provider_id");
+        builder.Property(e => e.ItemId).HasColumnName("item_id");
+        builder.Property(e => e.ExternalFileId).HasColumnName("external_file_id").HasMaxLength(255);
+        builder.Property(e => e.Path).HasColumnName("path").HasMaxLength(2048);
+        builder.Property(e => e.Name).HasColumnName("name").HasMaxLength(512);
+        builder.Property(e => e.MimeType).HasColumnName("mime_type").HasMaxLength(255);
+        builder.Property(e => e.Content).HasColumnName("content");
+        builder.Property(e => e.ByteSize).HasColumnName("byte_size");
+        builder.Property(e => e.Reason).HasColumnName("reason").HasMaxLength(32);
+        builder.Property(e => e.CreatedAt).HasColumnName("created_at").HasDefaultValueSql("now()");
+        builder.HasOne(e => e.Item)
+            .WithMany()
+            .HasForeignKey(e => e.ItemId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasIndex(e => new { e.ItemId, e.CreatedAt });
+        builder.HasIndex(e => e.UserId);
+    }
+}
