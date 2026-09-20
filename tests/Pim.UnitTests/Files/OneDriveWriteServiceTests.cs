@@ -214,6 +214,54 @@ public class OneDriveWriteServiceTests
         Assert.Equal(5340, error.ErrorCode);
     }
 
+    /// <summary>
+    /// 非 404 的 Graph 故障（如 500/429）必须原样抛出，不能被当成「远端已删除」，
+    /// 也不能把本地状态改成已恢复——否则会留下「本地已复活、远端其实还在故障」的不一致。
+    /// </summary>
+    [Fact]
+    public async Task Restore_WhenGraphFailsWithNon404_PropagatesAndKeepsLocalDeleted()
+    {
+        await using var db = CreateDb();
+        var (_, item, _) = SeedTree(db);
+        var graph = new FakeOneDriveGraphClient();
+        var service = CreateService(db, graph);
+        await service.DeleteToTrashAsync(item.Id);
+
+        graph.DownloadUrlException = new OneDriveGraphException(500, null, "internal error");
+
+        var error = await Assert.ThrowsAsync<OneDriveGraphException>(() => service.RestoreAsync(item.Id));
+        Assert.Equal(500, error.StatusCode);
+
+        var stillDeleted = await db.Set<FileItemEntity>().AsNoTracking().SingleAsync(i => i.Id == item.Id);
+        Assert.True(stillDeleted.IsDeleted, "Graph 故障时本地必须保持删除态，不能提前复活");
+    }
+
+    /// <summary>
+    /// 目录恢复时某个子孙的远端校验遇到非 404 故障：整次操作应失败并保持原状，
+    /// 不能把部分子孙标记成已恢复、其余仍为删除态。
+    /// </summary>
+    [Fact]
+    public async Task RestoreFolder_WhenDescendantCheckFails_PropagatesAndKeepsState()
+    {
+        await using var db = CreateDb();
+        var (provider, _, folder) = SeedTree(db);
+        var (sub, file) = SeedDescendants(db, provider, folder);
+        var graph = new FakeOneDriveGraphClient();
+        var service = CreateService(db, graph, clock: new AdvancingClock(Now));
+
+        await service.DeleteToTrashAsync(folder.Id);
+        // 父目录可正常校验，但某个子孙的校验遇到限流——用于真正走到子孙循环
+        graph.ItemExceptions[file.ExternalFileId] = new OneDriveGraphException(429, 30, "throttled");
+
+        await Assert.ThrowsAsync<OneDriveGraphException>(() => service.RestoreAsync(folder.Id));
+
+        // 未被 SaveChanges：内存中的实体不应被标记为已恢复
+        var rows = await db.Set<FileItemEntity>().AsNoTracking()
+            .Where(i => new[] { folder.Id, sub.Id, file.Id }.Contains(i.Id))
+            .ToListAsync();
+        Assert.All(rows, row => Assert.True(row.IsDeleted, "故障时所有项都应保持删除态"));
+    }
+
     [Fact]
     public async Task Upload_PutsByPath_ConvergesNewItem_AndAudits()
     {

@@ -91,11 +91,20 @@ internal sealed class FakeOneDriveGraphClient : IOneDriveGraphClient
             throw new OneDriveGraphException(404, null, $"Graph 404：{itemId} not found");
         }
 
+        // 按 item 维度注入其它 Graph 故障（如 429/500），用于验证错误传播而非「当作不存在」
+        if (ItemExceptions.TryGetValue(itemId, out var exception))
+        {
+            throw exception;
+        }
+
         return Task.FromResult(DownloadUrl);
     }
 
     /// <summary>这些 item 在远端已不存在（GetDownloadUrlAsync 抛 404）。</summary>
     public HashSet<string> MissingItemIds { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>按 item id 注入指定 Graph 异常（非 404 场景）。</summary>
+    public Dictionary<string, Exception> ItemExceptions { get; } = new(StringComparer.Ordinal);
 
     public Task<string?> GetThumbnailUrlAsync(string accessToken, string itemId, string size, CancellationToken ct = default)
     {
