@@ -166,6 +166,72 @@ public class FileSearchServiceTests
         Assert.Equal(20, result.Items.Count);
     }
 
+    /// <summary>
+    /// MCP 合约声明了 search_files 的 page/pageSize，因此必须真的翻页：
+    /// 第 2 页应返回不同的项，而不是把第一页再发一遍。
+    /// </summary>
+    [Fact]
+    public async Task SearchAsync_PaginatesThroughResults()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        for (var i = 0; i < 25; i++)
+        {
+            SeedItem(db, provider, $"/文档/报告{i:D2}.txt", $"报告{i:D2}.txt", "text/plain");
+        }
+
+        await db.SaveChangesAsync();
+        var service = CreateService(db, UserId);
+
+        var page1 = await service.SearchAsync(new FileSearchQuery("报告", null), page: 1, pageSize: 10);
+        var page2 = await service.SearchAsync(new FileSearchQuery("报告", null), page: 2, pageSize: 10);
+
+        Assert.Equal(10, page1.Items.Count);
+        Assert.Equal(10, page2.Items.Count);
+        Assert.Empty(page1.Items.Select(i => i.Id).Intersect(page2.Items.Select(i => i.Id)));
+    }
+
+    /// <summary>
+    /// 敏感项必须在**分页之前**被过滤：否则它会占掉页名额，
+    /// 使返回条数少于 pageSize 且后续页错位。
+    /// </summary>
+    [Fact]
+    public async Task SearchAsync_FiltersSensitiveBeforePaging()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        // 敏感项排在最前（按名称排序），若先分页就会被它占掉名额
+        SeedItem(db, provider, "/Secrets/报告A.txt", "报告A.txt", "text/plain");
+        SeedItem(db, provider, "/文档/报告B.txt", "报告B.txt", "text/plain");
+        SeedItem(db, provider, "/文档/报告C.txt", "报告C.txt", "text/plain");
+        await db.SaveChangesAsync();
+        var service = CreateService(db, UserId);
+
+        var page1 = await service.SearchAsync(new FileSearchQuery("报告", null), page: 1, pageSize: 2);
+
+        Assert.Equal(2, page1.Items.Count);
+        Assert.DoesNotContain(page1.Items, i => i.Path.StartsWith("/Secrets", StringComparison.Ordinal));
+    }
+
+    /// <summary>默认单页签名仍返回最多 20 条（旧行为不变）。</summary>
+    [Fact]
+    public async Task SearchAsync_DefaultOverload_KeepsTwentyLimit()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        for (var i = 0; i < 30; i++)
+        {
+            SeedItem(db, provider, $"/文档/报告{i:D2}.txt", $"报告{i:D2}.txt", "text/plain");
+        }
+
+        await db.SaveChangesAsync();
+        var service = CreateService(db, UserId);
+
+        var result = await service.SearchAsync(new FileSearchQuery("报告", null));
+
+        Assert.Equal(20, result.Items.Count);
+    }
+
     [Fact]
     public async Task SearchAsync_WhenNotLoggedIn_Throws1002()
     {

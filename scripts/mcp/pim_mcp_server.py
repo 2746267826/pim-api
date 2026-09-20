@@ -2323,7 +2323,7 @@ async def get_quick_note_attachment_meta(attachment_id: str) -> Any:
 
 @mcp.tool()
 async def get_file_providers() -> Any:
-    """List file providers (e.g. Nextcloud). Returns FileProviderDto[]."""
+    """List file providers (OneDrive is the only supported source since files v2). Returns FileProviderDto[]."""
     return await _call_api("GET", "/api/v1/files/providers")
 
 
@@ -2389,7 +2389,7 @@ async def get_file_suggestions(
 
 @mcp.tool()
 async def get_file_open_link(file_id: str) -> Any:
-    """Get open link for a file (WebDAV/Nextcloud). Returns {openLink}. Note: may contain url, hashed if redactUrls implicit. Call with redact handling."""
+    """Get the OneDrive web URL for a file item. Returns {openLink}. Note: may contain url, hashed if redactUrls implicit. Sensitive paths are rejected."""
     res = await _call_api("GET", f"/api/v1/files/items/{file_id}/open-link")
     # Apply redaction manually if needed; by default we hash urls
     if isinstance(res, dict) and "data" in res:

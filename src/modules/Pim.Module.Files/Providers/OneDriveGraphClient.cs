@@ -108,7 +108,7 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
 
     public async Task<OneDriveDeltaPage> GetDeltaPageAsync(string accessToken, string url, CancellationToken ct = default)
     {
-        var json = await GetGraphJsonAsync(NormalizeGraphUrl(url), accessToken, ct);
+        var json = await GetGraphJsonAsync(ResolveGraphUrl(url), accessToken, ct);
 
         var items = new List<OneDriveDeltaItem>();
         if (json.TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.Array)
@@ -280,10 +280,44 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     private string TokenEndpoint(string segment)
         => $"https://login.microsoftonline.com/{Uri.EscapeDataString(_tenant)}/oauth2/v2.0/{segment}";
 
-    private static string NormalizeGraphUrl(string url)
-        => Uri.TryCreate(url, UriKind.Absolute, out _)
-            ? url
-            : GraphBaseUrl + (url.StartsWith('/') ? url : "/" + url);
+    /// <summary>
+    /// 只允许把 Bearer token 发往 Microsoft Graph 自己的主机。
+    ///
+    /// <c>@odata.nextLink</c> / <c>@odata.deltaLink</c> 是**服务器返回值**，且 deltaLink 会落库、
+    /// 下轮同步再从库里读出来用。若不加校验，任何能影响该字段的路径（被篡改的响应、
+    /// 被写入的游标、恶意测试替身）都能让后续请求把用户 token 带给任意主机。
+    /// 这里对绝对 URL 做主机白名单校验，相对路径仍按 Graph 基址拼接。
+    /// </summary>
+    internal static string ResolveGraphUrl(string url)
+    {
+        // 相对形式（含只有 query 的 "?$deltatoken=..."）按 Graph 基址拼接。
+        // 注意 Uri.TryCreate 会把 "?x=1" 解析成绝对 URI（无主机），必须显式识别这种形态。
+        if (string.IsNullOrEmpty(url) || url.StartsWith('/') || url.StartsWith('?'))
+        {
+            return GraphBaseUrl + (url.StartsWith('/') ? url : "/" + url);
+        }
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var absolute) || string.IsNullOrEmpty(absolute.Host))
+        {
+            return GraphBaseUrl + "/" + url;
+        }
+
+        if (!string.Equals(absolute.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            || !AllowedGraphHosts.Contains(absolute.Host))
+        {
+            throw new OneDriveGraphException(
+                0, null, $"Graph URL 主机不被允许：{absolute.Host}（可能被篡改的同步游标）");
+        }
+
+        return absolute.ToString();
+    }
+
+    /// <summary>允许携带 token 的目标主机（Graph 全球版与个人版内容域）。</summary>
+    private static readonly HashSet<string> AllowedGraphHosts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "graph.microsoft.com",
+        "login.microsoftonline.com",
+    };
 
     private async Task<JsonElement> GetGraphJsonAsync(string url, string accessToken, CancellationToken ct)
     {

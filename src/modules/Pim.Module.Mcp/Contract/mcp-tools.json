@@ -2216,7 +2216,7 @@
  },
  {
   "name": "get_file_providers",
-  "description": "List file providers (e.g. Nextcloud). Returns FileProviderDto[].",
+  "description": "List file providers (OneDrive is the only supported source since files v2). Returns FileProviderDto[].",
   "inputSchema": {
    "properties": {},
    "title": "get_file_providersArguments",
@@ -2348,7 +2348,7 @@
  },
  {
   "name": "get_file_open_link",
-  "description": "Get open link for a file (WebDAV/Nextcloud). Returns {openLink}. Note: may contain url, hashed if redactUrls implicit. Call with redact handling.",
+  "description": "Get the OneDrive web URL for a file item. Returns {openLink}. Note: may contain a url, hashed when redactUrls is set. Sensitive paths are rejected.",
   "inputSchema": {
    "properties": {
     "file_id": {

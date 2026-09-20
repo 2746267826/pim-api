@@ -394,9 +394,13 @@ public sealed class FilesModule : IModule
     private static async Task<IResult> SearchAsync(
         [FromQuery] string? q,
         [FromQuery] string? mode,
+        [FromQuery] int? page,
+        [FromQuery] int? pageSize,
         [FromServices] FileSearchService service,
         CancellationToken ct)
-        => Results.Ok(ApiResponse<FileSearchResultDto>.Ok(await service.SearchAsync(new FileSearchQuery(q, mode), ct)));
+        => Results.Ok(ApiResponse<FileSearchResultDto>.Ok(
+            // MCP 合约里 search_files 声明了 page/pageSize，这里必须真正生效（复审发现）
+            await service.SearchAsync(new FileSearchQuery(q, mode), page ?? 1, pageSize ?? 20, ct)));
 
     private static async Task<IResult> ListSuggestionsAsync(
         [FromServices] FileOperationService service,
