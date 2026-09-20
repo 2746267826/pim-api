@@ -153,16 +153,9 @@ public class LiveDbQualityInspectionTests
         Assert.True(
             unavailable.Count == 0,
             $"不应有尺子因取数失败退化为 UNKNOWN（{unavailable.Count}）：{string.Join(" | ", unavailable)}");
-        _output.WriteLine($"数据不可判（UNKNOWN）的项：{unavailable.Count}");
 
         Assert.Equal("DataField", RequireDetail(details, "S8_INV-C19_covered_layers"));
         Assert.True(result.IssueCount > 0, "生产形状数据上必须检出问题，不能是假绿灯");
-        Assert.True(
-            unavailable.Count <= 2,
-            $"过多判定项因取数失败退化为 UNKNOWN（{unavailable.Count}）：{string.Join(" | ", unavailable)}");
-        _output.WriteLine(
-            $"数据不可判（UNKNOWN）的项：{unavailable.Count}"
-            + (unavailable.Count == 0 ? string.Empty : $" -> {string.Join(" | ", unavailable)}"));
 
         // summary 必须与逐条状态自洽，不能出现"面板红、汇总绿"。
         var statusCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
