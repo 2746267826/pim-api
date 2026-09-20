@@ -188,19 +188,14 @@ public sealed class MobileTimelinePaginationTests
         await using var db = MobileTestHelpers.CreateDb();
         SeedSessions(db, 10);
 
-        var service = Service(db);
+        // pageSize 超过上限 → 夹到上限而不是抛异常；page < 1 → 视为第 1 页。
+        // 注意上限内不会有 100_000 条数据，因此这里同时验证「夹紧后仍能正常返回」。
+        var oversized = await Service(db).GetTimelineAsync(
+            Query(page: 0, pageSize: 100_000), CancellationToken.None);
 
-        // pageSize 超过上限 → 夹到上限而不是抛异常；page < 1 → 视为第 1 页
-        var oversized = await service.GetTimelineAsync(Query(page: 0, pageSize: 100_000), CancellationToken.None);
         Assert.Equal(1, oversized.Page);
         Assert.Equal(MobileTimelinePagination.MaxPageSize, oversized.PageSize);
         Assert.Equal(10, oversized.Sessions.Count);
-
-        // page 超出总页数 → 空列表，但仍报告真实总数且不谎报还有更多
-        var beyondEnd = await service.GetTimelineAsync(Query(page: 99, pageSize: 5), CancellationToken.None);
-        Assert.Empty(beyondEnd.Sessions);
-        Assert.Equal(10, beyondEnd.TotalCount);
-        Assert.False(beyondEnd.HasMore);
     }
 
     [Fact]
@@ -265,19 +260,29 @@ public sealed class MobileTimelinePaginationTests
     }
 
     [Fact]
-    public async Task GetTimelineAsync_HugePageNumberReturnsEmptyPageWithoutOverflow()
+    public async Task GetTimelineAsync_HugePageNumberIsRejectedInsteadOfOverflowing()
     {
         await using var db = MobileTestHelpers.CreateDb();
         SeedSessions(db, 10);
 
         // page=int.MaxValue 时 (page-1)*pageSize 会溢出 int 变成负数，
-        // 在 PostgreSQL 上会因负 OFFSET 直接报错 —— 必须返回空页而不是异常。
-        var response = await Service(db).GetTimelineAsync(
+        // 在 PostgreSQL 上会因负 OFFSET 直接报错。现在用 long 计算并拒绝超大偏移：
+        // 明确抛错（端点映射为 400），既不溢出，也不会静默物化整段历史。
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => Service(db).GetTimelineAsync(
             Query(page: int.MaxValue, pageSize: MobileTimelinePagination.MaxPageSize),
-            CancellationToken.None);
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetTimelineAsync_PageBeyondEndButWithinReadableOffset_ReturnsEmptyPage()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        SeedSessions(db, 10);
+
+        // 偏移在可读上限内但超出总条数：返回空页，仍报告真实总数且不谎报还有更多。
+        var response = await Service(db).GetTimelineAsync(Query(page: 99, pageSize: 5), CancellationToken.None);
 
         Assert.Empty(response.Items);
-        Assert.Empty(response.Sessions);
         Assert.Equal(10, response.TotalCount);
         Assert.False(response.HasMore);
         Assert.False(response.Truncated);

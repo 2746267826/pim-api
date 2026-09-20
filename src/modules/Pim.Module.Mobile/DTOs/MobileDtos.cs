@@ -315,6 +315,22 @@ public static class MobileTimelinePagination
     /// </summary>
     public const int MaxPageSize = 50000;
 
+    /// <summary>
+    /// 单次请求允许读取的最大偏移量。
+    /// <para>
+    /// 合并流按时间排序，要在「会话 + fallback 汇总」的交错流里定位第 N 页，
+    /// 必须至少读过该页之前的行，因此读取成本天然是 O(skip)（这是偏移分页的固有代价，
+    /// 不是实现缺陷）。若不设上限，一个超大 <c>page</c> 就能让单次请求物化整段历史
+    /// （接口允许不传 <c>date</c>，此时范围是全部历史）。
+    /// </para>
+    /// <para>
+    /// 20 万行已远超任何真实单日窗口（实测单日峰值：会话 7863、汇总 30444），
+    /// 因此正常调用永远不会触碰该上限；确实需要更大窗口的调用方应按日期分段请求。
+    /// 超过该上限时接口返回明确错误，而不是静默读取巨量数据或返回错误的分页内容。
+    /// </para>
+    /// </summary>
+    public const long MaxReadableOffset = 200_000;
+
     /// <summary>页码从 1 起算；缺失或小于 1 一律视为第 1 页。</summary>
     public static int ClampPage(int? page) => page is null or < 1 ? 1 : page.Value;
 

@@ -533,30 +533,26 @@ ON CONFLICT DO NOTHING;
 -- 「认不出 → 游戏」是错误映射，且分类器已对非应用记录短路（见 ActivityClassifier），
 -- 这里再把存量规则停用，保证已经播种过的库也不会继续污染。
 --
--- 按**规则语义**（任意一个条件是对 appNameNormalized 的 equals unknown）识别，
--- 而不是只按规则名匹配：
---   * 历史迁移的名称变体（大小写、尾部 .exe、多余空格）都能覆盖；
---   * 不会误伤恰好同名但条件不同的用户规则；
---   * 用 jsonb_array_elements 遍历**全部**条件 —— 早先只检查 all[0]，会漏掉
---     unknown 出现在第二个及之后条件的规则（review 指出）。
+-- 清理范围必须同时满足两个条件，缺一不可：
+--   1) 规则名是迁移产物（'Migrated app rule: ' 前缀）——历史迁移的 app_pattern 变体
+--      （unknown / Unknown / unknown.exe / ' unknown '）都落在这个前缀下；
+--   2) 条件形状与迁移完全一致：all 里**恰好一条** appNameNormalized equals unknown。
+-- 之所以要求「恰好一条」：迁移只会产出单条件规则，而多条件的复合规则
+-- （例如 domain=example.com AND appNameNormalized=unknown）是调用方自己写的合法规则，
+-- 语义上并不等价于「认不出就归类」，不能一并停用（review 指出早先版本会误伤它）。
 UPDATE pc_activity_category_rules
 SET status = 'disabled',
     updated_at = NOW(),
     explanation = COALESCE(explanation, '') || ' [disabled by #331: unknown must not map to an activity category]'
 WHERE status = 'active'
-  AND EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements(
-            CASE WHEN jsonb_typeof(conditions_json -> 'all') = 'array'
-                 THEN conditions_json -> 'all'
-                 ELSE '[]'::jsonb
-            END) AS condition
-        WHERE COALESCE(condition ->> 'field', '') = 'appNameNormalized'
-          AND COALESCE(condition ->> 'op', '') = 'equals'
-          AND lower(trim(regexp_replace(
-                trim(COALESCE(condition ->> 'value', '')),
-                '\.exe$', '', 'i'))) = 'unknown'
-      );
+  AND rule_name LIKE 'Migrated app rule: %'
+  AND jsonb_typeof(conditions_json -> 'all') = 'array'
+  AND jsonb_array_length(conditions_json -> 'all') = 1
+  AND COALESCE(conditions_json -> 'all' -> 0 ->> 'field', '') = 'appNameNormalized'
+  AND COALESCE(conditions_json -> 'all' -> 0 ->> 'op', '') = 'equals'
+  AND lower(trim(regexp_replace(
+        trim(COALESCE(conditions_json -> 'all' -> 0 ->> 'value', '')),
+        '\.exe$', '', 'i'))) = 'unknown';
 
 INSERT INTO pc_activity_category_rules (rule_name, scope, category_name, project_tag, color, priority, source, status, conditions_json, confidence, explanation)
 SELECT

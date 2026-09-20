@@ -137,9 +137,19 @@ public sealed class MobileModule : IModule
             [FromQuery] int? pageSize,
             [FromServices] MobileUsageQueryService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileTimelineResponse>.Ok(await service.GetTimelineAsync(
-                BuildTimelineQuery(deviceId, date, rangeStartUtc, rangeEndUtc, page, pageSize),
-                ct))));
+        {
+            try
+            {
+                return Results.Ok(ApiResponse<MobileTimelineResponse>.Ok(await service.GetTimelineAsync(
+                    BuildTimelineQuery(deviceId, date, rangeStartUtc, rangeEndUtc, page, pageSize),
+                    ct)));
+            }
+            catch (ArgumentOutOfRangeException ex)
+            {
+                // 分页偏移超过可读上限：明确 400，而不是静默物化整段历史（#330 review）。
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
 
         group.MapGet("/location/history", async (
             [FromQuery] string? deviceId,

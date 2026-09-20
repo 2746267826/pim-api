@@ -201,6 +201,84 @@ public sealed class Issues330And331RealDbTests
         public string? Role => "user";
     }
 
+    // ================= #331：启动 SQL 的规则清理 =================
+
+    /// <summary>
+    /// 在真实 PostgreSQL 上**执行**启动期清理语句（临时表 + 回滚，绝不写镜像库），
+    /// 覆盖单元测试无法验证的 jsonb 语义：
+    /// 迁移变体（大小写 / .exe / 空格）必须被停用；
+    /// 合法复合规则与手写规则不得被误停用；异常 JSON 形状不得抛错。
+    /// </summary>
+    [SkippableFact]
+    public async Task UnknownRuleCleanup_OnPostgres_DisablesOnlyMigratedVariants()
+    {
+        var connectionString = RealDbTestConnection.Require();
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        await using (var setup = new NpgsqlCommand(
+            """
+            CREATE TEMP TABLE t_rules (rule_name text, status text, conditions_json jsonb);
+            INSERT INTO t_rules VALUES
+             ('Migrated app rule: unknown', 'active', '{"all":[{"field":"appNameNormalized","op":"equals","value":"unknown"}]}'),
+             ('Migrated app rule: Unknown', 'active', '{"all":[{"field":"appNameNormalized","op":"equals","value":"Unknown"}]}'),
+             ('Migrated app rule: unknown.exe', 'active', '{"all":[{"field":"appNameNormalized","op":"equals","value":"unknown.exe"}]}'),
+             ('Migrated app rule:  unknown ', 'active', '{"all":[{"field":"appNameNormalized","op":"equals","value":" unknown "}]}'),
+             ('Migrated app rule: code', 'active', '{"all":[{"field":"appNameNormalized","op":"equals","value":"code"}]}'),
+             ('My legit domain rule', 'active', '{"all":[{"field":"domain","op":"equals","value":"example.com"},{"field":"appNameNormalized","op":"equals","value":"unknown"}]}'),
+             ('Hand-written unknown rule', 'active', '{"all":[{"field":"appNameNormalized","op":"equals","value":"unknown"}]}'),
+             ('null conditions', 'active', NULL),
+             ('all not array', 'active', '{"all":{"field":"appNameNormalized","op":"equals","value":"unknown"}}'),
+             ('all empty', 'active', '{"all":[]}'),
+             ('non-object element', 'active', '{"all":["unknown"]}');
+
+            UPDATE t_rules
+            SET status = 'disabled'
+            WHERE status = 'active'
+              AND rule_name LIKE 'Migrated app rule: %'
+              AND jsonb_typeof(conditions_json -> 'all') = 'array'
+              AND jsonb_array_length(conditions_json -> 'all') = 1
+              AND COALESCE(conditions_json -> 'all' -> 0 ->> 'field', '') = 'appNameNormalized'
+              AND COALESCE(conditions_json -> 'all' -> 0 ->> 'op', '') = 'equals'
+              AND lower(trim(regexp_replace(
+                    trim(COALESCE(conditions_json -> 'all' -> 0 ->> 'value', '')),
+                    '\.exe$', '', 'i'))) = 'unknown';
+            """, connection, transaction))
+        {
+            await setup.ExecuteNonQueryAsync();
+        }
+
+        await using var read = new NpgsqlCommand(
+            "SELECT rule_name, status FROM t_rules ORDER BY rule_name", connection, transaction);
+        var byName = new Dictionary<string, string>(StringComparer.Ordinal);
+        await using (var reader = await read.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+                byName[reader.GetString(0)] = reader.GetString(1);
+        }
+
+        // 迁移变体全部停用
+        Assert.Equal("disabled", byName["Migrated app rule: unknown"]);
+        Assert.Equal("disabled", byName["Migrated app rule: Unknown"]);
+        Assert.Equal("disabled", byName["Migrated app rule: unknown.exe"]);
+        Assert.Equal("disabled", byName["Migrated app rule:  unknown "]);
+
+        // 合法规则不受影响
+        Assert.Equal("active", byName["Migrated app rule: code"]);
+        Assert.Equal("active", byName["My legit domain rule"]);
+        Assert.Equal("active", byName["Hand-written unknown rule"]);
+
+        // 异常 JSON 形状不得抛错，且不应被改动
+        Assert.Equal("active", byName["null conditions"]);
+        Assert.Equal("active", byName["all not array"]);
+        Assert.Equal("active", byName["all empty"]);
+        Assert.Equal("active", byName["non-object element"]);
+
+        await transaction.RollbackAsync();
+    }
+
     // ================= #331：空档不得判成应用类别 =================
 
     [SkippableFact]
@@ -209,44 +287,37 @@ public sealed class Issues330And331RealDbTests
         var connectionString = RealDbTestConnection.Require();
         await using var db = CreateContext(connectionString);
 
-        // 生产库中 gap/idle/afk 曾被判成「游戏」（unknown 规则命中）。
-        // 分类器已对非应用记录短路，这里核对：按新逻辑重新判定时，
-        // 这些记录一律得到「未活动」，绝不落到任何应用类别上。
-        var inactive = await db.Set<ActivityClassificationEntity>()
+        // 直接核对**落库状态**，而不是重新跑一遍分类器：
+        // 后者即使历史重写完全失效也会通过（review 指出断言过弱）。
+        var inactiveTotal = await db.Set<ActivityClassificationEntity>()
             .AsNoTracking()
-            .Where(c => c.RecordType == "gap" || c.RecordType == "idle" || c.RecordType == "afk")
-            .Select(c => new { c.RecordType, c.CategoryName })
-            .Take(500)
+            .CountAsync(
+                c => c.RecordType == "gap" || c.RecordType == "idle" || c.RecordType == "afk",
+                CancellationToken.None);
+
+        Skip.If(inactiveTotal == 0, "镜像库没有 gap/idle/afk 分类记录，跳过。");
+
+        // #331 的具体缺陷是「空档被归到某个**应用类别**」（生产实测为「游戏」）。
+        // 因此断言：任何非应用记录都不得带 7 大类中的应用类别。
+        // 「其他」是修复前的中性兜底值，不属于该缺陷（历史行可能仍是它）；
+        // 「未活动」是修复后的正确值。该断言直接读库状态，历史重写失效会立刻失败。
+        var applicationCategories = Pim.Module.PcTracker.Services.CategoryLegacyMapper.UnifiedCategoryNames
+            .Where(name => name != Pim.Module.PcTracker.Services.CategoryLegacyMapper.Other)
+            .ToArray();
+
+        var misclassified = await db.Set<ActivityClassificationEntity>()
+            .AsNoTracking()
+            .Where(c => (c.RecordType == "gap" || c.RecordType == "idle" || c.RecordType == "afk")
+                && applicationCategories.Contains(c.CategoryName))
+            .GroupBy(c => c.CategoryName)
+            .Select(g => new { CategoryName = g.Key, Count = g.Count() })
+            .Take(10)
             .ToListAsync(CancellationToken.None);
-
-        Skip.If(inactive.Count == 0, "镜像库没有 gap/idle/afk 分类记录，跳过。");
-
-        var rules = await new ActivityClassificationRuleService(db).LoadActiveAsync(CancellationToken.None);
-
-        var misclassified = new List<string>();
-        foreach (var row in inactive)
-        {
-            var result = ActivityClassifier.Classify(
-                new Pim.Module.PcTracker.Services.ActivityClassificationContext(
-                    RecordType: row.RecordType,
-                    AppName: null,
-                    AppNameNormalized: AppNameNormalizer.Normalize(null),
-                    Domain: null,
-                    UrlPath: null,
-                    Title: null,
-                    WindowTitle: null,
-                    FilePath: null,
-                    BucketType: null),
-                rules,
-                NullLogger.Instance);
-
-            if (result.CategoryName != Pim.Module.PcTracker.DTOs.ActivityClassificationResult.InactiveCategoryName)
-                misclassified.Add($"{row.RecordType}:{result.CategoryName}");
-        }
 
         Assert.True(
             misclassified.Count == 0,
-            $"空档记录仍被判成应用类别：{string.Join(", ", misclassified.Distinct().Take(5))}");
+            "库中仍存在被判成应用类别的空档记录："
+            + string.Join(", ", misclassified.Select(o => $"{o.CategoryName}×{o.Count}")));
     }
 
     [SkippableFact]

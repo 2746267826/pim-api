@@ -185,15 +185,15 @@ public sealed class GapClassificationTests
 
         Assert.Contains("UPDATE pc_activity_category_rules", sql);
         Assert.Contains("status = 'disabled'", sql);
-        // 用 jsonb_array_elements 遍历**全部**条件：早先只查 all[0]，
-        // 会漏掉 unknown 出现在第二个及之后条件的规则（review 指出）。
-        Assert.Contains("jsonb_array_elements(", sql);
-        Assert.Contains("->> 'field'", sql);
+        // 只清理迁移产物：限定规则名前缀，并要求条件形状与迁移一致（all 恰好一条）。
+        // 否则合法的复合规则（domain=... AND appNameNormalized=unknown）会被误停用（review 指出）。
+        Assert.Contains("rule_name LIKE 'Migrated app rule: %'", sql);
+        Assert.Contains("jsonb_array_length(conditions_json -> 'all') = 1", sql);
         // 非数组 / 缺失的 all 不能抛错
         Assert.Contains("jsonb_typeof(conditions_json -> 'all') = 'array'", sql);
         // 名称变体归一化：先 trim、去 .exe、再 trim/转小写
         Assert.Contains("lower(trim(regexp_replace(trim(", sql);
-        // 不能只按规则名匹配（那会漏掉未知变体）
+        // 不能只按规则名匹配（那会漏掉 unknown.exe / 大小写等变体）
         Assert.DoesNotContain("WHERE rule_name = 'Migrated app rule: unknown'", sql);
     }
 

@@ -160,6 +160,17 @@ public sealed class MobileUsageQueryService
         // skip 用 long 计算：page 来自查询串，int 溢出会变成负 OFFSET，
         // 在 PostgreSQL 上直接报错而不是返回空页（review 发现）。
         var skip = ((long)page - 1) * pageSize;
+
+        // 合并流要定位第 N 页必须读过其之前的行，读取成本是 O(skip)。
+        // 超过可读偏移上限时明确拒绝，避免单次请求物化整段历史（review 指出）。
+        if (skip > MobileTimelinePagination.MaxReadableOffset)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(query),
+                $"分页偏移过大（skip={skip}）：最多可读取 {MobileTimelinePagination.MaxReadableOffset} 条之前的数据，"
+                + "请缩小日期范围后按日期分段请求。");
+        }
+
         if (skip >= totalCount)
         {
             return new MobileTimelineResponse(
