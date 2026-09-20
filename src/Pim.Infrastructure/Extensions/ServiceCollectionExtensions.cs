@@ -98,18 +98,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICurrentUserService, CurrentUserService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
 
-        // Storage (optional — skip if MinIO is not configured)
-        var minioEndpoint = configuration["Minio:Endpoint"];
-        var minioAccess = configuration["Minio:AccessKey"];
-        var minioSecret = configuration["Minio:SecretKey"];
-        if (!string.IsNullOrWhiteSpace(minioEndpoint) && !string.IsNullOrWhiteSpace(minioAccess) && !string.IsNullOrWhiteSpace(minioSecret))
-        {
-            services.AddSingleton(sp => new MinioStorage(
-                minioEndpoint,
-                minioAccess!,
-                minioSecret!));
-        }
-
+        // Storage：MinIO 随 P4 退役（文件与附件线均改走 OneDrive），不再注册
         services.AddSingleton(sp => new KopiaService(
             configuration["Kopia:RepositoryPath"]!,
             configuration["Kopia:Password"]!));

@@ -77,25 +77,11 @@ public abstract class OptionalHttpHealthCheck(IHttpClientFactory httpClientFacto
     }
 }
 
-public sealed class MinioHealthCheck(IHttpClientFactory f, IConfiguration cfg) : OptionalHttpHealthCheck(f, cfg)
-{
-    protected override string Name => "minio";
-    protected override string? ResolveUrl(IConfiguration cfg)
-        => cfg["Minio:Endpoint"] is { Length: > 0 } e ? $"{e.TrimEnd('/')}/minio/health/live" : null;
-}
-
 public sealed class TikaHealthCheck(IHttpClientFactory f, IConfiguration cfg) : OptionalHttpHealthCheck(f, cfg)
 {
     protected override string Name => "tika";
     protected override string? ResolveUrl(IConfiguration cfg)
         => cfg["Tika:BaseUrl"] is { Length: > 0 } e ? $"{e.TrimEnd('/')}/version" : null;
-}
-
-public sealed class QdrantHealthCheck(IHttpClientFactory f, IConfiguration cfg) : OptionalHttpHealthCheck(f, cfg)
-{
-    protected override string Name => "qdrant";
-    protected override string? ResolveUrl(IConfiguration cfg)
-        => cfg["Qdrant:BaseUrl"] is { Length: > 0 } e ? $"{e.TrimEnd('/')}/collections" : null;
 }
 
 public sealed class LiteLlmHealthCheck(IHttpClientFactory f, IConfiguration cfg) : OptionalHttpHealthCheck(f, cfg)
@@ -119,9 +105,8 @@ public static class PimHealthChecks
             .ForwardToPrometheus()
             .AddCheck<PimDatabaseHealthCheck>("database", failureStatus: HealthStatus.Unhealthy, tags: ["ready"])
             .AddCheck<HangfireStorageHealthCheck>("hangfire", failureStatus: HealthStatus.Degraded, tags: ["ready"])
-            .AddCheck<MinioHealthCheck>("minio", failureStatus: HealthStatus.Degraded, tags: ["ready"])
+            // minio / qdrant 随 P4 退役，其健康检查一并移除
             .AddCheck<TikaHealthCheck>("tika", failureStatus: HealthStatus.Degraded, tags: ["ready"])
-            .AddCheck<QdrantHealthCheck>("qdrant", failureStatus: HealthStatus.Degraded, tags: ["ready"])
             .AddCheck<LiteLlmHealthCheck>("litellm", failureStatus: HealthStatus.Degraded, tags: ["ready"]);
     }
 
