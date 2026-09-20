@@ -39,6 +39,79 @@ public class InvariantOptionsAndMigrationTests
         Assert.Equal(0.90, resolved.CoverageRedRatio);
     }
 
+    /// <summary>
+    /// 复审回归（Minor）：**所有** double 阈值都必须做有限值校验，不能只管新增的那一个。
+    /// NaN 不满足任何比较运算（`NaN &lt;= 0` 为 false），只写范围比较会把它放行；
+    /// 随后该阈值参与的所有比较都返回 false。+∞ 同理（例如 S7 阈值设为 ∞ 会让所有空洞都不违规）。
+    /// </summary>
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void InvariantOptions_NonFiniteDoubleThresholds_AreRejected(double badValue)
+    {
+        // 逐字段把每一个 double 阈值设成非有限值，断言都被拦下。
+        var setters = new (string Name, Action<InvariantOptions, double> Set)[]
+        {
+            (nameof(InvariantOptions.MinInputDensityPerMinute), (o, v) => o.MinInputDensityPerMinute = v),
+            (nameof(InvariantOptions.LongEventThresholdMinutes), (o, v) => o.LongEventThresholdMinutes = v),
+            (nameof(InvariantOptions.UndeclaredOfflineGapMinutes), (o, v) => o.UndeclaredOfflineGapMinutes = v),
+            (nameof(InvariantOptions.MaxUploadLagP99Minutes), (o, v) => o.MaxUploadLagP99Minutes = v),
+            (nameof(InvariantOptions.MobileSummaryLagHours), (o, v) => o.MobileSummaryLagHours = v),
+            (nameof(InvariantOptions.RecentWindowHours), (o, v) => o.RecentWindowHours = v),
+            (nameof(InvariantOptions.MaxDailyActiveHours), (o, v) => o.MaxDailyActiveHours = v),
+            (nameof(InvariantOptions.AwakeWindowHours), (o, v) => o.AwakeWindowHours = v),
+            (nameof(InvariantOptions.AwakeWindowWarningRatio), (o, v) => o.AwakeWindowWarningRatio = v),
+            (nameof(InvariantOptions.CoverageRedRatio), (o, v) => o.CoverageRedRatio = v),
+            (nameof(InvariantOptions.CoverageYellowRatio), (o, v) => o.CoverageYellowRatio = v),
+            (nameof(InvariantOptions.ClockSkewToleranceMinutes), (o, v) => o.ClockSkewToleranceMinutes = v),
+            (nameof(InvariantOptions.TimelineGapThresholdMinutes), (o, v) => o.TimelineGapThresholdMinutes = v),
+            (nameof(InvariantOptions.InstanceOverlapToleranceSeconds), (o, v) => o.InstanceOverlapToleranceSeconds = v),
+            (nameof(InvariantOptions.Tolerance), (o, v) => o.Tolerance = v)
+        };
+
+        foreach (var (name, set) in setters)
+        {
+            var options = new InvariantOptions();
+            set(options, badValue);
+
+            Assert.False(options.Validate(out var error), $"{name} 设为 {badValue} 后本应校验失败");
+            Assert.NotNull(error);
+            Assert.Contains(name, error!);
+
+            // 回退路径也必须生效：非法配置一律回退默认值并标注
+            var (resolved, fallback, note) = InvariantOptions.Resolve(options);
+            Assert.True(fallback, $"{name} 非法时应当回退默认值");
+            Assert.NotNull(note);
+            Assert.NotNull(resolved);
+        }
+    }
+
+    /// <summary>
+    /// 复审回归：阈值非有限时必须**回退默认值**，绝不能让 ∞/NaN 直接进入判定
+    /// （否则 S7 所有空洞都会"不违规"，形成静默漏报）。
+    /// </summary>
+    [Fact]
+    public void InvariantOptions_NonFiniteGapThreshold_FallsBackSoHolesStillDetected()
+    {
+        var options = new InvariantOptions { TimelineGapThresholdMinutes = double.PositiveInfinity };
+        var (resolved, fallback, _) = InvariantOptions.Resolve(options);
+
+        Assert.True(fallback);
+        Assert.Equal(15.0, resolved.TimelineGapThresholdMinutes);
+
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = new DateTime(2026, 7, 6, 10, 0, 0, DateTimeKind.Utc), EndTime = new DateTime(2026, 7, 6, 10, 30, 0, DateTimeKind.Utc) },
+            new() { DeviceId = "DEV-1", StartTime = new DateTime(2026, 7, 6, 11, 0, 0, DateTimeKind.Utc), EndTime = new DateTime(2026, 7, 6, 11, 30, 0, DateTimeKind.Utc) }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, options);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+    }
+
     [Fact]
     public void InvariantOptions_InvalidValues_FallbacksGracefullyWithNotes()
     {

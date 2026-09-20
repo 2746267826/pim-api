@@ -333,6 +333,33 @@ public class DataReliabilityQualityInspectorTests
     }
 
     /// <summary>
+    /// 复审回归（Important）：S9 与 S7 必须使用**同一份**"缺数据"类型口径。
+    /// S7 把 gap/afk/offline/sleep 当作覆盖标记；S9 必须把同样的类型算作"设备声明的离线"，
+    /// 并把其余类型算作有效记录。两处各写各的，legacy（afk/offline/sleep）或未来新增的类型
+    /// 就会在一条尺子里被算作记录、在另一条里被算作离线，导致两条尺子互相矛盾。
+    /// </summary>
+    [Fact]
+    public async Task CheckS9AndS7_UseTheSameGapEventTypePredicate()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateRecordingInspector(conn);
+
+        await inspector.InspectReportAsync(ReportNow);
+
+        // S9 的两条 CTE：离线集合按 IN 判定，有效记录按 NOT IN 判定，二者互补。
+        var coverageQuery = conn.ExecutedCommands
+            .First(sql => sql.Contains("offline_seconds", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Contains("NOT IN ('gap', 'afk', 'offline', 'sleep')", coverageQuery);
+        Assert.Contains("IN ('gap', 'afk', 'offline', 'sleep')", coverageQuery);
+
+        // S7 的时间线查询取全部类型，由 C# 侧统一判定是否 gap（不再在 SQL 里硬编码类型集合）
+        var timelineQuery = conn.ExecutedCommands
+            .First(sql => sql.Contains("end_time", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain("event_type IN", timelineQuery, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// 复审回归（Important）：S9 的设备集合必须取"有记录"与"有离线声明"的**并集**。
     /// 只从 recorded 出发会让"整段窗口都声明了离线、因此没有任何记录"的设备被静默跳过，
     /// 等于替它默认通过；这类设备恰恰是最需要被看见的。

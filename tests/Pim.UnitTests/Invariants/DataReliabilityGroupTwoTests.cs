@@ -504,6 +504,37 @@ public class DataReliabilityGroupTwoTests
         Assert.Equal(0, result.TotalViolations);
     }
 
+    /// <summary>
+    /// 复审回归（Important）：这条用例专门锁住"时间线 / 覆盖标记必须是两份输入"这个设计。
+    ///
+    /// 场景：窗口 0-10 与 40-50 之间有 30 分钟空白，中间只有一段 20-30 的 gap 标记。
+    ///   * **正确（双输入）**：时间线 = [0-10, 40-50] → 空洞 10-40 共 30 分钟；
+    ///     gap(20-30) 盖不住它 → **判违规**。
+    ///   * **旧实现（gap 混在时间线里）**：列表 = [0-10, 20-30(gap), 40-50]，
+    ///     空洞被 gap 切成 10-20 与 30-40 两段各 10 分钟，**都低于 15 分钟阈值** → 漏报通过。
+    ///
+    /// 也就是说旧实现会把一段 30 分钟的无解释空白"切碎"成两段不达标的碎片从而放过。
+    /// 把 gap 放回时间线（回退该设计）时这条用例必须失败。
+    /// </summary>
+    [Fact]
+    public void S7_GapFragment_DoesNotSplitHoleIntoSubThresholdPieces()
+    {
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(10), EventType = "window" },
+            // 只标记了中间 10 分钟，前后各留 10 分钟无解释空白
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(20), EndTime = _baseUtc.AddMinutes(30), IsGap = true, EventType = "gap" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(40), EndTime = _baseUtc.AddMinutes(50), EventType = "window" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+        // 报出的应当是整段 30 分钟空洞，而不是被切碎后的碎片
+        Assert.Contains("30.0m", result.Detail);
+    }
+
     [Fact]
     public void S7_OnlyHistoricalHoles_DowngradesToWarning()
     {

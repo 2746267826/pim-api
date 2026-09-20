@@ -114,6 +114,18 @@ public sealed class InvariantOptions
     {
         var errors = new List<string>();
 
+        // 所有 double 阈值先统一做**有限值**校验：NaN 不满足任何比较运算
+        //（`NaN < 0`、`NaN <= 0` 均为 false），只写范围比较会把它放行；
+        // 随后该阈值参与的所有比较都返回 false，造成静默漏报。
+        // +∞ 同理：例如 TimelineGapThresholdMinutes = ∞ 会让所有 S7 空洞都"不违规"。
+        foreach (var (name, value) in DoubleThresholds())
+        {
+            if (!double.IsFinite(value))
+            {
+                errors.Add($"{name} must be a finite value");
+            }
+        }
+
         if (MinInputDensityPerMinute < 0) errors.Add("MinInputDensityPerMinute must be >= 0");
         if (LongEventThresholdMinutes <= 0) errors.Add("LongEventThresholdMinutes must be > 0");
         if (UndeclaredOfflineGapMinutes <= 0) errors.Add("UndeclaredOfflineGapMinutes must be > 0");
@@ -131,10 +143,7 @@ public sealed class InvariantOptions
         if (InspectionTimeoutSeconds <= 0) errors.Add("InspectionTimeoutSeconds must be > 0");
         if (ClockSkewToleranceMinutes < 0) errors.Add("ClockSkewToleranceMinutes must be >= 0");
         if (TimelineGapThresholdMinutes <= 0) errors.Add("TimelineGapThresholdMinutes must be > 0");
-        // NaN 不满足任何比较运算（NaN < 0 为 false），只写 `< 0` 会把它放行，
-        // 随后所有容差比较都返回 false，造成静默漏报。必须显式要求有限值。
-        if (!double.IsFinite(InstanceOverlapToleranceSeconds) || InstanceOverlapToleranceSeconds < 0)
-            errors.Add("InstanceOverlapToleranceSeconds must be a finite value >= 0");
+        if (InstanceOverlapToleranceSeconds < 0) errors.Add("InstanceOverlapToleranceSeconds must be >= 0");
         if (Tolerance < 0) errors.Add("Tolerance must be >= 0");
 
         if (errors.Count > 0)
@@ -145,6 +154,29 @@ public sealed class InvariantOptions
 
         errorMessage = null;
         return true;
+    }
+
+    /// <summary>
+    /// 全部 double 阈值（字段名 + 当前值）。集中列出是为了让"新增阈值却忘了做有限值校验"
+    /// 这件事很难发生，并让校验逻辑只写一遍。
+    /// </summary>
+    private IEnumerable<(string Name, double Value)> DoubleThresholds()
+    {
+        yield return (nameof(MinInputDensityPerMinute), MinInputDensityPerMinute);
+        yield return (nameof(LongEventThresholdMinutes), LongEventThresholdMinutes);
+        yield return (nameof(UndeclaredOfflineGapMinutes), UndeclaredOfflineGapMinutes);
+        yield return (nameof(MaxUploadLagP99Minutes), MaxUploadLagP99Minutes);
+        yield return (nameof(MobileSummaryLagHours), MobileSummaryLagHours);
+        yield return (nameof(RecentWindowHours), RecentWindowHours);
+        yield return (nameof(MaxDailyActiveHours), MaxDailyActiveHours);
+        yield return (nameof(AwakeWindowHours), AwakeWindowHours);
+        yield return (nameof(AwakeWindowWarningRatio), AwakeWindowWarningRatio);
+        yield return (nameof(CoverageRedRatio), CoverageRedRatio);
+        yield return (nameof(CoverageYellowRatio), CoverageYellowRatio);
+        yield return (nameof(ClockSkewToleranceMinutes), ClockSkewToleranceMinutes);
+        yield return (nameof(TimelineGapThresholdMinutes), TimelineGapThresholdMinutes);
+        yield return (nameof(InstanceOverlapToleranceSeconds), InstanceOverlapToleranceSeconds);
+        yield return (nameof(Tolerance), Tolerance);
     }
 
     /// <summary>

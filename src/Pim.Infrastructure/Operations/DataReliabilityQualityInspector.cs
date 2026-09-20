@@ -51,6 +51,15 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
     public string CheckName => "data_reliability";
 
     /// <summary>
+    /// "缺数据"类事件类型（SQL 片段，用于 <c>event_type</c> 判定）。
+    /// S7 与 S9 必须使用**同一份**口径：S7 用它在时间线里识别"覆盖标记"，
+    /// S9 用它区分"有效记录"与"设备声明的离线"。两处若各写各的，
+    /// legacy（afk/offline/sleep）或未来新增的类型就会在这条尺子里被算作记录、
+    /// 在另一条里被算作离线，导致两条尺子互相矛盾。
+    /// </summary>
+    private const string GapEventTypeSqlList = "'gap', 'afk', 'offline', 'sleep'";
+
+    /// <summary>
     /// 结构化体检（#260）：13 条尺子的编号 / 名称 / 状态 / 当前值 / 阈值 / 违规分档 / 样例 / 关联 issue。
     /// 与 <see cref="InspectAsync"/> 共用同一批取数与判据调用（<see cref="RunChecksAsync"/>），保证"判据只有一份实现"。
     /// 全程只读：只发 SELECT，不写任何表，也不写缓存表——"最近一次结果"由进程内单例缓存承担。
@@ -1163,10 +1172,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             DateTime end = reader.GetDateTime(2);
             string type = reader.IsDBNull(3) ? "window" : reader.GetString(3);
 
-            bool isGap = type.Equals("gap", StringComparison.OrdinalIgnoreCase) ||
-                         type.Equals("afk", StringComparison.OrdinalIgnoreCase) ||
-                         type.Equals("offline", StringComparison.OrdinalIgnoreCase) ||
-                         type.Equals("sleep", StringComparison.OrdinalIgnoreCase);
+            bool isGap = IsGapEventType(type);
 
             intervals.Add(new TimelineInterval
             {
@@ -1296,7 +1302,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         //    gap 区间可能由多个 30 分钟分片首尾相接组成，必须先合并再求长度，否则重复计算。
         await using var cmd = conn.CreateCommand();
         cmd.CommandTimeout = 30;
-        cmd.CommandText = """
+        cmd.CommandText = $"""
             WITH win AS (
                 SELECT @windowStart::timestamptz AS ws, @windowEnd::timestamptz AS we
             ),
@@ -1305,7 +1311,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                        GREATEST(timestamp, win.ws) AS gs,
                        LEAST(timestamp + duration * interval '1 second', win.we) AS ge
                 FROM pc_tracker_events, win
-                WHERE event_type = 'gap'
+                WHERE event_type IN ({GapEventTypeSqlList})
                   AND timestamp + duration * interval '1 second' > win.ws
                   AND timestamp < win.we
             ),
@@ -1341,7 +1347,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                        GREATEST(timestamp, win.ws) AS rs,
                        LEAST(timestamp + duration * interval '1 second', win.we) AS re
                 FROM pc_tracker_events, win
-                WHERE event_type IN ('window', 'web-page', 'idle')
+                WHERE event_type NOT IN ({GapEventTypeSqlList})
                   AND timestamp + duration * interval '1 second' > win.ws
                   AND timestamp < win.we
             ),
@@ -1826,6 +1832,14 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             return false;
         }
     }
+
+    /// <summary>事件类型是否属于"缺数据"类（gap / afk / offline / sleep，与 <see cref="GapEventTypeSqlList"/> 一致）。</summary>
+    private static bool IsGapEventType(string? eventType) =>
+        eventType is not null &&
+        (eventType.Equals("gap", StringComparison.OrdinalIgnoreCase) ||
+         eventType.Equals("afk", StringComparison.OrdinalIgnoreCase) ||
+         eventType.Equals("offline", StringComparison.OrdinalIgnoreCase) ||
+         eventType.Equals("sleep", StringComparison.OrdinalIgnoreCase));
 
     private static async Task<bool> ColumnExistsAsync(
         DbConnection conn,
