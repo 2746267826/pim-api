@@ -134,6 +134,26 @@ public sealed class McpInProcessClientTests
         Assert.True(body.RootElement.GetProperty("moved").GetBoolean());
     }
 
+    /// <summary>
+    /// 跨域 302（如附件直链跳到 OneDrive 内容域）时，客户端**不应**跟随——
+    /// 跟随会把预授权直链当作跳转目标去请求，且最终响应里携带的是目标站点的头，
+    /// 使 get_quick_note_attachment_meta 之类的「dump 全部响应头」工具把 OneDrive
+    /// 临时凭证链接暴露给 agent。这里锁定「跨域不跟随、保留 302 与 Location 供调用方判断」。
+    /// </summary>
+    [Fact]
+    public async Task CrossOriginRedirect_IsNotFollowed()
+    {
+        var (client, _) = CreateClient(app =>
+            app.MapGet("/api/v1/file", () => Results.Redirect(
+                "https://my.microsoftpersonalcontent.com/dl?tempauth=SECRET", permanent: false)));
+
+        var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/file");
+        var response = await client.SendAsync(request, CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+        Assert.NotNull(response.Headers.Location);
+    }
+
     [Fact]
     public async Task PostRedirect_ReplaysBodyWithNewContent()
     {

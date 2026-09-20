@@ -791,11 +791,23 @@ public sealed class McpToolExecutor
     {
         var headers = new JsonObject();
         foreach (var header in response.Headers)
-            headers[header.Key] = string.Join(", ", header.Value);
+            headers[header.Key] = RedactUrlBearingHeader(header.Key, string.Join(", ", header.Value));
         foreach (var header in response.Content.Headers)
-            headers[header.Key] = string.Join(", ", header.Value);
+            headers[header.Key] = RedactUrlBearingHeader(header.Key, string.Join(", ", header.Value));
         return headers;
     }
+
+    /// <summary>
+    /// 位置类响应头可能携带预授权直链（含临时凭据），不能原样交给 agent。
+    /// 附件下载现在会 302 到 OneDrive 内容域，`Location` 尤其敏感——这里统一脱敏，
+    /// 与「日志/审计/返回值零 token 与直链」的既有约束一致。
+    /// </summary>
+    private static string RedactUrlBearingHeader(string name, string value)
+        => name.Equals("Location", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Content-Location", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("Link", StringComparison.OrdinalIgnoreCase)
+                ? "[redacted]"
+                : value;
 
     private async Task<JsonNode?> EventByIdAsync(McpToolSpec spec, JsonObject args, string accessToken, CancellationToken ct)
     {
