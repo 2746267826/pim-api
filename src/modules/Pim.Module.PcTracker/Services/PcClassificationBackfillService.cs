@@ -122,25 +122,32 @@ public sealed class PcClassificationBackfillService
     /// 该业务日是否存在「过时的非应用记录快照」（#331）：记录类型属于 gap/idle/afk，
     /// 但类别不是「未活动」——即修复前被旧规则写成的应用类别（如「游戏」）。
     /// 人工/LLM 纠正过的快照不算过时（它们本就允许带任意类别）。
+    /// <para>
+    /// 记录类型与来源都按小写比较：SQL 的 IN/等值区分大小写，而
+    /// <see cref="PcActivityOverlapResolver.IsInactive"/> 与
+    /// <see cref="ActivityClassificationSnapshotService"/> 的保护判定都是大小写不灵敏的。
+    /// 若这里大小写敏感，'Gap' 这类历史写法会既不被判为过时（本方法漏检），
+    /// 又会被重写逻辑当作非应用记录处理 —— 两处口径必须一致。
+    /// </para>
     /// </summary>
     private async Task<bool> HasStaleInactiveSnapshotsAsync(
         DateTimeOffset startUtc,
         DateTimeOffset endUtc,
         CancellationToken ct)
     {
-        var inactiveTypes = PcActivityOverlapResolver.InactiveRecordTypes.ToArray();
+        var inactiveTypes = PcActivityOverlapResolver.InactiveRecordTypes
+            .Select(type => type.ToLowerInvariant())
+            .ToArray();
         var inactiveCategory = ActivityClassificationResult.InactiveCategoryName;
+        var protectedSources = new[] { "manual", "corrected", "user_corrected", "llm_corrected" };
 
         return await _db.Set<ActivityClassificationEntity>()
             .AnyAsync(
                 snapshot => snapshot.StartedAt >= startUtc
                     && snapshot.StartedAt < endUtc
-                    && inactiveTypes.Contains(snapshot.RecordType)
+                    && inactiveTypes.Contains(snapshot.RecordType.ToLower())
                     && snapshot.CategoryName != inactiveCategory
-                    && snapshot.Source != "manual"
-                    && snapshot.Source != "corrected"
-                    && snapshot.Source != "user_corrected"
-                    && snapshot.Source != "llm_corrected",
+                    && !protectedSources.Contains(snapshot.Source.ToLower()),
                 ct);
     }
 

@@ -132,6 +132,54 @@ public class PcClassificationBackfillServiceTests
     }
 
     [Fact]
+    public async Task BackfillAsync_ReprocessesDayWithMixedCaseInactiveRecordType()
+    {
+        // 历史数据可能写了 'Gap'/'IDLE'：IsInactive 与保护判定都大小写不灵敏，
+        // 因此这里的「过时」判定也必须忽略大小写，否则该日会被跳过而漏修。
+        await using var db = CreateDb();
+        var gapStart = DateTimeOffset.Parse("2026-08-10T10:00:00Z");
+        db.Set<TrackerEventEntity>().Add(GapEvent(gapStart, 1800));
+        db.Set<AwEventEntity>().Add(WindowEvent("2026-08-10T08:00:00Z", 600, "Code.exe", "Program.cs"));
+        db.Set<ActivityClassificationEntity>().Add(Snapshot(
+            "pc-fallback-v1:cover-start",
+            DateTimeOffset.Parse("2026-08-10T08:00:00Z")));
+
+        var record = TrackerPageTimelineBuilder.ToRawTrackerRecord(GapEvent(gapStart, 1800), []);
+        var stale = StaleInactiveSnapshot(ActivityClassificationRecordKey.FromRecord(record), gapStart);
+        stale.RecordType = "Gap";
+        db.Set<ActivityClassificationEntity>().Add(stale);
+        await db.SaveChangesAsync();
+
+        var stats = await CreateService(db).BackfillAsync(lookbackDays: 14, CancellationToken.None);
+
+        Assert.True(stats.ProcessedDays >= 1, "大小写变体的非应用记录也必须触发重处理");
+    }
+
+    [Fact]
+    public async Task BackfillAsync_DoesNotTreatUppercaseManualSourceAsStale()
+    {
+        // 保护来源的大小写变体同样不能被视为「过时」，否则会白白重处理该日。
+        await using var db = CreateDb();
+        var gapStart = DateTimeOffset.Parse("2026-08-10T10:00:00Z");
+        db.Set<TrackerEventEntity>().Add(GapEvent(gapStart, 1800));
+        db.Set<AwEventEntity>().Add(WindowEvent("2026-08-10T08:00:00Z", 600, "Code.exe", "Program.cs"));
+        db.Set<ActivityClassificationEntity>().Add(Snapshot(
+            "pc-fallback-v1:cover-start",
+            DateTimeOffset.Parse("2026-08-10T08:00:00Z")));
+
+        var record = TrackerPageTimelineBuilder.ToRawTrackerRecord(GapEvent(gapStart, 1800), []);
+        var manual = StaleInactiveSnapshot(ActivityClassificationRecordKey.FromRecord(record), gapStart);
+        manual.CategoryName = "学习";
+        manual.Source = "Manual";
+        db.Set<ActivityClassificationEntity>().Add(manual);
+        await db.SaveChangesAsync();
+
+        var stats = await CreateService(db).BackfillAsync(lookbackDays: 14, CancellationToken.None);
+
+        Assert.Equal(0, stats.ProcessedDays);
+    }
+
+    [Fact]
     public async Task EnsureClassificationsAsync_SecondRunDoesNotDuplicateSnapshots()
     {
         // 并发防护的幂等面：同一批 records 连续 ensure 两次，第二次全命中已有快照，不新增不抛。
