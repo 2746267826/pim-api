@@ -95,6 +95,14 @@ public sealed class InvariantOptions
     public double TimelineGapThresholdMinutes { get; set; } = 15.0;
 
     /// <summary>
+    /// S13: 多实例并发判定的区间重叠容差，单位：秒，默认 0.05。
+    /// 同一设备旧实例退出、新实例接管时，两段采集区间在边界上可能相触甚至亚秒级交叠；
+    /// 只有重叠超过该容差才认定为"真的同时在采集"（多实例并发），
+    /// 否则视为正常交接。0 表示不做容差（任何正重叠都算违规）。
+    /// </summary>
+    public double InstanceOverlapToleranceSeconds { get; set; } = 0.05;
+
+    /// <summary>
     /// 默认计算容差（如时钟浮点/网络抖动），默认 0.05 (5%)
     /// </summary>
     public double Tolerance { get; set; } = 0.05;
@@ -123,6 +131,7 @@ public sealed class InvariantOptions
         if (InspectionTimeoutSeconds <= 0) errors.Add("InspectionTimeoutSeconds must be > 0");
         if (ClockSkewToleranceMinutes < 0) errors.Add("ClockSkewToleranceMinutes must be >= 0");
         if (TimelineGapThresholdMinutes <= 0) errors.Add("TimelineGapThresholdMinutes must be > 0");
+        if (InstanceOverlapToleranceSeconds < 0) errors.Add("InstanceOverlapToleranceSeconds must be >= 0");
         if (Tolerance < 0) errors.Add("Tolerance must be >= 0");
 
         if (errors.Count > 0)

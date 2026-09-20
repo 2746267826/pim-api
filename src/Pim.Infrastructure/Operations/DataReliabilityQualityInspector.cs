@@ -843,9 +843,9 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             await using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = 15;
             cmd.CommandText = $"""
-                SELECT device_id, package_name, event_timestamp_utc, count(*)
+                SELECT device_id, package_name, event_timestamp_utc, event_type, count(*)
                 FROM mobile_usage_events
-                GROUP BY device_id, package_name, event_timestamp_utc
+                GROUP BY device_id, package_name, event_timestamp_utc, event_type
                 HAVING count(*) > 1
                 LIMIT {context.Options.MaxScanRows + 1};
                 """;
@@ -855,10 +855,11 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                 string dev = r.GetString(0);
                 string pkg = r.GetString(1);
                 DateTime t = r.GetDateTime(2);
-                long cnt = r.GetInt64(3);
+                string type = r.GetString(3);
+                long cnt = r.GetInt64(4);
                 for (int i = 0; i < cnt; i++)
                 {
-                    keys.Add(new BusinessRecordKey { Domain = "Mobile", DeviceId = dev, UniqueKey = $"{pkg}:{t:O}", Timestamp = t });
+                    keys.Add(BusinessRecordKey.ForMobile(dev, pkg, t, type));
                 }
             }
         }
@@ -1518,8 +1519,10 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
 
         await using var cmd = conn.CreateCommand();
         cmd.CommandTimeout = 15;
+        // duration 必须一并取出：S13 判的是两个实例的采集区间是否**真实重叠**，
+        // 只拿时间戳无法区分"旧实例退出、新实例立刻接管"（正常交接）与"两个实例同时在采集"。
         cmd.CommandText = $"""
-            SELECT device_id, timestamp, instance_id
+            SELECT device_id, timestamp, instance_id, duration
             FROM pc_tracker_events
             WHERE instance_id IS NOT NULL AND instance_id != ''
             ORDER BY timestamp DESC
@@ -1533,11 +1536,13 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             string dev = reader.IsDBNull(0) ? "default" : reader.GetString(0);
             DateTime ts = reader.GetDateTime(1);
             string instanceId = reader.IsDBNull(2) ? "default" : reader.GetString(2);
+            double duration = reader.IsDBNull(3) ? 0 : reader.GetDouble(3);
             heartbeats.Add(new CollectionHeartbeat
             {
                 DeviceId = dev,
                 Timestamp = ts,
-                InstanceId = instanceId
+                InstanceId = instanceId,
+                DurationSeconds = duration
             });
         }
 

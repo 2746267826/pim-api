@@ -346,9 +346,96 @@ public class DataReliabilityGroupThreeTests
     #region S13: 实例唯一 (INV-P22)
 
     [Fact]
-    public void S13_MultipleInstancesSameDeviceSameHour_Fails()
+    public void S13_MultipleInstancesSameDeviceSameHour_Overlapping_Fails()
     {
-        // 同一设备同小时出现两个不同的 instanceId
+        // 同一设备同小时两个实例**同时**在采集：区间真实重叠（各采集 10 分钟，重叠 5 分钟）
+        var heartbeats = new List<CollectionHeartbeat>
+        {
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc, DurationSeconds = 600, InstanceId = "inst-A", SessionId = 1 },
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddMinutes(5), DurationSeconds = 600, InstanceId = "inst-B", SessionId = 1 }
+        };
+
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+        Assert.Contains("并发重叠", result.Detail);
+    }
+
+    [Fact]
+    public void S13_MultipleInstancesSameDeviceSameHour_HandoverOnly_Passes()
+    {
+        // 同一小时内先后出现两个 instanceId，但**没有时间重叠** —— 旧实例退出、新实例接管，
+        // 这是客户端升级/重启的正常交接（实测 09-18 19:17 交接误差 0.001s），不得判红。
+        var heartbeats = new List<CollectionHeartbeat>
+        {
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc, DurationSeconds = 600, InstanceId = "inst-A", SessionId = 1 },
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddMinutes(10), DurationSeconds = 600, InstanceId = "inst-B", SessionId = 1 }
+        };
+
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S13_HandoverWithSubSecondBoundaryTouch_Passes()
+    {
+        // 交接边界亚秒相触（旧实例结束 19:17:22.038、新实例 19:17:22.039）：
+        // 重叠为 0，属于正常交接；容差内的相触同样不得判红。
+        var boundary = _baseUtc.AddMinutes(17).AddSeconds(22).AddMilliseconds(38);
+        var heartbeats = new List<CollectionHeartbeat>
+        {
+            new() { DeviceId = "PC-MAIN", Timestamp = boundary.AddSeconds(-10), DurationSeconds = 10, InstanceId = "inst-A", SessionId = 1 },
+            new() { DeviceId = "PC-MAIN", Timestamp = boundary, DurationSeconds = 20, InstanceId = "inst-B", SessionId = 2 }
+        };
+
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S13_OverlapWithinTolerance_Passes()
+    {
+        // 重叠 10 毫秒，小于默认容差 0.05s（毫秒级边界相触），不得判红
+        var heartbeats = new List<CollectionHeartbeat>
+        {
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc, DurationSeconds = 600.010, InstanceId = "inst-A", SessionId = 1 },
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddSeconds(600), DurationSeconds = 60, InstanceId = "inst-B", SessionId = 2 }
+        };
+
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S13_OverlapExceedingTolerance_Fails()
+    {
+        // 重叠 200 毫秒 > 默认容差 0.05s：属于真实并发采集
+        var heartbeats = new List<CollectionHeartbeat>
+        {
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc, DurationSeconds = 600.2, InstanceId = "inst-A", SessionId = 1 },
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddSeconds(600), DurationSeconds = 60, InstanceId = "inst-B", SessionId = 2 }
+        };
+
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S13_ZeroDurationHeartbeats_CannotEstablishConcurrency_Passes()
+    {
+        // 未提供时长（缺省 0）时退化为瞬时点：两个实例在不同时刻被观测到，
+        // 无法据此断定它们**同时**在采集，因此不判红。
+        // 需要注意：这也意味着纯瞬时输入不足以判定并发 —— 生产取数层必须提供
+        // DurationSeconds（pc_tracker_events.duration），否则这条尺子会失去判定能力。
         var heartbeats = new List<CollectionHeartbeat>
         {
             new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc, InstanceId = "inst-A", SessionId = 1 },
@@ -357,9 +444,59 @@ public class DataReliabilityGroupThreeTests
 
         var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
 
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S13_ToleranceIsConfigurable()
+    {
+        // 把容差抬到 1s：200ms 的重叠就落在容差内，不再判红 —— 证明容差确实生效
+        var heartbeats = new List<CollectionHeartbeat>
+        {
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc, DurationSeconds = 600.2, InstanceId = "inst-A", SessionId = 1 },
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddSeconds(600), DurationSeconds = 60, InstanceId = "inst-B", SessionId = 2 }
+        };
+
+        var relaxed = new InvariantOptions { InstanceOverlapToleranceSeconds = 1.0 };
+        Assert.True(DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, relaxed).Pass);
+
+        var strict = new InvariantOptions { InstanceOverlapToleranceSeconds = 0.0 };
+        Assert.False(DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, strict).Pass);
+    }
+
+    [Fact]
+    public void S13_SameInstanceOverlappingSegments_Passes()
+    {
+        // 同一个 instanceId 的片段相互重叠属于同一条采集流内部的事，不是多实例并发
+        var heartbeats = new List<CollectionHeartbeat>
+        {
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc, DurationSeconds = 600, InstanceId = "inst-A", SessionId = 1 },
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddMinutes(5), DurationSeconds = 600, InstanceId = "inst-A", SessionId = 2 },
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddMinutes(10), DurationSeconds = 600, InstanceId = "inst-A", SessionId = 3 }
+        };
+
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S13_ThreeInstances_ReportsSingleHourViolation()
+    {
+        // 三实例并发仍按"每设备每小时 1 处"计
+        var heartbeats = new List<CollectionHeartbeat>
+        {
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc, DurationSeconds = 600, InstanceId = "inst-A", SessionId = 1 },
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddMinutes(1), DurationSeconds = 600, InstanceId = "inst-B", SessionId = 2 },
+            new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddMinutes(2), DurationSeconds = 600, InstanceId = "inst-C", SessionId = 3 }
+        };
+
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
-        Assert.Contains("检测到 2 个不同实例ID", result.Detail);
     }
 
     [Fact]

@@ -1397,8 +1397,17 @@ public static class DataReliabilityInvariants
     /// <summary>
     /// S13 (INV-P22): 实例唯一
     /// 判据: 同一 device_id 在任一时刻只应有一条独立采集流（用轮询相位 / 会话序号连续性判定）。
-    /// 阈值: 同一小时内出现 &gt;= 2 条互斥采集流 = 红。
+    /// 阈值: 同一小时内出现 &gt;= 2 条**互斥**采集流 = 红。
     /// 为什么是这个阈值: 多实例同时采集同一设备会产生竞态覆盖、双倍计数和会话断裂，破坏时序完整性。
+    ///
+    /// 实现口径（#254 S13）：
+    ///   「互斥」= 两条采集流在时间上真实**重叠并发**。同一小时内先后出现两个 instance_id
+    ///   并不构成违规 —— 客户端升级/重启时旧进程退出、新进程立刻接管，正是正常交接
+    ///   （实测 09-18 19:17 交接误差仅 0.001 秒、重叠为 0，旧实现把它误报成多实例）。
+    ///   因此判定基于采集区间是否重叠，并允许 <see cref="InvariantOptions.InstanceOverlapToleranceSeconds"/>
+    ///   的边界容差；重叠超过容差才计违规。
+    ///
+    /// 相位判定作为补充：若心跳未携带 instance_id，则按"互斥轮询相位在同一小时交错"判定。
     /// </summary>
     public static InvariantResult CheckS13_SingleInstance(
         IEnumerable<CollectionHeartbeat> heartbeats,
@@ -1420,22 +1429,24 @@ public static class DataReliabilityInvariants
 
         foreach (var g in groups)
         {
-            // 检查同一小时内是否存在不同的 instanceId 或互相冲突的会话序号/相位
-            var instanceIds = g.Select(h => h.InstanceId).Where(id => !string.IsNullOrEmpty(id)).Distinct().ToList();
-            if (instanceIds.Count >= 2)
+            var overlapping = FindConcurrentInstanceOverlap(g, opt.InstanceOverlapToleranceSeconds);
+            if (overlapping is not null)
             {
                 totalViolations++;
                 if (samples.Count < opt.MaxSampleCount)
                 {
-                    samples.Add($"Device={g.Key.DeviceId}, Hour={g.Key.Hour:yyyy-MM-dd HH:00}: 检测到 {instanceIds.Count} 个不同实例ID ({string.Join(", ", instanceIds)})");
+                    var (instanceA, instanceB, overlapSeconds) = overlapping.Value;
+                    samples.Add($"Device={g.Key.DeviceId}, Hour={g.Key.Hour:yyyy-MM-dd HH:00}: 实例 {instanceA} 与 {instanceB} 并发重叠 {overlapSeconds:F3}s");
                     violations.Add(new InvariantViolation(
                         Id: $"{g.Key.DeviceId}:{g.Key.Hour:yyyy-MM-ddTHH}:00Z",
                         DeviceId: g.Key.DeviceId,
                         OccurredAtUtc: g.Key.Hour,
                         Fields: Fields(
-                            ("kind", "instance-id-conflict"),
+                            ("kind", "instance-concurrency"),
                             ("hourUtc", g.Key.Hour.ToString("O")),
-                            ("instanceIds", string.Join(", ", instanceIds)))));
+                            ("instanceA", instanceA),
+                            ("instanceB", instanceB),
+                            ("overlapSeconds", overlapSeconds.ToString("F3")))));
                 }
                 continue;
             }
@@ -1477,6 +1488,66 @@ public static class DataReliabilityInvariants
         }
 
         return InvariantResult.Success("INV-P22 PASS: 每台设备均保持唯一样本采集实例流", note, fallback);
+    }
+
+    /// <summary>
+    /// 在同一设备同一小时的采集流里找出**真实并发**的两个实例：两条不同 instance_id 的采集区间
+    /// 重叠超过容差。只有重叠才算并发；先后交接（旧实例结束、新实例开始）不算。
+    ///
+    /// 区间由 <see cref="CollectionHeartbeat.Timestamp"/> + <see cref="CollectionHeartbeat.DurationSeconds"/>
+    /// 给出。时长缺省为 0 时退化为瞬时点：此时只有"不同实例在同一时刻"才可能被判并发，
+    /// 而正常的顺序交接（时刻不同）不会被误报。
+    ///
+    /// 复杂度：按起点排序后，只需知道"其它实例在当前位置之前的最大结束时刻"。
+    /// 维护每个实例的最大结束时刻（同一小时的实例数极少），因此整体为 O(n × 实例数)。
+    /// </summary>
+    private static (string InstanceA, string InstanceB, double OverlapSeconds)? FindConcurrentInstanceOverlap(
+        IEnumerable<CollectionHeartbeat> hourGroup,
+        double toleranceSeconds)
+    {
+        var intervals = hourGroup
+            .Where(h => !string.IsNullOrEmpty(h.InstanceId))
+            .Select(h => (
+                InstanceId: h.InstanceId!,
+                Start: h.Timestamp,
+                End: h.Timestamp.AddSeconds(Math.Max(0, h.DurationSeconds))))
+            .OrderBy(i => i.Start)
+            .ThenBy(i => i.End)
+            .ToList();
+
+        if (intervals.Count == 0)
+        {
+            return null;
+        }
+
+        // 每个实例迄今出现的最大结束时刻。用于 O(1) 判断"有没有别的实例压到当前区间上"。
+        var maxEndByInstance = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+
+        foreach (var current in intervals)
+        {
+            double requiredEndTicks = toleranceSeconds * TimeSpan.TicksPerSecond;
+
+            foreach (var (instanceId, otherEnd) in maxEndByInstance)
+            {
+                if (string.Equals(instanceId, current.InstanceId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (otherEnd.Ticks - current.Start.Ticks > requiredEndTicks)
+                {
+                    double overlap = (otherEnd - current.Start).TotalSeconds;
+                    return (instanceId, current.InstanceId, overlap);
+                }
+            }
+
+            if (!maxEndByInstance.TryGetValue(current.InstanceId, out var knownEnd) || current.End > knownEnd)
+            {
+                maxEndByInstance[current.InstanceId] = current.End;
+            }
+        }
+
+        return null;
     }
 
     #endregion

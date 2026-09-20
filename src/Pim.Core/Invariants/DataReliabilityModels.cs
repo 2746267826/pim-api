@@ -221,7 +221,13 @@ public sealed class DerivedTableStatus
 }
 
 /// <summary>
-/// S13 (INV-P22): 采集心跳/事件
+/// S13 (INV-P22): 采集心跳/事件。
+/// <para>
+/// <see cref="Timestamp"/> + <see cref="DurationSeconds"/> 描述该实例在采集流中**占用**的时间区间；
+/// 判据按区间是否真实重叠来判断"多实例并发采集"。若 <see cref="DurationSeconds"/> 为 0
+/// （旧调用方只提供瞬时心跳），判据退化为按时刻先后判断交接是否重叠 —— 见
+/// <see cref="DataReliabilityInvariants.CheckS13_SingleInstance"/>。
+/// </para>
 /// </summary>
 public sealed class CollectionHeartbeat
 {
@@ -230,4 +236,11 @@ public sealed class CollectionHeartbeat
     public long SessionId { get; set; }
     public double PhaseOffsetSeconds { get; set; }
     public string? InstanceId { get; set; }
+
+    /// <summary>
+    /// 该心跳事件覆盖的时长（秒）。用于判定不同实例的采集区间是否真实重叠：
+    /// 只有重叠才构成"多实例并发采集"；提前退出、下一个实例立刻接管属于正常交接。
+    /// 0 表示未提供时长（按瞬时点处理）。
+    /// </summary>
+    public double DurationSeconds { get; set; }
 }
