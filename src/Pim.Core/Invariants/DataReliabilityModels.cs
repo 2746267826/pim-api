@@ -118,6 +118,18 @@ public sealed class ClockEventItem
 /// <summary>
 /// S6 (INV-P20): 设备下线声明与上传滞后采样
 /// </summary>
+/// <summary>
+/// 设备"我下线了"的自我声明。
+///
+/// 语义有两种形态，判据必须都支持：
+///   * **区间声明**：客户端明确给出离线的起止（如计划离线窗口），Start &lt; End；
+///   * **时点声明**：客户端只在上报里带了一个"我正要下线"的时刻（心跳/退出钩子），
+///     此时 Start == End，表示"设备在该时刻声明即将停止出数"。
+///
+/// 判据用 StartTime 落在待解释空档附近来认定覆盖，**不要求 EndTime 延伸到空档末尾**
+/// （时点声明没有终止信息）；但也不得把一次声明当成"此后永久离线"——
+/// 实测有一次 exit 声明 7 秒后设备就恢复了，若按永久处理会掩盖之后所有真实断档。
+/// </summary>
 public sealed class OfflineDeclaration
 {
     public string DeviceId { get; set; } = string.Empty;

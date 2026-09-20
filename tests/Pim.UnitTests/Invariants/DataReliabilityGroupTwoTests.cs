@@ -208,6 +208,85 @@ public class DataReliabilityGroupTwoTests
     }
 
     [Fact]
+    public void S6_EarlyDeclaration_DoesNotSuppressLaterHoles()
+    {
+        // 复审回归（Critical）：一次"我下线了"的声明只能解释它附近的空档，
+        // 绝不能解释此后所有空档。实测有一次 exit 声明 7 秒后设备就恢复了：
+        // 若把声明当成"此后永久离线"，该设备之后的真实断档会被永久掩盖（假绿灯）。
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "DEV-EXIT",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddMinutes(10)),
+                // 声明时刻附近的短空档（由该声明解释）
+                (_baseUtc.AddMinutes(12), _baseUtc.AddMinutes(22)),
+                // 数小时之后的 2 小时空档：与那次声明无关，必须仍被判为无声明空档
+                (_baseUtc.AddHours(5), _baseUtc.AddHours(5).AddMinutes(30))
+            },
+            Declarations = new List<OfflineDeclaration>
+            {
+                new() { DeviceId = "DEV-EXIT", StartTime = _baseUtc.AddMinutes(11), EndTime = _baseUtc.AddMinutes(11), Reason = "exit" }
+            }
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+        Assert.Contains("无声明空档", result.Detail);
+    }
+
+    [Fact]
+    public void S6_DeclarationAtHoleStart_CoversThatHole()
+    {
+        // 声明时刻正好落在空档内 -> 该空档被解释，不判违规
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "DEV-OK",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddMinutes(10)),
+                (_baseUtc.AddHours(2), _baseUtc.AddHours(2).AddMinutes(30))
+            },
+            Declarations = new List<OfflineDeclaration>
+            {
+                new() { DeviceId = "DEV-OK", StartTime = _baseUtc.AddMinutes(30), EndTime = _baseUtc.AddMinutes(30), Reason = "shutdown" }
+            }
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S6_IntervalDeclaration_DoesNotCoverHoleOutsideItsRange()
+    {
+        // 区间声明必须完整覆盖空档才有解释力：声明只盖了 1 小时，
+        // 而空档有 2 小时 —— 没被盖住的部分仍然是"无解释空白"。
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "DEV-PARTIAL",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddMinutes(10)),
+                (_baseUtc.AddHours(2), _baseUtc.AddHours(2).AddMinutes(10))
+            },
+            Declarations = new List<OfflineDeclaration>
+            {
+                new() { DeviceId = "DEV-PARTIAL", StartTime = _baseUtc.AddMinutes(10), EndTime = _baseUtc.AddHours(1), Reason = "planned_offline" }
+            }
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+    }
+
+    [Fact]
     public void S6_OnlyHistoricalViolations_DowngradesToWarning()
     {
         // 空档全部发生在 24h 窗口之外 -> 只计数、降级为黄线（T4 分档）

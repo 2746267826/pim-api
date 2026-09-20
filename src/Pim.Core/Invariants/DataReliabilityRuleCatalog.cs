@@ -87,9 +87,9 @@ public static class DataReliabilityRuleCatalog
             Name: "业务键唯一（不重复）",
             Group: DataReliabilityGroup.SelfConsistency,
             GroupLabel: "数据自洽",
-            Criterion: "定位按 (device, recorded_at, lat, lon) 唯一；手机事件按 (device, package, event_time, event_type) 唯一；PC 事件按 (device, timestamp, duration, event_type, app_name, browser, instance_id) 唯一。",
+            Criterion: "定位按 (device, recorded_at, lat, lon) 唯一；手机事件按 (device, package, event_time, event_type, class_name) 唯一；PC 事件按 (device, timestamp, duration, event_type, app_name, browser, instance_id) 唯一。",
             Threshold: "新增重复行 = 0；更早的重复行计入「存量」只计数。",
-            Rationale: "重复事件会导致时长与频次双重虚高，破坏聚合指标的可信度；实测定位 1065/6280 行重复、手机同刻重复 1245 条，都属于无唯一键约束的历史欠账。",
+            Rationale: "重复事件会导致时长与频次双重虚高，破坏聚合指标的可信度；实测定位 1065/6280 行重复、手机同刻重复 1245 条，都属于无唯一键约束的历史欠账。手机事件的业务键含 class_name：同一时刻同一包名的多行实测是**不同 Activity**（class_name 各异），与写入侧幂等键及数据库唯一索引口径一致。",
             RelatedIssues: new[] { 246 }),
 
         new DataReliabilityRuleDefinition(
@@ -111,8 +111,8 @@ public static class DataReliabilityRuleCatalog
             Name: "设备必须自己声明下线",
             Group: DataReliabilityGroup.Coverage,
             GroupLabel: "覆盖完整",
-            Criterion: "设备停止出数必须自己有交代：没有下线声明的空档超过阈值判红；上传滞后 p99 超过阈值同样判红。",
-            Threshold: "无声明空档 30 分钟（T2）；上传滞后 p99 30 分钟（T2）。实测上传滞后 p99 = 23 分钟、相邻事件间隔 p99 = 22.7 分钟。",
+            Criterion: "设备停止出数必须自己有交代：没有下线声明的空档超过阈值判红；上传滞后 p99 超过阈值同样判红。空档按「上一段结束 → 下一段开始」计算；下线声明取自客户端主动上报的离线记录。",
+            Threshold: "无声明空档 30 分钟（T2）；上传滞后 p99 30 分钟（T2）。实测上传滞后 p99 = 23 分钟、相邻事件间隔 p99 = 22.7 分钟。系统合成的 gap 事件不计入上传滞后（其差值恒等于断档时长，不是链路延迟）。",
             Rationale: "现代操作系统的关机与睡眠都有系统钩子，停摆本身可以被告知；没有声明就突然停止 30 分钟，说明采集端崩溃或掉线，用户看到的「没记录」与真实行为无法区分。",
             RelatedIssues: new[] { 252 }),
 
@@ -147,8 +147,8 @@ public static class DataReliabilityRuleCatalog
             Name: "有缺口必有信号",
             Group: DataReliabilityGroup.Coverage,
             GroupLabel: "覆盖完整",
-            Criterion: "覆盖率低于红线时，报告状态必须报红或报黄，绝不得报「正常」；分母无法精准界定时必须输出未知并说明口径，而不是给出一个好看的假比例。",
-            Threshold: "覆盖率 = 有效数据时长 ÷ 设备在线时长；< 95% 报红、< 99% 报黄（T6）。",
+            Criterion: "覆盖率低于红线时，报告状态必须报红或报黄，绝不得报「正常」；分母无法精准界定时必须输出未知并说明口径，而不是给出一个好看的假比例。在线时长 = 体检窗口 − 设备自己声明过的离线时长；未声明的空档算作「在线却没数据」，照常拉低覆盖率。",
+            Threshold: "覆盖率 = 有效数据时长 ÷ 设备在线时长；< 95% 报红、< 99% 报黄（T6）。窗口取墙钟最近 24 小时（不锚在最后一条数据上，否则设备一停摆覆盖率就永远是满的）。",
             Rationale: "95% 覆盖率是个人生活记录可信度的基准底线；低覆盖率若显示「正常」属于静默掩盖故障，实测断流一天仍报正常的根因就在这条尺子缺席。",
             RelatedIssues: new[] { 244 }),
 
@@ -195,8 +195,8 @@ public static class DataReliabilityRuleCatalog
             Name: "实例唯一",
             Group: DataReliabilityGroup.PipelineHealth,
             GroupLabel: "链路健康",
-            Criterion: "同一 device_id 在任一时刻只应有一条独立采集流，按 instance_id 或互斥的轮询相位判定。",
-            Threshold: "同一小时内出现 ≥ 2 条互斥采集流判红。",
+            Criterion: "同一 device_id 在任一时刻只应有一条独立采集流，按 instance_id 或互斥的轮询相位判定。「互斥」指两条采集流在时间上真实重叠并发；同一小时内先后出现两个 instance_id（旧进程退出、新进程接管）属于正常交接，不算违规。",
+            Threshold: "同一小时内出现 ≥ 2 条互斥采集流判红；布局重叠容差 0.05 秒（可配置）。",
             Rationale: "多实例同时采集同一设备会产生竞态覆盖、双倍计数与会话断裂，破坏时序完整性；客户端已加互斥，尺子用于确认它真的生效。",
             RelatedIssues: new[] { 250 })
     };

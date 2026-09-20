@@ -1114,14 +1114,15 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                     DateTime offlineAt = hreader.GetDateTime(1);
                     string reason = hreader.IsDBNull(2) ? "planned_offline" : hreader.GetString(2);
 
-                    // planned_offline_at 是"这一跳发生时进程已声明即将下线"的时刻；声明覆盖到
-                    // 随后的首次数据为止。用该设备的下一跳上限封顶不可知，这里给一个保守的
-                    // 覆盖窗口：从声明时刻起，向后覆盖到该设备本轮数据的重新出现（由判据侧核对）。
+                    // planned_offline_at 是一个**时点声明**："这一跳时进程声明即将下线"。
+                    // daemon_heartbeats 每台设备每种 daemon 只有一行（无历史序列），因此这里
+                    // 只能给出这个时刻本身，不能假设"此后永久离线" —— 实测有一次 exit 声明
+                    // 7 秒后设备就恢复出数了。判据侧按"声明时刻是否落在这个空档附近"认定覆盖。
                     declarations.Add(new OfflineDeclaration
                     {
                         DeviceId = dev,
                         StartTime = offlineAt,
-                        EndTime = DateTime.MaxValue,
+                        EndTime = offlineAt,
                         Reason = reason
                     });
                 }
@@ -1140,12 +1141,15 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (!await TableExistsAsync(conn, "pc_tracker_events", context.Ct))
             return InvariantResult.Unknown("INV-P21 UNKNOWN: 数据表 pc_tracker_events 不存在");
 
+        // 时间线区间取**全部**事件：任何一条事件都意味着"设备当时在记录"，
+        // 因此都能填补空洞。早先只取 window/idle/gap、把 web-page 排除在外，
+        // 会让"浏览器会话被分段成 window + web-page"的时间段凭空出现空洞 ——
+        // 实测因此多报 6 处（41 vs 35）并不存在的断档。
         await using var cmd = conn.CreateCommand();
         cmd.CommandTimeout = 15;
         cmd.CommandText = $"""
             SELECT device_id, timestamp, timestamp + (duration || ' seconds')::interval as end_time, event_type
             FROM pc_tracker_events
-            WHERE event_type IN ('window', 'idle', 'gap')
             ORDER BY timestamp DESC
             LIMIT {context.Options.MaxScanRows + 1};
             """;

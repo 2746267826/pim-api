@@ -332,6 +332,28 @@ public class DataReliabilityQualityInspectorTests
         }
     }
 
+    /// <summary>
+    /// 复审回归（Important）：S7 的时间线区间必须取**全部**事件类型。
+    /// 早先只取 window/idle/gap、把 web-page 排除在外，会让"浏览器会话被分段成
+    /// window + web-page"的时间段凭空出现空洞（实测多报 6 处不存在的断档）。
+    /// </summary>
+    [Fact]
+    public async Task CheckS7_TimelineQuery_IncludesEveryEventType()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateRecordingInspector(conn);
+
+        await inspector.InspectReportAsync(ReportNow);
+
+        var timelineQueries = conn.ExecutedCommands
+            .Where(sql => sql.Contains("end_time", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        Assert.NotEmpty(timelineQueries);
+        Assert.All(timelineQueries, sql =>
+            Assert.DoesNotContain("event_type IN", sql, StringComparison.OrdinalIgnoreCase));
+    }
+
     /// <summary>体检窗口必须来自调用方传入的时钟，不得依赖数据库 NOW()（否则结论随库时钟漂移）。</summary>
     [Fact]
     public async Task InspectReportAsync_DoesNotRelyOnTheDatabaseClock()

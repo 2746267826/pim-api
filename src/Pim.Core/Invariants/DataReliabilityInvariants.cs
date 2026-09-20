@@ -836,6 +836,10 @@ public static class DataReliabilityInvariants
         var gapThresholdMinutes = opt.UndeclaredOfflineGapMinutes;
         var p99LagMinutesThreshold = opt.MaxUploadLagP99Minutes;
 
+        // 声明时刻与空档边界的允许偏差：客户端在"停止出数"前后数分钟内才写声明，
+        // 且心跳上报本身有延迟，因此边界留 5 分钟宽限。
+        const double declarationGraceMinutes = 5.0;
+
         if (trace == null || trace.EventIntervals == null || trace.EventIntervals.Count == 0)
         {
             return InvariantResult.Unknown("INV-P20 UNKNOWN: 数据源为空或未接线", note, fallback);
@@ -870,11 +874,32 @@ public static class DataReliabilityInvariants
 
             if (gapMinutes > gapThresholdMinutes)
             {
-                // 检查是否有下线声明覆盖该空档的大部分或关键区间
+                // 下线声明是否解释了这个空档。声明有两种形态，必须分别判定
+                // （见 OfflineDeclaration 的注释）：
+                //   * 区间声明（Start < End）：客户端明确给出了离线起止，
+                //     要求它**完整覆盖**这个空档（允许边界宽限）；
+                //   * 时点声明（Start == End）：心跳/退出钩子只给了一个"我正要下线"的时刻，
+                //     没有终止信息，因此只要求该时刻**落在空档范围内**。
+                // 关键约束：两种形态都**不得**把一次声明当成"此后永久离线"——
+                // 实测有一次 exit 声明 7 秒后设备就恢复出数，若按永久处理会掩盖之后所有真实断档。
                 bool declared = trace.Declarations != null && trace.Declarations.Any(d =>
-                    d.DeviceId == trace.DeviceId &&
-                    d.StartTime <= gapStart.AddMinutes(5) &&
-                    d.EndTime >= gapEnd.AddMinutes(-5));
+                {
+                    if (!string.Equals(d.DeviceId, trace.DeviceId, StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+
+                    if (d.EndTime > d.StartTime)
+                    {
+                        // 区间声明：必须盖住整个空档
+                        return d.StartTime <= gapStart.AddMinutes(declarationGraceMinutes) &&
+                               d.EndTime >= gapEnd.AddMinutes(-declarationGraceMinutes);
+                    }
+
+                    // 时点声明：时刻落在空档内（含边界宽限）
+                    return d.StartTime >= gapStart.AddMinutes(-declarationGraceMinutes) &&
+                           d.StartTime <= gapEnd.AddMinutes(declarationGraceMinutes);
+                });
 
                 if (!declared)
                 {
