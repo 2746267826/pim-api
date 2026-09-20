@@ -601,10 +601,19 @@ public class DataReliabilityGroupTwoTests
         Assert.Contains("必须为红/错误", result.Detail);
     }
 
+    /// <summary>
+    /// 口径说明（有意为之，非缺陷）：S9 判的是"**缺口有没有产生信号**"，而不是"覆盖率本身好不好"。
+    /// 覆盖率 60% 但设备如实上报 Error/Critical 时，系统并没有静默掩盖故障 → 通过。
+    /// 只有"低覆盖率却被报成 Normal/Healthy/OK"才是这条尺子要抓的静默失败（见下一条用例）。
+    ///
+    /// 已知局限（登记为观察项）：`ReportedStatus` 长年固定为 Error 时，这条尺子无法区分
+    /// "如实报告"与"坏了但状态字段不再更新"。要覆盖这一点需要引入状态上报的时效性判定，
+    /// 属于口径变更，不在本工单范围内。
+    /// </summary>
     [Fact]
     public void S9_Coverage60Percent_ReportedError_Passes()
     {
-        // 覆盖率 60%，如实报告 Error / Critical
+        // 覆盖率 60%，但设备如实报告 Error —— 没有静默掩盖，判通过
         var report = new CoverageSignalReport
         {
             DeviceId = "DEV-GAP",
