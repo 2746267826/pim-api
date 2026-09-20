@@ -51,13 +51,18 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
     public string CheckName => "data_reliability";
 
     /// <summary>
-    /// "缺数据"类事件类型（SQL 片段，用于 <c>event_type</c> 判定）。
-    /// S7 与 S9 必须使用**同一份**口径：S7 用它在时间线里识别"覆盖标记"，
-    /// S9 用它区分"有效记录"与"设备声明的离线"。两处若各写各的，
-    /// legacy（afk/offline/sleep）或未来新增的类型就会在这条尺子里被算作记录、
-    /// 在另一条里被算作离线，导致两条尺子互相矛盾。
+    /// "缺数据"类事件类型的**唯一权威清单**。
+    /// S7 用它在时间线里识别"覆盖标记"，S9 用它区分"有效记录"与"设备声明的离线"。
+    /// SQL 片段（<see cref="GapEventTypeSqlList"/>）与 C# 判定（<see cref="IsGapEventType"/>）
+    /// 都从这一个数组派生 —— 这样两份口径在结构上不可能漂移
+    /// （两处各写各的时，legacy 的 afk/offline/sleep 或未来新增类型会让同一条数据
+    /// 在一条尺子里算记录、在另一条里算离线，且不会有任何编译错误）。
     /// </summary>
-    private const string GapEventTypeSqlList = "'gap', 'afk', 'offline', 'sleep'";
+    internal static readonly string[] GapEventTypes = ["gap", "afk", "offline", "sleep"];
+
+    /// <summary>把 <see cref="GapEventTypes"/> 渲染成 SQL 的 <c>IN (...)</c> 取值列表。</summary>
+    internal static string GapEventTypeSqlList { get; } =
+        string.Join(", ", GapEventTypes.Select(type => $"'{type}'"));
 
     /// <summary>
     /// 结构化体检（#260）：13 条尺子的编号 / 名称 / 状态 / 当前值 / 阈值 / 违规分档 / 样例 / 关联 issue。
@@ -1833,13 +1838,15 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         }
     }
 
-    /// <summary>事件类型是否属于"缺数据"类（gap / afk / offline / sleep，与 <see cref="GapEventTypeSqlList"/> 一致）。</summary>
-    private static bool IsGapEventType(string? eventType) =>
+    /// <summary>
+    /// 事件类型是否属于"缺数据"类（gap / afk / offline / sleep）。
+    /// 必须与 <see cref="GapEventTypeSqlList"/>（SQL 侧）逐项一致 ——
+    /// 两处一旦漂移，S7 与 S9 就会对同一行数据给出相反的分类。
+    /// 一致性由 `DataReliabilityQualityInspectorTests.GapEventTypePredicate_MatchesSqlList` 锁定。
+    /// </summary>
+    internal static bool IsGapEventType(string? eventType) =>
         eventType is not null &&
-        (eventType.Equals("gap", StringComparison.OrdinalIgnoreCase) ||
-         eventType.Equals("afk", StringComparison.OrdinalIgnoreCase) ||
-         eventType.Equals("offline", StringComparison.OrdinalIgnoreCase) ||
-         eventType.Equals("sleep", StringComparison.OrdinalIgnoreCase));
+        GapEventTypes.Contains(eventType, StringComparer.OrdinalIgnoreCase);
 
     private static async Task<bool> ColumnExistsAsync(
         DbConnection conn,

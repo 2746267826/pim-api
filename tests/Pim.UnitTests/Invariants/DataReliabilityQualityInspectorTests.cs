@@ -333,6 +333,57 @@ public class DataReliabilityQualityInspectorTests
     }
 
     /// <summary>
+    /// 复审回归（Important）：C# 侧的 <c>IsGapEventType</c> 与 SQL 侧的
+    /// <c>GapEventTypeSqlList</c> 必须逐项一致。
+    ///
+    /// 这两份"缺数据"定义分别用于 S7（在内存里标记覆盖区间）与 S9（在 SQL 里拆分离线与
+    /// 有效记录）。一旦有人只改了一边，同一行数据就会在一条尺子里被算作记录、
+    /// 在另一条里被算作离线 —— 这类漂移没有任何编译错误，只能靠这条断言拦住。
+    /// </summary>
+    [Fact]
+    public void GapEventTypePredicate_MatchesSqlList()
+    {
+        const char SingleQuote = '\'';
+
+        var sqlTypes = DataReliabilityQualityInspector.GapEventTypeSqlList
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(part => part.Trim(SingleQuote))
+            .ToList();
+
+        Assert.NotEmpty(sqlTypes);
+        Assert.Equal(sqlTypes.Count, sqlTypes.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+
+        // SQL 片段必须恰好由权威清单渲染而来 —— 双向都成立，漂移无从发生
+        Assert.Equal(
+            DataReliabilityQualityInspector.GapEventTypes.OrderBy(t => t, StringComparer.Ordinal).ToList(),
+            sqlTypes.OrderBy(t => t, StringComparer.Ordinal).ToList());
+
+        // C# 判定与 SQL 清单对每一个候选类型给出**相同**结论（双向覆盖）
+        var candidates = DataReliabilityQualityInspector.GapEventTypes
+            .Concat(["window", "web-page", "idle", "notepad", "hibernate", "", "GAP", "Sleep"])
+            .ToList();
+
+        foreach (var type in candidates)
+        {
+            bool inSqlList = sqlTypes.Contains(type, StringComparer.OrdinalIgnoreCase);
+            bool byCSharp = DataReliabilityQualityInspector.IsGapEventType(type);
+            Assert.True(inSqlList == byCSharp,
+                $"'{type}' 在 SQL 清单里={inSqlList}，但 C# 判定={byCSharp} —— S7 与 S9 会对同一行数据给出相反分类");
+        }
+
+        // 真实采集类型必须**不**被判为 gap
+        foreach (var type in new[] { "window", "web-page", "idle" })
+        {
+            Assert.False(DataReliabilityQualityInspector.IsGapEventType(type),
+                $"'{type}' 是真实采集类型，不应被判为缺数据");
+        }
+
+        Assert.False(DataReliabilityQualityInspector.IsGapEventType(null));
+        Assert.False(DataReliabilityQualityInspector.IsGapEventType(""));
+        Assert.False(DataReliabilityQualityInspector.IsGapEventType("unknown-type"));
+    }
+
+    /// <summary>
     /// 复审回归（Important）：S9 与 S7 必须使用**同一份**"缺数据"类型口径。
     /// S7 把 gap/afk/offline/sleep 当作覆盖标记；S9 必须把同样的类型算作"设备声明的离线"，
     /// 并把其余类型算作有效记录。两处各写各的，legacy（afk/offline/sleep）或未来新增的类型
@@ -350,8 +401,11 @@ public class DataReliabilityQualityInspectorTests
         var coverageQuery = conn.ExecutedCommands
             .First(sql => sql.Contains("offline_seconds", StringComparison.OrdinalIgnoreCase));
 
-        Assert.Contains("NOT IN ('gap', 'afk', 'offline', 'sleep')", coverageQuery);
-        Assert.Contains("IN ('gap', 'afk', 'offline', 'sleep')", coverageQuery);
+        // 从权威清单派生期望值，而不是冻结成字面量：这样"调整缺数据类型集合"
+        // 只需改一处，测试只负责验证 IN / NOT IN 两者互补。
+        var gapList = DataReliabilityQualityInspector.GapEventTypeSqlList;
+        Assert.Contains($"NOT IN ({gapList})", coverageQuery);
+        Assert.Contains($"IN ({gapList})", coverageQuery);
 
         // S7 的时间线查询取全部类型，由 C# 侧统一判定是否 gap（不再在 SQL 里硬编码类型集合）
         var timelineQuery = conn.ExecutedCommands
