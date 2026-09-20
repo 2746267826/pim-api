@@ -303,6 +303,83 @@ public sealed class MobileTimelinePaginationTests
     }
 
     [Fact]
+    public async Task GetTimelineAsync_ExactPageBoundary_DoesNotClaimMoreData()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        // 恰好整页：最后一页必须报告 hasMore=false，不能永远说「还有下一页」
+        SeedSessions(db, 1000);
+
+        var service = Service(db);
+        var page1 = await service.GetTimelineAsync(Query(page: 1, pageSize: 500), CancellationToken.None);
+        var page2 = await service.GetTimelineAsync(Query(page: 2, pageSize: 500), CancellationToken.None);
+
+        Assert.Equal(500, page1.Items.Count);
+        Assert.True(page1.HasMore);
+        Assert.Equal(500, page2.Items.Count);
+        Assert.False(page2.HasMore);
+        Assert.False(page2.Truncated);
+        Assert.Equal(1000, page2.TotalCount);
+    }
+
+    [Fact]
+    public async Task GetTimelineAsync_IdenticalTimestampsAcrossSources_AreOrderedDeterministically()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        // 同一时刻既有会话又有汇总：排序必须确定（Start 相同则按 Id），
+        // 且分页不得因此丢行或重复。
+        for (var i = 0; i < 30; i++)
+        {
+            var start = WindowStart.AddMinutes(i);
+            db.Set<MobileUsageSessionEntity>().Add(new MobileUsageSessionEntity
+            {
+                Id = Guid.NewGuid(),
+                UserId = MobileTestHelpers.UserId,
+                DeviceId = "android-main",
+                PackageName = "com.example.session",
+                StartUtc = start,
+                EndUtc = start.AddMinutes(1),
+                DurationMs = 60_000,
+                CreatedAt = start
+            });
+            db.Set<MobileUsageSummaryEntity>().Add(new MobileUsageSummaryEntity
+            {
+                Id = Guid.NewGuid(),
+                UserId = MobileTestHelpers.UserId,
+                DeviceId = "android-main",
+                PackageName = "com.example.fallback",
+                WindowStartUtc = start,
+                WindowEndUtc = start.AddMinutes(1),
+                TotalTimeVisibleMs = 60_000,
+                SourceKind = "usage-stats-fallback",
+                CreatedAt = start
+            });
+        }
+        await db.SaveChangesAsync();
+
+        var service = Service(db);
+
+        var first = await service.GetTimelineAsync(Query(page: 1, pageSize: 17), CancellationToken.None);
+        var firstAgain = await service.GetTimelineAsync(Query(page: 1, pageSize: 17), CancellationToken.None);
+
+        // 同一请求可复现
+        Assert.Equal(
+            first.Items.Select(i => i.Id).ToList(),
+            firstAgain.Items.Select(i => i.Id).ToList());
+
+        // 逐页取完，共 60 条，无重无漏
+        var all = new List<string>();
+        for (var page = 1; page <= 4; page++)
+        {
+            var response = await service.GetTimelineAsync(Query(page: page, pageSize: 17), CancellationToken.None);
+            all.AddRange(response.Items.Select(i => i.Id));
+            Assert.Equal(60, response.TotalCount);
+        }
+
+        Assert.Equal(60, all.Count);
+        Assert.Equal(60, all.Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
     public async Task GetTimelineAsync_RangeWithoutMatchesReportsZeroTotals()
     {
         await using var db = MobileTestHelpers.CreateDb();
