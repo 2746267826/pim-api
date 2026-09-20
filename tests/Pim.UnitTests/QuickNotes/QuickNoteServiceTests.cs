@@ -133,6 +133,7 @@ public class QuickNoteServiceTests
     private sealed class FakeObjectStorage : IQuickNoteObjectStorage
     {
         public Task<string> StoreAsync(
+            Guid userId,
             string objectKey,
             Stream content,
             string contentType,
@@ -140,10 +141,10 @@ public class QuickNoteServiceTests
             CancellationToken ct = default)
             => Task.FromResult(objectKey);
 
-        public Task<Stream> OpenReadAsync(string objectKey, CancellationToken ct = default)
+        public Task<Stream> OpenReadAsync(Guid userId, string objectKey, CancellationToken ct = default)
             => Task.FromResult<Stream>(new MemoryStream());
 
-        public Task DeleteAsync(string objectKey, CancellationToken ct = default)
+        public Task DeleteAsync(Guid userId, string objectKey, CancellationToken ct = default)
             => Task.CompletedTask;
     }
 }

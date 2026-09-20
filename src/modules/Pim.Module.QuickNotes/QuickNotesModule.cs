@@ -21,13 +21,10 @@ public class QuickNotesModule : IModule
     public void RegisterServices(IServiceCollection services, IConfiguration configuration)
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
-        var hasMinio = !string.IsNullOrWhiteSpace(configuration["Minio:Endpoint"])
-            && !string.IsNullOrWhiteSpace(configuration["Minio:AccessKey"])
-            && !string.IsNullOrWhiteSpace(configuration["Minio:SecretKey"]);
-        if (hasMinio)
-            services.AddScoped<IQuickNoteObjectStorage, MinioQuickNoteObjectStorage>();
-        else
-            services.AddScoped<IQuickNoteObjectStorage, NullQuickNoteObjectStorage>();
+        // 文件模块 v2（设计文档 §10）：附件统一存用户自己的 OneDrive，
+        // MinIO 与「未配置即降级为不可用」的 Null 实现随 P4 退役。
+        // 未绑定 OneDrive 时由 IOneDriveAttachmentStore 抛出明确的领域错误，UI 据此提示绑定状态。
+        services.AddScoped<IQuickNoteObjectStorage, OneDriveQuickNoteObjectStorage>();
         services.AddScoped<QuickNoteAttachmentService>();
         services.AddScoped<QuickNoteService>();
     }
@@ -137,6 +134,14 @@ public class QuickNotesModule : IModule
             [FromServices] QuickNoteAttachmentService service,
             CancellationToken ct) =>
         {
+            // 存储后端能给出预授权直链时直接 302，避免服务器代理附件流量（设计文档 §10）；
+            // 拿不到直链则回退到服务器代理下载。
+            var directLink = await service.GetDirectLinkAsync(id, ct);
+            if (!string.IsNullOrWhiteSpace(directLink))
+            {
+                return Results.Redirect(directLink);
+            }
+
             var download = await service.DownloadAsync(id, ct);
             return Results.File(download.Content, download.ContentType, download.FileName);
         });

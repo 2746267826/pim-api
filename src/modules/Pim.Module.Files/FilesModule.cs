@@ -12,6 +12,7 @@ using Pim.Core.Common;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
 using Pim.Core.Modules;
+using Pim.Core.Storage;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Files.DTOs;
@@ -59,6 +60,8 @@ public sealed class FilesModule : IModule
             sp.GetService<ILogger<OneDriveTextExtractor>>()));
         services.AddScoped<OneDriveContentService>();
         services.AddScoped<OneDriveWriteService>();
+        // QuickNotes 等模块经此把附件存入用户自己的 OneDrive（设计文档 §10）
+        services.AddScoped<IOneDriveAttachmentStore, OneDriveAttachmentStore>();
         // OneDriveGraphClient 的构造函数收的是 IHttpClientFactory + IConfiguration（它自己
         // CreateClient("onedrive-graph")），不能注册成 AddHttpClient<T> 的类型化客户端：
         // ActivatorUtilities 要求类型化客户端的构造函数能接收 HttpClient，这里的构造函数没有

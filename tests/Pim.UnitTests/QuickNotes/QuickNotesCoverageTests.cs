@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Exceptions;
+using Pim.Core.Storage;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Operations;
@@ -329,11 +330,107 @@ public class QuickNotesCoverageTests
         var ok = await svc2.LoadBindableAttachmentsAsync(new[] { up2.Id }, note1.Id);
         Assert.Single(ok);
 
-        // Null storage throws
-        var nullStorage = new NullQuickNoteObjectStorage();
-        await Assert.ThrowsAsync<InvalidOperationException>(() => nullStorage.StoreAsync("k", new MemoryStream(), "text/plain", 1));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => nullStorage.OpenReadAsync("k"));
-        await nullStorage.DeleteAsync("k"); // should not throw
+        // 未绑定 OneDrive 时附件不可用：由 OneDrive 适配器抛出明确的领域错误
+        // （MinIO/Null 降级路径随 P4 退役）
+        var unbound = new OneDriveQuickNoteObjectStorage(new ThrowingAttachmentStore());
+        var noBinding = await Assert.ThrowsAsync<DomainException>(
+            () => unbound.StoreAsync(UserId, "k", new MemoryStream(), "text/plain", 1));
+        Assert.Equal(5320, noBinding.ErrorCode);
+        var noBindingRead = await Assert.ThrowsAsync<DomainException>(
+            () => unbound.OpenReadAsync(UserId, "k"));
+        Assert.Equal(5320, noBindingRead.ErrorCode);
+    }
+
+    /// <summary>模拟「用户尚未绑定 OneDrive」：任何操作都抛 5320。</summary>
+    private sealed class ThrowingAttachmentStore : IOneDriveAttachmentStore
+    {
+        private static DomainException NotBound() => new(5320, "尚未绑定 OneDrive，附件功能不可用");
+
+        public Task<string> StoreAsync(Guid userId, string objectKey, Stream content, string contentType, long sizeBytes, CancellationToken ct = default)
+            => throw NotBound();
+
+        public Task<Stream> OpenReadAsync(Guid userId, string objectKey, CancellationToken ct = default)
+            => throw NotBound();
+
+        public Task<string?> GetDirectLinkAsync(Guid userId, string objectKey, CancellationToken ct = default)
+            => throw NotBound();
+
+        public Task DeleteAsync(Guid userId, string objectKey, CancellationToken ct = default)
+            => throw NotBound();
+    }
+
+    /// <summary>
+    /// 记录每次调用收到的 userId。用于锁定交接文档资产的缺陷：
+    /// objectKey 是裸 driveItem id（不含 '/'），任何「从 objectKey 反解 userId」的实现
+    /// 都会拿到空值；身份必须由调用方显式传入并原样到达存储层。
+    /// </summary>
+    private sealed class RecordingAttachmentStore : IOneDriveAttachmentStore
+    {
+        public const string BareDriveItemId = "01ABCDEF2345678";
+
+        public List<(Guid UserId, string ObjectKey)> Calls { get; } = [];
+
+        public Task<string> StoreAsync(Guid userId, string objectKey, Stream content, string contentType, long sizeBytes, CancellationToken ct = default)
+        {
+            Calls.Add((userId, objectKey));
+            return Task.FromResult(BareDriveItemId);
+        }
+
+        public Task<Stream> OpenReadAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        {
+            Calls.Add((userId, objectKey));
+            return Task.FromResult<Stream>(new MemoryStream("body"u8.ToArray()));
+        }
+
+        public Task<string?> GetDirectLinkAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        {
+            Calls.Add((userId, objectKey));
+            return Task.FromResult<string?>("https://my.microsoftpersonalcontent.com/dl?tempauth=x");
+        }
+
+        public Task DeleteAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        {
+            Calls.Add((userId, objectKey));
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// 端到端锁定：上传返回裸 driveItem id 后，下载/删除必须仍能用它工作，
+    /// 且 userId 必须原样透传（不依赖 objectKey 的字符串形状）。
+    /// </summary>
+    [Fact]
+    public async Task AttachmentRoundTrip_WithBareDriveItemId_WorksAndPassesUserIdExplicitly()
+    {
+        await using var db = ServiceTestBase.CreateDb();
+        var inner = new RecordingAttachmentStore();
+        var storage = new OneDriveQuickNoteObjectStorage(inner);
+        var service = CreateAttachmentService(db, UserId, storage);
+        await using var content = new MemoryStream("image-bytes"u8.ToArray());
+
+        var uploaded = await service.UploadAsync(content, "capture.png", "image/png", content.Length);
+
+        var attachment = await db.Set<QuickNoteAttachmentEntity>().AsNoTracking().SingleAsync();
+        Assert.Equal(RecordingAttachmentStore.BareDriveItemId, attachment.ObjectKey);
+        Assert.Equal("onedrive", attachment.StorageProvider);
+        Assert.DoesNotContain('/', attachment.ObjectKey);
+
+        // 下载/直链/删除必须成功（若改用 objectKey 反解 userId，这里会抛 5308/4006）
+        await service.DownloadAsync(uploaded.Id);
+        await service.GetDirectLinkAsync(uploaded.Id);
+        await service.DeleteAsync(uploaded.Id);
+
+        // 上传拿到的 objectKey 是原始路径约定；返回后持久化的是存储给的裸 driveItem id。
+        // 后三笔调用（读/直链/删）必须用持久化的裸 id —— 这正是「反解 userId」会崩的地方。
+        var storeCall = inner.Calls[0];
+        Assert.Equal(UserId, storeCall.UserId);
+        Assert.StartsWith("quick-notes/", storeCall.ObjectKey);
+
+        foreach (var call in inner.Calls.Skip(1))
+        {
+            Assert.Equal(UserId, call.UserId);
+            Assert.Equal(RecordingAttachmentStore.BareDriveItemId, call.ObjectKey);
+        }
     }
 
     private static QuickNoteService CreateService(PimDbContext db, Guid? userId, QuickNoteAttachmentService? attachments = null)
@@ -355,19 +452,19 @@ public class QuickNotesCoverageTests
     private sealed class FakeStorage : IQuickNoteObjectStorage
     {
         private readonly Dictionary<string, byte[]> _store = new();
-        public Task<string> StoreAsync(string objectKey, Stream content, string contentType, long sizeBytes, CancellationToken ct = default)
+        public Task<string> StoreAsync(Guid userId, string objectKey, Stream content, string contentType, long sizeBytes, CancellationToken ct = default)
         {
             using var ms = new MemoryStream();
             content.CopyTo(ms);
             _store[objectKey] = ms.ToArray();
             return Task.FromResult(objectKey);
         }
-        public Task<Stream> OpenReadAsync(string objectKey, CancellationToken ct = default)
+        public Task<Stream> OpenReadAsync(Guid userId, string objectKey, CancellationToken ct = default)
         {
             _store.TryGetValue(objectKey, out var b);
             return Task.FromResult<Stream>(new MemoryStream(b ?? Array.Empty<byte>()));
         }
-        public Task DeleteAsync(string objectKey, CancellationToken ct = default)
+        public Task DeleteAsync(Guid userId, string objectKey, CancellationToken ct = default)
         {
             _store.Remove(objectKey);
             return Task.CompletedTask;

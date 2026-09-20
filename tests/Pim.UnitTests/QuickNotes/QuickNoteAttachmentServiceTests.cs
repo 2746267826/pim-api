@@ -36,9 +36,13 @@ public class QuickNoteAttachmentServiceTests
         Assert.Equal(uploaded.Id, attachment.Id);
         Assert.Equal(UserId, attachment.UserId);
         Assert.Null(attachment.QuickNoteId);
-        Assert.Equal("minio", attachment.StorageProvider);
+        // MinIO 随 P4 退役；测试替身不是 OneDrive 适配器，故记录实现类型名
+        Assert.Equal(nameof(FakeObjectStorage), attachment.StorageProvider);
         Assert.StartsWith($"quick-notes/{UserId:N}/{uploaded.Id:N}/", attachment.ObjectKey);
         Assert.True(storage.StoredObjects.ContainsKey(attachment.ObjectKey));
+
+        // 用户身份必须显式传给存储层（不再从 objectKey 反解）
+        Assert.Equal(UserId, storage.LastStoreUserId);
     }
 
     [Fact]
@@ -239,26 +243,31 @@ public class QuickNoteAttachmentServiceTests
     {
         public Dictionary<string, StoredObject> StoredObjects { get; } = new();
 
+        /// <summary>最近一次 StoreAsync 收到的 userId，用于验证身份是显式传入的。</summary>
+        public Guid? LastStoreUserId { get; private set; }
+
         public async Task<string> StoreAsync(
+            Guid userId,
             string objectKey,
             Stream content,
             string contentType,
             long sizeBytes,
             CancellationToken ct = default)
         {
+            LastStoreUserId = userId;
             await using var copy = new MemoryStream();
             await content.CopyToAsync(copy, ct);
             StoredObjects[objectKey] = new StoredObject(copy.ToArray(), contentType, sizeBytes);
             return objectKey;
         }
 
-        public Task<Stream> OpenReadAsync(string objectKey, CancellationToken ct = default)
+        public Task<Stream> OpenReadAsync(Guid userId, string objectKey, CancellationToken ct = default)
         {
             Stream stream = new MemoryStream(StoredObjects[objectKey].Bytes);
             return Task.FromResult(stream);
         }
 
-        public Task DeleteAsync(string objectKey, CancellationToken ct = default)
+        public Task DeleteAsync(Guid userId, string objectKey, CancellationToken ct = default)
         {
             StoredObjects.Remove(objectKey);
             return Task.CompletedTask;
