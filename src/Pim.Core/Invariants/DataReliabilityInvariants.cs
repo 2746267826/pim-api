@@ -1003,10 +1003,14 @@ public static class DataReliabilityInvariants
     /// 阈值: 未标记空洞 = 0，断档判定阈值 15.0 分钟。
     /// 为什么是这个阈值: 超过 15m 的无数据空洞若在 UI 上直接拼接或无解释空白，用户无法分辨是设备没用还是系统漏记；必须显示 gap 标记。
     ///
-    /// 实现口径（#254 S7，本轮修正）：空洞的认定**必须看它是否被 gap 事件覆盖**。
-    /// 旧实现只检查"相邻两条区间是否相接"，`TimelineInterval.IsGap` 是取数层查出来却从未被读的
-    /// 死字段 —— 一个被 gap 事件完整覆盖的断档也会被判"未标记"。现在先把 gap 区间合并，
-    /// 再判别每个空洞是否被合并后的 gap 区间完整覆盖；未覆盖才算违规，并按业务时间做 T4 分档。
+    /// 实现口径（#254 S7，本轮修正）：判据要把**时间线**与**覆盖标记**这两份输入分开看：
+    ///   * 时间线 = 真实采集到的事件区间（window / web-page / idle）—— 它们之间没被覆盖到的地方才是"空洞"；
+    ///   * 覆盖标记 = "缺数据"类区间（gap 等），用来解释空洞是否已被显式标注。
+    ///
+    ///   不能把 gap 区间混进时间线里再去找空洞：那样 gap 会自己把自己的空洞"填掉"，
+    ///   判据的覆盖检查变成永远不可达的死代码（空洞只可能出现在非 gap 区间之间，
+    ///   而覆盖它的 gap 区间本身又会被当成时间线的一部分，矛盾）。因此这里按 <see cref="TimelineInterval.IsGap"/>
+    ///   把输入拆成两份：空洞在非 gap 区间上寻找，再用合并后的 gap 区间判断是否被完整覆盖。
     /// </summary>
     public static InvariantResult CheckS7_TimelineGapMarked(
         IEnumerable<TimelineInterval> intervals,
@@ -1036,7 +1040,11 @@ public static class DataReliabilityInvariants
         // 按设备分别判定：gap 事件只能标记同一台设备的空洞。
         foreach (var deviceGroup in list.GroupBy(i => i.DeviceId, StringComparer.Ordinal))
         {
-            var deviceIntervals = deviceGroup
+            var deviceIntervals = deviceGroup.ToList();
+
+            // 时间线只由"真实采集到的事件"构成；gap 是覆盖标记，不进时间线。
+            var timeline = deviceIntervals
+                .Where(i => !i.IsGap)
                 .OrderBy(i => i.StartTime)
                 .ThenBy(i => i.EndTime)
                 .ToList();
@@ -1045,12 +1053,19 @@ public static class DataReliabilityInvariants
             var coverage = MergeIntervals(
                 deviceIntervals.Where(i => i.IsGap).Select(i => (i.StartTime, i.EndTime)));
 
-            var cursor = deviceIntervals[0].EndTime;
-            for (int i = 1; i < deviceIntervals.Count; i++)
+            // 时间线上没有真实事件时无从判断空洞（全是 gap 声明，说明整段都没采到）。
+            if (timeline.Count == 0)
             {
-                var interval = deviceIntervals[i];
-                var holeStart = cursor;
-                var holeEnd = interval.StartTime;
+                continue;
+            }
+
+            // 先把时间线自身合并（重叠事件不应产生重复游标），再找相邻段之间的空洞。
+            var mergedTimeline = MergeIntervals(timeline.Select(i => (i.StartTime, i.EndTime)));
+
+            for (int i = 1; i < mergedTimeline.Count; i++)
+            {
+                var holeStart = mergedTimeline[i - 1].End;
+                var holeEnd = mergedTimeline[i].Start;
                 var holeMinutes = (holeEnd - holeStart).TotalMinutes;
 
                 if (holeMinutes > thresholdMinutes && !IsFullyCovered(coverage, holeStart, holeEnd))
@@ -1064,10 +1079,10 @@ public static class DataReliabilityInvariants
 
                     if (samples.Count < opt.MaxSampleCount)
                     {
-                        samples.Add($"Device={interval.DeviceId}: [{holeStart:yyyy-MM-dd HH:mm:ss} ~ {holeEnd:yyyy-MM-dd HH:mm:ss}] 存在 {holeMinutes:F1}m 未标记空洞 (> {thresholdMinutes:F1}m)");
+                        samples.Add($"Device={deviceGroup.Key}: [{holeStart:yyyy-MM-dd HH:mm:ss} ~ {holeEnd:yyyy-MM-dd HH:mm:ss}] 存在 {holeMinutes:F1}m 未标记空洞 (> {thresholdMinutes:F1}m)");
                         violations.Add(new InvariantViolation(
-                            Id: $"{interval.DeviceId}:unmarked-hole:{i}",
-                            DeviceId: interval.DeviceId,
+                            Id: $"{deviceGroup.Key}:unmarked-hole:{i}",
+                            DeviceId: deviceGroup.Key,
                             OccurredAtUtc: ToUtc(holeStart),
                             Fields: Fields(
                                 ("holeStartUtc", ToUtc(holeStart).ToString("O")),
@@ -1075,11 +1090,6 @@ public static class DataReliabilityInvariants
                                 ("holeMinutes", holeMinutes.ToString("F1")),
                                 ("isNew", isNew ? "true" : "false"))));
                     }
-                }
-
-                if (interval.EndTime > cursor)
-                {
-                    cursor = interval.EndTime;
                 }
             }
         }
@@ -1128,14 +1138,18 @@ public static class DataReliabilityInvariants
 
     /// <summary>
     /// 空洞是否被"缺数据"覆盖段**完整**覆盖（判据原文要求"完整覆盖"，留白即未标记）。
-    /// 允许 1 秒的边界容差：gap 分片与相邻事件的边界在毫秒/秒级上可能有取整差。
+    ///
+    /// 容差取**毫秒级**而不是秒级：事件的起止时间在入库时已归一到毫秒，
+    /// 秒级容差会让"覆盖段比空洞短最多 1 秒"也算完整覆盖 —— 对一个 15 分钟的空洞而言
+    /// 这等于放行 0.1% 的留白，与"完整覆盖"的判据原文不符。
+    /// 毫秒级既容纳了入库精度，又不会放过肉眼可见的空白。
     /// </summary>
     private static bool IsFullyCovered(
         IReadOnlyList<(DateTime Start, DateTime End)> coverage,
         DateTime holeStart,
         DateTime holeEnd)
     {
-        var tolerance = TimeSpan.FromSeconds(1);
+        var tolerance = TimeSpan.FromMilliseconds(1);
         foreach (var (start, end) in coverage)
         {
             if (start <= holeStart.Add(tolerance) && end >= holeEnd.Subtract(tolerance))
@@ -1146,7 +1160,6 @@ public static class DataReliabilityInvariants
 
         return false;
     }
-
 
     /// <summary>
     /// S8 (INV-C19): 日界一致（三层口径统一）

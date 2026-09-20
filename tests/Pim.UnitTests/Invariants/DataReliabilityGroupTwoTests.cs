@@ -437,6 +437,56 @@ public class DataReliabilityGroupTwoTests
     }
 
     [Fact]
+    public void S7_HoleLongerThanGapCoverage_BySubSecond_Fails()
+    {
+        // 复审回归：容差必须是毫秒级。gap 覆盖段比空洞短 500 毫秒时，
+        // 仍然属于"没有完整覆盖" —— 秒级容差会把这种留白放行。
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(10), EventType = "window" },
+            new()
+            {
+                DeviceId = "DEV-1",
+                StartTime = _baseUtc.AddMinutes(10),
+                // 覆盖段比真实空洞短 0.5 秒
+                EndTime = _baseUtc.AddMinutes(40).AddMilliseconds(-500),
+                IsGap = true,
+                EventType = "gap"
+            },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(40), EndTime = _baseUtc.AddMinutes(50), EventType = "window" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S7_HoleCoveredWithinMillisecondTolerance_Passes()
+    {
+        // 覆盖段与空洞边界只差 1 毫秒（入库精度）-> 视为完整覆盖
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(10), EventType = "window" },
+            new()
+            {
+                DeviceId = "DEV-1",
+                StartTime = _baseUtc.AddMinutes(10),
+                EndTime = _baseUtc.AddMinutes(40).AddMilliseconds(-1),
+                IsGap = true,
+                EventType = "gap"
+            },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(40), EndTime = _baseUtc.AddMinutes(50), EventType = "window" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
     public void S7_OnlyHistoricalHoles_DowngradesToWarning()
     {
         var now = new DateTime(2026, 7, 20, 10, 0, 0, DateTimeKind.Utc);

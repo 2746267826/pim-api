@@ -1331,13 +1331,42 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                 FROM merged_gap
                 GROUP BY device_id
             ),
-            recorded AS (
-                SELECT device_id, COALESCE(SUM(duration), 0) AS recorded_seconds
+            -- 分子 = 窗口内**有记录**的时长。必须先把事件区间裁剪到窗口、再合并重叠区间后求和：
+            --   1. 直接 SUM(duration) 会把跨窗口边界的事件整段计入（窗口外部分也算进来了）；
+            --   2. 同设备的重叠事件（window 与 web-page 并发等）会被重复累加 ——
+            --      覆盖率是按"时间轴被覆盖了多少"定义的，不是按"事件时长之和"。
+            --   合并后取并集长度才是可解释的覆盖率分子。
+            clipped_recorded AS (
+                SELECT device_id,
+                       GREATEST(timestamp, win.ws) AS rs,
+                       LEAST(timestamp + duration * interval '1 second', win.we) AS re
                 FROM pc_tracker_events, win
-                WHERE timestamp >= win.ws AND timestamp < win.we
-                  AND event_type IN ('window', 'web-page', 'idle')
+                WHERE event_type IN ('window', 'web-page', 'idle')
+                  AND timestamp + duration * interval '1 second' > win.ws
+                  AND timestamp < win.we
+            ),
+            rec_marked AS (
+                SELECT device_id, rs, re,
+                       CASE WHEN MAX(re) OVER (PARTITION BY device_id ORDER BY rs, re
+                                               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) >= rs
+                            THEN 0 ELSE 1 END AS is_new_group
+                FROM clipped_recorded
+            ),
+            rec_grouped AS (
+                SELECT device_id, rs, re,
+                       SUM(is_new_group) OVER (PARTITION BY device_id ORDER BY rs, re) AS grp
+                FROM rec_marked
+            ),
+            rec_merged AS (
+                SELECT device_id, grp, MIN(rs) AS rs, MAX(re) AS re
+                FROM rec_grouped
+                GROUP BY device_id, grp
+            ),
+            recorded AS (
+                SELECT device_id, COALESCE(SUM(EXTRACT(EPOCH FROM (re - rs))), 0) AS recorded_seconds
+                FROM rec_merged
                 GROUP BY device_id
-            )
+            ),
             -- 设备集合必须取「有记录」与「有离线声明」的**并集**：只从 recorded 出发会让
             -- "整段窗口都声明了离线、因此没有任何记录"的设备被静默跳过，等于替它默认通过。
             devices AS (
@@ -1442,6 +1471,9 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             {
                 DeviceId = deviceId,
                 OnlineDurationSeconds = onlineSeconds,
+                // 分子已按"裁剪到窗口 + 合并重叠区间"计算，天然不会超过窗口长度。
+                // 这里的上限只用于兜住"声明与记录在边界上自相矛盾"的脏数据
+                //（窗口 − 声明离线 < 有记录时长），避免算出 >100% 的无意义覆盖率。
                 ValidDataDurationSeconds = Math.Min(recordedSeconds, onlineSeconds),
                 ReportedStatus = healthStatusByDevice.TryGetValue(deviceId, out var st) ? st : reportedStatus,
                 IsDataInsufficientForDenominator = false,
