@@ -215,11 +215,11 @@ public sealed class McpClientServiceTests : IDisposable
             ["write"] = new() { ["create_task"] = true },
         };
         var dto = await _service.UpdateAsync(created.Client.Id, null, writeOnly, _owner);
-        Assert.Equal(102, dto.Permissions["read"].Count);
+        Assert.Equal(100, dto.Permissions["read"].Count);
         Assert.True(dto.Permissions["read"]["get_tasks"]);
         Assert.True(dto.Permissions["write"]["create_task"]);
         // Unlisted write tools keep their previous value (not wiped).
-        Assert.Equal(50, dto.Permissions["write"].Count);
+        Assert.Equal(49, dto.Permissions["write"].Count);
     }
 
     [Fact]
@@ -233,7 +233,7 @@ public sealed class McpClientServiceTests : IDisposable
         var dto = await _service.UpdateAsync(created.Client.Id, null, singleKey, _owner);
         Assert.False(dto.Permissions["read"]["get_events"]);
         Assert.True(dto.Permissions["read"]["get_tasks"]);
-        Assert.Equal(102, dto.Permissions["read"].Count);
+        Assert.Equal(100, dto.Permissions["read"].Count);
     }
 
     private sealed class StubHostEnvironment : IHostEnvironment

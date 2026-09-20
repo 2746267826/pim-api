@@ -18,8 +18,8 @@ def test_strip_bearer():
     assert s._strip_bearer("  Bearer xyz  ") == "xyz"
 
 
-def test_write_tool_names_total_is_50():
-    assert len(s._WRITE_TOOL_NAMES) == 50
+def test_write_tool_names_total_is_49():
+    assert len(s._WRITE_TOOL_NAMES) == 49
 
 
 def test_all_write_tools_are_registered():
@@ -32,9 +32,9 @@ def test_tool_inventory_counts():
     tools = s._list_tools_meta()
     read = [t for t in tools if t["group"] == "read"]
     write = [t for t in tools if t["group"] == "write"]
-    assert len(tools) == 151
-    assert len(read) == 101
-    assert len(write) == 50
+    assert len(tools) == 149
+    assert len(read) == 100
+    assert len(write) == 49
 
 
 def test_write_flag_matches_catalog():

@@ -141,7 +141,7 @@ async def _run_http_smoke():
                 await session.initialize()
                 tools = await session.list_tools()
                 names = {t.name for t in tools.tools}
-                assert len(names) == 151, f"expected 151 tools, got {len(names)}"
+                assert len(names) == 149, f"expected 149 tools, got {len(names)}"
                 print(f"tools listed: {len(names)}")
 
                 denied = await session.call_tool("create_task", {"title": "blocked"})
@@ -172,7 +172,7 @@ async def _run_stdio_smoke():
             async with StdioSession(read, write) as session:
                 await session.initialize()
                 tools = await session.list_tools()
-                assert len(tools.tools) == 151, f"expected 151 stdio tools, got {len(tools.tools)}"
+                assert len(tools.tools) == 149, f"expected 149 stdio tools, got {len(tools.tools)}"
                 print(f"stdio tools listed: {len(tools.tools)}")
 
     await asyncio.wait_for(run_stdio(), timeout=30)

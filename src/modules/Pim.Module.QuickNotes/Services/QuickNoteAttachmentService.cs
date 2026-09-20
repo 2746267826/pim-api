@@ -37,14 +37,14 @@ public sealed class QuickNoteAttachmentService(
             ? "application/octet-stream"
             : contentType.Trim();
         var objectKey = $"quick-notes/{userId:N}/{id:N}/{safeName}";
-        var storedObjectKey = await storage.StoreAsync(objectKey, content, normalizedContentType, sizeBytes, ct);
+        var storedObjectKey = await storage.StoreAsync(userId, objectKey, content, normalizedContentType, sizeBytes, ct);
 
         var attachment = new QuickNoteAttachmentEntity
         {
             Id = id,
             QuickNoteId = null,
             UserId = userId,
-            StorageProvider = "minio",
+            StorageProvider = ResolveProviderName(),
             ObjectKey = storedObjectKey,
             FileName = safeName,
             ContentType = normalizedContentType,
@@ -70,8 +70,30 @@ public sealed class QuickNoteAttachmentService(
         if (attachment.UserId != userId)
             throw new DomainException(40301, "无权访问该附件");
 
-        var content = await storage.OpenReadAsync(attachment.ObjectKey, ct);
+        var content = await storage.OpenReadAsync(userId, attachment.ObjectKey, ct);
         return (content, attachment.ContentType, attachment.FileName);
+    }
+
+    /// <summary>
+    /// 预授权直链（设计文档 §10）：存储后端支持时可让内容端点 302，避免服务器代理流量。
+    /// 不支持时返回 null，由端点回退到代理下载。
+    /// </summary>
+    public async Task<string?> GetDirectLinkAsync(Guid id, CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var attachment = await db.Set<QuickNoteAttachmentEntity>()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(a => a.Id == id, ct)
+            ?? throw new DomainException(4006, "附件不存在");
+        if (attachment.UserId != userId)
+            throw new DomainException(40301, "无权访问该附件");
+
+        if (storage is not IQuickNoteDirectLinkStorage directLink)
+        {
+            return null;
+        }
+
+        return await directLink.GetDirectLinkAsync(userId, attachment.ObjectKey, ct);
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
@@ -82,6 +104,11 @@ public sealed class QuickNoteAttachmentService(
             ?? throw new DomainException(4006, "附件不存在");
         if (attachment.UserId != userId)
             throw new DomainException(40301, "无权访问该附件");
+
+        // 先删远端再改本地：附件实体是**用户自己的** OneDrive 对象，
+        // 只软删元数据会把文件永久留在对方网盘里（用户删了附件却在 OneDrive 里还能看到）。
+        // 与文件模块一致：远端成功（或远端已不存在）后才收敛本地状态。
+        await storage.DeleteAsync(userId, attachment.ObjectKey, ct);
 
         attachment.DeletedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
@@ -136,4 +163,13 @@ public sealed class QuickNoteAttachmentService(
 
     private static string BuildDownloadUrl(Guid id)
         => $"/api/v1/quick-notes/attachments/{id}/download";
+
+    /// <summary>
+    /// 记录附件落在哪个后端。v2 起附件只有 OneDrive 一条线（MinIO 随 P4 退役），
+    /// 因此实现方是 OneDrive 适配器时记 "onedrive"，其余（测试替身等）记类型名。
+    /// </summary>
+    private string ResolveProviderName()
+        => storage is OneDriveQuickNoteObjectStorage
+            ? OneDriveQuickNoteObjectStorage.ProviderName
+            : storage.GetType().Name;
 }

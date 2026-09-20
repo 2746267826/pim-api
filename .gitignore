@@ -56,3 +56,6 @@ ssl/
 .DS_Store
 Thumbs.db
 __pycache__/
+
+## Local E2E harness (graph stub / mitm certs / scratch probes)
+tmp-probe/

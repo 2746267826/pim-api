@@ -16,13 +16,10 @@ services:
       - ASPNETCORE_URLS=http://+:5000
       - TZ=Asia/Shanghai
       - ConnectionStrings__DefaultConnection=Host=postgres;Database=pim;Username=pim;Password=${PG_PASSWORD}
-      - Minio__Endpoint=minio:9000
-      - Minio__AccessKey=${MINIO_ACCESS_KEY}
-      - Minio__SecretKey=${MINIO_SECRET_KEY}
       - Kopia__RepositoryPath=/data/kopia-repo
       - Kopia__Password=${KOPIA_PASSWORD}
       - DataProtection__KeysPath=/data/data-protection
-      - Tika__BaseUrl=http://tika:9998
+      - Tika__BaseUrl=${TIKA_BASE_URL:-}
       - Ai__Enabled=${AI_ENABLED:-false}
       - Ai__Provider=litellm
       - Ai__BaseUrl=http://litellm:4000
@@ -33,13 +30,6 @@ services:
       - Ai__MaxAttemptsPerRequest=2
       - Ai__SaveFullPrompts=true
       - Ai__SaveFullResponses=true
-      - Nextcloud__PublicBaseUrl=${NEXTCLOUD_PUBLIC_BASE_URL}
-      - Nextcloud__InternalBaseUrl=http://nextcloud
-      - OnlyOffice__PublicUrl=${ONLYOFFICE_PUBLIC_URL}
-      - OnlyOffice__JwtSecret=${ONLYOFFICE_JWT_SECRET}
-      - Qdrant__BaseUrl=http://qdrant:6333
-      - Qdrant__Url=http://qdrant:6333
-      - Qdrant__Collection=pim_file_chunks
       - PIM_OPS_KEY=${PIM_OPS_KEY:-}
       - LOKI_URL=${LOKI_URL:-}
     volumes:
@@ -48,11 +38,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
-        condition: service_healthy
       litellm:
-        condition: service_started
-      qdrant:
         condition: service_started
     networks:
       - pim-net
@@ -120,28 +106,6 @@ services:
     networks:
       - pim-net
 
-  minio:
-    image: minio/minio:latest
-    restart: unless-stopped
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - pim-net
-
-  tika:
-    image: apache/tika:latest
-    restart: unless-stopped
-    networks:
-      - pim-net
 
   litellm:
     image: docker.litellm.ai/berriai/litellm:main-latest
@@ -181,82 +145,14 @@ services:
     networks:
       - pim-net
 
-  nextcloud-db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: nextcloud
-      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
-      POSTGRES_DB: nextcloud
-    volumes:
-      - nextcloud_db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nextcloud"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - pim-net
 
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    networks:
-      - pim-net
 
-  nextcloud:
-    image: nextcloud:apache
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8080:80"
-    environment:
-      POSTGRES_HOST: nextcloud-db
-      POSTGRES_USER: nextcloud
-      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD}
-      POSTGRES_DB: nextcloud
-      REDIS_HOST: redis
-      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
-      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
-      OVERWRITEPROTOCOL: http
-      OVERWRITEHOST: 127.0.0.1:8080
-    volumes:
-      - nextcloud_data:/var/www/html
-    depends_on:
-      nextcloud-db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    networks:
-      - pim-net
 
-  onlyoffice:
-    image: onlyoffice/documentserver
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8082:80"
-    environment:
-      JWT_ENABLED: "true"
-      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET}
-    networks:
-      - pim-net
 
-  qdrant:
-    image: qdrant/qdrant:latest
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:6333:6333"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    networks:
-      - pim-net
 
 volumes:
   pg_data:
-  minio_data:
   pim_data:
-  nextcloud_data:
-  nextcloud_db_data:
-  qdrant_data:
   prometheus_data:
   grafana_data:
   loki_data:

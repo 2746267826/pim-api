@@ -209,8 +209,6 @@ public static class McpToolTable
             S("get_file_providers", "GET", "/api/v1/files/providers"),
             S("get_files", "GET", "/api/v1/files/items", Q("folderId=path", "page", "pageSize"), redact: true),
             S("get_file", "GET", "/api/v1/files/items/{file_id}"),
-            S("get_file_versions", "GET", "/api/v1/files/items/{file_id}/versions"),
-            S("get_file_trash", "GET", "/api/v1/files/trash", Q("page", "pageSize")),
             S("search_files", "GET", "/api/v1/files/search", Q("q", "page", "pageSize")),
             S("read_file_text", "GET", "/api/v1/files/items/{file_id}/extracted-text", Q("maxBytes")),
             S("get_file_suggestions", "GET", "/api/v1/files/suggestions", Q("page", "pageSize")),
@@ -286,7 +284,6 @@ public static class McpToolTable
             // 路径参数名必须与契约（mcp-tools.json）里的属性名一致：
             // BuildPath 只替换「契约参数名 == 占位符名」的项，名字不一致会拼不出 URL（复审 I-8）。
             W("restore_file", "POST", "/api/v1/files/items/{fileId}/restore", req: R("fileId")),
-            W("index_file", "POST", "/api/v1/files/items/{fileId}/index", req: R("fileId")),
 
             // ===================== PcTracker writes (4) =====================
             W("create_category", "POST", "/api/v1/pc/categories", req: R("appPattern", "categoryName", "color", "priority")),

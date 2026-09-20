@@ -216,6 +216,50 @@ public class OneDriveGraphClientTests
         Assert.Equal(410, error.StatusCode);
     }
 
+    /// <summary>
+    /// delta 游标（@odata.nextLink / @odata.deltaLink）是服务器返回值且会落库，
+    /// 绝不能把 Bearer token 发往非 Graph 主机——否则被篡改的游标即可窃取用户 token。
+    /// </summary>
+    [Theory]
+    [InlineData("https://attacker.example.com/v1.0/me/drive/root/delta")]
+    [InlineData("http://graph.microsoft.com/v1.0/me/drive/root/delta")]
+    [InlineData("https://graph.microsoft.com.attacker.example.com/v1.0/delta")]
+    public async Task GetDeltaPage_WithUntrustedAbsoluteCursor_DoesNotSendRequest(string hostileUrl)
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = _ => StubHttpHandler.Json(200, new { value = Array.Empty<object>() }),
+        };
+        var client = CreateClient(handler);
+
+        await Assert.ThrowsAsync<OneDriveGraphException>(() => client.GetDeltaPageAsync("secret-token", hostileUrl));
+
+        // 关键：无论异常如何，都不能带着 token 打到攻击者主机上
+        Assert.Empty(handler.Requests);
+    }
+
+    /// <summary>Graph 官方主机与相对路径仍然正常工作。</summary>
+    [Theory]
+    [InlineData("https://graph.microsoft.com/v1.0/me/drive/root/delta?$deltatoken=x")]
+    [InlineData("/me/drive/root/delta?$deltatoken=x")]
+    public async Task GetDeltaPage_WithTrustedCursorOrRelativePath_SendsRequest(string url)
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = _ => StubHttpHandler.Json(200, new Dictionary<string, object>
+            {
+                ["value"] = Array.Empty<object>(),
+                ["@odata.deltaLink"] = "https://graph.microsoft.com/v1.0/me/drive/root/delta?$deltatoken=next",
+            }),
+        };
+        var client = CreateClient(handler);
+
+        await client.GetDeltaPageAsync("at", url);
+
+        var request = Assert.Single(handler.Requests);
+        Assert.StartsWith("https://graph.microsoft.com/", request.Url);
+    }
+
     [Fact]
     public async Task GetDrive_MapsQuotaAndType()
     {

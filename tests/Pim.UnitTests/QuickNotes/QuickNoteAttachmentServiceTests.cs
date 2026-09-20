@@ -36,9 +36,13 @@ public class QuickNoteAttachmentServiceTests
         Assert.Equal(uploaded.Id, attachment.Id);
         Assert.Equal(UserId, attachment.UserId);
         Assert.Null(attachment.QuickNoteId);
-        Assert.Equal("minio", attachment.StorageProvider);
+        // MinIO 随 P4 退役；测试替身不是 OneDrive 适配器，故记录实现类型名
+        Assert.Equal(nameof(FakeObjectStorage), attachment.StorageProvider);
         Assert.StartsWith($"quick-notes/{UserId:N}/{uploaded.Id:N}/", attachment.ObjectKey);
         Assert.True(storage.StoredObjects.ContainsKey(attachment.ObjectKey));
+
+        // 用户身份必须显式传给存储层（不再从 objectKey 反解）
+        Assert.Equal(UserId, storage.LastStoreUserId);
     }
 
     [Fact]
@@ -208,10 +212,59 @@ public class QuickNoteAttachmentServiceTests
         Assert.Equal(4006, error.ErrorCode);
     }
 
+    /// <summary>
+    /// 删除附件必须同时清理**存储层**：附件实体存在用户自己的 OneDrive 里，
+    /// 只软删元数据会把文件永久留在对方网盘（用户删了附件却在 OneDrive 里仍能看到）。
+    /// </summary>
+    [Fact]
+    public async Task DeleteAsync_RemovesObjectFromStorage()
+    {
+        await using var db = CreateDb();
+        var storage = new FakeObjectStorage();
+        var attachments = CreateAttachmentService(db, UserId, storage);
+        await using var content = new MemoryStream(Encoding.UTF8.GetBytes("image-bytes"));
+        var uploaded = await attachments.UploadAsync(content, "gone.png", "image/png", content.Length);
+
+        var attachment = await db.Set<QuickNoteAttachmentEntity>().AsNoTracking().SingleAsync();
+        Assert.Contains(attachment.ObjectKey, storage.StoredObjects.Keys);
+
+        await attachments.DeleteAsync(uploaded.Id);
+
+        Assert.Contains(attachment.ObjectKey, storage.DeletedObjectKeys);
+        Assert.DoesNotContain(attachment.ObjectKey, storage.StoredObjects.Keys);
+        // 软删后要被全局过滤器挡在常规查询外，因此这里显式忽略过滤器回读
+        var reloaded = await db.Set<QuickNoteAttachmentEntity>()
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync();
+        Assert.NotNull(reloaded.DeletedAt);
+    }
+
+    /// <summary>
+    /// 远端删除失败时本地**不得**标记为已删除：否则用户以为附件没了，
+    /// 实际文件仍留在 OneDrive，且本地再也无法重试清理。
+    /// </summary>
+    [Fact]
+    public async Task DeleteAsync_WhenStorageFails_KeepsLocalStateUnchanged()
+    {
+        await using var db = CreateDb();
+        var storage = new FakeObjectStorage { DeleteException = new InvalidOperationException("graph down") };
+        var attachments = CreateAttachmentService(db, UserId, storage);
+        await using var content = new MemoryStream(Encoding.UTF8.GetBytes("image-bytes"));
+        var uploaded = await attachments.UploadAsync(content, "stay.png", "image/png", content.Length);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => attachments.DeleteAsync(uploaded.Id));
+
+        var reloaded = await db.Set<QuickNoteAttachmentEntity>()
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync();
+        Assert.Null(reloaded.DeletedAt);
+    }
+
     private static PimDbContext CreateDb()
     {
-        PimDbContext.RegisterModuleAssembly(typeof(QuickNoteEntity).Assembly);
-        var options = new DbContextOptionsBuilder<PimDbContext>()
+        PimDbContext.RegisterModuleAssembly(typeof(QuickNoteEntity).Assembly);        var options = new DbContextOptionsBuilder<PimDbContext>()
             .UseInMemoryDatabase($"quick-note-attachments-{Guid.NewGuid()}")
             .Options;
         return new PimDbContext(options);
@@ -239,30 +292,47 @@ public class QuickNoteAttachmentServiceTests
     {
         public Dictionary<string, StoredObject> StoredObjects { get; } = new();
 
+        /// <summary>最近一次 StoreAsync 收到的 userId，用于验证身份是显式传入的。</summary>
+        public Guid? LastStoreUserId { get; private set; }
+
         public async Task<string> StoreAsync(
+            Guid userId,
             string objectKey,
             Stream content,
             string contentType,
             long sizeBytes,
             CancellationToken ct = default)
         {
+            LastStoreUserId = userId;
             await using var copy = new MemoryStream();
             await content.CopyToAsync(copy, ct);
             StoredObjects[objectKey] = new StoredObject(copy.ToArray(), contentType, sizeBytes);
             return objectKey;
         }
 
-        public Task<Stream> OpenReadAsync(string objectKey, CancellationToken ct = default)
+        public Task<Stream> OpenReadAsync(Guid userId, string objectKey, CancellationToken ct = default)
         {
             Stream stream = new MemoryStream(StoredObjects[objectKey].Bytes);
             return Task.FromResult(stream);
         }
 
-        public Task DeleteAsync(string objectKey, CancellationToken ct = default)
+        public Task DeleteAsync(Guid userId, string objectKey, CancellationToken ct = default)
         {
+            if (DeleteException is not null)
+            {
+                throw DeleteException;
+            }
+
+            DeletedObjectKeys.Add(objectKey);
             StoredObjects.Remove(objectKey);
             return Task.CompletedTask;
         }
+
+        /// <summary>被删除的远端 objectKey 记录，用于验证删除确实清了存储层。</summary>
+        public List<string> DeletedObjectKeys { get; } = [];
+
+        /// <summary>设置后 DeleteAsync 抛出该异常，用于验证本地状态不被提前改动。</summary>
+        public Exception? DeleteException { get; set; }
     }
 
     private sealed record StoredObject(byte[] Bytes, string ContentType, long SizeBytes);

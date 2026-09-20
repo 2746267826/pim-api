@@ -54,21 +54,7 @@ public class PimHealthChecksTests
         Assert.Equal(HealthStatus.Degraded, result.Status);
     }
 
-    [Fact]
-    public async Task Minio_NotConfigured_IsDegraded()
-    {
-        var check = new MinioHealthCheck(NewHttpFactory(), NewCfg());
-        var result = await check.CheckHealthAsync(new HealthCheckContext());
-        Assert.Equal(HealthStatus.Degraded, result.Status);
-    }
-
-    [Fact]
-    public async Task Qdrant_NotConfigured_IsDegraded()
-    {
-        var check = new QdrantHealthCheck(NewHttpFactory(), NewCfg());
-        var result = await check.CheckHealthAsync(new HealthCheckContext());
-        Assert.Equal(HealthStatus.Degraded, result.Status);
-    }
+    // MinIO / Qdrant 健康检查随 P4 退役，相应用例已移除；Tika 仍是可选依赖（见上方用例）
 
     [Fact]
     public async Task Hangfire_Disabled_IsDegraded()

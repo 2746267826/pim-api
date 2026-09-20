@@ -2216,7 +2216,7 @@
  },
  {
   "name": "get_file_providers",
-  "description": "List file providers (e.g. Nextcloud). Returns FileProviderDto[].",
+  "description": "List file providers (OneDrive is the only supported source since files v2). Returns FileProviderDto[].",
   "inputSchema": {
    "properties": {},
    "title": "get_file_providersArguments",
@@ -2274,43 +2274,6 @@
     "file_id"
    ],
    "title": "get_fileArguments",
-   "type": "object"
-  }
- },
- {
-  "name": "get_file_versions",
-  "description": "List versions for a file. Returns FileVersion[].",
-  "inputSchema": {
-   "properties": {
-    "file_id": {
-     "title": "File Id",
-     "type": "string"
-    }
-   },
-   "required": [
-    "file_id"
-   ],
-   "title": "get_file_versionsArguments",
-   "type": "object"
-  }
- },
- {
-  "name": "get_file_trash",
-  "description": "List file trash items. Returns ProviderTrashItem[].",
-  "inputSchema": {
-   "properties": {
-    "page": {
-     "default": 1,
-     "title": "Page",
-     "type": "integer"
-    },
-    "pageSize": {
-     "default": 20,
-     "title": "Pagesize",
-     "type": "integer"
-    }
-   },
-   "title": "get_file_trashArguments",
    "type": "object"
   }
  },
@@ -2385,7 +2348,7 @@
  },
  {
   "name": "get_file_open_link",
-  "description": "Get open link for a file (WebDAV/Nextcloud). Returns {openLink}. Note: may contain url, hashed if redactUrls implicit. Call with redact handling.",
+  "description": "Get the OneDrive web URL for a file item. Returns {openLink}. Note: may contain a url, hashed when redactUrls is set. Sensitive paths are rejected.",
   "inputSchema": {
    "properties": {
     "file_id": {
@@ -4759,23 +4722,6 @@
     "fileId"
    ],
    "title": "restore_fileArguments",
-   "type": "object"
-  }
- },
- {
-  "name": "index_file",
-  "description": "Trigger file indexing for RAG search. Requires write permission index_file.",
-  "inputSchema": {
-   "properties": {
-    "fileId": {
-     "title": "Fileid",
-     "type": "string"
-    }
-   },
-   "required": [
-    "fileId"
-   ],
-   "title": "index_fileArguments",
    "type": "object"
   }
  },

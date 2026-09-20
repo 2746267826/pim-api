@@ -10,7 +10,7 @@ public sealed class McpWriteEndpointMapTests
     public void EveryWriteTool_HasAnAllowedEndpoint()
     {
         var tools = McpToolCatalog.WriteTools.Select(t => t.Name).ToList();
-        Assert.Equal(50, tools.Count);
+        Assert.Equal(49, tools.Count);
 
         // Every write tool must be reachable through its McpToolTable route with the mapped
         // endpoint (IsAllowedForTool must accept the exact route the executor dispatches to).
