@@ -197,39 +197,35 @@ public class OneDriveTextExtractorTests
     /// <summary>压缩数据损坏（非 zip 头损坏）也必须给 5336，而不是 500。</summary>
     [Fact]
     public async Task Docx_CorruptEntryData_ReturnsDomainError()
-    {        // 先造一个合法 docx，再把 word/document.xml 的压缩数据字节打乱：
-        // zip 中央目录仍可解析，但读取该条目时会抛 InvalidDataException。
-        var valid = MinimalDocxWithText("原始内容");
+    {
+        // 先造一个合法 docx，再破坏 word/document.xml 的条目数据：
+        // 中央目录仍可解析，但读取该条目时 deflate 解码失败 → InvalidDataException，
+        // 必须被映射为 5336 而不是冒泡成 500（复审 N3-1）。
         using var buffer = new MemoryStream();
         using (var archive = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
         {
-            var entry = archive.CreateEntry("word/document.xml", CompressionLevel.NoCompression);
+            // 必须用 Optimal（deflate）压缩：stored 条目不经过解码器，
+            // 破坏数据区不会可靠触发 InvalidDataException
+            var entry = archive.CreateEntry("word/document.xml", CompressionLevel.Optimal);
             using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
             writer.Write("<w:document><w:body><w:p><w:r><w:t>hello</w:t></w:r></w:p></w:body></w:document>");
         }
 
         var bytes = buffer.ToArray();
-        // 在本地文件头之后的压缩数据区写入垃圾字节，破坏 deflate 流。
-        var marker = Encoding.ASCII.GetBytes("<w:document>");
-        var index = IndexOf(bytes, marker);
-        Assert.True(index > 0, "测试前提：应能定位到条目数据");
-        for (var i = index; i < Math.Min(index + 16, bytes.Length); i++)
+        // 破坏 deflate 压缩数据区：本地文件头 30 字节 + 文件名长度后即数据区。
+        // 中央目录仍可解析，但读取该条目时必然抛 InvalidDataException（实测确定触发；
+        // 改 local header 的压缩方法字段或 stored 条目 CRC 都不会可靠触发）。
+        var nameLength = Encoding.UTF8.GetByteCount("word/document.xml");
+        var dataStart = 30 + nameLength;
+        for (var i = dataStart; i < Math.Min(dataStart + 8, bytes.Length); i++)
         {
-            bytes[i] = 0xFF;
+            bytes[i] ^= 0xFF;
         }
 
-        try
-        {
-            var result = await _extractor.ExtractAsync(bytes, "corrupt.docx", null, maxBytes: 1024);
-            // 若实现能容错读出来，则不应抛异常——但绝不能是未捕获的 InvalidDataException
-            Assert.NotNull(result);
-        }
-        catch (DomainException error)
-        {
-            Assert.Equal(5336, error.ErrorCode);
-        }
-
-        Assert.NotEmpty(valid);
+        // 强断言：这条路径必须给出领域错误 5336（不允许「碰巧读出来」而让用例失去意义）
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => _extractor.ExtractAsync(bytes, "corrupt.docx", null, maxBytes: 1024));
+        Assert.Equal(5336, error.ErrorCode);
     }
 
     /// <summary>
@@ -260,6 +256,32 @@ public class OneDriveTextExtractorTests
         var bytes = buffer.ToArray();
         var error = await Assert.ThrowsAsync<DomainException>(
             () => _extractor.ExtractAsync(bytes, "many-entries.pptx", null, maxBytes: 1024));
+        Assert.Equal(5336, error.ErrorCode);
+    }
+
+    /// <summary>docx 路径同样受整包条目数上限约束（复审 N3-4 的 docx 侧覆盖）。</summary>
+    [Fact]
+    public async Task Docx_TooManyEntries_IsRejectedByArchiveWideEntryBudget()
+    {
+        using var buffer = new MemoryStream();
+        using (var archive = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            var document = archive.CreateEntry("word/document.xml", CompressionLevel.NoCompression);
+            using (var writer = new StreamWriter(document.Open(), Encoding.UTF8))
+            {
+                writer.Write("<w:document><w:body><w:p><w:r><w:t>ok</w:t></w:r></w:p></w:body></w:document>");
+            }
+
+            for (var i = 0; i < OneDriveTextExtractor.MaxZipEntries + 10; i++)
+            {
+                var filler = archive.CreateEntry($"word/media/blob{i}.bin", CompressionLevel.NoCompression);
+                using var stream = filler.Open();
+                stream.WriteByte(0x00);
+            }
+        }
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => _extractor.ExtractAsync(buffer.ToArray(), "many.docx", null, maxBytes: 1024));
         Assert.Equal(5336, error.ErrorCode);
     }
 

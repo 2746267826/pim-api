@@ -132,17 +132,17 @@ public sealed partial class OneDriveTextExtractor(
     {
         using var budget = new ZipReadBudget();
         using var archive = OpenArchive(bytes);
-        // 条目数按**整包**计数（含非 slide 条目），否则一个塞满无关条目的包可以绕过上限（复审 N3-4）
-        var allEntries = GuardZip(() => archive.Entries.ToList());
-        budget.CountEntries(allEntries.Count);
-        var slideEntries = allEntries
+        // 先用受保护的 Entries.Count 做整包条目数校验（含非 slide 条目），
+        // 超限时直接拒绝，不分配完整条目列表；否则一个塞满无关条目的包可以绕过上限（复审 N3-4）
+        budget.CountEntries(GuardZip(() => archive.Entries.Count));
+        var slideEntries = GuardZip(() => archive.Entries
             .Where(entry => entry.FullName.StartsWith("ppt/slides/slide", StringComparison.OrdinalIgnoreCase)
                 && entry.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
             // 按幻灯片序号排序：字符串排序会把 slide10 排在 slide2 前面，
             // 导致 10 页以上的 PPT 内容顺序错乱（复审 I-10）。
             .OrderBy(entry => SlideNumber(entry.FullName))
             .ThenBy(entry => entry.FullName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+            .ToList());
 
         var lines = new List<string>();
         foreach (var slide in slideEntries)
