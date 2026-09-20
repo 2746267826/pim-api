@@ -220,4 +220,89 @@ public class OneDriveContentEndpointsE2ETests
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
+
+    /// <summary>
+    /// API 级隐私回归：把各内容出口串起来验证敏感路径**一致**被拒。
+    /// 单点用例分散在各服务，这里确认端点层没有漏掉任何一条出口
+    /// （历史上 open-link 就曾漏过；搜索也曾在另一条路径上漏过滤）。
+    /// </summary>
+    [Fact]
+    public async Task SensitivePath_IsRejectedOnEveryContentEgress()
+    {
+        var (factory, user, _, itemId, _) = await CreateUserWithFileAsync(
+            $"p4-egress-{Guid.NewGuid():N}", path: "/Passwords/凭据.txt");
+
+        var egresses = new (string Method, string Url)[]
+        {
+            ("GET", $"/api/v1/files/items/{itemId}/content"),
+            ("GET", $"/api/v1/files/items/{itemId}/thumbnail"),
+            ("GET", $"/api/v1/files/items/{itemId}/preview-url"),
+            ("GET", $"/api/v1/files/items/{itemId}/text"),
+            ("GET", $"/api/v1/files/items/{itemId}/snapshots"),
+            ("GET", $"/api/v1/files/items/{itemId}/extracted-text"),
+            ("GET", $"/api/v1/files/items/{itemId}/open-link"),
+        };
+
+        foreach (var (method, url) in egresses)
+        {
+            var response = method == "GET"
+                ? await user.GetAsync(url)
+                : await user.PostAsync(url, null);
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        }
+
+        // 搜索结果里也不能出现敏感项
+        var search = await user.GetAsync("/api/v1/files/search?q=" + Uri.EscapeDataString("凭据"));
+        Assert.Equal(HttpStatusCode.OK, search.StatusCode);
+        using var doc = JsonDocument.Parse(await search.Content.ReadAsStringAsync());
+        var items = doc.RootElement.GetProperty("data").GetProperty("items");
+        Assert.Equal(0, items.GetArrayLength());
+    }
+
+    /// <summary>
+    /// 上传端点只认当前用户的 OneDrive 绑定：他人的 providerId 传进来应 404（不泄露存在性），
+    /// 而不是把文件写进别人的网盘。
+    /// </summary>
+    [Fact]
+    public async Task Upload_WithForeignProviderId_IsRejected()
+    {
+        var (factory, alice, providerId, _, _) = await CreateUserWithFileAsync($"p4-upload-iso-{Guid.NewGuid():N}");
+        var anon = factory.CreateClient();
+        var bobToken = await OneDriveFilesEndpointsE2ETests.RegisterAndGetTokenAsync(
+            anon, ("p4-bob-" + Guid.NewGuid().ToString("N"))[..18]);
+        var bob = OneDriveFilesEndpointsE2ETests.Authed(factory, bobToken);
+
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent(providerId.ToString()), "providerId");
+        form.Add(new StringContent("/偷渡.txt"), "path");
+        form.Add(new ByteArrayContent("payload"u8.ToArray()), "file", "偷渡.txt");
+
+        var response = await bob.PostAsync("/api/v1/files/items/upload", form);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    /// <summary>上传成功后回读的 DTO 必须是刚落库的那一条（名称/路径/大小一致）。</summary>
+    [Fact]
+    public async Task Upload_ReturnsConvergedMetadata()
+    {
+        var (factory, user, providerId, _, _) = await CreateUserWithFileAsync($"p4-upload-dto-{Guid.NewGuid():N}");
+
+        // 目标文件夹必须已在本地元数据里（未同步的目录会被明确拒绝），fixture 里有 /合同
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent(providerId.ToString()), "providerId");
+        form.Add(new StringContent("/合同/新上传.txt"), "path");
+        form.Add(new ByteArrayContent("hello upload"u8.ToArray()), "file", "新上传.txt");
+
+        var response = await user.PostAsync("/api/v1/files/items/upload", form);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var data = doc.RootElement.GetProperty("data");
+        Assert.Equal("新上传.txt", data.GetProperty("name").GetString());
+        Assert.Equal("/合同/新上传.txt", data.GetProperty("path").GetString());
+        // 未显式声明 Content-Type 的 multipart 部件按八位字节流处理（与上传端点的默认一致）
+        Assert.Equal("application/octet-stream", data.GetProperty("mimeType").GetString());
+        Assert.Equal(12, data.GetProperty("size").GetInt64());
+    }
 }
