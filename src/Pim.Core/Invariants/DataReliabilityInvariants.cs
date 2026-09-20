@@ -100,6 +100,42 @@ public static class DataReliabilityInvariants
             return InvariantResult.Unknown($"{invariantCode} UNKNOWN: 部分设备无数据可判定", note, fallback);
         }
 
+        // 任一设备只判到黄线时，整条尺子必须是黄线 —— 绝不能因为"没有设备报红"
+        // 就把存量违规折成绿灯（那会让面板显示"全绿"而实际上有设备存在存量欠账）。
+        var warned = results.Where(result => result.Status == InvariantStatus.Warning).ToList();
+        if (warned.Count > 0)
+        {
+            var samples = warned.SelectMany(result => result.Samples).Take(opt.MaxSampleCount).ToList();
+            var violations = warned.SelectMany(result => result.Violations).Take(opt.MaxSampleCount).ToList();
+            var earliestOccurrences = warned
+                .Select(result => result.EarliestOccurrence)
+                .Where(value => value.HasValue)
+                .Select(value => value!.Value)
+                .ToList();
+            var latestOccurrences = warned
+                .Select(result => result.LatestOccurrence)
+                .Where(value => value.HasValue)
+                .Select(value => value!.Value)
+                .ToList();
+
+            int total = warned.Sum(result => result.TotalViolations);
+            int newCount = warned.Sum(result => result.NewViolations);
+            int historical = warned.Sum(result => result.HistoricalViolations);
+
+            return InvariantResult.Failure(
+                $"{invariantCode} WARN: 检测到 {total} 处存量违规（覆盖 {warned.Count} 台设备，无新增）",
+                total,
+                newCount,
+                historical,
+                samples,
+                earliestOccurrences.Count > 0 ? earliestOccurrences.Min() : null,
+                latestOccurrences.Count > 0 ? latestOccurrences.Max() : null,
+                note,
+                fallback,
+                isWarning: true,
+                violations: violations);
+        }
+
         return InvariantResult.Success($"{invariantCode} PASS: 全部 {results.Count} 台设备均通过", note, fallback);
     }
 
@@ -781,65 +817,104 @@ public static class DataReliabilityInvariants
     ///   1. 空档必须被声明：设备无数据的时间段必须有"正常下线"声明（关机/休眠/planned offline）；没有声明的空档 &gt; 30 分钟 = 红
     ///   2. 上传必须及时：created_at - 事件时间 的 p99 &lt;= 30 分钟 (T2)
     ///   3. 停摆必须可解释：相邻事件间隔 &gt; 30 分钟且未声明下线 = 红
-    /// 阈值: 无下线声明空档阈值 30.0 分钟 (T2)，上传滞后 p99 阈值 30.0 分钟 (T2)。
+    /// 阈值: 无声明空档阈值 30.0 分钟 (T2)，上传滞后 p99 阈值 30.0 分钟 (T2)。
     /// 为什么是这个阈值: 现代操作系统关机与睡眠都有系统钩子；若无声明突然停止 30m，说明采集端崩溃或掉线；上传 p99 超过 30m 表明链路堆积积压严重。
+    ///
+    /// 实现口径（#254 S6，本轮修正）：
+    ///   1. 空档按「上一段**结束**（滚动最大值）→ 下一段**开始**」计算，并按业务时间做 T4 新增/存量分档。
+    ///      旧实现取「相邻起点之差」，把事件自身时长也当成空档 —— 实测把 29 处真实空档放大成 72 处；
+    ///   2. 上传滞后 p99 排除系统合成的 gap 事件（其 created_at - timestamp 恒等于断档时长，不是链路延迟。
+    ///      实测：含 gap 时 p99 = 425.9 分钟，排除后 19.2 分钟，阈值 30 分钟）；
+    ///   3. 仅有存量违规时降级为黄线（与 S11 同一模式，T4）。
     /// </summary>
     public static InvariantResult CheckS6_OfflineDeclared(
         DeviceActivityTrace trace,
-        InvariantOptions? options = null)
+        InvariantOptions? options = null,
+        DateTime? referenceTimeUtc = null)
     {
         var (opt, fallback, note) = InvariantOptions.Resolve(options);
         var gapThresholdMinutes = opt.UndeclaredOfflineGapMinutes;
         var p99LagMinutesThreshold = opt.MaxUploadLagP99Minutes;
 
-        if (trace == null || trace.EventTimes == null || trace.EventTimes.Count == 0)
+        if (trace == null || trace.EventIntervals == null || trace.EventIntervals.Count == 0)
         {
             return InvariantResult.Unknown("INV-P20 UNKNOWN: 数据源为空或未接线", note, fallback);
         }
 
+        var now = referenceTimeUtc ?? DateTime.UtcNow;
+        var cutoff = now.AddHours(-opt.RecentWindowHours);
+
         int totalViolations = 0;
+        int newViolations = 0;
+        int historicalViolations = 0;
         var samples = new List<string>();
         var violations = new List<InvariantViolation>();
+        DateTime? earliest = null;
+        DateTime? latest = null;
 
-        // 1. 检查事件之间的空档是否被声明覆盖
-        var sortedTimes = trace.EventTimes.OrderBy(t => t).ToList();
-        for (int i = 0; i < sortedTimes.Count - 1; i++)
+        // 1. 检查事件区间之间的空档是否被声明覆盖。
+        //    空档 = 「截至上一段的滚动最大结束时刻」→「下一段开始」。用滚动最大值而不是
+        //    前一段的结束，是为了同时覆盖区间互相重叠的输入（重叠时后一段整体落在前一段内部）。
+        var sortedIntervals = trace.EventIntervals
+            .OrderBy(i => i.StartTime)
+            .ThenBy(i => i.EndTime)
+            .ToList();
+
+        var cursor = sortedIntervals[0].EndTime;
+        for (int i = 1; i < sortedIntervals.Count; i++)
         {
-            var t1 = sortedTimes[i];
-            var t2 = sortedTimes[i + 1];
-            var gapMinutes = (t2 - t1).TotalMinutes;
+            var interval = sortedIntervals[i];
+            var gapStart = cursor;
+            var gapEnd = interval.StartTime;
+            var gapMinutes = (gapEnd - gapStart).TotalMinutes;
+
             if (gapMinutes > gapThresholdMinutes)
             {
                 // 检查是否有下线声明覆盖该空档的大部分或关键区间
                 bool declared = trace.Declarations != null && trace.Declarations.Any(d =>
                     d.DeviceId == trace.DeviceId &&
-                    d.StartTime <= t1.AddMinutes(5) &&
-                    d.EndTime >= t2.AddMinutes(-5));
+                    d.StartTime <= gapStart.AddMinutes(5) &&
+                    d.EndTime >= gapEnd.AddMinutes(-5));
 
                 if (!declared)
                 {
                     totalViolations++;
+                    bool isNew = gapEnd >= cutoff;
+                    if (isNew) newViolations++; else historicalViolations++;
+
+                    earliest = earliest == null || gapStart < earliest ? gapStart : earliest;
+                    latest = latest == null || gapEnd > latest ? gapEnd : latest;
+
                     if (samples.Count < opt.MaxSampleCount)
                     {
-                        samples.Add($"Device={trace.DeviceId}: [{t1:yyyy-MM-dd HH:mm:ss} ~ {t2:yyyy-MM-dd HH:mm:ss}] 存在 {gapMinutes:F1}m 无声明空档 (> {gapThresholdMinutes:F1}m)");
+                        samples.Add($"Device={trace.DeviceId}: [{gapStart:yyyy-MM-dd HH:mm:ss} ~ {gapEnd:yyyy-MM-dd HH:mm:ss}] 存在 {gapMinutes:F1}m 无声明空档 (> {gapThresholdMinutes:F1}m)");
                         violations.Add(new InvariantViolation(
                             Id: $"{trace.DeviceId}:undeclared-gap:{i}",
                             DeviceId: trace.DeviceId,
-                            OccurredAtUtc: ToUtc(t1),
+                            OccurredAtUtc: ToUtc(gapStart),
                             Fields: Fields(
                                 ("kind", "undeclared-gap"),
-                                ("gapStartUtc", ToUtc(t1).ToString("O")),
-                                ("gapEndUtc", ToUtc(t2).ToString("O")),
-                                ("gapMinutes", gapMinutes.ToString("F1")))));
+                                ("gapStartUtc", ToUtc(gapStart).ToString("O")),
+                                ("gapEndUtc", ToUtc(gapEnd).ToString("O")),
+                                ("gapMinutes", gapMinutes.ToString("F1")),
+                                ("isNew", isNew ? "true" : "false"))));
                     }
                 }
             }
+
+            if (interval.EndTime > cursor)
+            {
+                cursor = interval.EndTime;
+            }
         }
 
-        // 2. 检查上传滞后 p99
-        if (trace.UploadLagSamples != null && trace.UploadLagSamples.Count > 0)
+        // 2. 检查上传滞后 p99。系统合成的 gap 事件必须排除：它们的 timestamp 是断档起点、
+        //    created_at 是重启后补传时刻，两者之差恒等于断档时长，不代表上传链路延迟。
+        var realSamples = trace.UploadLagSamples?.Where(s => !s.IsSyntheticGap).ToList()
+            ?? new List<UploadLagSample>();
+        if (realSamples.Count > 0)
         {
-            var lags = trace.UploadLagSamples
+            var lags = realSamples
                 .Select(s => Math.Max(0, (s.CreatedAt - s.EventTime).TotalMinutes))
                 .OrderBy(v => v)
                 .ToList();
@@ -850,13 +925,19 @@ public static class DataReliabilityInvariants
 
             if (p99Lag > p99LagMinutesThreshold)
             {
+                var worst = realSamples
+                    .OrderByDescending(s => (s.CreatedAt - s.EventTime).TotalMinutes)
+                    .First();
+                bool isNew = worst.CreatedAt >= cutoff;
+                if (isNew) newViolations++; else historicalViolations++;
+
                 totalViolations++;
+                earliest = earliest == null || worst.EventTime < earliest ? worst.EventTime : earliest;
+                latest = latest == null || worst.CreatedAt > latest ? worst.CreatedAt : latest;
+
                 if (samples.Count < opt.MaxSampleCount)
                 {
                     samples.Add($"Device={trace.DeviceId}: 上传滞后 p99={p99Lag:F1}m 超过阈值 {p99LagMinutesThreshold:F1}m");
-                    var worst = trace.UploadLagSamples
-                        .OrderByDescending(s => (s.CreatedAt - s.EventTime).TotalMinutes)
-                        .First();
                     violations.Add(new InvariantViolation(
                         Id: $"{trace.DeviceId}:upload-lag-p99",
                         DeviceId: trace.DeviceId,
@@ -864,38 +945,48 @@ public static class DataReliabilityInvariants
                         Fields: Fields(
                             ("kind", "upload-lag-p99"),
                             ("p99LagMinutes", p99Lag.ToString("F1")),
-                            ("worstLagMinutes", Math.Max(0, (worst.CreatedAt - worst.EventTime).TotalMinutes).ToString("F1")))));
+                            ("worstLagMinutes", Math.Max(0, (worst.CreatedAt - worst.EventTime).TotalMinutes).ToString("F1")),
+                            ("isNew", isNew ? "true" : "false"))));
                 }
             }
         }
 
         if (totalViolations > 0)
         {
+            bool isWarning = newViolations == 0 && historicalViolations > 0;
             return InvariantResult.Failure(
-                $"INV-P20 FAIL: 检测到 {totalViolations} 处无声明空档或上传滞后超标",
+                $"INV-P20 {(isWarning ? "WARN" : "FAIL")}: 检测到 {totalViolations} 处无声明空档或上传滞后超标 (新增 {newViolations}, 存量 {historicalViolations})",
                 totalViolations,
-                totalViolations,
-                0,
+                newViolations,
+                historicalViolations,
                 samples,
-                null,
-                null,
+                earliest,
+                latest,
                 note,
                 fallback,
+                isWarning: isWarning,
                 violations: violations);
         }
 
         return InvariantResult.Success("INV-P20 PASS: 设备无声明空档与上传延迟均在指标内", note, fallback);
     }
 
+
     /// <summary>
     /// S7 (INV-P21): 断档必须在时间轴上被标记
     /// 判据: 相邻事件之间 &gt; 15 分钟的空洞，必须被"缺数据"类事件（gap 或等价标记）完整覆盖。
     /// 阈值: 未标记空洞 = 0，断档判定阈值 15.0 分钟。
     /// 为什么是这个阈值: 超过 15m 的无数据空洞若在 UI 上直接拼接或无解释空白，用户无法分辨是设备没用还是系统漏记；必须显示 gap 标记。
+    ///
+    /// 实现口径（#254 S7，本轮修正）：空洞的认定**必须看它是否被 gap 事件覆盖**。
+    /// 旧实现只检查"相邻两条区间是否相接"，`TimelineInterval.IsGap` 是取数层查出来却从未被读的
+    /// 死字段 —— 一个被 gap 事件完整覆盖的断档也会被判"未标记"。现在先把 gap 区间合并，
+    /// 再判别每个空洞是否被合并后的 gap 区间完整覆盖；未覆盖才算违规，并按业务时间做 T4 分档。
     /// </summary>
     public static InvariantResult CheckS7_TimelineGapMarked(
         IEnumerable<TimelineInterval> intervals,
-        InvariantOptions? options = null)
+        InvariantOptions? options = null,
+        DateTime? referenceTimeUtc = null)
     {
         var (opt, fallback, note) = InvariantOptions.Resolve(options);
         var thresholdMinutes = opt.TimelineGapThresholdMinutes;
@@ -906,54 +997,131 @@ public static class DataReliabilityInvariants
             return InvariantResult.Unknown("INV-P21 UNKNOWN: 数据源为空或未接线", note, fallback);
         }
 
+        var now = referenceTimeUtc ?? DateTime.UtcNow;
+        var cutoff = now.AddHours(-opt.RecentWindowHours);
+
         int totalViolations = 0;
+        int newViolations = 0;
+        int historicalViolations = 0;
         var samples = new List<string>();
         var violations = new List<InvariantViolation>();
+        DateTime? earliest = null;
+        DateTime? latest = null;
 
-        for (int i = 0; i < list.Count - 1; i++)
+        // 按设备分别判定：gap 事件只能标记同一台设备的空洞。
+        foreach (var deviceGroup in list.GroupBy(i => i.DeviceId, StringComparer.Ordinal))
         {
-            var a = list[i];
-            var b = list[i + 1];
+            var deviceIntervals = deviceGroup
+                .OrderBy(i => i.StartTime)
+                .ThenBy(i => i.EndTime)
+                .ToList();
 
-            if (b.StartTime > a.EndTime)
+            // 先把"缺数据"类区间合并成互不重叠的覆盖段（多个 30 分钟 gap 分片拼接成一段完整断档）。
+            var coverage = MergeIntervals(
+                deviceIntervals.Where(i => i.IsGap).Select(i => (i.StartTime, i.EndTime)));
+
+            var cursor = deviceIntervals[0].EndTime;
+            for (int i = 1; i < deviceIntervals.Count; i++)
             {
-                var holeMinutes = (b.StartTime - a.EndTime).TotalMinutes;
-                if (holeMinutes > thresholdMinutes)
+                var interval = deviceIntervals[i];
+                var holeStart = cursor;
+                var holeEnd = interval.StartTime;
+                var holeMinutes = (holeEnd - holeStart).TotalMinutes;
+
+                if (holeMinutes > thresholdMinutes && !IsFullyCovered(coverage, holeStart, holeEnd))
                 {
                     totalViolations++;
+                    bool isNew = holeEnd >= cutoff;
+                    if (isNew) newViolations++; else historicalViolations++;
+
+                    earliest = earliest == null || holeStart < earliest ? holeStart : earliest;
+                    latest = latest == null || holeEnd > latest ? holeEnd : latest;
+
                     if (samples.Count < opt.MaxSampleCount)
                     {
-                        samples.Add($"Device={a.DeviceId}: [{a.EndTime:yyyy-MM-dd HH:mm:ss} ~ {b.StartTime:yyyy-MM-dd HH:mm:ss}] 存在 {holeMinutes:F1}m 未标记空洞 (> {thresholdMinutes:F1}m)");
+                        samples.Add($"Device={interval.DeviceId}: [{holeStart:yyyy-MM-dd HH:mm:ss} ~ {holeEnd:yyyy-MM-dd HH:mm:ss}] 存在 {holeMinutes:F1}m 未标记空洞 (> {thresholdMinutes:F1}m)");
                         violations.Add(new InvariantViolation(
-                            Id: $"{a.DeviceId}:unmarked-hole:{i}",
-                            DeviceId: a.DeviceId,
-                            OccurredAtUtc: ToUtc(a.EndTime),
+                            Id: $"{interval.DeviceId}:unmarked-hole:{i}",
+                            DeviceId: interval.DeviceId,
+                            OccurredAtUtc: ToUtc(holeStart),
                             Fields: Fields(
-                                ("holeStartUtc", ToUtc(a.EndTime).ToString("O")),
-                                ("holeEndUtc", ToUtc(b.StartTime).ToString("O")),
-                                ("holeMinutes", holeMinutes.ToString("F1")))));
+                                ("holeStartUtc", ToUtc(holeStart).ToString("O")),
+                                ("holeEndUtc", ToUtc(holeEnd).ToString("O")),
+                                ("holeMinutes", holeMinutes.ToString("F1")),
+                                ("isNew", isNew ? "true" : "false"))));
                     }
+                }
+
+                if (interval.EndTime > cursor)
+                {
+                    cursor = interval.EndTime;
                 }
             }
         }
 
         if (totalViolations > 0)
         {
+            bool isWarning = newViolations == 0 && historicalViolations > 0;
             return InvariantResult.Failure(
-                $"INV-P21 FAIL: 时间轴上存在 {totalViolations} 处未标记的断档空洞",
+                $"INV-P21 {(isWarning ? "WARN" : "FAIL")}: 时间轴上存在 {totalViolations} 处未标记的断档空洞 (新增 {newViolations}, 存量 {historicalViolations})",
                 totalViolations,
-                totalViolations,
-                0,
+                newViolations,
+                historicalViolations,
                 samples,
-                null,
-                null,
+                earliest,
+                latest,
                 note,
                 fallback,
+                isWarning: isWarning,
                 violations: violations);
         }
 
         return InvariantResult.Success("INV-P21 PASS: 所有 >15m 空洞均已妥善标记为 gap 事件", note, fallback);
     }
+
+    /// <summary>把可能重叠/相接的区间合并成互不重叠的升序区间列表。</summary>
+    private static List<(DateTime Start, DateTime End)> MergeIntervals(
+        IEnumerable<(DateTime Start, DateTime End)> source)
+    {
+        var merged = new List<(DateTime Start, DateTime End)>();
+        foreach (var interval in source.OrderBy(i => i.Start).ThenBy(i => i.End))
+        {
+            if (merged.Count == 0 || interval.Start > merged[^1].End)
+            {
+                merged.Add(interval);
+                continue;
+            }
+
+            if (interval.End > merged[^1].End)
+            {
+                merged[^1] = (merged[^1].Start, interval.End);
+            }
+        }
+
+        return merged;
+    }
+
+    /// <summary>
+    /// 空洞是否被"缺数据"覆盖段**完整**覆盖（判据原文要求"完整覆盖"，留白即未标记）。
+    /// 允许 1 秒的边界容差：gap 分片与相邻事件的边界在毫秒/秒级上可能有取整差。
+    /// </summary>
+    private static bool IsFullyCovered(
+        IReadOnlyList<(DateTime Start, DateTime End)> coverage,
+        DateTime holeStart,
+        DateTime holeEnd)
+    {
+        var tolerance = TimeSpan.FromSeconds(1);
+        foreach (var (start, end) in coverage)
+        {
+            if (start <= holeStart.Add(tolerance) && end >= holeEnd.Subtract(tolerance))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
 
     /// <summary>
     /// S8 (INV-C19): 日界一致（三层口径统一）
@@ -1404,14 +1572,21 @@ public static class DataReliabilityInvariants
     ///   「互斥」= 两条采集流在时间上真实**重叠并发**。同一小时内先后出现两个 instance_id
     ///   并不构成违规 —— 客户端升级/重启时旧进程退出、新进程立刻接管，正是正常交接
     ///   （实测 09-18 19:17 交接误差仅 0.001 秒、重叠为 0，旧实现把它误报成多实例）。
-    ///   因此判定基于采集区间是否重叠，并允许 <see cref="InvariantOptions.InstanceOverlapToleranceSeconds"/>
-    ///   的边界容差；重叠超过容差才计违规。
+    ///
+    ///   重叠检测**按设备整体进行、不按小时切分**：实例 A 的区间可以跨越整点
+    ///   （如 A=[00:59:50, 01:00:10]、B=[01:00:00, 01:00:20]），若先按"事件自身时间戳所在小时"
+    ///   分组，A 与 B 会落进两个不同的组而互相看不见，真实并发会被漏掉。
+    ///   检测到重叠后，再按重叠发生的时刻归属到对应小时。
+    ///
+    ///   数据不足时必须如实报告"未知"：若一个设备在窗口内出现多个实例，但**所有**区间时长都为 0
+    ///   （数据源没有提供时长），则无从判断它们是否真的同时在采集，此时输出 UNKNOWN —— 绝不亮假绿灯。
     ///
     /// 相位判定作为补充：若心跳未携带 instance_id，则按"互斥轮询相位在同一小时交错"判定。
     /// </summary>
     public static InvariantResult CheckS13_SingleInstance(
         IEnumerable<CollectionHeartbeat> heartbeats,
-        InvariantOptions? options = null)
+        InvariantOptions? options = null,
+        DateTime? referenceTimeUtc = null)
     {
         var (opt, fallback, note) = InvariantOptions.Resolve(options);
 
@@ -1421,91 +1596,164 @@ public static class DataReliabilityInvariants
             return InvariantResult.Unknown("INV-P22 UNKNOWN: 数据源为空或未接线", note, fallback);
         }
 
-        var groups = list.GroupBy(h => (h.DeviceId, Hour: new DateTime(h.Timestamp.Year, h.Timestamp.Month, h.Timestamp.Day, h.Timestamp.Hour, 0, 0, DateTimeKind.Utc)));
+        var now = referenceTimeUtc ?? DateTime.UtcNow;
+        var cutoff = now.AddHours(-opt.RecentWindowHours);
 
-        int totalViolations = 0;
-        var samples = new List<string>();
-        var violations = new List<InvariantViolation>();
+        // 先按设备分组做全局（跨小时）重叠检测，再按重叠发生的小时归属违规。
+        var violationsByHour = new Dictionary<(string DeviceId, DateTime Hour), (string InstanceA, string InstanceB, double OverlapSeconds, DateTime OccurredAt)>();
+        var inconclusiveDevices = new List<string>();
 
-        foreach (var g in groups)
+        foreach (var deviceGroup in list.GroupBy(h => h.DeviceId, StringComparer.Ordinal))
         {
-            var overlapping = FindConcurrentInstanceOverlap(g, opt.InstanceOverlapToleranceSeconds);
-            if (overlapping is not null)
+            var deviceHeartbeats = deviceGroup.ToList();
+            var conflicted = FindConcurrentInstanceOverlaps(deviceHeartbeats, opt.InstanceOverlapToleranceSeconds);
+
+            if (conflicted.Count == 0 && HasInstancesWithoutDuration(deviceHeartbeats))
             {
-                totalViolations++;
-                if (samples.Count < opt.MaxSampleCount)
-                {
-                    var (instanceA, instanceB, overlapSeconds) = overlapping.Value;
-                    samples.Add($"Device={g.Key.DeviceId}, Hour={g.Key.Hour:yyyy-MM-dd HH:00}: 实例 {instanceA} 与 {instanceB} 并发重叠 {overlapSeconds:F3}s");
-                    violations.Add(new InvariantViolation(
-                        Id: $"{g.Key.DeviceId}:{g.Key.Hour:yyyy-MM-ddTHH}:00Z",
-                        DeviceId: g.Key.DeviceId,
-                        OccurredAtUtc: g.Key.Hour,
-                        Fields: Fields(
-                            ("kind", "instance-concurrency"),
-                            ("hourUtc", g.Key.Hour.ToString("O")),
-                            ("instanceA", instanceA),
-                            ("instanceB", instanceB),
-                            ("overlapSeconds", overlapSeconds.ToString("F3")))));
-                }
+                // 多实例但完全没有时长信息：无法证明"并发"也无法证伪，如实报未知。
+                inconclusiveDevices.Add(deviceGroup.Key);
                 continue;
             }
 
-            // 若无 instanceId，检查是否存在明显互斥的固定相位交错（例如两条不同相位的周期采集流）
-            var phases = g.Select(h => Math.Round(h.PhaseOffsetSeconds, 1)).Distinct().ToList();
-            if (phases.Count >= 2 && g.Count() >= 6)
+            foreach (var conflict in conflicted)
             {
-                // 检查是否并发交错存在
-                totalViolations++;
-                if (samples.Count < opt.MaxSampleCount)
+                var hour = FloorToHour(conflict.OccurredAt);
+                var key = (deviceGroup.Key, hour);
+                if (!violationsByHour.ContainsKey(key))
                 {
-                    samples.Add($"Device={g.Key.DeviceId}, Hour={g.Key.Hour:yyyy-MM-dd HH:00}: 检测到 {phases.Count} 个互斥轮询相位并发交错 ({string.Join(", ", phases)}s)");
-                    violations.Add(new InvariantViolation(
-                        Id: $"{g.Key.DeviceId}:{g.Key.Hour:yyyy-MM-ddTHH}:00Z",
-                        DeviceId: g.Key.DeviceId,
-                        OccurredAtUtc: g.Key.Hour,
-                        Fields: Fields(
-                            ("kind", "phase-conflict"),
-                            ("hourUtc", g.Key.Hour.ToString("O")),
-                            ("phases", string.Join(", ", phases)))));
+                    violationsByHour[key] = conflict;
                 }
+            }
+
+            // 无 instance_id 时的补充判定：互斥轮询相位在同一小时交错。
+            foreach (var hourGroup in deviceHeartbeats
+                .Where(h => string.IsNullOrEmpty(h.InstanceId))
+                .GroupBy(h => FloorToHour(h.Timestamp)))
+            {
+                var group = hourGroup.ToList();
+                if (group.Count < 6)
+                {
+                    continue;
+                }
+
+                var phases = group.Select(h => Math.Round(h.PhaseOffsetSeconds, 1)).Distinct().ToList();
+                if (phases.Count >= 2)
+                {
+                    var key = (deviceGroup.Key, hourGroup.Key);
+                    violationsByHour[key] = (
+                        string.Join(", ", phases) + "s 相位交错",
+                        "phase-conflict",
+                        group.Count,
+                        hourGroup.Key);
+                }
+            }
+        }
+
+        int totalViolations = violationsByHour.Count;
+        int newViolations = 0;
+        int historicalViolations = 0;
+        var samples = new List<string>();
+        var violations = new List<InvariantViolation>();
+        DateTime? earliest = null;
+        DateTime? latest = null;
+
+        foreach (var pair in violationsByHour.OrderBy(kv => kv.Key.Hour))
+        {
+            var deviceId = pair.Key.DeviceId;
+            var hour = pair.Key.Hour;
+            var info = pair.Value;
+
+            bool isNew = info.OccurredAt >= cutoff;
+            if (isNew) newViolations++; else historicalViolations++;
+
+            earliest = earliest == null || info.OccurredAt < earliest ? info.OccurredAt : earliest;
+            latest = latest == null || info.OccurredAt > latest ? info.OccurredAt : latest;
+
+            if (samples.Count < opt.MaxSampleCount)
+            {
+                samples.Add(info.InstanceB == "phase-conflict"
+                    ? $"Device={deviceId}, Hour={hour:yyyy-MM-dd HH:00}: 检测到 {info.InstanceA}"
+                    : $"Device={deviceId}, Hour={hour:yyyy-MM-dd HH:00}: 实例 {info.InstanceA} 与 {info.InstanceB} 并发重叠 {info.OverlapSeconds:F3}s");
+
+                violations.Add(new InvariantViolation(
+                    Id: $"{deviceId}:{hour:yyyy-MM-ddTHH}:00Z",
+                    DeviceId: deviceId,
+                    OccurredAtUtc: info.OccurredAt,
+                    Fields: info.InstanceB == "phase-conflict"
+                        ? Fields(
+                            ("kind", "phase-conflict"),
+                            ("hourUtc", hour.ToString("O")),
+                            ("phases", info.InstanceA),
+                            ("isNew", isNew ? "true" : "false"))
+                        : Fields(
+                            ("kind", "instance-concurrency"),
+                            ("hourUtc", hour.ToString("O")),
+                            ("instanceA", info.InstanceA),
+                            ("instanceB", info.InstanceB),
+                            ("overlapSeconds", info.OverlapSeconds.ToString("F3")),
+                            ("isNew", isNew ? "true" : "false"))));
             }
         }
 
         if (totalViolations > 0)
         {
+            bool isWarning = newViolations == 0 && historicalViolations > 0;
             return InvariantResult.Failure(
-                $"INV-P22 FAIL: 检测到 {totalViolations} 处同一设备多实例并发采集冲突",
+                $"INV-P22 {(isWarning ? "WARN" : "FAIL")}: 检测到 {totalViolations} 处同一设备多实例并发采集冲突 (新增 {newViolations}, 存量 {historicalViolations})",
                 totalViolations,
-                totalViolations,
-                0,
+                newViolations,
+                historicalViolations,
                 samples,
-                null,
-                null,
+                earliest,
+                latest,
                 note,
                 fallback,
+                isWarning: isWarning,
                 violations: violations);
+        }
+
+        if (inconclusiveDevices.Count > 0)
+        {
+            return InvariantResult.Unknown(
+                $"INV-P22 UNKNOWN: 设备 {string.Join(", ", inconclusiveDevices)} 出现多个采集实例但区间时长缺失，无法判定是否真的并发采集",
+                note,
+                fallback);
         }
 
         return InvariantResult.Success("INV-P22 PASS: 每台设备均保持唯一样本采集实例流", note, fallback);
     }
 
+    private static DateTime FloorToHour(DateTime value) =>
+        new(value.Year, value.Month, value.Day, value.Hour, 0, 0, DateTimeKind.Utc);
+
+    /// <summary>该设备是否"出现多个实例、但所有区间时长都为 0"（无从判断并发与否）。</summary>
+    private static bool HasInstancesWithoutDuration(IEnumerable<CollectionHeartbeat> heartbeats)
+    {
+        var withInstance = heartbeats.Where(h => !string.IsNullOrEmpty(h.InstanceId)).ToList();
+        if (withInstance.Select(h => h.InstanceId).Distinct(StringComparer.Ordinal).Count() < 2)
+        {
+            return false;
+        }
+
+        return withInstance.All(h => h.DurationSeconds <= 0);
+    }
+
     /// <summary>
-    /// 在同一设备同一小时的采集流里找出**真实并发**的两个实例：两条不同 instance_id 的采集区间
-    /// 重叠超过容差。只有重叠才算并发；先后交接（旧实例结束、新实例开始）不算。
+    /// 找出该设备**所有**真实并发重叠（跨小时，不按小时切分）。两条不同 instance_id 的采集区间
+    /// 重叠超过容差才算并发；先后交接（旧实例结束、新实例开始）不算。
     ///
     /// 区间由 <see cref="CollectionHeartbeat.Timestamp"/> + <see cref="CollectionHeartbeat.DurationSeconds"/>
-    /// 给出。时长缺省为 0 时退化为瞬时点：此时只有"不同实例在同一时刻"才可能被判并发，
-    /// 而正常的顺序交接（时刻不同）不会被误报。
-    ///
-    /// 复杂度：按起点排序后，只需知道"其它实例在当前位置之前的最大结束时刻"。
-    /// 维护每个实例的最大结束时刻（同一小时的实例数极少），因此整体为 O(n × 实例数)。
+    /// 给出。按起点排序后只需知道"其它实例在当前区间起点之前的最大结束时刻"，
+    /// 维护每个实例的最大结束时刻（实例数极少），因此整体为 O(n log n + n × 实例数)。
     /// </summary>
-    private static (string InstanceA, string InstanceB, double OverlapSeconds)? FindConcurrentInstanceOverlap(
-        IEnumerable<CollectionHeartbeat> hourGroup,
+    private static List<(string InstanceA, string InstanceB, double OverlapSeconds, DateTime OccurredAt)> FindConcurrentInstanceOverlaps(
+        IEnumerable<CollectionHeartbeat> heartbeats,
         double toleranceSeconds)
     {
-        var intervals = hourGroup
+        var results = new List<(string, string, double, DateTime)>();
+        var toleranceTicks = toleranceSeconds * TimeSpan.TicksPerSecond;
+
+        var intervals = heartbeats
             .Where(h => !string.IsNullOrEmpty(h.InstanceId))
             .Select(h => (
                 InstanceId: h.InstanceId!,
@@ -1517,16 +1765,13 @@ public static class DataReliabilityInvariants
 
         if (intervals.Count == 0)
         {
-            return null;
+            return results;
         }
 
-        // 每个实例迄今出现的最大结束时刻。用于 O(1) 判断"有没有别的实例压到当前区间上"。
         var maxEndByInstance = new Dictionary<string, DateTime>(StringComparer.Ordinal);
 
         foreach (var current in intervals)
         {
-            double requiredEndTicks = toleranceSeconds * TimeSpan.TicksPerSecond;
-
             foreach (var (instanceId, otherEnd) in maxEndByInstance)
             {
                 if (string.Equals(instanceId, current.InstanceId, StringComparison.Ordinal))
@@ -1534,10 +1779,10 @@ public static class DataReliabilityInvariants
                     continue;
                 }
 
-                if (otherEnd.Ticks - current.Start.Ticks > requiredEndTicks)
+                if (otherEnd.Ticks - current.Start.Ticks > toleranceTicks)
                 {
                     double overlap = (otherEnd - current.Start).TotalSeconds;
-                    return (instanceId, current.InstanceId, overlap);
+                    results.Add((instanceId, current.InstanceId, overlap, current.Start));
                 }
             }
 
@@ -1547,7 +1792,7 @@ public static class DataReliabilityInvariants
             }
         }
 
-        return null;
+        return results;
     }
 
     #endregion

@@ -318,8 +318,12 @@ public static class PcActivityStreamGenerator
     }
 
     /// <summary>
-    /// S13 (INV-P22): 生成同设备多采集流违规心跳（同一设备、同一小时内存在多个采集器实例或相位冲突）
-    /// 最小可复现样例：两个实例 ID 在同一小时内交替上报心跳
+    /// S13 (INV-P22): 生成同设备多采集流违规心跳（同一设备、同一小时内存在多个采集器实例真正并发采集）。
+    ///
+    /// 场景：两个实例 A / B **同时**在采集同一台设备 —— 各自连续覆盖同一段时间，
+    /// 因此它们的采集区间互相重叠（这就是"多实例并发采集"的实质）。
+    /// 仅"同一小时内出现两个 instance_id、但先后交接"不构成违规（正常升级/重启），
+    /// 所以这里必须给出重叠的采集区间，而不是交替的瞬时心跳。
     /// </summary>
     public static List<CollectionHeartbeat> GenerateS13MultiStreamViolations(int seed = 42)
     {
@@ -327,6 +331,10 @@ public static class PcActivityStreamGenerator
         faker.Random = new Randomizer(seed);
         var baseTime = new DateTime(2026, 7, 6, 14, 0, 0, DateTimeKind.Utc);
         const string deviceId = "device_s13_multi";
+
+        // 两个实例各以 5 分钟为周期连续采集（每条心跳覆盖到下一次心跳），彼此相位相差 2 秒。
+        // 两者的采集区间因此持续重叠 —— 真实并发。
+        const double coverageSeconds = 5 * 60;
 
         var list = new List<CollectionHeartbeat>();
         for (int i = 0; i < 6; i++)
@@ -337,6 +345,7 @@ public static class PcActivityStreamGenerator
                 InstanceId = "instance_tracker_A",
                 DeviceId = deviceId,
                 Timestamp = ts,
+                DurationSeconds = coverageSeconds,
                 SessionId = 1001,
                 PhaseOffsetSeconds = 0.0
             });
@@ -345,6 +354,7 @@ public static class PcActivityStreamGenerator
                 InstanceId = "instance_tracker_B",
                 DeviceId = deviceId,
                 Timestamp = ts.AddSeconds(2),
+                DurationSeconds = coverageSeconds,
                 SessionId = 1002,
                 PhaseOffsetSeconds = 2.0
             });
@@ -353,7 +363,8 @@ public static class PcActivityStreamGenerator
     }
 
     /// <summary>
-    /// S13 (INV-P22): 生成单设备单实例正常采集流心跳（绿尺子基线）
+    /// S13 (INV-P22): 生成单设备单实例正常采集流心跳（绿尺子基线）。
+    /// 单实例连续采集：同一 instance_id 的片段首尾相接，不构成多实例并发。
     /// </summary>
     public static List<CollectionHeartbeat> GenerateS13SingleStreamNormal(int count = 12, int seed = 42)
     {
@@ -371,6 +382,7 @@ public static class PcActivityStreamGenerator
                 InstanceId = singleInstanceId,
                 DeviceId = deviceId,
                 Timestamp = baseTime.AddMinutes(i * 5),
+                DurationSeconds = 5 * 60,
                 SessionId = 2000 + i,
                 PhaseOffsetSeconds = 0.0
             });

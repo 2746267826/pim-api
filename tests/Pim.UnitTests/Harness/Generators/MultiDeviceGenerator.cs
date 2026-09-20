@@ -164,13 +164,18 @@ public static class MultiDeviceGenerator
             return new DeviceActivityTrace
             {
                 DeviceId = deviceId,
-                EventTimes = new List<DateTime> { baseTime, baseTime.AddMinutes(5), baseTime.AddMinutes(10) },
-                Declarations = new List<OfflineDeclaration>(),
-                UploadLagSamples = new List<(DateTime, DateTime)>
+                EventIntervals = new List<(DateTime, DateTime)>
                 {
-                    (baseTime, baseTime.AddMinutes(45)),
-                    (baseTime.AddMinutes(5), baseTime.AddMinutes(50)),
-                    (baseTime.AddMinutes(10), baseTime.AddMinutes(55))
+                    (baseTime, baseTime.AddMinutes(5)),
+                    (baseTime.AddMinutes(5), baseTime.AddMinutes(10)),
+                    (baseTime.AddMinutes(10), baseTime.AddMinutes(15))
+                },
+                Declarations = new List<OfflineDeclaration>(),
+                UploadLagSamples = new List<UploadLagSample>
+                {
+                    new() { EventTime = baseTime, CreatedAt = baseTime.AddMinutes(45) },
+                    new() { EventTime = baseTime.AddMinutes(5), CreatedAt = baseTime.AddMinutes(50) },
+                    new() { EventTime = baseTime.AddMinutes(10), CreatedAt = baseTime.AddMinutes(55) }
                 }
             };
         }
@@ -178,19 +183,17 @@ public static class MultiDeviceGenerator
         return new DeviceActivityTrace
         {
             DeviceId = deviceId,
-            // 10:00, 10:30, 然后断档到 11:30 (60分钟空档 > 30分钟)
-            EventTimes = new List<DateTime>
+            // 10:00-10:30 活跃，10:30 -> 11:30 空档 60 分钟 (> 30 分钟)，再由 11:30 继续
+            EventIntervals = new List<(DateTime, DateTime)>
             {
-                baseTime,
-                baseTime.AddMinutes(30),
-                baseTime.AddMinutes(90),
-                baseTime.AddMinutes(120)
+                (baseTime, baseTime.AddMinutes(30)),
+                (baseTime.AddMinutes(90), baseTime.AddMinutes(120))
             },
             Declarations = new List<OfflineDeclaration>(), // 空声明列表 -> 触发无声明空档
-            UploadLagSamples = new List<(DateTime, DateTime)>
+            UploadLagSamples = new List<UploadLagSample>
             {
-                (baseTime, baseTime.AddMinutes(1)),
-                (baseTime.AddMinutes(30), baseTime.AddMinutes(31))
+                new() { EventTime = baseTime, CreatedAt = baseTime.AddMinutes(1) },
+                new() { EventTime = baseTime.AddMinutes(90), CreatedAt = baseTime.AddMinutes(91) }
             }
         };
     }
@@ -206,12 +209,10 @@ public static class MultiDeviceGenerator
         return new DeviceActivityTrace
         {
             DeviceId = deviceId,
-            EventTimes = new List<DateTime>
+            EventIntervals = new List<(DateTime, DateTime)>
             {
-                baseTime,
-                baseTime.AddMinutes(30),
-                baseTime.AddMinutes(90),
-                baseTime.AddMinutes(120)
+                (baseTime, baseTime.AddMinutes(30)),
+                (baseTime.AddMinutes(90), baseTime.AddMinutes(120))
             },
             Declarations = new List<OfflineDeclaration>
             {
@@ -224,11 +225,10 @@ public static class MultiDeviceGenerator
                     Reason = "system_shutdown"
                 }
             },
-            UploadLagSamples = new List<(DateTime, DateTime)>
+            UploadLagSamples = new List<UploadLagSample>
             {
-                (baseTime, baseTime.AddMinutes(1)),
-                (baseTime.AddMinutes(30), baseTime.AddMinutes(31)),
-                (baseTime.AddMinutes(90), baseTime.AddMinutes(91))
+                new() { EventTime = baseTime, CreatedAt = baseTime.AddMinutes(1) },
+                new() { EventTime = baseTime.AddMinutes(90), CreatedAt = baseTime.AddMinutes(91) }
             }
         };
     }

@@ -103,17 +103,13 @@ public class LiveDbQualityInspectionTests
         // 必须不健康（真实生产数据存在违规，绝不得为假绿灯）
         Assert.False(result.IsHealthy);
 
-        // 验证评审指出的各项基准尺子状态（当前生产数据事实）：
-        // S1: 🔴 FAIL (window / web-page 重叠)
-        // S2: 🔴 FAIL (idle 444 分钟仅 6 次按键)
-        // S4: 🔴 FAIL (定位与手机同刻重复)
-        // S5: 🟢 PASS (时钟本身健康，反向验证不把好的判红)
-        // S6: 🔴 FAIL (29 处无声明空档)
-        // S7: 🔴 FAIL (29 处空洞未标记)
-        // S10: 🔴 FAIL (分类快照补齐自 09-01 起每天产出 0)
-        // S11: 🔴 FAIL (102 个批次语义不自洽)
-        // S12: 🔴 FAIL (mobile_timeline_blocks 与 mobile_usage_aggregates 均 0 行)
-
+        // 断言策略（#254 修复后重写）：
+        // 这份用例连的是"生产形状"的镜像库，其快照会随时间滚动，而各条尺子的结论也会随
+        // 修复上线而变化（例如 S13 从红转绿、S6 从红转黄）。因此**不再逐条冻结状态快照**，
+        // 改为断言那些与快照无关、却能真正抓住"假绿灯/链路坏掉"的结构性事实：
+        //   1. 绿基线 S3/S5/S8/S10/S12 必须保持绿（不得因修复回归）；
+        //   2. 已知存在存量欠账的尺子必须"可判定"（红或黄），绝不能是 UNKNOWN 或绿；
+        //   3. 任何一条尺子都不得因为"取数链路坏了"而退化成 UNKNOWN。
         foreach (var key in AllRuleKeys)
         {
             RequireDetail(details, key);
@@ -121,39 +117,43 @@ public class LiveDbQualityInspectionTests
 
         RequireDetail(details, "S8_INV-C19_covered_layers");
 
-        // 期望结论来自"生产形状数据"。镜像/开发库缺失部分数据时，对应项会返回 UNKNOWN
-        // （取数失败），这时既不能判红也不能判绿 —— 因此逐项接受"期望状态 或 UNKNOWN"，
-        // 但把 UNKNOWN 单独计数与打印（绝不把 UNKNOWN 当 PASS），并限制其数量：
-        // 判定项大面积退化成 UNKNOWN 说明取数链路坏了，必须失败。
-        (string Key, string Expected)[] expectations =
+        // 1. 绿基线：修复任何条目都不得让这几条回归。
+        string[] mustStayGreen =
         [
-            ("S1_INV-P16", "🔴 FAIL"),
-            ("S2_INV-P17", "🔴 FAIL"),
-            ("S3_INV-P18", "🟢 PASS"),
-            ("S4_INV-C18", "🔴 FAIL"),
-            ("S5_INV-P19", "🟢 PASS"),
-            ("S6_INV-P20", "🔴 FAIL"),
-            ("S7_INV-P21", "🔴 FAIL"),
-            ("S8_INV-C19", "🟢 PASS"),
-            ("S9_INV-C20", "⚪ UNKNOWN"),
-            ("S10_INV-C21", "🔴 FAIL"),
-            ("S11_INV-M21", "🔴 FAIL"),
-            ("S12_INV-M22", "🔴 FAIL"),
-            ("S13_INV-P22", "🔴 FAIL")
+            "S3_INV-P18", "S5_INV-P19", "S8_INV-C19", "S10_INV-C21", "S12_INV-M22"
         ];
-        var unavailable = new List<string>();
-        foreach (var (key, expected) in expectations)
+        foreach (var key in mustStayGreen)
         {
             var actual = RequireDetail(details, key);
-            if (!expected.StartsWith("⚪ UNKNOWN", StringComparison.Ordinal)
-                && actual.StartsWith("⚪ UNKNOWN", StringComparison.Ordinal))
-            {
-                unavailable.Add($"{key}: {actual}");
-                continue;
-            }
-
-            Assert.StartsWith(expected, actual);
+            Assert.StartsWith("🟢 PASS", actual);
         }
+
+        // 2. 已知存量欠账：生产形状数据上这些尺子必须仍然"看得见问题"（红或黄）。
+        //    这里刻意不断言"必须红"：判据修好之后，只剩存量违规的尺子会正确降级为黄线
+        //    （例如 S6），把它钉成红色等于要求尺子继续误报。
+        string[] mustStillDetectProblems =
+        [
+            "S1_INV-P16", "S2_INV-P17", "S4_INV-C18", "S7_INV-P21", "S11_INV-M21"
+        ];
+        foreach (var key in mustStillDetectProblems)
+        {
+            var actual = RequireDetail(details, key);
+            Assert.True(
+                actual.StartsWith("🔴", StringComparison.Ordinal) || actual.StartsWith("🟡", StringComparison.Ordinal),
+                $"{key} 在存在存量欠账的生产形状数据上既非红也非黄，疑似假绿灯：{actual}");
+        }
+
+        // 3. 绝不接受"因为取数链路坏了而整片 UNKNOWN"：判定项大面积退化说明取数坏了。
+        var unavailable = AllRuleKeys
+            .Select(key => (Key: key, Detail: RequireDetail(details, key)))
+            .Where(entry => entry.Detail.StartsWith("⚪ UNKNOWN", StringComparison.Ordinal))
+            .Select(entry => $"{entry.Key}: {entry.Detail}")
+            .ToList();
+
+        Assert.True(
+            unavailable.Count == 0,
+            $"不应有尺子因取数失败退化为 UNKNOWN（{unavailable.Count}）：{string.Join(" | ", unavailable)}");
+        _output.WriteLine($"数据不可判（UNKNOWN）的项：{unavailable.Count}");
 
         Assert.Equal("DataField", RequireDetail(details, "S8_INV-C19_covered_layers"));
         Assert.True(result.IssueCount > 0, "生产形状数据上必须检出问题，不能是假绿灯");

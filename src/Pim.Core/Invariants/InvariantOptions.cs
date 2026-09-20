@@ -131,7 +131,10 @@ public sealed class InvariantOptions
         if (InspectionTimeoutSeconds <= 0) errors.Add("InspectionTimeoutSeconds must be > 0");
         if (ClockSkewToleranceMinutes < 0) errors.Add("ClockSkewToleranceMinutes must be >= 0");
         if (TimelineGapThresholdMinutes <= 0) errors.Add("TimelineGapThresholdMinutes must be > 0");
-        if (InstanceOverlapToleranceSeconds < 0) errors.Add("InstanceOverlapToleranceSeconds must be >= 0");
+        // NaN 不满足任何比较运算（NaN < 0 为 false），只写 `< 0` 会把它放行，
+        // 随后所有容差比较都返回 false，造成静默漏报。必须显式要求有限值。
+        if (!double.IsFinite(InstanceOverlapToleranceSeconds) || InstanceOverlapToleranceSeconds < 0)
+            errors.Add("InstanceOverlapToleranceSeconds must be a finite value >= 0");
         if (Tolerance < 0) errors.Add("Tolerance must be >= 0");
 
         if (errors.Count > 0)

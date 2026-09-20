@@ -21,6 +21,9 @@ public partial class PcTrackerService
     private const int MaxBrowserLength = 16;
     private const int MaxInstanceIdLength = 128;
 
+    /// <summary>单条事件时长上限（秒）：7 天。见 <see cref="NormalizeDurationToMillisecond"/> 的溢出说明。</summary>
+    private const double MaxTrackerEventDurationSeconds = 7 * 24 * 3600;
+
     public async Task<int> UploadTrackerEventsAsync(TrackerEventsUploadRequest req, CancellationToken ct)
     {
         if (req.Events.Count > MaxTrackerEventsPerUpload)
@@ -44,8 +47,14 @@ public partial class PcTrackerService
             if (!DateTime.TryParseExact(e.Date, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var date))
                 throw new ArgumentException($"Invalid date '{e.Date}'. Expected YYYY-MM-DD.", nameof(req));
 
-            if (e.Duration < 0)
-                throw new ArgumentException($"Duration must be >=0, got {e.Duration}.", nameof(req));
+            if (e.Duration < 0 || !double.IsFinite(e.Duration))
+                throw new ArgumentException($"Duration must be a finite value >=0, got {e.Duration}.", nameof(req));
+
+            // 上限守卫：时长会参与 timestamp.AddSeconds，巨大的有限值会让它抛
+            // ArgumentOutOfRangeException（变成 500 而不是可预期的 400）。
+            // 7 天远超任何真实采集片段，足以覆盖 30 分钟切片与跨业务日分片。
+            if (e.Duration > MaxTrackerEventDurationSeconds)
+                throw new ArgumentException($"Duration too large (max {MaxTrackerEventDurationSeconds}s), got {e.Duration}.", nameof(req));
 
             // 时长必须与起点同一精度（毫秒），否则事件结束时刻会落在非整毫秒上。
             // 客户端分段离散化（NativeTrackerService.SessionToEvents）产出的片段是
@@ -104,7 +113,12 @@ public partial class PcTrackerService
             .Where(x => x.DeviceId == req.DeviceId && x.Timestamp >= minTs && x.Timestamp <= maxTs)
             .Select(x => new { x.Timestamp, x.Duration, x.EventType, x.AppName, x.Browser, x.InstanceId })
             .ToListAsync(ct);
-        var existingKeys = existing.Select(x => MakeTrackerKey(x.Timestamp, x.Duration, x.EventType, x.AppName, x.Browser, x.InstanceId)).ToHashSet();
+        // 两侧都按同一口径归一化时长后再比 key：库里已有的旧行保留着修复前的全精度时长
+        // （如 0.8231027），而新上传会被归一化成 0.823 —— 若只归一化单侧，修复前写入的
+        // 事件在修复后被重传时会被当成新事件重复入库（唯一索引按原始 duration，兜不住）。
+        var existingKeys = existing
+            .Select(x => MakeTrackerKey(x.Timestamp, NormalizeDurationToMillisecond(x.Timestamp, x.Duration), x.EventType, x.AppName, x.Browser, x.InstanceId))
+            .ToHashSet();
 
         var toInsert = entities.Where(x => existingKeys.Add(MakeTrackerKey(x.Timestamp, x.Duration, x.EventType, x.AppName, x.Browser, x.InstanceId))).ToList();
         if (toInsert.Count == 0) return 0;
@@ -122,7 +136,9 @@ public partial class PcTrackerService
                 .Where(x => x.DeviceId == req.DeviceId && x.Timestamp >= minTs && x.Timestamp <= maxTs)
                 .Select(x => new { x.Timestamp, x.Duration, x.EventType, x.AppName, x.Browser, x.InstanceId })
                 .ToListAsync(ct);
-            var retryKeys = retryExisting.Select(x => MakeTrackerKey(x.Timestamp, x.Duration, x.EventType, x.AppName, x.Browser, x.InstanceId)).ToHashSet();
+            var retryKeys = retryExisting
+                .Select(x => MakeTrackerKey(x.Timestamp, NormalizeDurationToMillisecond(x.Timestamp, x.Duration), x.EventType, x.AppName, x.Browser, x.InstanceId))
+                .ToHashSet();
             var retryInsert = entities.Where(x => retryKeys.Add(MakeTrackerKey(x.Timestamp, x.Duration, x.EventType, x.AppName, x.Browser, x.InstanceId))).ToList();
             if (retryInsert.Count == 0) return 0;
             _db.Set<TrackerEventEntity>().AddRange(retryInsert);

@@ -130,14 +130,35 @@ public sealed class UploadLagSample
 {
     public DateTime EventTime { get; set; }
     public DateTime CreatedAt { get; set; }
+
+    /// <summary>
+    /// 该样本是否为**系统合成的"缺数据"标记**（gap/离线补报）而不是真实采集事件。
+    /// 合成 gap 事件的 timestamp 是断档起点、created_at 是重启后补传时刻，
+    /// 两者之差恒等于断档时长，**不代表上传链路延迟**，必须排除出 S6 的滞后统计
+    /// （实测：含 gap 时 p99 = 425.9 分钟，排除后 p99 = 19.2 分钟）。
+    /// </summary>
+    public bool IsSyntheticGap { get; set; }
 }
 
 public sealed class DeviceActivityTrace
 {
     public string DeviceId { get; set; } = string.Empty;
-    public IReadOnlyList<DateTime> EventTimes { get; set; } = Array.Empty<DateTime>();
+
+    /// <summary>
+    /// 该设备产生的**事件区间**（起点 + 时长）。空档判定按"上一段结束 → 下一段开始"计算，
+    /// 而不是"起点减起点" —— 判据说的是"设备**停止出数**必须自己有交代"，
+    /// 停止出数发生在事件结束时刻，不是下一条事件的起点。
+    /// </summary>
+    public IReadOnlyList<(DateTime StartTime, DateTime EndTime)> EventIntervals { get; set; }
+        = Array.Empty<(DateTime, DateTime)>();
+
     public IReadOnlyList<OfflineDeclaration> Declarations { get; set; } = Array.Empty<OfflineDeclaration>();
-    public IReadOnlyList<(DateTime EventTime, DateTime CreatedAt)> UploadLagSamples { get; set; } = Array.Empty<(DateTime, DateTime)>();
+
+    /// <summary>
+    /// 上传滞后采样。系统合成的 gap 事件必须标记 <see cref="UploadLagSample.IsSyntheticGap"/>，
+    /// 否则会把"断档时长"误当成"链路延迟"计入 p99。
+    /// </summary>
+    public IReadOnlyList<UploadLagSample> UploadLagSamples { get; set; } = Array.Empty<UploadLagSample>();
 }
 
 /// <summary>

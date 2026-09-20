@@ -345,6 +345,80 @@ public class DataReliabilityQualityInspectorTests
             Assert.DoesNotContain("NOW()", sql, StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// 复审回归（Important）：导出通路必须复刻体检用到的**全部**阈值配置。
+    /// 漏拷一个字段会让"面板结论"与"导出清单"用不同口径计算，用户看到的违规数与导出结果对不上。
+    ///
+    /// 这里用反射逐字段对比（除有意覆盖的样例上限），因此以后给 InvariantOptions
+    /// 新增字段却忘了复制时会自动失败，不需要有人记得回来补测试。
+    /// </summary>
+    [Fact]
+    public void BuildExportOptions_CopiesEveryThresholdExceptSampleLimit()
+    {
+        var source = new InvariantOptions
+        {
+            MinInputDensityPerMinute = 2.5,
+            LongEventThresholdMinutes = 45,
+            UndeclaredOfflineGapMinutes = 40,
+            MaxUploadLagP99Minutes = 35,
+            MobileSummaryLagHours = 6,
+            RecentWindowHours = 48,
+            MaxDailyActiveHours = 20,
+            AwakeWindowHours = 15,
+            AwakeWindowWarningRatio = 0.8,
+            CoverageRedRatio = 0.9,
+            CoverageYellowRatio = 0.97,
+            MaxSampleCount = 7,
+            ClockSkewToleranceMinutes = 3,
+            TimelineGapThresholdMinutes = 20,
+            InstanceOverlapToleranceSeconds = 0.25,
+            Tolerance = 0.07,
+            MaxScanRows = 1234,
+            InspectionTimeoutSeconds = 30
+        };
+
+        var export = DataReliabilityQualityInspector.BuildExportOptions(source, sampleLimit: 500);
+
+        Assert.Equal(500, export.MaxSampleCount); // 唯一被有意覆盖的字段
+
+        var mismatches = new List<string>();
+        foreach (var property in typeof(InvariantOptions).GetProperties(
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+        {
+            if (!property.CanRead || !property.CanWrite) continue;
+            if (property.Name == nameof(InvariantOptions.MaxSampleCount)) continue;
+
+            var expected = property.GetValue(source);
+            var actual = property.GetValue(export);
+            if (!Equals(expected, actual))
+            {
+                mismatches.Add($"{property.Name}: 期望 {expected}, 实际 {actual}");
+            }
+        }
+
+        Assert.True(mismatches.Count == 0,
+            $"导出配置漏拷了体检阈值：{string.Join("; ", mismatches)}");
+    }
+
+    /// <summary>
+    /// 端到端佐证：同一份心跳在默认容差下判红，在放宽容差后判绿 ——
+    /// 说明容差确实参与判定，因此上面那条"逐字段复刻"的断言是有实际后果的。
+    /// </summary>
+    [Fact]
+    public void InstanceOverlapTolerance_ChangesS13Verdict()
+    {
+        var heartbeats = new List<CollectionHeartbeat>
+        {
+            new() { DeviceId = "d", Timestamp = ReportNow.UtcDateTime, DurationSeconds = 600.2, InstanceId = "a" },
+            new() { DeviceId = "d", Timestamp = ReportNow.UtcDateTime.AddSeconds(600), DurationSeconds = 60, InstanceId = "b" }
+        };
+
+        Assert.False(DataReliabilityInvariants.CheckS13_SingleInstance(
+            heartbeats, new InvariantOptions { InstanceOverlapToleranceSeconds = 0.05 }).Pass);
+        Assert.True(DataReliabilityInvariants.CheckS13_SingleInstance(
+            heartbeats, new InvariantOptions { InstanceOverlapToleranceSeconds = 0.25 }).Pass);
+    }
+
     [Fact]
     public async Task GetViolationsAsync_UnknownRule_Throws()
     {

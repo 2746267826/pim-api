@@ -210,6 +210,38 @@ public class PcTrackerEventMillisecondNormalizationTests
         Assert.True(stored <= original, "归一只允许缩短时长，不得放大");
     }
 
+    /// <summary>
+    /// 复审回归（Important）：库里已有**修复前**写入的历史行（时长保留全精度如 0.8231027），
+    /// 修复后客户端重传同一事件时，两侧必须按同一口径归一化后再比 key，否则历史事件会被重复入库。
+    /// 这里直接往库里种一条"旧精度"行来模拟升级前的存量数据。
+    /// </summary>
+    [Fact]
+    public async Task Upload_LegacyFullPrecisionRow_DeduplicatesAgainstNormalizedUpload()
+    {
+        await using var db = CreateDbContext();
+        var service = CreateService(db);
+
+        var start = BaseTs.AddMilliseconds(294);
+        db.Set<TrackerEventEntity>().Add(new TrackerEventEntity
+        {
+            DeviceId = "dev-a",
+            Timestamp = start,
+            Duration = 0.8231027,            // 修复前的旧精度存量行
+            EventType = "window",
+            AppName = "App",
+            CreatedAt = BaseTs,
+            Date = new DateTime(2026, 8, 20)
+        });
+        await db.SaveChangesAsync();
+
+        var uploaded = await service.UploadTrackerEventsAsync(
+            new TrackerEventsUploadRequest("dev-a", new List<TrackerEventDto> { EventAt(start, 0.8231027) }),
+            CancellationToken.None);
+
+        Assert.Equal(0, uploaded);
+        Assert.Single(db.Set<TrackerEventEntity>());
+    }
+
     [Fact]
     public async Task Upload_SubMillisecondDuration_StillDeduplicates()
     {
@@ -231,17 +263,29 @@ public class PcTrackerEventMillisecondNormalizationTests
         await using var db = CreateDbContext();
         var service = CreateService(db);
 
-        // 0.1 + 0.2 之类的浮点噪声不得改变归一化结果（同一逻辑时长必须得到同一存储值）
+        // 浮点噪声（0.1 + 0.2 = 0.30000000000000004）不得改变归一化结果：
+        // 同一逻辑时长必须落到**同一个存储值**，否则去重键会因噪声而漂移。
+        // 这里按"整毫秒"做位级比较（而非 12 位精度容差 —— 那会把 0.3 与
+        // 0.30000000000000004 判成相等，等于没测到东西）。
         var start = BaseTs.AddMilliseconds(100);
-        var noisy = 0.1 + 0.2;          // 0.30000000000000004
-        var clean = 0.3;
+        double noisy = 0.1 + 0.2;
 
         await service.UploadTrackerEventsAsync(
             new TrackerEventsUploadRequest("dev-a", new List<TrackerEventDto> { EventAt(start, noisy, "app-x") }),
             CancellationToken.None);
-        var first = Assert.Single(db.Set<TrackerEventEntity>());
+        var noisyStored = Assert.Single(db.Set<TrackerEventEntity>()).Duration;
 
-        Assert.Equal(Math.Floor(clean * 1000) / 1000, first.Duration, 12);
+        await using var db2 = CreateDbContext();
+        var service2 = CreateService(db2);
+        await service2.UploadTrackerEventsAsync(
+            new TrackerEventsUploadRequest("dev-a", new List<TrackerEventDto> { EventAt(start, 0.3, "app-x") }),
+            CancellationToken.None);
+        var cleanStored = Assert.Single(db2.Set<TrackerEventEntity>()).Duration;
+
+        // 两者必须是同一个值（位级相等），且是整毫秒
+        Assert.Equal(BitConverter.DoubleToInt64Bits(cleanStored), BitConverter.DoubleToInt64Bits(noisyStored));
+        Assert.Equal(300L, (long)Math.Round(noisyStored * 1000, MidpointRounding.AwayFromZero));
+        Assert.Equal(0, noisyStored * 1000 % 1);
     }
 
     [Fact]
