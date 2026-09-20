@@ -105,6 +105,11 @@ public sealed class QuickNoteAttachmentService(
         if (attachment.UserId != userId)
             throw new DomainException(40301, "无权访问该附件");
 
+        // 先删远端再改本地：附件实体是**用户自己的** OneDrive 对象，
+        // 只软删元数据会把文件永久留在对方网盘里（用户删了附件却在 OneDrive 里还能看到）。
+        // 与文件模块一致：远端成功（或远端已不存在）后才收敛本地状态。
+        await storage.DeleteAsync(userId, attachment.ObjectKey, ct);
+
         attachment.DeletedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
     }
