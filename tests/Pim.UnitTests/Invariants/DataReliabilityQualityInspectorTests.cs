@@ -333,6 +333,27 @@ public class DataReliabilityQualityInspectorTests
     }
 
     /// <summary>
+    /// 复审回归（Important）：S9 的设备集合必须取"有记录"与"有离线声明"的**并集**。
+    /// 只从 recorded 出发会让"整段窗口都声明了离线、因此没有任何记录"的设备被静默跳过，
+    /// 等于替它默认通过；这类设备恰恰是最需要被看见的。
+    /// </summary>
+    [Fact]
+    public async Task CheckS9_EnumeratesDevicesFromBothRecordedAndDeclaredOffline()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateRecordingInspector(conn);
+
+        await inspector.InspectReportAsync(ReportNow);
+
+        var coverageQuery = conn.ExecutedCommands
+            .FirstOrDefault(sql => sql.Contains("offline_seconds", StringComparison.OrdinalIgnoreCase));
+
+        Assert.NotNull(coverageQuery);
+        Assert.Contains("UNION", coverageQuery!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("devices", coverageQuery!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// 复审回归（Important）：S7 的时间线区间必须取**全部**事件类型。
     /// 早先只取 window/idle/gap、把 web-page 排除在外，会让"浏览器会话被分段成
     /// window + web-page"的时间段凭空出现空洞（实测多报 6 处不存在的断档）。

@@ -1338,13 +1338,21 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                   AND event_type IN ('window', 'web-page', 'idle')
                 GROUP BY device_id
             )
-            SELECT r.device_id,
-                   r.recorded_seconds,
+            -- 设备集合必须取「有记录」与「有离线声明」的**并集**：只从 recorded 出发会让
+            -- "整段窗口都声明了离线、因此没有任何记录"的设备被静默跳过，等于替它默认通过。
+            devices AS (
+                SELECT device_id FROM recorded
+                UNION
+                SELECT device_id FROM offline
+            )
+            SELECT d.device_id,
+                   COALESCE(r.recorded_seconds, 0) AS recorded_seconds,
                    LEAST(COALESCE(o.offline_seconds, 0),
                          EXTRACT(EPOCH FROM (@windowEnd::timestamptz - @windowStart::timestamptz))) AS offline_seconds
-            FROM recorded r
-            LEFT JOIN offline o ON o.device_id = r.device_id
-            ORDER BY r.device_id
+            FROM devices d
+            LEFT JOIN recorded r ON r.device_id = d.device_id
+            LEFT JOIN offline o ON o.device_id = d.device_id
+            ORDER BY d.device_id
             LIMIT @maxDevices;
             """;
         var pMax = cmd.CreateParameter(); pMax.ParameterName = "@maxDevices"; pMax.Value = context.Options.MaxScanRows + 1; cmd.Parameters.Add(pMax);
