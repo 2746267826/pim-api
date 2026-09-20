@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -17,7 +18,8 @@ namespace Pim.Module.Files.Services;
 public sealed class FileSearchService(
     PimDbContext db,
     ICurrentUserService currentUser,
-    SensitivePathPolicy? sensitivePolicy = null)
+    SensitivePathPolicy? sensitivePolicy = null,
+    IConfiguration? configuration = null)
 {
     /// <summary>先按上限多取一些再做敏感过滤，避免敏感项吃掉结果预算。</summary>
     private const int CandidateLimit = 60;
@@ -25,7 +27,9 @@ public sealed class FileSearchService(
     /// <summary>返回结果上限。</summary>
     private const int ResultLimit = 20;
 
-    private readonly SensitivePathPolicy _sensitivePolicy = sensitivePolicy ?? new SensitivePathPolicy(null);
+    // 与其它出口一致：没有注入实例时按配置构造，而不是退回硬编码默认值，
+    // 否则自定义 Files:SensitivePathPatterns 会被静默忽略。
+    private readonly SensitivePathPolicy _sensitivePolicy = sensitivePolicy ?? new SensitivePathPolicy(configuration);
 
     private Guid UserId => currentUser.UserId ?? throw new DomainException(1002, "未登录");
 

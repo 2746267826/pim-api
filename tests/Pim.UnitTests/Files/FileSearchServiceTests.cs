@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -175,5 +176,33 @@ public class FileSearchServiceTests
             () => service.SearchAsync(new FileSearchQuery("x", null)));
 
         Assert.Equal(1002, error.ErrorCode);
+    }
+
+    /// <summary>
+    /// 未注入 SensitivePathPolicy 实例时，必须按**配置**构造，而不是退回硬编码默认值——
+    /// 否则自定义 `Files:SensitivePathPatterns` 会被静默忽略，用户以为加了保护其实没有。
+    /// </summary>
+    [Fact]
+    public async Task SearchAsync_HonoursConfiguredSensitivePatterns()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        SeedItem(db, provider, "/机密/方案.txt", "方案.txt", "text/plain");
+        SeedItem(db, provider, "/文档/说明.txt", "说明.txt", "text/plain");
+        await db.SaveChangesAsync();
+
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Files:SensitivePathPatterns:0"] = "/机密/*",
+            })
+            .Build();
+        var service = new FileSearchService(
+            db, new StubCurrentUser(UserId), sensitivePolicy: null, configuration: configuration);
+
+        var result = await service.SearchAsync(new FileSearchQuery(".txt", null));
+
+        var item = Assert.Single(result.Items);
+        Assert.Equal("说明.txt", item.Name);
     }
 }
