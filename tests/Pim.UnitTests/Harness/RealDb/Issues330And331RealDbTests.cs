@@ -292,7 +292,9 @@ public sealed class Issues330And331RealDbTests
         var inactiveTotal = await db.Set<ActivityClassificationEntity>()
             .AsNoTracking()
             .CountAsync(
-                c => c.RecordType == "gap" || c.RecordType == "idle" || c.RecordType == "afk",
+                c => c.RecordType.ToLower() == "gap"
+                    || c.RecordType.ToLower() == "idle"
+                    || c.RecordType.ToLower() == "afk",
                 CancellationToken.None);
 
         Skip.If(inactiveTotal == 0, "镜像库没有 gap/idle/afk 分类记录，跳过。");
@@ -307,7 +309,9 @@ public sealed class Issues330And331RealDbTests
 
         var misclassified = await db.Set<ActivityClassificationEntity>()
             .AsNoTracking()
-            .Where(c => (c.RecordType == "gap" || c.RecordType == "idle" || c.RecordType == "afk")
+            .Where(c => (c.RecordType.ToLower() == "gap"
+                    || c.RecordType.ToLower() == "idle"
+                    || c.RecordType.ToLower() == "afk")
                 && applicationCategories.Contains(c.CategoryName))
             .GroupBy(c => c.CategoryName)
             .Select(g => new { CategoryName = g.Key, Count = g.Count() })
@@ -326,29 +330,56 @@ public sealed class Issues330And331RealDbTests
         var connectionString = RealDbTestConnection.Require();
         await using var db = CreateContext(connectionString);
 
-        var rules = await new ActivityClassificationRuleService(db).LoadActiveAsync(CancellationToken.None);
+        // 分类器已对非应用记录短路；这里核对**存量规则本身**是否还残留
+        // 「迁移规则 → unknown → 应用类别」这一具体缺陷形态。
+        //
+        // 判定必须与启动清理同口径，否则断言会失真（review 指出）：
+        //   * 只针对迁移产物（'Migrated app rule: ' 前缀）—— 手写规则/合法复合规则不算缺陷；
+        //   * 条件形状必须是迁移产出的单条件 appNameNormalized equals unknown；
+        //   * 值需规范化（trim / 去 .exe / 转小写）后再比较，覆盖 Unknown、unknown.exe 等变体。
+        var applicationCategories = Pim.Module.PcTracker.Services.CategoryLegacyMapper.UnifiedCategoryNames
+            .Where(name => name != Pim.Module.PcTracker.Services.CategoryLegacyMapper.Other)
+            .ToArray();
 
-        // 分类器已对非应用记录短路，但仍应存在**任意**应用记录（appNameNormalized=unknown）
-        // 命中该规则时被误判的风险 —— 这里核对存量规则本身是否还在做「unknown → 应用类别」映射。
-        // 镜像库可能尚未包含该规则（快照早于规则产生），因此仅在存在时断言其不再 active。
-        // conditions_json 是 jsonb：LIKE 不能直接作用于 jsonb 列（42883），
-        // 因此与 ActivityLabelingService.LoadCoveredAppPatternsAsync 同口径，取回后在内存中过滤。
-        var unknownRules = (await db.Set<ActivityCategoryRuleEntity>()
-                .AsNoTracking()
-                .Select(r => new { r.RuleName, r.Status, r.CategoryName, r.ConditionsJson })
-                .ToListAsync(CancellationToken.None))
-            .Where(r => r.ConditionsJson is not null
-                && r.ConditionsJson.Contains("unknown", StringComparison.Ordinal))
-            .ToList();
+        // conditions_json 是 jsonb：LIKE 不能直接作用于 jsonb 列（42883），取回后在内存中过滤。
+        var rules = await db.Set<ActivityCategoryRuleEntity>()
+            .AsNoTracking()
+            .Where(r => r.Status == "active" && r.RuleName.StartsWith("Migrated app rule: "))
+            .Select(r => new { r.RuleName, r.CategoryName, r.ConditionsJson })
+            .ToListAsync(CancellationToken.None);
 
-        var activeUnknownRules = unknownRules
-            .Where(r => string.Equals(r.Status, "active", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var offenders = new List<string>();
+        foreach (var rule in rules)
+        {
+            if (!applicationCategories.Contains(rule.CategoryName))
+                continue;
+
+            using var document = System.Text.Json.JsonDocument.Parse(rule.ConditionsJson);
+            if (!document.RootElement.TryGetProperty("all", out var all)
+                || all.ValueKind != System.Text.Json.JsonValueKind.Array
+                || all.GetArrayLength() != 1)
+                continue;
+
+            var condition = all[0];
+            if (!condition.TryGetProperty("field", out var field)
+                || !condition.TryGetProperty("op", out var op)
+                || !condition.TryGetProperty("value", out var value))
+                continue;
+
+            if (field.GetString() != "appNameNormalized" || op.GetString() != "equals")
+                continue;
+
+            var normalized = (value.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+            if (normalized.EndsWith(".exe", StringComparison.Ordinal))
+                normalized = normalized[..^4];
+
+            if (normalized.Trim() == "unknown")
+                offenders.Add($"{rule.RuleName} -> {rule.CategoryName}");
+        }
 
         Assert.True(
-            activeUnknownRules.Count == 0,
-            "仍存在 active 的 unknown 兜底规则：" +
-            string.Join(", ", activeUnknownRules.Select(r => $"{r.RuleName} -> {r.CategoryName}")));
+            offenders.Count == 0,
+            "仍存在 active 的「迁移 unknown → 应用类别」规则：" + string.Join(", ", offenders));
     }
 
     // ================= #331：timeline/v2 不渲染空档伪应用块 =================

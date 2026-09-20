@@ -153,6 +153,11 @@ public class PcClassificationBackfillServiceTests
         var stats = await CreateService(db).BackfillAsync(lookbackDays: 14, CancellationToken.None);
 
         Assert.True(stats.ProcessedDays >= 1, "大小写变体的非应用记录也必须触发重处理");
+
+        // 不仅要「触发了重处理」，还要断言该行确实被写回正确结论 ——
+        // 否则重处理触发但写回失败时本用例仍会通过（review 指出）。
+        var rewritten = await db.Set<ActivityClassificationEntity>().SingleAsync(s => s.Id == stale.Id);
+        Assert.Equal(ActivityClassificationResult.InactiveCategoryName, rewritten.CategoryName);
     }
 
     [Fact]
