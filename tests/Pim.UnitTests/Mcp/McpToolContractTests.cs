@@ -120,4 +120,25 @@ public sealed class McpToolContractTests
         var uploadFile = byName["upload_file"];
         Assert.True(uploadFile.InputSchema.GetProperty("properties").TryGetProperty("fileContentBase64", out _));
     }
+
+    [Fact]
+    public void Contract_MobileTimelineExposesPaginationArguments()
+    {
+        // #330：单日会话可达数千条，接口必须能翻页并显式报告截断，
+        // 否则调用方只能看到一天的前一段（旧实现固定 500 条且无任何标记）。
+        var timeline = McpToolExecutor.ToolContract.Single(t => t.Name == "get_mobile_timeline");
+        var properties = timeline.InputSchema.GetProperty("properties");
+
+        Assert.True(properties.TryGetProperty("page", out _));
+        Assert.True(properties.TryGetProperty("pageSize", out _));
+
+        var spec = McpToolTable.TryGet("get_mobile_timeline")!;
+        Assert.Contains("page", spec.QueryParams);
+        Assert.Contains("pageSize", spec.QueryParams);
+
+        // 契约 schema 的参数集合必须与工具表一致（否则调用方传了却被丢弃）
+        Assert.Equal(
+            spec.QueryParams.Where(p => p != "redactUrls").OrderBy(p => p, StringComparer.Ordinal),
+            properties.EnumerateObject().Select(p => p.Name).Where(n => n != "redactUrls").OrderBy(n => n, StringComparer.Ordinal));
+    }
 }

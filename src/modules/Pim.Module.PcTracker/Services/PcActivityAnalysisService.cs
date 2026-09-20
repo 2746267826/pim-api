@@ -48,6 +48,10 @@ public sealed class PcActivityAnalysisService
             var end = start.AddMinutes(blockMinutes);
             var records = detail.Items
                 .Where(record => record.DurationSeconds is > 0)
+                // #331：gap / idle / afk 表示「这里没有人」，不是活动。
+                // 不排除的话，空档会被算进 activeSeconds / 强度 / 类别分布，
+                // 把一天里没人的时段显示成「有活动」（与分类分布、生产力统计的口径保持一致）。
+                .Where(record => !PcActivityOverlapResolver.IsInactive(record.RecordType))
                 .Where(record => DateTimeOffset.TryParse(record.Start, out var recordStart)
                     && recordStart >= start
                     && recordStart < end)

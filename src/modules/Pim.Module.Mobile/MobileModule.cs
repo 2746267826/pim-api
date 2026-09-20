@@ -133,11 +133,23 @@ public sealed class MobileModule : IModule
             [FromQuery] string? deviceId,
             [FromQuery] DateTimeOffset? rangeStartUtc,
             [FromQuery] DateTimeOffset? rangeEndUtc,
+            [FromQuery] int? page,
+            [FromQuery] int? pageSize,
             [FromServices] MobileUsageQueryService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileTimelineResponse>.Ok(await service.GetTimelineAsync(
-                BuildSummaryQuery(deviceId, date, rangeStartUtc, rangeEndUtc),
-                ct))));
+        {
+            try
+            {
+                return Results.Ok(ApiResponse<MobileTimelineResponse>.Ok(await service.GetTimelineAsync(
+                    BuildTimelineQuery(deviceId, date, rangeStartUtc, rangeEndUtc, page, pageSize),
+                    ct)));
+            }
+            catch (ArgumentOutOfRangeException ex)
+            {
+                // 分页偏移超过可读上限：明确 400，而不是静默物化整段历史（#330 review）。
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
 
         group.MapGet("/location/history", async (
             [FromQuery] string? deviceId,
@@ -489,6 +501,25 @@ public sealed class MobileModule : IModule
 
         var (start, end) = BusinessDay.GetRangeUtc(day);
         return new MobileSummaryQuery(deviceId, start, end);
+    }
+
+    /// <summary>
+    /// timeline 的查询构造（#330）：业务日窗口口径与 <see cref="BuildSummaryQuery"/> 完全一致，
+    /// 额外带上分页参数（仅 timeline 支持分页）。
+    /// </summary>
+    public static MobileTimelineQuery BuildTimelineQuery(
+        string? deviceId,
+        string? date,
+        DateTimeOffset? rangeStartUtc,
+        DateTimeOffset? rangeEndUtc,
+        int? page,
+        int? pageSize)
+    {
+        if (!BusinessDay.TryParseDate(date, out var day))
+            return new MobileTimelineQuery(deviceId, rangeStartUtc, rangeEndUtc, page, pageSize);
+
+        var (start, end) = BusinessDay.GetRangeUtc(day);
+        return new MobileTimelineQuery(deviceId, start, end, page, pageSize);
     }
 }
 

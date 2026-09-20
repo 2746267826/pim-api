@@ -2032,14 +2032,19 @@ async def get_mobile_summary(
 async def get_mobile_timeline(
     date: str,
     deviceId: Optional[str] = None,
+    page: Optional[int] = None,
+    pageSize: Optional[int] = None,
     redactUrls: bool = True,
 ) -> Any:
-    """Get mobile timeline for one business day (app usage sessions). The business day is [D 04:00, D+1 04:00) Asia/Shanghai and is fixed server-side, so no timezone argument is accepted. Returns MobileTimelineResponse."""
+    """Get mobile timeline for one business day (app usage sessions). The business day is [D 04:00, D+1 04:00) Asia/Shanghai and is fixed server-side, so no timezone argument is accepted. A day can hold thousands of sessions, so the response is paged: it reports totalCount / hasMore / truncated and you must page through to read the whole day. Returns MobileTimelineResponse."""
     try:
         datetime.strptime(date, "%Y-%m-%d")
     except Exception:
         return {"error": "date must be YYYY-MM-DD", "code": 400}
-    params = _clean_params(date=date, deviceId=deviceId)
+    err = _validate_pagination(page, pageSize)
+    if err:
+        return err
+    params = _clean_params(date=date, deviceId=deviceId, page=page, pageSize=pageSize)
     return await _call_api("GET", "/api/v1/mobile/timeline", params=params, redact_urls=redactUrls)
 
 

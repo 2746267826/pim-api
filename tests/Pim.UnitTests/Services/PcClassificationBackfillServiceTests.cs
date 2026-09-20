@@ -49,6 +49,141 @@ public class PcClassificationBackfillServiceTests
         Assert.Equal(1, await db.Set<ActivityClassificationEntity>().CountAsync());
     }
 
+    /// <summary>
+    /// #331：整日快照齐全、但没有头尾未覆盖事件时，backfill 原本会直接跳过该日，
+    /// 于是修复前写成「游戏」的 gap/idle/afk 行永远得不到纠正。
+    /// 这里锁定：存在 stale inactive 快照的过去日必须被重新处理，并把它改判为「未活动」。
+    /// </summary>
+    [Fact]
+    public async Task BackfillAsync_ReprocessesPastDayWithStaleInactiveSnapshot()
+    {
+        await using var db = CreateDb();
+        var gapStart = DateTimeOffset.Parse("2026-08-10T10:00:00Z");
+        // gap 快照由 gap 事件派生（record_key 可重新推导，与生产一致）
+        db.Set<TrackerEventEntity>().Add(GapEvent(gapStart, 1800));
+        db.Set<AwEventEntity>().Add(WindowEvent("2026-08-10T08:00:00Z", 600, "Code.exe", "Program.cs"));
+        db.Set<ActivityClassificationEntity>().Add(Snapshot(
+            "pc-fallback-v1:cover-start",
+            DateTimeOffset.Parse("2026-08-10T08:00:00Z")));
+
+        // 该行的 record_key 必须与事件重新推导出的键一致，否则 ensure 不认它
+        var record = TrackerPageTimelineBuilder.ToRawTrackerRecord(
+            GapEvent(gapStart, 1800),
+            []);
+        var stale = StaleInactiveSnapshot(
+            ActivityClassificationRecordKey.FromRecord(record),
+            gapStart);
+        db.Set<ActivityClassificationEntity>().Add(stale);
+        await db.SaveChangesAsync();
+
+        var stats = await CreateService(db).BackfillAsync(lookbackDays: 14, CancellationToken.None);
+
+        Assert.True(stats.ProcessedDays >= 1, "含 stale inactive 快照的过去日必须被重新处理");
+
+        // 该 gap 行被改判为「未活动」，不再显示成「游戏」
+        var gap = await db.Set<ActivityClassificationEntity>()
+            .SingleAsync(s => s.Id == stale.Id);
+        Assert.Equal(ActivityClassificationResult.InactiveCategoryName, gap.CategoryName);
+    }
+
+    [Fact]
+    public async Task BackfillAsync_LeavesCleanPastDaySkipped()
+    {
+        // 回归保护：没有 stale inactive 快照的过去日仍走原来的跳过路径，
+        // 避免每次 backfill 都全量重分类。
+        await using var db = CreateDb();
+        db.Set<AwEventEntity>().Add(WindowEvent("2026-08-10T08:00:00Z", 600, "Code.exe", "Program.cs"));
+        db.Set<ActivityClassificationEntity>().Add(Snapshot(
+            "pc-fallback-v1:clean",
+            DateTimeOffset.Parse("2026-08-10T08:00:00Z")));
+        await db.SaveChangesAsync();
+
+        var stats = await CreateService(db).BackfillAsync(lookbackDays: 14, CancellationToken.None);
+
+        Assert.Equal(0, stats.ProcessedDays);
+    }
+
+    [Fact]
+    public async Task BackfillAsync_DoesNotRewriteManuallyCorrectedInactiveSnapshot()
+    {
+        // 人工纠正过的空档分类必须保留：历史修复不能覆盖人的判断。
+        await using var db = CreateDb();
+        var gapStart = DateTimeOffset.Parse("2026-08-10T10:00:00Z");
+        db.Set<TrackerEventEntity>().Add(GapEvent(gapStart, 1800));
+        db.Set<AwEventEntity>().Add(WindowEvent("2026-08-10T08:00:00Z", 600, "Code.exe", "Program.cs"));
+        db.Set<ActivityClassificationEntity>().Add(Snapshot(
+            "pc-fallback-v1:cover-start",
+            DateTimeOffset.Parse("2026-08-10T08:00:00Z")));
+
+        var record = TrackerPageTimelineBuilder.ToRawTrackerRecord(GapEvent(gapStart, 1800), []);
+        var manual = StaleInactiveSnapshot(
+            ActivityClassificationRecordKey.FromRecord(record),
+            gapStart);
+        manual.CategoryName = "学习";
+        manual.Source = "manual";
+        db.Set<ActivityClassificationEntity>().Add(manual);
+        await db.SaveChangesAsync();
+
+        await CreateService(db).BackfillAsync(lookbackDays: 14, CancellationToken.None);
+
+        var kept = await db.Set<ActivityClassificationEntity>().SingleAsync(s => s.Id == manual.Id);
+        Assert.Equal("学习", kept.CategoryName);
+        Assert.Equal("manual", kept.Source);
+    }
+
+    [Fact]
+    public async Task BackfillAsync_ReprocessesDayWithMixedCaseInactiveRecordType()
+    {
+        // 历史数据可能写了 'Gap'/'IDLE'：IsInactive 与保护判定都大小写不灵敏，
+        // 因此这里的「过时」判定也必须忽略大小写，否则该日会被跳过而漏修。
+        await using var db = CreateDb();
+        var gapStart = DateTimeOffset.Parse("2026-08-10T10:00:00Z");
+        db.Set<TrackerEventEntity>().Add(GapEvent(gapStart, 1800));
+        db.Set<AwEventEntity>().Add(WindowEvent("2026-08-10T08:00:00Z", 600, "Code.exe", "Program.cs"));
+        db.Set<ActivityClassificationEntity>().Add(Snapshot(
+            "pc-fallback-v1:cover-start",
+            DateTimeOffset.Parse("2026-08-10T08:00:00Z")));
+
+        var record = TrackerPageTimelineBuilder.ToRawTrackerRecord(GapEvent(gapStart, 1800), []);
+        var stale = StaleInactiveSnapshot(ActivityClassificationRecordKey.FromRecord(record), gapStart);
+        stale.RecordType = "Gap";
+        db.Set<ActivityClassificationEntity>().Add(stale);
+        await db.SaveChangesAsync();
+
+        var stats = await CreateService(db).BackfillAsync(lookbackDays: 14, CancellationToken.None);
+
+        Assert.True(stats.ProcessedDays >= 1, "大小写变体的非应用记录也必须触发重处理");
+
+        // 不仅要「触发了重处理」，还要断言该行确实被写回正确结论 ——
+        // 否则重处理触发但写回失败时本用例仍会通过（review 指出）。
+        var rewritten = await db.Set<ActivityClassificationEntity>().SingleAsync(s => s.Id == stale.Id);
+        Assert.Equal(ActivityClassificationResult.InactiveCategoryName, rewritten.CategoryName);
+    }
+
+    [Fact]
+    public async Task BackfillAsync_DoesNotTreatUppercaseManualSourceAsStale()
+    {
+        // 保护来源的大小写变体同样不能被视为「过时」，否则会白白重处理该日。
+        await using var db = CreateDb();
+        var gapStart = DateTimeOffset.Parse("2026-08-10T10:00:00Z");
+        db.Set<TrackerEventEntity>().Add(GapEvent(gapStart, 1800));
+        db.Set<AwEventEntity>().Add(WindowEvent("2026-08-10T08:00:00Z", 600, "Code.exe", "Program.cs"));
+        db.Set<ActivityClassificationEntity>().Add(Snapshot(
+            "pc-fallback-v1:cover-start",
+            DateTimeOffset.Parse("2026-08-10T08:00:00Z")));
+
+        var record = TrackerPageTimelineBuilder.ToRawTrackerRecord(GapEvent(gapStart, 1800), []);
+        var manual = StaleInactiveSnapshot(ActivityClassificationRecordKey.FromRecord(record), gapStart);
+        manual.CategoryName = "学习";
+        manual.Source = "Manual";
+        db.Set<ActivityClassificationEntity>().Add(manual);
+        await db.SaveChangesAsync();
+
+        var stats = await CreateService(db).BackfillAsync(lookbackDays: 14, CancellationToken.None);
+
+        Assert.Equal(0, stats.ProcessedDays);
+    }
+
     [Fact]
     public async Task EnsureClassificationsAsync_SecondRunDoesNotDuplicateSnapshots()
     {
@@ -311,6 +446,20 @@ public class PcClassificationBackfillServiceTests
             DataJson = "{}"
         };
 
+    /// <summary>#331：daemon 上报的空档事件（30 分钟/片），派生出 record_type=gap 的快照。</summary>
+    private static TrackerEventEntity GapEvent(DateTimeOffset timestamp, double duration) =>
+        new()
+        {
+            Id = Random.Shared.NextInt64(1, long.MaxValue),
+            DeviceId = "device-1",
+            Timestamp = timestamp,
+            Duration = duration,
+            EventType = "gap",
+            AppName = null,
+            WindowTitle = null,
+            RawJson = "{\"gapStart\":\"" + timestamp.ToString("O") + "\",\"isStartup\":true}"
+        };
+
     private static ActivityClassificationEntity Snapshot(string recordKey, DateTimeOffset startedAt) =>
         new()
         {
@@ -324,6 +473,22 @@ public class PcClassificationBackfillServiceTests
             CategoryColor = "#64748b",
             Confidence = 0.2,
             Source = "fallback"
+        };
+
+    /// <summary>#331 的存量污染行：gap 记录被旧规则判成「游戏」。</summary>
+    private static ActivityClassificationEntity StaleInactiveSnapshot(string recordKey, DateTimeOffset startedAt) =>
+        new()
+        {
+            Id = Guid.NewGuid(),
+            RecordKey = recordKey,
+            RecordType = "gap",
+            DeviceId = "device-1",
+            StartedAt = startedAt,
+            EndedAt = startedAt.AddSeconds(1800),
+            CategoryName = "游戏",
+            CategoryColor = "#F43F5E",
+            Confidence = 0.95,
+            Source = "rule"
         };
 
     private static ActivityCategoryRuleEntity CodeRule(string categoryName, int priority) =>

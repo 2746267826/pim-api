@@ -524,6 +524,36 @@ INSERT INTO pc_activity_category_rules (rule_name, scope, category_name, project
 ('Builtin: Office apps', 'activity', '文档', NULL, '#F59E0B', 300, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"containsAny","value":["winword","excel","powerpnt","notion","obsidian","typora"]}}]}}'::jsonb, 0.85, 'Builtin office rule.'),
 ('Builtin: File managers', 'activity', '文档', NULL, '#F59E0B', 300, 'builtin', 'active', '{{"all":[{{"field":"appNameNormalized","op":"containsAny","value":["explorer","everything","totalcommander"]}}]}}'::jsonb, 0.85, 'Builtin file rule.')
 ON CONFLICT DO NOTHING;
+-- #331：#301 之后仍然每天产生约 10 小时假「游戏」的规则级根因。
+-- pc_app_categories 迁移把 app_pattern='unknown' 也搬成了一条 active 规则：
+--   {{"all":[{{"field":"appNameNormalized","op":"equals","value":"unknown"}}]}} -> 游戏
+--   (confidence 0.95, priority + 1000)
+-- 而 AppNameNormalizer 对「无应用身份」一律归一化为字面量 "unknown"，
+-- 于是所有 gap / idle / afk 记录都命中它变成「游戏」。
+-- 「认不出 → 游戏」是错误映射，且分类器已对非应用记录短路（见 ActivityClassifier），
+-- 这里再把存量规则停用，保证已经播种过的库也不会继续污染。
+--
+-- 清理范围必须同时满足两个条件，缺一不可：
+--   1) 规则名是迁移产物（'Migrated app rule: ' 前缀）——历史迁移的 app_pattern 变体
+--      （unknown / Unknown / unknown.exe / ' unknown '）都落在这个前缀下；
+--   2) 条件形状与迁移完全一致：all 里**恰好一条** appNameNormalized equals unknown。
+-- 之所以要求「恰好一条」：迁移只会产出单条件规则，而多条件的复合规则
+-- （例如 domain=example.com AND appNameNormalized=unknown）是调用方自己写的合法规则，
+-- 语义上并不等价于「认不出就归类」，不能一并停用（review 指出早先版本会误伤它）。
+UPDATE pc_activity_category_rules
+SET status = 'disabled',
+    updated_at = NOW(),
+    explanation = COALESCE(explanation, '') || ' [disabled by #331: unknown must not map to an activity category]'
+WHERE status = 'active'
+  AND rule_name LIKE 'Migrated app rule: %'
+  AND jsonb_typeof(conditions_json -> 'all') = 'array'
+  AND jsonb_array_length(conditions_json -> 'all') = 1
+  AND COALESCE(conditions_json -> 'all' -> 0 ->> 'field', '') = 'appNameNormalized'
+  AND COALESCE(conditions_json -> 'all' -> 0 ->> 'op', '') = 'equals'
+  AND lower(trim(regexp_replace(
+        trim(COALESCE(conditions_json -> 'all' -> 0 ->> 'value', '')),
+        '\.exe$', '', 'i'))) = 'unknown';
+
 INSERT INTO pc_activity_category_rules (rule_name, scope, category_name, project_tag, color, priority, source, status, conditions_json, confidence, explanation)
 SELECT
     'Migrated app rule: ' || app_pattern,
@@ -542,7 +572,11 @@ WHERE NOT EXISTS (
     SELECT 1
     FROM pc_activity_category_rules r
     WHERE r.rule_name = 'Migrated app rule: ' || pc_app_categories.app_pattern
-);
+)
+-- #331：unknown 是「没有应用身份」的哨兵值，不是应用名，永远不迁移成应用规则。
+-- 先 trim 再剥 .exe，最后 trim/转小写：' unknown '、'Unknown'、'unknown.exe'、
+-- ' unknown.exe ' 都要挡住（与上面的停用条件同一口径）。
+AND lower(trim(regexp_replace(trim(app_pattern), '\.exe$', '', 'i'))) <> 'unknown';
 
 -- Phase 2: pc_categories (hierarchical classification tree)
 

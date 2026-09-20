@@ -197,7 +197,7 @@ public sealed class MobileServicePropertyTests
         SeedSession(db, "com.tencent.mm", RangeStart.AddHours(10), RangeStart.AddHours(10).AddMinutes(5), deviceId: "android-main");
         await db.SaveChangesAsync();
         var svc = new MobileUsageQueryService(db, MobileTestHelpers.CurrentUser(), MobileTestHelpers.Time(BaseTime));
-        var res = await svc.GetTimelineAsync(new MobileSummaryQuery("android-main", RangeStart, RangeEnd), CancellationToken.None);
+        var res = await svc.GetTimelineAsync(new MobileTimelineQuery("android-main", RangeStart, RangeEnd), CancellationToken.None);
         Assert.NotEmpty(res.Items);
         Assert.NotEmpty(res.Sessions);
     }

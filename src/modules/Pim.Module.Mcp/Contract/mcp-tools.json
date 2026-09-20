@@ -1701,6 +1701,32 @@
      "default": null,
      "title": "Deviceid"
     },
+    "page": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "1-based page number (default 1). A day can exceed one page; check hasMore/totalCount in the response and page through to read the whole day.",
+     "title": "Page"
+    },
+    "pageSize": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Rows per page, 1-100 (MCP-wide limit). Omit to use the server default. Exceeding the limit is rejected with code 400.",
+     "title": "Pagesize"
+    },
     "redactUrls": {
      "default": true,
      "title": "Redacturls",

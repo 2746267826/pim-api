@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Pim.Core.Caching;
 using Pim.Infrastructure.Data;
+using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
 
 namespace Pim.Module.PcTracker.Services;
@@ -69,9 +70,15 @@ public sealed class PcClassificationBackfillService
             var isCurrentWindow = startUtc <= now && now < endUtc;
             if (!isCurrentWindow)
             {
+                // #331：即使整日快照齐全，也可能存在**过时**的非应用记录（gap/idle/afk）
+                // —— 它们曾被旧规则判成「游戏」等应用类别。若这里直接跳过，
+                // 历史污染数据永远进不了 EnsureClassificationsAsync，修复只对新数据生效。
+                // 因此把「存在 stale inactive 快照」也视为需要补齐。
+                var hasStaleInactiveSnapshots = await HasStaleInactiveSnapshotsAsync(startUtc, endUtc, ct);
+
                 var snapshotCount = await _db.Set<ActivityClassificationEntity>()
                     .CountAsync(snapshot => snapshot.StartedAt >= startUtc && snapshot.StartedAt < endUtc, ct);
-                if (snapshotCount > 0)
+                if (snapshotCount > 0 && !hasStaleInactiveSnapshots)
                 {
                     var earliestSnapshotStart = await _db.Set<ActivityClassificationEntity>()
                         .Where(s => s.StartedAt >= startUtc && s.StartedAt < endUtc)
@@ -109,6 +116,39 @@ public sealed class PcClassificationBackfillService
 
         _cache.EvictByPrefix(PcCachePrefix);
         return new PcClassificationBackfillStats(processedDays, checked((int)writtenSnapshots));
+    }
+
+    /// <summary>
+    /// 该业务日是否存在「过时的非应用记录快照」（#331）：记录类型属于 gap/idle/afk，
+    /// 但类别不是「未活动」——即修复前被旧规则写成的应用类别（如「游戏」）。
+    /// 人工/LLM 纠正过的快照不算过时（它们本就允许带任意类别）。
+    /// <para>
+    /// 记录类型与来源都按小写比较：SQL 的 IN/等值区分大小写，而
+    /// <see cref="PcActivityOverlapResolver.IsInactive"/> 与
+    /// <see cref="ActivityClassificationSnapshotService"/> 的保护判定都是大小写不灵敏的。
+    /// 若这里大小写敏感，'Gap' 这类历史写法会既不被判为过时（本方法漏检），
+    /// 又会被重写逻辑当作非应用记录处理 —— 两处口径必须一致。
+    /// </para>
+    /// </summary>
+    private async Task<bool> HasStaleInactiveSnapshotsAsync(
+        DateTimeOffset startUtc,
+        DateTimeOffset endUtc,
+        CancellationToken ct)
+    {
+        var inactiveTypes = PcActivityOverlapResolver.InactiveRecordTypes
+            .Select(type => type.ToLowerInvariant())
+            .ToArray();
+        var inactiveCategory = ActivityClassificationResult.InactiveCategoryName;
+        var protectedSources = new[] { "manual", "corrected", "user_corrected", "llm_corrected" };
+
+        return await _db.Set<ActivityClassificationEntity>()
+            .AnyAsync(
+                snapshot => snapshot.StartedAt >= startUtc
+                    && snapshot.StartedAt < endUtc
+                    && inactiveTypes.Contains(snapshot.RecordType.ToLower())
+                    && snapshot.CategoryName != inactiveCategory
+                    && !protectedSources.Contains(snapshot.Source.ToLower()),
+                ct);
     }
 
     /// <summary>业务日 D 的窗口起点 [D 04:00 Asia/Shanghai) 换算为 UTC（口径与 PcActivityAggregationService 一致）。</summary>

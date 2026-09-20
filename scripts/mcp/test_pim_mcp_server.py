@@ -204,3 +204,48 @@ def test_wrapper_allowed_tool_passes_through(monkeypatch):
     assert result.get("code") == 0
     assert result["data"]["path"] == "/api/v1/calendar/tasks"
     assert result["data"]["body"]["title"] == "hello"
+
+
+def test_get_mobile_timeline_forwards_pagination(monkeypatch):
+    """#330: 单日会话可达数千条，MCP 调用方必须能翻页读完整天。"""
+    import asyncio
+
+    captured = {}
+
+    async def fake_call_api(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return {"code": 0, "data": {}}
+
+    monkeypatch.setattr(s, "_call_api", fake_call_api)
+    # MCP 全局限定 pageSize <= 100（与其它分页工具一致）
+    asyncio.run(s.get_mobile_timeline(date="2026-09-18", deviceId="android-1", page=2, pageSize=100))
+
+    assert captured["args"][0] == "GET"
+    assert captured["args"][1] == "/api/v1/mobile/timeline"
+    assert captured["kwargs"]["params"]["page"] == 2
+    assert captured["kwargs"]["params"]["pageSize"] == 100
+
+
+def test_get_mobile_timeline_omits_absent_pagination(monkeypatch):
+    """不传分页参数时应保持原样（服务端默认页），不要把 None 传成查询参数。"""
+    import asyncio
+
+    captured = {}
+
+    async def fake_call_api(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return {"code": 0, "data": {}}
+
+    monkeypatch.setattr(s, "_call_api", fake_call_api)
+    asyncio.run(s.get_mobile_timeline(date="2026-09-18"))
+
+    assert "page" not in captured["kwargs"]["params"]
+    assert "pageSize" not in captured["kwargs"]["params"]
+
+
+def test_get_mobile_timeline_rejects_invalid_pagination():
+    import asyncio
+
+    assert asyncio.run(s.get_mobile_timeline(date="2026-09-18", page=0)).get("code") == 400
+    assert asyncio.run(s.get_mobile_timeline(date="2026-09-18", pageSize=101)).get("code") == 400

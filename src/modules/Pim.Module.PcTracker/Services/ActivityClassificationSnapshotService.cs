@@ -80,8 +80,16 @@ public class ActivityClassificationSnapshotService
 
             if (auditId is null && snapshots.ContainsKey(keyedRecord.RecordKey))
             {
-                classifiedRecords[record] = ToClassificationResult(snapshot);
-                continue;
+                // #331：非应用记录（gap/idle/afk）的历史快照可能是按旧规则判出来的
+                // 「游戏」等应用类别。若照旧直接沿用，修复只会作用于新记录，
+                // 存量污染会一直留在 detail / 分析等读快照的消费者里。
+                // 因此这类记录即使没有审计上下文也强制按新口径重写（人工纠正仍受保护）。
+                if (!PcActivityOverlapResolver.IsInactive(snapshot.RecordType)
+                    || string.Equals(snapshot.CategoryName, classification.CategoryName, StringComparison.Ordinal))
+                {
+                    classifiedRecords[record] = ToClassificationResult(snapshot);
+                    continue;
+                }
             }
 
             ApplySnapshot(snapshot, keyedRecord, classification, auditId, now);

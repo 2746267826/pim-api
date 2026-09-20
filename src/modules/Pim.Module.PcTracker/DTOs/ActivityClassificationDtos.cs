@@ -9,8 +9,34 @@ public record ActivityClassificationResult(
     string Explanation,
     Guid? SourceRuleId = null)
 {
+    /// <summary>
+    /// 「未活动」结论的类别名（#331）。gap / idle / afk 表示「这里没有人」，
+    /// 不是某个应用的使用行为，因此不能落到「游戏」之类「应用类别」上。
+    /// 与「其他」区分开，便于下游识别空档而不是把空档混进中性活动统计。
+    /// </summary>
+    public const string InactiveCategoryName = "未活动";
+
+    /// <summary>「未活动」结论的配色（中性灰，与「其他」的 #64748b 区分）。</summary>
+    public const string InactiveCategoryColor = "#94a3b8";
+
+    /// <summary>「未活动」结论的来源标记。</summary>
+    public const string InactiveSource = "inactive";
+
     public static ActivityClassificationResult Fallback() =>
         new("其他", "#64748b", null, 0.2, "fallback", "没有匹配到规则或启发式分类。");
+
+    /// <summary>
+    /// 空档 / 空闲 / 离开（#331）：显式声明「无活动」，不参与任何应用类别判定。
+    /// 置信度取 1.0 —— 这不是猜测，而是对「该时段没有应用活动」的确定结论。
+    /// </summary>
+    public static ActivityClassificationResult Inactive() =>
+        new(
+            InactiveCategoryName,
+            InactiveCategoryColor,
+            null,
+            1.0,
+            InactiveSource,
+            "空档 / 未活动时段：该记录不代表任何应用使用行为（gap/idle/afk）。");
 }
 
 public record ActivityClassificationRuleDto(

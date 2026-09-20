@@ -180,7 +180,9 @@ public static class McpToolTable
 
             // ===================== Mobile reads (18) =====================
             S("get_mobile_summary", "GET", "/api/v1/mobile/summary", Q("date", "deviceId")),
-            S("get_mobile_timeline", "GET", "/api/v1/mobile/timeline", Q("date", "deviceId"), redact: true),
+            // #330：timeline 单日可达数千条，必须能翻页并显式看到截断标记
+            // （响应里的 totalCount / hasMore / truncated），否则调用方只能看到一天的前一段。
+            S("get_mobile_timeline", "GET", "/api/v1/mobile/timeline", Q("date", "deviceId", "page", "pageSize"), redact: true),
             S("get_mobile_location_history", "GET", "/api/v1/mobile/location/history", Q("start", "end", "maxAccuracyMeters", "deviceId")),
             S("get_mobile_location_latest", "GET", "/api/v1/mobile/location/history", Q("maxAccuracyMeters", "deviceId"), kind: McpToolKind.MobileLocationLatest),
             S("get_mobile_location_tracks", "GET", "/api/v1/mobile/location/analytics/tracks", Q("start=rangeStartUtc", "end=rangeEndUtc", "timezone", "maxAccuracyMeters")),
