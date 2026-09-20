@@ -1114,12 +1114,24 @@ public static class DataReliabilityInvariants
         return InvariantResult.Success("INV-P21 PASS: 所有 >15m 空洞均已妥善标记为 gap 事件", note, fallback);
     }
 
-    /// <summary>把可能重叠/相接的区间合并成互不重叠的升序区间列表。</summary>
+    /// <summary>
+    /// 把可能重叠/相接的区间合并成互不重叠的升序区间列表。
+    ///
+    /// 对 <c>End &lt; Start</c> 的反向区间做规范化（视为位于 Start 的零长区间）：
+    /// 这类输入本身没有意义，但若不处理，它的 End 会小于 Start，
+    /// 可能让后续区间被误判为"不相接"从而凭空产生空洞。取数层已保证 End &gt;= Start，
+    /// 这里只是让判据作为公开 API 对非法输入也保持稳健。
+    /// </summary>
     private static List<(DateTime Start, DateTime End)> MergeIntervals(
         IEnumerable<(DateTime Start, DateTime End)> source)
     {
         var merged = new List<(DateTime Start, DateTime End)>();
-        foreach (var interval in source.OrderBy(i => i.Start).ThenBy(i => i.End))
+        var normalized = source
+            .Select(i => i.End < i.Start ? (Start: i.Start, End: i.Start) : i)
+            .OrderBy(i => i.Start)
+            .ThenBy(i => i.End);
+
+        foreach (var interval in normalized)
         {
             if (merged.Count == 0 || interval.Start > merged[^1].End)
             {

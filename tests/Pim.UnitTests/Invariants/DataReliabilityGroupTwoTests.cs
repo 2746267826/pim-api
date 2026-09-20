@@ -487,6 +487,24 @@ public class DataReliabilityGroupTwoTests
     }
 
     [Fact]
+    public void S7_ReversedInterval_DoesNotCreatePhantomHole()
+    {
+        // 反向区间（End < Start）本身无意义，但判据是公开 API，必须稳健：
+        // 若直接使用其 End，会把后续区间误判成"不相接"从而凭空产生空洞。
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(50), EventType = "window" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(50), EndTime = _baseUtc.AddMinutes(30), EventType = "window" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(50), EndTime = _baseUtc.AddMinutes(60), EventType = "window" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
     public void S7_OnlyHistoricalHoles_DowngradesToWarning()
     {
         var now = new DateTime(2026, 7, 20, 10, 0, 0, DateTimeKind.Utc);
