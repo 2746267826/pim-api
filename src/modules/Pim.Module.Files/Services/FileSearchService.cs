@@ -40,6 +40,9 @@ public sealed class FileSearchService(
         }
 
         var lowered = search.ToLowerInvariant();
+        // 先把未登录错误抛在查询表达式**之外**：若在 Where 里取 UserId，
+        // 异常会被 EF 包装成 InvalidOperationException，最终变成 500 而不是 1002。
+        var userId = UserId;
         // 数据库侧过滤（IQueryable），避免全表加载导致 OOM
         var entities = await db.Set<FileItemEntity>()
             .AsNoTracking()
@@ -47,7 +50,7 @@ public sealed class FileSearchService(
             .Include(item => item.IndexJobs)
             .Where(item =>
                 item.Provider != null
-                && item.Provider.UserId == UserId
+                && item.Provider.UserId == userId
                 && !item.IsDeleted
                 && (item.Name.ToLower().Contains(lowered)
                     || item.Path.ToLower().Contains(lowered)
