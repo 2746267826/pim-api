@@ -13,7 +13,7 @@ services:
       - DataProtection__KeysPath=/data/keys/data-protection
       - Kopia__RepositoryPath=/data/kopia-repo
       - Kopia__Password=${KOPIA_PASSWORD}
-      - Tika__BaseUrl=${TIKA_BASE_URL}
+      - Tika__BaseUrl=${TIKA_BASE_URL:-}
       - Ai__Enabled=${AI_ENABLED:-false}
       - Ai__Provider=litellm
       - Ai__BaseUrl=${AI_BASE_URL}
