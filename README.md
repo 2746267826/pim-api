@@ -65,11 +65,20 @@ Android 客户端常驻采集定位与手机使用数据，服务端负责轨迹
 
 ### 文件库
 
-- 文件管理、版本历史、回收站。
-- 全文 / 语义混合搜索（Qdrant 向量库 + 本地哈希嵌入，384 维，无需外部嵌入模型）。
-- 文档解析（Apache Tika）、Nextcloud 网盘对接、OnlyOffice 在线编辑。
-- 可选 AI：文件摘要、标签建议、组织建议（AI 关闭时文件库照常工作）。
-- 敏感路径保护：`/Secrets/*`、`/Passwords/*` 等目录内容默认不进入 AI 处理。
+- **OneDrive 个人版为唯一事实源**（文件模块 v2）：绑定走设备码，每 20 分钟 delta 增量同步，
+  服务端只存**元数据**，内容按需瞬态经过——不落盘、不建索引。
+- 三栏文件页：懒加载文件树、列表 / 网格、预览（图片 / PDF / Office / 文本）；文本可直接编辑，
+  编辑前自动留存快照（PostgreSQL）。
+- 稳定直链：`/items/{id}/content`、`/thumbnail` 302 到 Graph 预授权 URL；
+  「在 OneDrive 打开」给出网页地址；删除进 OneDrive 回收站 + PIM 侧软删。
+- **元数据搜索**（文件名 / 路径 / 类型）：内容级查找交给 Hermes（MCP）的 `read_file_text` 现取现抽。
+- 文档文本抽取：文本 / docx / pptx 内置处理；pdf 等在配置 Tika 时增强。
+- 敏感路径保护：`/Secrets/*`、`/Passwords/*`（可配置）在**所有**内容出口一致拦截——
+  直链、缩略图、预览、文本读写、`read_file_text`、网页地址与搜索结果。
+- 快速记录附件同样存入用户自己的 OneDrive（`/PIM/...`）。
+
+> 文件模块 v2 已退役 Nextcloud / WebDAV 适配器、MinIO、Qdrant 与内容索引线（见
+> [designs/onedrive-files-v2.md](designs/onedrive-files-v2.md) §17）。Tika 为可选依赖。
 
 ### 快速笔记
 
@@ -135,7 +144,7 @@ AI 层通过 LiteLLM 网关接入任意 OpenAI 兼容模型：
         │  （Web 前端由服务端托管）    │
         └──────────────┬─────────────┘
                        ▼
-     PostgreSQL ─ MinIO ─ Tika ─ Qdrant（可选）─ LiteLLM（可选）─ Nextcloud / OnlyOffice（可选）
+     PostgreSQL ─ Microsoft Graph / OneDrive（文件）─ LiteLLM（可选）─ Tika（可选）
 ```
 
 - **服务端是唯一事实来源**：业务规则、聚合计算、分类判定全部在服务端完成；客户端只是传感器。
@@ -158,13 +167,13 @@ AI 层通过 LiteLLM 网关接入任意 OpenAI 兼容模型：
 
 ## 快速开始
 
-前置：Docker + Docker Compose，可访问的 PostgreSQL 16、MinIO 与 Tika 实例（或按开发全家桶一并启动）。
+前置：Docker + Docker Compose，以及可访问的 PostgreSQL 16 实例（文件功能需要绑定 OneDrive 个人版账号）。
 
 ```bash
 git clone https://github.com/2746267826/pim-platform.git
 cd pim-platform
 cp .env.prod.example .env.prod
-# 编辑 .env.prod：填入数据库连接串、MinIO 凭据与 Kopia 密码
+# 编辑 .env.prod：填入数据库连接串、Kopia 密码与 OneDrive 租户（个人版保持 consumers）
 # 预置密钥：mkdir -p /data/keys/data-protection && openssl genrsa -out /data/keys/jwt_private.pem 2048
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 ```
@@ -195,12 +204,9 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 | 依赖 | 用途 | 必选 |
 |---|---|---|
 | PostgreSQL 16 | 主存储 | 是 |
-| MinIO | 对象存储（文件） | 是（未配置时服务可启动，但文件模块不可用） |
-| Apache Tika | 文档内容解析 | 是（未配置时文档解析不可用，文件索引报错） |
-| Qdrant | 向量库（文件语义搜索） | 推荐（未配置时语义搜索不可用，其余正常） |
+| Microsoft OneDrive（Graph） | 文件与附件唯一事实源 | 是（未绑定 OneDrive 时文件与附件功能不可用） |
 | LiteLLM | AI 网关 | 否（关闭 AI 可不接） |
-| Nextcloud | 网盘对接 | 否 |
-| OnlyOffice | 在线编辑 | 否 |
+| Apache Tika | 文本抽取（`read_file_text` 的 pdf 等） | 否（未配置时这些类型明确返回「不支持」；文本/docx/pptx 不受影响） |
 | Prometheus / Grafana | 运维监控与告警 | 否（推荐，开箱即用） |
 | Grafana Loki | 集中日志收集 | 否（可选） |
 
@@ -243,7 +249,8 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 
 ### 开发部署（Docker 全家桶）
 
-仓库根目录 `docker-compose.yml` 一键启动全部依赖：PostgreSQL、MinIO、Tika、LiteLLM、Qdrant、Nextcloud、OnlyOffice、Redis + API 容器（本地构建镜像）。
+仓库根目录 `docker-compose.yml` 一键启动依赖栈：PostgreSQL、LiteLLM + API 容器（本地构建镜像）。
+文件功能使用 OneDrive，无需本地对象存储；Tika 为可选项，需要时用 `TIKA_BASE_URL` 指向外部实例。
 
 ```bash
 cp .env.example .env   # 修改其中的占位密码
@@ -264,7 +271,7 @@ npm --prefix src/client-web run dev
 生产环境建议前置 nginx（仓库 `nginx.conf` 可作参考），要点：
 
 - **SSL**：证书 `fullchain.pem` / `privkey.pem`。
-- **WebSocket / SSE**：`Upgrade` / `Connection` 必须透传（OnlyOffice 在线编辑及 MCP Streamable HTTP 流式传输依赖）。
+- **WebSocket / SSE**：`Upgrade` / `Connection` 必须透传（MCP Streamable HTTP 流式传输依赖）。
 - **上传体积**：`client_max_body_size 500M`。
 - **路径转发**：`/`、`/api/` 与 `/mcp` 转发到 API；地图瓦片由 API 的 `/api/v1/tiles/{z}/{x}/{y}.png` 服务端拉取并缓存。生产机原有 `/tiles` nginx 反代配置需由运维单独移除，本仓库不修改生产配置。
 
@@ -385,7 +392,7 @@ PIM 提供企业级的生产可观测性基础设施，详细运维指南见 [do
 |---|---|---|
 | `GET /health` | 基础健康 | 检查进程存活状态与基础配置 |
 | `GET /health/live` | Liveness | Kubernetes / Docker 存活探针，轻量即时返回 |
-| `GET /health/ready` | Readiness | 就绪探针，核验 PostgreSQL 连接、MinIO 及核心依赖就绪态 |
+| `GET /health/ready` | Readiness | 就绪探针，核验 PostgreSQL 连接与核心依赖就绪态（Tika/LiteLLM 等可选依赖失败仅 Degraded） |
 
 ### 告警规则与仪表盘
 
@@ -404,10 +411,11 @@ PIM 提供企业级的生产可观测性基础设施，详细运维指南见 [do
 | `PIM_HTTP_PORT` | 宿主机 HTTP 端口（默认仅绑定回环地址） | 否 |
 | `PIM_SSH_PORT` | 宿主机 SSH 端口（默认仅绑定回环地址） | 否 |
 | `PG_CONNECTION` | PostgreSQL 连接串（映射 `ConnectionStrings__DefaultConnection`） | 是 |
-| `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | MinIO 对象存储 | 是 |
+| `FILES_ONEDRIVE_TENANT` | OneDrive 租户（个人版填 `consumers`） | 否（默认 consumers） |
+| `FILES_SENSITIVE_PATH_PATTERNS` | 敏感路径规则（逗号分隔） | 否（默认 `/Secrets/*,/Passwords/*`） |
 | `KOPIA_PASSWORD` | Kopia 备份仓库加密密码 | 是 |
 | `PIM_SSH_AUTHORIZED_KEYS` | 容器 SSH 公钥（base64 单行） | 是 |
-| `TIKA_BASE_URL` | Tika 服务地址（未配置时文档解析不可用） | 是 |
+| `TIKA_BASE_URL` | Tika 服务地址（未配置时 pdf 等抽取返回「不支持」） | 否 |
 | `PIM_OPS_KEY` | 运维监控与 `/metrics` 抓取鉴权密钥（支持逗号分隔多个） | 否 |
 | `LOKI_URL` | Grafana Loki 日志收集端点（如 `http://loki:3100`） | 否 |
 | `AppLookup__Enabled` | PC Tracker 在线元数据检索开关（严格默认 `false`，保护隐私） | 否 |
@@ -416,9 +424,7 @@ PIM 提供企业级的生产可观测性基础设施，详细运维指南见 [do
 | `AI_ENABLED` | AI 开关（默认 `false`） | 否 |
 | `AI_BASE_URL` / `AI_API_KEY` | LiteLLM 网关地址与虚拟密钥 | 启用 AI 时 |
 | `AI_DEFAULT_MODEL` | 默认模型名（网关侧 `pim-default`） | 否 |
-| `NEXTCLOUD_PUBLIC_BASE_URL` / `NEXTCLOUD_INTERNAL_BASE_URL` | Nextcloud 对接 | 否 |
-| `ONLYOFFICE_PUBLIC_URL` / `ONLYOFFICE_JWT_SECRET` | OnlyOffice 在线编辑 | 否 |
-| `QDRANT_BASE_URL` | Qdrant 向量库 | 否 |
+
 | `PIM_LOG_RETAINED_FILES` | 日志保留份数（默认 2；按分卷数淘汰） | 否 |
 | `PIM_LOG_FILE_SIZE_LIMIT_BYTES` | 单个日志文件大小上限字节数（默认 `1073741824` 即 1 GiB，`0` / `unlimited` 为不限） | 否 |
 | `PIM_LOG_ROLL_ON_FILE_SIZE_LIMIT` | 达到大小上限时是否滚动为新分卷（默认 `true`） | 否 |
@@ -431,11 +437,9 @@ PIM 提供企业级的生产可观测性基础设施，详细运维指南见 [do
 | `Jwt__PrivateKeyPath` | `/data/keys/jwt_private.pem` | JWT 私钥 |
 | `DataProtection__KeysPath` | `/data/keys/data-protection` | 数据保护密钥 |
 | `Kopia__RepositoryPath` | `/data/kopia-repo` | 备份仓库 |
-| `Qdrant__Collection` | `pim_file_chunks` | 向量集合 |
-| `Files__AiDisabledPathPatterns__0/1` | `/Secrets/*`、`/Passwords/*` | 敏感路径不进 AI |
+| `Files__SensitivePathPatterns__0/1` | `/Secrets/*`、`/Passwords/*` | 敏感路径在所有内容出口拦截 |
 | `Ai__TimeoutSeconds` / `Ai__MaxAttemptsPerRequest` | 30 / 2 | AI 超时与重试上限 |
 | `Ai__SaveFullPrompts` / `Ai__SaveFullResponses` | true | AI 调用审计留痕 |
-| `Embedding__Provider` / `Embedding__Dimensions` | hashing / 384 | 本地哈希嵌入 |
 
 ### 开发环境变量（.env）
 
@@ -444,7 +448,8 @@ PIM 提供企业级的生产可观测性基础设施，详细运维指南见 [do
 ## 常见问题
 
 **数据存在哪里？**
-服务端 PostgreSQL（结构化数据）与 MinIO（文件），备份进 Kopia 仓库。核心数据无云端依赖（可选的外部服务对接除外）。
+服务端 PostgreSQL 存**结构化数据与文件元数据**；文件内容与附件存在你自己的 **OneDrive**（PIM 只是客户端，不落盘）。
+备份进 Kopia 仓库。核心数据无云端依赖（可选的外部服务对接除外）。
 
 **AI 必须开吗？**
 不必开。`AI_ENABLED=false`（默认）时文件库、分类、统计全部正常工作，只有 AI 摘要 / 建议类功能不可用。

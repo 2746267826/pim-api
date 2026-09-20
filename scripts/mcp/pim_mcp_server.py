@@ -2352,22 +2352,12 @@ async def get_file(file_id: str) -> Any:
 
 
 @mcp.tool()
-async def get_file_versions(file_id: str) -> Any:
-    """List versions for a file. Returns FileVersion[]."""
-    return await _call_api("GET", f"/api/v1/files/items/{file_id}/versions")
-
-
-@mcp.tool()
-async def get_file_trash(
-    page: int = 1,
-    pageSize: int = 20,
-) -> Any:
-    """List file trash items. Returns ProviderTrashItem[]."""
-    err = _validate_pagination(page, pageSize)
-    if err:
-        return err
-    params = _clean_params(page=page, pageSize=pageSize)
-    return await _call_api("GET", "/api/v1/files/trash", params=params)
+async def read_file_text(file_id: str, maxBytes: int = 65536) -> Any:
+    """Read a text-extractable OneDrive file's content (txt/md/docx/pptx; transient, never stored). Sensitive paths are rejected. Returns the extracted text plus truncation metadata."""
+    if not file_id:
+        return {"error": "file_id is required", "code": 400}
+    params = _clean_params(maxBytes=maxBytes)
+    return await _call_api("GET", f"/api/v1/files/items/{file_id}/extracted-text", params=params)
 
 
 @mcp.tool()
@@ -3200,14 +3190,6 @@ async def restore_file(fileId: str) -> Any:
     return await _call_api("POST", f"/api/v1/files/items/{fileId}/restore")
 
 
-@mcp.tool()
-async def index_file(fileId: str) -> Any:
-    """Trigger file indexing for RAG search. Requires write permission index_file."""
-    if not fileId:
-        return {"error": "fileId is required", "code": 400}
-    return await _call_api("POST", f"/api/v1/files/items/{fileId}/index")
-
-
 # ===================== PcTracker Writes (4) =====================
 
 @mcp.tool()
@@ -3289,7 +3271,7 @@ _register_write_tool_names(
     "create_quick_note", "update_quick_note", "delete_quick_note", "archive_quick_note",
     "restore_quick_note", "process_quick_note", "upload_quick_note_attachment",
     "delete_quick_note_attachment",
-    "upload_file", "move_file", "rename_file", "delete_file", "restore_file", "index_file",
+    "upload_file", "move_file", "rename_file", "delete_file", "restore_file",
     "create_category", "update_categories_order", "delete_category", "seed_categories",
     "create_mobile_goal", "delete_mobile_goal",
 )
