@@ -533,19 +533,30 @@ ON CONFLICT DO NOTHING;
 -- 「认不出 → 游戏」是错误映射，且分类器已对非应用记录短路（见 ActivityClassifier），
 -- 这里再把存量规则停用，保证已经播种过的库也不会继续污染。
 --
--- 按**规则语义**（条件里对 appNameNormalized 的 equals 值为 unknown）识别，而不是只按
--- 规则名匹配：历史迁移产生的名称变体（大小写、尾部 .exe、多余空格）都能覆盖，
--- 也不会误伤恰好同名但条件不同的用户规则。
+-- 按**规则语义**（任意一个条件是对 appNameNormalized 的 equals unknown）识别，
+-- 而不是只按规则名匹配：
+--   * 历史迁移的名称变体（大小写、尾部 .exe、多余空格）都能覆盖；
+--   * 不会误伤恰好同名但条件不同的用户规则；
+--   * 用 jsonb_array_elements 遍历**全部**条件 —— 早先只检查 all[0]，会漏掉
+--     unknown 出现在第二个及之后条件的规则（review 指出）。
 UPDATE pc_activity_category_rules
 SET status = 'disabled',
     updated_at = NOW(),
     explanation = COALESCE(explanation, '') || ' [disabled by #331: unknown must not map to an activity category]'
 WHERE status = 'active'
-  AND lower(trim(regexp_replace(
-        COALESCE(conditions_json -> 'all' -> 0 ->> 'value', ''),
-        '\.exe$', '', 'i'))) = 'unknown'
-  AND COALESCE(conditions_json -> 'all' -> 0 ->> 'field', '') = 'appNameNormalized'
-  AND COALESCE(conditions_json -> 'all' -> 0 ->> 'op', '') = 'equals';
+  AND EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(conditions_json -> 'all') = 'array'
+                 THEN conditions_json -> 'all'
+                 ELSE '[]'::jsonb
+            END) AS condition
+        WHERE COALESCE(condition ->> 'field', '') = 'appNameNormalized'
+          AND COALESCE(condition ->> 'op', '') = 'equals'
+          AND lower(trim(regexp_replace(
+                trim(COALESCE(condition ->> 'value', '')),
+                '\.exe$', '', 'i'))) = 'unknown'
+      );
 
 INSERT INTO pc_activity_category_rules (rule_name, scope, category_name, project_tag, color, priority, source, status, conditions_json, confidence, explanation)
 SELECT
@@ -567,8 +578,9 @@ WHERE NOT EXISTS (
     WHERE r.rule_name = 'Migrated app rule: ' || pc_app_categories.app_pattern
 )
 -- #331：unknown 是「没有应用身份」的哨兵值，不是应用名，永远不迁移成应用规则。
--- trim 后再比较：' unknown '、'Unknown'、'unknown.exe' 都要挡住（与上面的停用条件同一口径）。
-AND lower(trim(regexp_replace(app_pattern, '\.exe$', '', 'i'))) <> 'unknown';
+-- 先 trim 再剥 .exe，最后 trim/转小写：' unknown '、'Unknown'、'unknown.exe'、
+-- ' unknown.exe ' 都要挡住（与上面的停用条件同一口径）。
+AND lower(trim(regexp_replace(trim(app_pattern), '\.exe$', '', 'i'))) <> 'unknown';
 
 -- Phase 2: pc_categories (hierarchical classification tree)
 

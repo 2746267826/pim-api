@@ -282,13 +282,17 @@ public class PcProductivityService
         // pc-fallback-v1:<hash> 伪应用块（生产实测单日 161 块、全部标「游戏」）。
         // 与分类分布 / 生产力统计（#301）保持同一口径：空档不进入时间线。
         // 过滤下推到 SQL：这些类型在库里占比不小，没必要读进内存再丢。
+        // 用 ToLower() 比较：IsInactive 声明为大小写不敏感，SQL 的 IN 却区分大小写，
+        // 历史上若存在 'Gap'/'IDLE' 之类的写法会被漏掉（review 指出）。
         // 显式二级排序（Id）：相同 StartedAt 的行在 SQL 中的返回顺序未定义，
         // 固定下来可让消解输入顺序、进而让整份时间线结果完全可复现。
-        var inactiveTypes = PcActivityOverlapResolver.InactiveRecordTypes.ToArray();
+        var inactiveTypes = PcActivityOverlapResolver.InactiveRecordTypes
+            .Select(type => type.ToLowerInvariant())
+            .ToArray();
         var items = await _db.Set<ActivityClassificationEntity>()
             .Where(c => c.StartedAt < dayEnd
                      && c.EndedAt > dayStart
-                     && !inactiveTypes.Contains(c.RecordType))
+                     && !inactiveTypes.Contains(c.RecordType.ToLower()))
             .OrderBy(c => c.StartedAt)
             .ThenBy(c => c.Id)
             .ToListAsync(ct);
