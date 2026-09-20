@@ -135,8 +135,6 @@ public static class McpToolCatalog
         Add(tools, "files", "get_file_providers", "List file providers.");
         Add(tools, "files", "get_files", "List files.");
         Add(tools, "files", "get_file", "Get file metadata.");
-        Add(tools, "files", "get_file_versions", "File versions.");
-        Add(tools, "files", "get_file_trash", "File trash.");
         Add(tools, "files", "search_files", "Search files (metadata only).");
         Add(tools, "files", "read_file_text", "Read a text-extractable file's content (docx/pptx/text; transient, not stored).");
         Add(tools, "files", "get_file_suggestions", "File suggestions.");
@@ -221,7 +219,6 @@ public static class McpToolCatalog
         AddW(tools, "files", "rename_file", "Rename a file.");
         AddW(tools, "files", "delete_file", "Delete a file (moves it to the OneDrive recycle bin and soft-deletes it in PIM).");
         AddW(tools, "files", "restore_file", "Restore a PIM-soft-deleted file; only possible while the file still exists in OneDrive.");
-        AddW(tools, "files", "index_file", "DEPRECATED: file indexing is retired in files v2; requests return an explicit error.");
 
         // PcTracker 分类 4
         AddW(tools, "pctracker.categories", "create_category", "Create a PC activity category.");

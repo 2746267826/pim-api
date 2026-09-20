@@ -5,15 +5,15 @@ using Xunit;
 namespace Pim.UnitTests.Mcp;
 
 /// <summary>
-/// Equivalence contract tests: the embedded 152-tool wire contract (dumped from the Python
+/// Equivalence contract tests: the embedded 149-tool wire contract (dumped from the Python
 /// reference) must match the .NET catalog and tool table exactly — names, counts, schemas.
 /// </summary>
 public sealed class McpToolContractTests
 {
     [Fact]
-    public void Contract_ContainsExactly152Tools()
+    public void Contract_ContainsExactly149Tools()
     {
-        Assert.Equal(152, McpToolExecutor.ToolContract.Count);
+        Assert.Equal(149, McpToolExecutor.ToolContract.Count);
     }
 
     [Fact]
@@ -24,8 +24,8 @@ public sealed class McpToolContractTests
         var readNames = McpToolCatalog.ReadTools.Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
         var writeNames = McpToolCatalog.WriteTools.Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
 
-        Assert.Equal(102, readNames.Count);
-        Assert.Equal(50, writeNames.Count);
+        Assert.Equal(100, readNames.Count);
+        Assert.Equal(49, writeNames.Count);
         Assert.Equal(contractNames, readNames.Union(writeNames).ToHashSet(StringComparer.Ordinal));
         Assert.Empty(contractNames.Intersect(writeNames).Intersect(readNames));
     }
