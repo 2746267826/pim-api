@@ -371,6 +371,14 @@ public class DataReliabilityQualityInspectorTests
                 $"'{type}' 在 SQL 清单里={inSqlList}，但 C# 判定={byCSharp} —— S7 与 S9 会对同一行数据给出相反分类");
         }
 
+        // 大小写语义必须一致：C# 用 OrdinalIgnoreCase，而 PostgreSQL 的
+        // `varchar IN (...)` 是**大小写敏感**的。若 SQL 侧不套 LOWER()，
+        // 'GAP' 会在 S7 被判为缺数据、却在 S9 被算作有效记录。
+        Assert.Contains("LOWER(event_type)", DataReliabilityQualityInspector.GapEventTypeSqlPredicate);
+        Assert.Contains("LOWER(event_type)", DataReliabilityQualityInspector.NonGapEventTypeSqlPredicate);
+        Assert.StartsWith("LOWER(event_type) IN (", DataReliabilityQualityInspector.GapEventTypeSqlPredicate);
+        Assert.StartsWith("LOWER(event_type) NOT IN (", DataReliabilityQualityInspector.NonGapEventTypeSqlPredicate);
+
         // 真实采集类型必须**不**被判为 gap
         foreach (var type in new[] { "window", "web-page", "idle" })
         {
@@ -403,9 +411,10 @@ public class DataReliabilityQualityInspectorTests
 
         // 从权威清单派生期望值，而不是冻结成字面量：这样"调整缺数据类型集合"
         // 只需改一处，测试只负责验证 IN / NOT IN 两者互补。
-        var gapList = DataReliabilityQualityInspector.GapEventTypeSqlList;
-        Assert.Contains($"NOT IN ({gapList})", coverageQuery);
-        Assert.Contains($"IN ({gapList})", coverageQuery);
+        // 从权威清单/判定式派生期望值，而不是冻结成字面量：测试只负责验证
+        // 取数 SQL 用的是同一套（且大小写一致的）判定式，而不是验证某个固定取值集合。
+        Assert.Contains(DataReliabilityQualityInspector.NonGapEventTypeSqlPredicate, coverageQuery);
+        Assert.Contains(DataReliabilityQualityInspector.GapEventTypeSqlPredicate, coverageQuery);
 
         // S7 的时间线查询取全部类型，由 C# 侧统一判定是否 gap（不再在 SQL 里硬编码类型集合）
         var timelineQuery = conn.ExecutedCommands

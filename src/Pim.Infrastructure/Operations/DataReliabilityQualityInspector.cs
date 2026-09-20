@@ -60,9 +60,21 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
     /// </summary>
     internal static readonly string[] GapEventTypes = ["gap", "afk", "offline", "sleep"];
 
-    /// <summary>把 <see cref="GapEventTypes"/> 渲染成 SQL 的 <c>IN (...)</c> 取值列表。</summary>
+    /// <summary>
+    /// 把 <see cref="GapEventTypes"/> 渲染成 SQL 的 <c>IN (...)</c> 取值列表。
+    /// 使用时必须套在 <c>LOWER(event_type)</c> 上（见 <see cref="GapEventTypeSqlPredicate"/>）：
+    /// PostgreSQL 的 <c>varchar IN (...)</c> 是**大小写敏感**的，而 C# 侧
+    /// <see cref="IsGapEventType"/> 用 <c>OrdinalIgnoreCase</c> 匹配 ——
+    /// 若不统一，`GAP` 会在 S7 被判为缺数据、却在 S9 被算作有效记录。
+    /// </summary>
     internal static string GapEventTypeSqlList { get; } =
         string.Join(", ", GapEventTypes.Select(type => $"'{type}'"));
+
+    /// <summary>可直接嵌入 SQL 的完整判定式（已统一大小写语义）。</summary>
+    internal static string GapEventTypeSqlPredicate { get; } = $"LOWER(event_type) IN ({GapEventTypeSqlList})";
+
+    /// <summary>可直接嵌入 SQL 的反判定式（已统一大小写语义）。</summary>
+    internal static string NonGapEventTypeSqlPredicate { get; } = $"LOWER(event_type) NOT IN ({GapEventTypeSqlList})";
 
     /// <summary>
     /// 结构化体检（#260）：13 条尺子的编号 / 名称 / 状态 / 当前值 / 阈值 / 违规分档 / 样例 / 关联 issue。
@@ -1316,7 +1328,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                        GREATEST(timestamp, win.ws) AS gs,
                        LEAST(timestamp + duration * interval '1 second', win.we) AS ge
                 FROM pc_tracker_events, win
-                WHERE event_type IN ({GapEventTypeSqlList})
+                WHERE {GapEventTypeSqlPredicate}
                   AND timestamp + duration * interval '1 second' > win.ws
                   AND timestamp < win.we
             ),
@@ -1352,7 +1364,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                        GREATEST(timestamp, win.ws) AS rs,
                        LEAST(timestamp + duration * interval '1 second', win.we) AS re
                 FROM pc_tracker_events, win
-                WHERE event_type NOT IN ({GapEventTypeSqlList})
+                WHERE {NonGapEventTypeSqlPredicate}
                   AND timestamp + duration * interval '1 second' > win.ws
                   AND timestamp < win.we
             ),
