@@ -84,8 +84,27 @@ internal sealed class FakeOneDriveGraphClient : IOneDriveGraphClient
     public Task<string?> GetDownloadUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
     {
         DownloadUrlCalls.Add((accessToken, itemId));
+        if (DownloadUrlException is not null) throw DownloadUrlException;
+        // 按 item 维度模拟「远端已删除」：恢复流程会逐个校验子孙是否仍在 OneDrive
+        if (MissingItemIds.Contains(itemId))
+        {
+            throw new OneDriveGraphException(404, null, $"Graph 404：{itemId} not found");
+        }
+
+        // 按 item 维度注入其它 Graph 故障（如 429/500），用于验证错误传播而非「当作不存在」
+        if (ItemExceptions.TryGetValue(itemId, out var exception))
+        {
+            throw exception;
+        }
+
         return Task.FromResult(DownloadUrl);
     }
+
+    /// <summary>这些 item 在远端已不存在（GetDownloadUrlAsync 抛 404）。</summary>
+    public HashSet<string> MissingItemIds { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>按 item id 注入指定 Graph 异常（非 404 场景）。</summary>
+    public Dictionary<string, Exception> ItemExceptions { get; } = new(StringComparer.Ordinal);
 
     public Task<string?> GetThumbnailUrlAsync(string accessToken, string itemId, string size, CancellationToken ct = default)
     {
@@ -112,6 +131,34 @@ internal sealed class FakeOneDriveGraphClient : IOneDriveGraphClient
         PutCalls.Add((accessToken, itemId, bytes, contentType));
         return Task.CompletedTask;
     }
+
+    public List<(string AccessToken, string ItemId, string? NewName, string? NewParentId)> PatchCalls { get; } = [];
+    public List<(string AccessToken, string ItemId)> DeleteCalls { get; } = [];
+    public string? WebUrl { get; set; } = "https://onedrive.live.com/redir?resid=x";
+    public string NewItemId { get; set; } = "new-item-id";
+    public Exception? DownloadUrlException { get; set; }
+    public List<(string AccessToken, string ItemPath, byte[] Bytes, string ContentType)> PutNewFileCalls { get; } = [];
+
+    public Task<string> PatchItemAsync(string accessToken, string itemId, string? newName, string? newParentId, CancellationToken ct = default)
+    {
+        PatchCalls.Add((accessToken, itemId, newName, newParentId));
+        return Task.FromResult(itemId);
+    }
+
+    public Task DeleteItemAsync(string accessToken, string itemId, CancellationToken ct = default)
+    {
+        DeleteCalls.Add((accessToken, itemId));
+        return Task.CompletedTask;
+    }
+
+    public Task<string> PutNewFileByPathAsync(string accessToken, string itemPath, byte[] bytes, string contentType, CancellationToken ct = default)
+    {
+        PutNewFileCalls.Add((accessToken, itemPath, bytes, contentType));
+        return Task.FromResult(NewItemId);
+    }
+
+    public Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
+        => Task.FromResult(WebUrl);
 }
 
 internal static class OneDriveDeltaPageFactory

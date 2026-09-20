@@ -50,8 +50,27 @@ public sealed class FilesModule : IModule
 
         // OneDrive（Graph 直链版，见 designs/onedrive-files-v2.md）
         services.AddSingleton<SensitivePathPolicy>();
+        services.AddSingleton<OneDriveSyncGate>();
+        services.AddSingleton<OneDriveTokenCache>();
+        services.AddSingleton<OneDriveTransientRateLimiter>();
+        services.AddScoped<OneDriveTextExtractor>(sp => new OneDriveTextExtractor(
+            // pdf 等非文本类型只能靠 Tika；不传的话 read_file_text 对 pdf 永远报「不支持」
+            sp.GetService<IFileTextExtractionService>(),
+            sp.GetService<ILogger<OneDriveTextExtractor>>()));
         services.AddScoped<OneDriveContentService>();
-        services.AddHttpClient<OneDriveGraphClient>();
+        services.AddScoped<OneDriveWriteService>();
+        // OneDriveGraphClient 的构造函数收的是 IHttpClientFactory + IConfiguration（它自己
+        // CreateClient("onedrive-graph")），不能注册成 AddHttpClient<T> 的类型化客户端：
+        // ActivatorUtilities 要求类型化客户端的构造函数能接收 HttpClient，这里的构造函数没有
+        // 这个参数位，解析时会抛「A suitable constructor ... could not be located」，
+        // 进而让所有 OneDrive 服务（绑定/同步/内容/写）全部 500。
+        // 正确做法：注册类型本身 + 用同名命名客户端承载超时策略（复审 C-1）。
+        services.AddHttpClient(OneDriveGraphClient.HttpClientName, client =>
+        {
+            // Graph 挂起时不占满默认 100s 请求周期（复审 M-11）
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
+        services.AddScoped<OneDriveGraphClient>();
         services.AddScoped<IOneDriveGraphClient>(sp => sp.GetRequiredService<OneDriveGraphClient>());
         services.AddScoped<OneDriveTokenService>();
         services.AddScoped<OneDriveBindingService>();
@@ -104,6 +123,9 @@ public sealed class FilesModule : IModule
         group.MapPut("/items/{id:guid}/text", OneDriveSaveTextAsync);
         group.MapGet("/items/{id:guid}/snapshots", OneDriveListSnapshotsAsync);
         group.MapPost("/items/{id:guid}/snapshots/{snapshotId:guid}/restore", OneDriveRestoreSnapshotAsync);
+        // read_file_text（MCP）与 item 级恢复此前只有处理器、没有路由，工具调用恒 404（复审 C-3/C-4）
+        group.MapGet("/items/{id:guid}/extracted-text", OneDriveReadTextAsync);
+        group.MapPost("/items/{id:guid}/restore", OneDriveRestoreItemAsync);
         group.MapPost("/items/{id:guid}/index", IndexItemAsync);
         group.MapGet("/search", SearchAsync);
         group.MapGet("/suggestions", ListSuggestionsAsync);
@@ -117,6 +139,29 @@ public sealed class FilesModule : IModule
         var registry = serviceProvider.GetService<IAiSchemaRegistry>();
         if (registry is not null)
             FileAiService.RegisterSchemas(registry);
+
+        // 进程崩溃/重启会留下永久 "syncing"：启动时统一复位为可感知的中断态（设计 §6）
+        try
+        {
+            using var scope = serviceProvider.CreateScope();
+            var startupDb = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var stuck = await startupDb.Set<FileProviderEntity>()
+                .Where(provider => provider.SyncStatus == "syncing")
+                .ToListAsync();
+            foreach (var provider in stuck)
+            {
+                provider.SyncStatus = "error";
+                provider.LastError = "进程重启中断了上次同步，将自动重试";
+                provider.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+            if (stuck.Count > 0)
+                await startupDb.SaveChangesAsync();
+        }
+        catch (Exception exception)
+        {
+            serviceProvider.GetService<ILogger<FilesModule>>()?.LogWarning(
+                exception, "Failed to reset stale syncing providers at startup.");
+        }
 
         var jobClient = serviceProvider.GetService<IBackgroundJobClient>();
         var recurringJobs = serviceProvider.GetService<IRecurringJobManager>();
@@ -306,21 +351,52 @@ public sealed class FilesModule : IModule
         Guid id,
         [FromBody] MoveFileRequest request,
         [FromServices] FileOperationService service,
+        [FromServices] OneDriveWriteService oneDriveWrite,
+        [FromServices] PimDbContext db,
         CancellationToken ct)
-        => Results.Ok(ApiResponse<FileItemDto>.Ok(await service.MoveAsync(id, request, ct)));
+    {
+        if (await IsOneDriveItemAsync(db, id, ct))
+        {
+            var result = await oneDriveWrite.MoveAsync(id, request.DestinationPath, ct);
+            return Results.Ok(ApiResponse<FileItemDto>.Ok(await service.GetItemAsync(id, ct)));
+        }
+
+        return Results.Ok(ApiResponse<FileItemDto>.Ok(await service.MoveAsync(id, request, ct)));
+    }
 
     private static async Task<IResult> RenameItemAsync(
         Guid id,
         [FromBody] RenameFileRequest request,
         [FromServices] FileOperationService service,
+        [FromServices] OneDriveWriteService oneDriveWrite,
+        [FromServices] PimDbContext db,
         CancellationToken ct)
-        => Results.Ok(ApiResponse<FileItemDto>.Ok(await service.RenameAsync(id, request, ct)));
+    {
+        if (await IsOneDriveItemAsync(db, id, ct))
+        {
+            await oneDriveWrite.RenameAsync(id, request.Name, ct);
+            return Results.Ok(ApiResponse<FileItemDto>.Ok(await service.GetItemAsync(id, ct)));
+        }
+
+        return Results.Ok(ApiResponse<FileItemDto>.Ok(await service.RenameAsync(id, request, ct)));
+    }
 
     private static async Task<IResult> DeleteItemAsync(
         Guid id,
         [FromServices] FileOperationService service,
+        [FromServices] OneDriveWriteService oneDriveWrite,
+        [FromServices] PimDbContext db,
         CancellationToken ct)
     {
+        if (await IsOneDriveItemAsync(db, id, ct))
+        {
+            await oneDriveWrite.DeleteToTrashAsync(id, ct);
+            // 个人版没有回收站 API（设计 §14-V5），Graph DELETE 后远端即不可见，
+            // 因此不能承诺「可恢复」——诚实说明可在 OneDrive 网页回收站自行还原（复审 I-7）。
+            return Results.Ok(ApiResponse<string>.Ok(
+                "已删除（已移入 OneDrive 回收站；如需还原请在 OneDrive 网页版操作）"));
+        }
+
         await service.DeleteAsync(id, ct);
         return Results.Ok(ApiResponse<string>.Ok("已删除"));
     }
@@ -411,8 +487,44 @@ public sealed class FilesModule : IModule
         Guid id,
         [FromQuery] string? mode,
         [FromServices] FileOperationService service,
+        [FromServices] OneDriveWriteService oneDriveWrite,
+        [FromServices] PimDbContext db,
         CancellationToken ct)
-        => Results.Ok(ApiResponse<FileOpenLinkDto>.Ok(await service.BuildOpenLinkAsync(id, mode, ct)));
+    {
+        if (await IsOneDriveItemAsync(db, id, ct))
+        {
+            var webUrl = await oneDriveWrite.GetWebUrlAsync(id, ct);
+            return Results.Ok(ApiResponse<FileOpenLinkDto>.Ok(new FileOpenLinkDto(webUrl, "onedrive-web")));
+        }
+
+        return Results.Ok(ApiResponse<FileOpenLinkDto>.Ok(await service.BuildOpenLinkAsync(id, mode, ct)));
+    }
+
+    private static async Task<bool> IsOneDriveItemAsync(PimDbContext db, Guid itemId, CancellationToken ct)
+        => await db.Set<FileItemEntity>()
+            .AsNoTracking()
+            .Include(item => item.Provider)
+            .AnyAsync(item => item.Id == itemId && item.Provider != null && item.Provider.Provider == "onedrive", ct);
+
+    private static async Task<IResult> OneDriveReadTextAsync(
+        Guid id,
+        [FromQuery] long? maxBytes,
+        [FromServices] OneDriveContentService service,
+        CancellationToken ct)
+    {
+        var text = await service.ReadTextAsync(id, maxBytes, ct);
+        return Results.Ok(ApiResponse<OneDriveTextDto>.Ok(OneDriveTextDto.From(text)));
+    }
+
+    private static async Task<IResult> OneDriveRestoreItemAsync(
+        Guid id,
+        [FromServices] OneDriveWriteService service,
+        CancellationToken ct)
+    {
+        var result = await service.RestoreAsync(id, ct);
+        return Results.Ok(ApiResponse<OneDriveWriteResultDto>.Ok(
+            new OneDriveWriteResultDto(result.ItemId, result.Path)));
+    }
 
     private static IResult NotImplemented()
         => Results.Json(ApiResponse<string>.Error(501, "文件模块端点尚未实现"), statusCode: 501);

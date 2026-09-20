@@ -14,7 +14,12 @@ namespace Pim.Module.Files.Providers;
 /// </summary>
 public sealed class OneDriveGraphClient : IOneDriveGraphClient
 {
-    private const string HttpClientName = "onedrive-graph";
+    /// <summary>
+    /// 本客户端使用的**命名** HttpClient。注册方必须用这个名字配置超时等策略，
+    /// 因为 <see cref="OneDriveGraphClient"/> 通过 <c>IHttpClientFactory.CreateClient(Name)</c>
+    /// 取客户端，而不是构造函数注入 <c>HttpClient</c>。
+    /// </summary>
+    public const string HttpClientName = "onedrive-graph";
     private const string GraphBaseUrl = "https://graph.microsoft.com/v1.0";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -162,7 +167,10 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
             HttpMethod.Get,
             $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}/content");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        using var response = await Http.SendAsync(request, ct);
+        // ResponseHeadersRead：默认的 ResponseContentRead 会在返回前把整个响应体缓冲进内存，
+        // 于是「上限检查」形同虚设——没有 Content-Length 的 chunked 响应可以先把内存吃光
+        // 再被拒绝（复审 I-9）。改为拿到响应头就返回，边读边计数。
+        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             return null;
@@ -179,13 +187,21 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
             throw new OneDriveContentTooLargeException(length);
         }
 
-        var bytes = await response.Content.ReadAsByteArrayAsync(ct);
-        if (bytes.Length > maxBytes)
+        using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        int read;
+        while ((read = await stream.ReadAsync(chunk, ct)) > 0)
         {
-            throw new OneDriveContentTooLargeException(bytes.Length);
+            if (buffer.Length + read > maxBytes)
+            {
+                throw new OneDriveContentTooLargeException(buffer.Length + read);
+            }
+
+            buffer.Write(chunk, 0, read);
         }
 
-        return new OneDriveSmallContent(bytes, response.Content.Headers.ContentType?.ToString());
+        return new OneDriveSmallContent(buffer.ToArray(), response.Content.Headers.ContentType?.ToString());
     }
 
     public async Task PutSmallContentAsync(string accessToken, string itemId, byte[] bytes, string contentType, CancellationToken ct = default)
@@ -202,6 +218,61 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
             var body = await response.Content.ReadAsStringAsync(ct);
             throw CreateGraphException(response, body);
         }
+    }
+
+    public async Task<string> PatchItemAsync(string accessToken, string itemId, string? newName, string? newParentId, CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object>();
+        if (newName is not null) body["name"] = newName;
+        if (newParentId is not null)
+        {
+            body["parentReference"] = new Dictionary<string, object> { ["id"] = newParentId };
+        }
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Patch,
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = new StringContent(JsonSerializer.Serialize(body, JsonOptions), Encoding.UTF8, "application/json");
+        using var response = await Http.SendAsync(request, ct);
+        var json = await ReadJsonAsync(response, ct);
+        return ReadRequiredString(json, "id");
+    }
+
+    public async Task DeleteItemAsync(string accessToken, string itemId, CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Delete,
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await Http.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.NotFound)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            throw CreateGraphException(response, body);
+        }
+    }
+
+    public async Task<string> PutNewFileByPathAsync(string accessToken, string itemPath, byte[] bytes, string contentType, CancellationToken ct = default)
+    {
+        var normalized = itemPath.TrimStart('/');
+        using var request = new HttpRequestMessage(
+            HttpMethod.Put,
+            $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}:/content");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = new ByteArrayContent(bytes);
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+        using var response = await Http.SendAsync(request, ct);
+        var json = await ReadJsonAsync(response, ct);
+        return ReadRequiredString(json, "id");
+    }
+
+    public async Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
+    {
+        var json = await GetGraphJsonAsync(
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}?$select=id,webUrl",
+            accessToken, ct);
+        return ReadNullableString(json, "webUrl");
     }
 
     private HttpClient Http => _httpClientFactory.CreateClient(HttpClientName);

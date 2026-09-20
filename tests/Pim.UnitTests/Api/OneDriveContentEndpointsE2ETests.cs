@@ -153,4 +153,71 @@ public class OneDriveContentEndpointsE2ETests
         Assert.Contains("preview", doc.RootElement.GetProperty("data").GetProperty("url").GetString());
         Assert.Single(graph.PreviewCalls);
     }
+
+    // ===================== P4a 复审：MCP 契约对应的路由必须真的可达 =====================
+
+    /// <summary>
+    /// MCP <c>read_file_text</c> 映射到 GET /items/{id}/extracted-text。此前该路由从未注册，
+    /// 工具调用恒 404——本用例锁死「契约里的路由真实存在且能返回文本」。
+    /// </summary>
+    [Fact]
+    public async Task ExtractedText_EndpointServesText_ForReadFileTextTool()
+    {
+        var (factory, user, _, itemId, graph) = await CreateUserWithFileAsync($"p4a-extext-{Guid.NewGuid():N}");
+        graph.SmallContent = new("e2e 抽取文本"u8.ToArray(), "text/plain");
+
+        var response = await user.GetAsync($"/api/v1/files/items/{itemId}/extracted-text?maxBytes=1024");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var data = doc.RootElement.GetProperty("data");
+        Assert.Contains("e2e 抽取文本", data.GetProperty("content").GetString());
+        Assert.False(data.GetProperty("truncated").GetBoolean());
+    }
+
+    /// <summary>
+    /// MCP <c>restore_file</c> 映射到 POST /items/{id}/restore。此前同样只有处理器没有路由，
+    /// 恒 404。本用例验证软删后的文件能经该端点恢复。
+    /// </summary>
+    [Fact]
+    public async Task RestoreItem_EndpointUndeletesSoftDeletedItem_ForRestoreFileTool()
+    {
+        var (factory, user, _, itemId, graph) = await CreateUserWithFileAsync($"p4a-restore-{Guid.NewGuid():N}");
+
+        // 先经 DELETE 软删（走 OneDriveWriteService，Graph 成功后才本地软删）
+        var deleteResponse = await user.DeleteAsync($"/api/v1/files/items/{itemId}");
+        Assert.Equal(HttpStatusCode.OK, deleteResponse.StatusCode);
+
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var item = await db.Set<FileItemEntity>().SingleAsync(row => row.Id == itemId);
+            Assert.True(item.IsDeleted, "删除后本地应标记为软删");
+        }
+
+        // 远端仍存在（fake 返回 200）→ 应能恢复
+        var restoreResponse = await user.PostAsync($"/api/v1/files/items/{itemId}/restore", null);
+        Assert.Equal(HttpStatusCode.OK, restoreResponse.StatusCode);
+
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var item = await db.Set<FileItemEntity>().SingleAsync(row => row.Id == itemId);
+            Assert.False(item.IsDeleted, "恢复后本地软删标记应清除");
+        }
+    }
+
+    /// <summary>
+    /// 敏感路径在 read_file_text 出口同样拦截（设计 §13）：不能因为多了一个新出口就绕过。
+    /// </summary>
+    [Fact]
+    public async Task ExtractedText_SensitivePath_IsRejected()
+    {
+        var (factory, user, _, itemId, _) = await CreateUserWithFileAsync(
+            $"p4a-extext-sens-{Guid.NewGuid():N}", path: "/Secrets/密码.txt");
+
+        var response = await user.GetAsync($"/api/v1/files/items/{itemId}/extracted-text");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
 }

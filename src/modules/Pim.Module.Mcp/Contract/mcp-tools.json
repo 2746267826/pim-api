@@ -2290,7 +2290,7 @@
  },
  {
   "name": "search_files",
-  "description": "Search files (fulltext + semantic). Core for RAG. Returns FileSearchResponse (paged).",
+  "description": "Search files (metadata only: name/folder/path).",
   "inputSchema": {
    "properties": {
     "q": {
@@ -2312,6 +2312,28 @@
     "q"
    ],
    "title": "search_filesArguments",
+   "type": "object"
+  }
+ },
+ {
+  "name": "read_file_text",
+  "description": "Read a text-extractable OneDrive file's content (txt/md/docx/pptx; transient, never stored). Sensitive paths are rejected.",
+  "inputSchema": {
+   "properties": {
+    "file_id": {
+     "title": "File Id",
+     "type": "string"
+    },
+    "maxBytes": {
+     "default": 65536,
+     "title": "Maxbytes",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "file_id"
+   ],
+   "title": "read_file_textArguments",
    "type": "object"
   }
  },
@@ -4699,21 +4721,16 @@
  },
  {
   "name": "restore_file",
-  "description": "Restore a file from trash. trashId identifies the trash entry. Requires write permission restore_file.",
+  "description": "Restore a PIM-soft-deleted OneDrive file. fileId is the PIM file item id; the item is restored only if it still exists in OneDrive (personal OneDrive has no recycle-bin API, so a file already removed from OneDrive cannot be restored). Requires write permission restore_file.",
   "inputSchema": {
    "properties": {
     "fileId": {
      "title": "Fileid",
      "type": "string"
-    },
-    "trashId": {
-     "title": "Trashid",
-     "type": "string"
     }
    },
    "required": [
-    "fileId",
-    "trashId"
+    "fileId"
    ],
    "title": "restore_fileArguments",
    "type": "object"

@@ -128,7 +128,7 @@ public sealed class McpProtocolIntegrationTests : IClassFixture<WebApplicationFa
     }
 
     [Fact]
-    public async Task ToolsList_ReturnsAll151Tools()
+    public async Task ToolsList_ReturnsAll152Tools()
     {
         using var client = CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "pim_mcp_dummy");
@@ -136,7 +136,7 @@ public sealed class McpProtocolIntegrationTests : IClassFixture<WebApplicationFa
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         using var body = ReadJsonFromResponse(response);
         var tools = body.RootElement.GetProperty("result").GetProperty("tools");
-        Assert.Equal(151, tools.GetArrayLength());
+        Assert.Equal(152, tools.GetArrayLength());
 
         var contractNames = McpToolExecutor.ToolContract.Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
         var wireNames = tools.EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToHashSet(StringComparer.Ordinal);

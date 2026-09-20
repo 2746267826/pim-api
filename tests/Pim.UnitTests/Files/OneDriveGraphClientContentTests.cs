@@ -168,6 +168,54 @@ public class OneDriveGraphClientContentTests
         Assert.Null(await client.DownloadSmallAsync("at", "item-1", maxBytes: 1024));
     }
 
+    /// <summary>
+    /// 没有 Content-Length 的 chunked 响应不能绕过上限：实现必须边读边计数，
+    /// 而不是先把整个响应体缓冲进内存再判断（复审 I-9）。
+    /// 这里用一个「无 Content-Length、内容远超上限」的流来验证。
+    /// </summary>
+    [Fact]
+    public async Task DownloadSmall_ChunkedResponseWithoutContentLength_StillEnforcesMaxBytes()
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = _ =>
+            {
+                // 未知长度的流式内容：HttpClient 不会给出 Content-Length。
+                var content = new StreamContent(new MemoryStream(new byte[8192]));
+                content.Headers.ContentLength = null;
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+            },
+        };
+        var client = CreateClient(handler);
+
+        var error = await Assert.ThrowsAsync<OneDriveContentTooLargeException>(
+            () => client.DownloadSmallAsync("at", "item-1", maxBytes: 1024));
+
+        Assert.True(error.ActualBytes > 1024);
+    }
+
+    /// <summary>无 Content-Length 但在上限内的流式响应仍应正常返回。</summary>
+    [Fact]
+    public async Task DownloadSmall_ChunkedResponseWithinLimit_ReturnsContent()
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = _ =>
+            {
+                var content = new StreamContent(new MemoryStream("chunked 内容"u8.ToArray()));
+                content.Headers.ContentLength = null;
+                content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/plain");
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+            },
+        };
+        var client = CreateClient(handler);
+
+        var result = await client.DownloadSmallAsync("at", "item-1", maxBytes: 1024);
+
+        Assert.NotNull(result);
+        Assert.Equal("chunked 内容", Encoding.UTF8.GetString(result!.Bytes));
+    }
+
     [Fact]
     public async Task PutSmallContent_PutsBytesWithContentType()
     {

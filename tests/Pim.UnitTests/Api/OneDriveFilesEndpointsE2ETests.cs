@@ -81,8 +81,11 @@ public class OneDriveFilesEndpointsE2ETests
         public Task<OneDriveSmallContent?> DownloadSmallAsync(string accessToken, string itemId, long maxBytes, CancellationToken ct = default)
         {
             DownloadSmallCalls.Add((accessToken, itemId, maxBytes));
-            return Task.FromResult<OneDriveSmallContent?>(new("e2e 文本内容"u8.ToArray(), "text/plain"));
+            return Task.FromResult<OneDriveSmallContent?>(SmallContent ?? new("e2e 文本内容"u8.ToArray(), "text/plain"));
         }
+
+        /// <summary>DownloadSmallAsync 的返回内容；null 时用默认的 "e2e 文本内容"。</summary>
+        public OneDriveSmallContent? SmallContent { get; set; }
 
         public Task PutSmallContentAsync(string accessToken, string itemId, byte[] bytes, string contentType, CancellationToken ct = default)
         {
@@ -90,6 +93,27 @@ public class OneDriveFilesEndpointsE2ETests
             TextContents.Add(System.Text.Encoding.UTF8.GetString(bytes));
             return Task.CompletedTask;
         }
+
+        public List<(string AccessToken, string ItemId, string? NewName, string? NewParentId)> PatchCalls { get; } = [];
+        public List<(string AccessToken, string ItemId)> DeleteCalls { get; } = [];
+
+        public Task<string> PatchItemAsync(string accessToken, string itemId, string? newName, string? newParentId, CancellationToken ct = default)
+        {
+            PatchCalls.Add((accessToken, itemId, newName, newParentId));
+            return Task.FromResult(itemId);
+        }
+
+        public Task DeleteItemAsync(string accessToken, string itemId, CancellationToken ct = default)
+        {
+            DeleteCalls.Add((accessToken, itemId));
+            return Task.CompletedTask;
+        }
+
+        public Task<string> PutNewFileByPathAsync(string accessToken, string itemPath, byte[] bytes, string contentType, CancellationToken ct = default)
+            => Task.FromResult("new-uploaded-item");
+
+        public Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
+            => Task.FromResult<string?>("https://onedrive.live.com/redir?resid=x");
     }
 
     internal static WebApplicationFactory<Program> CreateFactory(string dbName, E2EGraphClient graph)

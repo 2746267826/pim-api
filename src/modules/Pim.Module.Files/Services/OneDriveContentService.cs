@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Pim.Core.Exceptions;
+using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Files.Entities;
@@ -42,6 +43,9 @@ public sealed class OneDriveContentService
     private readonly OneDriveTokenService _tokens;
     private readonly ICurrentUserService _currentUser;
     private readonly SensitivePathPolicy _sensitivePolicy;
+    private readonly OneDriveTextExtractor _textExtractor;
+    private readonly OneDriveTransientRateLimiter _rateLimiter;
+    private readonly IAuditLogService? _auditLog;
     private readonly ILogger<OneDriveContentService>? _logger;
     private readonly TimeProvider _clock;
 
@@ -52,13 +56,19 @@ public sealed class OneDriveContentService
         ICurrentUserService currentUser,
         SensitivePathPolicy sensitivePolicy,
         ILogger<OneDriveContentService>? logger = null,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null,
+        OneDriveTextExtractor? textExtractor = null,
+        OneDriveTransientRateLimiter? rateLimiter = null,
+        IAuditLogService? auditLog = null)
     {
         _db = db;
         _client = client;
         _tokens = tokens;
         _currentUser = currentUser;
         _sensitivePolicy = sensitivePolicy;
+        _textExtractor = textExtractor ?? new OneDriveTextExtractor();
+        _rateLimiter = rateLimiter ?? new OneDriveTransientRateLimiter(clock);
+        _auditLog = auditLog;
         _logger = logger;
         _clock = clock ?? TimeProvider.System;
     }
@@ -92,6 +102,71 @@ public sealed class OneDriveContentService
         var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
         var link = await _client.GetPreviewUrlAsync(token, item.ExternalFileId, ct);
         return link ?? throw new DomainException(5333, "OneDrive 暂未返回预览地址，请稍后重试");
+    }
+
+    /// <summary>
+    /// read_file_text：瞬态下载 + 抽取 + 限流 + 审计（设计文档 §12）。
+    /// 与 GetTextAsync 的区别：接受任意可抽取类型（docx/pptx/Tika）、支持 maxBytes、
+    /// 面向 agent 的高频读取因此有限流。
+    /// </summary>
+    public async Task<OneDriveTextContent> ReadTextAsync(Guid itemId, long? maxBytesParam, CancellationToken ct = default)
+    {
+        var maxBytes = maxBytesParam is null or <= 0
+            ? OneDriveTextExtractor.DefaultMaxBytes
+            : Math.Min(maxBytesParam.Value, OneDriveTextExtractor.HardMaxBytes);
+        var (item, provider) = await LoadOwnedItemAsync(itemId, ct);
+        if (item.ItemType == "folder")
+        {
+            throw new DomainException(5332, "文件夹没有可抽取的文本");
+        }
+        EnsureNotSensitive(item);
+        _rateLimiter.AssertAllowed(UserId);
+
+        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
+        var bytes = await DownloadSmallBytesOrThrowAsync(token, item, OneDriveTextExtractor.HardMaxBytes, ct);
+        var extracted = await _textExtractor.ExtractAsync(bytes, item.Name, item.MimeType, maxBytes, ct);
+        await RecordAuditAsync("files.read_text", item.Id, extracted.SourceBytes, ct);
+        _logger?.LogInformation(
+            "OneDrive read_text: item {ItemId}, {Bytes} bytes, extractor={Extractor}",
+            itemId, extracted.SourceBytes, extracted.Extractor);
+        return new OneDriveTextContent(extracted.Content, item.MimeType, extracted.SourceBytes, extracted.Truncated);
+    }
+
+    private async Task RecordAuditAsync(string action, Guid itemId, long bytes, CancellationToken ct)
+    {
+        if (_auditLog is null)
+        {
+            return;
+        }
+
+        await _auditLog.RecordAsync(new CreateAuditLogRequest(
+            UserId,
+            AuditActorType.User,
+            action,
+            "file_item",
+            itemId.ToString(),
+            "files",
+            AuditResult.Success,
+            null,
+            null,
+            null,
+            new Dictionary<string, string> { ["bytes"] = bytes.ToString() },
+            null,
+            null), ct);
+    }
+
+    private async Task<byte[]> DownloadSmallBytesOrThrowAsync(
+        string token, FileItemEntity item, long maxBytes, CancellationToken ct)
+    {
+        try
+        {
+            return (await _client.DownloadSmallAsync(token, item.ExternalFileId, maxBytes, ct)
+                ?? throw new DomainException(5104, "文件不存在或已被删除")).Bytes;
+        }
+        catch (OneDriveContentTooLargeException)
+        {
+            throw new DomainException(5331, "文件超过文本处理上限，请在 OneDrive 中操作");
+        }
     }
 
     public async Task<OneDriveTextContent> GetTextAsync(Guid itemId, CancellationToken ct = default)
