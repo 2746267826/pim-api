@@ -27,10 +27,10 @@ public class DataReliabilityGroupTwoTests
         var trace = new DeviceActivityTrace
         {
             DeviceId = "DEV-PC1",
-            EventTimes = new List<DateTime>
+            EventIntervals = new List<(DateTime, DateTime)>
             {
-                _baseUtc,
-                _baseUtc.AddHours(2)
+                (_baseUtc, _baseUtc.AddMinutes(30)),
+                (_baseUtc.AddHours(2), _baseUtc.AddHours(2).AddMinutes(30))
             },
             Declarations = new List<OfflineDeclaration>() // 无下线声明
         };
@@ -52,10 +52,10 @@ public class DataReliabilityGroupTwoTests
         var trace = new DeviceActivityTrace
         {
             DeviceId = "DEV-PC1",
-            EventTimes = new List<DateTime>
+            EventIntervals = new List<(DateTime, DateTime)>
             {
-                gapStart,
-                gapEnd
+                (gapStart, gapStart.AddMinutes(30)),
+                (gapEnd, gapEnd.AddMinutes(30))
             },
             Declarations = new List<OfflineDeclaration>
             {
@@ -79,19 +79,21 @@ public class DataReliabilityGroupTwoTests
     public void S6_UploadLagP99ExceedsThreshold_Fails()
     {
         // 采集事件时间与入库 created_at 滞后超过 30 分钟 (p99)
-        var lagSamples = new List<(DateTime EventTime, DateTime CreatedAt)>();
+        var lagSamples = new List<UploadLagSample>();
         for (int i = 0; i < 100; i++)
         {
             var eventTime = _baseUtc.AddMinutes(i);
             // 99% 的样本滞后 45 分钟 (> 30m)
-            var createdAt = eventTime.AddMinutes(45);
-            lagSamples.Add((eventTime, createdAt));
+            lagSamples.Add(new UploadLagSample { EventTime = eventTime, CreatedAt = eventTime.AddMinutes(45) });
         }
 
         var trace = new DeviceActivityTrace
         {
             DeviceId = "DEV-LAGGY",
-            EventTimes = new List<DateTime> { _baseUtc, _baseUtc.AddMinutes(10) },
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddMinutes(10))
+            },
             UploadLagSamples = lagSamples
         };
 
@@ -102,6 +104,233 @@ public class DataReliabilityGroupTwoTests
     }
 
     #endregion
+
+    [Fact]
+    public void S6_GapMeasuredFromEventEndNotNextStart()
+    {
+        // 事件本身很长：10:00 起持续 50 分钟，下一条 11:00 才开始。
+        // 真实空档是 10:50 -> 11:00（10 分钟，未超阈值），而不是"起点差"50 分钟。
+        // 旧实现取相邻起点之差，会把这个 50 分钟事件自身时长误报成无声明空档。
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "DEV-LONG",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddMinutes(50)),
+                (_baseUtc.AddHours(1), _baseUtc.AddHours(1).AddMinutes(30))
+            },
+            Declarations = new List<OfflineDeclaration>()
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S6_OverlappingIntervals_DoNotCreatePhantomGap()
+    {
+        // 区间互相重叠（第二段整体落在第一段内部）时不得产生空档
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "DEV-OVL",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddHours(2)),
+                (_baseUtc.AddMinutes(30), _baseUtc.AddMinutes(40))
+            },
+            Declarations = new List<OfflineDeclaration>()
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S6_SyntheticGapEvents_AreExcludedFromUploadLagP99()
+    {
+        // 100 个真实样本滞后仅 1 分钟；另有 2 个系统合成 gap 事件"滞后" 700 分钟。
+        // 合成 gap 的 timestamp 是断档起点、created_at 是重启后补传时刻，其差值恒等于断档时长，
+        // 不代表链路延迟 —— 排除后 p99 应回到 1 分钟左右并通过。
+        var samples = new List<UploadLagSample>();
+        for (int i = 0; i < 100; i++)
+        {
+            var t = _baseUtc.AddMinutes(i);
+            samples.Add(new UploadLagSample { EventTime = t, CreatedAt = t.AddMinutes(1) });
+        }
+        samples.Add(new UploadLagSample { EventTime = _baseUtc, CreatedAt = _baseUtc.AddMinutes(700), IsSyntheticGap = true });
+        samples.Add(new UploadLagSample { EventTime = _baseUtc.AddMinutes(1), CreatedAt = _baseUtc.AddMinutes(701), IsSyntheticGap = true });
+
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "DEV-GAPSYN",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddMinutes(10))
+            },
+            UploadLagSamples = samples
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S6_RealSamplesStillCountedWhenSyntheticGapsPresent()
+    {
+        // 排除合成 gap 之后，真实样本的滞后仍必须被计入：不能因为过滤而放过真实积压。
+        var samples = new List<UploadLagSample>
+        {
+            new() { EventTime = _baseUtc, CreatedAt = _baseUtc.AddMinutes(45) },
+            new() { EventTime = _baseUtc.AddMinutes(1), CreatedAt = _baseUtc.AddMinutes(46) },
+            new() { EventTime = _baseUtc.AddMinutes(2), CreatedAt = _baseUtc.AddMinutes(700), IsSyntheticGap = true }
+        };
+
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "DEV-MIX",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddMinutes(10))
+            },
+            UploadLagSamples = samples
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+
+        Assert.False(result.Pass);
+        Assert.Contains("上传滞后 p99", result.Detail);
+    }
+
+    [Fact]
+    public void S6_EarlyDeclaration_DoesNotSuppressLaterHoles()
+    {
+        // 复审回归（Critical）：一次"我下线了"的声明只能解释它附近的空档，
+        // 绝不能解释此后所有空档。实测有一次 exit 声明 7 秒后设备就恢复了：
+        // 若把声明当成"此后永久离线"，该设备之后的真实断档会被永久掩盖（假绿灯）。
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "DEV-EXIT",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddMinutes(10)),
+                // 声明时刻附近的短空档（由该声明解释）
+                (_baseUtc.AddMinutes(12), _baseUtc.AddMinutes(22)),
+                // 数小时之后的 2 小时空档：与那次声明无关，必须仍被判为无声明空档
+                (_baseUtc.AddHours(5), _baseUtc.AddHours(5).AddMinutes(30))
+            },
+            Declarations = new List<OfflineDeclaration>
+            {
+                new() { DeviceId = "DEV-EXIT", StartTime = _baseUtc.AddMinutes(11), EndTime = _baseUtc.AddMinutes(11), Reason = "exit" }
+            }
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+        Assert.Contains("无声明空档", result.Detail);
+    }
+
+    [Fact]
+    public void S6_DeclarationAtHoleStart_CoversThatHole()
+    {
+        // 声明时刻正好落在空档内 -> 该空档被解释，不判违规
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "DEV-OK",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddMinutes(10)),
+                (_baseUtc.AddHours(2), _baseUtc.AddHours(2).AddMinutes(30))
+            },
+            Declarations = new List<OfflineDeclaration>
+            {
+                new() { DeviceId = "DEV-OK", StartTime = _baseUtc.AddMinutes(30), EndTime = _baseUtc.AddMinutes(30), Reason = "shutdown" }
+            }
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S6_IntervalDeclaration_DoesNotCoverHoleOutsideItsRange()
+    {
+        // 区间声明必须完整覆盖空档才有解释力：声明只盖了 1 小时，
+        // 而空档有 2 小时 —— 没被盖住的部分仍然是"无解释空白"。
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "DEV-PARTIAL",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddMinutes(10)),
+                (_baseUtc.AddHours(2), _baseUtc.AddHours(2).AddMinutes(10))
+            },
+            Declarations = new List<OfflineDeclaration>
+            {
+                new() { DeviceId = "DEV-PARTIAL", StartTime = _baseUtc.AddMinutes(10), EndTime = _baseUtc.AddHours(1), Reason = "planned_offline" }
+            }
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S6_OnlyHistoricalViolations_DowngradesToWarning()
+    {
+        // 空档全部发生在 24h 窗口之外 -> 只计数、降级为黄线（T4 分档）
+        var now = new DateTime(2026, 7, 20, 10, 0, 0, DateTimeKind.Utc);
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "DEV-OLD",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddMinutes(30)),
+                (_baseUtc.AddHours(2), _baseUtc.AddHours(2).AddMinutes(30))
+            },
+            Declarations = new List<OfflineDeclaration>()
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: now);
+
+        Assert.True(result.IsWarning);
+        Assert.False(result.IsFail);
+        Assert.Equal(0, result.NewViolations);
+        Assert.True(result.HistoricalViolations > 0);
+    }
+
+    [Fact]
+    public void S6_RecentViolation_StaysRed()
+    {
+        // 空档发生在 24h 窗口内 -> 保持红线
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "DEV-NEW",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (_baseUtc, _baseUtc.AddMinutes(30)),
+                (_baseUtc.AddHours(2), _baseUtc.AddHours(2).AddMinutes(30))
+            },
+            Declarations = new List<OfflineDeclaration>()
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: _baseUtc.AddHours(3));
+
+        Assert.True(result.IsFail);
+        Assert.True(result.NewViolations > 0);
+        Assert.Equal(0, result.HistoricalViolations);
+    }
 
     #region S7: 断档必须在时间轴上被标记 (INV-P21)
 
@@ -152,6 +381,175 @@ public class DataReliabilityGroupTwoTests
         var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
 
         Assert.True(result.Pass);
+    }
+
+    [Fact]
+    public void S7_HoleCoveredByMergedGapChunks_Passes()
+    {
+        // 60 分钟空洞由两个首尾相接的 30 分钟 gap 分片（客户端按 1800s 切块上报）完整覆盖。
+        // 旧实现只看"相邻区间是否相接"，从不检查 IsGap 覆盖，会把这个已标记的断档判成违规。
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(30), EventType = "window" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(30), EndTime = _baseUtc.AddHours(1), IsGap = true, EventType = "gap" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddHours(1), EndTime = _baseUtc.AddHours(1).AddMinutes(30), IsGap = true, EventType = "gap" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddHours(1).AddMinutes(30), EndTime = _baseUtc.AddHours(2), EventType = "window" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S7_HoleOnlyPartiallyCoveredByGap_Fails()
+    {
+        // gap 只盖住后半段，前半段仍是"无解释空白" —— 判据原文要求**完整覆盖**，留白即未标记。
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(10), EventType = "window" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(40), EndTime = _baseUtc.AddHours(1), IsGap = true, EventType = "gap" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddHours(1), EndTime = _baseUtc.AddHours(1).AddMinutes(10), EventType = "window" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S7_GapOfAnotherDeviceDoesNotCoverHole()
+    {
+        // 另一台设备的 gap 不能替本设备标记断档
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(10), EventType = "window" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddHours(1), EndTime = _baseUtc.AddHours(1).AddMinutes(10), EventType = "window" },
+            new() { DeviceId = "DEV-2", StartTime = _baseUtc.AddMinutes(10), EndTime = _baseUtc.AddHours(1), IsGap = true, EventType = "gap" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S7_HoleLongerThanGapCoverage_BySubSecond_Fails()
+    {
+        // 复审回归：容差必须是毫秒级。gap 覆盖段比空洞短 500 毫秒时，
+        // 仍然属于"没有完整覆盖" —— 秒级容差会把这种留白放行。
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(10), EventType = "window" },
+            new()
+            {
+                DeviceId = "DEV-1",
+                StartTime = _baseUtc.AddMinutes(10),
+                // 覆盖段比真实空洞短 0.5 秒
+                EndTime = _baseUtc.AddMinutes(40).AddMilliseconds(-500),
+                IsGap = true,
+                EventType = "gap"
+            },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(40), EndTime = _baseUtc.AddMinutes(50), EventType = "window" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S7_HoleCoveredWithinMillisecondTolerance_Passes()
+    {
+        // 覆盖段与空洞边界只差 1 毫秒（入库精度）-> 视为完整覆盖
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(10), EventType = "window" },
+            new()
+            {
+                DeviceId = "DEV-1",
+                StartTime = _baseUtc.AddMinutes(10),
+                EndTime = _baseUtc.AddMinutes(40).AddMilliseconds(-1),
+                IsGap = true,
+                EventType = "gap"
+            },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(40), EndTime = _baseUtc.AddMinutes(50), EventType = "window" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S7_ReversedInterval_DoesNotCreatePhantomHole()
+    {
+        // 反向区间（End < Start）本身无意义，但判据是公开 API，必须稳健：
+        // 若直接使用其 End，会把后续区间误判成"不相接"从而凭空产生空洞。
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(50), EventType = "window" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(50), EndTime = _baseUtc.AddMinutes(30), EventType = "window" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(50), EndTime = _baseUtc.AddMinutes(60), EventType = "window" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+
+        Assert.True(result.Pass);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    /// <summary>
+    /// 复审回归（Important）：这条用例专门锁住"时间线 / 覆盖标记必须是两份输入"这个设计。
+    ///
+    /// 场景：窗口 0-10 与 40-50 之间有 30 分钟空白，中间只有一段 20-30 的 gap 标记。
+    ///   * **正确（双输入）**：时间线 = [0-10, 40-50] → 空洞 10-40 共 30 分钟；
+    ///     gap(20-30) 盖不住它 → **判违规**。
+    ///   * **旧实现（gap 混在时间线里）**：列表 = [0-10, 20-30(gap), 40-50]，
+    ///     空洞被 gap 切成 10-20 与 30-40 两段各 10 分钟，**都低于 15 分钟阈值** → 漏报通过。
+    ///
+    /// 也就是说旧实现会把一段 30 分钟的无解释空白"切碎"成两段不达标的碎片从而放过。
+    /// 把 gap 放回时间线（回退该设计）时这条用例必须失败。
+    /// </summary>
+    [Fact]
+    public void S7_GapFragment_DoesNotSplitHoleIntoSubThresholdPieces()
+    {
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(10), EventType = "window" },
+            // 只标记了中间 10 分钟，前后各留 10 分钟无解释空白
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(20), EndTime = _baseUtc.AddMinutes(30), IsGap = true, EventType = "gap" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(40), EndTime = _baseUtc.AddMinutes(50), EventType = "window" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+
+        Assert.False(result.Pass);
+        Assert.Equal(1, result.TotalViolations);
+        // 报出的应当是整段 30 分钟空洞，而不是被切碎后的碎片
+        Assert.Contains("30.0m", result.Detail);
+    }
+
+    [Fact]
+    public void S7_OnlyHistoricalHoles_DowngradesToWarning()
+    {
+        var now = new DateTime(2026, 7, 20, 10, 0, 0, DateTimeKind.Utc);
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(30), EventType = "window" },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(50), EndTime = _baseUtc.AddMinutes(80), EventType = "window" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: now);
+
+        Assert.True(result.IsWarning);
+        Assert.Equal(0, result.NewViolations);
+        Assert.True(result.HistoricalViolations > 0);
     }
 
     #endregion
@@ -302,10 +700,19 @@ public class DataReliabilityGroupTwoTests
         Assert.Contains("必须为红/错误", result.Detail);
     }
 
+    /// <summary>
+    /// 口径说明（有意为之，非缺陷）：S9 判的是"**缺口有没有产生信号**"，而不是"覆盖率本身好不好"。
+    /// 覆盖率 60% 但设备如实上报 Error/Critical 时，系统并没有静默掩盖故障 → 通过。
+    /// 只有"低覆盖率却被报成 Normal/Healthy/OK"才是这条尺子要抓的静默失败（见下一条用例）。
+    ///
+    /// 已知局限（登记为观察项）：`ReportedStatus` 长年固定为 Error 时，这条尺子无法区分
+    /// "如实报告"与"坏了但状态字段不再更新"。要覆盖这一点需要引入状态上报的时效性判定，
+    /// 属于口径变更，不在本工单范围内。
+    /// </summary>
     [Fact]
     public void S9_Coverage60Percent_ReportedError_Passes()
     {
-        // 覆盖率 60%，如实报告 Error / Critical
+        // 覆盖率 60%，但设备如实报告 Error —— 没有静默掩盖，判通过
         var report = new CoverageSignalReport
         {
             DeviceId = "DEV-GAP",

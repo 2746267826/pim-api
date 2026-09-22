@@ -332,6 +332,139 @@ public class DataReliabilityQualityInspectorTests
         }
     }
 
+    /// <summary>
+    /// 复审回归（Important）：C# 侧的 <c>IsGapEventType</c> 与 SQL 侧的
+    /// <c>GapEventTypeSqlList</c> 必须逐项一致。
+    ///
+    /// 这两份"缺数据"定义分别用于 S7（在内存里标记覆盖区间）与 S9（在 SQL 里拆分离线与
+    /// 有效记录）。一旦有人只改了一边，同一行数据就会在一条尺子里被算作记录、
+    /// 在另一条里被算作离线 —— 这类漂移没有任何编译错误，只能靠这条断言拦住。
+    /// </summary>
+    [Fact]
+    public void GapEventTypePredicate_MatchesSqlList()
+    {
+        const char SingleQuote = '\'';
+
+        var sqlTypes = DataReliabilityQualityInspector.GapEventTypeSqlList
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(part => part.Trim(SingleQuote))
+            .ToList();
+
+        Assert.NotEmpty(sqlTypes);
+        Assert.Equal(sqlTypes.Count, sqlTypes.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+
+        // SQL 片段必须恰好由权威清单渲染而来 —— 双向都成立，漂移无从发生
+        Assert.Equal(
+            DataReliabilityQualityInspector.GapEventTypes.OrderBy(t => t, StringComparer.Ordinal).ToList(),
+            sqlTypes.OrderBy(t => t, StringComparer.Ordinal).ToList());
+
+        // C# 判定与 SQL 清单对每一个候选类型给出**相同**结论（双向覆盖）
+        var candidates = DataReliabilityQualityInspector.GapEventTypes
+            .Concat(["window", "web-page", "idle", "notepad", "hibernate", "", "GAP", "Sleep"])
+            .ToList();
+
+        foreach (var type in candidates)
+        {
+            bool inSqlList = sqlTypes.Contains(type, StringComparer.OrdinalIgnoreCase);
+            bool byCSharp = DataReliabilityQualityInspector.IsGapEventType(type);
+            Assert.True(inSqlList == byCSharp,
+                $"'{type}' 在 SQL 清单里={inSqlList}，但 C# 判定={byCSharp} —— S7 与 S9 会对同一行数据给出相反分类");
+        }
+
+        // 大小写语义必须一致：C# 用 OrdinalIgnoreCase，而 PostgreSQL 的
+        // `varchar IN (...)` 是**大小写敏感**的。若 SQL 侧不套 LOWER()，
+        // 'GAP' 会在 S7 被判为缺数据、却在 S9 被算作有效记录。
+        Assert.Contains("LOWER(event_type)", DataReliabilityQualityInspector.GapEventTypeSqlPredicate);
+        Assert.Contains("LOWER(event_type)", DataReliabilityQualityInspector.NonGapEventTypeSqlPredicate);
+        Assert.StartsWith("LOWER(event_type) IN (", DataReliabilityQualityInspector.GapEventTypeSqlPredicate);
+        Assert.StartsWith("LOWER(event_type) NOT IN (", DataReliabilityQualityInspector.NonGapEventTypeSqlPredicate);
+
+        // 真实采集类型必须**不**被判为 gap
+        foreach (var type in new[] { "window", "web-page", "idle" })
+        {
+            Assert.False(DataReliabilityQualityInspector.IsGapEventType(type),
+                $"'{type}' 是真实采集类型，不应被判为缺数据");
+        }
+
+        Assert.False(DataReliabilityQualityInspector.IsGapEventType(null));
+        Assert.False(DataReliabilityQualityInspector.IsGapEventType(""));
+        Assert.False(DataReliabilityQualityInspector.IsGapEventType("unknown-type"));
+    }
+
+    /// <summary>
+    /// 复审回归（Important）：S9 与 S7 必须使用**同一份**"缺数据"类型口径。
+    /// S7 把 gap/afk/offline/sleep 当作覆盖标记；S9 必须把同样的类型算作"设备声明的离线"，
+    /// 并把其余类型算作有效记录。两处各写各的，legacy（afk/offline/sleep）或未来新增的类型
+    /// 就会在一条尺子里被算作记录、在另一条里被算作离线，导致两条尺子互相矛盾。
+    /// </summary>
+    [Fact]
+    public async Task CheckS9AndS7_UseTheSameGapEventTypePredicate()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateRecordingInspector(conn);
+
+        await inspector.InspectReportAsync(ReportNow);
+
+        // S9 的两条 CTE：离线集合按 IN 判定，有效记录按 NOT IN 判定，二者互补。
+        var coverageQuery = conn.ExecutedCommands
+            .First(sql => sql.Contains("offline_seconds", StringComparison.OrdinalIgnoreCase));
+
+        // 从权威清单派生期望值，而不是冻结成字面量：这样"调整缺数据类型集合"
+        // 只需改一处，测试只负责验证 IN / NOT IN 两者互补。
+        // 从权威清单/判定式派生期望值，而不是冻结成字面量：测试只负责验证
+        // 取数 SQL 用的是同一套（且大小写一致的）判定式，而不是验证某个固定取值集合。
+        Assert.Contains(DataReliabilityQualityInspector.NonGapEventTypeSqlPredicate, coverageQuery);
+        Assert.Contains(DataReliabilityQualityInspector.GapEventTypeSqlPredicate, coverageQuery);
+
+        // S7 的时间线查询取全部类型，由 C# 侧统一判定是否 gap（不再在 SQL 里硬编码类型集合）
+        var timelineQuery = conn.ExecutedCommands
+            .First(sql => sql.Contains("end_time", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain("event_type IN", timelineQuery, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 复审回归（Important）：S9 的设备集合必须取"有记录"与"有离线声明"的**并集**。
+    /// 只从 recorded 出发会让"整段窗口都声明了离线、因此没有任何记录"的设备被静默跳过，
+    /// 等于替它默认通过；这类设备恰恰是最需要被看见的。
+    /// </summary>
+    [Fact]
+    public async Task CheckS9_EnumeratesDevicesFromBothRecordedAndDeclaredOffline()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateRecordingInspector(conn);
+
+        await inspector.InspectReportAsync(ReportNow);
+
+        var coverageQuery = conn.ExecutedCommands
+            .FirstOrDefault(sql => sql.Contains("offline_seconds", StringComparison.OrdinalIgnoreCase));
+
+        Assert.NotNull(coverageQuery);
+        Assert.Contains("UNION", coverageQuery!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("devices", coverageQuery!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 复审回归（Important）：S7 的时间线区间必须取**全部**事件类型。
+    /// 早先只取 window/idle/gap、把 web-page 排除在外，会让"浏览器会话被分段成
+    /// window + web-page"的时间段凭空出现空洞（实测多报 6 处不存在的断档）。
+    /// </summary>
+    [Fact]
+    public async Task CheckS7_TimelineQuery_IncludesEveryEventType()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateRecordingInspector(conn);
+
+        await inspector.InspectReportAsync(ReportNow);
+
+        var timelineQueries = conn.ExecutedCommands
+            .Where(sql => sql.Contains("end_time", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        Assert.NotEmpty(timelineQueries);
+        Assert.All(timelineQueries, sql =>
+            Assert.DoesNotContain("event_type IN", sql, StringComparison.OrdinalIgnoreCase));
+    }
+
     /// <summary>体检窗口必须来自调用方传入的时钟，不得依赖数据库 NOW()（否则结论随库时钟漂移）。</summary>
     [Fact]
     public async Task InspectReportAsync_DoesNotRelyOnTheDatabaseClock()
@@ -343,6 +476,80 @@ public class DataReliabilityQualityInspectorTests
 
         Assert.All(conn.ExecutedCommands, sql =>
             Assert.DoesNotContain("NOW()", sql, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// 复审回归（Important）：导出通路必须复刻体检用到的**全部**阈值配置。
+    /// 漏拷一个字段会让"面板结论"与"导出清单"用不同口径计算，用户看到的违规数与导出结果对不上。
+    ///
+    /// 这里用反射逐字段对比（除有意覆盖的样例上限），因此以后给 InvariantOptions
+    /// 新增字段却忘了复制时会自动失败，不需要有人记得回来补测试。
+    /// </summary>
+    [Fact]
+    public void BuildExportOptions_CopiesEveryThresholdExceptSampleLimit()
+    {
+        var source = new InvariantOptions
+        {
+            MinInputDensityPerMinute = 2.5,
+            LongEventThresholdMinutes = 45,
+            UndeclaredOfflineGapMinutes = 40,
+            MaxUploadLagP99Minutes = 35,
+            MobileSummaryLagHours = 6,
+            RecentWindowHours = 48,
+            MaxDailyActiveHours = 20,
+            AwakeWindowHours = 15,
+            AwakeWindowWarningRatio = 0.8,
+            CoverageRedRatio = 0.9,
+            CoverageYellowRatio = 0.97,
+            MaxSampleCount = 7,
+            ClockSkewToleranceMinutes = 3,
+            TimelineGapThresholdMinutes = 20,
+            InstanceOverlapToleranceSeconds = 0.25,
+            Tolerance = 0.07,
+            MaxScanRows = 1234,
+            InspectionTimeoutSeconds = 30
+        };
+
+        var export = DataReliabilityQualityInspector.BuildExportOptions(source, sampleLimit: 500);
+
+        Assert.Equal(500, export.MaxSampleCount); // 唯一被有意覆盖的字段
+
+        var mismatches = new List<string>();
+        foreach (var property in typeof(InvariantOptions).GetProperties(
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+        {
+            if (!property.CanRead || !property.CanWrite) continue;
+            if (property.Name == nameof(InvariantOptions.MaxSampleCount)) continue;
+
+            var expected = property.GetValue(source);
+            var actual = property.GetValue(export);
+            if (!Equals(expected, actual))
+            {
+                mismatches.Add($"{property.Name}: 期望 {expected}, 实际 {actual}");
+            }
+        }
+
+        Assert.True(mismatches.Count == 0,
+            $"导出配置漏拷了体检阈值：{string.Join("; ", mismatches)}");
+    }
+
+    /// <summary>
+    /// 端到端佐证：同一份心跳在默认容差下判红，在放宽容差后判绿 ——
+    /// 说明容差确实参与判定，因此上面那条"逐字段复刻"的断言是有实际后果的。
+    /// </summary>
+    [Fact]
+    public void InstanceOverlapTolerance_ChangesS13Verdict()
+    {
+        var heartbeats = new List<CollectionHeartbeat>
+        {
+            new() { DeviceId = "d", Timestamp = ReportNow.UtcDateTime, DurationSeconds = 600.2, InstanceId = "a" },
+            new() { DeviceId = "d", Timestamp = ReportNow.UtcDateTime.AddSeconds(600), DurationSeconds = 60, InstanceId = "b" }
+        };
+
+        Assert.False(DataReliabilityInvariants.CheckS13_SingleInstance(
+            heartbeats, new InvariantOptions { InstanceOverlapToleranceSeconds = 0.05 }).Pass);
+        Assert.True(DataReliabilityInvariants.CheckS13_SingleInstance(
+            heartbeats, new InvariantOptions { InstanceOverlapToleranceSeconds = 0.25 }).Pass);
     }
 
     [Fact]

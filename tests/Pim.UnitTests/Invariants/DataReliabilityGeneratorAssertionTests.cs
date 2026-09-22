@@ -463,7 +463,7 @@ public class DataReliabilityGeneratorAssertionTests
         // 6. S6 MultiDeviceGenerator
         var s6Run1 = MultiDeviceGenerator.GenerateS6DeclaredGapTrace(seed);
         var s6Run2 = MultiDeviceGenerator.GenerateS6DeclaredGapTrace(seed);
-        Assert.Equal(s6Run1.EventTimes, s6Run2.EventTimes);
+        Assert.Equal(s6Run1.EventIntervals, s6Run2.EventIntervals);
 
         // 7. S7 MultiDeviceGenerator
         var s7Run1 = MultiDeviceGenerator.GenerateS7MarkedGapIntervals(seed);

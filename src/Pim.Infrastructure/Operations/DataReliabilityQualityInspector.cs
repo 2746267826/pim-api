@@ -51,6 +51,32 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
     public string CheckName => "data_reliability";
 
     /// <summary>
+    /// "缺数据"类事件类型的**唯一权威清单**。
+    /// S7 用它在时间线里识别"覆盖标记"，S9 用它区分"有效记录"与"设备声明的离线"。
+    /// SQL 片段（<see cref="GapEventTypeSqlList"/>）与 C# 判定（<see cref="IsGapEventType"/>）
+    /// 都从这一个数组派生 —— 这样两份口径在结构上不可能漂移
+    /// （两处各写各的时，legacy 的 afk/offline/sleep 或未来新增类型会让同一条数据
+    /// 在一条尺子里算记录、在另一条里算离线，且不会有任何编译错误）。
+    /// </summary>
+    internal static readonly string[] GapEventTypes = ["gap", "afk", "offline", "sleep"];
+
+    /// <summary>
+    /// 把 <see cref="GapEventTypes"/> 渲染成 SQL 的 <c>IN (...)</c> 取值列表。
+    /// 使用时必须套在 <c>LOWER(event_type)</c> 上（见 <see cref="GapEventTypeSqlPredicate"/>）：
+    /// PostgreSQL 的 <c>varchar IN (...)</c> 是**大小写敏感**的，而 C# 侧
+    /// <see cref="IsGapEventType"/> 用 <c>OrdinalIgnoreCase</c> 匹配 ——
+    /// 若不统一，`GAP` 会在 S7 被判为缺数据、却在 S9 被算作有效记录。
+    /// </summary>
+    internal static string GapEventTypeSqlList { get; } =
+        string.Join(", ", GapEventTypes.Select(type => $"'{type}'"));
+
+    /// <summary>可直接嵌入 SQL 的完整判定式（已统一大小写语义）。</summary>
+    internal static string GapEventTypeSqlPredicate { get; } = $"LOWER(event_type) IN ({GapEventTypeSqlList})";
+
+    /// <summary>可直接嵌入 SQL 的反判定式（已统一大小写语义）。</summary>
+    internal static string NonGapEventTypeSqlPredicate { get; } = $"LOWER(event_type) NOT IN ({GapEventTypeSqlList})";
+
+    /// <summary>
     /// 结构化体检（#260）：13 条尺子的编号 / 名称 / 状态 / 当前值 / 阈值 / 违规分档 / 样例 / 关联 issue。
     /// 与 <see cref="InspectAsync"/> 共用同一批取数与判据调用（<see cref="RunChecksAsync"/>），保证"判据只有一份实现"。
     /// 全程只读：只发 SELECT，不写任何表，也不写缓存表——"最近一次结果"由进程内单例缓存承担。
@@ -177,26 +203,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         }
 
         // 导出只关心"完整清单"，因此把样例上限抬到请求的 limit（判据本身仍按同一套三态/区间规则判定）。
-        var exportOptions = new InvariantOptions
-        {
-            MinInputDensityPerMinute = options.MinInputDensityPerMinute,
-            LongEventThresholdMinutes = options.LongEventThresholdMinutes,
-            UndeclaredOfflineGapMinutes = options.UndeclaredOfflineGapMinutes,
-            MaxUploadLagP99Minutes = options.MaxUploadLagP99Minutes,
-            MobileSummaryLagHours = options.MobileSummaryLagHours,
-            RecentWindowHours = options.RecentWindowHours,
-            MaxDailyActiveHours = options.MaxDailyActiveHours,
-            AwakeWindowHours = options.AwakeWindowHours,
-            AwakeWindowWarningRatio = options.AwakeWindowWarningRatio,
-            CoverageRedRatio = options.CoverageRedRatio,
-            CoverageYellowRatio = options.CoverageYellowRatio,
-            MaxSampleCount = clampedLimit,
-            ClockSkewToleranceMinutes = options.ClockSkewToleranceMinutes,
-            TimelineGapThresholdMinutes = options.TimelineGapThresholdMinutes,
-            Tolerance = options.Tolerance,
-            MaxScanRows = options.MaxScanRows,
-            InspectionTimeoutSeconds = options.InspectionTimeoutSeconds
-        };
+        var exportOptions = BuildExportOptions(options, clampedLimit);
 
         var context = new RuleCheckContext
         {
@@ -311,6 +318,35 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             totalIssues,
             message,
             details);
+    }
+
+    /// <summary>
+    /// 构造导出用的阈值配置：**除样例上限外，逐字段复刻体检用的那一套**。
+    ///
+    /// 这里刻意用反射而不是手写字段拷贝：漏拷一个字段（例如 S13 的
+    /// <see cref="InvariantOptions.InstanceOverlapToleranceSeconds"/>）会让"面板结论"与
+    /// "导出清单"用不同口径计算，用户看到的违规数与导出结果对不上。
+    /// 反射 + 单元测试断言"所有公开可写属性都被复刻（除有意覆盖的样例上限）"，
+    /// 让以后新增字段的人要么显式复制、要么显式加进豁免名单。
+    /// </summary>
+    internal static InvariantOptions BuildExportOptions(InvariantOptions source, int sampleLimit)
+    {
+        var exportOptions = new InvariantOptions();
+        var overridden = new HashSet<string>(StringComparer.Ordinal) { nameof(InvariantOptions.MaxSampleCount) };
+
+        foreach (var property in typeof(InvariantOptions).GetProperties(
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+        {
+            if (!property.CanRead || !property.CanWrite || overridden.Contains(property.Name))
+            {
+                continue;
+            }
+
+            property.SetValue(exportOptions, property.GetValue(source));
+        }
+
+        exportOptions.MaxSampleCount = sampleLimit;
+        return exportOptions;
     }
 
     /// <summary>一次体检运行的取数结果集合。</summary>
@@ -843,9 +879,9 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             await using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = 15;
             cmd.CommandText = $"""
-                SELECT device_id, package_name, event_timestamp_utc, count(*)
+                SELECT device_id, package_name, event_timestamp_utc, event_type, count(*)
                 FROM mobile_usage_events
-                GROUP BY device_id, package_name, event_timestamp_utc
+                GROUP BY device_id, package_name, event_timestamp_utc, event_type
                 HAVING count(*) > 1
                 LIMIT {context.Options.MaxScanRows + 1};
                 """;
@@ -855,10 +891,11 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                 string dev = r.GetString(0);
                 string pkg = r.GetString(1);
                 DateTime t = r.GetDateTime(2);
-                long cnt = r.GetInt64(3);
+                string type = r.GetString(3);
+                long cnt = r.GetInt64(4);
                 for (int i = 0; i < cnt; i++)
                 {
-                    keys.Add(new BusinessRecordKey { Domain = "Mobile", DeviceId = dev, UniqueKey = $"{pkg}:{t:O}", Timestamp = t });
+                    keys.Add(BusinessRecordKey.ForMobile(dev, pkg, t, type));
                 }
             }
         }
@@ -1005,25 +1042,32 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (!await TableExistsAsync(conn, "pc_tracker_events", context.Ct))
             return InvariantResult.Unknown("INV-P20 UNKNOWN: 数据表 pc_tracker_events 不存在");
 
+        // 取事件**区间**（起点 + 时长）而不是裸时刻：空档必须按"上一段结束 → 下一段开始"判定，
+        // 用起点差会把事件自身时长也算成空档（实测 29 处真实空档被放大成 72 处）。
+        // 同时取 event_type 以标记系统合成的 gap 事件（它们的"上传滞后"恒等于断档时长，不是链路延迟）。
         await using var cmd = conn.CreateCommand();
-        cmd.CommandTimeout = 15;
+        cmd.CommandTimeout = 20;
         cmd.CommandText = $"""
-            SELECT device_id, timestamp, created_at
+            SELECT device_id, timestamp, created_at, duration, event_type
             FROM pc_tracker_events
-            WHERE event_type != 'web-page'
             ORDER BY timestamp DESC
             LIMIT {context.Options.MaxScanRows + 1};
             """;
 
-        var rows = new List<(string DeviceId, DateTime Timestamp, DateTime CreatedAt)>();
+        var rows = new List<(string DeviceId, DateTime Start, DateTime End, DateTime CreatedAt, bool IsSyntheticGap)>();
         await using (var reader = await cmd.ExecuteReaderAsync(context.Ct))
         {
             while (await reader.ReadAsync(context.Ct))
             {
+                DateTime start = reader.GetDateTime(1);
+                double duration = reader.IsDBNull(3) ? 0 : reader.GetDouble(3);
+                string type = reader.IsDBNull(4) ? "window" : reader.GetString(4);
                 rows.Add((
                     reader.IsDBNull(0) ? "default" : reader.GetString(0),
-                    reader.GetDateTime(1),
-                    reader.GetDateTime(2)));
+                    start,
+                    start.AddSeconds(Math.Max(0, duration)),
+                    reader.GetDateTime(2),
+                    type.Equals("gap", StringComparison.OrdinalIgnoreCase)));
             }
         }
 
@@ -1035,43 +1079,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (rows.Count == 0)
             return InvariantResult.Unknown("INV-P20 UNKNOWN: 无事件记录检验下线声明与上传延迟");
 
-        var declarations = new List<OfflineDeclaration>();
-        if (await TableExistsAsync(conn, "pc_tracker_health", context.Ct))
-        {
-            await using var hcmd = conn.CreateCommand();
-            hcmd.CommandTimeout = 5;
-            hcmd.CommandText = $"""
-                SELECT device_id, reported_at, status
-                FROM pc_tracker_health
-                ORDER BY reported_at DESC
-                LIMIT {context.Options.MaxScanRows + 1};
-                """;
-            await using var hreader = await hcmd.ExecuteReaderAsync(context.Ct);
-            int healthRows = 0;
-            while (await hreader.ReadAsync(context.Ct))
-            {
-                healthRows++;
-                string dev = hreader.GetString(0);
-                DateTime rep = hreader.GetDateTime(1);
-                string stat = hreader.GetString(2);
-                if (stat.Equals("offline", StringComparison.OrdinalIgnoreCase) ||
-                    stat.Equals("planned_offline", StringComparison.OrdinalIgnoreCase))
-                {
-                    declarations.Add(new OfflineDeclaration
-                    {
-                        DeviceId = dev,
-                        StartTime = rep,
-                        EndTime = rep.AddHours(2),
-                        Reason = stat
-                    });
-                }
-            }
-
-            if (healthRows > context.Options.MaxScanRows)
-            {
-                context.Collector.MarkScanTruncated();
-            }
-        }
+        var declarations = await LoadOfflineDeclarationsAsync(conn, context);
 
         // 按设备分别判定：下线声明带的是真实 device_id，混在一起判会让所有声明都匹配不上，
         // 从而把"已经声明过下线"的设备误报成无声明空档。
@@ -1082,15 +1090,76 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             var trace = new DeviceActivityTrace
             {
                 DeviceId = group.Key,
-                EventTimes = group.Select(row => row.Timestamp).ToList(),
+                EventIntervals = group.Select(row => (row.Start, row.End)).ToList(),
                 Declarations = declarations,
-                UploadLagSamples = group.Select(row => (row.Timestamp, row.CreatedAt)).ToList()
+                UploadLagSamples = group
+                    .Select(row => new UploadLagSample
+                    {
+                        EventTime = row.Start,
+                        CreatedAt = row.CreatedAt,
+                        IsSyntheticGap = row.IsSyntheticGap
+                    })
+                    .ToList()
             };
 
-            deviceResults.Add(DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, context.Options));
+            deviceResults.Add(DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, context.Options, context.NowUtc));
         }
 
         return DataReliabilityInvariants.CombineDeviceVerdicts("INV-P20", deviceResults, context.Options);
+    }
+
+    /// <summary>
+    /// 读取设备自己声明的"正常下线"（S6）。数据源是 <c>daemon_heartbeats</c>：
+    /// 它带有 <c>planned_offline_at</c> / <c>offline_reason</c>（客户端在退出/关机前主动写入），
+    /// 而 <c>pc_tracker_health</c> 只保存"当前进程的最后一跳"、没有历史序列，
+    /// 用它当声明来源等于永远读不到声明。两个来源都读，任一命中即视为已声明。
+    /// </summary>
+    private static async Task<List<OfflineDeclaration>> LoadOfflineDeclarationsAsync(
+        DbConnection conn,
+        RuleCheckContext context)
+    {
+        var declarations = new List<OfflineDeclaration>();
+
+        if (await TableExistsAsync(conn, "daemon_heartbeats", context.Ct))
+        {
+            try
+            {
+                await using var hcmd = conn.CreateCommand();
+                hcmd.CommandTimeout = 10;
+                hcmd.CommandText = """
+                    SELECT device_id, planned_offline_at, offline_reason, received_at
+                    FROM daemon_heartbeats
+                    WHERE planned_offline_at IS NOT NULL
+                    ORDER BY received_at DESC
+                    LIMIT 5000;
+                    """;
+                await using var hreader = await hcmd.ExecuteReaderAsync(context.Ct);
+                while (await hreader.ReadAsync(context.Ct))
+                {
+                    string dev = hreader.IsDBNull(0) ? "default" : hreader.GetString(0);
+                    DateTime offlineAt = hreader.GetDateTime(1);
+                    string reason = hreader.IsDBNull(2) ? "planned_offline" : hreader.GetString(2);
+
+                    // planned_offline_at 是一个**时点声明**："这一跳时进程声明即将下线"。
+                    // daemon_heartbeats 每台设备每种 daemon 只有一行（无历史序列），因此这里
+                    // 只能给出这个时刻本身，不能假设"此后永久离线" —— 实测有一次 exit 声明
+                    // 7 秒后设备就恢复出数了。判据侧按"声明时刻是否落在这个空档附近"认定覆盖。
+                    declarations.Add(new OfflineDeclaration
+                    {
+                        DeviceId = dev,
+                        StartTime = offlineAt,
+                        EndTime = offlineAt,
+                        Reason = reason
+                    });
+                }
+            }
+            catch
+            {
+                // 容错：声明表不可读时不制造假绿（无声明 → 判据照常判红）。
+            }
+        }
+
+        return declarations;
     }
 
     private async Task<InvariantResult> CheckS7Async(DbConnection conn, RuleCheckContext context)
@@ -1098,12 +1167,15 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (!await TableExistsAsync(conn, "pc_tracker_events", context.Ct))
             return InvariantResult.Unknown("INV-P21 UNKNOWN: 数据表 pc_tracker_events 不存在");
 
+        // 时间线区间取**全部**事件：任何一条事件都意味着"设备当时在记录"，
+        // 因此都能填补空洞。早先只取 window/idle/gap、把 web-page 排除在外，
+        // 会让"浏览器会话被分段成 window + web-page"的时间段凭空出现空洞 ——
+        // 实测因此多报 6 处（41 vs 35）并不存在的断档。
         await using var cmd = conn.CreateCommand();
         cmd.CommandTimeout = 15;
         cmd.CommandText = $"""
             SELECT device_id, timestamp, timestamp + (duration || ' seconds')::interval as end_time, event_type
             FROM pc_tracker_events
-            WHERE event_type IN ('window', 'idle', 'gap')
             ORDER BY timestamp DESC
             LIMIT {context.Options.MaxScanRows + 1};
             """;
@@ -1117,10 +1189,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             DateTime end = reader.GetDateTime(2);
             string type = reader.IsDBNull(3) ? "window" : reader.GetString(3);
 
-            bool isGap = type.Equals("gap", StringComparison.OrdinalIgnoreCase) ||
-                         type.Equals("afk", StringComparison.OrdinalIgnoreCase) ||
-                         type.Equals("offline", StringComparison.OrdinalIgnoreCase) ||
-                         type.Equals("sleep", StringComparison.OrdinalIgnoreCase);
+            bool isGap = IsGapEventType(type);
 
             intervals.Add(new TimelineInterval
             {
@@ -1140,7 +1209,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (intervals.Count == 0)
             return InvariantResult.Unknown("INV-P21 UNKNOWN: 无时间线区间可检验断档标记");
 
-        return DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, context.Options);
+        return DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, context.Options, context.NowUtc);
     }
 
     private async Task<InvariantResult> CheckS8Async(DbConnection conn, RuleCheckContext context)
@@ -1219,70 +1288,271 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         return DataReliabilityInvariants.CheckS8_DayBoundaryConsistent(samples, context.Options);
     }
 
+    /// <summary>
+    /// S9 (INV-C20): 覆盖率 = 有效数据时长 ÷ 设备在线时长（#254 S9 口径）。
+    ///
+    /// 分母口径（已拍板）：在线时长 = 体检窗口 − 设备自己**声明过的**离线时长。
+    /// 声明来源是该设备自己产生的"缺数据"事件（gap），它们正是"这段我没在采"的自我交代。
+    /// 未声明的空档会被算作"在线却没数据"，从而拉低覆盖率并报红 —— 这正是判据原文要抓的
+    /// "采集端崩溃或掉线"。旧实现把分母硬编码成 24h 自然窗口（夜间关机即虚低 47.7%），
+    /// 于是干脆放弃判定、恒返回"未知"；现在分子分母都来自可核对的真实数据，能给出真实结论。
+    ///
+    /// 窗口是**墙钟**的最近 24 小时 [now − 24h, now)：设备停摆后的静止期照常算作"在线却无数据"，
+    /// 从而被计入缺口。这一点是刻意的 —— S9 存在的理由就是抓"设备断流了、面板却仍报正常"
+    /// （#244 的原始故障）。若把窗口末端锚在"最后一条数据"上，设备一停摆窗口就跟着缩到停摆前，
+    /// 覆盖率永远是满的，这条尺子会恰好对它唯一该抓的故障失明。
+    ///
+    /// 仅当窗口内**既没有任何记录、也没有任何 gap 声明**时，才如实输出"未知"。
+    /// </summary>
     private async Task<InvariantResult> CheckS9Async(DbConnection conn, RuleCheckContext context)
     {
         if (!await TableExistsAsync(conn, "pc_tracker_events", context.Ct))
             return InvariantResult.Unknown("INV-C20 UNKNOWN: 数据表 pc_tracker_events 不存在");
 
-        // 1. 获取最近 24h 的有效活跃时长（window 与 web-page，排除 idle）
+        var windowHours = context.Options.RecentWindowHours;
+
+        // 1. 体检窗口 = 墙钟最近 24h（见方法注释：锚在数据末端会让尺子对"断流"失明）。
+        DateTime windowEnd = context.NowUtc;
+        DateTime windowStart = windowEnd.AddHours(-windowHours);
+
+        // 2. 逐设备核算：分子（有记录的时长）+ 声明的离线时长（合并后的 gap 区间）。
+        //    gap 区间可能由多个 30 分钟分片首尾相接组成，必须先合并再求长度，否则重复计算。
         await using var cmd = conn.CreateCommand();
-        cmd.CommandTimeout = 15;
-        cmd.CommandText = """
-            SELECT COALESCE(SUM(duration), 0)
-            FROM pc_tracker_events
-            WHERE timestamp >= @since
-              AND event_type IN ('window', 'web-page')
-              AND is_idle = false;
+        cmd.CommandTimeout = 30;
+        cmd.CommandText = $"""
+            WITH win AS (
+                SELECT @windowStart::timestamptz AS ws, @windowEnd::timestamptz AS we
+            ),
+            clipped_gap AS (
+                SELECT device_id,
+                       GREATEST(timestamp, win.ws) AS gs,
+                       LEAST(timestamp + duration * interval '1 second', win.we) AS ge
+                FROM pc_tracker_events, win
+                WHERE {GapEventTypeSqlPredicate}
+                  AND timestamp + duration * interval '1 second' > win.ws
+                  AND timestamp < win.we
+            ),
+            marked AS (
+                SELECT device_id, gs, ge,
+                       CASE WHEN MAX(ge) OVER (PARTITION BY device_id ORDER BY gs, ge
+                                               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) >= gs
+                            THEN 0 ELSE 1 END AS is_new_group
+                FROM clipped_gap
+            ),
+            grouped AS (
+                SELECT device_id, gs, ge,
+                       SUM(is_new_group) OVER (PARTITION BY device_id ORDER BY gs, ge) AS grp
+                FROM marked
+            ),
+            merged_gap AS (
+                SELECT device_id, grp, MIN(gs) AS gs, MAX(ge) AS ge
+                FROM grouped
+                GROUP BY device_id, grp
+            ),
+            offline AS (
+                SELECT device_id, COALESCE(SUM(EXTRACT(EPOCH FROM (ge - gs))), 0) AS offline_seconds
+                FROM merged_gap
+                GROUP BY device_id
+            ),
+            -- 分子 = 窗口内**有记录**的时长。必须先把事件区间裁剪到窗口、再合并重叠区间后求和：
+            --   1. 直接 SUM(duration) 会把跨窗口边界的事件整段计入（窗口外部分也算进来了）；
+            --   2. 同设备的重叠事件（window 与 web-page 并发等）会被重复累加 ——
+            --      覆盖率是按"时间轴被覆盖了多少"定义的，不是按"事件时长之和"。
+            --   合并后取并集长度才是可解释的覆盖率分子。
+            clipped_recorded AS (
+                SELECT device_id,
+                       GREATEST(timestamp, win.ws) AS rs,
+                       LEAST(timestamp + duration * interval '1 second', win.we) AS re
+                FROM pc_tracker_events, win
+                WHERE {NonGapEventTypeSqlPredicate}
+                  AND timestamp + duration * interval '1 second' > win.ws
+                  AND timestamp < win.we
+            ),
+            rec_marked AS (
+                SELECT device_id, rs, re,
+                       CASE WHEN MAX(re) OVER (PARTITION BY device_id ORDER BY rs, re
+                                               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) >= rs
+                            THEN 0 ELSE 1 END AS is_new_group
+                FROM clipped_recorded
+            ),
+            rec_grouped AS (
+                SELECT device_id, rs, re,
+                       SUM(is_new_group) OVER (PARTITION BY device_id ORDER BY rs, re) AS grp
+                FROM rec_marked
+            ),
+            rec_merged AS (
+                SELECT device_id, grp, MIN(rs) AS rs, MAX(re) AS re
+                FROM rec_grouped
+                GROUP BY device_id, grp
+            ),
+            recorded AS (
+                SELECT device_id, COALESCE(SUM(EXTRACT(EPOCH FROM (re - rs))), 0) AS recorded_seconds
+                FROM rec_merged
+                GROUP BY device_id
+            ),
+            -- 设备集合必须取「有记录」与「有离线声明」的**并集**：只从 recorded 出发会让
+            -- "整段窗口都声明了离线、因此没有任何记录"的设备被静默跳过，等于替它默认通过。
+            devices AS (
+                SELECT device_id FROM recorded
+                UNION
+                SELECT device_id FROM offline
+            )
+            SELECT d.device_id,
+                   COALESCE(r.recorded_seconds, 0) AS recorded_seconds,
+                   LEAST(COALESCE(o.offline_seconds, 0),
+                         EXTRACT(EPOCH FROM (@windowEnd::timestamptz - @windowStart::timestamptz))) AS offline_seconds
+            FROM devices d
+            LEFT JOIN recorded r ON r.device_id = d.device_id
+            LEFT JOIN offline o ON o.device_id = d.device_id
+            ORDER BY d.device_id
+            LIMIT @maxDevices;
             """;
-        BindTimestamp(cmd, "@since", context.NowUtc.AddHours(-context.Options.RecentWindowHours));
-        var scalar = await cmd.ExecuteScalarAsync(context.Ct);
-        double validDuration = Convert.ToDouble(scalar ?? 0);
+        var pMax = cmd.CreateParameter(); pMax.ParameterName = "@maxDevices"; pMax.Value = context.Options.MaxScanRows + 1; cmd.Parameters.Add(pMax);
+        BindTimestamp(cmd, "@windowStart", windowStart);
+        BindTimestamp(cmd, "@windowEnd", windowEnd);
 
-        string deviceId = "default";
+        var perDevice = new List<(string DeviceId, double RecordedSeconds, double OfflineSeconds)>();
+        await using (var reader = await cmd.ExecuteReaderAsync(context.Ct))
+        {
+            while (await reader.ReadAsync(context.Ct))
+            {
+                perDevice.Add((
+                    reader.IsDBNull(0) ? "default" : reader.GetString(0),
+                    reader.IsDBNull(1) ? 0 : Convert.ToDouble(reader.GetValue(1)),
+                    reader.IsDBNull(2) ? 0 : Convert.ToDouble(reader.GetValue(2))));
+            }
+        }
+
+        double windowSeconds = (windowEnd - windowStart).TotalSeconds;
+
+        // 3. 上报状态（"有缺口必有信号"里的那个信号）：pc_tracker_health 的心跳。
+        //    必须在"无设备记录"的提前返回**之前**查询 —— 否则一旦窗口内没有记录，
+        //    连信号源都不会被读取，"有缺口必有信号"就无从判起。
         string reportedStatus = "Normal";
-        double onlineDuration = 86400.0; // 24h 自然窗口基准
-
+        var healthStatusByDevice = new Dictionary<string, string>(StringComparer.Ordinal);
         if (await TableExistsAsync(conn, "pc_tracker_health", context.Ct))
         {
             await using var statCmd = conn.CreateCommand();
             statCmd.CommandTimeout = 5;
-            statCmd.CommandText = "SELECT device_id, status, uptime_seconds FROM pc_tracker_health ORDER BY reported_at DESC LIMIT 1;";
-            await using var hr = await statCmd.ExecuteReaderAsync(context.Ct);
-            if (await hr.ReadAsync(context.Ct))
+            statCmd.CommandText = "SELECT device_id, status FROM pc_tracker_health ORDER BY reported_at DESC LIMIT 100;";
+            try
             {
-                deviceId = hr.GetString(0);
-                string stat = hr.GetString(1);
-                if (stat.Equals("running", StringComparison.OrdinalIgnoreCase) || stat.Equals("healthy", StringComparison.OrdinalIgnoreCase))
+                await using var hr = await statCmd.ExecuteReaderAsync(context.Ct);
+                while (await hr.ReadAsync(context.Ct))
                 {
-                    reportedStatus = "Normal";
+                    string dev = hr.IsDBNull(0) ? "default" : hr.GetString(0);
+                    string stat = hr.IsDBNull(1) ? "Normal" : hr.GetString(1);
+                    if (!healthStatusByDevice.ContainsKey(dev))
+                    {
+                        healthStatusByDevice[dev] = stat.Equals("running", StringComparison.OrdinalIgnoreCase) ||
+                                                    stat.Equals("healthy", StringComparison.OrdinalIgnoreCase)
+                            ? "Normal"
+                            : stat;
+                    }
                 }
-                else
-                {
-                    reportedStatus = stat;
-                }
+            }
+            catch
+            {
+                // 容错：心跳表不可读时按"未报告状态"处理（不因缺信号而制造假绿）。
             }
         }
 
-        // 2. 统计最近 24h 内的大缺口明细 (>15m)
-        var gapBreakdowns = new List<string>();
+        if (perDevice.Count == 0)
+        {
+            return InvariantResult.Unknown(
+                $"INV-C20 UNKNOWN: 最近 {windowHours:F0} 小时内无任何设备记录，无法界定在线时长分母");
+        }
+
+        // 4. 逐设备判定；任一台无法界定分母时，该设备如实记"未知"（不替它亮绿）。
+        var deviceResults = new List<InvariantResult>();
+        var deniedDevices = new List<string>();
+
+        foreach (var (deviceId, recordedSeconds, offlineSeconds) in perDevice)
+        {
+            double onlineSeconds = windowSeconds - Math.Min(offlineSeconds, windowSeconds);
+
+            if (onlineSeconds <= 0)
+            {
+                deniedDevices.Add(deviceId);
+                deviceResults.Add(InvariantResult.Unknown(
+                    $"INV-C20 UNKNOWN: 设备 {deviceId} 在体检窗口内全部时段都已声明离线，在线时长为 0，无法计算覆盖率"));
+                continue;
+            }
+
+            bool hasDeclaration = offlineSeconds > 0;
+            if (!hasDeclaration && recordedSeconds <= 0)
+            {
+                deniedDevices.Add(deviceId);
+                deviceResults.Add(InvariantResult.Unknown(
+                    $"INV-C20 UNKNOWN: 设备 {deviceId} 在窗口内既无记录也无离线声明，分母口径不足"));
+                continue;
+            }
+
+            var gapBreakdown = await LoadGapBreakdownAsync(conn, context, deviceId, windowStart, windowEnd);
+
+            var report = new CoverageSignalReport
+            {
+                DeviceId = deviceId,
+                OnlineDurationSeconds = onlineSeconds,
+                // 分子已按"裁剪到窗口 + 合并重叠区间"计算，天然不会超过窗口长度。
+                // 这里的上限只用于兜住"声明与记录在边界上自相矛盾"的脏数据
+                //（窗口 − 声明离线 < 有记录时长），避免算出 >100% 的无意义覆盖率。
+                ValidDataDurationSeconds = Math.Min(recordedSeconds, onlineSeconds),
+                ReportedStatus = healthStatusByDevice.TryGetValue(deviceId, out var st) ? st : reportedStatus,
+                IsDataInsufficientForDenominator = false,
+                DenominatorBasisNote = $"在线时长 = 体检窗口 {windowSeconds / 3600.0:F1}h − 设备声明的离线时长 {offlineSeconds / 3600.0:F1}h（来源：该设备自己的 gap 事件，已合并区间）",
+                GapBreakdown = gapBreakdown
+            };
+
+            deviceResults.Add(DataReliabilityInvariants.CheckS9_GapHasSignal(report, context.Options));
+
+            // 把覆盖率作为"当前值"暴露给面板（多设备时取最差的一台）。
+            double ratio = report.ValidDataDurationSeconds / report.OnlineDurationSeconds;
+            if (context.Collector.CurrentValue is not double existing || ratio < existing)
+            {
+                context.Collector.SetCurrentValue(ratio, unit: "ratio", label: $"{ratio * 100.0:F1}%");
+            }
+        }
+
+        if (deniedDevices.Count == perDevice.Count)
+        {
+            return InvariantResult.Unknown(
+                $"INV-C20 UNKNOWN: 全部 {perDevice.Count} 台设备均无法界定在线时长分母（{string.Join(", ", deniedDevices)}）");
+        }
+
+        return DataReliabilityInvariants.CombineDeviceVerdicts("INV-C20", deviceResults, context.Options);
+    }
+
+    /// <summary>S9 缺口明细：窗口内该设备 &gt;15 分钟的未解释空洞（供面板下钻）。</summary>
+    private static async Task<IReadOnlyList<string>> LoadGapBreakdownAsync(
+        DbConnection conn,
+        RuleCheckContext context,
+        string deviceId,
+        DateTime windowStart,
+        DateTime windowEnd)
+    {
+        var breakdown = new List<string>();
         try
         {
             await using var gapCmd = conn.CreateCommand();
             gapCmd.CommandTimeout = 15;
-            gapCmd.CommandText = $"""
-                WITH evs AS (
-                    SELECT timestamp as s, timestamp + duration * interval '1 second' as e,
-                           LEAD(timestamp) OVER (PARTITION BY device_id ORDER BY timestamp ASC) as next_s
+            gapCmd.CommandText = """
+                WITH ev AS (
+                    SELECT timestamp AS s,
+                           timestamp + duration * interval '1 second' AS e,
+                           LEAD(timestamp) OVER (ORDER BY timestamp) AS next_s
                     FROM pc_tracker_events
-                    WHERE timestamp >= @since
+                    WHERE device_id = @dev AND timestamp >= @windowStart AND timestamp < @windowEnd
                 )
-                SELECT s, next_s, extract(epoch from (next_s - e)) as gap_sec
-                FROM evs
-                WHERE next_s > e AND extract(epoch from (next_s - e)) > 900
+                SELECT s, next_s, EXTRACT(EPOCH FROM (next_s - e)) AS gap_sec
+                FROM ev
+                WHERE next_s > e AND EXTRACT(EPOCH FROM (next_s - e)) > 900
                 ORDER BY s DESC
-                LIMIT {context.Options.MaxScanRows + 1};
+                LIMIT 20;
                 """;
-            BindTimestamp(gapCmd, "@since", context.NowUtc.AddHours(-context.Options.RecentWindowHours));
+            BindTimestamp(gapCmd, "@windowStart", windowStart);
+            BindTimestamp(gapCmd, "@windowEnd", windowEnd);
+            var pDev = gapCmd.CreateParameter(); pDev.ParameterName = "@dev"; pDev.Value = deviceId; gapCmd.Parameters.Add(pDev);
 
             await using var gapReader = await gapCmd.ExecuteReaderAsync(context.Ct);
             while (await gapReader.ReadAsync(context.Ct))
@@ -1290,43 +1560,19 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                 DateTime s = gapReader.GetDateTime(0);
                 DateTime nextS = gapReader.GetDateTime(1);
                 double gapSec = gapReader.GetDouble(2);
-                gapBreakdowns.Add($"[{s:yyyy-MM-dd HH:mm} ~ {nextS:yyyy-MM-dd HH:mm} 缺口 {gapSec / 3600.0:F2}h]");
+                breakdown.Add($"[{s:yyyy-MM-dd HH:mm} ~ {nextS:yyyy-MM-dd HH:mm} 缺口 {gapSec / 3600.0:F2}h]");
             }
 
-            // SQL 按时间倒序取上限行（保证截掉的是最旧的缺口而不是最新的），这里还原成时间升序展示。
-            if (gapBreakdowns.Count > context.Options.MaxScanRows)
-            {
-                gapBreakdowns.RemoveRange(context.Options.MaxScanRows, gapBreakdowns.Count - context.Options.MaxScanRows);
-                context.Collector.MarkScanTruncated();
-            }
-
-            gapBreakdowns.Reverse();
+            breakdown.Reverse();
         }
         catch
         {
-            // 容错处理
+            // 容错：缺口明细只用于展示，取不到不影响判定。
         }
 
-        // 3. 按照 Reviewer 指示：pc_tracker_health 仅保存单条当前进程心跳（无历史心跳序列与离线声明日志），
-        //    分母设备在线时长无法精准界定（若粗暴以 24h 自然日 86400s 为分母，夜间关机 14h 将导致覆盖率虚低 47.7%）。
-        //    因此标记为 IsDataInsufficientForDenominator = true，输出为 UNKNOWN (口径近似 / 数据源不足) 并附带详细明细。
-        var report = new CoverageSignalReport
-        {
-            DeviceId = deviceId,
-            OnlineDurationSeconds = onlineDuration,
-            ValidDataDurationSeconds = validDuration,
-            ReportedStatus = reportedStatus,
-            IsDataInsufficientForDenominator = true,
-            DenominatorBasisNote = "pc_tracker_health 仅存单条当前心跳 (uptime=2400s)，缺失历史心跳时序与离线声明日志，无法精准界定设备在线区间分母",
-            GapBreakdown = gapBreakdowns
-        };
-
-        // 即使最终判为 UNKNOWN（分母口径不足），也把近似覆盖率作为"当前值"暴露出来，避免设置页出现空白。
-        double approximateRatio = onlineDuration > 0 ? validDuration / onlineDuration : 0;
-        context.Collector.SetCurrentValue(approximateRatio, unit: "ratio", label: $"{approximateRatio * 100.0:F1}%");
-
-        return DataReliabilityInvariants.CheckS9_GapHasSignal(report, context.Options);
+        return breakdown;
     }
+
 
     private async Task<InvariantResult> CheckS10Async(DbConnection conn, RuleCheckContext context)
     {
@@ -1518,8 +1764,10 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
 
         await using var cmd = conn.CreateCommand();
         cmd.CommandTimeout = 15;
+        // duration 必须一并取出：S13 判的是两个实例的采集区间是否**真实重叠**，
+        // 只拿时间戳无法区分"旧实例退出、新实例立刻接管"（正常交接）与"两个实例同时在采集"。
         cmd.CommandText = $"""
-            SELECT device_id, timestamp, instance_id
+            SELECT device_id, timestamp, instance_id, duration
             FROM pc_tracker_events
             WHERE instance_id IS NOT NULL AND instance_id != ''
             ORDER BY timestamp DESC
@@ -1533,11 +1781,13 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             string dev = reader.IsDBNull(0) ? "default" : reader.GetString(0);
             DateTime ts = reader.GetDateTime(1);
             string instanceId = reader.IsDBNull(2) ? "default" : reader.GetString(2);
+            double duration = reader.IsDBNull(3) ? 0 : reader.GetDouble(3);
             heartbeats.Add(new CollectionHeartbeat
             {
                 DeviceId = dev,
                 Timestamp = ts,
-                InstanceId = instanceId
+                InstanceId = instanceId,
+                DurationSeconds = duration
             });
         }
 
@@ -1549,7 +1799,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (heartbeats.Count == 0)
             return InvariantResult.Unknown("INV-P22 UNKNOWN: 无采集流数据可检验多实例冲突");
 
-        return DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, context.Options);
+        return DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, context.Options, context.NowUtc);
     }
 
     #endregion
@@ -1599,6 +1849,16 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             return false;
         }
     }
+
+    /// <summary>
+    /// 事件类型是否属于"缺数据"类（gap / afk / offline / sleep）。
+    /// 必须与 <see cref="GapEventTypeSqlList"/>（SQL 侧）逐项一致 ——
+    /// 两处一旦漂移，S7 与 S9 就会对同一行数据给出相反的分类。
+    /// 一致性由 `DataReliabilityQualityInspectorTests.GapEventTypePredicate_MatchesSqlList` 锁定。
+    /// </summary>
+    internal static bool IsGapEventType(string? eventType) =>
+        eventType is not null &&
+        GapEventTypes.Contains(eventType, StringComparer.OrdinalIgnoreCase);
 
     private static async Task<bool> ColumnExistsAsync(
         DbConnection conn,

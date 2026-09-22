@@ -118,6 +118,18 @@ public sealed class ClockEventItem
 /// <summary>
 /// S6 (INV-P20): 设备下线声明与上传滞后采样
 /// </summary>
+/// <summary>
+/// 设备"我下线了"的自我声明。
+///
+/// 语义有两种形态，判据必须都支持：
+///   * **区间声明**：客户端明确给出离线的起止（如计划离线窗口），Start &lt; End；
+///   * **时点声明**：客户端只在上报里带了一个"我正要下线"的时刻（心跳/退出钩子），
+///     此时 Start == End，表示"设备在该时刻声明即将停止出数"。
+///
+/// 判据用 StartTime 落在待解释空档附近来认定覆盖，**不要求 EndTime 延伸到空档末尾**
+/// （时点声明没有终止信息）；但也不得把一次声明当成"此后永久离线"——
+/// 实测有一次 exit 声明 7 秒后设备就恢复了，若按永久处理会掩盖之后所有真实断档。
+/// </summary>
 public sealed class OfflineDeclaration
 {
     public string DeviceId { get; set; } = string.Empty;
@@ -130,14 +142,35 @@ public sealed class UploadLagSample
 {
     public DateTime EventTime { get; set; }
     public DateTime CreatedAt { get; set; }
+
+    /// <summary>
+    /// 该样本是否为**系统合成的"缺数据"标记**（gap/离线补报）而不是真实采集事件。
+    /// 合成 gap 事件的 timestamp 是断档起点、created_at 是重启后补传时刻，
+    /// 两者之差恒等于断档时长，**不代表上传链路延迟**，必须排除出 S6 的滞后统计
+    /// （实测：含 gap 时 p99 = 425.9 分钟，排除后 p99 = 19.2 分钟）。
+    /// </summary>
+    public bool IsSyntheticGap { get; set; }
 }
 
 public sealed class DeviceActivityTrace
 {
     public string DeviceId { get; set; } = string.Empty;
-    public IReadOnlyList<DateTime> EventTimes { get; set; } = Array.Empty<DateTime>();
+
+    /// <summary>
+    /// 该设备产生的**事件区间**（起点 + 时长）。空档判定按"上一段结束 → 下一段开始"计算，
+    /// 而不是"起点减起点" —— 判据说的是"设备**停止出数**必须自己有交代"，
+    /// 停止出数发生在事件结束时刻，不是下一条事件的起点。
+    /// </summary>
+    public IReadOnlyList<(DateTime StartTime, DateTime EndTime)> EventIntervals { get; set; }
+        = Array.Empty<(DateTime, DateTime)>();
+
     public IReadOnlyList<OfflineDeclaration> Declarations { get; set; } = Array.Empty<OfflineDeclaration>();
-    public IReadOnlyList<(DateTime EventTime, DateTime CreatedAt)> UploadLagSamples { get; set; } = Array.Empty<(DateTime, DateTime)>();
+
+    /// <summary>
+    /// 上传滞后采样。系统合成的 gap 事件必须标记 <see cref="UploadLagSample.IsSyntheticGap"/>，
+    /// 否则会把"断档时长"误当成"链路延迟"计入 p99。
+    /// </summary>
+    public IReadOnlyList<UploadLagSample> UploadLagSamples { get; set; } = Array.Empty<UploadLagSample>();
 }
 
 /// <summary>
@@ -221,7 +254,13 @@ public sealed class DerivedTableStatus
 }
 
 /// <summary>
-/// S13 (INV-P22): 采集心跳/事件
+/// S13 (INV-P22): 采集心跳/事件。
+/// <para>
+/// <see cref="Timestamp"/> + <see cref="DurationSeconds"/> 描述该实例在采集流中**占用**的时间区间；
+/// 判据按区间是否真实重叠来判断"多实例并发采集"。若 <see cref="DurationSeconds"/> 为 0
+/// （旧调用方只提供瞬时心跳），判据退化为按时刻先后判断交接是否重叠 —— 见
+/// <see cref="DataReliabilityInvariants.CheckS13_SingleInstance"/>。
+/// </para>
 /// </summary>
 public sealed class CollectionHeartbeat
 {
@@ -230,4 +269,11 @@ public sealed class CollectionHeartbeat
     public long SessionId { get; set; }
     public double PhaseOffsetSeconds { get; set; }
     public string? InstanceId { get; set; }
+
+    /// <summary>
+    /// 该心跳事件覆盖的时长（秒）。用于判定不同实例的采集区间是否真实重叠：
+    /// 只有重叠才构成"多实例并发采集"；提前退出、下一个实例立刻接管属于正常交接。
+    /// 0 表示未提供时长（按瞬时点处理）。
+    /// </summary>
+    public double DurationSeconds { get; set; }
 }
