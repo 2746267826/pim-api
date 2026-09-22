@@ -37,6 +37,18 @@
 
 -
 
+## 需求与验收映射 / Requirement & Acceptance Mapping
+
+<!-- 每行一条验收条件（AC）；编号须与工单一致。
+     要求、编号规则、结果状态语义见 docs/ai-dev-workflow.md。
+     无需求来源的维护性改动写「无 / None」，但「测试」章节仍须给出实际执行结果。 -->
+
+| 编号 | 实现（文件/函数） | 验证方式 | 结果 | 证据 |
+|---|---|---|---|---|
+|  |  |  |  |  |
+
+<!-- 结果只能填：PASS / FAIL / BLOCKED / NOT-VERIFIED / APPROVED-EXCEPTION -->
+
 <!--
 说明 / Note：
 以上「技术修改 / 功能变化 / 如何体验」章节会被 CI 自动提取并写入 GitHub Release 更新日志，
