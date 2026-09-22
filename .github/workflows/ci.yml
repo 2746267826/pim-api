@@ -382,6 +382,100 @@ jobs:
           echo ""
           echo "> Artifacts: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
+  # 汇总门禁：把「子任务失败 / 应跑却未跑」变成整体失败。
+  #
+  # 为什么需要它：`summarize` 虽然 `if: always()`，但只打印表格，
+  # 无论子任务结果如何都返回成功，因此无法作为分支保护的必需检查。
+  # 本 job 名称固定（CI Gate）、总在运行，且在下列任一情形失败：
+  #   1) 任一必需 job 结果为 failure / cancelled；
+  #   2) `changes` 判定某组件「应当重建」，但对应 job 以 skipped 结束（疑似静默漏跑）。
+  # 反之，因路径过滤而未变化、按设计被跳过的组件视为正常。
+  #
+  # 维护提示：本 job 的 `should` 判定必须与各 build-* job 的 `if` 条件保持一致；
+  # 修改那些 if 条件（例如新增组件、调整路径过滤）时，请同步更新这里，否则会漏报或误报。
+  gate:
+    name: CI Gate
+    needs: [resolve-version, changes, build-api, build-web, build-windows, build-android, build-docker, build-shell-windows, build-shell-android, build-browser-extension, build-browser-extension-firefox, build-mcp]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate required jobs
+        env:
+          R_RESOLVE: ${{ needs.resolve-version.result }}
+          R_CHANGES: ${{ needs.changes.result }}
+          R_API: ${{ needs.build-api.result }}
+          R_WEB: ${{ needs.build-web.result }}
+          R_WINDOWS: ${{ needs.build-windows.result }}
+          R_ANDROID: ${{ needs.build-android.result }}
+          R_DOCKER: ${{ needs.build-docker.result }}
+          R_SHELL_WINDOWS: ${{ needs.build-shell-windows.result }}
+          R_SHELL_ANDROID: ${{ needs.build-shell-android.result }}
+          R_EXT: ${{ needs.build-browser-extension.result }}
+          R_EXT_FIREFOX: ${{ needs.build-browser-extension-firefox.result }}
+          R_MCP: ${{ needs.build-mcp.result }}
+          W_ALL: ${{ needs.changes.outputs.all }}
+          W_API: ${{ needs.changes.outputs.api }}
+          W_WEB: ${{ needs.changes.outputs.web }}
+          W_WINDOWS: ${{ needs.changes.outputs.windows }}
+          W_ANDROID: ${{ needs.changes.outputs.android }}
+          W_DOCKER: ${{ needs.changes.outputs.docker }}
+          W_SHELL_WINDOWS: ${{ needs.changes.outputs.shellWindows }}
+          W_SHELL_ANDROID: ${{ needs.changes.outputs.shellAndroid }}
+          W_EXT: ${{ needs.changes.outputs.browserExtension }}
+          W_MCP: ${{ needs.changes.outputs.mcp }}
+        run: |
+          set -uo pipefail
+          fail=0
+
+          # 该组件本次是否被判定为「应当重建」（任一 flag 为 true，或 all 为 true）
+          should () {
+            if [ "$W_ALL" = "true" ]; then echo true; return; fi
+            for flag in "$@"; do
+              if [ "$flag" = "true" ]; then echo true; return; fi
+            done
+            echo false
+          }
+
+          # result: 子任务结果；wanted: 是否应当运行（true/false）
+          check () {
+            local label="$1" result="$2" wanted="$3"
+            if [ "$result" = "success" ]; then
+              echo "✅ $label — success"
+            elif [ "$result" = "skipped" ] && [ "$wanted" != "true" ]; then
+              echo "⏭️  $label — skipped（该组件本次无变化，按设计跳过）"
+            elif [ "$result" = "skipped" ]; then
+              echo "❌ $label — 判定应当重建，却以 skipped 结束（疑似静默漏跑）"
+              fail=1
+            else
+              echo "❌ $label — ${result:-<missing>}"
+              fail=1
+            fi
+          }
+
+          # 基础 job 必须成功（它们决定后续过滤与版本解析）
+          check "resolve-version" "$R_RESOLVE" "true"
+          check "changes"         "$R_CHANGES" "true"
+
+          check "build-api"                       "$R_API"           "$(should "$W_API")"
+          check "build-web"                       "$R_WEB"           "$(should "$W_WEB")"
+          check "build-windows"                   "$R_WINDOWS"       "$(should "$W_WINDOWS")"
+          check "build-android"                   "$R_ANDROID"       "$(should "$W_ANDROID")"
+          check "build-docker"                    "$R_DOCKER"        "$(should "$W_API" "$W_WEB" "$W_DOCKER")"
+          check "build-shell-windows"             "$R_SHELL_WINDOWS" "$(should "$W_SHELL_WINDOWS")"
+          check "build-shell-android"             "$R_SHELL_ANDROID" "$(should "$W_SHELL_ANDROID")"
+          check "build-browser-extension"         "$R_EXT"           "$(should "$W_EXT")"
+          check "build-browser-extension-firefox" "$R_EXT_FIREFOX"   "$(should "$W_EXT")"
+          check "build-mcp"                       "$R_MCP"           "$(should "$W_MCP")"
+
+          if [ "$fail" -ne 0 ]; then
+            echo ""
+            echo "::error::CI Gate 未通过：存在失败或疑似静默跳过的必需 job。"
+            exit 1
+          fi
+
+          echo ""
+          echo "CI Gate 通过：所有必需 job 均成功，或因组件无变化而按设计跳过。"
+
   release:
     needs: [resolve-version, summarize, build-api, build-web, build-windows, build-android, build-docker, build-shell-windows, build-shell-android, build-browser-extension, build-browser-extension-firefox, build-mcp]
     # Release on every master push where no build failed. Skipped (unchanged)
