@@ -44,6 +44,30 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # 真库用例需要一个可用的 PostgreSQL。这里用 GitHub 托管的临时实例：
+    # 随本次运行创建、结束后销毁，不接触任何真实环境，也不需要任何外部凭据。
+    # 注意：TempMigrationDatabase 会自行建库/删库，要求 CREATEDB 权限
+    #（官方镜像中 POSTGRES_USER 即超级用户，满足该前提）。
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pim_ci
+          POSTGRES_PASSWORD: pim_ci_temporary
+          POSTGRES_DB: pim_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # 指向本次运行的一次性实例；凭据仅对该临时容器有效，非任何真实环境凭据。
+      # RealDbTestConnection 只读这个变量：不可达时用例显式 Skip，其余异常必须失败。
+      PIM_TEST_CONN: "Host=127.0.0.1;Port=5432;Database=pim_ci;Username=pim_ci;Password=pim_ci_temporary"
+
     steps:
       - uses: actions/checkout@v4
         with:
