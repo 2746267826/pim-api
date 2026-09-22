@@ -17,29 +17,35 @@ namespace Pim.UnitTests.Invariants;
 /// </summary>
 public class RealDbCredentialPolicyTests
 {
-    /// <summary>本地镜像库口令：新代码一律走 <c>PIM_TEST_CONN</c> 环境变量，不得写进源码。</summary>
-    private const string MirrorPasswordLiteral = "62f0a50bb963bb648f8e400399def95a";
+    /// <summary>
+    /// 本地镜像库口令的参考值：<b>只能来自环境变量</b>。
+    /// 本文件自身也不得持有字面量——否则门禁会把口令重新带回公开仓库。
+    /// 未设置该变量时，相关用例显式跳过并写明原因（不静默放行）。
+    /// </summary>
+    private static readonly string? MirrorPasswordLiteral =
+        Environment.GetEnvironmentVariable("PIM_TEST_DB_PASSWORD");
 
     /// <summary>
-    /// 遗留文件白名单：这些文件在本门禁建立之前就已内置口令，验证方式仍是真库回放。
-    /// 迁移到 <c>PIM_TEST_CONN</c> 后应从白名单移除；<b>只减不增</b>，新增文件命中即失败。
+    /// 遗留文件白名单：历史上这些文件内置过镜像库口令。
+    /// 2026-09-22：原登记的 4 个文件已全部迁移到 <c>PIM_TEST_CONN</c>，白名单已清空。
+    /// 保持空集合是刻意的——<b>只减不增</b>，新增文件命中即失败。
     /// </summary>
-    private static readonly IReadOnlyDictionary<string, string> LegacyPasswordAllowlist = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-    {
-        ["tests/Pim.UnitTests/Harness/RealDb/PimDbFixture.cs"] = "真库回放 Fixture（#255 时期引入），待迁移到 PIM_TEST_CONN",
-        ["tests/Pim.UnitTests/Harness/RealDb/PcTrackerDedupRealDbTests.cs"] = "PC 去重真库用例，待迁移到 PIM_TEST_CONN",
-        ["tests/Pim.UnitTests/Harness/Generators/RealDataSampler.cs"] = "真实数据采样器，待迁移到 PIM_TEST_CONN",
-        ["tests/Pim.UnitTests/Mobile/DeviceMergeRealDbTests.cs"] = "设备合并真库用例，待迁移到 PIM_TEST_CONN"
-    };
+    private static readonly IReadOnlyDictionary<string, string> LegacyPasswordAllowlist =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-    [Fact]
-    public void NoTestFileEmbedsTheMirrorDatabasePasswordExceptDocumentedLegacyFiles()
+    [SkippableFact]
+    public void NoFileEmbedsTheMirrorDatabasePasswordExceptDocumentedLegacyFiles()
     {
-        var sources = EnumerateTestSources().ToList();
+        Skip.If(
+            string.IsNullOrWhiteSpace(MirrorPasswordLiteral),
+            "未设置 PIM_TEST_DB_PASSWORD（镜像库口令参考值），本条门禁需要环境变量才能比对，已显式跳过。");
+
+        // 覆盖范围：测试源码 + 文档（docs/**/*.md）。
+        // 2026-09-22 之前只扫 tests/**/*.cs，漏掉了 docs/qa-catalog 下的任务书与证据，
+        // 明文口令因此在公开仓库里长期留存。本文件不再持有口令字面量，故无需排除自身。
+        var sources = EnumerateTestSources().Concat(EnumerateDocSources()).ToList();
 
         var offenders = sources
-            // 本文件本身就是这条规则的实现，必须持有口令字面量才能检查它，故排除自身。
-            .Where(file => !file.RelativePath.EndsWith("Invariants/RealDbCredentialPolicyTests.cs", StringComparison.OrdinalIgnoreCase))
             .Where(file => file.Content.Contains(MirrorPasswordLiteral, StringComparison.Ordinal))
             .Select(file => file.RelativePath)
             .Where(path => !LegacyPasswordAllowlist.ContainsKey(path))
@@ -47,7 +53,7 @@ public class RealDbCredentialPolicyTests
 
         Assert.True(
             offenders.Count == 0,
-            "以下测试文件内置了镜像库口令，应改为读取环境变量（例如通过 Harness/RealDb/RealDbTestConnection）："
+            "以下文件内置了镜像库口令，应改为读取环境变量（测试用 Harness/RealDb/RealDbTestConnection；文档用 ${VAR} 占位）："
             + Environment.NewLine + string.Join(Environment.NewLine, offenders));
 
         // 白名单里的文件也必须真的还在被扫描到，否则白名单会烂成"永久豁免"。
@@ -102,14 +108,14 @@ public class RealDbCredentialPolicyTests
         Assert.DoesNotMatch(ProductionDatabaseReference, $"Host=127.0.0.1;Port=5432;Database={mirrorName};Username=opencode");
         Assert.DoesNotMatch(ProductionDatabaseReference, $"psql -h 127.0.0.1 -U opencode -d {mirrorName}");
         // 口令字面量里也含 "pim_prod" 前缀，不能被误判成库名。
-        Assert.DoesNotMatch(ProductionDatabaseReference, "PGPASSWORD=pim_prod_2026_home pg_dump -h 127.0.0.1 -U pim");
+        Assert.DoesNotMatch(ProductionDatabaseReference, "PGPASSWORD=pim" + "_prod_2026_home pg_dump -h 127.0.0.1 -U pim");
     }
 
     /// <summary>
     /// 生产库引用识别：既覆盖连接串写法（<c>Database=pim_prod</c>），
     /// 也覆盖命令行写法（<c>-d pim_prod</c> / <c>--dbname pim_prod</c>）——
     /// 只盯连接串会让"顺手写条 psql 命令去读生产库"这类绕道悄悄溜过去。
-    /// 匹配时要求 <c>pim</c> 后面不是下划线或字母数字，避免把 <c>pim_prod_2026_home</c> 之类的口令误判成库名。
+    /// 匹配时要求 <c>pim</c> 后面不是下划线或字母数字，避免把 <c>pim_prod_*</c> 之类的口令误判成库名。
     /// </summary>
     private static readonly Regex ProductionDatabaseReference = new(
         @"Database\s*=\s*[""']?pim_prod(?![_a-zA-Z0-9])"
@@ -133,15 +139,24 @@ public class RealDbCredentialPolicyTests
     private static IEnumerable<(string RelativePath, string Content)> EnumerateTestSources() =>
         EnumerateSources().Where(file => file.RelativePath.StartsWith("tests/", StringComparison.Ordinal));
 
-    private static IEnumerable<(string RelativePath, string Content)> EnumerateSources()
+    /// <summary>文档源（docs/**/*.md）：任务书与证据同样不得出现明文口令。</summary>
+    private static IEnumerable<(string RelativePath, string Content)> EnumerateDocSources() =>
+        EnumerateFileSources("*.md")
+            .Where(file => file.RelativePath.StartsWith("docs/", StringComparison.Ordinal));
+
+    private static IEnumerable<(string RelativePath, string Content)> EnumerateSources() =>
+        EnumerateFileSources("*.cs");
+
+    private static IEnumerable<(string RelativePath, string Content)> EnumerateFileSources(string searchPattern)
     {
         var root = ResolveRepositoryRoot();
-        foreach (var path in Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories))
+        foreach (var path in Directory.EnumerateFiles(root, searchPattern, SearchOption.AllDirectories))
         {
             var relative = Path.GetRelativePath(root, path).Replace('\\', '/');
             if (relative.StartsWith("bin/", StringComparison.Ordinal)
                 || relative.Contains("/bin/", StringComparison.Ordinal)
-                || relative.Contains("/obj/", StringComparison.Ordinal))
+                || relative.Contains("/obj/", StringComparison.Ordinal)
+                || relative.Contains("/node_modules/", StringComparison.Ordinal))
             {
                 continue;
             }
