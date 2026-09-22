@@ -94,6 +94,20 @@ jobs:
       - name: Restore
         run: dotnet restore Pim.sln --runtime linux-x64
 
+      # 真库用例（Harness/RealDb、Harness/PropertyTests）假定目标库已有完整 schema：
+      # PimDbFixture 的探活会查询 mobile_usage_sessions，缺表属于"配置错误"而**不是**
+      # "环境缺失"，会直接让用例失败（这是刻意的，避免静默跳过）。
+      # 因此先对本次运行的临时实例执行一次完整迁移链（只建 schema，不灌数据）。
+      - name: Initialize test database schema
+        run: |
+          set -euo pipefail
+          dotnet tool install --global dotnet-ef --version 8.0.11 >/dev/null 2>&1 || true
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          dotnet ef database update \
+            --project src/Pim.Infrastructure/Pim.Infrastructure.csproj \
+            --startup-project src/Pim.Api/Pim.Api.csproj \
+            --connection "$PIM_TEST_CONN"
+
       - name: Test
         run: dotnet test Pim.sln --configuration Release --no-restore
 
