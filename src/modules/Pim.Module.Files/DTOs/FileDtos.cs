@@ -90,9 +90,30 @@ public sealed record FileSuggestionDto(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
-public sealed record FileListQuery(string? Path);
+/// <summary>
+/// 目录列表查询（REQ-2/3/8/9）。
+/// <paramref name="Q"/> 为当前文件夹内的名称过滤；<paramref name="Sort"/> 取
+/// <c>name</c>/<c>modified</c>/<c>size</c>，<paramref name="Order"/> 取 <c>asc</c>/<c>desc</c>，
+/// <paramref name="Type"/> 取 <c>folder</c>/<c>file</c>（省略表示全部）。
+/// 取值非法时回落到默认（名称升序、全部类型），不抛错——前端本地缓存可能带着旧值。
+/// </summary>
+public sealed record FileListQuery(
+    string? Path,
+    string? Q = null,
+    string? Sort = null,
+    string? Order = null,
+    string? Type = null);
 public sealed record FileSearchQuery(string? Q, string? Mode);
-public sealed record FileSearchResultDto(IReadOnlyList<FileItemDto> Items, IReadOnlyList<FileChunkSearchHitDto> Chunks);
+/// <summary>
+/// 元数据搜索结果（REQ-8 / P7）。
+/// <paramref name="TotalCount"/>/<paramref name="TotalPages"/> 是**新增的可选字段**：
+/// 老调用方（含 MCP <c>search_files</c>）只会多拿到信息，不会少拿到字段。
+/// </summary>
+public sealed record FileSearchResultDto(
+    IReadOnlyList<FileItemDto> Items,
+    IReadOnlyList<FileChunkSearchHitDto> Chunks,
+    int TotalCount = 0,
+    int TotalPages = 0);
 public sealed record FileChunkSearchHitDto(Guid ChunkId, Guid FileItemId, Guid VersionId, string Text, decimal Score);
 public sealed record MoveFileRequest(string DestinationPath);
 public sealed record RenameFileRequest(string Name);

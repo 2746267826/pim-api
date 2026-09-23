@@ -24,8 +24,19 @@ public sealed class FileOperationService(
     private const string ResourceType = "file";
     private const string AuditSource = "files";
 
+    /// <summary>列表分页上限（工单 P3：100/页）。</summary>
+    internal const int MaxPageSize = 100;
+
     private Guid UserId => currentUser.UserId ?? throw new DomainException(1002, "未登录");
 
+    /// <summary>
+    /// 目录列表（REQ-2/3/8/9）：只返回 <paramref name="query"/> 指定目录的**直属子项**，
+    /// 过滤、排序、计数与分页全部在数据库侧完成。
+    ///
+    /// 旧实现把目标路径的整棵子树 <c>ToListAsync</c> 进内存再筛直属子项：根目录在 12 万项的
+    /// 树上要物化 12 万个带 Include 的实体（实测 3044ms），且时间随全树规模线性增长。
+    /// 这里改成纯 SQL 谓词 + LIMIT/OFFSET，物化量恒为**一页**。
+    /// </summary>
     public async Task<PagedResult<FileItemDto>> ListItemsAsync(
         FileListQuery query,
         int page = 1,
@@ -33,43 +44,112 @@ public sealed class FileOperationService(
         CancellationToken ct = default)
     {
         page = Math.Max(1, page);
-        pageSize = Math.Clamp(pageSize, 1, 100);
+        pageSize = Math.Clamp(pageSize, 1, MaxPageSize);
         var userId = UserId;
         var parentPath = NormalizePath(query.Path);
-        var candidatePrefix = parentPath == "/" ? "/" : $"{parentPath}/";
 
-        var candidates = await db.Set<FileItemEntity>()
-            .AsNoTracking()
-            .Include(item => item.IndexJobs)
-            .Where(item =>
-                item.Provider != null
-                && item.Provider.UserId == userId
-                && !item.IsDeleted
-                && item.Path.StartsWith(candidatePrefix))
-            .ToListAsync(ct);
+        var items = DirectChildren(db, userId, parentPath);
 
-        var allItems = candidates
-            .Where(item => IsDirectChildPath(item.Path, parentPath))
-            .OrderBy(item => item.ItemType == "folder" ? 0 : 1)
-            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Id)
-            .Select(FileItemMapper.Map)
-            .ToList();
+        // REQ-4：树只要目录；REQ-9/AC-9.2：类型过滤与排序都要在分页之前生效
+        var itemType = NormalizeItemType(query.Type);
+        if (itemType is not null)
+        {
+            items = items.Where(item => item.ItemType == itemType);
+        }
 
-        var totalCount = allItems.Count;
+        // REQ-8：当前文件夹模式的关键词过滤（名称，大小写不敏感）
+        var keyword = query.Q?.Trim();
+        if (!string.IsNullOrEmpty(keyword))
+        {
+            var lowered = keyword.ToLowerInvariant();
+            items = items.Where(item => item.Name.ToLower().Contains(lowered));
+        }
+
+        var totalCount = await items.CountAsync(ct);
         var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
-        var items = allItems
+
+        var rows = await ApplySort(items, query.Sort, query.Order)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .ToList();
+            .Include(item => item.IndexJobs)
+            .ToListAsync(ct);
 
         return new PagedResult<FileItemDto>(
-            items,
+            rows.Select(FileItemMapper.Map).ToList(),
             page,
             pageSize,
             totalCount,
             totalPages);
     }
+
+    /// <summary>
+    /// 直属子项的数据库侧谓词（REQ-2）。
+    ///
+    /// 两条判据合起来等价于原来的内存版 <c>IsDirectChildPath</c>：
+    /// <list type="number">
+    ///   <item>路径必须以 <c>父路径 + "/"</c> 开头（根目录即 <c>"/"</c>）——原文的
+    ///   <c>StartsWith(candidatePrefix)</c>；</item>
+    ///   <item>去掉该前缀后**不能再出现分隔符**——原文的「相对路径不含 '/'」；</item>
+    ///   <item>另外排除父路径自身：根目录的前缀是 <c>"/"</c>，会把代表根容器的那一行
+    ///   （<c>path = "/"</c>）也扫进来，而它并不是自己的子项。</item>
+    /// </list>
+    ///
+    /// 刻意**不用**「前缀区间」(<c>path &gt;= prefix AND path &lt; prefix+1</c>) 来预筛：该区间是否
+    /// 覆盖全部同前缀路径取决于数据库排序规则对分隔符与后随字符的相对次序，换一个
+    /// collation 就可能把合法子项排除在区间外，造成静默缺项。这里用 <c>LIKE 'prefix%'</c>
+    /// 语义（<c>StartsWith</c>）作为唯一判据，正确性与 collation 无关；
+    /// 让它在 12 万项规模上仍走索引的是迁移里那条 <c>text_pattern_ops</c> 索引。
+    /// </summary>
+    internal static IQueryable<FileItemEntity> DirectChildren(
+        PimDbContext db,
+        Guid userId,
+        string parentPath)
+    {
+        var prefix = parentPath == "/" ? "/" : $"{parentPath}/";
+
+        return db.Set<FileItemEntity>()
+            .AsNoTracking()
+            .Where(item =>
+                item.Provider != null
+                && item.Provider.UserId == userId
+                && !item.IsDeleted
+                && item.Path != parentPath
+                && item.Path.StartsWith(prefix)
+                && !item.Path.Substring(prefix.Length).Contains("/"));
+    }
+
+    /// <summary>
+    /// 排序（REQ-9）：文件夹恒在前（Windows 资源管理器口径，也是 AC-2.2 的默认约定），
+    /// 再按排序键；末位恒以 <c>Id</c> 兜底，保证翻页时是一个**全序**，不重不漏（AC-9.2）。
+    /// 未知排序键/方向回落到默认（名称升序），不抛错。
+    /// </summary>
+    internal static IOrderedQueryable<FileItemEntity> ApplySort(
+        IQueryable<FileItemEntity> source,
+        string? sort,
+        string? order)
+    {
+        var descending = string.Equals(order?.Trim(), "desc", StringComparison.OrdinalIgnoreCase);
+        var foldersFirst = source.OrderBy(item => item.ItemType == "folder" ? 0 : 1);
+
+        return (sort?.Trim().ToLowerInvariant()) switch
+        {
+            "modified" when descending => foldersFirst.ThenByDescending(i => i.ModifiedAt).ThenBy(i => i.Id),
+            "modified" => foldersFirst.ThenBy(i => i.ModifiedAt).ThenBy(i => i.Id),
+            "size" when descending => foldersFirst.ThenByDescending(i => i.Size ?? 0).ThenBy(i => i.Id),
+            "size" => foldersFirst.ThenBy(i => i.Size ?? 0).ThenBy(i => i.Id),
+            "name" when descending => foldersFirst.ThenByDescending(i => i.Name.ToLower()).ThenBy(i => i.Id),
+            _ => foldersFirst.ThenBy(i => i.Name.ToLower()).ThenBy(i => i.Id),
+        };
+    }
+
+    /// <summary>只接受 folder/file；其余（含 null、脏值）表示不过滤。</summary>
+    private static string? NormalizeItemType(string? type)
+        => type?.Trim().ToLowerInvariant() switch
+        {
+            "folder" => "folder",
+            "file" => "file",
+            _ => null,
+        };
 
     public async Task<FileItemDto> GetItemAsync(Guid id, CancellationToken ct = default)
     {
@@ -195,25 +275,9 @@ public sealed class FileOperationService(
             suggestion.CreatedAt,
             suggestion.UpdatedAt);
 
-    private static bool IsDirectChildPath(string itemPath, string parentPath)
-    {
-        var normalizedPath = NormalizePath(itemPath);
-        if (normalizedPath == parentPath)
-            return false;
+    // 旧的 IsDirectChildPath（内存版直属子项判定）随 REQ-2 一并删除：
+    // 判定已下推到 SQL（见 DirectChildren），保留一份内存实现只会让两处语义漂移。
 
-        if (parentPath == "/")
-        {
-            var rootRelativePath = normalizedPath.Trim('/');
-            return rootRelativePath.Length > 0 && !rootRelativePath.Contains('/', StringComparison.Ordinal);
-        }
-
-        var prefix = $"{parentPath}/";
-        if (!normalizedPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        var relativePath = normalizedPath[prefix.Length..];
-        return relativePath.Length > 0 && !relativePath.Contains('/', StringComparison.Ordinal);
-    }
 
     internal static string NormalizePath(string? path)
     {

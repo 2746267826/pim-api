@@ -73,6 +73,10 @@ public sealed class FileItemEntityConfiguration : IEntityTypeConfiguration<FileI
         builder.HasIndex(e => new { e.ProviderId, e.Path });
         builder.HasIndex(e => new { e.ProviderId, e.ParentExternalFileId });
         builder.HasIndex(e => new { e.ProviderId, e.IsDeleted });
+        // 另有一条不在本模型里的索引：ix_file_items_provider_id_path_pattern
+        // (provider_id, path text_pattern_ops)，由迁移 20260923140137_AddFileItemPathPatternIndex
+        // 用原生 SQL 建。EF 的模型 API 表达不了 opclass；列表的 path LIKE 'prefix%' 判据在非 C
+        // 排序规则下用不了上面的普通 (provider_id, path) 索引，靠这条才走索引扫描（REQ-2）。
     }
 }
 

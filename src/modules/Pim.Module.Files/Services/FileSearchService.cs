@@ -21,10 +21,7 @@ public sealed class FileSearchService(
     SensitivePathPolicy? sensitivePolicy = null,
     IConfiguration? configuration = null)
 {
-    /// <summary>先按上限多取一些再做敏感过滤，避免敏感项吃掉结果预算。</summary>
-    private const int CandidateLimit = 60;
-
-    /// <summary>返回结果上限（单页）。</summary>
+    /// <summary>返回结果上限（单页，不传 pageSize 时使用）。</summary>
     private const int ResultLimit = 20;
 
     /// <summary>按 id 排序、批量取一页元数据（供翻页使用）。</summary>
@@ -43,9 +40,14 @@ public sealed class FileSearchService(
         => SearchAsync(query, page: 1, pageSize: ResultLimit, ct);
 
     /// <summary>
-    /// 元数据搜索（设计 §9）：支持分页。
-    /// 合约里 `search_files` 声明了 page/pageSize，因此这里必须真的翻页，否则
-    /// page=2 会返回第一页、超过单页的结果永远取不到（复审发现）。
+    /// 元数据搜索（设计 §9）：支持真分页并返回总数（REQ-8 / P7）。
+    ///
+    /// 敏感路径的排除**下推到 SQL**（在分页与计数之前），因此：
+    /// <list type="bullet">
+    ///   <item>结果里没有敏感项；</item>
+    ///   <item><c>TotalCount</c> 也不含敏感项——否则「共 N 项」会泄漏被保护文件的数量；</item>
+    ///   <item>分页不再需要「先多取 60 条候选再内存过滤」的旧窗口，第 2 页起不会凭空缺页。</item>
+    /// </list>
     /// </summary>
     public async Task<FileSearchResultDto> SearchAsync(
         FileSearchQuery query,
@@ -59,7 +61,7 @@ public sealed class FileSearchService(
         var search = query.Q?.Trim();
         if (string.IsNullOrWhiteSpace(search))
         {
-            return new FileSearchResultDto([], []);
+            return new FileSearchResultDto([], [], 0, 0);
         }
 
         var lowered = search.ToLowerInvariant();
@@ -77,24 +79,46 @@ public sealed class FileSearchService(
                 && !item.IsDeleted
                 && (item.Name.ToLower().Contains(lowered)
                     || item.Path.ToLower().Contains(lowered)
-                    || (item.MimeType != null && item.MimeType.ToLower().Contains(lowered))))
+                    || (item.MimeType != null && item.MimeType.ToLower().Contains(lowered))));
+
+        matches = ExcludeProtectedDirectories(matches);
+
+        var totalCount = await matches.CountAsync(ct);
+        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
+
+        var items = await matches
             .OrderBy(item => item.ItemType == "folder" ? 0 : 1)
             .ThenBy(item => item.Name.ToLower())
-            .ThenBy(item => item.Id);
-
-        // 敏感路径不进搜索结果（§13）。过滤必须在分页**之前**完成，否则敏感项会占掉页名额，
-        // 使返回条数少于 pageSize 且翻页错位；因此先在库侧多取候选，再在内存过滤后分页。
-        var candidates = await matches.Take(CandidateLimit).ToListAsync(ct);
-        var allowed = candidates
-            .Where(item => !_sensitivePolicy.IsProtected(item.Path))
-            .ToList();
-
-        var items = allowed
+            .ThenBy(item => item.Id)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(FileItemMapper.Map)
-            .ToList();
+            .ToListAsync(ct);
 
-        return new FileSearchResultDto(items, []);
+        return new FileSearchResultDto(
+            items.Select(FileItemMapper.Map).ToList(),
+            [],
+            totalCount,
+            totalPages);
+    }
+
+    /// <summary>
+    /// 把 <see cref="SensitivePathPolicy"/> 的「目录本身或其子树」判定翻译成 SQL 谓词。
+    ///
+    /// 逐条 AND 一个 <c>Where</c>（而不是 <c>Any(...)</c>）：EF 无法把闭包里的
+    /// <c>Any</c> 翻译成 SQL，逐条下推才能既保持与 <c>IsProtected</c> 相同的语义，
+    /// 又让排除发生在分页与计数之前。
+    /// </summary>
+    private IQueryable<FileItemEntity> ExcludeProtectedDirectories(IQueryable<FileItemEntity> source)
+    {
+        foreach (var directory in _sensitivePolicy.ProtectedDirectories)
+        {
+            var protectedDirectory = directory;
+            var protectedPrefix = $"{directory}/".ToLowerInvariant();
+            source = source.Where(item =>
+                item.Path != protectedDirectory
+                && !item.Path.ToLower().StartsWith(protectedPrefix));
+        }
+
+        return source;
     }
 }

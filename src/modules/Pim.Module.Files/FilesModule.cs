@@ -269,10 +269,18 @@ public sealed class FilesModule : IModule
         [FromQuery] string? path,
         [FromQuery] int? page,
         [FromQuery] int? pageSize,
+        [FromQuery] string? q,
+        [FromQuery] string? sort,
+        [FromQuery] string? order,
+        [FromQuery] string? type,
         [FromServices] FileOperationService service,
         CancellationToken ct)
         => Results.Ok(ApiResponse<FileListResponse>.Ok(new FileListResponse(
-            await service.ListItemsAsync(new FileListQuery(path), page ?? 1, pageSize ?? 50, ct))));
+            await service.ListItemsAsync(
+                new FileListQuery(path, q, sort, order, type),
+                page ?? 1,
+                pageSize ?? 50,
+                ct))));
 
     private static async Task<IResult> GetItemAsync(
         Guid id,

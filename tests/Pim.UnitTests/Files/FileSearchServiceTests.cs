@@ -232,6 +232,81 @@ public class FileSearchServiceTests
         Assert.Equal(20, result.Items.Count);
     }
 
+    /// <summary>
+    /// REQ-8 / P7（PR-1）：全盘搜索结果按 100/页翻页，且总数是**全部命中数**，
+    /// 不是「当前取回的候选数」。旧实现先 `Take(60)` 再分页，第 2 页起会凭空丢结果。
+    /// </summary>
+    [Fact]
+    public async Task SearchAsync_PagesThroughMoreCandidatesThanTheOldSixtyItemWindow()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        for (var i = 0; i < 150; i++)
+        {
+            SeedItem(db, provider, $"/文档/报告{i:D3}.txt", $"报告{i:D3}.txt", "text/plain");
+        }
+
+        await db.SaveChangesAsync();
+        var service = CreateService(db, UserId);
+
+        var page1 = await service.SearchAsync(new FileSearchQuery("报告", null), page: 1, pageSize: 100);
+        var page2 = await service.SearchAsync(new FileSearchQuery("报告", null), page: 2, pageSize: 100);
+
+        Assert.Equal(150, page1.TotalCount);
+        Assert.Equal(2, page1.TotalPages);
+        Assert.Equal(100, page1.Items.Count);
+        Assert.Equal(50, page2.Items.Count);
+        Assert.Empty(page1.Items.Select(i => i.Id).Intersect(page2.Items.Select(i => i.Id)));
+    }
+
+    /// <summary>
+    /// 反面（AC-8.3）：敏感路径既不进结果，也不进总数——否则「共 N 项」会泄漏被保护文件的数量，
+    /// 而且会让分页出现空页。
+    /// </summary>
+    [Fact]
+    public async Task SearchAsync_SensitivePathsAreExcludedFromTotalsToo()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        for (var i = 0; i < 5; i++)
+        {
+            SeedItem(db, provider, $"/Secrets/报告S{i}.txt", $"报告S{i}.txt", "text/plain");
+        }
+
+        for (var i = 0; i < 7; i++)
+        {
+            SeedItem(db, provider, $"/文档/报告{i}.txt", $"报告{i}.txt", "text/plain");
+        }
+
+        await db.SaveChangesAsync();
+        var service = CreateService(db, UserId);
+
+        var result = await service.SearchAsync(new FileSearchQuery("报告", null), page: 1, pageSize: 100);
+
+        Assert.Equal(7, result.TotalCount);
+        Assert.All(result.Items, i => Assert.DoesNotContain("/Secrets", i.Path));
+    }
+
+    /// <summary>反面：翻到超出末页时返回空列表而不是把最后一页再发一遍。</summary>
+    [Fact]
+    public async Task SearchAsync_PageBeyondTheEndReturnsEmpty()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        for (var i = 0; i < 5; i++)
+        {
+            SeedItem(db, provider, $"/文档/报告{i}.txt", $"报告{i}.txt", "text/plain");
+        }
+
+        await db.SaveChangesAsync();
+        var service = CreateService(db, UserId);
+
+        var result = await service.SearchAsync(new FileSearchQuery("报告", null), page: 9, pageSize: 100);
+
+        Assert.Empty(result.Items);
+        Assert.Equal(5, result.TotalCount);
+    }
+
     [Fact]
     public async Task SearchAsync_WhenNotLoggedIn_Throws1002()
     {
