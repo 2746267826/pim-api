@@ -112,16 +112,28 @@ public sealed class FileSearchService(
     /// 而 SQL 的 <c>=</c> / <c>LIKE</c> 在非 C 排序规则下**大小写敏感**。早先只对前缀转小写、
     /// 对目录本身用裸 <c>=</c>，导致 <c>/secrets</c> 这类大小写变体能绕过排除、
     /// 把受保护目录的存在泄漏进结果与 <c>TotalCount</c>（复审 Critical）。
+    ///
+    /// 关键细节：**两侧都在 SQL 里转小写**（<c>lower(path)</c> 对 <c>lower(@dir)</c>），
+    /// 而不是在应用侧预先把目录转好。应用侧 <c>ToLowerInvariant</c> 与 PostgreSQL
+    /// <c>lower()</c> 对少数 Unicode 字符结果不同（例如 <c>İ</c>：.NET 保持不变、
+    /// PG 归约为 <c>i</c>），混用会让「策略判定受保护、SQL 却保留」这一**泄漏方向**重新出现。
+    /// 两边都交给数据库，比较至少在内部自洽。
+    ///
+    /// 残余差异（已知，方向安全）：<c>IsProtected</c> 的 <c>OrdinalIgnoreCase</c> 与
+    /// 数据库 <c>lower()</c> 仍可能在个别 Unicode 目录名上分歧，此时 SQL 谓词**更倾向排除**
+    /// （宁可多隐藏、不泄漏）。默认规则 <c>/Secrets/*</c>、<c>/Passwords/*</c> 均为 ASCII，不受影响。
     /// </summary>
     private IQueryable<FileItemEntity> ExcludeProtectedDirectories(IQueryable<FileItemEntity> source)
     {
         foreach (var directory in _sensitivePolicy.ProtectedDirectories)
         {
-            var protectedDirectory = directory.ToLowerInvariant();
-            var protectedPrefix = $"{directory}/".ToLowerInvariant();
+            // 传给 SQL 的是**原样**目录；转小写在两侧分别由数据库完成，
+            // 避免应用侧与数据库的 Unicode 大小写规则不同造成漏排除。
+            var protectedDirectory = directory;
+            var protectedPrefix = $"{directory}/";
             source = source.Where(item =>
-                item.Path.ToLower() != protectedDirectory
-                && !item.Path.ToLower().StartsWith(protectedPrefix));
+                item.Path.ToLower() != protectedDirectory.ToLower()
+                && !item.Path.ToLower().StartsWith(protectedPrefix.ToLower()));
         }
 
         return source;

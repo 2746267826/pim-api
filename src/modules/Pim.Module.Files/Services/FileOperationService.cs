@@ -100,15 +100,18 @@ public sealed class FileOperationService(
     /// 否则迁移里那条 <c>text_pattern_ops</c> 索引失效、退化成整表扫描。因此这里刻意
     /// **不做** <c>rtrim(path)</c> 这类「包住被索引列」的写法——规范化只作用在
     /// <c>Substring</c> 的**结果**上（它只是过滤条件，与索引无关）。
-    /// 实测：包住列时计划为 Parallel Seq Scan（37ms），写成现在这样则是
-    /// Bitmap Index Scan on ix_file_items_provider_id_path_pattern（15ms）。
+    /// 实测：包住列时为 Parallel Seq Scan，写成现在这样在选择性前缀上为
+    /// Bitmap Index Scan on ix_file_items_provider_id_path_pattern。
     ///
-    /// 与旧实现一样**不做大小写折叠**：路径大小写由 OneDrive 事实源决定，
-    /// 折叠会让 <c>/Main</c> 与 <c>/main</c> 混为一谈，掩盖真实的数据问题。
+    /// **已知取舍**：<c>StartsWith</c> 是大小写敏感的，而旧内存实现用 <c>OrdinalIgnoreCase</c>。
+    /// 大小写折叠会让 <c>/Main</c> 与 <c>/main</c> 这两个在 OneDrive 上真实存在的不同目录混为一谈，
+    /// 因此**不折叠**——这与 OneDrive 事实源一致，并已固化为契约用例
+    /// （<c>ListItemsAsync_DoesNotFoldPathCaseBetweenSiblingDirectories</c>）。
+    /// 同理不做反斜杠/首尾空白归一化：一条路径里出现 <c>\</c> 或首尾空白，
+    /// 说明事实源数据异常，应当被记录而不是被静默吞掉。
     ///
-    /// 同样刻意**不用**「前缀区间」(<c>path &gt;= prefix AND path &lt; prefix+1</c>) 预筛：
-    /// 该区间是否覆盖全部同前缀路径取决于排序规则对分隔符与后随字符的相对次序，
-    /// 换一个 collation 就可能把合法子项排除在区间外，造成静默缺项。
+    /// 注：大前缀（如 <c>/main/</c>，命中子树全部行）规划器可能选择 Seq Scan——这是
+    /// 「结果集本就很大」的正常选择，不是索引失效；选择性前缀仍走索引。
     /// </summary>
     internal static IQueryable<FileItemEntity> DirectChildren(
         PimDbContext db,
@@ -123,7 +126,10 @@ public sealed class FileOperationService(
                 item.Provider != null
                 && item.Provider.UserId == userId
                 && !item.IsDeleted
+                // 前缀判据必须作用在**裸列**上（可用 text_pattern_ops 索引）
                 && item.Path.StartsWith(prefix)
+                // 注意：下面两条必须**内联**写在这里。抽成静态辅助方法后 EF 无法翻译，
+                // 会在真库上抛 "The LINQ expression ... could not be translated"（真库用例守住）。
                 && item.Path.Substring(prefix.Length).TrimEnd('/').Length > 0
                 && !item.Path.Substring(prefix.Length).TrimEnd('/').Contains("/"));
     }
