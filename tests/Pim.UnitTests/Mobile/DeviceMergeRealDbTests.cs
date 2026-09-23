@@ -36,6 +36,10 @@ public sealed class DeviceMergeRealDbTests
         "mobile_timeline_blocks",
         "mobile_usage_aggregates",
         "mobile_analytics_materializations",
+        // 阶段一取证（REQ-1~REQ-4 / REQ-9）：合并与删除都会改写/清理这两张表，
+        // 临时 schema 必须一起克隆，否则用例会在缺表处失败（而不是验证合并语义）。
+        "mobile_forensic_events",
+        "mobile_dropped_reason_daily",
     ];
 
     private const string TargetDeviceId = "android-e2e-target";
