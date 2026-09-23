@@ -13,4 +13,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+
+  <!-- 「直属子项的数据库侧谓词」需要被真库用例直接断言（含 EXPLAIN 计划形状），
+       这样 REQ-2 的性能契约才能被测试锁住，而不是只靠人工审查。 -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pim.UnitTests" />
+  </ItemGroup>
 </Project>

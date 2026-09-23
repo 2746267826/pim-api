@@ -1,8 +1,12 @@
 using System;
+using System.Data.Common;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Files.DTOs;
@@ -109,6 +113,7 @@ public sealed class FileListQueryRealDbTests
     private static FileOperationService CreateService(PimDbContext db)
         => new(db, new StubCurrentUser(UserId), new StubAuditLog());
 
+
     /// <summary>
     /// 建临时库前先把文件模块的 EF 配置登记进 <see cref="PimDbContext"/>：
     /// <see cref="TempMigrationDatabase"/> 自己不知道要用到哪些模块，不登记的话
@@ -121,6 +126,7 @@ public sealed class FileListQueryRealDbTests
         await temp.MigrateAsync();
         return temp;
     }
+
 
     /// <summary>
     /// AC-2.1 / AC-2.3：3 万项的子树存在时，根目录与 /main 的直属子项查询仍然精确、
@@ -203,6 +209,34 @@ public sealed class FileListQueryRealDbTests
         }
 
         Assert.Equal(4000, seen.Count);
+    }
+
+    /// <summary>
+    /// REQ-2 / AC-2.3 的性能契约：前缀判据必须**直接作用在 path 列上**，
+    /// 否则迁移里那条 <c>text_pattern_ops</c> 索引失效、退化成整表扫描。
+    ///
+    /// 守的是一个已经踩过的坑：为补回「尾斜杠规范化」曾写成 <c>rtrim(path,'/') LIKE ...</c>，
+    /// 语义对了但包住被索引列后计划从 Bitmap Index Scan 变成 Parallel Seq Scan，
+    /// 把 REQ-2 要消除的全表扫描请了回来。
+    ///
+    /// 做法：断言 EF 生成的**真实 SQL**（<c>ToQueryString</c>）形状——<c>LIKE</c> 的左侧
+    /// 必须是裸列 <c>path</c>；一旦有人写成 <c>rtrim(path,'/') LIKE ...</c>，这条立刻转红。
+    /// （计划形状的人工证据见 REQ-2 的 EXPLAIN 留档；这里守的是可自动化的那一部分。）
+    /// </summary>
+    [SkippableFact]
+    public async Task ListItemsAsync_PrefixPredicateKeepsTheIndexedColumnBare()
+    {
+        await using var temp = await CreateMigratedTempDatabaseAsync("wo_files_index");
+        await temp.ExecuteAsync(SeedSql);
+
+        var query = FileOperationService.DirectChildren(temp.Context, UserId, "/main/deep");
+        var sql = query.OrderBy(item => item.Name).Take(100).ToQueryString();
+
+        // StartsWith 必须翻成作用在裸列上的 LIKE，而不是 rtrim(path) LIKE ...
+        var withoutQuotes = sql.Replace("\"", string.Empty);
+        Assert.Contains("path LIKE", withoutQuotes, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("rtrim(path", withoutQuotes, StringComparison.OrdinalIgnoreCase);
+
     }
 
     /// <summary>

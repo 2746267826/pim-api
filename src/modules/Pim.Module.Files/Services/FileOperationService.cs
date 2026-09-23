@@ -90,27 +90,25 @@ public sealed class FileOperationService(
     ///
     /// 判据与原来的内存版 <c>IsDirectChildPath</c> 等价：
     /// <list type="number">
-    ///   <item>先把行内路径规范化（去尾部斜杠）再比较——历史行可能带尾斜杠，
-    ///   旧实现用 <c>NormalizePath</c> 处理过，下推后必须保留该语义，
-    ///   否则 <c>/main/</c> 会被当成 <c>/main</c> 的子项、<c>/main/report.txt/</c> 会被漏掉；</item>
     ///   <item>路径必须以 <c>父路径 + "/"</c> 开头（根目录即 <c>"/"</c>）；</item>
-    ///   <item>去掉该前缀后**不能再出现分隔符**；</item>
-    ///   <item>排除父路径自身：根目录的前缀是 <c>"/"</c>，会把代表根容器的那一行
-    ///   （<c>path = "/"</c>）也扫进来，而它并不是自己的子项。</item>
+    ///   <item>去掉该前缀后的剩余部分，**去掉尾部斜杠**后既不能为空、也不能再含分隔符；
+    ///   这一条同时覆盖了两个历史行为：<c>/main/</c>（代表目录自身的那一行）不算自己的子项、
+    ///   <c>/main/report.txt/</c>（带尾斜杠的历史行）仍要被列出。</item>
     /// </list>
     ///
-    /// 规范化在 SQL 里用 <c>trim(trailing '/' from path)</c> 表达（EF 把它翻成
-    /// <c>TrimEnd</c> 等价的 <c>rtrim</c>）；父路径入参由调用方
-    /// <see cref="NormalizePath"/> 规范化，两侧口径因此一致。
+    /// **性能约束（REQ-2/AC-2.3）**：<c>StartsWith</c> 必须直接作用在 <c>path</c> 列上，
+    /// 否则迁移里那条 <c>text_pattern_ops</c> 索引失效、退化成整表扫描。因此这里刻意
+    /// **不做** <c>rtrim(path)</c> 这类「包住被索引列」的写法——规范化只作用在
+    /// <c>Substring</c> 的**结果**上（它只是过滤条件，与索引无关）。
+    /// 实测：包住列时计划为 Parallel Seq Scan（37ms），写成现在这样则是
+    /// Bitmap Index Scan on ix_file_items_provider_id_path_pattern（15ms）。
     ///
-    /// 注意：与旧实现一样，**不做大小写折叠**——路径大小写由 OneDrive 事实源决定，
+    /// 与旧实现一样**不做大小写折叠**：路径大小写由 OneDrive 事实源决定，
     /// 折叠会让 <c>/Main</c> 与 <c>/main</c> 混为一谈，掩盖真实的数据问题。
     ///
-    /// 刻意**不用**「前缀区间」(<c>path &gt;= prefix AND path &lt; prefix+1</c>) 来预筛：该区间是否
-    /// 覆盖全部同前缀路径取决于数据库排序规则对分隔符与后随字符的相对次序，换一个
-    /// collation 就可能把合法子项排除在区间外，造成静默缺项。这里用 <c>LIKE 'prefix%'</c>
-    /// 语义（<c>StartsWith</c>）作为唯一判据，正确性与 collation 无关；
-    /// 让它在 12 万项规模上仍走索引的是迁移里那条 <c>text_pattern_ops</c> 索引。
+    /// 同样刻意**不用**「前缀区间」(<c>path &gt;= prefix AND path &lt; prefix+1</c>) 预筛：
+    /// 该区间是否覆盖全部同前缀路径取决于排序规则对分隔符与后随字符的相对次序，
+    /// 换一个 collation 就可能把合法子项排除在区间外，造成静默缺项。
     /// </summary>
     internal static IQueryable<FileItemEntity> DirectChildren(
         PimDbContext db,
@@ -125,10 +123,9 @@ public sealed class FileOperationService(
                 item.Provider != null
                 && item.Provider.UserId == userId
                 && !item.IsDeleted
-                // 规范化后再比较：历史行可能带尾斜杠（与旧内存实现同口径）
-                && item.Path.TrimEnd('/') != parentPath
-                && item.Path.TrimEnd('/').StartsWith(prefix)
-                && !item.Path.TrimEnd('/').Substring(prefix.Length).Contains("/"));
+                && item.Path.StartsWith(prefix)
+                && item.Path.Substring(prefix.Length).TrimEnd('/').Length > 0
+                && !item.Path.Substring(prefix.Length).TrimEnd('/').Contains("/"));
     }
 
     /// <summary>
