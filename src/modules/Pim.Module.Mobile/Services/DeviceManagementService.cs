@@ -200,6 +200,16 @@ public sealed class DeviceManagementService
             .Where(b => batches.Any(t => t.UserId == userId && t.DeviceId == targetDeviceId
                 && t.BatchId == b.BatchId))
             .ExecuteDeleteAsync(ct);
+
+        // 取证事件（阶段一 REQ-1~REQ-4）：幂等键是 (user, device, clientItemKey)，
+        // 两台设备可能带上同一个键（重装后重传），直接改写会撞唯一索引。
+        // 保留目标设备已有的那一份，与上面三张表同一条规则（AC-6.3 要求不产生孤儿记录）。
+        var forensic = _db.Set<MobileForensicEventEntity>();
+        await forensic
+            .Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId)
+            .Where(e => forensic.Any(t => t.UserId == userId && t.DeviceId == targetDeviceId
+                && t.ClientItemKey == e.ClientItemKey))
+            .ExecuteDeleteAsync(ct);
     }
 
     private async Task MoveDeviceRowsAsync(
@@ -213,6 +223,12 @@ public sealed class DeviceManagementService
         await _db.Set<MobileUsageSummaryEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
         await _db.Set<MobileLocationPointEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
         await _db.Set<MobileSyncBatchEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+        // 取证事件（REQ-1~REQ-4）与丢弃原因统计（REQ-9）随设备一起并入：
+        // 它们是"这台设备当时活着/死了"的原始证据，丢掉就等于把合并前的死因取证抹掉。
+        // 事件按上面的冲突规则去重后整体改写；统计的天然键是 (user, device, 本地日, 原因)，
+        // 两台设备同一天同一原因的行在语义上是"两台设备各自丢弃的条数"，因此**相加**而不是覆盖。
+        await _db.Set<MobileForensicEventEntity>().Where(e => e.UserId == userId && e.DeviceId == sourceDeviceId).ExecuteUpdateAsync(s => s.SetProperty(e => e.DeviceId, targetDeviceId), ct);
+        await MergeDroppedReasonDailyAsync(userId, sourceDeviceId, targetDeviceId, ct);
         // 派生数据（块 / 聚合 / 物化覆盖）在合并后一律丢弃，等下一次上传重新物化（#247）：
         // 1. 块与聚合分别有 (user, device, ...) 唯一索引，两台设备同桶/同分类的行直接改写
         //    device_id 会撞唯一索引，让合并在生产上 500；
@@ -227,6 +243,68 @@ public sealed class DeviceManagementService
             await _db.Set<MobileAnalyticsMaterializationEntity>()
                 .Where(e => e.UserId == userId && e.DeviceId == device).ExecuteDeleteAsync(ct);
         }
+    }
+
+    /// <summary>
+    /// 把源设备的「丢弃原因按天统计」并入目标设备（AC-9.2 / AC-6.3）。
+    ///
+    /// 天然键是 (user, device, 本地日, 原因)。两台设备同一天同一原因的行在语义上是
+    /// "两台设备各自丢弃的条数"，因此合并时**相加**；目标设备没有的行直接改写 device_id。
+    /// 若不做这一步，源设备的统计行就会变成指向已删除 device_id 的孤儿记录（AC-6.3 反面）。
+    /// </summary>
+    private async Task MergeDroppedReasonDailyAsync(
+        Guid userId,
+        string sourceDeviceId,
+        string targetDeviceId,
+        CancellationToken ct)
+    {
+        var source = _db.Set<MobileDroppedReasonDailyEntity>();
+        var target = _db.Set<MobileDroppedReasonDailyEntity>();
+
+        // 与目标同键的行：条数相加（"两台设备各自丢弃的条数"）。
+        // 全部用集合操作完成，不加载被跟踪实体——否则 ExecuteUpdate 改完库之后，
+        // 变更跟踪器里仍留着旧 DeviceId 的实例，同一作用域内后续读取会拿到陈旧值。
+        var colliding = await source
+            .Where(row => row.UserId == userId && row.DeviceId == sourceDeviceId)
+            .Where(row => target.Any(other => other.UserId == userId
+                && other.DeviceId == targetDeviceId
+                && other.LocalDate == row.LocalDate
+                && other.Reason == row.Reason))
+            .Select(row => new { row.LocalDate, row.Reason, row.Count })
+            .ToListAsync(ct);
+
+        foreach (var row in colliding)
+        {
+            var date = row.LocalDate;
+            var reason = row.Reason;
+            var count = row.Count;
+            await target
+                .Where(other => other.UserId == userId
+                    && other.DeviceId == targetDeviceId
+                    && other.LocalDate == date
+                    && other.Reason == reason)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(other => other.Count, other => other.Count + count)
+                        .SetProperty(other => other.ReceivedAtUtc, _timeProvider.GetUtcNow()),
+                    ct);
+        }
+
+        // 目标没有的 (本地日, 原因) 直接整体改写 device_id。
+        await source
+            .Where(row => row.UserId == userId && row.DeviceId == sourceDeviceId)
+            .Where(row => !target.Any(other => other.UserId == userId
+                && other.DeviceId == targetDeviceId
+                && other.LocalDate == row.LocalDate
+                && other.Reason == row.Reason))
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(row => row.DeviceId, targetDeviceId),
+                ct);
+
+        // 处理完冲突后，仍挂在源设备下的行就是已经并入目标的那批，删除以免留下孤儿记录（AC-6.3）。
+        await source
+            .Where(row => row.UserId == userId && row.DeviceId == sourceDeviceId)
+            .ExecuteDeleteAsync(ct);
     }
 
     /// <summary>
@@ -379,6 +457,9 @@ public sealed class DeviceManagementService
         await _db.Set<MobileAnalyticsMaterializationEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
         // 设备的 App 名称库条目必须一起删除，否则会留下指向已删除 device_id 的孤儿行（issue #231）。
         await _db.Set<MobileAppCatalogEntity>().Where(c => c.UserId == userId && c.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+        // 取证事件与丢弃原因统计同理（AC-6.3）：删除设备后不允许留下孤儿取证记录。
+        await _db.Set<MobileForensicEventEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
+        await _db.Set<MobileDroppedReasonDailyEntity>().Where(e => e.UserId == userId && e.DeviceId == deviceId).ExecuteDeleteAsync(ct);
         await _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && d.DeviceId == deviceId).ExecuteDeleteAsync(ct);
         if (tx is not null) await tx.CommitAsync(ct);
     }

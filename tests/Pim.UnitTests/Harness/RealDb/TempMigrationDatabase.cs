@@ -69,6 +69,13 @@ internal sealed class TempMigrationDatabase : IAsyncDisposable
         return new TempMigrationDatabase(database, admin, new PimDbContext(options));
     }
 
+    /// <summary>
+    /// 直接使用这个一次性库上的 <see cref="PimDbContext"/>。
+    /// 需要 <c>ExecuteDelete</c> / <c>ExecuteUpdate</c> / 真 SQL 翻译的用例必须走这里
+    /// （EF InMemory provider 不支持这些操作，用它验证等于什么都没验证）。
+    /// </summary>
+    public PimDbContext Db => _db;
+
     public Task MigrateAsync() => _db.Database.MigrateAsync();
 
     /// <summary>迁移到指定迁移（含），用来重建「该迁移之前」的历史起点。</summary>
