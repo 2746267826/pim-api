@@ -327,6 +327,77 @@ public class FileListQueryTests
         Assert.Equal(0, page.TotalPages);
     }
 
+    /// <summary>
+    /// 复审反例（Important）：历史行可能带尾斜杠；旧实现先 NormalizePath 再比较，
+    /// 下推到 SQL 后必须保留同一口径，否则 <c>/main/</c> 会被当成本目录的子项、
+    /// <c>/main/report.txt/</c> 会被漏掉。
+    /// </summary>
+    [Fact]
+    public async Task ListItemsAsync_NormalizesTrailingSlashesLikeTheLegacyInMemoryPredicate()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        Seed(db, provider, "/main", "main", "folder");
+        Seed(db, provider, "/main/report.txt", "report.txt");
+        // 带尾斜杠的历史行
+        Seed(db, provider, "/main/", "main-with-slash", "folder");
+        Seed(db, provider, "/main/legacy.txt/", "legacy.txt", "file");
+        await db.SaveChangesAsync();
+        var service = CreateService(db, UserId);
+
+        var page = await service.ListItemsAsync(new FileListQuery("/main"));
+
+        // 目录自身（带尾斜杠的那份）不是自己的子项；带尾斜杠的文件仍应被正常列出
+        Assert.Equal(2, page.TotalCount);
+        Assert.Contains(page.Items, i => i.Name == "report.txt");
+        Assert.Contains(page.Items, i => i.Name == "legacy.txt");
+        Assert.DoesNotContain(page.Items, i => i.Name == "main-with-slash");
+    }
+
+    /// <summary>
+    /// 复审反例（Important）：路径大小写由 OneDrive 事实源决定，直属子项判定**不折叠大小写**
+    /// —— 折叠会让不同目录混为一谈、掩盖真实的数据问题。这里把该选择固化成契约。
+    /// </summary>
+    [Fact]
+    public async Task ListItemsAsync_DoesNotFoldPathCaseBetweenSiblingDirectories()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        Seed(db, provider, "/Main", "Main", "folder");
+        Seed(db, provider, "/Main/report.txt", "report.txt");
+        Seed(db, provider, "/main", "main", "folder");
+        await db.SaveChangesAsync();
+        var service = CreateService(db, UserId);
+
+        var upper = await service.ListItemsAsync(new FileListQuery("/Main"));
+        var lower = await service.ListItemsAsync(new FileListQuery("/main"));
+
+        Assert.Equal("report.txt", Assert.Single(upper.Items).Name);
+        Assert.Empty(lower.Items);
+        Assert.Equal(0, lower.TotalCount);
+    }
+
+    /// <summary>P3：默认页大小是 100/页，端点未显式传 pageSize 时也必须是 100。</summary>
+    [Fact]
+    public async Task ListItemsAsync_DefaultPageSizeFollowsConfirmedHundredPerPage()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        for (var i = 0; i < 150; i++)
+        {
+            Seed(db, provider, $"/many/f{i:D3}.txt", $"f{i:D3}.txt");
+        }
+
+        await db.SaveChangesAsync();
+        var service = CreateService(db, UserId);
+
+        var page = await service.ListItemsAsync(new FileListQuery("/many"));
+
+        Assert.Equal(100, page.PageSize);
+        Assert.Equal(100, page.Items.Count);
+        Assert.Equal(150, page.TotalCount);
+    }
+
     /// <summary>多用户隔离：他人目录里的同名直属子项不得出现（REQ-30 回归）。</summary>
     [Fact]
     public async Task ListItemsAsync_IsScopedToTheCurrentUser()

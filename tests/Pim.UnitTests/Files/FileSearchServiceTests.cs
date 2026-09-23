@@ -307,6 +307,108 @@ public class FileSearchServiceTests
         Assert.Equal(5, result.TotalCount);
     }
 
+    /// <summary>
+    /// 复审 Critical：<c>IsProtected</c> 用 OrdinalIgnoreCase，而 SQL 的 <c>=</c>/<c>LIKE</c>
+    /// 在非 C 排序规则下大小写敏感。受保护**目录本身**的大小写变体必须同样被排除，
+    /// 否则会把它连同总数一起泄漏出去。
+    /// </summary>
+    [Theory]
+    [InlineData("/secrets/密码.txt")]
+    [InlineData("/SECRETS/密码.txt")]
+    [InlineData("/Secrets/密码.txt")]
+    [InlineData("/passwords/密码.txt")]
+    public async Task SearchAsync_ExcludesProtectedDirectoriesRegardlessOfPathCase(string protectedPath)
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        SeedItem(db, provider, protectedPath, "密码.txt", "text/plain");
+        SeedItem(db, provider, "/文档/说明.txt", "说明.txt", "text/plain");
+        await db.SaveChangesAsync();
+        var service = CreateService(db, UserId);
+
+        var result = await service.SearchAsync(new FileSearchQuery("txt", null), page: 1, pageSize: 100);
+
+        Assert.Equal(1, result.TotalCount);
+        Assert.DoesNotContain(result.Items, i => i.Path.Contains("ecrets", StringComparison.OrdinalIgnoreCase)
+            || i.Path.Contains("asswords", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>复审 Critical：受保护目录**自身**那一行也不得出现在结果与总数里。</summary>
+    [Theory]
+    [InlineData("/secrets")]
+    [InlineData("/Secrets")]
+    [InlineData("/SECRETS")]
+    public async Task SearchAsync_ExcludesTheProtectedDirectoryRowItselfRegardlessOfCase(string protectedRoot)
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        // 目录名里带关键词，命中搜索词
+        SeedItem(db, provider, protectedRoot, "secrets", "text/plain");
+        SeedItem(db, provider, "/文档/说明.txt", "说明.txt", "text/plain");
+        await db.SaveChangesAsync();
+        var service = CreateService(db, UserId);
+
+        var result = await service.SearchAsync(new FileSearchQuery("secrets", null), page: 1, pageSize: 100);
+
+        Assert.Equal(0, result.TotalCount);
+        Assert.Empty(result.Items);
+    }
+
+    /// <summary>
+    /// 段边界：<c>/Secrets0</c>、<c>/SecretsArchive</c> 不是受保护目录，不得被误伤
+    /// （与 <c>IsProtected</c> 的「段边界匹配」一致）。
+    /// </summary>
+    [Fact]
+    public async Task SearchAsync_DoesNotExcludePathsThatMerelyShareTheProtectedPrefix()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        SeedItem(db, provider, "/Secrets0/note.txt", "note.txt", "text/plain");
+        SeedItem(db, provider, "/SecretsArchive/note2.txt", "note2.txt", "text/plain");
+        SeedItem(db, provider, "/Secrets/secret.txt", "secret.txt", "text/plain");
+        await db.SaveChangesAsync();
+        var service = CreateService(db, UserId);
+
+        var result = await service.SearchAsync(new FileSearchQuery("note", null), page: 1, pageSize: 100);
+
+        Assert.Equal(2, result.TotalCount);
+        Assert.Contains(result.Items, i => i.Name == "note.txt");
+        Assert.Contains(result.Items, i => i.Name == "note2.txt");
+    }
+
+    /// <summary>
+    /// SQL 谓词与 <c>SensitivePathPolicy.IsProtected</c> 必须同口径：
+    /// 对一组路径逐一比对「策略判定」与「搜索结果是否保留」。
+    /// </summary>
+    [Theory]
+    [InlineData("/Secrets/a.txt", true)]
+    [InlineData("/secrets/a.txt", true)]
+    [InlineData("/SEcrets/a.txt", true)]
+    [InlineData("/Secrets", true)]
+    [InlineData("/secrets", true)]
+    [InlineData("/Passwords/x.txt", true)]
+    [InlineData("/Secrets0/a.txt", false)]
+    [InlineData("/Documents/a.txt", false)]
+    [InlineData("/a.txt", false)]
+    public async Task SearchAsync_SqlPredicateMatchesSensitivePathPolicy(string path, bool protectedByPolicy)
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, UserId);
+        var name = "probe-target.txt";
+        SeedItem(db, provider, path, name, "text/plain");
+        await db.SaveChangesAsync();
+
+        var policy = new SensitivePathPolicy(null);
+        Assert.Equal(protectedByPolicy, policy.IsProtected(path));
+
+        var service = CreateService(db, UserId, policy);
+        var result = await service.SearchAsync(new FileSearchQuery("probe-target", null), page: 1, pageSize: 100);
+
+        // 策略判定 true -> 结果与总数都不出现；false -> 必须能找到
+        Assert.Equal(protectedByPolicy ? 0 : 1, result.TotalCount);
+        Assert.Equal(protectedByPolicy ? 0 : 1, result.Items.Count);
+    }
+
     [Fact]
     public async Task SearchAsync_WhenNotLoggedIn_Throws1002()
     {

@@ -107,15 +107,20 @@ public sealed class FileSearchService(
     /// 逐条 AND 一个 <c>Where</c>（而不是 <c>Any(...)</c>）：EF 无法把闭包里的
     /// <c>Any</c> 翻译成 SQL，逐条下推才能既保持与 <c>IsProtected</c> 相同的语义，
     /// 又让排除发生在分页与计数之前。
+    ///
+    /// 两侧都必须转小写：<c>IsProtected</c> 用的是 <c>OrdinalIgnoreCase</c>，
+    /// 而 SQL 的 <c>=</c> / <c>LIKE</c> 在非 C 排序规则下**大小写敏感**。早先只对前缀转小写、
+    /// 对目录本身用裸 <c>=</c>，导致 <c>/secrets</c> 这类大小写变体能绕过排除、
+    /// 把受保护目录的存在泄漏进结果与 <c>TotalCount</c>（复审 Critical）。
     /// </summary>
     private IQueryable<FileItemEntity> ExcludeProtectedDirectories(IQueryable<FileItemEntity> source)
     {
         foreach (var directory in _sensitivePolicy.ProtectedDirectories)
         {
-            var protectedDirectory = directory;
+            var protectedDirectory = directory.ToLowerInvariant();
             var protectedPrefix = $"{directory}/".ToLowerInvariant();
             source = source.Where(item =>
-                item.Path != protectedDirectory
+                item.Path.ToLower() != protectedDirectory
                 && !item.Path.ToLower().StartsWith(protectedPrefix));
         }
 

@@ -24,6 +24,9 @@ public sealed class FileOperationService(
     private const string ResourceType = "file";
     private const string AuditSource = "files";
 
+    /// <summary>列表默认页大小（工单 P3：100/页）。</summary>
+    public const int DefaultPageSize = 100;
+
     /// <summary>列表分页上限（工单 P3：100/页）。</summary>
     internal const int MaxPageSize = 100;
 
@@ -40,7 +43,7 @@ public sealed class FileOperationService(
     public async Task<PagedResult<FileItemDto>> ListItemsAsync(
         FileListQuery query,
         int page = 1,
-        int pageSize = 50,
+        int pageSize = DefaultPageSize,
         CancellationToken ct = default)
     {
         page = Math.Max(1, page);
@@ -85,14 +88,23 @@ public sealed class FileOperationService(
     /// <summary>
     /// 直属子项的数据库侧谓词（REQ-2）。
     ///
-    /// 两条判据合起来等价于原来的内存版 <c>IsDirectChildPath</c>：
+    /// 判据与原来的内存版 <c>IsDirectChildPath</c> 等价：
     /// <list type="number">
-    ///   <item>路径必须以 <c>父路径 + "/"</c> 开头（根目录即 <c>"/"</c>）——原文的
-    ///   <c>StartsWith(candidatePrefix)</c>；</item>
-    ///   <item>去掉该前缀后**不能再出现分隔符**——原文的「相对路径不含 '/'」；</item>
-    ///   <item>另外排除父路径自身：根目录的前缀是 <c>"/"</c>，会把代表根容器的那一行
+    ///   <item>先把行内路径规范化（去尾部斜杠）再比较——历史行可能带尾斜杠，
+    ///   旧实现用 <c>NormalizePath</c> 处理过，下推后必须保留该语义，
+    ///   否则 <c>/main/</c> 会被当成 <c>/main</c> 的子项、<c>/main/report.txt/</c> 会被漏掉；</item>
+    ///   <item>路径必须以 <c>父路径 + "/"</c> 开头（根目录即 <c>"/"</c>）；</item>
+    ///   <item>去掉该前缀后**不能再出现分隔符**；</item>
+    ///   <item>排除父路径自身：根目录的前缀是 <c>"/"</c>，会把代表根容器的那一行
     ///   （<c>path = "/"</c>）也扫进来，而它并不是自己的子项。</item>
     /// </list>
+    ///
+    /// 规范化在 SQL 里用 <c>trim(trailing '/' from path)</c> 表达（EF 把它翻成
+    /// <c>TrimEnd</c> 等价的 <c>rtrim</c>）；父路径入参由调用方
+    /// <see cref="NormalizePath"/> 规范化，两侧口径因此一致。
+    ///
+    /// 注意：与旧实现一样，**不做大小写折叠**——路径大小写由 OneDrive 事实源决定，
+    /// 折叠会让 <c>/Main</c> 与 <c>/main</c> 混为一谈，掩盖真实的数据问题。
     ///
     /// 刻意**不用**「前缀区间」(<c>path &gt;= prefix AND path &lt; prefix+1</c>) 来预筛：该区间是否
     /// 覆盖全部同前缀路径取决于数据库排序规则对分隔符与后随字符的相对次序，换一个
@@ -113,9 +125,10 @@ public sealed class FileOperationService(
                 item.Provider != null
                 && item.Provider.UserId == userId
                 && !item.IsDeleted
-                && item.Path != parentPath
-                && item.Path.StartsWith(prefix)
-                && !item.Path.Substring(prefix.Length).Contains("/"));
+                // 规范化后再比较：历史行可能带尾斜杠（与旧内存实现同口径）
+                && item.Path.TrimEnd('/') != parentPath
+                && item.Path.TrimEnd('/').StartsWith(prefix)
+                && !item.Path.TrimEnd('/').Substring(prefix.Length).Contains("/"));
     }
 
     /// <summary>
