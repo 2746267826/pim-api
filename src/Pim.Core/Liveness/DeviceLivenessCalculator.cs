@@ -205,17 +205,20 @@ public static class DeviceLivenessCalculator
             longestMinutes);
     }
 
+    /// <summary>
+    /// 区间覆盖多少个整点小时桶（左闭右开）。
+    /// 用 <c>end - 1ms</c> 取最后一桶，避免"终点正好落在整点"时把区间之外的那个小时也算进分母。
+    /// </summary>
     private static int CountHourBuckets(DateTimeOffset rangeStartUtc, DateTimeOffset rangeEndUtc)
     {
-        var start = FloorToHour(rangeStartUtc);
-        var end = FloorToHour(rangeEndUtc);
-        var hours = (int)Math.Ceiling((end - start).TotalHours);
-        // 终点正好落在整点上时，最后那个整点属于区间之外，不计入分母。
-        if (rangeEndUtc == end && hours > 0)
+        if (rangeEndUtc <= rangeStartUtc)
         {
-            hours--;
+            return 1;
         }
 
+        var firstBucket = FloorToHour(rangeStartUtc);
+        var lastBucket = FloorToHour(rangeEndUtc.AddTicks(-1));
+        var hours = (int)Math.Round((lastBucket - firstBucket).TotalHours) + 1;
         return Math.Max(1, hours);
     }
 

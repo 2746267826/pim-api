@@ -167,20 +167,25 @@ public sealed class MobileLivenessService : IDeviceLivenessInspectionProvider
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var (start, end) = ResolveRange(rangeStartUtc, rangeEndUtc);
 
-        // local_date 是设备本地日（yyyy-MM-dd），按字符串区间过滤即可，避免把本地日错当 UTC 日。
+        // local_date 是设备本地日（yyyy-MM-dd）。这里按设备把该表读回内存再按日期过滤：
+        // 表体量极小（每设备每天每原因一行），而字符串区间比较在不同数据库上的可翻译性不一致，
+        // 放进 SQL 反而会带来"某些库能跑、某些库报错"的隐性差异。
         var startDate = start.ToOffset(TimeSpan.FromHours(8)).ToString("yyyy-MM-dd");
         var endDate = end.ToOffset(TimeSpan.FromHours(8)).ToString("yyyy-MM-dd");
 
-        var rows = await _db.Set<MobileDroppedReasonDailyEntity>()
+        var allRows = await _db.Set<MobileDroppedReasonDailyEntity>()
             .AsNoTracking()
-            .Where(entity => entity.UserId == userId
-                && entity.DeviceId == deviceId
-                && string.Compare(entity.LocalDate, startDate) >= 0
-                && string.Compare(entity.LocalDate, endDate) <= 0)
-            .OrderBy(entity => entity.LocalDate)
-            .ThenBy(entity => entity.Reason)
-            .Select(entity => new MobileDroppedReasonDailyDto(entity.LocalDate, entity.Reason, entity.Count))
+            .Where(entity => entity.UserId == userId && entity.DeviceId == deviceId)
+            .Select(entity => new { entity.LocalDate, entity.Reason, entity.Count })
             .ToListAsync(ct);
+
+        var rows = allRows
+            .Where(row => string.CompareOrdinal(row.LocalDate, startDate) >= 0
+                && string.CompareOrdinal(row.LocalDate, endDate) <= 0)
+            .OrderBy(row => row.LocalDate, StringComparer.Ordinal)
+            .ThenBy(row => row.Reason, StringComparer.Ordinal)
+            .Select(row => new MobileDroppedReasonDailyDto(row.LocalDate, row.Reason, row.Count))
+            .ToList();
 
         return new MobileDroppedReasonResponse(deviceId, start, end, rows, rows.Sum(row => row.Count));
     }
