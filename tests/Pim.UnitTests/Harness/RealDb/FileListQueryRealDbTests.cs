@@ -240,6 +240,65 @@ public sealed class FileListQueryRealDbTests
     }
 
     /// <summary>
+    /// REQ-30 / AC-30.1（PR-1 触及的出口）：在**真库**上核对多用户隔离与软删过滤——
+    /// 别人 provider 下的同级同名条目不得出现，软删条目既不进结果也不进总数。
+    /// 内存 provider 不经过 SQL，这条补的是「下推到 SQL 之后归属过滤仍然生效」。
+    /// </summary>
+    [SkippableFact]
+    public async Task ListItemsAsync_OnRealPostgres_KeepsUserIsolationAndSoftDeleteFilters()
+    {
+        await using var temp = await CreateMigratedTempDatabaseAsync("wo_files_isolation");
+        await temp.ExecuteAsync(SeedSql);
+
+        // 第二个用户 + 自己的 provider/条目（同名同目录，专门用来试探归属过滤）
+        await temp.ExecuteAsync(
+            """
+            INSERT INTO users (id, username, email, password_hash, role, is_active, created_at, updated_at)
+            VALUES ('abababab-2222-3333-4444-555555555583', 'wo-realdb-other', 'other@local.test',
+                    'x', 'user', true, now(), now());
+
+            INSERT INTO file_providers (id, user_id, provider, base_url, username, app_password_secret,
+                                        status, sync_status, synced_item_count, created_at, updated_at)
+            VALUES ('abababab-2222-3333-4444-555555555584', 'abababab-2222-3333-4444-555555555583',
+                    'onedrive', 'https://graph.microsoft.com', 'other', 'x',
+                    'connected', 'idle', 0, now(), now());
+
+            -- 别人的同级同名目录与文件：当前用户绝不能看到
+            INSERT INTO file_items (id, provider_id, external_file_id, path, name, item_type,
+                                    is_deleted, created_at, modified_at, synced_at)
+            VALUES (gen_random_uuid(), 'abababab-2222-3333-4444-555555555584', 'ext:/main',
+                    '/main', 'main', 'folder', false, now(), now(), now()),
+                   (gen_random_uuid(), 'abababab-2222-3333-4444-555555555584', 'ext:/readme.md',
+                    '/readme.md', 'readme.md', 'file', false, now(), now(), now());
+
+            -- 自己的一个软删条目：不得出现、也不得计数
+            INSERT INTO file_items (id, provider_id, external_file_id, path, name, item_type,
+                                    is_deleted, deleted_at, created_at, modified_at, synced_at)
+            VALUES (gen_random_uuid(), 'abababab-2222-3333-4444-555555555582', 'ext:/gone.txt',
+                    '/gone.txt', 'gone.txt', 'file', true, now(), now(), now(), now());
+
+            ANALYZE file_items;
+            """);
+
+        var service = CreateService(temp.Context);
+        var root = await service.ListItemsAsync(new FileListQuery("/"), page: 1, pageSize: 100);
+
+        // 根的 4 个直属子项不变：没有别人的条目，也没有自己的软删条目
+        Assert.Equal(4, root.TotalCount);
+        Assert.DoesNotContain(root.Items, i => i.Name == "gone.txt");
+        Assert.Equal(root.Items.Select(i => i.Id).Distinct().Count(), root.Items.Count);
+
+        var folders = await service.ListItemsAsync(new FileListQuery("/", Type: "folder"), page: 1, pageSize: 100);
+        Assert.Equal(3, folders.TotalCount);
+
+        // 搜索同样不得跨用户：只应有自己的内容
+        var search = new FileSearchService(temp.Context, new StubCurrentUser(UserId), new SensitivePathPolicy(null));
+        var hits = await search.SearchAsync(new FileSearchQuery("readme", null), page: 1, pageSize: 100);
+        Assert.Equal(1, hits.TotalCount);
+        Assert.Equal("readme.md", Assert.Single(hits.Items).Name);
+    }
+
+    /// <summary>
     /// REQ-8 / AC-8.3：全盘搜索在真库上分页，敏感目录既不进结果也不进总数。
     /// </summary>
     [SkippableFact]
