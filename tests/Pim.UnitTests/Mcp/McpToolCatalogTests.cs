@@ -7,10 +7,11 @@ namespace Pim.UnitTests.Mcp;
 public sealed class McpToolCatalogTests
 {
     [Fact]
-    public void Catalog_Has100ReadAnd49Write()
+    public void Catalog_Has101ReadAnd49Write()
     {
         // P4：read_file_text 加入读工具（OneDrive 文件模块 v2，设计 §12）
-        Assert.Equal(100, McpToolCatalog.ReadTools.Count);
+        // WO-ANDROID-KEEPALIVE-20260923 阶段一：get_mobile_liveness_summary 加入读工具（REQ-11）
+        Assert.Equal(101, McpToolCatalog.ReadTools.Count);
         Assert.Equal(49, McpToolCatalog.WriteTools.Count);
     }
 
@@ -50,7 +51,7 @@ public sealed class McpToolCatalogTests
         var permissions = McpToolCatalog.DefaultPermissions();
         Assert.True(permissions["read"].All(kv => kv.Value));
         Assert.True(permissions["write"].All(kv => !kv.Value));
-        Assert.Equal(100, permissions["read"].Count);
+        Assert.Equal(101, permissions["read"].Count);
         Assert.Equal(49, permissions["write"].Count);
     }
 

@@ -16,6 +16,30 @@ public sealed class MobileDeviceEntityConfiguration : IEntityTypeConfiguration<M
     }
 }
 
+public sealed class MobileForensicEventEntityConfiguration : IEntityTypeConfiguration<MobileForensicEventEntity>
+{
+    public void Configure(EntityTypeBuilder<MobileForensicEventEntity> builder)
+    {
+        builder.Property(e => e.PayloadJson).HasDefaultValue("{}");
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        // 幂等键（AC-5.2）：同一设备重复提交同一批事件时命中唯一约束被跳过，事件条数不变。
+        builder.HasIndex(e => new { e.UserId, e.DeviceId, e.ClientItemKey }).IsUnique();
+        builder.HasIndex(e => new { e.UserId, e.DeviceId, e.OccurredAtUtc });
+        builder.HasIndex(e => new { e.UserId, e.DeviceId, e.EventType, e.OccurredAtUtc });
+    }
+}
+
+public sealed class MobileDroppedReasonDailyEntityConfiguration : IEntityTypeConfiguration<MobileDroppedReasonDailyEntity>
+{
+    public void Configure(EntityTypeBuilder<MobileDroppedReasonDailyEntity> builder)
+    {
+        builder.Property(e => e.CreatedAt).HasDefaultValueSql("now()");
+        // 天然键（AC-9.2）：同一天同一原因只有一行，重复上报走覆盖而不是累加。
+        builder.HasIndex(e => new { e.UserId, e.DeviceId, e.LocalDate, e.Reason }).IsUnique();
+        builder.HasIndex(e => new { e.UserId, e.DeviceId, e.LocalDate });
+    }
+}
+
 public sealed class MobileAppCatalogEntityConfiguration : IEntityTypeConfiguration<MobileAppCatalogEntity>
 {
     public void Configure(EntityTypeBuilder<MobileAppCatalogEntity> builder)

@@ -30,6 +30,12 @@ public sealed class MobileModule : IModule
         services.AddScoped<MobileDeviceService>();
         services.AddScoped<MobileGapService>();
         services.AddScoped<MobileUsageIngestService>();
+        services.AddScoped<MobileForensicIngestService>();
+        services.AddScoped<MobileLivenessService>();
+        // 体检的「设备存活」数据项（REQ-10）：由本模块实现，核心体检服务经 DI 可选消费。
+        // 注册成同一个实例，保证 REST/MCP 摘要与体检数据项用的是同一份口径实现（AC-13.1）。
+        services.AddScoped<Pim.Core.Liveness.IDeviceLivenessInspectionProvider>(
+            sp => sp.GetRequiredService<MobileLivenessService>());
         services.AddScoped<MobileSessionInterpreter>();
         services.AddScoped<MobileLocationService>();
         services.AddScoped<MobileLocationQueryService>();
@@ -103,6 +109,57 @@ public sealed class MobileModule : IModule
             [FromServices] MobileUsageIngestService service,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<MobileUsageIngestResult>.Ok(await service.IngestAsync(request, ct))));
+
+        // ===== 阶段一取证通道（REQ-5 / REQ-6 / REQ-9）：独立于 mobile_sync_batches 既有语义 =====
+        group.MapPost("/forensics/events", async (
+            [FromBody] MobileForensicsUploadRequest request,
+            [FromServices] MobileForensicIngestService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileForensicsIngestResult>.Ok(await service.IngestAsync(request, ct))));
+
+        // 存活页 / 摘要 / 体检共用同一份摘要实现，四条路径的数字必须一致（AC-11.2 / AC-13.1）。
+        group.MapGet("/liveness/overview", async (
+            [FromQuery] DateTimeOffset? rangeStartUtc,
+            [FromQuery] DateTimeOffset? rangeEndUtc,
+            [FromServices] MobileLivenessService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileLivenessOverviewResponse>.Ok(
+                await service.GetOverviewAsync(rangeStartUtc, rangeEndUtc, ct))));
+
+        group.MapGet("/devices/{deviceId}/liveness", async (
+            [FromRoute] string deviceId,
+            [FromQuery] DateTimeOffset? rangeStartUtc,
+            [FromQuery] DateTimeOffset? rangeEndUtc,
+            [FromServices] MobileLivenessService service,
+            CancellationToken ct) =>
+        {
+            var block = await service.GetDeviceLivenessAsync(deviceId, rangeStartUtc, rangeEndUtc, ct);
+            // AC-11.4：无数据设备返回明确空态（200 + hasData=false + "无数据/未上报"），不返回 0%。
+            // 设备根本不存在时才 404，两者的区别对调用方可见。
+            return block is null
+                ? Results.NotFound(ApiResponse<string>.Error(404, "设备不存在。"))
+                : Results.Ok(ApiResponse<MobileDeviceLivenessDto>.Ok(block));
+        });
+
+        group.MapGet("/devices/{deviceId}/liveness/events", async (
+            [FromRoute] string deviceId,
+            [FromQuery] DateTimeOffset? rangeStartUtc,
+            [FromQuery] DateTimeOffset? rangeEndUtc,
+            [FromQuery] int? page,
+            [FromQuery] int? pageSize,
+            [FromServices] MobileLivenessService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileLivenessEventPageDto>.Ok(
+                await service.GetEventsAsync(deviceId, rangeStartUtc, rangeEndUtc, page, pageSize, ct))));
+
+        group.MapGet("/devices/{deviceId}/dropped-reasons", async (
+            [FromRoute] string deviceId,
+            [FromQuery] DateTimeOffset? rangeStartUtc,
+            [FromQuery] DateTimeOffset? rangeEndUtc,
+            [FromServices] MobileLivenessService service,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<MobileDroppedReasonResponse>.Ok(
+                await service.GetDroppedReasonsAsync(deviceId, rangeStartUtc, rangeEndUtc, ct))));
 
         group.MapPost("/location/points", async (
             [FromBody] MobileLocationPointRequest request,
@@ -536,6 +593,11 @@ public static class MobileEndpointPaths
     public const string Timeline = $"{Root}/timeline";
     public const string LocationHistory = $"{Root}/location/history";
     public const string Quality = $"{Root}/quality";
+    public const string ForensicEvents = $"{Root}/forensics/events";
+    public const string LivenessOverview = $"{Root}/liveness/overview";
+    public static string DeviceLiveness(string deviceId) => $"{Devices}/{deviceId}/liveness";
+    public static string DeviceLivenessEvents(string deviceId) => $"{DeviceLiveness(deviceId)}/events";
+    public static string DeviceDroppedReasons(string deviceId) => $"{Devices}/{deviceId}/dropped-reasons";
 }
 
 public sealed record MobileAnalyticsEndpointQuery(

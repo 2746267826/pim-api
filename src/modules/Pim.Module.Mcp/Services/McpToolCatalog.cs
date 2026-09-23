@@ -106,7 +106,7 @@ public static class McpToolCatalog
         Add(tools, "pctracker", "lookup_app_signature", "Lookup app signature.");
         Add(tools, "pctracker", "get_classification_settings", "Classification settings.");
 
-        // Mobile 18
+        // Mobile 19
         Add(tools, "mobile", "get_mobile_summary", "Mobile usage summary.");
         Add(tools, "mobile", "get_mobile_timeline", "Mobile timeline.");
         Add(tools, "mobile", "get_mobile_location_history", "Mobile location history.");
@@ -125,6 +125,7 @@ public static class McpToolCatalog
         Add(tools, "mobile", "get_mobile_apps_catalog_overrides", "Mobile catalog overrides.");
         Add(tools, "mobile", "get_mobile_apps_category_rules", "Mobile category rules.");
         Add(tools, "mobile", "get_mobile_goals", "Mobile usage goals.");
+        Add(tools, "mobile", "get_mobile_liveness_summary", "Device liveness summary (read-only).");
 
         // QuickNotes 3
         Add(tools, "quicknotes", "get_quick_notes", "List quick notes.");

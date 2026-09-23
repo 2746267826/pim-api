@@ -178,7 +178,7 @@ public static class McpToolTable
             S("lookup_app_signature", "GET", "/api/v1/pc/app-signatures/lookup/{processName}"),
             S("get_classification_settings", "GET", "/api/v1/pc/classification/settings"),
 
-            // ===================== Mobile reads (18) =====================
+            // ===================== Mobile reads (19) =====================
             S("get_mobile_summary", "GET", "/api/v1/mobile/summary", Q("date", "deviceId")),
             // #330：timeline 单日可达数千条，必须能翻页并显式看到截断标记
             // （响应里的 totalCount / hasMore / truncated），否则调用方只能看到一天的前一段。
@@ -199,6 +199,9 @@ public static class McpToolTable
             S("get_mobile_apps_catalog_overrides", "GET", "/api/v1/mobile/apps/catalog-overrides"),
             S("get_mobile_apps_category_rules", "GET", "/api/v1/mobile/apps/category-rules"),
             S("get_mobile_goals", "GET", "/api/v1/mobile/analytics/goals"),
+            // 阶段一「设备存活」只读查询（REQ-11 AC-11.2）：直接复用 REST 摘要端点，
+            // 因此 MCP 结果与 REST 必然一致；只读策略下不存在写入能力（AC-11.3）。
+            S("get_mobile_liveness_summary", "GET", "/api/v1/mobile/devices/{deviceId}/liveness", Q("rangeStartUtc", "rangeEndUtc")),
 
             // ===================== QuickNotes reads (3) =====================
             S("get_quick_notes", "GET", "/api/v1/quick-notes", Q("status", "search", "page", "pageSize")),
