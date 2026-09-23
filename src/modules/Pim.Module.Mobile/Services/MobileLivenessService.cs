@@ -167,11 +167,13 @@ public sealed class MobileLivenessService : IDeviceLivenessInspectionProvider
         var userId = MobileUserContext.RequireUserId(_currentUser);
         var (start, end) = ResolveRange(rangeStartUtc, rangeEndUtc);
 
-        // local_date 是设备本地日（yyyy-MM-dd）。这里按设备把该表读回内存再按日期过滤：
-        // 表体量极小（每设备每天每原因一行），而字符串区间比较在不同数据库上的可翻译性不一致，
-        // 放进 SQL 反而会带来"某些库能跑、某些库报错"的隐性差异。
-        var startDate = start.ToOffset(TimeSpan.FromHours(8)).ToString("yyyy-MM-dd");
-        var endDate = end.ToOffset(TimeSpan.FromHours(8)).ToString("yyyy-MM-dd");
+        // local_date 是**设备本地日**（yyyy-MM-dd）。服务端不知道设备时区，因此这里刻意
+        // 把日期窗口各放宽一天：设备在 UTC+14 ~ UTC-12 之间时，任何一个本地日都必然落在
+        // [start-1d, end+1d] 里。收窄成固定的 UTC+8 会让非 UTC+8 的设备在边界上少统计一天。
+        // 表体量极小（每设备每天每原因一行），读回内存过滤也比把字符串区间推进 SQL 更稳
+        // （不同数据库对字符串比较的可翻译性不一致）。
+        var startDate = start.AddDays(-1).ToString("yyyy-MM-dd");
+        var endDate = end.AddDays(1).ToString("yyyy-MM-dd");
 
         var allRows = await _db.Set<MobileDroppedReasonDailyEntity>()
             .AsNoTracking()
@@ -366,13 +368,30 @@ public sealed class MobileLivenessService : IDeviceLivenessInspectionProvider
             parts.Add(description);
         }
 
-        var unavailable = MobileLivenessCauseClassifier.ReadString(element, "unavailableFields");
-        if (!string.IsNullOrWhiteSpace(unavailable))
+        // AC-4.2：设备读不到的字段以数组形式上报，页面必须显示成"不可用"，而不是静默省略，
+        // 否则读者会把"没读到"误当成"一切正常"。
+        var unavailable = ReadStringArray(element, "unavailableFields");
+        if (unavailable.Count > 0)
         {
-            parts.Add($"不可用字段：{unavailable}");
+            parts.Add($"不可用字段：{string.Join("、", unavailable)}");
         }
 
         return parts.Count == 0 ? null : string.Join("；", parts);
+    }
+
+    private static IReadOnlyList<string> ReadStringArray(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var value) || value.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<string>();
+        }
+
+        return value.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => item.GetString())
+            .Where(text => !string.IsNullOrWhiteSpace(text))
+            .Select(text => text!)
+            .ToList();
     }
 
     private static void Append(List<string> parts, string label, string? raw, string onText, string offText)

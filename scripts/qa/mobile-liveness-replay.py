@@ -7,10 +7,13 @@
 前置条件（缺一不可，脚本不做任何生产库操作）：
   1. 目标库是隔离库（例如 pim_test），绝不是 pim_prod；
   2. API 已用 `ASPNETCORE_URLS` 起在 <base>；连接串指向该隔离库；
-  3. JWT 私钥与 DataProtection 目录已配置（见 PR「测试 / Tests」章节的命令）。
+  3. JWT 私钥与 DataProtection 目录已配置（见 PR「测试 / Tests」章节的命令）；
+  4. 环境变量 <c>KA_TEST_PASSWORD</c> 提供本次回放要注册的临时账号口令
+     （源码里**不内置任何口令**，见 AC-27.2）。
 
 用法：
-  python3 scripts/qa/mobile-liveness-replay.py [--base http://127.0.0.1:5999/api/v1] [--user-prefix ka_e2e]
+  KA_TEST_PASSWORD=... python3 scripts/qa/mobile-liveness-replay.py \
+      [--base http://127.0.0.1:5999/api/v1] [--user-prefix ka_e2e]
 
 退出码 0 表示全部断言通过；任一断言失败时报错退出。
 """
@@ -18,10 +21,14 @@
 import argparse
 import datetime
 import json
+import os
 import random
 import sys
 import urllib.error
 import urllib.request
+
+# 源码不内置口令（AC-27.2）：本次回放注册的一次性账号口令只从环境变量取。
+TEST_PASSWORD_ENV = "KA_TEST_PASSWORD"
 
 DEFAULT_BASE = "http://127.0.0.1:5999/api/v1"
 
@@ -53,6 +60,15 @@ def main():
     args = parser.parse_args()
     base = args.base
 
+    password = os.environ.get(TEST_PASSWORD_ENV)
+    if not password:
+        print(
+            f"{TEST_PASSWORD_ENV} 未设置：本脚本使用的一次性测试口令只从环境变量读取，"
+            "不会写进源码。",
+            file=sys.stderr,
+        )
+        return 2
+
     username = f"{args.user_prefix}_{random.randint(100000, 999999)}"
     status, response = call(
         "POST",
@@ -60,7 +76,7 @@ def main():
         {
             "username": username,
             "email": f"{username}@example.com",
-            "password": "KaTest!2026",
+            "password": password,
         },
         base=base,
     )
@@ -291,7 +307,7 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main() or 0)
     except AssertionError as exc:
         print("ASSERTION FAILED:", exc, file=sys.stderr)
         sys.exit(1)

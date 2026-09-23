@@ -60,6 +60,31 @@ public sealed class MobileLivenessServiceTests
     // ===== REQ-5 / AC-5.2：幂等 =====
 
     [Fact]
+    public async Task Ingest_RendersUnavailableContextFieldsInsteadOfOmittingThem()
+    {
+        // AC-4.2：设备读不到的字段必须显示成"不可用"，不能被静默省略（否则读者会以为一切正常）。
+        await using var db = MobileTestHelpers.CreateDb();
+        await SeedDeviceAsync(db, PhoneId, "OPPO PLG110", "{\"deviceKind\":\"phone\"}");
+        await IngestService(db).IngestAsync(
+            Upload(PhoneId, new[]
+            {
+                new MobileForensicEventUploadItem(
+                    "hb-1",
+                    ForensicEventTypes.Heartbeat,
+                    Now.AddHours(-1),
+                    "{\"screenOn\":true,\"unavailableFields\":[\"解锁状态\",\"电量百分比\"]}"),
+            }),
+            CancellationToken.None);
+
+        var page = await LivenessService(db).GetEventsAsync(
+            PhoneId, Now.AddDays(-1), Now, 1, 50, CancellationToken.None);
+
+        var item = Assert.Single(page.Items);
+        Assert.Contains("屏幕亮", item.Description);
+        Assert.Contains("不可用字段：解锁状态、电量百分比", item.Description);
+    }
+
+    [Fact]
     public async Task Ingest_RepeatedBatch_IsIdempotent()
     {
         await using var db = MobileTestHelpers.CreateDb();

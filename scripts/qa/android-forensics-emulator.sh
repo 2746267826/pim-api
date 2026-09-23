@@ -12,10 +12,13 @@
 #
 # 说明：
 # - 只读取应用自己的私有目录（debug 包可用 run-as），不抓 logcat、不要求 root。
-# - 输出里不含经纬度与凭据；台账负载本身也不含这些字段。
+# - 拉到本地的数据库副本**可能包含既有的定位点（经纬度）**，因此脚本结束时一律删除；
+#   需要保留现场时显式设置 KEEP_LEDGER_COPY=1（并自行保证不把它提交/上传）。
+# - 打印出来的输出只含取证台账字段，不含坐标与凭据。
 set -euo pipefail
 
 ANDROID_HOME="${ANDROID_HOME:-/home/coder/Android/sdk}"
+KEEP_LEDGER_COPY="${KEEP_LEDGER_COPY:-0}"
 ADB="$ANDROID_HOME/platform-tools/adb"
 PKG="com.pim.app"
 APK="${APK_PATH:-app/build/outputs/apk/debug/app-debug.apk}"
@@ -98,4 +101,10 @@ echo "== 状态页存活区块的实际文案（uiautomator dump） =="
 "$ADB" shell cat /sdcard/ka_window.xml 2>/dev/null | tr '>' '\n' | grep -o 'text="[^"]*"' | grep -E '设备存活|存活|覆盖率|最近心搏|最近死因|无数据|丢弃原因' | head -30 || true
 
 echo
-echo "原始台账已拉取到 $WORKDIR/pim.db"
+if [ "$KEEP_LEDGER_COPY" = "1" ]; then
+  echo "保留现场：$WORKDIR/pim.db（注意：该副本可能含既有定位点，切勿提交或上传）"
+else
+  # 默认删除本地副本：它可能含经纬度，不属于取证输出的一部分。
+  rm -rf "$WORKDIR"
+  echo "本地数据库副本已删除（需要保留现场请设置 KEEP_LEDGER_COPY=1）"
+fi

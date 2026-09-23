@@ -134,7 +134,40 @@ public sealed class MobileForensicIngestService
 
         // 事件与丢弃原因统计都走同一次 SaveChanges：只写事件却不落统计（或反过来）会让
         // "设备端条数 == 服务端条数" 的核对结果随提交路径不同而漂移（AC-5.1 / AC-9.2）。
-        await _db.SaveChangesAsync(ct);
+        //
+        // 并发重试（客户端同一批数据在两个连接上同时重发）可能让两个请求都通过上面的
+        // "查已存在"，其中一个随后撞 (user, device, clientItemKey) 唯一索引。这**不是**失败：
+        // 数据已经在了，语义就是 skipped，因此这里把唯一约束冲突翻译成 skipped（AC-5.2），
+        // 而不是把 500 抛回客户端。
+        var duplicatesOnInsert = new List<string>();
+        while (true)
+        {
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                break;
+            }
+            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+            {
+                foreach (var entry in ex.Entries)
+                {
+                    if (entry.Entity is MobileForensicEventEntity forensic)
+                    {
+                        duplicatesOnInsert.Add(forensic.ClientItemKey);
+                    }
+
+                    entry.State = EntityState.Detached;
+                }
+
+                if (duplicatesOnInsert.Count == 0)
+                {
+                    throw;
+                }
+
+                skipped.AddRange(duplicatesOnInsert);
+                duplicatesOnInsert.Clear();
+            }
+        }
 
         accepted.AddRange(candidates
             .Select(candidate => candidate.ClientItemKey)
@@ -218,6 +251,30 @@ public sealed class MobileForensicIngestService
         }
 
         return cleaned.Count;
+    }
+
+    /// <summary>唯一约束冲突（PostgreSQL 23505 / SQLite 2067）判定：并发重复提交的预期分支。</summary>
+    private static bool IsUniqueViolation(DbUpdateException exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            var type = current.GetType();
+            var sqlState = type.GetProperty("SqlState")?.GetValue(current) as string;
+            if (sqlState == "23505")
+            {
+                return true;
+            }
+
+            var message = current.Message;
+            if (message.Contains("23505", StringComparison.Ordinal) ||
+                message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("duplicate key value", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
