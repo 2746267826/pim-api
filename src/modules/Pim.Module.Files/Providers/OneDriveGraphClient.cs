@@ -382,6 +382,38 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     }
 
     /// <summary>
+    /// 按路径回读条目（REQ-14 登记上传结果用）。路径不存在时返回 null。
+    /// 这里刻意**不带 $select**：issue #342 的教训是 `$select` 组合可能让服务端静默丢字段。
+    /// </summary>
+    public async Task<OneDrivePathItem?> GetItemByPathAsync(
+        string accessToken,
+        string itemPath,
+        CancellationToken ct = default)
+    {
+        var normalized = itemPath.TrimStart('/');
+        try
+        {
+            var json = await GetGraphJsonAsync(
+                $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}",
+                accessToken, ct);
+            return new OneDrivePathItem(
+                ReadRequiredString(json, "id"),
+                ReadString(json, "name", normalized),
+                ReadNullableString(json, "size") is { } size && long.TryParse(size, out var parsed) ? parsed : ReadNullableLong(json, "size"),
+                ReadNullableString(json, "file") ?? ReadMimeType(json));
+        }
+        catch (OneDriveGraphException exception) when (exception.StatusCode == 404)
+        {
+            return null;
+        }
+    }
+
+    private static string? ReadMimeType(JsonElement json)
+        => json.TryGetProperty("file", out var file) && file.ValueKind == JsonValueKind.Object
+            ? ReadNullableString(file, "mimeType")
+            : null;
+
+    /// <summary>
     /// 新建文件夹（REQ-15）：`POST /drive/root:{path}`，body 带 folder facet。
     /// 同样固定 `conflictBehavior = rename`——同名文件夹不得覆盖（REQ-12 的同源约束）。
     /// </summary>

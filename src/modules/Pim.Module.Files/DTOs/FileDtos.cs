@@ -119,6 +119,19 @@ public sealed record MoveFileRequest(string DestinationPath);
 public sealed record CreateFolderRequest(string Path);
 public sealed record CreateShareRequest(string PermissionType, int? ExpiresInDays);
 
+/// <summary>REQ-14：创建上传会话（只创建会话，不搬字节）。</summary>
+public sealed record CreateUploadSessionRequest(string Path, string FileName);
+
+/// <summary>REQ-14：上传会话信息。uploadUrl 已预授权，分片 PUT 不得带 Authorization。</summary>
+public sealed record UploadSessionDto(
+    string UploadUrl,
+    DateTimeOffset? ExpirationDateTime,
+    string Path,
+    string FileName);
+
+/// <summary>REQ-14：上传完成登记（内容已在微软侧）。</summary>
+public sealed record CompleteUploadRequest(string Path, string FileName);
+
 /// <summary>REQ-25：手动同步已入队的即时反馈（不再等待同步跑完）。</summary>
 public sealed record OneDriveSyncStartedDto(bool Started, string Message);
 

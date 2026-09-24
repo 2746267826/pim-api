@@ -96,6 +96,9 @@ public interface IOneDriveGraphClient
     /// <summary>在当前目录内新建文件夹（REQ-15），返回 driveItem id。</summary>
     Task<string> CreateFolderAsync(string accessToken, string folderPath, string name, CancellationToken ct = default);
 
+    /// <summary>按路径回读条目（REQ-14 登记上传结果）；不存在返回 null。</summary>
+    Task<OneDrivePathItem?> GetItemByPathAsync(string accessToken, string itemPath, CancellationToken ct = default);
+
     /// <summary>
     /// 创建上传会话（REQ-14）：>4MB 的文件由浏览器直接向返回的 <c>uploadUrl</c> 分片上传，
     /// PIM 服务器只创建会话与登记元数据，不搬运字节。
@@ -115,6 +118,9 @@ public sealed record OneDriveSmallContent(byte[] Bytes, string? ContentType);
 
 /// <summary>Graph 返回的上传会话（<c>uploadUrl</c> 已预授权，分片 PUT 不得再带 Authorization）。</summary>
 public sealed record OneDriveUploadSession(string UploadUrl, DateTimeOffset? ExpirationDateTime);
+
+/// <summary>按路径回读到的条目（REQ-14 登记上传结果用；名称以服务端为准，重名时已被改名）。</summary>
+public sealed record OneDrivePathItem(string Id, string Name, long? Size, string? MimeType);
 
 /// <summary>分享链接的权限档（REQ-21 / V3：个人版按平台能力只提供可用档位）。</summary>
 public enum OneDriveSharePermission

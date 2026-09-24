@@ -382,6 +382,74 @@ public sealed class OneDriveWriteService
     }
 
     /// <summary>
+    /// 创建上传会话（REQ-14）：只向 Graph 要一个预授权 uploadUrl，**不接收也不转发任何字节**。
+    /// 浏览器拿到后直接向微软分片上传；完成后由 <see cref="RegisterUploadedFileAsync"/> 登记元数据。
+    /// </summary>
+    public async Task<OneDriveUploadSession> CreateUploadSessionAsync(
+        string destinationFolderPath,
+        string fileName,
+        CancellationToken ct = default)
+    {
+        OneDriveNameValidator.EnsureValidName(fileName);
+        var (provider, _) = await LoadConnectedProviderAsync(ct);
+        var folderPath = await EnsureFolderExistsAsync(provider, destinationFolderPath, ct);
+        var targetPath = (folderPath == "/" ? string.Empty : folderPath) + "/" + fileName;
+
+        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
+        return await _client.CreateUploadSessionAsync(token, targetPath, fileName, ct);
+    }
+
+    /// <summary>
+    /// 上传完成后登记元数据（REQ-14）：内容已在微软侧，这里只把结果落到本地元数据并写审计。
+    /// 通过 Graph 回读真实条目来确认存在与最终名称（REQ-12：重名时 Graph 会用 <c>名称 (1).ext</c>）。
+    /// </summary>
+    public async Task<OneDriveWriteResult> RegisterUploadedFileAsync(
+        string destinationFolderPath,
+        string fileName,
+        CancellationToken ct = default)
+    {
+        OneDriveNameValidator.EnsureValidName(fileName);
+        var (provider, folder) = await LoadConnectedProviderAsync(ct);
+        var folderPath = await EnsureFolderExistsAsync(provider, destinationFolderPath, ct);
+
+        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
+        var probePath = (folderPath == "/" ? string.Empty : folderPath) + "/" + fileName;
+        var item = await _client.GetItemByPathAsync(token, probePath, ct)
+            ?? throw new DomainException(5300, "上传已完成，但未能从 OneDrive 读回该文件，请稍后重新同步");
+
+        var now = _clock.GetUtcNow();
+        var row = await _db.Set<FileItemEntity>()
+            .SingleOrDefaultAsync(existing => existing.ProviderId == provider.Id
+                && existing.ExternalFileId == item.Id, ct);
+        if (row is null)
+        {
+            row = new FileItemEntity
+            {
+                ProviderId = provider.Id,
+                ExternalFileId = item.Id,
+                CreatedAt = now,
+            };
+            _db.Set<FileItemEntity>().Add(row);
+        }
+
+        row.ParentExternalFileId = folder.ExternalFileId;
+        row.Path = probePath;
+        // 用 Graph 回读到的**真实名称**（重名时 Graph 已自动改名，见 REQ-12）
+        row.Name = item.Name;
+        row.ItemType = "file";
+        row.MimeType = item.MimeType;
+        row.Size = item.Size;
+        row.IsDeleted = false;
+        row.DeletedAt = null;
+        row.LastSeenAt = now;
+        row.ModifiedAt = now;
+        row.SyncedAt = now;
+        await _db.SaveChangesAsync(ct);
+        await RecordAuditAsync("files.onedrive.upload_session_complete", row.Id, ct);
+        return new OneDriveWriteResult(row.Id, probePath);
+    }
+
+    /// <summary>
     /// 在当前目录内新建文件夹（REQ-15）。先校验名称（AC-15.2），再经 Graph 创建，
     /// 成功后收敛本地元数据（AC-15.1：OneDrive 与 PIM 元数据一致）。
     /// </summary>

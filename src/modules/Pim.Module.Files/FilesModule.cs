@@ -120,6 +120,9 @@ public sealed class FilesModule : IModule
         group.MapGet("/items/{id:guid}/open-link", BuildOpenLinkAsync);
         // REQ-15：在当前目录新建文件夹
         group.MapPost("/folders", CreateFolderAsync);
+        // REQ-14：大文件浏览器直传——服务器只创建会话与登记结果，不搬字节
+        group.MapPost("/items/upload-session", CreateUploadSessionAsync);
+        group.MapPost("/items/upload-session/complete", CompleteUploadSessionAsync);
         // REQ-21：分享链接（生成 / 撤销 / 我的分享）
         group.MapPost("/items/{id:guid}/share", CreateShareAsync);
         group.MapGet("/items/{id:guid}/shares", ListSharesAsync);
@@ -498,6 +501,30 @@ public sealed class FilesModule : IModule
         CancellationToken ct)
     {
         var result = await oneDriveWrite.CreateFolderAsync(request.Path, ct);
+        return Results.Ok(ApiResponse<FileItemDto>.Ok(
+            await FileOperationService.GetItemDtoAsync(db, result.ItemId, ct)));
+    }
+
+    private static async Task<IResult> CreateUploadSessionAsync(
+        [FromBody] CreateUploadSessionRequest request,
+        [FromServices] OneDriveWriteService oneDriveWrite,
+        CancellationToken ct)
+    {
+        var session = await oneDriveWrite.CreateUploadSessionAsync(request.Path, request.FileName, ct);
+        return Results.Ok(ApiResponse<UploadSessionDto>.Ok(new UploadSessionDto(
+            session.UploadUrl,
+            session.ExpirationDateTime,
+            request.Path,
+            request.FileName)));
+    }
+
+    private static async Task<IResult> CompleteUploadSessionAsync(
+        [FromBody] CompleteUploadRequest request,
+        [FromServices] OneDriveWriteService oneDriveWrite,
+        [FromServices] PimDbContext db,
+        CancellationToken ct)
+    {
+        var result = await oneDriveWrite.RegisterUploadedFileAsync(request.Path, request.FileName, ct);
         return Results.Ok(ApiResponse<FileItemDto>.Ok(
             await FileOperationService.GetItemDtoAsync(db, result.ItemId, ct)));
     }

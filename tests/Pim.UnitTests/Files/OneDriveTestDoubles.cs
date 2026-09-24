@@ -195,6 +195,12 @@ public Task<string> CreateFolderAsync(
     string name,
     CancellationToken ct = default)
     => Task.FromResult("new-folder-item");
+public Task<OneDrivePathItem?> GetItemByPathAsync(
+    string accessToken,
+    string itemPath,
+    CancellationToken ct = default)
+    => Task.FromResult<OneDrivePathItem?>(null);
+
 
 
     public Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default)

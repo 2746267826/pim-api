@@ -154,6 +154,12 @@ public class OneDriveFilesEndpointsE2ETests
             string name,
             CancellationToken ct = default)
             => Task.FromResult("new-folder-item");
+        public Task<OneDrivePathItem?> GetItemByPathAsync(
+            string accessToken,
+            string itemPath,
+            CancellationToken ct = default)
+            => Task.FromResult<OneDrivePathItem?>(null);
+
 
     }
     internal static WebApplicationFactory<Program> CreateFactory(string dbName, E2EGraphClient graph)
