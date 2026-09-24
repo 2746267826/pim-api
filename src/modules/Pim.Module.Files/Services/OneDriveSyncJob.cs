@@ -21,6 +21,20 @@ public sealed class OneDriveSyncJob
         _logger = logger;
     }
 
+    /// <summary>
+    /// 手动触发某个 provider 的同步（REQ-25：后台化）。
+    ///
+    /// 由 HTTP 端点以 **Hangfire 后台任务**形式入队，端点本身立即返回「已开始」，
+    /// 不阻塞请求；同步进行中用户可继续浏览（AC-25.1 / AC-25.3）。
+    /// 系统上下文运行，不依赖请求作用域。
+    /// </summary>
+    public async Task RunOneAsync(Guid providerId)
+    {
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var syncService = scope.ServiceProvider.GetRequiredService<OneDriveSyncService>();
+        await syncService.SyncAsync(providerId);
+    }
+
     public async Task RunAllAsync()
     {
         await using var scope = _scopeFactory.CreateAsyncScope();

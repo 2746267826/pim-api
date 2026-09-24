@@ -381,6 +381,142 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
             expiration is not null && DateTimeOffset.TryParse(expiration, out var parsed) ? parsed : null);
     }
 
+    /// <summary>
+    /// 新建文件夹（REQ-15）：`POST /drive/root:{path}`，body 带 folder facet。
+    /// 同样固定 `conflictBehavior = rename`——同名文件夹不得覆盖（REQ-12 的同源约束）。
+    /// </summary>
+    public async Task<string> CreateFolderAsync(
+        string accessToken,
+        string folderPath,
+        string name,
+        CancellationToken ct = default)
+    {
+        var normalized = folderPath.TrimStart('/');
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = JsonContent.Create(new
+        {
+            name,
+            folder = new { },
+            // 同名时自动改名而不是覆盖（REQ-12 / AC-12.2）
+            conflictBehavior = "rename",
+        });
+
+        using var response = await Http.SendAsync(request, ct);
+        var json = await ReadJsonAsync(response, ct);
+        return ReadRequiredString(json, "id");
+    }
+
+    /// <summary>
+    /// 生成分享链接（REQ-21）。个人版可用的 <c>scope</c> 为 <c>anonymous</c>；
+    /// <c>expirationDateTime</c> 仅在调用方要求时才带上（V2 未验证前不假设平台支持）。
+    /// </summary>
+    public async Task<OneDriveShareLink> CreateShareLinkAsync(
+        string accessToken,
+        string itemId,
+        OneDriveSharePermission permission,
+        DateTimeOffset? expiration,
+        CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object>
+        {
+            ["type"] = permission == OneDriveSharePermission.Edit ? "edit" : "view",
+            ["scope"] = "anonymous",
+        };
+        if (expiration is { } expires)
+        {
+            body["expirationDateTime"] = expires.ToUniversalTime().ToString("o");
+        }
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}/createLink");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = JsonContent.Create(body);
+
+        using var response = await Http.SendAsync(request, ct);
+        var json = await ReadJsonAsync(response, ct);
+        return ReadShareLink(json);
+    }
+
+    /// <summary>撤销分享权限（REQ-21：就地撤销 / 我的分享撤销）。</summary>
+    public async Task RevokeSharePermissionAsync(
+        string accessToken,
+        string itemId,
+        string permissionId,
+        CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Delete,
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}/permissions/{Uri.EscapeDataString(permissionId)}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await Http.SendAsync(request, ct);
+        // 404：权限已不存在，视为撤销成功（幂等）
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw CreateGraphException(response, string.Empty);
+        }
+    }
+
+    /// <summary>列出条目的分享权限（REQ-21「我的分享」）。</summary>
+    public async Task<IReadOnlyList<OneDriveShareLink>> ListSharePermissionsAsync(
+        string accessToken,
+        string itemId,
+        CancellationToken ct = default)
+    {
+        var json = await GetGraphJsonAsync(
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}/permissions",
+            accessToken, ct);
+
+        var links = new List<OneDriveShareLink>();
+        if (json.TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in value.EnumerateArray())
+            {
+                // 只保留「链接型」权限：个人版还会返回直接授予的权限项，那些没有 link 属性
+                if (entry.TryGetProperty("link", out var link) && link.ValueKind == JsonValueKind.Object)
+                {
+                    links.Add(ReadShareLink(entry));
+                }
+            }
+        }
+
+        return links;
+    }
+
+    private static OneDriveShareLink ReadShareLink(JsonElement json)
+    {
+        var permissionId = ReadNullableString(json, "id");
+        if (json.TryGetProperty("link", out var link) && link.ValueKind == JsonValueKind.Object)
+        {
+            return new OneDriveShareLink(
+                ReadNullableString(link, "webUrl") ?? string.Empty,
+                ReadNullableString(link, "type") ?? "view",
+                permissionId,
+                ReadNullableDateTimeOffset(json, "expirationDateTime"));
+        }
+
+        return new OneDriveShareLink(
+            ReadNullableString(json, "webUrl") ?? string.Empty,
+            "view",
+            permissionId,
+            ReadNullableDateTimeOffset(json, "expirationDateTime"));
+    }
+
+    private static DateTimeOffset? ReadNullableDateTimeOffset(JsonElement json, string propertyName)
+        => json.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.String
+            && DateTimeOffset.TryParse(property.GetString(), out var value)
+                ? value
+                : null;
+
     public async Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
     {
         var json = await GetGraphJsonAsync(

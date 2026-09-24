@@ -381,6 +381,50 @@ public sealed class OneDriveWriteService
         return new OneDriveWriteResult(item.Id, itemPath);
     }
 
+    /// <summary>
+    /// 在当前目录内新建文件夹（REQ-15）。先校验名称（AC-15.2），再经 Graph 创建，
+    /// 成功后收敛本地元数据（AC-15.1：OneDrive 与 PIM 元数据一致）。
+    /// </summary>
+    public async Task<OneDriveWriteResult> CreateFolderAsync(string path, CancellationToken ct = default)
+    {
+        var (folderPath, name) = OneDriveNameValidator.SplitTargetPath(path);
+        var (provider, parentFolder) = await LoadConnectedProviderAsync(ct);
+        var normalizedParent = await EnsureFolderExistsAsync(provider, folderPath, ct);
+
+        var targetPath = (normalizedParent == "/" ? string.Empty : normalizedParent) + "/" + name;
+        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
+        var created = await _client.CreateFolderAsync(token, targetPath, name, ct);
+
+        var now = _clock.GetUtcNow();
+        var item = await _db.Set<FileItemEntity>()
+            .SingleOrDefaultAsync(row => row.ProviderId == provider.Id && row.ExternalFileId == created, ct);
+        if (item is null)
+        {
+            item = new FileItemEntity
+            {
+                ProviderId = provider.Id,
+                ExternalFileId = created,
+                CreatedAt = now,
+            };
+            _db.Set<FileItemEntity>().Add(item);
+        }
+
+        item.ParentExternalFileId = parentFolder.ExternalFileId;
+        item.Path = targetPath;
+        item.Name = name;
+        item.ItemType = "folder";
+        item.MimeType = null;
+        item.Size = null;
+        item.IsDeleted = false;
+        item.DeletedAt = null;
+        item.LastSeenAt = now;
+        item.ModifiedAt = now;
+        item.SyncedAt = now;
+        await _db.SaveChangesAsync(ct);
+        await RecordAuditAsync("files.onedrive.create_folder", item.Id, ct);
+        return new OneDriveWriteResult(item.Id, targetPath);
+    }
+
     /// <summary>OneDrive 网页地址（替代 v1 的 BuildOpenLink）。</summary>
     public async Task<string> GetWebUrlAsync(Guid itemId, CancellationToken ct = default)
     {

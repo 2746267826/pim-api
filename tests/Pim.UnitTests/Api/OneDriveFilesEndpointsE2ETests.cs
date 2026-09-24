@@ -123,6 +123,38 @@ public class OneDriveFilesEndpointsE2ETests
             => Task.FromResult(new OneDriveUploadSession(
                 "https://upload.example.com/session-test",
                 DateTimeOffset.UtcNow.AddHours(1)));
+        public Task<OneDriveShareLink> CreateShareLinkAsync(
+            string accessToken,
+            string itemId,
+            OneDriveSharePermission permission,
+            DateTimeOffset? expiration,
+            CancellationToken ct = default)
+            => Task.FromResult(new OneDriveShareLink(
+                "https://1drv.ms/" + (permission == OneDriveSharePermission.Edit ? "edit" : "view") + "/" + itemId,
+                permission == OneDriveSharePermission.Edit ? "edit" : "view",
+                "perm-1",
+                expiration));
+
+        public Task RevokeSharePermissionAsync(
+            string accessToken,
+            string itemId,
+            string permissionId,
+            CancellationToken ct = default)
+            => Task.CompletedTask;
+
+        public Task<IReadOnlyList<OneDriveShareLink>> ListSharePermissionsAsync(
+            string accessToken,
+            string itemId,
+            CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<OneDriveShareLink>>([]);
+
+        public Task<string> CreateFolderAsync(
+            string accessToken,
+            string folderPath,
+            string name,
+            CancellationToken ct = default)
+            => Task.FromResult("new-folder-item");
+
     }
     internal static WebApplicationFactory<Program> CreateFactory(string dbName, E2EGraphClient graph)
         => new WebApplicationFactory<Program>().WithWebHostBuilder(b =>

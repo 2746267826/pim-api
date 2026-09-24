@@ -116,6 +116,18 @@ public sealed record FileSearchResultDto(
     int TotalPages = 0);
 public sealed record FileChunkSearchHitDto(Guid ChunkId, Guid FileItemId, Guid VersionId, string Text, decimal Score);
 public sealed record MoveFileRequest(string DestinationPath);
+public sealed record CreateFolderRequest(string Path);
+public sealed record CreateShareRequest(string PermissionType, int? ExpiresInDays);
+
+/// <summary>REQ-25：手动同步已入队的即时反馈（不再等待同步跑完）。</summary>
+public sealed record OneDriveSyncStartedDto(bool Started, string Message);
+
+/// <summary>REQ-25：同步状态（顶部横幅的数据源）。</summary>
+public sealed record OneDriveSyncStatusDto(
+    string SyncStatus,
+    string? LastError,
+    DateTimeOffset? LastSyncAt,
+    long SyncedItemCount);
 public sealed record RenameFileRequest(string Name);
 public sealed record FileOpenLinkDto(string Url, string Mode);
 public sealed record VersionRestorePreviewDto(Guid FileItemId, Guid VersionId, string CurrentVersionLabel, string RestoreVersionLabel, bool RequiresConfirmation, string Summary);

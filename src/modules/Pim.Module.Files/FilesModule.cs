@@ -48,6 +48,7 @@ public sealed class FilesModule : IModule
             sp.GetService<ILogger<OneDriveTextExtractor>>()));
         services.AddScoped<OneDriveContentService>();
         services.AddScoped<OneDriveWriteService>();
+        services.AddScoped<OneDriveShareService>();
         // QuickNotes 等模块经此把附件存入用户自己的 OneDrive（设计文档 §10）
         services.AddScoped<IOneDriveAttachmentStore, OneDriveAttachmentStore>();
         // OneDriveGraphClient 的构造函数收的是 IHttpClientFactory + IConfiguration（它自己
@@ -94,6 +95,7 @@ public sealed class FilesModule : IModule
         group.MapDelete("/providers/{id:guid}", DisconnectProviderAsync);
 
         group.MapPost("/providers/{id:guid}/sync", SyncProviderAsync);
+        group.MapGet("/providers/{id:guid}/sync-status", SyncStatusAsync);
         group.MapGet("/items", ListItemsAsync);
         group.MapGet("/items/{id:guid}", GetItemAsync);
         group.MapPost("/items/upload", UploadItemAsync);
@@ -116,6 +118,13 @@ public sealed class FilesModule : IModule
         group.MapPost("/suggestions/{id:guid}/dismiss", DismissSuggestionAsync);
         group.MapPost("/suggestions/{id:guid}/accept", AcceptSuggestionAsync);
         group.MapGet("/items/{id:guid}/open-link", BuildOpenLinkAsync);
+        // REQ-15：在当前目录新建文件夹
+        group.MapPost("/folders", CreateFolderAsync);
+        // REQ-21：分享链接（生成 / 撤销 / 我的分享）
+        group.MapPost("/items/{id:guid}/share", CreateShareAsync);
+        group.MapGet("/items/{id:guid}/shares", ListSharesAsync);
+        group.MapDelete("/items/{id:guid}/shares/{permissionId}", RevokeShareAsync);
+        group.MapGet("/shares", ListAllSharesAsync);
     }
 
     public async Task InitializeAsync(IServiceProvider serviceProvider)
@@ -253,10 +262,14 @@ public sealed class FilesModule : IModule
 
     private static async Task<IResult> SyncProviderAsync(
         Guid id,
+        HttpContext httpContext,
         [FromServices] OneDriveSyncService oneDriveService,
         [FromServices] PimDbContext db,
         CancellationToken ct)
     {
+        // 后台设施是**可选**依赖（Hangfire 未启用时也要能工作），因此不用 [FromServices]：
+        // 那个特性表示必需依赖，宿主解析不到会让端点 500。
+        var jobClient = httpContext.RequestServices.GetService<IBackgroundJobClient>();
         // 全局用户过滤器保证只能看到自己的 provider
         var provider = await db.Set<FileProviderEntity>()
             .AsNoTracking()
@@ -272,8 +285,46 @@ public sealed class FilesModule : IModule
             throw new DomainException(5334, "该文件来源已退役，请使用 OneDrive");
         }
 
-        var result = await oneDriveService.SyncAsync(id, ct);
-        return Results.Ok(ApiResponse<OneDriveSyncResultDto>.Ok(OneDriveSyncResultDto.From(result)));
+        // REQ-25：手动同步**后台化**。此前在请求内跑完整同步（增量一页≈秒级、全量重扫分钟级），
+        // 大更新时页面像卡死。现在只入队并立即返回「已开始」；进度与结果由
+        // GET /providers/{id}/sync-status 暴露（AC-25.1 / AC-25.3）。
+        if (jobClient is null)
+        {
+            // 后台设施不可用（例如未启用 Hangfire）时退回同步执行，而不是假装已开始——静默失败是禁止的
+            var fallback = await oneDriveService.SyncAsync(id, ct);
+            return Results.Ok(ApiResponse<OneDriveSyncResultDto>.Ok(OneDriveSyncResultDto.From(fallback)));
+        }
+
+        jobClient.Enqueue<OneDriveSyncJob>(job => job.RunOneAsync(id));
+        return Results.Ok(ApiResponse<OneDriveSyncStartedDto>.Ok(
+            new OneDriveSyncStartedDto(true, "已开始同步，可继续浏览；完成后会显示结果")));
+    }
+
+    /// <summary>REQ-25：同步状态（横幅数据源）。</summary>
+    private static async Task<IResult> SyncStatusAsync(
+        Guid id,
+        [FromServices] PimDbContext db,
+        CancellationToken ct)
+    {
+        // 全局用户过滤器保证只能看到自己的 provider
+        var provider = await db.Set<FileProviderEntity>()
+            .AsNoTracking()
+            .Where(item => item.Id == id)
+            .Select(item => new
+            {
+                item.SyncStatus,
+                item.LastError,
+                item.LastSyncAt,
+                item.SyncedItemCount,
+            })
+            .FirstOrDefaultAsync(ct)
+            ?? throw new DomainException(5104, "文件来源不存在");
+
+        return Results.Ok(ApiResponse<OneDriveSyncStatusDto>.Ok(new OneDriveSyncStatusDto(
+            provider.SyncStatus ?? "idle",
+            provider.LastError,
+            provider.LastSyncAt,
+            provider.SyncedItemCount)));
     }
 
     private static async Task<IResult> ListItemsAsync(
@@ -439,6 +490,48 @@ public sealed class FilesModule : IModule
         [FromServices] FileOperationService service,
         CancellationToken ct)
         => Results.Ok(ApiResponse<FileSuggestionDto>.Ok(await service.AcceptSuggestionAsync(id, ct)));
+
+    private static async Task<IResult> CreateFolderAsync(
+        [FromBody] CreateFolderRequest request,
+        [FromServices] OneDriveWriteService oneDriveWrite,
+        [FromServices] PimDbContext db,
+        CancellationToken ct)
+    {
+        var result = await oneDriveWrite.CreateFolderAsync(request.Path, ct);
+        return Results.Ok(ApiResponse<FileItemDto>.Ok(
+            await FileOperationService.GetItemDtoAsync(db, result.ItemId, ct)));
+    }
+
+    private static async Task<IResult> CreateShareAsync(
+        Guid id,
+        [FromBody] CreateShareRequest request,
+        [FromServices] OneDriveShareService shares,
+        CancellationToken ct)
+        => Results.Ok(ApiResponse<FileShareDto>.Ok(
+            await shares.CreateAsync(id, request.PermissionType, request.ExpiresInDays, ct)));
+
+    private static async Task<IResult> ListSharesAsync(
+        Guid id,
+        [FromServices] OneDriveShareService shares,
+        CancellationToken ct)
+        => Results.Ok(ApiResponse<IReadOnlyList<FileShareDto>>.Ok(await shares.ListForItemAsync(id, ct)));
+
+    private static async Task<IResult> RevokeShareAsync(
+        Guid id,
+        string permissionId,
+        [FromServices] OneDriveShareService shares,
+        CancellationToken ct)
+    {
+        await shares.RevokeAsync(id, permissionId, ct);
+        return Results.Ok(ApiResponse<bool>.Ok(true));
+    }
+
+    private static async Task<IResult> ListAllSharesAsync(
+        [FromQuery] int? limit,
+        [FromServices] OneDriveShareService shares,
+        CancellationToken ct)
+        => Results.Ok(ApiResponse<IReadOnlyList<FileShareDto>>.Ok(
+            await shares.ListAllAsync(limit ?? 50, ct)));
 
     private static async Task<IResult> BuildOpenLinkAsync(
         Guid id,
