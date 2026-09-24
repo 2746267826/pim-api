@@ -21,10 +21,7 @@ public sealed class FileSearchService(
     SensitivePathPolicy? sensitivePolicy = null,
     IConfiguration? configuration = null)
 {
-    /// <summary>先按上限多取一些再做敏感过滤，避免敏感项吃掉结果预算。</summary>
-    private const int CandidateLimit = 60;
-
-    /// <summary>返回结果上限（单页）。</summary>
+    /// <summary>返回结果上限（单页，不传 pageSize 时使用）。</summary>
     private const int ResultLimit = 20;
 
     /// <summary>按 id 排序、批量取一页元数据（供翻页使用）。</summary>
@@ -43,9 +40,14 @@ public sealed class FileSearchService(
         => SearchAsync(query, page: 1, pageSize: ResultLimit, ct);
 
     /// <summary>
-    /// 元数据搜索（设计 §9）：支持分页。
-    /// 合约里 `search_files` 声明了 page/pageSize，因此这里必须真的翻页，否则
-    /// page=2 会返回第一页、超过单页的结果永远取不到（复审发现）。
+    /// 元数据搜索（设计 §9）：支持真分页并返回总数（REQ-8 / P7）。
+    ///
+    /// 敏感路径的排除**下推到 SQL**（在分页与计数之前），因此：
+    /// <list type="bullet">
+    ///   <item>结果里没有敏感项；</item>
+    ///   <item><c>TotalCount</c> 也不含敏感项——否则「共 N 项」会泄漏被保护文件的数量；</item>
+    ///   <item>分页不再需要「先多取 60 条候选再内存过滤」的旧窗口，第 2 页起不会凭空缺页。</item>
+    /// </list>
     /// </summary>
     public async Task<FileSearchResultDto> SearchAsync(
         FileSearchQuery query,
@@ -59,7 +61,7 @@ public sealed class FileSearchService(
         var search = query.Q?.Trim();
         if (string.IsNullOrWhiteSpace(search))
         {
-            return new FileSearchResultDto([], []);
+            return new FileSearchResultDto([], [], 0, 0);
         }
 
         var lowered = search.ToLowerInvariant();
@@ -77,24 +79,63 @@ public sealed class FileSearchService(
                 && !item.IsDeleted
                 && (item.Name.ToLower().Contains(lowered)
                     || item.Path.ToLower().Contains(lowered)
-                    || (item.MimeType != null && item.MimeType.ToLower().Contains(lowered))))
+                    || (item.MimeType != null && item.MimeType.ToLower().Contains(lowered))));
+
+        matches = ExcludeProtectedDirectories(matches);
+
+        var totalCount = await matches.CountAsync(ct);
+        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
+
+        var items = await matches
             .OrderBy(item => item.ItemType == "folder" ? 0 : 1)
             .ThenBy(item => item.Name.ToLower())
-            .ThenBy(item => item.Id);
-
-        // 敏感路径不进搜索结果（§13）。过滤必须在分页**之前**完成，否则敏感项会占掉页名额，
-        // 使返回条数少于 pageSize 且翻页错位；因此先在库侧多取候选，再在内存过滤后分页。
-        var candidates = await matches.Take(CandidateLimit).ToListAsync(ct);
-        var allowed = candidates
-            .Where(item => !_sensitivePolicy.IsProtected(item.Path))
-            .ToList();
-
-        var items = allowed
+            .ThenBy(item => item.Id)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
-            .Select(FileItemMapper.Map)
-            .ToList();
+            .ToListAsync(ct);
 
-        return new FileSearchResultDto(items, []);
+        return new FileSearchResultDto(
+            items.Select(FileItemMapper.Map).ToList(),
+            [],
+            totalCount,
+            totalPages);
+    }
+
+    /// <summary>
+    /// 把 <see cref="SensitivePathPolicy"/> 的「目录本身或其子树」判定翻译成 SQL 谓词。
+    ///
+    /// 逐条 AND 一个 <c>Where</c>（而不是 <c>Any(...)</c>）：EF 无法把闭包里的
+    /// <c>Any</c> 翻译成 SQL，逐条下推才能既保持与 <c>IsProtected</c> 相同的语义，
+    /// 又让排除发生在分页与计数之前。
+    ///
+    /// 两侧都必须转小写：<c>IsProtected</c> 用的是 <c>OrdinalIgnoreCase</c>，
+    /// 而 SQL 的 <c>=</c> / <c>LIKE</c> 在非 C 排序规则下**大小写敏感**。早先只对前缀转小写、
+    /// 对目录本身用裸 <c>=</c>，导致 <c>/secrets</c> 这类大小写变体能绕过排除、
+    /// 把受保护目录的存在泄漏进结果与 <c>TotalCount</c>（复审 Critical）。
+    ///
+    /// 关键细节：**两侧都在 SQL 里转小写**（<c>lower(path)</c> 对 <c>lower(@dir)</c>），
+    /// 而不是在应用侧预先把目录转好。应用侧 <c>ToLowerInvariant</c> 与 PostgreSQL
+    /// <c>lower()</c> 对少数 Unicode 字符结果不同（例如 <c>İ</c>：.NET 保持不变、
+    /// PG 归约为 <c>i</c>），混用会让「策略判定受保护、SQL 却保留」这一**泄漏方向**重新出现。
+    /// 两边都交给数据库，比较至少在内部自洽。
+    ///
+    /// 残余差异（已知，方向安全）：<c>IsProtected</c> 的 <c>OrdinalIgnoreCase</c> 与
+    /// 数据库 <c>lower()</c> 仍可能在个别 Unicode 目录名上分歧，此时 SQL 谓词**更倾向排除**
+    /// （宁可多隐藏、不泄漏）。默认规则 <c>/Secrets/*</c>、<c>/Passwords/*</c> 均为 ASCII，不受影响。
+    /// </summary>
+    private IQueryable<FileItemEntity> ExcludeProtectedDirectories(IQueryable<FileItemEntity> source)
+    {
+        foreach (var directory in _sensitivePolicy.ProtectedDirectories)
+        {
+            // 传给 SQL 的是**原样**目录；转小写在两侧分别由数据库完成，
+            // 避免应用侧与数据库的 Unicode 大小写规则不同造成漏排除。
+            var protectedDirectory = directory;
+            var protectedPrefix = $"{directory}/";
+            source = source.Where(item =>
+                item.Path.ToLower() != protectedDirectory.ToLower()
+                && !item.Path.ToLower().StartsWith(protectedPrefix.ToLower()));
+        }
+
+        return source;
     }
 }

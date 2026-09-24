@@ -269,10 +269,20 @@ public sealed class FilesModule : IModule
         [FromQuery] string? path,
         [FromQuery] int? page,
         [FromQuery] int? pageSize,
+        [FromQuery] string? q,
+        [FromQuery] string? sort,
+        [FromQuery] string? order,
+        [FromQuery] string? type,
         [FromServices] FileOperationService service,
         CancellationToken ct)
+        // 默认页大小 = P3 确认的 100/页：旧默认 50 会让直接调用该端点（含 MCP get_files）
+        // 拿到的条数与前端不一致，也与工单口径不符（复审 Important）。
         => Results.Ok(ApiResponse<FileListResponse>.Ok(new FileListResponse(
-            await service.ListItemsAsync(new FileListQuery(path), page ?? 1, pageSize ?? 50, ct))));
+            await service.ListItemsAsync(
+                new FileListQuery(path, q, sort, order, type),
+                page ?? 1,
+                pageSize ?? FileOperationService.DefaultPageSize,
+                ct))));
 
     private static async Task<IResult> GetItemAsync(
         Guid id,
