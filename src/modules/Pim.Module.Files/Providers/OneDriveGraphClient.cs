@@ -20,6 +20,18 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     /// 取客户端，而不是构造函数注入 <c>HttpClient</c>。
     /// </summary>
     public const string HttpClientName = "onedrive-graph";
+
+    /// <summary>
+    /// **关闭自动跳转**的命名 HttpClient。
+    ///
+    /// 取内容直链时要看到 302 的 <c>Location</c>，但默认的 <see cref="HttpClientHandler"/>
+    /// 会自动跟随跳转（<c>AllowAutoRedirect=true</c>）：302 会被一路跟随到 CDN，
+    /// 调用方拿到的是 CDN 的 200、<c>Location</c> 恒为 null。
+    /// 这不能靠改共享的 <see cref="HttpClientName"/> 客户端实现——<c>DownloadSmallAsync</c>
+    /// 等内容出口依赖自动跟随把内容取回来，关掉会直接打断它们。
+    /// 因此单列一个客户端名，只给「只看 302、不取内容」的路径使用。
+    /// </summary>
+    public const string NoRedirectHttpClientName = "onedrive-graph-no-redirect";
     private const string GraphBaseUrl = "https://graph.microsoft.com/v1.0";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -173,7 +185,10 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
             $"{GraphBaseUrl}/drive/items/{escapedItemId}/content");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        // 必须用**关闭自动跳转**的客户端，否则 302 会被跟随到 CDN，
+        // Location 被消费掉、这里恒为 null（复审 Important）。
+        using var response = await NoRedirectHttp.SendAsync(
+            request, HttpCompletionOption.ResponseHeadersRead, ct);
         if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.Found)
         {
             // 复用既有错误映射（404/429 透传、其余 502），让上层的归属/敏感路径闸门语义不变
@@ -326,6 +341,9 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     }
 
     private HttpClient Http => _httpClientFactory.CreateClient(HttpClientName);
+
+    /// <summary>只看响应头、不跟随跳转的客户端（取 302 Location 专用）。</summary>
+    private HttpClient NoRedirectHttp => _httpClientFactory.CreateClient(NoRedirectHttpClientName);
 
     private string TokenEndpoint(string segment)
         => $"https://login.microsoftonline.com/{Uri.EscapeDataString(_tenant)}/oauth2/v2.0/{segment}";

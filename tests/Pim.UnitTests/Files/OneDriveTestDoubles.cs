@@ -190,6 +190,65 @@ internal static class OneDriveDeltaPageFactory
 }
 
 /// <summary>针对 OneDriveGraphClient 原始 HTTP 行为的桩 Handler。</summary>
+/// <summary>
+/// 忠实模拟 <see cref="HttpClientHandler"/> 的**自动跟随跳转**语义：
+/// <see cref="HttpMessageHandler"/> 自身的 <c>SendAsync</c> 不做跳转，所以只提供 stub 的
+/// 测试永远看不到「302 被跟随」这条真实行为——issue #342 复审正是这样漏掉的。
+/// 用 <see cref="HttpClientHandler"/> 的 <c>AllowAutoRedirect</c> 开关来复现：
+/// 开启时沿 <c>Location</c> 继续请求并返回末端响应（<c>Location</c> 已被消费掉），
+/// 关闭时原样返回 302（调用方才能读到 <c>Location</c>）。
+/// </summary>
+internal sealed class RedirectModelingHandler : HttpMessageHandler
+{
+    private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
+    private readonly bool _followRedirects;
+
+    public RedirectModelingHandler(Func<HttpRequestMessage, HttpResponseMessage> responder, bool followRedirects)
+    {
+        _responder = responder;
+        _followRedirects = followRedirects;
+    }
+
+    public List<(string Method, string Url, string? Authorization)> Requests { get; } = [];
+
+    public bool SawFollowUpRequest => Requests.Count > 1;
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        Requests.Add((
+            request.Method.Method,
+            request.RequestUri?.ToString() ?? "",
+            request.Headers.Authorization?.ToString()));
+
+        var response = _responder(request);
+
+        if (_followRedirects && IsRedirect(response.StatusCode) && response.Headers.Location is { } location)
+        {
+            // 真实 HttpClientHandler 的行为：跟随 Location、丢弃原响应头
+            var target = location.IsAbsoluteUri
+                ? location
+                : new Uri(request.RequestUri!, location);
+            // 跟随请求同样要记录，否则 SawFollowUpRequest 恒为 false（测试替身自身的缺陷）
+            Requests.Add((HttpMethod.Get.Method, target.ToString(), null));
+            using var followUp = new HttpRequestMessage(HttpMethod.Get, target);
+            return Task.FromResult(_responder(followUp));
+        }
+
+        return Task.FromResult(response);
+    }
+
+    private static bool IsRedirect(HttpStatusCode status)
+        => status is HttpStatusCode.MovedPermanently or HttpStatusCode.Found
+            or HttpStatusCode.SeeOther or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect;
+
+    public static HttpResponseMessage Redirect(string location) 
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.Found) { Content = new StringContent(string.Empty) };
+        response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
+        return response;
+    }
+}
+
 internal sealed class StubHttpHandler : HttpMessageHandler
 {
     public required Func<HttpRequestMessage, HttpResponseMessage> Responder { get; init; }

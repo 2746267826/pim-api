@@ -10,12 +10,148 @@ namespace Pim.UnitTests.Files;
 /// </summary>
 public class OneDriveGraphClientContentTests
 {
+    /// <summary>
+    /// 用**真实 HTTP 栈**验证跳转语义：本地起一个只回 302 的最小服务，客户端指向它。
+    /// stub handler 不模拟「自动跟随」，只有真实 <see cref="HttpClientHandler"/> 才能证明
+    /// 「关掉 AllowAutoRedirect 后确实读得到 Location」——这正是 #342 复审漏掉的那一层。
+    /// </summary>
+    [Fact]
+    public async Task NoRedirectHttpClient_ReadsLocationFromRealRedirectServer()
+    {
+        var server = new RedirectOnlyServer();
+        await server.StartAsync();
+        try
+        {
+            var following = new HttpClient(new HttpClientHandler { AllowAutoRedirect = true });
+            var notFollowing = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+
+            using var followResponse = await following.GetAsync(server.RedirectUrl);
+            Assert.Equal(HttpStatusCode.OK, followResponse.StatusCode);
+            Assert.Null(followResponse.Headers.Location); // 跟随之后 Location 已被消费
+
+            using var noFollowResponse = await notFollowing.GetAsync(server.RedirectUrl);
+            Assert.Equal(HttpStatusCode.Found, noFollowResponse.StatusCode);
+            Assert.Equal(server.TargetUrl, noFollowResponse.Headers.Location?.ToString());
+        }
+        finally
+        {
+            await server.DisposeAsync();
+        }
+    }
+
+    /// <summary>只回 302（Location 指向自身 + /cdn）的最小本地服务，不访问外网。</summary>
+    private sealed class RedirectOnlyServer : IAsyncDisposable
+    {
+        private readonly HttpListener _listener = new();
+
+        public string BaseUrl { get; }
+
+        public RedirectOnlyServer()
+        {
+            var port = GetFreePort();
+            BaseUrl = $"http://127.0.0.1:{port}/";
+            _listener.Prefixes.Add(BaseUrl);
+        }
+
+        public string RedirectUrl => BaseUrl + "item/content";
+        public string TargetUrl => BaseUrl + "cdn/item";
+
+        public Task StartAsync()
+        {
+            _listener.Start();
+            _ = Task.Run(async () =>
+            {
+                while (_listener.IsListening)
+                {
+                    HttpListenerContext context;
+                    try
+                    {
+                        context = await _listener.GetContextAsync();
+                    }
+                    catch
+                    {
+                        return;
+                    }
+
+                    if (context.Request.Url!.AbsolutePath.EndsWith("/content", StringComparison.Ordinal))
+                    {
+                        context.Response.StatusCode = 302;
+                        context.Response.RedirectLocation = TargetUrl;
+                    }
+                    else
+                    {
+                        context.Response.StatusCode = 200;
+                        var payload = Encoding.UTF8.GetBytes("cdn-bytes");
+                        context.Response.OutputStream.Write(payload);
+                    }
+                    context.Response.Close();
+                }
+            });
+            return Task.CompletedTask;
+        }
+
+        private static int GetFreePort()
+        {
+            var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            probe.Start();
+            var port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+            probe.Stop();
+            return port;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            try { _listener.Stop(); } catch { /* 已停 */ }
+            _listener.Close();
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private static OneDriveGraphClient CreateClient(StubHttpHandler handler)
         => new(new StubHttpClientFactory(handler));
+
+    private static (OneDriveGraphClient Client, RedirectAwareHttpClientFactory Factory) CreateRedirectAwareClient(
+        Func<HttpRequestMessage, HttpResponseMessage> responder)
+    {
+        var factory = new RedirectAwareHttpClientFactory(responder);
+        return (new OneDriveGraphClient(factory), factory);
+    }
 
     private sealed class StubHttpClientFactory(StubHttpHandler handler) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(handler);
+    }
+
+    /// <summary>
+    /// 按**注册名**给出不同配置的客户端，忠实复现生产装配：
+    /// 内容出口那个命名客户端关闭自动跳转（<c>AllowAutoRedirect=false</c>），其余保持默认跟随。
+    /// 于是「兜底不跟随 / 下载内容仍跟随」在测试里真的走了两套 handler，
+    /// 而不是「一个 stub 两种期望」——后者正是漏掉本次复审问题的原因。
+    /// </summary>
+    private sealed class RedirectAwareHttpClientFactory : IHttpClientFactory
+    {
+        private readonly RedirectModelingHandler _following;
+        private readonly RedirectModelingHandler _notFollowing;
+
+        public RedirectAwareHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> responder)
+        {
+            _following = new RedirectModelingHandler(responder, followRedirects: true);
+            _notFollowing = new RedirectModelingHandler(responder, followRedirects: false);
+        }
+
+        /// <summary>所有命名客户端发出的请求，按发生顺序。</summary>
+        public IReadOnlyList<string> AllRequestUrls
+            => _notFollowing.Requests.Select(r => r.Url).Concat(_following.Requests.Select(r => r.Url)).ToList();
+
+        public bool FollowingSawFollowUp => _following.SawFollowUpRequest;
+
+        public int TotalRequests => _notFollowing.Requests.Count + _following.Requests.Count;
+
+        public HttpClient CreateClient(string name)
+            => new(name == OneDriveGraphClient.NoRedirectHttpClientName ? _notFollowing : _following)
+            {
+                Timeout = TimeSpan.FromSeconds(30),
+            };
     }
 
     [Fact]
@@ -167,6 +303,55 @@ public class OneDriveGraphClientContentTests
 
         Assert.Equal("https://dl.example.com/file?sig=1", await client.GetDownloadUrlAsync("at", "file-1"));
         Assert.Equal(2, handler.Requests.Count);
+    }
+
+    /// <summary>
+    /// issue #342 复审 Important 的回归：兜底必须在**关掉自动跳转**的请求路径上执行。
+    ///
+    /// 这条用忠实模拟跳转语义的 handler：若客户端仍开启 AllowAutoRedirect，
+    /// 302 会被跟随到「CDN」，末端响应是 200 且 Location 已被消费 → 兜底恒返回 null
+    /// （线上就是这个后果，而只提供 stub 的旧测试永远发现不了）。
+    /// 断言：① 拿得到 CDN 地址；② 没有发生跟随请求（说明跳转确实被关闭）。
+    /// </summary>
+    [Fact]
+    public async Task GetDownloadUrl_FallbackDoesNotFollowRedirect()
+    {
+        var cdn = "https://cdn.example.com/file?tempauth=xyz";
+        var (client, factory) = CreateRedirectAwareClient(
+            request => request.RequestUri!.AbsolutePath.EndsWith("/content", StringComparison.Ordinal)
+                ? RedirectModelingHandler.Redirect(cdn)
+                : StubHttpHandler.Json(200, new Dictionary<string, object>
+                {
+                    ["id"] = "item-1",
+                    ["file"] = new Dictionary<string, object> { ["mimeType"] = "image/png" },
+                }));
+
+        var url = await client.GetDownloadUrlAsync("at", "item-1");
+
+        Assert.Equal(cdn, url);
+        // 只有「条目请求 + /content」两次；若走了会跟随的那套客户端，就会出现第三个 CDN 请求
+        Assert.Equal(2, factory.TotalRequests);
+        Assert.False(factory.FollowingSawFollowUp, "兜底请求不得走会跟随跳转的客户端");
+        Assert.Contains(factory.AllRequestUrls, u => u.EndsWith("/content", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// 对照：<see cref="OneDriveGraphClient.DownloadSmallAsync"/> 依赖**跟随**跳转取内容，
+    /// 关闭跳转不得影响它（回归保护：两条路径必须是不同的 HttpClient 配置）。
+    /// </summary>
+    [Fact]
+    public async Task DownloadSmall_StillFollowsRedirectToFetchContent()
+    {
+        var (client, factory) = CreateRedirectAwareClient(
+            request => request.RequestUri!.AbsolutePath.Contains("/cdn/", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("real-bytes") }
+                : RedirectModelingHandler.Redirect("https://cdn.example.com/cdn/item-1"));
+
+        var content = await client.DownloadSmallAsync("at", "item-1", maxBytes: 1024);
+
+        Assert.NotNull(content);
+        Assert.Equal("real-bytes", System.Text.Encoding.UTF8.GetString(content!.Bytes));
+        Assert.True(factory.FollowingSawFollowUp, "下载内容依赖跟随跳转；本修复不得把它一并关掉");
     }
 
     /// <summary>兜底也拿不到 Location 时返回 null（由上层映射为可读错误），不得抛未处理异常。</summary>
