@@ -61,6 +61,17 @@ public sealed class FilesModule : IModule
             // Graph 挂起时不占满默认 100s 请求周期（复审 M-11）
             client.Timeout = TimeSpan.FromSeconds(30);
         });
+        // 取内容直链要读 302 的 Location，必须显式关掉自动跟随：
+        // 默认 HttpClientHandler 会把 302 跟到 CDN，Location 就此丢失（issue #342 复审）。
+        // 不能改上面那个共享客户端——DownloadSmallAsync 等内容出口依赖跟随语义。
+        services.AddHttpClient(OneDriveGraphClient.NoRedirectHttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+        })
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+        });
         services.AddScoped<OneDriveGraphClient>();
         services.AddScoped<IOneDriveGraphClient>(sp => sp.GetRequiredService<OneDriveGraphClient>());
         services.AddScoped<OneDriveTokenService>();

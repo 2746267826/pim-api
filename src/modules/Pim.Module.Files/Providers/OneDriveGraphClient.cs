@@ -20,6 +20,18 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     /// 取客户端，而不是构造函数注入 <c>HttpClient</c>。
     /// </summary>
     public const string HttpClientName = "onedrive-graph";
+
+    /// <summary>
+    /// **关闭自动跳转**的命名 HttpClient。
+    ///
+    /// 取内容直链时要看到 302 的 <c>Location</c>，但默认的 <see cref="HttpClientHandler"/>
+    /// 会自动跟随跳转（<c>AllowAutoRedirect=true</c>）：302 会被一路跟随到 CDN，
+    /// 调用方拿到的是 CDN 的 200、<c>Location</c> 恒为 null。
+    /// 这不能靠改共享的 <see cref="HttpClientName"/> 客户端实现——<c>DownloadSmallAsync</c>
+    /// 等内容出口依赖自动跟随把内容取回来，关掉会直接打断它们。
+    /// 因此单列一个客户端名，只给「只看 302、不取内容」的路径使用。
+    /// </summary>
+    public const string NoRedirectHttpClientName = "onedrive-graph-no-redirect";
     private const string GraphBaseUrl = "https://graph.microsoft.com/v1.0";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -125,12 +137,65 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
             ReadNullableString(json, "@odata.deltaLink"));
     }
 
+    /// <summary>
+    /// 取条目的预授权下载直链（`@microsoft.graph.downloadUrl`）。
+    ///
+    /// **请求形状**（issue #342）：必须用**不带 `$select`** 的完整条目请求。
+    /// 曾用的 `?$select=id,@microsoft.graph.downloadUrl` 看似是官方文档示例，
+    /// 但对该账号（OneDrive 个人版）实测会被微软**静默丢弃注解**——HTTP 200、
+    /// 响应里只有 `@odata.context / @odata.etag / id`，于是下游抛「暂未返回下载直链」
+    /// 并被兜底映射成 400，所有文件都下不了。实测：去掉 `id` 或去掉整个 `$select` 均正常，
+    /// 普通属性（如 `webUrl`）与 `id` 同选则不受影响。
+    ///
+    /// **兜底**：注解仍缺失时，改问 `/content` 并**不跟随跳转**、只取 `Location` 头。
+    /// 这样依然拿的是微软预授权地址（零字节搬运，内容不经过 PIM 服务器），
+    /// 与「内容/链接一律微软直连」的硬约束一致。
+    /// </summary>
     public async Task<string?> GetDownloadUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
     {
-        var json = await GetGraphJsonAsync(
-            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}?$select=id,@microsoft.graph.downloadUrl",
-            accessToken, ct);
-        return ReadNullableString(json, "@microsoft.graph.downloadUrl");
+        var escaped = Uri.EscapeDataString(itemId);
+        var json = await GetGraphJsonAsync($"{GraphBaseUrl}/drive/items/{escaped}", accessToken, ct);
+        var annotation = ReadNullableString(json, "@microsoft.graph.downloadUrl");
+        if (!string.IsNullOrEmpty(annotation))
+        {
+            return annotation;
+        }
+
+        // 目录没有 /content：探测它只会拿到 404，进而被 RemoteItemExistsAsync 误判成
+        // 「文件已从 OneDrive 删除」，把删除/恢复流程搞乱（删除目录时会走这里）。
+        // 因此只在确认是**文件**（带 file facet）时才做兜底。
+        var isFile = json.TryGetProperty("file", out var file) && file.ValueKind == JsonValueKind.Object;
+        if (!isFile)
+        {
+            return null;
+        }
+
+        return await GetContentLocationAsync(accessToken, escaped, ct);
+    }
+
+    /// <summary>
+    /// 向 `/content` 发起请求但**不跟随 302**，只取 `Location`（预授权直链）。
+    /// 用 <see cref="HttpCompletionOption.ResponseHeadersRead"/> 避免把响应体读进内存，
+    /// 这是「内容不经服务器搬运」的关键：只读响应头，零字节下载。
+    /// </summary>
+    private async Task<string?> GetContentLocationAsync(string accessToken, string escapedItemId, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"{GraphBaseUrl}/drive/items/{escapedItemId}/content");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        // 必须用**关闭自动跳转**的客户端，否则 302 会被跟随到 CDN，
+        // Location 被消费掉、这里恒为 null（复审 Important）。
+        using var response = await NoRedirectHttp.SendAsync(
+            request, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.Found)
+        {
+            // 复用既有错误映射（404/429 透传、其余 502），让上层的归属/敏感路径闸门语义不变
+            throw CreateGraphException(response, string.Empty);
+        }
+
+        return response.Headers.Location?.ToString();
     }
 
     public async Task<string?> GetThumbnailUrlAsync(string accessToken, string itemId, string size, CancellationToken ct = default)
@@ -276,6 +341,9 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     }
 
     private HttpClient Http => _httpClientFactory.CreateClient(HttpClientName);
+
+    /// <summary>只看响应头、不跟随跳转的客户端（取 302 Location 专用）。</summary>
+    private HttpClient NoRedirectHttp => _httpClientFactory.CreateClient(NoRedirectHttpClientName);
 
     private string TokenEndpoint(string segment)
         => $"https://login.microsoftonline.com/{Uri.EscapeDataString(_tenant)}/oauth2/v2.0/{segment}";

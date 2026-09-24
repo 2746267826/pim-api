@@ -68,11 +68,66 @@ public class ExceptionMiddlewareTests
         Assert.Equal(4003, response.Code);
     }
 
+    /// <summary>
+    /// 按**消费方视角**反序列化（camelCase）。裸的 case-sensitive 反序列化会让
+    /// 「服务端输出 PascalCase」这类线上缺陷在测试里隐形——正是 issue #342 次生缺陷的成因。
+    /// </summary>
     private static async Task<ApiResponse<string>> ReadResponseAsync(HttpContext context)
     {
         context.Response.Body.Position = 0;
-        var response = await JsonSerializer.DeserializeAsync<ApiResponse<string>>(context.Response.Body);
+        var response = await JsonSerializer.DeserializeAsync<ApiResponse<string>>(
+            context.Response.Body,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
         return Assert.IsType<ApiResponse<string>>(response);
+    }
+
+    /// <summary>
+    /// issue #342 次生缺陷回归：错误响应必须是 **camelCase**（`code` / `message`），
+    /// 与全站成功响应、以及前端 `client.ts` 只读 `message/detail/title` 的约定一致。
+    /// 用 PascalCase 时前端取不到 message，只能回退显示「HTTP 400」，用户看不到原因。
+    /// </summary>
+    [Fact]
+    public async Task InvokeAsync_WritesErrorMessageInCamelCaseForTheClient()
+    {
+        var context = new DefaultHttpContext();
+        context.Response.Body = new MemoryStream();
+        var middleware = new ExceptionMiddleware(
+            _ => throw new DomainException(5333, "OneDrive 暂未返回下载直链，请稍后重试"),
+            NullLogger<ExceptionMiddleware>.Instance);
+
+        await middleware.InvokeAsync(context);
+
+        context.Response.Body.Position = 0;
+        using var document = await JsonDocument.ParseAsync(context.Response.Body);
+        var root = document.RootElement;
+
+        // 小写字段必须存在，且能被前端读到
+        Assert.True(root.TryGetProperty("code", out var code), "错误响应缺少 camelCase 的 code 字段");
+        Assert.Equal(5333, code.GetInt32());
+        Assert.True(root.TryGetProperty("message", out var message), "错误响应缺少 camelCase 的 message 字段");
+        Assert.Equal("OneDrive 暂未返回下载直链，请稍后重试", message.GetString());
+        // PascalCase 不得再出现，避免两套字段并存的歧义
+        Assert.False(root.TryGetProperty("Code", out _), "错误响应不应再输出 PascalCase 的 Code");
+        Assert.False(root.TryGetProperty("Message", out _), "错误响应不应再输出 PascalCase 的 Message");
+    }
+
+    /// <summary>Graph 失败（上游不可用）的错误体同样必须是 camelCase 可读文案。</summary>
+    [Fact]
+    public async Task InvokeAsync_GraphFailure_WritesCamelCaseMessage()
+    {
+        var context = new DefaultHttpContext();
+        context.Response.Body = new MemoryStream();
+        var middleware = new ExceptionMiddleware(
+            _ => throw new OneDriveGraphException(500, null, "graph down"),
+            NullLogger<ExceptionMiddleware>.Instance);
+
+        await middleware.InvokeAsync(context);
+
+        context.Response.Body.Position = 0;
+        using var document = await JsonDocument.ParseAsync(context.Response.Body);
+        Assert.True(document.RootElement.TryGetProperty("message", out var message));
+        Assert.False(string.IsNullOrWhiteSpace(message.GetString()));
+        Assert.False(document.RootElement.TryGetProperty("Message", out _));
     }
 
     /// <summary>

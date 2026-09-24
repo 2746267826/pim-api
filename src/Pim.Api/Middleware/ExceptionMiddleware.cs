@@ -8,6 +8,14 @@ namespace Pim.Api.Middleware;
 
 public class ExceptionMiddleware
 {
+    /// <summary>
+    /// 与全站（Minimal API 的 <c>Results.Ok</c>、MCP、内部服务）一致的 JSON 选项：
+    /// camelCase 属性名。**必须显式传**——裸的 <c>JsonSerializer.Serialize</c> 会输出
+    /// PascalCase（<c>Code/Message/Data</c>），而前端只读 <c>message/detail/title</c>，
+    /// 于是错误原因被吞掉、用户只看到「HTTP 400」（issue #342 次生缺陷）。
+    /// </summary>
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     private readonly RequestDelegate _next;
     private readonly ILogger<ExceptionMiddleware> _logger;
 
@@ -28,7 +36,7 @@ public class ExceptionMiddleware
             context.Response.StatusCode = ResolveDomainStatusCode(ex.ErrorCode);
             context.Response.ContentType = "application/json";
             var response = ApiResponse<string>.Error(ex.ErrorCode, ex.Message);
-            await context.Response.WriteAsync(JsonSerializer.Serialize(response));
+            await context.Response.WriteAsync(JsonSerializer.Serialize(response, JsonOptions));
         }
         catch (OneDriveGraphException ex)
         {
@@ -48,7 +56,7 @@ public class ExceptionMiddleware
             context.Response.StatusCode = status;
             context.Response.ContentType = "application/json";
             var response = ApiResponse<string>.Error(5390, "OneDrive 服务暂时不可用，请稍后重试");
-            await context.Response.WriteAsync(JsonSerializer.Serialize(response));
+            await context.Response.WriteAsync(JsonSerializer.Serialize(response, JsonOptions));
         }
         catch (BadHttpRequestException ex)
         {
@@ -57,7 +65,7 @@ public class ExceptionMiddleware
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             context.Response.ContentType = "application/json";
             var response = ApiResponse<string>.Error(40000, $"请求参数格式无效: {ex.Message}");
-            await context.Response.WriteAsync(JsonSerializer.Serialize(response));
+            await context.Response.WriteAsync(JsonSerializer.Serialize(response, JsonOptions));
         }
         catch (Exception ex) when (ClientAbort.IsClientAbort(context, ex))
         {
@@ -77,7 +85,7 @@ public class ExceptionMiddleware
             context.Response.StatusCode = StatusCodes.Status500InternalServerError;
             context.Response.ContentType = "application/json";
             var response = ApiResponse<string>.Error(01001, "内部服务器错误");
-            await context.Response.WriteAsync(JsonSerializer.Serialize(response));
+            await context.Response.WriteAsync(JsonSerializer.Serialize(response, JsonOptions));
         }
     }
 

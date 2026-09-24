@@ -155,6 +155,101 @@ public sealed class FilesModuleDiResolutionTests
         Assert.Equal(TimeSpan.FromSeconds(30), named.Timeout);
     }
 
+    /// <summary>
+    /// 内容出口用的命名客户端必须**关闭自动跳转**（issue #342 复审 Important）。
+    ///
+    /// 取直链要读 302 的 <c>Location</c>；默认 <c>HttpClientHandler.AllowAutoRedirect=true</c>
+    /// 会把 302 一路跟到 CDN，调用方拿到 CDN 的 200、<c>Location</c> 恒为 null，兜底形同虚设。
+    /// 单测里的 stub handler 不模拟「自动跟随」，因此**只有**在真实宿主容器上检查这个开关才能拦住它。
+    /// 同时断言默认客户端**保持**跟随语义——<c>DownloadSmallAsync</c> 靠它把内容取回来，不能被一并关掉。
+    /// </summary>
+    [Fact]
+    public void NoRedirectNamedClient_DisablesAutoRedirect_WhileDefaultKeepsFollowing()
+    {
+        using var factory = CreateRealHostFactory();
+        var httpClientFactory = factory.Services.GetRequiredService<IHttpClientFactory>();
+
+        var handler = ResolvePrimaryHandler(httpClientFactory, Pim.Module.Files.Providers.OneDriveGraphClient.NoRedirectHttpClientName);
+        Assert.False(handler.AllowAutoRedirect, "内容出口的命名客户端必须关闭自动跳转，否则拿不到 302 的 Location");
+
+        var following = ResolvePrimaryHandler(httpClientFactory, Pim.Module.Files.Providers.OneDriveGraphClient.HttpClientName);
+        Assert.True(following.AllowAutoRedirect, "默认客户端必须保持跟随跳转，否则 DownloadSmallAsync 等内容出口会取不到内容");
+    }
+
+    /// <summary>
+    /// 取命名客户端**实际生效**的主 handler（含 ConfigurePrimaryHttpMessageHandler 的覆盖）。
+    ///
+    /// handler 链由消息处理器工厂按需包装（生存期追踪、日志等），层级随框架版本变化，
+    /// 因此这里对对象图做**有界递归搜索**而不是假设某个字段名——只读反射，不产生请求。
+    /// </summary>
+    private static HttpClientHandler ResolvePrimaryHandler(IHttpClientFactory factory, string clientName)
+    {
+        var handler = (factory as IHttpMessageHandlerFactory)?.CreateHandler(clientName);
+        Assert.NotNull(handler);
+        // 若搜索失败，错误信息里带上根 handler 类型，便于判断是包装层级变化还是真的没配
+        var rootType = handler!.GetType().FullName;
+
+        var found = FindHandler<HttpClientHandler>(handler!);
+        Assert.NotNull(found);
+        return found!;
+        // NOTE: 若将来框架把主 handler 藏到更深的包装里，这里会失败并需要扩展搜索；
+        // 失败的报错信息包含客户端名，便于定位。
+    }
+
+    private static T? FindHandler<T>(object? root) where T : HttpMessageHandler
+    {
+        var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        var queue = new Queue<(object Node, int Depth)>();
+        if (root is not null)
+        {
+            queue.Enqueue((root, 0));
+        }
+
+        while (queue.Count > 0)
+        {
+            var (node, depth) = queue.Dequeue();
+            if (!visited.Add(node))
+            {
+                continue;
+            }
+
+            if (node is T match)
+            {
+                return match;
+            }
+
+            if (depth >= 6)
+            {
+                continue;
+            }
+
+            // 必须逐层走 BaseType：DelegatingHandler 的 _innerHandler 是**基类**的私有字段，
+            // GetFields 默认不返回基类私有成员（框架把主 handler 包在 LifetimeTracking 里）。
+            for (var type = node.GetType(); type is not null; type = type.BaseType)
+            {
+                foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.DeclaredOnly))
+                {
+                    object? value;
+                    try
+                    {
+                        value = field.GetValue(node);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    if (value is not null && value.GetType().IsClass)
+                    {
+                        queue.Enqueue((value, depth + 1));
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
     private static T ReadPrivateField<T>(object instance, string fieldName)
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)
