@@ -78,12 +78,6 @@ internal sealed class TempMigrationDatabase : IAsyncDisposable
 
     public Task MigrateAsync() => _db.Database.MigrateAsync();
 
-    /// <summary>
-    /// 迁移完成后的 <see cref="PimDbContext"/>，供用例用生产同款 EF 查询路径核对行为
-    /// （只在本类建出来的一次性库上使用，绝不指向镜像/生产库）。
-    /// </summary>
-    public PimDbContext Context => _db;
-
     /// <summary>迁移到指定迁移（含），用来重建「该迁移之前」的历史起点。</summary>
     public Task MigrateToAsync(string migrationId) =>
         ((IInfrastructure<IServiceProvider>)_db).Instance.GetRequiredService<IMigrator>()

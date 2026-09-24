@@ -144,7 +144,7 @@ public sealed class FileListQueryRealDbTests
             await temp.IndexExistsAsync("ix_file_items_provider_id_path_pattern"),
             "迁移未建立 ix_file_items_provider_id_path_pattern，前缀查询会退化成整表扫描");
 
-        var service = CreateService(temp.Context);
+        var service = CreateService(temp.Db);
 
         var stopwatch = Stopwatch.StartNew();
         var root = await service.ListItemsAsync(new FileListQuery("/"), page: 1, pageSize: 100);
@@ -184,7 +184,7 @@ public sealed class FileListQueryRealDbTests
         await using var temp = await CreateMigratedTempDatabaseAsync("wo_files_list");
         await temp.ExecuteAsync(SeedSql);
 
-        var service = CreateService(temp.Context);
+        var service = CreateService(temp.Db);
 
         var first = await service.ListItemsAsync(new FileListQuery("/main/deep"), page: 1, pageSize: 100);
         Assert.Equal(4000, first.TotalCount);
@@ -229,7 +229,7 @@ public sealed class FileListQueryRealDbTests
         await using var temp = await CreateMigratedTempDatabaseAsync("wo_files_index");
         await temp.ExecuteAsync(SeedSql);
 
-        var query = FileOperationService.DirectChildren(temp.Context, UserId, "/main/deep");
+        var query = FileOperationService.DirectChildren(temp.Db, UserId, "/main/deep");
         var sql = query.OrderBy(item => item.Name).Take(100).ToQueryString();
 
         // StartsWith 必须翻成作用在裸列上的 LIKE，而不是 rtrim(path) LIKE ...
@@ -280,7 +280,7 @@ public sealed class FileListQueryRealDbTests
             ANALYZE file_items;
             """);
 
-        var service = CreateService(temp.Context);
+        var service = CreateService(temp.Db);
         var root = await service.ListItemsAsync(new FileListQuery("/"), page: 1, pageSize: 100);
 
         // 根的 4 个直属子项不变：没有别人的条目，也没有自己的软删条目
@@ -292,7 +292,7 @@ public sealed class FileListQueryRealDbTests
         Assert.Equal(3, folders.TotalCount);
 
         // 搜索同样不得跨用户：只应有自己的内容
-        var search = new FileSearchService(temp.Context, new StubCurrentUser(UserId), new SensitivePathPolicy(null));
+        var search = new FileSearchService(temp.Db, new StubCurrentUser(UserId), new SensitivePathPolicy(null));
         var hits = await search.SearchAsync(new FileSearchQuery("readme", null), page: 1, pageSize: 100);
         Assert.Equal(1, hits.TotalCount);
         Assert.Equal("readme.md", Assert.Single(hits.Items).Name);
@@ -317,7 +317,7 @@ public sealed class FileListQueryRealDbTests
             """);
 
         var policy = new SensitivePathPolicy(null);
-        var service = new FileSearchService(temp.Context, new StubCurrentUser(UserId), policy);
+        var service = new FileSearchService(temp.Db, new StubCurrentUser(UserId), policy);
 
         var page1 = await service.SearchAsync(new FileSearchQuery("shot", null), page: 1, pageSize: 100);
         var page2 = await service.SearchAsync(new FileSearchQuery("shot", null), page: 2, pageSize: 100);
