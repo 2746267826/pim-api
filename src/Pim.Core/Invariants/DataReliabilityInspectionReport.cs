@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Pim.Core.Liveness;
 
 namespace Pim.Core.Invariants;
 
@@ -56,6 +57,12 @@ public sealed record DataReliabilityRuleReport(
 
 /// <summary>
 /// 一次完整体检的结果（#260）：13 条尺子结论 + 总览计数 + 本次体检时间与耗时。
+/// <para>
+/// <see cref="DeviceLiveness"/> 是阶段一新增的「设备存活」数据项（REQ-10）：**只展示数据，
+/// 本版本不判红/黄/绿**（R4-P1 / AC-10.3），因此它是独立区块而不是第 14 条尺子，
+/// 既不参与 <see cref="RedCount"/> / <see cref="YellowCount"/> / <see cref="GreenCount"/> 统计，
+/// 也不改变 <see cref="Status"/>。
+/// </para>
 /// </summary>
 public sealed record DataReliabilityInspectionReport(
     DateTimeOffset InspectedAtUtc,
@@ -71,7 +78,8 @@ public sealed record DataReliabilityInspectionReport(
     int HistoricalViolations,
     IReadOnlyDictionary<string, string> Notices,
     IReadOnlyList<DataReliabilityRuleReport> Rules,
-    string Message);
+    string Message,
+    IReadOnlyList<DeviceLivenessInspectionItem>? DeviceLiveness = null);
 
 /// <summary>
 /// 违规清单中的一条（ID + 业务时间 + 设备 + 关键字段），用于下钻导出，避免把大列表塞进页面。

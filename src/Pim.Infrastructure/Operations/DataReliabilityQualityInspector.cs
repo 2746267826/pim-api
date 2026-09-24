@@ -10,6 +10,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Pim.Core.Invariants;
+using Pim.Core.Liveness;
 using Pim.Infrastructure.Data;
 
 namespace Pim.Infrastructure.Operations;
@@ -33,19 +34,23 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
     private readonly ILogger<DataReliabilityQualityInspector> _logger;
     private readonly IDataReliabilityInspectionStore? _store;
     private readonly TimeProvider _timeProvider;
+    private readonly IReadOnlyList<IDeviceLivenessInspectionProvider> _livenessProviders;
 
     public DataReliabilityQualityInspector(
         PimDbContext? db,
         IOptions<InvariantOptions> options,
         ILogger<DataReliabilityQualityInspector> logger,
         IDataReliabilityInspectionStore? store = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IEnumerable<IDeviceLivenessInspectionProvider>? livenessProviders = null)
     {
         _db = db;
         _options = options?.Value ?? InvariantOptions.Default;
         _logger = logger;
         _store = store;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _livenessProviders = livenessProviders?.ToList()
+            ?? (IReadOnlyList<IDeviceLivenessInspectionProvider>)Array.Empty<IDeviceLivenessInspectionProvider>();
     }
 
     public string CheckName => "data_reliability";
@@ -158,6 +163,10 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             "数据可信度体检查询完成：Red={RedCount}, Yellow={YellowCount}, Green={GreenCount}, Unknown={UnknownCount}, Violations={TotalViolations}, Elapsed={ElapsedMs}ms",
             redCount, yellowCount, greenCount, unknownCount, totalViolations, started.ElapsedMilliseconds);
 
+        // 「设备存活」数据项（REQ-10）：独立区块，不参与红/黄/绿统计（R4-P1 / AC-10.3）。
+        // 取数失败只让该项缺席并在 Notices 里留下可见原因，绝不影响 13 条尺子的结论（REQ-28）。
+        var deviceLiveness = await LoadDeviceLivenessAsync(now, notices, timeout.Token);
+
         return new DataReliabilityInspectionReport(
             InspectedAtUtc: now,
             Version: 0, // 由 IDataReliabilityInspectionStore.Publish 赋值
@@ -172,7 +181,46 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             HistoricalViolations: historicalViolations,
             Notices: notices,
             Rules: rules,
-            Message: message);
+            Message: message,
+            DeviceLiveness: deviceLiveness);
+    }
+
+    /// <summary>
+    /// 收集「设备存活」数据项（REQ-10）。窗口固定取最近 7 天——与「设备存活」页默认区间一致（AC-7.1），
+    /// 使体检结论与页面首屏对得上同一批数据。
+    /// <para>
+    /// 本方法**绝不抛异常**：取数失败/超时都退化成"该项缺席 + 明确 notice"。理由与 13 条尺子一致——
+    /// 体检报告必须总能产出，缺数据只能显示成"无数据"，不能变成一次失败的调用（AC-10.2 / REQ-28）。
+    /// </para>
+    /// </summary>
+    private async Task<IReadOnlyList<DeviceLivenessInspectionItem>?> LoadDeviceLivenessAsync(
+        DateTimeOffset now,
+        Dictionary<string, string> notices,
+        CancellationToken ct)
+    {
+        if (_livenessProviders.Count == 0)
+        {
+            notices["device_liveness_unavailable"] = "未注册设备存活数据源；本项显示为未上报。";
+            return Array.Empty<DeviceLivenessInspectionItem>();
+        }
+
+        var start = now - TimeSpan.FromDays(7);
+        var items = new List<DeviceLivenessInspectionItem>();
+        foreach (var provider in _livenessProviders)
+        {
+            try
+            {
+                items.AddRange(await provider.GetLivenessForInspectionAsync(start, now, ct));
+            }
+            catch (Exception ex)
+            {
+                // 该项取数失败必须可见，不能被当成"设备存活良好"。
+                notices["device_liveness_error"] = $"设备存活数据项取数失败：{ex.Message}";
+                _logger.LogWarning(ex, "设备存活数据项取数失败");
+            }
+        }
+
+        return items;
     }
 
     /// <summary>
