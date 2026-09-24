@@ -71,6 +71,7 @@ public class OneDriveShareServiceTests
         public Task<string> PutNewFileByPathAsync(string accessToken, string itemPath, byte[] bytes, string contentType, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<string> CreateFolderAsync(string accessToken, string folderPath, string name, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<OneDrivePathItem?> GetItemByPathAsync(string accessToken, string itemPath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<OneDrivePathItem?> GetItemByIdAsync(string accessToken, string itemId, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<OneDriveUploadSession> CreateUploadSessionAsync(string accessToken, string itemPath, string fileName, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default) => throw new NotSupportedException();
     }

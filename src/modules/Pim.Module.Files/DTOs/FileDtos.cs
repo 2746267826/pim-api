@@ -130,7 +130,7 @@ public sealed record UploadSessionDto(
     string FileName);
 
 /// <summary>REQ-14：上传完成登记（内容已在微软侧）。</summary>
-public sealed record CompleteUploadRequest(string Path, string FileName);
+public sealed record CompleteUploadRequest(string Path, string FileName, string? UploadedItemId = null);
 
 /// <summary>REQ-25：手动同步已入队的即时反馈（不再等待同步跑完）。</summary>
 public sealed record OneDriveSyncStartedDto(bool Started, string Message);

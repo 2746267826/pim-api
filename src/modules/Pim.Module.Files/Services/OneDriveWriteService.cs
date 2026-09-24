@@ -406,6 +406,7 @@ public sealed class OneDriveWriteService
     public async Task<OneDriveWriteResult> RegisterUploadedFileAsync(
         string destinationFolderPath,
         string fileName,
+        string? uploadedItemId = null,
         CancellationToken ct = default)
     {
         OneDriveNameValidator.EnsureValidName(fileName);
@@ -413,9 +414,31 @@ public sealed class OneDriveWriteService
         var folderPath = await EnsureFolderExistsAsync(provider, destinationFolderPath, ct);
 
         var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
-        var probePath = (folderPath == "/" ? string.Empty : folderPath) + "/" + fileName;
-        var item = await _client.GetItemByPathAsync(token, probePath, ct)
-            ?? throw new DomainException(5300, "上传已完成，但未能从 OneDrive 读回该文件，请稍后重新同步");
+
+        // 优先按**上传完成响应里的真实条目 id** 回读：重名时 Graph 会把文件改名成
+        // 「名称 (1).ext」，此时按原路径回读会读到**本来就存在的那一个旧文件**，
+        // 把它的元数据登记成本次上传的结果（AC-12.1 的反面）。
+        OneDrivePathItem? item;
+        if (!string.IsNullOrWhiteSpace(uploadedItemId))
+        {
+            item = await _client.GetItemByIdAsync(token, uploadedItemId, ct);
+        }
+        else
+        {
+            // 客户端没带回 id 时的兜底：按路径回读（此时重名已由 Graph 处理，名字以服务端为准）
+            var probePath = (folderPath == "/" ? string.Empty : folderPath) + "/" + fileName;
+            item = await _client.GetItemByPathAsync(token, probePath, ct);
+        }
+
+        if (item is null)
+        {
+            throw new DomainException(5300, "上传已完成，但未能从 OneDrive 读回该文件，请稍后重新同步");
+        }
+
+        // 用服务端返回的真实路径/名称（重名时已自动改名），不沿用客户端提交的名字
+        var probePathResolved = item.ParentPath is { Length: > 0 }
+            ? (item.ParentPath == "/" ? string.Empty : item.ParentPath) + "/" + item.Name
+            : (folderPath == "/" ? string.Empty : folderPath) + "/" + item.Name;
 
         var now = _clock.GetUtcNow();
         var row = await _db.Set<FileItemEntity>()
@@ -433,7 +456,7 @@ public sealed class OneDriveWriteService
         }
 
         row.ParentExternalFileId = folder.ExternalFileId;
-        row.Path = probePath;
+        row.Path = probePathResolved;
         // 用 Graph 回读到的**真实名称**（重名时 Graph 已自动改名，见 REQ-12）
         row.Name = item.Name;
         row.ItemType = "file";
@@ -446,7 +469,7 @@ public sealed class OneDriveWriteService
         row.SyncedAt = now;
         await _db.SaveChangesAsync(ct);
         await RecordAuditAsync("files.onedrive.upload_session_complete", row.Id, ct);
-        return new OneDriveWriteResult(row.Id, probePath);
+        return new OneDriveWriteResult(row.Id, probePathResolved);
     }
 
     /// <summary>

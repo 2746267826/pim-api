@@ -60,6 +60,11 @@ internal sealed class FakeGraphServer : IAsyncDisposable
     /// <summary>最近一次请求体的文本视图（仅用于 JSON 请求，如 createUploadSession）。</summary>
     public string? LastRequestBodyText => LastRequestBody.Length == 0 ? null : Encoding.UTF8.GetString(LastRequestBody);
 
+    /// <summary>上传完成时 Graph 返回的最终条目 id/name（可改为模拟「重名自动改名」）。</summary>
+    public string CompletedItemId { get; set; } = "fake-uploaded-1";
+
+    public string CompletedItemName { get; set; } = "uploaded.bin";
+
     /// <summary>分享链接：createLink 返回的地址（可由用例改为 view/edit 以区分权限档）。</summary>
     public string ShareLinkFactory(string itemId, string type) => $"https://1drv.ms/{type}/{itemId}";
 
@@ -176,11 +181,13 @@ internal sealed class FakeGraphServer : IAsyncDisposable
             if (state.Received >= total)
             {
                 _files[sessionId] = state.Completed!;
+                // 201 的响应体是**最终条目**：重名时 Graph 会把名字改掉，客户端必须用它
                 await WriteAsync(context, 201, JsonSerializer.Serialize(new
                 {
-                    id = fileId,
-                    name = fileName,
+                    id = CompletedItemId,
+                    name = CompletedItemName,
                     size = total,
+                    parentReference = new { path = "/drive/root:/文档" },
                     file = new { mimeType = "application/octet-stream" },
                 }));
                 return;
@@ -211,6 +218,21 @@ internal sealed class FakeGraphServer : IAsyncDisposable
             {
                 id = $"perm-{itemId}",
                 link = new { webUrl = link, type, scope = "anonymous" },
+            }));
+            Record(method, path, null, 0);
+            return;
+        }
+
+        // ---- 按 id 回读条目（上传完成后登记用）----
+        if (method == "GET" && path.Contains("/drive/items/", StringComparison.Ordinal))
+        {
+            await WriteAsync(context, 200, JsonSerializer.Serialize(new
+            {
+                id = CompletedItemId,
+                name = CompletedItemName,
+                size = 1024,
+                parentReference = new { path = "/drive/root:/文档" },
+                file = new { mimeType = "application/octet-stream" },
             }));
             Record(method, path, null, 0);
             return;

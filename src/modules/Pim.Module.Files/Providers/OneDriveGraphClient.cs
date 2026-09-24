@@ -414,6 +414,58 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
             : null;
 
     /// <summary>
+    /// 按 id 回读条目（REQ-14 登记上传结果；id 来自上传完成响应，是权威标识）。
+    /// 不存在返回 null。
+    /// </summary>
+    public async Task<OneDrivePathItem?> GetItemByIdAsync(
+        string accessToken,
+        string itemId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var json = await GetGraphJsonAsync(
+                $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}",
+                accessToken, ct);
+            return new OneDrivePathItem(
+                ReadRequiredString(json, "id"),
+                ReadString(json, "name", itemId),
+                ReadNullableLong(json, "size"),
+                ReadMimeType(json),
+                ReadParentPath(json));
+        }
+        catch (OneDriveGraphException exception) when (exception.StatusCode == 404)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>读取 parentReference.path（用于把条目定位回目录树）。</summary>
+    private static string? ReadParentPath(JsonElement json)
+    {
+        if (!json.TryGetProperty("parentReference", out var parent) || parent.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var raw = ReadNullableString(parent, "path");
+        if (string.IsNullOrEmpty(raw))
+        {
+            return null;
+        }
+
+        // Graph 形如 "/drive/root:/文档"，取冒号后的部分；根目录是 "/drive/root:"
+        var marker = "/drive/root:";
+        if (raw.StartsWith(marker, StringComparison.Ordinal))
+        {
+            var relative = raw[marker.Length..];
+            return relative.Length == 0 ? "/" : relative;
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// 新建文件夹（REQ-15）：`POST /drive/root:{path}`，body 带 folder facet。
     /// 同样固定 `conflictBehavior = rename`——同名文件夹不得覆盖（REQ-12 的同源约束）。
     /// </summary>

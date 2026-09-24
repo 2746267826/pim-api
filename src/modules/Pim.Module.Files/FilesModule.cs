@@ -298,7 +298,19 @@ public sealed class FilesModule : IModule
             return Results.Ok(ApiResponse<OneDriveSyncResultDto>.Ok(OneDriveSyncResultDto.From(fallback)));
         }
 
-        jobClient.Enqueue<OneDriveSyncJob>(job => job.RunOneAsync(id));
+        try
+        {
+            jobClient.Enqueue<OneDriveSyncJob>(job => job.RunOneAsync(id));
+        }
+        catch (Exception exception)
+        {
+            // 入队失败**不能**回复「已开始」——那会让用户以为在同步，实际什么都没发生
+            // （AC-25.3 明令禁止静默失败）。这里如实报错并说明可稍后重试。
+            return Results.Json(
+                ApiResponse<string>.Error(5391, "同步任务入队失败，请稍后重试"),
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
         return Results.Ok(ApiResponse<OneDriveSyncStartedDto>.Ok(
             new OneDriveSyncStartedDto(true, "已开始同步，可继续浏览；完成后会显示结果")));
     }
@@ -524,7 +536,8 @@ public sealed class FilesModule : IModule
         [FromServices] PimDbContext db,
         CancellationToken ct)
     {
-        var result = await oneDriveWrite.RegisterUploadedFileAsync(request.Path, request.FileName, ct);
+        var result = await oneDriveWrite.RegisterUploadedFileAsync(
+            request.Path, request.FileName, request.UploadedItemId, ct);
         return Results.Ok(ApiResponse<FileItemDto>.Ok(
             await FileOperationService.GetItemDtoAsync(db, result.ItemId, ct)));
     }

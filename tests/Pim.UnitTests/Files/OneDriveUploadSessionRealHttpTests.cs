@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Pim.Module.Files.Providers;
 using Xunit;
@@ -220,6 +221,47 @@ public class OneDriveUploadSessionRealHttpTests
     /// 用**真实 HTTP 栈**（真实 <see cref="HttpClientHandler"/>）搭客户端，只把基址指向假 Graph。
     /// 不能塞 stub handler——那样请求根本到不了真实服务，用例会退化成「测自己搭的替身」。
     /// </summary>
+    /// <summary>
+    /// AC-12.1 的真实 HTTP 关键路径：重名时 Graph 会在上传完成响应里返回**改名后**的条目；
+    /// 登记阶段必须按这个 id/name 回读，而不是按客户端提交的原路径——
+    /// 否则会读到「本来就存在的那一个旧文件」，把它的元数据登记成本次上传的结果。
+    /// </summary>
+    [SkippableFact]
+    public async Task UploadCompletion_ReturnsServerRenamedItemSoRegistrationCanUseIt()
+    {
+        await using var server = new FakeGraphServer
+        {
+            CompletedItemId = "renamed-1",
+            CompletedItemName = "报告 (1).pdf",
+        };
+        await server.StartAsync();
+
+        var client = CreateClient(server);
+        var session = await client.CreateUploadSessionAsync("at", "/文档/报告.pdf", "报告.pdf");
+
+        // 上传最后一块，服务端返回 201 + 最终条目
+        using var http = new HttpClient();
+        var payload = new byte[1024];
+        using (var request = new HttpRequestMessage(HttpMethod.Put, session.UploadUrl))
+        {
+            request.Content = new ByteArrayContent(payload, 0, payload.Length);
+            request.Content.Headers.ContentRange =
+                new System.Net.Http.Headers.ContentRangeHeaderValue(0, payload.Length - 1, payload.Length);
+            using var response = await http.SendAsync(request);
+            Assert.Equal(System.Net.HttpStatusCode.Created, response.StatusCode);
+
+            using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+            Assert.Equal("renamed-1", document.RootElement.GetProperty("id").GetString());
+            Assert.Equal("报告 (1).pdf", document.RootElement.GetProperty("name").GetString());
+        }
+
+        // 按 id 回读得到的就是改名后的那一个（登记走这条路径）
+        var item = await client.GetItemByIdAsync("at", "renamed-1");
+        Assert.NotNull(item);
+        Assert.Equal("报告 (1).pdf", item!.Name);
+        Assert.Equal("/文档", item.ParentPath);
+    }
+
     private static OneDriveGraphClient CreateClient(FakeGraphServer server)
     {
         var configuration = new ConfigurationBuilder()

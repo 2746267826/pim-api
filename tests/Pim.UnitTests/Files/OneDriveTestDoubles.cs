@@ -200,6 +200,12 @@ public Task<OneDrivePathItem?> GetItemByPathAsync(
     string itemPath,
     CancellationToken ct = default)
     => Task.FromResult<OneDrivePathItem?>(null);
+public Task<OneDrivePathItem?> GetItemByIdAsync(
+    string accessToken,
+    string itemId,
+    CancellationToken ct = default)
+    => Task.FromResult<OneDrivePathItem?>(null);
+
 
 
 
