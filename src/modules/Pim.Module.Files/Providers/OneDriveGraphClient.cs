@@ -125,12 +125,62 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
             ReadNullableString(json, "@odata.deltaLink"));
     }
 
+    /// <summary>
+    /// 取条目的预授权下载直链（`@microsoft.graph.downloadUrl`）。
+    ///
+    /// **请求形状**（issue #342）：必须用**不带 `$select`** 的完整条目请求。
+    /// 曾用的 `?$select=id,@microsoft.graph.downloadUrl` 看似是官方文档示例，
+    /// 但对该账号（OneDrive 个人版）实测会被微软**静默丢弃注解**——HTTP 200、
+    /// 响应里只有 `@odata.context / @odata.etag / id`，于是下游抛「暂未返回下载直链」
+    /// 并被兜底映射成 400，所有文件都下不了。实测：去掉 `id` 或去掉整个 `$select` 均正常，
+    /// 普通属性（如 `webUrl`）与 `id` 同选则不受影响。
+    ///
+    /// **兜底**：注解仍缺失时，改问 `/content` 并**不跟随跳转**、只取 `Location` 头。
+    /// 这样依然拿的是微软预授权地址（零字节搬运，内容不经过 PIM 服务器），
+    /// 与「内容/链接一律微软直连」的硬约束一致。
+    /// </summary>
     public async Task<string?> GetDownloadUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
     {
-        var json = await GetGraphJsonAsync(
-            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}?$select=id,@microsoft.graph.downloadUrl",
-            accessToken, ct);
-        return ReadNullableString(json, "@microsoft.graph.downloadUrl");
+        var escaped = Uri.EscapeDataString(itemId);
+        var json = await GetGraphJsonAsync($"{GraphBaseUrl}/drive/items/{escaped}", accessToken, ct);
+        var annotation = ReadNullableString(json, "@microsoft.graph.downloadUrl");
+        if (!string.IsNullOrEmpty(annotation))
+        {
+            return annotation;
+        }
+
+        // 目录没有 /content：探测它只会拿到 404，进而被 RemoteItemExistsAsync 误判成
+        // 「文件已从 OneDrive 删除」，把删除/恢复流程搞乱（删除目录时会走这里）。
+        // 因此只在确认是**文件**（带 file facet）时才做兜底。
+        var isFile = json.TryGetProperty("file", out var file) && file.ValueKind == JsonValueKind.Object;
+        if (!isFile)
+        {
+            return null;
+        }
+
+        return await GetContentLocationAsync(accessToken, escaped, ct);
+    }
+
+    /// <summary>
+    /// 向 `/content` 发起请求但**不跟随 302**，只取 `Location`（预授权直链）。
+    /// 用 <see cref="HttpCompletionOption.ResponseHeadersRead"/> 避免把响应体读进内存，
+    /// 这是「内容不经服务器搬运」的关键：只读响应头，零字节下载。
+    /// </summary>
+    private async Task<string?> GetContentLocationAsync(string accessToken, string escapedItemId, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"{GraphBaseUrl}/drive/items/{escapedItemId}/content");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.Found)
+        {
+            // 复用既有错误映射（404/429 透传、其余 502），让上层的归属/敏感路径闸门语义不变
+            throw CreateGraphException(response, string.Empty);
+        }
+
+        return response.Headers.Location?.ToString();
     }
 
     public async Task<string?> GetThumbnailUrlAsync(string accessToken, string itemId, string size, CancellationToken ct = default)

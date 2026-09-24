@@ -36,9 +36,178 @@ public class OneDriveGraphClientContentTests
         Assert.Equal("https://dl.example.com/x?tempauth=abc", url);
         var request = Assert.Single(handler.Requests);
         Assert.Contains("drive/items/item-1", request.Url);
-        Assert.Contains("$select=", request.Url);
-        Assert.Contains("microsoft.graph.downloadUrl", Uri.UnescapeDataString(request.Url));
         Assert.Equal("Bearer at", request.Authorization);
+        // issue #342：请求形状不得回到 `$select=id,@microsoft.graph.downloadUrl`
+        // ——该组合会让微软侧**静默丢弃** downloadUrl 注解（个人版实测）。
+        var decoded = Uri.UnescapeDataString(request.Url);
+        Assert.DoesNotContain("@microsoft.graph.downloadUrl", decoded);
+        Assert.DoesNotContain("$select=id", decoded);
+    }
+
+    /// <summary>
+    /// issue #342 主因回归：`$select=id,@microsoft.graph.downloadUrl` 会被微软静默丢弃注解。
+    /// 这里断言修复后的首选形状是「不带 $select 的完整条目请求」——它是实测可用的变体 C。
+    /// </summary>
+    [Fact]
+    public async Task GetDownloadUrl_UsesFullItemRequestWithoutSelect()
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = _ => StubHttpHandler.Json(200, new Dictionary<string, object>
+            {
+                ["@microsoft.graph.downloadUrl"] = "https://dl.example.com/a",
+                ["id"] = "item-1",
+            }),
+        };
+        var client = CreateClient(handler);
+
+        Assert.Equal("https://dl.example.com/a", await client.GetDownloadUrlAsync("at", "item-1"));
+
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("GET", request.Method);
+        Assert.EndsWith("/drive/items/item-1", request.Url, StringComparison.Ordinal);
+        Assert.DoesNotContain("$select", request.Url);
+    }
+
+    /// <summary>
+    /// issue #342 修复建议 1 的兜底：注解缺失时改用 `/content`，**不跟随跳转**只取 Location，
+    /// 维持「内容不经服务器搬运」的硬约束（零字节下载）。
+    /// </summary>
+    [Fact]
+    public async Task GetDownloadUrl_FallsBackToContentLocationWhenAnnotationMissing()
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = request =>
+            {
+                if (request.RequestUri!.AbsolutePath.EndsWith("/content", StringComparison.Ordinal))
+                {
+                    var redirect = new HttpResponseMessage(HttpStatusCode.Found)
+                    {
+                        Content = new StringContent(string.Empty),
+                    };
+                    redirect.Headers.Location = new Uri("https://dl.example.com/fallback?sig=xyz");
+                    return redirect;
+                }
+
+                // 注解缺失（正是 #342 里变体 A 的响应：只有 @odata.context/etag/id），
+                // 但它是文件（带 file facet），因此应触发 /content 兜底
+                return StubHttpHandler.Json(200, new Dictionary<string, object>
+                {
+                    ["@odata.context"] = "https://graph.microsoft.com/v1.0/$metadata#drives('d')/items/$entity",
+                    ["@odata.etag"] = "etag-1",
+                    ["id"] = "item-1",
+                    ["file"] = new Dictionary<string, object> { ["mimeType"] = "image/png" },
+                });
+            },
+        };
+        var client = CreateClient(handler);
+
+        var url = await client.GetDownloadUrlAsync("at", "item-1");
+
+        Assert.Equal("https://dl.example.com/fallback?sig=xyz", url);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal("GET", handler.Requests[1].Method);
+        Assert.EndsWith("/drive/items/item-1/content", handler.Requests[1].Url, StringComparison.Ordinal);
+        Assert.Equal("Bearer at", handler.Requests[1].Authorization);
+        // 兜底路径不得把内容拉进服务器：只允许出现一次请求，且响应体为零字节
+        Assert.DoesNotContain("/content?$select", handler.Requests[1].Url);
+    }
+
+    /// <summary>
+    /// 目录没有 `/content`：注解缺失时**不得**去请求 `/content`，直接返回 null。
+    ///
+    /// 这条守住一个真实影响：`OneDriveWriteService.RemoteItemExistsAsync` 用本方法做
+    /// 「远端是否仍存在」的存在性探测，删除/恢复流程会传**目录** id。对目录打 `/content`
+    /// 会拿到 404，从而被误判成「文件已从 OneDrive 删除」，让删除/恢复行为整体错乱。
+    /// </summary>
+    [Fact]
+    public async Task GetDownloadUrl_FolderWithoutAnnotation_DoesNotProbeContent()
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = _ => StubHttpHandler.Json(200, new Dictionary<string, object>
+            {
+                ["id"] = "folder-1",
+                ["folder"] = new Dictionary<string, object> { ["childCount"] = 3 },
+            }),
+        };
+        var client = CreateClient(handler);
+
+        Assert.Null(await client.GetDownloadUrlAsync("at", "folder-1"));
+
+        // 只允许一次条目请求；目录不得触发 /content 兜底
+        var request = Assert.Single(handler.Requests);
+        Assert.EndsWith("/drive/items/folder-1", request.Url, StringComparison.Ordinal);
+    }
+
+    /// <summary>带 file facet 的条目仍然走兜底（与上一条构成对照，避免「一律不兜底」）。</summary>
+    [Fact]
+    public async Task GetDownloadUrl_FileWithoutAnnotation_StillProbesContent()
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = request =>
+            {
+                if (request.RequestUri!.AbsolutePath.EndsWith("/content", StringComparison.Ordinal))
+                {
+                    var redirect = new HttpResponseMessage(HttpStatusCode.Found) { Content = new StringContent(string.Empty) };
+                    redirect.Headers.Location = new Uri("https://dl.example.com/file?sig=1");
+                    return redirect;
+                }
+
+                return StubHttpHandler.Json(200, new Dictionary<string, object>
+                {
+                    ["id"] = "file-1",
+                    ["file"] = new Dictionary<string, object> { ["mimeType"] = "image/png" },
+                });
+            },
+        };
+        var client = CreateClient(handler);
+
+        Assert.Equal("https://dl.example.com/file?sig=1", await client.GetDownloadUrlAsync("at", "file-1"));
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    /// <summary>兜底也拿不到 Location 时返回 null（由上层映射为可读错误），不得抛未处理异常。</summary>
+    [Fact]
+    public async Task GetDownloadUrl_BothPathsUnavailable_ReturnsNull()
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = request => request.RequestUri!.AbsolutePath.EndsWith("/content", StringComparison.Ordinal)
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("bytes") }
+                : StubHttpHandler.Json(200, new Dictionary<string, object>
+                {
+                    ["id"] = "item-1",
+                    ["file"] = new Dictionary<string, object> { ["mimeType"] = "image/png" },
+                }),
+        };
+        var client = CreateClient(handler);
+
+        Assert.Null(await client.GetDownloadUrlAsync("at", "item-1"));
+    }
+
+    /// <summary>兜底路径上的 404/403 必须映射为原有语义（上层的 5300/敏感路径闸门依赖它）。</summary>
+    [Fact]
+    public async Task GetDownloadUrl_FallbackNotAllowed_MapsTo404()
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = request => request.RequestUri!.AbsolutePath.EndsWith("/content", StringComparison.Ordinal)
+                ? StubHttpHandler.Json(404, new Dictionary<string, object> { ["error"] = "not found" })
+                : StubHttpHandler.Json(200, new Dictionary<string, object>
+                {
+                    ["id"] = "item-1",
+                    ["file"] = new Dictionary<string, object> { ["mimeType"] = "image/png" },
+                }),
+        };
+        var client = CreateClient(handler);
+
+        var error = await Assert.ThrowsAsync<OneDriveGraphException>(
+            () => client.GetDownloadUrlAsync("at", "item-1"));
+
+        Assert.Equal(404, error.StatusCode);
     }
 
     [Fact]
