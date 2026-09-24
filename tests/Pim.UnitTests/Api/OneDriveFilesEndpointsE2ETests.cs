@@ -114,8 +114,16 @@ public class OneDriveFilesEndpointsE2ETests
 
         public Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
             => Task.FromResult<string?>("https://onedrive.live.com/redir?resid=x");
-    }
 
+        public Task<OneDriveUploadSession> CreateUploadSessionAsync(
+            string accessToken,
+            string itemPath,
+            string fileName,
+            CancellationToken ct = default)
+            => Task.FromResult(new OneDriveUploadSession(
+                "https://upload.example.com/session-test",
+                DateTimeOffset.UtcNow.AddHours(1)));
+    }
     internal static WebApplicationFactory<Program> CreateFactory(string dbName, E2EGraphClient graph)
         => new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {

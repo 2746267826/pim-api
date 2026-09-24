@@ -76,11 +76,25 @@ public interface IOneDriveGraphClient
     /// <summary>按路径简单上传新文件（PUT /drive/root:{path}:/content），返回 driveItem id。</summary>
     Task<string> PutNewFileByPathAsync(string accessToken, string itemPath, byte[] bytes, string contentType, CancellationToken ct = default);
 
+    /// <summary>
+    /// 创建上传会话（REQ-14）：>4MB 的文件由浏览器直接向返回的 <c>uploadUrl</c> 分片上传，
+    /// PIM 服务器只创建会话与登记元数据，不搬运字节。
+    /// 冲突行为固定为 <c>rename</c>（REQ-12：绝不覆盖同名文件）。
+    /// </summary>
+    Task<OneDriveUploadSession> CreateUploadSessionAsync(
+        string accessToken,
+        string itemPath,
+        string fileName,
+        CancellationToken ct = default);
+
     /// <summary>项的 OneDrive 网页地址（webUrl）。</summary>
     Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default);
 }
 
 public sealed record OneDriveSmallContent(byte[] Bytes, string? ContentType);
+
+/// <summary>Graph 返回的上传会话（<c>uploadUrl</c> 已预授权，分片 PUT 不得再带 Authorization）。</summary>
+public sealed record OneDriveUploadSession(string UploadUrl, DateTimeOffset? ExpirationDateTime);
 
 /// <summary>瞬态下载内容超过允许上限。</summary>
 public sealed class OneDriveContentTooLargeException(long actualBytes)

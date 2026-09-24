@@ -32,11 +32,14 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     /// 因此单列一个客户端名，只给「只看 302、不取内容」的路径使用。
     /// </summary>
     public const string NoRedirectHttpClientName = "onedrive-graph-no-redirect";
-    private const string GraphBaseUrl = "https://graph.microsoft.com/v1.0";
+    /// <summary>Microsoft Graph 的默认基址（全球版 v1.0）。</summary>
+    public const string DefaultGraphBaseUrl = "https://graph.microsoft.com/v1.0";
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly string _tenant;
+    private readonly string _graphBaseUrl;
 
     public OneDriveGraphClient(IHttpClientFactory httpClientFactory, IConfiguration? configuration = null)
     {
@@ -44,7 +47,17 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
         _tenant = configuration?["Files:OneDrive:Tenant"] is { Length: > 0 } tenant
             ? tenant
             : OneDriveAuth.DefaultTenant;
+        // 仅用于本地/测试环境把请求指向自建的假 Graph 服务（真实 HTTP 栈验证）。
+        // 默认值是官方基址；配置不改变任何安全属性——主机白名单仍按**实际基址**推导，
+        // 见 AllowedGraphHosts：允许的主机永远只包含「配置的 Graph 基址主机」与登录域名，
+        // 因此把基址指向别处并不会顺带放行任意主机。
+        _graphBaseUrl = configuration?["Files:OneDrive:GraphBaseUrl"] is { Length: > 0 } configured
+            ? configured.TrimEnd('/')
+            : DefaultGraphBaseUrl;
     }
+
+    /// <summary>当前生效的 Graph 基址。</summary>
+    public string GraphBaseUrl => _graphBaseUrl;
 
     public async Task<OneDriveDeviceCodeStart> RequestDeviceCodeAsync(string clientId, CancellationToken ct = default)
     {
@@ -321,15 +334,51 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     public async Task<string> PutNewFileByPathAsync(string accessToken, string itemPath, byte[] bytes, string contentType, CancellationToken ct = default)
     {
         var normalized = itemPath.TrimStart('/');
+        // conflictBehavior=rename：简单上传的默认冲突行为是 **replace**，不显式指定就会静默覆盖
+        // 同名文件（REQ-12 / AC-12.2 明令禁止）。
         using var request = new HttpRequestMessage(
             HttpMethod.Put,
-            $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}:/content");
+            $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}:/content?@microsoft.graph.conflictBehavior=rename");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Content = new ByteArrayContent(bytes);
         request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
         using var response = await Http.SendAsync(request, ct);
         var json = await ReadJsonAsync(response, ct);
         return ReadRequiredString(json, "id");
+    }
+
+    /// <summary>
+    /// 创建上传会话（REQ-14）。请求体固定 `@microsoft.graph.conflictBehavior = rename`：
+    /// 与简单上传同理，覆盖同名文件是明令禁止的（REQ-12）。
+    /// 注意 <c>itemPath</c> 用 `:/content` 形态的路径寻址，路径本身可能含非 ASCII，需转义。
+    /// </summary>
+    public async Task<OneDriveUploadSession> CreateUploadSessionAsync(
+        string accessToken,
+        string itemPath,
+        string fileName,
+        CancellationToken ct = default)
+    {
+        var normalized = itemPath.TrimStart('/');
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}:/createUploadSession");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = JsonContent.Create(new
+        {
+            item = new Dictionary<string, object>
+            {
+                ["@microsoft.graph.conflictBehavior"] = "rename",
+                ["name"] = fileName,
+            },
+        });
+
+        using var response = await Http.SendAsync(request, ct);
+        var json = await ReadJsonAsync(response, ct);
+        var uploadUrl = ReadRequiredString(json, "uploadUrl");
+        var expiration = ReadNullableString(json, "expirationDateTime");
+        return new OneDriveUploadSession(
+            uploadUrl,
+            expiration is not null && DateTimeOffset.TryParse(expiration, out var parsed) ? parsed : null);
     }
 
     public async Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
@@ -356,7 +405,7 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     /// 被写入的游标、恶意测试替身）都能让后续请求把用户 token 带给任意主机。
     /// 这里对绝对 URL 做主机白名单校验，相对路径仍按 Graph 基址拼接。
     /// </summary>
-    internal static string ResolveGraphUrl(string url)
+    internal string ResolveGraphUrl(string url)
     {
         // 相对形式（含只有 query 的 "?$deltatoken=..."）按 Graph 基址拼接。
         // 注意 Uri.TryCreate 会把 "?x=1" 解析成绝对 URI（无主机），必须显式识别这种形态。
@@ -380,12 +429,20 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
         return absolute.ToString();
     }
 
-    /// <summary>允许携带 token 的目标主机（Graph 全球版与个人版内容域）。</summary>
-    private static readonly HashSet<string> AllowedGraphHosts = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "graph.microsoft.com",
+    /// <summary>
+    /// 允许携带 token 的目标主机：**配置的 Graph 基址主机** + 登录域名。
+    ///
+    /// 由实际基址推导（而不是写死 graph.microsoft.com）是为了让本地假 Graph 服务也能被覆盖到，
+    /// 同时不削弱安全属性：白名单仍然只有「一个内容主机 + 一个登录主机」，
+    /// 攻击者域依然进不来（既有用例 `GetDeltaPage_WithUntrustedAbsoluteCursor_DoesNotSendRequest` 继续守着这一点）。
+    /// </summary>
+    private HashSet<string> AllowedGraphHosts => _allowedGraphHosts ??=
+    [
+        new Uri(_graphBaseUrl).Host,
         "login.microsoftonline.com",
-    };
+    ];
+
+    private HashSet<string>? _allowedGraphHosts;
 
     private async Task<JsonElement> GetGraphJsonAsync(string url, string accessToken, CancellationToken ct)
     {

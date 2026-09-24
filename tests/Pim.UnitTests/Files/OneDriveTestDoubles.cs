@@ -156,6 +156,14 @@ internal sealed class FakeOneDriveGraphClient : IOneDriveGraphClient
         PutNewFileCalls.Add((accessToken, itemPath, bytes, contentType));
         return Task.FromResult(NewItemId);
     }
+    public Task<OneDriveUploadSession> CreateUploadSessionAsync(
+        string accessToken,
+        string itemPath,
+        string fileName,
+        CancellationToken ct = default)
+        => Task.FromResult(new OneDriveUploadSession(
+            "https://upload.example.com/session-test",
+            DateTimeOffset.UtcNow.AddHours(1)));
 
     public Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
         => Task.FromResult(WebUrl);
@@ -247,6 +255,12 @@ internal sealed class RedirectModelingHandler : HttpMessageHandler
         response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
         return response;
     }
+}
+
+/// <summary>把任意 <see cref="HttpMessageHandler"/> 直接作为所有命名客户端的工厂。</summary>
+internal sealed class StubHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
+{
+    public HttpClient CreateClient(string name) => new(handler);
 }
 
 internal sealed class StubHttpHandler : HttpMessageHandler
