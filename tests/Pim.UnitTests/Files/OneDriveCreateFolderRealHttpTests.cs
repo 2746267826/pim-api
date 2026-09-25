@@ -130,4 +130,26 @@ public class OneDriveCreateFolderRealHttpTests
     {
         public HttpClient CreateClient(string name) => new(new HttpClientHandler());
     }
+
+    /// <summary>
+    /// F-1 边界：父路径含非 ASCII 与空格时，子目录形态必须正确转义，
+    /// 且不得出现 `//`（Graph 会当成不同路径）。
+    /// </summary>
+    [Fact]
+    public async Task CreateFolder_SubfolderWithSpacesAndNonAscii_IsEscapedOnce()
+    {
+        await using var server = new FakeGraphServer();
+        await server.StartAsync();
+
+        var client = CreateClient(server);
+        await client.CreateFolderAsync("at", "/我的 文档/子目录", "报告");
+
+        var request = server.Requests.Single(r =>
+            r.Method == "POST" && r.Path.Contains("/drive/root", StringComparison.Ordinal));
+        Assert.EndsWith(":/children", request.Path, StringComparison.Ordinal);
+        Assert.DoesNotContain("//", request.Path);
+        Assert.Equal(
+            $"/v1.0/drive/root:/{Uri.EscapeDataString("我的 文档/子目录")}:/children",
+            request.Path);
+    }
 }
