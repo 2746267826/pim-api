@@ -100,6 +100,10 @@ public sealed class FilesModule : IModule
         group.MapGet("/items/{id:guid}", GetItemAsync);
         group.MapPost("/items/upload", UploadItemAsync);
         group.MapGet("/items/{id:guid}/download", DownloadItemAsync);
+        // REQ-20 / AC-20.1：下载直链以 **JSON** 形式返回，页面 window.open 直链。
+        // 不再让前端用 fetch 跟随 302 去「读 response.url」——那会把整个文件体真拉一遍
+        // （验收 F-3）。与 preview-url 同一模式，服务器只给链接、不搬字节。
+        group.MapGet("/items/{id:guid}/download-url", DownloadUrlAsync);
         group.MapPost("/items/{id:guid}/move", MoveItemAsync);
         group.MapPost("/items/{id:guid}/rename", RenameItemAsync);
         group.MapDelete("/items/{id:guid}", DeleteItemAsync);
@@ -438,6 +442,16 @@ public sealed class FilesModule : IModule
         CancellationToken ct)
         // 稳定直链：302 到 Graph 预授权 URL（复用内容出口的登录/归属/敏感路径三道闸）
         => Results.Redirect(await service.GetContentLinkAsync(id, ct));
+
+    /// <summary>
+    /// REQ-20 / AC-20.1：下载直链的 JSON 形态。页面拿到 URL 后 <c>window.open</c>，
+    /// 浏览器直接从微软域取内容；**页面不会为了「看一眼 response.url」而把整文件拉进内存**（验收 F-3）。
+    /// </summary>
+    private static async Task<IResult> DownloadUrlAsync(
+        Guid id,
+        [FromServices] OneDriveContentService service,
+        CancellationToken ct)
+        => Results.Ok(ApiResponse<OneDriveLinkDto>.Ok(new OneDriveLinkDto(await service.GetContentLinkAsync(id, ct))));
 
     private static async Task<IResult> MoveItemAsync(
         Guid id,

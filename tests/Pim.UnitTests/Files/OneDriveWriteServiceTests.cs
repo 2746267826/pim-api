@@ -325,6 +325,76 @@ public class OneDriveWriteServiceTests
         await Assert.ThrowsAsync<DomainException>(() => service.DeleteToTrashAsync(item.Id));
     }
 
+    // ===================== F-2：文件夹登记以服务端为准 =====================
+
+    /// <summary>
+    /// F-2 / AC-15.1：重名时 Graph 会把新文件夹自动改名为「报告 1」并返回该 id。
+    /// 本地登记必须采用**服务端真实名称与路径**，否则刷新前 PIM 显示的名字
+    /// 与 OneDrive 不一致（曾因此被打回）。
+    /// </summary>
+    [Fact]
+    public async Task CreateFolder_DuplicateName_RegistersServerSideNameAndPath()
+    {
+        await using var db = CreateDb();
+        var (provider, _, _) = SeedTree(db);
+        var graph = new FakeOneDriveGraphClient();
+
+        // 服务端：这次创建实际落地为「报告 1」，位于 /合同 下
+        graph.CreatedFolderId = "folder-renamed";
+        graph.ItemsById["folder-renamed"] = new OneDrivePathItem(
+            "folder-renamed", "报告 1", null, null, "/合同");
+
+        var service = CreateService(db, graph);
+        var result = await service.CreateFolderAsync("/合同/报告");
+
+        var row = await db.Set<FileItemEntity>().SingleAsync(i => i.ExternalFileId == "folder-renamed");
+        Assert.Equal("报告 1", row.Name);
+        Assert.Equal("/合同/报告 1", row.Path);
+        Assert.Equal("/合同/报告 1", result.Path);
+        Assert.Equal("folder", row.ItemType);
+        Assert.Equal("root-ext", row.ParentExternalFileId);
+        Assert.Equal(provider.Id, row.ProviderId);
+    }
+
+    /// <summary>F-2：名字没被改时，登记结果与输入一致（不能为了改名把普通情况弄坏）。</summary>
+    [Fact]
+    public async Task CreateFolder_NoConflict_RegistersSubmittedName()
+    {
+        await using var db = CreateDb();
+        SeedTree(db);
+        var graph = new FakeOneDriveGraphClient();
+        graph.CreatedFolderId = "folder-new";
+        graph.ItemsById["folder-new"] = new OneDrivePathItem("folder-new", "报告", null, null, "/合同");
+
+        var service = CreateService(db, graph);
+        var result = await service.CreateFolderAsync("/合同/报告");
+
+        var row = await db.Set<FileItemEntity>().SingleAsync(i => i.ExternalFileId == "folder-new");
+        Assert.Equal("报告", row.Name);
+        Assert.Equal("/合同/报告", row.Path);
+        Assert.Equal("/合同/报告", result.Path);
+    }
+
+    /// <summary>
+    /// F-2 的兜底：服务端回读不到时不得沿用输入名假装成功
+    /// （那正是 F-2 的成因——本地与 OneDrive 不一致却当作成功）。
+    /// </summary>
+    [Fact]
+    public async Task CreateFolder_WhenServerReadbackFails_DoesNotRegisterSubmittedName()
+    {
+        await using var db = CreateDb();
+        SeedTree(db);
+        var graph = new FakeOneDriveGraphClient();
+        graph.CreatedFolderId = "folder-ghost";
+        // 刻意不配置 ItemsById：回读不到
+
+        var service = CreateService(db, graph);
+        var exception = await Assert.ThrowsAsync<DomainException>(() => service.CreateFolderAsync("/合同/报告"));
+
+        Assert.Equal(5300, exception.ErrorCode);
+        Assert.Empty(db.Set<FileItemEntity>().Where(i => i.ExternalFileId == "folder-ghost"));
+    }
+
     // ===================== P4a 复审：目录子孙收敛 + 敏感路径 =====================
 
     /// <summary>在 /合同 下再挂一层子目录与文件，用于验证子孙 Path 收敛。</summary>

@@ -78,6 +78,7 @@ public class FileEndpointPathTests
             ("GET", "/api/v1/files/items/{id:guid}/content"),
             ("GET", "/api/v1/files/items/{id:guid}/thumbnail"),
             ("GET", "/api/v1/files/items/{id:guid}/preview-url"),
+            ("GET", "/api/v1/files/items/{id:guid}/download-url"),
             ("GET", "/api/v1/files/items/{id:guid}/text"),
             ("PUT", "/api/v1/files/items/{id:guid}/text"),
             ("GET", "/api/v1/files/items/{id:guid}/snapshots"),

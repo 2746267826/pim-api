@@ -194,17 +194,38 @@ public Task<string> CreateFolderAsync(
     string folderPath,
     string name,
     CancellationToken ct = default)
-    => Task.FromResult("new-folder-item");
+{
+    CreateFolderCalls.Add((folderPath, name));
+    // 模拟真实 Graph 的重名自动改名：调用方必须回读才能知道最终名称（F-2）
+    return Task.FromResult(CreatedFolderId);
+}
+
+/// <summary>新建文件夹的调用记录（父路径, 输入名）。</summary>
+public List<(string FolderPath, string Name)> CreateFolderCalls { get; } = [];
+
+/// <summary>新建文件夹返回的条目 id（可改为模拟服务端自动改名后的那一个）。</summary>
+public string CreatedFolderId { get; set; } = "new-folder-item";
+
+/// <summary>
+/// 按 id 回读到的条目。用于模拟「重名后服务端把名字改成 名称 1」：
+/// 客户端必须以这里返回的名称为准登记（F-2 / AC-15.1）。
+/// </summary>
+public Dictionary<string, OneDrivePathItem> ItemsById { get; } = new(StringComparer.Ordinal);
+
+/// <summary>按路径回读到的条目。</summary>
+public Dictionary<string, OneDrivePathItem> ItemsByPath { get; } = new(StringComparer.Ordinal);
+
 public Task<OneDrivePathItem?> GetItemByPathAsync(
     string accessToken,
     string itemPath,
     CancellationToken ct = default)
-    => Task.FromResult<OneDrivePathItem?>(null);
+    => Task.FromResult(ItemsByPath.TryGetValue(itemPath, out var item) ? item : null);
+
 public Task<OneDrivePathItem?> GetItemByIdAsync(
     string accessToken,
     string itemId,
     CancellationToken ct = default)
-    => Task.FromResult<OneDrivePathItem?>(null);
+    => Task.FromResult(ItemsById.TryGetValue(itemId, out var item) ? item : null);
 
 
 

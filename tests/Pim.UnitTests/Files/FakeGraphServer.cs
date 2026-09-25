@@ -30,6 +30,12 @@ internal sealed class FakeGraphServer : IAsyncDisposable
     private readonly ConcurrentDictionary<string, UploadSessionState> _sessions = new();
     private readonly ConcurrentDictionary<string, byte[]> _files = new();
 
+    /// <summary>各父目录下已存在的子文件夹名（用于复刻真实的重名自动改名）。</summary>
+    private readonly ConcurrentDictionary<string, HashSet<string>> _folderChildren = new();
+
+    /// <summary>已创建的文件夹 id → (最终名称, 父路径)，供按 id 回读返回**服务端真实**名称。</summary>
+    private readonly ConcurrentDictionary<string, (string Name, string ParentPath)> _idToName = new();
+
     public FakeGraphServer()
     {
         var port = GetFreePort();
@@ -207,6 +213,74 @@ internal sealed class FakeGraphServer : IAsyncDisposable
             return;
         }
 
+        // ---- 在父目录下新建文件夹（REQ-15）----
+        // 真实 Graph 只接受「父目录的 children」形态：
+        //   POST /drive/root/children               （根目录）
+        //   POST /drive/root:/{parent}:/children    （子目录）
+        // 缺 `:/children` 的形态在真实账号上实测 **400 invalidRequest**，
+        // 所以这里如实拒绝它——假服务不许比真服务宽松，否则端点形态错了也照样绿。
+        if (method == "POST" && path.Contains("/drive/root", StringComparison.Ordinal))
+        {
+            var prefix = "/v1.0/drive/root";
+            var rest = path[prefix.Length..];
+            string? parentPath = null;
+            if (rest == "/children")
+            {
+                parentPath = "/";
+            }
+            else if (rest.StartsWith(":/", StringComparison.Ordinal)
+                && rest.EndsWith(":/children", StringComparison.Ordinal))
+            {
+                var raw = rest[2..^":/children".Length];
+                parentPath = "/" + Uri.UnescapeDataString(raw).Trim('/');
+            }
+
+            if (parentPath is null)
+            {
+                // 复刻真实账号的 400 invalidRequest
+                await WriteAsync(context, 400, """{"error":{"code":"invalidRequest","message":"The request is malformed or incorrect."}}""");
+                Record(method, path, null, LastRequestBody.Length);
+                return;
+            }
+
+            var body = JsonSerializer.Deserialize<JsonElement>(LastRequestBody);
+            var folderName = body.TryGetProperty("name", out var n) ? n.GetString() ?? "新建文件夹" : "新建文件夹";
+            var conflict = body.TryGetProperty("@microsoft.graph.conflictBehavior", out var cb) ? cb.GetString() : null;
+
+            var children = _folderChildren.GetOrAdd(parentPath, _ => []);
+            var finalName = folderName;
+            if (!children.Add(finalName))
+            {
+                if (conflict != "rename")
+                {
+                    await WriteAsync(context, 409, """{"error":{"code":"nameAlreadyExists"}}""");
+                    Record(method, path, null, LastRequestBody.Length);
+                    return;
+                }
+
+                // 真实账号实测的重名命名格式是「名称 1」（空格 + 序号，无括号）
+                var index = 1;
+                while (!children.Add($"{folderName} {index}"))
+                {
+                    index++;
+                }
+
+                finalName = $"{folderName} {index}";
+            }
+
+            var folderId = $"folder-{Guid.NewGuid():N}";
+            _idToName[folderId] = (finalName, parentPath);
+            await WriteAsync(context, 201, JsonSerializer.Serialize(new
+            {
+                id = folderId,
+                name = finalName,
+                folder = new { childCount = 0 },
+                parentReference = new { path = parentPath == "/" ? "/drive/root:" : $"/drive/root:{parentPath}" },
+            }));
+            Record(method, path, null, LastRequestBody.Length);
+            return;
+        }
+
         // ---- createLink（分享）----
         if (method == "POST" && path.EndsWith("/createLink", StringComparison.Ordinal))
         {
@@ -223,9 +297,27 @@ internal sealed class FakeGraphServer : IAsyncDisposable
             return;
         }
 
-        // ---- 按 id 回读条目（上传完成后登记用）----
+        // ---- 按 id 回读条目（上传完成后登记 / 新建文件夹后登记用）----
         if (method == "GET" && path.Contains("/drive/items/", StringComparison.Ordinal))
         {
+            var requestedId = path[(path.IndexOf("/drive/items/", StringComparison.Ordinal) + "/drive/items/".Length)..];
+            requestedId = Uri.UnescapeDataString(requestedId.Trim('/'));
+
+            // 建好的文件夹：返回**服务端真实**名称（重名时已自动改名）与父路径
+            if (_idToName.TryGetValue(requestedId, out var folder))
+            {
+                await WriteAsync(context, 200, JsonSerializer.Serialize(new
+                {
+                    id = requestedId,
+                    name = folder.Name,
+                    size = 0,
+                    folder = new { childCount = 0 },
+                    parentReference = new { path = folder.ParentPath == "/" ? "/drive/root:" : $"/drive/root:{folder.ParentPath}" },
+                }));
+                Record(method, path, null, 0);
+                return;
+            }
+
             await WriteAsync(context, 200, JsonSerializer.Serialize(new
             {
                 id = CompletedItemId,

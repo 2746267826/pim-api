@@ -466,8 +466,20 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     }
 
     /// <summary>
-    /// 新建文件夹（REQ-15）：`POST /drive/root:{path}`，body 带 folder facet。
-    /// 同样固定 `conflictBehavior = rename`——同名文件夹不得覆盖（REQ-12 的同源约束）。
+    /// 新建文件夹（REQ-15），返回新条目的 driveItem id。
+    ///
+    /// 端点必须是**父目录的 children** 形态：
+    /// <list type="bullet">
+    ///   <item>根目录：<c>POST /drive/root/children</c>；</item>
+    ///   <item>子目录：<c>POST /drive/root:/{parent}:/children</c>。</item>
+    /// </list>
+    /// 缺 `:/children` 的形态（<c>POST /drive/root:/{parent}</c>）在真实账号上实测为
+    /// **400 invalidRequest**，即「新建文件夹」必然失败——本条曾因此被打回（F-1），
+    /// 故形态由 <c>OneDriveCreateFolderRealHttpTests</c> 对着真实 HTTP 守住。
+    ///
+    /// 冲突行为固定 `conflictBehavior = rename`：同名时由 Graph 自动改名为「名称 1」
+    /// 而不是覆盖（REQ-12 / AC-12.2）。自动改名后**最终名称以服务端为准**，
+    /// 调用方必须回读登记（见 <c>OneDriveWriteService.CreateFolderAsync</c>）。
     /// </summary>
     public async Task<string> CreateFolderAsync(
         string accessToken,
@@ -475,17 +487,22 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
         string name,
         CancellationToken ct = default)
     {
-        var normalized = folderPath.TrimStart('/');
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}");
+        var normalized = folderPath.Trim().Trim('/');
+        var endpoint = normalized.Length == 0
+            ? $"{GraphBaseUrl}/drive/root/children"
+            : $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}:/children";
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        request.Content = JsonContent.Create(new
+        // 冲突行为用正式 instance attribute（带 @microsoft.graph. 前缀）：
+        // 验收方现场实测的正是该形态（重名 → 201 自动改名为「名称 1」）。
+        // 与 CreateUploadSessionAsync 的写法保持一致。
+        request.Content = JsonContent.Create(new Dictionary<string, object>
         {
-            name,
-            folder = new { },
+            ["name"] = name,
+            ["folder"] = new { },
             // 同名时自动改名而不是覆盖（REQ-12 / AC-12.2）
-            conflictBehavior = "rename",
+            ["@microsoft.graph.conflictBehavior"] = "rename",
         });
 
         using var response = await Http.SendAsync(request, ct);
