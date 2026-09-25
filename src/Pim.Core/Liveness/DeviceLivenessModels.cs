@@ -76,7 +76,37 @@ public static class DeviceLivenessRules
 
     /// <summary>无存活证据时的结论文案（AC-7.5 / AC-8.2 / AC-10.2 / AC-11.4）。</summary>
     public const string NoDataConclusion = "无数据/未上报：该区间内没有任何存活证据。";
+
+    /// <summary>兑现率的判定线：延迟不超过该值算「按时」（与 AC-17.1 的压制判定线同源）。</summary>
+    public const int FulfillmentOnTimeMinutes = 15;
+
+    /// <summary>兑现率口径说明原文（AC-18.3：页面需说明该口径）。</summary>
+    public const string FulfillmentDefinition =
+        "兑现率：区间内实际执行且延迟不超过 15 分钟的叫醒次数 ÷ 有实际执行时刻的叫醒次数。" +
+        "设备关机或用户暂停导致的未执行不计入分母。";
 }
+
+/// <summary>
+/// 叫醒兑现率（REQ-18）。**可选展示项**：没有可判定记录时为 null，页面不得显示为 0%。
+/// </summary>
+/// <param name="Rate">兑现率（0~1）；无可判定记录时为 null。</param>
+/// <param name="Fulfilled">按时叫醒次数（分子）。</param>
+/// <param name="Considered">有实际执行时刻的次数（分母，已排除关机/暂停未执行）。</param>
+/// <param name="ExcludedNoActualTime">因缺少实际时刻被排除在分母外的条数。</param>
+public sealed record AlarmFulfillment(
+    double? Rate,
+    int Fulfilled,
+    int Considered,
+    int ExcludedNoActualTime);
+
+/// <summary>
+/// 一条叫醒兑现样本（服务端计算兑现率用）。
+/// </summary>
+/// <param name="ScheduledAtUtc">预定时刻。</param>
+/// <param name="DelayMinutes">
+/// 实际延迟（分钟）；**为 null 表示没有实际执行**（设备关机/用户暂停），不计入分母（AC-18.3）。
+/// </param>
+public sealed record AlarmFulfillmentSample(DateTimeOffset ScheduledAtUtc, double? DelayMinutes);
 
 /// <summary>一条存活证据（时刻 + 来源）。</summary>
 public sealed record LivenessEvidence(DateTimeOffset AtUtc, string Source);
@@ -114,7 +144,8 @@ public sealed record DeviceLivenessSummary(
     IReadOnlyList<LivenessCauseCount> Causes,
     DateTimeOffset? LastEventAtUtc,
     string CoverageByHourDefinition,
-    string CoverageByExpectedHeartbeatDefinition);
+    string CoverageByExpectedHeartbeatDefinition,
+    AlarmFulfillment? Fulfillment = null);
 
 /// <summary>体检输出中的「设备存活」数据项（REQ-10）。**刻意不含红/黄/绿档位字段**（AC-10.3）。</summary>
 public sealed record DeviceLivenessInspectionItem(

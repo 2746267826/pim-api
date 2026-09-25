@@ -32,6 +32,21 @@ public static class DeviceLivenessCalculator
         IEnumerable<LivenessCauseCount>? causeEvents,
         DateTimeOffset rangeStartUtc,
         DateTimeOffset rangeEndUtc)
+        => Summarize(evidence, causeEvents, rangeStartUtc, rangeEndUtc, alarmFulfillments: null);
+
+    /// <summary>
+    /// 计算单设备存活摘要（含兑现率，REQ-18）。
+    /// </summary>
+    /// <param name="alarmFulfillments">
+    /// 叫醒兑现记录（预定时刻 + 是否有实际时刻 + 延迟）；为 null 表示该设备没有闹钟数据，
+    /// 此时兑现率为 null（AC-18.2：页面不得显示为 0%）。
+    /// </param>
+    public static DeviceLivenessSummary Summarize(
+        IEnumerable<LivenessEvidence> evidence,
+        IEnumerable<LivenessCauseCount>? causeEvents,
+        DateTimeOffset rangeStartUtc,
+        DateTimeOffset rangeEndUtc,
+        IEnumerable<AlarmFulfillmentSample>? alarmFulfillments)
     {
         if (rangeEndUtc <= rangeStartUtc)
         {
@@ -105,7 +120,47 @@ public static class DeviceLivenessCalculator
             Causes: causes,
             LastEventAtUtc: lastEvidenceAt,
             CoverageByHourDefinition: DeviceLivenessRules.CoverageByHourDefinition,
-            CoverageByExpectedHeartbeatDefinition: DeviceLivenessRules.CoverageByExpectedHeartbeatDefinition);
+            CoverageByExpectedHeartbeatDefinition: DeviceLivenessRules.CoverageByExpectedHeartbeatDefinition,
+            Fulfillment: ComputeFulfillment(alarmFulfillments));
+    }
+
+    /// <summary>
+    /// 由叫醒兑现记录算兑现率（REQ-18）。
+    ///
+    /// 口径（AC-18.3）：**缺少实际时刻的记录不计入分母**——把设备关机当成「未兑现」
+    /// 会让一次出差关机把兑现率砸到很低，而那是设备状态不是保活失效，会直接误导判断。
+    /// 没有任何可判定记录时返回 null（AC-18.2：不得显示为 0%）。
+    /// </summary>
+    public static AlarmFulfillment? ComputeFulfillment(IEnumerable<AlarmFulfillmentSample>? samples)
+    {
+        if (samples is null)
+        {
+            return null;
+        }
+
+        var list = samples.ToList();
+        if (list.Count == 0)
+        {
+            return null;
+        }
+
+        var executed = list.Where(item => item.DelayMinutes is not null).ToList();
+        if (executed.Count == 0)
+        {
+            // 有记录但都没真正执行：同样没有可判定的分母，给空态而不是 0%。
+            return new AlarmFulfillment(
+                Rate: null,
+                Fulfilled: 0,
+                Considered: 0,
+                ExcludedNoActualTime: list.Count);
+        }
+
+        var fulfilled = executed.Count(item => item.DelayMinutes <= DeviceLivenessRules.FulfillmentOnTimeMinutes);
+        return new AlarmFulfillment(
+            Rate: Math.Round((double)fulfilled / executed.Count, 4),
+            Fulfilled: fulfilled,
+            Considered: executed.Count,
+            ExcludedNoActualTime: list.Count - executed.Count);
     }
 
     /// <summary>
