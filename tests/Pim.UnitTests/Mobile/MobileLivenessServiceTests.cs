@@ -105,6 +105,45 @@ public sealed class MobileLivenessServiceTests
         Assert.Equal(2, await db.Set<MobileForensicEventEntity>().CountAsync());
     }
 
+    /// <summary>
+    /// 阶段二（REQ-18 / REQ-14 / REQ-21）：设备端新增的闹钟事件类型必须被服务端接受。
+    ///
+    /// 这条守的是一个**两端契约漂移**：设备端记账成功但服务端按「未知类型」拒绝，
+    /// 表现为「设备上看得见、服务端永远收不到」，而设备侧不会有任何报错。
+    /// 因此断言必须打在**服务端受理结果**上，不能只断言设备端写入了台账。
+    /// </summary>
+    [Fact]
+    public async Task Ingest_StageTwoKeepAliveEventTypes_AreAccepted()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = IngestService(db);
+
+        var result = await service.IngestAsync(
+            Upload(PhoneId, new[]
+            {
+                new MobileForensicEventUploadItem(
+                    "alarm-1",
+                    ForensicEventTypes.AlarmFulfillment,
+                    Now,
+                    "{\"scheduledAtUtcMillis\":1000,\"actualAtUtcMillis\":2000,\"delayMillis\":1000,\"outcome\":\"executed\"}"),
+                new MobileForensicEventUploadItem(
+                    "alarm-reg-1",
+                    ForensicEventTypes.AlarmRegistered,
+                    Now,
+                    "{\"intervalMinutes\":30,\"trigger\":\"app-start\"}"),
+                new MobileForensicEventUploadItem(
+                    "health-1",
+                    ForensicEventTypes.KeepAliveHealth,
+                    Now,
+                    "{\"reason\":\"permission-revoked\"}"),
+            }),
+            CancellationToken.None);
+
+        Assert.Equal(0, result.RejectedCount);
+        Assert.Equal(3, result.AcceptedCount);
+        Assert.Equal(3, await db.Set<MobileForensicEventEntity>().CountAsync());
+    }
+
     [Fact]
     public async Task Ingest_UnknownEventType_IsRejectedNotSilentlyDropped()
     {

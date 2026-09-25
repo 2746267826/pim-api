@@ -19,6 +19,15 @@ public static class ForensicEventTypes
 
     /// <summary>存活心跳（REQ-3）。</summary>
     public const string Heartbeat = "heartbeat";
+
+    /// <summary>闹钟兑现（REQ-18）：预定时刻、实际时刻、延迟、结果。</summary>
+    public const string AlarmFulfillment = "alarm-fulfillment";
+
+    /// <summary>闹钟登记（AC-14.1：已授权状态下台账出现闹钟登记事件）。</summary>
+    public const string AlarmRegistered = "alarm-registered";
+
+    /// <summary>保活健康事件（REQ-21 红点双通道的依据）。</summary>
+    public const string KeepAliveHealth = "keepalive-health";
 }
 
 /// <summary>
