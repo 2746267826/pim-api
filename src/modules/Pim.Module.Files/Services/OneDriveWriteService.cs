@@ -381,6 +381,155 @@ public sealed class OneDriveWriteService
         return new OneDriveWriteResult(item.Id, itemPath);
     }
 
+    /// <summary>
+    /// 创建上传会话（REQ-14）：只向 Graph 要一个预授权 uploadUrl，**不接收也不转发任何字节**。
+    /// 浏览器拿到后直接向微软分片上传；完成后由 <see cref="RegisterUploadedFileAsync"/> 登记元数据。
+    /// </summary>
+    public async Task<OneDriveUploadSession> CreateUploadSessionAsync(
+        string destinationFolderPath,
+        string fileName,
+        CancellationToken ct = default)
+    {
+        OneDriveNameValidator.EnsureValidName(fileName);
+        var (provider, _) = await LoadConnectedProviderAsync(ct);
+        var folderPath = await EnsureFolderExistsAsync(provider, destinationFolderPath, ct);
+        var targetPath = (folderPath == "/" ? string.Empty : folderPath) + "/" + fileName;
+
+        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
+        return await _client.CreateUploadSessionAsync(token, targetPath, fileName, ct);
+    }
+
+    /// <summary>
+    /// 上传完成后登记元数据（REQ-14）：内容已在微软侧，这里只把结果落到本地元数据并写审计。
+    /// 通过 Graph 回读真实条目来确认存在与最终名称（REQ-12：重名时 Graph 会用 <c>名称 (1).ext</c>）。
+    /// </summary>
+    public async Task<OneDriveWriteResult> RegisterUploadedFileAsync(
+        string destinationFolderPath,
+        string fileName,
+        string? uploadedItemId = null,
+        CancellationToken ct = default)
+    {
+        OneDriveNameValidator.EnsureValidName(fileName);
+        var (provider, folder) = await LoadConnectedProviderAsync(ct);
+        var folderPath = await EnsureFolderExistsAsync(provider, destinationFolderPath, ct);
+
+        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
+
+        // 优先按**上传完成响应里的真实条目 id** 回读：重名时 Graph 会把文件改名成
+        // 「名称 (1).ext」，此时按原路径回读会读到**本来就存在的那一个旧文件**，
+        // 把它的元数据登记成本次上传的结果（AC-12.1 的反面）。
+        OneDrivePathItem? item;
+        if (!string.IsNullOrWhiteSpace(uploadedItemId))
+        {
+            item = await _client.GetItemByIdAsync(token, uploadedItemId, ct);
+        }
+        else
+        {
+            // 客户端没带回 id 时的兜底：按路径回读（此时重名已由 Graph 处理，名字以服务端为准）
+            var probePath = (folderPath == "/" ? string.Empty : folderPath) + "/" + fileName;
+            item = await _client.GetItemByPathAsync(token, probePath, ct);
+        }
+
+        if (item is null)
+        {
+            throw new DomainException(5300, "上传已完成，但未能从 OneDrive 读回该文件，请稍后重新同步");
+        }
+
+        // 用服务端返回的真实路径/名称（重名时已自动改名），不沿用客户端提交的名字
+        var probePathResolved = item.ParentPath is { Length: > 0 }
+            ? (item.ParentPath == "/" ? string.Empty : item.ParentPath) + "/" + item.Name
+            : (folderPath == "/" ? string.Empty : folderPath) + "/" + item.Name;
+
+        var now = _clock.GetUtcNow();
+        var row = await _db.Set<FileItemEntity>()
+            .SingleOrDefaultAsync(existing => existing.ProviderId == provider.Id
+                && existing.ExternalFileId == item.Id, ct);
+        if (row is null)
+        {
+            row = new FileItemEntity
+            {
+                ProviderId = provider.Id,
+                ExternalFileId = item.Id,
+                CreatedAt = now,
+            };
+            _db.Set<FileItemEntity>().Add(row);
+        }
+
+        row.ParentExternalFileId = folder.ExternalFileId;
+        row.Path = probePathResolved;
+        // 用 Graph 回读到的**真实名称**（重名时 Graph 已自动改名，见 REQ-12）
+        row.Name = item.Name;
+        row.ItemType = "file";
+        row.MimeType = item.MimeType;
+        row.Size = item.Size;
+        row.IsDeleted = false;
+        row.DeletedAt = null;
+        row.LastSeenAt = now;
+        row.ModifiedAt = now;
+        row.SyncedAt = now;
+        await _db.SaveChangesAsync(ct);
+        await RecordAuditAsync("files.onedrive.upload_session_complete", row.Id, ct);
+        return new OneDriveWriteResult(row.Id, probePathResolved);
+    }
+
+    /// <summary>
+    /// 在当前目录内新建文件夹（REQ-15）。先校验名称（AC-15.2），再经 Graph 创建，
+    /// 成功后按**服务端回读结果**收敛本地元数据（AC-15.1：OneDrive 与 PIM 元数据一致）。
+    ///
+    /// 为什么必须回读而不是直接用输入名：重名时 Graph 会按 <c>conflictBehavior=rename</c>
+    /// 自动把新文件夹改名为「报告 1」，输入名与实际创建的条目**不是同一个东西**。
+    /// 沿用输入名会让 PIM 显示的名字与 OneDrive 不一致，直到下一轮同步才纠正（F-2 打回项）。
+    /// 这与 <see cref="RegisterUploadedFileAsync"/> 的上传登记是同一模式。
+    /// </summary>
+    public async Task<OneDriveWriteResult> CreateFolderAsync(string path, CancellationToken ct = default)
+    {
+        var (folderPath, name) = OneDriveNameValidator.SplitTargetPath(path);
+        var (provider, parentFolder) = await LoadConnectedProviderAsync(ct);
+        await EnsureFolderExistsAsync(provider, folderPath, ct);
+
+        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
+        var createdId = await _client.CreateFolderAsync(token, folderPath, name, ct);
+
+        // 以服务端返回的 id 回读真实名称与父路径（重名时名字已被 Graph 改成「名称 1」）
+        var created = await _client.GetItemByIdAsync(token, createdId, ct)
+            ?? throw new DomainException(5300, "文件夹已创建，但未能从 OneDrive 读回该文件夹，请稍后重新同步");
+
+        var resolvedParent = created.ParentPath is { Length: > 0 } parentPath
+            ? (parentPath == "/" ? string.Empty : parentPath)
+            : (folderPath == "/" ? string.Empty : folderPath);
+        var resolvedPath = resolvedParent + "/" + created.Name;
+
+        var now = _clock.GetUtcNow();
+        var item = await _db.Set<FileItemEntity>()
+            .SingleOrDefaultAsync(row => row.ProviderId == provider.Id && row.ExternalFileId == created.Id, ct);
+        if (item is null)
+        {
+            item = new FileItemEntity
+            {
+                ProviderId = provider.Id,
+                ExternalFileId = created.Id,
+                CreatedAt = now,
+            };
+            _db.Set<FileItemEntity>().Add(item);
+        }
+
+        item.ParentExternalFileId = parentFolder.ExternalFileId;
+        item.Path = resolvedPath;
+        // 用回读到的**真实名称**（重名时 Graph 已自动改名）
+        item.Name = created.Name;
+        item.ItemType = "folder";
+        item.MimeType = null;
+        item.Size = null;
+        item.IsDeleted = false;
+        item.DeletedAt = null;
+        item.LastSeenAt = now;
+        item.ModifiedAt = now;
+        item.SyncedAt = now;
+        await _db.SaveChangesAsync(ct);
+        await RecordAuditAsync("files.onedrive.create_folder", item.Id, ct);
+        return new OneDriveWriteResult(item.Id, resolvedPath);
+    }
+
     /// <summary>OneDrive 网页地址（替代 v1 的 BuildOpenLink）。</summary>
     public async Task<string> GetWebUrlAsync(Guid itemId, CancellationToken ct = default)
     {

@@ -107,6 +107,58 @@ public class OneDriveGraphClientContentTests
         }
     }
 
+    /// <summary>
+    /// REQ-12：任何上传路径都**不得覆盖**同名文件——必须显式要求 Graph 用 rename。
+    /// `PUT .../content` 的默认冲突行为是 replace（直接覆盖），不显式指定就会静默覆盖，正是 AC-12.2 禁止的。
+    /// </summary>
+    [Fact]
+    public async Task PutNewFileByPath_RequestsRenameConflictBehavior()
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = _ => StubHttpHandler.Json(201, new Dictionary<string, object> { ["id"] = "item-1" }),
+        };
+        var client = CreateClient(handler);
+
+        await client.PutNewFileByPathAsync("at", "/文档/报告.docx", [1, 2, 3], "application/octet-stream");
+
+        var request = Assert.Single(handler.Requests);
+        var decoded = Uri.UnescapeDataString(request.Url);
+        Assert.Contains("conflictBehavior=rename", decoded);
+        Assert.DoesNotContain("conflictBehavior=replace", decoded);
+    }
+
+    /// <summary>
+    /// REQ-14 / AC-14.2：创建上传会话时必须带 `@microsoft.graph.conflictBehavior = rename`，
+    /// 且**不得**出现 `replace` —— 否则大文件上传会覆盖同名文件。
+    /// </summary>
+    [Fact]
+    public async Task CreateUploadSession_RequestsRenameConflictBehaviorAndReturnsUploadUrl()
+    {
+        var handler = new StubHttpHandler
+        {
+            Responder = _ => StubHttpHandler.Json(200, new Dictionary<string, object>
+            {
+                ["uploadUrl"] = "https://upload.example.com/session-1",
+                ["expirationDateTime"] = "2026-09-24T12:00:00Z",
+            }),
+        };
+        var client = CreateClient(handler);
+
+        var session = await client.CreateUploadSessionAsync("at", "/文档/大视频.mp4", "大视频.mp4");
+
+        Assert.Equal("https://upload.example.com/session-1", session.UploadUrl);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("POST", request.Method);
+        var decoded = Uri.UnescapeDataString(request.Url);
+        Assert.Contains("createUploadSession", decoded);
+        Assert.Contains("/drive/root:/文档/大视频.mp4:", decoded);
+
+        Assert.NotNull(request.Body);
+        Assert.Contains("rename", request.Body);
+        Assert.DoesNotContain("replace", request.Body);
+    }
+
     private static OneDriveGraphClient CreateClient(StubHttpHandler handler)
         => new(new StubHttpClientFactory(handler));
 
@@ -115,11 +167,6 @@ public class OneDriveGraphClientContentTests
     {
         var factory = new RedirectAwareHttpClientFactory(responder);
         return (new OneDriveGraphClient(factory), factory);
-    }
-
-    private sealed class StubHttpClientFactory(StubHttpHandler handler) : IHttpClientFactory
-    {
-        public HttpClient CreateClient(string name) => new(handler);
     }
 
     /// <summary>

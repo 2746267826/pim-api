@@ -32,11 +32,14 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     /// 因此单列一个客户端名，只给「只看 302、不取内容」的路径使用。
     /// </summary>
     public const string NoRedirectHttpClientName = "onedrive-graph-no-redirect";
-    private const string GraphBaseUrl = "https://graph.microsoft.com/v1.0";
+    /// <summary>Microsoft Graph 的默认基址（全球版 v1.0）。</summary>
+    public const string DefaultGraphBaseUrl = "https://graph.microsoft.com/v1.0";
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly string _tenant;
+    private readonly string _graphBaseUrl;
 
     public OneDriveGraphClient(IHttpClientFactory httpClientFactory, IConfiguration? configuration = null)
     {
@@ -44,7 +47,17 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
         _tenant = configuration?["Files:OneDrive:Tenant"] is { Length: > 0 } tenant
             ? tenant
             : OneDriveAuth.DefaultTenant;
+        // 仅用于本地/测试环境把请求指向自建的假 Graph 服务（真实 HTTP 栈验证）。
+        // 默认值是官方基址；配置不改变任何安全属性——主机白名单仍按**实际基址**推导，
+        // 见 AllowedGraphHosts：允许的主机永远只包含「配置的 Graph 基址主机」与登录域名，
+        // 因此把基址指向别处并不会顺带放行任意主机。
+        _graphBaseUrl = configuration?["Files:OneDrive:GraphBaseUrl"] is { Length: > 0 } configured
+            ? configured.TrimEnd('/')
+            : DefaultGraphBaseUrl;
     }
+
+    /// <summary>当前生效的 Graph 基址。</summary>
+    public string GraphBaseUrl => _graphBaseUrl;
 
     public async Task<OneDriveDeviceCodeStart> RequestDeviceCodeAsync(string clientId, CancellationToken ct = default)
     {
@@ -321,9 +334,11 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     public async Task<string> PutNewFileByPathAsync(string accessToken, string itemPath, byte[] bytes, string contentType, CancellationToken ct = default)
     {
         var normalized = itemPath.TrimStart('/');
+        // conflictBehavior=rename：简单上传的默认冲突行为是 **replace**，不显式指定就会静默覆盖
+        // 同名文件（REQ-12 / AC-12.2 明令禁止）。
         using var request = new HttpRequestMessage(
             HttpMethod.Put,
-            $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}:/content");
+            $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}:/content?@microsoft.graph.conflictBehavior=rename");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Content = new ByteArrayContent(bytes);
         request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
@@ -331,6 +346,277 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
         var json = await ReadJsonAsync(response, ct);
         return ReadRequiredString(json, "id");
     }
+
+    /// <summary>
+    /// 创建上传会话（REQ-14）。请求体固定 `@microsoft.graph.conflictBehavior = rename`：
+    /// 与简单上传同理，覆盖同名文件是明令禁止的（REQ-12）。
+    /// 注意 <c>itemPath</c> 用 `:/content` 形态的路径寻址，路径本身可能含非 ASCII，需转义。
+    /// </summary>
+    public async Task<OneDriveUploadSession> CreateUploadSessionAsync(
+        string accessToken,
+        string itemPath,
+        string fileName,
+        CancellationToken ct = default)
+    {
+        var normalized = itemPath.TrimStart('/');
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}:/createUploadSession");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = JsonContent.Create(new
+        {
+            item = new Dictionary<string, object>
+            {
+                ["@microsoft.graph.conflictBehavior"] = "rename",
+                ["name"] = fileName,
+            },
+        });
+
+        using var response = await Http.SendAsync(request, ct);
+        var json = await ReadJsonAsync(response, ct);
+        var uploadUrl = ReadRequiredString(json, "uploadUrl");
+        var expiration = ReadNullableString(json, "expirationDateTime");
+        return new OneDriveUploadSession(
+            uploadUrl,
+            expiration is not null && DateTimeOffset.TryParse(expiration, out var parsed) ? parsed : null);
+    }
+
+    /// <summary>
+    /// 按路径回读条目（REQ-14 登记上传结果用）。路径不存在时返回 null。
+    /// 这里刻意**不带 $select**：issue #342 的教训是 `$select` 组合可能让服务端静默丢字段。
+    /// </summary>
+    public async Task<OneDrivePathItem?> GetItemByPathAsync(
+        string accessToken,
+        string itemPath,
+        CancellationToken ct = default)
+    {
+        var normalized = itemPath.TrimStart('/');
+        try
+        {
+            var json = await GetGraphJsonAsync(
+                $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}",
+                accessToken, ct);
+            return new OneDrivePathItem(
+                ReadRequiredString(json, "id"),
+                ReadString(json, "name", normalized),
+                ReadNullableString(json, "size") is { } size && long.TryParse(size, out var parsed) ? parsed : ReadNullableLong(json, "size"),
+                ReadNullableString(json, "file") ?? ReadMimeType(json));
+        }
+        catch (OneDriveGraphException exception) when (exception.StatusCode == 404)
+        {
+            return null;
+        }
+    }
+
+    private static string? ReadMimeType(JsonElement json)
+        => json.TryGetProperty("file", out var file) && file.ValueKind == JsonValueKind.Object
+            ? ReadNullableString(file, "mimeType")
+            : null;
+
+    /// <summary>
+    /// 按 id 回读条目（REQ-14 登记上传结果；id 来自上传完成响应，是权威标识）。
+    /// 不存在返回 null。
+    /// </summary>
+    public async Task<OneDrivePathItem?> GetItemByIdAsync(
+        string accessToken,
+        string itemId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var json = await GetGraphJsonAsync(
+                $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}",
+                accessToken, ct);
+            return new OneDrivePathItem(
+                ReadRequiredString(json, "id"),
+                ReadString(json, "name", itemId),
+                ReadNullableLong(json, "size"),
+                ReadMimeType(json),
+                ReadParentPath(json));
+        }
+        catch (OneDriveGraphException exception) when (exception.StatusCode == 404)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>读取 parentReference.path（用于把条目定位回目录树）。</summary>
+    private static string? ReadParentPath(JsonElement json)
+    {
+        if (!json.TryGetProperty("parentReference", out var parent) || parent.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var raw = ReadNullableString(parent, "path");
+        if (string.IsNullOrEmpty(raw))
+        {
+            return null;
+        }
+
+        // Graph 形如 "/drive/root:/文档"，取冒号后的部分；根目录是 "/drive/root:"
+        var marker = "/drive/root:";
+        if (raw.StartsWith(marker, StringComparison.Ordinal))
+        {
+            var relative = raw[marker.Length..];
+            return relative.Length == 0 ? "/" : relative;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 新建文件夹（REQ-15），返回新条目的 driveItem id。
+    ///
+    /// 端点必须是**父目录的 children** 形态：
+    /// <list type="bullet">
+    ///   <item>根目录：<c>POST /drive/root/children</c>；</item>
+    ///   <item>子目录：<c>POST /drive/root:/{parent}:/children</c>。</item>
+    /// </list>
+    /// 缺 `:/children` 的形态（<c>POST /drive/root:/{parent}</c>）在真实账号上实测为
+    /// **400 invalidRequest**，即「新建文件夹」必然失败——本条曾因此被打回（F-1），
+    /// 故形态由 <c>OneDriveCreateFolderRealHttpTests</c> 对着真实 HTTP 守住。
+    ///
+    /// 冲突行为固定 `conflictBehavior = rename`：同名时由 Graph 自动改名为「名称 1」
+    /// 而不是覆盖（REQ-12 / AC-12.2）。自动改名后**最终名称以服务端为准**，
+    /// 调用方必须回读登记（见 <c>OneDriveWriteService.CreateFolderAsync</c>）。
+    /// </summary>
+    public async Task<string> CreateFolderAsync(
+        string accessToken,
+        string folderPath,
+        string name,
+        CancellationToken ct = default)
+    {
+        var normalized = folderPath.Trim().Trim('/');
+        var endpoint = normalized.Length == 0
+            ? $"{GraphBaseUrl}/drive/root/children"
+            : $"{GraphBaseUrl}/drive/root:/{Uri.EscapeDataString(normalized)}:/children";
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        // 冲突行为用正式 instance attribute（带 @microsoft.graph. 前缀）：
+        // 验收方现场实测的正是该形态（重名 → 201 自动改名为「名称 1」）。
+        // 与 CreateUploadSessionAsync 的写法保持一致。
+        request.Content = JsonContent.Create(new Dictionary<string, object>
+        {
+            ["name"] = name,
+            ["folder"] = new { },
+            // 同名时自动改名而不是覆盖（REQ-12 / AC-12.2）
+            ["@microsoft.graph.conflictBehavior"] = "rename",
+        });
+
+        using var response = await Http.SendAsync(request, ct);
+        var json = await ReadJsonAsync(response, ct);
+        return ReadRequiredString(json, "id");
+    }
+
+    /// <summary>
+    /// 生成分享链接（REQ-21）。个人版可用的 <c>scope</c> 为 <c>anonymous</c>；
+    /// <c>expirationDateTime</c> 仅在调用方要求时才带上（V2 未验证前不假设平台支持）。
+    /// </summary>
+    public async Task<OneDriveShareLink> CreateShareLinkAsync(
+        string accessToken,
+        string itemId,
+        OneDriveSharePermission permission,
+        DateTimeOffset? expiration,
+        CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object>
+        {
+            ["type"] = permission == OneDriveSharePermission.Edit ? "edit" : "view",
+            ["scope"] = "anonymous",
+        };
+        if (expiration is { } expires)
+        {
+            body["expirationDateTime"] = expires.ToUniversalTime().ToString("o");
+        }
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}/createLink");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = JsonContent.Create(body);
+
+        using var response = await Http.SendAsync(request, ct);
+        var json = await ReadJsonAsync(response, ct);
+        return ReadShareLink(json);
+    }
+
+    /// <summary>撤销分享权限（REQ-21：就地撤销 / 我的分享撤销）。</summary>
+    public async Task RevokeSharePermissionAsync(
+        string accessToken,
+        string itemId,
+        string permissionId,
+        CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Delete,
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}/permissions/{Uri.EscapeDataString(permissionId)}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await Http.SendAsync(request, ct);
+        // 404：权限已不存在，视为撤销成功（幂等）
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw CreateGraphException(response, string.Empty);
+        }
+    }
+
+    /// <summary>列出条目的分享权限（REQ-21「我的分享」）。</summary>
+    public async Task<IReadOnlyList<OneDriveShareLink>> ListSharePermissionsAsync(
+        string accessToken,
+        string itemId,
+        CancellationToken ct = default)
+    {
+        var json = await GetGraphJsonAsync(
+            $"{GraphBaseUrl}/drive/items/{Uri.EscapeDataString(itemId)}/permissions",
+            accessToken, ct);
+
+        var links = new List<OneDriveShareLink>();
+        if (json.TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in value.EnumerateArray())
+            {
+                // 只保留「链接型」权限：个人版还会返回直接授予的权限项，那些没有 link 属性
+                if (entry.TryGetProperty("link", out var link) && link.ValueKind == JsonValueKind.Object)
+                {
+                    links.Add(ReadShareLink(entry));
+                }
+            }
+        }
+
+        return links;
+    }
+
+    private static OneDriveShareLink ReadShareLink(JsonElement json)
+    {
+        var permissionId = ReadNullableString(json, "id");
+        if (json.TryGetProperty("link", out var link) && link.ValueKind == JsonValueKind.Object)
+        {
+            return new OneDriveShareLink(
+                ReadNullableString(link, "webUrl") ?? string.Empty,
+                ReadNullableString(link, "type") ?? "view",
+                permissionId,
+                ReadNullableDateTimeOffset(json, "expirationDateTime"));
+        }
+
+        return new OneDriveShareLink(
+            ReadNullableString(json, "webUrl") ?? string.Empty,
+            "view",
+            permissionId,
+            ReadNullableDateTimeOffset(json, "expirationDateTime"));
+    }
+
+    private static DateTimeOffset? ReadNullableDateTimeOffset(JsonElement json, string propertyName)
+        => json.TryGetProperty(propertyName, out var property)
+            && property.ValueKind == JsonValueKind.String
+            && DateTimeOffset.TryParse(property.GetString(), out var value)
+                ? value
+                : null;
 
     public async Task<string?> GetItemWebUrlAsync(string accessToken, string itemId, CancellationToken ct = default)
     {
@@ -356,7 +642,7 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
     /// 被写入的游标、恶意测试替身）都能让后续请求把用户 token 带给任意主机。
     /// 这里对绝对 URL 做主机白名单校验，相对路径仍按 Graph 基址拼接。
     /// </summary>
-    internal static string ResolveGraphUrl(string url)
+    internal string ResolveGraphUrl(string url)
     {
         // 相对形式（含只有 query 的 "?$deltatoken=..."）按 Graph 基址拼接。
         // 注意 Uri.TryCreate 会把 "?x=1" 解析成绝对 URI（无主机），必须显式识别这种形态。
@@ -380,12 +666,20 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
         return absolute.ToString();
     }
 
-    /// <summary>允许携带 token 的目标主机（Graph 全球版与个人版内容域）。</summary>
-    private static readonly HashSet<string> AllowedGraphHosts = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "graph.microsoft.com",
+    /// <summary>
+    /// 允许携带 token 的目标主机：**配置的 Graph 基址主机** + 登录域名。
+    ///
+    /// 由实际基址推导（而不是写死 graph.microsoft.com）是为了让本地假 Graph 服务也能被覆盖到，
+    /// 同时不削弱安全属性：白名单仍然只有「一个内容主机 + 一个登录主机」，
+    /// 攻击者域依然进不来（既有用例 `GetDeltaPage_WithUntrustedAbsoluteCursor_DoesNotSendRequest` 继续守着这一点）。
+    /// </summary>
+    private HashSet<string> AllowedGraphHosts => _allowedGraphHosts ??=
+    [
+        new Uri(_graphBaseUrl).Host,
         "login.microsoftonline.com",
-    };
+    ];
+
+    private HashSet<string>? _allowedGraphHosts;
 
     private async Task<JsonElement> GetGraphJsonAsync(string url, string accessToken, CancellationToken ct)
     {

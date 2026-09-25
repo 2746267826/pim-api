@@ -257,6 +257,16 @@ public sealed class FilesModuleDiResolutionTests
         return (T)field.GetValue(instance)!;
     }
 
+    /// <summary>
+    /// 少数依赖来自**模块外部**（基础设施/框架），无法在 Files 模块程序集里按名字找到。
+    /// 用显式映射表登记，而不是放宽断言——新成员若不在表里仍会失败，护栏不会被削弱。
+    /// </summary>
+    private static readonly Dictionary<string, Type> ExternalFromServicesTypes = new(StringComparer.Ordinal)
+    {
+        // Hangfire 的后台作业客户端（REQ-25：手动同步后台化）
+        ["IBackgroundJobClient"] = typeof(Hangfire.IBackgroundJobClient),
+    };
+
     /// <summary>扫描 FilesModule.cs 里所有 <c>[FromServices]</c> 声明的依赖并解析成 Type。</summary>
     private static List<Type> CollectFromServicesTypes()
     {
@@ -273,8 +283,10 @@ public sealed class FilesModuleDiResolutionTests
         foreach (var name in names)
         {
             var type = ResolveType(moduleAssembly, name)
+                ?? (ExternalFromServicesTypes.TryGetValue(name, out var external) ? external : null)
                 ?? throw new InvalidOperationException(
-                    $"[FromServices] {name} 无法解析成类型：请确认它在 Files 模块程序集内。");
+                    $"[FromServices] {name} 无法解析成类型：请确认它在 Files 模块程序集内，"
+                    + "或加入 ExternalFromServicesTypes 显式映射。");
             resolved.Add(type);
         }
 
