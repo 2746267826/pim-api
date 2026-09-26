@@ -174,6 +174,41 @@ class LocationSprintLedgerTest {
         assertEquals(1, rows().size)
     }
 
+    /**
+     * R5-3：最近一次窗口跨度必须走 SQL，不能被高速档的跳过记录挤出扫描范围。
+     *
+     * 原实现「读最近 64 条再过滤」在高速档（2.5 秒一条跳过，约 34560 条/天）下
+     * 约 160 秒后就把已执行记录挤出扫描窗口，状态页那一行凭空消失。
+     */
+    @Test
+    fun `R5_3 海量跳过记录不会让最近一次窗口跨度消失`() = runTest {
+        val now = 1_700_000_000_000L
+        val ledger = LocationSprintLedger(
+            db.forensicEventDao(),
+            StructuredLogRepository(
+                ApplicationProvider.getApplicationContext(),
+                TrackingSettingsStore(
+                    ApplicationProvider.getApplicationContext<Context>()
+                        .getSharedPreferences("sprint-ledger-flood", Context.MODE_PRIVATE)
+                )
+            ) { now }
+        )
+        // 一条已执行窗口（较早）
+        ledger.recordExecuted(
+            SprintWindowResult(now - 3_600_000L, now - 3_570_000L, 30, 8f, 30)
+        )
+        // 之后涌入远超 64 条的跳过记录（模拟高速档）
+        repeat(500) { index ->
+            ledger.recordSkipped(now - 3_500_000L + index * 2_500L, SprintSkipReasons.HIGH_SPEED)
+        }
+
+        assertEquals(
+            "R5-3：已执行窗口跨度必须仍能读到（走 SQL，不受跳过记录数量影响）",
+            30_000L,
+            ledger.lastExecutedWindowDurationMillis()
+        )
+    }
+
     /** AC-9.2：台账存在性判定（状态页「暂无」空态的三条件之一）。 */
     @Test
     fun `AC-9_2 台账存在性判定`() = runTest {
