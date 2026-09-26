@@ -99,6 +99,29 @@ class LocationSprintRuntime internal constructor(
         }
     }
 
+    /**
+     * 手动定位会话的冲刺（REQ-6 / AC-6.1 / AC-6.3）。
+     *
+     * **不经过周期门控**：手动会话不是自动采集周期的一部分，用它去推进周期锚点
+     * 会让下一个自动周期提前/重复触发（独立 review round 3 的 I-1）。
+     */
+    fun onManualSession(): SprintStartDecision {
+        val context = AcquisitionContext(
+            policyMode = LocationPolicyMode.PowerSavingNormal.name,
+            scheduleLowFrequency = false,
+            motionSignal = "Unknown",
+            requestIntervalMillis = MANUAL_SESSION_INTERVAL_MILLIS
+        )
+        return controller.startManualSprint(context, nowUtcMillis())
+    }
+
+    /**
+     * 供采集循环把等待收敛到**下一个周期边界**（I-2：45 秒档在 30 秒唤醒网格上
+     * 会退化成 60 秒一拍）。只缩短等待、不放宽规则，也不超过兜底上限。
+     */
+    fun suggestedLoopWaitMillis(requestIntervalMillis: Long, capMillis: Long): Long =
+        periodGate.suggestedWaitMillis(nowUtcMillis(), requestIntervalMillis, capMillis)
+
     /** 停止采集/服务销毁时中止窗口（不产出「已执行」记录）。 */
     fun abort() {
         periodGate.reset()
@@ -110,5 +133,12 @@ class LocationSprintRuntime internal constructor(
     companion object {
         /** 冲刺点入库失败的原因编码（可核对，不静默）。 */
         const val SPRINT_ENQUEUE_FAILED = "sprint-enqueue-failed"
+
+        /**
+         * 手动会话的取点节奏（基线 `LocationUpdateSource` 的 1000/800 毫秒）。
+         *
+         * 只用于标注，不参与自动周期的门控计算。
+         */
+        const val MANUAL_SESSION_INTERVAL_MILLIS = 1_000L
     }
 }

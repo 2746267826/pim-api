@@ -56,7 +56,17 @@ object SprintSkipReasons {
      */
     const val NOT_THIS_PERIOD = "not-this-period"
 
-    val ALL = setOf(DISABLED, HIGH_SPEED, NOT_COLLECTING, PREREQUISITE_BLOCKED)
+    /**
+     * 本周期已有窗口在跑（手动在自动窗口期间触发时使用）。
+     *
+     * 不用它去跳过**周期驱动**的请求（那会违反 AC-2.5 的「窗口与周期相接」）；
+     * 只用于手动这一拍 —— 手动与自动是两个独立触发源，同一周期不得冲两次（D2）。
+     */
+    const val WINDOW_ALREADY_OPEN = "window-already-open"
+
+    val ALL = setOf(
+        DISABLED, HIGH_SPEED, NOT_COLLECTING, PREREQUISITE_BLOCKED, WINDOW_ALREADY_OPEN
+    )
 
     fun label(reason: String): String = when (reason) {
         DISABLED -> "冲刺开关已关闭"
@@ -64,6 +74,7 @@ object SprintSkipReasons {
         NOT_COLLECTING -> "当前不在采集时段"
         PREREQUISITE_BLOCKED -> "定位权限或系统定位未就绪"
         NOT_THIS_PERIOD -> "尚未到本采集周期"
+        WINDOW_ALREADY_OPEN -> "本采集周期已冲刺"
         else -> "未冲刺"
     }
 }

@@ -130,6 +130,51 @@ class SprintPeriodGateTest {
         assertTrue(gate.shouldStart(nowUtcMillis = 90_000L, requestIntervalMillis = 45_000L))
     }
 
+    /**
+     * I-2（独立 review round 3）：45 秒档在 30 秒唤醒网格上不对齐时，
+     * 实际节奏会退化成 60 秒一拍（占空比 67% → 约 50%）。循环需要知道
+     * 「把等待收敛到边界」，且**不得超过** 30 秒兜底上限。
+     */
+    @Test
+    fun `给出建议等待以对齐周期边界且不超过上限`() {
+        val gate = SprintPeriodGate()
+        gate.shouldStart(nowUtcMillis = 0L, requestIntervalMillis = 45_000L)
+        gate.onWindowStarted(startedAtUtcMillis = 0L)
+
+        assertEquals(
+            "30 秒唤醒点距 45 秒边界还有 15 秒 → 等 15 秒（而不是 30 秒）",
+            15_000L,
+            gate.suggestedWaitMillis(nowUtcMillis = 30_000L, requestIntervalMillis = 45_000L, capMillis = 30_000L)
+        )
+        // 600 秒档：边界远在上限之外，因此只等到上限（不加长 30 秒兜底）。
+        // 先让门控见过这个间隔（生产顺序：shouldStart → 循环等待）。
+        val longGate = SprintPeriodGate()
+        longGate.shouldStart(nowUtcMillis = 0L, requestIntervalMillis = 600_000L)
+        longGate.onWindowStarted(startedAtUtcMillis = 0L)
+        assertEquals(
+            "距边界超过上限时只等到上限（不加长 30 秒兜底）",
+            30_000L,
+            longGate.suggestedWaitMillis(
+                nowUtcMillis = 0L,
+                requestIntervalMillis = 600_000L,
+                capMillis = 30_000L
+            )
+        )
+    }
+
+    @Test
+    fun `档位间隔不超过唤醒上限时无需对齐`() {
+        val gate = SprintPeriodGate()
+        gate.shouldStart(nowUtcMillis = 0L, requestIntervalMillis = 30_000L)
+        gate.onWindowStarted(startedAtUtcMillis = 0L)
+
+        assertEquals(
+            "AC-2.5：运动/车载档（30 秒）与唤醒同周期，不加额外对齐等待",
+            0L,
+            gate.suggestedWaitMillis(nowUtcMillis = 0L, requestIntervalMillis = 30_000L, capMillis = 30_000L)
+        )
+    }
+
     /** AC-2.1 的目标节奏：周期档位不受冲刺影响（防「临时改间隔」回归）。 */
     @Test
     fun `门控不改变传入的注册间隔`() {

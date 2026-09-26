@@ -173,12 +173,45 @@ class LocationSprintController @Inject constructor(
         }
         synchronized(this) {
             if (window?.isOpen == true) {
-                // AC-2.5（A8 方案 B）：运动/车载档的窗口与周期相接、接近连续采样，
-                // 是需求方选定的**预期行为**。因此这里**不得**以「过于频繁」为由跳过 ——
-                // 记为「下一拍待发起」，本窗口一结束立刻接着开下一个，窗口之间不重叠
-                // （AC-2.3），但**每一拍都真的冲到**。
+                // 已经有一个窗口在跑。是否把本拍排进「待发起」取决于**触发来源**：
+                //
+                // - **周期驱动**（自动采集，D2）：AC-2.5 / A8 方案 B 要求运动/车载档
+                //   窗口与周期相接、接近连续采样，因此**不得**以「过于频繁」为由跳过 ——
+                //   记为「下一拍待发起」，本窗口一结束立刻接着开。
+                // - **手动驱动**（用户在同一段时间里按了手动定位）：手动会话与自动周期
+                //   是两个独立触发源，把手动那一拍排进自动周期会让同一周期出现两次冲刺
+                //   （违反 D2「每个采集周期一次」），还会与手动会话自己的取点流重复入库。
+                //   因此手动在窗口已开时**不排队**，只如实记「跳过」。
                 pendingStart = PendingSprint(context = context, requestedAtUtcMillis = nowUtcMillis)
                 return SprintStartDecision.Started(nowUtcMillis)
+            }
+            return startWindowLocked(context, nowUtcMillis)
+        }
+    }
+
+    /**
+     * 发起一次**手动**会话的冲刺（REQ-6 / AC-6.1 / AC-6.3）。
+     *
+     * 与周期驱动分开的理由：手动会话自带 ≈1 秒/最长 30 秒的取点过程，若把它也算作
+     * 「一个采集周期」，会污染周期锚点（`SprintPeriodGate`），使下一个自动周期
+     * 提前或重复触发（独立 review round 3 的 I-1）。
+     *
+     * 因此这里：
+     * - **不经过周期门控**，也不改写周期锚点；
+     * - 已有窗口在跑时**不排队**（避免同一周期两次冲刺）；
+     * - 开关关闭时照常记「跳过」且不注册（AC-6.3）。
+     */
+    fun startManualSprint(
+        context: AcquisitionContext,
+        nowUtcMillis: Long = wallClockMillis()
+    ): SprintStartDecision {
+        if (!sprintEnabledProvider()) {
+            return skip(SprintSkipReasons.DISABLED, nowUtcMillis)
+        }
+        synchronized(this) {
+            if (window?.isOpen == true) {
+                // 本周期已有窗口在跑：手动这一拍不排队，只记跳过（原因可核对）。
+                return skip(SprintSkipReasons.WINDOW_ALREADY_OPEN, nowUtcMillis)
             }
             return startWindowLocked(context, nowUtcMillis)
         }

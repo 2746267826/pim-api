@@ -199,6 +199,47 @@ class LocationManualSessionSprintTest {
         runCurrent()
     }
 
+    /**
+     * I-D（独立 review round 3）：low-quality 兜底与「最佳位置」必须取**精度最优**的
+     * 一条，而不是最后一条。基线在交付全部候选后，逐条覆盖会让最好一条被最后一条冲掉。
+     */
+    @Test
+    fun `最佳位置与兜底取精度最优的一条而非最后一条`() = runTest {
+        createCoordinator(this)
+        prerequisiteChecker.ready()
+
+        coordinator.startManualSession()
+        runner.waitForAcquire()
+
+        // 两条都不达标：40 米（较好）在前，80 米（更差）在后
+        runner.emitCandidate(snapshot(timeMillis = 1_000L, accuracy = 40f, altitude = null))
+        runCurrent()
+        runner.emitCandidate(snapshot(timeMillis = 2_000L, accuracy = 80f, altitude = null))
+        runCurrent()
+
+        assertEquals(
+            "会话展示的「最佳位置」必须是 40 米那条，而不是最后一条 80 米",
+            40f,
+            coordinator.state.value.bestLocation!!.horizontalAccuracyMeters!!
+        )
+
+        runner.complete(
+            LocationEngineResult(
+                sessionId = runner.acquiredRequest!!.sessionId,
+                bestLocation = null,
+                completion = LocationEngineCompletion.TimedOut
+            )
+        )
+        runCurrent()
+
+        assertEquals("兜底入库 1 条", 1, operations.enqueueCount)
+        assertEquals(
+            "AC-4.4 兜底必须取精度最优的一条",
+            40f,
+            operations.enqueued.single().accepted.fix.horizontalAccuracyMeters!!
+        )
+    }
+
     /** AC-15.3：手动会话里被丢弃的点也要留诊断记录（不得静默）。 */
     @Test
     fun `手动会话丢弃的点留诊断记录`() = runTest {

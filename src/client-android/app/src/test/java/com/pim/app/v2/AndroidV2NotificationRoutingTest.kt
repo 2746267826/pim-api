@@ -36,7 +36,10 @@ class AndroidV2NotificationRoutingTest {
         assertTrue(service.contains("stopSelf()"))
         assertTrue(service.contains("locationAcquisitionCoordinator.startAutomaticStream("))
         assertTrue(service.contains("locationAcquisitionCoordinator.updateAutomaticStream("))
-        assertTrue(service.contains("withTimeoutOrNull(30_000L)"))
+        // WO-ANDROID-GATE-20260926：等待上限仍是 30 秒（LOOP_WAIT_CAP_MILLIS），
+        // 但可提前到冲刺周期边界；断言意图而非字面量。
+        assertTrue(service.contains("withTimeoutOrNull(loopWaitMillis("))
+        assertTrue(service.contains("LOOP_WAIT_CAP_MILLIS = 30_000L"))
         assertTrue(service.contains("motionSignalRepository.status.value.signal"))
         assertTrue(service.contains("ScheduleWindowSelector.current"))
     }

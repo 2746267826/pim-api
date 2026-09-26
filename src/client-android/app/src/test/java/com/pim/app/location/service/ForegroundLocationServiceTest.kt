@@ -3024,7 +3024,11 @@ class ForegroundLocationServiceTest {
         assertTrue(source.contains("locationAcquisitionCoordinator.updateAutomaticStream("))
         assertTrue(source.contains("locationAcquisitionCoordinator.stopAutomaticStream()"))
         assertTrue(source.contains("isAutomaticStreamActive()"))
-        assertTrue(source.contains("withTimeoutOrNull(30_000L)"))
+        // WO-ANDROID-GATE-20260926：循环等待改为「上限 30 秒、可提前到冲刺周期边界」。
+        // 断言**意图**（30 秒上限常量 + 用 withTimeoutOrNull 施加）而不是字面量，
+        // 否则「只缩短等待」的对齐改动会被误判成回归。
+        assertTrue(source.contains("withTimeoutOrNull(loopWaitMillis("))
+        assertTrue(source.contains("LOOP_WAIT_CAP_MILLIS = 30_000L"))
         assertTrue(source.contains("requestIntervalMillis = decision.requestIntervalMillis"))
         assertFalse(
             "automatic loop must not insert an initial delay before the first round",

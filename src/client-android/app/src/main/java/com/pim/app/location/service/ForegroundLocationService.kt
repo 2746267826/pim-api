@@ -599,7 +599,14 @@ class ForegroundLocationService : Service() {
                 // 这是「唤醒粒度 vs 周期对齐」的已知抖动，只影响个别周期的**起点**，
                 // 不影响占空比上界与「不早退」；未在此处强改等待时长，
                 // 以免动到既有「最迟 30s 重算一次」的循环契约。
-                withTimeoutOrNull(30_000L) {
+                // I-2：把等待收敛到下一个冲刺周期边界。45 秒档在 30 秒唤醒网格上
+                // 不对齐，会让实际节奏退化成 60 秒一拍；对齐后恢复「一周期一次」。
+                // 仍然保留 30 秒兜底上限的**字面与语义**（只缩短，不加长）。
+                // 等待下一个唤醒。上限恒为 [LOOP_WAIT_CAP_MILLIS]（30 秒兜底，
+                // 覆盖日程/设置变化）；若冲刺周期边界更早则提前醒来，避免
+                // 45 秒档在 30 秒唤醒网格上退化成 60 秒一拍（I-2）。
+                // 注意：**只缩短、不加长**，30 秒上限语义不变。
+                withTimeoutOrNull(loopWaitMillis(decision.requestIntervalMillis)) {
                     val currentSignal = motionSignalRepository.status.value.signal
                     val lastFixSignal = fixRecordedSignal.value
                     merge(
@@ -619,6 +626,18 @@ class ForegroundLocationService : Service() {
             stopSelf()
         }
     }
+
+    /**
+     * 采集循环单次等待时长：兜底上限 [LOOP_WAIT_CAP_MILLIS]，但若更早到冲刺周期
+     * 边界就提前醒来（I-2）。
+     *
+     * 30 秒是**上限**（工单与本循环的既有约定），不是固定值：对齐只可能缩短等待。
+     */
+    private fun loopWaitMillis(requestIntervalMillis: Long): Long =
+        locationSprintRuntime.suggestedLoopWaitMillis(
+            requestIntervalMillis = requestIntervalMillis,
+            capMillis = LOOP_WAIT_CAP_MILLIS
+        ).takeIf { it > 0L } ?: LOOP_WAIT_CAP_MILLIS
 
     private fun recomputePolicyDecision(): PolicyDecision {
         val now = System.currentTimeMillis()
@@ -916,6 +935,14 @@ class ForegroundLocationService : Service() {
          * （被动源本身不设限流，日志/台账写入量要可控）。
          */
         const val PASSIVE_COUNTER_FLUSH_MILLIS = 60_000L
+
+        /**
+         * 采集循环单次等待的**上限**（工单 §6「最迟 30s 重算一次」的既有约定）。
+         *
+         * 冲刺周期对齐只可能**缩短**本次等待（让 45/120/600 秒档在边界处醒来），
+         * 绝不会加长它。
+         */
+        const val LOOP_WAIT_CAP_MILLIS = 30_000L
 
         /**
          * 手动单次会话的取点节奏（基线 `LocationUpdateSource` 的 1000/800 毫秒）。

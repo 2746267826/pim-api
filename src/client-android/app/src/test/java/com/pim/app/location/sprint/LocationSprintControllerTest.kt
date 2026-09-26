@@ -512,6 +512,90 @@ class LocationSprintControllerTest {
         assertFalse("关闭后不得有窗口在跑", controller.isWindowOpen())
     }
 
+    /**
+     * I-1（独立 review round 3）：手动会话**不得**经过周期门控，也不得在
+     * 已有窗口时排队 —— 否则同一采集周期会出现两次冲刺（违反 D2），
+     * 并与手动会话自己的取点流重复入库。
+     */
+    @Test
+    fun `手动冲刺不与自动窗口叠加`() = runTest {
+        val controller = controller(this)
+        controller.startSprint(context(), mode = LocationPolicyMode.PowerSavingNormal)
+        runCurrent()
+        assertEquals(1, runner.streamCount)
+
+        val manual = controller.startManualSprint(context())
+        runCurrent()
+
+        assertEquals(
+            "I-1：手动在已有自动窗口时不得再开一个窗口",
+            SprintStartDecision.Skipped(SprintSkipReasons.WINDOW_ALREADY_OPEN),
+            manual
+        )
+        assertEquals("I-1：同一时刻仍然只有一个冲刺流", 1, runner.streamCount)
+        assertFalse("I-1：手动不得排队形成第二个窗口", controller.hasPendingStart())
+        controller.abort()
+    }
+
+    /** I-1：没有窗口在跑时，手动照常发起冲刺（AC-6.1）。 */
+    @Test
+    fun `手动冲刺在没有窗口时照常发起`() = runTest {
+        val controller = controller(this)
+
+        val manual = controller.startManualSprint(context())
+        runCurrent()
+
+        assertTrue("AC-6.1：手动必须能发起冲刺", manual is SprintStartDecision.Started)
+        assertEquals(1, runner.streamCount)
+        controller.abort()
+    }
+
+    /** AC-6.3：开关关闭时手动也不冲刺，且记「跳过」。 */
+    @Test
+    fun `开关关闭时手动冲刺被跳过`() = runTest {
+        enabled = false
+        val controller = controller(this)
+
+        val manual = controller.startManualSprint(context())
+        runCurrent()
+
+        assertEquals(
+            SprintStartDecision.Skipped(SprintSkipReasons.DISABLED),
+            manual
+        )
+        assertEquals("AC-6.3：关闭时不得注册冲刺流", 0, runner.streamCount)
+        controller.abort()
+    }
+
+    /**
+     * I-A（独立 review round 3）：`abort()` 发生在 `finishWindow` **正在写台账**时，
+     * `windowJob` 已被置空，取消不到那个协程 —— 只能靠代数（generation）拦住它
+     * 开出待发起的下一拍。中止必须**精确插在写台账那一刻**，否则测不出这条回归。
+     */
+    @Test
+    fun `写台账期间中止不得再开窗口`() = runTest {
+        val controller = controller(this)
+        controller.startSprint(context(), mode = LocationPolicyMode.PowerSavingNormal)
+        runCurrent()
+        // 让下一拍进入待发起槽位（AC-2.5）
+        controller.startSprint(context(), mode = LocationPolicyMode.PowerSavingNormal)
+        runCurrent()
+        assertTrue(controller.hasPendingStart())
+
+        // 在本窗口写台账的**那一刻**中止（等价于「写台账期间服务被销毁/停止采集」）
+        ledger.onBeforeWrite = { controller.abort() }
+
+        finishWindow(controller)
+        runCurrent()
+
+        assertEquals(
+            "I-A：写台账期间被中止，待发起的下一拍不得开出新窗口",
+            1,
+            runner.streamCount
+        )
+        assertFalse("中止后不得有窗口在跑", controller.isWindowOpen())
+    }
+
     /** 中止的窗口不产出「已执行」记录（不得拿未跑完的窗口充证据）。 */
     @Test
     fun `中止的窗口不写已执行记录`() = runTest {
@@ -566,6 +650,9 @@ class LocationSprintControllerTest {
 }
 
 private class RecordingSprintLedger : SprintLedgerPort {
+    /** 在写台账「那一刻」触发的钩子（用于把中止精确插进挂起点）。 */
+    var onBeforeWrite: (() -> Unit)? = null
+
     /** (outcome, skipReason) */
     val records = mutableListOf<Pair<String, String?>>()
     val results = mutableListOf<SprintWindowResult>()
@@ -573,6 +660,7 @@ private class RecordingSprintLedger : SprintLedgerPort {
     val executedCount: Int get() = records.count { it.first == SprintOutcome.EXECUTED }
 
     override suspend fun recordExecuted(result: SprintWindowResult): Boolean {
+        onBeforeWrite?.invoke()
         records += SprintOutcome.EXECUTED to null
         results += result
         return true

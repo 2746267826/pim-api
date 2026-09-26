@@ -145,6 +145,26 @@ interface ForensicEventDao {
         payloadLike: String
     ): Int
 
+    /**
+     * 取最近一条**已执行**冲刺记录的载荷（REQ-9：状态页显示最近一次窗口跨度）。
+     *
+     * 走 SQL 而不是「读最近 N 条再过滤」：高速档每 2.5 秒写一条**跳过**记录
+     * （约 34560 条/天），固定条数上限会把已执行记录挤出扫描范围，
+     * 让状态页那一行凭空消失（独立 review round 3 的 I-3）。
+     */
+    @Query(
+        """
+        SELECT payload_json FROM mobile_forensic_events
+        WHERE event_type = :eventType AND payload_json LIKE :payloadLike
+        ORDER BY occurred_at_utc DESC
+        LIMIT 1
+        """
+    )
+    suspend fun latestPayloadByTypeLike(
+        eventType: String,
+        payloadLike: String
+    ): String?
+
     /** 时间窗内是否存在任何该类型事件（AC-9.2 的「有采集数据」判定用）。 */
     @Query(
         """

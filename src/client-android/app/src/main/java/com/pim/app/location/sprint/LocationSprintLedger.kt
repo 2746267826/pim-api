@@ -108,15 +108,15 @@ class LocationSprintLedger @Inject constructor(
      * 避免验收方必须导出诊断包才能看到窗口跨度。
      */
     suspend fun lastExecutedWindowDurationMillis(): Long? = try {
-        dao.recentByType(SPRINT_EVENT_TYPE, RECENT_SCAN_LIMIT)
-            .firstOrNull { payloadOutcome(it.payloadJson) == SprintOutcome.EXECUTED }
-            ?.let { entity ->
-                runCatching {
-                    val root = org.json.JSONObject(entity.payloadJson)
-                    if (root.isNull("sprintDurationMillis")) null
-                    else root.getLong("sprintDurationMillis")
-                }.getOrNull()
-            }
+        // 走 SQL（与 24 小时计数同一口径）：高速档的跳过记录可达数万条/天，
+        // 「读最近 N 条再过滤」会让这一行随跳过记录的增长而消失（I-3）。
+        dao.latestPayloadByTypeLike(SPRINT_EVENT_TYPE, EXECUTED_PAYLOAD_LIKE)?.let { payload ->
+            runCatching {
+                val root = org.json.JSONObject(payload)
+                if (root.isNull("sprintDurationMillis")) null
+                else root.getLong("sprintDurationMillis")
+            }.getOrNull()
+        }
     } catch (ex: CancellationException) {
         throw ex
     } catch (_: Exception) {
@@ -170,9 +170,6 @@ class LocationSprintLedger @Inject constructor(
          * 序列化，字段顺序与转义不保证稳定，精确匹配随时会因格式变化而失效。
          */
         const val EXECUTED_PAYLOAD_LIKE = "%\"outcome\":\"executed\"%"
-
-        /** 读取「最近一次已执行窗口跨度」时扫描的条数上限（冲刺台账条数有限）。 */
-        const val RECENT_SCAN_LIMIT = 64
 
         /** 冲刺台账的事件类型（供谓词与测试引用，避免字符串散落）。 */
         val SPRINT_EVENT_TYPE = LocationSprintEventTypes.SPRINT
