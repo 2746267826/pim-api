@@ -465,7 +465,15 @@ public sealed class MobileLivenessService : IDeviceLivenessInspectionProvider
                 .ToList(),
             summary.LastEventAtUtc,
             summary.CoverageByHourDefinition,
-            summary.CoverageByExpectedHeartbeatDefinition);
+            summary.CoverageByExpectedHeartbeatDefinition,
+            // REQ-18：没有闹钟数据的设备保持 null（AC-18.2：不得显示为 0%）。
+            summary.Fulfillment is { } fulfillment
+                ? new MobileAlarmFulfillmentDto(
+                    fulfillment.Rate,
+                    fulfillment.Fulfilled,
+                    fulfillment.Considered,
+                    fulfillment.ExcludedNoActualTime)
+                : null);
 
     public static string SilenceSeverityLabel(string severity) => severity switch
     {
