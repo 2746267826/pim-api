@@ -327,8 +327,13 @@ class ForegroundLocationService : Service() {
         }
 
         val settings = trackingSettingsStore.read()
-        initializeAutomaticRuntime(settings)
+        // startForeground 必须**尽早**调用：Android 要求 startForegroundService() 之后
+        // 在很短的时间内（约 5 秒）进入前台，否则系统会抛
+        // 「Context.startForegroundService() did not then call Service.startForeground()」
+        // 并把服务拉下来（模拟器实测触发过，见本 PR 的验证记录）。
+        // 因此先进入前台，再做接线（冲刺台账 / 被动监听注册）等可能较慢的初始化。
         startForeground(LocationNotificationRenderer.NOTIFICATION_ID, notification())
+        initializeAutomaticRuntime(settings)
 
         if (!settings.continuousCollectionEnabled) {
             lastDroppedReason = "连续采集未开启"
