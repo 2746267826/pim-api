@@ -12,6 +12,7 @@ namespace Pim.UnitTests.Mobile;
 /// </summary>
 public sealed class DeviceLivenessCalculatorTests
 {
+    private static readonly DateTimeOffset Now = new(2026, 9, 3, 12, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset RangeStart = new(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
     private static readonly DateTimeOffset RangeEnd = new(2026, 9, 8, 0, 0, 0, TimeSpan.Zero);
 
@@ -220,5 +221,88 @@ public sealed class DeviceLivenessCalculatorTests
         Assert.Contains("整点小时", DeviceLivenessRules.CoverageByHourDefinition);
         Assert.Contains("应有心跳", DeviceLivenessRules.CoverageByExpectedHeartbeatDefinition);
         Assert.Contains("15", DeviceLivenessRules.CoverageByExpectedHeartbeatDefinition);
+    }
+
+    // ===================== REQ-18：叫醒兑现率 =====================
+
+    /// <summary>
+    /// AC-18.3（反面语义）：**缺少实际时刻的记录不计入分母**。
+    /// 把设备关机当成「未兑现」会让一次出差关机把兑现率砸到很低，
+    /// 而那是设备状态不是保活失效——口径错了会直接误导判断。
+    /// </summary>
+    [Fact]
+    public void Fulfillment_ExcludesRecordsWithoutActualTimeFromDenominator()
+    {
+        var result = DeviceLivenessCalculator.ComputeFulfillment(new[]
+        {
+            new AlarmFulfillmentSample(Now, 0),
+            new AlarmFulfillmentSample(Now, null),
+            new AlarmFulfillmentSample(Now, null),
+        });
+
+        Assert.NotNull(result);
+        Assert.Equal(1, result!.Considered);
+        Assert.Equal(2, result.ExcludedNoActualTime);
+        Assert.Equal(1d, result.Rate);
+    }
+
+    /// <summary>AC-18.2：没有可判定记录时兑现率为 null，页面不得显示为 0%。</summary>
+    [Fact]
+    public void Fulfillment_IsNullWhenNothingWasExecuted()
+    {
+        var onlyNotExecuted = DeviceLivenessCalculator.ComputeFulfillment(new[]
+        {
+            new AlarmFulfillmentSample(Now, null),
+        });
+        Assert.NotNull(onlyNotExecuted);
+        Assert.Null(onlyNotExecuted!.Rate);
+
+        var none = DeviceLivenessCalculator.ComputeFulfillment(Array.Empty<AlarmFulfillmentSample>());
+        Assert.Null(none);
+    }
+
+    /// <summary>AC-18.2：没有闹钟数据的设备（samples 为 null）不得被算成 0%。</summary>
+    [Fact]
+    public void Fulfillment_IsNullWhenDeviceHasNoAlarmData()
+    {
+        Assert.Null(DeviceLivenessCalculator.ComputeFulfillment(null));
+    }
+
+    /// <summary>AC-18.1 / 判定线：≤15 分钟算按时，&gt;15 分钟不算（与 AC-17.1 同源）。</summary>
+    [Fact]
+    public void Fulfillment_UsesTheFifteenMinuteLine()
+    {
+        var result = DeviceLivenessCalculator.ComputeFulfillment(new[]
+        {
+            new AlarmFulfillmentSample(Now, 15),
+            new AlarmFulfillmentSample(Now, 15.1),
+        });
+
+        Assert.Equal(1, result!.Fulfilled);
+        Assert.Equal(2, result.Considered);
+        Assert.Equal(0.5d, result.Rate);
+        Assert.Equal(15, DeviceLivenessRules.FulfillmentOnTimeMinutes);
+    }
+
+    /// <summary>确实执行但都不按时 → 0%，与「无数据」（null）区分开。</summary>
+    [Fact]
+    public void Fulfillment_IsZeroWhenExecutedButNeverOnTime()
+    {
+        var result = DeviceLivenessCalculator.ComputeFulfillment(new[]
+        {
+            new AlarmFulfillmentSample(Now, 40),
+            new AlarmFulfillmentSample(Now, 30),
+        });
+
+        Assert.Equal(0d, result!.Rate);
+        Assert.Equal(0, result.Fulfilled);
+        Assert.Equal(2, result.Considered);
+    }
+
+    /// <summary>AC-18.3：口径说明必须写明「不计入分母」，页面上要能读到。</summary>
+    [Fact]
+    public void Fulfillment_DefinitionStatesTheDenominatorRule()
+    {
+        Assert.Contains("不计入分母", DeviceLivenessRules.FulfillmentDefinition);
     }
 }

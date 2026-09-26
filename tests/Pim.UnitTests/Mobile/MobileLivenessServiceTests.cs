@@ -105,6 +105,107 @@ public sealed class MobileLivenessServiceTests
         Assert.Equal(2, await db.Set<MobileForensicEventEntity>().CountAsync());
     }
 
+    /// <summary>
+    /// 阶段二（REQ-18 / REQ-14 / REQ-21）：设备端新增的闹钟事件类型必须被服务端接受。
+    ///
+    /// 这条守的是一个**两端契约漂移**：设备端记账成功但服务端按「未知类型」拒绝，
+    /// 表现为「设备上看得见、服务端永远收不到」，而设备侧不会有任何报错。
+    /// 因此断言必须打在**服务端受理结果**上，不能只断言设备端写入了台账。
+    /// </summary>
+    [Fact]
+    public async Task Ingest_StageTwoKeepAliveEventTypes_AreAccepted()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var service = IngestService(db);
+
+        var result = await service.IngestAsync(
+            Upload(PhoneId, new[]
+            {
+                new MobileForensicEventUploadItem(
+                    "alarm-1",
+                    ForensicEventTypes.AlarmFulfillment,
+                    Now,
+                    "{\"scheduledAtUtcMillis\":1000,\"actualAtUtcMillis\":2000,\"delayMillis\":1000,\"outcome\":\"executed\"}"),
+                new MobileForensicEventUploadItem(
+                    "alarm-reg-1",
+                    ForensicEventTypes.AlarmRegistered,
+                    Now,
+                    "{\"intervalMinutes\":30,\"trigger\":\"app-start\"}"),
+                new MobileForensicEventUploadItem(
+                    "health-1",
+                    ForensicEventTypes.KeepAliveHealth,
+                    Now,
+                    "{\"reason\":\"permission-revoked\"}"),
+            }),
+            CancellationToken.None);
+
+        Assert.Equal(0, result.RejectedCount);
+        Assert.Equal(3, result.AcceptedCount);
+        Assert.Equal(3, await db.Set<MobileForensicEventEntity>().CountAsync());
+    }
+
+    /// <summary>
+    /// REQ-18：兑现率必须经 API 返回；且**没有闹钟数据的设备返回 null 而不是 0%**
+    /// （AC-18.2：把「无数据」显示成 0% 就是谎报保活失效）。
+    /// </summary>
+    [Fact]
+    public async Task DeviceLiveness_WithoutAlarmData_ReportsNullFulfillment()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        await SeedDeviceAsync(db, PhoneId, "手机");
+        await IngestService(db).IngestAsync(
+            Upload(PhoneId, new[] { Heartbeat("hb-1", Now.AddMinutes(-5)) }),
+            CancellationToken.None);
+
+        var dto = await LivenessService(db).GetDeviceLivenessAsync(
+            PhoneId, Now.AddDays(-1), Now, CancellationToken.None);
+
+        Assert.NotNull(dto);
+        Assert.Null(dto!.Fulfillment);
+    }
+
+    /// <summary>
+    /// REQ-18 / AC-18.3：兑现率计算时必须把「未执行」排除在分母外，
+    /// 且 API 返回的分子分母与 rate 三者自洽（可复算）。
+    /// </summary>
+    [Fact]
+    public async Task DeviceLiveness_ComputesFulfillmentAndExcludesNotExecuted()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        await SeedDeviceAsync(db, PhoneId, "手机");
+
+        var scheduled = Now.AddMinutes(-10).ToUnixTimeMilliseconds();
+        await IngestService(db).IngestAsync(
+            Upload(PhoneId, new[]
+            {
+                Heartbeat("hb-1", Now.AddMinutes(-5)),
+                new MobileForensicEventUploadItem(
+                    "alarm-ok",
+                    ForensicEventTypes.AlarmFulfillment,
+                    Now.AddMinutes(-9),
+                    $"{{\"scheduledAtUtcMillis\":{scheduled},\"actualAtUtcMillis\":{Now.AddMinutes(-9).ToUnixTimeMilliseconds()}," +
+                    "\"delayMillis\":60000,\"outcome\":\"executed\"}"),
+                new MobileForensicEventUploadItem(
+                    "alarm-skipped",
+                    ForensicEventTypes.AlarmFulfillment,
+                    Now.AddMinutes(-8),
+                    $"{{\"scheduledAtUtcMillis\":{scheduled},\"actualAtUtcMillis\":null," +
+                    "\"delayMillis\":null,\"outcome\":\"not-executed\"}"),
+            }),
+            CancellationToken.None);
+
+        var dto = await LivenessService(db).GetDeviceLivenessAsync(
+            PhoneId, Now.AddDays(-1), Now, CancellationToken.None);
+
+        Assert.NotNull(dto);
+        var fulfillment = dto!.Fulfillment;
+        Assert.NotNull(fulfillment);
+        Assert.Equal(1, fulfillment!.Considered);
+        Assert.Equal(1, fulfillment.ExcludedNoActualTime);
+        Assert.Equal(1, fulfillment.Fulfilled);
+        Assert.Equal(1d, fulfillment.Rate);
+    }
+
     [Fact]
     public async Task Ingest_UnknownEventType_IsRejectedNotSilentlyDropped()
     {

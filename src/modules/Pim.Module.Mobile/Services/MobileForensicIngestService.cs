@@ -29,6 +29,12 @@ public sealed class MobileForensicIngestService
         ForensicEventTypes.ProcessExit,
         ForensicEventTypes.ForceStop,
         ForensicEventTypes.Heartbeat,
+        // 阶段二（REQ-14 / REQ-18 / REQ-21）：设备端新增的三种事件类型必须在这里登记，
+        // 否则会被下面的契约校验按「未知类型」拒绝（REQ-28 的有意设计），
+        // 表现为「闹钟兑现在设备上记了、却永远到不了服务端」。
+        ForensicEventTypes.AlarmFulfillment,
+        ForensicEventTypes.AlarmRegistered,
+        ForensicEventTypes.KeepAliveHealth,
     };
 
     private readonly PimDbContext _db;

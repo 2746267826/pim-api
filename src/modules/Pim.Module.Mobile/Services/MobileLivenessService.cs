@@ -307,7 +307,17 @@ public sealed class MobileLivenessService : IDeviceLivenessInspectionProvider
 
         evidence.AddRange(batchArrivals.Select(at => new LivenessEvidence(at, LivenessEvidenceSources.SyncBatch)));
 
-        var summary = DeviceLivenessCalculator.Summarize(evidence, causes, start, end);
+        // REQ-18：叫醒兑现率（可选展示项）。设备没有闹钟数据时为 null，
+        // 页面据此显示空态而不是 0%（AC-18.2）。
+        var alarmEvents = forensicEvents
+            .Where(item => item.EventType == ForensicEventTypes.AlarmFulfillment)
+            .Select(item => (item.OccurredAtUtc, item.PayloadJson))
+            .ToList();
+        var fulfillments = alarmEvents.Count == 0
+            ? null
+            : AlarmFulfillmentParser.ParseAll(alarmEvents);
+
+        var summary = DeviceLivenessCalculator.Summarize(evidence, causes, start, end, fulfillments);
         var kind = ResolveDeviceKind(device.MetadataJson);
 
         return MapDeviceBlock(device, kind, summary);
@@ -455,7 +465,15 @@ public sealed class MobileLivenessService : IDeviceLivenessInspectionProvider
                 .ToList(),
             summary.LastEventAtUtc,
             summary.CoverageByHourDefinition,
-            summary.CoverageByExpectedHeartbeatDefinition);
+            summary.CoverageByExpectedHeartbeatDefinition,
+            // REQ-18：没有闹钟数据的设备保持 null（AC-18.2：不得显示为 0%）。
+            summary.Fulfillment is { } fulfillment
+                ? new MobileAlarmFulfillmentDto(
+                    fulfillment.Rate,
+                    fulfillment.Fulfilled,
+                    fulfillment.Considered,
+                    fulfillment.ExcludedNoActualTime)
+                : null);
 
     public static string SilenceSeverityLabel(string severity) => severity switch
     {

@@ -66,7 +66,19 @@ public sealed record MobileDeviceLivenessDto(
     IReadOnlyList<MobileLivenessCauseDto> Causes,
     DateTimeOffset? LastEventAtUtc,
     string CoverageByHourDefinition,
-    string CoverageByExpectedHeartbeatDefinition);
+    string CoverageByExpectedHeartbeatDefinition,
+    // REQ-18：兑现率是**可选展示项**。null 表示该设备没有闹钟数据，
+    // 页面必须显示空态而不是 0%（AC-18.2）。
+    MobileAlarmFulfillmentDto? Fulfillment = null);
+
+/// <summary>
+/// 叫醒兑现率（REQ-18）。<see cref="Rate"/> 为 null 表示无可判定记录（不是 0%）。
+/// </summary>
+public sealed record MobileAlarmFulfillmentDto(
+    double? Rate,
+    int Fulfilled,
+    int Considered,
+    int ExcludedNoActualTime);
 
 /// <summary>一段静默（REQ-7.4 的标色对象）。</summary>
 public sealed record MobileSilenceWindowDto(
