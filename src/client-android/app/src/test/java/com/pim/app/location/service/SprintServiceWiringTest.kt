@@ -20,16 +20,17 @@ import org.junit.Test
  */
 class SprintServiceWiringTest {
 
-    private fun serviceSource(): String {
+    private fun serviceSource(): String =
+        repoSource("src/main/java/com/pim/app/location/service/ForegroundLocationService.kt")
+
+    private fun repoSource(relativePath: String): String {
         var current: File? = File("").canonicalFile
         while (current != null) {
-            val candidate = current.resolve(
-                "src/main/java/com/pim/app/location/service/ForegroundLocationService.kt"
-            )
+            val candidate = current.resolve(relativePath)
             if (candidate.isFile) return candidate.readText(Charsets.UTF_8)
             current = current.parentFile
         }
-        error("ForegroundLocationService.kt not found")
+        error("$relativePath not found")
     }
 
     /** I-1：手动冲刺必须走 `onManualSession`（不经周期门控、不改锚点）。 */
@@ -121,6 +122,51 @@ class SprintServiceWiringTest {
             "异常大值也收敛到上限",
             30_000L,
             ForegroundLocationService.resolveLoopWaitMillis(Long.MAX_VALUE)
+        )
+    }
+
+    /**
+     * R5-1（Critical）：状态页必须**真的把冲刺概况传给渲染函数**。
+     *
+     * 独立 review round 5 发现 `StatusCenterScreen` 收了 `sprintSummary`
+     * 却没传给 `StatusCenterContent`，页面永远显示默认的「暂无」——
+     * 看起来像「没有采集数据」，实际是没接线。
+     */
+    @Test
+    fun `状态页把冲刺概况传给渲染函数`() {
+        val screen = repoSource(
+            "src/main/java/com/pim/app/ui/status/StatusCenterScreen.kt"
+        )
+
+        assertTrue(
+            "R5-1：调用 StatusCenterContent 时必须传 sprintSummary",
+            screen.contains("sprintSummary = sprintSummary")
+        )
+        assertFalse(
+            "R5-1：SprintSummary 不得再有默认值（漏传会静默显示「暂无」）",
+            screen.contains("countDisplay = com.pim.app.location.sprint.SprintCountDisplay.Empty\n    ),")
+        )
+    }
+
+    /**
+     * R5-2：手动会话终结只在**取消**时中止自己发起的冲刺窗口。
+     *
+     * 无条件 abort() 会在手动正常跑满 30 秒时掐掉即将写完的窗口，
+     * 让「已执行」记录永不落台账（操作卡 §6 正是查这条）；也可能取消
+     * 自动采集循环正在跑的窗口并重置周期锚点。
+     */
+    @Test
+    fun `手动终结只在取消时中止手动窗口`() {
+        val source = serviceSource()
+
+        assertTrue(
+            "R5-2：只有取消分支才中止手动冲刺窗口",
+            source.contains("AcquisitionPhase.Cancelled") &&
+                source.contains("abortManualWindow()")
+        )
+        assertFalse(
+            "R5-2：终结路径不得无条件 abort()（会掐掉自动循环的窗口与已执行记录）",
+            source.contains("locationSprintRuntime.abort()\n            // 本实例拥有的会话已终结")
         )
     }
 

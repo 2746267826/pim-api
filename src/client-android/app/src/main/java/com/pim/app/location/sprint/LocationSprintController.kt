@@ -104,6 +104,9 @@ class LocationSprintController @Inject constructor(
     /** 窗口的单调时钟起点（判定剩余时长用；账台账仍记墙钟时刻供人对账）。 */
     private var windowStartedElapsedRealtimeMillis: Long = 0L
 
+    /** 当前窗口是否由手动会话发起。 */
+    private var windowManual: Boolean = false
+
     /**
      * 「下一拍待发起」槽位（AC-2.5 / A8 方案 B）。
      *
@@ -213,20 +216,38 @@ class LocationSprintController @Inject constructor(
                 // 本周期已有窗口在跑：手动这一拍不排队，只记跳过（原因可核对）。
                 return skip(SprintSkipReasons.WINDOW_ALREADY_OPEN, nowUtcMillis)
             }
-            return startWindowLocked(context, nowUtcMillis)
+            return startWindowLocked(context, nowUtcMillis, manual = true)
         }
     }
 
     /** 在锁内真正开一个窗口（调用方必须已持有锁）。 */
     private fun startWindowLocked(
         context: AcquisitionContext,
-        nowUtcMillis: Long
+        nowUtcMillis: Long,
+        manual: Boolean = false
     ): SprintStartDecision {
         val fresh = LocationSprintWindow(startedAtUtcMillis = nowUtcMillis)
         window = fresh
+        windowManual = manual
         windowStartedElapsedRealtimeMillis = elapsedRealtimeMillis()
         windowJob = scope.launch { runWindow(fresh, context) }
         return SprintStartDecision.Started(nowUtcMillis)
+    }
+
+    /**
+     * 只中止**手动会话自己发起**的窗口（AC-6.1 / R5-2）。
+     *
+     * 自动采集循环的窗口不归手动会话管：手动结束不能把它取消掉，否则那一拍
+     * 会永远丢掉「已执行」记录；也不能重置周期锚点（那会让自动循环提前再冲一次）。
+     *
+     * @return true 表示确实中止了一个手动窗口。
+     */
+    fun abortManualWindow(): Boolean {
+        synchronized(this) {
+            if (window?.isOpen != true || !windowManual) return false
+        }
+        abort()
+        return true
     }
 
     /**
@@ -251,6 +272,16 @@ class LocationSprintController @Inject constructor(
     /** 是否存在待发起的下一拍（诊断用）。 */
     @Synchronized
     fun hasPendingStart(): Boolean = pendingStart != null
+
+    /**
+     * 当前窗口是否由**手动会话**发起（用于「只中止自己那一个窗口」）。
+     *
+     * 采集停止/服务销毁时无条件中止是对的；但**手动会话终结**时只能中止
+     * 手动自己开的那一个窗口 —— 否则会把自动采集循环正在跑的冲刺一并取消，
+     * 让那一拍丢失（独立 review round 5 的 R5-2）。
+     */
+    @Synchronized
+    fun isWindowManual(): Boolean = windowManual
 
     private suspend fun runWindow(active: LocationSprintWindow, context: AcquisitionContext) {
         // AC-5.6：冲刺必须独立注册；主流注册的 interval 与锚点完全不受影响。

@@ -140,6 +140,9 @@ fun StatusCenterScreen(
         state = state,
         feedback = feedback,
         liveness = liveness,
+        // REQ-9：冲刺概况必须**真正传下去**。漏传会静默落到默认的 Empty，
+        // 页面就会一直显示「暂无」——看起来像「没有采集数据」，而不是「没接线」。
+        sprintSummary = sprintSummary,
         keepAliveHealthAlert = keepAliveAlert,
         onOpenDroppedReasons = { viewModel.openDroppedReasons() },
         onOpenGuidance = { showGuidance = true },
@@ -175,13 +178,15 @@ fun StatusCenterScreen(
 @Composable
 internal fun StatusCenterContent(
     state: StatusCenterState,
+    /**
+     * 冲刺概况（REQ-9）。
+     *
+     * **无默认值**：有默认值时漏传会静默显示「暂无」，把「没接线」伪装成
+     * 「没有采集数据」（独立 review round 5 的 R5-1 正是这样漏掉的）。
+     */
+    sprintSummary: com.pim.app.location.sprint.SprintSummary,
     feedback: StatusActionFeedback? = null,
     liveness: LivenessUiSnapshot? = null,
-    sprintSummary: com.pim.app.location.sprint.SprintSummary = com.pim.app.location.sprint.SprintSummary(
-        enabled = null,
-        count = null,
-        countDisplay = com.pim.app.location.sprint.SprintCountDisplay.Empty
-    ),
     keepAliveHealthAlert: String? = null,
     onOpenDroppedReasons: () -> Unit = {},
     onOpenGuidance: () -> Unit = {},

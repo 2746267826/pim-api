@@ -485,9 +485,19 @@ class ForegroundLocationService : Service() {
                 }
                 return@launch
             }
-            // M-2：会话终结即中止冲刺窗口。冲刺控制器跑在**自己的** scope 上，
-            // 不停掉的话会在这个实例拆除后继续占着高频注册（最长 30 秒）。
-            locationSprintRuntime.abort()
+            // M-2 + R5-2：**取消**时才中止手动自己发起的冲刺窗口。
+            //
+            // - 取消（用户按「停止」）：窗口没跑完，若不停掉，控制器会继续在自己的
+            //   scope 上占着高频注册最长 30 秒（本实例可能已经拆除）。
+            // - 正常终结（Completed / TimedOut / Failed）：手动冲刺与手动会话几乎
+            //   同时起跑（都是 30 秒），此时中止会把**即将写完**的窗口掐掉，
+            //   让「已执行」记录永远不落台账 —— 而真机操作卡 §6 正是要看这条记录。
+            //
+            // 两种情况都**只动手动自己的窗口**：自动采集循环正在跑的冲刺不归手动会话管，
+            // 取消它会丢掉自动那一拍，并重置周期锚点导致提前再冲一次。
+            if (locationAcquisitionCoordinator.state.value.phase == AcquisitionPhase.Cancelled) {
+                locationSprintRuntime.abortManualWindow()
+            }
             // 本实例拥有的会话已终结：清除所有权，使随后的 onDestroy() 不再
             // 尝试取消该会话。
             ownedManualSessionId = null

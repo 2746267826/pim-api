@@ -128,6 +128,16 @@ class LocationSprintRuntime internal constructor(
         controller.abort()
     }
 
+    /**
+     * **手动会话终结**时只中止手动自己发起的窗口（R5-2）。
+     *
+     * 手动结束不得取消自动采集循环正在跑的冲刺，也不得重置周期锚点 ——
+     * 那会让自动循环提前再冲一次，且那一拍的「已执行」记录永久丢失。
+     *
+     * @return true 表示确实中止了一个手动窗口。
+     */
+    fun abortManualWindow(): Boolean = controller.abortManualWindow()
+
     fun isWindowOpen(): Boolean = controller.isWindowOpen()
 
     companion object {
