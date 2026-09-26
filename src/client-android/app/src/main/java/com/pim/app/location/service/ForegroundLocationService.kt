@@ -590,7 +590,15 @@ class ForegroundLocationService : Service() {
                     locationAcquisitionCoordinator.stopAutomaticStream()
                 }
                 // 运动信号变化或新 fix 入库即时唤醒（高速档依赖 fix 驱动重算）；
-                // 最迟 30s 重算一次（覆盖日程/设置变化）
+                // 最迟 30s 重算一次（覆盖日程/设置变化）。
+                //
+                // 注意：本循环的兜底唤醒粒度是 30 秒，而冲刺周期可能是 45/120/600 秒。
+                // 冲刺的周期门控（SprintPeriodGate）保证**不会多冲**（一周期一次），
+                // 但若某次唤醒恰好落在周期边界之前、下一次唤醒又偏晚，该周期可能被
+                // 顺延一拍 —— 真机实测 60 秒档出现过 60s/89s 的间隔抖动。
+                // 这是「唤醒粒度 vs 周期对齐」的已知抖动，只影响个别周期的**起点**，
+                // 不影响占空比上界与「不早退」；未在此处强改等待时长，
+                // 以免动到既有「最迟 30s 重算一次」的循环契约。
                 withTimeoutOrNull(30_000L) {
                     val currentSignal = motionSignalRepository.status.value.signal
                     val lastFixSignal = fixRecordedSignal.value
