@@ -146,17 +146,19 @@ class PassiveLocationProcessor(
     }
 
     /**
-     * 清零计数（在台账写入**成功之后**调用）。
+     * 扣除**已落库的那一份**计数（在台账写入成功后调用）。
      *
-     * 顺序很关键：先清后写时，一旦写入被取消或失败，整个窗口的分母就没了；
-     * 先写后清则最坏情况是重复写一次同一窗口（幂等键会拦下）。
+     * 用「减去快照」而不是「清零」：写台账是挂起操作，期间到达的回调
+     * （`peekCounters()` 之后、写入完成之前）不属于刚写的那一行；直接清零会把它们
+     * 一起抹掉 —— 分母偏小，AC-14.2 的三数对账就失去意义（独立 review round 4 的 M-1）。
+     * 减去快照能让这些增量留在窗口里，等下一次刷新落库。
      */
-    fun clearCounters() {
+    fun subtractCounters(snapshot: PassiveLocationCounters) {
         synchronized(lock) {
-            callbackCount = 0
-            acceptedCount = 0
-            droppedCount = 0
-            duplicateCount = 0
+            callbackCount = (callbackCount - snapshot.callbackCount).coerceAtLeast(0)
+            acceptedCount = (acceptedCount - snapshot.acceptedCount).coerceAtLeast(0)
+            droppedCount = (droppedCount - snapshot.droppedCount).coerceAtLeast(0)
+            duplicateCount = (duplicateCount - snapshot.duplicateCount).coerceAtLeast(0)
         }
     }
 

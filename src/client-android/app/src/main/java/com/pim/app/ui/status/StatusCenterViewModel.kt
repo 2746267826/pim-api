@@ -207,7 +207,9 @@ class StatusCenterViewModel @Inject constructor(
         com.pim.app.location.sprint.SprintSummary(
             enabled = null,
             count = null,
-            countDisplay = com.pim.app.location.sprint.SprintCountDisplay.Empty
+            // §5 加载态：首次读取完成前显示「—」，而不是「暂无」
+            // （「暂无」是「确认没有采集数据」的结论，不能在读之前就下）。
+            countDisplay = com.pim.app.location.sprint.SprintCountDisplay.Loading
         )
     )
     val sprintSummary: StateFlow<com.pim.app.location.sprint.SprintSummary> =

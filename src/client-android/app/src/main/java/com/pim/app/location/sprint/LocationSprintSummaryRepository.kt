@@ -17,6 +17,9 @@ import javax.inject.Singleton
  * 「压根没采集」在页面上长得一样 —— 验收方复验 AC-5.3 时正是靠这个区分。
  */
 sealed interface SprintCountDisplay {
+    /** 尚未读取完成：显示「—」（§5 加载中占位）。 */
+    data object Loading : SprintCountDisplay
+
     /** 无采集数据：显示「暂无（最近 24 小时无采集数据）」。 */
     data object Empty : SprintCountDisplay
 

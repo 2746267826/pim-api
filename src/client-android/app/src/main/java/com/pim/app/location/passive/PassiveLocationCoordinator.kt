@@ -125,8 +125,9 @@ class PassiveLocationCoordinator internal constructor(
             )
             return counters
         }
-        // 写入成功后才清零并推进窗口（起点 + 序号），下一个窗口不会复用同一条台账键。
-        active.clearCounters()
+        // 写入成功后扣除**已落库的那一份**（不是清零）：写台账期间到达的回调
+        // 不属于刚写的这一行，清零会把它们一起抹掉（M-1）。
+        active.subtractCounters(counters)
         windowStartUtcMillis = nowUtcMillis()
         windowSequence += 1L
         return counters

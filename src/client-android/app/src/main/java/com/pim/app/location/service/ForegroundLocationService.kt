@@ -266,6 +266,10 @@ class ForegroundLocationService : Service() {
     ) {
         isPausing = false
         explicitTeardown = false
+        // 注意：**不**把 startForeground 提到前置检查之前。
+        // 既有契约测试明确要求「先检查定位就绪再 startForeground」
+        // （AndroidV2CollectionControlContractTest、ForegroundLocationServiceTest），
+        // 该顺序属本工单范围外，保持不动。
         if (enableCollection && persistCollectionIntentBeforePrerequisites) {
             trackingSettingsStore.setContinuousCollectionEnabled(true)
         }
@@ -327,11 +331,9 @@ class ForegroundLocationService : Service() {
         }
 
         val settings = trackingSettingsStore.read()
-        // startForeground 必须**尽早**调用：Android 要求 startForegroundService() 之后
-        // 在很短的时间内（约 5 秒）进入前台，否则系统会抛
-        // 「Context.startForegroundService() did not then call Service.startForeground()」
-        // 并把服务拉下来（模拟器实测触发过，见本 PR 的验证记录）。
-        // 因此先进入前台，再做接线（冲刺台账 / 被动监听注册）等可能较慢的初始化。
+        // 本次新增的接线（冲刺台账 + 被动监听注册）放在 startForeground **之后**：
+        // 被动监听要经 LocationManager 注册，可能较慢。这是相对基线的唯一顺序调整，
+        // 只影响我们新加的这段初始化，不触碰上面既有的「先检查再进前台」约定。
         startForeground(LocationNotificationRenderer.NOTIFICATION_ID, notification())
         initializeAutomaticRuntime(settings)
 
@@ -368,14 +370,11 @@ class ForegroundLocationService : Service() {
      * 无论哪种，手动会话本身照常跑满 30 秒（用户确认口径，D6）。
      */
     private fun maybeRunManualSprint() {
-        val context = AcquisitionContext(
-            policyMode = LocationPolicyMode.PowerSavingNormal.name,
-            scheduleLowFrequency = false,
-            motionSignal = motionSignalRepository.status.value.signal.name,
-            // 手动会话的固有节奏 ≈1 秒（基线即 1000/800 毫秒）。
-            requestIntervalMillis = MANUAL_SESSION_INTERVAL_MILLIS
-        )
-        locationSprintRuntime.onPeriod(context, LocationPolicyMode.PowerSavingNormal)
+        // I-1：**必须**走 onManualSession，不能走 onPeriod。
+        // 手动会话自带 ≈1 秒节奏，若经周期门控会把门控的 lastIntervalMillis 写成 1000，
+        // 使下一个自动周期立刻再次放行 —— 同一周期出现两次冲刺（违反 D2），
+        // 并与手动会话自己的取点流重复入库。
+        locationSprintRuntime.onManualSession()
     }
 
     /**
@@ -486,6 +485,9 @@ class ForegroundLocationService : Service() {
                 }
                 return@launch
             }
+            // M-2：会话终结即中止冲刺窗口。冲刺控制器跑在**自己的** scope 上，
+            // 不停掉的话会在这个实例拆除后继续占着高频注册（最长 30 秒）。
+            locationSprintRuntime.abort()
             // 本实例拥有的会话已终结：清除所有权，使随后的 onDestroy() 不再
             // 尝试取消该会话。
             ownedManualSessionId = null
@@ -639,10 +641,12 @@ class ForegroundLocationService : Service() {
      * 30 秒是**上限**（工单与本循环的既有约定），不是固定值：对齐只可能缩短等待。
      */
     private fun loopWaitMillis(requestIntervalMillis: Long): Long =
-        locationSprintRuntime.suggestedLoopWaitMillis(
-            requestIntervalMillis = requestIntervalMillis,
-            capMillis = LOOP_WAIT_CAP_MILLIS
-        ).takeIf { it > 0L } ?: LOOP_WAIT_CAP_MILLIS
+        resolveLoopWaitMillis(
+            locationSprintRuntime.suggestedLoopWaitMillis(
+                requestIntervalMillis = requestIntervalMillis,
+                capMillis = LOOP_WAIT_CAP_MILLIS
+            )
+        )
 
     private fun recomputePolicyDecision(): PolicyDecision {
         val now = System.currentTimeMillis()
@@ -926,6 +930,14 @@ class ForegroundLocationService : Service() {
     }
 
     companion object {
+        /**
+         * 采集循环单次等待时长的纯计算（供单测断言**行为**，而不只是源码里出现常量）。
+         *
+         * 上限恒为 [LOOP_WAIT_CAP_MILLIS]：冲刺周期对齐只可能缩短等待，绝不放长。
+         */
+        internal fun resolveLoopWaitMillis(suggested: Long): Long =
+            suggested.takeIf { it in 1..LOOP_WAIT_CAP_MILLIS } ?: LOOP_WAIT_CAP_MILLIS
+
         private val _runtimeState = MutableStateFlow(ForegroundLocationRuntimeState())
         val runtimeState: StateFlow<ForegroundLocationRuntimeState> = _runtimeState.asStateFlow()
 
@@ -948,14 +960,6 @@ class ForegroundLocationService : Service() {
          * 绝不会加长它。
          */
         const val LOOP_WAIT_CAP_MILLIS = 30_000L
-
-        /**
-         * 手动单次会话的取点节奏（基线 `LocationUpdateSource` 的 1000/800 毫秒）。
-         *
-         * 手动会话没有「策略档周期」的概念，它本身就是一段 ≈1 秒、最长 30 秒的取点过程，
-         * 因此周期门控对它恒放行（REQ-6：手动同样执行冲刺）。
-         */
-        const val MANUAL_SESSION_INTERVAL_MILLIS = 1_000L
 
         fun resolveRequestInterval(intervalMillis: Long): Long {
             require(intervalMillis > 0L) { "intervalMillis must be positive" }

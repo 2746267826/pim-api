@@ -251,14 +251,14 @@ class PassiveLocationProcessorTest {
     }
 
     /**
-     * AC-14.2：计数快照与清零分离 —— **先落库、成功后再清零**。
+     * AC-14.2：计数快照与「扣除已落库份额」分离 —— **先落库、成功后再扣**。
      *
-     * 先清后写时，一旦写入被取消或失败，整个窗口的分母就没了
-     * （独立 review round 2 指出）。这里断言两者是独立操作：
-     * 取快照不清零，清零要显式调用。
+     * 先清后写时，一旦写入被取消或失败，整个窗口的分母就没了（round 2）。
+     * 落库成功后也必须**只扣掉已写的那一份**：写台账期间到达的回调不属于那一行，
+     * 直接清零会把它们抹掉（round 4 的 M-1）。
      */
     @Test
-    fun `计数快照不清零且清零需显式调用`() = runTest {
+    fun `计数快照不清零且只扣除已落库份额`() = runTest {
         val processor = processor()
         processor.handle(fix(at = START, accuracy = 10f))
         processor.handle(fix(at = START, accuracy = 40f))
@@ -276,8 +276,30 @@ class PassiveLocationProcessorTest {
             processor.countersSnapshot().callbackCount
         )
 
-        processor.clearCounters()
-        assertEquals(0, processor.countersSnapshot().callbackCount)
+        processor.subtractCounters(snapshot)
+        assertEquals("扣除已落库份额后归零", 0, processor.countersSnapshot().callbackCount)
+    }
+
+    /** M-1：写台账期间到达的回调必须保留在窗口里，不得被清零抹掉。 */
+    @Test
+    fun `落库期间到达的回调不被抹掉`() = runTest {
+        val processor = processor()
+        processor.handle(fix(at = START, accuracy = 10f))
+        processor.handle(fix(at = START, accuracy = 12f))
+
+        // 取快照（准备落库）
+        val snapshot = processor.peekCounters()
+        assertEquals(2, snapshot.callbackCount)
+
+        // 写台账期间又来了 1 条回调（不属于刚写的那一行）
+        processor.handle(fix(at = START, accuracy = 15f))
+
+        // 落库成功 → 只扣除已写的那 2 条
+        processor.subtractCounters(snapshot)
+
+        val remaining = processor.countersSnapshot()
+        assertEquals("M-1：写台账期间的回调必须保留", 1, remaining.callbackCount)
+        assertEquals(1, remaining.acceptedCount)
     }
 
     /**

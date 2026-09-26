@@ -364,6 +364,7 @@ private fun SprintSection(summary: com.pim.app.location.sprint.SprintSummary) {
             label = "最近 24 小时冲刺次数",
             value = when (val display = summary.countDisplay) {
                 is com.pim.app.location.sprint.SprintCountDisplay.Value -> "${display.count} 次"
+                com.pim.app.location.sprint.SprintCountDisplay.Loading -> "—"
                 com.pim.app.location.sprint.SprintCountDisplay.Empty -> "暂无"
                 com.pim.app.location.sprint.SprintCountDisplay.Failed -> "读取失败"
             },
@@ -382,6 +383,8 @@ private fun SprintSection(summary: com.pim.app.location.sprint.SprintSummary) {
 
         Text(
             text = when (val display = summary.countDisplay) {
+                com.pim.app.location.sprint.SprintCountDisplay.Loading ->
+                    "正在读取本地冲刺台账。"
                 is com.pim.app.location.sprint.SprintCountDisplay.Value -> {
                     if (display.count == 0) {
                         "最近 24 小时有采集数据，但一次冲刺都没执行。"
@@ -392,7 +395,8 @@ private fun SprintSection(summary: com.pim.app.location.sprint.SprintSummary) {
                 com.pim.app.location.sprint.SprintCountDisplay.Empty ->
                     "最近 24 小时没有采集数据，因此无法统计冲刺次数。"
                 com.pim.app.location.sprint.SprintCountDisplay.Failed ->
-                    "读取冲刺台账失败，下面显示的是上一次成功读取的结果。"
+                    summary.count?.let { "读取冲刺台账失败，上次成功读取为 $it 次。" }
+                        ?: "读取冲刺台账失败。"
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
