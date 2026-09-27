@@ -34,7 +34,14 @@ public sealed class CalendarOffsetQueryParameterE2ETests
 {
     /// <summary>
     /// 用真实 PostgreSQL 起一个完整 API 宿主。
-    /// 只替换连接串，其余装配（鉴权、EF、拦截器）与生产一致。
+    ///
+    /// <para>
+    /// **不替换也不重建 <c>PimDbContext</c> 的注册**：只把连接串喂给配置，
+    /// 让 <c>AddPimInfrastructure</c> 按生产路径完成装配。这样本用例真正验证的是
+    /// 「生产的 DI 注册里带着偏移归一化拦截器」——若有人把
+    /// <c>ServiceCollectionExtensions</c> 里的 <c>AddInterceptors</c> 删掉，
+    /// 这些用例会立刻失败（复审 Minor：先前版本自行重建注册，删掉生产那行仍然全绿）。
+    /// </para>
     /// </summary>
     private static WebApplicationFactory<Program> CreateFactory(string connectionString)
         => new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
@@ -43,21 +50,9 @@ public sealed class CalendarOffsetQueryParameterE2ETests
             builder.UseSetting("DisableHangfire", "true");
             builder.UseSetting("Database:Migrations:FailFast", "false");
             builder.UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz");
+            // 走生产装配路径：AddPimInfrastructure 读这个键并装上拦截器。
+            builder.UseSetting("ConnectionStrings:DefaultConnection", connectionString);
             // Jwt:PrivateKeyPath 缺失时 Test 环境回退到进程内临时 RSA，无需真实密钥文件。
-            builder.ConfigureServices(services =>
-            {
-                var descriptor = services.SingleOrDefault(
-                    d => d.ServiceType == typeof(DbContextOptions<PimDbContext>));
-                if (descriptor is not null)
-                {
-                    services.Remove(descriptor);
-                }
-
-                // 走与生产相同的 UseNpgsql + 拦截器装配路径。
-                services.AddDbContext<PimDbContext>(options =>
-                    options.UseNpgsql(connectionString, npgsql => npgsql.EnableRetryOnFailure(3))
-                        .AddInterceptors(new UtcDateTimeOffsetParameterInterceptor()));
-            });
         });
 
     private static async Task<string> RegisterAndGetTokenAsync(HttpClient client, string username)
@@ -79,6 +74,19 @@ public sealed class CalendarOffsetQueryParameterE2ETests
         var client = factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return client;
+    }
+
+    /// <summary>建一个日历（创建日程必须归属某个日历）。</summary>
+    private static async Task<Guid> CreateCalendarAsync(HttpClient client)
+    {
+        var response = await client.PostAsJsonAsync("/api/v1/calendar/calendars", new
+        {
+            name = $"offset-probe-{Guid.NewGuid():N}"[..30],
+            color = "#3B82F6",
+        });
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.GetProperty("data").GetProperty("id").GetGuid();
     }
 
     /// <summary>
@@ -131,6 +139,52 @@ public sealed class CalendarOffsetQueryParameterE2ETests
         Assert.Equal(
             NormalizeData(await utcResponse.Content.ReadAsStringAsync()),
             NormalizeData(await offsetResponse.Content.ReadAsStringAsync()));
+    }
+
+    /// <summary>
+    /// 带偏移与等价 UTC 必须返回**同一批日程**：在窗口内播种一条日程，
+    /// 断言两种格式都命中它。这补上了"两边都为空"时比对无区分度的缺口
+    /// （复审 Minor）。
+    /// </summary>
+    [SkippableFact]
+    public async Task Layers_WithNonZeroOffset_ReturnsTheSameEventsAsEquivalentUtc()
+    {
+        var connectionString = RealDbTestConnection.Require();
+        using var factory = CreateFactory(connectionString);
+        var username = $"offrow_{Guid.NewGuid():N}"[..20];
+        var token = await RegisterAndGetTokenAsync(factory.CreateClient(), username);
+        var client = Authed(factory, token);
+
+        // 窗口 = 2026-03-02T16:00Z ~ 2026-03-03T16:00Z（= 2026-03-03 00:00+08:00 起一整天）。
+        // 在该窗口内建一条日程，其标题可唯一识别。
+        var title = $"offset-probe-{Guid.NewGuid():N}";
+        var calendarId = await CreateCalendarAsync(client);
+        var createResponse = await client.PostAsJsonAsync("/api/v1/calendar/events", new
+        {
+            calendarId,
+            title,
+            description = (string?)null,
+            location = (string?)null,
+            dtStart = "2026-03-03T02:00:00+08:00",
+            dtEnd = "2026-03-03T03:00:00+08:00",
+            rRule = (string?)null,
+        });
+        Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
+
+        var offsetResponse = await client.GetAsync(
+            "/api/v1/calendar/layers?start=2026-03-03T00:00:00%2B08:00&end=2026-03-04T00:00:00%2B08:00&layers=events");
+        var utcResponse = await client.GetAsync(
+            "/api/v1/calendar/layers?start=2026-03-02T16:00:00Z&end=2026-03-03T16:00:00Z&layers=events");
+
+        Assert.Equal(HttpStatusCode.OK, utcResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, offsetResponse.StatusCode);
+
+        var offsetBody = await offsetResponse.Content.ReadAsStringAsync();
+        var utcBody = await utcResponse.Content.ReadAsStringAsync();
+
+        // 两种格式都必须命中同一条日程（证明偏移被正确归一，未把窗口挪走）。
+        Assert.Contains(title, offsetBody, StringComparison.Ordinal);
+        Assert.Contains(title, utcBody, StringComparison.Ordinal);
     }
 
     [SkippableFact]
