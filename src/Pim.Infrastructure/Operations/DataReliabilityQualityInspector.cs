@@ -1219,10 +1219,15 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         // 因此都能填补空洞。早先只取 window/idle/gap、把 web-page 排除在外，
         // 会让"浏览器会话被分段成 window + web-page"的时间段凭空出现空洞 ——
         // 实测因此多报 6 处（41 vs 35）并不存在的断档。
+        //
+        // 结束时刻用 **numeric × interval**，不要用字符串拼接 interval（#349）：
+        // `duration || ' seconds'` 依赖 float8 → text 的渲染，而 PostgreSQL 对极小值输出
+        // 科学计数法（7.9e-05），interval 解析器不接受 → 整条查询 22007，S7 恒 unknown。
+        // 乘法在数值域完成，没有文本往返，任何量级都不会解析失败。
         await using var cmd = conn.CreateCommand();
         cmd.CommandTimeout = 15;
         cmd.CommandText = $"""
-            SELECT device_id, timestamp, timestamp + (duration || ' seconds')::interval as end_time, event_type
+            SELECT device_id, timestamp, timestamp + (duration * interval '1 second') as end_time, event_type
             FROM pc_tracker_events
             ORDER BY timestamp DESC
             LIMIT {context.Options.MaxScanRows + 1};

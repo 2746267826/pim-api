@@ -175,6 +175,48 @@ public class DataReliabilityQualityInspectorTests
         }
     }
 
+    /// <summary>
+    /// #349 回归守卫：取数 SQL 绝不能用字符串拼接 interval 来计算事件结束时刻。
+    ///
+    /// <para>
+    /// <c>(duration || ' seconds')::interval</c> 依赖 float8 → text 渲染，PostgreSQL 对极小值
+    /// 输出科学计数法（<c>7.9e-05</c>），interval 解析器不接受 → 整条查询 22007 → S7 恒 unknown。
+    /// 正确的写法是数值乘法 <c>duration * interval '1 second'</c>。
+    /// </para>
+    ///
+    /// <para>
+    /// 这里在 SQL 文本层设卡：真库用例（<c>DataReliabilityS7RealDbTests</c>）需要 PostgreSQL 才能跑，
+    /// 而本断言在任何环境都会执行，能在提交阶段就拦住这个写法回潮。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Inspector_IntervalFetch_NeverConcatenatesDurationIntoIntervalString()
+    {
+        var recordingConn = new RecordingDbConnection();
+        var optionsBuilder = new DbContextOptionsBuilder<PimDbContext>();
+        optionsBuilder.UseNpgsql(recordingConn);
+
+        await using var db = new PimDbContext(optionsBuilder.Options);
+        var inspector = new DataReliabilityQualityInspector(
+            db,
+            Options.Create(new InvariantOptions()),
+            NullLogger<DataReliabilityQualityInspector>.Instance);
+
+        await inspector.InspectAsync(DateTimeOffset.UtcNow);
+
+        var intervalSql = recordingConn.ExecutedCommands
+            .Where(sql => sql.Contains("pc_tracker_events", StringComparison.Ordinal))
+            .ToList();
+        Assert.NotEmpty(intervalSql);
+
+        foreach (var sql in intervalSql)
+        {
+            // 字符串拼接成 interval：`duration || ' seconds'`（含任意引号/空格变体）。
+            Assert.DoesNotMatch(@"(?is)\|\|\s*'\s*(seconds?|minutes?|hours?|days?)\s*'\s*\)?\s*::\s*interval", sql);
+            Assert.DoesNotContain("|| ' seconds'", sql);
+        }
+    }
+
     private static readonly DateTimeOffset ReportNow = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
 
     private static DataReliabilityQualityInspector CreateRecordingInspector(RecordingDbConnection conn)
