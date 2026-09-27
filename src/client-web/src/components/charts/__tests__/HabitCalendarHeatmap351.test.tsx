@@ -58,10 +58,16 @@ describe('HabitCalendarHeatmap #351', () => {
   });
 
   it('归档态大小写不同也照样过滤', async () => {
-    getHabits.mockResolvedValue([habit({ title: '小写归档', status: 'archived' })]);
+    // 同时给一个活跃习惯：这样"数据已加载"有可观察信号，
+    // 断言归档项缺失才真正说明被过滤，而不是"还在加载所以还没渲染"。
+    getHabits.mockResolvedValue([
+      habit({ id: 'h-active', title: '活跃习惯', status: 'Active' }),
+      habit({ id: 'h-lower', title: '小写归档', status: 'archived' }),
+    ]);
     renderCard();
 
-    await waitFor(() => expect(screen.queryByText('小写归档')).toBeNull());
+    expect(await screen.findByText('活跃习惯')).toBeTruthy();
+    expect(screen.queryByText('小写归档')).toBeNull();
   });
 
   it('枚举序号 cadence 显示为可读文案而不是裸数字', async () => {
