@@ -131,4 +131,52 @@ describe('HabitsPage #351', () => {
     expect(await screen.findByText(/每天 · /)).toBeTruthy();
     expect(screen.queryByText(/^0 · /)).toBeNull();
   });
+
+  /**
+   * 复审 Important：频率筛选必须处理"后端下发枚举序号"这一真实形态。
+   * 此前用 `String(habit.cadence).toLowerCase() === 'daily'` 比较，
+   * 序号 0 会得到 "0" !== "daily"，于是选「每天」时明明有每日习惯却显示空态。
+   */
+  it('按频率筛选时能匹配后端下发的枚举序号 cadence', async () => {
+    getHabits.mockResolvedValue([
+      habit({ id: 'h-daily', title: '每日习惯', cadence: 0 }),
+      habit({ id: 'h-weekly', title: '每周习惯', cadence: 1 }),
+    ]);
+    renderPage();
+
+    expect(await screen.findByText('每日习惯')).toBeTruthy();
+    expect(screen.getByText('每周习惯')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('频率'), { target: { value: 'daily' } });
+
+    expect(await screen.findByText('每日习惯')).toBeTruthy();
+    expect(screen.queryByText('每周习惯')).toBeNull();
+    expect(screen.queryByText('当前筛选下没有习惯记录。')).toBeNull();
+  });
+
+  /**
+   * 复审 Important：编辑表单必须回显已保存的描述，否则"只改标题"会让用户
+   * 在不知情的情况下把描述重新提交/清空。
+   */
+  it('编辑表单回显已保存的描述', async () => {
+    getHabits.mockResolvedValue([habit({ description: '已保存的描述' })]);
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId('habit-edit-h-1'));
+
+    const descriptionInput = screen.getByLabelText('习惯描述') as HTMLInputElement;
+    expect(descriptionInput.value).toBe('已保存的描述');
+  });
+
+  it('清空描述后提交的是空串（显式清空，而不是"未传"）', async () => {
+    getHabits.mockResolvedValue([habit({ description: '待清空' })]);
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId('habit-edit-h-1'));
+    fireEvent.change(screen.getByLabelText('习惯描述'), { target: { value: '' } });
+    fireEvent.click(screen.getByTestId('habit-save-h-1'));
+
+    await waitFor(() => expect(updateHabit).toHaveBeenCalledTimes(1));
+    expect(updateHabit).toHaveBeenCalledWith('h-1', expect.objectContaining({ description: '' }));
+  });
 });

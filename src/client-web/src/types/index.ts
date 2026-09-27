@@ -191,9 +191,12 @@ export interface AddTaskChecklistItemRequest {
 export interface HabitRoutine {
   id: string;
   title: string;
-  cadence: 'Daily' | 'Weekly' | 'Monthly' | string;
+  /** 后端把 HabitCadence 序列化为枚举名或枚举序号，展示前需用 habitCadenceLabel 归一。 */
+  cadence: 'Daily' | 'Weekly' | 'Monthly' | number | string;
   source: string;
   status: string;
+  /** #351：描述；编辑表单用它回显已保存内容。 */
+  description?: string | null;
 }
 
 export interface CreateHabitRequest {

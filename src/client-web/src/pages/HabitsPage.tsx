@@ -3,6 +3,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { archiveHabit, deleteHabit, getHabits, updateHabit } from '../api/calendar';
 import type { HabitRoutine } from '../types';
 import HabitRoutineEditor from '../components/schedule/HabitRoutineEditor';
+import {
+  HABIT_CADENCE_OPTIONS,
+  habitCadenceFilterValue,
+  habitCadenceLabel,
+  habitCadenceValue,
+  isArchivedHabit,
+} from '../components/schedule/habitCadence';
 import PageHeader from '../ui/PageHeader';
 import MobilePageHeader from '../ui/MobilePageHeader';
 import SegmentedControl from '../ui/SegmentedControl';
@@ -14,33 +21,6 @@ const habitTabs: Array<{ value: HabitTab; label: string }> = [
   { value: 'planning', label: '规划' },
   { value: 'archive', label: '归档' },
 ];
-
-/** 习惯规则可选的频率（与后端 HabitCadence 对齐）。 */
-const cadenceOptions = [
-  { value: 'Daily', label: '每天' },
-  { value: 'Weekly', label: '每周' },
-  { value: 'Monthly', label: '每月' },
-];
-
-/**
- * 后端把 cadence 序列化为枚举名或枚举序号（HabitCadence 是普通 enum）。
- * 展示与比较必须都能处理两种形态，否则界面上会出现 "0" 这种不可读的值。
- */
-function cadenceLabel(cadence: HabitRoutine['cadence']): string {
-  const raw = String(cadence ?? '');
-  const byName = cadenceOptions.find(option => option.value.toLowerCase() === raw.toLowerCase());
-  if (byName) return byName.label;
-  const index = Number(raw);
-  if (Number.isInteger(index) && index >= 0 && index < cadenceOptions.length) {
-    return cadenceOptions[index].label;
-  }
-  return raw || '未设置';
-}
-
-/** 归档态口径与后端一致：忽略大小写比较。 */
-function isArchived(habit: HabitRoutine): boolean {
-  return String(habit.status ?? '').toLowerCase() === 'archived';
-}
 
 export default function HabitsPage() {
   const [tab, setTab] = useState<HabitTab>('active');
@@ -67,7 +47,7 @@ export default function HabitsPage() {
   const updateMutation = useMutation({
     mutationFn: (habit: HabitRoutine) => updateHabit(habit.id, {
       title: editTitle.trim(),
-      description: editDescription.trim() === '' ? null : editDescription.trim(),
+      description: editDescription.trim(),
       cadence: editCadence,
     }),
     onSuccess: () => {
@@ -99,18 +79,18 @@ export default function HabitsPage() {
   const startEditing = (habit: HabitRoutine) => {
     setEditingId(habit.id);
     setEditTitle(habit.title);
-    setEditDescription('');
-    setEditCadence(cadenceValue(habit.cadence));
+    setEditDescription(habit.description ?? '');
+    setEditCadence(habitCadenceValue(habit.cadence));
     setActionError(null);
   };
 
   const filteredHabits = habits.filter(habit => {
-    const cadenceMatches = cadence === 'all' || String(habit.cadence).toLowerCase() === cadence;
+    const cadenceMatches = cadence === 'all' || habitCadenceFilterValue(habit.cadence) === cadence;
     const sourceMatches = source === 'all' || habit.source.toLowerCase() === source;
     const archiveMatches = tab === 'archive'
-      ? isArchived(habit)
+      ? isArchivedHabit(habit)
       : tab === 'active'
-        ? !isArchived(habit)
+        ? !isArchivedHabit(habit)
         : true;
     return cadenceMatches && sourceMatches && archiveMatches;
   });
@@ -188,7 +168,7 @@ export default function HabitsPage() {
                     onChange={event => setEditCadence(event.target.value)}
                     className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
                   >
-                    {cadenceOptions.map(option => (
+                    {HABIT_CADENCE_OPTIONS.map(option => (
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
                   </select>
@@ -217,7 +197,7 @@ export default function HabitsPage() {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-sm font-semibold text-slate-900">{habit.title}</h3>
                     <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-500">
-                      {cadenceLabel(habit.cadence)} · {habit.status}
+                      {habitCadenceLabel(habit.cadence)} · {habit.status}
                     </span>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-2">
@@ -229,7 +209,7 @@ export default function HabitsPage() {
                     >
                       编辑
                     </button>
-                    {!isArchived(habit) && (
+                    {!isArchivedHabit(habit) && (
                       <button
                         type="button"
                         data-testid={`habit-archive-${habit.id}`}
@@ -284,18 +264,6 @@ export default function HabitsPage() {
       </div>
     </div>
   );
-}
-
-/** 把 cadence 的各种形态（枚举名/序号）归一为后端接受的枚举名。 */
-function cadenceValue(cadence: HabitRoutine['cadence']): string {
-  const raw = String(cadence ?? '');
-  const byName = cadenceOptions.find(option => option.value.toLowerCase() === raw.toLowerCase());
-  if (byName) return byName.value;
-  const index = Number(raw);
-  if (Number.isInteger(index) && index >= 0 && index < cadenceOptions.length) {
-    return cadenceOptions[index].value;
-  }
-  return 'Daily';
 }
 
 function describeActionError(error: unknown): string {

@@ -383,6 +383,87 @@ public class HabitManagementTests
             () => service.GetHabitAsync(created.Id, CancellationToken.None));
     }
 
+    // ================= 复审补强（Important）=================
+
+    /// <summary>
+    /// 复审 Important：描述必须能**读回**，否则编辑表单无法回显，
+    /// 用户改了标题就会在不知情的情况下覆盖/清空描述。
+    /// </summary>
+    [Fact]
+    public async Task HabitDto_ExposesDescriptionForRoundTrip()
+    {
+        await using var db = CreateDb();
+        var service = CreatePlanningService(db);
+        await service.CreateHabitAsync(
+            new CreateHabitRequest("带描述", "原始描述", "Daily"), CancellationToken.None);
+
+        var listed = await service.ListHabitsAsync(CancellationToken.None);
+        var habit = Assert.Single(listed);
+        Assert.Equal("原始描述", habit.Description);
+
+        var fetched = await service.GetHabitAsync(habit.Id, CancellationToken.None);
+        Assert.Equal("原始描述", fetched.Description);
+    }
+
+    /// <summary>
+    /// 复审 Important：空串是「显式清空」，null/未传是「保持不变」。
+    /// 二者必须可区分，否则"只改标题"会静默抹掉描述。
+    /// </summary>
+    [Fact]
+    public async Task UpdateHabit_DescriptionSemantics_DistinguishesClearFromUnchanged()
+    {
+        await using var db = CreateDb();
+        var service = CreatePlanningService(db);
+        var created = await service.CreateHabitAsync(
+            new CreateHabitRequest("描述语义", "保留我", "Daily"), CancellationToken.None);
+
+        // 1) 不传 description → 保持不变
+        await service.UpdateHabitAsync(created.Id, new UpdateHabitRequest(Title: "改了标题"), CancellationToken.None);
+        var afterTitleOnly = await service.GetHabitAsync(created.Id, CancellationToken.None);
+        Assert.Equal("保留我", afterTitleOnly.Description);
+
+        // 2) 传空串 → 显式清空
+        await service.UpdateHabitAsync(created.Id, new UpdateHabitRequest(Description: ""), CancellationToken.None);
+        var afterClear = await service.GetHabitAsync(created.Id, CancellationToken.None);
+        Assert.Null(afterClear.Description);
+
+        // 3) 传新值 → 覆盖
+        await service.UpdateHabitAsync(created.Id, new UpdateHabitRequest(Description: "新描述"), CancellationToken.None);
+        var afterSet = await service.GetHabitAsync(created.Id, CancellationToken.None);
+        Assert.Equal("新描述", afterSet.Description);
+    }
+
+    /// <summary>复审 Minor 补强：超长标题与未知 cadence 的边界。</summary>
+    [Fact]
+    public async Task UpdateHabit_RejectsOverLongTitle()
+    {
+        await using var db = CreateDb();
+        var service = CreatePlanningService(db);
+        var created = await service.CreateHabitAsync(
+            new CreateHabitRequest("原标题", null, "Daily"), CancellationToken.None);
+
+        await Assert.ThrowsAsync<DomainException>(() => service.UpdateHabitAsync(
+            created.Id, new UpdateHabitRequest(Title: new string('x', 256)), CancellationToken.None));
+
+        var stored = await service.GetHabitAsync(created.Id, CancellationToken.None);
+        Assert.Equal("原标题", stored.Title);
+    }
+
+    [Fact]
+    public async Task UpdateHabit_UnknownCadence_FallsBackToStoredValue()
+    {
+        await using var db = CreateDb();
+        var service = CreatePlanningService(db);
+        var created = await service.CreateHabitAsync(
+            new CreateHabitRequest("频率边界", null, "Weekly"), CancellationToken.None);
+
+        // 空串不是合法 cadence：保持原值，而不是把习惯改成一个无意义的频率。
+        await service.UpdateHabitAsync(created.Id, new UpdateHabitRequest(Cadence: "  "), CancellationToken.None);
+
+        var stored = await service.GetHabitAsync(created.Id, CancellationToken.None);
+        Assert.Equal(Pim.Core.Planning.HabitCadence.Weekly, stored.Cadence);
+    }
+
     private static PimDbContext CreateDb()
     {
         PimDbContext.RegisterModuleAssembly(typeof(CalendarEntity).Assembly);

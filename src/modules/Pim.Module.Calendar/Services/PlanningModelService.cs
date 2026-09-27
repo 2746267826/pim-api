@@ -456,8 +456,12 @@ public class PlanningModelService
             entity.Title = request.Title.Trim();
         }
 
+        // 空串 = 显式清空（存 null）；null/未传 = 保持不变。
+        // 若把 null 也当清空，用户只改标题就会把描述静默抹掉（复审 Important）。
         if (request.Description is not null)
-            entity.Description = request.Description;
+            entity.Description = string.IsNullOrWhiteSpace(request.Description)
+                ? null
+                : request.Description;
 
         if (request.Cadence is not null)
             entity.Cadence = NormalizeShort(request.Cadence, entity.Cadence);
@@ -531,7 +535,13 @@ public class PlanningModelService
     }
 
     private static HabitRoutineDto ToHabitDto(HabitRoutineEntity entity)
-        => new(entity.Id, entity.Title, ParseCadence(entity.Cadence), entity.Source, entity.Status);
+        => new(
+            entity.Id,
+            entity.Title,
+            ParseCadence(entity.Cadence),
+            entity.Source,
+            entity.Status,
+            entity.Description);
 
     public async Task<HabitOccurrenceDto> CreateHabitOccurrenceAsync(
         Guid habitId,
