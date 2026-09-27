@@ -15,7 +15,9 @@ public class ActivityClassificationSnapshotService
 
     /// <summary>
     /// 死锁重试前的退避：让与本批次互相阻塞的那个事务先提交，避免双方同步重试再次撞车。
-    /// 取值需大于 PostgreSQL 默认 <c>deadlock_timeout</c>（1s）的观测抖动，又要短到不拖慢请求。
+    /// 取值只需错开两个批次的重试时刻 —— 产生死锁的那一方是**由 PostgreSQL 立即选出**
+    /// 并回滚的（它是唯一等到 <c>deadlock_timeout</c> 的一方），本退避不必等满那个超时；
+    /// 外层 EF 执行策略本身也会在重试之间退避。
     /// </summary>
     private static readonly TimeSpan DeadlockRetryBackoff = TimeSpan.FromMilliseconds(50);
 
@@ -128,14 +130,21 @@ public class ActivityClassificationSnapshotService
     ///   （实测 8 并发下可复现）。这里退避后重试整批保存。</description></item>
     /// </list>
     /// <para>
-    /// 处于**外层显式事务**中时不在此处重试：死锁会让该事务进入 aborted 状态，
-    /// 原地重试只会拿到 25P02。那种场景由外层 <c>ExecuteInTransactionAsync</c> 的
-    /// 执行策略重跑整个工作单元（含新建事务），这里原样抛出即可。
+    /// <b>两种失败在"是否处于外层事务中"上的处理不同</b>（复审 Important）：
     /// </para>
+    /// <list type="bullet">
+    ///   <item><description><b>23505 在事务内也可就地重试</b>：EF 在事务内保存时会用
+    ///   <c>SAVEPOINT</c> 包裹，PostgreSQL 的 23505 只回滚到该 savepoint，事务**仍然可用**。
+    ///   手动重算（<c>ExecuteInTransactionAsync</c> → 本方法 <c>saveChanges: true</c>）
+    ///   正是这条路径；若把事务期整个排除在重试之外，他方抢写会让用户的重算直接失败。</description></item>
+    ///   <item><description><b>40P01 在事务内不能就地重试</b>：死锁会中止**整个事务**，
+    ///   后续任何语句都报 25P02，原地重试只会把一个可诊断的错误变成一串无意义的失败。
+    ///   这种情形交给外层执行策略重跑整个工作单元（含新建事务）。</description></item>
+    /// </list>
     /// </summary>
     private async Task SaveWithUniqueKeyRetryAsync(List<string> keys, CancellationToken ct)
     {
-        var retryInPlace = _db.Database.CurrentTransaction is null;
+        var insideTransaction = _db.Database.CurrentTransaction is not null;
 
         for (var attempt = 0; ; attempt++)
         {
@@ -153,33 +162,41 @@ public class ActivityClassificationSnapshotService
 
                 return;
             }
-            catch (Exception ex) when (retryInPlace && IsRetryableSnapshotWriteFailure(ex))
+            catch (Exception ex) when (IsUniqueViolation(ex))
             {
                 if (attempt >= MaxUniqueViolationRetries - 1)
                 {
                     _logger.LogError(
                         ex,
-                        "Classification snapshot batch kept failing on write contention after {Max} attempts; giving up. keys={KeyCount}",
+                        "Classification snapshot batch kept hitting the record_key unique constraint after {Max} attempts; giving up. keys={KeyCount}",
                         MaxUniqueViolationRetries,
                         keys.Count);
                     throw;
                 }
 
-                if (IsUniqueViolation(ex))
+                // 事务内同样可恢复：23505 只回滚到 EF 的 savepoint。
+                if (!await TryDetachConcurrentDuplicatesAsync(ex, keys, ct))
+                    throw;
+            }
+            catch (Exception ex) when (!insideTransaction && IsDeadlock(ex))
+            {
+                if (attempt >= MaxUniqueViolationRetries - 1)
                 {
-                    if (!await TryDetachConcurrentDuplicatesAsync(ex, keys, ct))
-                        throw;
-                }
-                else
-                {
-                    // 死锁：给对方事务留出提交窗口，错开两个批次的重试时刻。
-                    _logger.LogWarning(
-                        "Classification snapshot batch hit a deadlock on attempt {Attempt}/{Max}; backing off and retrying. keys={KeyCount}",
-                        attempt + 1,
+                    _logger.LogError(
+                        ex,
+                        "Classification snapshot batch kept hitting deadlocks after {Max} attempts; giving up. keys={KeyCount}",
                         MaxUniqueViolationRetries,
                         keys.Count);
-                    await Task.Delay(DeadlockRetryBackoff, ct);
+                    throw;
                 }
+
+                // 死锁：给对方事务留出提交窗口，错开两个批次的重试时刻。
+                _logger.LogWarning(
+                    "Classification snapshot batch hit a deadlock on attempt {Attempt}/{Max}; backing off and retrying. keys={KeyCount}",
+                    attempt + 1,
+                    MaxUniqueViolationRetries,
+                    keys.Count);
+                await Task.Delay(DeadlockRetryBackoff, ct);
             }
         }
     }
@@ -229,21 +246,32 @@ public class ActivityClassificationSnapshotService
 
     /// <summary>
     /// 可原地重试的写失败：唯一键冲突（23505）或死锁（40P01）。
-    /// 沿 InnerException 链（有界深度）查找 PostgreSQL 错误码——
-    /// 死锁既可能以 <see cref="DbUpdateException"/> 直接抛出，也可能被 EF 的执行策略
-    /// 包装成 <see cref="RetryLimitExceededException"/>（两者都不是彼此的基类）。
+    /// 保留为单一入口（复审用它可以一次性确认"哪些 SQLSTATE 算暂时性"）；
+    /// 实际重试门控见 <see cref="SaveWithUniqueKeyRetryAsync"/> —— 两者在"事务内"的可行性不同。
     /// </summary>
     internal static bool IsRetryableSnapshotWriteFailure(Exception exception)
-        => TryFindPostgresException(exception, out var postgresException)
-           && postgresException.SqlState is PostgresErrorCodes.UniqueViolation or PostgresErrorCodes.DeadlockDetected;
+        => IsUniqueViolation(exception) || IsDeadlock(exception);
 
     private static bool IsUniqueViolation(Exception exception)
         => TryFindPostgresException(exception, out var postgresException)
            && postgresException.SqlState == PostgresErrorCodes.UniqueViolation;
 
+    private static bool IsDeadlock(Exception exception)
+        => TryFindPostgresException(exception, out var postgresException)
+           && postgresException.SqlState == PostgresErrorCodes.DeadlockDetected;
+
+    /// <summary>
+    /// 沿 <c>InnerException</c> 链查找 <see cref="PostgresException"/>。
+    /// 深度有界（防御异常的环形 InnerException 链导致死循环）：
+    /// 死锁既可能作为最外层异常，也可能被 EF 执行策略包成
+    /// <c>RetryLimitExceededException</c> → <c>DbUpdateException</c> → <c>PostgresException</c>。
+    /// </summary>
     private static bool TryFindPostgresException(Exception exception, out PostgresException postgresException)
     {
-        for (Exception? current = exception; current is not null; current = current.InnerException)
+        const int maxDepth = 8;
+
+        var current = exception;
+        for (var depth = 0; current is not null && depth < maxDepth; depth++, current = current.InnerException)
         {
             if (current is PostgresException found)
             {
