@@ -205,6 +205,15 @@ export interface CreateHabitRequest {
   ruleJson?: string | null;
 }
 
+/** #351：编辑习惯。只传需要修改的字段，未传字段由后端保持原值。 */
+export interface UpdateHabitRequest {
+  title?: string | null;
+  description?: string | null;
+  cadence?: string | null;
+  status?: string | null;
+  ruleJson?: string | null;
+}
+
 export interface ReminderSummary {
   id: string;
   relatedObjectType?: string;

@@ -203,12 +203,42 @@ public class CalendarModule : IModule
             CancellationToken ct) =>
             Results.Ok(ApiResponse<object>.Ok(await svc.ListHabitsAsync(ct))));
 
+        group.MapGet("/habits/{id:guid}", async (
+            Guid id,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.GetHabitAsync(id, ct))));
+
         group.MapPost("/habits", async (
             [FromBody] CreateHabitRequest req,
             [FromServices] PlanningModelService svc,
             CancellationToken ct) =>
             Results.Created("/api/v1/calendar/habits",
                 ApiResponse<object>.Ok(await svc.CreateHabitAsync(req, ct))));
+
+        // #351：习惯创建后必须可编辑 / 归档 / 删除，否则只能直接改库。
+        // PUT 为部分更新语义（只覆盖显式传入的字段）。
+        group.MapPut("/habits/{id:guid}", async (
+            Guid id,
+            [FromBody] UpdateHabitRequest req,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.UpdateHabitAsync(id, req, ct))));
+
+        group.MapDelete("/habits/{id:guid}", async (
+            Guid id,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+        {
+            await svc.DeleteHabitAsync(id, ct);
+            return Results.Ok(ApiResponse<object>.Ok(new { id }));
+        });
+
+        group.MapPost("/habits/{id:guid}/archive", async (
+            Guid id,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<object>.Ok(await svc.ArchiveHabitAsync(id, ct))));
 
         group.MapPost("/habits/{id:guid}/occurrences", async (
             Guid id,
