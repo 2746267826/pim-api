@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using Pim.Infrastructure.Data;
@@ -11,6 +12,12 @@ public class ActivityClassificationSnapshotService
 {
     public const string ClassifierVersion = "local-v1";
     private const int MaxUniqueViolationRetries = 5;
+
+    /// <summary>
+    /// 死锁重试前的退避：让与本批次互相阻塞的那个事务先提交，避免双方同步重试再次撞车。
+    /// 取值需大于 PostgreSQL 默认 <c>deadlock_timeout</c>（1s）的观测抖动，又要短到不拖慢请求。
+    /// </summary>
+    private static readonly TimeSpan DeadlockRetryBackoff = TimeSpan.FromMilliseconds(50);
 
     private readonly PimDbContext _db;
     private readonly ILogger<ActivityClassificationSnapshotService> _logger;
@@ -110,12 +117,26 @@ public class ActivityClassificationSnapshotService
     }
 
     /// <summary>
-    /// 并发防护：后台定时补齐与页面触发的 ensure 可能同时插入同一 record_key，
-    /// PG 唯一索引会让后提交方抛 DbUpdateException。每轮重查该批 keys、剔除他方已写入的
-    /// 重复实体后重试；仅处理 PostgreSQL 唯一键冲突，其他数据库异常原样抛出。
+    /// 并发防护：后台定时补齐与页面触发的 ensure 可能同时插入同一 record_key。
+    /// 并发写同一批 key 会以两种方式失败，两种都必须重试，否则整批物化失败：
+    /// <list type="bullet">
+    ///   <item><description><b>唯一键冲突（23505）</b>：他方已写入同 key。重查该批 keys，
+    ///   剔除本上下文里已成重复的 Added 实体后重试。</description></item>
+    ///   <item><description><b>死锁（40P01）</b>：两批事务按不同顺序插入同一唯一索引，
+    ///   PostgreSQL 选一方回滚。仅靠 23505 重试无法收敛——死锁在第 3 次尝试后以
+    ///   <see cref="RetryLimitExceededException"/> 逃逸，整个物化请求 500
+    ///   （实测 8 并发下可复现）。这里退避后重试整批保存。</description></item>
+    /// </list>
+    /// <para>
+    /// 处于**外层显式事务**中时不在此处重试：死锁会让该事务进入 aborted 状态，
+    /// 原地重试只会拿到 25P02。那种场景由外层 <c>ExecuteInTransactionAsync</c> 的
+    /// 执行策略重跑整个工作单元（含新建事务），这里原样抛出即可。
+    /// </para>
     /// </summary>
     private async Task SaveWithUniqueKeyRetryAsync(List<string> keys, CancellationToken ct)
     {
+        var retryInPlace = _db.Database.CurrentTransaction is null;
+
         for (var attempt = 0; ; attempt++)
         {
             try
@@ -132,62 +153,106 @@ public class ActivityClassificationSnapshotService
 
                 return;
             }
-            catch (DbUpdateException ex) when (IsPostgreSqlUniqueViolation(ex))
+            catch (Exception ex) when (retryInPlace && IsRetryableSnapshotWriteFailure(ex))
             {
                 if (attempt >= MaxUniqueViolationRetries - 1)
                 {
                     _logger.LogError(
                         ex,
-                        "Classification snapshot batch kept hitting the record_key unique constraint after {Max} attempts; giving up. keys={KeyCount}",
+                        "Classification snapshot batch kept failing on write contention after {Max} attempts; giving up. keys={KeyCount}",
                         MaxUniqueViolationRetries,
                         keys.Count);
                     throw;
                 }
 
-                var tracked = _db.ChangeTracker.Entries<ActivityClassificationEntity>()
-                    .Where(entry => entry.State == EntityState.Added)
-                    .ToList();
-
-                var existingKeys = new HashSet<string>(
-                    await _db.Set<ActivityClassificationEntity>()
-                        .Where(entity => keys.Contains(entity.RecordKey))
-                        .Select(entity => entity.RecordKey)
-                        .ToListAsync(ct),
-                    StringComparer.Ordinal);
-
-                var duplicates = tracked
-                    .Where(entry => existingKeys.Contains(entry.Entity.RecordKey))
-                    .ToList();
-                if (duplicates.Count == 0)
+                if (IsUniqueViolation(ex))
                 {
-                    _logger.LogWarning(
-                        ex,
-                        "Classification snapshot batch hit the record_key unique constraint but no concurrent duplicate was found among tracked entities; rethrowing. keys={KeyCount}",
-                        keys.Count);
-                    throw;
+                    if (!await TryDetachConcurrentDuplicatesAsync(ex, keys, ct))
+                        throw;
                 }
-
-                foreach (var entry in duplicates)
-                    entry.State = EntityState.Detached;
-
-                _logger.LogWarning(
-                    "Classification snapshot batch hit the record_key unique constraint on attempt {Attempt}/{Max}; detached {DuplicateCount} concurrently written duplicates and retrying. keys={KeyCount}",
-                    attempt + 1,
-                    MaxUniqueViolationRetries,
-                    duplicates.Count,
-                    keys.Count);
+                else
+                {
+                    // 死锁：给对方事务留出提交窗口，错开两个批次的重试时刻。
+                    _logger.LogWarning(
+                        "Classification snapshot batch hit a deadlock on attempt {Attempt}/{Max}; backing off and retrying. keys={KeyCount}",
+                        attempt + 1,
+                        MaxUniqueViolationRetries,
+                        keys.Count);
+                    await Task.Delay(DeadlockRetryBackoff, ct);
+                }
             }
         }
     }
 
-    private static bool IsPostgreSqlUniqueViolation(DbUpdateException exception)
+    /// <summary>
+    /// 剔除本上下文里已被他方并发写入的重复 Added 实体。
+    /// 返回 false 表示这次失败不是"并发重复写入"（没有可剔除的实体），调用方应原样抛出——
+    /// 否则会把真实缺陷伪装成可重试的竞争。
+    /// </summary>
+    private async Task<bool> TryDetachConcurrentDuplicatesAsync(
+        Exception failure,
+        List<string> keys,
+        CancellationToken ct)
     {
-        for (Exception? current = exception.InnerException; current is not null; current = current.InnerException)
+        var tracked = _db.ChangeTracker.Entries<ActivityClassificationEntity>()
+            .Where(entry => entry.State == EntityState.Added)
+            .ToList();
+
+        var existingKeys = new HashSet<string>(
+            await _db.Set<ActivityClassificationEntity>()
+                .Where(entity => keys.Contains(entity.RecordKey))
+                .Select(entity => entity.RecordKey)
+                .ToListAsync(ct),
+            StringComparer.Ordinal);
+
+        var duplicates = tracked
+            .Where(entry => existingKeys.Contains(entry.Entity.RecordKey))
+            .ToList();
+        if (duplicates.Count == 0)
         {
-            if (current is PostgresException postgresException)
-                return postgresException.SqlState == PostgresErrorCodes.UniqueViolation;
+            _logger.LogWarning(
+                failure,
+                "Classification snapshot batch hit the record_key unique constraint but no concurrent duplicate was found among tracked entities; rethrowing. keys={KeyCount}",
+                keys.Count);
+            return false;
         }
 
+        foreach (var entry in duplicates)
+            entry.State = EntityState.Detached;
+
+        _logger.LogWarning(
+            "Classification snapshot batch detached {DuplicateCount} concurrently written duplicates and will retry. keys={KeyCount}",
+            duplicates.Count,
+            keys.Count);
+        return true;
+    }
+
+    /// <summary>
+    /// 可原地重试的写失败：唯一键冲突（23505）或死锁（40P01）。
+    /// 沿 InnerException 链（有界深度）查找 PostgreSQL 错误码——
+    /// 死锁既可能以 <see cref="DbUpdateException"/> 直接抛出，也可能被 EF 的执行策略
+    /// 包装成 <see cref="RetryLimitExceededException"/>（两者都不是彼此的基类）。
+    /// </summary>
+    internal static bool IsRetryableSnapshotWriteFailure(Exception exception)
+        => TryFindPostgresException(exception, out var postgresException)
+           && postgresException.SqlState is PostgresErrorCodes.UniqueViolation or PostgresErrorCodes.DeadlockDetected;
+
+    private static bool IsUniqueViolation(Exception exception)
+        => TryFindPostgresException(exception, out var postgresException)
+           && postgresException.SqlState == PostgresErrorCodes.UniqueViolation;
+
+    private static bool TryFindPostgresException(Exception exception, out PostgresException postgresException)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is PostgresException found)
+            {
+                postgresException = found;
+                return true;
+            }
+        }
+
+        postgresException = null!;
         return false;
     }
 

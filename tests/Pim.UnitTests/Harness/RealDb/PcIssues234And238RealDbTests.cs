@@ -75,11 +75,29 @@ public sealed class PcIssues234And238RealDbTests
             new StubCurrentUserService(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")),
             NullLogger<ActivityClassificationRecomputeService>.Instance);
 
-        // Preview classification for rule across 2026-09-10 (where 200+ native msedge events exist)
+        // 环境前提（#339）：镜像库需存在原生 msedge tracker 事件，否则本用例无意义。
+        // 原生 tracker 事件只在 AW 退役后写入，因此该日必然是 post-AW 业务日。
+        // 取**最近**一个有 msedge 事件的日子（而不是写死某个历史日期）：
+        // 镜像快照会滚动，写死日期早晚会没数据，让用例退化成永久 Skip。
+        var probeDay = await db.Set<TrackerEventEntity>()
+            .AsNoTracking()
+            .Where(e => e.AppName == "msedge" && e.EventType == "window")
+            .Select(e => e.Timestamp)
+            .OrderByDescending(ts => ts)
+            .FirstOrDefaultAsync(CancellationToken.None);
+
+        Skip.If(
+            probeDay == default,
+            "镜像库无匹配数据（pc_tracker_events 无 msedge 原生事件），跳过 #234 原生事件核对。");
+
+        var day = DateOnly.FromDateTime(probeDay.UtcDateTime).ToString("yyyy-MM-dd");
+
+        // 分类名用现行统一字典：旧「浏览」已被迁移 20260815154954 统一为「文档」，
+        // 沿用旧名会在任何已迁移库上以「分类不存在」失败（与空库无关的真实缺陷）。
         var rule = new SaveActivityClassificationRuleRequest(
             RuleName: "Microsoft Edge",
             Scope: "app",
-            CategoryName: "浏览",
+            CategoryName: CategoryLegacyMapper.Documents,
             ProjectTag: null,
             Color: "#0078d4",
             Priority: 100,
@@ -87,12 +105,13 @@ public sealed class PcIssues234And238RealDbTests
             Confidence: 1.0,
             Explanation: null);
 
-        var range = new ActivityClassificationApplyRangeRequest("range", "2026-09-10", "2026-09-10");
+        var range = new ActivityClassificationApplyRangeRequest("range", day, day);
 
         var preview = await recomputeService.PreviewRuleAsync(rule, range, CancellationToken.None);
 
+        // 业务断言保持原样：有数据就必须真的算出受影响记录，且样本含 msedge。
         Assert.NotNull(preview);
-        Assert.True(preview.AffectedRecordCount > 0, $"Expected affected native events on 2026-09-10, got {preview.AffectedRecordCount}");
+        Assert.True(preview.AffectedRecordCount > 0, $"Expected affected native events on {day}, got {preview.AffectedRecordCount}");
         Assert.Contains(preview.Samples, s => s.AppName != null && s.AppName.Equals("msedge", StringComparison.OrdinalIgnoreCase));
     }
 

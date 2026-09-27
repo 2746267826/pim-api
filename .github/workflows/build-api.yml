@@ -145,13 +145,9 @@ jobs:
           # 保险：确认带 RID 的 assets 仍然可用
           dotnet restore Pim.sln --runtime linux-x64
 
-      # 排除说明：以下 4 个真库用例的前提是「PIM_TEST_CONN 指向含生产数据的镜像库」，
-      # 在 CI 的空库上会在查询阶段异常，而不是按设计显式跳过。它们的验证由独立验收
-      # 环节在真实镜像库上执行；空库健壮性改造见 issue #339。
       - name: Test
         run: |
-          dotnet test Pim.sln --configuration Release --no-restore \
-            --filter "FullyQualifiedName!~MobileTimeline_SpecificHeavyDayLosesDataUnderLegacyCap&FullyQualifiedName!~MobileTimeline_RealDayExceedsLegacy500Cap&FullyQualifiedName!~RealDb_Issue234_PostAwDate_ActivityClassification_UsesNativeEvents&FullyQualifiedName!~EnsureClassificationsAsync_ConcurrentMaterializationDoesNotThrow"
+          dotnet test Pim.sln --configuration Release --no-restore
 
       - name: Publish API (linux-x64, framework-dependent)
         run: |
