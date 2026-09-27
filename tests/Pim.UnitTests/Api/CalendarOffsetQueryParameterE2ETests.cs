@@ -52,6 +52,12 @@ public sealed class CalendarOffsetQueryParameterE2ETests
             builder.UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz");
             // 走生产装配路径：AddPimInfrastructure 读这个键并装上拦截器。
             builder.UseSetting("ConnectionStrings:DefaultConnection", connectionString);
+            // 生产装配会创建 DataProtection 密钥目录（默认 /data/keys/data-protection，
+            // CI runner 上不可写 → UnauthorizedAccessException: Access to the path '/data' is denied）。
+            // 指向进程可写的临时目录，保持"跑真实装配路径"而不是绕过它。
+            builder.UseSetting(
+                "DataProtection:KeysPath",
+                Path.Combine(Path.GetTempPath(), $"pim-dp-{Guid.NewGuid():N}"));
             // Jwt:PrivateKeyPath 缺失时 Test 环境回退到进程内临时 RSA，无需真实密钥文件。
         });
 
