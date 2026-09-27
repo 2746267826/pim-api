@@ -6,6 +6,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -177,8 +178,17 @@ class LocationAcquisitionEngineTest {
         assertEquals(200L, candidates.last().timeMillis)
     }
 
+    /**
+     * WO-ANDROID-GATE-20260926 REQ-15 / AC-15.3 改写了本用例的交付语义。
+     *
+     * 基线：缺水平精度的候选**既不交付也不留记录**（引擎在 `onCandidate` 前就吞掉），
+     * 属 AC-15.3 禁止的静默丢弃。现在引擎必须**交付每一条**候选，
+     * 由下游质量门判定并留下 `missing-horizontal-accuracy` 丢弃记录。
+     *
+     * 但「本轮最好一条」的判定不受影响：缺精度者仍不得取代有限精度的 best。
+     */
     @Test
-    fun `later nonFinite candidate cannot replace finite best`() = runTest {
+    fun `later nonFinite candidate is delivered but cannot replace finite best`() = runTest {
         val source = FakeLocationUpdateSource()
         val engine = LocationAcquisitionEngine(source)
         val request = LocationEngineRequest(
@@ -195,8 +205,32 @@ class LocationAcquisitionEngineTest {
         source.complete()
         job.join()
 
-        assertEquals(1, candidates.size)
-        assertEquals(100L, candidates.single().timeMillis)
+        assertEquals(
+            "AC-15.3：缺精度的候选也必须交付（由质量门判定并留丢弃记录），不得静默吞掉",
+            2,
+            candidates.size
+        )
+        assertEquals(listOf(100L, 200L), candidates.map { it.timeMillis })
+    }
+
+    /** 引擎回报的「本轮最好一条」仍不得被缺精度者取代。 */
+    @Test
+    fun `nonFinite candidate cannot become the reported best`() = runTest {
+        val source = FakeLocationUpdateSource()
+        val engine = LocationAcquisitionEngine(source)
+        val request = LocationEngineRequest(
+            sessionId = "s", priority = 100, timeoutMillis = 10_000L, startedAtWallClockMillis = 0L
+        )
+
+        val deferred = async {
+            engine.acquire(request, onCandidate = { }, onAvailabilityChanged = { })
+        }
+        source.emit(LocationUpdateEvent.Candidate(locationSnapshot(10f, 5.0, 100L)))
+        source.emit(LocationUpdateEvent.Candidate(locationSnapshot(null, 5.0, 200L)))
+        source.complete()
+        val result = deferred.await()
+
+        assertEquals(100L, result.bestLocation!!.timeMillis)
     }
 
     @Test

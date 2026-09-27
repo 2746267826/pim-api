@@ -30,6 +30,13 @@ import org.junit.Test
  * 这是 `AGENTS.md` 要求的「连接 Android 测试门禁」的一部分——Linux 编译通过不能冒充真机通过，
  * 因此状态页存活区块与丢弃原因页都在这里跑一次真实渲染。
  */
+/** 仪表化测试用的冲刺概况（REQ-9：`StatusCenterContent` 的 sprintSummary 无默认值）。 */
+private fun sprintSummaryForTest() = com.pim.app.location.sprint.SprintSummary(
+    enabled = true,
+    count = 0,
+    countDisplay = com.pim.app.location.sprint.SprintCountDisplay.Value(0)
+)
+
 class StatusLivenessScreenTest {
 
     @get:Rule
@@ -91,10 +98,8 @@ class StatusLivenessScreenTest {
         val state = mutableStateOf(normalState())
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = state.value,
-                    liveness = snapshot(hasData = true)
-                )
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state.value,
+                    liveness = snapshot(hasData = true))
             }
         }
 
@@ -113,10 +118,8 @@ class StatusLivenessScreenTest {
         // AC-8.2：数据陈旧时必须标注"数据为 N 小时前"。
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
-                    liveness = snapshot(hasData = true, staleNote = "数据为 2 小时前")
-                )
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
+                    liveness = snapshot(hasData = true, staleNote = "数据为 2 小时前"))
             }
         }
 
@@ -140,7 +143,7 @@ class StatusLivenessScreenTest {
 
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(state = normalState(), liveness = empty)
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(), liveness = empty)
             }
         }
 

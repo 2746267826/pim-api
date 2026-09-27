@@ -297,6 +297,34 @@ fun SettingsScreen(
             state.collectionStatus?.let { Text(it) }
         }
 
+        PimSection("高频冲刺") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("定位冲刺")
+                Switch(
+                    checked = state.sprintEnabled,
+                    onCheckedChange = viewModel::setSprintEnabled
+                )
+            }
+            Text(
+                text = if (state.sprintEnabled) {
+                    "当前：已开启。每个采集周期会做一次最长 30 秒的高频取点。"
+                } else {
+                    "当前：已关闭。不会再发起任何冲刺。"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "开关切换后立即生效，不需要重启应用或采集服务。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         PimSection("采集预设") {
             Row(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),

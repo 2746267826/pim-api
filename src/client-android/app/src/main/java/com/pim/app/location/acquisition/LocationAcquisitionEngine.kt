@@ -81,10 +81,19 @@ class LocationAcquisitionEngine @Inject constructor(
                             val snapshot = event.location
                             if (snapshot.timeMillis < request.startedAtWallClockMillis) return@collect
 
+                            // WO-ANDROID-GATE-20260926 REQ-15 / AC-4.1 / AC-4.2 / AC-15.3：
+                            // **每一条候选都必须交付**，这里不再是「只有更好才交付」。
+                            // 基线只在精度改善时调用 onCandidate，等价于一条静默的点级取舍：
+                            // 同一个 30 秒窗口里 12 / 18 / 25 米三条达标点会被吞掉两条，
+                            // 与「期间达标的都留」（A5）和「窗口内不得有任何客户端裁剪」直接冲突。
+                            // 客户端现在只做精度过滤，取舍交给服务端（REQ-15）。
+                            //
+                            // bestLocation 仍只用于「本轮最好一条」的回报（预热与 low-quality
+                            // 兜底依赖它），与「是否交付」解耦。
                             if (isBetterThan(snapshot, bestLocation)) {
                                 bestLocation = snapshot
-                                onCandidate(snapshot)
                             }
+                            onCandidate(snapshot)
                         }
                         is LocationUpdateEvent.Availability -> {
                             onAvailabilityChanged(event.available)

@@ -967,8 +967,15 @@ class LocationAcquisitionCoordinatorTest {
         advanceUntilIdle()
     }
 
+    /**
+     * WO-ANDROID-GATE-20260926 REQ-15 / AC-15.1 改写了本用例的语义。
+     *
+     * 基线：GMS 对全新请求立即回调最近缓存位置，与预热点 `recordedAt` 相同时被
+     * **2 秒去重静默跳过**（既不入库也不留诊断）。该去重已按 REQ-15 整体取消
+     * （客户端只做精度过滤），因此**每一条回调都必须逐条入库**。
+     */
     @Test
-    fun `stream first fix duplicating the warm-up point is skipped`() = runTest {
+    fun `stream first fix duplicating the warm-up point is now enqueued per REQ-15`() = runTest {
         createCoordinator(this)
         prerequisiteChecker.ready()
 
@@ -984,22 +991,31 @@ class LocationAcquisitionCoordinatorTest {
         assertEquals(1, operations.enqueueCount)
 
         runner.waitForStreamStart()
-        // GMS 对全新请求立即回调最近缓存位置：与预热点同 recordedAt → 跳过
+        // AC-15.1：与预热点同一时刻的缓存 fix 也不得被吞 —— 后台去重已取消
         runner.emitStreamCandidate(aSnapshot)
         runCurrent()
-        assertEquals(1, operations.enqueueCount)
+        assertEquals(
+            "AC-15.1：客户端已无 2 秒去重，重复时刻的达标点必须逐条入库",
+            2,
+            operations.enqueueCount
+        )
         assertEquals(0, operations.recordDroppedCount)
 
-        // 真正的新 fix（时间差远超 2s）正常入库
         runner.emitStreamCandidate(aSnapshot.copy(timeMillis = 100_000L))
         runCurrent()
-        assertEquals(2, operations.enqueueCount)
+        assertEquals(3, operations.enqueueCount)
         coordinator.stopAutomaticStream()
         advanceUntilIdle()
     }
 
+    /**
+     * WO-ANDROID-GATE-20260926 REQ-15 / AC-15.1 / AC-15.3 改写了本用例的语义。
+     *
+     * 基线：重注册后 GMS 立即回调 0.5 秒前的缓存 fix，被 2 秒去重**静默跳过**
+     * （命中即 `return`，无任何记录）。去重取消后每一条回调都必须逐条入库。
+     */
     @Test
-    fun `re-registration immediate cached fix near the last recorded fix is skipped`() = runTest {
+    fun `re-registration immediate cached fix is now enqueued per REQ-15`() = runTest {
         createCoordinator(this)
         prerequisiteChecker.ready()
 
@@ -1017,17 +1033,21 @@ class LocationAcquisitionCoordinatorTest {
         runCurrent()
         assertEquals(1, operations.enqueueCount)
 
-        // 间隔变化触发重注册：新流的立即回调是 0.5s 前的缓存 fix → 跳过
+        // 间隔变化触发重注册：新流的立即回调是 0.5s 前的缓存 fix
         coordinator.updateAutomaticStream(automaticContext.copy(requestIntervalMillis = 30_000L))
         runCurrent()
         runner.waitForStreamStart()
         runner.emitStreamCandidate(aSnapshot.copy(timeMillis = 10_500L))
         runCurrent()
-        assertEquals(1, operations.enqueueCount)
+        assertEquals(
+            "AC-15.3：重注册后的缓存 fix 也必须入库，不得静默丢弃",
+            2,
+            operations.enqueueCount
+        )
 
         runner.emitStreamCandidate(aSnapshot.copy(timeMillis = 40_000L))
         runCurrent()
-        assertEquals(2, operations.enqueueCount)
+        assertEquals(3, operations.enqueueCount)
         coordinator.stopAutomaticStream()
         advanceUntilIdle()
     }

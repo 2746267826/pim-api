@@ -1,5 +1,6 @@
 package com.pim.app.status
 
+import com.pim.app.location.passive.PassiveLocationContract
 import com.pim.app.schedule.ScheduleCacheFreshness
 
 object StatusDisplayText {
@@ -19,10 +20,23 @@ object StatusDisplayText {
         else -> "未知状态"
     }
 
+    /**
+     * 丢弃原因中文文案。
+     *
+     * WO-ANDROID-GATE-20260926 REQ-14 规则 4：被动点采用**原因编码**（`passive-*`）留痕，
+     * **未映射的原因会显示「其他原因」**，因此被动来源的三个编码必须在这里登记，
+     * 否则验收方在「丢弃原因」页看到的是一片「其他原因」，无法区分来源。
+     */
     fun droppedReason(value: String?): String = when (value) {
         "missing-horizontal-accuracy" -> "缺少水平精度"
         "horizontal-accuracy-too-low" -> "定位精度不达标"
         "altitude-missing-timeout" -> "等待高度超时"
+        PassiveLocationContract.REASON_ACCURACY_TOO_LOW -> "被动定位精度不达标"
+        PassiveLocationContract.REASON_MISSING_ACCURACY -> "被动定位缺少水平精度"
+        PassiveLocationContract.REASON_DUPLICATE_FIX -> "被动定位与主动流重复"
+        PassiveLocationContract.REASON_ENQUEUE_FAILED -> "被动定位入库失败"
+    "sprint-enqueue-failed" -> "冲刺点入库失败"
+        "sprint-enqueue-failed" -> "冲刺点入库失败"
         null, "" -> "暂无"
         else -> "其他原因"
     }

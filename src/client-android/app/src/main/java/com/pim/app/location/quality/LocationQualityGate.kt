@@ -82,12 +82,29 @@ class LocationQualityGate(
     }
 
     companion object {
-        const val MAX_ACCURACY_METERS_EXCLUSIVE = 20f
+        /**
+         * 精度门槛（米，**严格小于**才收）：WO-ANDROID-GATE-20260926 REQ-1 / A1 + A10（2026-09-26 复核确认 30 米）。
+         *
+         * **这是门槛的唯一来源**：用户可见文案（手动定位页「精度规则」、状态页丢弃原因说明）
+         * 必须引用本常量派生，不得在第二处写死（AC-1.3 / AC-12.3）。
+         */
+        const val MAX_ACCURACY_METERS_EXCLUSIVE = 30f
         const val LOW_QUALITY_ACCURACY_FLAG = "low-quality-accuracy"
 
         fun fromTrackingSettings(settings: TrackingSettings): LocationQualityGate =
             LocationQualityGate(
                 altitudeWaitTimeoutMillis = settings.altitudeWaitTimeoutMillis
             )
+
+        /**
+         * 门槛的用户可见数值文案（AC-1.3 / AC-12.3）：**唯一**的文案格式化点，
+         * 保证所有页面显示的门槛与采集判定同源。整数值去掉小数尾巴（30.0 → "30"）。
+         */
+        fun displayThresholdMeters(): String =
+            if (MAX_ACCURACY_METERS_EXCLUSIVE == MAX_ACCURACY_METERS_EXCLUSIVE.toInt().toFloat()) {
+                MAX_ACCURACY_METERS_EXCLUSIVE.toInt().toString()
+            } else {
+                MAX_ACCURACY_METERS_EXCLUSIVE.toString()
+            }
     }
 }

@@ -1,5 +1,6 @@
 package com.pim.app.ui.status
 
+import com.pim.app.location.passive.PassiveLocationContract
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -114,10 +115,21 @@ internal fun DroppedReasonScreen(
 }
 
 /** 丢弃原因的中文文案（AC-26.1）。未知原因原样显示标识，不猜成某个具体原因。 */
+/**
+ * 丢弃原因的中文标签。
+ *
+ * WO-ANDROID-GATE-20260926 REQ-14 规则 4：被动点的丢弃用**原因编码**（`passive-*`）留痕，
+ * 这里必须补上映射，否则验收方在页面上只能看到原始编码 / 「其他原因」，无法区分来源。
+ */
 internal fun droppedReasonLabel(reason: String): String = when (reason) {
     "missing-horizontal-accuracy" -> "缺少水平准确度"
     "horizontal-accuracy-too-low" -> "水平准确度不达标"
     "altitude-missing-timeout" -> "等待高度超时"
+    PassiveLocationContract.REASON_ACCURACY_TOO_LOW -> "被动定位精度不达标"
+    PassiveLocationContract.REASON_MISSING_ACCURACY -> "被动定位缺少水平精度"
+    PassiveLocationContract.REASON_DUPLICATE_FIX -> "被动定位与主动流重复"
+    PassiveLocationContract.REASON_ENQUEUE_FAILED -> "被动定位入库失败"
+    "sprint-enqueue-failed" -> "冲刺点入库失败"
     else -> reason
 }
 

@@ -19,6 +19,12 @@ import com.pim.app.location.acquisition.AcquisitionContext
 import com.pim.app.location.acquisition.AcquisitionPhase
 import com.pim.app.location.acquisition.LocationAcquisitionCoordinator
 import com.pim.app.location.acquisition.SessionStartResult
+import com.pim.app.location.acquisition.TriggerType
+
+import com.pim.app.location.passive.PassiveLocationCoordinator
+import com.pim.app.location.quality.RawLocationFix
+import com.pim.app.location.sprint.LocationSprintRuntime
+import com.pim.app.location.sprint.SprintWindowResult
 import com.pim.app.location.highspeed.HighSpeedMode
 import com.pim.app.location.motion.MotionSignalRepository
 import com.pim.app.location.policy.LocationPolicyEngine
@@ -69,12 +75,15 @@ class ForegroundLocationService : Service() {
     @Inject lateinit var mobileSyncScheduler: MobileSyncScheduler
     @Inject lateinit var locationAcquisitionCoordinator: LocationAcquisitionCoordinator
     @Inject lateinit var queueStatusRepository: QueueStatusRepository
+    @Inject lateinit var locationSprintRuntime: LocationSprintRuntime
+    @Inject lateinit var passiveLocationCoordinator: PassiveLocationCoordinator
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var scheduleRefreshJob: Job? = null
     private var snapshotCollectJob: Job? = null
     private var automaticLoopJob: Job? = null
     private var queueObservationJob: Job? = null
+    private var passiveCounterFlushJob: Job? = null
     private var policyEngine: LocationPolicyEngine? = null
     private var scheduleFreshness: ScheduleCacheFreshness = ScheduleCacheFreshness.Missing
     private var scheduleLastSuccessAtMillis: Long? = null
@@ -106,6 +115,9 @@ class ForegroundLocationService : Service() {
     // 最近一次流入库 fix 的 GPS 速度：高速轨迹状态机（policyEngine.highSpeedTracker）
     // 以它为输入，自动循环每次重算时观察。null 表示尚未收到任何入库 fix。
     private var lastSpeedMetersPerSecond: Float? = null
+    // ── WO-ANDROID-GATE-20260926：冲刺与被动定位的运行时状态 ──
+    /** 最近一次冲刺窗口结果（供状态页/通知读取）。 */
+    private var lastSprintResult: SprintWindowResult? = null
     // fix 入库信号：自动循环等待它唤醒，从而在速度变化时立即重算策略并
     // （按需）重注册常驻流，让 2.5s 密集采样与 10s/60s 防抖即时生效。
     private val fixRecordedSignal = MutableStateFlow(0L)
@@ -254,6 +266,10 @@ class ForegroundLocationService : Service() {
     ) {
         isPausing = false
         explicitTeardown = false
+        // 注意：**不**把 startForeground 提到前置检查之前。
+        // 既有契约测试明确要求「先检查定位就绪再 startForeground」
+        // （AndroidV2CollectionControlContractTest、ForegroundLocationServiceTest），
+        // 该顺序属本工单范围外，保持不动。
         if (enableCollection && persistCollectionIntentBeforePrerequisites) {
             trackingSettingsStore.setContinuousCollectionEnabled(true)
         }
@@ -315,8 +331,11 @@ class ForegroundLocationService : Service() {
         }
 
         val settings = trackingSettingsStore.read()
-        initializeAutomaticRuntime(settings)
+        // 本次新增的接线（冲刺台账 + 被动监听注册）放在 startForeground **之后**：
+        // 被动监听要经 LocationManager 注册，可能较慢。这是相对基线的唯一顺序调整，
+        // 只影响我们新加的这段初始化，不触碰上面既有的「先检查再进前台」约定。
         startForeground(LocationNotificationRenderer.NOTIFICATION_ID, notification())
+        initializeAutomaticRuntime(settings)
 
         if (!settings.continuousCollectionEnabled) {
             lastDroppedReason = "连续采集未开启"
@@ -328,11 +347,69 @@ class ForegroundLocationService : Service() {
         startAutomaticLoop()
     }
 
+    /**
+     * 冲刺与被动源的运行时接线（WO-ANDROID-GATE-20260926 REQ-6 / REQ-8 / REQ-14）。
+     *
+     * 具体判定/入库/留痕都在各自的编排类里（`LocationSprintRuntime` /
+     * `PassiveLocationCoordinator`），服务只负责生命周期与「每拍发起一次」——
+     * 既有契约测试要求服务自身不出现质量门与丢弃诊断符号。
+     */
+    private fun wireSprintLedger(settings: TrackingSettings) {
+        locationSprintRuntime.wire()
+        locationSprintRuntime.abort()
+        // AC-14.1：被动监听随采集服务常驻；注册成功会留日志（含 provider 与时刻）。
+        passiveLocationCoordinator.start(::activeStreamFixes)
+    }
+
+    /**
+     * 手动定位的冲刺（REQ-6 / AC-6.1 / AC-6.3）。
+     *
+     * - 开关**开**：发起一次冲刺窗口并落「已执行」台账（AC-6.1 证据）；
+     * - 开关**关**：记一条「跳过（开关关闭）」，**不**注册冲刺流（AC-6.3）。
+     *
+     * 无论哪种，手动会话本身照常跑满 30 秒（用户确认口径，D6）。
+     */
+    private fun maybeRunManualSprint() {
+        // I-1：**必须**走 onManualSession，不能走 onPeriod。
+        // 手动会话自带 ≈1 秒节奏，若经周期门控会把门控的 lastIntervalMillis 写成 1000，
+        // 使下一个自动周期立刻再次放行 —— 同一周期出现两次冲刺（违反 D2），
+        // 并与手动会话自己的取点流重复入库。
+        locationSprintRuntime.onManualSession()
+    }
+
+    /**
+     * 主动流最近的入库 fix 快照（AC-14.5 重复判定用）。
+     *
+     * 只读，且不触碰任何注册状态 —— 被动监听不得扰动主流（AC-14.7）。
+     */
+    private fun activeStreamFixes(): List<RawLocationFix> {
+        val latest = locationAcquisitionCoordinator.streamState.value.latestFix
+            ?: return emptyList()
+        return listOf(
+            RawLocationFix(
+                latitude = latest.latitude,
+                longitude = latest.longitude,
+                horizontalAccuracyMeters = latest.horizontalAccuracyMeters,
+                altitudeMeters = latest.altitudeMeters,
+                provider = latest.provider,
+                recordedAtMillis = latest.timeMillis,
+                policyMode = currentDecision.mode.name,
+                scheduleLowFrequency = currentDecision.scheduleLowFrequency,
+                motionSignal = motionSignalRepository.status.value.signal.name
+            )
+        )
+    }
+
     private fun stopCollection() {
+        // 被动计数在本窗口停止前落台账（AC-14.2 的三数对账分母）。
+        scope.launch { runCatching { passiveLocationCoordinator.stop() } }
+        locationSprintRuntime.abort()
         automaticLoopJob?.cancel()
         automaticLoopJob = null
         queueObservationJob?.cancel()
         queueObservationJob = null
+        passiveCounterFlushJob?.cancel()
+        passiveCounterFlushJob = null
         scheduleRefreshJob?.cancel()
         snapshotCollectJob?.cancel()
         runCatching { motionSignalRepository.unregister() }
@@ -379,6 +456,10 @@ class ForegroundLocationService : Service() {
             startAutomaticLoop()
             return
         }
+        // REQ-6 / AC-6.1：手动定位同样执行冲刺，并留下可核对的台账记录。
+        // 用户 2026-09-26 确认：手动会话**无论开关都跑满 30 秒**，开关只决定是否冲刺。
+        // 因此这里按开关决定发起冲刺还是记「跳过」，会话时长不受影响。
+        maybeRunManualSprint()
 
         scope.launch {
             // 观察本会话的终结状态；若该会话在 waiter 挂起期间被新的手动
@@ -404,6 +485,19 @@ class ForegroundLocationService : Service() {
                 }
                 return@launch
             }
+            // M-2 + R5-2：**取消**时才中止手动自己发起的冲刺窗口。
+            //
+            // - 取消（用户按「停止」）：窗口没跑完，若不停掉，控制器会继续在自己的
+            //   scope 上占着高频注册最长 30 秒（本实例可能已经拆除）。
+            // - 正常终结（Completed / TimedOut / Failed）：手动冲刺与手动会话几乎
+            //   同时起跑（都是 30 秒），此时中止会把**即将写完**的窗口掐掉，
+            //   让「已执行」记录永远不落台账 —— 而真机操作卡 §6 正是要看这条记录。
+            //
+            // 两种情况都**只动手动自己的窗口**：自动采集循环正在跑的冲刺不归手动会话管，
+            // 取消它会丢掉自动那一拍，并重置周期锚点导致提前再冲一次。
+            if (locationAcquisitionCoordinator.state.value.phase == AcquisitionPhase.Cancelled) {
+                locationSprintRuntime.abortManualWindow()
+            }
             // 本实例拥有的会话已终结：清除所有权，使随后的 onDestroy() 不再
             // 尝试取消该会话。
             ownedManualSessionId = null
@@ -423,6 +517,7 @@ class ForegroundLocationService : Service() {
         locationAcquisitionCoordinator.onRecorded = { snapshot ->
             recordAccepted(snapshot)
         }
+        wireSprintLedger(settings)
         applyDecision(
             policyEngine!!.reduce(
                 LocationPolicyInput(
@@ -493,12 +588,42 @@ class ForegroundLocationService : Service() {
                     } else {
                         locationAcquisitionCoordinator.updateAutomaticStream(context)
                     }
+                    // REQ-2 / D2：每个采集周期发起一次冲刺。
+                    // AC-5.6：冲刺走**自己的**注册，本行不触碰上面主流的 context/注册；
+                    // AC-2.5：运动/车载档（30 秒硬下限）照常发起，不做任何「节拍过密即跳过」判断。
+                    locationSprintRuntime.onPeriod(context, decision.mode)
+                    updateNotification()
                 } else {
+                    // AC-10.3：非采集时段不冲刺，但**要记录未冲刺原因**（AC-8.2）。
+                    locationSprintRuntime.onPeriod(
+                        AcquisitionContext(
+                            policyMode = decision.mode.name,
+                            scheduleLowFrequency = decision.scheduleLowFrequency,
+                            motionSignal = motionSignalRepository.status.value.signal.name,
+                            requestIntervalMillis = 0L
+                        ),
+                        decision.mode
+                    )
                     locationAcquisitionCoordinator.stopAutomaticStream()
                 }
                 // 运动信号变化或新 fix 入库即时唤醒（高速档依赖 fix 驱动重算）；
-                // 最迟 30s 重算一次（覆盖日程/设置变化）
-                withTimeoutOrNull(30_000L) {
+                // 最迟 30s 重算一次（覆盖日程/设置变化）。
+                //
+                // 注意：本循环的兜底唤醒粒度是 30 秒，而冲刺周期可能是 45/120/600 秒。
+                // 冲刺的周期门控（SprintPeriodGate）保证**不会多冲**（一周期一次），
+                // 但若某次唤醒恰好落在周期边界之前、下一次唤醒又偏晚，该周期可能被
+                // 顺延一拍 —— 真机实测 60 秒档出现过 60s/89s 的间隔抖动。
+                // 这是「唤醒粒度 vs 周期对齐」的已知抖动，只影响个别周期的**起点**，
+                // 不影响占空比上界与「不早退」；未在此处强改等待时长，
+                // 以免动到既有「最迟 30s 重算一次」的循环契约。
+                // I-2：把等待收敛到下一个冲刺周期边界。45 秒档在 30 秒唤醒网格上
+                // 不对齐，会让实际节奏退化成 60 秒一拍；对齐后恢复「一周期一次」。
+                // 仍然保留 30 秒兜底上限的**字面与语义**（只缩短，不加长）。
+                // 等待下一个唤醒。上限恒为 [LOOP_WAIT_CAP_MILLIS]（30 秒兜底，
+                // 覆盖日程/设置变化）；若冲刺周期边界更早则提前醒来，避免
+                // 45 秒档在 30 秒唤醒网格上退化成 60 秒一拍（I-2）。
+                // 注意：**只缩短、不加长**，30 秒上限语义不变。
+                withTimeoutOrNull(loopWaitMillis(decision.requestIntervalMillis)) {
                     val currentSignal = motionSignalRepository.status.value.signal
                     val lastFixSignal = fixRecordedSignal.value
                     merge(
@@ -518,6 +643,20 @@ class ForegroundLocationService : Service() {
             stopSelf()
         }
     }
+
+    /**
+     * 采集循环单次等待时长：兜底上限 [LOOP_WAIT_CAP_MILLIS]，但若更早到冲刺周期
+     * 边界就提前醒来（I-2）。
+     *
+     * 30 秒是**上限**（工单与本循环的既有约定），不是固定值：对齐只可能缩短等待。
+     */
+    private fun loopWaitMillis(requestIntervalMillis: Long): Long =
+        resolveLoopWaitMillis(
+            locationSprintRuntime.suggestedLoopWaitMillis(
+                requestIntervalMillis = requestIntervalMillis,
+                capMillis = LOOP_WAIT_CAP_MILLIS
+            )
+        )
 
     private fun recomputePolicyDecision(): PolicyDecision {
         val now = System.currentTimeMillis()
@@ -553,6 +692,16 @@ class ForegroundLocationService : Service() {
                 pendingUploadTotal = snapshot.pendingUploadTotal
                 publishRuntimeState()
                 updateNotification()
+            }
+        }
+        // AC-14.2：被动点的三数计数必须**周期性**落台账，不能只在停止时写 ——
+        // 服务可能被系统杀掉或被 force-stop，那时 onDestroy/stopCollection 都不执行，
+        // 「回调总数」这个分母就丢了（真机实测确认过）。这里按固定周期刷窗口。
+        passiveCounterFlushJob?.cancel()
+        passiveCounterFlushJob = scope.launch {
+            while (true) {
+                delay(PASSIVE_COUNTER_FLUSH_MILLIS)
+                runCatching { passiveLocationCoordinator.flushWindow() }
             }
         }
     }
@@ -791,12 +940,36 @@ class ForegroundLocationService : Service() {
     }
 
     companion object {
+        /**
+         * 采集循环单次等待时长的纯计算（供单测断言**行为**，而不只是源码里出现常量）。
+         *
+         * 上限恒为 [LOOP_WAIT_CAP_MILLIS]：冲刺周期对齐只可能缩短等待，绝不放长。
+         */
+        internal fun resolveLoopWaitMillis(suggested: Long): Long =
+            suggested.takeIf { it in 1..LOOP_WAIT_CAP_MILLIS } ?: LOOP_WAIT_CAP_MILLIS
+
         private val _runtimeState = MutableStateFlow(ForegroundLocationRuntimeState())
         val runtimeState: StateFlow<ForegroundLocationRuntimeState> = _runtimeState.asStateFlow()
 
         fun isRunning(): Boolean = runtimeState.value.isRunning
 
         val timeFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+        /**
+         * 被动计数落台账的周期（AC-14.2）。
+         *
+         * 1 分钟：既保证服务被杀时最多丢 1 分钟的分母，又不会把台账写爆
+         * （被动源本身不设限流，日志/台账写入量要可控）。
+         */
+        const val PASSIVE_COUNTER_FLUSH_MILLIS = 60_000L
+
+        /**
+         * 采集循环单次等待的**上限**（工单 §6「最迟 30s 重算一次」的既有约定）。
+         *
+         * 冲刺周期对齐只可能**缩短**本次等待（让 45/120/600 秒档在边界处醒来），
+         * 绝不会加长它。
+         */
+        const val LOOP_WAIT_CAP_MILLIS = 30_000L
 
         fun resolveRequestInterval(intervalMillis: Long): Long {
             require(intervalMillis > 0L) { "intervalMillis must be positive" }

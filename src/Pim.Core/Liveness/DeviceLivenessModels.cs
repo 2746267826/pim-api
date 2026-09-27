@@ -28,6 +28,20 @@ public static class ForensicEventTypes
 
     /// <summary>保活健康事件（REQ-21 红点双通道的依据）。</summary>
     public const string KeepAliveHealth = "keepalive-health";
+
+    /// <summary>
+    /// 定位冲刺台账（WO-ANDROID-GATE-20260926 REQ-8）。
+    /// 每次冲刺一节：发起/结束时刻、窗口内取点条数（去重前）、最好精度、最终入库条数；
+    /// 未冲刺时记录原因。**设备端同名字面量见 `LocationSprintEventTypes.SPRINT`**。
+    /// </summary>
+    public const string LocationSprint = "location-sprint";
+
+    /// <summary>
+    /// 被动定位计数摘要（WO-ANDROID-GATE-20260926 REQ-14 / AC-14.2）。
+    /// 供「被动回调总数 / 入库数 / 丢弃记录数」三数对账，缺口必须为 0。
+    /// **设备端同名字面量见 `PassiveLocationEventTypes.PASSIVE_COUNTER`**。
+    /// </summary>
+    public const string PassiveLocationCounter = "passive-location-counter";
 }
 
 /// <summary>

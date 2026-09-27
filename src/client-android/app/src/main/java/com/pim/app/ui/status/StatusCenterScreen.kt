@@ -100,6 +100,7 @@ fun StatusCenterScreen(
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val liveness by viewModel.liveness.collectAsStateWithLifecycle()
+    val sprintSummary by viewModel.sprintSummary.collectAsStateWithLifecycle()
     val droppedReasons by viewModel.droppedReasons.collectAsStateWithLifecycle()
     val showDroppedReasons by viewModel.showDroppedReasons.collectAsStateWithLifecycle()
     val feedback by viewModel.feedback.collectAsStateWithLifecycle()
@@ -139,6 +140,9 @@ fun StatusCenterScreen(
         state = state,
         feedback = feedback,
         liveness = liveness,
+        // REQ-9：冲刺概况必须**真正传下去**。漏传会静默落到默认的 Empty，
+        // 页面就会一直显示「暂无」——看起来像「没有采集数据」，而不是「没接线」。
+        sprintSummary = sprintSummary,
         keepAliveHealthAlert = keepAliveAlert,
         onOpenDroppedReasons = { viewModel.openDroppedReasons() },
         onOpenGuidance = { showGuidance = true },
@@ -174,6 +178,13 @@ fun StatusCenterScreen(
 @Composable
 internal fun StatusCenterContent(
     state: StatusCenterState,
+    /**
+     * 冲刺概况（REQ-9）。
+     *
+     * **无默认值**：有默认值时漏传会静默显示「暂无」，把「没接线」伪装成
+     * 「没有采集数据」（独立 review round 5 的 R5-1 正是这样漏掉的）。
+     */
+    sprintSummary: com.pim.app.location.sprint.SprintSummary,
     feedback: StatusActionFeedback? = null,
     liveness: LivenessUiSnapshot? = null,
     keepAliveHealthAlert: String? = null,
@@ -224,6 +235,11 @@ internal fun StatusCenterContent(
         feedback?.let {
             FeedbackRow(it)
         }
+
+        Divider()
+
+        // REQ-9：状态页可见冲刺概况（开关当前状态 + 最近 24 小时冲刺次数）。
+        SprintSection(sprintSummary)
 
         Divider()
 
@@ -321,6 +337,74 @@ private fun FeedbackRow(feedback: StatusActionFeedback) {
             text = text,
             modifier = Modifier.padding(12.dp),
             style = MaterialTheme.typography.bodyMedium
+        )
+    }
+}
+
+/**
+ * 冲刺概况区块（REQ-9 / AC-9.1 / AC-9.2 / §5 页面清单）。
+ *
+ * 三态（正常 / 空 / 错误）与加载占位都必须可区分：
+ * - 空态：最近 24 小时无任何采集数据 → 「暂无」；
+ * - 有数据：如实显示「N 次」（含 0 次）并同时展示开关状态；
+ * - 错误态：显示「读取失败」并保留上次值。
+ */
+@Composable
+private fun SprintSection(summary: com.pim.app.location.sprint.SprintSummary) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        SectionHeader("高频冲刺", Icons.Filled.Sensors)
+
+        FactRow(
+            label = "冲刺开关",
+            value = when (summary.enabled) {
+                true -> "已开启"
+                false -> "已关闭"
+                // §5 加载/错误态：开关必有值，读不到时显示占位而不是猜一个。
+                null -> "—"
+            },
+            tag = "sprint-switch"
+        )
+
+        FactRow(
+            label = "最近 24 小时冲刺次数",
+            value = when (val display = summary.countDisplay) {
+                is com.pim.app.location.sprint.SprintCountDisplay.Value -> "${display.count} 次"
+                com.pim.app.location.sprint.SprintCountDisplay.Loading -> "—"
+                com.pim.app.location.sprint.SprintCountDisplay.Empty -> "暂无"
+                com.pim.app.location.sprint.SprintCountDisplay.Failed -> "读取失败"
+            },
+            tag = "sprint-count-24h"
+        )
+
+        // AC-2.2 / AC-3.1：最近一次窗口跨度直接可见，验收方无需导出诊断包即可核对
+        // 「约 30 秒、不早退」。
+        summary.lastWindowDurationMillis?.let { duration ->
+            FactRow(
+                label = "最近一次冲刺窗口",
+                value = "${duration / 1000} 秒",
+                tag = "sprint-last-window"
+            )
+        }
+
+        Text(
+            text = when (val display = summary.countDisplay) {
+                com.pim.app.location.sprint.SprintCountDisplay.Loading ->
+                    "正在读取本地冲刺台账。"
+                is com.pim.app.location.sprint.SprintCountDisplay.Value -> {
+                    if (display.count == 0) {
+                        "最近 24 小时有采集数据，但一次冲刺都没执行。"
+                    } else {
+                        "每个采集周期会做一次最长 30 秒的高频取点。"
+                    }
+                }
+                com.pim.app.location.sprint.SprintCountDisplay.Empty ->
+                    "最近 24 小时没有采集数据，因此无法统计冲刺次数。"
+                com.pim.app.location.sprint.SprintCountDisplay.Failed ->
+                    summary.count?.let { "读取冲刺台账失败，上次成功读取为 $it 次。" }
+                        ?: "读取冲刺台账失败。"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }

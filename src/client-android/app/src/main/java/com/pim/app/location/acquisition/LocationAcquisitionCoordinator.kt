@@ -2,6 +2,7 @@ package com.pim.app.location.acquisition
 
 import android.os.SystemClock
 import com.google.android.gms.location.Priority
+import com.pim.app.location.LocationPointPayload
 import com.pim.app.location.LocationSnapshot
 import com.pim.app.location.quality.AltitudeWaitCoordinator
 import com.pim.app.location.quality.LocationQualityGate
@@ -25,11 +26,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -47,7 +44,7 @@ interface LocationAcquisitionOperations {
  * - 手动触发 = 立即执行一次同一引擎（一次性采集，30s 截止，达标入库；超时用
  *   最好 fix 并标记 low-quality，绝不静默）。
  * - 自动采集 = 同一引擎的常驻流：注册时先预热等 GPS 收敛（冷启动），随后系统按
- *   interval 回调 fix，逐点过 20m 质量门入库；≥20m 的 fix 走 drop 诊断，不回退。
+ *   interval 回调 fix，逐点过 30m 质量门入库；≥30m 的 fix 走 drop 诊断，不回退。
  * - priority 恒为 HIGH_ACCURACY（§3.2）；省电只靠采样间隔。
  * 手动会话状态走 [state]，自动流状态走 [streamState]，两者互不干扰。
  */
@@ -85,10 +82,6 @@ class LocationAcquisitionCoordinator @Inject constructor(
 
     private var sessionJob: Job? = null
     private var streamJob: Job? = null
-    // 最近一次流入库 fix 的 recordedAt：用于跳过预热/重注册后 GMS 立即回调的
-    // 缓存 fix（与刚入库的点几乎同时间），避免重叠点。
-    private var lastRecordedStreamTimeMillis: Long? = null
-
     // ─── 手动一次性采集 ─────────────────────────────────────────
 
     fun startManualSession(): SessionStartResult {
@@ -224,7 +217,7 @@ class LocationAcquisitionCoordinator @Inject constructor(
         newJob.start()
     }
 
-    /** 冷启动预热：等 GPS 收敛（≤30s），接受首个 <20m fix 并入库；不回退。 */
+    /** 冷启动预热：等 GPS 收敛（≤30s），接受首个 <30m fix 并入库；不回退。 */
     private suspend fun warmUpOnce(context: AcquisitionContext) {
         val settings = trackingSettingsStore.read()
         val sessionId = "warmup-${uuidGenerator()}"
@@ -235,23 +228,23 @@ class LocationAcquisitionCoordinator @Inject constructor(
             ownerJob = null,
             settings = settings,
             sink = StateSink.STREAM,
-            allowLowQualityFallback = false
+            allowLowQualityFallback = false,
+            collectAll = false
         )) {
             is OneShotOutcome.Accepted -> {
+                // 流预热固定 collectAll = false，因此这里只会有一条（保持基线语义）。
+                // 入库已在采集过程中逐条完成（见 enqueueAcceptedNow），此处只更新状态。
+                val warmed = outcome.accepted.single()
                 try {
-                    val raw = rawJson(outcome.accepted, TriggerType.AUTOMATIC.storageSource)
-                    operations.enqueueAccepted(outcome.accepted, raw, TriggerType.AUTOMATIC.storageSource)
-                    operations.scheduleSync()
-                    val snapshot = outcome.accepted.fix.toSnapshot()
+                    val snapshot = warmed.fix.toSnapshot()
                     _streamState.update {
                         it.copy(
                             latestFix = snapshot,
-                            latestQualityFlags = outcome.accepted.qualityFlags,
+                            latestQualityFlags = warmed.qualityFlags,
                             lastError = null
                         )
                     }
                     onRecorded?.invoke(snapshot)
-                    lastRecordedStreamTimeMillis = outcome.accepted.fix.recordedAtMillis
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -268,14 +261,11 @@ class LocationAcquisitionCoordinator @Inject constructor(
     }
 
     private suspend fun handleStreamFix(snapshot: LocationSnapshot, context: AcquisitionContext) {
-        // 去重：GMS 对全新 requestLocationUpdates 通常立即回调最近缓存位置，
-        // 若与刚入库的预热/上一流 fix 几乎同时间（<2s），跳过入库与诊断，
-        // 避免地图重叠点。墙钟回拨（时间差为负）不在此窗口内，正常放行。
-        val last = lastRecordedStreamTimeMillis
-        if (last != null) {
-            val diff = snapshot.timeMillis - last
-            if (diff in 0L until STREAM_DEDUP_MIN_INTERVAL_MILLIS) return
-        }
+        // WO-ANDROID-GATE-20260926 REQ-15 / AC-15.1 / AC-15.3：
+        // 常规流 2 秒去重已**整体取消**。基线在这里对「与上一条入库 fix 相差 <2s」的
+        // 回调直接 `return` —— 既不入库也不留诊断，正是 AC-15.3 禁止的静默丢弃路径。
+        // 客户端现在只做精度过滤，达标点逐条入库、逐条进入上传队列；
+        // 滤波与舍弃交给服务端（A9 / A11）。
         val fix = snapshot.toRawFix(TriggerType.AUTOMATIC, context)
         val gate = LocationQualityGate.fromTrackingSettings(trackingSettingsStore.read())
         when (val decision = gate.evaluate(fix, wallClockMillis())) {
@@ -314,7 +304,6 @@ class LocationAcquisitionCoordinator @Inject constructor(
                 it.copy(latestFix = snapshot, latestQualityFlags = flags, lastError = null)
             }
             onRecorded?.invoke(snapshot)
-            lastRecordedStreamTimeMillis = accepted.fix.recordedAtMillis
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -327,7 +316,14 @@ class LocationAcquisitionCoordinator @Inject constructor(
     private enum class StateSink { SESSION, STREAM }
 
     private sealed interface OneShotOutcome {
-        data class Accepted(val accepted: QualityAcceptedLocation) : OneShotOutcome
+        /**
+         * 收下的点。
+         *
+         * WO-ANDROID-GATE-20260926 D6 / REQ-4：手动会话跑满 30 秒并**收集期间全部达标点**
+         * （不再「首个达标点即结束」），因此这里是一组而不是单条。
+         * 流预热仍只取最好一条（`collectAll = false`），保持既有行为不被改动。
+         */
+        data class Accepted(val accepted: List<QualityAcceptedLocation>) : OneShotOutcome
         data object NoFix : OneShotOutcome
         data class Failed(val reason: String) : OneShotOutcome
     }
@@ -385,10 +381,11 @@ class LocationAcquisitionCoordinator @Inject constructor(
                 ownerJob = ownerJob,
                 settings = settings,
                 sink = StateSink.SESSION,
-                allowLowQualityFallback = true
+                allowLowQualityFallback = true,
+                collectAll = true
             )) {
                 is OneShotOutcome.Accepted ->
-                    handleAccepted(outcome.accepted, sessionId, triggerType, ownerJob)
+                    handleAccepted(outcome.accepted, sessionId, ownerJob)
                 is OneShotOutcome.NoFix ->
                     updateStateIfCurrent(sessionId, ownerJob) {
                         it.copy(
@@ -423,7 +420,12 @@ class LocationAcquisitionCoordinator @Inject constructor(
         ownerJob: Job?,
         settings: TrackingSettings,
         sink: StateSink,
-        allowLowQualityFallback: Boolean
+        allowLowQualityFallback: Boolean,
+        /**
+         * true = 收下本次会话期间**全部**达标点（手动会话，D6 / REQ-4）；
+         * false = 只保留最好一条（流预热，保持基线语义不被改动）。
+         */
+        collectAll: Boolean
     ): OneShotOutcome = coroutineScope {
         updateSinkPhase(sink, sessionId, ownerJob, AcquisitionPhase.Acquiring)
 
@@ -431,7 +433,10 @@ class LocationAcquisitionCoordinator @Inject constructor(
         val sessionStartedElapsedRealtimeMillis = elapsedRealtimeMillis()
         val deadlineCapMillis = sessionStartedWallClockMillis + 30_000L
         val deadlineCapElapsedRealtimeMillis = sessionStartedElapsedRealtimeMillis + 30_000L
-        val altitudeWaitCoordinator = AltitudeWaitCoordinator(
+        // 每个 fix 一个独立的等待器：海拔等待的**判定条件**（同一道门、同一超时、
+        // 同一个 quality flag）完全不变，只是不再共享「单个 pending」状态 ——
+        // 共享状态下后一个缺海拔的点会顶掉前一个，让前一个静默消失（AC-15.3 禁止）。
+        fun newAltitudeWaiter() = AltitudeWaitCoordinator(
             gate = LocationQualityGate.fromTrackingSettings(settings),
             nowMillis = wallClockMillis,
             nowElapsedRealtimeMillis = elapsedRealtimeMillis,
@@ -445,19 +450,92 @@ class LocationAcquisitionCoordinator @Inject constructor(
             startedAtWallClockMillis = sessionStartedWallClockMillis
         )
 
-        val bestSnapshot = AtomicReference<LocationSnapshot?>(null)
-        val acceptedLocation = AtomicReference<QualityAcceptedLocation?>(null)
+        // REQ-4「最好一条」：按**精度**取最优（不是最后一条）。
+        // 存 RawLocationFix（low-quality 兜底与 rawJson 需要它）与它来源的
+        // snapshot（会话展示 `bestLocation` 要保留引擎交付的那个对象）。
+        val bestFix = AtomicReference<RawLocationFix?>(null)
+        // 「最好一条」对应的引擎快照（会话展示 `bestLocation` 保留该对象身份）。
+        val bestFixSource = AtomicReference<LocationSnapshot?>(null)
+        val acceptedLocations = java.util.Collections.synchronizedList(
+            mutableListOf<QualityAcceptedLocation>()
+        )
         val engineResult = AtomicReference<LocationEngineResult?>(null)
-        val qualityAccepted = AtomicBoolean(false)
         val qualityJobs = mutableListOf<Job>()
         val engineJobRef = AtomicReference<Job?>(null)
+        // 会话是否已经采集结束（引擎已返回）。REQ-3 取消了「达标即取消引擎」，
+        // 因此迟到的回调必须由本标志拦住，不能让它们在终态之后继续改写状态
+        // （既有那条守卫走的正是「已达标即 return」，随着早退一起消失了）。
+        val engineFinished = AtomicBoolean(false)
+        // 入库失败（DB 异常等）必须让会话显式失败，不得静默丢弃（AC-15.3）。
+        val enqueueError = AtomicReference<Exception?>(null)
+        // 预热是否已经收下首个达标点（范围外行为，保持基线；手动会话不使用本标志）。
+        val warmUpClaimed = AtomicBoolean(false)
+        // 手动会话的中止判定：停止采集/取消后，迟到的达标点不得再入库。
+        fun sessionStillActive(): Boolean = when (sink) {
+            StateSink.SESSION -> isCurrentSession(sessionId) &&
+                _state.value.phase != AcquisitionPhase.Cancelled
+            StateSink.STREAM -> true
+        }
 
-        fun onQualityAccepted(accepted: QualityAcceptedLocation) {
-            if (qualityAccepted.compareAndSet(false, true)) {
-                acceptedLocation.set(accepted)
-                altitudeWaitCoordinator.cancelPending()
+        // REQ-15 / AC-15.1 / AC-15.3：达标点**逐条入库**（不是窗口结束才批量落库），
+        // 这样进程中途被杀也不会丢已达标点，且不存在「命中即 return 且无记录」的路径。
+        suspend fun enqueueAcceptedNow(accepted: QualityAcceptedLocation) {
+            if (!sessionStillActive()) return
+            try {
+                val json = rawJson(accepted, triggerType.storageSource)
+                operations.enqueueAccepted(accepted, json, triggerType.storageSource)
+                operations.scheduleSync()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                enqueueError.compareAndSet(null, e)
+            }
+        }
+
+        /**
+         * 只在**更好**时更新「本轮最好一条」。
+         *
+         * 精度更小者优先；精度不可用时按时间新者优先（与
+         * [LocationAcquisitionEngine] 的 `isBetterThan` 同口径，
+         * 保证会话展示与 low-quality 兜底都取真正最优的那条，而不是最后一条）。
+         */
+        /** @return true 表示这条确实更优（调用方据此更新会话展示的「最佳位置」）。 */
+        fun updateBestIfBetter(fix: RawLocationFix, snapshot: LocationSnapshot): Boolean {
+            while (true) {
+                val current = bestFix.get()
+                if (!isBetterFix(fix, current)) return false
+                if (bestFix.compareAndSet(current, fix)) {
+                    bestFixSource.set(snapshot)
+                    return true
+                }
+            }
+        }
+
+        /**
+         * 收下一个达标点。
+         *
+         * @return true 表示本次确实收下了（预热只认首条，其余返回 false）。
+         */
+        fun onQualityAccepted(
+            accepted: QualityAcceptedLocation,
+            sourceSnapshot: LocationSnapshot
+        ): Boolean {
+            // D6 / AC-6.4：**手动会话不早退** —— 达标点照收，会话继续跑满 30 秒
+            // （基线在这里无条件 `cancel()` 引擎，正是本工单取消的「首个达标点即结束」）。
+            //
+            // 但**流预热**（collectAll = false）保持基线语义：拿到首个达标点即结束，
+            // 只入库一条。REQ-10 要求「范围外一律不改」，预热属于范围外，
+            // 因此不能顺手一起改掉（独立 review 指出过这一点）。
+            if (!collectAll && !warmUpClaimed.compareAndSet(false, true)) return false
+            acceptedLocations += accepted
+            // REQ-4 的「最好一条」判定：按精度取最优（与引擎 isBetterThan 同口径），
+            // 不能取「最后一条」—— 基线 bestSnapshot 每来一条就覆盖，取消早退后
+            // 那条赋值会把最好一条冲成最后一条（独立 review round 2 指出）。
+            updateBestIfBetter(accepted.fix, sourceSnapshot)
+            if (!collectAll) {
                 engineJobRef.get()?.cancel()
             }
+            return true
         }
 
         val engineJob = launch {
@@ -466,17 +544,29 @@ class LocationAcquisitionCoordinator @Inject constructor(
                     runner.acquire(
                         request = request,
                         onCandidate = { snapshot ->
-                            if (qualityAccepted.get()) return@acquire
-                            bestSnapshot.set(snapshot)
-                            updateSinkBest(sink, sessionId, ownerJob, snapshot, AcquisitionPhase.Evaluating)
+                            if (engineFinished.get()) return@acquire
+                            // 记录最新取点用于实时进度（AC-6.2）。
+                            updateSinkLatest(sink, sessionId, ownerJob, snapshot, AcquisitionPhase.Evaluating)
+                            // REQ-4「最好一条」：**每条候选**都要参与比较（不只是达标的那些），
+                            // 否则「无达标点时的手动 low-quality 兜底」（AC-4.4 显式例外）
+                            // 会因为没有候选入选而拿不到 best —— 兜底会退化成「不入库」。
+                            if (updateBestIfBetter(snapshot.toRawFix(triggerType, context), snapshot)) {
+                                updateSinkBest(sink, sessionId, ownerJob, snapshot)
+                            }
 
                             val fix = snapshot.toRawFix(triggerType, context)
                             val qualityJob = launch {
-                                altitudeWaitCoordinator.handleFix(
+                                newAltitudeWaiter().handleFix(
                                     fix = fix,
                                     deadlineCapMillis = deadlineCapMillis,
                                     deadlineCapElapsedRealtimeMillis = deadlineCapElapsedRealtimeMillis,
-                                    onAccepted = { accepted -> onQualityAccepted(accepted) },
+                                    onAccepted = { accepted ->
+                                        // onQualityAccepted 对预热只认首条（warmUpClaimed），
+                                        // 因此用它的返回值判断「本次是否真的收下」，
+                                        // 不能用 acceptedLocations.size（它恒为 1，会重复入库）。
+                                        val acceptedNow = onQualityAccepted(accepted, snapshot)
+                                        if (acceptedNow) enqueueAcceptedNow(accepted)
+                                    },
                                     onDropped = { droppedFix, reason -> recordDrop(droppedFix, reason) }
                                 )
                             }
@@ -485,7 +575,9 @@ class LocationAcquisitionCoordinator @Inject constructor(
                     )
                 )
             } catch (_: CancellationException) {
-                // quality acceptance or external cancel
+                // external cancel（早退已按 D6 取消，这里只剩外部取消）
+            } finally {
+                engineFinished.set(true)
             }
         }
         engineJobRef.set(engineJob)
@@ -504,19 +596,38 @@ class LocationAcquisitionCoordinator @Inject constructor(
             if (_state.value.phase == AcquisitionPhase.Cancelled) return@coroutineScope OneShotOutcome.NoFix
         }
 
-        val accepted = acceptedLocation.get()
-        if (accepted != null) return@coroutineScope OneShotOutcome.Accepted(accepted)
-
-        val best = bestSnapshot.get()
-        if (best != null && allowLowQualityFallback) {
-            return@coroutineScope OneShotOutcome.Accepted(
-                QualityAcceptedLocation(
-                    fix = best.toRawFix(triggerType, context),
-                    altitudeMeters = best.altitudeMeters,
-                    acceptedAtMillis = wallClockMillis(),
-                    qualityFlags = setOf(LocationQualityGate.LOW_QUALITY_ACCURACY_FLAG)
-                )
+        enqueueError.get()?.let { failure ->
+            return@coroutineScope OneShotOutcome.Failed(
+                failure.message ?: failure.javaClass.simpleName
             )
+        }
+
+        val accepted = acceptedLocations.toList()
+        if (accepted.isNotEmpty()) {
+            // 入库已在 onAccepted 时逐条完成（见 enqueueAcceptedNow），这里只回报结果。
+            // 流预热保持基线语义：只取最好一条（bestSnapshot 已是本轮最优）。
+            return@coroutineScope OneShotOutcome.Accepted(
+                if (collectAll) accepted else listOf(accepted.first())
+            )
+        }
+
+        val best = bestFix.get()
+        if (best != null && allowLowQualityFallback) {
+            // AC-4.4 的显式例外：手动无达标点时保持既有 low-quality 兜底入库 1 条。
+            // 用的是**精度最优**的那条（不是最后一条）。
+            val fallback = QualityAcceptedLocation(
+                fix = best,
+                altitudeMeters = best.altitudeMeters,
+                acceptedAtMillis = wallClockMillis(),
+                qualityFlags = setOf(LocationQualityGate.LOW_QUALITY_ACCURACY_FLAG)
+            )
+            enqueueAcceptedNow(fallback)
+            enqueueError.get()?.let { failure ->
+                return@coroutineScope OneShotOutcome.Failed(
+                    failure.message ?: failure.javaClass.simpleName
+                )
+            }
+            return@coroutineScope OneShotOutcome.Accepted(listOf(fallback))
         }
 
         val completion = engineResult.get()?.completion
@@ -539,7 +650,14 @@ class LocationAcquisitionCoordinator @Inject constructor(
         }
     }
 
-    private fun updateSinkBest(
+    /**
+     * 展示层：记录**最新**取点与会话阶段。
+     *
+     * 与 `bestLocation`（按精度取最优）分开：实时进度要的是「刚取到哪个点」，
+     * 而「最佳位置」要的是「本轮最好的一条」—— 两者混用会让 low-quality
+     * 兜底与界面都退化成「最后一条」（独立 review round 2 指出）。
+     */
+    private fun updateSinkLatest(
         sink: StateSink,
         sessionId: String?,
         ownerJob: Job?,
@@ -548,39 +666,52 @@ class LocationAcquisitionCoordinator @Inject constructor(
     ) {
         when (sink) {
             StateSink.SESSION -> updateStateIfCurrent(sessionId, ownerJob) {
-                it.copy(bestLocation = snapshot, phase = phase)
+                it.copy(phase = phase)
             }
             StateSink.STREAM -> _streamState.update { it.copy(latestFix = snapshot) }
         }
     }
 
+    /**
+     * 把「本轮最好一条」同步到会话展示（`bestLocation`）与常驻流的最新点。
+     *
+     * 只在**确实更优**时调用（由 [updateBestIfBetter] 的返回值决定），
+     * 因此 `bestLocation` 始终是精度最优的一条而不是最后一条。
+     */
+    private fun updateSinkBest(
+        sink: StateSink,
+        sessionId: String?,
+        ownerJob: Job?,
+        sourceSnapshot: LocationSnapshot
+    ) {
+        // 保留引擎交付的 snapshot 身份：`bestLocation` 的语义是「本轮最好的一条」，
+        // 不是「最后一条」，也不能被重建成另一个对象（会话展示与既有用例都按它比对）。
+        when (sink) {
+            StateSink.SESSION -> updateStateIfCurrent(sessionId, ownerJob) {
+                it.copy(bestLocation = sourceSnapshot)
+            }
+            StateSink.STREAM -> _streamState.update { it.copy(latestFix = sourceSnapshot) }
+        }
+    }
+
+    /**
+     * 会话正常收尾：入库已在采集过程中逐条完成（[enqueueAcceptedNow]），
+     * 这里只落终态并把最好的一条回报给通知/状态页。
+     */
     private suspend fun handleAccepted(
-        accepted: QualityAcceptedLocation,
+        accepted: List<QualityAcceptedLocation>,
         sessionId: String,
-        triggerType: TriggerType,
         ownerJob: Job
     ) {
         if (!isCurrentSession(sessionId)) return
-        try {
-            val json = rawJson(accepted, triggerType.storageSource)
-            operations.enqueueAccepted(accepted, json, triggerType.storageSource)
-            // Record is already enqueued; schedule sync at most once even if session changed.
-            operations.scheduleSync()
-            updateStateIfCurrent(sessionId, ownerJob) {
-                it.copy(
-                    phase = AcquisitionPhase.Completed,
-                    lastQualityFlags = accepted.qualityFlags,
-                    errorReason = null
-                )
-            }
-            onRecorded?.invoke(accepted.fix.toSnapshot())
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            updateStateIfCurrent(sessionId, ownerJob) {
-                it.copy(phase = AcquisitionPhase.Failed, errorReason = e.message)
-            }
+        updateStateIfCurrent(sessionId, ownerJob) {
+            it.copy(
+                phase = AcquisitionPhase.Completed,
+                lastQualityFlags = accepted.lastOrNull()?.qualityFlags ?: emptySet(),
+                errorReason = null
+            )
         }
+        accepted.lastOrNull()?.let { location -> onRecorded?.invoke(location.fix.toSnapshot()) }
     }
 
     private suspend fun recordDrop(fix: RawLocationFix, reason: String) {
@@ -624,43 +755,35 @@ class LocationAcquisitionCoordinator @Inject constructor(
     private fun isCurrentSession(sessionId: String?): Boolean =
         sessionId != null && _state.value.sessionId == sessionId
 
-    private fun rawJson(accepted: QualityAcceptedLocation, source: String): String {
-        val fix = accepted.fix
-        val payload = buildJsonObject {
-            put("latitude", JsonPrimitive(fix.latitude))
-            put("longitude", JsonPrimitive(fix.longitude))
-            put(
-                "horizontalAccuracyMeters",
-                finiteJsonNumberOrNull(fix.horizontalAccuracyMeters?.toDouble())
-            )
-            put("provider", JsonPrimitive(fix.provider))
-            put("source", JsonPrimitive(source))
-            put("altitudeMeters", finiteJsonNumberOrNull(accepted.altitudeMeters))
-            put(
-                "speedMetersPerSecond",
-                finiteJsonNumberOrNull(fix.speedMetersPerSecond?.toDouble())
-            )
-            put(
-                "bearingDegrees",
-                finiteJsonNumberOrNull(fix.bearingDegrees?.toDouble())
-            )
-            put("recordedAtUnixMs", JsonPrimitive(fix.recordedAtMillis))
-            put("submittedAtUnixMs", JsonPrimitive(wallClockMillis()))
-            put("policyMode", JsonPrimitive(fix.policyMode))
-            put("scheduleLowFrequency", JsonPrimitive(fix.scheduleLowFrequency))
-            put("motionSignal", JsonPrimitive(fix.motionSignal))
-            put(
-                "qualityFlags",
-                buildJsonArray {
-                    accepted.qualityFlags.sorted().forEach { add(JsonPrimitive(it)) }
-                }
-            )
+    /**
+     * 「更好的一条」判定（与 [LocationAcquisitionEngine.isBetterThan] 同口径）。
+     *
+     * 精度有限且更小者更优；精度不可用时按时间新者优先。
+     */
+    private fun isBetterFix(candidate: RawLocationFix, current: RawLocationFix?): Boolean {
+        if (current == null) return true
+        val candidateAccuracy = candidate.horizontalAccuracyMeters
+        val currentAccuracy = current.horizontalAccuracyMeters
+        val candidateValid = candidateAccuracy != null && candidateAccuracy.isFinite()
+        val currentValid = currentAccuracy != null && currentAccuracy.isFinite()
+        return when {
+            candidateValid && !currentValid -> true
+            !candidateValid && currentValid -> false
+            !candidateValid && !currentValid -> candidate.recordedAtMillis > current.recordedAtMillis
+            else -> {
+                val cmp = candidateAccuracy!!.compareTo(currentAccuracy!!)
+                cmp < 0 || (cmp == 0 && candidate.recordedAtMillis > current.recordedAtMillis)
+            }
         }
-        return json.encodeToString(JsonElement.serializer(), payload)
     }
 
-    private fun finiteJsonNumberOrNull(value: Double?): JsonElement =
-        if (value == null || !value.isFinite()) JsonNull else JsonPrimitive(value)
+    /** 负载构造收敛到 [LocationPointPayload]（主动流/冲刺/被动三源共用一份）。 */
+    private fun rawJson(accepted: QualityAcceptedLocation, source: String): String =
+        LocationPointPayload.encode(
+            accepted = accepted,
+            source = source,
+            submittedAtMillis = wallClockMillis()
+        )
 
     private fun LocationSnapshot.toRawFix(
         triggerType: TriggerType,
@@ -693,6 +816,5 @@ class LocationAcquisitionCoordinator @Inject constructor(
 
     private companion object {
         const val STREAM_ALTITUDE_MISSING_FLAG = "altitude-missing"
-        const val STREAM_DEDUP_MIN_INTERVAL_MILLIS = 2_000L
     }
 }

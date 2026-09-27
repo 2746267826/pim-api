@@ -13,7 +13,17 @@ data class TrackingSettings(
     val altitudeWaitTimeoutMillis: Long,
     val syncOnUnmeteredOnly: Boolean,
     val logRetentionDays: Int = 7,
-    val verboseLoggingUntilUtcMillis: Long? = null
+    val verboseLoggingUntilUtcMillis: Long? = null,
+    /**
+     * 高频冲刺开关（WO-ANDROID-GATE-20260926 REQ-5）。
+     *
+     * 默认**开**（D1：需求方要先体验效果）。关闭后必须**真的不再发起任何冲刺**，
+     * 且切换后**无需重启**即自下一个周期起生效（AC-5.3 / AC-5.5）——
+     * 采集循环每个周期都重新读本字段，不做一次性快照。
+     *
+     * 范围外提醒：本开关只控制冲刺窗口，**不**控制采集频率档位（REQ-10）。
+     */
+    val sprintEnabled: Boolean = true
 ) {
     companion object {
         fun defaults(): TrackingSettings = TrackingSettings(
@@ -24,7 +34,8 @@ data class TrackingSettings(
             movementIntervalMillis = 60 * 1000L,
             scheduleRecoveryThresholdMeters = 100.0,
             altitudeWaitTimeoutMillis = 15 * 1000L,
-            syncOnUnmeteredOnly = false
+            syncOnUnmeteredOnly = false,
+            sprintEnabled = true
         )
     }
 }
@@ -64,7 +75,8 @@ class TrackingSettingsStore(
             ),
             verboseLoggingUntilUtcMillis = preferences.getString(
                 KEY_VERBOSE_LOGGING_UNTIL, null
-            )?.toLongOrNull() ?: defaults.verboseLoggingUntilUtcMillis
+            )?.toLongOrNull() ?: defaults.verboseLoggingUntilUtcMillis,
+            sprintEnabled = preferences.getBoolean(KEY_SPRINT_ENABLED, defaults.sprintEnabled)
         )
     }
 
@@ -81,12 +93,23 @@ class TrackingSettingsStore(
             .putBoolean(KEY_SYNC_ON_UNMETERED_ONLY, settings.syncOnUnmeteredOnly)
             .putInt(KEY_LOG_RETENTION_DAYS, settings.logRetentionDays)
             .putString(KEY_VERBOSE_LOGGING_UNTIL, settings.verboseLoggingUntilUtcMillis?.toString())
+            .putBoolean(KEY_SPRINT_ENABLED, settings.sprintEnabled)
             .apply()
         return read()
     }
 
     fun setContinuousCollectionEnabled(enabled: Boolean): TrackingSettings {
         return write(read().copy(continuousCollectionEnabled = enabled))
+    }
+
+    /**
+     * 切换高频冲刺开关（REQ-5 / AC-5.5）。
+     *
+     * 只写这一个字段并**立即落盘**：采集循环与手动会话每拍重新读，
+     * 因此无需重启应用/采集服务即自下一个周期起生效。
+     */
+    fun setSprintEnabled(enabled: Boolean): TrackingSettings {
+        return write(read().copy(sprintEnabled = enabled))
     }
 
     fun applyPreset(profileId: String): TrackingSettings {
@@ -130,6 +153,7 @@ class TrackingSettingsStore(
         const val KEY_SYNC_ON_UNMETERED_ONLY = "tracking.sync_on_unmetered_only"
         const val KEY_LOG_RETENTION_DAYS = "tracking.log_retention_days"
         const val KEY_VERBOSE_LOGGING_UNTIL = "tracking.verbose_logging_until_utc_millis"
+        const val KEY_SPRINT_ENABLED = "tracking.sprint_enabled"
     }
 }
 

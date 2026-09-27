@@ -8,11 +8,19 @@ import android.content.Context
 import android.content.Intent
 import android.location.LocationManager
 import android.os.Looper
+import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.testing.WorkManagerTestInitHelper
 import com.google.android.gms.location.Priority
 import com.pim.app.TestPimApp
+import com.pim.app.data.AppDatabase
 import com.pim.app.location.LocationSnapshot
+import com.pim.app.location.passive.PassiveLocationCoordinator
+import com.pim.app.location.passive.PassiveLocationLedger
+import com.pim.app.location.passive.PassiveLocationSource
+import com.pim.app.location.sprint.LocationSprintController
+import com.pim.app.location.sprint.LocationSprintRuntime
+import com.pim.app.mobile.logs.StructuredLogRepository
 import com.pim.app.location.acquisition.AcquisitionPhase
 import com.pim.app.location.acquisition.AcquisitionContext
 import com.pim.app.location.acquisition.LocationAcquisitionCoordinator
@@ -84,11 +92,14 @@ import org.robolectric.annotation.LooperMode
 @Config(sdk = [34], application = TestPimApp::class)
 class ForegroundLocationServiceTest {
     private val cacheDirs = mutableListOf<java.io.File>()
+    private val databases = mutableListOf<AppDatabase>()
 
     @org.junit.After
     fun cleanUp() {
         cacheDirs.forEach { it.deleteRecursively() }
         cacheDirs.clear()
+        databases.forEach { it.close() }
+        databases.clear()
     }
 
     private fun emptyQueueStatusRepo(
@@ -126,7 +137,72 @@ class ForegroundLocationServiceTest {
         } else {
             service.trackingSettingsStore = trackingStore("fg_default_", enabled = false)
         }
+        service.attachSprintAndPassiveDependencies(harness, context, service.trackingSettingsStore)
         return service
+    }
+
+    /**
+     * WO-ANDROID-GATE-20260926：装配冲刺与被动定位的运行时依赖。
+     *
+     * 被动计数台账用 Robolectric 下的真实（内存）`AppDatabase`，避免用假件
+     * 掩盖 Room 层的装配错误。
+     */
+    private fun ForegroundLocationService.attachSprintAndPassiveDependencies(
+        harness: CoordinatorHarness,
+        context: Application,
+        settingsStore: TrackingSettingsStore
+    ) {
+        val database = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        databases += database
+        val operations = RecordingAcquisitionOperations()
+        val sprintController = LocationSprintController(
+            runner = harness.runner,
+            ledger = harness.sprintLedger,
+            trackingSettingsStore = settingsStore
+        )
+        locationSprintRuntime = LocationSprintRuntime(
+            controller = sprintController,
+            operations = operations
+        )
+        val passiveLogs = StructuredLogRepository(context, settingsStore) { System.currentTimeMillis() }
+        passiveLocationCoordinator = PassiveLocationCoordinator(
+            source = PassiveLocationSource(context, settingsStore, passiveLogs),
+            operations = operations,
+            ledger = PassiveLocationLedger(database.forensicEventDao(), passiveLogs),
+            logs = passiveLogs
+        )
+    }
+
+    /** 记录冲刺/被动点的入库与丢弃，供运行时接线断言用（不落库，避免测试互相干扰）。 */
+    class RecordingAcquisitionOperations : com.pim.app.location.acquisition.LocationAcquisitionOperations {
+        val enqueued = java.util.Collections.synchronizedList(
+            mutableListOf<Triple<com.pim.app.location.quality.QualityAcceptedLocation, String, String>>()
+        )
+        val dropped = java.util.Collections.synchronizedList(
+            mutableListOf<Pair<com.pim.app.location.quality.RawLocationFix, String>>()
+        )
+        val syncRequests = java.util.concurrent.atomic.AtomicInteger(0)
+
+        override suspend fun enqueueAccepted(
+            accepted: com.pim.app.location.quality.QualityAcceptedLocation,
+            rawJson: String,
+            source: String
+        ) {
+            enqueued += Triple(accepted, rawJson, source)
+        }
+
+        override suspend fun recordDropped(
+            fix: com.pim.app.location.quality.RawLocationFix,
+            reason: String
+        ) {
+            dropped += fix to reason
+        }
+
+        override fun scheduleSync() {
+            syncRequests.incrementAndGet()
+        }
     }
 
     private fun minimalScheduleRepository(context: Application): ScheduleWindowRepository {
@@ -1390,6 +1466,16 @@ class ForegroundLocationServiceTest {
 
         val sessionId = harness.runner.lastRequest!!.sessionId
         harness.runner.emitCandidate(acceptedSnapshot())
+        // WO-ANDROID-GATE-20260926 D6：手动会话不再「首个达标点即结束」，必须等满 30 秒。
+        // 这里显式让一次性采集截止，等价于窗口跑满。
+        // D6：手动会话等满 30 秒才终结 —— 显式让一次性采集截止。
+        harness.runner.completeCurrent(
+            LocationEngineResult(
+                sessionId = sessionId,
+                bestLocation = null,
+                completion = LocationEngineCompletion.TimedOut
+            )
+        )
         idleUntil {
             harness.coordinator.state.value.sessionId == sessionId &&
                 harness.coordinator.state.value.phase == AcquisitionPhase.Completed
@@ -1616,6 +1702,14 @@ class ForegroundLocationServiceTest {
         )
         idleUntil(timeoutMillis = 15_000L) { harness.runner.acquireCount.get() >= 1 }
         harness.runner.emitCandidate(acceptedSnapshot())
+        // D6：手动会话等满 30 秒；显式让一次性采集截止以进入 Completed。
+        harness.runner.completeCurrent(
+            LocationEngineResult(
+                sessionId = harness.runner.lastRequest!!.sessionId,
+                bestLocation = null,
+                completion = LocationEngineCompletion.TimedOut
+            )
+        )
         idleUntil(timeoutMillis = 15_000L) {
             harness.coordinator.state.value.phase == AcquisitionPhase.Completed
         }
@@ -1837,6 +1931,14 @@ class ForegroundLocationServiceTest {
         // has not run yet, which is exactly the deterministic window in which
         // an unexpected onDestroy must not cancel the owned result.
         harness.runner.emitCandidate(acceptedSnapshot())
+        // D6：手动会话等满 30 秒才终结 —— 显式让一次性采集截止。
+        harness.runner.completeCurrent(
+            LocationEngineResult(
+                sessionId = sessionId!!,
+                bestLocation = null,
+                completion = LocationEngineCompletion.TimedOut
+            )
+        )
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         while (harness.coordinator.state.value.phase != AcquisitionPhase.Completed) {
             if (System.nanoTime() > deadline) {
@@ -2314,6 +2416,14 @@ class ForegroundLocationServiceTest {
         // window in which a replaceAwaitingManual start switches the session id
         // before the old waiter ever sees the old terminal state.
         harness.runner.emitCandidate(acceptedSnapshot())
+        // D6：手动会话等满 30 秒才终结 —— 显式让一次性采集截止。
+        harness.runner.completeCurrent(
+            LocationEngineResult(
+                sessionId = startedId!!,
+                bestLocation = null,
+                completion = LocationEngineCompletion.TimedOut
+            )
+        )
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         while (harness.coordinator.state.value.phase != AcquisitionPhase.Completed) {
             if (System.nanoTime() > deadline) {
@@ -2914,7 +3024,11 @@ class ForegroundLocationServiceTest {
         assertTrue(source.contains("locationAcquisitionCoordinator.updateAutomaticStream("))
         assertTrue(source.contains("locationAcquisitionCoordinator.stopAutomaticStream()"))
         assertTrue(source.contains("isAutomaticStreamActive()"))
-        assertTrue(source.contains("withTimeoutOrNull(30_000L)"))
+        // WO-ANDROID-GATE-20260926：循环等待改为「上限 30 秒、可提前到冲刺周期边界」。
+        // 断言**意图**（30 秒上限常量 + 用 withTimeoutOrNull 施加）而不是字面量，
+        // 否则「只缩短等待」的对齐改动会被误判成回归。
+        assertTrue(source.contains("withTimeoutOrNull(loopWaitMillis("))
+        assertTrue(source.contains("LOOP_WAIT_CAP_MILLIS = 30_000L"))
         assertTrue(source.contains("requestIntervalMillis = decision.requestIntervalMillis"))
         assertFalse(
             "automatic loop must not insert an initial delay before the first round",
@@ -3143,11 +3257,13 @@ class ForegroundLocationServiceTest {
 
         fun createService(): ForegroundLocationService {
             val service = Robolectric.buildService(ForegroundLocationService::class.java).get()
-            service.locationAcquisitionCoordinator = newHarness().coordinator
+            val harness = newHarness()
+            service.locationAcquisitionCoordinator = harness.coordinator
             service.queueStatusRepository = emptyQueueStatusRepo()
             service.motionSignalRepository = MotionSignalRepository(context)
             service.trackingSettingsStore = store
             service.scheduleWindowRepository = repository
+            service.attachSprintAndPassiveDependencies(harness, context, store)
             return service
         }
 
@@ -3161,6 +3277,8 @@ class ForegroundLocationServiceTest {
         var prerequisiteResult: LocationPrerequisiteResult = LocationPrerequisiteResult.Ready
     ) {
         val runner = ControllableRunner()
+        /** 冲刺台账假件（本文件只关心接线，台账落库由 LocationSprintLedgerTest 守）。 */
+        val sprintLedger = RecordingSprintLedgerPort()
         val trackingSettingsStore = TrackingSettingsStore(
             InMemorySharedPreferences()
         )
@@ -3200,7 +3318,7 @@ class ForegroundLocationServiceTest {
         }
     }
 
-    class ControllableRunner : LocationAcquisitionRunner {
+    class ControllableRunner : LocationAcquisitionRunner, com.pim.app.location.sprint.SprintUpdateSource {
         data class Session(
             val request: LocationEngineRequest,
             val onCandidate: suspend (LocationSnapshot) -> Unit,
@@ -3223,6 +3341,13 @@ class ForegroundLocationServiceTest {
         val streamStart = CompletableDeferred<Unit>()
         private val streamHold = CompletableDeferred<Unit>()
 
+        // ── 冲刺的独立注册（AC-5.6）──
+        private val sprintStreams = CopyOnWriteArrayList<StreamSession>()
+        val sprintStreamCount = AtomicInteger(0)
+        val lastSprintStreamRequest: LocationUpdateRequest?
+            get() = sprintStreams.lastOrNull()?.request
+        private val sprintHold = CompletableDeferred<Unit>()
+
         override suspend fun acquire(
             request: LocationEngineRequest,
             onCandidate: suspend (LocationSnapshot) -> Unit,
@@ -3234,6 +3359,7 @@ class ForegroundLocationServiceTest {
             return session.result.await()
         }
 
+        /** 主流常驻注册（AC-5.6：冲刺不得混进这里）。 */
         override suspend fun stream(
             request: LocationUpdateRequest,
             onCandidate: suspend (LocationSnapshot) -> Unit
@@ -3242,6 +3368,26 @@ class ForegroundLocationServiceTest {
             streamCount.incrementAndGet()
             streamStart.complete(Unit)
             streamHold.await()
+        }
+
+        /**
+         * 冲刺的**独立**注册（AC-5.6）。
+         *
+         * 单独记账（[sprintStreams] / [sprintStreamCount]）：若与主流共用一份记录，
+         * 冲刺的 1 秒窗口会污染「主流注册间隔」断言 —— 那正是工单要防的耦合。
+         */
+        override suspend fun streamSprintWindow(
+            request: LocationUpdateRequest,
+            onSnapshot: suspend (LocationSnapshot) -> Unit
+        ) {
+            sprintStreams += StreamSession(request, onSnapshot)
+            sprintStreamCount.incrementAndGet()
+            sprintHold.await()
+        }
+
+        fun emitSprintCandidate(snapshot: LocationSnapshot) {
+            val session = sprintStreams.lastOrNull() ?: return
+            runBlocking { session.onCandidate(snapshot) }
         }
 
         fun waitForStreamStart() {
@@ -3323,5 +3469,25 @@ class ForegroundLocationServiceTest {
         override suspend fun sendHeartbeat(body: com.pim.core.models.DaemonHeartbeatRequest) = error("not mocked")
         override suspend fun sendEndpointNotificationAction(deviceId: String, body: com.pim.core.models.EndpointNotificationActionRequestDto) = error("not mocked")
         override suspend fun getClientLatest() = com.pim.core.models.ClientShellLatestResponse()
+    }
+}
+
+/** 冲刺台账假件：本文件只关心 service 的接线，台账落库由 LocationSprintLedgerTest 守。 */
+class RecordingSprintLedgerPort : com.pim.app.location.sprint.SprintLedgerPort {
+    val records = java.util.Collections.synchronizedList(mutableListOf<Pair<String, String?>>())
+
+    val executedCount: Int
+        get() = records.count { it.first == com.pim.app.location.sprint.SprintOutcome.EXECUTED }
+
+    override suspend fun recordExecuted(
+        result: com.pim.app.location.sprint.SprintWindowResult
+    ): Boolean {
+        records += com.pim.app.location.sprint.SprintOutcome.EXECUTED to null
+        return true
+    }
+
+    override suspend fun recordSkipped(occurredAtUtcMillis: Long, reason: String): Boolean {
+        records += com.pim.app.location.sprint.SprintOutcome.SKIPPED to reason
+        return true
     }
 }

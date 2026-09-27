@@ -49,8 +49,7 @@ object LocationUploadPlanner {
 class LocationUploadCoordinator @Inject constructor(
     @ApplicationContext private val context: Context,
     private val database: AppDatabase,
-    private val api: ApiService,
-    private val compressor: com.pim.app.location.TrajectoryCompressor
+    private val api: ApiService
 ) {
     private val dao: MobileDataDao = database.mobileDataDao()
 
@@ -124,18 +123,18 @@ class LocationUploadCoordinator @Inject constructor(
     }
 
     private suspend fun pendingRows(limit: Int): List<MobileLocationPointEntity> {
-        // PIM-035: ensure limit is applied before compress to preserve tail, then compress reduces within limit
+        // WO-ANDROID-GATE-20260926 REQ-15 / AC-15.1 / AC-15.2：客户端只做精度过滤。
+        // 这里原本对 pendingRows 调 Douglas-Peucker（ε = 8.0 米，
+        // TrajectoryCompressor.DOUGLAS_EPSILON_METERS）抽稀，被抽掉的点既不进上传、
+        // 也不留任何记录 —— 属 AC-15.3 禁止的静默丢弃路径。抽稀已整体取消：
+        // 达标的点逐条进入上传队列，滤波与舍弃交给服务端（A9 / A11）。
+        //
+        // 上传口径不变（本工单范围外）：仍是逐条 HTTP 请求、每次同步最多取 DEFAULT_LIMIT 条。
         val pending = dao.getLocationPointsBySyncStatus(MobileSyncStatus.PENDING, limit)
-        if (pending.size >= limit) {
-            val slice = pending.take(limit)
-            val compressed = compressor.compress(slice)
-            // Preserve original tail if compression dropped it (Douglas-Peucker keeps endpoints)
-            return if (compressed.isNotEmpty() && compressed.last().id != slice.last().id) (compressed.dropLast(1) + slice.last()).take(limit) else compressed
-        }
+        if (pending.size >= limit) return pending
+
         val failed = dao.getLocationPointsBySyncStatus(MobileSyncStatus.FAILED, limit - pending.size)
-        val combined = (pending + failed).take(limit)
-        val compressed = compressor.compress(combined)
-        return if (compressed.isNotEmpty() && combined.isNotEmpty() && compressed.last().id != combined.last().id) (compressed.dropLast(1) + combined.last()).take(limit) else compressed
+        return pending + failed
     }
 
     private suspend fun applyStatusUpdates(updates: LocationUploadStatusUpdates) {

@@ -146,6 +146,15 @@ interface MobileDataDao {
         rejectedStatus: String = MobileSyncStatus.REJECTED
     ): Flow<Int>
 
+    /**
+     * 时间窗内是否有定位点（AC-9.2 的空态判定：「无定位点、无心跳、无台账记录」才算「暂无」）。
+     *
+     * 只看**时间窗**、不看 sync_status：已上传的点已被删除，因此「有采集数据」应以
+     * 仍然留存的行为准；这里用于「最近 24 小时是否采集过」的粗判，不用于计数展示。
+     */
+    @Query("SELECT COUNT(*) FROM mobile_location_points WHERE recorded_at_utc >= :fromUtc")
+    suspend fun countLocationPointsSince(fromUtc: Long): Int
+
     @Query("SELECT COUNT(*) FROM mobile_location_points WHERE sync_status != :syncedStatus AND sync_status != :rejectedStatus")
     fun pendingLocationPointCount(
         syncedStatus: String = MobileSyncStatus.SYNCED,

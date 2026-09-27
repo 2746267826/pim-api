@@ -49,6 +49,9 @@ class FusedLocationUpdateSource @Inject constructor(
         if (request.durationMillis > 0L) {
             builder.setDurationMillis(request.durationMillis)
         }
+        // AC-5.6 提醒：冲刺走的是**独立**注册（LocationSprintController），
+        // 它有自己的 interval/duration，绝不通过改写主流注册来实现 —— 那会把下一拍
+        // 从「改回时刻」重新计时，把周期锚点拖长。
         val locationRequest = builder.build()
 
         val callback = object : LocationCallback() {

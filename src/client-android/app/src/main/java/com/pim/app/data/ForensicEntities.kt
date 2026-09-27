@@ -124,6 +124,56 @@ interface ForensicEventDao {
     @Query("SELECT COUNT(*) FROM mobile_forensic_events WHERE event_type = :eventType")
     suspend fun countByType(eventType: String): Int
 
+    /**
+     * 按「事件类型 + 时间窗 + 结果」计数（REQ-9 / AC-9.1）。
+     *
+     * 走 SQL 而不是「读最近 N 条再过滤」：高速档（2.5 秒一拍）下跳过记录可达约
+     * 34560 条/天，用固定条数上限会把 24 小时内的已执行记录挤出窗口，
+     * 让状态页把「其实冲了很多次」显示成 0 次。
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM mobile_forensic_events
+        WHERE event_type = :eventType
+          AND occurred_at_utc >= :fromUtc
+          AND payload_json LIKE :payloadLike
+        """
+    )
+    suspend fun countByTypeInWindowWithPayloadLike(
+        eventType: String,
+        fromUtc: Long,
+        payloadLike: String
+    ): Int
+
+    /**
+     * 取最近一条**已执行**冲刺记录的载荷（REQ-9：状态页显示最近一次窗口跨度）。
+     *
+     * 走 SQL 而不是「读最近 N 条再过滤」：高速档每 2.5 秒写一条**跳过**记录
+     * （约 34560 条/天），固定条数上限会把已执行记录挤出扫描范围，
+     * 让状态页那一行凭空消失（独立 review round 3 的 I-3）。
+     */
+    @Query(
+        """
+        SELECT payload_json FROM mobile_forensic_events
+        WHERE event_type = :eventType AND payload_json LIKE :payloadLike
+        ORDER BY occurred_at_utc DESC
+        LIMIT 1
+        """
+    )
+    suspend fun latestPayloadByTypeLike(
+        eventType: String,
+        payloadLike: String
+    ): String?
+
+    /** 时间窗内是否存在任何该类型事件（AC-9.2 的「有采集数据」判定用）。 */
+    @Query(
+        """
+        SELECT COUNT(*) FROM mobile_forensic_events
+        WHERE event_type = :eventType AND occurred_at_utc >= :fromUtc
+        """
+    )
+    suspend fun countByTypeInWindow(eventType: String, fromUtc: Long): Int
+
     /** 进程退出原因台账最近若干条（REQ-1 / REQ-8「最近死因」）。 */
     @Query(
         """

@@ -7,7 +7,6 @@ import androidx.test.core.app.ApplicationProvider
 import com.pim.app.TestPimApp
 import com.pim.app.data.AppDatabase
 import com.pim.app.data.ForensicEventDao
-import com.pim.app.location.TrajectoryCompressor
 import com.pim.app.forensics.AndroidHeartbeatSnapshotReader
 import com.pim.app.forensics.ForensicContext
 import com.pim.app.forensics.ForensicContextSource
@@ -109,9 +108,7 @@ class MobileSyncPeriodicHeartbeatTest {
             logs = logs,
             heartbeatReporter = MobileHeartbeatReporter(context, api),
             serverSettingsStore = ServerSettingsStore(context, tokenManager),
-            locationUploadCoordinator = LocationUploadCoordinator(
-                context, db, api, TrajectoryCompressor()
-            ),
+            locationUploadCoordinator = LocationUploadCoordinator(context, db, api),
             forensicUploadCoordinator = ForensicUploadCoordinator(
                 context = context,
                 api = api,

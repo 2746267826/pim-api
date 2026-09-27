@@ -68,6 +68,7 @@ import com.pim.app.data.AppDatabase
 import com.pim.app.location.LocationCaptureRepository
 import com.pim.app.location.LocationCaptureState
 import com.pim.app.location.LocationSnapshot
+import com.pim.app.location.quality.LocationQualityGate
 import com.pim.app.mobile.logs.StructuredLogEntry
 import com.pim.app.mobile.logs.StructuredLogRepository
 import com.pim.app.mobile.sync.MobileSyncCoordinator
@@ -297,7 +298,10 @@ private fun LocationTab(
 
     Section(title = "手动定位") {
         StatusRow("状态", state.statusMessage)
-        StatusRow("精度规则", "精度门槛 < 20m")
+        StatusRow(
+            "精度规则",
+            "精度门槛 < ${LocationQualityGate.displayThresholdMeters()}m"
+        )
         StatusRow("等待时长", formatDuration(state.waitDurationMs))
         Divider()
         LocationSnapshotRows(snapshot)

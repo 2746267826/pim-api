@@ -194,8 +194,53 @@ class StatusCenterViewModel @Inject constructor(
     private val acceptedSignal: StatusAcceptedSignal,
     private val diagnosticOperations: DiagnosticOperations,
     private val trackingSettingsStore: TrackingSettingsStore,
-    private val forensicLivenessRepository: ForensicLivenessRepository
+    private val forensicLivenessRepository: ForensicLivenessRepository,
+    private val sprintSummaryRepository: com.pim.app.location.sprint.LocationSprintSummaryRepository
 ) : ViewModel() {
+
+    /**
+     * 状态页「高频冲刺」区块（REQ-9 / AC-9.1 / AC-9.2）。
+     *
+     * 口径 = 设备端本地台账 + 本地设置，**不新增接口**（REQ-9）。
+     */
+    private val _sprintSummary = MutableStateFlow(
+        com.pim.app.location.sprint.SprintSummary(
+            enabled = null,
+            count = null,
+            // §5 加载态：首次读取完成前显示「—」，而不是「暂无」
+            // （「暂无」是「确认没有采集数据」的结论，不能在读之前就下）。
+            countDisplay = com.pim.app.location.sprint.SprintCountDisplay.Loading
+        )
+    )
+    val sprintSummary: StateFlow<com.pim.app.location.sprint.SprintSummary> =
+        _sprintSummary.asStateFlow()
+
+    /** 上次成功读取到的次数：§5 错误态要求「保留上次值」。 */
+    private var lastSprintCount: Int? = null
+
+    /**
+     * 刷新冲刺概况（AC-9.1：与台账交叉核对一致）。
+     *
+     * 读取失败时**保留上次值**并把展示置为「读取失败」（§5 错误态），
+     * 不把「读不到」伪装成「暂无」或「0 次」。
+     */
+    fun refreshSprintSummary() {
+        viewModelScope.launch {
+            val summary = try {
+                sprintSummaryRepository.read(previous = lastSprintCount)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                com.pim.app.location.sprint.SprintSummary(
+                    enabled = null,
+                    count = lastSprintCount,
+                    countDisplay = com.pim.app.location.sprint.SprintCountDisplay.Failed
+                )
+            }
+            if (summary.count != null) lastSprintCount = summary.count
+            _sprintSummary.value = summary
+        }
+    }
 
     /** 状态页顶部存活区块（REQ-8）。 */
     private val _liveness = MutableStateFlow<LivenessUiSnapshot?>(null)
@@ -210,10 +255,13 @@ class StatusCenterViewModel @Inject constructor(
 
     init {
         refreshLiveness()
+        refreshSprintSummary()
     }
 
     /** 读取本地取证台账并刷新存活区块；不依赖网络（AC-8.2 离线也要给出本地结论）。 */
     fun refreshLiveness() {
+        // 「刷新状态」按钮同时刷新冲刺概况（REQ-9：沿用既有刷新入口，无下拉刷新）。
+        refreshSprintSummary()
         viewModelScope.launch {
             _liveness.value = try {
                 forensicLivenessRepository.snapshot()

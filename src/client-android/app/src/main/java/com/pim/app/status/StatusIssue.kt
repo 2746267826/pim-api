@@ -1,5 +1,6 @@
 package com.pim.app.status
 
+import com.pim.app.location.quality.LocationQualityGate
 import com.pim.app.schedule.ScheduleCacheFreshness
 import com.pim.app.location.service.ForegroundLocationRuntimeState
 
@@ -216,7 +217,10 @@ data class StatusIssue(
             code = "location-accuracy-rejected",
             severity = StatusSeverity.Warning,
             title = "定位精度不达标",
-            message = "最近有定位点因水平精度缺失或大于等于 50m 被丢弃。",
+            // AC-12.3：与采集门槛同一口径（引用 LocationQualityGate 常量派生），
+            // 旧的「大于等于 50m」是查询侧 maxAccuracyMeters 口径，与采集门槛无关。
+            message = "最近有定位点因水平精度缺失或大于等于 " +
+                "${LocationQualityGate.displayThresholdMeters()}m 被丢弃。",
             lastOccurredAtMillis = lastOccurredAtMillis,
             actionLabel = "查看采集设置",
             target = StatusActionTarget.Settings

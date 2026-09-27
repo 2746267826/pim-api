@@ -64,6 +64,8 @@ data class SettingsUiState(
     val altitudeSecText: String = (TrackingSettings.defaults().altitudeWaitTimeoutMillis / 1_000.0).toDisplayNumber(),
     val advancedErrors: Map<String, String> = emptyMap(),
     val syncOnUnmeteredOnly: Boolean = false,
+    /** WO-ANDROID-GATE-20260926 REQ-5：高频冲刺开关（默认开，持久化，改后无需重启即生效）。 */
+    val sprintEnabled: Boolean = true,
     val verboseLoggingEnabled: Boolean = false,
     val verboseLoggingUntilUtcMillis: Long? = null,
     val logRetentionDays: Int = 7,
@@ -453,6 +455,18 @@ class SettingsViewModel @Inject constructor(
         _state.update { it.copy(syncOnUnmeteredOnly = trackingSettingsStore.read().syncOnUnmeteredOnly) }
     }
 
+    /**
+     * 切换高频冲刺开关（REQ-5 / AC-5.5）。
+     *
+     * **只写设置，不做任何重启动作**：采集循环与手动会话每个周期都重新读这个字段，
+     * 因此自下一个周期起生效 —— 这正是 AC-5.5 要求的「无需重启应用或采集服务」。
+     * 需求方对「假开关」零容忍（A4），所以这里刻意不附加任何需要重启的副作用。
+     */
+    fun setSprintEnabled(enabled: Boolean) {
+        trackingSettingsStore.setSprintEnabled(enabled)
+        _state.update { it.copy(sprintEnabled = trackingSettingsStore.read().sprintEnabled) }
+    }
+
     fun setVerboseLoggingEnabled(enabled: Boolean) {
         val now = System.currentTimeMillis()
         trackingSettingsStore.setVerboseLoggingEnabled(enabled, now)
@@ -792,6 +806,7 @@ class SettingsViewModel @Inject constructor(
             it.copy(
                 trackingProfile = settings.profile,
                 syncOnUnmeteredOnly = settings.syncOnUnmeteredOnly,
+                sprintEnabled = settings.sprintEnabled,
                 verboseLoggingEnabled = verboseEnabled,
                 verboseLoggingUntilUtcMillis = settings.verboseLoggingUntilUtcMillis,
                 logRetentionDays = settings.logRetentionDays,

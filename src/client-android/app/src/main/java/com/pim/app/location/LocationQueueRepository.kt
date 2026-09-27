@@ -10,40 +10,37 @@ import com.pim.app.location.quality.QualityAcceptedLocation
 import com.pim.app.location.quality.RawLocationFix
 import javax.inject.Inject
 
+/**
+ * 定位点入库队列。
+ *
+ * **WO-ANDROID-GATE-20260926 REQ-15 / AC-15.1 / AC-15.2 / AC-15.3**：
+ * 客户端**只做精度过滤** —— 一旦某个 fix 通过了质量门，就必须**逐条入库**。
+ * 此处已**取消**两条点级裁剪：
+ *
+ * 1. 静止聚类丢弃（原 `TrajectoryCompressor.shouldClusterDrop`，5 米 / 30 秒）——
+ *    基线实现命中即静默 `return -1L`，既不入库也不留记录，属 AC-15.3 明令禁止的
+ *    「命中即 return 且无记录」；
+ * 2. 上传前抽稀（见 [com.pim.app.mobile.sync.LocationUploadCoordinator]）。
+ *
+ * 滤波与舍弃交给服务端（A9 / A11）。`sprintSampleCount` 与入库条数的对账（AC-4.5）
+ * 依赖这里「不吞点」这一性质，改动前请先读 REQ-15。
+ */
 class LocationQueueRepository @Inject constructor(
-    private val dao: MobileDataDao,
-    private val compressor: TrajectoryCompressor
+    private val dao: MobileDataDao
 ) {
-    @Volatile
-    private var lastAccepted: QualityAcceptedLocation? = null
-
+    /**
+     * 入库一条已通过质量门的定位点。
+     *
+     * @return 新插入行的 id；失败时为 -1（由 Room 决定，**不是**客户端裁剪的结果）。
+     */
     suspend fun enqueueAccepted(
         accepted: QualityAcceptedLocation,
         rawJson: String,
         source: String = "auto"
     ): Long {
-        // Synchronized check-then-set to avoid race on volatile lastAccepted
-        synchronized(this) {
-            val prev = lastAccepted
-            if (prev != null && compressor.shouldClusterDrop(prev, accepted)) {
-                return -1L
-            }
-            // Note: DB insert is outside synchronized to avoid holding lock during I/O;
-            // we optimistically update lastAccepted after successful insert.
-            // If concurrent insert races, at most one extra point may be dropped/kept, which is acceptable vs unbounded growth.
-        }
-        val id = dao.insertLocationPoint(MobileLocationPointEntity.fromAccepted(accepted, rawJson, source))
-        if (id != -1L) {
-            synchronized(this) { lastAccepted = accepted }
-        }
-        return id
-    }
-
-    /**
-     * Batch compression helper for upload path: Douglas-Peucker reduces synced payload.
-     */
-    fun compressForUpload(points: List<MobileLocationPointEntity>): List<MobileLocationPointEntity> {
-        return compressor.compress(points)
+        return dao.insertLocationPoint(
+            MobileLocationPointEntity.fromAccepted(accepted, rawJson, source)
+        )
     }
 
     suspend fun recordDropped(
