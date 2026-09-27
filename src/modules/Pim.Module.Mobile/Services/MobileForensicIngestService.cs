@@ -35,6 +35,11 @@ public sealed class MobileForensicIngestService
         ForensicEventTypes.AlarmFulfillment,
         ForensicEventTypes.AlarmRegistered,
         ForensicEventTypes.KeepAliveHealth,
+        // WO-ANDROID-GATE-20260926（定位精度门 + 30 秒冲刺 + 被动定位）：设备端新增的
+        // 两种事件类型同样必须在这里登记，否则会被下面的契约校验按「未知类型」拒绝
+        // （REQ-28 的有意设计），表现为「冲刺台账在设备上记了、却永远到不了服务端」。
+        ForensicEventTypes.LocationSprint,
+        ForensicEventTypes.PassiveLocationCounter,
     };
 
     private readonly PimDbContext _db;
