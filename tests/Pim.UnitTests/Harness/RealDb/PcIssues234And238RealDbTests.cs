@@ -90,7 +90,9 @@ public sealed class PcIssues234And238RealDbTests
             probeDay == default,
             "镜像库无匹配数据（pc_tracker_events 无 msedge 原生事件），跳过 #234 原生事件核对。");
 
-        var day = DateOnly.FromDateTime(probeDay.UtcDateTime).ToString("yyyy-MM-dd");
+        // 用业务日（而非 UTC 日历日）取出该事件的归属日：preview 的 range 走的是
+        // 业务日口径，两者口径不同会让"取到事件却算出 0 条"（复审 Minor）。
+        var day = Pim.Core.Common.BusinessDay.GetBusinessDate(probeDay).ToString("yyyy-MM-dd");
 
         // 分类名用现行统一字典：旧「浏览」已被迁移 20260815154954 统一为「文档」，
         // 沿用旧名会在任何已迁移库上以「分类不存在」失败（与空库无关的真实缺陷）。
