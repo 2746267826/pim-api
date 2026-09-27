@@ -43,6 +43,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
+/** 仪表化测试用的冲刺概况（REQ-9：`StatusCenterContent` 的 sprintSummary 无默认值）。 */
+private fun sprintSummaryForTest() = com.pim.app.location.sprint.SprintSummary(
+    enabled = true,
+    count = 0,
+    countDisplay = com.pim.app.location.sprint.SprintCountDisplay.Value(0)
+)
+
 class StatusCenterScreenTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
@@ -50,7 +57,7 @@ class StatusCenterScreenTest {
     @Test
     fun loadingShowsProgressAndDisablesSync() {
         val state = mutableStateOf(StatusCenterState.empty().copy(isLoading = true, syncPhase = SyncPhase.Idle))
-        composeTestRule.setContent { PimTheme { StatusCenterContent(state = state.value) } }
+        composeTestRule.setContent { PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state.value) } }
 
         composeTestRule.onNodeWithTag("status-loading").assertIsDisplayed()
         composeTestRule.onNodeWithText("正在读取状态").assertIsDisplayed()
@@ -60,7 +67,7 @@ class StatusCenterScreenTest {
     @Test
     fun overallNormalShowsNormalText() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState(syncPhase = SyncPhase.Idle)) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(syncPhase = SyncPhase.Idle)) }
         }
         composeTestRule.onNodeWithTag("status-overall").assertIsDisplayed()
         composeTestRule.onNodeWithText("正常").assertIsDisplayed()
@@ -69,7 +76,7 @@ class StatusCenterScreenTest {
     @Test
     fun overallAttentionShowsAttentionText() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState().copy(overall = StatusOverall.Attention)) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState().copy(overall = StatusOverall.Attention)) }
         }
         composeTestRule.onNodeWithText("需注意").assertIsDisplayed()
     }
@@ -77,7 +84,7 @@ class StatusCenterScreenTest {
     @Test
     fun overallAbnormalShowsAbnormalText() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState().copy(overall = StatusOverall.Abnormal)) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState().copy(overall = StatusOverall.Abnormal)) }
         }
         composeTestRule.onNodeWithText("异常").assertIsDisplayed()
     }
@@ -85,7 +92,7 @@ class StatusCenterScreenTest {
     @Test
     fun syncPhaseRunningShowsRunningText() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState().copy(syncPhase = SyncPhase.Running)) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState().copy(syncPhase = SyncPhase.Running)) }
         }
         composeTestRule.onNodeWithTag("status-sync-phase").assertIsDisplayed()
         composeTestRule.onNodeWithTag("status-sync-button").assertIsNotEnabled()
@@ -95,8 +102,7 @@ class StatusCenterScreenTest {
     fun transportFactsShowCountsAndTimes() {
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    normalState().copy(
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState().copy(
                         pendingTotal = 42,
                         acceptedCount = 5,
                         rejectedCount = 3,
@@ -104,8 +110,7 @@ class StatusCenterScreenTest {
                         lastSuccessfulUploadAt = "2026-07-14T10:00:00Z",
                         lastAttemptedUploadAt = "2026-07-14T10:05:00Z",
                         nextAttemptAtMillis = 60_000L
-                    )
-                )
+                    ))
             }
         }
 
@@ -123,7 +128,7 @@ class StatusCenterScreenTest {
     @Test
     fun transportShowsPlaceholdersWithoutHistoryOrSchedule() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState()) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState()) }
         }
 
         composeTestRule.onNode(
@@ -170,7 +175,7 @@ class StatusCenterScreenTest {
             networkAvailability = NetworkAvailability.Validated
         )
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(state = state) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state) }
         }
 
         composeTestRule.onNodeWithTag("status-permission-notification").performScrollTo().assertIsDisplayed()
@@ -190,7 +195,7 @@ class StatusCenterScreenTest {
     @Test
     fun connectionProbeShowsNotCheckedWhenNoEvidenceExists() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState().copy(lastProbeResult = null)) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState().copy(lastProbeResult = null)) }
         }
 
         composeTestRule.onNode(
@@ -201,7 +206,7 @@ class StatusCenterScreenTest {
     @Test
     fun syncButtonIdleIsEnabled() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState().copy(syncPhase = SyncPhase.Idle, isLoading = false)) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState().copy(syncPhase = SyncPhase.Idle, isLoading = false)) }
         }
         composeTestRule.onNodeWithTag("status-sync-button").assertIsEnabled()
     }
@@ -211,10 +216,8 @@ class StatusCenterScreenTest {
         var clickCount = 0
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState().copy(syncPhase = SyncPhase.Waiting, isLoading = false),
-                    onSyncNow = { clickCount++ }
-                )
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState().copy(syncPhase = SyncPhase.Waiting, isLoading = false),
+                    onSyncNow = { clickCount++ })
             }
         }
 
@@ -228,7 +231,7 @@ class StatusCenterScreenTest {
     @Test
     fun syncButtonRunningIsDisabled() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState().copy(syncPhase = SyncPhase.Running, isLoading = false)) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState().copy(syncPhase = SyncPhase.Running, isLoading = false)) }
         }
         composeTestRule.onNodeWithTag("status-sync-button").assertIsNotEnabled()
     }
@@ -236,7 +239,7 @@ class StatusCenterScreenTest {
     @Test
     fun syncButtonFailedIsEnabled() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState().copy(syncPhase = SyncPhase.Failed, isLoading = false)) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState().copy(syncPhase = SyncPhase.Failed, isLoading = false)) }
         }
         composeTestRule.onNodeWithTag("status-sync-button").assertIsEnabled()
     }
@@ -246,10 +249,8 @@ class StatusCenterScreenTest {
         var clickCount = 0
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState().copy(syncPhase = SyncPhase.Idle, isLoading = false),
-                    onSyncNow = { clickCount++ }
-                )
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState().copy(syncPhase = SyncPhase.Idle, isLoading = false),
+                    onSyncNow = { clickCount++ })
             }
         }
         composeTestRule.onNodeWithTag("status-sync-button").performClick()
@@ -260,14 +261,12 @@ class StatusCenterScreenTest {
     fun syncButtonIdleEnabledEvenWithZeroPendingAndOffline() {
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState().copy(
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState().copy(
                         syncPhase = SyncPhase.Idle,
                         pendingTotal = 0,
                         networkAvailability = NetworkAvailability.Unavailable,
                         isLoading = false
-                    )
-                )
+                    ))
             }
         }
         composeTestRule.onNodeWithTag("status-sync-button").assertIsEnabled()
@@ -290,10 +289,8 @@ class StatusCenterScreenTest {
         )
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = state,
-                    onIssueAction = { actionClickCount++ }
-                )
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state,
+                    onIssueAction = { actionClickCount++ })
             }
         }
 
@@ -310,7 +307,7 @@ class StatusCenterScreenTest {
     @Test
     fun feedbackProbeCheckingShowsChinese() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState(), feedback = StatusActionFeedback.ProbeChecking) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(), feedback = StatusActionFeedback.ProbeChecking) }
         }
         composeTestRule.onNode(
             hasTestTag("status-feedback") and hasAnyDescendant(hasText("检查中"))
@@ -320,7 +317,7 @@ class StatusCenterScreenTest {
     @Test
     fun feedbackProbeCompletedShowsChinese() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState(), feedback = StatusActionFeedback.ProbeCompleted) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(), feedback = StatusActionFeedback.ProbeCompleted) }
         }
         composeTestRule.onNode(
             hasTestTag("status-feedback") and hasAnyDescendant(hasText("检查已完成"))
@@ -330,7 +327,7 @@ class StatusCenterScreenTest {
     @Test
     fun feedbackProbeFailedShowsChinese() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState(), feedback = StatusActionFeedback.ProbeFailed) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(), feedback = StatusActionFeedback.ProbeFailed) }
         }
         composeTestRule.onNode(
             hasTestTag("status-feedback") and hasAnyDescendant(hasText("检查未完成，请稍后重试"))
@@ -340,7 +337,7 @@ class StatusCenterScreenTest {
     @Test
     fun feedbackSyncSubmitFailedShowsChinese() {
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(normalState(), feedback = StatusActionFeedback.SyncSubmitFailed) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(), feedback = StatusActionFeedback.SyncSubmitFailed) }
         }
         composeTestRule.onNode(
             hasTestTag("status-feedback") and hasAnyDescendant(hasText("同步请求未能提交，请稍后重试"))
@@ -372,7 +369,7 @@ class StatusCenterScreenTest {
             )
         )
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(state = state) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state) }
         }
 
         composeTestRule.onNode(
@@ -418,7 +415,7 @@ class StatusCenterScreenTest {
             )
         )
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(state = state) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state) }
         }
 
         val actionable = hasTestTag("status-actionable-issues")
@@ -445,7 +442,7 @@ class StatusCenterScreenTest {
             )
         )
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(state = state) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state) }
         }
 
         val information = hasTestTag("status-information-issues")
@@ -469,7 +466,7 @@ class StatusCenterScreenTest {
             )
         )
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(state = state) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state) }
         }
 
         composeTestRule.onNodeWithTag("status-information-issues").assertDoesNotExist()
@@ -486,7 +483,7 @@ class StatusCenterScreenTest {
             )
         )
         composeTestRule.setContent {
-            PimTheme { StatusCenterContent(state = state) }
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state) }
         }
 
         composeTestRule.onNodeWithTag("status-issues").performScrollTo()
@@ -526,7 +523,7 @@ class StatusCenterScreenTest {
         composeTestRule.setContent {
             PimTheme {
                 Box(Modifier.width(320.dp).testTag("narrow-status-host")) {
-                    StatusCenterContent(state = state)
+                    StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state)
                 }
             }
         }
@@ -566,11 +563,9 @@ class StatusCenterScreenTest {
         var captured = false
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
                     exportState = DiagnosticExportUiState(includeRecentLocations = false),
-                    onSetIncludeRecentLocations = { captured = it }
-                )
+                    onSetIncludeRecentLocations = { captured = it })
             }
         }
         composeTestRule.onNodeWithTag("status-diagnostics-export-option")
@@ -584,10 +579,8 @@ class StatusCenterScreenTest {
         var clicked = false
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
-                    onRequestDiagnosticExport = { clicked = true }
-                )
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
+                    onRequestDiagnosticExport = { clicked = true })
             }
         }
         composeTestRule.onNodeWithTag("status-diagnostics-export-button")
@@ -600,10 +593,8 @@ class StatusCenterScreenTest {
     fun exportButtonDisabledDuringExport() {
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
-                    exportState = DiagnosticExportUiState(isExporting = true)
-                )
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
+                    exportState = DiagnosticExportUiState(isExporting = true))
             }
         }
         composeTestRule.onNodeWithTag("status-diagnostics-export-button")
@@ -615,10 +606,8 @@ class StatusCenterScreenTest {
     fun exportProgressShowsWhenExporting() {
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
-                    exportState = DiagnosticExportUiState(isExporting = true)
-                )
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
+                    exportState = DiagnosticExportUiState(isExporting = true))
             }
         }
         composeTestRule.onNodeWithTag("status-diagnostics-export-progress")
@@ -631,11 +620,9 @@ class StatusCenterScreenTest {
         var confirmed = false
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
                     exportState = DiagnosticExportUiState(showLocationConfirmation = true),
-                    onConfirmLocationExport = { confirmed = true }
-                )
+                    onConfirmLocationExport = { confirmed = true })
             }
         }
         composeTestRule.onNodeWithTag("status-diagnostics-export-confirm-accept").performClick()
@@ -647,11 +634,9 @@ class StatusCenterScreenTest {
         var dismissed = false
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
                     exportState = DiagnosticExportUiState(showLocationConfirmation = true),
-                    onDismissLocationConfirmation = { dismissed = true }
-                )
+                    onDismissLocationConfirmation = { dismissed = true })
             }
         }
         composeTestRule.onNodeWithTag("status-diagnostics-export-confirm-cancel").performClick()
@@ -663,14 +648,12 @@ class StatusCenterScreenTest {
         var shared = false
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
                     exportState = DiagnosticExportUiState(
                         exportedFile = File("/tmp/test.zip"),
                         feedback = DiagnosticExportFeedback.PackageReady
                     ),
-                    onShareDiagnostic = { shared = true }
-                )
+                    onShareDiagnostic = { shared = true })
             }
         }
         composeTestRule.onNodeWithTag("status-diagnostics-export-share")
@@ -684,13 +667,11 @@ class StatusCenterScreenTest {
     fun shareButtonRemainsAvailableAfterShareCannotOpen() {
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
                     exportState = DiagnosticExportUiState(
                         exportedFile = File("/tmp/test.zip"),
                         feedback = DiagnosticExportFeedback.ShareUnavailable
-                    )
-                )
+                    ))
             }
         }
 
@@ -703,12 +684,10 @@ class StatusCenterScreenTest {
     fun exportFeedbackSurfaceShowsChinese() {
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
                     exportState = DiagnosticExportUiState(
                         feedback = DiagnosticExportFeedback.PackageReady
-                    )
-                )
+                    ))
             }
         }
         composeTestRule.onNodeWithTag("status-diagnostics-export-feedback")
@@ -720,10 +699,8 @@ class StatusCenterScreenTest {
     fun meteredSyncConfirmationDialogShowsWhenFlagged() {
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
-                    showMeteredSyncConfirmation = true
-                )
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
+                    showMeteredSyncConfirmation = true)
             }
         }
         composeTestRule.onNodeWithTag("status-metered-sync-confirm").assertIsDisplayed()
@@ -735,10 +712,8 @@ class StatusCenterScreenTest {
     fun meteredSyncConfirmationDialogHiddenWhenNotFlagged() {
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
-                    showMeteredSyncConfirmation = false
-                )
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
+                    showMeteredSyncConfirmation = false)
             }
         }
         composeTestRule.onNodeWithTag("status-metered-sync-confirm").assertDoesNotExist()
@@ -749,11 +724,9 @@ class StatusCenterScreenTest {
         var confirmed = false
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
                     showMeteredSyncConfirmation = true,
-                    onConfirmMeteredSync = { confirmed = true }
-                )
+                    onConfirmMeteredSync = { confirmed = true })
             }
         }
         composeTestRule.onNodeWithTag("status-metered-sync-confirm-accept").performClick()
@@ -765,11 +738,9 @@ class StatusCenterScreenTest {
         var dismissed = false
         composeTestRule.setContent {
             PimTheme {
-                StatusCenterContent(
-                    state = normalState(),
+                StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = normalState(),
                     showMeteredSyncConfirmation = true,
-                    onDismissMeteredSyncConfirmation = { dismissed = true }
-                )
+                    onDismissMeteredSyncConfirmation = { dismissed = true })
             }
         }
         composeTestRule.onNodeWithTag("status-metered-sync-confirm-cancel").performClick()
