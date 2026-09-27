@@ -1385,6 +1385,8 @@ export interface FileProvider {
   accountName?: string | null;
   syncStatus?: string;
   syncedItemCount?: number;
+  /** #353：已索引总量（未删除），与最近一次运行的变更数区分。 */
+  totalIndexedCount?: number;
   deltaResetAt?: string | null;
   tokenExpiresAt?: string | null;
 }
@@ -1523,7 +1525,16 @@ export interface OneDriveSyncStatus {
   syncStatus: string;
   lastError: string | null;
   lastSyncAt: string | null;
+  /**
+   * **最近一次同步运行**中应用（新增/更新）的项目数；每次运行覆盖写入，
+   * 无增量变更的日常同步即为 0。展示时不得当作累计总量（#353）。
+   */
   syncedItemCount: number;
+  /**
+   * #353：当前已索引的条目总量（未删除）。与 `syncedItemCount` 语义不同，
+   * 横幅按「上次同步时间 · 本次变更数 · 已索引总量」的组合口径展示。
+   */
+  totalIndexedCount?: number;
 }
 
 /** REQ-21：分享链接。 */

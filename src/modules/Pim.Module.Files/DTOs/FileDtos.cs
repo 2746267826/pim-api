@@ -20,7 +20,12 @@ public sealed record FileProviderDto(
     string SyncStatus = "idle",
     long SyncedItemCount = 0,
     DateTimeOffset? DeltaResetAt = null,
-    DateTimeOffset? TokenExpiresAt = null);
+    DateTimeOffset? TokenExpiresAt = null,
+    /// <summary>
+    /// #353：当前已索引的条目总量（未删除）。与 <see cref="SyncedItemCount"/>
+    /// （最近一次运行的应用数）语义不同，用于横幅的组合口径展示。
+    /// </summary>
+    long TotalIndexedCount = 0);
 
 public sealed record BindNextcloudProviderRequest(
     string BaseUrl,
@@ -136,11 +141,23 @@ public sealed record CompleteUploadRequest(string Path, string FileName, string?
 public sealed record OneDriveSyncStartedDto(bool Started, string Message);
 
 /// <summary>REQ-25：同步状态（顶部横幅的数据源）。</summary>
+/// <param name="SyncStatus">同步状态：syncing / idle / error。</param>
+/// <param name="LastError">最近一次失败原因（成功时为 null）。</param>
+/// <param name="LastSyncAt">上次同步完成时间。</param>
+/// <param name="SyncedItemCount">
+/// **最近一次同步运行**中应用（新增/更新）的项目数；每次运行覆盖写入，
+/// 无增量变更的日常同步即为 0。#353：界面不得把它当作累计总量展示。
+/// </param>
+/// <param name="TotalIndexedCount">
+/// #353：当前已索引的条目总量（未删除）。用于与「本次变更数」区分展示 ——
+/// 组合口径「上次同步时间 + 本次变更数 + 已索引总量」，避免「已同步 0 项」被误读为同步失败。
+/// </param>
 public sealed record OneDriveSyncStatusDto(
     string SyncStatus,
     string? LastError,
     DateTimeOffset? LastSyncAt,
-    long SyncedItemCount);
+    long SyncedItemCount,
+    long TotalIndexedCount = 0);
 public sealed record RenameFileRequest(string Name);
 public sealed record FileOpenLinkDto(string Url, string Mode);
 public sealed record VersionRestorePreviewDto(Guid FileItemId, Guid VersionId, string CurrentVersionLabel, string RestoreVersionLabel, bool RequiresConfirmation, string Summary);

@@ -19,12 +19,19 @@ export interface SyncBannerProps {
  * - 「立即同步」必须**立即反馈已开始**，不阻塞页面（阻塞式同步已在后端改为入队）；
  * - 同步进行中与失败都要有可读文案：成功显示进度量、失败显示原因（AC-25.2）；
  * - 失败恢复后横幅自动回到正常态（由 status 驱动，无粘滞状态）。
+ *
+ * #353：`syncedItemCount` 的语义是「**最近一次同步运行**中应用的项目数」，
+ * 每次运行覆盖写入；日常「无增量变更」的同步会把它写成 0。而「已同步 X 项」
+ * 给人的是累计/总量直觉，索引其实完整也会被误读成同步失败。
+ * 因此空闲态改为**组合口径**：上次同步时间 + 本次变更数 + 已索引总量，
+ * 参考格式「上次同步 12:40 · 本次变更 0 项 · 共 121,399 项」。
  */
 export default function SyncBanner({ status, starting = false, onSync, error }: SyncBannerProps) {
   const syncState = status?.syncStatus ?? 'idle';
   const syncing = starting || syncState === 'syncing';
+  const hasError = Boolean(error) || syncState === 'error';
 
-  const tone = error || syncState === 'error'
+  const tone = hasError
     ? 'error'
     : syncing
       ? 'busy'
@@ -36,13 +43,22 @@ export default function SyncBanner({ status, starting = false, onSync, error }: 
     if (starting) return '已开始同步，可继续浏览…';
     if (syncState === 'syncing') {
       return status && status.syncedItemCount > 0
-        ? `正在同步…已处理 ${status.syncedItemCount} 项`
+        ? `正在同步…本次已变更 ${status.syncedItemCount} 项`
         : '正在同步…';
     }
     if (status?.lastSyncAt) {
       const at = new Date(status.lastSyncAt);
       if (!Number.isNaN(at.getTime())) {
-        return `已同步 ${status.syncedItemCount} 项 · ${at.toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+        const time = at.toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        // 组合口径：时间 + 本次变更数 + 已索引总量，避免「已同步 0 项」被误读为失败。
+        const parts = [
+          `上次同步 ${time}`,
+          `本次变更 ${status.syncedItemCount} 项`,
+        ];
+        if (typeof status.totalIndexedCount === 'number') {
+          parts.push(`共 ${status.totalIndexedCount.toLocaleString('zh-CN')} 项`);
+        }
+        return parts.join(' · ');
       }
     }
     return '尚未同步';
