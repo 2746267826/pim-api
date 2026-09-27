@@ -67,11 +67,16 @@ public sealed class Issues330And331RealDbTests
         await using var reader = await command.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
 
-        var maxSessions = reader.GetInt64(0);
-        var dayCount = reader.GetInt64(1);
+        // #339：空库上聚合结果只有一行全 NULL（COUNT(*)=0 时 max(c) 为 NULL），
+        // 直接 GetInt64 会抛 InvalidCastException —— 环境不满足被伪装成缺陷。
+        // 先判空再取值，让它走显式 Skip。
+        var dayCount = reader.IsDBNull(1) ? 0L : reader.GetInt64(1);
+        var maxSessions = reader.IsDBNull(0) ? 0L : reader.GetInt64(0);
         await reader.CloseAsync();
 
-        Assert.True(dayCount > 0, "镜像库应含会话数据，否则本用例无意义");
+        Skip.If(
+            dayCount == 0,
+            "镜像库无匹配数据（mobile_usage_sessions 无会话），跳过 #330 量级核对。");
 
         // 镜像库确实存在远超 500 条的「设备 × 业务日」——这是 #330 的客观前提。
         Assert.True(
@@ -103,7 +108,14 @@ public sealed class Issues330And331RealDbTests
              """,
             connection);
         await using var reader = await command.ExecuteReaderAsync();
-        Assert.True(await reader.ReadAsync());
+
+        // #339：空库上 GROUP BY 无分组 → 零行，原先的 Assert.True(reader.ReadAsync())
+        // 会把"环境没有数据"报成断言失败。这里改为显式 Skip。
+        if (!await reader.ReadAsync())
+        {
+            await reader.CloseAsync();
+            Skip.If(true, "镜像库无匹配数据（mobile_usage_sessions 无会话），跳过 #330 重业务日核对。");
+        }
 
         var busiestDay = reader.GetFieldValue<DateTime>(0);
         var total = reader.GetInt64(1);
