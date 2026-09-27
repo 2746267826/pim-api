@@ -44,7 +44,7 @@ interface LocationAcquisitionOperations {
  * - 手动触发 = 立即执行一次同一引擎（一次性采集，30s 截止，达标入库；超时用
  *   最好 fix 并标记 low-quality，绝不静默）。
  * - 自动采集 = 同一引擎的常驻流：注册时先预热等 GPS 收敛（冷启动），随后系统按
- *   interval 回调 fix，逐点过 20m 质量门入库；≥20m 的 fix 走 drop 诊断，不回退。
+ *   interval 回调 fix，逐点过 30m 质量门入库；≥30m 的 fix 走 drop 诊断，不回退。
  * - priority 恒为 HIGH_ACCURACY（§3.2）；省电只靠采样间隔。
  * 手动会话状态走 [state]，自动流状态走 [streamState]，两者互不干扰。
  */
@@ -217,7 +217,7 @@ class LocationAcquisitionCoordinator @Inject constructor(
         newJob.start()
     }
 
-    /** 冷启动预热：等 GPS 收敛（≤30s），接受首个 <20m fix 并入库；不回退。 */
+    /** 冷启动预热：等 GPS 收敛（≤30s），接受首个 <30m fix 并入库；不回退。 */
     private suspend fun warmUpOnce(context: AcquisitionContext) {
         val settings = trackingSettingsStore.read()
         val sessionId = "warmup-${uuidGenerator()}"
