@@ -339,11 +339,17 @@ public sealed class FilesModule : IModule
             .FirstOrDefaultAsync(ct)
             ?? throw new DomainException(5104, "文件来源不存在");
 
+        // #353：已索引总量单独统计（未删除条目），与「最近一次运行的应用数」区分。
+        var totalIndexed = await db.Set<FileItemEntity>()
+            .AsNoTracking()
+            .CountAsync(item => item.ProviderId == id && !item.IsDeleted, ct);
+
         return Results.Ok(ApiResponse<OneDriveSyncStatusDto>.Ok(new OneDriveSyncStatusDto(
             provider.SyncStatus ?? "idle",
             provider.LastError,
             provider.LastSyncAt,
-            provider.SyncedItemCount)));
+            provider.SyncedItemCount,
+            totalIndexed)));
     }
 
     private static async Task<IResult> ListItemsAsync(
