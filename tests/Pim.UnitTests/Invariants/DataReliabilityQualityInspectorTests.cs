@@ -211,10 +211,36 @@ public class DataReliabilityQualityInspectorTests
 
         foreach (var sql in intervalSql)
         {
-            // 字符串拼接成 interval：`duration || ' seconds'`（含任意引号/空格变体）。
-            Assert.DoesNotMatch(@"(?is)\|\|\s*'\s*(seconds?|minutes?|hours?|days?)\s*'\s*\)?\s*::\s*interval", sql);
-            Assert.DoesNotContain("|| ' seconds'", sql);
+            AssertNoStringConcatenatedInterval(sql);
         }
+    }
+
+    /// <summary>
+    /// 断言 SQL 里没有「数值 → 文本 → interval」的拼接写法。
+    ///
+    /// <para>
+    /// 覆盖复审指出的漏网变体：任意单位（含 milliseconds / weeks / ms）、
+    /// 单复数、<c>concat(...)</c> 形式、以及 <c>E'...'</c> 转义字符串字面量。
+    /// 关键是"把数值先转成文本再交给 interval 解析"这条路径 ——
+    /// 只要存在这条路径，PostgreSQL 对极小值的科学计数法渲染就可能让它解析失败。
+    /// </para>
+    /// </summary>
+    private static void AssertNoStringConcatenatedInterval(string sql)
+    {
+        // a) `... || '<unit>' ... ::interval`，含可选 E'' 前缀与额外空白。
+        Assert.DoesNotMatch(
+            @"(?is)\|\|\s*[Ee]?'\s*(microseconds?|milliseconds?|ms|seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)\s*'\s*\)?\s*::\s*interval",
+            sql);
+
+        // b) concat(x, ' seconds')::interval —— 同样是把数值走文本通道。
+        Assert.DoesNotMatch(
+            @"(?is)concat\s*\([^)]*'\s*(microseconds?|milliseconds?|ms|seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)\s*'[^)]*\)\s*::\s*interval",
+            sql);
+
+        // c) make_interval 只接受数值入参，安全；这里反向确认取数没有把 duration
+        //    先拼成字符串再转换（上面两条已覆盖）。保留一条直白断言防止旧写法回归。
+        Assert.DoesNotContain("|| ' seconds')::interval", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("|| ' second')::interval", sql, StringComparison.OrdinalIgnoreCase);
     }
 
     private static readonly DateTimeOffset ReportNow = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
