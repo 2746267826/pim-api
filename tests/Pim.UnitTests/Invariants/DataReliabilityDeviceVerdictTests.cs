@@ -145,7 +145,7 @@ public class DataReliabilityDeviceVerdictTests
         Assert.Equal(InvariantStatus.Warning, result.Status);
         Assert.True(result.IsWarning);
         Assert.False(result.IsFail);
-        Assert.Equal(0, result.NewViolations);
+        Assert.Equal(0, result.WindowViolations);
         Assert.Equal(29, result.TotalViolations);
         Assert.Equal(29, result.HistoricalViolations);
     }
@@ -162,7 +162,10 @@ public class DataReliabilityDeviceVerdictTests
 
         Assert.Equal(InvariantStatus.Fail, result.Status);
         Assert.False(result.IsWarning);
-        Assert.Equal(2, result.TotalViolations);
+        // 总数 = 窗内 2 + 其它设备的历史欠账 5：欠账不得因为"另一台设备报红"就从数字里消失。
+        Assert.Equal(2, result.WindowViolations);
+        Assert.Equal(5, result.HistoricalViolations);
+        Assert.Equal(7, result.TotalViolations);
     }
 
     [Fact]

@@ -27,7 +27,8 @@ public class InvariantOptionsAndMigrationTests
             TimelineGapThresholdMinutes = 20.0,
             CoverageRedRatio = 0.90,
             CoverageYellowRatio = 0.98,
-            RecentWindowHours = 48.0,
+            AssessmentWindowHours = 48.0,
+            CoverageWindowHours = 24.0,
             MaxSampleCount = 10
         };
 
@@ -58,7 +59,8 @@ public class InvariantOptionsAndMigrationTests
             (nameof(InvariantOptions.UndeclaredOfflineGapMinutes), (o, v) => o.UndeclaredOfflineGapMinutes = v),
             (nameof(InvariantOptions.MaxUploadLagP99Minutes), (o, v) => o.MaxUploadLagP99Minutes = v),
             (nameof(InvariantOptions.MobileSummaryLagHours), (o, v) => o.MobileSummaryLagHours = v),
-            (nameof(InvariantOptions.RecentWindowHours), (o, v) => o.RecentWindowHours = v),
+            (nameof(InvariantOptions.AssessmentWindowHours), (o, v) => o.AssessmentWindowHours = v),
+            (nameof(InvariantOptions.CoverageWindowHours), (o, v) => o.CoverageWindowHours = v),
             (nameof(InvariantOptions.MaxDailyActiveHours), (o, v) => o.MaxDailyActiveHours = v),
             (nameof(InvariantOptions.AwakeWindowHours), (o, v) => o.AwakeWindowHours = v),
             (nameof(InvariantOptions.AwakeWindowWarningRatio), (o, v) => o.AwakeWindowWarningRatio = v),
@@ -106,7 +108,8 @@ public class InvariantOptionsAndMigrationTests
             new() { DeviceId = "DEV-1", StartTime = new DateTime(2026, 7, 6, 11, 0, 0, DateTimeKind.Utc), EndTime = new DateTime(2026, 7, 6, 11, 30, 0, DateTimeKind.Utc) }
         };
 
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, options);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(
+            intervals, options, referenceTimeUtc: new DateTime(2026, 7, 6, 12, 0, 0, DateTimeKind.Utc));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -155,13 +158,16 @@ public class InvariantOptionsAndMigrationTests
             }
         };
 
+        // 夹具时间是固定过去时刻：显式给出参考时刻，保证违规落在考核窗内（否则只算欠账 → 恒绿）。
+        var referenceTimeUtc = start.AddMinutes(50);
+
         // 默认阈值 30 分钟：40m > 30m，判为未收尾 (FAIL)
-        var defaultResult = DataReliabilityInvariants.CheckS2_OverlongEventEvidence(events);
+        var defaultResult = DataReliabilityInvariants.CheckS2_OverlongEventEvidence(events, referenceTimeUtc: referenceTimeUtc);
         Assert.False(defaultResult.Pass);
 
         // 修改配置阈值为 60 分钟：40m <= 60m，不视为超长 (PASS)
         var relaxedOptions = new InvariantOptions { LongEventThresholdMinutes = 60.0 };
-        var relaxedResult = DataReliabilityInvariants.CheckS2_OverlongEventEvidence(events, relaxedOptions);
+        var relaxedResult = DataReliabilityInvariants.CheckS2_OverlongEventEvidence(events, relaxedOptions, referenceTimeUtc: referenceTimeUtc);
         Assert.True(relaxedResult.Pass);
     }
 

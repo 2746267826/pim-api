@@ -30,7 +30,7 @@ public class DataReliabilityGateTests
         GreenCount: rules.Count(r => r.Status == "green"),
         UnknownCount: rules.Count(r => r.Status == "unknown"),
         TotalViolations: 0,
-        NewViolations: 0,
+        WindowViolations: 0,
         HistoricalViolations: 0,
         Notices: new Dictionary<string, string>(),
         Rules: rules.Select(rule => new DataReliabilityRuleReport(
@@ -52,7 +52,7 @@ public class DataReliabilityGateTests
             Rationale: "理由",
             RelatedIssues: Array.Empty<int>(),
             TotalViolations: 0,
-            NewViolations: 0,
+            WindowViolations: 0,
             HistoricalViolations: 0,
             EarliestOccurrenceUtc: null,
             LatestOccurrenceUtc: null,

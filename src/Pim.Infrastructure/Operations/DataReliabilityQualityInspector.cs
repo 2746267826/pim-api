@@ -35,6 +35,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
     private readonly IDataReliabilityInspectionStore? _store;
     private readonly TimeProvider _timeProvider;
     private readonly IReadOnlyList<IDeviceLivenessInspectionProvider> _livenessProviders;
+    private readonly IProcessStartTimeProvider? _processStartTimeProvider;
 
     public DataReliabilityQualityInspector(
         PimDbContext? db,
@@ -42,7 +43,8 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         ILogger<DataReliabilityQualityInspector> logger,
         IDataReliabilityInspectionStore? store = null,
         TimeProvider? timeProvider = null,
-        IEnumerable<IDeviceLivenessInspectionProvider>? livenessProviders = null)
+        IEnumerable<IDeviceLivenessInspectionProvider>? livenessProviders = null,
+        IProcessStartTimeProvider? processStartTimeProvider = null)
     {
         _db = db;
         _options = options?.Value ?? InvariantOptions.Default;
@@ -51,7 +53,18 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         _timeProvider = timeProvider ?? TimeProvider.System;
         _livenessProviders = livenessProviders?.ToList()
             ?? (IReadOnlyList<IDeviceLivenessInspectionProvider>)Array.Empty<IDeviceLivenessInspectionProvider>();
+        _processStartTimeProvider = processStartTimeProvider;
     }
+
+    /// <summary>
+    /// 本次体检的考核线 = max(体检时刻 − 考核窗, 进程启动时刻)（REQ-1）。
+    /// 未注入进程启动时刻时回退纯滚动窗（D2 / AC-1.6）。
+    /// </summary>
+    private DateTime ResolveAssessmentStartUtc(DateTime inspectionTimeUtc, InvariantOptions options) =>
+        DataReliabilityAssessmentWindow.ResolveAssessmentStartUtc(
+            inspectionTimeUtc,
+            options.AssessmentWindowHours,
+            _processStartTimeProvider?.ProcessStartedAtUtc.UtcDateTime);
 
     public string CheckName => "data_reliability";
 
@@ -100,7 +113,10 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, options.InspectionTimeoutSeconds)));
 
-        var run = await RunChecksAsync(now, options, timeout.Token);
+        // 考核线：max(体检时刻 − 考核窗, 进程启动时刻)。一次体检只算一次，判据与取数下限共用同一条线。
+        var assessmentStartUtc = ResolveAssessmentStartUtc(now.UtcDateTime, options);
+
+        var run = await RunChecksAsync(now, options, assessmentStartUtc, timeout.Token);
         if (run.UnavailableReason != null)
         {
             notices["database_unavailable"] = run.UnavailableReason;
@@ -131,25 +147,20 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             .OrderBy(rule => rule.Order)
             .ToList();
 
-        int redCount = rules.Count(rule => rule.Status == "red");
-        int yellowCount = rules.Count(rule => rule.Status == "yellow");
-        int greenCount = rules.Count(rule => rule.Status == "green");
-        int unknownCount = rules.Count(rule => rule.Status == "unknown");
-
-        // 总览的"违规数"只累加 red/yellow 尺子，green/unknown 的 0 不参与，避免把未知当成 0 违规的假象。
-        var countedRules = rules.Where(rule => rule.Status is "red" or "yellow").ToList();
-        int totalViolations = countedRules.Sum(rule => rule.TotalViolations);
-        int newViolations = countedRules.Sum(rule => rule.NewViolations);
-        int historicalViolations = countedRules.Sum(rule => rule.HistoricalViolations);
+        // 总览口径（REQ-2 / AC-2.4 / AC-2.6）统一由 Core 的纯函数计算：
+        //   * 总览「违规数」**只由窗内违规产生** —— 历史欠账不得计入，也不得影响总览状态；
+        //   * 历史欠账单独累计（**含绿灯尺子**的欠账），只展示、可下钻、可导出。
+        var summary = DataReliabilityInspectionSummary.Compute(rules);
+        int redCount = summary.RedCount;
+        int yellowCount = summary.YellowCount;
+        int greenCount = summary.GreenCount;
+        int unknownCount = summary.UnknownCount;
+        int windowViolations = summary.WindowViolations;
+        int totalViolations = summary.TotalViolations;
+        int historicalViolations = summary.HistoricalViolations;
 
         started.Stop();
-        var overallStatus = redCount > 0
-            ? "red"
-            : yellowCount > 0
-                ? "yellow"
-                : unknownCount > 0
-                    ? "unknown"
-                    : "green";
+        var overallStatus = summary.Status;
 
         string message = overallStatus switch
         {
@@ -160,8 +171,9 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         };
 
         _logger.LogInformation(
-            "数据可信度体检查询完成：Red={RedCount}, Yellow={YellowCount}, Green={GreenCount}, Unknown={UnknownCount}, Violations={TotalViolations}, Elapsed={ElapsedMs}ms",
-            redCount, yellowCount, greenCount, unknownCount, totalViolations, started.ElapsedMilliseconds);
+            "数据可信度体检查询完成：Red={RedCount}, Yellow={YellowCount}, Green={GreenCount}, Unknown={UnknownCount}, WindowViolations={WindowViolations}, HistoricalViolations={HistoricalViolations}, AssessmentStartUtc={AssessmentStartUtc}, AssessmentWindowHours={AssessmentWindowHours}, Elapsed={ElapsedMs}ms",
+            redCount, yellowCount, greenCount, unknownCount, windowViolations, historicalViolations,
+            assessmentStartUtc, options.AssessmentWindowHours, started.ElapsedMilliseconds);
 
         // 「设备存活」数据项（REQ-10）：独立区块，不参与红/黄/绿统计（R4-P1 / AC-10.3）。
         // 取数失败只让该项缺席并在 Notices 里留下可见原因，绝不影响 13 条尺子的结论（REQ-28）。
@@ -177,12 +189,14 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             GreenCount: greenCount,
             UnknownCount: unknownCount,
             TotalViolations: totalViolations,
-            NewViolations: newViolations,
+            WindowViolations: windowViolations,
             HistoricalViolations: historicalViolations,
             Notices: notices,
             Rules: rules,
             Message: message,
-            DeviceLiveness: deviceLiveness);
+            DeviceLiveness: deviceLiveness,
+            AssessmentStartUtc: new DateTimeOffset(DateTime.SpecifyKind(assessmentStartUtc, DateTimeKind.Utc)),
+            AssessmentWindowHours: options.AssessmentWindowHours);
     }
 
     /// <summary>
@@ -257,6 +271,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         {
             Options = exportOptions,
             NowUtc = now.UtcDateTime,
+            AssessmentStartUtc = ResolveAssessmentStartUtc(now.UtcDateTime, options),
             Ct = timeout.Token,
             Collector = new RuleRunCollector(clampedLimit)
         };
@@ -277,7 +292,11 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                 Id: violation.Id,
                 DeviceId: violation.DeviceId,
                 OccurredAtUtc: new DateTimeOffset(DateTime.SpecifyKind(violation.OccurredAtUtc, DateTimeKind.Utc)),
-                Fields: violation.Fields))
+                Fields: violation.Fields,
+                // 分档标记：判据在 Fields 里写死 isNew（窗内=true / 历史欠账=false），导出据此外显，
+                // 让"这条违规算不算窗内"在两处只有一份口径（REQ-4 / AC-4.2）。
+                IsNew: violation.Fields.TryGetValue("isNew", out var isNewValue)
+                       && string.Equals(isNewValue, "true", StringComparison.OrdinalIgnoreCase)))
             .ToArray();
 
         bool truncated = result.TotalViolations > items.Length;
@@ -418,6 +437,9 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         public string? CurrentValueLabel { get; init; }
         public S2ThreeStateDistribution? ThreeState { get; init; }
         public bool ScanTruncated { get; init; }
+
+        /// <summary>S3 专用：取数实际覆盖到的业务日数（AC-6.4）。</summary>
+        public int? ScanCoveredDays { get; init; }
     }
 
     /// <summary>
@@ -437,6 +459,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         public string? CurrentValueLabel { get; private set; }
         public S2ThreeStateDistribution? ThreeState { get; private set; }
         public bool ScanTruncated { get; private set; }
+        public int? ScanCoveredDays { get; private set; }
 
         public void SetCurrentValue(double? value, string? unit = null, string? label = null)
         {
@@ -448,6 +471,8 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         public void SetThreeState(S2ThreeStateDistribution distribution) => ThreeState = distribution;
 
         public void MarkScanTruncated() => ScanTruncated = true;
+
+        public void SetScanCoveredDays(int coveredDays) => ScanCoveredDays = coveredDays;
     }
 
     /// <summary>
@@ -458,12 +483,23 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
     {
         public InvariantOptions Options { get; init; } = InvariantOptions.Default;
         public DateTime NowUtc { get; init; }
+
+        /// <summary>
+        /// 考核线 = max(体检时刻 − 考核窗, 进程启动时刻)。判据分档与取数下限都用它，
+        /// 保证"窗内取到的数据"与"判为窗内的违规"是同一条线。
+        /// </summary>
+        public DateTime AssessmentStartUtc { get; init; }
+
         public CancellationToken Ct { get; init; }
         public RuleRunCollector Collector { get; init; } = new(0);
     }
 
     /// <summary>逐步执行 13 条尺子的取数与判据，并保留结构化测量结果。</summary>
-    private async Task<CheckRun> RunChecksAsync(DateTimeOffset now, InvariantOptions options, CancellationToken ct)
+    private async Task<CheckRun> RunChecksAsync(
+        DateTimeOffset now,
+        InvariantOptions options,
+        DateTime assessmentStartUtc,
+        CancellationToken ct)
     {
         var nowUtc = now.UtcDateTime;
         var outcomes = new Dictionary<string, RuleOutcome>(StringComparer.OrdinalIgnoreCase);
@@ -485,6 +521,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             {
                 Options = options,
                 NowUtc = nowUtc,
+                AssessmentStartUtc = assessmentStartUtc,
                 Ct = ct,
                 Collector = collector
             };
@@ -513,7 +550,8 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                 CurrentValueUnit = collector.CurrentValueUnit,
                 CurrentValueLabel = collector.CurrentValueLabel,
                 ThreeState = collector.ThreeState,
-                ScanTruncated = collector.ScanTruncated
+                ScanTruncated = collector.ScanTruncated,
+                ScanCoveredDays = collector.ScanCoveredDays
             };
         }
 
@@ -587,6 +625,11 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             detail = $"{detail}（查询已达上限 {options.MaxScanRows} 行，结果可能不完整）";
         }
 
+        if (outcome.ScanCoveredDays is { } coveredDays)
+        {
+            detail = $"{detail}（本次取数覆盖 {coveredDays} 个业务日）";
+        }
+
         double? currentValue;
         string? currentValueUnit;
         string? currentValueLabel;
@@ -629,7 +672,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             Rationale: definition.Rationale,
             RelatedIssues: definition.RelatedIssues,
             TotalViolations: result.TotalViolations,
-            NewViolations: result.NewViolations,
+            WindowViolations: result.WindowViolations,
             HistoricalViolations: result.HistoricalViolations,
             EarliestOccurrenceUtc: ToUtcOffset(result.EarliestOccurrence),
             LatestOccurrenceUtc: ToUtcOffset(result.LatestOccurrence),
@@ -641,7 +684,8 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             TrendDelta: null,
             TrendBaselineUtc: null,
             ThreeState: outcome.ThreeState,
-            ScanTruncated: outcome.ScanTruncated);
+            ScanTruncated: outcome.ScanTruncated,
+            ScanCoveredDays: outcome.ScanCoveredDays);
     }
 
     private static DateTimeOffset? ToUtcOffset(DateTime? value)
@@ -706,7 +750,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (list.Count == 0)
             return InvariantResult.Unknown("INV-P16 UNKNOWN: pc_tracker_events 中无可用事件序列");
 
-        return DataReliabilityInvariants.CheckS1_NoOverlap(list, context.Options, referenceTimeUtc: context.NowUtc);
+        return DataReliabilityInvariants.CheckS1_NoOverlap(list, context.Options, referenceTimeUtc: context.NowUtc, assessmentStartUtc: context.AssessmentStartUtc);
     }
 
     private async Task<InvariantResult> CheckS2Async(DbConnection conn, RuleCheckContext context)
@@ -814,9 +858,22 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
 
         // 同一批候选事件既喂给判据、也喂给三态分布，保证设置页展示与红线判定永远一致（EPIC #254 G4）。
         context.Collector.SetThreeState(DataReliabilityInvariants.ClassifyS2ThreeStates(candidates, context.Options));
-        return DataReliabilityInvariants.CheckS2_OverlongEventEvidence(candidates, context.Options, referenceTimeUtc: context.NowUtc);
+        return DataReliabilityInvariants.CheckS2_OverlongEventEvidence(candidates, context.Options, referenceTimeUtc: context.NowUtc, assessmentStartUtc: context.AssessmentStartUtc);
     }
 
+    /// <summary>
+    /// S3 取数：**只取考核窗内**的活跃事件行（REQ-6 / AC-6.1）。
+    /// <para>
+    /// 现状是"最近 20000 行 duration &gt; 0"，没有任何时间下限，窗外的天也参与判定；
+    /// 这里补上 <c>timestamp &gt;= 考核线</c>，判据再按业务日聚合 —— 跨考核线的业务日因此
+    /// 天然只按"窗内行"聚合（AC-6.2）。
+    /// </para>
+    /// <para>
+    /// 取数仍有 <see cref="InvariantOptions.MaxScanRows"/> 行数上限：命中时把实际覆盖到的业务日数
+    /// 记进 <see cref="DataReliabilityRuleReport.ScanCoveredDays"/> 并沿用 <c>ScanTruncated</c> 标注，
+    /// 绝不静默当作"已覆盖整个考核窗"（AC-6.4）。
+    /// </para>
+    /// </summary>
     private async Task<InvariantResult> CheckS3Async(DbConnection conn, RuleCheckContext context)
     {
         if (!await TableExistsAsync(conn, "pc_tracker_events", context.Ct))
@@ -836,10 +893,11 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                    app_name,
                    id::text
             FROM pc_tracker_events
-            WHERE duration > 0
+            WHERE duration > 0 AND timestamp >= @since
             ORDER BY timestamp DESC
             LIMIT {context.Options.MaxScanRows + 1};
             """;
+        BindTimestamp(cmd, "@since", context.AssessmentStartUtc);
 
         var rawEvents = new List<RawActivityEvent>();
         await using var reader = await cmd.ExecuteReaderAsync(context.Ct);
@@ -871,13 +929,21 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             });
         }
 
-        if (ApplyScanCap(rawEvents, context.Options.MaxScanRows))
+        bool scanTruncated = ApplyScanCap(rawEvents, context.Options.MaxScanRows);
+        if (scanTruncated)
         {
             context.Collector.MarkScanTruncated();
         }
 
         if (rawEvents.Count == 0)
             return InvariantResult.Unknown("INV-P18 UNKNOWN: 无活跃事件可聚合单日时长");
+
+        // 实测覆盖到的业务日数（AC-6.4）：命中行数上限时它可能小于考核窗天数，面板要如实显示。
+        int coveredDays = rawEvents
+            .Select(e => (e.DeviceId, e.BusinessDate))
+            .Distinct()
+            .Count();
+        context.Collector.SetScanCoveredDays(coveredDays);
 
         var dailyDurations = DataReliabilityInvariants.AggregateDailyActiveDurations(rawEvents, context.Options);
         context.Collector.SetCurrentValue(
@@ -988,7 +1054,9 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
 
         if (keys.Count == 0)
         {
-            // 若无重复项，采样近 24 小时正常项以验证表非空且处于健康状态
+            // 若无重复项，采样考核窗内的正常项以验证表非空且处于健康状态。
+            // 下限必须用**考核线**（不是 24h）：否则"窗内 7 天、24h 之外"这段既没有违规行、
+            // 也采不到正常行，S4 会在数据其实存在时误报"业务表为空"（AC-5.6）。
             if (await TableExistsAsync(conn, "pc_tracker_events", context.Ct))
             {
                 await using var sampleCmd = conn.CreateCommand();
@@ -1000,7 +1068,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                     ORDER BY id DESC
                     LIMIT 10;
                     """;
-                BindTimestamp(sampleCmd, "@since", context.NowUtc.AddHours(-context.Options.RecentWindowHours));
+                BindTimestamp(sampleCmd, "@since", context.AssessmentStartUtc);
                 await using var sr = await sampleCmd.ExecuteReaderAsync(context.Ct);
                 while (await sr.ReadAsync(context.Ct))
                 {
@@ -1012,7 +1080,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (keys.Count == 0)
             return InvariantResult.Unknown("INV-C18 UNKNOWN: 业务表为空，无数据检验业务键唯一性");
 
-        return DataReliabilityInvariants.CheckS4_BusinessKeyUnique(keys, context.Options, referenceTimeUtc: context.NowUtc);
+        return DataReliabilityInvariants.CheckS4_BusinessKeyUnique(keys, context.Options, referenceTimeUtc: context.NowUtc, assessmentStartUtc: context.AssessmentStartUtc);
     }
 
     private async Task<InvariantResult> CheckS5Async(DbConnection conn, RuleCheckContext context)
@@ -1022,7 +1090,8 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
 
         await using var cmd = conn.CreateCommand();
         cmd.CommandTimeout = 15;
-        // 增加时间窗限定在最近 24 小时，避免无界扫描或混入过旧历史数据
+        // 时间窗下限必须跟着**考核线**走（不是写死的 24 小时）：分档是 7 天窗，
+        // 取数只取 24 小时会让"窗内 7 天、24h 之外"的违规既进不了窗内、也进不了欠账（AC-5.6）。
         cmd.CommandText = """
             SELECT id, device_id, timestamp, created_at
             FROM pc_tracker_events
@@ -1030,7 +1099,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             ORDER BY id DESC
             LIMIT 500;
             """;
-        BindTimestamp(cmd, "@since", context.NowUtc.AddHours(-context.Options.RecentWindowHours));
+        BindTimestamp(cmd, "@since", context.AssessmentStartUtc);
 
         var items = new List<ClockEventItem>();
         await using var reader = await cmd.ExecuteReaderAsync(context.Ct);
@@ -1082,7 +1151,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
 
         double maxSkewMinutes = items.Max(item => (item.EventTime - item.ServerReceivedTime).TotalMinutes);
         context.Collector.SetCurrentValue(maxSkewMinutes, unit: "min");
-        return DataReliabilityInvariants.CheckS5_ClockTrustworthy(items, context.Options, referenceTimeUtc: context.NowUtc);
+        return DataReliabilityInvariants.CheckS5_ClockTrustworthy(items, context.Options, referenceTimeUtc: context.NowUtc, assessmentStartUtc: context.AssessmentStartUtc);
     }
 
     private async Task<InvariantResult> CheckS6Async(DbConnection conn, RuleCheckContext context)
@@ -1150,7 +1219,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                     .ToList()
             };
 
-            deviceResults.Add(DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, context.Options, context.NowUtc));
+            deviceResults.Add(DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, context.Options, context.NowUtc, context.AssessmentStartUtc));
         }
 
         return DataReliabilityInvariants.CombineDeviceVerdicts("INV-P20", deviceResults, context.Options);
@@ -1262,7 +1331,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (intervals.Count == 0)
             return InvariantResult.Unknown("INV-P21 UNKNOWN: 无时间线区间可检验断档标记");
 
-        return DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, context.Options, context.NowUtc);
+        return DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, context.Options, context.NowUtc, context.AssessmentStartUtc);
     }
 
     private async Task<InvariantResult> CheckS8Async(DbConnection conn, RuleCheckContext context)
@@ -1362,7 +1431,9 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (!await TableExistsAsync(conn, "pc_tracker_events", context.Ct))
             return InvariantResult.Unknown("INV-C20 UNKNOWN: 数据表 pc_tracker_events 不存在");
 
-        var windowHours = context.Options.RecentWindowHours;
+        // S9 覆盖率窗口与考核窗**相互独立**（REQ-5 / A5 / AC-5.5）：覆盖率是"设备此刻是否在正常出数"的
+        // 现状指标，保持 24 小时；改考核窗不得联动它，改它也不得影响分档。
+        var windowHours = context.Options.CoverageWindowHours;
 
         // 1. 体检窗口 = 墙钟最近 24h（见方法注释：锚在数据末端会让尺子对"断流"失明）。
         DateTime windowEnd = context.NowUtc;
@@ -1716,8 +1787,8 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         // 对尚未跑完迁移的库（新增列还不存在）退化为只读旧列，规则 1/2 仍然有效。
         var hasItemCounts = await ColumnExistsAsync(conn, "mobile_sync_batches", "rejected_count", context.Ct)
             && await ColumnExistsAsync(conn, "mobile_sync_batches", "skipped_count", context.Ct);
-        // 窗口起点是批次"业务时间"（T4）：新增/存量分档必须用它，而不是入库时间 created_at——
-        // 否则积压补传的历史窗口会被误算成新增（EPIC #254 T4）。
+        // 窗口起点是批次"业务时间"：考核线分档必须用它，而不是入库时间 created_at——
+        // 否则积压补传的历史窗口会被误算成窗内违规（分档时间字段沿用现状，本单不改）。
         cmd.CommandText = hasItemCounts
             ? $"""
               SELECT batch_id, status, failed_count, accepted_count, rejected_count, skipped_count, window_start_utc
@@ -1764,7 +1835,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (batches.Count == 0)
             return InvariantResult.Unknown("INV-M21 UNKNOWN: mobile_sync_batches 中无批次记录");
 
-        return DataReliabilityInvariants.CheckS11_StatusSemantics(batches, context.Options, context.NowUtc);
+        return DataReliabilityInvariants.CheckS11_StatusSemantics(batches, context.Options, context.NowUtc, context.AssessmentStartUtc);
     }
 
     private async Task<InvariantResult> CheckS12Async(DbConnection conn, RuleCheckContext context)
@@ -1852,7 +1923,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (heartbeats.Count == 0)
             return InvariantResult.Unknown("INV-P22 UNKNOWN: 无采集流数据可检验多实例冲突");
 
-        return DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, context.Options, context.NowUtc);
+        return DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, context.Options, context.NowUtc, context.AssessmentStartUtc);
     }
 
     #endregion

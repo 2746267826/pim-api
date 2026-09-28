@@ -12,6 +12,7 @@ using Microsoft.Extensions.Options;
 using Pim.Core.Invariants;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Operations;
+using Pim.UnitTests.Harness;
 using Xunit;
 
 namespace Pim.UnitTests.Invariants;
@@ -278,7 +279,7 @@ public class DataReliabilityQualityInspectorTests
             Assert.False(string.IsNullOrWhiteSpace(rule.Criterion), $"{rule.Code} 缺判据原文");
             Assert.False(string.IsNullOrWhiteSpace(rule.Rationale), $"{rule.Code} 缺设定理由");
             Assert.True(rule.Samples.Count <= new InvariantOptions().MaxSampleCount, $"{rule.Code} 样例超过上限");
-            Assert.InRange(rule.NewViolations + rule.HistoricalViolations, 0, rule.TotalViolations);
+            Assert.InRange(rule.WindowViolations + rule.HistoricalViolations, 0, rule.TotalViolations);
             Assert.Contains(rule.Status, new[] { "red", "yellow", "green", "unknown" });
             Assert.False(string.IsNullOrWhiteSpace(rule.StatusLabel));
         }
@@ -563,7 +564,7 @@ public class DataReliabilityQualityInspectorTests
             UndeclaredOfflineGapMinutes = 40,
             MaxUploadLagP99Minutes = 35,
             MobileSummaryLagHours = 6,
-            RecentWindowHours = 48,
+            AssessmentWindowHours = 48,
             MaxDailyActiveHours = 20,
             AwakeWindowHours = 15,
             AwakeWindowWarningRatio = 0.8,
@@ -614,10 +615,13 @@ public class DataReliabilityQualityInspectorTests
             new() { DeviceId = "d", Timestamp = ReportNow.UtcDateTime.AddSeconds(600), DurationSeconds = 60, InstanceId = "b" }
         };
 
+        // 夹具时间是固定过去时刻：必须显式给出参考时刻，否则违规一律归历史欠账 → 恒绿，
+        // 这条"容差确实参与判定"的佐证就会失效。
+        var referenceTimeUtc = ReportNow.UtcDateTime.AddMinutes(30);
         Assert.False(DataReliabilityInvariants.CheckS13_SingleInstance(
-            heartbeats, new InvariantOptions { InstanceOverlapToleranceSeconds = 0.05 }).Pass);
+            heartbeats, new InvariantOptions { InstanceOverlapToleranceSeconds = 0.05 }, referenceTimeUtc).Pass);
         Assert.True(DataReliabilityInvariants.CheckS13_SingleInstance(
-            heartbeats, new InvariantOptions { InstanceOverlapToleranceSeconds = 0.25 }).Pass);
+            heartbeats, new InvariantOptions { InstanceOverlapToleranceSeconds = 0.25 }, referenceTimeUtc).Pass);
     }
 
     [Fact]
@@ -628,194 +632,4 @@ public class DataReliabilityQualityInspectorTests
         await Assert.ThrowsAsync<ArgumentException>(() => inspector.GetViolationsAsync("S99", 10));
     }
 
-    #region Mock ADO.NET Infrastructure for Offline Verification
-
-    private sealed class RecordingDbConnection : DbConnection
-    {
-        private ConnectionState _state = ConnectionState.Open;
-
-        public List<string> ExecutedCommands { get; } = new();
-
-        /// <summary>每条语句执行时已绑定的参数名（用于验证 SQL 里的 @xxx 都真的被绑定了）。</summary>
-        public List<IReadOnlyList<string>> ExecutedParameterNames { get; } = new();
-
-        [AllowNull]
-        public override string ConnectionString { get; set; } = "Host=mock;Database=mock";
-        public override string Database => "mock";
-        public override string DataSource => "mock";
-        public override string ServerVersion => "16.0";
-        public override ConnectionState State => _state;
-
-        public override void ChangeDatabase(string databaseName) { }
-        public override void Close() => _state = ConnectionState.Closed;
-        public override void Open() => _state = ConnectionState.Open;
-        public override Task OpenAsync(CancellationToken cancellationToken)
-        {
-            _state = ConnectionState.Open;
-            return Task.CompletedTask;
-        }
-
-        protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel) => throw new NotSupportedException();
-
-        protected override DbCommand CreateDbCommand() => new RecordingDbCommand(this);
-    }
-
-    private sealed class RecordingDbCommand : DbCommand
-    {
-        private readonly RecordingDbConnection _connection;
-
-        public RecordingDbCommand(RecordingDbConnection connection)
-        {
-            _connection = connection;
-        }
-
-        [AllowNull]
-        public override string CommandText { get; set; } = string.Empty;
-        public override int CommandTimeout { get; set; }
-        public override CommandType CommandType { get; set; }
-        protected override DbConnection? DbConnection
-        {
-            get => _connection;
-            set { }
-        }
-        protected override DbParameterCollection DbParameterCollection { get; } = new DummyParameterCollection();
-        protected override DbTransaction? DbTransaction { get; set; }
-        public override bool DesignTimeVisible { get; set; }
-        public override UpdateRowSource UpdatedRowSource { get; set; }
-
-        public override void Cancel() { }
-        protected override DbParameter CreateDbParameter() => new DummyParameter();
-
-        private void Record()
-        {
-            _connection.ExecutedCommands.Add(CommandText);
-            _connection.ExecutedParameterNames.Add(
-                Parameters.Cast<DbParameter>().Select(parameter => parameter.ParameterName).ToList());
-        }
-
-        protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
-        {
-            Record();
-            return new EmptyDbDataReader();
-        }
-
-        protected override Task<DbDataReader> ExecuteDbDataReaderAsync(CommandBehavior behavior, CancellationToken cancellationToken)
-        {
-            Record();
-            return Task.FromResult<DbDataReader>(new EmptyDbDataReader());
-        }
-
-        public override int ExecuteNonQuery()
-        {
-            Record();
-            return 1;
-        }
-
-        public override Task<int> ExecuteNonQueryAsync(CancellationToken cancellationToken)
-        {
-            Record();
-            return Task.FromResult(1);
-        }
-
-        public override object? ExecuteScalar()
-        {
-            Record();
-            return 0L;
-        }
-
-        public override Task<object?> ExecuteScalarAsync(CancellationToken cancellationToken)
-        {
-            Record();
-            return Task.FromResult<object?>(0L);
-        }
-
-        public override void Prepare() { }
-    }
-
-    private sealed class DummyParameter : DbParameter
-    {
-        public override DbType DbType { get; set; }
-        public override ParameterDirection Direction { get; set; }
-        public override bool IsNullable { get; set; }
-        [AllowNull]
-        public override string ParameterName { get; set; } = string.Empty;
-        [AllowNull]
-        public override string SourceColumn { get; set; } = string.Empty;
-        public override object? Value { get; set; }
-        public override bool SourceColumnNullMapping { get; set; }
-        public override int Size { get; set; }
-        public override void ResetDbType() { }
-    }
-
-    private sealed class DummyParameterCollection : DbParameterCollection
-    {
-        private readonly List<DbParameter> _parameters = new();
-        public override int Count => _parameters.Count;
-        public override object SyncRoot => this;
-        public override int Add(object value) { _parameters.Add((DbParameter)value); return _parameters.Count - 1; }
-        public override void AddRange(Array values)
-        {
-            foreach (var val in values)
-            {
-                if (val is DbParameter p) _parameters.Add(p);
-            }
-        }
-        public override void Clear() => _parameters.Clear();
-        public override bool Contains(object value) => _parameters.Contains((DbParameter)value);
-        public override bool Contains(string value) => _parameters.Exists(p => p.ParameterName == value);
-        public override void CopyTo(Array array, int index) => ((System.Collections.ICollection)_parameters).CopyTo(array, index);
-        public override System.Collections.IEnumerator GetEnumerator() => _parameters.GetEnumerator();
-        protected override DbParameter GetParameter(int index) => _parameters[index];
-        protected override DbParameter GetParameter(string parameterName) => _parameters.Find(p => p.ParameterName == parameterName) ?? new DummyParameter();
-        public override int IndexOf(object value) => _parameters.IndexOf((DbParameter)value);
-        public override int IndexOf(string parameterName) => _parameters.FindIndex(p => p.ParameterName == parameterName);
-        public override void Insert(int index, object value) => _parameters.Insert(index, (DbParameter)value);
-        public override void Remove(object value) => _parameters.Remove((DbParameter)value);
-        public override void RemoveAt(int index) => _parameters.RemoveAt(index);
-        public override void RemoveAt(string parameterName) { int idx = IndexOf(parameterName); if (idx >= 0) _parameters.RemoveAt(idx); }
-        protected override void SetParameter(int index, DbParameter value) => _parameters[index] = value;
-        protected override void SetParameter(string parameterName, DbParameter value) { int idx = IndexOf(parameterName); if (idx >= 0) _parameters[idx] = value; }
-    }
-
-    private sealed class EmptyDbDataReader : DbDataReader
-    {
-        public override int FieldCount => 0;
-        public override int Depth => 0;
-        public override bool IsClosed => false;
-        public override int RecordsAffected => 0;
-        public override bool HasRows => false;
-
-        public override object this[int ordinal] => DBNull.Value;
-        public override object this[string name] => DBNull.Value;
-
-        public override bool Read() => false;
-        public override Task<bool> ReadAsync(CancellationToken cancellationToken) => Task.FromResult(false);
-        public override bool NextResult() => false;
-        public override Task<bool> NextResultAsync(CancellationToken cancellationToken) => Task.FromResult(false);
-
-        public override bool GetBoolean(int ordinal) => false;
-        public override byte GetByte(int ordinal) => 0;
-        public override long GetBytes(int ordinal, long dataOffset, byte[]? buffer, int bufferOffset, int length) => 0;
-        public override char GetChar(int ordinal) => ' ';
-        public override long GetChars(int ordinal, long dataOffset, char[]? buffer, int bufferOffset, int length) => 0;
-        public override string GetDataTypeName(int ordinal) => string.Empty;
-        public override DateTime GetDateTime(int ordinal) => DateTime.UtcNow;
-        public override decimal GetDecimal(int ordinal) => 0m;
-        public override double GetDouble(int ordinal) => 0.0;
-        public override Type GetFieldType(int ordinal) => typeof(object);
-        public override float GetFloat(int ordinal) => 0f;
-        public override Guid GetGuid(int ordinal) => Guid.Empty;
-        public override short GetInt16(int ordinal) => 0;
-        public override int GetInt32(int ordinal) => 0;
-        public override long GetInt64(int ordinal) => 0;
-        public override string GetName(int ordinal) => string.Empty;
-        public override int GetOrdinal(string name) => -1;
-        public override string GetString(int ordinal) => string.Empty;
-        public override object GetValue(int ordinal) => DBNull.Value;
-        public override int GetValues(object[] values) => 0;
-        public override bool IsDBNull(int ordinal) => true;
-        public override System.Collections.IEnumerator GetEnumerator() => Array.Empty<object>().GetEnumerator();
-    }
-
-    #endregion
 }

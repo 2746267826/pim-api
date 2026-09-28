@@ -161,9 +161,9 @@ public class DataReliabilityGroupThreeTests
     }
 
     [Fact]
-    public void S11_StockOnlyViolation_TurnsYellowWithHistoricalCount()
+    public void S11_StockOnlyViolation_StaysGreenWithHistoricalCount()
     {
-        // T4: 窗口起点在 24h 之外 → 存量欠账，只计数不报警（黄线），新增必须为 0
+        // WO-RELIABILITY-WINDOW-20260928 AC-3.7：批次窗口起点在考核线之前 → 绿 + 历史欠账计数（旧口径为黄）
         var batches = new List<BatchSyncStatusRecord>
         {
             new()
@@ -173,24 +173,25 @@ public class DataReliabilityGroupThreeTests
                 RejectedCount = 10,
                 TotalCount = 100,
                 Status = "failed",
-                WindowStartUtc = _baseUtc.AddHours(-25)
+                // 必须真的落在考核线之外：25 小时在 7 天考核窗内，会变成窗内违规（旧用例假设 24h 分档线）
+                WindowStartUtc = _baseUtc.AddDays(-30)
             }
         };
 
         var result = DataReliabilityInvariants.CheckS11_StatusSemantics(batches, referenceTimeUtc: _baseUtc);
 
-        Assert.False(result.Pass);
-        Assert.True(result.IsWarning);
+        Assert.Equal(InvariantStatus.Pass, result.Status);
+        Assert.False(result.IsWarning);
         Assert.Equal(1, result.TotalViolations);
-        Assert.Equal(0, result.NewViolations);
+        Assert.Equal(0, result.WindowViolations);
         Assert.Equal(1, result.HistoricalViolations);
-        Assert.Contains("存量 1", result.Detail);
+        Assert.Contains("历史欠账 1", result.Detail);
     }
 
     [Fact]
-    public void S11_NewViolation_TurnsRedWithNewCount()
+    public void S11_NewViolation_TurnsRedWithWindowCount()
     {
-        // T4: 窗口起点在 24h 之内 → 新增违规，保持红尺
+        // 窗口起点落在考核窗内 → 窗内违规，保持红尺
         var batches = new List<BatchSyncStatusRecord>
         {
             new()
@@ -209,15 +210,15 @@ public class DataReliabilityGroupThreeTests
         Assert.False(result.Pass);
         Assert.True(result.IsFail);
         Assert.Equal(1, result.TotalViolations);
-        Assert.Equal(1, result.NewViolations);
+        Assert.Equal(1, result.WindowViolations);
         Assert.Equal(0, result.HistoricalViolations);
-        Assert.Contains("新增 1", result.Detail);
+        Assert.Contains("1 个窗内批次", result.Detail);
     }
 
     [Fact]
     public void S11_MixedViolations_BucketedByWindowStart()
     {
-        // 历史空转批次（存量）+ 今天的 failed 误标（新增）：按窗口起点分档、互不混淆
+        // 历史空转批次（欠账）+ 窗内的 failed 误标（窗内）：按窗口起点分档、互不混淆
         var batches = new List<BatchSyncStatusRecord>
         {
             new()
@@ -247,7 +248,7 @@ public class DataReliabilityGroupThreeTests
         Assert.False(result.Pass);
         Assert.True(result.IsFail);
         Assert.Equal(2, result.TotalViolations);
-        Assert.Equal(1, result.NewViolations);
+        Assert.Equal(1, result.WindowViolations);
         Assert.Equal(1, result.HistoricalViolations);
     }
 
@@ -355,7 +356,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddMinutes(5), DurationSeconds = 600, InstanceId = "inst-B", SessionId = 1 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -373,7 +374,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddMinutes(10), DurationSeconds = 600, InstanceId = "inst-B", SessionId = 1 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -391,7 +392,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = boundary, DurationSeconds = 20, InstanceId = "inst-B", SessionId = 2 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -407,7 +408,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddSeconds(600), DurationSeconds = 60, InstanceId = "inst-B", SessionId = 2 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -423,7 +424,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddSeconds(600), DurationSeconds = 60, InstanceId = "inst-B", SessionId = 2 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -442,7 +443,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddMinutes(10), InstanceId = "inst-B", SessionId = 1 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.True(result.IsUnknown);
         Assert.Equal(0, result.TotalViolations);
@@ -459,10 +460,10 @@ public class DataReliabilityGroupThreeTests
         };
 
         var relaxed = new InvariantOptions { InstanceOverlapToleranceSeconds = 1.0 };
-        Assert.True(DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, relaxed).Pass);
+        Assert.True(DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, relaxed, referenceTimeUtc: _baseUtc.AddMinutes(30)).Pass);
 
         var strict = new InvariantOptions { InstanceOverlapToleranceSeconds = 0.0 };
-        Assert.False(DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, strict).Pass);
+        Assert.False(DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, strict, referenceTimeUtc: _baseUtc.AddMinutes(30)).Pass);
     }
 
     [Fact]
@@ -476,7 +477,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddMinutes(10), DurationSeconds = 600, InstanceId = "inst-A", SessionId = 3 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -493,7 +494,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddMinutes(2), DurationSeconds = 600, InstanceId = "inst-C", SessionId = 3 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -512,7 +513,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = hourStart, DurationSeconds = 20, InstanceId = "inst-B", SessionId = 2 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -530,7 +531,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddHours(3), InstanceId = "inst-B", SessionId = 2 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.True(result.IsUnknown);
         Assert.Contains("无法判定", result.Detail);
@@ -546,7 +547,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddHours(3), InstanceId = "inst-A", SessionId = 2 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.True(result.Pass);
     }
@@ -563,7 +564,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-B", Timestamp = _baseUtc.AddSeconds(600), DurationSeconds = 600, InstanceId = "b2", SessionId = 2 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -581,7 +582,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddHours(2).AddMinutes(1), DurationSeconds = 600, InstanceId = "b2", SessionId = 4 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.False(result.Pass);
         Assert.Equal(2, result.TotalViolations);
@@ -608,7 +609,7 @@ public class DataReliabilityGroupThreeTests
             });
         }
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -625,7 +626,7 @@ public class DataReliabilityGroupThreeTests
             new() { DeviceId = "PC-MAIN", Timestamp = _baseUtc.AddMinutes(20), InstanceId = "inst-A", SessionId = 3 }
         };
 
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(heartbeats, referenceTimeUtc: _baseUtc.AddMinutes(30));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);

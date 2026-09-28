@@ -50,7 +50,7 @@ public class DataReliabilityGroupOneTests
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
-        Assert.Equal(1, result.NewViolations);
+        Assert.Equal(1, result.WindowViolations);
         Assert.Contains("overlaps with", result.Detail);
     }
 
@@ -383,16 +383,17 @@ public class DataReliabilityGroupOneTests
     public void S4_DistinguishesStockAndNewDuplicates()
     {
         var now = _baseTime;
-        var oldTime = now.AddHours(-48); // 48 小时前 (存量)
-        var newTime = now.AddMinutes(-30); // 30 分钟前 (新增)
+        // 分档线现在是 7 天考核窗：48 小时仍在窗内，必须放到考核线之外才算历史欠账。
+        var oldTime = now.AddDays(-10); // 10 天前 (历史欠账)
+        var newTime = now.AddMinutes(-30); // 30 分钟前 (窗内)
 
         var records = new List<BusinessRecordKey>
         {
-            // 存量重复 (2 条相同)
+            // 历史欠账重复 (2 条相同)
             BusinessRecordKey.ForPc("DEV-1", oldTime, 60, "active", "chrome.exe", null, null),
             BusinessRecordKey.ForPc("DEV-1", oldTime, 60, "active", "chrome.exe", null, null),
 
-            // 新增重复 (2 条相同)
+            // 窗内重复 (2 条相同)
             BusinessRecordKey.ForLocation("DEV-1", newTime, 30.0, 120.0),
             BusinessRecordKey.ForLocation("DEV-1", newTime, 30.0, 120.0)
         };
@@ -402,7 +403,7 @@ public class DataReliabilityGroupOneTests
         Assert.False(result.Pass);
         Assert.Equal(2, result.TotalViolations);
         Assert.Equal(1, result.HistoricalViolations); // 存量重复
-        Assert.Equal(1, result.NewViolations);        // 新增重复
+        Assert.Equal(1, result.WindowViolations);        // 新增重复
     }
 
     #endregion
@@ -423,7 +424,7 @@ public class DataReliabilityGroupOneTests
             }
         };
 
-        var result = DataReliabilityInvariants.CheckS5_ClockTrustworthy(items);
+        var result = DataReliabilityInvariants.CheckS5_ClockTrustworthy(items, referenceTimeUtc: _baseTime.AddHours(1));
 
         Assert.True(result.Pass);
     }
@@ -443,7 +444,7 @@ public class DataReliabilityGroupOneTests
             }
         };
 
-        var result = DataReliabilityInvariants.CheckS5_ClockTrustworthy(items);
+        var result = DataReliabilityInvariants.CheckS5_ClockTrustworthy(items, referenceTimeUtc: _baseTime.AddHours(1));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -464,7 +465,7 @@ public class DataReliabilityGroupOneTests
             }
         };
 
-        var defaultResult = DataReliabilityInvariants.CheckS5_ClockTrustworthy(items);
+        var defaultResult = DataReliabilityInvariants.CheckS5_ClockTrustworthy(items, referenceTimeUtc: _baseTime.AddHours(1));
         Assert.False(defaultResult.Pass);
 
         var customOptions = new InvariantOptions { ClockSkewToleranceMinutes = 10.0 };
