@@ -204,6 +204,9 @@ public class DataReliabilityEndpointContractTests
         Assert.True(data.TryGetProperty("notices", out _));
         Assert.True(data.TryGetProperty("elapsedMilliseconds", out _));
         Assert.True(data.TryGetProperty("message", out _));
+        // WO-RELIABILITY-WINDOW-20260928 AC-7.1：面板账本信息行依赖这两个字段，必须在契约里。
+        Assert.True(data.TryGetProperty("assessmentStartUtc", out _));
+        Assert.True(data.TryGetProperty("assessmentWindowHours", out _));
 
         var first = data.GetProperty("rules")[0];
         foreach (var field in new[]
@@ -212,7 +215,9 @@ public class DataReliabilityEndpointContractTests
             "detail", "currentValue", "currentValueUnit", "currentValueLabel", "threshold", "criterion",
             "rationale", "relatedIssues", "totalViolations", "windowViolations", "historicalViolations",
             "earliestOccurrenceUtc", "latestOccurrenceUtc", "samples", "thresholdFallback", "thresholdNote",
-            "coveredLayers", "trend", "trendDelta", "trendBaselineUtc", "threeState", "scanTruncated"
+            "coveredLayers", "trend", "trendDelta", "trendBaselineUtc", "threeState", "scanTruncated",
+            // AC-6.4：S3 的实测覆盖业务日数（其余尺子为 null）
+            "scanCoveredDays"
         })
         {
             Assert.True(first.TryGetProperty(field, out _), $"rules[0] 缺少字段 {field}");
