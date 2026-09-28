@@ -6,7 +6,7 @@ import android.os.StatFs
 import androidx.room.withTransaction
 import com.pim.app.data.AppDatabase
 import com.pim.app.location.PolicyTransitionWriteFailure
-import com.pim.app.location.PolicyTransitionWriteFailureStore
+import com.pim.app.location.PolicyTransitionWriteFailureSource
 import com.pim.app.location.service.ForegroundLocationRuntimeState
 import com.pim.app.mobile.logs.StructuredLogRepository
 import com.pim.app.permissions.PermissionStatusRepository
@@ -113,7 +113,7 @@ class DiagnosticExportRepository internal constructor(
         connectionProbeStore: ConnectionProbeStore,
         permissionStatusRepository: PermissionStatusRepository,
         scheduleWindowRepository: ScheduleWindowRepository,
-        policyTransitionWriteFailureStore: PolicyTransitionWriteFailureStore
+        policyTransitionWriteFailureSource: PolicyTransitionWriteFailureSource
     ) : this(
         context = context,
         db = db,
@@ -125,7 +125,7 @@ class DiagnosticExportRepository internal constructor(
         serviceRunning = { com.pim.app.location.service.ForegroundLocationService.isRunning() },
         scheduleSnapshot = { scheduleWindowRepository.snapshot.value },
         runtimeSnapshot = { com.pim.app.location.service.ForegroundLocationService.runtimeState.value },
-        policyTransitionWriteFailure = { policyTransitionWriteFailureStore.state.value }
+        policyTransitionWriteFailure = { policyTransitionWriteFailureSource.state.value }
     )
 
     override suspend fun export(includeRecentLocations: Boolean): DiagnosticExportResult = withContext(dispatcher) {

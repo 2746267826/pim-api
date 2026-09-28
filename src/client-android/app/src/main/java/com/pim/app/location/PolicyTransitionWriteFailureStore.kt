@@ -5,9 +5,12 @@ import com.pim.app.di.PolicyTransitionPreferences
 import com.pim.app.mobile.logs.StructuredLogRepository
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 
 /**
  * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-3（D-4）：策略切换写入失败的可见状态。
@@ -41,13 +44,15 @@ interface PolicyTransitionWriteFailureSource {
  * - 失败时写一条 error 级结构化日志，**含异常类名与摘要**，且不受「详细日志」开关限制
  *   （`StructuredLogRepository` 只对 `debug` 级做门控，`error` 始终落盘，AC-3.5）。
  *
- * 计数逻辑只做 `synchronized` 内的轻量读写，不占用主线程做重活（REQ-3 反面行为）。
+ * 计数逻辑只做 `synchronized` 内的轻量读写，且 `SharedPreferences.commit()` 这种磁盘写
+ * 一律切到 [ioDispatcher]，**不占用主线程做重活**（REQ-3 反面行为）。
  */
 @Singleton
 class PolicyTransitionWriteFailureStore internal constructor(
     private val preferences: SharedPreferences,
     private val logs: StructuredLogRepository,
-    private val nowMillis: () -> Long
+    private val nowMillis: () -> Long,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : PolicyTransitionWriteFailureSource {
     @Inject
     constructor(
@@ -63,14 +68,16 @@ class PolicyTransitionWriteFailureStore internal constructor(
     /** 记录一次失败：计数严格 +1、最近失败时间刷新，并落一条 error 日志。 */
     suspend fun recordFailure(throwable: Throwable) {
         val now = nowMillis()
-        val updated = synchronized(lock) {
-            val current = mutableState.value
-            val next = PolicyTransitionWriteFailure(
-                consecutiveFailures = current.consecutiveFailures + 1,
-                lastFailureAtUtcMillis = now
-            )
-            persist(next)
-            next
+        val updated = withContext(ioDispatcher) {
+            synchronized(lock) {
+                val current = mutableState.value
+                val next = PolicyTransitionWriteFailure(
+                    consecutiveFailures = current.consecutiveFailures + 1,
+                    lastFailureAtUtcMillis = now
+                )
+                persist(next)
+                next
+            }
         }
         logs.error(
             "location",
@@ -84,12 +91,12 @@ class PolicyTransitionWriteFailureStore internal constructor(
     }
 
     /** 成功写入一次：连续失败计数与最近失败时间**同时**归零（AC-3.2 / AC-3.4）。 */
-    fun recordSuccess() {
-        synchronized(lock) {
-            val current = mutableState.value
-            if (current == PolicyTransitionWriteFailure.None) return
-            val reset = PolicyTransitionWriteFailure.None
-            persist(reset)
+    suspend fun recordSuccess() {
+        withContext(ioDispatcher) {
+            synchronized(lock) {
+                if (mutableState.value == PolicyTransitionWriteFailure.None) return@synchronized
+                persist(PolicyTransitionWriteFailure.None)
+            }
         }
     }
 

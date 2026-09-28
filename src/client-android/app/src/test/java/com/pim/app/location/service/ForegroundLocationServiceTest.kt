@@ -1205,7 +1205,9 @@ class ForegroundLocationServiceTest {
         invokeApplyDecision(service, d3)
         invokeApplyDecision(service, d4)
         invokeApplyDecision(service, d4.copy(nextExpectedLocationAtMillis = 99_000L))
-        shadowOf(Looper.getMainLooper()).idle()
+        // 写入成功路径会记录「连续失败归零」，其中有一次 IO 派发（不在主线程落盘），
+        // 因此这里等写入协程真正跑完，而不是只 idle 一次主 looper。
+        idleUntil { recorded.size == 4 }
 
         assertEquals(4, recorded.size)
         assertNull(recorded[0].first)
@@ -3195,7 +3197,7 @@ class ForegroundLocationServiceTest {
         runBlocking { withTimeout(5_000) { started.await() } }
         invokeApplyDecision(service, secondDecision)
         release.complete(Unit)
-        shadowOf(Looper.getMainLooper()).idle()
+        idleUntil { recorded.size == 2 }
 
         assertEquals(listOf("第一条", "第二条"), recorded.toList())
         service.onDestroy()

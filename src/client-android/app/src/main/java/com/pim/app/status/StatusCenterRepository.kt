@@ -4,7 +4,7 @@ import com.pim.app.data.AppDatabase
 import com.pim.app.data.MobileDataDao
 import com.pim.app.data.MobileLocationPolicyTransitionEntity
 import com.pim.app.location.PolicyTransitionWriteFailure
-import com.pim.app.location.PolicyTransitionWriteFailureStore
+import com.pim.app.location.PolicyTransitionWriteFailureSource
 import com.pim.app.location.service.ForegroundLocationService
 import com.pim.app.location.service.ForegroundLocationRuntimeState
 import com.pim.app.mobile.logs.StructuredLogRepository
@@ -82,8 +82,8 @@ class StatusCenterRepository @Inject constructor(
     private val acceptedSignal: StatusAcceptedSignal,
     private val scheduleWindowRepository: ScheduleWindowRepository,
     private val queueStatusRepository: QueueStatusRepository,
-    private val policyTransitionHistoryRepository: PolicyTransitionHistoryRepository,
-    private val policyTransitionWriteFailureStore: PolicyTransitionWriteFailureStore
+    private val policyTransitionHistorySource: PolicyTransitionHistorySource,
+    private val policyTransitionWriteFailureSource: PolicyTransitionWriteFailureSource
 ) {
     private val dao: MobileDataDao = database.mobileDataDao()
 
@@ -93,14 +93,14 @@ class StatusCenterRepository @Inject constructor(
             diagnosticSnapshotFlow(),
             syncCoordinator.currentState,
             ForegroundLocationService.runtimeState,
-            policyTransitionWriteFailureStore.state
+            policyTransitionWriteFailureSource.state
         ) { queues, diagnostics, syncState, runtime, writeFailure ->
             CoreFacts(queues, diagnostics, syncState, runtime, writeFailure)
         }
 
         // REQ-4：不再取「最近 5 条」，只取最新 1 条 + 已持续时长（D-12：在快照刷新时重算）。
         val scheduleFlow = scheduleWindowRepository.snapshot
-            .combine(policyTransitionHistoryRepository.observeCurrent()) { snap, transitions ->
+            .combine(policyTransitionHistorySource.observeCurrent()) { snap, transitions ->
                 ScheduleFacts(
                     scheduleSnapshot = snap,
                     transitions = transitions
