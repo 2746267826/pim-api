@@ -938,11 +938,18 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         }
 
         if (rawEvents.Count == 0)
-            return InvariantResult.Unknown("INV-P18 UNKNOWN: 无活跃事件可聚合单日时长");
+        {
+            // 取数成功、只是考核窗内还没有活跃事件（最典型的是刚重启：考核线 = 进程启动时刻）。
+            // 如实报"未知"而不是绿：零数据不等于健康（否则采集链路一断，这条尺子反而先变绿）。
+            return InvariantResult.Unknown(
+                $"INV-P18 UNKNOWN: 考核窗内（自 {context.AssessmentStartUtc:yyyy-MM-dd HH:mm} UTC 起）尚无活跃事件可聚合单日时长");
+        }
 
-        // 实测覆盖到的业务日数（AC-6.4）：命中行数上限时它可能小于考核窗天数，面板要如实显示。
+        // 实测覆盖到的**日历业务日**数（AC-6.4）：问的是"2 万行能覆盖考核窗里的多少天"，
+        // 所以按业务日去重（不乘设备数——多设备时按设备×日期去重会把天数算得比窗口还大）。
+        // 命中行数上限时它可能小于考核窗天数，面板要如实显示。
         int coveredDays = rawEvents
-            .Select(e => (e.DeviceId, e.BusinessDate))
+            .Select(e => e.BusinessDate)
             .Distinct()
             .Count();
         context.Collector.SetScanCoveredDays(coveredDays);
@@ -1100,12 +1107,15 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
             cmd.CommandTimeout = 15;
             // 时间窗下限必须跟着**考核线**走（不是写死的 24 小时）：分档是 7 天窗，
             // 取数只取 24 小时会让"窗内 7 天、24h 之外"的违规既进不了窗内、也进不了欠账（AC-5.6）。
-            cmd.CommandText = """
+            // 上限也必须跟着考核窗走：考核窗默认 7 天，写死的 500 行在活跃库上只回溯一两天，
+            // 中间那段既取不到、也不标注截断 —— 与"S4 / S5 不得漏计窗内违规"是同一条要求。
+            // 这里沿用全库统一的 MaxScanRows 上限，并在命中时标注截断（绝不静默）。
+            cmd.CommandText = $"""
                 SELECT id, device_id, timestamp, created_at
                 FROM pc_tracker_events
                 WHERE created_at >= @since
                 ORDER BY id DESC
-                LIMIT 500;
+                LIMIT {context.Options.MaxScanRows + 1};
                 """;
             BindTimestamp(cmd, "@since", context.AssessmentStartUtc);
 
@@ -1124,6 +1134,11 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                     ServerReceivedTime = created
                 });
             }
+        }
+
+        if (ApplyScanCap(items, context.Options.MaxScanRows))
+        {
+            context.Collector.MarkScanTruncated();
         }
 
         // 若考核窗内无数据（例如刚重启，考核线 = 进程启动时刻），兜底取最近 100 条。

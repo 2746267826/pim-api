@@ -360,6 +360,30 @@ public class DataReliabilityAssessmentWindowTests
         InputDensityPerMinute = 30
     };
 
+    /// <summary>
+    /// AC-5.6 的取数上限面：S5 主取数不得再用写死的 500 行 —— 考核窗默认 7 天，
+    /// 活跃库上最新 500 行只回溯一两天，中间那段既取不到也不标注截断（静默漏计窗内违规）。
+    /// 这里把 MaxScanRows 配成一个特征值，断言取数上限确实跟着配置走。
+    /// </summary>
+    [Fact]
+    public async Task Inspector_S5Fetch_CapFollowsConfiguredScanLimit()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateInspector(conn, new InvariantOptions { MaxScanRows = 12345 });
+
+        await inspector.InspectReportAsync(InspectionTime);
+
+        var s5Sql = conn.ExecutedCommands
+            .Select((sql, index) => (Sql: sql, Parameters: conn.ExecutedParameterValues[index]))
+            .Where(entry => entry.Parameters.ContainsKey("@since")
+                && entry.Sql.Contains("SELECT id, device_id, timestamp, created_at", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.True(s5Sql.Count >= 1, "没有找到 S5 主取数语句");
+        Assert.Contains("LIMIT 12346", s5Sql[0].Sql, StringComparison.Ordinal);
+        Assert.DoesNotContain("LIMIT 500", s5Sql[0].Sql, StringComparison.Ordinal);
+    }
+
     #region 进程启动时刻：重启即重置账本，且不落库
 
     /// <summary>AC-1.5：模拟新进程启动（新启动时刻）→ 账本以新时刻为准；沿用旧时刻 = 失败。</summary>
