@@ -381,6 +381,8 @@ public class DataReliabilityOnlyDebtTests
         Assert.Equal(InvariantStatus.Fail, mixed.Status);
         Assert.Equal(1, mixed.WindowViolations);
         Assert.Equal(1, mixed.HistoricalViolations);
+        Assert.Equal(2, mixed.TotalViolations);
+        Assert.Equal(mixed.WindowViolations + mixed.HistoricalViolations, mixed.TotalViolations);
     }
 
     #endregion
