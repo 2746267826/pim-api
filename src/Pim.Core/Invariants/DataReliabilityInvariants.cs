@@ -1037,24 +1037,43 @@ public static class DataReliabilityInvariants
         //    created_at 是重启后补传时刻，两者之差恒等于断档时长，不代表上传链路延迟。
         var realSamples = trace.UploadLagSamples?.Where(s => !s.IsSyntheticGap).ToList()
             ?? new List<UploadLagSample>();
+
+        // 窗内 / 窗外**分开**算 p99，各自出一笔违规。
+        //
+        // 为什么不能整批算一个 p99 再用"最差一条"的时间归边：p99 是聚合统计量，
+        // 若窗外还存在一条更差的样本，整笔会被记成历史欠账 —— 而窗内那批样本的 p99
+        // 其实已经超过阈值。结果是"窗内链路已经积压，尺子却是绿的"（静默漏报）。
         if (realSamples.Count > 0)
         {
-            var lags = realSamples
-                .Select(s => Math.Max(0, (s.CreatedAt - s.EventTime).TotalMinutes))
-                .OrderBy(v => v)
-                .ToList();
-
-            int p99Index = (int)Math.Ceiling(lags.Count * 0.99) - 1;
-            p99Index = Math.Clamp(p99Index, 0, lags.Count - 1);
-            double p99Lag = lags[p99Index];
-
-            if (p99Lag > p99LagMinutesThreshold)
+            foreach (bool windowBucket in new[] { true, false })
             {
-                var worst = realSamples
+                var bucketSamples = realSamples
+                    .Where(sample => (sample.CreatedAt >= cutoff) == windowBucket)
+                    .ToList();
+                if (bucketSamples.Count == 0)
+                {
+                    continue;
+                }
+
+                var lags = bucketSamples
+                    .Select(s => Math.Max(0, (s.CreatedAt - s.EventTime).TotalMinutes))
+                    .OrderBy(v => v)
+                    .ToList();
+
+                int p99Index = (int)Math.Ceiling(lags.Count * 0.99) - 1;
+                p99Index = Math.Clamp(p99Index, 0, lags.Count - 1);
+                double p99Lag = lags[p99Index];
+
+                if (p99Lag <= p99LagMinutesThreshold)
+                {
+                    continue;
+                }
+
+                var worst = bucketSamples
                     .OrderByDescending(s => (s.CreatedAt - s.EventTime).TotalMinutes)
                     .First();
-                bool isWindowViolation = worst.CreatedAt >= cutoff;
-                if (isWindowViolation) windowViolations++; else historicalViolations++;
+
+                if (windowBucket) windowViolations++; else historicalViolations++;
 
                 totalViolations++;
                 earliest = earliest == null || worst.EventTime < earliest ? worst.EventTime : earliest;
@@ -1062,16 +1081,17 @@ public static class DataReliabilityInvariants
 
                 if (samples.Count < opt.MaxSampleCount)
                 {
-                    samples.Add($"Device={trace.DeviceId}: 上传滞后 p99={p99Lag:F1}m 超过阈值 {p99LagMinutesThreshold:F1}m [{DescribeScope(isWindowViolation)}]");
+                    samples.Add($"Device={trace.DeviceId}: 上传滞后 p99={p99Lag:F1}m 超过阈值 {p99LagMinutesThreshold:F1}m（{bucketSamples.Count} 个样本） [{DescribeScope(windowBucket)}]");
                     violations.Add(new InvariantViolation(
-                        Id: $"{trace.DeviceId}:upload-lag-p99",
+                        Id: $"{trace.DeviceId}:upload-lag-p99:{(windowBucket ? "window" : "historical")}",
                         DeviceId: trace.DeviceId,
                         OccurredAtUtc: ToUtc(worst.EventTime),
                         Fields: Fields(
                             ("kind", "upload-lag-p99"),
                             ("p99LagMinutes", p99Lag.ToString("F1")),
+                            ("sampleCount", bucketSamples.Count.ToString()),
                             ("worstLagMinutes", Math.Max(0, (worst.CreatedAt - worst.EventTime).TotalMinutes).ToString("F1")),
-                            ("isNew", isWindowViolation ? "true" : "false"))));
+                            ("isNew", windowBucket ? "true" : "false"))));
                 }
             }
         }

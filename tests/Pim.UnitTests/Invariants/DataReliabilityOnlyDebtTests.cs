@@ -325,6 +325,66 @@ public class DataReliabilityOnlyDebtTests
 
     #endregion
 
+    #region 反面：窗内问题不得因为"窗外还有更差的样本"而被折成欠账
+
+    /// <summary>
+    /// S6 的上传滞后 p99 是**聚合统计量**。若整批算一个 p99、再用"最差一条样本"的时间归边，
+    /// 窗外只要存在一条更差的样本，窗内那批样本的 p99 超标就会被整笔记成历史欠账 → 尺子变绿。
+    /// 本用例构造"窗外滞后 1000 分钟 + 窗内滞后 40 分钟（> 30 分钟阈值）"，要求窗内仍然判红。
+    /// </summary>
+    [Fact]
+    public void S6_WindowP99Exceeds_WhileWorstSampleIsDebt_StillRed()
+    {
+        var debtSample = new DeviceActivityTrace
+        {
+            DeviceId = "PC-1",
+            EventIntervals = new (DateTime, DateTime)[] { (DebtTimeUtc, DebtTimeUtc.AddMinutes(10)) },
+            UploadLagSamples = new[]
+            {
+                new UploadLagSample { EventTime = DebtTimeUtc, CreatedAt = DebtTimeUtc.AddMinutes(1000) }
+            }
+        };
+
+        var mixedTrace = new DeviceActivityTrace
+        {
+            DeviceId = "PC-1",
+            EventIntervals = new (DateTime, DateTime)[] { (WindowTimeUtc.AddHours(-1), WindowTimeUtc) },
+            UploadLagSamples = new[]
+            {
+                // 窗外：滞后 1000 分钟（"最差一条"落在欠账侧）
+                new UploadLagSample { EventTime = DebtTimeUtc, CreatedAt = DebtTimeUtc.AddMinutes(1000) },
+                // 窗内：滞后 40 分钟（窗内这一批的 p99 已经超过 30 分钟阈值）
+                new UploadLagSample { EventTime = WindowTimeUtc.AddMinutes(-40), CreatedAt = WindowTimeUtc }
+            }
+        };
+
+        // 先确认两个分支本身都成立：单看窗外样本只有欠账，单看窗内样本（同样是 40 分钟）必须判红。
+        var debtOnly = DataReliabilityInvariants.CheckS6_OfflineDeclared(debtSample, referenceTimeUtc: NowUtc);
+        Assert.Equal(InvariantStatus.Pass, debtOnly.Status);
+        Assert.Equal(1, debtOnly.HistoricalViolations);
+
+        var windowOnly = DataReliabilityInvariants.CheckS6_OfflineDeclared(
+            new DeviceActivityTrace
+            {
+                DeviceId = "PC-1",
+                EventIntervals = new (DateTime, DateTime)[] { (WindowTimeUtc.AddHours(-1), WindowTimeUtc) },
+                UploadLagSamples = new[]
+                {
+                    new UploadLagSample { EventTime = WindowTimeUtc.AddMinutes(-40), CreatedAt = WindowTimeUtc }
+                }
+            },
+            referenceTimeUtc: NowUtc);
+        Assert.Equal(InvariantStatus.Fail, windowOnly.Status);
+
+        var mixed = DataReliabilityInvariants.CheckS6_OfflineDeclared(mixedTrace, referenceTimeUtc: NowUtc);
+
+        Assert.Equal(InvariantStatus.Fail, mixed.Status);
+        Assert.Equal(1, mixed.WindowViolations);
+        Assert.Equal(1, mixed.HistoricalViolations);
+    }
+
+    #endregion
+
     #region AC-4.2：S4 / S5 / S11 的违规项必须带分档标记
 
     /// <summary>
