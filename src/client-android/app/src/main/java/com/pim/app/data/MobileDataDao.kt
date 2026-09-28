@@ -208,8 +208,36 @@ interface MobileDataDao {
     @Query("SELECT * FROM mobile_location_dropped_diagnostics ORDER BY recorded_at_utc DESC LIMIT :limit")
     fun recentDroppedLocationDiagnostics(limit: Int = 20): Flow<List<MobileLocationDroppedDiagnosticEntity>>
 
-    @Query("SELECT * FROM mobile_location_policy_transitions ORDER BY occurred_at_utc DESC LIMIT :limit")
+    @Query("SELECT * FROM mobile_location_policy_transitions ORDER BY occurred_at_utc DESC, id DESC LIMIT :limit")
     fun recentPolicyTransitions(limit: Int = 20): Flow<List<MobileLocationPolicyTransitionEntity>>
+
+    /**
+     * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-5：30 天窗口内的切换记录（时间倒序）。
+     * 同毫秒并列时按 `id` 倒序，保证「最新一条」稳定可判（AC-1.1）。
+     */
+    @Query(
+        """
+        SELECT * FROM mobile_location_policy_transitions
+        WHERE occurred_at_utc >= :sinceUtc
+        ORDER BY occurred_at_utc DESC, id DESC
+        LIMIT :limit
+        """
+    )
+    fun policyTransitionsSince(
+        sinceUtc: Long,
+        limit: Int = 20
+    ): Flow<List<MobileLocationPolicyTransitionEntity>>
+
+    /** WO-ANDROID-POLICY-TRANSITION-20260928 REQ-5：30 天窗口内的条数（AC-5.4）。 */
+    @Query("SELECT COUNT(*) FROM mobile_location_policy_transitions WHERE occurred_at_utc >= :sinceUtc")
+    fun policyTransitionCountSince(sinceUtc: Long): Flow<Int>
+
+    /** WO-ANDROID-POLICY-TRANSITION-20260928 REQ-4：最新一条切换记录（只取 1 条）。 */
+    @Query("SELECT * FROM mobile_location_policy_transitions ORDER BY occurred_at_utc DESC, id DESC LIMIT 1")
+    fun latestPolicyTransition(): Flow<MobileLocationPolicyTransitionEntity?>
+
+    @Query("SELECT COUNT(*) FROM mobile_location_policy_transitions")
+    suspend fun policyTransitionCount(): Int
 
     @Query(
         """
@@ -396,6 +424,13 @@ interface MobileDataDao {
      */
     @Query("DELETE FROM mobile_location_dropped_diagnostics WHERE recorded_at_utc < :cutoffUtc")
     suspend fun deleteDroppedDiagnosticsOlderThan(cutoffUtc: Long): Int
+
+    /**
+     * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-6：策略切换历史的 30 天时间清理。
+     * 沿用丢弃明细的既有范式（严格小于 → 恰好 30 天前的记录保留，D-11）。
+     */
+    @Query("DELETE FROM mobile_location_policy_transitions WHERE occurred_at_utc < :cutoffUtc")
+    suspend fun deletePolicyTransitionsOlderThan(cutoffUtc: Long): Int
 
     @Query("SELECT COUNT(*) FROM mobile_location_dropped_diagnostics")
     suspend fun droppedDiagnosticCount(): Int

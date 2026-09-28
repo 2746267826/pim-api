@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.pim.app.data.AppDatabase
 import com.pim.app.data.MobileDataDao
 import com.pim.app.data.MobileLocationDroppedDiagnosticEntity
+import com.pim.app.data.MobileLocationPolicyTransitionEntity
 import com.pim.app.mobile.logs.StructuredLogRepository
 import com.pim.app.settings.TrackingSettingsStore
 import kotlinx.coroutines.test.runTest
@@ -119,5 +120,63 @@ class ForensicRetentionTest {
         retention.purgeExpired(now)
 
         assertEquals(2_000, ledger.totalCount())
+    }
+
+    // ── WO-ANDROID-POLICY-TRANSITION-20260928 REQ-6 ───────────────────────────
+
+    private suspend fun transition(name: String, occurredAtUtc: Long) {
+        mobileDao.insertPolicyTransition(
+            MobileLocationPolicyTransitionEntity(
+                fromMode = null,
+                toMode = "PowerSavingNormal",
+                reason = name,
+                occurredAtUtc = occurredAtUtc
+            )
+        )
+    }
+
+    @Test
+    fun `REQ-6 策略切换历史按三十天窗口清理且边界沿用严格小于`() = runTest {
+        // 31 天前 → 删；恰好 30 天 → 保留；29 天前 → 保留（AC-6.1 / AC-6.2）。
+        transition("31 天前", now - 31 * day)
+        transition("恰好 30 天", now - 30 * day)
+        transition("29 天前", now - 29 * day)
+        val before = mobileDao.policyTransitionCount()
+
+        val removed = retention.purgeExpired(now)
+
+        assertEquals(3, before)
+        assertEquals("恰好 30 天的记录必须保留（严格小于判据）", 2, mobileDao.policyTransitionCount())
+        assertEquals(1, removed)
+    }
+
+    @Test
+    fun `REQ-6 清理策略切换历史不影响其它表`() = runTest {
+        transition("31 天前", now - 31 * day)
+        dropped("horizontal-accuracy-too-low", now - 1 * day)
+        ledger.recordHeartbeat(now - 1 * day, "{}")
+        mobileDao.insertLocationPoint(
+            com.pim.app.data.MobileLocationPointEntity(
+                latitude = 1.0,
+                longitude = 2.0,
+                accuracyMeters = 5f,
+                provider = "gps",
+                recordedAtUtc = now - 1 * day,
+                source = "auto",
+                collectedAtUtc = now - 1 * day,
+                rawJson = "{}",
+                syncStatus = com.pim.app.data.MobileSyncStatus.PENDING,
+                createdAtUtc = now - 1 * day
+            )
+        )
+        val locationPointsBefore = mobileDao.diagnosticDatabaseCounts().mobileLocationPointsRowCount
+        val droppedBefore = mobileDao.droppedDiagnosticCount()
+        val heartbeatsBefore = ledger.totalCount()
+
+        retention.purgeExpired(now)
+
+        assertEquals(locationPointsBefore, mobileDao.diagnosticDatabaseCounts().mobileLocationPointsRowCount)
+        assertEquals(droppedBefore, mobileDao.droppedDiagnosticCount())
+        assertEquals(heartbeatsBefore, ledger.totalCount())
     }
 }

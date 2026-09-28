@@ -1188,6 +1188,16 @@ class SettingsServerMutationTest {
             webViewSiteDataCleaner = siteDataCleaner,
             scheduleCacheStore = scheduleCacheStore,
             api = fakeApi,
+            policyTransitionHistorySource = object : com.pim.app.status.PolicyTransitionHistorySource {
+                override fun observeCurrent() = kotlinx.coroutines.flow.flowOf(com.pim.app.status.PolicyTransitionState())
+                override fun observeWindow(limit: Int) =
+                    kotlinx.coroutines.flow.flowOf(emptyList<com.pim.app.status.PolicyTransitionSnapshot>())
+                override fun observeWindowCount() = kotlinx.coroutines.flow.flowOf(0)
+            },
+            policyTransitionWriteFailureSource = object : com.pim.app.location.PolicyTransitionWriteFailureSource {
+                override val state =
+                    kotlinx.coroutines.flow.MutableStateFlow(com.pim.app.location.PolicyTransitionWriteFailure.None)
+            },
             appContext = context
         )
         return Fixture(

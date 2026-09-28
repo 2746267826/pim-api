@@ -15,6 +15,8 @@ import com.google.android.gms.location.Priority
 import com.pim.app.TestPimApp
 import com.pim.app.data.AppDatabase
 import com.pim.app.location.LocationSnapshot
+import com.pim.app.location.PolicyTransitionRecorder
+import com.pim.app.location.PolicyTransitionWriteFailureStore
 import com.pim.app.location.passive.PassiveLocationCoordinator
 import com.pim.app.location.passive.PassiveLocationLedger
 import com.pim.app.location.passive.PassiveLocationSource
@@ -138,7 +140,42 @@ class ForegroundLocationServiceTest {
             service.trackingSettingsStore = trackingStore("fg_default_", enabled = false)
         }
         service.attachSprintAndPassiveDependencies(harness, context, service.trackingSettingsStore)
+        attachPolicyTransitionDependencies(service)
         return service
+    }
+
+    /**
+     * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-1 / REQ-3：给服务装上**非空**的写入依赖。
+     *
+     * 缺陷版本这里是「可空字段 + 静默跳过」，测试不装也能过；现在写入依赖是必填的，
+     * 未装时生产路径会以「装配错误」显式失败（AC-1.5，见 `PolicyTransitionRecordingWiringTest`）。
+     * 本文件的用例关心的是去重 / 取消 / 协程语义，因此默认装一个记录用的测试替身；
+     * **真实接线**（走生产装配 + 真 DAO）由 `PolicyTransitionRecordingWiringTest` 守住。
+     */
+    private fun attachPolicyTransitionDependencies(
+        service: ForegroundLocationService,
+        recorder: PolicyTransitionRecorder = PolicyTransitionRecorder { _, _ -> 0L },
+        now: () -> Long = System::currentTimeMillis
+    ): PolicyTransitionWriteFailureStore {
+        val store = newPolicyTransitionWriteFailureStore(now)
+        service.policyTransitionRecorder = recorder
+        service.policyTransitionWriteFailures = store
+        return store
+    }
+
+    private fun newPolicyTransitionWriteFailureStore(
+        now: () -> Long = System::currentTimeMillis
+    ): PolicyTransitionWriteFailureStore {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val prefs = context.getSharedPreferences(
+            "policy_transition_failure_fixture_" + System.nanoTime(),
+            Context.MODE_PRIVATE
+        ).also { it.edit().clear().commit() }
+        val logs = StructuredLogRepository(
+            context,
+            TrackingSettingsStore(InMemorySharedPreferences())
+        ) { now() }
+        return PolicyTransitionWriteFailureStore(prefs, logs, now)
     }
 
     /**
@@ -1144,8 +1181,11 @@ class ForegroundLocationServiceTest {
     fun applyDecisionDedupesTransitionsAndPublishesRuntimePolicyFields() {
         val recorded = CopyOnWriteArrayList<Pair<LocationPolicyMode?, PolicyDecision>>()
         val service = buildService()
-        setPolicyTransitionWriter(service) { from, decision ->
+        // WO-ANDROID-POLICY-TRANSITION-20260928 AC-2.4：原反射注入用例迁移到此注入方式
+        // （直接给非空依赖装测试替身，不再 `getDeclaredField("policyTransitionWriter")`）。
+        service.policyTransitionRecorder = PolicyTransitionRecorder { from, decision ->
             recorded += from to decision
+            0L
         }
 
         val d1 = PolicyDecision(
@@ -3098,7 +3138,7 @@ class ForegroundLocationServiceTest {
     @LooperMode(LooperMode.Mode.PAUSED)
     fun policyTransitionWriterDoesNotSwallowCancellation() {
         val service = buildService()
-        setPolicyTransitionWriter(service) { _, _ ->
+        service.policyTransitionRecorder = PolicyTransitionRecorder { _, _ ->
             throw CancellationException("cancel transition write")
         }
 
@@ -3129,13 +3169,14 @@ class ForegroundLocationServiceTest {
         val release = CompletableDeferred<Unit>()
         val recorded = CopyOnWriteArrayList<String>()
         var first = true
-        setPolicyTransitionWriter(service) { _, decision ->
+        service.policyTransitionRecorder = PolicyTransitionRecorder { _, decision ->
             if (first) {
                 first = false
                 started.complete(Unit)
                 release.await()
             }
             recorded += decision.reason
+            0L
         }
 
         val firstDecision = PolicyDecision(
@@ -3209,15 +3250,6 @@ class ForegroundLocationServiceTest {
             .invoke(service)
     }
 
-    private fun setPolicyTransitionWriter(
-        service: ForegroundLocationService,
-        writer: suspend (LocationPolicyMode?, PolicyDecision) -> Unit
-    ) {
-        val field = ForegroundLocationService::class.java.getDeclaredField("policyTransitionWriter")
-        field.isAccessible = true
-        field.set(service, writer)
-    }
-
     private fun idleUntil(timeoutMillis: Long = 5_000L, predicate: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
         while (!predicate()) {
@@ -3266,6 +3298,7 @@ class ForegroundLocationServiceTest {
             service.trackingSettingsStore = store
             service.scheduleWindowRepository = repository
             service.attachSprintAndPassiveDependencies(harness, context, store)
+            attachPolicyTransitionDependencies(service)
             return service
         }
 

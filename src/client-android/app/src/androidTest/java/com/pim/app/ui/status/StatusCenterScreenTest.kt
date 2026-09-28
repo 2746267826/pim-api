@@ -377,14 +377,13 @@ class StatusCenterScreenTest {
         ).assertExists()
         composeTestRule.onNodeWithText("invalid-api-url").assertDoesNotExist()
 
+        // WO-ANDROID-POLICY-TRANSITION-20260928 REQ-4（D-1）：原「策略档位」「当前策略」
+        // 两行合并为「当前状态」一行，值 = 档位 · 模式名 · 已持续 X。
         composeTestRule.onNode(
-            hasTestTag("status-tracking-profile") and hasAnyDescendant(hasText("省电"))
+            hasTestTag("status-current-state") and
+                hasAnyDescendant(hasText("省电 · 常规省电 · 已持续 未知"))
         ).assertExists()
         composeTestRule.onNodeWithText("power-saving").assertDoesNotExist()
-
-        composeTestRule.onNode(
-            hasTestTag("status-policy-mode") and hasAnyDescendant(hasText("常规省电"))
-        ).assertExists()
         composeTestRule.onNodeWithText("PowerSavingNormal").assertDoesNotExist()
 
         composeTestRule.onNode(
@@ -745,6 +744,140 @@ class StatusCenterScreenTest {
         }
         composeTestRule.onNodeWithTag("status-metered-sync-confirm-cancel").performClick()
         assertTrue(dismissed)
+    }
+
+    // ── WO-ANDROID-POLICY-TRANSITION-20260928 REQ-4 / REQ-3 ─────────────────
+
+    @Test
+    fun currentStateAndLastTransitionAreExactlyTwoRows() {
+        val transition = com.pim.app.status.PolicyTransitionSnapshot(
+            fromMode = "PowerSavingNormal",
+            toMode = "MotionObservation",
+            reason = "检测到运动状态：步行",
+            occurredAtMillis = java.time.Instant.parse("2026-09-28T02:00:00Z").toEpochMilli()
+        )
+        val state = normalState().copy(
+            snapshot = normalState().snapshot.copy(
+                tracking = TrackingPolicySnapshot(
+                    profile = "standard",
+                    currentPolicyMode = "MotionObservation",
+                    nextExpectedLocationAtMillis = null
+                ),
+                latestPolicyTransition = transition,
+                currentPolicyDurationMillis = (2L * 60L + 5L) * 60_000L
+            )
+        )
+        composeTestRule.setContent {
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state) }
+        }
+
+        // 只 1 行「当前状态」+ 只 1 行「上次切换」；不再有「最近 5 条切换」。
+        composeTestRule.onAllNodesWithTag("status-current-state").assertCountEquals(1)
+        composeTestRule.onAllNodesWithTag("status-policy-transition-last").assertCountEquals(1)
+        composeTestRule.onNode(
+            hasTestTag("status-current-state") and
+                hasAnyDescendant(hasText("标准 · 运动观察 · 已持续 2 小时 5 分钟"))
+        ).assertExists()
+        composeTestRule.onNode(
+            hasTestTag("status-policy-transition-last") and
+                hasAnyDescendant(
+                    hasText(
+                        "常规省电 → 运动观察 · 检测到运动状态：步行",
+                        substring = true
+                    )
+                )
+        ).assertExists()
+        // 旧的多条「策略切换」标签整体消失。
+        composeTestRule.onAllNodesWithTag("status-policy-transition-0").assertCountEquals(0)
+        composeTestRule.onAllNodesWithTag("status-policy-transition-4").assertCountEquals(0)
+    }
+
+    @Test
+    fun emptyHistoryShowsUnknownDurationAndNoRecord() {
+        val state = normalState().copy(
+            snapshot = normalState().snapshot.copy(
+                latestPolicyTransition = null,
+                currentPolicyDurationMillis = null
+            )
+        )
+        composeTestRule.setContent {
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state) }
+        }
+
+        composeTestRule.onNode(
+            hasTestTag("status-current-state") and
+                hasAnyDescendant(hasText("已持续 未知", substring = true))
+        ).assertExists()
+        composeTestRule.onNode(
+            hasTestTag("status-policy-transition-last") and
+                hasAnyDescendant(hasText("暂无记录", substring = true))
+        ).assertExists()
+    }
+
+    @Test
+    fun writeFailureAppearsAsWarningInExistingIssuesSection() {
+        val failedAt = java.time.Instant.parse("2026-09-28T04:30:00Z").toEpochMilli()
+        val issue = StatusIssue.policyTransitionWriteFailure(
+            consecutiveFailures = 3,
+            lastFailureAtMillis = failedAt
+        )
+        val state = normalState().copy(issues = listOf(issue))
+        composeTestRule.setContent {
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state) }
+        }
+
+        // 落在既有「需要处理」告警区，且仍然只有两行状态切换信息。
+        composeTestRule.onNodeWithTag("status-actionable-issues").assertExists()
+        composeTestRule.onNodeWithTag("status-issue-policy-transition-write-failure").assertExists()
+        composeTestRule.onNode(
+            hasTestTag("status-issue-policy-transition-write-failure") and
+                hasAnyDescendant(
+                    hasText(
+                        com.pim.app.status.PolicyTransitionDisplay.writeFailureText(3, failedAt)
+                    )
+                )
+        ).assertExists()
+        composeTestRule.onNodeWithTag("status-issue-action-policy-transition-write-failure")
+            .assertExists()
+        composeTestRule.onAllNodesWithTag("status-current-state").assertCountEquals(1)
+        composeTestRule.onAllNodesWithTag("status-policy-transition-last").assertCountEquals(1)
+    }
+
+    @Test
+    fun existingPolicyAndScheduleRowsAreRetained() {
+        // AC-4.4：撤回项检查——「策略原因 / 采集间隔 / 下次定位 / 日程缓存 / 上次成功 / 上次检查」
+        // 六行在非空快照下仍必须存在（后三者为条件渲染）。
+        val state = normalState().copy(
+            snapshot = normalState().snapshot.copy(
+                tracking = TrackingPolicySnapshot(
+                    profile = "standard",
+                    currentPolicyMode = "MotionObservation",
+                    nextExpectedLocationAtMillis = 1_800_000_000_000L,
+                    currentPolicyReason = "当前日程时段，降低定位频率",
+                    requestIntervalMillis = 30_000L
+                ),
+                schedule = com.pim.app.status.ScheduleCacheStatusSnapshot(
+                    freshness = com.pim.app.schedule.ScheduleCacheFreshness.Fresh,
+                    hasCachedWindows = true,
+                    lastSuccessAtMillis = 1_799_999_000_000L,
+                    lastAttemptAtMillis = 1_799_999_500_000L,
+                    lastError = null
+                )
+            )
+        )
+        composeTestRule.setContent {
+            PimTheme { StatusCenterContent(sprintSummary = sprintSummaryForTest(), state = state) }
+        }
+
+        composeTestRule.onNodeWithTag("status-policy-reason").assertExists()
+        composeTestRule.onNodeWithTag("status-policy-interval").assertExists()
+        composeTestRule.onNodeWithTag("status-next-location").assertExists()
+        composeTestRule.onNodeWithTag("status-schedule-freshness").assertExists()
+        composeTestRule.onNodeWithTag("status-schedule-last-success").assertExists()
+        composeTestRule.onNodeWithTag("status-schedule-last-attempt").assertExists()
+        // 并且仍然只有两行状态切换信息。
+        composeTestRule.onAllNodesWithTag("status-current-state").assertCountEquals(1)
+        composeTestRule.onAllNodesWithTag("status-policy-transition-last").assertCountEquals(1)
     }
 
     private fun normalState(

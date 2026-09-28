@@ -1,7 +1,10 @@
 package com.pim.app.ui.settings
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,6 +52,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,7 +71,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material3.ExperimentalMaterial3Api
 import com.pim.app.settings.TrackingPresetCatalog
+import com.pim.app.status.PolicyTransitionDisplay
 import com.pim.app.status.StatusPermissionNavigator
+import com.pim.app.ui.status.formatPolicyTransition
 import com.pim.app.keepalive.ui.ColorOsGuidanceScreen
 import com.pim.app.keepalive.ui.KeepAliveSection
 import com.pim.app.keepalive.ui.KeepAliveViewModel
@@ -79,10 +86,16 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun SettingsScreen(
     modifier: Modifier = Modifier,
+    /**
+     * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-3（D-10）：状态页写入失败告警的动作入口
+     * 会带着这个标记进入设置页，页面把它滚到「策略切换历史」板块（不新建二级页面）。
+     */
+    scrollToPolicyTransitionHistory: Boolean = false,
+    onPolicyTransitionHistoryScrolled: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
     keepAliveViewModel: KeepAliveViewModel = hiltViewModel()
 ) {
@@ -96,6 +109,19 @@ fun SettingsScreen(
     var showResetDialog by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val scrollState = rememberScrollState()
+    val policyHistoryRequester = remember { BringIntoViewRequester() }
+
+    // REQ-3（D-10）：从状态页告警的动作按钮进来时，把「策略切换历史」板块滚进视野。
+    LaunchedEffect(scrollToPolicyTransitionHistory) {
+        if (scrollToPolicyTransitionHistory) {
+            // 等首帧：requester 要挂到节点上之后才能 bringIntoView。
+            withFrameNanos { }
+            withFrameNanos { }
+            runCatching { policyHistoryRequester.bringIntoView() }
+            onPolicyTransitionHistoryScrolled()
+        }
+    }
 
     // AC-23.2：每次进入引导页都重新读一次系统状态，避免显示上次进入时的旧读数。
     LaunchedEffect(showGuidance, lifecycleOwner) {
@@ -169,7 +195,12 @@ fun SettingsScreen(
             },
             modifier = Modifier.testTag("settings-diagnostics-confirm"),
             title = { Text("确认清除诊断数据？") },
-            text = { Text("将清除本地诊断日志、诊断状态和导出文件。业务队列、服务器地址和登录状态不受影响。") },
+            text = {
+                Text(
+                    "将清除本地诊断日志、诊断状态和导出文件，并一并清除策略切换历史。" +
+                        "业务队列、服务器地址和登录状态不受影响。"
+                )
+            },
             confirmButton = {
                 TextButton(
                     onClick = viewModel::confirmClearDiagnostics,
@@ -194,7 +225,7 @@ fun SettingsScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scrollState)
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -477,6 +508,13 @@ fun SettingsScreen(
                     Text("清除诊断数据")
                 }
             }
+            // REQ-5（D-6）：一并清空行为保持不变，但必须让用户看得见。
+            Text(
+                text = "将一并清除策略切换历史",
+                modifier = Modifier.testTag("settings-diagnostics-clear-note"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             state.diagnosticClearFeedback?.let { feedback ->
                 Text(
                     modifier = Modifier.testTag("settings-diagnostics-feedback"),
@@ -491,6 +529,13 @@ fun SettingsScreen(
                 )
             }
         }
+
+        // WO-ANDROID-POLICY-TRANSITION-20260928 REQ-5：位置在「诊断」板块**之后**（D-3 / AC-5.6）。
+        PolicyTransitionHistorySection(
+            state = state,
+            onExpandPolicyHistory = viewModel::expandPolicyTransitionHistory,
+            modifier = Modifier.bringIntoViewRequester(policyHistoryRequester)
+        )
 
         KeepAliveSection(
             state = keepAliveState,
@@ -618,3 +663,86 @@ fun SettingsScreen(
         }
     }
 }
+
+/** REQ-5（P2）：板块默认展示最近 20 条。 */
+internal const val POLICY_HISTORY_PAGE_SIZE = 20
+
+/**
+ * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-5：「策略切换历史」板块。
+ *
+ * - 内容：最近 **30 天**内全部切换记录，**时间倒序**（DAO 侧排序）；
+ * - 行格式：`MM-dd HH:mm · 旧模式 → 新模式 · 原因`（与状态页共用 `formatPolicyTransition`）；
+ * - 默认 20 条 + 底部 `仅显示最近 20 条 · 30 天内共 N 条` + `展开全部`（板块内展开，D-7）；
+ * - 空态：`暂无记录（修复后的新版本开始记录）`（D-8）；
+ * - 说明：`本地保留 30 天`（**不**写"与日志清理窗口一致"——日志窗口默认 7 天且可改）；
+ * - 顶部：REQ-3 的写入失败提示（与状态页告警区同一文案）。
+ */
+@Composable
+internal fun PolicyTransitionHistorySection(
+    state: SettingsUiState,
+    onExpandPolicyHistory: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    PimSection("策略切换历史", modifier = modifier.testTag("settings-policy-history")) {
+        val failure = state.policyTransitionWriteFailure
+        if (failure.hasFailure) {
+            Text(
+                text = PolicyTransitionDisplay.writeFailureText(
+                    consecutiveFailures = failure.consecutiveFailures,
+                    lastFailureAtMillis = failure.lastFailureAtUtcMillis
+                ),
+                modifier = Modifier.testTag("settings-policy-history-failure"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary
+            )
+        }
+
+        val withinWindow = state.policyHistory
+        val visibleRows = if (state.policyHistoryExpanded) {
+            withinWindow
+        } else {
+            withinWindow.take(POLICY_HISTORY_PAGE_SIZE)
+        }
+
+        if (withinWindow.isEmpty()) {
+            Text(
+                text = "暂无记录（修复后的新版本开始记录）",
+                modifier = Modifier.testTag("settings-policy-history-empty"),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            visibleRows.forEachIndexed { index, transition ->
+                Text(
+                    text = formatPolicyTransition(transition),
+                    modifier = Modifier.testTag("settings-policy-history-row-$index"),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        if (withinWindow.size > POLICY_HISTORY_PAGE_SIZE && !state.policyHistoryExpanded) {
+            Text(
+                text = "仅显示最近 $POLICY_HISTORY_PAGE_SIZE 条 · " +
+                    "30 天内共 ${state.policyHistoryTotalInWindow} 条",
+                modifier = Modifier.testTag("settings-policy-history-more"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedButton(
+                onClick = onExpandPolicyHistory,
+                modifier = Modifier.testTag("settings-policy-history-expand")
+            ) {
+                Text("展开全部")
+            }
+        }
+
+        Text(
+            text = "本地保留 30 天",
+            modifier = Modifier.testTag("settings-policy-history-note"),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+

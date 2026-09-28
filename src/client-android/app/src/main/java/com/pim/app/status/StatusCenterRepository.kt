@@ -3,6 +3,8 @@ package com.pim.app.status
 import com.pim.app.data.AppDatabase
 import com.pim.app.data.MobileDataDao
 import com.pim.app.data.MobileLocationPolicyTransitionEntity
+import com.pim.app.location.PolicyTransitionWriteFailure
+import com.pim.app.location.PolicyTransitionWriteFailureStore
 import com.pim.app.location.service.ForegroundLocationService
 import com.pim.app.location.service.ForegroundLocationRuntimeState
 import com.pim.app.mobile.logs.StructuredLogRepository
@@ -28,12 +30,13 @@ private data class CoreFacts(
     val queues: QueueStatusSnapshot,
     val diagnostics: DiagnosticSnapshot,
     val syncState: MobileSyncState,
-    val runtime: ForegroundLocationRuntimeState
+    val runtime: ForegroundLocationRuntimeState,
+    val policyTransitionWriteFailure: PolicyTransitionWriteFailure
 )
 
 private data class ScheduleFacts(
     val scheduleSnapshot: ScheduleCacheSnapshot,
-    val transitions: List<PolicyTransitionSnapshot>
+    val transitions: PolicyTransitionState
 )
 
 private data class ExternalFacts(
@@ -78,7 +81,9 @@ class StatusCenterRepository @Inject constructor(
     private val workInfoStatusProvider: WorkInfoStatusProvider,
     private val acceptedSignal: StatusAcceptedSignal,
     private val scheduleWindowRepository: ScheduleWindowRepository,
-    private val queueStatusRepository: QueueStatusRepository
+    private val queueStatusRepository: QueueStatusRepository,
+    private val policyTransitionHistoryRepository: PolicyTransitionHistoryRepository,
+    private val policyTransitionWriteFailureStore: PolicyTransitionWriteFailureStore
 ) {
     private val dao: MobileDataDao = database.mobileDataDao()
 
@@ -87,16 +92,18 @@ class StatusCenterRepository @Inject constructor(
             queueStatusRepository.observe(),
             diagnosticSnapshotFlow(),
             syncCoordinator.currentState,
-            ForegroundLocationService.runtimeState
-        ) { queues, diagnostics, syncState, runtime ->
-            CoreFacts(queues, diagnostics, syncState, runtime)
+            ForegroundLocationService.runtimeState,
+            policyTransitionWriteFailureStore.state
+        ) { queues, diagnostics, syncState, runtime, writeFailure ->
+            CoreFacts(queues, diagnostics, syncState, runtime, writeFailure)
         }
 
+        // REQ-4：不再取「最近 5 条」，只取最新 1 条 + 已持续时长（D-12：在快照刷新时重算）。
         val scheduleFlow = scheduleWindowRepository.snapshot
-            .combine(dao.recentPolicyTransitions(limit = 5)) { snap, transitions ->
+            .combine(policyTransitionHistoryRepository.observeCurrent()) { snap, transitions ->
                 ScheduleFacts(
                     scheduleSnapshot = snap,
-                    transitions = transitions.map { it.toPolicyTransitionSnapshot() }
+                    transitions = transitions
                 )
             }
 
@@ -118,7 +125,13 @@ class StatusCenterRepository @Inject constructor(
                     listOfNotNull(core.syncState.lastError)
                 }
             )
-            val snapshot = buildSnapshot(core.queues, mergedDiagnostics, core.runtime, scheduleFacts)
+            val snapshot = buildSnapshot(
+                core.queues,
+                mergedDiagnostics,
+                core.runtime,
+                scheduleFacts,
+                core.policyTransitionWriteFailure
+            )
             val state = StatusResultMapper.buildState(
                 snapshot = snapshot,
                 syncState = core.syncState,
@@ -148,7 +161,8 @@ class StatusCenterRepository @Inject constructor(
         queues: QueueStatusSnapshot,
         diagnostics: DiagnosticSnapshot,
         runtime: ForegroundLocationRuntimeState,
-        scheduleFacts: ScheduleFacts
+        scheduleFacts: ScheduleFacts,
+        policyTransitionWriteFailure: PolicyTransitionWriteFailure
     ): StatusCenterSnapshot {
         val baseUrl = serverSettingsStore.getBaseUrl()
         val validation = ServerUrlValidator.validate(baseUrl)
@@ -176,7 +190,9 @@ class StatusCenterRepository @Inject constructor(
             queues = queues,
             diagnostics = diagnostics,
             schedule = scheduleFacts.scheduleSnapshot.toScheduleCacheStatusSnapshot(expectedServerIdentity),
-            recentPolicyTransitions = scheduleFacts.transitions
+            latestPolicyTransition = scheduleFacts.transitions.latest,
+            currentPolicyDurationMillis = scheduleFacts.transitions.currentDurationMillis,
+            policyTransitionWriteFailure = policyTransitionWriteFailure
         )
     }
 

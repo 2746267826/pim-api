@@ -1,5 +1,6 @@
 package com.pim.app.status
 
+import com.pim.app.location.PolicyTransitionWriteFailure
 import com.pim.app.location.quality.LocationQualityGate
 import com.pim.app.schedule.ScheduleCacheFreshness
 import com.pim.app.location.service.ForegroundLocationRuntimeState
@@ -48,6 +49,8 @@ enum class StatusActionTarget {
     Queue,
     NetworkSettings,
     ConnectionCheck,
+    /** WO-ANDROID-POLICY-TRANSITION-20260928 REQ-3：跳到设置页「策略切换历史」板块。 */
+    PolicyTransitionHistory,
     None
 }
 
@@ -63,6 +66,7 @@ enum class StatusActionRoute {
 object StatusActionRouter {
     fun route(target: StatusActionTarget): StatusActionRoute = when (target) {
         StatusActionTarget.Settings,
+        StatusActionTarget.PolicyTransitionHistory,
         StatusActionTarget.Login -> StatusActionRoute.OpenSettings
         StatusActionTarget.Permissions -> StatusActionRoute.OpenPermissions
         StatusActionTarget.Sync,
@@ -312,6 +316,26 @@ data class StatusIssue(
             actionLabel = "",
             target = StatusActionTarget.None
         )
+
+        /**
+         * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-3（D-10）：写入失败提示的**主位**。
+         *
+         * 落在状态页**既有**告警区（「需要处理」）的一条 `Warning` 行，**不**新增第三条
+         * 状态切换信息行（对齐 Q-1「只显示当前状态和上一个状态」）。
+         * 文案逐字取自工单 §四：`策略切换记录写入失败 N 次 · 最近 MM-dd HH:mm`。
+         */
+        fun policyTransitionWriteFailure(
+            consecutiveFailures: Int,
+            lastFailureAtMillis: Long?
+        ): StatusIssue = StatusIssue(
+            code = "policy-transition-write-failure",
+            severity = StatusSeverity.Warning,
+            title = PolicyTransitionDisplay.writeFailureText(consecutiveFailures, lastFailureAtMillis),
+            message = "可在设置页「策略切换历史」查看本地记录。",
+            lastOccurredAtMillis = lastFailureAtMillis,
+            actionLabel = "查看历史",
+            target = StatusActionTarget.PolicyTransitionHistory
+        )
     }
 }
 
@@ -418,7 +442,15 @@ data class StatusCenterSnapshot(
     val queues: QueueStatusSnapshot,
     val diagnostics: DiagnosticSnapshot,
     val schedule: ScheduleCacheStatusSnapshot = ScheduleCacheStatusSnapshot(),
-    val recentPolicyTransitions: List<PolicyTransitionSnapshot> = emptyList()
+    /**
+     * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-4：**最新一条**切换记录（查询收敛为 1 条）。
+     * 状态页的「上次切换」行与「已持续」时长都取自它；无记录为 null。
+     */
+    val latestPolicyTransition: PolicyTransitionSnapshot? = null,
+    /** REQ-4（D-2 / P5）：当前状态已持续时长 = 快照时刻 − 最新一条记录时间；无记录为 null。 */
+    val currentPolicyDurationMillis: Long? = null,
+    /** REQ-3：写入失败状态（连续失败次数 + 最近失败时间）。 */
+    val policyTransitionWriteFailure: PolicyTransitionWriteFailure = PolicyTransitionWriteFailure.None
 )
 
 data class StatusCenterState(
@@ -545,6 +577,15 @@ object StatusIssuePlanner {
         val heartbeat = snapshot.diagnostics.lastHeartbeatStatus.orEmpty()
         if (heartbeat.contains("fail", ignoreCase = true) || heartbeat.contains("失败")) {
             issues += StatusIssue.heartbeatFailure()
+        }
+
+        // WO-ANDROID-POLICY-TRANSITION-20260928 REQ-3（P3：连续失败 > 0 即提示）。
+        val writeFailure = snapshot.policyTransitionWriteFailure
+        if (writeFailure.hasFailure) {
+            issues += StatusIssue.policyTransitionWriteFailure(
+                consecutiveFailures = writeFailure.consecutiveFailures,
+                lastFailureAtMillis = writeFailure.lastFailureAtUtcMillis
+            )
         }
 
         return issues.distinctBy { it.code }

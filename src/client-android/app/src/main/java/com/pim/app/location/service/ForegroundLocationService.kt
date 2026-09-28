@@ -15,6 +15,8 @@ import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.location.Priority
 import com.pim.app.location.LocationSnapshot
+import com.pim.app.location.PolicyTransitionRecorder
+import com.pim.app.location.PolicyTransitionWriteFailureStore
 import com.pim.app.location.acquisition.AcquisitionContext
 import com.pim.app.location.acquisition.AcquisitionPhase
 import com.pim.app.location.acquisition.LocationAcquisitionCoordinator
@@ -111,7 +113,17 @@ class ForegroundLocationService : Service() {
     // never this instance's to cancel.
     private var ownedManualSessionId: String? = null
     private var policyTransitionWriteJob: Job? = null
-    internal var policyTransitionWriter: (suspend (LocationPolicyMode?, PolicyDecision) -> Unit)? = null
+    /**
+     * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-1：策略切换记录的写入依赖。
+     *
+     * **非空**生产依赖，由 `PolicyTransitionModule` 绑定到 `LocationQueueRepository`。
+     * 缺陷版本是一个从未被生产装配赋值的**可空** lambda 字段（见工单 §二 / 附录 A1），
+     * 字段为空时静默跳过，导致 2026-07-26 起整整一个半月零写库。
+     */
+    @Inject lateinit var policyTransitionRecorder: PolicyTransitionRecorder
+
+    /** REQ-3：写入失败的可见状态（连续失败次数 + 最近失败时间，持久化）。 */
+    @Inject lateinit var policyTransitionWriteFailures: PolicyTransitionWriteFailureStore
     // 最近一次流入库 fix 的 GPS 速度：高速轨迹状态机（policyEngine.highSpeedTracker）
     // 以它为输入，自动循环每次重算时观察。null 表示尚未收到任何入库 fix。
     private var lastSpeedMetersPerSecond: Float? = null
@@ -836,21 +848,46 @@ class ForegroundLocationService : Service() {
         currentDecision = decision
         val transition = policyTransitionDeduper.note(decision)
         if (transition != null) {
+            // REQ-1 / AC-1.5：装配错误必须**在决策路径上同步显式失败**，
+            // 不能等协程调度、更不能退化成「日志里才有」的静默跳过。
+            val recorder = resolvePolicyTransitionRecorder()
             policyTransitionWriteJob = scope.launch {
                 policyTransitionWriteMutex.withLock {
-                    try {
-                        val writer = policyTransitionWriter
-                        if (writer != null) {
-                            writer(transition.fromMode, transition.decision)
-                        }
-                    } catch (ex: CancellationException) {
-                        throw ex
-                    } catch (_: Exception) {
-                    }
+                    writePolicyTransition(recorder, transition.fromMode, transition.decision)
                 }
             }
         }
         publishRuntimeState(isRunning = isRunning)
+    }
+
+    /**
+     * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-3：把一条决策变化落到本地库。
+     *
+     * - **写入异常不静默**：记录一条 error 级日志（含异常类名与摘要）并累加持久化的
+     *   连续失败计数；成功一次即归零（AC-3.1 ~ AC-3.4）。
+     * - 取消信号必须继续向上抛（迁移后的用例仍守住这一点）。
+     */
+    private suspend fun writePolicyTransition(
+        recorder: PolicyTransitionRecorder,
+        fromMode: LocationPolicyMode?,
+        decision: PolicyDecision
+    ) {
+        try {
+            recorder.record(fromMode, decision)
+            policyTransitionWriteFailures.recordSuccess()
+        } catch (ex: CancellationException) {
+            throw ex
+        } catch (ex: Exception) {
+            policyTransitionWriteFailures.recordFailure(ex)
+        }
+    }
+
+    /** 生产装配缺失时**显式失败**，不允许静默跳过（AC-1.5）。 */
+    private fun resolvePolicyTransitionRecorder(): PolicyTransitionRecorder {
+        check(::policyTransitionRecorder.isInitialized) {
+            "装配错误：PolicyTransitionRecorder 未注入，策略切换记录无法写入"
+        }
+        return policyTransitionRecorder
     }
 
     private fun isLocationEnabled(): Boolean {

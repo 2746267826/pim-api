@@ -10,6 +10,7 @@ import com.pim.app.data.MobileLocationPointEntity
 import com.pim.app.data.MobileLogEntity
 import com.pim.app.data.MobileLocationDroppedDiagnosticEntity
 import com.pim.app.data.MobileLocationPolicyTransitionEntity
+import com.pim.app.location.PolicyTransitionWriteFailure
 import com.pim.app.data.MobileSyncBatchEntity
 import com.pim.app.location.service.ForegroundLocationRuntimeState
 import com.pim.app.schedule.ScheduleCacheFreshness
@@ -109,7 +110,10 @@ class DiagnosticExportRepositoryTest {
         structuredLogRepository: StructuredLogRepository = structuredLogRepo,
         deleteExportFile: ((File) -> Boolean)? = null,
         scheduleSnapshot: () -> ScheduleCacheSnapshot = { defaultScheduleSnapshot() },
-        runtimeSnapshot: () -> ForegroundLocationRuntimeState = { ForegroundLocationRuntimeState() }
+        runtimeSnapshot: () -> ForegroundLocationRuntimeState = { ForegroundLocationRuntimeState() },
+        policyTransitionWriteFailure: () -> PolicyTransitionWriteFailure = {
+            PolicyTransitionWriteFailure.None
+        }
     ): DiagnosticExportRepository {
         val actualPublish: (File, File) -> Unit = if (publish != null) publish else { tmp, final ->
             Files.move(tmp.toPath(), final.toPath())
@@ -131,7 +135,8 @@ class DiagnosticExportRepositoryTest {
             publish = actualPublish,
             deleteExportFile = deleteExportFile ?: { it.delete() },
             scheduleSnapshot = scheduleSnapshot,
-            runtimeSnapshot = runtimeSnapshot
+            runtimeSnapshot = runtimeSnapshot,
+            policyTransitionWriteFailure = policyTransitionWriteFailure
         )
     }
 
@@ -1112,6 +1117,41 @@ class DiagnosticExportRepositoryTest {
             assertTrue(status.has("currentPolicyReason"))
             assertTrue(status.has("currentPolicyRequestIntervalMillis"))
             assertTrue(status.has("recentPolicyTransitions"))
+            // WO-ANDROID-POLICY-TRANSITION-20260928 REQ-3：写入失败状态随导出给出。
+            assertTrue(status.has("policyTransitionWriteFailureCount"))
+            assertTrue(status.has("policyTransitionWriteLastFailureAtUtc"))
+        }
+    }
+
+    @Test
+    fun status_policyTransitionWriteFailureCarriesCountAndLastFailure() = runTest {
+        val failedAt = 1_756_684_800_000L
+        val repo = createRepo(
+            policyTransitionWriteFailure = {
+                PolicyTransitionWriteFailure(
+                    consecutiveFailures = 2,
+                    lastFailureAtUtcMillis = failedAt
+                )
+            }
+        )
+        val result = repo.export(includeRecentLocations = false)
+
+        ZipFile(result.file).use { zip ->
+            val status = JSONObject(zip.readEntry("status.json")!!)
+            assertEquals(2, status.getInt("policyTransitionWriteFailureCount"))
+            assertEquals(failedAt, status.getLong("policyTransitionWriteLastFailureAtUtc"))
+        }
+    }
+
+    @Test
+    fun status_policyTransitionWriteFailureDefaultsToZeroAndNull() = runTest {
+        val repo = createRepo()
+        val result = repo.export(includeRecentLocations = false)
+
+        ZipFile(result.file).use { zip ->
+            val status = JSONObject(zip.readEntry("status.json")!!)
+            assertEquals(0, status.getInt("policyTransitionWriteFailureCount"))
+            assertTrue(status.isNull("policyTransitionWriteLastFailureAtUtc"))
         }
     }
 

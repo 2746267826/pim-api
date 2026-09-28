@@ -96,6 +96,89 @@ class StatusPresentationTest {
         assertEquals("未安排", formatPolicyInterval(-1L))
     }
 
+    // ── WO-ANDROID-POLICY-TRANSITION-20260928 REQ-4（D-2 / P5）──────────────
+
+    @Test
+    fun `已持续时长按工单分档渲染含全部边界`() {
+        // 无记录
+        assertEquals("未知", formatPolicyDuration(null))
+        // < 1 分钟（含 59 秒）
+        assertEquals("不足 1 分钟", formatPolicyDuration(0L))
+        assertEquals("不足 1 分钟", formatPolicyDuration(59_000L))
+        // < 1 小时（含 1 分钟 / 59 分钟）
+        assertEquals("1 分钟", formatPolicyDuration(60_000L))
+        assertEquals("59 分钟", formatPolicyDuration(59L * 60_000L))
+        // < 24 小时（1 小时 / 23 小时 59 分）
+        assertEquals("1 小时", formatPolicyDuration(60L * 60_000L))
+        assertEquals("1 小时 30 分钟", formatPolicyDuration(90L * 60_000L))
+        assertEquals("23 小时 59 分钟", formatPolicyDuration(24L * 60L * 60_000L - 60_000L))
+        // ≥ 24 小时（整 24 小时省略「0 小时」；Y = 0 时省略）
+        assertEquals("1 天", formatPolicyDuration(24L * 60L * 60_000L))
+        assertEquals("1 天 5 小时", formatPolicyDuration(29L * 60L * 60_000L))
+        assertEquals("30 天", formatPolicyDuration(30L * 24L * 60L * 60_000L))
+    }
+
+    @Test
+    fun `当前状态值由档位模式名与已持续时长组成`() {
+        assertEquals(
+            "标准 · 运动观察 · 已持续 2 小时 5 分钟",
+            formatCurrentPolicyState(
+                profile = "standard",
+                policyMode = "MotionObservation",
+                durationMillis = (2L * 60L + 5L) * 60_000L
+            )
+        )
+        // 空库：档位 / 模式仍来自运行时快照，时长显示「未知」（AC-4.3）。
+        assertEquals(
+            "标准 · 运动观察 · 已持续 未知",
+            formatCurrentPolicyState(
+                profile = "standard",
+                policyMode = "MotionObservation",
+                durationMillis = null
+            )
+        )
+    }
+
+    @Test
+    fun `已持续时长与上次切换取自同一条记录的时刻`() {
+        val occurredAt = Instant.parse("2026-09-28T02:00:00Z").toEpochMilli()
+        val transition = PolicyTransitionSnapshot(
+            fromMode = "PowerSavingNormal",
+            toMode = "MotionObservation",
+            reason = "检测到运动状态：步行",
+            occurredAtMillis = occurredAt
+        )
+        val now = Instant.parse("2026-09-28T04:30:00Z").toEpochMilli()
+
+        // 状态页这次渲染用的两个值来自同一快照：now − occurredAt。
+        assertEquals("2 小时 30 分钟", formatPolicyDuration(now - occurredAt))
+        assertEquals(
+            "09-28 02:00 · 常规省电 → 运动观察 · 检测到运动状态：步行",
+            formatPolicyTransition(transition, ZoneId.of("UTC"))
+        )
+    }
+
+    @Test
+    fun `写入失败文案在状态页与设置页是同一份`() {
+        val at = Instant.parse("2026-09-28T04:30:00Z").toEpochMilli()
+        assertEquals(
+            "策略切换记录写入失败 2 次 · 最近 09-28 12:30",
+            com.pim.app.status.PolicyTransitionDisplay.writeFailureText(
+                consecutiveFailures = 2,
+                lastFailureAtMillis = at,
+                zoneId = ZoneId.of("Asia/Shanghai")
+            )
+        )
+        assertEquals(
+            "策略切换记录写入失败 2 次 · 最近 未知",
+            com.pim.app.status.PolicyTransitionDisplay.writeFailureText(
+                consecutiveFailures = 2,
+                lastFailureAtMillis = null,
+                zoneId = ZoneId.of("Asia/Shanghai")
+            )
+        )
+    }
+
     @Test
     fun waitingSyncCanRequestOneTimeNetworkOverride() {
         val state = StatusCenterState.empty().copy(

@@ -1,5 +1,6 @@
 package com.pim.app.status
 
+import com.pim.app.location.PolicyTransitionWriteFailure
 import com.pim.app.location.service.ForegroundLocationRuntimeState
 import com.pim.app.schedule.ScheduleCacheFreshness
 import org.junit.Assert.assertEquals
@@ -633,5 +634,70 @@ class StatusIssueTest {
         val issues = StatusIssuePlanner.plan(snapshot).associateBy { it.code }
 
         assertFalse("battery-optimization-missing must not appear when granted", issues.containsKey("battery-optimization-missing"))
+    }
+
+    // ── WO-ANDROID-POLICY-TRANSITION-20260928 REQ-3 ────────────────────────────
+
+    private fun healthySnapshot(writeFailure: PolicyTransitionWriteFailure) = StatusCenterSnapshot(
+        permissions = PermissionStatusSnapshot(true, true, true, true, true, true),
+        api = ApiConnectionSnapshot(
+            address = "https://valid.example",
+            isValid = true,
+            reasonCode = null,
+            warnings = emptySet()
+        ),
+        auth = AuthStatusSnapshot(hasAccessToken = true, isExpired = false),
+        service = ForegroundServiceSnapshot(continuousCollectionEnabled = true, serviceRunning = true),
+        tracking = TrackingPolicySnapshot("power-saving", "PowerSavingNormal", null),
+        queues = QueueStatusSnapshot(0, 0, 0, 0, 0, 0),
+        diagnostics = DiagnosticSnapshot(null, null, null, null),
+        policyTransitionWriteFailure = writeFailure
+    )
+
+    @Test
+    fun `写入失败在告警区产生一条 Warning 且文案逐字一致`() {
+        val failedAt = java.time.Instant.parse("2026-09-28T04:30:00Z").toEpochMilli()
+        val issue = StatusIssue.policyTransitionWriteFailure(
+            consecutiveFailures = 3,
+            lastFailureAtMillis = failedAt
+        )
+
+        assertEquals("policy-transition-write-failure", issue.code)
+        assertEquals(StatusSeverity.Warning, issue.severity)
+        assertEquals(
+            PolicyTransitionDisplay.writeFailureText(3, failedAt),
+            issue.title
+        )
+        assertEquals(
+            "策略切换记录写入失败 3 次 · 最近 09-28 12:30",
+            PolicyTransitionDisplay.writeFailureText(3, failedAt, java.time.ZoneId.of("Asia/Shanghai"))
+        )
+        assertEquals("查看历史", issue.actionLabel)
+        assertEquals(StatusActionTarget.PolicyTransitionHistory, issue.target)
+        assertEquals(StatusActionRoute.OpenSettings, StatusActionRouter.route(issue.target))
+    }
+
+    @Test
+    fun `连续失败为零时告警区不出现写入失败提示`() {
+        val issues = StatusIssuePlanner.plan(healthySnapshot(PolicyTransitionWriteFailure.None))
+        assertFalse(issues.any { it.code == "policy-transition-write-failure" })
+    }
+
+    @Test
+    fun `连续失败大于零时告警区出现写入失败提示`() {
+        val issues = StatusIssuePlanner.plan(
+            healthySnapshot(
+                PolicyTransitionWriteFailure(
+                    consecutiveFailures = 1,
+                    lastFailureAtUtcMillis = 1_756_684_800_000L
+                )
+            )
+        )
+        val issue = issues.single { it.code == "policy-transition-write-failure" }
+        assertEquals(StatusSeverity.Warning, issue.severity)
+        assertTrue(
+            "文案必须逐字为「策略切换记录写入失败 N 次 · 最近 MM-dd HH:mm」：${issue.title}",
+            issue.title.matches(Regex("策略切换记录写入失败 1 次 · 最近 \\d{2}-\\d{2} \\d{2}:\\d{2}"))
+        )
     }
 }

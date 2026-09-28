@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Sensors
@@ -87,6 +88,11 @@ import java.time.format.DateTimeFormatter
 fun StatusCenterScreen(
     modifier: Modifier = Modifier,
     onOpenSettings: () -> Unit = {},
+    /**
+     * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-3（D-10）：写入失败告警的动作入口——
+     * 打开设置页并定位到「策略切换历史」板块。默认退化为打开设置页。
+     */
+    onOpenPolicyTransitionHistory: () -> Unit = onOpenSettings,
     viewModel: StatusCenterViewModel = hiltViewModel(),
     keepAliveViewModel: com.pim.app.keepalive.ui.KeepAliveViewModel = hiltViewModel()
 ) {
@@ -149,7 +155,13 @@ fun StatusCenterScreen(
         modifier = modifier,
         onIssueAction = { issue ->
             when (StatusActionRouter.route(viewModel.onIssueAction(issue))) {
-                StatusActionRoute.OpenSettings -> onOpenSettings()
+                // REQ-3（D-10）：写入失败告警的动作按钮直达设置页「策略切换历史」板块。
+                StatusActionRoute.OpenSettings ->
+                    if (issue.target == StatusActionTarget.PolicyTransitionHistory) {
+                        onOpenPolicyTransitionHistory()
+                    } else {
+                        onOpenSettings()
+                    }
                 StatusActionRoute.OpenPermissions -> StatusPermissionNavigator.open(context, issue)
                 StatusActionRoute.TriggerSync -> viewModel.syncNow()
                 StatusActionRoute.OpenNetworkSettings -> {
@@ -608,8 +620,17 @@ private fun CollectionAndConnectionSection(state: StatusCenterState) {
         )
         FactRow("持续采集", if (snap.service.continuousCollectionEnabled) "已开启" else "未开启")
         FactRow("服务运行", if (snap.service.serviceRunning) "运行中" else "已停止")
-        FactRow("策略档位", StatusDisplayText.profile(snap.tracking.profile), "status-tracking-profile")
-        FactRow("当前策略", StatusDisplayText.policyMode(snap.tracking.currentPolicyMode), "status-policy-mode")
+        // WO-ANDROID-POLICY-TRANSITION-20260928 REQ-4：原「策略档位」「当前策略」两行合并为
+        // 「当前状态」一行（D-1），值内附已持续时长（D-2 / P5：不再显示绝对起始时刻）。
+        FactRow(
+            "当前状态",
+            formatCurrentPolicyState(
+                profile = snap.tracking.profile,
+                policyMode = snap.tracking.currentPolicyMode,
+                durationMillis = snap.currentPolicyDurationMillis
+            ),
+            "status-current-state"
+        )
         FactRow(
             "下次定位",
             snap.tracking.nextExpectedLocationAtMillis?.takeIf { it > 0L }?.let(::formatEpochMillis) ?: "未安排",
@@ -621,7 +642,7 @@ private fun CollectionAndConnectionSection(state: StatusCenterState) {
             FactRow("采集间隔", formatPolicyInterval(interval), "status-policy-interval")
         }
 
-        ScheduleFactsSection(snap.schedule, snap.recentPolicyTransitions)
+        ScheduleFactsSection(snap.schedule, snap.latestPolicyTransition)
 
         PermissionsSection(snap.permissions)
 
@@ -653,7 +674,7 @@ private fun PermissionRow(label: String, granted: Boolean, tag: String) {
 @Composable
 private fun ScheduleFactsSection(
     schedule: ScheduleCacheStatusSnapshot,
-    transitions: List<PolicyTransitionSnapshot>
+    latestTransition: PolicyTransitionSnapshot?
 ) {
     Column(
         modifier = Modifier.testTag("status-schedule-facts"),
@@ -667,12 +688,54 @@ private fun ScheduleFactsSection(
             FactRow("上次检查", formatEpochMillis(schedule.lastAttemptAtMillis), "status-schedule-last-attempt")
         }
 
-        transitions.forEachIndexed { index, t ->
-            FactRow(
-                label = "策略切换",
-                value = formatPolicyTransition(t),
-                tag = "status-policy-transition-$index"
-            )
+        // WO-ANDROID-POLICY-TRANSITION-20260928 REQ-4 / AC-4.1：只保留 **1** 行「上次切换」，
+        // 不再逐条渲染「最近 5 条切换」；空库时显示「暂无记录」（AC-4.3 / D-9）。
+        FactRow(
+            label = "上次切换",
+            value = latestTransition?.let { formatPolicyTransition(it) } ?: "暂无记录",
+            tag = "status-policy-transition-last"
+        )
+    }
+}
+
+/**
+ * REQ-4（D-1）：`<档位> · <模式名> · 已持续 X`。
+ *
+ * 「已持续」= 当前时刻 − 库中最新一条切换记录的时间（进入当前状态的时刻，D-2 / P5）；
+ * 库中无记录时显示 `未知`。起始时刻由「上次切换」行的同一时刻承载。
+ */
+internal fun formatCurrentPolicyState(
+    profile: String?,
+    policyMode: String?,
+    durationMillis: Long?
+): String = buildString {
+    append(StatusDisplayText.profile(profile))
+    append(" · ")
+    append(StatusDisplayText.policyMode(policyMode))
+    append(" · 已持续 ")
+    append(formatPolicyDuration(durationMillis))
+}
+
+/**
+ * REQ-4（D-2）「已持续」分档渲染（工单 §四）：
+ * 无记录 `未知` / < 1 分钟 `不足 1 分钟` / < 1 小时 `X 分钟` /
+ * < 24 小时 `X 小时`（Y=0 省略「Y 分钟」）/ ≥ 24 小时 `X 天`（Y=0 省略「Y 小时」）。
+ */
+internal fun formatPolicyDuration(durationMillis: Long?): String {
+    if (durationMillis == null || durationMillis < 0L) return "未知"
+    val minutes = durationMillis / 60_000L
+    val hours = durationMillis / 3_600_000L
+    val days = durationMillis / 86_400_000L
+    return when {
+        durationMillis < 60_000L -> "不足 1 分钟"
+        hours < 1L -> "$minutes 分钟"
+        days < 1L -> {
+            val restMinutes = minutes % 60L
+            if (restMinutes == 0L) "$hours 小时" else "$hours 小时 $restMinutes 分钟"
+        }
+        else -> {
+            val restHours = hours % 24L
+            if (restHours == 0L) "$days 天" else "$days 天 $restHours 小时"
         }
     }
 }
@@ -1014,6 +1077,7 @@ private fun issueActionIcon(target: StatusActionTarget) = when (target) {
     StatusActionTarget.Sync, StatusActionTarget.Queue -> Icons.Filled.Sync
     StatusActionTarget.NetworkSettings -> Icons.Filled.Wifi
     StatusActionTarget.ConnectionCheck -> Icons.Filled.NetworkCheck
+    StatusActionTarget.PolicyTransitionHistory -> Icons.Filled.History
     StatusActionTarget.None -> Icons.Filled.Info
 }
 

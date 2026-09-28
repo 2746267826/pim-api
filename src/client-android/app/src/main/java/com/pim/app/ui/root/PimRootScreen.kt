@@ -25,6 +25,9 @@ import com.pim.app.ui.tracks.TracksScreen
 fun PimRootScreen(initialDestination: PimDestination = PimDestination.Today) {
     var selected by rememberSaveable(initialDestination.name) { mutableStateOf(initialDestination) }
     var savedTracksUrl by rememberSaveable { mutableStateOf<String?>(null) }
+    // WO-ANDROID-POLICY-TRANSITION-20260928 REQ-3（D-10）：状态页写入失败告警的动作按钮
+    // 要把用户带到设置页「策略切换历史」板块（不新建二级页面）。
+    var scrollToPolicyHistory by rememberSaveable { mutableStateOf(false) }
 
     PimTheme {
         Scaffold(
@@ -54,9 +57,17 @@ fun PimRootScreen(initialDestination: PimDestination = PimDestination.Today) {
                 )
                 PimDestination.Status -> StatusCenterScreen(
                     modifier = modifier,
-                    onOpenSettings = { selected = PimDestination.Settings }
+                    onOpenSettings = { selected = PimDestination.Settings },
+                    onOpenPolicyTransitionHistory = {
+                        scrollToPolicyHistory = true
+                        selected = PimDestination.Settings
+                    }
                 )
-                PimDestination.Settings -> SettingsScreen(modifier)
+                PimDestination.Settings -> SettingsScreen(
+                    modifier = modifier,
+                    scrollToPolicyTransitionHistory = scrollToPolicyHistory,
+                    onPolicyTransitionHistoryScrolled = { scrollToPolicyHistory = false }
+                )
             }
         }
     }
