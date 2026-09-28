@@ -33,7 +33,7 @@ export default function DataReliabilityRuleRow({ rule, onOpen }: DataReliability
         </StatusBadge>
         <span className="text-sm text-slate-700">{formatCurrentValue(rule)}</span>
         <span className="text-xs text-slate-500">
-          影响 {rule.totalViolations} 条（新增 {rule.newViolations} / 存量 {rule.historicalViolations}）
+          影响 {rule.totalViolations} 条（新增 {rule.windowViolations} / 存量 {rule.historicalViolations}）
         </span>
         {rule.scanTruncated && <span className="text-xs text-amber-700">查询已达上限，结果可能不完整</span>}
       </button>

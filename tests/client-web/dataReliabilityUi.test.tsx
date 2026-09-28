@@ -37,7 +37,7 @@ function rule(overrides: Partial<DataReliabilityRuleReport> & { code: string }):
     rationale: `设定理由 ${overrides.code}`,
     relatedIssues: [],
     totalViolations: 0,
-    newViolations: 0,
+    windowViolations: 0,
     historicalViolations: 0,
     earliestOccurrenceUtc: null,
     latestOccurrenceUtc: null,
@@ -55,7 +55,7 @@ function rule(overrides: Partial<DataReliabilityRuleReport> & { code: string }):
 }
 
 const rules: DataReliabilityRuleReport[] = [
-  rule({ code: 'S1', status: 'red', statusLabel: '红', totalViolations: 14, newViolations: 3, historicalViolations: 11, currentValue: 14, currentValueUnit: '对', relatedIssues: [249] }),
+  rule({ code: 'S1', status: 'red', statusLabel: '红', totalViolations: 14, windowViolations: 3, historicalViolations: 11, currentValue: 14, currentValueUnit: '对', relatedIssues: [249] }),
   rule({ code: 'S2', groupLabel: '数据自洽', currentValue: 4, threeState: {
     inputActiveSeconds: 159 * 60,
     mediaActiveSeconds: 90 * 60,
@@ -89,7 +89,7 @@ const report: DataReliabilityInspectionReport = {
   greenCount: 10,
   unknownCount: 1,
   totalViolations: 14,
-  newViolations: 3,
+  windowViolations: 3,
   historicalViolations: 11,
   notices: {},
   rules,
@@ -191,7 +191,7 @@ const manySamples = rule({
   code: 'S4',
   samples: Array.from({ length: 10 }, (_, index) => `重复行样例 ${index}`),
   totalViolations: 40,
-  newViolations: 0,
+  windowViolations: 0,
   historicalViolations: 40,
 });
 const sampleDialog = text(

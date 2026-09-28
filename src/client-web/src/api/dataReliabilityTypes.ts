@@ -37,7 +37,7 @@ export interface DataReliabilityRuleReport {
   rationale: string;
   relatedIssues: number[];
   totalViolations: number;
-  newViolations: number;
+  windowViolations: number;
   historicalViolations: number;
   earliestOccurrenceUtc: string | null;
   latestOccurrenceUtc: string | null;
@@ -62,7 +62,7 @@ export interface DataReliabilityInspectionReport {
   greenCount: number;
   unknownCount: number;
   totalViolations: number;
-  newViolations: number;
+  windowViolations: number;
   historicalViolations: number;
   notices: Record<string, string>;
   rules: DataReliabilityRuleReport[];

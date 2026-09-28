@@ -19,7 +19,7 @@ export default function DataReliabilityPanel({ report, now, onSelectRule }: Data
 
       {report.totalViolations > 0 && (
         <p className="px-1 text-xs text-slate-500">
-          本次共 {report.totalViolations} 条违规，其中新增 {report.newViolations} 条、存量 {report.historicalViolations} 条。
+          本次共 {report.totalViolations} 条违规，其中新增 {report.windowViolations} 条、存量 {report.historicalViolations} 条。
           存量只计数不当红线，看趋势判断历史修复是否起作用。
         </p>
       )}

@@ -231,7 +231,7 @@ public sealed class MobileQualityService
                 PimHealthStatus.Critical,
                 "data_reliability",
                 $"{code} 数据可信度尺子报红：{verdict.Message}",
-                "打开「设置 → 数据可信度」查看违规样例与存量趋势"));
+                "打开「设置 → 数据可信度」查看违规样例与历史欠账"));
         }
 
         foreach (var code in verdict.YellowRules)

@@ -98,7 +98,7 @@ export default function DataReliabilityRuleDialog({
           <h3 className="font-semibold text-slate-900">当前情况</h3>
           <p>
             当前值：{formatCurrentValue(rule)}；违规 {rule.totalViolations} 条（
-            <span className="text-red-700">新增 {rule.newViolations}</span> /{' '}
+            <span className="text-red-700">新增 {rule.windowViolations}</span> /{' '}
             <span className="text-amber-700">存量 {rule.historicalViolations}</span>）
           </p>
           <p>
