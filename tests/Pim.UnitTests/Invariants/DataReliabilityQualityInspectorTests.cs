@@ -175,6 +175,74 @@ public class DataReliabilityQualityInspectorTests
         }
     }
 
+    /// <summary>
+    /// #349 回归守卫：取数 SQL 绝不能用字符串拼接 interval 来计算事件结束时刻。
+    ///
+    /// <para>
+    /// <c>(duration || ' seconds')::interval</c> 依赖 float8 → text 渲染，PostgreSQL 对极小值
+    /// 输出科学计数法（<c>7.9e-05</c>），interval 解析器不接受 → 整条查询 22007 → S7 恒 unknown。
+    /// 正确的写法是数值乘法 <c>duration * interval '1 second'</c>。
+    /// </para>
+    ///
+    /// <para>
+    /// 这里在 SQL 文本层设卡：真库用例（<c>DataReliabilityS7RealDbTests</c>）需要 PostgreSQL 才能跑，
+    /// 而本断言在任何环境都会执行，能在提交阶段就拦住这个写法回潮。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Inspector_IntervalFetch_NeverConcatenatesDurationIntoIntervalString()
+    {
+        var recordingConn = new RecordingDbConnection();
+        var optionsBuilder = new DbContextOptionsBuilder<PimDbContext>();
+        optionsBuilder.UseNpgsql(recordingConn);
+
+        await using var db = new PimDbContext(optionsBuilder.Options);
+        var inspector = new DataReliabilityQualityInspector(
+            db,
+            Options.Create(new InvariantOptions()),
+            NullLogger<DataReliabilityQualityInspector>.Instance);
+
+        await inspector.InspectAsync(DateTimeOffset.UtcNow);
+
+        var intervalSql = recordingConn.ExecutedCommands
+            .Where(sql => sql.Contains("pc_tracker_events", StringComparison.Ordinal))
+            .ToList();
+        Assert.NotEmpty(intervalSql);
+
+        foreach (var sql in intervalSql)
+        {
+            AssertNoStringConcatenatedInterval(sql);
+        }
+    }
+
+    /// <summary>
+    /// 断言 SQL 里没有「数值 → 文本 → interval」的拼接写法。
+    ///
+    /// <para>
+    /// 覆盖复审指出的漏网变体：任意单位（含 milliseconds / weeks / ms）、
+    /// 单复数、<c>concat(...)</c> 形式、以及 <c>E'...'</c> 转义字符串字面量。
+    /// 关键是"把数值先转成文本再交给 interval 解析"这条路径 ——
+    /// 只要存在这条路径，PostgreSQL 对极小值的科学计数法渲染就可能让它解析失败。
+    /// </para>
+    /// </summary>
+    private static void AssertNoStringConcatenatedInterval(string sql)
+    {
+        // a) `... || '<unit>' ... ::interval`，含可选 E'' 前缀与额外空白。
+        Assert.DoesNotMatch(
+            @"(?is)\|\|\s*[Ee]?'\s*(microseconds?|milliseconds?|ms|seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)\s*'\s*\)?\s*::\s*interval",
+            sql);
+
+        // b) concat(x, ' seconds')::interval —— 同样是把数值走文本通道。
+        Assert.DoesNotMatch(
+            @"(?is)concat\s*\([^)]*'\s*(microseconds?|milliseconds?|ms|seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)\s*'[^)]*\)\s*::\s*interval",
+            sql);
+
+        // c) make_interval 只接受数值入参，安全；这里反向确认取数没有把 duration
+        //    先拼成字符串再转换（上面两条已覆盖）。保留一条直白断言防止旧写法回归。
+        Assert.DoesNotContain("|| ' seconds')::interval", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("|| ' second')::interval", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static readonly DateTimeOffset ReportNow = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
 
     private static DataReliabilityQualityInspector CreateRecordingInspector(RecordingDbConnection conn)
