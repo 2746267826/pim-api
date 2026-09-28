@@ -566,6 +566,7 @@ class MobileSyncCoordinator @Inject constructor(
             },
             progressText = when {
                 hasRetryable -> "定位队列上传失败，已安排网络重试。"
+                updates.truncated -> "定位队列本轮已同步 $syncedCount 条，仍有积压待继续追平。"
                 current.phase == "usage-permission-missing" ->
                     "${current.progressText} 定位队列已同步 $syncedCount 条。"
                 else -> "定位队列已同步 $syncedCount 条。"
@@ -588,7 +589,8 @@ class MobileSyncCoordinator @Inject constructor(
         val details = mapOf(
             "syncedCount" to syncedCount,
             "rejectedCount" to rejectedCount,
-            "retryableCount" to retryableCount
+            "retryableCount" to retryableCount,
+            "truncated" to updates.truncated
         )
         if (hasRetryable) {
             logs.warn("mobile-location-sync", "定位队列上传未完成，已安排 WorkManager 重试。", details)

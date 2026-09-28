@@ -182,7 +182,7 @@ class LocationUploadNoDecimationTest {
                     val items = request.points.mapIndexed { index, _ ->
                         MobileIngestItemResult(
                             clientItemKey = "row-$index",
-                            entityType = "location",
+                            entityType = "location-point",
                             outcome = "accepted",
                             code = "accepted",
                             message = "Accepted."
