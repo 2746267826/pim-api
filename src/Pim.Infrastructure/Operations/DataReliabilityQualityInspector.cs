@@ -1088,37 +1088,43 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         if (!await TableExistsAsync(conn, "pc_tracker_events", context.Ct))
             return InvariantResult.Unknown("INV-P19 UNKNOWN: 数据表 pc_tracker_events 不存在");
 
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandTimeout = 15;
-        // 时间窗下限必须跟着**考核线**走（不是写死的 24 小时）：分档是 7 天窗，
-        // 取数只取 24 小时会让"窗内 7 天、24h 之外"的违规既进不了窗内、也进不了欠账（AC-5.6）。
-        cmd.CommandText = """
-            SELECT id, device_id, timestamp, created_at
-            FROM pc_tracker_events
-            WHERE created_at >= @since
-            ORDER BY id DESC
-            LIMIT 500;
-            """;
-        BindTimestamp(cmd, "@since", context.AssessmentStartUtc);
-
         var items = new List<ClockEventItem>();
-        await using var reader = await cmd.ExecuteReaderAsync(context.Ct);
-        while (await reader.ReadAsync(context.Ct))
+
+        // 主取数必须放在**自己的作用域**里：兜底查询要在 reader 关闭之后才能执行，
+        // 否则同一个连接上会报 "A command is already in progress"（考核线 = 进程启动时刻时，
+        // 窗内通常一行都没有，兜底必然触发 —— 这条路径此前一直没被走到过）。
+        await using (var cmd = conn.CreateCommand())
         {
-            long id = reader.GetInt64(0);
-            string dev = reader.IsDBNull(1) ? "default" : reader.GetString(1);
-            DateTime ts = reader.GetDateTime(2);
-            DateTime created = reader.GetDateTime(3);
-            items.Add(new ClockEventItem
+            cmd.CommandTimeout = 15;
+            // 时间窗下限必须跟着**考核线**走（不是写死的 24 小时）：分档是 7 天窗，
+            // 取数只取 24 小时会让"窗内 7 天、24h 之外"的违规既进不了窗内、也进不了欠账（AC-5.6）。
+            cmd.CommandText = """
+                SELECT id, device_id, timestamp, created_at
+                FROM pc_tracker_events
+                WHERE created_at >= @since
+                ORDER BY id DESC
+                LIMIT 500;
+                """;
+            BindTimestamp(cmd, "@since", context.AssessmentStartUtc);
+
+            await using var reader = await cmd.ExecuteReaderAsync(context.Ct);
+            while (await reader.ReadAsync(context.Ct))
             {
-                EventId = id.ToString(),
-                DeviceId = dev,
-                EventTime = ts,
-                ServerReceivedTime = created
-            });
+                long id = reader.GetInt64(0);
+                string dev = reader.IsDBNull(1) ? "default" : reader.GetString(1);
+                DateTime ts = reader.GetDateTime(2);
+                DateTime created = reader.GetDateTime(3);
+                items.Add(new ClockEventItem
+                {
+                    EventId = id.ToString(),
+                    DeviceId = dev,
+                    EventTime = ts,
+                    ServerReceivedTime = created
+                });
+            }
         }
 
-        // 若最近 24 小时无数据，兜底取最近 100 条
+        // 若考核窗内无数据（例如刚重启，考核线 = 进程启动时刻），兜底取最近 100 条。
         if (items.Count == 0)
         {
             await using var fallbackCmd = conn.CreateCommand();

@@ -1490,8 +1490,11 @@ public static class DataReliabilityInvariants
                 return InvariantResult.Failure(
                     $"INV-C20 WARN: 设备 {report.DeviceId} 覆盖率为 {(ratio * 100.0):F1}% (< 黄线 {(opt.CoverageYellowRatio * 100.0):F0}%)，但报告状态为 '{report.ReportedStatus}' (必须报警告/黄线)",
                     1,
-                    0,
+                    // S9 是现状型指标：它的违规没有业务时间轴，"覆盖率此刻偏低"天然就是**当下**的问题，
+                    // 因此计入窗内计数（historical = 0）—— 否则会出现"黄线却没有窗内违规支撑"，
+                    // 与 REQ-2「红/黄只由窗内违规产生」自相矛盾，也会把这份现状问题误记成历史欠账。
                     1,
+                    0,
                     new[] { $"Device={report.DeviceId}: Coverage={(ratio * 100.0):F1}%, ReportedStatus={report.ReportedStatus}" },
                     null,
                     null,
