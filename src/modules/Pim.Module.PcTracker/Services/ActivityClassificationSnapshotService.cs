@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using Pim.Infrastructure.Data;
@@ -11,6 +12,14 @@ public class ActivityClassificationSnapshotService
 {
     public const string ClassifierVersion = "local-v1";
     private const int MaxUniqueViolationRetries = 5;
+
+    /// <summary>
+    /// 死锁重试前的退避：让与本批次互相阻塞的那个事务先提交，避免双方同步重试再次撞车。
+    /// 取值只需错开两个批次的重试时刻 —— 产生死锁的那一方是**由 PostgreSQL 立即选出**
+    /// 并回滚的（它是唯一等到 <c>deadlock_timeout</c> 的一方），本退避不必等满那个超时；
+    /// 外层 EF 执行策略本身也会在重试之间退避。
+    /// </summary>
+    private static readonly TimeSpan DeadlockRetryBackoff = TimeSpan.FromMilliseconds(50);
 
     private readonly PimDbContext _db;
     private readonly ILogger<ActivityClassificationSnapshotService> _logger;
@@ -110,12 +119,33 @@ public class ActivityClassificationSnapshotService
     }
 
     /// <summary>
-    /// 并发防护：后台定时补齐与页面触发的 ensure 可能同时插入同一 record_key，
-    /// PG 唯一索引会让后提交方抛 DbUpdateException。每轮重查该批 keys、剔除他方已写入的
-    /// 重复实体后重试；仅处理 PostgreSQL 唯一键冲突，其他数据库异常原样抛出。
+    /// 并发防护：后台定时补齐与页面触发的 ensure 可能同时插入同一 record_key。
+    /// 并发写同一批 key 会以两种方式失败，两种都必须重试，否则整批物化失败：
+    /// <list type="bullet">
+    ///   <item><description><b>唯一键冲突（23505）</b>：他方已写入同 key。重查该批 keys，
+    ///   剔除本上下文里已成重复的 Added 实体后重试。</description></item>
+    ///   <item><description><b>死锁（40P01）</b>：两批事务按不同顺序插入同一唯一索引，
+    ///   PostgreSQL 选一方回滚。仅靠 23505 重试无法收敛——死锁在第 3 次尝试后以
+    ///   <see cref="RetryLimitExceededException"/> 逃逸，整个物化请求 500
+    ///   （实测 8 并发下可复现）。这里退避后重试整批保存。</description></item>
+    /// </list>
+    /// <para>
+    /// <b>两种失败在"是否处于外层事务中"上的处理不同</b>（复审 Important）：
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><description><b>23505 在事务内也可就地重试</b>：EF 在事务内保存时会用
+    ///   <c>SAVEPOINT</c> 包裹，PostgreSQL 的 23505 只回滚到该 savepoint，事务**仍然可用**。
+    ///   手动重算（<c>ExecuteInTransactionAsync</c> → 本方法 <c>saveChanges: true</c>）
+    ///   正是这条路径；若把事务期整个排除在重试之外，他方抢写会让用户的重算直接失败。</description></item>
+    ///   <item><description><b>40P01 在事务内不能就地重试</b>：死锁会中止**整个事务**，
+    ///   后续任何语句都报 25P02，原地重试只会把一个可诊断的错误变成一串无意义的失败。
+    ///   这种情形交给外层执行策略重跑整个工作单元（含新建事务）。</description></item>
+    /// </list>
     /// </summary>
     private async Task SaveWithUniqueKeyRetryAsync(List<string> keys, CancellationToken ct)
     {
+        var insideTransaction = _db.Database.CurrentTransaction is not null;
+
         for (var attempt = 0; ; attempt++)
         {
             try
@@ -132,7 +162,7 @@ public class ActivityClassificationSnapshotService
 
                 return;
             }
-            catch (DbUpdateException ex) when (IsPostgreSqlUniqueViolation(ex))
+            catch (Exception ex) when (IsUniqueViolation(ex))
             {
                 if (attempt >= MaxUniqueViolationRetries - 1)
                 {
@@ -144,50 +174,113 @@ public class ActivityClassificationSnapshotService
                     throw;
                 }
 
-                var tracked = _db.ChangeTracker.Entries<ActivityClassificationEntity>()
-                    .Where(entry => entry.State == EntityState.Added)
-                    .ToList();
-
-                var existingKeys = new HashSet<string>(
-                    await _db.Set<ActivityClassificationEntity>()
-                        .Where(entity => keys.Contains(entity.RecordKey))
-                        .Select(entity => entity.RecordKey)
-                        .ToListAsync(ct),
-                    StringComparer.Ordinal);
-
-                var duplicates = tracked
-                    .Where(entry => existingKeys.Contains(entry.Entity.RecordKey))
-                    .ToList();
-                if (duplicates.Count == 0)
+                // 事务内同样可恢复：23505 只回滚到 EF 的 savepoint。
+                if (!await TryDetachConcurrentDuplicatesAsync(ex, keys, ct))
+                    throw;
+            }
+            catch (Exception ex) when (!insideTransaction && IsDeadlock(ex))
+            {
+                if (attempt >= MaxUniqueViolationRetries - 1)
                 {
-                    _logger.LogWarning(
+                    _logger.LogError(
                         ex,
-                        "Classification snapshot batch hit the record_key unique constraint but no concurrent duplicate was found among tracked entities; rethrowing. keys={KeyCount}",
+                        "Classification snapshot batch kept hitting deadlocks after {Max} attempts; giving up. keys={KeyCount}",
+                        MaxUniqueViolationRetries,
                         keys.Count);
                     throw;
                 }
 
-                foreach (var entry in duplicates)
-                    entry.State = EntityState.Detached;
-
+                // 死锁：给对方事务留出提交窗口，错开两个批次的重试时刻。
                 _logger.LogWarning(
-                    "Classification snapshot batch hit the record_key unique constraint on attempt {Attempt}/{Max}; detached {DuplicateCount} concurrently written duplicates and retrying. keys={KeyCount}",
+                    "Classification snapshot batch hit a deadlock on attempt {Attempt}/{Max}; backing off and retrying. keys={KeyCount}",
                     attempt + 1,
                     MaxUniqueViolationRetries,
-                    duplicates.Count,
                     keys.Count);
+                await Task.Delay(DeadlockRetryBackoff, ct);
             }
         }
     }
 
-    private static bool IsPostgreSqlUniqueViolation(DbUpdateException exception)
+    /// <summary>
+    /// 剔除本上下文里已被他方并发写入的重复 Added 实体。
+    /// 返回 false 表示这次失败不是"并发重复写入"（没有可剔除的实体），调用方应原样抛出——
+    /// 否则会把真实缺陷伪装成可重试的竞争。
+    /// </summary>
+    private async Task<bool> TryDetachConcurrentDuplicatesAsync(
+        Exception failure,
+        List<string> keys,
+        CancellationToken ct)
     {
-        for (Exception? current = exception.InnerException; current is not null; current = current.InnerException)
+        var tracked = _db.ChangeTracker.Entries<ActivityClassificationEntity>()
+            .Where(entry => entry.State == EntityState.Added)
+            .ToList();
+
+        var existingKeys = new HashSet<string>(
+            await _db.Set<ActivityClassificationEntity>()
+                .Where(entity => keys.Contains(entity.RecordKey))
+                .Select(entity => entity.RecordKey)
+                .ToListAsync(ct),
+            StringComparer.Ordinal);
+
+        var duplicates = tracked
+            .Where(entry => existingKeys.Contains(entry.Entity.RecordKey))
+            .ToList();
+        if (duplicates.Count == 0)
         {
-            if (current is PostgresException postgresException)
-                return postgresException.SqlState == PostgresErrorCodes.UniqueViolation;
+            _logger.LogWarning(
+                failure,
+                "Classification snapshot batch hit the record_key unique constraint but no concurrent duplicate was found among tracked entities; rethrowing. keys={KeyCount}",
+                keys.Count);
+            return false;
         }
 
+        foreach (var entry in duplicates)
+            entry.State = EntityState.Detached;
+
+        _logger.LogWarning(
+            "Classification snapshot batch detached {DuplicateCount} concurrently written duplicates and will retry. keys={KeyCount}",
+            duplicates.Count,
+            keys.Count);
+        return true;
+    }
+
+    /// <summary>
+    /// 可原地重试的写失败：唯一键冲突（23505）或死锁（40P01）。
+    /// 保留为单一入口（复审用它可以一次性确认"哪些 SQLSTATE 算暂时性"）；
+    /// 实际重试门控见 <see cref="SaveWithUniqueKeyRetryAsync"/> —— 两者在"事务内"的可行性不同。
+    /// </summary>
+    internal static bool IsRetryableSnapshotWriteFailure(Exception exception)
+        => IsUniqueViolation(exception) || IsDeadlock(exception);
+
+    private static bool IsUniqueViolation(Exception exception)
+        => TryFindPostgresException(exception, out var postgresException)
+           && postgresException.SqlState == PostgresErrorCodes.UniqueViolation;
+
+    private static bool IsDeadlock(Exception exception)
+        => TryFindPostgresException(exception, out var postgresException)
+           && postgresException.SqlState == PostgresErrorCodes.DeadlockDetected;
+
+    /// <summary>
+    /// 沿 <c>InnerException</c> 链查找 <see cref="PostgresException"/>。
+    /// 深度有界（防御异常的环形 InnerException 链导致死循环）：
+    /// 死锁既可能作为最外层异常，也可能被 EF 执行策略包成
+    /// <c>RetryLimitExceededException</c> → <c>DbUpdateException</c> → <c>PostgresException</c>。
+    /// </summary>
+    private static bool TryFindPostgresException(Exception exception, out PostgresException postgresException)
+    {
+        const int maxDepth = 8;
+
+        var current = exception;
+        for (var depth = 0; current is not null && depth < maxDepth; depth++, current = current.InnerException)
+        {
+            if (current is PostgresException found)
+            {
+                postgresException = found;
+                return true;
+            }
+        }
+
+        postgresException = null!;
         return false;
     }
 

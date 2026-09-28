@@ -201,6 +201,84 @@ public class ActivityClassificationSnapshotServiceTests
         Assert.Equal(1, db.SaveAttemptCount);
     }
 
+    /// <summary>
+    /// #339：死锁（40P01）必须被重试，而不是让整批物化失败。
+    ///
+    /// 两批事务按不同顺序插入同一 record_key 唯一索引时，PostgreSQL 会选中一方回滚并报 40P01。
+    /// 修复前 <c>SaveWithUniqueKeyRetryAsync</c> 只识别 23505，死锁在第 3 次尝试后以
+    /// <c>RetryLimitExceededException</c> 逃逸（真库 8 并发实测复现），本用例即为该场景的确定性重放。
+    /// </summary>
+    [Fact]
+    public async Task EnsureClassificationsAsync_RetriesTransientDeadlockUntilItSucceeds()
+    {
+        using var db = CreateDbWithTransientDeadlock(deadlockCount: 2);
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
+        var record = NewRecord("Code.exe", "deadlock-retry.cs");
+
+        var classified = await service.EnsureClassificationsAsync(
+            [record],
+            [NewRule("Code is programming", "编程")],
+            null,
+            CancellationToken.None);
+
+        Assert.Equal("编程", Assert.Single(classified).CategoryName);
+        Assert.Equal(3, db.SaveAttemptCount);
+        var snapshot = await db.Set<ActivityClassificationEntity>().SingleAsync();
+        Assert.Equal("编程", snapshot.CategoryName);
+    }
+
+    /// <summary>
+    /// #339：持续死锁必须有界收敛——重试用尽后抛出真实失败，而不是无限循环。
+    /// </summary>
+    [Fact]
+    public async Task EnsureClassificationsAsync_GivesUpAfterPersistentDeadlock()
+    {
+        using var db = CreateDbWithTransientDeadlock(deadlockCount: int.MaxValue);
+        var service = new ActivityClassificationSnapshotService(db, NullLogger<ActivityClassificationSnapshotService>.Instance);
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => service.EnsureClassificationsAsync(
+            [NewRecord("Code.exe", "persistent-deadlock.cs")],
+            [NewRule("Code is programming", "编程")],
+            null,
+            CancellationToken.None));
+
+        Assert.Equal(5, db.SaveAttemptCount);
+    }
+
+    [Theory]
+    // 可直接原地重试：唯一键冲突与死锁。
+    [InlineData("23505", true)]
+    [InlineData("40P01", true)]
+    // 非暂时性故障必须原样抛出，不能被重试掩盖。
+    [InlineData("42703", false)]
+    [InlineData("23503", false)]
+    [InlineData("28P01", false)]
+    public void IsRetryableSnapshotWriteFailure_ClassifiesBySqlState(string sqlState, bool expected)
+    {
+        var failure = new DbUpdateException(
+            "simulated",
+            new PostgresException("simulated", "ERROR", "ERROR", sqlState));
+
+        Assert.Equal(expected, ActivityClassificationSnapshotService.IsRetryableSnapshotWriteFailure(failure));
+    }
+
+    /// <summary>
+    /// 死锁可能被 EF 执行策略包装多层（真库实测外层是
+    /// <c>RetryLimitExceededException</c> → <c>DbUpdateException</c> → <c>PostgresException</c>），
+    /// 外层类型不是 DbUpdateException 时也必须能识别。这里用任意外层类型验证链式查找。
+    /// </summary>
+    [Fact]
+    public void IsRetryableSnapshotWriteFailure_FindsSqlStateThroughWrappingLayers()
+    {
+        var wrapped = new InvalidOperationException(
+            "outer wrapper",
+            new DbUpdateException(
+                "middle wrapper",
+                new PostgresException("deadlock", "ERROR", "ERROR", "40P01")));
+
+        Assert.True(ActivityClassificationSnapshotService.IsRetryableSnapshotWriteFailure(wrapped));
+    }
+
     [Fact]
     public async Task EnsureClassificationsAsync_ReturnsPerRecordClassificationsForDuplicateKeys()
     {
@@ -456,6 +534,15 @@ public class ActivityClassificationSnapshotServiceTests
         return new UnrelatedFailurePimDbContext(options);
     }
 
+    private static TransientDeadlockPimDbContext CreateDbWithTransientDeadlock(int deadlockCount)
+    {
+        PimDbContext.RegisterModuleAssembly(typeof(ActivityClassificationEntity).Assembly);
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        return new TransientDeadlockPimDbContext(options, deadlockCount);
+    }
+
     private static PcDetailRecord NewRecord(string appName, string title) =>
         new(
             "window",
@@ -568,6 +655,11 @@ public class ActivityClassificationSnapshotServiceTests
         }
     }
 
+    /// <summary>
+    /// 模拟"非暂时性"数据库失败：用 42703（未定义列）而不是 40P01。
+    /// 40P01 死锁自 #339 起属于可重试故障，继续用它做"无关失败"的替身会让
+    /// 该用例断言的重试次数失真。
+    /// </summary>
     private sealed class UnrelatedFailurePimDbContext : PimDbContext
     {
         public UnrelatedFailurePimDbContext(DbContextOptions<PimDbContext> options)
@@ -581,7 +673,34 @@ public class ActivityClassificationSnapshotServiceTests
         {
             SaveAttemptCount++;
             throw new DbUpdateException("Simulated unrelated database failure.",
-                new PostgresException("deadlock", "ERROR", "ERROR", "40P01"));
+                new PostgresException("column does not exist", "ERROR", "ERROR", "42703"));
+        }
+    }
+
+    /// <summary>
+    /// 前 <paramref name="deadlockCount"/> 次保存抛死锁（40P01），之后正常保存。
+    /// 用于确定性重放真库里"两批事务互锁后被 PostgreSQL 选中回滚"的瞬态故障。
+    /// </summary>
+    private sealed class TransientDeadlockPimDbContext : PimDbContext
+    {
+        private readonly int _deadlockCount;
+
+        public TransientDeadlockPimDbContext(DbContextOptions<PimDbContext> options, int deadlockCount)
+            : base(options)
+        {
+            _deadlockCount = deadlockCount;
+        }
+
+        public int SaveAttemptCount { get; private set; }
+
+        public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+        {
+            SaveAttemptCount++;
+            if (SaveAttemptCount <= _deadlockCount)
+                throw new DbUpdateException("Simulated transient deadlock.",
+                    new PostgresException("deadlock detected", "ERROR", "ERROR", "40P01"));
+
+            return base.SaveChangesAsync(cancellationToken);
         }
     }
 }
