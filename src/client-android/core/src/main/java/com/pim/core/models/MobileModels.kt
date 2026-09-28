@@ -146,6 +146,29 @@ data class MobileLocationPointRequest(
     val rawJson: String
 )
 
+/**
+ * 批量定位点上传（积压补传）：一次请求携带多个点。
+ *
+ * 服务端单批上限 1000 条（`MobileLocationService.MaxBatchPoints`），超限整批被拒。
+ */
+@Serializable
+data class MobileLocationPointsUploadRequest(
+    val points: List<MobileLocationPointRequest>
+)
+
+/**
+ * 批量上传结果：**逐条**返回，客户端据此把「已接受 / 重复 / 被拒」映射回本地队列。
+ *
+ * 服务端按请求顺序逐条产出 `itemResults`（条数 == 请求点数），客户端以顺序对齐本地行。
+ */
+@Serializable
+data class MobileLocationPointsUploadResult(
+    val acceptedCount: Int = 0,
+    val skippedCount: Int = 0,
+    val rejectedCount: Int = 0,
+    val itemResults: List<MobileIngestItemResult> = emptyList()
+)
+
 @Serializable
 data class MobileLocationPointDto(
     val id: String,
