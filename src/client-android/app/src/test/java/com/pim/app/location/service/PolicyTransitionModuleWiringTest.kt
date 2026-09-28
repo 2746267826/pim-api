@@ -31,10 +31,19 @@ class PolicyTransitionModuleWiringTest {
     }
 
     private fun moduleSource(): String =
-        repoSource("src/main/java/com/pim/app/di/PolicyTransitionModule.kt")
+        stripComments(repoSource("src/main/java/com/pim/app/di/PolicyTransitionModule.kt"))
 
     private fun serviceSource(): String =
-        repoSource("src/main/java/com/pim/app/location/service/ForegroundLocationService.kt")
+        stripComments(repoSource("src/main/java/com/pim/app/location/service/ForegroundLocationService.kt"))
+
+    /**
+     * 去掉行注释与块注释后再匹配：源码谓词不能靠「把字符串写进注释」蒙混过关。
+     * （它仍然只是形状检查，真实行为由其它用例验；这里只堵最廉价的绕过方式。）
+     */
+    private fun stripComments(source: String): String =
+        source
+            .replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), "")
+            .replace(Regex("//[^\\n]*"), "")
 
     @Test
     fun `Hilt 模块把写入依赖绑到真实仓库`() {

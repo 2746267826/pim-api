@@ -740,6 +740,14 @@ internal fun formatPolicyDuration(durationMillis: Long?): String {
     }
 }
 
+/**
+ * 「上次切换」/「策略切换历史」的行格式：`MM-dd HH:mm · 旧模式 → 新模式 · 原因`。
+ *
+ * WO-ANDROID-POLICY-TRANSITION-20260928 **AC-4.5**：原因必须与库中 `reason` **逐字一致**
+ * （无改写、无截断）。因此这里**不**走 `StatusDisplayText.scheduleReason` 的白名单改写——
+ * 那会把「高速轨迹模式：持续高速运动（≥8km/h）」这类合法原因换成「策略已更新」。
+ * 库里的 `reason` 只由策略引擎写入，本身就是给用户看的中文短句。
+ */
 internal fun formatPolicyTransition(
     transition: PolicyTransitionSnapshot,
     zoneId: ZoneId = ZoneId.systemDefault()
@@ -750,7 +758,7 @@ internal fun formatPolicyTransition(
     append(" → ")
     append(StatusDisplayText.policyMode(transition.toMode))
     append(" · ")
-    append(StatusDisplayText.scheduleReason(transition.reason))
+    append(transition.reason.ifBlank { "暂无" })
 }
 
 internal fun formatPolicyInterval(millis: Long): String {

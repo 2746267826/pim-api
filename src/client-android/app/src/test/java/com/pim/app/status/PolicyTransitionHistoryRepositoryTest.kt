@@ -65,23 +65,16 @@ class PolicyTransitionHistoryRepositoryTest {
     )
 
     @Test
-    fun `空库时最新记录与已持续都为空`() = runTest {
-        val state = repository().observeCurrent().first()
-        assertNull(state.latest)
-        assertNull("无记录时「已持续」必须为 null（界面显示「未知」）", state.currentDurationMillis)
+    fun `空库时最新记录为空`() = runTest {
+        assertNull(repository().observeLatest().first())
     }
 
     @Test
-    fun `已持续取自最新一条记录的时刻`() = runTest {
+    fun `最新记录取自时间最新的一条`() = runTest {
         insert(now - 3 * day, reason = "老的")
         insert(now - 90 * 60_000L, from = "PowerSavingNormal", to = "MotionObservation", reason = "新的")
 
-        val state = repository().observeCurrent().first()
-
-        assertEquals("新的", state.latest?.reason)
-        assertEquals(90L * 60_000L, state.currentDurationMillis)
-        // 「上次切换」行与「已持续」用的是同一条记录的时间（AC-4.2）。
-        assertEquals(state.latest!!.occurredAtMillis, now - state.currentDurationMillis!!)
+        assertEquals("新的", repository().observeLatest().first()?.reason)
     }
 
     @Test
@@ -90,7 +83,24 @@ class PolicyTransitionHistoryRepositoryTest {
         insert(millis, reason = "先写")
         insert(millis, reason = "后写")
 
-        assertEquals("后写", repository().observeCurrent().first().latest?.reason)
+        assertEquals("后写", repository().observeLatest().first()?.reason)
+    }
+
+    @Test
+    fun `已持续时长按快照时刻重算`() {
+        val latest = PolicyTransitionSnapshot(
+            fromMode = "PowerSavingNormal",
+            toMode = "MotionObservation",
+            reason = "检测到运动状态：步行",
+            occurredAtMillis = now - 90 * 60_000L
+        )
+        // 同一个「上次切换」记录，不同快照时刻得到不同时长 → 刷新即刷新（AC-4.2 / D-12）。
+        assertEquals(90L * 60_000L, currentPolicyDurationMillis(latest, now))
+        assertEquals(150L * 60_000L, currentPolicyDurationMillis(latest, now + 60 * 60_000L))
+        // 无记录 → null（界面「未知」）。
+        assertNull(currentPolicyDurationMillis(null, now))
+        // 设备时钟回拨时不得出现负数时长。
+        assertEquals(0L, currentPolicyDurationMillis(latest, latest.occurredAtMillis - 1_000L))
     }
 
     @Test
@@ -101,11 +111,10 @@ class PolicyTransitionHistoryRepositoryTest {
         insert(now - 1 * day, reason = "窗口内新")
         val repository = repository()
 
-        val rows = repository.observeWindow().first()
-        val count = repository.observeWindowCount().first()
+        val window = repository.observeWindow().first()
 
-        assertEquals(listOf("窗口内新", "窗口内旧", "恰好 30 天"), rows.map { it.reason })
-        assertEquals("窗口内条数必须与实际可见条数一致（AC-5.4）", 3, count)
+        assertEquals(listOf("窗口内新", "窗口内旧", "恰好 30 天"), window.rows.map { it.reason })
+        assertEquals("窗口内条数必须与实际可见条数一致（AC-5.4）", 3, window.totalInWindow)
     }
 
     @Test
@@ -113,11 +122,10 @@ class PolicyTransitionHistoryRepositoryTest {
         repeat(25) { index -> insert(now - index * 60_000L - 1_000L, reason = "第 ${index + 1} 条") }
         val repository = repository()
 
-        val all = repository.observeWindow().first()
-        val count = repository.observeWindowCount().first()
+        val window = repository.observeWindow().first()
 
-        assertEquals(25, all.size)
-        assertEquals(25, count)
-        assertEquals("仅显示最近 20 条时也要能看到 25 这个分母", 20, all.take(20).size)
+        assertEquals(25, window.rows.size)
+        assertEquals(25, window.totalInWindow)
+        assertEquals("仅显示最近 20 条时也要能看到 25 这个分母", 20, window.rows.take(20).size)
     }
 }

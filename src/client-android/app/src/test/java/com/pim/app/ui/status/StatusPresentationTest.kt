@@ -88,6 +88,35 @@ class StatusPresentationTest {
     }
 
     @Test
+    fun `policyTransitionReasonIsVerbatimEvenOutsideTheRuntimeWhitelist`() {
+        // AC-4.5：原因必须与库中 reason 逐字一致。策略引擎会写出不在
+        // StatusDisplayText.scheduleReason 白名单里的原因（运动名「移动中」、高速档三条），
+        // 这些**不得**被改写成「策略已更新」。
+        val verbatimReasons = listOf(
+            "检测到运动状态：移动中",
+            "高速轨迹模式：持续高速运动（≥8km/h）",
+            "检测到高速运动，高速轨迹确认中",
+            "高速轨迹模式",
+            "策略已更新"
+        )
+        verbatimReasons.forEach { reason ->
+            val transition = PolicyTransitionSnapshot(
+                fromMode = "PowerSavingNormal",
+                toMode = "MotionObservation",
+                reason = reason,
+                occurredAtMillis = Instant.parse("2026-07-14T10:10:00Z").toEpochMilli()
+            )
+            assertEquals(
+                "reason=$reason",
+                "07-14 10:10 · 常规省电 → 运动观察 · $reason",
+                formatPolicyTransition(transition, ZoneId.of("UTC"))
+            )
+        }
+        // 运行时那一行（「策略原因」）的白名单行为保持不变。
+        assertEquals("策略已更新", StatusDisplayText.scheduleReason("高速轨迹模式"))
+    }
+
+    @Test
     fun `policyIntervalUsesReadableMinutesAndSeconds`() {
         assertEquals("5 分钟", formatPolicyInterval(300_000L))
         assertEquals("1分30秒", formatPolicyInterval(90_000L))

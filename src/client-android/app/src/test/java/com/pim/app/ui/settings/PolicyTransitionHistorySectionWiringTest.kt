@@ -23,7 +23,16 @@ class PolicyTransitionHistorySectionWiringTest {
     }
 
     private fun settingsSource(): String =
-        repoSource("src/main/java/com/pim/app/ui/settings/SettingsScreen.kt")
+        stripComments(repoSource("src/main/java/com/pim/app/ui/settings/SettingsScreen.kt"))
+
+    /**
+     * 去掉行注释与块注释后再匹配：源码谓词不能靠「把字符串写进注释」蒙混过关。
+     * （它仍然只是形状检查，真实行为由其它用例验；这里只堵最廉价的绕过方式。）
+     */
+    private fun stripComments(source: String): String =
+        source
+            .replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), "")
+            .replace(Regex("//[^\\n]*"), "")
 
     @Test
     fun `板块标题与说明文案逐字`() {

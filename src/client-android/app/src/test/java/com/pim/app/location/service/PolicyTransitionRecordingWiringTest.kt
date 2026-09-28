@@ -93,13 +93,20 @@ class PolicyTransitionRecordingWiringTest {
         return dao
     }
 
+    /** 写入侧时钟（注入而不是 `System.currentTimeMillis()`，断言才能落在具体时间戳上）。 */
+    private var nowMillis = 1_800_000_000_000L
+
+    /** 真实仓库 + 真实 Room（默认新建库），沿用生产装配函数使用的构造函数。 */
+    private fun productionRepository(dao: MobileDataDao = newDao()): LocationQueueRepository =
+        LocationQueueRepository(dao) { nowMillis }
+
     /**
-     * 生产装配：新建真实 Room 库 + 真实仓库，再经 [PolicyTransitionProductionWiring] ——
+     * 生产装配：真实 Room + 真实仓库，再经 [PolicyTransitionProductionWiring] ——
      * 与 `PolicyTransitionModule` 用的是**同一段**装配代码。
      */
     private fun productionService(
-        repository: LocationQueueRepository = LocationQueueRepository(newDao()),
-        now: () -> Long = System::currentTimeMillis
+        repository: LocationQueueRepository = productionRepository(),
+        now: () -> Long = { nowMillis }
     ): ForegroundLocationService {
         val service = Robolectric.buildService(ForegroundLocationService::class.java).get()
         service.policyTransitionRecorder = PolicyTransitionProductionWiring.recorder(repository)
@@ -185,15 +192,18 @@ class PolicyTransitionRecordingWiringTest {
         assertNull("首条决策的 fromMode 必须为空", rows[0].fromMode)
         assertEquals(LocationPolicyMode.PowerSavingNormal.name, rows[0].toMode)
         assertEquals("默认省电档", rows[0].reason)
-        assertTrue("occurred_at_utc 必须是真实时间戳", rows[0].occurredAtUtc > 0L)
+        assertEquals("落库时间来自注入时钟", nowMillis, rows[0].occurredAtUtc)
     }
 
     @Test
     @LooperMode(LooperMode.Mode.PAUSED)
     fun `连续两次不同决策落库两行且与决策顺序一致`() {
         val service = productionService()
+        val firstAt = nowMillis
 
         invokeApplyDecision(service, decision())
+        nowMillis += 5_000L
+        val secondAt = nowMillis
         invokeApplyDecision(
             service,
             decision(
@@ -210,10 +220,13 @@ class PolicyTransitionRecordingWiringTest {
         assertEquals(LocationPolicyMode.PowerSavingNormal.name, rows[1].fromMode)
         assertEquals(LocationPolicyMode.ScheduleLowFrequency.name, rows[1].toMode)
         assertEquals("当前日程时段，降低定位频率", rows[1].reason)
+        assertEquals(firstAt, rows[0].occurredAtUtc)
+        assertEquals(secondAt, rows[1].occurredAtUtc)
         assertTrue(
             "按 id 升序时 occurred_at_utc 非递减",
             rows[0].occurredAtUtc <= rows[1].occurredAtUtc
         )
+        assertEquals("决策顺序与 id 升序一一对应", listOf(1L, 2L), rows.map { it.id })
     }
 
     @Test
@@ -241,7 +254,7 @@ class PolicyTransitionRecordingWiringTest {
         idleUntil { runBlocking { dao.policyTransitionCount() } == 1 }
 
         // 重启 = 新服务实例（去重器状态清零），同一张库表。
-        val restarted = productionService(LocationQueueRepository(dao))
+        val restarted = productionService(productionRepository(dao))
         invokeApplyDecision(
             restarted,
             decision(mode = LocationPolicyMode.MotionObservation, reason = "检测到运动状态：步行")
@@ -251,6 +264,56 @@ class PolicyTransitionRecordingWiringTest {
         val rows = rows()
         assertNull("重启后的首条决策仍必须记「暂无 → 新模式」", rows[1].fromMode)
         assertEquals(LocationPolicyMode.MotionObservation.name, rows[1].toMode)
+    }
+
+    // ── AC-1.1：三次决策变化 = 三行，且顺序与决策一致 ─────────────────────────
+
+    @Test
+    @LooperMode(LooperMode.Mode.PAUSED)
+    fun `三次决策变化落库三行且按 id 与决策顺序一一对应`() {
+        val service = productionService()
+        val stamps = mutableListOf<Long>()
+
+        val first = decision()
+        val second = decision(
+            mode = LocationPolicyMode.ScheduleLowFrequency,
+            reason = "当前日程时段，降低定位频率"
+        )
+        val third = decision(
+            mode = LocationPolicyMode.MotionObservation,
+            reason = "检测到运动状态：步行"
+        )
+
+        invokeApplyDecision(service, first)
+        idleUntil { runBlocking { dao.policyTransitionCount() } == 1 }
+
+        nowMillis += 1_000L
+        stamps += nowMillis
+        invokeApplyDecision(service, second)
+        idleUntil { runBlocking { dao.policyTransitionCount() } == 2 }
+
+        nowMillis += 1_000L
+        stamps += nowMillis
+        invokeApplyDecision(service, third)
+        idleUntil { runBlocking { dao.policyTransitionCount() } == 3 }
+
+        stamps.add(0, 1_800_000_000_000L)
+        val rows = rows()
+        assertEquals(3, rows.size)
+        assertEquals(listOf(1L, 2L, 3L), rows.map { it.id })
+        assertEquals(
+            listOf(
+                LocationPolicyMode.PowerSavingNormal.name,
+                LocationPolicyMode.ScheduleLowFrequency.name,
+                LocationPolicyMode.MotionObservation.name
+            ),
+            rows.map { it.toMode }
+        )
+        assertEquals(stamps, rows.map { it.occurredAtUtc })
+        assertTrue(
+            "occurred_at_utc 必须非递减",
+            rows.zipWithNext().all { (a, b) -> a.occurredAtUtc <= b.occurredAtUtc }
+        )
     }
 
     // ── AC-1.4：清空表后的一次决策变化仍要落库 ────────────────────────────────

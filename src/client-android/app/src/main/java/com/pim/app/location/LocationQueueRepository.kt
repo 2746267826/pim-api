@@ -25,9 +25,13 @@ import javax.inject.Inject
  * 滤波与舍弃交给服务端（A9 / A11）。`sprintSampleCount` 与入库条数的对账（AC-4.5）
  * 依赖这里「不吞点」这一性质，改动前请先读 REQ-15。
  */
-class LocationQueueRepository @Inject constructor(
-    private val dao: MobileDataDao
+class LocationQueueRepository internal constructor(
+    private val dao: MobileDataDao,
+    private val nowMillis: () -> Long
 ) : PolicyTransitionRecorder {
+    @Inject
+    constructor(dao: MobileDataDao) : this(dao, System::currentTimeMillis)
+
     /**
      * 入库一条已通过质量门的定位点。
      *
@@ -64,11 +68,7 @@ class LocationQueueRepository @Inject constructor(
         decision: PolicyDecision
     ): Long {
         return dao.insertPolicyTransition(
-            MobileLocationPolicyTransitionEntity.fromDecision(
-                fromMode,
-                decision,
-                System.currentTimeMillis()
-            )
+            MobileLocationPolicyTransitionEntity.fromDecision(fromMode, decision, nowMillis())
         )
     }
 }

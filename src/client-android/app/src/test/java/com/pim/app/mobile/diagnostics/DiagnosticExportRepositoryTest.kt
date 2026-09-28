@@ -1144,6 +1144,39 @@ class DiagnosticExportRepositoryTest {
     }
 
     @Test
+    fun status_policyTransitionWriteFailureComesFromTheRealStoreAfterAFailedWrite() = runTest {
+        // AC-3.1 ②③：同一次运行里，真实 store 记一次失败 → 计数 = 1，导出字段跟着变。
+        val prefs = context.getSharedPreferences("policy-transition-export", Context.MODE_PRIVATE)
+            .also { it.edit().clear().commit() }
+        val store = com.pim.app.location.PolicyTransitionWriteFailureStore(
+            prefs,
+            structuredLogRepo,
+            { baseNow }
+        )
+        store.recordFailure(IllegalStateException("磁盘已满"))
+
+        val repo = createRepo(policyTransitionWriteFailure = { store.state.value })
+        val result = repo.export(includeRecentLocations = false)
+
+        ZipFile(result.file).use { zip ->
+            val status = JSONObject(zip.readEntry("status.json")!!)
+            assertEquals(1, status.getInt("policyTransitionWriteFailureCount"))
+            assertEquals(baseNow, status.getLong("policyTransitionWriteLastFailureAtUtc"))
+        }
+        // 成功一次后计数归零，导出字段同步归零（AC-3.2）。
+        store.recordSuccess()
+        val afterSuccess = createRepo(
+            nowMillis = baseNow + 60_000L,
+            policyTransitionWriteFailure = { store.state.value }
+        ).export(includeRecentLocations = false)
+        ZipFile(afterSuccess.file).use { zip ->
+            val status = JSONObject(zip.readEntry("status.json")!!)
+            assertEquals(0, status.getInt("policyTransitionWriteFailureCount"))
+            assertTrue(status.isNull("policyTransitionWriteLastFailureAtUtc"))
+        }
+    }
+
+    @Test
     fun status_policyTransitionWriteFailureDefaultsToZeroAndNull() = runTest {
         val repo = createRepo()
         val result = repo.export(includeRecentLocations = false)

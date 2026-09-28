@@ -134,13 +134,14 @@ class SettingsViewModel @Inject constructor(
     /** REQ-5：历史板块的数据流（30 天窗口 + 窗口内计数），以及 REQ-3 的失败状态。 */
     private fun observePolicyTransitionHistory() {
         viewModelScope.launch {
-            policyTransitionHistorySource.observeWindow().collect { rows ->
-                _state.update { it.copy(policyHistory = rows) }
-            }
-        }
-        viewModelScope.launch {
-            policyTransitionHistorySource.observeWindowCount().collect { count ->
-                _state.update { it.copy(policyHistoryTotalInWindow = count) }
+            // 行与分母来自同一个窗口快照，AC-5.4 的「N 与可见条数一致」不会因窗口漂移而破。
+            policyTransitionHistorySource.observeWindow().collect { window ->
+                _state.update {
+                    it.copy(
+                        policyHistory = window.rows,
+                        policyHistoryTotalInWindow = window.totalInWindow
+                    )
+                }
             }
         }
         viewModelScope.launch {

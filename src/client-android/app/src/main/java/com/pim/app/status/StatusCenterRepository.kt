@@ -36,7 +36,7 @@ private data class CoreFacts(
 
 private data class ScheduleFacts(
     val scheduleSnapshot: ScheduleCacheSnapshot,
-    val transitions: PolicyTransitionState
+    val latestTransition: PolicyTransitionSnapshot?
 )
 
 private data class ExternalFacts(
@@ -67,7 +67,7 @@ internal fun Flow<StatusEmission>.emitStates(clearAccepted: (Long) -> Unit): Flo
     }
 
 @Singleton
-class StatusCenterRepository @Inject constructor(
+class StatusCenterRepository internal constructor(
     private val permissionStatusRepository: PermissionStatusRepository,
     private val serverSettingsStore: ServerSettingsStore,
     private val tokenManager: TokenManager,
@@ -83,8 +83,47 @@ class StatusCenterRepository @Inject constructor(
     private val scheduleWindowRepository: ScheduleWindowRepository,
     private val queueStatusRepository: QueueStatusRepository,
     private val policyTransitionHistorySource: PolicyTransitionHistorySource,
-    private val policyTransitionWriteFailureSource: PolicyTransitionWriteFailureSource
+    private val policyTransitionWriteFailureSource: PolicyTransitionWriteFailureSource,
+    private val nowMillis: () -> Long
 ) {
+    @Inject
+    constructor(
+        permissionStatusRepository: PermissionStatusRepository,
+        serverSettingsStore: ServerSettingsStore,
+        tokenManager: TokenManager,
+        trackingSettingsStore: TrackingSettingsStore,
+        database: AppDatabase,
+        syncCoordinator: MobileSyncCoordinator,
+        refreshSignal: StatusRefreshSignal,
+        logRepository: StructuredLogRepository,
+        connectionProbeStore: ConnectionProbeStore,
+        networkStatusProvider: NetworkStatusProvider,
+        workInfoStatusProvider: WorkInfoStatusProvider,
+        acceptedSignal: StatusAcceptedSignal,
+        scheduleWindowRepository: ScheduleWindowRepository,
+        queueStatusRepository: QueueStatusRepository,
+        policyTransitionHistorySource: PolicyTransitionHistorySource,
+        policyTransitionWriteFailureSource: PolicyTransitionWriteFailureSource
+    ) : this(
+        permissionStatusRepository = permissionStatusRepository,
+        serverSettingsStore = serverSettingsStore,
+        tokenManager = tokenManager,
+        trackingSettingsStore = trackingSettingsStore,
+        database = database,
+        syncCoordinator = syncCoordinator,
+        refreshSignal = refreshSignal,
+        logRepository = logRepository,
+        connectionProbeStore = connectionProbeStore,
+        networkStatusProvider = networkStatusProvider,
+        workInfoStatusProvider = workInfoStatusProvider,
+        acceptedSignal = acceptedSignal,
+        scheduleWindowRepository = scheduleWindowRepository,
+        queueStatusRepository = queueStatusRepository,
+        policyTransitionHistorySource = policyTransitionHistorySource,
+        policyTransitionWriteFailureSource = policyTransitionWriteFailureSource,
+        nowMillis = System::currentTimeMillis
+    ) { }
+
     private val dao: MobileDataDao = database.mobileDataDao()
 
     fun observe(): Flow<StatusCenterState> {
@@ -98,12 +137,12 @@ class StatusCenterRepository @Inject constructor(
             CoreFacts(queues, diagnostics, syncState, runtime, writeFailure)
         }
 
-        // REQ-4：不再取「最近 5 条」，只取最新 1 条 + 已持续时长（D-12：在快照刷新时重算）。
+        // REQ-4：不再取「最近 5 条」，只取最新 1 条；已持续时长在**每次重建快照时**重算（D-12）。
         val scheduleFlow = scheduleWindowRepository.snapshot
-            .combine(policyTransitionHistorySource.observeCurrent()) { snap, transitions ->
+            .combine(policyTransitionHistorySource.observeLatest()) { snap, latest ->
                 ScheduleFacts(
                     scheduleSnapshot = snap,
-                    transitions = transitions
+                    latestTransition = latest
                 )
             }
 
@@ -190,8 +229,12 @@ class StatusCenterRepository @Inject constructor(
             queues = queues,
             diagnostics = diagnostics,
             schedule = scheduleFacts.scheduleSnapshot.toScheduleCacheStatusSnapshot(expectedServerIdentity),
-            latestPolicyTransition = scheduleFacts.transitions.latest,
-            currentPolicyDurationMillis = scheduleFacts.transitions.currentDurationMillis,
+            latestPolicyTransition = scheduleFacts.latestTransition,
+            // D-12：不新增定时轮询，但在**本次快照构建时**按当前时刻重算，页面刷新即刷新。
+            currentPolicyDurationMillis = currentPolicyDurationMillis(
+                scheduleFacts.latestTransition,
+                nowMillis()
+            ),
             policyTransitionWriteFailure = policyTransitionWriteFailure
         )
     }

@@ -4,39 +4,37 @@ import com.pim.app.data.MobileDataDao
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 
-/**
- * 状态页「当前状态 / 上次切换」所需的一组值，**同一快照内自洽**（D-12）：
- * 时长由注入的时钟在本次映射时算一次，不在渲染期反复取 `now`。
- */
-data class PolicyTransitionState(
-    val latest: PolicyTransitionSnapshot? = null,
-    /** 当前状态已持续时长 = 快照时刻 − 最新一条记录时间；无记录为 null（→ 显示「未知」）。 */
-    val currentDurationMillis: Long? = null
+/** REQ-5：30 天窗口内的一次快照——**行与分母来自同一个窗口起点**，不会自相矛盾（AC-5.4）。 */
+data class PolicyTransitionWindow(
+    val rows: List<PolicyTransitionSnapshot> = emptyList(),
+    /** 窗口内全部条数（底部「30 天内共 N 条」逐字取它）。 */
+    val totalInWindow: Int = 0
 )
 
 /**
- * 策略切换历史的读取入口（REQ-4 / REQ-5）。
+ * 状态页「当前状态 / 上次切换」（REQ-4）与设置页「策略切换历史」（REQ-5）的读取入口。
  *
- * 抽象成接口是为了让界面层（`SettingsViewModel`）能在单测里用最轻的替身驱动，
- * 而不必为了一个只读列表拖起一整套 Room（沿用仓库既有做法：`ConnectionProbeEvidenceStore`）。
+ * 抽象成接口是为了让界面层能在单测里用最轻的替身驱动，而不必为了两块 UI 拖起一整套 Room
+ * （沿用仓库既有做法：`ConnectionProbeEvidenceStore`）。
+ *
+ * 注意：「已持续」时长**不在**这里的流里算（那会只在 Room 发射时才更新），
+ * 而是由 `StatusCenterRepository` 在每次重建状态快照时用注入时钟重算（D-12）。
  */
 interface PolicyTransitionHistorySource {
-    /** REQ-4：最新一条记录 + 已持续时长。 */
-    fun observeCurrent(): Flow<PolicyTransitionState>
+    /** REQ-4：最新一条切换记录；无记录为 null（界面显示「暂无记录」/「未知」）。 */
+    fun observeLatest(): Flow<PolicyTransitionSnapshot?>
 
-    /** REQ-5：30 天窗口内的记录，时间倒序。 */
+    /** REQ-5：30 天窗口内的记录（时间倒序）与窗口内条数。 */
     fun observeWindow(
         limit: Int = PolicyTransitionHistoryRepository.DEFAULT_WINDOW_LIMIT
-    ): Flow<List<PolicyTransitionSnapshot>>
-
-    /** REQ-5：30 天窗口内的条数（AC-5.4 的 N）。 */
-    fun observeWindowCount(): Flow<Int>
+    ): Flow<PolicyTransitionWindow>
 }
 
 /**
- * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-4 / REQ-5：策略切换历史的读取入口。
+ * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-4 / REQ-5：策略切换历史的读取实现。
  *
  * - REQ-4：状态页只取**最新 1 条**（查询由 `limit = 5` 收敛）；
  * - REQ-5：设置页「策略切换历史」取 **30 天窗口**内全部记录（时间倒序）与窗口内条数。
@@ -52,21 +50,23 @@ class PolicyTransitionHistoryRepository internal constructor(
     @Inject
     constructor(dao: MobileDataDao) : this(dao, System::currentTimeMillis)
 
-    /** REQ-4：最新一条记录 + 已持续时长。 */
-    override fun observeCurrent(): Flow<PolicyTransitionState> =
-        dao.latestPolicyTransition().map { entity ->
-            val snapshot = entity?.toPolicyTransitionSnapshot()
-            val duration = snapshot?.let { (nowMillis() - it.occurredAtMillis).coerceAtLeast(0L) }
-            PolicyTransitionState(latest = snapshot, currentDurationMillis = duration)
+    /** REQ-4：最新一条记录。 */
+    override fun observeLatest(): Flow<PolicyTransitionSnapshot?> =
+        dao.latestPolicyTransition().map { it?.toPolicyTransitionSnapshot() }
+
+    /** REQ-5：30 天窗口内的记录与条数——两条查询共用同一个窗口起点。 */
+    override fun observeWindow(limit: Int): Flow<PolicyTransitionWindow> {
+        val since = sinceUtc()
+        return combine(
+            dao.policyTransitionsSince(since, limit),
+            dao.policyTransitionCountSince(since)
+        ) { rows, count ->
+            PolicyTransitionWindow(
+                rows = rows.map { it.toPolicyTransitionSnapshot() },
+                totalInWindow = count
+            )
         }
-
-    /** REQ-5：30 天窗口内的记录，时间倒序。 */
-    override fun observeWindow(limit: Int): Flow<List<PolicyTransitionSnapshot>> =
-        dao.policyTransitionsSince(sinceUtc(), limit)
-            .map { rows -> rows.map { it.toPolicyTransitionSnapshot() } }
-
-    /** REQ-5：30 天窗口内的条数（用于「仅显示最近 20 条 · 30 天内共 N 条」与 AC-5.4）。 */
-    override fun observeWindowCount(): Flow<Int> = dao.policyTransitionCountSince(sinceUtc())
+    }
 
     private fun sinceUtc(): Long = nowMillis() - WINDOW_MILLIS
 
@@ -79,3 +79,14 @@ class PolicyTransitionHistoryRepository internal constructor(
         const val DEFAULT_WINDOW_LIMIT = Int.MAX_VALUE
     }
 }
+
+/**
+ * REQ-4（D-2 / P5）：「当前状态」的已持续时长 = 快照时刻 − 库中最新一条切换记录时间。
+ *
+ * 无记录（或时间在未来，例如设备时钟回拨）时返回 null → 界面显示「未知」。
+ * 纯函数，便于逐档验收（AC-4.2）。
+ */
+internal fun currentPolicyDurationMillis(
+    latest: PolicyTransitionSnapshot?,
+    nowMillis: Long
+): Long? = latest?.let { (nowMillis - it.occurredAtMillis).coerceAtLeast(0L) }

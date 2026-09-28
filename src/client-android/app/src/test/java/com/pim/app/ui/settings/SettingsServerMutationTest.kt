@@ -1189,10 +1189,10 @@ class SettingsServerMutationTest {
             scheduleCacheStore = scheduleCacheStore,
             api = fakeApi,
             policyTransitionHistorySource = object : com.pim.app.status.PolicyTransitionHistorySource {
-                override fun observeCurrent() = kotlinx.coroutines.flow.flowOf(com.pim.app.status.PolicyTransitionState())
+                override fun observeLatest() =
+                    kotlinx.coroutines.flow.flowOf(null as com.pim.app.status.PolicyTransitionSnapshot?)
                 override fun observeWindow(limit: Int) =
-                    kotlinx.coroutines.flow.flowOf(emptyList<com.pim.app.status.PolicyTransitionSnapshot>())
-                override fun observeWindowCount() = kotlinx.coroutines.flow.flowOf(0)
+                    kotlinx.coroutines.flow.flowOf(com.pim.app.status.PolicyTransitionWindow())
             },
             policyTransitionWriteFailureSource = object : com.pim.app.location.PolicyTransitionWriteFailureSource {
                 override val state =

@@ -19,7 +19,6 @@ import com.pim.app.location.PolicyTransitionWriteFailure
 import com.pim.app.status.PolicyTransitionSnapshot
 import com.pim.app.ui.theme.PimTheme
 import java.time.Instant
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -74,6 +73,28 @@ class PolicyTransitionHistorySectionTest {
         }
     }
 
+    /**
+     * 与真实页面同构的渲染：`expanded` 是状态，点击「展开全部」后**同一次组合**里重画，
+     * 因此可以在一个用例里断言「20 条 → 25 条」。
+     */
+    private fun renderStateful(rows: List<PolicyTransitionSnapshot>, totalInWindow: Int = rows.size) {
+        val expanded = androidx.compose.runtime.mutableStateOf(false)
+        composeTestRule.setContent {
+            PimTheme {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    PolicyTransitionHistorySection(
+                        state = stateWith(
+                            rows = rows,
+                            expanded = expanded.value,
+                            totalInWindow = totalInWindow
+                        ),
+                        onExpandPolicyHistory = { expanded.value = true }
+                    )
+                }
+            }
+        }
+    }
+
     /** 断言节点存在，且其文本与期望**逐字相等**（不是包含）。 */
     private fun SemanticsNodeInteraction.assertExactText(expected: String) {
         assertExists()
@@ -95,19 +116,22 @@ class PolicyTransitionHistorySectionTest {
 
     @Test
     fun defaultPageShowsTwentyRowsAndExpandingRevealsAll() {
-        val rows = transitions(25)
-        var expandRequested = false
-        render(stateWith(rows, expanded = false)) { expandRequested = true }
+        renderStateful(transitions(25))
 
         // 默认 20 条 + 底部提示行（AC-5.2 / AC-5.4）。
         composeTestRule.onNodeWithTag("settings-policy-history-row-19").assertExists()
         composeTestRule.onAllNodesWithTag("settings-policy-history-row-20").assertCountEquals(0)
         composeTestRule.onNodeWithTag("settings-policy-history-more")
             .assertExactText("仅显示最近 20 条 · 30 天内共 25 条")
-        assertEquals(false, expandRequested)
 
         composeTestRule.onNodeWithTag("settings-policy-history-expand").performClick()
-        assertTrue("「展开全部」必须回调（板块内展开，D-7）", expandRequested)
+
+        // 同一次组合里点完之后：25 条全部可见，提示行消失（板块内展开，D-7）。
+        composeTestRule.onNodeWithTag("settings-policy-history-row-24").assertExists()
+        for (index in 0 until 25) {
+            composeTestRule.onNodeWithTag("settings-policy-history-row-$index").assertExists()
+        }
+        composeTestRule.onNodeWithTag("settings-policy-history-more").assertDoesNotExist()
     }
 
     @Test
