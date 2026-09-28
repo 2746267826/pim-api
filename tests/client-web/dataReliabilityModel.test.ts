@@ -3,9 +3,13 @@ import type {
   DataReliabilityRuleReport,
   S2ThreeStateDistribution,
 } from '../../src/client-web/src/api/dataReliabilityTypes';
+import type { DataReliabilityInspectionReport } from '../../src/client-web/src/api/dataReliabilityTypes';
 import {
+  buildLedgerLine,
   buildOverviewCounts,
   dataReliabilityStaleAfterHours,
+  formatAssessmentWindow,
+  formatLedgerTimestamp,
   isInspectionStale,
   buildThreeStateBuckets,
   buildViolationExportFileName,
@@ -53,6 +57,29 @@ function rule(overrides: Partial<DataReliabilityRuleReport>): DataReliabilityRul
     trendBaselineUtc: null,
     threeState: null,
     scanTruncated: false,
+    scanCoveredDays: null,
+    ...overrides,
+  };
+}
+
+function report(overrides: Partial<DataReliabilityInspectionReport> = {}): DataReliabilityInspectionReport {
+  return {
+    inspectedAtUtc: '2026-09-14T10:00:00Z',
+    version: 1,
+    elapsedMilliseconds: 1,
+    status: 'green',
+    redCount: 0,
+    yellowCount: 0,
+    greenCount: 13,
+    unknownCount: 0,
+    totalViolations: 0,
+    windowViolations: 0,
+    historicalViolations: 0,
+    notices: {},
+    rules: [rule({})],
+    message: '',
+    assessmentStartUtc: '2026-09-07T10:00:00Z',
+    assessmentWindowHours: 168,
     ...overrides,
   };
 }
@@ -114,19 +141,48 @@ assert.equal(formatCurrentValue(rule({ currentValue: 12, currentValueUnit: '对'
 assert.equal(formatCurrentValue(rule({ currentValue: 0.873, currentValueLabel: '87.3%' })), '87.3%');
 assert.equal(formatCurrentValue(rule({ currentValue: null })), '暂无');
 
-// ---- 存量趋势 ----
+// ---- 历史欠账趋势（旧术语「存量」已退役）----
 const decreasing = describeTrend(
   rule({ trend: 'decreasing', trendDelta: -12, trendBaselineUtc: '2026-09-14T10:00:00Z' })
 );
-assert.ok(decreasing.startsWith('存量较'), `decreasing 文案应以"存量较"开头: ${decreasing}`);
+assert.ok(decreasing.startsWith('历史欠账较'), `decreasing 文案应以"历史欠账较"开头: ${decreasing}`);
 assert.ok(decreasing.includes('减少 12 条'), `decreasing 文案应包含减量: ${decreasing}`);
-assert.ok(decreasing.includes('修复有效'), `decreasing 文案应说明修复是否有效: ${decreasing}`);
+assert.ok(decreasing.includes('消化'), `decreasing 文案应说明欠账在消化: ${decreasing}`);
 assert.ok(
   describeTrend(rule({ trend: 'increasing', trendDelta: 5 })).includes('增加 5 条'),
   'increasing 趋势文案应包含增量'
 );
 assert.ok(describeTrend(rule({ trend: 'flat', trendDelta: 0, historicalViolations: 7 })).includes('持平'));
 assert.ok(describeTrend(rule({ trend: 'unknown' })).includes('暂无对比基线'));
+for (const trend of ['decreasing', 'increasing', 'flat', 'unknown'] as const) {
+  const text = describeTrend(rule({ trend }));
+  assert.ok(!text.includes('存量'), `趋势文案不得再出现「存量」: ${text}`);
+}
+
+// ---- 考核账本信息行（AC-7.1：逐字对照工单 §五）----
+assert.equal(formatAssessmentWindow(168), '最近 7 天');
+assert.equal(formatAssessmentWindow(24), '最近 1 天');
+assert.equal(formatAssessmentWindow(36), '最近 36 小时');
+assert.equal(formatAssessmentWindow(null), '未配置');
+// 账本时刻按**浏览器本地时区**渲染（与"本次体检时间"一致），因此断言格式 + 与本地时间分量一致，
+// 而不是把 UTC 字面量写死（否则容器时区一变用例就假红）。
+const ledgerAt = new Date('2026-09-07T02:30:00Z');
+const pad2 = (part: number) => String(part).padStart(2, '0');
+const expectedLedger = `${ledgerAt.getFullYear()}-${pad2(ledgerAt.getMonth() + 1)}-${pad2(ledgerAt.getDate())} ` +
+  `${pad2(ledgerAt.getHours())}:${pad2(ledgerAt.getMinutes())}`;
+assert.equal(formatLedgerTimestamp('2026-09-07T02:30:00Z'), expectedLedger);
+assert.match(formatLedgerTimestamp('2026-09-07T02:30:00Z'), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+assert.equal(formatLedgerTimestamp(null), '未知');
+
+const ledgerReport = report({
+  inspectedAtUtc: '2026-09-14T10:00:00Z',
+  assessmentStartUtc: '2026-09-07T02:30:00Z',
+  assessmentWindowHours: 168,
+});
+const ledgerLine = buildLedgerLine(ledgerReport);
+assert.ok(ledgerLine.startsWith(`考核账本自 ${expectedLedger} 起`), `账本行前缀不符: ${ledgerLine}`);
+assert.ok(ledgerLine.includes('容器更新/重启后自动重置'), `账本行必须说明重启自动重置: ${ledgerLine}`);
+assert.ok(ledgerLine.includes('考核窗：最近 7 天'), `账本行必须给出考核窗时长: ${ledgerLine}`);
 
 // ---- S2 三态分布 ----
 const distribution: S2ThreeStateDistribution = {
@@ -156,7 +212,7 @@ const serialized = serializeViolationExport({
   generatedAtUtc: '2026-09-14T12:00:00Z',
   totalCount: 1,
   truncated: false,
-  items: [{ ruleCode: 'S1', id: '7', deviceId: 'dev', occurredAtUtc: '2026-09-14T01:00:00Z', fields: { eventType: 'window' } }],
+  items: [{ ruleCode: 'S1', id: '7', deviceId: 'dev', occurredAtUtc: '2026-09-14T01:00:00Z', fields: { eventType: 'window' }, isNew: false }],
 });
 assert.ok(serialized.includes('"id": "7"'), '导出内容应包含违规 ID');
 assert.ok(serialized.includes('"eventType": "window"'), '导出内容应包含关键字段');
@@ -177,6 +233,8 @@ const counts = buildOverviewCounts({
   notices: {},
   rules: [rule({}), rule({ code: 'S2' })],
   message: '',
+  assessmentStartUtc: '2026-09-07T12:00:00Z',
+  assessmentWindowHours: 168,
 });
 assert.deepEqual(counts, { red: 9, yellow: 0, green: 3, unknown: 1, total: 2 });
 

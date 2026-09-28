@@ -99,7 +99,7 @@ export default function DataReliabilityPage() {
         <div className="pim-card space-y-2 p-6 text-sm text-slate-600">
           <p>暂无数据：还没有可用的体检结果。</p>
           <p className="text-xs text-slate-500">
-            点右上角「重新体检」立即跑一次；体检完成后这里会显示 13 条尺子的红黄绿、违规样例与存量趋势。
+            点右上角「重新体检」立即跑一次；体检完成后这里会显示 13 条尺子的红黄绿、违规样例与历史欠账。
           </p>
         </div>
       )}

@@ -50,6 +50,8 @@ export interface DataReliabilityRuleReport {
   trendBaselineUtc: string | null;
   threeState: S2ThreeStateDistribution | null;
   scanTruncated: boolean;
+  /** S3 专用：本次取数实际覆盖到的业务日数（AC-6.4）；其余尺子为 null。 */
+  scanCoveredDays: number | null;
 }
 
 export interface DataReliabilityInspectionReport {
@@ -67,6 +69,10 @@ export interface DataReliabilityInspectionReport {
   notices: Record<string, string>;
   rules: DataReliabilityRuleReport[];
   message: string;
+  /** 本次体检的考核线（面板上的「考核账本起始时刻」）：max(体检时刻 − 考核窗, 进程启动时刻)。 */
+  assessmentStartUtc: string;
+  /** 本次体检生效的考核窗时长（小时），默认 168（7 天）。 */
+  assessmentWindowHours: number;
 }
 
 export interface DataReliabilityViolationItem {
@@ -75,6 +81,8 @@ export interface DataReliabilityViolationItem {
   deviceId: string;
   occurredAtUtc: string;
   fields: Record<string, string>;
+  /** 分档标记：true = 窗内（决定颜色），false = 历史欠账（只计数）。 */
+  isNew: boolean;
 }
 
 export interface DataReliabilityViolationExport {

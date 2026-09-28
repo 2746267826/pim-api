@@ -7,7 +7,7 @@ import { SETTINGS_SECTION_ITEMS } from '../layout/navItems';
 const settingsLinks = [
   {
     title: '数据可信度',
-    description: '查看 13 项数据可信度体检结果、违规样例与存量趋势',
+    description: '查看 13 项数据可信度体检结果、违规样例与历史欠账',
     label: '体检',
     to: '/settings/data-reliability',
   },

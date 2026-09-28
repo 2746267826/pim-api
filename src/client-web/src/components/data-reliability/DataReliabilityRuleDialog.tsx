@@ -98,13 +98,13 @@ export default function DataReliabilityRuleDialog({
           <h3 className="font-semibold text-slate-900">当前情况</h3>
           <p>
             当前值：{formatCurrentValue(rule)}；违规 {rule.totalViolations} 条（
-            <span className="text-red-700">新增 {rule.windowViolations}</span> /{' '}
-            <span className="text-amber-700">存量 {rule.historicalViolations}</span>）
+            窗内 <span className="text-red-700">{rule.windowViolations}</span> / 历史欠账{' '}
+            <span className="text-slate-400">{rule.historicalViolations}</span>）
           </p>
           <p>
             最早发生：{formatDateTime(rule.earliestOccurrenceUtc)}；最近发生：{formatDateTime(rule.latestOccurrenceUtc)}
           </p>
-          <p>存量趋势：{describeTrend(rule)}</p>
+          <p>历史欠账趋势：{describeTrend(rule)}</p>
         </section>
 
         <section className="space-y-1">
@@ -130,7 +130,8 @@ export default function DataReliabilityRuleDialog({
             {exporting ? '导出中…' : '导出完整违规清单'}
           </button>
           <p className="text-xs text-slate-500">
-            导出为 JSON（ID + 业务时间 + 设备 + 关键字段），最多 {dataReliabilityViolationExportLimit} 条；面板内只展示 10 条样例。
+            导出为 JSON（ID + 业务时间 + 设备 + 分档（窗内 / 历史欠账）+ 关键字段），最多{' '}
+            {dataReliabilityViolationExportLimit} 条；面板内只展示 10 条样例。
           </p>
           {exportError && (
             <p role="alert" className="text-xs text-red-700">

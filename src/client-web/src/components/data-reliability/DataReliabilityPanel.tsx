@@ -17,10 +17,11 @@ export default function DataReliabilityPanel({ report, now, onSelectRule }: Data
     <div className="space-y-4">
       <DataReliabilityOverview report={report} now={now} />
 
-      {report.totalViolations > 0 && (
-        <p className="px-1 text-xs text-slate-500">
-          本次共 {report.totalViolations} 条违规，其中新增 {report.windowViolations} 条、存量 {report.historicalViolations} 条。
-          存量只计数不当红线，看趋势判断历史修复是否起作用。
+      {(report.windowViolations > 0 || report.historicalViolations > 0) && (
+        <p className="px-1 text-xs text-slate-500" data-testid="data-reliability-summary">
+          本次窗内 {report.windowViolations} 条违规（决定红 / 黄 / 绿）、历史欠账{' '}
+          <span className="text-slate-400">{report.historicalViolations}</span> 条。
+          历史欠账只计数、不参与颜色判定。
         </p>
       )}
 

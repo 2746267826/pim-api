@@ -34,6 +34,16 @@ assertContains(rowPath, ['min-h-[44px]', 'flex-wrap']);
 assertContains(dialogPath, ['min-h-[44px]']);
 assertContains(distributionPath, ['sm:grid-cols-3']);
 
+// 账本信息行与「窗内 / 历史欠账」两档数字都必须在 375px 下随卡片换行、不得撑出横向滚动：
+// 账本行用 w-full + 小字号，尺子行沿用 flex-wrap（AC-7.2 / AC-7.7）。
+const overviewPath = 'src/client-web/src/components/data-reliability/DataReliabilityOverview.tsx';
+assertContains(overviewPath, ['data-reliability-ledger', 'w-full text-xs']);
+assertContains(rowPath, ['窗内', '历史欠账']);
+assert.ok(
+  !/w-\[\d{3,}px\]/.test(read(overviewPath)),
+  '账本行不得使用固定像素宽度（375px 下会破版）'
+);
+
 // 响应式：不得出现会造成横向滚动的固定宽度 / 视口宽度
 for (const path of [pagePath, panelPath, rowPath, dialogPath, distributionPath]) {
   const source = read(path);
