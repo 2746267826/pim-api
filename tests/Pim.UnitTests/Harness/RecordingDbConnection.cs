@@ -31,6 +31,19 @@ internal sealed class RecordingDbConnection : DbConnection
     /// </summary>
     public List<IReadOnlyDictionary<string, object?>> ExecutedParameterValues { get; } = new();
 
+    /// <summary>
+    /// 当前还没被释放的 DataReader 数量。真实 Npgsql 在同一连接上"上一条命令还没读完"时
+    /// 会抛 <c>A command is already in progress</c>；这个桩复刻该行为，
+    /// 让"忘了先关 reader 就发下一条命令"这类只在真库上才炸的缺陷在单测里就能被抓住。
+    /// </summary>
+    private int _openReaders;
+
+    internal int OpenReaderCount => _openReaders;
+
+    internal void OnReaderOpened() => _openReaders++;
+
+    internal void OnReaderClosed() => _openReaders--;
+
     [AllowNull]
     public override string ConnectionString { get; set; } = "Host=mock;Database=mock";
     public override string Database => "mock";
@@ -80,6 +93,11 @@ internal sealed class RecordingDbCommand : DbCommand
 
     private void Record()
     {
+        if (_connection.OpenReaderCount > 0)
+        {
+            throw new InvalidOperationException($"A command is already in progress: {CommandText}");
+        }
+
         _connection.ExecutedCommands.Add(CommandText);
         var bound = Parameters.Cast<DbParameter>().ToList();
         _connection.ExecutedParameterNames.Add(bound.Select(parameter => parameter.ParameterName).ToList());
@@ -92,13 +110,13 @@ internal sealed class RecordingDbCommand : DbCommand
     protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
     {
         Record();
-        return new EmptyDbDataReader();
+        return new EmptyDbDataReader(_connection);
     }
 
     protected override Task<DbDataReader> ExecuteDbDataReaderAsync(CommandBehavior behavior, CancellationToken cancellationToken)
     {
         Record();
-        return Task.FromResult<DbDataReader>(new EmptyDbDataReader());
+        return Task.FromResult<DbDataReader>(new EmptyDbDataReader(_connection));
     }
 
     public override int ExecuteNonQuery()
@@ -175,6 +193,32 @@ internal sealed class RecordingDbParameterCollection : DbParameterCollection
 
 internal sealed class EmptyDbDataReader : DbDataReader
 {
+    public EmptyDbDataReader(RecordingDbConnection? owner = null)
+    {
+        _owner = owner;
+        _owner?.OnReaderOpened();
+    }
+
+    private readonly RecordingDbConnection? _owner;
+    private bool _disposed;
+
+    protected override void Dispose(bool disposing)
+    {
+        if (!_disposed)
+        {
+            _disposed = true;
+            _owner?.OnReaderClosed();
+        }
+
+        base.Dispose(disposing);
+    }
+
+    public override ValueTask DisposeAsync()
+    {
+        Dispose(true);
+        return ValueTask.CompletedTask;
+    }
+
     public override int FieldCount => 0;
     public override int Depth => 0;
     public override bool IsClosed => false;

@@ -255,6 +255,31 @@ public class DataReliabilityAssessmentWindowTests
 
     #endregion
 
+    /// <summary>
+    /// 回归防线：考核窗内没有数据时，取数层的兜底查询不得在"上一条命令还没读完"的情况下发出
+    /// （真实 Npgsql 会抛 <c>A command is already in progress</c>，随后该尺子静默退化成"未知"）。
+    /// 记录桩已复刻 Npgsql 的这条约束，因此这里能挡住它。
+    /// </summary>
+    [Fact]
+    public async Task Inspector_EmptyWindow_NoRuleDegradesWithCommandInProgress()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateInspector(conn, new InvariantOptions());
+
+        var report = await inspector.InspectReportAsync(InspectionTime);
+
+        foreach (var rule in report.Rules)
+        {
+            Assert.DoesNotContain("取数执行异常", rule.Detail, StringComparison.Ordinal);
+            Assert.DoesNotContain("already in progress", rule.Detail, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // S5 有兜底取数：考核窗内无数据时必须把兜底查询**真的跑完**，结论只能是"表里没数据"
+        // 这类诚实原因；出现"取数执行异常"就说明兜底在 reader 没关的时候就发了命令。
+        var s5 = report.Rules.Single(rule => rule.Code == "S5");
+        Assert.Contains("表中无事件记录", s5.Detail, StringComparison.Ordinal);
+    }
+
     #region 进程启动时刻：重启即重置账本，且不落库
 
     /// <summary>AC-1.5：模拟新进程启动（新启动时刻）→ 账本以新时刻为准；沿用旧时刻 = 失败。</summary>
