@@ -8,7 +8,10 @@ import com.pim.app.data.MobileDataDao
 import com.pim.app.data.MobileLocationPointEntity
 import com.pim.app.data.MobileSyncStatus
 import com.pim.core.models.ApiResponse
+import com.pim.core.models.MobileIngestItemResult
 import com.pim.core.models.MobileLocationPointRequest
+import com.pim.core.models.MobileLocationPointsUploadRequest
+import com.pim.core.models.MobileLocationPointsUploadResult
 import com.pim.core.network.ApiService
 import java.lang.reflect.Proxy
 import kotlinx.coroutines.test.runTest
@@ -91,22 +94,44 @@ class LocationUploadNoDecimationTest {
         )
     }
 
-    /** AC-15.5：每次同步仍是逐条 HTTP 请求、单次上限不变（上传协议属范围外）。 */
+    /**
+     * 上传协议（批量补传）：单次同步走批量端点，一批最多 [LOCATION_UPLOAD_BATCH_LIMIT] 条。
+     *
+     * 旧口径（WO-ANDROID-GATE-20260926 AC-15.5 记录）：逐条 HTTP、每次同步最多 100 条。
+     * 本改造后同样 150 条只发 **1 次** 请求即可传完。
+     */
     @Test
-    fun `单次同步上限仍为 100 条且逐条请求`() = runTest {
+    fun `单次同步走批量端点且 150 条一次请求传完`() = runTest {
         val requested = mutableListOf<MobileLocationPointRequest>()
+        val requestSizes = mutableListOf<Int>()
         seedStraightLine(count = 150, metersPerStep = 1.0)
 
-        coordinator(requested).uploadPending()
+        coordinator(requested, requestSizes).uploadPending()
 
+        assertEquals("批量上传：150 条应只发 1 次请求", 1, requestSizes.size)
+        assertEquals(listOf(150), requestSizes)
+        assertEquals(150, requested.size)
         assertEquals(
-            "AC-15.5：单次同步仍最多取 100 条（上传协议未改造）",
-            100,
-            requested.size
+            "上传成功后队列清空",
+            0,
+            dao.getLocationPointsBySyncStatus(MobileSyncStatus.PENDING, 500).size
         )
+    }
+
+    /** 单批不超过 [LOCATION_UPLOAD_BATCH_LIMIT] 条；超出的留在队列，不丢点。 */
+    @Test
+    fun `单批上限 500 条超出的留待下一批`() = runTest {
+        val requested = mutableListOf<MobileLocationPointRequest>()
+        val requestSizes = mutableListOf<Int>()
+        seedStraightLine(count = 700, metersPerStep = 1.0)
+
+        coordinator(requested, requestSizes).uploadPending()
+
+        assertEquals(listOf(500), requestSizes)
+        assertEquals(500, requested.size)
         assertEquals(
-            "AC-15.5：剩余 50 条留在队列等待下次同步（不丢点、允许积压）",
-            50,
+            "剩余 200 条留在队列等待下一批（不丢点、允许积压）",
+            200,
             dao.getLocationPointsBySyncStatus(MobileSyncStatus.PENDING, 500).size
         )
     }
@@ -129,24 +154,50 @@ class LocationUploadNoDecimationTest {
         }
     }
 
-    private fun coordinator(sink: MutableList<MobileLocationPointRequest>) = LocationUploadCoordinator(
+    private fun coordinator(
+        sink: MutableList<MobileLocationPointRequest> = mutableListOf(),
+        requestSizes: MutableList<Int> = mutableListOf()
+    ) = LocationUploadCoordinator(
         ApplicationProvider.getApplicationContext(),
         db,
-        recordingApi(sink)
+        recordingApi(sink, requestSizes)
     )
 
     /**
      * 只实现上传链路会碰到的接口，其余方法一律抛出，避免用「意外调用」掩盖装配错误。
      */
-    private fun recordingApi(sink: MutableList<MobileLocationPointRequest>): ApiService =
+    private fun recordingApi(
+        sink: MutableList<MobileLocationPointRequest>,
+        requestSizes: MutableList<Int>
+    ): ApiService =
         Proxy.newProxyInstance(
             ApiService::class.java.classLoader,
             arrayOf(ApiService::class.java)
         ) { _, method, args ->
             when (method.name) {
-                "uploadMobileLocation" -> {
-                    sink += args!![0] as MobileLocationPointRequest
-                    ApiResponse<Any>(code = 0, message = "ok", data = null)
+                "uploadMobileLocationsBatch" -> {
+                    val request = args!![0] as MobileLocationPointsUploadRequest
+                    requestSizes += request.points.size
+                    sink += request.points
+                    val items = request.points.mapIndexed { index, _ ->
+                        MobileIngestItemResult(
+                            clientItemKey = "row-$index",
+                            entityType = "location",
+                            outcome = "accepted",
+                            code = "accepted",
+                            message = "Accepted."
+                        )
+                    }
+                    ApiResponse<Any>(
+                        code = 0,
+                        message = "ok",
+                        data = MobileLocationPointsUploadResult(
+                            acceptedCount = items.size,
+                            skippedCount = 0,
+                            rejectedCount = 0,
+                            itemResults = items
+                        )
+                    )
                 }
                 "toString" -> "RecordingApiService"
                 "hashCode" -> System.identityHashCode(this)

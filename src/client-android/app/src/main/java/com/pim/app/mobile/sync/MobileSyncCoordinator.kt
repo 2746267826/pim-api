@@ -532,11 +532,19 @@ class MobileSyncCoordinator @Inject constructor(
         }
     }
 
+    /**
+     * 上传本地积压的定位点。
+     *
+     * 走**批量端点**并**循环到队列排空**（上限 [MAX_LOCATION_BATCHES_PER_RUN] 批，每批
+     * [LOCATION_UPLOAD_BATCH_LIMIT] 条）——断网/高频采集期间积压的点在恢复联网后的第一个
+     * 同步周期内追平，而不是每个 15 分钟周期只吃一批。出现可重试失败时停止本轮，
+     * 保持既有节奏由 WorkManager 重试。
+     */
     private suspend fun uploadQueuedLocations(
         current: MobileSyncState,
         attemptedAt: String
     ): MobileSyncState {
-        val updates = locationUploadCoordinator.uploadPending()
+        val updates = locationUploadCoordinator.uploadPendingUntilDrained()
         if (updates.syncedIds.isEmpty() && updates.failedIds.isEmpty()) {
             val idle = current.copy(
                 pendingQueueCount = pendingQueueCount(),

@@ -80,6 +80,8 @@ class MobileSyncPeriodicHeartbeatTest {
     ) { _, method, _ ->
         when (method.name) {
             "sendHeartbeat" -> ApiResponse<Any>(code = 0, message = "ok", data = null)
+            // 定位点批量补传：本测试队列为空时不会被调用；显式声明确保"意外调用"仍然可见。
+            "uploadMobileLocationsBatch" -> ApiResponse<Any>(code = 0, message = "ok", data = null)
             "toString" -> "StubApiService"
             "hashCode" -> System.identityHashCode(this)
             "equals" -> false

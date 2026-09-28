@@ -107,6 +107,16 @@ interface ApiService {
     @POST("mobile/location/points")
     suspend fun uploadMobileLocation(@Body request: MobileLocationPointRequest): ApiResponse<MobileLocationPointDto>
 
+    /**
+     * 批量补传通道（客户端积压时用）：一次请求上传多个定位点，逐条返回结果。
+     *
+     * 与单点端点共用同一套幂等语义（同一 设备+时刻+经纬度 只保留一行）。
+     */
+    @POST("mobile/location/points/batch")
+    suspend fun uploadMobileLocationsBatch(
+        @Body request: MobileLocationPointsUploadRequest
+    ): ApiResponse<MobileLocationPointsUploadResult>
+
     @GET("mobile/summary")
     suspend fun getMobileSummary(
         @Query("date") date: String? = null,
