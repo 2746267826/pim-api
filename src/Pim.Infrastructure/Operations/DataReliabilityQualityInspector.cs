@@ -346,14 +346,16 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
 
             switch (rule.Status)
             {
+                // 违规数只累加**窗内**违规（REQ-2 / AC-2.4）：历史欠账只计数、不参与总览口径，
+                // 否则 Stage0 巡检的指标与日志会把"修复前的旧账"当成当下的问题量。
                 case "red":
                     redCount++;
-                    totalIssues += Math.Max(1, rule.TotalViolations);
+                    totalIssues += Math.Max(1, rule.WindowViolations);
                     details[rule.Key] = $"🔴 FAIL: {rule.Detail}";
                     break;
                 case "yellow":
                     yellowCount++;
-                    totalIssues += Math.Max(1, rule.TotalViolations);
+                    totalIssues += Math.Max(1, rule.WindowViolations);
                     details[rule.Key] = $"🟡 WARN: {rule.Detail}";
                     break;
                 case "unknown":
