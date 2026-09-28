@@ -31,6 +31,12 @@ public class PlanningModelService
         "outlook-ics"
     };
 
+    /// <summary>
+    /// #351：归档态取值。必须与前端 <c>HabitsPage</c> 的过滤口径一致 ——
+    /// 它按 <c>status === 'archived'</c>（忽略大小写）区分「执行中」与「归档」页签。
+    /// </summary>
+    internal const string ArchivedHabitStatus = "Archived";
+
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly IOperationConfirmationService? _confirmationService;
@@ -124,12 +130,19 @@ public class PlanningModelService
 
         if (requestedLayers.Contains("habits"))
         {
+            // #351：归档习惯与已删除习惯一样不再是"活跃习惯"，其 occurrence 不得继续
+            // 出现在日历 habits 图层 —— 今日区块 calendar.habits 走的正是这条查询，
+            // 若不过滤，归档后今日区块仍会显示它。
+            // 比较用忽略大小写口径，与前端 HabitsPage 的 status.toLowerCase() === 'archived'
+            // 保持一致：只按大小写不同就漏过滤，会让界面与图层互相矛盾。
+            var archived = ArchivedHabitStatus.ToLowerInvariant();
             var occurrences = await _db.Set<HabitOccurrenceEntity>()
                 .AsNoTracking()
                 .Include(o => o.HabitRoutine)
                 .Where(o => o.UserId == userId
                     && o.StartsAt < query.End
-                    && o.EndsAt > query.Start)
+                    && o.EndsAt > query.Start
+                    && o.HabitRoutine.Status.ToLower() != archived)
                 .ToListAsync(ct);
 
             items.AddRange(occurrences
@@ -392,12 +405,13 @@ public class PlanningModelService
             .OrderBy(h => h.Title)
             .ToListAsync(ct);
 
-        return habits.Select(h => new HabitRoutineDto(
-            h.Id,
-            h.Title,
-            ParseCadence(h.Cadence),
-            h.Source,
-            h.Status)).ToList();
+        return habits.Select(ToHabitDto).ToList();
+    }
+
+    public async Task<HabitRoutineDto> GetHabitAsync(Guid habitId, CancellationToken ct = default)
+    {
+        var entity = await FindOwnHabitAsync(habitId, ct);
+        return ToHabitDto(entity);
     }
 
     public async Task<HabitRoutineDto> CreateHabitAsync(
@@ -422,8 +436,112 @@ public class PlanningModelService
 
         _db.Set<HabitRoutineEntity>().Add(entity);
         await _db.SaveChangesAsync(ct);
-        return new HabitRoutineDto(entity.Id, entity.Title, ParseCadence(entity.Cadence), entity.Source, entity.Status);
+        return ToHabitDto(entity);
     }
+
+    /// <summary>
+    /// #351：编辑习惯（标题 / 描述 / cadence 等）。
+    /// 只更新显式传入的字段 —— 未传的字段保持原值，避免调用方漏传就把长期习惯事实清空。
+    /// </summary>
+    public async Task<HabitRoutineDto> UpdateHabitAsync(
+        Guid habitId,
+        UpdateHabitRequest request,
+        CancellationToken ct = default)
+    {
+        var entity = await FindOwnHabitAsync(habitId, ct);
+
+        if (request.Title is not null)
+        {
+            ValidateRequired(request.Title, "Habit title", 255);
+            entity.Title = request.Title.Trim();
+        }
+
+        // 空串 = 显式清空（存 null）；null/未传 = 保持不变。
+        // 若把 null 也当清空，用户只改标题就会把描述静默抹掉（复审 Important）。
+        if (request.Description is not null)
+            entity.Description = string.IsNullOrWhiteSpace(request.Description)
+                ? null
+                : request.Description;
+
+        if (request.Cadence is not null)
+            entity.Cadence = NormalizeShort(request.Cadence, entity.Cadence);
+
+        if (request.Status is not null)
+            entity.Status = NormalizeShort(request.Status, entity.Status);
+
+        if (request.RuleJson is not null)
+            entity.RuleJson = string.IsNullOrWhiteSpace(request.RuleJson) ? "{}" : request.RuleJson;
+
+        entity.UpdatedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return ToHabitDto(entity);
+    }
+
+    /// <summary>
+    /// #351：归档习惯 —— 从活跃列表消失、出现在「归档」页签。
+    /// 与前端既有过滤逻辑对齐：前端按 <c>status == "archived"</c>（忽略大小写）分流。
+    /// 归档不删除数据，历史 occurrence 仍保留，可继续审计。
+    /// </summary>
+    public async Task<HabitRoutineDto> ArchiveHabitAsync(Guid habitId, CancellationToken ct = default)
+    {
+        var entity = await FindOwnHabitAsync(habitId, ct);
+        entity.Status = ArchivedHabitStatus;
+        entity.UpdatedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return ToHabitDto(entity);
+    }
+
+    /// <summary>
+    /// #351：删除习惯。遵循仓库既有软删除惯例（<c>deleted_at</c>）：
+    /// <list type="bullet">
+    ///   <item><description>习惯行保留可审计，但所有展示面（列表 / 日历 habits 图层 /
+    ///   今日区块走同一图层查询）都不再返回；</description></item>
+    ///   <item><description>其历史 occurrence 一并软删除，不产生孤儿数据。</description></item>
+    /// </list>
+    /// </summary>
+    public async Task DeleteHabitAsync(Guid habitId, CancellationToken ct = default)
+    {
+        var entity = await FindOwnHabitAsync(habitId, ct);
+        var now = DateTimeOffset.UtcNow;
+
+        // 先软删 occurrence：习惯一旦不可见，其 occurrence 也必须同步不可见，
+        // 否则日历 habits 图层仍会通过 occurrence → habit 关联把它们渲染出来（孤儿展示）。
+        var occurrences = await _db.Set<HabitOccurrenceEntity>()
+            .Where(o => o.HabitRoutineId == entity.Id && o.DeletedAt == null)
+            .ToListAsync(ct);
+        foreach (var occurrence in occurrences)
+        {
+            occurrence.DeletedAt = now;
+            occurrence.UpdatedAt = now;
+        }
+
+        entity.DeletedAt = now;
+        entity.UpdatedAt = now;
+        await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// 取当前用户自己的习惯；不存在、已删除或属于他人时一律抛「习惯不存在」——
+    /// #351：越权访问不得暴露"该 id 存在但不属于你"，因此不区分这两种情形。
+    /// </summary>
+    private async Task<HabitRoutineEntity> FindOwnHabitAsync(Guid habitId, CancellationToken ct)
+    {
+        var userId = UserId;
+        var entity = await _db.Set<HabitRoutineEntity>()
+            .FirstOrDefaultAsync(h => h.Id == habitId && h.UserId == userId, ct);
+        if (entity is null)
+            throw new DomainException(02030, "Habit does not exist");
+        return entity;
+    }
+
+    private static HabitRoutineDto ToHabitDto(HabitRoutineEntity entity)
+        => new(
+            entity.Id,
+            entity.Title,
+            ParseCadence(entity.Cadence),
+            entity.Source,
+            entity.Status,
+            entity.Description);
 
     public async Task<HabitOccurrenceDto> CreateHabitOccurrenceAsync(
         Guid habitId,
