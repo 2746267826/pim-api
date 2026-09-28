@@ -86,7 +86,9 @@ public class CalendarModule : IModule
             CancellationToken ct) =>
         {
             // timezone param is accepted for compatibility (issue #171 passes ?timezone=Asia/Shanghai) but ignored:
-            // start/end already carry offset (e.g. Z), and all stored times are UTC via ToUniversalTime().
+            // start/end carry their own offset — which is NOT necessarily UTC (#352: +08:00 used to 500).
+            // Any non-zero offset is normalized to UTC at the database boundary by
+            // UtcDateTimeOffsetParameterInterceptor, so the instant is preserved either way.
             _ = timezone;
             var requestedLayers = string.IsNullOrWhiteSpace(layers)
                 ? null

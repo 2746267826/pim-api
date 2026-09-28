@@ -29,7 +29,11 @@ public static class ServiceCollectionExtensions
         services.AddDbContext<PimDbContext>(options =>
             options.UseNpgsql(
                 configuration.GetConnectionString("DefaultConnection"),
-                npgsql => npgsql.EnableRetryOnFailure(3)));
+                npgsql => npgsql.EnableRetryOnFailure(3))
+            // #352：Npgsql 对 timestamptz 只接受 offset 0。在数据库边界统一归一化，
+            // 使「外部传入带偏移的时间参数 → 500」这类缺陷在结构上不可能再出现
+            // （#313 修在调用点、#352 又漏出六个端点，散点修复会持续漏）。
+            .AddInterceptors(new UtcDateTimeOffsetParameterInterceptor()));
         services.AddScoped<PimMigrationAdoptionService>();
         services.AddScoped<IAuditLogService, AuditLogService>();
         services.AddScoped<AuditVersionService>();
