@@ -33,10 +33,25 @@ public sealed class FileProviderBindingService(
             .ThenBy(provider => provider.Username)
             .ToListAsync(ct);
 
-        return providers.Select(MapProvider).ToList();
+        // #353：一次查询取回各 provider 的已索引总量（未删除），避免逐个 provider 再查一次。
+        var providerIds = providers.Select(provider => provider.Id).ToList();
+        var indexedTotals = providerIds.Count == 0
+            ? new Dictionary<Guid, long>()
+            : await _db.Set<FileItemEntity>()
+                .AsNoTracking()
+                .Where(item => providerIds.Contains(item.ProviderId) && !item.IsDeleted)
+                .GroupBy(item => item.ProviderId)
+                .Select(group => new { ProviderId = group.Key, Total = (long)group.Count() })
+                .ToDictionaryAsync(item => item.ProviderId, item => item.Total, ct);
+
+        return providers
+            .Select(provider => MapProvider(
+                provider,
+                indexedTotals.TryGetValue(provider.Id, out var total) ? total : 0))
+            .ToList();
     }
 
-    private static FileProviderDto MapProvider(FileProviderEntity provider)
+    private static FileProviderDto MapProvider(FileProviderEntity provider, long totalIndexedCount = 0)
         => new(
             provider.Id,
             provider.Provider,
@@ -55,5 +70,6 @@ public sealed class FileProviderBindingService(
             provider.SyncStatus,
             provider.SyncedItemCount,
             provider.DeltaResetAt,
-            provider.TokenExpiresAt);
+            provider.TokenExpiresAt,
+            totalIndexedCount);
 }
