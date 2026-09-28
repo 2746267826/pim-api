@@ -228,10 +228,6 @@ interface MobileDataDao {
         limit: Int = 20
     ): Flow<List<MobileLocationPolicyTransitionEntity>>
 
-    /** WO-ANDROID-POLICY-TRANSITION-20260928 REQ-5：30 天窗口内的条数（AC-5.4）。 */
-    @Query("SELECT COUNT(*) FROM mobile_location_policy_transitions WHERE occurred_at_utc >= :sinceUtc")
-    fun policyTransitionCountSince(sinceUtc: Long): Flow<Int>
-
     /** WO-ANDROID-POLICY-TRANSITION-20260928 REQ-4：最新一条切换记录（只取 1 条）。 */
     @Query("SELECT * FROM mobile_location_policy_transitions ORDER BY occurred_at_utc DESC, id DESC LIMIT 1")
     fun latestPolicyTransition(): Flow<MobileLocationPolicyTransitionEntity?>

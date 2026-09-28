@@ -99,7 +99,7 @@ class PolicyTransitionHistoryRepositoryTest {
         assertEquals(150L * 60_000L, currentPolicyDurationMillis(latest, now + 60 * 60_000L))
         // 无记录 → null（界面「未知」）。
         assertNull(currentPolicyDurationMillis(null, now))
-        // 设备时钟回拨时不得出现负数时长。
+        // 设备时钟回拨时收敛到 0（界面「不足 1 分钟」），不出现负数时长。
         assertEquals(0L, currentPolicyDurationMillis(latest, latest.occurredAtMillis - 1_000L))
     }
 

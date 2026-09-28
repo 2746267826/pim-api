@@ -291,7 +291,7 @@ class MobileDataDaoDiagnosticTest {
     }
 
     @Test
-    fun policyTransitionsSinceFiltersByWindowAndCountsIt() = runTest {
+    fun policyTransitionsSinceFiltersByWindow() = runTest {
         val day = 24L * 60L * 60L * 1000L
         val now = 1_756_684_800_000L
         val since = now - 30 * day
@@ -301,7 +301,6 @@ class MobileDataDaoDiagnosticTest {
 
         val rows = dao.policyTransitionsSince(since).first()
         assertEquals(listOf("窗口内新", "窗口内旧"), rows.map { it.reason })
-        assertEquals(2, dao.policyTransitionCountSince(since).first())
     }
 
     private fun batch(

@@ -4,7 +4,6 @@ import com.pim.app.data.MobileDataDao
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 
 /** REQ-5：30 天窗口内的一次快照——**行与分母来自同一个窗口起点**，不会自相矛盾（AC-5.4）。 */
@@ -28,9 +27,7 @@ interface PolicyTransitionHistorySource {
     fun observeLatest(): Flow<PolicyTransitionSnapshot?>
 
     /** REQ-5：30 天窗口内的记录（时间倒序）与窗口内条数。 */
-    fun observeWindow(
-        limit: Int = PolicyTransitionHistoryRepository.DEFAULT_WINDOW_LIMIT
-    ): Flow<PolicyTransitionWindow>
+    fun observeWindow(): Flow<PolicyTransitionWindow>
 }
 
 /**
@@ -54,19 +51,17 @@ class PolicyTransitionHistoryRepository internal constructor(
     override fun observeLatest(): Flow<PolicyTransitionSnapshot?> =
         dao.latestPolicyTransition().map { it?.toPolicyTransitionSnapshot() }
 
-    /** REQ-5：30 天窗口内的记录与条数——两条查询共用同一个窗口起点。 */
-    override fun observeWindow(limit: Int): Flow<PolicyTransitionWindow> {
-        val since = sinceUtc()
-        return combine(
-            dao.policyTransitionsSince(since, limit),
-            dao.policyTransitionCountSince(since)
-        ) { rows, count ->
-            PolicyTransitionWindow(
-                rows = rows.map { it.toPolicyTransitionSnapshot() },
-                totalInWindow = count
-            )
+    /**
+     * REQ-5：30 天窗口内的记录与条数。
+     *
+     * **一次查询同时给出行与分母**：板块默认只画 20 条是在界面层 `take(20)`，
+     * 因此「30 天内共 N 条」永远等于窗口内实际行数（AC-5.4），不会出现两条查询错帧。
+     */
+    override fun observeWindow(): Flow<PolicyTransitionWindow> =
+        dao.policyTransitionsSince(sinceUtc(), limit = Int.MAX_VALUE).map { rows ->
+            val snapshots = rows.map { it.toPolicyTransitionSnapshot() }
+            PolicyTransitionWindow(rows = snapshots, totalInWindow = snapshots.size)
         }
-    }
 
     private fun sinceUtc(): Long = nowMillis() - WINDOW_MILLIS
 
@@ -74,17 +69,14 @@ class PolicyTransitionHistoryRepository internal constructor(
         /** 30 天（与 `ForensicRetention.WINDOW_DAYS` 同窗，P4：固定值、不联动日志保留天数）。 */
         const val WINDOW_DAYS = 30L
         const val WINDOW_MILLIS = WINDOW_DAYS * 24L * 60L * 60L * 1000L
-
-        /** 默认窗口查询条数上限：板块默认 20 条 + 「展开全部」需要拿到全部。 */
-        const val DEFAULT_WINDOW_LIMIT = Int.MAX_VALUE
     }
 }
 
 /**
  * REQ-4（D-2 / P5）：「当前状态」的已持续时长 = 快照时刻 − 库中最新一条切换记录时间。
  *
- * 无记录（或时间在未来，例如设备时钟回拨）时返回 null → 界面显示「未知」。
- * 纯函数，便于逐档验收（AC-4.2）。
+ * 无记录时返回 null → 界面显示「未知」；设备时钟回拨（记录时间在未来）时收敛到 0
+ * （界面显示「不足 1 分钟」），不显示负数时长。纯函数，便于逐档验收（AC-4.2）。
  */
 internal fun currentPolicyDurationMillis(
     latest: PolicyTransitionSnapshot?,
