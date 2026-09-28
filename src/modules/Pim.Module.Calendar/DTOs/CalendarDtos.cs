@@ -357,6 +357,18 @@ public record CreateHabitRequest(
     string? RuleJson = null
 );
 
+/// <summary>
+/// #351：编辑习惯。所有字段可选，**只更新显式传入的字段**（PATCH 语义）——
+/// 未传的字段保持原值，避免调用方漏传就静默清空长期习惯事实。
+/// </summary>
+public record UpdateHabitRequest(
+    [MaxLength(255)] string? Title = null,
+    string? Description = null,
+    [MaxLength(40)] string? Cadence = null,
+    [MaxLength(40)] string? Status = null,
+    string? RuleJson = null
+);
+
 public record CreateHabitOccurrenceRequest(
     DateTimeOffset StartsAt,
     DateTimeOffset EndsAt,

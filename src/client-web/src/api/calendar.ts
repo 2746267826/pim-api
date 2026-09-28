@@ -49,6 +49,7 @@ import type {
   TaskExecutionSegmentResponse,
   TaskResponse,
   UnifiedEventDraft,
+  UpdateHabitRequest,
   UpdateOutlookSettingsRequest,
 } from '../types';
 
@@ -183,6 +184,12 @@ export const calendarApiPaths = {
   },
   habits() {
     return '/calendar/habits';
+  },
+  habit(id: string) {
+    return `/calendar/habits/${encodeURIComponent(id)}`;
+  },
+  habitArchive(id: string) {
+    return `/calendar/habits/${encodeURIComponent(id)}/archive`;
   },
   reminders() {
     return '/calendar/reminders';
@@ -588,6 +595,24 @@ export async function getHabits() {
 
 export async function createHabit(data: CreateHabitRequest) {
   const r = await apiPost<ApiResponse<HabitRoutine>>(calendarApiPaths.habits(), data);
+  return r.data;
+}
+
+/** #351：编辑习惯。只传需要修改的字段（后端按部分更新语义处理）。 */
+export async function updateHabit(id: string, data: UpdateHabitRequest) {
+  const r = await apiPut<ApiResponse<HabitRoutine>>(calendarApiPaths.habit(id), data);
+  return r.data;
+}
+
+/** #351：归档习惯（从活跃列表与日历图层消失，进入「归档」页签）。 */
+export async function archiveHabit(id: string) {
+  const r = await apiPost<ApiResponse<HabitRoutine>>(calendarApiPaths.habitArchive(id), {});
+  return r.data;
+}
+
+/** #351：删除习惯（软删除；其历史 occurrence 一并隐藏）。 */
+export async function deleteHabit(id: string) {
+  const r = await apiDelete<ApiResponse<{ id: string }>>(calendarApiPaths.habit(id));
   return r.data;
 }
 

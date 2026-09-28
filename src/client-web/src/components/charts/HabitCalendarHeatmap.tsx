@@ -1,11 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getHabits } from '../../api/calendar';
-
-function cadenceLabel(cadence: string) {
-  const map: Record<string, string> = { Daily: '每日', Weekly: '每周', Monthly: '每月' };
-  return map[cadence] ?? cadence;
-}
+import { habitCadenceLabel, isArchivedHabit } from '../schedule/habitCadence';
 
 /**
  * 习惯卡（今日页 / 展览馆共用）。
@@ -18,10 +14,15 @@ function cadenceLabel(cadence: string) {
  * 只有创建打卡 POST /habits/{id}/occurrences，没有查询端点）后再接入。
  */
 export default function HabitCalendarHeatmap() {
-  const { data: habits = [], isLoading } = useQuery({
+  const { data: allHabits = [], isLoading } = useQuery({
     queryKey: ['exhibition-habits'],
     queryFn: getHabits,
   });
+
+  // #351：归档习惯不再是"活跃习惯"，与日历图层/今日区块口径一致 ——
+  // 此处若不过滤，归档后"今日"页的习惯卡仍会列出该习惯，与官方
+  // calendar.habits 区块（已过滤）自相矛盾。
+  const habits = allHabits.filter(habit => !isArchivedHabit(habit));
 
   return (
     <section className="pim-card min-w-0 p-4">
@@ -56,7 +57,7 @@ export default function HabitCalendarHeatmap() {
                 className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2"
               >
                 <span className="truncate text-sm text-slate-800">{habit.title}</span>
-                <span className="shrink-0 text-[11px] text-slate-400">{cadenceLabel(habit.cadence)}</span>
+                <span className="shrink-0 text-[11px] text-slate-400">{habitCadenceLabel(habit.cadence)}</span>
               </li>
             ))}
           </ul>
