@@ -73,6 +73,17 @@ assertContains(pagePath, [
 assertContains(settingsPath, ["to: '/settings/data-reliability'", '数据可信度']);
 assertContains(layoutPath, ['/settings/data-reliability', 'DataReliabilityPage']);
 
+// 旧术语退役（AC-7.6 的源码侧守卫）：data-reliability 组件与页面里不得再出现「新增 / 存量」。
+for (const path of [pagePath, panelPath, rowPath, dialogPath, distributionPath]) {
+  const source = read(path);
+  assert.ok(!source.includes('存量'), `${path} 不得再出现「存量」`);
+  assert.ok(
+    !/新增/.test(source),
+    `${path} 不得再出现「新增」（历史欠账 / 窗内 才是现行术语）`
+  );
+}
+assert.ok(!read(overviewPath).includes('存量'), `${overviewPath} 不得再出现「存量」`);
+
 // 页面默认不触发全量扫库：查询只读缓存结果，全量体检必须挂在显式的 mutation 上
 const pageCode = readCode(pagePath);
 assert.ok(

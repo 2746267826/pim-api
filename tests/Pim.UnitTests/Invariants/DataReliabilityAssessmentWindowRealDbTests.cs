@@ -118,6 +118,13 @@ public class DataReliabilityAssessmentWindowRealDbTests
             wideS1.HistoricalViolations < narrowS1.HistoricalViolations,
             $"S1 的欠账应随考核窗变长而减少：24h {narrowS1.HistoricalViolations} vs 168h {wideS1.HistoricalViolations}");
 
+        // ---- AC-6.4：S3 必须给出取数实际覆盖到的业务日数（不足时如实标注截断，不得静默）----
+        var wideS3 = wide.Rules.Single(rule => rule.Code == "S3");
+        Assert.NotNull(wideS3.ScanCoveredDays);
+        Assert.InRange(wideS3.ScanCoveredDays!.Value, 1, 8);
+        _output.WriteLine(
+            $"S3 取数覆盖 {wideS3.ScanCoveredDays} 个业务日（考核窗 7 天；命中上限={wideS3.ScanTruncated}）");
+
         // ---- AC-5.5：S9 覆盖率窗口保持 24h，不被考核窗联动 ----
         Assert.Single(wide.Rules, rule => rule.Code == "S9");
 
@@ -145,6 +152,45 @@ public class DataReliabilityAssessmentWindowRealDbTests
         Assert.True(
             justRestarted.HistoricalViolations > 0,
             "刚重启后，修复前的历史违规必须全部进历史欠账（只计数）");
+
+        // ---- AC-7.3 / AC-4.2：下钻导出的违规项必须带分档列，且 S4 / S5 / S11 可见 ----
+        await AssertExportCarriesSplitMarkerAsync(connectionString);
+    }
+
+    /// <summary>导出（GET /rules/{code}/violations）：每条项都必须带 `isNew` 分档标记。</summary>
+    private async Task AssertExportCarriesSplitMarkerAsync(string connectionString)
+    {
+        using var factory = CreateFactory(connectionString, assessmentWindowHours: 168, processStartedAgo: TimeSpan.FromHours(1));
+        var anonymous = factory.CreateClient();
+        var token = await RegisterThrowawayUserAsync(anonymous);
+
+        using var user = factory.CreateClient();
+        user.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        foreach (var code in new[] { "S1", "S4", "S5", "S11" })
+        {
+            var response = await user.GetAsync($"/api/v1/data-reliability/rules/{code}/violations?limit=2000");
+            response.EnsureSuccessStatusCode();
+
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var items = document.RootElement.GetProperty("data").GetProperty("items");
+            var count = items.GetArrayLength();
+            _output.WriteLine($"{code} 导出 {count} 条违规项");
+
+            if (code == "S5")
+            {
+                // S5 在这份镜像数据上可能没有违规，此时没有可断言的条目。
+                continue;
+            }
+
+            Assert.True(count > 0, $"{code} 在镜像库上应有可导出的违规项");
+            foreach (var item in items.EnumerateArray())
+            {
+                Assert.True(
+                    item.TryGetProperty("isNew", out var isNew) && (isNew.ValueKind is JsonValueKind.True or JsonValueKind.False),
+                    $"{code} 导出的违规项缺少分档标记 isNew");
+            }
+        }
     }
 
     /// <summary>把体检报告的关键读数打到测试输出，作为可复核的原始输出。</summary>
@@ -158,7 +204,9 @@ public class DataReliabilityAssessmentWindowRealDbTests
         foreach (var rule in snapshot.Rules)
         {
             _output.WriteLine(
-                $"  {rule.Code,-4} {rule.Status,-7} 窗内 {rule.WindowViolations,5} 欠账 {rule.HistoricalViolations,6} 合计 {rule.TotalViolations,6}");
+                $"  {rule.Code,-4} {rule.Status,-7} 窗内 {rule.WindowViolations,5} 欠账 {rule.HistoricalViolations,6} 合计 {rule.TotalViolations,6}"
+                + (rule.ScanCoveredDays is { } days ? $" 覆盖 {days} 个业务日" : string.Empty)
+                + (rule.ScanTruncated ? " [已达取数上限]" : string.Empty));
 
             if (rule.Status == "unknown")
             {
@@ -173,7 +221,9 @@ public class DataReliabilityAssessmentWindowRealDbTests
         int WindowViolations,
         int HistoricalViolations,
         int TotalViolations,
-        string Detail);
+        string Detail,
+        int? ScanCoveredDays,
+        bool ScanTruncated);
 
     private sealed record InspectionSnapshot(
         string Status,
@@ -217,7 +267,11 @@ public class DataReliabilityAssessmentWindowRealDbTests
                 rule.GetProperty("windowViolations").GetInt32(),
                 rule.GetProperty("historicalViolations").GetInt32(),
                 rule.GetProperty("totalViolations").GetInt32(),
-                rule.GetProperty("detail").GetString() ?? string.Empty))
+                rule.GetProperty("detail").GetString() ?? string.Empty,
+                rule.TryGetProperty("scanCoveredDays", out var covered) && covered.ValueKind == JsonValueKind.Number
+                    ? covered.GetInt32()
+                    : null,
+                rule.TryGetProperty("scanTruncated", out var truncated) && truncated.ValueKind == JsonValueKind.True))
             .ToList();
 
         return new InspectionSnapshot(

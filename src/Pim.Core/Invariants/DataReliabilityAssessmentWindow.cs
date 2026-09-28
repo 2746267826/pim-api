@@ -45,6 +45,14 @@ public static class DataReliabilityAssessmentWindow
             return rollingStartUtc;
         }
 
+        // 进程启动时刻落在未来 = 时钟被回拨或注入值错误。此时若照单全收，考核线会晚于体检时刻，
+        // 窗内永远为空 → 所有违规都被折成"历史欠账"、整块面板变绿（静默假绿灯）。
+        // 这种不可信输入一律回退到滚动窗：宁可照常判色，也不亮假绿。
+        if (processStartedAt > inspectionTimeUtc)
+        {
+            return rollingStartUtc;
+        }
+
         // 取较晚者：不得取较早者（否则"重启后旧违规仍算窗内"，AC-1.4）。
         return processStartedAt > rollingStartUtc ? processStartedAt : rollingStartUtc;
     }

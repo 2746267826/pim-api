@@ -96,6 +96,22 @@ public class DataReliabilityAssessmentWindowTests
         Assert.Equal(processStart > rollingStart ? processStart : rollingStart, line);
     }
 
+    /// <summary>
+    /// 反面（防静默假绿）：进程启动时刻落在未来（时钟回拨 / 注入值错误）时不得把考核线推到体检时刻之后
+    /// —— 那会让窗内永远为空、所有违规都被折成"历史欠账"，整块面板变绿。
+    /// </summary>
+    [Fact]
+    public void AssessmentLine_FutureProcessStart_FallsBackToRollingWindow()
+    {
+        var line = DataReliabilityAssessmentWindow.ResolveAssessmentStartUtc(
+            InspectionTimeUtc,
+            assessmentWindowHours: 168,
+            processStartedAtUtc: InspectionTimeUtc.AddHours(3));
+
+        Assert.Equal(InspectionTimeUtc.AddDays(-7), line);
+        Assert.True(line <= InspectionTimeUtc, "考核线不得晚于体检时刻");
+    }
+
     /// <summary>AC-1.6：未注入进程启动时刻 → 回退纯滚动窗（体检时刻 − 考核窗时长）。</summary>
     [Fact]
     public void AssessmentLine_NoProcessStart_FallsBackToRollingWindow()
@@ -279,6 +295,70 @@ public class DataReliabilityAssessmentWindowTests
         var s5 = report.Rules.Single(rule => rule.Code == "S5");
         Assert.Contains("表中无事件记录", s5.Detail, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// AC-6.2：跨考核线的业务日按"窗内行聚合"。
+    ///
+    /// <para>
+    /// 组合口径的两半在这里各有归属：**取数侧**只把 `timestamp &gt;= 考核线` 的行交给聚合
+    /// （由 <see cref="Inspector_FetchLowerBounds_FollowAssessmentLine_NotCoverageWindow"/> 的 SQL 断言钉住），
+    /// **聚合侧**按业务日分桶、不会去重建窗外的那些行。本用例钉住后半段：
+    /// 同一个业务日只剩窗内那部分行时，聚合结果就等于窗内那部分时长，而不是整天时长。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void S3_BusinessDaySpanningAssessmentLine_AggregatesWindowRowsOnly()
+    {
+        var assessmentStart = InspectionTimeUtc.AddDays(-7);
+        var businessDate = "2026-09-21";
+
+        // 同一业务日：考核线之前 2 行（每行 1h，共 2h），考核线之后 1 行（0.5h）。
+        var allRowsOfTheDay = new List<RawActivityEvent>
+        {
+            Raw(days: -8, hours: 0, seconds: 3600, businessDate),
+            Raw(days: -8, hours: 2, seconds: 3600, businessDate),
+            Raw(days: -6, hours: 0, seconds: 1800, businessDate)
+        };
+
+        // 取数侧只交出窗内行（AC-6.1 的 SQL 过滤）。
+        var windowRows = allRowsOfTheDay.Where(row => row.Timestamp >= assessmentStart).ToList();
+        Assert.Single(windowRows);
+
+        var daily = DataReliabilityInvariants.AggregateDailyActiveDurations(windowRows);
+
+        var day = Assert.Single(daily);
+        Assert.Equal(businessDate, day.Date);
+        Assert.Equal(1800, day.ActiveDurationSeconds, precision: 0);
+
+        // 反面：整窗外的行不能被"脑补"回来（否则跨线业务日会被算成整天、把单日时长虚高）。
+        Assert.NotEqual(7200, day.ActiveDurationSeconds);
+    }
+
+    /// <summary>AC-6.4：取数覆盖天数必须如实给出，不等于考核窗天数时不得静默。</summary>
+    [Fact]
+    public async Task Inspector_S3ReportsMeasuredCoveredDays()
+    {
+        var conn = new RecordingDbConnection();
+        var inspector = CreateInspector(conn, new InvariantOptions { AssessmentWindowHours = 168.0 });
+
+        var report = await inspector.InspectReportAsync(InspectionTime);
+
+        // 空库（桩不返回任何行）时 S3 诚实报"无活跃事件"，不会伪造覆盖天数。
+        var s3 = report.Rules.Single(rule => rule.Code == "S3");
+        Assert.Equal("unknown", s3.Status);
+        Assert.Null(s3.ScanCoveredDays);
+    }
+
+    /// <summary>构造一行活跃事件（相对体检时刻 days/hours 之前）。</summary>
+    private static RawActivityEvent Raw(int days, int hours, double seconds, string businessDate) => new()
+    {
+        DeviceId = "PC-1",
+        BusinessDate = businessDate,
+        Timestamp = InspectionTimeUtc.AddDays(days).AddHours(hours),
+        DurationSeconds = seconds,
+        EventType = "window",
+        InputDensityPerMinute = 30
+    };
 
     #region 进程启动时刻：重启即重置账本，且不落库
 
