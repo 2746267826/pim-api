@@ -325,6 +325,40 @@ public class DataReliabilityOnlyDebtTests
 
     #endregion
 
+    #region AC-4.2：S4 / S5 / S11 的违规项必须带分档标记
+
+    /// <summary>
+    /// AC-4.2（反面 AC-4.3）：违规项的分档标记此前只有 S1/S2/S6/S7/S13 有；
+    /// S4 / S5 / S11 必须补齐，否则下钻与导出无法区分窗内 / 欠账。
+    /// </summary>
+    [Theory]
+    [InlineData("S4-window")]
+    [InlineData("S4-debt")]
+    [InlineData("S5-window")]
+    [InlineData("S5-debt")]
+    [InlineData("S11-window")]
+    [InlineData("S11-debt")]
+    public void S4S5S11_Violations_CarrySplitMarker(string scenario)
+    {
+        var wantsWindow = scenario.EndsWith("-window", StringComparison.Ordinal);
+        var at = wantsWindow ? WindowTimeUtc : DebtTimeUtc;
+        var expectedMarker = wantsWindow ? "true" : "false";
+
+        var result = scenario.Split('-')[0] switch
+        {
+            "S4" => DataReliabilityInvariants.CheckS4_BusinessKeyUnique(S4Duplicates(at), referenceTimeUtc: NowUtc),
+            "S5" => DataReliabilityInvariants.CheckS5_ClockTrustworthy(S5Skew(at), referenceTimeUtc: NowUtc),
+            _ => DataReliabilityInvariants.CheckS11_StatusSemantics(S11InconsistentBatch(at), referenceTimeUtc: NowUtc)
+        };
+
+        var violation = Assert.Single(result.Violations);
+        Assert.True(violation.Fields.ContainsKey("isNew"), $"{scenario} 的违规项缺少分档标记 isNew");
+        Assert.Equal(expectedMarker, violation.Fields["isNew"]);
+        Assert.Contains(wantsWindow ? "窗内" : "历史欠账", Assert.Single(result.Samples), StringComparison.Ordinal);
+    }
+
+    #endregion
+
     #region REQ-7 / AC-7.6：分档文案不再出现"新增 / 存量"
 
     [Fact]
