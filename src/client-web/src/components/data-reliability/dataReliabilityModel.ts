@@ -121,7 +121,10 @@ export function formatCurrentValue(rule: DataReliabilityRuleReport): string {
   return `${rule.currentValue}${unit}`;
 }
 
-/** 存量趋势文案（#260 要求"存量需给出趋势，便于判断修复是否起作用"）。 */
+/**
+ * 历史欠账趋势文案（#260 要求"给出趋势，便于判断修复是否起作用"）。
+ * D5：本轮不改口径，仍对**欠账数**环比；重启后无基线 → 暂无对比基线。
+ */
 export function describeTrend(rule: DataReliabilityRuleReport): string {
   const baseline = rule.trendBaselineUtc
     ? `较 ${formatDateTime(rule.trendBaselineUtc)} 的体检`
@@ -130,14 +133,45 @@ export function describeTrend(rule: DataReliabilityRuleReport): string {
 
   switch (rule.trend) {
     case 'decreasing':
-      return `存量${baseline}减少 ${Math.abs(delta)} 条（存量修复有效）`;
+      return `历史欠账${baseline}减少 ${Math.abs(delta)} 条（历史欠账在消化）`;
     case 'increasing':
-      return `存量${baseline}增加 ${Math.abs(delta)} 条（存量在增长）`;
+      return `历史欠账${baseline}增加 ${Math.abs(delta)} 条（历史欠账在增长）`;
     case 'flat':
-      return `存量${baseline}持平（${rule.historicalViolations} 条）`;
+      return `历史欠账${baseline}持平（${rule.historicalViolations} 条）`;
     default:
-      return `暂无对比基线（存量 ${rule.historicalViolations} 条）`;
+      return `暂无对比基线（历史欠账 ${rule.historicalViolations} 条）`;
   }
+}
+
+/** 考核窗时长的人话（168 → "最近 7 天"）；非整天数按小时显示。 */
+export function formatAssessmentWindow(hours: number | null | undefined): string {
+  if (!Number.isFinite(hours) || (hours ?? 0) <= 0) return '未配置';
+  const value = hours as number;
+  if (value % 24 === 0) return `最近 ${value / 24} 天`;
+  return `最近 ${value} 小时`;
+}
+
+/** `<YYYY-MM-DD HH:mm>`（浏览器本地时区，与面板上其它时间显示一致）。 */
+export function formatLedgerTimestamp(value: string | null | undefined): string {
+  if (!value) return '未知';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  );
+}
+
+/**
+ * 面板头部的账本信息行（逐字规格见工单 §五）：
+ * `考核账本自 <YYYY-MM-DD HH:mm> 起（容器更新/重启后自动重置）｜ 考核窗：最近 7 天`
+ */
+export function buildLedgerLine(report: DataReliabilityInspectionReport): string {
+  return (
+    `考核账本自 ${formatLedgerTimestamp(report.assessmentStartUtc)} 起（容器更新/重启后自动重置）` +
+    `｜ 考核窗：${formatAssessmentWindow(report.assessmentWindowHours)}`
+  );
 }
 
 export interface ThreeStateBucket {

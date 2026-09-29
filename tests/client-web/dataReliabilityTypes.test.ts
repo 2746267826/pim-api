@@ -26,7 +26,7 @@ const rule: DataReliabilityRuleReport = {
   rationale: '同一时刻不可能有两个互斥状态',
   relatedIssues: [249],
   totalViolations: 12,
-  newViolations: 3,
+  windowViolations: 3,
   historicalViolations: 9,
   earliestOccurrenceUtc: '2026-09-01T00:00:00+00:00',
   latestOccurrenceUtc: null,
@@ -39,6 +39,7 @@ const rule: DataReliabilityRuleReport = {
   trendBaselineUtc: '2026-09-10T00:00:00+00:00',
   threeState: null,
   scanTruncated: false,
+  scanCoveredDays: null,
 };
 
 const report: DataReliabilityInspectionReport = {
@@ -51,11 +52,13 @@ const report: DataReliabilityInspectionReport = {
   greenCount: 12,
   unknownCount: 0,
   totalViolations: 12,
-  newViolations: 3,
+  windowViolations: 3,
   historicalViolations: 9,
   notices: {},
   rules: [rule],
   message: '体检完成',
+  assessmentStartUtc: '2026-09-07T10:00:00+00:00',
+  assessmentWindowHours: 168,
 };
 
 const exportPayload: DataReliabilityViolationExport = {
@@ -70,6 +73,7 @@ const exportPayload: DataReliabilityViolationExport = {
       deviceId: 'DESKTOP-ARJ75IN',
       occurredAtUtc: '2026-09-14T01:00:00+00:00',
       fields: { eventType: 'window' },
+      isNew: true,
     },
   ],
 };
@@ -82,6 +86,15 @@ if (exportPayload.items[0].fields.eventType !== 'window') {
 }
 if (rule.threeState !== null || rule.trendDelta !== -4) {
   throw new Error('nullable rule fields mismatch');
+}
+if (rule.windowViolations + rule.historicalViolations !== rule.totalViolations) {
+  throw new Error('分档计数必须满足「窗内 + 历史欠账 = 总数」');
+}
+if (report.assessmentWindowHours !== 168 || !report.assessmentStartUtc) {
+  throw new Error('考核账本起点与考核窗时长必须在报告契约里');
+}
+if (exportPayload.items[0].isNew !== true) {
+  throw new Error('导出项必须带分档标记 isNew');
 }
 
 console.error('PASS: dataReliabilityTypes');

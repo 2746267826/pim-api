@@ -124,30 +124,74 @@ public class DataReliabilityDeviceVerdictTests
         Assert.Equal(20, result.TotalViolations);
     }
 
+    /// <summary>
+    /// 回归防线（#254）：**阈值型**告警（例如覆盖率的黄线）不得因为"没有设备报红"被折成绿灯。
+    ///
+    /// <para>
+    /// WO-RELIABILITY-WINDOW-20260928 之后，逐设备判定的"仅历史欠账"已经不再是 Warning 而是绿
+    /// （见 <see cref="DeviceLevelOnlyDebt_IsNotFoldedIntoYellow"/>），因此这里改用阈值型告警
+    /// （窗内计数 &gt; 0 的 Warning）来守同一条回归线。
+    /// </para>
+    /// </summary>
     [Fact]
-    public void DeviceLevelWarning_IsNotFoldedIntoPass()
+    public void DeviceLevelThresholdWarning_IsNotFoldedIntoPass()
     {
-        // 回归防线（#254 S6）：逐设备判定在"仅有存量违规"时返回 Warning（生产路径是
-        // InvariantResult.Failure(..., isWarning: true)，因此带得住真实违规计数）。
-        // 合并时若不看 Warning，整条尺子会被折成绿灯 —— 面板显示"全绿"而实际存在存量欠账。
         var warning = InvariantResult.Failure(
-            "INV-P20 WARN: 设备 dev-a 检测到 29 处存量违规",
-            29,
+            "INV-C20 WARN: 设备 dev-a 覆盖率跌破黄线",
+            1,
+            1,
             0,
-            29,
-            new[] { "Device=dev-a: 29 处无声明空档" },
+            new[] { "Device=dev-a: Coverage=97.0%" },
             isWarning: true);
 
         var result = DataReliabilityInvariants.CombineDeviceVerdicts(
-            "INV-P20",
+            "INV-C20",
             new[] { Pass(), warning });
 
         Assert.Equal(InvariantStatus.Warning, result.Status);
         Assert.True(result.IsWarning);
         Assert.False(result.IsFail);
-        Assert.Equal(0, result.NewViolations);
-        Assert.Equal(29, result.TotalViolations);
+        Assert.Equal(1, result.WindowViolations);
+        Assert.Equal(1, result.TotalViolations);
+    }
+
+    /// <summary>
+    /// WO-RELIABILITY-WINDOW-20260928 AC-3.5：逐设备"仅历史欠账"（窗内 0 违规）合并后必须是**绿**，
+    /// 不得合成黄或未知；欠账数字照常累加、可下钻。
+    /// </summary>
+    [Fact]
+    public void DeviceLevelOnlyDebt_IsNotFoldedIntoYellow()
+    {
+        var debtA = InvariantResult.Success(
+            "INV-P20 PASS: 窗内无声明空档（历史欠账 20 处，只计数）",
+            null,
+            false,
+            totalViolations: 20,
+            historicalViolations: 20,
+            samples: new[] { "Device=dev-a: 20 处无声明空档 [历史欠账]" },
+            violations: new[]
+            {
+                new InvariantViolation("dev-a:1", "dev-a", new DateTime(2026, 9, 18, 0, 0, 0, DateTimeKind.Utc), new Dictionary<string, string> { ["isNew"] = "false" })
+            });
+
+        var debtB = InvariantResult.Success(
+            "INV-P20 PASS: 窗内无声明空档（历史欠账 9 处，只计数）",
+            null,
+            false,
+            totalViolations: 9,
+            historicalViolations: 9,
+            samples: new[] { "Device=dev-b: 9 处无声明空档 [历史欠账]" });
+
+        var result = DataReliabilityInvariants.CombineDeviceVerdicts("INV-P20", new[] { Pass(), debtA, debtB });
+
+        Assert.Equal(InvariantStatus.Pass, result.Status);
+        Assert.False(result.IsWarning);
+        Assert.False(result.IsFail);
+        Assert.False(result.IsUnknown);
+        Assert.Equal(0, result.WindowViolations);
         Assert.Equal(29, result.HistoricalViolations);
+        Assert.Equal(29, result.TotalViolations);
+        Assert.NotEmpty(result.Violations);
     }
 
     [Fact]
@@ -162,7 +206,10 @@ public class DataReliabilityDeviceVerdictTests
 
         Assert.Equal(InvariantStatus.Fail, result.Status);
         Assert.False(result.IsWarning);
-        Assert.Equal(2, result.TotalViolations);
+        // 总数 = 窗内 2 + 其它设备的历史欠账 5：欠账不得因为"另一台设备报红"就从数字里消失。
+        Assert.Equal(2, result.WindowViolations);
+        Assert.Equal(5, result.HistoricalViolations);
+        Assert.Equal(7, result.TotalViolations);
     }
 
     [Fact]

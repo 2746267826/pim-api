@@ -35,7 +35,7 @@ public class DataReliabilityGroupTwoTests
             Declarations = new List<OfflineDeclaration>() // 无下线声明
         };
 
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -69,7 +69,7 @@ public class DataReliabilityGroupTwoTests
             }
         };
 
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -97,7 +97,7 @@ public class DataReliabilityGroupTwoTests
             UploadLagSamples = lagSamples
         };
 
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.False(result.Pass);
         Assert.Contains("上传滞后 p99", result.Detail);
@@ -122,7 +122,7 @@ public class DataReliabilityGroupTwoTests
             Declarations = new List<OfflineDeclaration>()
         };
 
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -143,7 +143,7 @@ public class DataReliabilityGroupTwoTests
             Declarations = new List<OfflineDeclaration>()
         };
 
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -174,7 +174,7 @@ public class DataReliabilityGroupTwoTests
             UploadLagSamples = samples
         };
 
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -201,7 +201,7 @@ public class DataReliabilityGroupTwoTests
             UploadLagSamples = samples
         };
 
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.False(result.Pass);
         Assert.Contains("上传滞后 p99", result.Detail);
@@ -230,7 +230,7 @@ public class DataReliabilityGroupTwoTests
             }
         };
 
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -255,7 +255,7 @@ public class DataReliabilityGroupTwoTests
             }
         };
 
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -280,16 +280,17 @@ public class DataReliabilityGroupTwoTests
             }
         };
 
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
     }
 
     [Fact]
-    public void S6_OnlyHistoricalViolations_DowngradesToWarning()
+    public void S6_OnlyHistoricalViolations_StaysGreenWithDebtCount()
     {
-        // 空档全部发生在 24h 窗口之外 -> 只计数、降级为黄线（T4 分档）
+        // WO-RELIABILITY-WINDOW-20260928 AC-3.5：空档全部落在考核线之前 -> **绿 + 历史欠账计数**。
+        // 旧口径在这里降级为"仅存量 → 黄"，已被取消（历史欠账只计数、不参与颜色）。
         var now = new DateTime(2026, 7, 20, 10, 0, 0, DateTimeKind.Utc);
         var trace = new DeviceActivityTrace
         {
@@ -304,10 +305,13 @@ public class DataReliabilityGroupTwoTests
 
         var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: now);
 
-        Assert.True(result.IsWarning);
+        Assert.Equal(InvariantStatus.Pass, result.Status);
         Assert.False(result.IsFail);
-        Assert.Equal(0, result.NewViolations);
+        Assert.False(result.IsWarning);
+        Assert.Equal(0, result.WindowViolations);
         Assert.True(result.HistoricalViolations > 0);
+        Assert.Equal(result.HistoricalViolations, result.TotalViolations);
+        Assert.NotEmpty(result.Violations);
     }
 
     [Fact]
@@ -328,7 +332,7 @@ public class DataReliabilityGroupTwoTests
         var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: _baseUtc.AddHours(3));
 
         Assert.True(result.IsFail);
-        Assert.True(result.NewViolations > 0);
+        Assert.True(result.WindowViolations > 0);
         Assert.Equal(0, result.HistoricalViolations);
     }
 
@@ -344,7 +348,7 @@ public class DataReliabilityGroupTwoTests
             new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(50), EndTime = _baseUtc.AddMinutes(80), IsGap = false }
         };
 
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -362,7 +366,7 @@ public class DataReliabilityGroupTwoTests
             new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(50), EndTime = _baseUtc.AddMinutes(80), IsGap = false }
         };
 
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -378,7 +382,7 @@ public class DataReliabilityGroupTwoTests
             new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(40), EndTime = _baseUtc.AddMinutes(60), IsGap = false }
         };
 
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.True(result.Pass);
     }
@@ -396,7 +400,7 @@ public class DataReliabilityGroupTwoTests
             new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddHours(1).AddMinutes(30), EndTime = _baseUtc.AddHours(2), EventType = "window" }
         };
 
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -413,7 +417,7 @@ public class DataReliabilityGroupTwoTests
             new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddHours(1), EndTime = _baseUtc.AddHours(1).AddMinutes(10), EventType = "window" }
         };
 
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -430,7 +434,7 @@ public class DataReliabilityGroupTwoTests
             new() { DeviceId = "DEV-2", StartTime = _baseUtc.AddMinutes(10), EndTime = _baseUtc.AddHours(1), IsGap = true, EventType = "gap" }
         };
 
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -456,7 +460,7 @@ public class DataReliabilityGroupTwoTests
             new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(40), EndTime = _baseUtc.AddMinutes(50), EventType = "window" }
         };
 
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -480,7 +484,7 @@ public class DataReliabilityGroupTwoTests
             new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(40), EndTime = _baseUtc.AddMinutes(50), EventType = "window" }
         };
 
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -498,7 +502,7 @@ public class DataReliabilityGroupTwoTests
             new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(50), EndTime = _baseUtc.AddMinutes(60), EventType = "window" }
         };
 
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.True(result.Pass);
         Assert.Equal(0, result.TotalViolations);
@@ -527,7 +531,7 @@ public class DataReliabilityGroupTwoTests
             new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(40), EndTime = _baseUtc.AddMinutes(50), EventType = "window" }
         };
 
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: _baseUtc.AddDays(1));
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
@@ -536,8 +540,9 @@ public class DataReliabilityGroupTwoTests
     }
 
     [Fact]
-    public void S7_OnlyHistoricalHoles_DowngradesToWarning()
+    public void S7_OnlyHistoricalHoles_StaysGreenWithDebtCount()
     {
+        // WO-RELIABILITY-WINDOW-20260928 AC-3.6：空洞全部落在考核线之前 -> **绿 + 历史欠账计数**（旧口径为黄）。
         var now = new DateTime(2026, 7, 20, 10, 0, 0, DateTimeKind.Utc);
         var intervals = new List<TimelineInterval>
         {
@@ -547,9 +552,11 @@ public class DataReliabilityGroupTwoTests
 
         var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: now);
 
-        Assert.True(result.IsWarning);
-        Assert.Equal(0, result.NewViolations);
+        Assert.Equal(InvariantStatus.Pass, result.Status);
+        Assert.False(result.IsWarning);
+        Assert.Equal(0, result.WindowViolations);
         Assert.True(result.HistoricalViolations > 0);
+        Assert.NotEmpty(result.Violations);
     }
 
     #endregion

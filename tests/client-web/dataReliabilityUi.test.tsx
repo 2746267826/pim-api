@@ -37,7 +37,7 @@ function rule(overrides: Partial<DataReliabilityRuleReport> & { code: string }):
     rationale: `设定理由 ${overrides.code}`,
     relatedIssues: [],
     totalViolations: 0,
-    newViolations: 0,
+    windowViolations: 0,
     historicalViolations: 0,
     earliestOccurrenceUtc: null,
     latestOccurrenceUtc: null,
@@ -50,12 +50,13 @@ function rule(overrides: Partial<DataReliabilityRuleReport> & { code: string }):
     trendBaselineUtc: null,
     threeState: null,
     scanTruncated: false,
+    scanCoveredDays: null,
     ...overrides,
   };
 }
 
 const rules: DataReliabilityRuleReport[] = [
-  rule({ code: 'S1', status: 'red', statusLabel: '红', totalViolations: 14, newViolations: 3, historicalViolations: 11, currentValue: 14, currentValueUnit: '对', relatedIssues: [249] }),
+  rule({ code: 'S1', status: 'red', statusLabel: '红', totalViolations: 14, windowViolations: 3, historicalViolations: 11, currentValue: 14, currentValueUnit: '对', relatedIssues: [249] }),
   rule({ code: 'S2', groupLabel: '数据自洽', currentValue: 4, threeState: {
     inputActiveSeconds: 159 * 60,
     mediaActiveSeconds: 90 * 60,
@@ -89,11 +90,13 @@ const report: DataReliabilityInspectionReport = {
   greenCount: 10,
   unknownCount: 1,
   totalViolations: 14,
-  newViolations: 3,
+  windowViolations: 3,
   historicalViolations: 11,
   notices: {},
   rules,
   message: '体检完成',
+  assessmentStartUtc: '2026-09-07T10:00:00Z',
+  assessmentWindowHours: 168,
 };
 
 // ---- 面板 ----
@@ -130,10 +133,26 @@ assert.ok(panel.includes('🔴'), '红尺子应有红色图标');
 assert.ok(panel.includes('>红<') || panel.includes('红 · 红'), '红尺子应有中文状态文字');
 assert.ok(panel.includes('⚪'), '未知尺子应有灰色图标');
 
-// 分档：新增 vs 存量
-assert.ok(panel.includes('新增 3'), '应展示新增违规数');
-assert.ok(panel.includes('存量 11'), '应展示存量违规数');
-assert.ok(panel.includes('影响 14 条'), '应展示影响行数');
+// 账本信息行（AC-7.1）：账本起始时刻 + 重启自动重置说明 + 考核窗时长
+assert.ok(panel.includes('data-reliability-ledger'), '面板头部应有账本信息行');
+assert.ok(panel.includes('考核账本自'), `账本行应给出起始时刻: ${panel.slice(0, 600)}`);
+assert.ok(panel.includes('容器更新/重启后自动重置'), '账本行应说明重启自动重置');
+assert.ok(panel.includes('考核窗：最近 7 天'), '账本行应给出考核窗时长');
+
+// 分档：窗内 vs 历史欠账（AC-7.2）
+assert.ok(panel.includes('窗内 3'), '尺子行应展示窗内违规数');
+assert.ok(panel.includes('历史欠账'), '尺子行应展示历史欠账数');
+// 欠账数渲染在灰字 span 里（不带红/黄颜色语义），因此按标签容差断言。
+assert.ok(
+  /历史欠账\s*<span class="[^"]*text-slate-400"[^>]*>11<\/span>/.test(panel),
+  `尺子行的欠账数应为灰字: ${panel.slice(0, 1600)}`
+);
+assert.ok(panel.includes('本次窗内 3 条违规'), '汇总行应只把窗内违规算作总览违规数');
+assert.ok(panel.includes('历史欠账只计数、不参与颜色判定'), '汇总行应说明欠账不参与颜色判定');
+
+// AC-7.6（反面）：面板全文不得再出现旧术语「新增 / 存量」
+assert.ok(!panel.includes('新增'), '面板不得再出现「新增」字样');
+assert.ok(!panel.includes('存量'), '面板不得再出现「存量」字样');
 
 // S2 三态分布
 assert.ok(panel.includes('data-testid="s2-three-state"'), 'S2 应有三态分布区域');
@@ -174,8 +193,17 @@ assert.ok(dialog.includes('阈值'), '弹窗应显示阈值标题');
 assert.ok(dialog.includes('阈值 S1'), '弹窗应显示阈值内容');
 assert.ok(dialog.includes('为什么这么定'), '弹窗应解释阈值依据');
 assert.ok(dialog.includes('设定理由 S1'), '弹窗应显示设定理由内容');
-assert.ok(dialog.includes('新增 3'), '弹窗应显示新增违规数');
-assert.ok(dialog.includes('存量 11'), '弹窗应显示存量违规数');
+assert.ok(
+  /窗内\s*<span class="[^"]*text-red-700"[^>]*>3<\/span>/.test(dialog),
+  `弹窗应显示窗内违规数: ${dialog.slice(0, 1200)}`
+);
+assert.ok(
+  /历史欠账\s*<span class="[^"]*text-slate-400"[^>]*>11<\/span>/.test(dialog),
+  `弹窗应显示灰字历史欠账数: ${dialog.slice(0, 1200)}`
+);
+assert.ok(dialog.includes('历史欠账趋势'), '弹窗应显示历史欠账趋势');
+assert.ok(!dialog.includes('新增'), '弹窗不得再出现「新增」字样');
+assert.ok(!dialog.includes('存量'), '弹窗不得再出现「存量」字样');
 assert.ok(dialog.includes('导出完整违规清单'), '弹窗应提供完整清单导出');
 assert.ok(dialog.includes('暂无违规样例'), '无样例时不得静默留白');
 assert.ok(
@@ -191,7 +219,7 @@ const manySamples = rule({
   code: 'S4',
   samples: Array.from({ length: 10 }, (_, index) => `重复行样例 ${index}`),
   totalViolations: 40,
-  newViolations: 0,
+  windowViolations: 0,
   historicalViolations: 40,
 });
 const sampleDialog = text(

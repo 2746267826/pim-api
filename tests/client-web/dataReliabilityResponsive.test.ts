@@ -34,6 +34,16 @@ assertContains(rowPath, ['min-h-[44px]', 'flex-wrap']);
 assertContains(dialogPath, ['min-h-[44px]']);
 assertContains(distributionPath, ['sm:grid-cols-3']);
 
+// 账本信息行与「窗内 / 历史欠账」两档数字都必须在 375px 下随卡片换行、不得撑出横向滚动：
+// 账本行用 w-full + 小字号，尺子行沿用 flex-wrap（AC-7.2 / AC-7.7）。
+const overviewPath = 'src/client-web/src/components/data-reliability/DataReliabilityOverview.tsx';
+assertContains(overviewPath, ['data-reliability-ledger', 'w-full text-xs']);
+assertContains(rowPath, ['窗内', '历史欠账']);
+assert.ok(
+  !/w-\[\d{3,}px\]/.test(read(overviewPath)),
+  '账本行不得使用固定像素宽度（375px 下会破版）'
+);
+
 // 响应式：不得出现会造成横向滚动的固定宽度 / 视口宽度
 for (const path of [pagePath, panelPath, rowPath, dialogPath, distributionPath]) {
   const source = read(path);
@@ -62,6 +72,17 @@ assertContains(pagePath, [
 // 设置页入口与路由
 assertContains(settingsPath, ["to: '/settings/data-reliability'", '数据可信度']);
 assertContains(layoutPath, ['/settings/data-reliability', 'DataReliabilityPage']);
+
+// 旧术语退役（AC-7.6 的源码侧守卫）：data-reliability 组件与页面里不得再出现「新增 / 存量」。
+for (const path of [pagePath, panelPath, rowPath, dialogPath, distributionPath]) {
+  const source = read(path);
+  assert.ok(!source.includes('存量'), `${path} 不得再出现「存量」`);
+  assert.ok(
+    !/新增/.test(source),
+    `${path} 不得再出现「新增」（历史欠账 / 窗内 才是现行术语）`
+  );
+}
+assert.ok(!read(overviewPath).includes('存量'), `${overviewPath} 不得再出现「存量」`);
 
 // 页面默认不触发全量扫库：查询只读缓存结果，全量体检必须挂在显式的 mutation 上
 const pageCode = readCode(pagePath);

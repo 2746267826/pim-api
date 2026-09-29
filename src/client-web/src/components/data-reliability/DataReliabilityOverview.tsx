@@ -1,5 +1,5 @@
 import type { DataReliabilityInspectionReport } from '../../api/dataReliabilityTypes';
-import { buildOverviewCounts, formatDateTime, formatFreshness } from './dataReliabilityModel';
+import { buildLedgerLine, buildOverviewCounts, formatDateTime, formatFreshness } from './dataReliabilityModel';
 
 interface DataReliabilityOverviewProps {
   report: DataReliabilityInspectionReport;
@@ -23,6 +23,10 @@ export default function DataReliabilityOverview({ report, now }: DataReliability
       {counts.red > 0 && <strong className="text-red-700">数据在流血：{counts.red} 条尺子报红</strong>}
       {counts.red === 0 && counts.unknown === 0 && <span className="text-emerald-700">13 条尺子暂无红线</span>}
       {counts.unknown > 0 && <span className="text-slate-600">{counts.unknown} 条数据源不足，未能判定</span>}
+      {/* 考核账本信息行（REQ-7 / AC-7.1）：账本起始时刻 + 重启自动重置说明 + 考核窗时长 */}
+      <span className="w-full text-xs text-slate-600" data-testid="data-reliability-ledger">
+        {buildLedgerLine(report)}
+      </span>
     </section>
   );
 }

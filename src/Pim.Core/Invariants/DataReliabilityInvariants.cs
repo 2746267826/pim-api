@@ -42,9 +42,14 @@ public static class DataReliabilityInvariants
     };
 
     /// <summary>
-    /// 把"按设备分别判定"的多份结论合并成一条尺子结论（S6 这类需要逐设备核对声明的尺子使用）。
-    /// 语义：任一台设备报红即整条报红；没有红线但有设备无法判定（数据源缺失 / 未接线）则整条记未知
-    /// ——不能因为"其它设备都通过"就替没数据的设备背书；只有全部通过才算通过。
+    /// 把"按设备分别判定"的多份结论合并成一条尺子结论（S6 / S13 这类需要逐设备核对的尺子使用）。
+    /// 语义：任一台设备报红（**窗内**违规）即整条报红；没有红线但有设备无法判定（数据源缺失 / 未接线）则整条记未知
+    /// ——不能因为"其它设备都通过"就替没数据的设备背书；阈值型黄线沿用；只有全部通过才算通过。
+    /// <para>
+    /// **"仅欠账"不得被合成黄或未知**（AC-3.5 / AC-3.8）：逐设备判定在"窗内 0 违规、只有历史欠账"时
+    /// 返回的是绿（<see cref="InvariantStatus.Pass"/>，带欠账计数），合并时必须把所有设备的欠账数累加
+    /// 并保持绿色，否则面板会显示"全绿但欠账丢失"或"欠账折黄"。
+    /// </para>
     /// </summary>
     /// <param name="invariantCode">尺子的不变量编号，例如 <c>INV-P20</c>，只用于拼装结论文案。</param>
     /// <param name="perDeviceResults">每台设备各自的判定结果。</param>
@@ -62,6 +67,11 @@ public static class DataReliabilityInvariants
             return InvariantResult.Unknown($"{invariantCode} UNKNOWN: 数据源为空或未接线", note, fallback);
         }
 
+        // 双计数在**全部**设备上累加：报红分支也不能漏掉"其它设备只有欠账"的那部分数字。
+        int allTotal = results.Sum(result => result.TotalViolations);
+        int allWindow = results.Sum(result => result.WindowViolations);
+        int allHistorical = results.Sum(result => result.HistoricalViolations);
+
         var failed = results.Where(result => result.Status == InvariantStatus.Fail).ToList();
         if (failed.Count > 0)
         {
@@ -78,15 +88,11 @@ public static class DataReliabilityInvariants
                 .Select(value => value!.Value)
                 .ToList();
 
-            int total = failed.Sum(result => result.TotalViolations);
-            int newCount = failed.Sum(result => result.NewViolations);
-            int historical = failed.Sum(result => result.HistoricalViolations);
-
             return InvariantResult.Failure(
-                $"{invariantCode} FAIL: 检测到 {total} 处违规（覆盖 {failed.Count} 台设备）",
-                total,
-                newCount,
-                historical,
+                $"{invariantCode} FAIL: 检测到 {allWindow} 处窗内违规（覆盖 {failed.Count} 台设备；历史欠账 {allHistorical} 处，只计数）",
+                allTotal,
+                allWindow,
+                allHistorical,
                 samples,
                 earliestOccurrences.Count > 0 ? earliestOccurrences.Min() : null,
                 latestOccurrences.Count > 0 ? latestOccurrences.Max() : null,
@@ -100,8 +106,8 @@ public static class DataReliabilityInvariants
             return InvariantResult.Unknown($"{invariantCode} UNKNOWN: 部分设备无数据可判定", note, fallback);
         }
 
-        // 任一设备只判到黄线时，整条尺子必须是黄线 —— 绝不能因为"没有设备报红"
-        // 就把存量违规折成绿灯（那会让面板显示"全绿"而实际上有设备存在存量欠账）。
+        // 任一设备只判到黄线时，整条尺子必须是黄线 —— 黄线只可能来自阈值型判定（例如 S3 的警告线），
+        // 不再来自"仅存量"（那种情况逐设备已是绿，见 REQ-3）。
         var warned = results.Where(result => result.Status == InvariantStatus.Warning).ToList();
         if (warned.Count > 0)
         {
@@ -118,15 +124,11 @@ public static class DataReliabilityInvariants
                 .Select(value => value!.Value)
                 .ToList();
 
-            int total = warned.Sum(result => result.TotalViolations);
-            int newCount = warned.Sum(result => result.NewViolations);
-            int historical = warned.Sum(result => result.HistoricalViolations);
-
             return InvariantResult.Failure(
-                $"{invariantCode} WARN: 检测到 {total} 处存量违规（覆盖 {warned.Count} 台设备，无新增）",
-                total,
-                newCount,
-                historical,
+                $"{invariantCode} WARN: 检测到 {warned.Sum(result => result.WindowViolations)} 处窗内阈值告警（覆盖 {warned.Count} 台设备；历史欠账 {allHistorical} 处，只计数）",
+                allTotal,
+                allWindow,
+                allHistorical,
                 samples,
                 earliestOccurrences.Count > 0 ? earliestOccurrences.Min() : null,
                 latestOccurrences.Count > 0 ? latestOccurrences.Max() : null,
@@ -136,7 +138,32 @@ public static class DataReliabilityInvariants
                 violations: violations);
         }
 
-        return InvariantResult.Success($"{invariantCode} PASS: 全部 {results.Count} 台设备均通过", note, fallback);
+        // 到这里全部设备都是绿：可能有历史欠账（只计数），但状态必须是绿。
+        var debtSamples = results.SelectMany(result => result.Samples).Take(opt.MaxSampleCount).ToList();
+        var debtViolations = results.SelectMany(result => result.Violations).Take(opt.MaxSampleCount).ToList();
+        var debtEarliest = results
+            .Select(result => result.EarliestOccurrence)
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .ToList();
+        var debtLatest = results
+            .Select(result => result.LatestOccurrence)
+            .Where(value => value.HasValue)
+            .Select(value => value!.Value)
+            .ToList();
+
+        return InvariantResult.Success(
+            allHistorical > 0
+                ? $"{invariantCode} PASS: 窗内全部 {results.Count} 台设备均通过（历史欠账 {allHistorical} 处，只计数不参与颜色判定）"
+                : $"{invariantCode} PASS: 全部 {results.Count} 台设备均通过",
+            note,
+            fallback,
+            totalViolations: allTotal,
+            historicalViolations: allHistorical,
+            samples: debtSamples,
+            violations: debtViolations,
+            earliestOccurrence: debtEarliest.Count > 0 ? debtEarliest.Min() : null,
+            latestOccurrence: debtLatest.Count > 0 ? debtLatest.Max() : null);
     }
 
     /// <summary>
@@ -149,7 +176,7 @@ public static class DataReliabilityInvariants
                 System.Text.Encoding.UTF8.GetBytes(businessKey)))[..16];
 
     /// <summary>S11 结构化违规引用：批次号 + 语义不自洽的原因（业务时间取窗口起点）。</summary>
-    private static InvariantViolation BatchViolation(BatchSyncStatusRecord batch, string reason) =>
+    private static InvariantViolation BatchViolation(BatchSyncStatusRecord batch, string reason, bool isWindowViolation) =>
         new(
             Id: batch.BatchId,
             DeviceId: string.Empty,
@@ -160,7 +187,8 @@ public static class DataReliabilityInvariants
                 ("acceptedCount", batch.AcceptedCount.ToString()),
                 ("rejectedCount", batch.RejectedCount.ToString()),
                 ("skippedCount", batch.SkippedCount.ToString()),
-                ("reason", reason)));
+                ("reason", reason),
+                ("isNew", isWindowViolation ? "true" : "false")));
 
     /// <summary>
     /// S2 (INV-P17): 超长事件的三态分布。
@@ -248,25 +276,33 @@ public static class DataReliabilityInvariants
     }
 
     /// <summary>
-    /// 把违规分档写成一句人话，例如"新增 3 / 存量 11"，供体检接口与质量报告共用。
+    /// 把违规分档写成一句人话，例如"窗内 3 / 历史欠账 11"，供体检接口与质量报告共用。
     /// </summary>
     public static string DescribeViolationSplit(InvariantResult result) =>
-        $"新增 {result.NewViolations} / 存量 {result.HistoricalViolations}";
+        $"窗内 {result.WindowViolations} / 历史欠账 {result.HistoricalViolations}";
+
+    /// <summary>
+    /// 单条违规的归属标签：**窗内**（业务时间 ≥ 考核线，决定颜色）/ **历史欠账**（窗外，只计数）。
+    /// 样例与导出统一用它，避免同一条违规在样例里是"新增"、在导出里是别的说法。
+    /// </summary>
+    private static string DescribeScope(bool isWindowViolation) => isWindowViolation ? "窗内" : "历史欠账";
 
     /// <summary>
     /// S1 (INV-P16): 同类型事件不重叠
     /// 判据: 同设备、同事件类型的事件区间两两不相交（不存在 A.start &lt; B.end &amp;&amp; B.start &lt; A.end）。
-    /// 阈值: 重叠对数 = 0（针对新增数据；存量走黄线）。
+    /// 阈值: 重叠对数 = 0；按考核线分档——**窗内**重叠判红，**历史欠账**（窗外）只计数不参与颜色（REQ-3）。
+    /// 分档时间字段（沿用现状，本单不改）: 重叠区间的**结束时刻**。
     /// 为什么是这个阈值: 同一设备在同一时刻不可能产生两个同级别的互斥前台焦点或互斥状态，重叠说明采集端或入库去重损坏。
     /// </summary>
     public static InvariantResult CheckS1_NoOverlap(
         IEnumerable<EventTimeSpan> events,
         InvariantOptions? options = null,
-        DateTime? referenceTimeUtc = null)
+        DateTime? referenceTimeUtc = null,
+        DateTime? assessmentStartUtc = null)
     {
         var (opt, fallback, note) = InvariantOptions.Resolve(options);
         var now = referenceTimeUtc ?? DateTime.UtcNow;
-        var cutoff = now.AddHours(-opt.RecentWindowHours);
+        var cutoff = assessmentStartUtc ?? now.AddHours(-opt.AssessmentWindowHours);
 
         var list = events?.ToList() ?? new List<EventTimeSpan>();
         if (list.Count == 0)
@@ -277,7 +313,7 @@ public static class DataReliabilityInvariants
         var groups = list.GroupBy(e => (e.DeviceId, e.EventType));
 
         int totalViolations = 0;
-        int newViolations = 0;
+        int windowViolations = 0;
         int historicalViolations = 0;
         var samples = new List<string>();
         var violations = new List<InvariantViolation>();
@@ -302,15 +338,15 @@ public static class DataReliabilityInvariants
                     {
                         totalViolations++;
                         var overlapEnd = a.EndTime < b.EndTime ? a.EndTime : b.EndTime;
-                        bool isNew = overlapEnd >= cutoff;
-                        if (isNew) newViolations++; else historicalViolations++;
+                        bool isWindowViolation = overlapEnd >= cutoff;
+                        if (isWindowViolation) windowViolations++; else historicalViolations++;
 
                         earliest = earliest == null || a.StartTime < earliest ? a.StartTime : earliest;
                         latest = latest == null || overlapEnd > latest ? overlapEnd : latest;
 
                         if (samples.Count < opt.MaxSampleCount)
                         {
-                            samples.Add($"Device={a.DeviceId}, Type={a.EventType}: [{a.StartTime:yyyy-MM-dd HH:mm:ss} ~ {a.EndTime:yyyy-MM-dd HH:mm:ss}] overlaps with [{b.StartTime:yyyy-MM-dd HH:mm:ss} ~ {b.EndTime:yyyy-MM-dd HH:mm:ss}] (New={isNew})");
+                            samples.Add($"Device={a.DeviceId}, Type={a.EventType}: [{a.StartTime:yyyy-MM-dd HH:mm:ss} ~ {a.EndTime:yyyy-MM-dd HH:mm:ss}] overlaps with [{b.StartTime:yyyy-MM-dd HH:mm:ss} ~ {b.EndTime:yyyy-MM-dd HH:mm:ss}] ({DescribeScope(isWindowViolation)})");
                             violations.Add(new InvariantViolation(
                                 Id: string.IsNullOrEmpty(a.EventId) ? $"{a.DeviceId}:{a.StartTime:O}" : a.EventId,
                                 DeviceId: a.DeviceId,
@@ -321,19 +357,19 @@ public static class DataReliabilityInvariants
                                     ("endUtc", ToUtc(a.EndTime).ToString("O")),
                                     ("overlapWithId", b.EventId),
                                     ("overlapSeconds", (overlapEnd - b.StartTime).TotalSeconds.ToString("F0")),
-                                    ("isNew", isNew ? "true" : "false"))));
+                                    ("isNew", isWindowViolation ? "true" : "false"))));
                         }
                     }
                 }
             }
         }
 
-        if (totalViolations > 0)
+        if (windowViolations > 0)
         {
             return InvariantResult.Failure(
-                $"INV-P16 FAIL: 检测到 {totalViolations} 对同类型事件重叠 (新增 {newViolations}, 存量 {historicalViolations})",
+                $"INV-P16 FAIL: 检测到 {windowViolations} 对窗内同类型事件重叠（历史欠账 {historicalViolations} 对，只计数）",
                 totalViolations,
-                newViolations,
+                windowViolations,
                 historicalViolations,
                 samples,
                 earliest,
@@ -341,6 +377,20 @@ public static class DataReliabilityInvariants
                 note,
                 fallback,
                 violations: violations);
+        }
+
+        if (historicalViolations > 0)
+        {
+            return InvariantResult.Success(
+                $"INV-P16 PASS: 窗内无同类型事件重叠（历史欠账 {historicalViolations} 对，只计数不参与颜色判定）",
+                note,
+                fallback,
+                totalViolations: totalViolations,
+                historicalViolations: historicalViolations,
+                samples: samples,
+                violations: violations,
+                earliestOccurrence: earliest,
+                latestOccurrence: latest);
         }
 
         return InvariantResult.Success("INV-P16 PASS: 无同类型事件重叠", note, fallback);
@@ -359,11 +409,12 @@ public static class DataReliabilityInvariants
     public static InvariantResult CheckS2_OverlongEventEvidence(
         IEnumerable<LongEventCandidate> events,
         InvariantOptions? options = null,
-        DateTime? referenceTimeUtc = null)
+        DateTime? referenceTimeUtc = null,
+        DateTime? assessmentStartUtc = null)
     {
         var (opt, fallback, note) = InvariantOptions.Resolve(options);
         var now = referenceTimeUtc ?? DateTime.UtcNow;
-        var cutoff = now.AddHours(-opt.RecentWindowHours);
+        var cutoff = assessmentStartUtc ?? now.AddHours(-opt.AssessmentWindowHours);
 
         var list = events?.ToList() ?? new List<LongEventCandidate>();
         if (list.Count == 0)
@@ -372,7 +423,7 @@ public static class DataReliabilityInvariants
         }
 
         int totalViolations = 0;
-        int newViolations = 0;
+        int windowViolations = 0;
         int historicalViolations = 0;
         var samples = new List<string>();
         var violations = new List<InvariantViolation>();
@@ -409,15 +460,15 @@ public static class DataReliabilityInvariants
 
             // 都不满足：判「疑似未收尾」
             totalViolations++;
-            bool isNew = e.EndTime >= cutoff;
-            if (isNew) newViolations++; else historicalViolations++;
+            bool isWindowViolation = e.EndTime >= cutoff;
+            if (isWindowViolation) windowViolations++; else historicalViolations++;
 
             earliest = earliest == null || e.StartTime < earliest ? e.StartTime : earliest;
             latest = latest == null || e.EndTime > latest ? e.EndTime : latest;
 
             if (samples.Count < opt.MaxSampleCount)
             {
-                samples.Add($"Device={e.DeviceId}, Event={e.EventId ?? e.EventType}, App={e.AppName ?? "N/A"}, Duration={durationMinutes:F1}m > {opt.LongEventThresholdMinutes:F1}m: 疑似未收尾 (无操作密度[{inputDensity:F2}/min < {opt.MinInputDensityPerMinute:F1}], 无媒体活动, 非明确空档)");
+                samples.Add($"Device={e.DeviceId}, Event={e.EventId ?? e.EventType}, App={e.AppName ?? "N/A"}, Duration={durationMinutes:F1}m > {opt.LongEventThresholdMinutes:F1}m: 疑似未收尾 (无操作密度[{inputDensity:F2}/min < {opt.MinInputDensityPerMinute:F1}], 无媒体活动, 非明确空档) [{DescribeScope(isWindowViolation)}]");
                 violations.Add(new InvariantViolation(
                     Id: string.IsNullOrEmpty(e.EventId) ? $"{e.DeviceId}:{e.StartTime:O}" : e.EventId,
                     DeviceId: e.DeviceId,
@@ -429,16 +480,16 @@ public static class DataReliabilityInvariants
                         ("endUtc", ToUtc(e.EndTime).ToString("O")),
                         ("durationMinutes", durationMinutes.ToString("F1")),
                         ("inputDensityPerMinute", inputDensity.ToString("F2")),
-                        ("isNew", isNew ? "true" : "false"))));
+                        ("isNew", isWindowViolation ? "true" : "false"))));
             }
         }
 
-        if (totalViolations > 0)
+        if (windowViolations > 0)
         {
             return InvariantResult.Failure(
-                $"INV-P17 FAIL: 检测到 {totalViolations} 个疑似未收尾超长事件 (新增 {newViolations}, 存量 {historicalViolations})",
+                $"INV-P17 FAIL: 检测到 {windowViolations} 个窗内疑似未收尾超长事件（历史欠账 {historicalViolations} 个，只计数）",
                 totalViolations,
-                newViolations,
+                windowViolations,
                 historicalViolations,
                 samples,
                 earliest,
@@ -446,6 +497,20 @@ public static class DataReliabilityInvariants
                 note,
                 fallback,
                 violations: violations);
+        }
+
+        if (historicalViolations > 0)
+        {
+            return InvariantResult.Success(
+                $"INV-P17 PASS: 窗内所有超长事件均有合规的活动证据或为明确空档（历史欠账 {historicalViolations} 个，只计数不参与颜色判定）",
+                note,
+                fallback,
+                totalViolations: totalViolations,
+                historicalViolations: historicalViolations,
+                samples: samples,
+                violations: violations,
+                earliestOccurrence: earliest,
+                latestOccurrence: latest);
         }
 
         return InvariantResult.Success("INV-P17 PASS: 所有超长事件均有合规的活动证据或为明确空档", note, fallback);
@@ -637,7 +702,8 @@ public static class DataReliabilityInvariants
                 $"INV-P18 WARN: 单日合并活跃时长未超硬上限，但存在 {warningCount} 天超过清醒窗口警告线 {warningSeconds / 3600.0:F1}h",
                 samples: samples,
                 thresholdNote: note,
-                thresholdFallback: fallback);
+                thresholdFallback: fallback,
+                totalViolations: warningCount);
         }
 
         double maxDayHours = list.Max(d => d.ActiveDurationSeconds) / 3600.0;
@@ -651,17 +717,19 @@ public static class DataReliabilityInvariants
     ///   定位: (device, recorded_at, lat, lon) 唯一
     ///   手机事件: (device, package, event_time, event_type) 唯一
     ///   PC 事件: (device, timestamp, duration, event_type, app_name, browser, instance_id) 唯一
-    /// 阈值: 新增重复行 = 0（存量走黄线）。
+    /// 阈值: 重复行 = 0；按考核线分档——**窗内**重复判红，**历史欠账**（窗外）只计数不参与颜色（REQ-3）。
+    /// 分档时间字段（沿用现状，本单不改）: 业务记录时间戳。
     /// 为什么是这个阈值: 重复事件会导致时长与频次双重虚高，破坏聚合指标的可信度。
     /// </summary>
     public static InvariantResult CheckS4_BusinessKeyUnique(
         IEnumerable<BusinessRecordKey> records,
         InvariantOptions? options = null,
-        DateTime? referenceTimeUtc = null)
+        DateTime? referenceTimeUtc = null,
+        DateTime? assessmentStartUtc = null)
     {
         var (opt, fallback, note) = InvariantOptions.Resolve(options);
         var now = referenceTimeUtc ?? DateTime.UtcNow;
-        var cutoff = now.AddHours(-opt.RecentWindowHours);
+        var cutoff = assessmentStartUtc ?? now.AddHours(-opt.AssessmentWindowHours);
 
         var list = records?.ToList() ?? new List<BusinessRecordKey>();
         if (list.Count == 0)
@@ -672,7 +740,7 @@ public static class DataReliabilityInvariants
         var groups = list.GroupBy(r => (r.Domain, r.UniqueKey));
 
         int totalViolations = 0;
-        int newViolations = 0;
+        int windowViolations = 0;
         int historicalViolations = 0;
         var samples = new List<string>();
         var violations = new List<InvariantViolation>();
@@ -687,10 +755,11 @@ public static class DataReliabilityInvariants
                 int dups = count - 1;
                 totalViolations += dups;
 
+                bool groupHasWindowDuplicate = false;
                 foreach (var item in g.Skip(1))
                 {
-                    bool isNew = item.Timestamp >= cutoff;
-                    if (isNew) newViolations++; else historicalViolations++;
+                    bool isWindowViolation = item.Timestamp >= cutoff;
+                    if (isWindowViolation) { windowViolations++; groupHasWindowDuplicate = true; } else historicalViolations++;
 
                     earliest = earliest == null || item.Timestamp < earliest ? item.Timestamp : earliest;
                     latest = latest == null || item.Timestamp > latest ? item.Timestamp : latest;
@@ -701,24 +770,25 @@ public static class DataReliabilityInvariants
                     var first = g.First();
                     // 业务键里可能含经纬度（定位域），样例与导出只输出不可逆摘要，避免把精确坐标带出去。
                     string opaqueKey = ObfuscateBusinessKey(first.UniqueKey);
-                    samples.Add($"Domain={first.Domain}, Device={first.DeviceId}, KeyDigest={opaqueKey}: 重复出现 {count} 次");
+                    samples.Add($"Domain={first.Domain}, Device={first.DeviceId}, KeyDigest={opaqueKey}: 重复出现 {count} 次 [{DescribeScope(groupHasWindowDuplicate)}]");
                     violations.Add(new InvariantViolation(
                         Id: opaqueKey,
                         DeviceId: first.DeviceId,
                         OccurredAtUtc: ToUtc(first.Timestamp),
                         Fields: Fields(
                             ("domain", first.Domain),
-                            ("duplicateCount", count.ToString()))));
+                            ("duplicateCount", count.ToString()),
+                            ("isNew", groupHasWindowDuplicate ? "true" : "false"))));
                 }
             }
         }
 
-        if (totalViolations > 0)
+        if (windowViolations > 0)
         {
             return InvariantResult.Failure(
-                $"INV-C18 FAIL: 检测到 {totalViolations} 行业务键重复 (新增 {newViolations}, 存量 {historicalViolations})",
+                $"INV-C18 FAIL: 检测到 {windowViolations} 行窗内业务键重复（历史欠账 {historicalViolations} 行，只计数）",
                 totalViolations,
-                newViolations,
+                windowViolations,
                 historicalViolations,
                 samples,
                 earliest,
@@ -728,23 +798,39 @@ public static class DataReliabilityInvariants
                 violations: violations);
         }
 
+        if (historicalViolations > 0)
+        {
+            return InvariantResult.Success(
+                $"INV-C18 PASS: 窗内业务键唯一无重复（历史欠账 {historicalViolations} 行，只计数不参与颜色判定）",
+                note,
+                fallback,
+                totalViolations: totalViolations,
+                historicalViolations: historicalViolations,
+                samples: samples,
+                violations: violations,
+                earliestOccurrence: earliest,
+                latestOccurrence: latest);
+        }
+
         return InvariantResult.Success("INV-C18 PASS: 业务键唯一无重复", note, fallback);
     }
 
     /// <summary>
     /// S5 (INV-P19): 时钟可信
     /// 判据: 事件时间戳 &lt;= 服务端接收时间 + 容差。
-    /// 阈值: 容差 5.0 分钟 (ClockSkewToleranceMinutes)。
+    /// 阈值: 容差 5.0 分钟 (ClockSkewToleranceMinutes)；按考核线分档——窗内超前判红，窗外只计欠账（REQ-3）。
+    /// 分档时间字段（沿用现状，本单不改）: 服务端接收时间。
     /// 为什么是这个阈值: 客户端时钟可能与网络授时存在少许偏差或时钟漂移，5 分钟为工业标准网络时间容限；超过 5 分钟属于严重超前或时钟穿越。
     /// </summary>
     public static InvariantResult CheckS5_ClockTrustworthy(
         IEnumerable<ClockEventItem> items,
         InvariantOptions? options = null,
-        DateTime? referenceTimeUtc = null)
+        DateTime? referenceTimeUtc = null,
+        DateTime? assessmentStartUtc = null)
     {
         var (opt, fallback, note) = InvariantOptions.Resolve(options);
         var now = referenceTimeUtc ?? DateTime.UtcNow;
-        var cutoff = now.AddHours(-opt.RecentWindowHours);
+        var cutoff = assessmentStartUtc ?? now.AddHours(-opt.AssessmentWindowHours);
         var toleranceSeconds = opt.ClockSkewToleranceMinutes * 60.0;
 
         var list = items?.ToList() ?? new List<ClockEventItem>();
@@ -754,7 +840,7 @@ public static class DataReliabilityInvariants
         }
 
         int totalViolations = 0;
-        int newViolations = 0;
+        int windowViolations = 0;
         int historicalViolations = 0;
         var samples = new List<string>();
         var violations = new List<InvariantViolation>();
@@ -767,41 +853,54 @@ public static class DataReliabilityInvariants
             if (skewSeconds > toleranceSeconds)
             {
                 totalViolations++;
-                bool isNew = item.ServerReceivedTime >= cutoff;
-                if (isNew) newViolations++; else historicalViolations++;
+                bool isWindowViolation = item.ServerReceivedTime >= cutoff;
+                if (isWindowViolation) windowViolations++; else historicalViolations++;
 
                 earliest = earliest == null || item.EventTime < earliest ? item.EventTime : earliest;
                 latest = latest == null || item.EventTime > latest ? item.EventTime : latest;
 
                 if (samples.Count < opt.MaxSampleCount)
                 {
-                    samples.Add($"Device={item.DeviceId}, Event={item.EventId}: EventTime={item.EventTime:yyyy-MM-dd HH:mm:ss} 超前 ReceivedTime={item.ServerReceivedTime:yyyy-MM-dd HH:mm:ss} 达到 {skewSeconds / 60.0:F1}m > 容差 {opt.ClockSkewToleranceMinutes:F1}m");
+                    samples.Add($"Device={item.DeviceId}, Event={item.EventId}: EventTime={item.EventTime:yyyy-MM-dd HH:mm:ss} 超前 ReceivedTime={item.ServerReceivedTime:yyyy-MM-dd HH:mm:ss} 达到 {skewSeconds / 60.0:F1}m > 容差 {opt.ClockSkewToleranceMinutes:F1}m [{DescribeScope(isWindowViolation)}]");
                     violations.Add(new InvariantViolation(
                         Id: string.IsNullOrEmpty(item.EventId) ? $"{item.DeviceId}:{item.EventTime:O}" : item.EventId,
                         DeviceId: item.DeviceId,
                         OccurredAtUtc: ToUtc(item.EventTime),
                         Fields: Fields(
                             ("serverReceivedUtc", ToUtc(item.ServerReceivedTime).ToString("O")),
-                            ("skewMinutes", (skewSeconds / 60.0).ToString("F1")))));
+                            ("skewMinutes", (skewSeconds / 60.0).ToString("F1")),
+                            ("isNew", isWindowViolation ? "true" : "false"))));
                 }
             }
         }
 
-        if (totalViolations > 0)
+        if (windowViolations > 0)
         {
-            bool isWarning = newViolations == 0 && historicalViolations > 0;
             return InvariantResult.Failure(
-                $"INV-P19 {(isWarning ? "WARN" : "FAIL")}: 检测到 {totalViolations} 个事件时钟超前 (新增 {newViolations}, 存量 {historicalViolations})",
+                $"INV-P19 FAIL: 检测到 {windowViolations} 个窗内事件时钟超前（历史欠账 {historicalViolations} 个，只计数）",
                 totalViolations,
-                newViolations,
+                windowViolations,
                 historicalViolations,
                 samples,
                 earliest,
                 latest,
                 note,
                 fallback,
-                isWarning: isWarning,
                 violations: violations);
+        }
+
+        if (historicalViolations > 0)
+        {
+            return InvariantResult.Success(
+                $"INV-P19 PASS: 窗内事件时间戳均在合理时钟容差范围内（历史欠账 {historicalViolations} 个，只计数不参与颜色判定）",
+                note,
+                fallback,
+                totalViolations: totalViolations,
+                historicalViolations: historicalViolations,
+                samples: samples,
+                violations: violations,
+                earliestOccurrence: earliest,
+                latestOccurrence: latest);
         }
 
         return InvariantResult.Success("INV-P19 PASS: 所有事件时间戳均在合理时钟容差范围内", note, fallback);
@@ -821,16 +920,17 @@ public static class DataReliabilityInvariants
     /// 为什么是这个阈值: 现代操作系统关机与睡眠都有系统钩子；若无声明突然停止 30m，说明采集端崩溃或掉线；上传 p99 超过 30m 表明链路堆积积压严重。
     ///
     /// 实现口径（#254 S6，本轮修正）：
-    ///   1. 空档按「上一段**结束**（滚动最大值）→ 下一段**开始**」计算，并按业务时间做 T4 新增/存量分档。
+    ///   1. 空档按「上一段**结束**（滚动最大值）→ 下一段**开始**」计算，并按业务时间做考核线分档。
     ///      旧实现取「相邻起点之差」，把事件自身时长也当成空档 —— 实测把 29 处真实空档放大成 72 处；
     ///   2. 上传滞后 p99 排除系统合成的 gap 事件（其 created_at - timestamp 恒等于断档时长，不是链路延迟。
     ///      实测：含 gap 时 p99 = 425.9 分钟，排除后 19.2 分钟，阈值 30 分钟）；
-    ///   3. 仅有存量违规时降级为黄线（与 S11 同一模式，T4）。
+    ///   3. 分档按考核线：窗内违规判红，窗外只计历史欠账（REQ-3，取消"仅存量 → 黄"）。
     /// </summary>
     public static InvariantResult CheckS6_OfflineDeclared(
         DeviceActivityTrace trace,
         InvariantOptions? options = null,
-        DateTime? referenceTimeUtc = null)
+        DateTime? referenceTimeUtc = null,
+        DateTime? assessmentStartUtc = null)
     {
         var (opt, fallback, note) = InvariantOptions.Resolve(options);
         var gapThresholdMinutes = opt.UndeclaredOfflineGapMinutes;
@@ -846,10 +946,10 @@ public static class DataReliabilityInvariants
         }
 
         var now = referenceTimeUtc ?? DateTime.UtcNow;
-        var cutoff = now.AddHours(-opt.RecentWindowHours);
+        var cutoff = assessmentStartUtc ?? now.AddHours(-opt.AssessmentWindowHours);
 
         int totalViolations = 0;
-        int newViolations = 0;
+        int windowViolations = 0;
         int historicalViolations = 0;
         var samples = new List<string>();
         var violations = new List<InvariantViolation>();
@@ -904,15 +1004,15 @@ public static class DataReliabilityInvariants
                 if (!declared)
                 {
                     totalViolations++;
-                    bool isNew = gapEnd >= cutoff;
-                    if (isNew) newViolations++; else historicalViolations++;
+                    bool isWindowViolation = gapEnd >= cutoff;
+                    if (isWindowViolation) windowViolations++; else historicalViolations++;
 
                     earliest = earliest == null || gapStart < earliest ? gapStart : earliest;
                     latest = latest == null || gapEnd > latest ? gapEnd : latest;
 
                     if (samples.Count < opt.MaxSampleCount)
                     {
-                        samples.Add($"Device={trace.DeviceId}: [{gapStart:yyyy-MM-dd HH:mm:ss} ~ {gapEnd:yyyy-MM-dd HH:mm:ss}] 存在 {gapMinutes:F1}m 无声明空档 (> {gapThresholdMinutes:F1}m)");
+                        samples.Add($"Device={trace.DeviceId}: [{gapStart:yyyy-MM-dd HH:mm:ss} ~ {gapEnd:yyyy-MM-dd HH:mm:ss}] 存在 {gapMinutes:F1}m 无声明空档 (> {gapThresholdMinutes:F1}m) [{DescribeScope(isWindowViolation)}]");
                         violations.Add(new InvariantViolation(
                             Id: $"{trace.DeviceId}:undeclared-gap:{i}",
                             DeviceId: trace.DeviceId,
@@ -922,7 +1022,7 @@ public static class DataReliabilityInvariants
                                 ("gapStartUtc", ToUtc(gapStart).ToString("O")),
                                 ("gapEndUtc", ToUtc(gapEnd).ToString("O")),
                                 ("gapMinutes", gapMinutes.ToString("F1")),
-                                ("isNew", isNew ? "true" : "false"))));
+                                ("isNew", isWindowViolation ? "true" : "false"))));
                     }
                 }
             }
@@ -937,24 +1037,43 @@ public static class DataReliabilityInvariants
         //    created_at 是重启后补传时刻，两者之差恒等于断档时长，不代表上传链路延迟。
         var realSamples = trace.UploadLagSamples?.Where(s => !s.IsSyntheticGap).ToList()
             ?? new List<UploadLagSample>();
+
+        // 窗内 / 窗外**分开**算 p99，各自出一笔违规。
+        //
+        // 为什么不能整批算一个 p99 再用"最差一条"的时间归边：p99 是聚合统计量，
+        // 若窗外还存在一条更差的样本，整笔会被记成历史欠账 —— 而窗内那批样本的 p99
+        // 其实已经超过阈值。结果是"窗内链路已经积压，尺子却是绿的"（静默漏报）。
         if (realSamples.Count > 0)
         {
-            var lags = realSamples
-                .Select(s => Math.Max(0, (s.CreatedAt - s.EventTime).TotalMinutes))
-                .OrderBy(v => v)
-                .ToList();
-
-            int p99Index = (int)Math.Ceiling(lags.Count * 0.99) - 1;
-            p99Index = Math.Clamp(p99Index, 0, lags.Count - 1);
-            double p99Lag = lags[p99Index];
-
-            if (p99Lag > p99LagMinutesThreshold)
+            foreach (bool windowBucket in new[] { true, false })
             {
-                var worst = realSamples
+                var bucketSamples = realSamples
+                    .Where(sample => (sample.CreatedAt >= cutoff) == windowBucket)
+                    .ToList();
+                if (bucketSamples.Count == 0)
+                {
+                    continue;
+                }
+
+                var lags = bucketSamples
+                    .Select(s => Math.Max(0, (s.CreatedAt - s.EventTime).TotalMinutes))
+                    .OrderBy(v => v)
+                    .ToList();
+
+                int p99Index = (int)Math.Ceiling(lags.Count * 0.99) - 1;
+                p99Index = Math.Clamp(p99Index, 0, lags.Count - 1);
+                double p99Lag = lags[p99Index];
+
+                if (p99Lag <= p99LagMinutesThreshold)
+                {
+                    continue;
+                }
+
+                var worst = bucketSamples
                     .OrderByDescending(s => (s.CreatedAt - s.EventTime).TotalMinutes)
                     .First();
-                bool isNew = worst.CreatedAt >= cutoff;
-                if (isNew) newViolations++; else historicalViolations++;
+
+                if (windowBucket) windowViolations++; else historicalViolations++;
 
                 totalViolations++;
                 earliest = earliest == null || worst.EventTime < earliest ? worst.EventTime : earliest;
@@ -962,35 +1081,48 @@ public static class DataReliabilityInvariants
 
                 if (samples.Count < opt.MaxSampleCount)
                 {
-                    samples.Add($"Device={trace.DeviceId}: 上传滞后 p99={p99Lag:F1}m 超过阈值 {p99LagMinutesThreshold:F1}m");
+                    samples.Add($"Device={trace.DeviceId}: 上传滞后 p99={p99Lag:F1}m 超过阈值 {p99LagMinutesThreshold:F1}m（{bucketSamples.Count} 个样本） [{DescribeScope(windowBucket)}]");
                     violations.Add(new InvariantViolation(
-                        Id: $"{trace.DeviceId}:upload-lag-p99",
+                        Id: $"{trace.DeviceId}:upload-lag-p99:{(windowBucket ? "window" : "historical")}",
                         DeviceId: trace.DeviceId,
                         OccurredAtUtc: ToUtc(worst.EventTime),
                         Fields: Fields(
                             ("kind", "upload-lag-p99"),
                             ("p99LagMinutes", p99Lag.ToString("F1")),
+                            ("sampleCount", bucketSamples.Count.ToString()),
                             ("worstLagMinutes", Math.Max(0, (worst.CreatedAt - worst.EventTime).TotalMinutes).ToString("F1")),
-                            ("isNew", isNew ? "true" : "false"))));
+                            ("isNew", windowBucket ? "true" : "false"))));
                 }
             }
         }
 
-        if (totalViolations > 0)
+        if (windowViolations > 0)
         {
-            bool isWarning = newViolations == 0 && historicalViolations > 0;
             return InvariantResult.Failure(
-                $"INV-P20 {(isWarning ? "WARN" : "FAIL")}: 检测到 {totalViolations} 处无声明空档或上传滞后超标 (新增 {newViolations}, 存量 {historicalViolations})",
+                $"INV-P20 FAIL: 检测到 {windowViolations} 处窗内无声明空档或上传滞后超标（历史欠账 {historicalViolations} 处，只计数）",
                 totalViolations,
-                newViolations,
+                windowViolations,
                 historicalViolations,
                 samples,
                 earliest,
                 latest,
                 note,
                 fallback,
-                isWarning: isWarning,
                 violations: violations);
+        }
+
+        if (historicalViolations > 0)
+        {
+            return InvariantResult.Success(
+                $"INV-P20 PASS: 窗内无声明空档与上传延迟均在指标内（历史欠账 {historicalViolations} 处，只计数不参与颜色判定）",
+                note,
+                fallback,
+                totalViolations: totalViolations,
+                historicalViolations: historicalViolations,
+                samples: samples,
+                violations: violations,
+                earliestOccurrence: earliest,
+                latestOccurrence: latest);
         }
 
         return InvariantResult.Success("INV-P20 PASS: 设备无声明空档与上传延迟均在指标内", note, fallback);
@@ -1000,7 +1132,7 @@ public static class DataReliabilityInvariants
     /// <summary>
     /// S7 (INV-P21): 断档必须在时间轴上被标记
     /// 判据: 相邻事件之间 &gt; 15 分钟的空洞，必须被"缺数据"类事件（gap 或等价标记）完整覆盖。
-    /// 阈值: 未标记空洞 = 0，断档判定阈值 15.0 分钟。
+    /// 阈值: 未标记空洞 = 0，断档判定阈值 15.0 分钟；按考核线分档（窗内判红 / 窗外只计欠账）。
     /// 为什么是这个阈值: 超过 15m 的无数据空洞若在 UI 上直接拼接或无解释空白，用户无法分辨是设备没用还是系统漏记；必须显示 gap 标记。
     ///
     /// 实现口径（#254 S7，本轮修正）：判据要把**时间线**与**覆盖标记**这两份输入分开看：
@@ -1015,7 +1147,8 @@ public static class DataReliabilityInvariants
     public static InvariantResult CheckS7_TimelineGapMarked(
         IEnumerable<TimelineInterval> intervals,
         InvariantOptions? options = null,
-        DateTime? referenceTimeUtc = null)
+        DateTime? referenceTimeUtc = null,
+        DateTime? assessmentStartUtc = null)
     {
         var (opt, fallback, note) = InvariantOptions.Resolve(options);
         var thresholdMinutes = opt.TimelineGapThresholdMinutes;
@@ -1027,10 +1160,10 @@ public static class DataReliabilityInvariants
         }
 
         var now = referenceTimeUtc ?? DateTime.UtcNow;
-        var cutoff = now.AddHours(-opt.RecentWindowHours);
+        var cutoff = assessmentStartUtc ?? now.AddHours(-opt.AssessmentWindowHours);
 
         int totalViolations = 0;
-        int newViolations = 0;
+        int windowViolations = 0;
         int historicalViolations = 0;
         var samples = new List<string>();
         var violations = new List<InvariantViolation>();
@@ -1071,15 +1204,15 @@ public static class DataReliabilityInvariants
                 if (holeMinutes > thresholdMinutes && !IsFullyCovered(coverage, holeStart, holeEnd))
                 {
                     totalViolations++;
-                    bool isNew = holeEnd >= cutoff;
-                    if (isNew) newViolations++; else historicalViolations++;
+                    bool isWindowViolation = holeEnd >= cutoff;
+                    if (isWindowViolation) windowViolations++; else historicalViolations++;
 
                     earliest = earliest == null || holeStart < earliest ? holeStart : earliest;
                     latest = latest == null || holeEnd > latest ? holeEnd : latest;
 
                     if (samples.Count < opt.MaxSampleCount)
                     {
-                        samples.Add($"Device={deviceGroup.Key}: [{holeStart:yyyy-MM-dd HH:mm:ss} ~ {holeEnd:yyyy-MM-dd HH:mm:ss}] 存在 {holeMinutes:F1}m 未标记空洞 (> {thresholdMinutes:F1}m)");
+                        samples.Add($"Device={deviceGroup.Key}: [{holeStart:yyyy-MM-dd HH:mm:ss} ~ {holeEnd:yyyy-MM-dd HH:mm:ss}] 存在 {holeMinutes:F1}m 未标记空洞 (> {thresholdMinutes:F1}m) [{DescribeScope(isWindowViolation)}]");
                         violations.Add(new InvariantViolation(
                             Id: $"{deviceGroup.Key}:unmarked-hole:{i}",
                             DeviceId: deviceGroup.Key,
@@ -1088,27 +1221,39 @@ public static class DataReliabilityInvariants
                                 ("holeStartUtc", ToUtc(holeStart).ToString("O")),
                                 ("holeEndUtc", ToUtc(holeEnd).ToString("O")),
                                 ("holeMinutes", holeMinutes.ToString("F1")),
-                                ("isNew", isNew ? "true" : "false"))));
+                                ("isNew", isWindowViolation ? "true" : "false"))));
                     }
                 }
             }
         }
 
-        if (totalViolations > 0)
+        if (windowViolations > 0)
         {
-            bool isWarning = newViolations == 0 && historicalViolations > 0;
             return InvariantResult.Failure(
-                $"INV-P21 {(isWarning ? "WARN" : "FAIL")}: 时间轴上存在 {totalViolations} 处未标记的断档空洞 (新增 {newViolations}, 存量 {historicalViolations})",
+                $"INV-P21 FAIL: 时间轴上存在 {windowViolations} 处窗内未标记的断档空洞（历史欠账 {historicalViolations} 处，只计数）",
                 totalViolations,
-                newViolations,
+                windowViolations,
                 historicalViolations,
                 samples,
                 earliest,
                 latest,
                 note,
                 fallback,
-                isWarning: isWarning,
                 violations: violations);
+        }
+
+        if (historicalViolations > 0)
+        {
+            return InvariantResult.Success(
+                $"INV-P21 PASS: 窗内所有 >{thresholdMinutes:F0}m 空洞均已妥善标记为 gap 事件（历史欠账 {historicalViolations} 处，只计数不参与颜色判定）",
+                note,
+                fallback,
+                totalViolations: totalViolations,
+                historicalViolations: historicalViolations,
+                samples: samples,
+                violations: violations,
+                earliestOccurrence: earliest,
+                latestOccurrence: latest);
         }
 
         return InvariantResult.Success("INV-P21 PASS: 所有 >15m 空洞均已妥善标记为 gap 事件", note, fallback);
@@ -1365,8 +1510,11 @@ public static class DataReliabilityInvariants
                 return InvariantResult.Failure(
                     $"INV-C20 WARN: 设备 {report.DeviceId} 覆盖率为 {(ratio * 100.0):F1}% (< 黄线 {(opt.CoverageYellowRatio * 100.0):F0}%)，但报告状态为 '{report.ReportedStatus}' (必须报警告/黄线)",
                     1,
-                    0,
+                    // S9 是现状型指标：它的违规没有业务时间轴，"覆盖率此刻偏低"天然就是**当下**的问题，
+                    // 因此计入窗内计数（historical = 0）—— 否则会出现"黄线却没有窗内违规支撑"，
+                    // 与 REQ-2「红/黄只由窗内违规产生」自相矛盾，也会把这份现状问题误记成历史欠账。
                     1,
+                    0,
                     new[] { $"Device={report.DeviceId}: Coverage={(ratio * 100.0):F1}%, ReportedStatus={report.ReportedStatus}" },
                     null,
                     null,
@@ -1462,14 +1610,15 @@ public static class DataReliabilityInvariants
     ///   2. failed_count &gt; 0 的批次不得处于 completed 状态
     ///   3. 处理计数（accepted/failed/rejected/skipped）全为 0 的批次不得处于 completed（虚假完成/空转批次）
     /// 阈值: 违规批次数 = 0。
-    /// 新增/存量（T4）: 按窗口起点 window_start_utc 分档——落在最近 RecentWindowHours（默认 24h）内为新增，
-    /// 其余为存量；仅有存量违规时降级为黄线警告（存量只计数不报警）。缺省窗口起点一律视为存量。
+    /// 分档: 按窗口起点 window_start_utc 与考核线比较——窗内违规判红，窗外只计历史欠账（REQ-3，取消"仅存量 → 黄"）。
+    /// 缺省窗口起点（MinValue）一律视为历史欠账。分档时间字段沿用现状、本单不改。
     /// 为什么是这个阈值: 客户端条目级校验拒绝（如零时长过滤）被误当成整批失败，会导致质量面板误报同步失败并引导用户无意义重试。
     /// </summary>
     public static InvariantResult CheckS11_StatusSemantics(
         IEnumerable<BatchSyncStatusRecord> batches,
         InvariantOptions? options = null,
-        DateTime? referenceTimeUtc = null)
+        DateTime? referenceTimeUtc = null,
+        DateTime? assessmentStartUtc = null)
     {
         var (opt, fallback, note) = InvariantOptions.Resolve(options);
 
@@ -1480,10 +1629,10 @@ public static class DataReliabilityInvariants
         }
 
         var now = referenceTimeUtc ?? DateTime.UtcNow;
-        var cutoff = now.AddHours(-opt.RecentWindowHours);
+        var cutoff = assessmentStartUtc ?? now.AddHours(-opt.AssessmentWindowHours);
 
         int totalViolations = 0;
-        int newViolations = 0;
+        int windowViolations = 0;
         int historicalViolations = 0;
         var samples = new List<string>();
         var violations = new List<InvariantViolation>();
@@ -1497,22 +1646,24 @@ public static class DataReliabilityInvariants
             if (b.FailedCount == 0 && isFailedStatus)
             {
                 totalViolations++;
-                if (ToUtc(b.WindowStartUtc) >= cutoff) newViolations++; else historicalViolations++;
+                bool isWindowViolation = ToUtc(b.WindowStartUtc) >= cutoff;
+                if (isWindowViolation) windowViolations++; else historicalViolations++;
                 if (samples.Count < opt.MaxSampleCount)
                 {
-                    samples.Add($"Batch={b.BatchId}: FailedCount=0 但状态被标为 '{b.Status}' (应为 completed 或 rejected 语义)");
-                    violations.Add(BatchViolation(b, "failed-without-failure"));
+                    samples.Add($"Batch={b.BatchId}: FailedCount=0 但状态被标为 '{b.Status}' (应为 completed 或 rejected 语义) [{DescribeScope(isWindowViolation)}]");
+                    violations.Add(BatchViolation(b, "failed-without-failure", isWindowViolation));
                 }
             }
             // 2. 有失败却标为已完成
             else if (b.FailedCount > 0 && b.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
             {
                 totalViolations++;
-                if (ToUtc(b.WindowStartUtc) >= cutoff) newViolations++; else historicalViolations++;
+                bool isWindowViolation = ToUtc(b.WindowStartUtc) >= cutoff;
+                if (isWindowViolation) windowViolations++; else historicalViolations++;
                 if (samples.Count < opt.MaxSampleCount)
                 {
-                    samples.Add($"Batch={b.BatchId}: FailedCount={b.FailedCount} > 0 但状态被标为 'completed'");
-                    violations.Add(BatchViolation(b, "completed-with-failures"));
+                    samples.Add($"Batch={b.BatchId}: FailedCount={b.FailedCount} > 0 但状态被标为 'completed' [{DescribeScope(isWindowViolation)}]");
+                    violations.Add(BatchViolation(b, "completed-with-failures", isWindowViolation));
                 }
             }
             // 3. 处理计数全为 0 却标为已完成 (虚假完成 / 空转批次)
@@ -1520,29 +1671,40 @@ public static class DataReliabilityInvariants
             else if ((b.TotalCount == 0 || (b.AcceptedCount == 0 && b.FailedCount == 0 && b.RejectedCount == 0 && b.SkippedCount == 0)) && b.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))
             {
                 totalViolations++;
-                if (ToUtc(b.WindowStartUtc) >= cutoff) newViolations++; else historicalViolations++;
+                bool isWindowViolation = ToUtc(b.WindowStartUtc) >= cutoff;
+                if (isWindowViolation) windowViolations++; else historicalViolations++;
                 if (samples.Count < opt.MaxSampleCount)
                 {
-                    samples.Add($"Batch={b.BatchId}: 处理计数为 0 (accepted=0, failed=0) 却被标为 'completed' (虚假完成/空转批次)");
-                    violations.Add(BatchViolation(b, "empty-run-completed"));
+                    samples.Add($"Batch={b.BatchId}: 处理计数为 0 (accepted=0, failed=0) 却被标为 'completed' (虚假完成/空转批次) [{DescribeScope(isWindowViolation)}]");
+                    violations.Add(BatchViolation(b, "empty-run-completed", isWindowViolation));
                 }
             }
         }
 
-        if (totalViolations > 0)
+        if (windowViolations > 0)
         {
-            bool isWarning = newViolations == 0 && historicalViolations > 0;
             return InvariantResult.Failure(
-                $"INV-M21 {(isWarning ? "WARN" : "FAIL")}: 检测到 {totalViolations} 个批次状态语义与计数指标不自洽 (新增 {newViolations}, 存量 {historicalViolations})",
+                $"INV-M21 FAIL: 检测到 {windowViolations} 个窗内批次状态语义与计数指标不自洽（历史欠账 {historicalViolations} 个，只计数）",
                 totalViolations,
-                newViolations,
+                windowViolations,
                 historicalViolations,
                 samples,
                 null,
                 null,
                 note,
                 fallback,
-                isWarning: isWarning,
+                violations: violations);
+        }
+
+        if (historicalViolations > 0)
+        {
+            return InvariantResult.Success(
+                $"INV-M21 PASS: 窗内所有批次状态与其失败/拒绝计数语义一致（历史欠账 {historicalViolations} 个，只计数不参与颜色判定）",
+                note,
+                fallback,
+                totalViolations: totalViolations,
+                historicalViolations: historicalViolations,
+                samples: samples,
                 violations: violations);
         }
 
@@ -1636,7 +1798,8 @@ public static class DataReliabilityInvariants
     public static InvariantResult CheckS13_SingleInstance(
         IEnumerable<CollectionHeartbeat> heartbeats,
         InvariantOptions? options = null,
-        DateTime? referenceTimeUtc = null)
+        DateTime? referenceTimeUtc = null,
+        DateTime? assessmentStartUtc = null)
     {
         var (opt, fallback, note) = InvariantOptions.Resolve(options);
 
@@ -1647,7 +1810,7 @@ public static class DataReliabilityInvariants
         }
 
         var now = referenceTimeUtc ?? DateTime.UtcNow;
-        var cutoff = now.AddHours(-opt.RecentWindowHours);
+        var cutoff = assessmentStartUtc ?? now.AddHours(-opt.AssessmentWindowHours);
 
         // 先按设备分组做全局（跨小时）重叠检测，再按重叠发生的小时归属违规。
         var violationsByHour = new Dictionary<(string DeviceId, DateTime Hour), (string InstanceA, string InstanceB, double OverlapSeconds, DateTime OccurredAt)>();
@@ -1700,7 +1863,7 @@ public static class DataReliabilityInvariants
         }
 
         int totalViolations = violationsByHour.Count;
-        int newViolations = 0;
+        int windowViolations = 0;
         int historicalViolations = 0;
         var samples = new List<string>();
         var violations = new List<InvariantViolation>();
@@ -1713,8 +1876,8 @@ public static class DataReliabilityInvariants
             var hour = pair.Key.Hour;
             var info = pair.Value;
 
-            bool isNew = info.OccurredAt >= cutoff;
-            if (isNew) newViolations++; else historicalViolations++;
+            bool isWindowViolation = info.OccurredAt >= cutoff;
+            if (isWindowViolation) windowViolations++; else historicalViolations++;
 
             earliest = earliest == null || info.OccurredAt < earliest ? info.OccurredAt : earliest;
             latest = latest == null || info.OccurredAt > latest ? info.OccurredAt : latest;
@@ -1722,8 +1885,8 @@ public static class DataReliabilityInvariants
             if (samples.Count < opt.MaxSampleCount)
             {
                 samples.Add(info.InstanceB == "phase-conflict"
-                    ? $"Device={deviceId}, Hour={hour:yyyy-MM-dd HH:00}: 检测到 {info.InstanceA}"
-                    : $"Device={deviceId}, Hour={hour:yyyy-MM-dd HH:00}: 实例 {info.InstanceA} 与 {info.InstanceB} 并发重叠 {info.OverlapSeconds:F3}s");
+                    ? $"Device={deviceId}, Hour={hour:yyyy-MM-dd HH:00}: 检测到 {info.InstanceA} [{DescribeScope(isWindowViolation)}]"
+                    : $"Device={deviceId}, Hour={hour:yyyy-MM-dd HH:00}: 实例 {info.InstanceA} 与 {info.InstanceB} 并发重叠 {info.OverlapSeconds:F3}s [{DescribeScope(isWindowViolation)}]");
 
                 violations.Add(new InvariantViolation(
                     Id: $"{deviceId}:{hour:yyyy-MM-ddTHH}:00Z",
@@ -1734,31 +1897,29 @@ public static class DataReliabilityInvariants
                             ("kind", "phase-conflict"),
                             ("hourUtc", hour.ToString("O")),
                             ("phases", info.InstanceA),
-                            ("isNew", isNew ? "true" : "false"))
+                            ("isNew", isWindowViolation ? "true" : "false"))
                         : Fields(
                             ("kind", "instance-concurrency"),
                             ("hourUtc", hour.ToString("O")),
                             ("instanceA", info.InstanceA),
                             ("instanceB", info.InstanceB),
                             ("overlapSeconds", info.OverlapSeconds.ToString("F3")),
-                            ("isNew", isNew ? "true" : "false"))));
+                            ("isNew", isWindowViolation ? "true" : "false"))));
             }
         }
 
-        if (totalViolations > 0)
+        if (windowViolations > 0)
         {
-            bool isWarning = newViolations == 0 && historicalViolations > 0;
             return InvariantResult.Failure(
-                $"INV-P22 {(isWarning ? "WARN" : "FAIL")}: 检测到 {totalViolations} 处同一设备多实例并发采集冲突 (新增 {newViolations}, 存量 {historicalViolations})",
+                $"INV-P22 FAIL: 检测到 {windowViolations} 处同一设备窗内多实例并发采集冲突（历史欠账 {historicalViolations} 处，只计数）",
                 totalViolations,
-                newViolations,
+                windowViolations,
                 historicalViolations,
                 samples,
                 earliest,
                 latest,
                 note,
                 fallback,
-                isWarning: isWarning,
                 violations: violations);
         }
 
@@ -1768,6 +1929,20 @@ public static class DataReliabilityInvariants
                 $"INV-P22 UNKNOWN: 设备 {string.Join(", ", inconclusiveDevices)} 出现多个采集实例但区间时长缺失，无法判定是否真的并发采集",
                 note,
                 fallback);
+        }
+
+        if (historicalViolations > 0)
+        {
+            return InvariantResult.Success(
+                $"INV-P22 PASS: 窗内每台设备均保持唯一样本采集实例流（历史欠账 {historicalViolations} 处，只计数不参与颜色判定）",
+                note,
+                fallback,
+                totalViolations: totalViolations,
+                historicalViolations: historicalViolations,
+                samples: samples,
+                violations: violations,
+                earliestOccurrence: earliest,
+                latestOccurrence: latest);
         }
 
         return InvariantResult.Success("INV-P22 PASS: 每台设备均保持唯一样本采集实例流", note, fallback);

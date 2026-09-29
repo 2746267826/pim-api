@@ -200,7 +200,7 @@ public class DataReliabilityGeneratorAssertionTests
     public void INV_P20_S6_InjectedUndeclaredGap_MustTurnRed()
     {
         var undeclaredTrace = MultiDeviceGenerator.GenerateS6UndeclaredGapTrace(seed: 42, byUploadLag: false);
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(undeclaredTrace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(undeclaredTrace, referenceTimeUtc: _referenceUtc);
 
         Assert.False(result.Pass, "[INV-P20] Invariant S6 must fail when device has gap > 30 minutes without offline/shutdown declaration");
         Assert.True(result.TotalViolations > 0, "[INV-P20] TotalViolations must be greater than 0");
@@ -211,7 +211,7 @@ public class DataReliabilityGeneratorAssertionTests
     public void INV_P20_S6_InjectedUploadLagP99_MustTurnRed()
     {
         var lagTrace = MultiDeviceGenerator.GenerateS6UndeclaredGapTrace(seed: 42, byUploadLag: true);
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(lagTrace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(lagTrace, referenceTimeUtc: _referenceUtc);
 
         Assert.False(result.Pass, "[INV-P20] Invariant S6 must fail when upload lag p99 exceeds 30.0 minutes threshold");
         Assert.True(result.TotalViolations > 0, "[INV-P20] TotalViolations must be greater than 0");
@@ -222,7 +222,7 @@ public class DataReliabilityGeneratorAssertionTests
     public void INV_P20_S6_NormalData_MustBeGreen()
     {
         var declaredTrace = MultiDeviceGenerator.GenerateS6DeclaredGapTrace(seed: 42);
-        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(declaredTrace);
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(declaredTrace, referenceTimeUtc: _referenceUtc);
 
         Assert.True(result.Pass, $"[INV-P20] Invariant S6 must pass when gaps have valid shutdown declarations: {result.Detail}");
         Assert.Equal(0, result.TotalViolations);
@@ -237,7 +237,7 @@ public class DataReliabilityGeneratorAssertionTests
     public void INV_P21_S7_InjectedUnmarkedGap_MustTurnRed()
     {
         var unmarkedIntervals = MultiDeviceGenerator.GenerateS7UnmarkedGapIntervals(seed: 42);
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(unmarkedIntervals);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(unmarkedIntervals, referenceTimeUtc: _referenceUtc);
 
         Assert.False(result.Pass, "[INV-P21] Invariant S7 must fail when timeline gap > 15 minutes is missing gap marker interval");
         Assert.True(result.TotalViolations > 0, "[INV-P21] TotalViolations must be greater than 0");
@@ -248,7 +248,7 @@ public class DataReliabilityGeneratorAssertionTests
     public void INV_P21_S7_NormalData_MustBeGreen()
     {
         var markedIntervals = MultiDeviceGenerator.GenerateS7MarkedGapIntervals(seed: 42);
-        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(markedIntervals);
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(markedIntervals, referenceTimeUtc: _referenceUtc);
 
         Assert.True(result.Pass, $"[INV-P21] Invariant S7 must pass when gaps > 15 minutes are bridged with IsGap=true: {result.Detail}");
         Assert.Equal(0, result.TotalViolations);
@@ -357,7 +357,7 @@ public class DataReliabilityGeneratorAssertionTests
         Assert.False(result.Pass, "[INV-M21] Invariant S11 must fail when batch status contradicts item-level counts");
         Assert.True(result.IsFail, "[INV-M21] 混合新增与存量违规时必须保持红尺（不得降级为黄）");
         Assert.True(result.TotalViolations > 0, "[INV-M21] TotalViolations must be greater than 0");
-        Assert.Equal(1, result.NewViolations);
+        Assert.Equal(1, result.WindowViolations);
         Assert.Equal(1, result.HistoricalViolations);
         Assert.Contains("INV-M21", result.Detail);
     }
@@ -407,7 +407,7 @@ public class DataReliabilityGeneratorAssertionTests
     public void INV_P22_S13_InjectedMultiStream_MustTurnRed()
     {
         var multiStreamHeartbeats = PcActivityStreamGenerator.GenerateS13MultiStreamViolations(seed: 42);
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(multiStreamHeartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(multiStreamHeartbeats, referenceTimeUtc: _referenceUtc);
 
         Assert.False(result.Pass, "[INV-P22] Invariant S13 must fail when multiple collector instances report for the same device in the same hour");
         Assert.True(result.TotalViolations > 0, "[INV-P22] TotalViolations must be greater than 0");
@@ -418,7 +418,7 @@ public class DataReliabilityGeneratorAssertionTests
     public void INV_P22_S13_NormalData_MustBeGreen()
     {
         var singleStreamHeartbeats = PcActivityStreamGenerator.GenerateS13SingleStreamNormal(count: 12, seed: 42);
-        var result = DataReliabilityInvariants.CheckS13_SingleInstance(singleStreamHeartbeats);
+        var result = DataReliabilityInvariants.CheckS13_SingleInstance(singleStreamHeartbeats, referenceTimeUtc: _referenceUtc);
 
         Assert.True(result.Pass, $"[INV-P22] Invariant S13 must pass when a single collector instance reports monotonically: {result.Detail}");
         Assert.Equal(0, result.TotalViolations);

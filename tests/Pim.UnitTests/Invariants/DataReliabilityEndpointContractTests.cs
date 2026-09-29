@@ -55,7 +55,7 @@ public class DataReliabilityEndpointContractTests
             GreenCount: 12,
             UnknownCount: 0,
             TotalViolations: 3,
-            NewViolations: 1,
+            WindowViolations: 1,
             HistoricalViolations: 2,
             Notices: new Dictionary<string, string>(),
             Rules: DataReliabilityRuleCatalog.All
@@ -78,7 +78,7 @@ public class DataReliabilityEndpointContractTests
                     Rationale: definition.Rationale,
                     RelatedIssues: definition.RelatedIssues,
                     TotalViolations: definition.Code == "S1" ? 3 : 0,
-                    NewViolations: definition.Code == "S1" ? 1 : 0,
+                    WindowViolations: definition.Code == "S1" ? 1 : 0,
                     HistoricalViolations: definition.Code == "S1" ? 2 : 0,
                     EarliestOccurrenceUtc: null,
                     LatestOccurrenceUtc: null,
@@ -199,20 +199,25 @@ public class DataReliabilityEndpointContractTests
         Assert.True(data.TryGetProperty("greenCount", out _));
         Assert.True(data.TryGetProperty("unknownCount", out _));
         Assert.True(data.TryGetProperty("totalViolations", out _));
-        Assert.True(data.TryGetProperty("newViolations", out _));
+        Assert.True(data.TryGetProperty("windowViolations", out _));
         Assert.True(data.TryGetProperty("historicalViolations", out _));
         Assert.True(data.TryGetProperty("notices", out _));
         Assert.True(data.TryGetProperty("elapsedMilliseconds", out _));
         Assert.True(data.TryGetProperty("message", out _));
+        // WO-RELIABILITY-WINDOW-20260928 AC-7.1：面板账本信息行依赖这两个字段，必须在契约里。
+        Assert.True(data.TryGetProperty("assessmentStartUtc", out _));
+        Assert.True(data.TryGetProperty("assessmentWindowHours", out _));
 
         var first = data.GetProperty("rules")[0];
         foreach (var field in new[]
         {
             "code", "invariantCode", "key", "order", "name", "group", "groupLabel", "status", "statusLabel",
             "detail", "currentValue", "currentValueUnit", "currentValueLabel", "threshold", "criterion",
-            "rationale", "relatedIssues", "totalViolations", "newViolations", "historicalViolations",
+            "rationale", "relatedIssues", "totalViolations", "windowViolations", "historicalViolations",
             "earliestOccurrenceUtc", "latestOccurrenceUtc", "samples", "thresholdFallback", "thresholdNote",
-            "coveredLayers", "trend", "trendDelta", "trendBaselineUtc", "threeState", "scanTruncated"
+            "coveredLayers", "trend", "trendDelta", "trendBaselineUtc", "threeState", "scanTruncated",
+            // AC-6.4：S3 的实测覆盖业务日数（其余尺子为 null）
+            "scanCoveredDays"
         })
         {
             Assert.True(first.TryGetProperty(field, out _), $"rules[0] 缺少字段 {field}");

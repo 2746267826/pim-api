@@ -18,7 +18,7 @@ public interface IDataReliabilityInspectionStore
     IReadOnlyList<DataReliabilityInspectionReport> History { get; }
 
     /// <summary>
-    /// 发布一次体检结果：分配单调递增的 <c>Version</c>，并对比历史基线补齐每条尺子的存量趋势。
+    /// 发布一次体检结果：分配单调递增的 <c>Version</c>，并对比历史基线补齐每条尺子的**历史欠账**趋势。
     /// </summary>
     DataReliabilityInspectionReport Publish(DataReliabilityInspectionReport report);
 }
@@ -110,7 +110,7 @@ public sealed class InMemoryDataReliabilityInspectionStore : IDataReliabilityIns
         return _history[0];
     }
 
-    /// <summary>用基线计算存量趋势：减少/增加/持平；没有基线时为 unknown。</summary>
+    /// <summary>用基线计算历史欠账趋势（D5：本轮不改口径，仍对欠账数环比）：减少/增加/持平；没有基线时为 unknown。</summary>
     private static DataReliabilityRuleReport ApplyTrend(
         DataReliabilityRuleReport rule,
         DataReliabilityInspectionReport? baseline)

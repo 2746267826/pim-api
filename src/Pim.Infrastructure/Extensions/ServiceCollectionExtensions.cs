@@ -79,6 +79,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<AiGatewayQualityInspector>();
         services.AddScoped<IDataQualityInspector, AiGatewayQualityInspector>();
         services.Configure<InvariantOptions>(configuration.GetSection("Invariants"));
+
+        // 进程启动时刻（考核账本起点，REQ-1）：**传实例**而不是传工厂 ——
+        // 单例是懒加载的，用工厂的话"第一次体检"才会构造它，账本起点会晚于真实启动时刻。
+        // 这里在宿主启动（容器构建）时就把它定下来，且只在内存持有、不落库（AC-1.5）。
+        services.AddSingleton<IProcessStartTimeProvider>(new ProcessStartTimeProvider());
         services.AddScoped<DataReliabilityQualityInspector>();
         services.AddScoped<IDataQualityInspector>(sp => sp.GetRequiredService<DataReliabilityQualityInspector>());
         services.AddScoped<IDataReliabilityReportInspector>(sp => sp.GetRequiredService<DataReliabilityQualityInspector>());

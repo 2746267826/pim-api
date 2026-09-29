@@ -103,13 +103,10 @@ public class LiveDbQualityInspectionTests
         // 必须不健康（真实生产数据存在违规，绝不得为假绿灯）
         Assert.False(result.IsHealthy);
 
-        // 断言策略（#254 修复后重写）：
-        // 这份用例连的是"生产形状"的镜像库，其快照会随时间滚动，而各条尺子的结论也会随
-        // 修复上线而变化（例如 S13 从红转绿、S6 从红转黄）。因此**不再逐条冻结状态快照**，
-        // 改为断言那些与快照无关、却能真正抓住"假绿灯/链路坏掉"的结构性事实：
-        //   1. 绿基线 S3/S5/S8/S10/S12 必须保持绿（不得因修复回归）；
-        //   2. 已知存在存量欠账的尺子必须"可判定"（红或黄），绝不能是 UNKNOWN 或绿；
-        //   3. 任何一条尺子都不得因为"取数链路坏了"而退化成 UNKNOWN。
+        // 断言策略（WO-RELIABILITY-WINDOW-20260928 后重写）：
+        // 这份用例连的是"生产形状"的镜像库，其快照会随时间滚动，各条尺子的颜色也会随修复上线而变化。
+        // 机制改造把颜色从"全历史"改为"只丈量考核窗"，因此这里**不再冻结任何颜色快照**，
+        // 改为断言与快照无关、却能真正抓住"假绿灯 / 历史欠账被折色 / 取数链路坏掉"的结构性事实。
         foreach (var key in AllRuleKeys)
         {
             RequireDetail(details, key);
@@ -117,33 +114,7 @@ public class LiveDbQualityInspectionTests
 
         RequireDetail(details, "S8_INV-C19_covered_layers");
 
-        // 1. 绿基线：修复任何条目都不得让这几条回归。
-        string[] mustStayGreen =
-        [
-            "S3_INV-P18", "S5_INV-P19", "S8_INV-C19", "S10_INV-C21", "S12_INV-M22"
-        ];
-        foreach (var key in mustStayGreen)
-        {
-            var actual = RequireDetail(details, key);
-            Assert.StartsWith("🟢 PASS", actual);
-        }
-
-        // 2. 已知存量欠账：生产形状数据上这些尺子必须仍然"看得见问题"（红或黄）。
-        //    这里刻意不断言"必须红"：判据修好之后，只剩存量违规的尺子会正确降级为黄线
-        //    （例如 S6），把它钉成红色等于要求尺子继续误报。
-        string[] mustStillDetectProblems =
-        [
-            "S1_INV-P16", "S2_INV-P17", "S4_INV-C18", "S7_INV-P21", "S11_INV-M21"
-        ];
-        foreach (var key in mustStillDetectProblems)
-        {
-            var actual = RequireDetail(details, key);
-            Assert.True(
-                actual.StartsWith("🔴", StringComparison.Ordinal) || actual.StartsWith("🟡", StringComparison.Ordinal),
-                $"{key} 在存在存量欠账的生产形状数据上既非红也非黄，疑似假绿灯：{actual}");
-        }
-
-        // 3. 绝不接受"因为取数链路坏了而整片 UNKNOWN"：判定项大面积退化说明取数坏了。
+        // 1. 绝不接受"因为取数链路坏了而整片 UNKNOWN"：判定项大面积退化说明取数坏了。
         var unavailable = AllRuleKeys
             .Select(key => (Key: key, Detail: RequireDetail(details, key)))
             .Where(entry => entry.Detail.StartsWith("⚪ UNKNOWN", StringComparison.Ordinal))
@@ -155,7 +126,6 @@ public class LiveDbQualityInspectionTests
             $"不应有尺子因取数失败退化为 UNKNOWN（{unavailable.Count}）：{string.Join(" | ", unavailable)}");
 
         Assert.Equal("DataField", RequireDetail(details, "S8_INV-C19_covered_layers"));
-        Assert.True(result.IssueCount > 0, "生产形状数据上必须检出问题，不能是假绿灯");
 
         // summary 必须与逐条状态自洽，不能出现"面板红、汇总绿"。
         var statusCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -170,12 +140,48 @@ public class LiveDbQualityInspectionTests
             + $"{statusCounts.GetValueOrDefault("Green")} Green, {statusCounts.GetValueOrDefault("Unknown")} Unknown",
             RequireDetail(details, "summary"));
 
-        // 结构化报告（设置页「数据可信度」面板的数据来源）也必须能落到真库上：
-        // 13 条尺子齐全、S2 拿得到三态分布、每条都有阈值文案。
         var report = await inspector.InspectReportAsync(DateTimeOffset.UtcNow);
         Assert.Equal(13, report.Rules.Count);
         Assert.Single(report.Rules, rule => rule.Code == "S2" && rule.ThreeState != null);
         Assert.All(report.Rules, rule => Assert.False(string.IsNullOrWhiteSpace(rule.Threshold)));
+
+        // 2. 形态 1：颜色只能由**窗内**违规撑起 —— 任何红/黄尺子的窗内计数必须 > 0，
+        //    且"窗内 = 0"的尺子必须是绿（历史欠账不得把尺子折黄/折红，AC-2.3 / AC-3.x）。
+        foreach (var rule in report.Rules)
+        {
+            if (rule.Status is "red" or "yellow")
+            {
+                Assert.True(
+                    rule.WindowViolations > 0,
+                    $"{rule.Code} 是 {rule.Status} 却没有窗内违规支撑（窗内 {rule.WindowViolations} / 欠账 {rule.HistoricalViolations}），疑似历史欠账折色");
+            }
+            else if (rule.Status == "green")
+            {
+                Assert.Equal(0, rule.WindowViolations);
+            }
+        }
+
+        // 3. 形态 2：计数不重不漏（AC-2.6），且报告级"违规数"只统计窗内（AC-2.4）。
+        Assert.All(report.Rules, rule =>
+            Assert.Equal(rule.TotalViolations, rule.WindowViolations + rule.HistoricalViolations));
+        Assert.Equal(report.Rules.Sum(rule => rule.WindowViolations), report.TotalViolations);
+        Assert.Equal(report.TotalViolations, report.WindowViolations);
+        Assert.Equal(report.Rules.Sum(rule => rule.HistoricalViolations), report.HistoricalViolations);
+
+        // 4. 生产形状数据上必须**看得见**历史欠账：机制改造是让欠账退出颜色，不是把违规丢掉。
+        Assert.True(
+            report.HistoricalViolations > 0,
+            "生产形状镜像库里存在修复前的大批历史违规，欠账计数不应为 0（否则说明分档或取数出了问题）");
+
+        // 5. 总览状态必须与逐条状态自洽，且只由红/黄/未知支撑。
+        var expectedStatus = report.RedCount > 0
+            ? "red"
+            : report.YellowCount > 0
+                ? "yellow"
+                : report.UnknownCount > 0
+                    ? "unknown"
+                    : "green";
+        Assert.Equal(expectedStatus, report.Status);
     }
 
     /// <summary>取一条必须存在的详情；缺失或为空时报出"缺哪个键、实际有哪些键"，便于定位。</summary>

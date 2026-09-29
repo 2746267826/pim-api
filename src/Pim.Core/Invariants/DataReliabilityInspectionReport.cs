@@ -22,6 +22,11 @@ public sealed record S2ThreeStateDistribution(
 /// 单条尺子的体检结论（体检接口与设置页面板的数据契约）。
 /// 判据细节来自 <see cref="InvariantResult"/>，阈值与判据原文来自 <see cref="DataReliabilityRuleCatalog"/>。
 /// </summary>
+/// <param name="TotalViolations">该尺子的总违规数 = <paramref name="WindowViolations"/> + <paramref name="HistoricalViolations"/>（AC-2.6）。</param>
+/// <param name="WindowViolations">窗内违规数（业务时间 ≥ 考核线）：唯一决定红 / 黄 / 绿。</param>
+/// <param name="HistoricalViolations">历史欠账数（考核线之前）：只计数 / 展示 / 导出。</param>
+/// <param name="ScanTruncated">取数是否命中行数上限；命中时必须显式告知结果可能不完整。</param>
+/// <param name="ScanCoveredDays">S3 专用：取数实际覆盖的业务日数（AC-6.4）；其余尺子为 null。</param>
 public sealed record DataReliabilityRuleReport(
     string Code,
     string InvariantCode,
@@ -41,7 +46,7 @@ public sealed record DataReliabilityRuleReport(
     string Rationale,
     IReadOnlyList<int> RelatedIssues,
     int TotalViolations,
-    int NewViolations,
+    int WindowViolations,
     int HistoricalViolations,
     DateTimeOffset? EarliestOccurrenceUtc,
     DateTimeOffset? LatestOccurrenceUtc,
@@ -53,7 +58,8 @@ public sealed record DataReliabilityRuleReport(
     int? TrendDelta,
     DateTimeOffset? TrendBaselineUtc,
     S2ThreeStateDistribution? ThreeState,
-    bool ScanTruncated);
+    bool ScanTruncated,
+    int? ScanCoveredDays = null);
 
 /// <summary>
 /// 一次完整体检的结果（#260）：13 条尺子结论 + 总览计数 + 本次体检时间与耗时。
@@ -62,6 +68,12 @@ public sealed record DataReliabilityRuleReport(
 /// 本版本不判红/黄/绿**（R4-P1 / AC-10.3），因此它是独立区块而不是第 14 条尺子，
 /// 既不参与 <see cref="RedCount"/> / <see cref="YellowCount"/> / <see cref="GreenCount"/> 统计，
 /// 也不改变 <see cref="Status"/>。
+/// </para>
+/// <para>
+/// 计数口径（WO-RELIABILITY-WINDOW-20260928 REQ-2 / AC-2.4）：
+/// <see cref="TotalViolations"/> **只统计窗内违规**（历史欠账不得计入总览违规数与总览状态），
+/// <see cref="WindowViolations"/> 与它同值；<see cref="HistoricalViolations"/> 是 13 条尺子的历史欠账合计
+/// （含绿灯尺子的欠账），只展示、不参与颜色。
 /// </para>
 /// </summary>
 public sealed record DataReliabilityInspectionReport(
@@ -74,12 +86,14 @@ public sealed record DataReliabilityInspectionReport(
     int GreenCount,
     int UnknownCount,
     int TotalViolations,
-    int NewViolations,
+    int WindowViolations,
     int HistoricalViolations,
     IReadOnlyDictionary<string, string> Notices,
     IReadOnlyList<DataReliabilityRuleReport> Rules,
     string Message,
-    IReadOnlyList<DeviceLivenessInspectionItem>? DeviceLiveness = null);
+    IReadOnlyList<DeviceLivenessInspectionItem>? DeviceLiveness = null,
+    DateTimeOffset AssessmentStartUtc = default,
+    double AssessmentWindowHours = 0);
 
 /// <summary>
 /// 违规清单中的一条（ID + 业务时间 + 设备 + 关键字段），用于下钻导出，避免把大列表塞进页面。
@@ -89,7 +103,8 @@ public sealed record DataReliabilityViolationItem(
     string Id,
     string DeviceId,
     DateTimeOffset OccurredAtUtc,
-    IReadOnlyDictionary<string, string> Fields);
+    IReadOnlyDictionary<string, string> Fields,
+    bool IsNew = false);
 
 /// <summary>
 /// 某条尺子的完整违规清单导出结果。

@@ -4,7 +4,12 @@ using System.Collections.Generic;
 namespace Pim.Core.Invariants;
 
 /// <summary>
-/// 不变量状态四态：绿（通过）、黄（警告/存量欠账）、红（违规/新增）、未知（数据源缺失/未接线）。
+/// 不变量状态四态：绿（窗内无违规）、黄（阈值型警告）、红（窗内违规）、未知（数据源缺失/未接线）。
+/// <para>
+/// 口径（WO-RELIABILITY-WINDOW-20260928 REQ-2）：红 / 黄 / 绿**只由窗内违规决定**；
+/// 历史欠账（考核线之前的违规）只计数、可下钻、可导出，**不参与任何颜色判定**——
+/// "仅欠账"必须返回 <see cref="InvariantStatus.Pass"/>，不得折黄折红。
+/// </para>
 /// </summary>
 public enum InvariantStatus
 {
@@ -34,7 +39,14 @@ public sealed class InvariantResult
     public InvariantStatus Status { get; init; } = InvariantStatus.Pass;
     public string Detail { get; init; } = string.Empty;
     public int TotalViolations { get; init; } = 0;
-    public int NewViolations { get; init; } = 0;
+
+    /// <summary>
+    /// 窗内违规数（业务时间 ≥ 考核线）：**唯一决定红 / 黄 / 绿的计数**。
+    /// 考核线 = max(体检时刻 − 考核窗, 进程启动时刻)，见 <see cref="DataReliabilityAssessmentWindow"/>。
+    /// </summary>
+    public int WindowViolations { get; init; } = 0;
+
+    /// <summary>历史欠账数（业务时间 &lt; 考核线）：只计数 / 展示 / 导出，不参与颜色判定。</summary>
     public int HistoricalViolations { get; init; } = 0;
     public IReadOnlyList<string> Samples { get; init; } = Array.Empty<string>();
 
@@ -67,26 +79,49 @@ public sealed class InvariantResult
         TotalViolations = tuple.pass ? 0 : 1
     };
 
+    /// <summary>
+    /// 绿（通过）。允许携带双计数与违规项，用于"窗内 0 违规、但窗外有历史欠账"的场景（REQ-2 / AC-2.1）：
+    /// 状态必须是绿，欠账数字与下钻清单仍要看得见。
+    /// </summary>
     public static InvariantResult Success(
         string detail,
         string? thresholdNote = null,
         bool thresholdFallback = false,
-        string? coveredLayers = null) => new()
+        string? coveredLayers = null,
+        int totalViolations = 0,
+        int historicalViolations = 0,
+        IReadOnlyList<string>? samples = null,
+        IReadOnlyList<InvariantViolation>? violations = null,
+        DateTime? earliestOccurrence = null,
+        DateTime? latestOccurrence = null) => new()
     {
         Pass = true,
         Status = InvariantStatus.Pass,
         Detail = detail,
+        TotalViolations = totalViolations,
+        WindowViolations = 0,
+        HistoricalViolations = historicalViolations,
+        Samples = samples ?? Array.Empty<string>(),
+        Violations = violations ?? Array.Empty<InvariantViolation>(),
+        EarliestOccurrence = earliestOccurrence,
+        LatestOccurrence = latestOccurrence,
         ThresholdNote = thresholdNote,
         ThresholdFallback = thresholdFallback,
         CoveredLayers = coveredLayers
     };
 
+    /// <summary>
+    /// 黄（阈值型警告，例如 S3 的 14.4h 清醒窗口警告线）。
+    /// 注意：本工厂**不得**再用于"仅历史欠账"——那种情况按 REQ-2 必须是绿。
+    /// </summary>
     public static InvariantResult Warning(
         string detail,
         IReadOnlyList<string>? samples = null,
         string? thresholdNote = null,
         bool thresholdFallback = false,
-        string? coveredLayers = null)
+        string? coveredLayers = null,
+        int? totalViolations = null,
+        int historicalViolations = 0)
     {
         string fullDetail = detail;
         if (samples != null && samples.Count > 0)
@@ -99,9 +134,9 @@ public sealed class InvariantResult
             Pass = true,
             Status = InvariantStatus.Warning,
             Detail = fullDetail,
-            TotalViolations = 0,
-            NewViolations = 0,
-            HistoricalViolations = samples?.Count ?? 1,
+            TotalViolations = totalViolations ?? samples?.Count ?? 1,
+            WindowViolations = totalViolations ?? samples?.Count ?? 1,
+            HistoricalViolations = historicalViolations,
             Samples = samples ?? Array.Empty<string>(),
             ThresholdNote = thresholdNote,
             ThresholdFallback = thresholdFallback,
@@ -127,7 +162,7 @@ public sealed class InvariantResult
     public static InvariantResult Failure(
         string detail,
         int totalViolations = 1,
-        int newViolations = 0,
+        int windowViolations = 0,
         int historicalViolations = 0,
         IReadOnlyList<string>? samples = null,
         DateTime? earliestOccurrence = null,
@@ -149,8 +184,8 @@ public sealed class InvariantResult
             Pass = false,
             Status = isWarning ? InvariantStatus.Warning : InvariantStatus.Fail,
             Detail = fullDetail,
-            TotalViolations = totalViolations > 0 ? totalViolations : (newViolations + historicalViolations),
-            NewViolations = newViolations,
+            TotalViolations = totalViolations > 0 ? totalViolations : (windowViolations + historicalViolations),
+            WindowViolations = windowViolations,
             HistoricalViolations = historicalViolations,
             Samples = samples ?? Array.Empty<string>(),
             Violations = violations ?? Array.Empty<InvariantViolation>(),

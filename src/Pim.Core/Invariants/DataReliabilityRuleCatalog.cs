@@ -52,7 +52,7 @@ public static class DataReliabilityRuleCatalog
             Group: DataReliabilityGroup.SelfConsistency,
             GroupLabel: "数据自洽",
             Criterion: "同设备、同事件类型的事件区间两两不相交（不存在 A.start < B.end 且 B.start < A.end）；父子层级关系另立规则，不在此判据内。",
-            Threshold: "重叠对数 = 0；最近 24 小时（T4）内发生的重叠计为「新增」红线，更早的计入「存量」只计数不当红线。",
+            Threshold: "重叠对数 = 0；考核线 = max(体检时刻 − 考核窗, 服务进程启动时刻)，考核线之后的重叠计为「窗内」红线，之前的计入「历史欠账」只计数、不参与颜色判定（考核窗默认 7 天）。",
             Rationale: "同一设备在同一时刻不可能产生两个同级别的互斥前台焦点或互斥状态；出现重叠说明采集端裁剪或入库去重损坏，会让时长与频次同时虚高。",
             RelatedIssues: new[] { 249 }),
 
@@ -88,7 +88,7 @@ public static class DataReliabilityRuleCatalog
             Group: DataReliabilityGroup.SelfConsistency,
             GroupLabel: "数据自洽",
             Criterion: "定位按 (device, recorded_at, lat, lon) 唯一；手机事件按 (device, package, event_time, event_type, class_name) 唯一；PC 事件按 (device, timestamp, duration, event_type, app_name, browser, instance_id) 唯一。",
-            Threshold: "新增重复行 = 0；更早的重复行计入「存量」只计数。",
+            Threshold: "重复行 = 0；考核线之后的重复行计为「窗内」红线，之前的计入「历史欠账」只计数、不参与颜色判定。",
             Rationale: "重复事件会导致时长与频次双重虚高，破坏聚合指标的可信度；实测定位 1065/6280 行重复、手机同刻重复 1245 条，都属于无唯一键约束的历史欠账。手机事件的业务键含 class_name：同一时刻同一包名的多行实测是**不同 Activity**（class_name 各异），与写入侧幂等键及数据库唯一索引口径一致。",
             RelatedIssues: new[] { 246 }),
 
@@ -99,7 +99,7 @@ public static class DataReliabilityRuleCatalog
             Name: "时钟可信",
             Group: DataReliabilityGroup.SelfConsistency,
             GroupLabel: "数据自洽",
-            Criterion: "事件时间戳不得超前服务端接收时间超过容差；仅存在历史违规时降级为黄。",
+            Criterion: "事件时间戳不得超前服务端接收时间超过容差；按考核线分档，窗外违规计入「历史欠账」只计数、不参与颜色判定。",
             Threshold: "容差 5.0 分钟（ClockSkewToleranceMinutes）。",
             Rationale: "客户端时钟与网络授时之间存在少许偏差或时钟漂移属正常现象，5 分钟是工业标准网络时间容限；超过 5 分钟属于严重超前或时钟穿越，会让事件落到未来时间轴上。",
             RelatedIssues: Array.Empty<int>()),
@@ -184,7 +184,7 @@ public static class DataReliabilityRuleCatalog
             Group: DataReliabilityGroup.PipelineHealth,
             GroupLabel: "链路健康",
             Criterion: "派生表（时间线块、使用聚合）在最近窗口内有源数据时必须非空；若设计为在线计算，必须显式声明，不允许「存在一张没人写的空表」这种含糊状态。",
-            Threshold: "最近 24 小时（T4）有源数据时，派生表行数 > 0（或显式声明在线计算）。",
+            Threshold: "最近 24 小时（派生表巡检窗口，与考核窗无关）有源数据时，派生表行数 > 0（或显式声明在线计算）。",
             Rationale: "死表或未初始化的空派生表会让查询落入空表返回空白，或让开发者误以为已有预聚合而引发性能雪崩；实测手机时间线块与使用聚合均为 0 行。",
             RelatedIssues: new[] { 247 }),
 

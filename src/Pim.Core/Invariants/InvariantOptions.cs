@@ -38,9 +38,18 @@ public sealed class InvariantOptions
     public double MobileSummaryLagHours { get; set; } = 4.0;
 
     /// <summary>
-    /// T4: 新增与存量欠账分界窗口，单位：小时，默认 24.0
+    /// 考核窗时长，单位：小时，默认 168.0（7 天）。
+    /// 考核线 = max(体检时刻 − 考核窗, 进程启动时刻)；考核线之后的违规（窗内）决定红/黄/绿，
+    /// 之前的违规计入「历史欠账」只计数。与 S9 覆盖率窗口（<see cref="CoverageWindowHours"/>）相互独立。
     /// </summary>
-    public double RecentWindowHours { get; set; } = 24.0;
+    public double AssessmentWindowHours { get; set; } = 168.0;
+
+    /// <summary>
+    /// S9 覆盖率窗口，单位：小时，默认 24.0。
+    /// S9 是现状指标（设备此刻是否在正常出数），**不套考核窗机制**（A5 / AC-5.1）：
+    /// 改考核窗不得影响它，改它也不得影响分档。
+    /// </summary>
+    public double CoverageWindowHours { get; set; } = 24.0;
 
     /// <summary>
     /// T5: 单日活跃硬上限，单位：小时，默认 24.0
@@ -131,7 +140,17 @@ public sealed class InvariantOptions
         if (UndeclaredOfflineGapMinutes <= 0) errors.Add("UndeclaredOfflineGapMinutes must be > 0");
         if (MaxUploadLagP99Minutes <= 0) errors.Add("MaxUploadLagP99Minutes must be > 0");
         if (MobileSummaryLagHours <= 0) errors.Add("MobileSummaryLagHours must be > 0");
-        if (RecentWindowHours <= 0) errors.Add("RecentWindowHours must be > 0");
+        if (AssessmentWindowHours < DataReliabilityAssessmentWindow.MinHours ||
+            AssessmentWindowHours > DataReliabilityAssessmentWindow.MaxHours)
+        {
+            errors.Add($"AssessmentWindowHours must be in [{DataReliabilityAssessmentWindow.MinHours}, {DataReliabilityAssessmentWindow.MaxHours}]");
+        }
+
+        if (CoverageWindowHours < DataReliabilityAssessmentWindow.MinHours ||
+            CoverageWindowHours > DataReliabilityAssessmentWindow.MaxHours)
+        {
+            errors.Add($"CoverageWindowHours must be in [{DataReliabilityAssessmentWindow.MinHours}, {DataReliabilityAssessmentWindow.MaxHours}]");
+        }
         if (MaxDailyActiveHours <= 0 || MaxDailyActiveHours > 24.0) errors.Add("MaxDailyActiveHours must be > 0 and <= 24.0");
         if (AwakeWindowHours <= 0 || AwakeWindowHours > 24.0) errors.Add("AwakeWindowHours must be > 0 and <= 24.0");
         if (AwakeWindowWarningRatio <= 0 || AwakeWindowWarningRatio > 1.0) errors.Add("AwakeWindowWarningRatio must be in (0, 1.0]");
@@ -167,7 +186,8 @@ public sealed class InvariantOptions
         yield return (nameof(UndeclaredOfflineGapMinutes), UndeclaredOfflineGapMinutes);
         yield return (nameof(MaxUploadLagP99Minutes), MaxUploadLagP99Minutes);
         yield return (nameof(MobileSummaryLagHours), MobileSummaryLagHours);
-        yield return (nameof(RecentWindowHours), RecentWindowHours);
+        yield return (nameof(AssessmentWindowHours), AssessmentWindowHours);
+        yield return (nameof(CoverageWindowHours), CoverageWindowHours);
         yield return (nameof(MaxDailyActiveHours), MaxDailyActiveHours);
         yield return (nameof(AwakeWindowHours), AwakeWindowHours);
         yield return (nameof(AwakeWindowWarningRatio), AwakeWindowWarningRatio);

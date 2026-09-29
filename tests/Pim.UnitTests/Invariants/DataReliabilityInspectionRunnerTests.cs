@@ -53,7 +53,7 @@ public class DataReliabilityInspectionRunnerTests
             GreenCount: 13,
             UnknownCount: 0,
             TotalViolations: 0,
-            NewViolations: 0,
+            WindowViolations: 0,
             HistoricalViolations: 0,
             Notices: new Dictionary<string, string>(),
             Rules: DataReliabilityRuleCatalog.All
@@ -76,7 +76,7 @@ public class DataReliabilityInspectionRunnerTests
                     Rationale: definition.Rationale,
                     RelatedIssues: definition.RelatedIssues,
                     TotalViolations: 0,
-                    NewViolations: 0,
+                    WindowViolations: 0,
                     HistoricalViolations: 0,
                     EarliestOccurrenceUtc: null,
                     LatestOccurrenceUtc: null,
