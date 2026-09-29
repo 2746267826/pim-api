@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.pim.app.location.PolicyTransitionWriteFailure
+import com.pim.app.location.PolicyTransitionWriteFailureSource
 import com.pim.app.location.service.ForegroundLocationController
 import com.pim.app.mobile.sync.MobileSyncScheduler
 import com.pim.app.permissions.PermissionStatusRepository
@@ -22,6 +24,8 @@ import com.pim.app.recovery.CollectionState
 import com.pim.app.recovery.RunningStateRestorer
 import com.pim.app.schedule.ScheduleCacheStore
 import com.pim.app.status.PermissionStatusSnapshot
+import com.pim.app.status.PolicyTransitionHistorySource
+import com.pim.app.status.PolicyTransitionSnapshot
 import com.pim.core.models.ClientShellLatestResponse
 import com.pim.core.network.ApiService
 import com.pim.core.settings.PimServerEndpoints
@@ -81,7 +85,15 @@ data class SettingsUiState(
     val latestVersion: String? = null,
     val updateUrl: String? = null,
     val updateError: String? = null,
-    val updateCheckedAt: String? = null
+    val updateCheckedAt: String? = null,
+    /** WO-ANDROID-POLICY-TRANSITION-20260928 REQ-5：30 天窗口内的切换记录（时间倒序）。 */
+    val policyHistory: List<PolicyTransitionSnapshot> = emptyList(),
+    /** REQ-5：30 天窗口内条数（「30 天内共 N 条」逐字取它，AC-5.4）。 */
+    val policyHistoryTotalInWindow: Int = 0,
+    /** REQ-5（D-3 / P2）：默认只显示 20 条，展开后在板块内显示全部。 */
+    val policyHistoryExpanded: Boolean = false,
+    /** REQ-3：写入失败状态（板块顶部提示 + 诊断导出字段）。 */
+    val policyTransitionWriteFailure: PolicyTransitionWriteFailure = PolicyTransitionWriteFailure.None
 )
 
 private enum class SaveServerUrlResult {
@@ -106,6 +118,8 @@ class SettingsViewModel @Inject constructor(
     private val webViewSiteDataCleaner: WebViewSiteDataCleaner,
     private val scheduleCacheStore: ScheduleCacheStore,
     private val api: ApiService,
+    private val policyTransitionHistorySource: PolicyTransitionHistorySource,
+    private val policyTransitionWriteFailureSource: PolicyTransitionWriteFailureSource,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
     private val _state = MutableStateFlow(SettingsUiState())
@@ -114,6 +128,32 @@ class SettingsViewModel @Inject constructor(
     init {
         refresh(runProbe = false)
         viewModelScope.launch { checkUpdate() }
+        observePolicyTransitionHistory()
+    }
+
+    /** REQ-5：历史板块的数据流（30 天窗口 + 窗口内计数），以及 REQ-3 的失败状态。 */
+    private fun observePolicyTransitionHistory() {
+        viewModelScope.launch {
+            // 行与分母来自同一个窗口快照，AC-5.4 的「N 与可见条数一致」不会因窗口漂移而破。
+            policyTransitionHistorySource.observeWindow().collect { window ->
+                _state.update {
+                    it.copy(
+                        policyHistory = window.rows,
+                        policyHistoryTotalInWindow = window.totalInWindow
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            policyTransitionWriteFailureSource.state.collect { failure ->
+                _state.update { it.copy(policyTransitionWriteFailure = failure) }
+            }
+        }
+    }
+
+    /** REQ-5（D-7）：板块内「展开全部」，不新建二级页面。 */
+    fun expandPolicyTransitionHistory() {
+        _state.update { it.copy(policyHistoryExpanded = true) }
     }
 
     fun refresh() {

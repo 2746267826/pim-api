@@ -140,6 +140,16 @@ class UpdateCheckViewModelTest {
             webViewSiteDataCleaner = cleaner,
             scheduleCacheStore = cacheStore,
             api = fakeApi,
+            policyTransitionHistorySource = object : com.pim.app.status.PolicyTransitionHistorySource {
+                override fun observeLatest() =
+                    kotlinx.coroutines.flow.flowOf(null as com.pim.app.status.PolicyTransitionSnapshot?)
+                override fun observeWindow() =
+                    kotlinx.coroutines.flow.flowOf(com.pim.app.status.PolicyTransitionWindow())
+            },
+            policyTransitionWriteFailureSource = object : com.pim.app.location.PolicyTransitionWriteFailureSource {
+                override val state =
+                    kotlinx.coroutines.flow.MutableStateFlow(com.pim.app.location.PolicyTransitionWriteFailure.None)
+            },
             appContext = context
         )
     }

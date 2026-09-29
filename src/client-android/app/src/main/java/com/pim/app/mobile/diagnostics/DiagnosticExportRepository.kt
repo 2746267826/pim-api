@@ -5,6 +5,8 @@ import android.os.Build
 import android.os.StatFs
 import androidx.room.withTransaction
 import com.pim.app.data.AppDatabase
+import com.pim.app.location.PolicyTransitionWriteFailure
+import com.pim.app.location.PolicyTransitionWriteFailureSource
 import com.pim.app.location.service.ForegroundLocationRuntimeState
 import com.pim.app.mobile.logs.StructuredLogRepository
 import com.pim.app.permissions.PermissionStatusRepository
@@ -93,6 +95,13 @@ class DiagnosticExportRepository internal constructor(
     },
     private val runtimeSnapshot: () -> ForegroundLocationRuntimeState = {
         ForegroundLocationRuntimeState()
+    },
+    /**
+     * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-3：策略切换写入失败状态
+     * （连续失败次数 + 最近失败时间），随诊断导出一起给出（AC-3.1 ③）。
+     */
+    private val policyTransitionWriteFailure: () -> PolicyTransitionWriteFailure = {
+        PolicyTransitionWriteFailure.None
     }
 ) : DiagnosticOperations {
     @Inject constructor(
@@ -103,7 +112,8 @@ class DiagnosticExportRepository internal constructor(
         redactor: DiagnosticRedactor,
         connectionProbeStore: ConnectionProbeStore,
         permissionStatusRepository: PermissionStatusRepository,
-        scheduleWindowRepository: ScheduleWindowRepository
+        scheduleWindowRepository: ScheduleWindowRepository,
+        policyTransitionWriteFailureSource: PolicyTransitionWriteFailureSource
     ) : this(
         context = context,
         db = db,
@@ -114,7 +124,8 @@ class DiagnosticExportRepository internal constructor(
         permissionSnapshot = { permissionStatusRepository.snapshot() },
         serviceRunning = { com.pim.app.location.service.ForegroundLocationService.isRunning() },
         scheduleSnapshot = { scheduleWindowRepository.snapshot.value },
-        runtimeSnapshot = { com.pim.app.location.service.ForegroundLocationService.runtimeState.value }
+        runtimeSnapshot = { com.pim.app.location.service.ForegroundLocationService.runtimeState.value },
+        policyTransitionWriteFailure = { policyTransitionWriteFailureSource.state.value }
     )
 
     override suspend fun export(includeRecentLocations: Boolean): DiagnosticExportResult = withContext(dispatcher) {
@@ -420,6 +431,14 @@ class DiagnosticExportRepository internal constructor(
         status.put("currentPolicyMode", rt.currentPolicyMode)
         status.put("currentPolicyReason", rt.currentPolicyReason ?: JSONObject.NULL)
         status.put("currentPolicyRequestIntervalMillis", rt.requestIntervalMillis ?: JSONObject.NULL)
+
+        // REQ-3：写入失败可见化——导出新增「连续失败次数 + 最近一次失败时间」（AC-3.1 ③）。
+        val writeFailure = policyTransitionWriteFailure()
+        status.put("policyTransitionWriteFailureCount", writeFailure.consecutiveFailures)
+        status.put(
+            "policyTransitionWriteLastFailureAtUtc",
+            writeFailure.lastFailureAtUtcMillis ?: JSONObject.NULL
+        )
 
         val transitions = dao.recentPolicyTransitions(limit = 20).first()
         val transitionsArr = JSONArray()

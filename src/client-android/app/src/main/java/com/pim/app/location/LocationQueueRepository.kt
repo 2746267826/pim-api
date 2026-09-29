@@ -25,9 +25,13 @@ import javax.inject.Inject
  * 滤波与舍弃交给服务端（A9 / A11）。`sprintSampleCount` 与入库条数的对账（AC-4.5）
  * 依赖这里「不吞点」这一性质，改动前请先读 REQ-15。
  */
-class LocationQueueRepository @Inject constructor(
-    private val dao: MobileDataDao
-) {
+class LocationQueueRepository internal constructor(
+    private val dao: MobileDataDao,
+    private val nowMillis: () -> Long
+) : PolicyTransitionRecorder {
+    @Inject
+    constructor(dao: MobileDataDao) : this(dao, System::currentTimeMillis)
+
     /**
      * 入库一条已通过质量门的定位点。
      *
@@ -53,13 +57,18 @@ class LocationQueueRepository @Inject constructor(
         )
     }
 
-    suspend fun recordPolicyTransition(
+    /**
+     * WO-ANDROID-POLICY-TRANSITION-20260928 REQ-1：这是**生产写入路径**。
+     *
+     * 通过 [PolicyTransitionRecorder] 由 `ForegroundLocationService` 持有；此前它是无人调用的
+     * 死代码（提交 `2067be8f` 删掉了兜底分支），现在重新接线并被真实接线测试守住。
+     */
+    override suspend fun record(
         fromMode: LocationPolicyMode?,
-        decision: PolicyDecision,
-        occurredAtUtc: Long = System.currentTimeMillis()
+        decision: PolicyDecision
     ): Long {
         return dao.insertPolicyTransition(
-            MobileLocationPolicyTransitionEntity.fromDecision(fromMode, decision, occurredAtUtc)
+            MobileLocationPolicyTransitionEntity.fromDecision(fromMode, decision, nowMillis())
         )
     }
 }

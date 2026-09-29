@@ -3,6 +3,7 @@ package com.pim.app.data
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -253,6 +254,54 @@ class MobileDataDaoDiagnosticTest {
         fromMode = "PowerSavingNormal", toMode = "Active",
         reason = "test", occurredAtUtc = 1000L
     )
+
+    private fun policyTransitionAt(occurredAtUtc: Long, reason: String = "test") =
+        MobileLocationPolicyTransitionEntity(
+            fromMode = null, toMode = "PowerSavingNormal",
+            reason = reason, occurredAtUtc = occurredAtUtc
+        )
+
+    // ── WO-ANDROID-POLICY-TRANSITION-20260928 REQ-4 / REQ-5 / REQ-6 ──────────
+
+    @Test
+    fun policyTransitionPurgeKeepsExactlyThirtyDaysOld() = runTest {
+        val day = 24L * 60L * 60L * 1000L
+        val now = 1_756_684_800_000L
+        dao.insertPolicyTransition(policyTransitionAt(now - 31 * day, "31 天前"))
+        dao.insertPolicyTransition(policyTransitionAt(now - 30 * day, "恰好 30 天"))
+        dao.insertPolicyTransition(policyTransitionAt(now - 29 * day, "29 天前"))
+
+        val deleted = dao.deletePolicyTransitionsOlderThan(now - 30 * day)
+
+        assertEquals("严格小于判据：只有 31 天前那条被删", 1, deleted)
+        assertEquals(2, dao.policyTransitionCount())
+    }
+
+    @Test
+    fun latestPolicyTransitionPicksNewestAndBreaksTiesByIdDescending() = runTest {
+        val tieMillis = 1_782_000_000_000L
+        val first = dao.insertPolicyTransition(policyTransitionAt(tieMillis, "并列第一条"))
+        val second = dao.insertPolicyTransition(policyTransitionAt(tieMillis, "并列第二条"))
+        dao.insertPolicyTransition(policyTransitionAt(tieMillis - 1_000L, "更早"))
+
+        val latest = dao.latestPolicyTransition().first()
+        assertEquals(second, latest?.id)
+        assertEquals("并列第二条", latest?.reason)
+        assertTrue(second > first)
+    }
+
+    @Test
+    fun policyTransitionsSinceFiltersByWindow() = runTest {
+        val day = 24L * 60L * 60L * 1000L
+        val now = 1_756_684_800_000L
+        val since = now - 30 * day
+        dao.insertPolicyTransition(policyTransitionAt(now - 31 * day, "窗口外"))
+        dao.insertPolicyTransition(policyTransitionAt(now - 2 * day, "窗口内旧"))
+        dao.insertPolicyTransition(policyTransitionAt(now - 1 * day, "窗口内新"))
+
+        val rows = dao.policyTransitionsSince(since).first()
+        assertEquals(listOf("窗口内新", "窗口内旧"), rows.map { it.reason })
+    }
 
     private fun batch(
         batchId: String = java.util.UUID.randomUUID().toString(),
