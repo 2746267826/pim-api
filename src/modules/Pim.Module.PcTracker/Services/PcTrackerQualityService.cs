@@ -545,7 +545,7 @@ public sealed class PcTrackerQualityService
 
     private static CoverageGaps BuildCoverage(
         DateTimeOffset rangeStart,
-        DateTimeOffset rangeEnd,
+        DateTimeOffset coverageEnd,
         IReadOnlyCollection<TrackerEventEntity> trackerEvents,
         IReadOnlyCollection<KeystatsSampleEntity> samples,
         bool includeTrailingGap)
@@ -556,13 +556,13 @@ public sealed class PcTrackerQualityService
         void Mark(DateTimeOffset start, DateTimeOffset end)
         {
             var clippedStart = start < rangeStart ? rangeStart : start;
-            var clippedEnd = end > rangeEnd ? rangeEnd : end;
+            var clippedEnd = end > coverageEnd ? coverageEnd : end;
 
             // 零长区间（零时长事件 / KeyStats 采样点）也要算「这个小时有数据」，
             // 否则只有采样、没有窗口事件的小时会被误报成缺数。
             if (clippedEnd <= clippedStart)
             {
-                if (start >= rangeStart && start < rangeEnd)
+                if (start >= rangeStart && start < coverageEnd)
                 {
                     coveredHours.Add((int)Math.Floor((start - rangeStart).TotalHours));
                     if (lastDataAtUtc is null || start > lastDataAtUtc)
@@ -586,7 +586,7 @@ public sealed class PcTrackerQualityService
         foreach (var sample in samples)
             Mark(sample.SampledAtUtc, sample.SampledAtUtc);
 
-        var totalHours = (int)Math.Ceiling((rangeEnd - rangeStart).TotalHours);
+        var totalHours = (int)Math.Ceiling((coverageEnd - rangeStart).TotalHours);
         var gaps = new List<CoverageGap>();
         var missingHourStarts = new List<DateTimeOffset>();
         int? previousCovered = null;
@@ -617,10 +617,10 @@ public sealed class PcTrackerQualityService
         if (includeTrailingGap && lastDataAtUtc is not null)
         {
             var trailingStart = lastDataAtUtc.Value;
-            if (rangeEnd - trailingStart >= MinimumReportedGap)
+            if (coverageEnd - trailingStart >= MinimumReportedGap)
             {
                 trailingGapStart = trailingStart;
-                gaps.Add(new CoverageGap(trailingStart, rangeEnd));
+                gaps.Add(new CoverageGap(trailingStart, coverageEnd));
                 // 第一个「整小时都没数据」的小时：数据恰好停在整点时，该小时本身就算全缺。
                 for (var hour = (int)Math.Ceiling((trailingStart - rangeStart).TotalHours);
                      hour < totalHours;
