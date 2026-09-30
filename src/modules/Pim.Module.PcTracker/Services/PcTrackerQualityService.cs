@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Linq.Expressions;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Operations;
@@ -639,25 +640,27 @@ public sealed class PcTrackerQualityService
     /// </summary>
     private async Task<DateTimeOffset?> ComputeDatabaseContentHorizonAsync(CancellationToken ct)
     {
-        // 事件按**结束时刻**（Timestamp + Duration）计，与 ComputeDataHorizon 同口径：
-        // 只取起点的话，最后一条长事件（数小时）会让「本库最新内容」比真实值早，
-        // 把「整库停住」误判成「内容比心跳旧」。
-        var awLatest = await _db.Set<AwEventEntity>().AsNoTracking()
-            .OrderByDescending(e => e.Timestamp)
-            .Select(e => new { e.Timestamp, e.Duration })
-            .FirstOrDefaultAsync(ct);
-        var trackerLatest = await _db.Set<TrackerEventEntity>().AsNoTracking()
-            .OrderByDescending(e => e.Timestamp)
-            .Select(e => new { e.Timestamp, e.Duration })
-            .FirstOrDefaultAsync(ct);
+        // 事件按**结束时刻**（Timestamp + Duration）计，与 ComputeDataHorizon 同口径。
+        var awHorizon = await MaxEventEndAsync(
+            _db.Set<AwEventEntity>().AsNoTracking(),
+            e => e.Timestamp,
+            e => e.Duration,
+            from => e => e.Timestamp >= from,
+            ct);
+        var trackerHorizon = await MaxEventEndAsync(
+            _db.Set<TrackerEventEntity>().AsNoTracking(),
+            e => e.Timestamp,
+            e => e.Duration,
+            from => e => e.Timestamp >= from,
+            ct);
         var sampleLatest = await _db.Set<KeystatsSampleEntity>().AsNoTracking()
             .OrderByDescending(s => s.SampledAtUtc)
             .Select(s => (DateTimeOffset?)s.SampledAtUtc)
             .FirstOrDefaultAsync(ct);
 
         DateTimeOffset? horizon = null;
-        Consider(awLatest is null ? null : awLatest.Timestamp.AddSeconds(Math.Max(0, awLatest.Duration)));
-        Consider(trackerLatest is null ? null : trackerLatest.Timestamp.AddSeconds(Math.Max(0, trackerLatest.Duration)));
+        Consider(awHorizon);
+        Consider(trackerHorizon);
         Consider(sampleLatest);
 
         return horizon;
@@ -667,6 +670,41 @@ public sealed class PcTrackerQualityService
             if (candidate is not null && (horizon is null || candidate > horizon))
                 horizon = candidate;
         }
+    }
+
+    /// <summary>
+    /// 一张事件表的「内容结束时刻」：全表 <c>max(Timestamp + Duration)</c>（空表返回 null）。
+    /// 不能只用「起点最新那一条 + 它自己的时长」推断 —— 一条更早开始、持续更久的事件可能结束得更晚，
+    /// 会把本库的内容终点报早，让「读数为什么旧」给出错误的时刻。
+    /// </summary>
+    private static async Task<DateTimeOffset?> MaxEventEndAsync<TEntity>(
+        IQueryable<TEntity> source,
+        Expression<Func<TEntity, DateTimeOffset>> timestampSelector,
+        Expression<Func<TEntity, double>> durationSelector,
+        Func<DateTimeOffset, Expression<Func<TEntity, bool>>> windowFilter,
+        CancellationToken ct)
+        where TEntity : class
+    {
+        if (!await source.AnyAsync(ct))
+            return null;
+
+        // 只有起点落在 [maxTimestamp - maxDuration, maxTimestamp] 内的事件，其结束时刻才可能晚于 maxTimestamp；
+        // 因此在这个窗口内取 max(Timestamp + Duration) 与全表结果一致，无需全表扫描。
+        var maxTimestamp = await source.MaxAsync(timestampSelector, ct);
+        var maxDurationSeconds = Math.Max(0, await source.MaxAsync(durationSelector, ct));
+        var windowStart = maxTimestamp.AddSeconds(-maxDurationSeconds);
+
+        var horizon = maxTimestamp;
+        var timestampOf = timestampSelector.Compile();
+        var durationOf = durationSelector.Compile();
+        foreach (var entity in await source.Where(windowFilter(windowStart)).ToListAsync(ct))
+        {
+            var end = timestampOf(entity).AddSeconds(Math.Max(0, durationOf(entity)));
+            if (end > horizon)
+                horizon = end;
+        }
+
+        return horizon;
     }
 
     /// <summary>近 7 个业务日事件数基线（中位数）与本次范围的日均对比。</summary>

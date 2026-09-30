@@ -120,6 +120,48 @@ public sealed class PcQualityLocatabilityTests
     }
 
     [Fact]
+    public async Task GetQualityAsync_ContentHorizonIsTheLatestEventEnd_NotTheLatestStart()
+    {
+        await using var db = CreateDb();
+        // 内容地平线的口径是 max(Timestamp + Duration)，不是「起点最新的那一条 + 它自己的时长」：
+        // 一条更早开始、但持续到 02:00Z 的长事件，比 01:30Z 开始的短事件结束得更晚。
+        var longEvent = DateTimeOffset.Parse("2026-09-28T00:00:00+00:00");
+        AddTrackerEvent(db, longEvent, 7200, "window");
+        AddTrackerEvent(db, DateTimeOffset.Parse("2026-09-28T01:30:00+00:00"), 300, "window");
+        AddSample(db, DateTimeOffset.Parse("2026-09-28T01:00:00+00:00"));
+        AddHeartbeat(db, DateTimeOffset.Parse("2026-09-28T01:50:00+00:00"));
+        await db.SaveChangesAsync();
+
+        var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
+
+        var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
+        // AC-8.1：判据字段必须写出本库真实的内容终点，否则「读数为什么旧」会被解释成错误的时刻。
+        Assert.Equal(longEvent.AddSeconds(7200).ToString("O"), daemon.Details["contentHorizonUtc"]);
+        Assert.Equal("True", daemon.Details["libraryFrozenAtHorizon"]);
+        Assert.Equal("database-or-collector-frozen", daemon.Details["staleCause"]);
+        Assert.Contains(result.Issues, i => i.Code == "database-or-collector-frozen");
+    }
+
+    [Fact]
+    public async Task GetQualityAsync_ContentHorizonCoversAwEvents_NotJustTrackerEvents()
+    {
+        await using var db = CreateDb();
+        // 同一口径要覆盖 AW 事件表：只按「最新起点」推断同样会低估内容终点。
+        var longEvent = DateTimeOffset.Parse("2026-09-28T00:00:00+00:00");
+        AddAwEvent(db, longEvent, 7200);
+        AddAwEvent(db, DateTimeOffset.Parse("2026-09-28T01:30:00+00:00"), 300);
+        AddSample(db, DateTimeOffset.Parse("2026-09-28T00:30:00+00:00"));
+        AddHeartbeat(db, DateTimeOffset.Parse("2026-09-28T01:50:00+00:00"));
+        await db.SaveChangesAsync();
+
+        var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
+
+        var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
+        Assert.Equal(longEvent.AddSeconds(7200).ToString("O"), daemon.Details["contentHorizonUtc"]);
+        Assert.Equal("True", daemon.Details["libraryFrozenAtHorizon"]);
+    }
+
+    [Fact]
     public async Task GetQualityAsync_TrackerEventsExposeBaselineAndVerdict()
     {
         await using var db = CreateDb();
@@ -284,6 +326,19 @@ public sealed class PcQualityLocatabilityTests
             WindowTitle = "Project",
             Date = timestamp.Date,
             RawJson = "{}"
+        });
+
+    private static void AddAwEvent(PimDbContext db, DateTimeOffset timestamp, double duration)
+        => db.Set<AwEventEntity>().Add(new AwEventEntity
+        {
+            DeviceId = "DESKTOP",
+            Timestamp = timestamp,
+            Duration = duration,
+            EventType = "window",
+            AppName = "Code",
+            BucketId = "aw-watcher-window_DESKTOP",
+            BucketType = "currentwindow",
+            DataJson = "{}"
         });
 
     private static void AddSample(PimDbContext db, DateTimeOffset sampledAt)
