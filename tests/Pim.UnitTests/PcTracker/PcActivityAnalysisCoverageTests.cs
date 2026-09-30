@@ -200,6 +200,27 @@ public sealed class PcActivityAnalysisCoverageTests
     }
 
     [Fact]
+    public async Task GetDailyAnalysisAsync_InputOnlyHoursAreNotInSummaryTimeline()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
+        // 记录在案的口径差异（AC-2.3 的已知例外）：
+        // summary.timeline 只收 window / web-page（它是「应用使用时间线」），
+        // 而 REQ-2 之后的 analysis 活跃时长还包含 input-minute。
+        // 只有逐分钟输入、没有窗口事件的小时：analysis > 0 而 timeline = 0 → 2% 容差在这种形状下不成立。
+        db.Set<KeystatsSampleEntity>().AddRange(BuildMinuteSamples(dayStart.AddHours(5), minutes: 60, "device-1"));
+        await db.SaveChangesAsync();
+
+        var tracker = Tracker(db);
+        var analysis = await new PcActivityAnalysisService(tracker).GetDailyAnalysisAsync(Day, 60, CancellationToken.None);
+        var summary = await tracker.GetSummaryAsync(Day, CancellationToken.None);
+
+        // 60 条采样 → 59 条 input-minute 记录（相邻采样的差），覆盖 59 分钟。
+        Assert.Equal(3540, analysis.Blocks[5].ActiveDurationSeconds, 3);
+        Assert.Equal(0, summary.Timeline.Sum(item => item.DurationMinutes));
+    }
+
+    [Fact]
     public async Task GetDailyAnalysisAsync_FullBusinessDay_MeasuresLatencyAndAllocations()
     {
         await using var db = CreateDb();

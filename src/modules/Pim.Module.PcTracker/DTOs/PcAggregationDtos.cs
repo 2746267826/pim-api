@@ -50,4 +50,11 @@ public sealed record PcKeystatsRangeResponse(
     int PeakKps,
     int PeakCps,
     int TotalKeyPresses,
-    int TotalClicks);
+    int TotalClicks,
+    // 以下 4 个字段是「与单日版同构」的补充（REQ-7 / AC-7.3：前端复用同一组件）：
+    // 单日 KeystatsSummary 用 keyPresses / 侧键 / mouseDistance，范围版必须同名给出，
+    // 否则 KeyboardHeatmap 之类按单日字段取数的组件在范围模式下仍然取不到值。
+    int KeyPresses = 0,
+    int SideBackClicks = 0,
+    int SideForwardClicks = 0,
+    double MouseDistance = 0);

@@ -204,10 +204,13 @@ public sealed class PcActivityAggregationService
         var leftClicks = 0;
         var middleClicks = 0;
         var rightClicks = 0;
+        var sideBackClicks = 0;
+        var sideForwardClicks = 0;
         var totalClicks = 0;
         var peakKps = 0;
         var peakCps = 0;
         double scrollDistance = 0;
+        double mouseDistance = 0;
 
         foreach (var row in dailyRows)
         {
@@ -215,8 +218,11 @@ public sealed class PcActivityAggregationService
             leftClicks += row.LeftClicks;
             middleClicks += row.MiddleClicks;
             rightClicks += row.RightClicks;
+            sideBackClicks += row.SideBackClicks;
+            sideForwardClicks += row.SideForwardClicks;
             totalClicks += TotalClicks(row);
             scrollDistance += row.ScrollDistance;
+            mouseDistance += row.MouseDistance;
             peakKps = Math.Max(peakKps, row.PeakKps);
             peakCps = Math.Max(peakCps, row.PeakCps);
 
@@ -233,8 +239,11 @@ public sealed class PcActivityAggregationService
             leftClicks += sample.LeftClicks;
             middleClicks += sample.MiddleClicks;
             rightClicks += sample.RightClicks;
+            sideBackClicks += sample.SideBackClicks;
+            sideForwardClicks += sample.SideForwardClicks;
             totalClicks += TotalClicks(sample);
             scrollDistance += sample.ScrollDistance;
+            mouseDistance += sample.MouseDistance;
             peakKps = Math.Max(peakKps, sample.PeakKps);
             peakCps = Math.Max(peakCps, sample.PeakCps);
 
@@ -267,7 +276,11 @@ public sealed class PcActivityAggregationService
             peakKps,
             peakCps,
             totalKeyPresses,
-            totalClicks);
+            totalClicks,
+            KeyPresses: totalKeyPresses,
+            SideBackClicks: sideBackClicks,
+            SideForwardClicks: sideForwardClicks,
+            MouseDistance: mouseDistance);
     }
 
     /// <summary>与单日版 <c>summary.keystats.totalClicks</c> 同口径：左右中键 + 侧键。</summary>

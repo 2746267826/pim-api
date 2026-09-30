@@ -245,8 +245,19 @@ public sealed class PcTrackerEndpointsE2ETests
 
         var summary = await GetJsonAsync(client, "/api/v1/pc/summary?date=2026-08-01");
         var single = summary.GetProperty("data").GetProperty("keystats");
-        Assert.All(new[] { "keyPressCounts", "topKeys", "leftClicks", "middleClicks", "rightClicks", "scrollDistance", "peakKps", "peakCps" },
+        // AC-7.3：范围响应是单日版的超集，前端可直接复用同一组件（含 keyPresses / 侧键 / mouseDistance）。
+        Assert.All(new[]
+            {
+                "keyPressCounts", "topKeys", "leftClicks", "middleClicks", "rightClicks", "scrollDistance",
+                "peakKps", "peakCps", "keyPresses", "sideBackClicks", "sideForwardClicks", "mouseDistance"
+            },
             field => Assert.True(single.TryGetProperty(field, out _), $"单日响应缺少字段 {field}"));
+        Assert.All(new[]
+            {
+                "keyPresses", "sideBackClicks", "sideForwardClicks", "mouseDistance"
+            },
+            field => Assert.True(data.TryGetProperty(field, out _), $"范围响应缺少字段 {field}"));
+        Assert.Equal(data.GetProperty("totalKeyPresses").GetInt32(), data.GetProperty("keyPresses").GetInt32());
 
         // AC-7.1：范围结果 = 逐日单日 summary.keystats 的聚合（逐键 + 各计数）。
         var expectedKeys = 0;

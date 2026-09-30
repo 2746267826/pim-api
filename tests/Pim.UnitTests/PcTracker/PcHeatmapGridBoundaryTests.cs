@@ -102,8 +102,22 @@ public sealed class PcHeatmapGridBoundaryTests
         Assert.Equal(12_345, cell.KeyPressCount);
         Assert.Equal(12_345, response.MaxKeyCount);
 
+        // hour 维度共用同一批「每日最新快照」：按键按事件数比例分摊，总数仍应来自 12345 而不是 999999。
+        db.Set<AwEventEntity>().Add(new AwEventEntity
+        {
+            DeviceId = "device-1",
+            Timestamp = PcTrackerService.GetBusinessDayStartForQuery(day).AddHours(2),
+            Duration = 600,
+            EventType = "window",
+            AppName = "Code.exe",
+            AppNameNormalized = "code",
+            DataJson = "{}"
+        });
+        await db.SaveChangesAsync();
+
         var hour = await Service(db).GetHeatmapGridAsync(day, day, "hour", CancellationToken.None);
-        Assert.All(Assert.Single(hour.Grid), bucket => Assert.True(bucket.KeyPressCount <= 12_345));
+        var nonZero = Assert.Single(Assert.Single(hour.Grid).Where(b => b.KeyPressCount > 0));
+        Assert.Equal(12_345, nonZero.KeyPressCount);
     }
 
     [Fact]

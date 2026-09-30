@@ -41,6 +41,9 @@ public sealed class PcKeystatsRangeAggregationTests
         double expectedScroll = 0;
         var expectedPeakKps = 0;
         var expectedPeakCps = 0;
+        var expectedSideBack = 0;
+        var expectedSideForward = 0;
+        double expectedMouse = 0;
 
         for (var day = start; day <= end; day = day.AddDays(1))
         {
@@ -54,6 +57,9 @@ public sealed class PcKeystatsRangeAggregationTests
             expectedScroll += keystats.ScrollDistance;
             expectedPeakKps = Math.Max(expectedPeakKps, keystats.PeakKps);
             expectedPeakCps = Math.Max(expectedPeakCps, keystats.PeakCps);
+            expectedSideBack += keystats.SideBackClicks;
+            expectedSideForward += keystats.SideForwardClicks;
+            expectedMouse += keystats.MouseDistance;
             foreach (var (key, count) in keystats.KeyPressCounts)
                 expectedCounts[key] = expectedCounts.GetValueOrDefault(key) + count;
         }
@@ -66,6 +72,11 @@ public sealed class PcKeystatsRangeAggregationTests
         Assert.Equal(expectedScroll, range.ScrollDistance, 6);
         Assert.Equal(expectedPeakKps, range.PeakKps);
         Assert.Equal(expectedPeakCps, range.PeakCps);
+        // AC-7.3：与单日版同构的补充字段（前端复用同一组件）。
+        Assert.Equal(expectedKeys, range.KeyPresses);
+        Assert.Equal(expectedSideBack, range.SideBackClicks);
+        Assert.Equal(expectedSideForward, range.SideForwardClicks);
+        Assert.Equal(expectedMouse, range.MouseDistance, 6);
         Assert.Equal(expectedCounts.Count, range.KeyPressCounts.Count);
         foreach (var (key, count) in expectedCounts)
             Assert.Equal(count, range.KeyPressCounts[key]);
@@ -222,6 +233,9 @@ public sealed class PcKeystatsRangeAggregationTests
             row.ScrollDistance = 100.5 + i;
             row.PeakKps = 5 + (i % 7);
             row.PeakCps = 3 + (i % 4);
+            row.SideBackClicks = 1;
+            row.SideForwardClicks = 2;
+            row.MouseDistance = 1000.5 + i;
             db.Set<KeystatsDailyEntity>().Add(row);
         }
     }
