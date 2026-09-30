@@ -339,18 +339,56 @@ public partial class PcTrackerService
             var bucketEnd = bucketStart.AddHours(1);
             var inBucketAw = awEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
             var inBucketTracker = trackerEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
-            var activeMinutes = (int)Math.Min(60, SumOverlapSecondsCombined(merged, bucketStart, bucketEnd) / 60);
-            var intensity = activeMinutes switch
-            {
-                0 => 0,
-                <= 5 => 1,
-                <= 15 => 2,
-                <= 30 => 3,
-                <= 45 => 4,
-                _ => 5
-            };
+            var activeSeconds = SumOverlapSecondsCombined(merged, bucketStart, bucketEnd);
+            var activeMinutes = (int)Math.Min(60, activeSeconds / 60);
             var localHour = TimeZoneInfo.ConvertTime(bucketStart, timeZone).Hour;
-            return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), localHour, activeMinutes, inBucketAw + inBucketTracker, intensity);
+            return new HeatmapBucket(
+                bucketStart.ToString("O"),
+                bucketEnd.ToString("O"),
+                localHour,
+                activeMinutes,
+                inBucketAw + inBucketTracker,
+                // REQ-3：与 summary / activity-analysis 用同一个「活跃时长占比」分档函数
+                // （此处活跃区间仍是 AW 遗留口径的 window 合并区间，见 PR 说明）。
+                PcActivityIntensity.ForSeconds(activeSeconds, 3600),
+                PcActivityIntensity.MaxLevel);
+        }).ToList();
+    }
+
+    /// <summary>
+    /// 概览热力图的小时桶（REQ-1 / REQ-3）：活跃时长与 <c>activity-analysis</c> 用**同一批记录**
+    /// 走**同一个消解口径** <see cref="PcActivityOverlapResolver"/>，因此同一业务日、同一小时的
+    /// 活跃秒数与分档必然一致（AC-1.1 / AC-3.2），不再出现「两个接口各算一套」。
+    /// </summary>
+    private static List<HeatmapBucket> BuildHourlyHeatmapFromRecords(
+        DateTimeOffset dayStart,
+        IReadOnlyList<PcDetailRecord> records,
+        IReadOnlyList<AwEventEntity> awWindowEvents,
+        IReadOnlyList<TrackerEventEntity> trackerWindowEvents)
+    {
+        var timeZone = ResolveBusinessDayTimeZone();
+        var segments = PcActivityActiveSegments.Resolve(records, dayStart, dayStart.AddDays(1));
+
+        return Enumerable.Range(0, 24).Select(hour =>
+        {
+            var bucketStart = dayStart.AddHours(hour);
+            var bucketEnd = bucketStart.AddHours(1);
+            // 关键：按桶裁剪后求和。直接累加整段时长会让跨小时的段在每个被跨到的小时里各记满一次
+            // （实测 07:30–08:30 的段会让 07、08 两个桶都报 60 分钟/满档），
+            // 与 activity-analysis 的逐块裁剪不一致 → AC-1.1 / AC-3.2 会失败。
+            var activeSeconds = PcActivityActiveSegments.SumOverlapSeconds(segments, bucketStart, bucketEnd);
+            var activeMinutes = (int)Math.Min(60, activeSeconds / 60);
+            var inBucketAw = awWindowEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
+            var inBucketTracker = trackerWindowEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
+            var localHour = TimeZoneInfo.ConvertTime(bucketStart, timeZone).Hour;
+            return new HeatmapBucket(
+                bucketStart.ToString("O"),
+                bucketEnd.ToString("O"),
+                localHour,
+                activeMinutes,
+                inBucketAw + inBucketTracker,
+                PcActivityIntensity.ForSeconds(activeSeconds, 3600),
+                PcActivityIntensity.MaxLevel);
         }).ToList();
     }
 

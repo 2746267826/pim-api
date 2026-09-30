@@ -275,8 +275,13 @@ public class PcTrackerQualityServiceTests
         // Old AW bucket in DB that hasn't been seen for months
         AddBucket(db, "aw-watcher-window_DESKTOP", "currentwindow", seenAt: FixedNowPostAw.AddDays(-100));
 
-        // Add native tracker window event for post-AW date 2026-09-10
-        AddTrackerEvent(db, DateTimeOffset.Parse("2026-09-10T06:10:00+00:00"), duration: 60, eventType: "window");
+        // Add native tracker window event for post-AW date 2026-09-10。
+        // 注意（WO-PC-BACKEND-20260930 REQ-8 之后的新语义）：pc/quality 会把「范围内连续缺数的小时」
+        // 报成 tracker-events-missing-hours。本用例的意图是「AW 退役后不看 AW、只看原生事件即为健康」，
+        // 因此这里把当天的原生事件铺满业务日（从第一条事件起到业务日结束），而不是只放一条。
+        var firstEvent = DateTimeOffset.Parse("2026-09-10T06:10:00+00:00");
+        for (var i = 0; i < 17; i++)
+            AddTrackerEvent(db, firstEvent.AddHours(i), duration: 3500, eventType: "window");
         // Add KeyStats samples
         AddKeyStatsSample(db, DateTimeOffset.Parse("2026-09-10T06:10:00+00:00"), keys: 10);
         AddKeyStatsSample(db, DateTimeOffset.Parse("2026-09-10T06:11:00+00:00"), keys: 12);

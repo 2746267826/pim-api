@@ -370,9 +370,15 @@ public partial class PcTrackerService
         // 闲置时长同样跟随数据源：AW 的 afk 事件 + tracker 的 idle 事件，取区间并集。
         var idleMinutes = ComputeIdleMinutes(awEvents, trackerEvents, dayStart, dayEnd);
 
-        var heatmap = BuildHourlyHeatmapCombined(dayStart, windowEvents, trackerWindowEvents);
         var awRecords = await BuildInterpretedAwDetailRecordsAsync(awEvents, ct);
         var trackerRecords = await BuildInterpretedTrackerDetailRecordsAsync(trackerEvents, ct);
+        // REQ-1 / REQ-3：热力图与 activity-analysis 用同一批记录（window / web-page / input-minute）
+        // 与同一个重叠消解口径，两个接口的活跃时长与强度档位因此可交叉验证。
+        var activeRecords = awRecords
+            .Concat(trackerRecords)
+            .Concat(await LoadInputMinuteRecordsAsync(dayStart, dayEnd, ct))
+            .ToList();
+        var heatmap = BuildHourlyHeatmapFromRecords(dayStart, activeRecords, windowEvents, trackerWindowEvents);
         var timeline = awRecords.Concat(trackerRecords)
             .Where(IsSummaryTimelineRecord)
             .Select(ToTimelineItem)
@@ -419,6 +425,75 @@ public partial class PcTrackerService
         return _timelineSmoothing.Smooth(
             timeline,
             settings.RecommendedMinimumClassificationDurationMinutes).ToList();
+    }
+
+    /// <summary>
+    /// 业务日内的逐分钟输入记录（input-minute），与 <c>/pc/detail?view=interpreted</c> 同一构造口径。
+    /// 概览热力图与 activity-analysis 都要把它并进活跃区间，否则「只有输入、没有窗口事件」的时段
+    /// 会被漏掉（#362 review）。
+    /// </summary>
+    private async Task<List<PcDetailRecord>> LoadInputMinuteRecordsAsync(
+        DateTimeOffset dayStart,
+        DateTimeOffset dayEnd,
+        CancellationToken ct)
+    {
+        var samples = await _db.Set<KeystatsSampleEntity>()
+            .AsNoTracking()
+            .Where(s => s.SampledAtUtc >= dayStart && s.SampledAtUtc < dayEnd)
+            .OrderBy(s => s.PimDeviceId)
+            .ThenBy(s => s.SampledAtUtc)
+            .ToListAsync(ct);
+
+        return ToInputMinuteRecords(samples).ToList();
+    }
+
+    /// <summary>
+    /// 查询范围内的活跃区间并集（REQ-3 / REQ-4 的强度与活跃分钟口径）：
+    /// AW 的 window / web 事件、原生 tracker 的 window / web-page 事件、逐分钟输入记录（input-minute）；
+    /// gap / idle / afk 与 afk 状态的 AW 事件一律不参与（#331）。
+    /// 跨界记录裁剪到范围边界，不整条丢弃也不重复计满。
+    /// </summary>
+    private async Task<List<(DateTimeOffset Start, DateTimeOffset End)>> LoadActiveIntervalUnionAsync(
+        DateTimeOffset rangeStart,
+        DateTimeOffset rangeEnd,
+        CancellationToken ct)
+    {
+        var intervals = new List<(DateTimeOffset Start, DateTimeOffset End)>();
+
+        var awEvents = await _db.Set<AwEventEntity>()
+            .AsNoTracking()
+            .Where(e => e.Timestamp >= rangeStart && e.Timestamp < rangeEnd && e.Duration > 0)
+            .Where(e => e.EventType == "window" || e.EventType == "web")
+            .Where(e => e.AfkStatus == null || e.AfkStatus != "afk")
+            .Select(e => new { e.Timestamp, e.Duration })
+            .ToListAsync(ct);
+        foreach (var e in awEvents)
+            AddClip(e.Timestamp, e.Timestamp.AddSeconds(e.Duration));
+
+        var trackerEvents = await _db.Set<TrackerEventEntity>()
+            .AsNoTracking()
+            .Where(e => e.Timestamp >= rangeStart && e.Timestamp < rangeEnd && e.Duration > 0)
+            .Where(e => e.EventType == "window" || e.EventType == "web-page")
+            .Select(e => new { e.Timestamp, e.Duration })
+            .ToListAsync(ct);
+        foreach (var e in trackerEvents)
+            AddClip(e.Timestamp, e.Timestamp.AddSeconds(e.Duration));
+
+        foreach (var record in await LoadInputMinuteRecordsAsync(rangeStart, rangeEnd, ct))
+        {
+            if (PcActivityActiveSegments.TryGetInterval(record, out var start, out var end))
+                AddClip(start, end);
+        }
+
+        void AddClip(DateTimeOffset start, DateTimeOffset end)
+        {
+            var clippedStart = start < rangeStart ? rangeStart : start;
+            var clippedEnd = end > rangeEnd ? rangeEnd : end;
+            if (clippedEnd > clippedStart)
+                intervals.Add((clippedStart, clippedEnd));
+        }
+
+        return MergeIntervals(intervals);
     }
 
     public async Task<List<HeatmapBucket>> GetHeatmapAsync(DateTime start, DateTime end, CancellationToken ct)
@@ -552,6 +627,36 @@ public partial class PcTrackerService
     {
         var page = Math.Max(1, q.Page);
         var pageSize = Math.Clamp(q.PageSize, 1, 200);
+        var records = await BuildCompleteDetailRecordsAsync(q, ct);
+
+        var totalCount = records.Count;
+        var items = records
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToList();
+
+        return new TypedDetailQueryResponse(
+            items,
+            page,
+            pageSize,
+            totalCount,
+            (int)Math.Ceiling((double)totalCount / pageSize));
+    }
+
+    /// <summary>
+    /// 内部分析路径（REQ-1 / #362）：返回所选范围的**全部**明细记录，不吃 <see cref="QueryCompleteDetailAsync"/>
+    /// 的对外分页契约（<c>PageSize</c> 被夹到 1–200 且只取第 1 页）。
+    /// <para>
+    /// 为什么单独开这个入口而不是放大 <c>Clamp</c> 上限：<c>/pc/detail</c> 的对外分页上限一旦放大，
+    /// 所有 detail 调用的内存与响应体都会一起变大（历史上已因此被审计）。聚合/建议这类内部调用
+    /// 需要的是「覆盖整个业务日」，因此只让内部路径不吃分页限制，对外契约保持不变。
+    /// </para>
+    /// </summary>
+    public async Task<List<PcDetailRecord>> QueryAllDetailRecordsAsync(DetailQueryParams q, CancellationToken ct)
+        => await BuildCompleteDetailRecordsAsync(q, ct);
+
+    private async Task<List<PcDetailRecord>> BuildCompleteDetailRecordsAsync(DetailQueryParams q, CancellationToken ct)
+    {
         var (start, end) = GetDetailQueryRange(q);
 
         var awEvents = await _db.Set<AwEventEntity>()
@@ -595,18 +700,7 @@ public partial class PcTrackerService
         records = ApplyCompleteDetailFilters(records, q).ToList();
         records = ApplyCompleteDetailSort(records, q).ToList();
 
-        var totalCount = records.Count;
-        var items = records
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .ToList();
-
-        return new TypedDetailQueryResponse(
-            items,
-            page,
-            pageSize,
-            totalCount,
-            (int)Math.Ceiling((double)totalCount / pageSize));
+        return records;
     }
 
     public async Task<List<AppCategoryRule>> GetAllCategoriesAsync(CancellationToken ct)
@@ -674,15 +768,43 @@ public partial class PcTrackerService
 
     public async Task<HeatmapGridResponse> GetHeatmapGridAsync(DateTime start, DateTime end, string dimension, CancellationToken ct)
     {
+        if (end.Date < start.Date)
+            throw new ArgumentException("start 不能晚于 end。");
+
+        // REQ-6（#367, P-4 方案 a）：hour 维度按业务日构造「日期 × 24 小时」矩阵，
+        // 但历史行为只返回起始日一行、其余日期被静默忽略 —— 「参数合法但与范围不符」。
+        // 这里明确报错，不再静默给单日结果；单日范围的 hour 行为保持不变。
+        if (string.Equals(dimension, "hour", StringComparison.OrdinalIgnoreCase) && start.Date != end.Date)
+        {
+            throw new ArgumentException(
+                $"dimension=hour 仅支持单日范围（start 与 end 必须是同一天），当前收到 " +
+                $"{start:yyyy-MM-dd} ~ {end:yyyy-MM-dd}。跨日请使用 dimension=day，或按天分别请求。");
+        }
+
         var keystats = await _db.Set<KeystatsDailyEntity>()
             .Where(x => x.SnapshotDate >= start.Date && x.SnapshotDate <= end.Date)
             .ToListAsync(ct);
-        var maxKeyCount = keystats.Any() ? keystats.Max(x => x.KeyPresses) : 1;
 
-        if (dimension == "hour")
+        // 与 summary.keystats / REQ-7 的取数口径一致：每个业务日只认**最近写入**的那条快照。
+        // 一天上报两次时，旧写法会按未排序的 FirstOrDefault 取到旧快照，而 maxKeyCount 又可能来自另一条，
+        // 导致格子里的按键数与色阶上界自相矛盾。
+        var dailyKeystats = keystats
+            .GroupBy(x => x.SnapshotDate.Date)
+            .Select(group => group.OrderByDescending(x => x.CreatedAt).First())
+            .ToList();
+        var maxKeyCount = dailyKeystats.Count > 0 ? dailyKeystats.Max(x => x.KeyPresses) : 1;
+
+        // REQ-3（#364）：网格单元的强度档位与其它接口同量纲 —— 都是「活跃时长占桶时长比例」的 0–5 档，
+        // 活跃区间取 window / web-page / input-minute 三类记录的并集（不含 gap/idle/afk），
+        // 与 /pc/detail 的解释口径一致。
+        var rangeStart = BusinessDayStart(start.Date);
+        var rangeEnd = BusinessDayStart(end.Date).AddDays(1);
+        var activeIntervals = await LoadActiveIntervalUnionAsync(rangeStart, rangeEnd, ct);
+
+        if (string.Equals(dimension, "hour", StringComparison.OrdinalIgnoreCase))
         {
             var targetDate = start.Date;
-            var daily = keystats.FirstOrDefault(x => x.SnapshotDate == targetDate);
+            var daily = dailyKeystats.FirstOrDefault(x => x.SnapshotDate == targetDate);
             var dayStart = BusinessDayStart(targetDate);
             var dayEnd = dayStart.AddDays(1);
             // #303：与概览指标同一口径 —— 合并 AW 与原生 tracker 的 window 事件。
@@ -719,29 +841,47 @@ public partial class PcTrackerService
                     ? totalAwEvents > 0 ? (int)((double)daily.KeyPresses * eventCount / totalAwEvents) : (int)(daily.KeyPresses / 24.0)
                     : 0;
                 var localHour = TimeZoneInfo.ConvertTime(bucketStart, ResolveBusinessDayTimeZone()).Hour;
-                return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), localHour, 0, eventCount, keyCount);
+                var activeSeconds = SumOverlapSecondsCombined(activeIntervals, bucketStart, bucketEnd);
+                var activeMinutes = (int)Math.Min(60, activeSeconds / 60);
+                return new HeatmapGridCell(
+                    bucketStart.ToString("O"),
+                    bucketEnd.ToString("O"),
+                    localHour,
+                    activeMinutes,
+                    eventCount,
+                    PcActivityIntensity.ForSeconds(activeSeconds, 3600),
+                    PcActivityIntensity.MaxLevel,
+                    keyCount);
             }).ToList();
 
-            return new HeatmapGridResponse(new List<List<HeatmapBucket>> { row }, dimension, maxKeyCount);
+            return new HeatmapGridResponse(new List<List<HeatmapGridCell>> { row }, dimension, maxKeyCount);
         }
 
-        var grid = new List<List<HeatmapBucket>>();
-        var rowDays = new List<HeatmapBucket>();
+        var grid = new List<List<HeatmapGridCell>>();
+        var rowDays = new List<HeatmapGridCell>();
         for (var day = start.Date; day <= end.Date; day = day.AddDays(1))
         {
-            var daily = keystats.FirstOrDefault(x => x.SnapshotDate == day);
-            rowDays.Add(new HeatmapBucket(
-                new DateTimeOffset(day, TimeSpan.Zero).ToString("O"),
-                new DateTimeOffset(day.AddDays(1), TimeSpan.Zero).ToString("O"),
+            var daily = dailyKeystats.FirstOrDefault(x => x.SnapshotDate == day);
+            // REQ-4（#365）：day 桶边界必须是业务日窗口 [前一日 20:00Z, 当日 20:00Z)，
+            // 与同接口的 hour 维度、summary.heatmap 一致。此前用 UTC 零点，
+            // 数值归属正确但边界标注错了（前端转 +08:00 后显示 08:00 而不是 04:00）。
+            var bucketStart = BusinessDayStart(day);
+            var bucketEnd = bucketStart.AddDays(1);
+            var activeSeconds = SumOverlapSecondsCombined(activeIntervals, bucketStart, bucketEnd);
+            rowDays.Add(new HeatmapGridCell(
+                bucketStart.ToString("O"),
+                bucketEnd.ToString("O"),
                 (int)day.DayOfWeek,
+                (int)Math.Min(1440, activeSeconds / 60),
                 0,
-                0,
+                PcActivityIntensity.ForSeconds(activeSeconds, TimeSpan.FromDays(1).TotalSeconds),
+                PcActivityIntensity.MaxLevel,
                 daily?.KeyPresses ?? 0));
 
             if (rowDays.Count == 7)
             {
                 grid.Add(rowDays);
-                rowDays = new List<HeatmapBucket>();
+                rowDays = new List<HeatmapGridCell>();
             }
         }
 
@@ -1140,31 +1280,6 @@ public partial class PcTrackerService
                 a.ScrollDistance,
                 totalInteractions > 0 ? (a.KeyPresses + TotalClicks(a)) / totalInteractions : 0))
             .ToList();
-    }
-
-    private static List<HeatmapBucket> BuildHourlyHeatmap(DateTimeOffset dayStart, List<AwEventEntity> events)
-    {
-        var timeZone = ResolveBusinessDayTimeZone();
-        // 去重后的全局并集区间，用于 activeMinutes 去重计算
-        var merged = MergeIntervalsForHeatmap(events.Where(e => e.Duration > 0).ToList());
-        return Enumerable.Range(0, 24).Select(hour =>
-        {
-            var bucketStart = dayStart.AddHours(hour);
-            var bucketEnd = bucketStart.AddHours(1);
-            var inBucket = events.Where(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd).ToList();
-            var activeMinutes = (int)Math.Min(60, SumOverlapSeconds(merged, bucketStart, bucketEnd) / 60);
-            var intensity = activeMinutes switch
-            {
-                0 => 0,
-                <= 5 => 1,
-                <= 15 => 2,
-                <= 30 => 3,
-                <= 45 => 4,
-                _ => 5
-            };
-            var localHour = TimeZoneInfo.ConvertTime(bucketStart, timeZone).Hour;
-            return new HeatmapBucket(bucketStart.ToString("O"), bucketEnd.ToString("O"), localHour, activeMinutes, inBucket.Count, intensity);
-        }).ToList();
     }
 
     private async Task<List<PcDetailRecord>> BuildInterpretedAwDetailRecordsAsync(List<AwEventEntity> awEvents, CancellationToken ct)
@@ -1683,35 +1798,4 @@ public partial class PcTrackerService
         return e.LeftClicks + e.RightClicks + e.MiddleClicks + e.SideBackClicks + e.SideForwardClicks;
     }
 
-    private static List<(DateTimeOffset Start, DateTimeOffset End)> MergeIntervalsForHeatmap(List<AwEventEntity> events)
-    {
-        if (events.Count == 0) return new List<(DateTimeOffset, DateTimeOffset)>();
-        var sorted = events.OrderBy(e => e.Timestamp).ToList();
-        var merged = new List<(DateTimeOffset Start, DateTimeOffset End)>();
-        foreach (var e in sorted)
-        {
-            var s = e.Timestamp;
-            var en = e.Timestamp.AddSeconds(Math.Min(e.Duration, 3600));
-            if (merged.Count == 0) { merged.Add((s, en)); continue; }
-            var last = merged[^1];
-            if (s <= last.End)
-            {
-                if (en > last.End) merged[^1] = (last.Start, en);
-            }
-            else merged.Add((s, en));
-        }
-        return merged;
-    }
-
-    private static double SumOverlapSeconds(List<(DateTimeOffset Start, DateTimeOffset End)> merged, DateTimeOffset bucketStart, DateTimeOffset bucketEnd)
-    {
-        double sum = 0;
-        foreach (var (s, e) in merged)
-        {
-            var os = s > bucketStart ? s : bucketStart;
-            var oe = e < bucketEnd ? e : bucketEnd;
-            if (oe > os) sum += (oe - os).TotalSeconds;
-        }
-        return sum;
-    }
 }

@@ -130,9 +130,11 @@ CREATE TABLE IF NOT EXISTS pc_activity_classification_suggestions (
     user_feedback TEXT,
     llm_response_json JSONB,
     status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    generated_for_date DATE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE pc_activity_classification_suggestions ADD COLUMN IF NOT EXISTS generated_for_date DATE;
 CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_suggestions_cluster_key ON pc_activity_classification_suggestions (cluster_key);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_pc_activity_classification_suggestions_pending_cluster ON pc_activity_classification_suggestions (cluster_key) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS ix_pc_activity_classification_suggestions_status ON pc_activity_classification_suggestions (status);
