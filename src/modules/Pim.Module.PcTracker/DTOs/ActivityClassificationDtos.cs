@@ -81,7 +81,13 @@ public record ActivityClassificationSuggestionDto(
     string Status,
     string? AppDisplayName = null,
     string? AppIcon = null,
-    string? RecognitionSource = null);
+    string? RecognitionSource = null,
+    /// <summary>
+    /// 该建议所属业务日（yyyy-MM-dd，Asia/Shanghai 04:00 起算）。REQ-5 / #366：
+    /// 接口的 <c>date</c> 参数只决定「扫描哪个业务日」；列表本身仍返回全量待处理建议，
+    /// 每条用它标明归日。
+    /// </summary>
+    string? GeneratedForDate = null);
 
 public record AcceptActivityClassificationSuggestionRequest(
     string RuleName,

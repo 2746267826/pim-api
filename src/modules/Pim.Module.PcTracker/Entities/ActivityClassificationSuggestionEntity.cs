@@ -19,6 +19,14 @@ public class ActivityClassificationSuggestionEntity
     [Column("user_feedback")] public string? UserFeedback { get; set; }
     [Column("llm_response_json", TypeName = "jsonb")] public string? LlmResponseJson { get; set; }
     [Column("status")][MaxLength(16)] public string Status { get; set; } = "pending";
+
+    /// <summary>
+    /// 该建议的样本所属**业务日**（Asia/Shanghai 04:00 起算，REQ-5 / #366）。
+    /// 列表接口的 <c>date</c> 参数用于「扫描该业务日记录并刷新建议」，不是「只返回该日的建议」；
+    /// 每条建议用本字段标明它是在哪个业务日被生成/刷新的，前端据此归日。
+    /// </summary>
+    [Column("generated_for_date", TypeName = "date")] public DateTime? GeneratedForDate { get; set; }
+
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("updated_at")] public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 }

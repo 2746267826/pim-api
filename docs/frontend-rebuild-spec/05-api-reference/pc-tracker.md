@@ -38,13 +38,14 @@
   | keystats.topKeys[].keyName | string | 按键名 |
   | keystats.topKeys[].count | number | 次数 |
   | keystats.topKeys[].share | number | 占比 |
-  | heatmap | HeatmapBucket[] | 小时级热力桶（AW window + tracker window 事件合并去重，PcTrackerService.cs:377-378） |
+  | heatmap | HeatmapBucket[] | 小时级热力桶；活跃分钟数与 activity-analysis 同源同口径（window / web-page / input-minute 记录经 `PcActivityOverlapResolver` 消解后的区间并集），因此同一业务日逐小时两接口档位一致 |
   | heatmap[].start | string | 桶起始时间 ISO-8601 |
   | heatmap[].end | string | 桶结束时间 ISO-8601 |
   | heatmap[].hour | number | 本地小时 |
   | heatmap[].activeMinutes | number | 活跃分钟数 |
   | heatmap[].totalEvents | number | 事件数 |
-  | heatmap[].intensityScore | number | 强度分 |
+  | heatmap[].intensityLevel | number | 强度档位 0–5（活跃时长占桶时长比例分档：0 / ≤1/12 / ≤1/4 / ≤1/2 / ≤3/4 / >3/4） |
+  | heatmap[].intensityMax | number | 档位上界，恒 5 |
   | appRanking | AppRankingItem[] | 应用键鼠排行 |
   | appRanking[].appName | string | 进程名 |
   | appRanking[].displayName | string | 归一化显示名 |
@@ -194,30 +195,39 @@
   | nextSteps | string[] | 全局下一步建议 |
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:340-368`；DTO `DTOs/PcQualityDtos.cs:5-26`；前端 `src/client-web/src/api/pcTracker.ts:162-170`
 - 备注：前端对 status 做数值/字符串双兼容归一化（pcTracker.ts:43-94），序列化可能为数字或枚举名。
+- 可定位性字段（REQ-8/#369，全部落在 `components[].details` 与 `issues`，不改状态枚举）：
+  - `daemon-upload`：`staleReason` ∈ `none` / `collector-heartbeat-stale`（真正的采集端心跳过期）/ `collector-heartbeat-old` / `database-lags-now`（本库整体滞后，不是采集端现在停机）/ `query-range-beyond-database-horizon`（本库数据滞后于查询范围）/ `planned-offline` / `heartbeat-missing`；并给出 `dataHorizonUtc`、`contentHorizonUtc`、`receivedAt`、`ageMinutes`、`rangeEndUtc`、`effectiveRangeEndUtc`、`rangeShortfallMinutes`、`databaseLagMinutes`、`libraryFrozenAtHorizon` 作为判据。
+  - `tracker-events`：事件基线判定 `baselineMethod`（近 7 个业务日事件数中位数）、`baselineEventCount`、`baselineDays`、`currentDailyEventCount`、`deviationRatio`、`verdict`（`偏低` / `在基线区间内` / `偏高` / `无基线`）、`verdictBasis`；缺数时段 `missingHourCount`、`missingHours`（本地时间，最多列 24 个）、`disconnectedFromUtc`（首次中断时刻）、`lastDataAtUtc`，并在存在「两侧都有数据的中间断档」时给出 `tracker-events-missing-hours` 问题项。
+  - 组件 `message` 只描述本组件，不复制总览文案（`overallStatus` / `message`）。
 
 ### GET /api/v1/pc/heatmap/grid
-- 用途：键盘热力图网格（按小时单行或按周 7 列网格）。
+- 用途：键盘热力图网格（按小时单行，或按天/周网格）。
 - 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
 - Web 前端使用：是（PC 追踪总览页 PcTrackerPage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
   | start | string | 否 | 起始日，缺省今天-30 天 |
   | end | string | 否 | 结束日，缺省今天 |
-  | dimension | string | 否 | `hour\|day\|month\|year`，默认 `day`（PcTrackerModule.cs:731）；`hour` 取 start 当日 24 桶单行，其余按天网格（PcTrackerService.cs:682-749） |
+  | dimension | string | 否 | 维度，默认 `day`。`hour` **仅支持单日**（`start` 与 `end` 必须是同一天）；跨日 + `hour` 返回 400（详见下方"行为变更"） |
   | force | boolean | 否 | 默认 false；true 跳过聚合缓存 |
 - 响应 data：`HeatmapGridResponse`
   | 字段 | 类型 | 说明 |
-  | grid | HeatmapBucket[][] | 网格（二维数组；day 维度每行 7 天，bucket.hour=DayOfWeek 序号；hour 维度单行 24 桶） |
-  | grid[][].start | string | 桶起始 ISO-8601 |
-  | grid[][].end | string | 桶结束 ISO-8601 |
+  | grid | HeatmapGridCell[][] | 网格（day 维度每行 7 天，cell.hour=DayOfWeek 序号；hour 维度单行 24 桶） |
+  | grid[][].start | string | 桶起始 ISO-8601。**day 桶起点 = 业务日起点**（前一日 20:00Z = 本地 04:00），与 summary.heatmap 相同；hour 桶自业务日起点逐小时 |
+  | grid[][].end | string | 桶结束 ISO-8601（start + 24h / +1h） |
   | grid[][].hour | number | 本地小时（hour 维度）或星期序号（day 维度） |
-  | grid[][].activeMinutes | number | 恒 0（占位） |
-  | grid[][].totalEvents | number | hour 维度为事件数，day 维度恒 0 |
-  | grid[][].intensityScore | number | hour 维度按比例分摊的按键数，day 维度=当日按键数 |
+  | grid[][].activeMinutes | number | 桶内活跃分钟数（window / web-page / input-minute 区间并集，去重；hour 桶上限 60，day 桶上限 1440） |
+  | grid[][].totalEvents | number | hour 维度为去重后事件数，day 维度恒 0 |
+  | grid[][].intensityLevel | number | 强度档位 0–5（活跃时长占桶时长比例分档，与 summary.heatmap / activity-analysis 同量纲） |
+  | grid[][].intensityMax | number | 档位上界，恒 5 |
+  | grid[][].keyPressCount | number | 原始按键数（旧字段名 `intensityScore`；hour 维度按事件数比例分摊当日按键数，day 维度=当日按键数） |
   | dimension | string | 回显维度 |
-  | maxKeyCount | number | 区间内最大按键数（无数据为 1） |
-- 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:725-743`（服务 `Services/PcTrackerService.cs:675-750`）；DTO `DTOs/PcTrackerDtos.cs:233-237`；前端 `src/client-web/src/api/pcTracker.ts:29-33`
-- 备注：hour 维度合并 AW 与 tracker window 事件并跨来源去重（#303，PcTrackerService.cs:688-710）。
+  | maxKeyCount | number | **`keyPressCount` 的上界**（区间内单日最大按键数，无数据为 1），供色阶归一化 |
+- 行为变更（WO-PC-BACKEND-20260930 REQ-4 / REQ-6）：
+  - **day 桶边界**（REQ-4/#365）：由 UTC 零点改为业务日窗口 `[前一日 20:00Z, 当日 20:00Z)`；数值归属不变，前端按 `start` 转 `+08:00` 后为 04:00。
+  - **hour + 跨日**（REQ-6/#367，P-4 方案 a）：返回 **400** + 明确文案（含实际收到的 start/end），不再静默返回起始日单行；单日 + `hour` 行为不变（24 桶、自业务日起点起算）。
+- 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:725-757`（服务 `Services/PcTrackerService.cs` `GetHeatmapGridAsync`）；DTO `DTOs/PcTrackerDtos.cs`（`HeatmapGridCell` / `HeatmapGridResponse`）
+- 备注：hour 维度合并 AW 与 tracker window 事件并跨来源去重（#303）；day 维度的活跃分钟同样走统一的区间并集口径（REQ-3）。
 
 ### GET /api/v1/pc/activity-analysis
 - 用途：按时间块（默认 60 分钟）分析当日活动强度、待分类数量与上下文切换。
@@ -235,8 +245,9 @@
   | blocks | PcActivityAnalysisBlockDto[] | 时间块列表 |
   | blocks[].start | string | 块开始 ISO-8601 |
   | blocks[].end | string | 块结束 ISO-8601 |
-  | blocks[].intensityScore | number | 强度分 |
-  | blocks[].activeDurationSeconds | number | 活跃时长秒 |
+  | blocks[].intensityLevel | number | 强度档位 0–5（活跃时长 ÷ 块时长：0 / ≤1/12 / ≤1/4 / ≤1/2 / ≤3/4 / >3/4）；60 分钟块与 summary.heatmap 同值 |
+  | blocks[].intensityMax | number | 档位上界，恒 5 |
+  | blocks[].activeDurationSeconds | number | 块内活跃墙钟秒数 = 块内记录区间经 `PcActivityOverlapResolver` 消解后的并集长度（≤ 块时长） |
   | blocks[].pendingClassificationCount | number | 待分类记录数 |
   | blocks[].contextSwitchCount | number | 上下文切换次数 |
   | blocks[].categoryChangeCount | number | 分类变化次数 |
@@ -340,6 +351,45 @@
   | items[].minutes | number | 分钟数 |
   | items[].percentage | number | 占比 |
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:1083-1118`；DTO `DTOs/PcAggregationDtos.cs:27-29`；前端 `src/client-web/src/api/pcTracker.ts:457-458、474-476`
+
+### GET /api/v1/pc/aggregation/keystats
+- 用途：键鼠**范围聚合**（REQ-7/#368）：近 30 天等长范围一次请求即可渲染键盘/鼠标热力图，无需前端逐日拉取后再合并。
+- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- Web 前端使用：是（PC 追踪总览页范围模式的键鼠卡片；字段与单日版 `summary.keystats` 同构，可复用同一组件）
+- Query 参数：与聚合组其它端点一致 —— `date` 单日 或 `start`&`end` 范围二选一；`timezone` 缺省 Asia/Shanghai；`force` 跳过缓存。参数非法 / 格式错误 / `start > end` 返回 400。
+- 响应 data：`PcKeystatsRangeResponse`
+  | 字段 | 类型 | 说明 |
+  | keyPressCounts | Record<string, number> | 按键名→次数（按 `keyName` 跨日合并；规模由不同按键数决定，不随天数线性膨胀） |
+  | topKeys | KeyCountItem[] | 按键 Top 10（`keyName` / `count` / `share`，share = count ÷ totalKeyPresses） |
+  | leftClicks | number | 左键点击数合计 |
+  | middleClicks | number | 中键点击数合计 |
+  | rightClicks | number | 右键点击数合计 |
+  | scrollDistance | number | 滚轮距离合计 |
+  | peakKps | number | 各日峰值 KPS 的最大值 |
+  | peakCps | number | 各日峰值 CPS 的最大值 |
+  | totalKeyPresses | number | 按键总数（对应单日版 `keystats.keyPresses`） |
+  | totalClicks | number | 点击总数，与单日版同口径（左+右+中+侧键），因此不一定等于 left+middle+right |
+- 取数口径：与单日版 `summary.keystats` 完全一致 —— 每个业务日取该日**最近写入**的一条 keystats 快照，再按键名合并 / 计数求和 / 峰值取最大（AC-7.1 要求逐键一致）。
+- 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs`（`/aggregation/keystats`）；服务 `Services/PcActivityAggregationService.cs` `GetKeystatsRangeAsync`；DTO `DTOs/PcAggregationDtos.cs`（`PcKeystatsRangeResponse`）
+
+---
+
+## 字段映射表（REQ-3 / #364）
+
+> 供前端重写对照使用（P-1 直接改名、不做兼容期）。三处接口的强度字段自此同名同量纲。
+
+| 位置 | 旧字段名 | 新字段名 | 类型 / 量纲 | 算路 |
+| --- | --- | --- | --- | --- |
+| summary.heatmap[] | `intensityScore` | `intensityLevel` | int 0–5 | 活跃时长占小时比例分档：0 / ≤1/12 / ≤1/4 / ≤1/2 / ≤3/4 / >3/4（等价于既有的 0/5/15/30/45 活跃分钟） |
+| summary.heatmap[] | —（无） | `intensityMax` | int，恒 5 | 档位上界，供色阶归一化 |
+| activity-analysis.blocks[] | `intensityScore` | `intensityLevel` | int 0–5 | 活跃时长 ÷ 块时长分档（同一组比例边界）；60 分钟块与 summary.heatmap 同值 |
+| activity-analysis.blocks[] | —（无） | `intensityMax` | int，恒 5 | 同上 |
+| heatmap/grid 单元格 | `intensityScore` | `keyPressCount` | int，原始按键数 | hour 维度按事件数比例分摊当日按键数；day 维度=当日按键数。上界为响应级 `maxKeyCount` |
+| heatmap/grid 单元格 | —（无） | `intensityLevel` | int 0–5 | 活跃时长占桶时长比例分档（同一组比例边界） |
+| heatmap/grid 单元格 | —（无） | `intensityMax` | int，恒 5 | 同上 |
+| heatmap/grid（响应级） | `maxKeyCount` | `maxKeyCount`（保留） | number | **`keyPressCount` 的上界**（区间内单日最大按键数，无数据为 1） |
+
+**响应类型改名**：`heatmap/grid` 的单元格由 `HeatmapBucket` 改为 `HeatmapGridCell`（新增 `keyPressCount` / `intensityLevel` / `intensityMax`，`activeMinutes` 由恒 0 变为真实值）；`summary.heatmap` 与 `aw/heatmap` 仍为 `HeatmapBucket`（新增 `intensityMax`，`intensityScore` → `intensityLevel`）。
 
 ---
 
@@ -559,12 +609,16 @@
   | suggestedRulesJson | string \| null | 建议规则 JSON |
   | userFeedback | string \| null | 用户反馈 |
   | llmResponseJson | string \| null | LLM 响应 JSON |
-  | status | string | 状态：`pending` \| `accepted` \| `rejected`（ActivitySuggestionService.cs:11、265、401） |
+  | status | string | 状态：`pending` \| `accepted` \| `rejected` \| `invalidated`（`invalidated` = 空闲哨兵建议被置失效，P-5） |
+  | generatedForDate | string | **该建议所属业务日** `yyyy-MM-dd`（REQ-5/#366）：扫描时按簇内样本的业务日写入；历史遗留行按「样本里最新时刻 → 最后刷新时刻」回退推导，保证每条都能归日 |
   | appDisplayName | string \| null | 应用显示名 |
   | appIcon | string \| null | 应用图标 |
   | recognitionSource | string \| null | 识别来源 |
-- 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:418-449`；DTO `DTOs/ActivityClassificationDtos.cs:68-84`；前端 `src/client-web/src/api/pcTracker.ts:180、196-200`
-- 备注：服务端先取当日明细（page=1, pageSize=500），筛出 `classificationSource=fallback` 或 `classificationConfidence<0.5` 的记录再聚类（PcTrackerModule.cs:1320-1324 NeedsClassificationSuggestion）。
+- 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:418-453`；DTO `DTOs/ActivityClassificationDtos.cs:68-89`；前端 `src/client-web/src/api/pcTracker.ts:180、196-200`
+- `date` 参数语义（REQ-5/AC-5.4）：**「扫描该业务日的记录并刷新建议」**，不是「只返回该业务日的建议」。列表始终返回**全量待处理（pending）建议**，调用方用每条的 `generatedForDate` 归日。
+- 候选过滤（REQ-5）：除 `classificationSource=fallback` 或 `classificationConfidence<0.5` 外，**排除未活动记录**（`gap` / `idle` / `afk`）与采集端空闲哨兵（`AppName = __IDLE__`），因此不会再生成 `app:__idle__` 建议。
+- 既有数据处置（P-5 方案 a）：历史上已存在的 `app:__idle__` pending 建议在下次刷新时**置为 `invalidated`**（保留行与创建时间，可追溯），读取侧也不再返回该簇。
+- 扫描范围（REQ-1/#362）：扫描输入覆盖**整个业务日**，不再受 `/pc/detail` 的对外分页上限（200 条且只取第 1 页）截断。
 
 ### GET /api/v1/pc/classification/suggestions/v2
 - 用途：v2 分类建议（基于应用签名/域名知识库/启发式的聚类建议）。
