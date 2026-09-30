@@ -6,6 +6,7 @@ import MetricCard from '../../ui/MetricCard';
 import StatusBadge from '../../ui/StatusBadge';
 import type { PcActivityTodayData, TodaySection } from '../../types';
 import { getPcCategoryDistribution, getPcFocusBlocks } from '../../api/pcTracker';
+import PcActiveMinutesNote from '../pc-tracker/PcActiveMinutesNote';
 import { formatPcDate, getPcBusinessDate } from '../../utils/pcBusinessDay';
 import EChartBox from '../charts/EChartBox';
 import {
@@ -108,6 +109,8 @@ export default function TodayPcOverview({ section }: { section: TodaySection<PcA
                 height={150}
                 ariaLabel="今日 24 小时 PC 活跃面积图"
               />
+              {/* REQ-8：与 WorkbenchPage 的「PC 活跃」同口径说明 */}
+              <PcActiveMinutesNote className="mt-2" />
             </Block>
             <Block title="分类分布">
               {categoryItems.length > 0 ? (

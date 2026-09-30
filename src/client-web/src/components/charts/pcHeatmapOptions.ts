@@ -22,9 +22,19 @@ function localDateStr(ms: number): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
-/** 桶 start 的本地日期部分（后端写入的日期字面量，取前 10 位即 YYYY-MM-DD） */
+/**
+ * 桶 start → 业务日（yyyy-MM-dd）。
+ *
+ * `heatmap/grid` 的 day/month/year 桶起点是业务日窗口 `[前一日 20:00Z, 当日 20:00Z)`，
+ * 直接取字面量前 10 位会比业务日早一天（20:00Z = 次日 04:00 +08:00）。这里统一换算到
+ * 固定 +08:00 再取日期，与后端业务日口径一致（见 utils/pcBusinessDay.ts）。
+ */
 export function bucketDatePart(start: string): string {
-  return start.slice(0, 10);
+  const ms = Date.parse(start);
+  // 无时区的字面量按原样取前 10 位（保守兜底，不让提示整块消失）。
+  if (Number.isNaN(ms)) return start.slice(0, 10);
+  const shifted = new Date(ms + SHANGHAI_OFFSET_MS);
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
 }
 
 /** 活动热力单元格：x/y 网格坐标 + 原始桶 + 用于着色的强度值 */
@@ -68,7 +78,7 @@ export function mapActivityGrid(data: HeatmapGridResponse | undefined): Activity
   if (dimension === 'hour') {
     for (const bucket of buckets) {
       const x = ((bucket.hour - PC_BUSINESS_DAY_START_HOUR) % 24 + 24) % 24;
-      cells.push({ x, y: 0, bucket, value: bucket.intensityScore ?? 0 });
+      cells.push({ x, y: 0, bucket, value: bucket.keyPressCount ?? 0 });
     }
     return { cells, xLabels: PC_BUSINESS_HOURS.map(pcHourLabel), yLabels: ['强度'] };
   }
@@ -83,7 +93,7 @@ export function mapActivityGrid(data: HeatmapGridResponse | undefined): Activity
     }).filter((e): e is NonNullable<typeof e> => e !== null);
     const minWeek = Math.min(...entries.map(e => e.weekKey));
     for (const e of entries) {
-      cells.push({ x: e.weekday, y: e.weekKey - minWeek, bucket: e.bucket, value: e.bucket.intensityScore ?? 0 });
+      cells.push({ x: e.weekday, y: e.weekKey - minWeek, bucket: e.bucket, value: e.bucket.keyPressCount ?? 0 });
     }
     const maxWeek = Math.max(...entries.map(e => e.weekKey));
     const yLabels: string[] = [];
@@ -100,7 +110,7 @@ export function mapActivityGrid(data: HeatmapGridResponse | undefined): Activity
     }).filter((e): e is NonNullable<typeof e> => e !== null);
     const monthKeys = [...new Set(entries.map(e => e.key))].sort();
     for (const e of entries) {
-      cells.push({ x: e.dayIndex, y: monthKeys.indexOf(e.key), bucket: e.bucket, value: e.bucket.intensityScore ?? 0 });
+      cells.push({ x: e.dayIndex, y: monthKeys.indexOf(e.key), bucket: e.bucket, value: e.bucket.keyPressCount ?? 0 });
     }
     return { cells, xLabels: Array.from({ length: 31 }, (_, i) => String(i + 1)), yLabels: monthKeys };
   }
@@ -113,7 +123,7 @@ export function mapActivityGrid(data: HeatmapGridResponse | undefined): Activity
     const dayOfYear = Math.floor((d.getTime() - yearStart) / MS_PER_DAY);
     const offset = mondayWeekday(new Date(yearStart));
     const weekOfYear = Math.floor((dayOfYear + offset) / 7);
-    cells.push({ x: Math.min(weekOfYear, 52), y: mondayWeekday(d), bucket, value: bucket.intensityScore ?? 0 });
+    cells.push({ x: Math.min(weekOfYear, 52), y: mondayWeekday(d), bucket, value: bucket.keyPressCount ?? 0 });
   }
   return {
     cells,
@@ -300,7 +310,7 @@ export function buildCategoryGanttOption(timeline: TimelineItem[], showAllHours 
   return option as EChartsOption;
 }
 
-/** 活动热力图：四维度统一入口，色阶 chartColors.githubGreen，visualMap max 取 maxKeyCount。 */
+/** 活动热力图：四维度统一入口，色阶 chartColors.githubGreen，着色值 = keyPressCount，上界 = maxKeyCount。 */
 export function buildActivityHeatmapOption(data: HeatmapGridResponse | undefined): EChartsOption {
   if (!data) {
     return { series: [{ type: 'heatmap', data: [] }] } as EChartsOption;
@@ -324,7 +334,9 @@ export function buildActivityHeatmapOption(data: HeatmapGridResponse | undefined
         const p = (Array.isArray(params) ? params[0] : params) as { data?: { bucket?: HeatmapBucket } } | undefined;
         const bucket = p?.data?.bucket;
         if (!bucket) return '';
-        return `${bucketDatePart(bucket.start)} · ${bucket.intensityScore ?? 0} 次输入 · ${bucket.activeMinutes ?? 0} 分钟`;
+        // 键数取原始计数 keyPressCount（上界 maxKeyCount）；activeMinutes 为桶内真实活跃分钟
+        // （day/month/year 维度后端已由恒 0 改为真实值，REQ-9）。
+        return `${bucketDatePart(bucket.start)} · ${bucket.keyPressCount ?? 0} 次输入 · 活跃 ${bucket.activeMinutes ?? 0} 分钟`;
       },
       backgroundColor: 'rgba(15, 23, 42, 0.92)',
       textStyle: { color: '#fff', fontSize: 11 },
@@ -369,11 +381,16 @@ export function buildActivityHeatmapOption(data: HeatmapGridResponse | undefined
   return option as EChartsOption;
 }
 
-/** 时间块热力：x = 块序号 1..n，y 单行，value = intensityScore，色阶沿用现有 0-4 五档青绿。 */
+/**
+ * 时间块热力：x = 块序号 1..n，y 单行，value = intensityLevel（0–5 档），
+ * 色阶上界取块自带的 intensityMax（后端固定 5，见 references/A §A-1）。
+ */
 export function buildAnalysisBlocksOption(
   blocks: PcActivityAnalysisBlock[],
   selectedStart?: string | null,
 ): EChartsOption {
+  // 后端同一响应内 intensityMax 一致；容错取各块最大值，缺省回退 5。
+  const intensityMax = blocks.reduce((acc, b) => Math.max(acc, b.intensityMax ?? 5), 0) || 5;
   const option: EChartsOption = {
     tooltip: {
       trigger: 'item',
@@ -384,8 +401,10 @@ export function buildAnalysisBlocksOption(
         if (!block) return '';
         const start = new Date(block.start);
         const end = new Date(block.end);
-        const activeMinutes = Math.round(block.activeDurationSeconds / 60);
-        return `${formatClock(start.getTime())} - ${formatClock(end.getTime())} · ${activeMinutes} 活跃分钟\n${block.pendingClassificationCount} 条待分类 · ${block.contextSwitchCount} 次上下文切换`;
+        // 后端修复后 activeDurationSeconds 恒 ≤ 块时长；仍夹紧一次，避免异常数据出现「活跃 99 分钟」。
+        const blockMinutes = (end.getTime() - start.getTime()) / 60000;
+        const activeMinutes = Math.min(Math.round(block.activeDurationSeconds / 60), Math.max(Math.round(blockMinutes), 0));
+        return `${formatClock(start.getTime())} - ${formatClock(end.getTime())} · 活跃 ${activeMinutes} 分钟\n${block.pendingClassificationCount} 条待分类 · ${block.contextSwitchCount} 次上下文切换`;
       },
       backgroundColor: 'rgba(15, 23, 42, 0.92)',
       textStyle: { color: '#fff', fontSize: 11 },
@@ -409,16 +428,16 @@ export function buildAnalysisBlocksOption(
     ],
     visualMap: {
       min: 0,
-      max: 4,
+      max: intensityMax,
       calculable: false,
       show: false,
-      inRange: { color: ['#f8fafc', '#d9f2ec', '#9fdacf', '#43afa3', '#0f8f88'] },
+      inRange: { color: ['#f8fafc', '#d9f2ec', '#9fdacf', '#43afa3', '#0f8f88', '#0b6b66'] },
     },
     series: [
       {
         type: 'heatmap',
         data: blocks.map((block, i) => ({
-          value: [i, 0, block.intensityScore ?? 0],
+          value: [i, 0, block.intensityLevel ?? 0],
           blockIndex: i,
           itemStyle:
             selectedStart && block.start === selectedStart

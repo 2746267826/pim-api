@@ -54,3 +54,20 @@ export function addPcMonths(date: Date, months: number) {
   const lastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
   return new Date(Date.UTC(targetYear, targetMonth, Math.min(date.getUTCDate(), lastDay)));
 }
+
+/**
+ * 分类建议的业务日 → 展示文案（REQ-5）。
+ *
+ * 建议列表每条带后端下发的 `generatedForDate`（业务日，yyyy-MM-dd），历史行由
+ * 「样本最新时刻 → 最后刷新时刻」回退推导。列表按日展示时必须用该字段，
+ * 不能用请求的 `date` 参数（其语义是「扫描该业务日并刷新建议」，不代表返回范围）。
+ * 缺字段或格式非法时返回 null，由调用方决定不展示，绝不伪造日期。
+ */
+export function formatSuggestionBusinessDate(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+  const parsed = new Date(`${trimmed}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return trimmed;
+}

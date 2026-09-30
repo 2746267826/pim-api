@@ -265,7 +265,7 @@ function MouseZone({
   );
 }
 
-function MouseHeatmap({ keystats, maxKey }: { keystats: KeystatsSummary; maxKey: number }) {
+function MouseHeatmap({ keystats, maxKey }: { keystats: KeystatsView; maxKey: number }) {
   const maxMouse = Math.max(
     maxKey,
     keystats.leftClicks,
@@ -310,12 +310,26 @@ function MouseHeatmap({ keystats, maxKey }: { keystats: KeystatsSummary; maxKey:
 }
 
 interface Props {
-  keystats: KeystatsSummary | null;
+  /**
+   * 单日视图传 `summary.keystats`（带 `date`），范围视图传 `/pc/aggregation/keystats`
+   * 的结果（无 `date`、多 `totalKeyPresses`）—— 同一组件复用（REQ-6 / AC-6.2）。
+   */
+  keystats: KeystatsView | null;
+  /** 请求失败（如范围端点 400 起止颠倒）。显示可读提示，不静默空白（REQ-6.3）。 */
+  error?: unknown;
 }
 
-export default function KeyboardHeatmap({ keystats }: Props) {
-  const safeKeystats: KeystatsSummary = keystats ?? {
-    date: '',
+/** 单日 summary.keystats 与范围聚合结果共有的字段视图（范围结果没有 `date`）。 */
+export type KeystatsView = Omit<KeystatsSummary, 'date'> & { date?: string };
+
+function readableError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error) return error;
+  return '键鼠统计加载失败，请稍后重试。';
+}
+
+export default function KeyboardHeatmap({ keystats, error }: Props) {
+  const safeKeystats: KeystatsView = keystats ?? {
     keyPresses: 0,
     totalClicks: 0,
     leftClicks: 0,
@@ -357,11 +371,16 @@ export default function KeyboardHeatmap({ keystats }: Props) {
         </div>
       </div>
 
-      {!keystats && (
+      {error ? (
+        <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <span className="font-medium">键鼠统计请求未成功：</span>
+          <span className="break-words">{readableError(error)}</span>
+        </div>
+      ) : !keystats ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
           当前日期暂无键鼠数据，已展示完整键鼠布局骨架。
         </div>
-      )}
+      ) : null}
 
       {shortcuts.length > 0 && (
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">

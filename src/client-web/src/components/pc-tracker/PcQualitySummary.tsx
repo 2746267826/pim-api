@@ -2,6 +2,7 @@ import type { PcQualityResponse, PimHealthStatus } from '../../types';
 import StatusBadge from '../../ui/StatusBadge';
 import EChartBox from '../charts/EChartBox';
 import { buildQualityRingOption } from '../charts/pcPanelOptions';
+import { describePcQualityLocatability } from './pcQualityLocatability';
 
 type StatusTone = 'primary' | 'warning' | 'danger' | 'neutral';
 
@@ -86,6 +87,8 @@ export default function PcQualitySummary({
   const statusLabel = quality.label || fallbackLabel[status];
   const healthyCount = quality.components.filter(component => component.status === 'Healthy').length;
   const ringOption = buildQualityRingOption(healthyCount, quality.components.length);
+  // REQ-7：体检新增的可定位信息（缺数时段 / 本库滞后 vs 采集端停机）
+  const locatability = describePcQualityLocatability(quality);
 
   return (
     <section className={panelClass}>
@@ -134,6 +137,52 @@ export default function PcQualitySummary({
           <dd className="mt-1 font-medium text-slate-700">{quality.components.length}</dd>
         </div>
       </dl>
+
+      {locatability.hasMissingHours && (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3" data-pc-quality-section="missing-hours">
+          <h3 className="text-xs font-semibold text-amber-800">缺数时段</h3>
+          {locatability.missingSegments.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {locatability.missingSegments.map(segment => (
+                <li key={segment} className="text-sm text-amber-900">
+                  连续缺数：{segment}
+                </li>
+              ))}
+            </ul>
+          )}
+          {locatability.missingHours.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {locatability.missingHours.map(hour => (
+                <span
+                  key={hour}
+                  className="rounded-md border border-amber-300 bg-white/70 px-2 py-0.5 text-xs text-amber-800"
+                >
+                  {hour}
+                </span>
+              ))}
+            </div>
+          )}
+          <p className="mt-2 text-[11px] text-amber-700">
+            {locatability.missingHourCount !== null ? `共 ${locatability.missingHourCount} 个小时缺数` : '来自体检的 tracker-events 缺数明细'}
+            （本地时间，业务日 04:00 起算）。
+          </p>
+        </div>
+      )}
+
+      {locatability.lagVerdictLabel && (
+        <div className="mt-4 rounded-lg border border-sky-200 bg-sky-50 p-3" data-pc-quality-section="lag-vs-collector">
+          <h3 className="text-xs font-semibold text-sky-900">本库滞后 vs 采集端停机</h3>
+          <p className="mt-1 text-sm text-sky-900" data-lag-verdict={locatability.lagVerdict}>
+            {locatability.lagVerdictLabel}
+          </p>
+          {locatability.lagEvidenceLabel && (
+            <dl className="mt-2 text-[11px] text-sky-800">
+              <dt className="inline font-medium">判别字段：</dt>
+              <dd className="inline break-words">{locatability.lagEvidenceLabel}</dd>
+            </dl>
+          )}
+        </div>
+      )}
 
       {issues.length > 0 && (
         <div className="mt-4">

@@ -16,6 +16,9 @@ import {
   dismissAiPlaceholder,
 } from '../api/calendar';
 import { getPcSummary } from '../api/pcTracker';
+import { PC_ACTIVE_MINUTES_NOTE, formatActiveHours, sumHeatmapActiveMinutes } from '../components/charts/pcTodayOptions';
+import { formatPcDate, getPcBusinessDate } from '../utils/pcBusinessDay';
+import PcActiveMinutesNote from '../components/pc-tracker/PcActiveMinutesNote';
 import { getPendingConfirmations, operationsApiPaths } from '../api/operations';
 import TaskEditorDialog from '../dialogs/TaskEditorDialog';
 import type { TaskMutationData } from '../api/calendar';
@@ -130,7 +133,6 @@ export default function WorkbenchPage() {
   const [selectedTask, setSelectedTask] = useState<TaskResponse | undefined>();
   const queryClient = useQueryClient();
   const range = useMemo(todayRange, []);
-  const todayStr = useMemo(() => range.start.split('T')[0], [range]);
 
   const { data: tasksData, isLoading: tasksLoading } = useQuery({
     queryKey: ['workbench-tasks'],
@@ -147,11 +149,22 @@ export default function WorkbenchPage() {
     return new Map(taskBooks.map(b => [b.id, b.name]));
   }, [taskBooks]);
 
+  // REQ-8：PC 汇总必须按**业务日**取数（Asia/Shanghai 04:00 起算）。
+  // 原先用 `range.start.split('T')[0]`（本地午夜的 UTC 日期），在 UTC+8 下会整体差一天，
+  // 于是「PC 活跃」显示的是前一天的汇总，与 summary.heatmap 对不上。
+  const pcBusinessDateStr = useMemo(() => formatPcDate(getPcBusinessDate()), []);
+
   const { data: pcSummary } = useQuery({
-    queryKey: ['workbench-pc-summary', todayStr],
-    queryFn: () => getPcSummary(todayStr),
+    queryKey: ['workbench-pc-summary', pcBusinessDateStr],
+    queryFn: () => getPcSummary(pcBusinessDateStr),
     refetchInterval: getDeferredAutoRefreshInterval,
   });
+
+  // REQ-8：「PC 活跃」= summary.heatmap[].activeMinutes 求和（口径含只有键鼠输入、无窗口记录的分钟），
+  // 数值变大是上游有意统一口径的结果，这里只做说明与换算，不夹回时间线覆盖时长。
+  const pcActiveHours = pcSummary
+    ? formatActiveHours(sumHeatmapActiveMinutes(pcSummary.heatmap))
+    : '—';
 
   const toggleTaskMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: TaskMutationData }) => updateTask(id, data),
@@ -572,14 +585,13 @@ export default function WorkbenchPage() {
                 </div>
               </div>
               <div className="p-2 bg-zinc-50 rounded-lg border border-zinc-100">
-                <div className="text-zinc-400 text-[10px] font-sans">活跃时长</div>
-                <div className="font-bold text-zinc-900 text-sm mt-0.5 truncate">
-                  {pcSummary?.metrics?.activeInputDuration || (pcSummary?.heatmap
-                    ? `${(pcSummary.heatmap.reduce((acc, h) => acc + (h.activeMinutes || 0), 0) / 60).toFixed(1)}h`
-                    : '—')}
+                <div className="text-zinc-400 text-[10px] font-sans" title={PC_ACTIVE_MINUTES_NOTE}>PC 活跃</div>
+                <div className="font-bold text-zinc-900 text-sm mt-0.5 truncate" data-pc-active-hours={pcActiveHours}>
+                  {pcActiveHours}
                 </div>
               </div>
             </div>
+            <PcActiveMinutesNote className="mt-2" />
           </div>
         </div>
 

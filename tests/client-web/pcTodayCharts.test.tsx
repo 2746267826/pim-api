@@ -30,7 +30,8 @@ const heatmap: HeatmapBucket[] = PC_BUSINESS_HOURS.map((hour, index) => ({
   hour,
   activeMinutes: index * 5,
   totalEvents: index * 2,
-  intensityScore: index % 4,
+  intensityLevel: index % 5,
+  intensityMax: 5,
 }));
 
 test('buildTodayActivityAreaOption maps 24 business hours to a smooth line with area', () => {

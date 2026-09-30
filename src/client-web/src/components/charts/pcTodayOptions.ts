@@ -151,3 +151,24 @@ export function buildFocusSummary(items: PcFocusBlockItem[]) {
   }
   return { count: items.length, longestMinutes, totalMinutes };
 }
+
+/**
+ * REQ-8 · 「PC 活跃」口径说明。
+ *
+ * 后端把「只有键鼠输入、没有窗口事件」的分钟也算作活跃（`input-minute`），
+ * 同一业务日数值会明显变大（实测 9/27：569 → 722.8 分钟），因此「活跃」可能
+ * 大于时间线覆盖时长。这是上游有意统一口径的结果，不是 bug —— 说明用于避免
+ * 用户把口径变化报成缺陷。
+ */
+export const PC_ACTIVE_MINUTES_NOTE =
+  '「PC 活跃」包含只有键鼠输入、无窗口记录的分钟，因此可能大于时间线覆盖时长（数值会变大）。';
+
+/** 「PC 活跃」小时数：与 summary.heatmap.activeMinutes 求和一致，不夹到时间线时长。 */
+export function sumHeatmapActiveMinutes(heatmap: HeatmapBucket[] | undefined): number {
+  return (heatmap ?? []).reduce((acc, bucket) => acc + (bucket?.activeMinutes || 0), 0);
+}
+
+/** 分钟 → 「X.Xh」展示（PC 记录概览的「活跃」数值口径）。 */
+export function formatActiveHours(minutes: number): string {
+  return `${(minutes / 60).toFixed(1)}h`;
+}

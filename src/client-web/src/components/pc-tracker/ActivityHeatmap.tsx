@@ -7,14 +7,37 @@ import type { HeatmapGridResponse } from '../../types';
 interface Props {
   data: HeatmapGridResponse | undefined;
   isLoading: boolean;
+  /**
+   * 请求失败（如 `dimension=hour` 跨日返回 400）。必须显示后端文案，
+   * 不能当作空数据渲染成一张空图（REQ-4）。
+   */
+  error?: unknown;
   onDateClick?: (date: string) => void;
 }
 
-export default function ActivityHeatmap({ data, isLoading, onDateClick }: Props) {
+function readableError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error) return error;
+  return '活动热力图加载失败，请稍后重试。';
+}
+
+export default function ActivityHeatmap({ data, isLoading, error, onDateClick }: Props) {
   const option = useMemo(() => buildActivityHeatmapOption(data), [data]);
 
   if (isLoading) {
     return <div className="rounded-2xl border border-slate-200 bg-slate-50 py-10 text-center text-sm text-slate-400">加载中...</div>;
+  }
+
+  if (error) {
+    return (
+      <div
+        role="alert"
+        className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-6 text-center text-sm text-amber-800"
+      >
+        <p className="font-medium">活动热力图请求未成功</p>
+        <p className="mt-1 break-words text-xs text-amber-700">{readableError(error)}</p>
+      </div>
+    );
   }
 
   if (!data) {

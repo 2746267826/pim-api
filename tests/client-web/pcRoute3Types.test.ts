@@ -33,7 +33,8 @@ const analysis: PcActivityAnalysisResponse = {
   blocks: [{
     start: '2026-07-05T00:00:00Z',
     end: '2026-07-05T01:00:00Z',
-    intensityScore: 3,
+    intensityLevel: 3,
+    intensityMax: 5,
     activeDurationSeconds: 1200,
     pendingClassificationCount: 1,
     contextSwitchCount: 2,
