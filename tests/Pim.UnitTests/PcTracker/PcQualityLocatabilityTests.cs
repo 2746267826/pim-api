@@ -253,22 +253,23 @@ public sealed class PcQualityLocatabilityTests
     }
 
     [Fact]
-    public async Task GetQualityAsync_NaNDurationEventIsIgnoredButDoesNotBreakAnything()
+    public async Task GetQualityAsync_NaNDurationDoesNotShrinkTheHorizonWindow()
     {
         await using var db = CreateDb();
         var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
-        // NaN 时长（脏数据）：PostgreSQL 里 NaN 比任何有限值都大，不排除的话 MAX(duration) 会变成 NaN，
-        // 窗口估算与内容地平线都会跟着坏掉。这里锁定「NaN 不参与时长估算」。
-        AddTrackerEvent(db, dayStart.AddHours(2), double.NaN, "window");
-        AddTrackerEvent(db, dayStart.AddHours(10), 3600, "window");
+        // NaN 时长（脏数据）：PostgreSQL 里 NaN 比任何有限值都大，不过滤的话 MAX(duration) 会是 NaN，
+        // 回看窗口随之缩成「只有起点最新那一条」，更早但更晚结束的长事件会被漏掉。
+        // 排法：NaN 行拥有全表最新起点，真正该赢的是更早开始、持续 20 小时的那条。
+        AddTrackerEvent(db, dayStart.AddHours(2), 20 * 3600, "window");
+        AddTrackerEvent(db, dayStart.AddHours(10), double.NaN, "window");
         AddHeartbeat(db, Now.AddMinutes(-1));
         await db.SaveChangesAsync();
 
         var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
 
         var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
-        // 内容地平线来自那条正常事件（10:00Z + 1 小时），NaN 那条不贡献时长。
-        Assert.Equal(dayStart.AddHours(11).ToString("O"), daemon.Details["contentHorizonUtc"]);
+        // 地平线 = 02:00Z 那条的结束时刻（+20 小时），NaN 那条只贡献自己的起点（10:00Z）。
+        Assert.Equal(dayStart.AddHours(22).ToString("O"), daemon.Details["contentHorizonUtc"]);
     }
 
     [Fact]
@@ -320,6 +321,9 @@ public sealed class PcQualityLocatabilityTests
         Assert.True(int.Parse(tracker.Details["missingHourCount"]) > 0, tracker.Details["missingHourCount"]);
         Assert.Contains("2026-09-27 23:00", tracker.Details["missingHours"]);
         Assert.Contains(result.Issues, i => i.Code == "tracker-events-missing-hours");
+        // 同一小时不能既被记为有数据（零长记录停在整点上）又列进缺数列表。
+        Assert.Equal(dayStart.AddHours(2).ToString("O"), tracker.Details["lastDataAtUtc"]);
+        Assert.DoesNotContain("2026-09-27 06:00", tracker.Details["missingHours"]);
     }
 
     [Fact]
