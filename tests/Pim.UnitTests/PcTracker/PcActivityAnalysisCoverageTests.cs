@@ -221,6 +221,40 @@ public sealed class PcActivityAnalysisCoverageTests
     }
 
     [Fact]
+    public async Task GetDailyAnalysisAsync_InputMinuteOnlyMinutesAreExactlyTheTimelineGap()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
+        // 与镜像库 2026-09-27 同形（只读实测：input-minute 全天覆盖，window / web-page 只覆盖其中一部分）：
+        // analysis 的活跃时长走 PcActivityOverlapResolver 的候选并集（含 input-minute，这是 REQ-2 与术语表
+        // 规定的唯一口径），而 summary.timeline 按 IsSummaryTimelineRecord 只收 window / web-page。
+        // 两者的差额恰好是「只有 input-minute 覆盖的分钟」—— 该差额在真实数据上远大于 2%，
+        // 因此 AC-2.3 的第二条（与 summary.timeline 覆盖分钟数差 ≤2%）与本条 AC 的并集口径互相冲突。
+        for (var hour = 0; hour < 13; hour++)
+        {
+            db.Set<AwEventEntity>().Add(WindowEvent(dayStart.AddHours(hour), 2400, "Code.exe", "A"));
+            db.Set<KeystatsSampleEntity>().AddRange(BuildMinuteSamples(dayStart.AddHours(hour), minutes: 60, $"device-{hour}"));
+        }
+
+        await db.SaveChangesAsync();
+
+        var tracker = Tracker(db);
+        var analysis = await new PcActivityAnalysisService(tracker).GetDailyAnalysisAsync(Day, 60, CancellationToken.None);
+        var summary = await tracker.GetSummaryAsync(Day, CancellationToken.None);
+
+        var analysisMinutes = analysis.Blocks.Sum(b => b.ActiveDurationSeconds) / 60.0;
+        var timelineMinutes = summary.Timeline.Sum(item => item.DurationMinutes);
+
+        // 每小时：60 条采样 → 59 条 input-minute 记录（覆盖 59 分钟），window 的 40 分钟整段被消解 → 并集 59 分钟。
+        Assert.Equal(13 * 59, analysisMinutes, 1);
+        // timeline 只收 window / web-page：每小时 40 分钟。
+        Assert.Equal(13 * 40, timelineMinutes, 1);
+        // 差额 = input-minute 独占分钟（19 分钟/小时）。AC-2.3 第一条（≤86400 秒）仍然成立。
+        Assert.Equal(13 * 19, analysisMinutes - timelineMinutes, 1);
+        Assert.True(analysis.Blocks.Sum(b => b.ActiveDurationSeconds) <= 86400);
+    }
+
+    [Fact]
     public async Task GetDailyAnalysisAsync_FullBusinessDay_MeasuresLatencyAndAllocations()
     {
         await using var db = CreateDb();
