@@ -603,6 +603,7 @@ public sealed class PcTrackerQualityService
     /// <summary>
     /// 全库范围的最新内容时刻（不含心跳）：AW 事件、原生事件、KeyStats 样本的最大时刻。
     /// 用于判断「这本库本身就旧」还是「采集端现在停了」——后者只有在内容另有新数据时才成立。
+    /// 口径说明：事件按**起点**计（单条时长最多再加几小时，相对于「几天」级别的滞后判断可忽略）。
     /// </summary>
     private async Task<DateTimeOffset?> ComputeDatabaseContentHorizonAsync(CancellationToken ct)
     {
@@ -853,11 +854,11 @@ public sealed class PcTrackerQualityService
             ? "query-range-beyond-database-horizon"
             : libraryFrozen
                 ? "database-or-collector-frozen"
-                : contentNewerThanHeartbeat
+                : contentNewerThanHeartbeat || age >= DaemonLifecycleClassifier.AbnormalDaemonAge
                     ? "collector-heartbeat-stale"
-                    : age < DaemonLifecycleClassifier.OnlineDaemonAge
-                        ? "none"
-                        : "unclear";
+                    : age >= DaemonLifecycleClassifier.OnlineDaemonAge
+                        ? "collector-heartbeat-old"
+                        : "none";
 
         // 附加说明（Warning）：只在「本库确实没覆盖到 / 整体停住」时给，不取代心跳判据。
         if (!string.Equals(lifecycle.State, "planned-offline", StringComparison.Ordinal))
