@@ -103,9 +103,12 @@ public sealed class PcTrackerQualityService
         var daysInRange = Math.Max(1, (int)Math.Ceiling((rangeEnd - rangeStart).TotalDays));
         var baseline = (await BuildTrackerBaselineAsync(rangeStart, ct))
             .WithCurrentDailyEventCount(trackerEvents.Count / (double)daysInRange);
+        // 查询当前业务日时「范围末尾」还在未来：缺数判定、尾部断档、trailingGapMinutes 必须共用
+        // 同一个有效终点（= min(范围末尾, 现在)），否则会把还没到的小时报成缺数。
+        var coverageEnd = EffectiveRangeEnd(rangeEnd, checkedAt);
         var coverage = BuildCoverage(
             rangeStart,
-            rangeEnd,
+            coverageEnd,
             coverageEvents,
             samples,
             includeTrailingGap: heartbeat is not null && heartbeat.PlannedOfflineAt is null);
@@ -121,7 +124,7 @@ public sealed class PcTrackerQualityService
 
         if (isPostAw || trackerEvents.Count > 0)
         {
-            components.Add(CheckTrackerEvents(trackerEvents, baseline, coverage, rangeStart, rangeEnd, checkedAt, issues));
+            components.Add(CheckTrackerEvents(trackerEvents, baseline, coverage, rangeStart, rangeEnd, coverageEnd, checkedAt, issues));
         }
 
         components.Add(CheckKeystats(samples, issues));
@@ -349,6 +352,7 @@ public sealed class PcTrackerQualityService
         CoverageGaps coverage,
         DateTimeOffset rangeStart,
         DateTimeOffset rangeEnd,
+        DateTimeOffset coverageEnd,
         DateTimeOffset checkedAt,
         List<PcQualityIssueDto> issues)
     {
@@ -385,7 +389,7 @@ public sealed class PcTrackerQualityService
                 {
                     if (evt.Duration <= 0) continue;
                     var currentStart = evt.Timestamp;
-                    var currentEnd = evt.Timestamp.AddSeconds(evt.Duration);
+                    var currentEnd = EventEnd(evt.Timestamp, evt.Duration);
                     if (lastEnd is not null && currentStart.AddSeconds(1) < lastEnd.Value)
                     {
                         overlappingCount++;
@@ -472,13 +476,15 @@ public sealed class PcTrackerQualityService
             ["verdictBasis"] = baseline.Basis,
             ["rangeStartUtc"] = rangeStart.ToString("O"),
             ["rangeEndUtc"] = rangeEnd.ToString("O"),
+            // 缺数判定实际使用的有效终点（查询当前业务日时 = 现在，而不是还在未来的业务日末尾）。
+            ["coverageEndUtc"] = coverageEnd.ToString("O"),
             // AC-8.3：哪几小时无数据 / 从哪个时刻起断开。
             ["missingHourCount"] = coverage.MissingHourCount.ToString(),
             ["missingHours"] = coverage.DescribeMissingHours(),
             ["disconnectedFromUtc"] = coverage.DisconnectedFromUtc?.ToString("O") ?? string.Empty,
             ["lastDataAtUtc"] = coverage.LastDataAtUtc?.ToString("O") ?? string.Empty,
             ["trailingGapMinutes"] = Math
-                .Round(TrailingGapMinutes(coverage, rangeStart, checkedAt < rangeEnd ? checkedAt : rangeEnd))
+                .Round(TrailingGapMinutes(coverage, rangeStart, coverageEnd))
                 .ToString("0", CultureInfo.InvariantCulture),
             ["trailingGapFromUtc"] = coverage.TrailingGapStartUtc?.ToString("O") ?? string.Empty,
             ["coverageEmpty"] = (coverage.LastDataAtUtc is null).ToString()
@@ -524,15 +530,16 @@ public sealed class PcTrackerQualityService
     {
         var source = _db.Set<TrackerEventEntity>().AsNoTracking();
         var maxDurationSeconds = await source.MaxAsync(e => (double?)e.Duration, ct) ?? 0;
-        if (maxDurationSeconds <= 0)
+        if (double.IsNaN(maxDurationSeconds) || maxDurationSeconds <= 0)
             return new List<TrackerEventEntity>();
 
+        var lookbackStart = ClampAddSeconds(rangeStart, -maxDurationSeconds);
         var candidates = await source
-            .Where(e => e.Timestamp >= rangeStart.AddSeconds(-maxDurationSeconds) && e.Timestamp < rangeStart)
+            .Where(e => e.Timestamp >= lookbackStart && e.Timestamp < rangeStart)
             .ToListAsync(ct);
 
         return candidates
-            .Where(e => e.Timestamp.AddSeconds(Math.Max(0, e.Duration)) > rangeStart)
+            .Where(e => EventEnd(e.Timestamp, e.Duration) > rangeStart)
             .ToList();
     }
 
@@ -575,7 +582,7 @@ public sealed class PcTrackerQualityService
         }
 
         foreach (var e in trackerEvents)
-            Mark(e.Timestamp, e.Timestamp.AddSeconds(Math.Max(0, e.Duration)));
+            Mark(e.Timestamp, EventEnd(e.Timestamp, e.Duration));
         foreach (var sample in samples)
             Mark(sample.SampledAtUtc, sample.SampledAtUtc);
 
@@ -627,6 +634,40 @@ public sealed class PcTrackerQualityService
         return new CoverageGaps(gaps, missingHourStarts, lastDataAtUtc, trailingGapStart, trackerEvents.Count);
     }
 
+    /// <summary>
+    /// 缺数判定 / 尾部断档 / 范围缺口共用的「有效范围末尾」：范围末尾在未来时取当前时刻。
+    /// 查询尚未结束的业务日时，还没到的小时不是缺数。
+    /// </summary>
+    private static DateTimeOffset EffectiveRangeEnd(DateTimeOffset rangeEnd, DateTimeOffset checkedAt)
+        => rangeEnd < checkedAt ? rangeEnd : checkedAt;
+
+    /// <summary>
+    /// 事件结束时刻：负时长（与 NaN）按「零长事件」处理；时长大到 <see cref="DateTimeOffset"/> 放不下时
+    /// 截到可表示的最大值 —— 脏数据不该让整个 quality 接口 500。
+    /// </summary>
+    private static DateTimeOffset EventEnd(DateTimeOffset timestamp, double durationSeconds)
+        => ClampAddSeconds(timestamp, double.IsNaN(durationSeconds) || durationSeconds <= 0 ? 0 : durationSeconds);
+
+    /// <summary>
+    /// 加减秒数但把结果截在 <see cref="DateTimeOffset"/> 可表示范围内。用于两个地方：
+    /// 事件结束时刻，以及「按最大时长回推的候选窗口起点」—— 后者的参数是在 EF 里当常量求值的，
+    /// 极长时长会在求值阶段就抛 <c>ArgumentOutOfRangeException</c>，光包住结果计算不够。
+    /// </summary>
+    private static DateTimeOffset ClampAddSeconds(DateTimeOffset value, double seconds)
+    {
+        if (double.IsNaN(seconds) || seconds == 0)
+            return value;
+
+        if (seconds > 0)
+        {
+            var remaining = (DateTimeOffset.MaxValue - value).TotalSeconds;
+            return seconds >= remaining ? DateTimeOffset.MaxValue : value.AddSeconds(seconds);
+        }
+
+        var available = (value - DateTimeOffset.MinValue).TotalSeconds;
+        return -seconds >= available ? DateTimeOffset.MinValue : value.AddSeconds(seconds);
+    }
+
     /// <summary>缺数时段的最小上报长度：低于这个长度的空白不单列（避免逐日噪音）。</summary>
     private static readonly TimeSpan MinimumReportedGap = TimeSpan.FromHours(1);
 
@@ -650,9 +691,9 @@ public sealed class PcTrackerQualityService
         DateTimeOffset? horizon = heartbeat?.ReceivedAt;
 
         foreach (var e in awEvents)
-            Consider(e.Timestamp.AddSeconds(Math.Max(0, e.Duration)));
+            Consider(EventEnd(e.Timestamp, e.Duration));
         foreach (var e in trackerEvents)
-            Consider(e.Timestamp.AddSeconds(Math.Max(0, e.Duration)));
+            Consider(EventEnd(e.Timestamp, e.Duration));
         foreach (var sample in samples)
             Consider(sample.SampledAtUtc);
 
@@ -724,14 +765,14 @@ public sealed class PcTrackerQualityService
         // 因此在这个窗口内取 max(Timestamp + Duration) 与全表结果一致，无需全表扫描。
         var maxTimestamp = await source.MaxAsync(timestampSelector, ct);
         var maxDurationSeconds = Math.Max(0, await source.MaxAsync(durationSelector, ct));
-        var windowStart = maxTimestamp.AddSeconds(-maxDurationSeconds);
+        var windowStart = ClampAddSeconds(maxTimestamp, -maxDurationSeconds);
 
         var horizon = maxTimestamp;
         var timestampOf = timestampSelector.Compile();
         var durationOf = durationSelector.Compile();
         foreach (var entity in await source.Where(windowFilter(windowStart)).ToListAsync(ct))
         {
-            var end = timestampOf(entity).AddSeconds(Math.Max(0, durationOf(entity)));
+            var end = EventEnd(timestampOf(entity), durationOf(entity));
             if (end > horizon)
                 horizon = end;
         }
@@ -910,6 +951,11 @@ public sealed class PcTrackerQualityService
         {
             details["heartbeat"] = "missing";
             details["staleReason"] = "heartbeat-missing";
+            // 没有心跳就没有可比较的时间关系，但调用方仍然需要知道「本库到底有没有内容」：
+            // 空库给 no-content，有内容但缺心跳给 heartbeat-missing（都写进 staleCause）。
+            details["dataHorizonUtc"] = dataHorizonUtc?.ToString("O") ?? string.Empty;
+            details["contentHorizonUtc"] = contentHorizonUtc?.ToString("O") ?? string.Empty;
+            details["staleCause"] = contentHorizonUtc is null ? "no-content" : "heartbeat-missing";
             componentIssues.Add(new PcQualityIssueDto(
                 "missing-windows-daemon-heartbeat",
                 PimHealthStatus.Unknown,
@@ -945,8 +991,9 @@ public sealed class PcTrackerQualityService
         //   query-range-beyond-database-horizon 查询范围超出本库内容（心跳另有判断）→ 本库没有这段数据
         //   database-or-collector-frozen     心跳与内容一起停在很久以前，范围未超出 → 两种可能
         //   no-content                       本库没有任何事件/样本，无法判断
-        //   planned-offline / none           计划内下线 / 心跳新鲜
-        var effectiveRangeEnd = rangeEnd < checkedAt ? rangeEnd : checkedAt;
+        //   heartbeat-missing                本库有内容但没有心跳，没有可比较的时间关系
+        //   planned-offline / none           计划内下线 / 时间关系无可归因异常
+        var effectiveRangeEnd = EffectiveRangeEnd(rangeEnd, checkedAt);
         var rangeShortfall = contentHorizonUtc is null
             ? (TimeSpan?)null
             : effectiveRangeEnd - contentHorizonUtc.Value;
@@ -978,10 +1025,10 @@ public sealed class PcTrackerQualityService
                             ? "query-range-beyond-database-horizon"
                             : libraryFrozen
                                 ? "database-or-collector-frozen"
-                                // 心跳本身过期，且本库/内容关系没有其它异常 → 成因就是心跳通道。
-                                : age >= DaemonLifecycleClassifier.AbnormalDaemonAge
-                                    ? "collector-heartbeat-stale"
-                                    : "none";
+                                // 时间关系上没有可归因的异常（心跳确实过期只由 staleReason 表达）：
+                                // 这里不因为「心跳年龄大」就写成 collector-heartbeat-stale ——
+                                // 那个码专指「本库内容另有更新的数据，只有心跳停」。
+                                : "none";
 
         // 附加说明（Warning）：只描述「本库有没有覆盖这段范围 / 是不是整体停住」，
         // 措辞不排除「采集端停机」这种可能（因为只有时间关系时两种情况无法区分）。
@@ -999,7 +1046,8 @@ public sealed class PcTrackerQualityService
                         ? $"，且查询范围末尾 {FormatLocal(effectiveRangeEnd)} 超出本库内容 {rangeShortfall!.Value.TotalHours:0.#} 小时。"
                         : "。") +
                     "可能是滞后快照 / 同步中断，也可能是采集端自那时起停机 —— 请对照 dataHorizonUtc、contentHorizonUtc、databaseLagMinutes 判断。",
-                    "先确认本库是否来自滞后快照；若不是，按采集端停机处理。"));
+                    "对照 dataHorizonUtc / contentHorizonUtc / databaseLagMinutes 确认本库是否为滞后快照，" +
+                    "并核对采集端在该时刻之后是否还有上报 —— 两者都可能，先取证据再下结论。"));
             }
             else if (rangeBeyondDatabase)
             {

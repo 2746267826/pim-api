@@ -205,6 +205,47 @@ public sealed class PcKeystatsRangeAggregationTests
     }
 
     [Fact]
+    public async Task GetKeystatsRangeAsync_TakesOnlyTheLatestSampleWhenADayHasSeveral()
+    {
+        await using var db = CreateDb();
+        var day = new DateTime(2026, 9, 2);
+        // 同一天两条采样：只取写入时刻最新的那条（与单日版、与日快照「取最近一条」同口径），
+        // 不能把两条相加。
+        db.Set<KeystatsSampleEntity>().Add(Sample(day, DateTimeOffset.Parse("2026-09-02T10:00:00Z"), 100, "A"));
+        db.Set<KeystatsSampleEntity>().Add(Sample(day, DateTimeOffset.Parse("2026-09-02T12:00:00Z"), 700, "B"));
+        await db.SaveChangesAsync();
+
+        var range = await new PcActivityAggregationService(db).GetKeystatsRangeAsync(
+            new PcAggregationQuery(null, "2026-09-02", "2026-09-02", null), CancellationToken.None);
+
+        Assert.Equal(700, range.TotalKeyPresses);
+        Assert.Equal(700, range.KeyPressCounts["B"]);
+        Assert.DoesNotContain("A", range.KeyPressCounts.Keys);
+    }
+
+    [Fact]
+    public async Task GetKeystatsRangeAsync_DoesNotAddSamplesOnDaysThatAlreadyHaveADailySnapshot()
+    {
+        await using var db = CreateDb();
+        var withDaily = new DateTime(2026, 9, 3);
+        db.Set<KeystatsDailyEntity>().Add(Row(withDaily, 900, DateTimeOffset.Parse("2026-09-03T10:00:00Z"), "D"));
+        // 同一天还有采样：日快照存在时不再叠加采样（否则会重复计入同一天的量）。
+        db.Set<KeystatsSampleEntity>().Add(Sample(withDaily, DateTimeOffset.Parse("2026-09-03T11:00:00Z"), 5000, "S"));
+        // 没有日快照的那天仍然回退到采样。
+        var sampleOnly = new DateTime(2026, 9, 2);
+        db.Set<KeystatsSampleEntity>().Add(Sample(sampleOnly, DateTimeOffset.Parse("2026-09-02T11:00:00Z"), 700, "T"));
+        await db.SaveChangesAsync();
+
+        var range = await new PcActivityAggregationService(db).GetKeystatsRangeAsync(
+            new PcAggregationQuery(null, "2026-09-02", "2026-09-03", null), CancellationToken.None);
+
+        Assert.Equal(700 + 900, range.TotalKeyPresses);
+        Assert.Equal(900, range.KeyPressCounts["D"]);
+        Assert.Equal(700, range.KeyPressCounts["T"]);
+        Assert.DoesNotContain("S", range.KeyPressCounts.Keys);
+    }
+
+    [Fact]
     public async Task GetKeystatsRangeAsync_StartAfterEndThrows()
     {
         await using var db = CreateDb();
@@ -239,6 +280,25 @@ public sealed class PcKeystatsRangeAggregationTests
             db.Set<KeystatsDailyEntity>().Add(row);
         }
     }
+
+    private static KeystatsSampleEntity Sample(DateTime day, DateTimeOffset sampledAt, int keyPresses, string key)
+        => new()
+        {
+            PimDeviceId = "device-1",
+            SampledAtUtc = sampledAt,
+            StatsDate = day.Date,
+            KeyPresses = keyPresses,
+            LeftClicks = 3,
+            RightClicks = 2,
+            MiddleClicks = 1,
+            SideBackClicks = 1,
+            SideForwardClicks = 1,
+            ScrollDistance = 10.5,
+            MouseDistance = 100.5,
+            PeakKps = 5,
+            PeakCps = 3,
+            KeyCountsJson = $"{{\"{key}\":{keyPresses}}}"
+        };
 
     private static KeystatsDailyEntity Row(DateTime day, int keyPresses, DateTimeOffset createdAt, string key)
     {
