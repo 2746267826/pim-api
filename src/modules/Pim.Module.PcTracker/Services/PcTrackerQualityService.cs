@@ -73,6 +73,12 @@ public sealed class PcTrackerQualityService
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
 
+        // 覆盖判定要额外带上「起点在范围之前、但伸进范围」的事件（Mark 会按边界裁剪）：
+        // 只按「起点落在范围内」取数会整条丢掉这类记录，让范围第一小时被误报成没有数据。
+        var coverageEvents = trackerEvents
+            .Concat(await LoadEventsCrossingRangeStartAsync(rangeStart, ct))
+            .ToList();
+
         var samples = await _db.Set<KeystatsSampleEntity>()
             .AsNoTracking()
             .Where(s => s.SampledAtUtc >= rangeStart && s.SampledAtUtc < rangeEnd)
@@ -100,7 +106,7 @@ public sealed class PcTrackerQualityService
         var coverage = BuildCoverage(
             rangeStart,
             rangeEnd,
-            trackerEvents,
+            coverageEvents,
             samples,
             includeTrailingGap: heartbeat is not null && heartbeat.PlannedOfflineAt is null);
 
@@ -349,7 +355,9 @@ public sealed class PcTrackerQualityService
         var componentIssues = new List<PcQualityIssueDto>();
         var overlappingCount = 0;
 
-        if (events.Count == 0)
+        // 「范围内一个事件都没有」用的是覆盖判定那一批：起点在范围之前、但伸进范围的事件
+        // 同样说明这段范围有数据（只按「起点落在范围内」取数会把它漏掉）。
+        if (coverage.TrackerEventCount == 0)
         {
             componentIssues.Add(new PcQualityIssueDto(
                 "missing-tracker-events",
@@ -504,6 +512,30 @@ public sealed class PcTrackerQualityService
     }
 
     /// <summary>范围内部的缺数时段：只报「两侧都有数据」的中间断档，起止空缺交给心跳/数据滞后判据。</summary>
+    /// <summary>
+    /// 起点早于 <paramref name="rangeStart"/>、但结束时刻落在范围之内的事件（跨范围起点的那一条）。
+    /// <para>只有这类事件的结束时刻才可能晚于 <paramref name="rangeStart"/>，而结束时刻 = 起点 + 时长，
+    /// 所以先用 <c>max(duration)</c> 把候选窗口收窄到 <c>[rangeStart - maxDuration, rangeStart)</c>，
+    /// 再在内存里按结束时刻过滤 —— 避免把 <c>起点 + 时长</c> 写进 SQL 的 WHERE（翻译风险高）。</para>
+    /// </summary>
+    private async Task<List<TrackerEventEntity>> LoadEventsCrossingRangeStartAsync(
+        DateTimeOffset rangeStart,
+        CancellationToken ct)
+    {
+        var source = _db.Set<TrackerEventEntity>().AsNoTracking();
+        var maxDurationSeconds = await source.MaxAsync(e => (double?)e.Duration, ct) ?? 0;
+        if (maxDurationSeconds <= 0)
+            return new List<TrackerEventEntity>();
+
+        var candidates = await source
+            .Where(e => e.Timestamp >= rangeStart.AddSeconds(-maxDurationSeconds) && e.Timestamp < rangeStart)
+            .ToListAsync(ct);
+
+        return candidates
+            .Where(e => e.Timestamp.AddSeconds(Math.Max(0, e.Duration)) > rangeStart)
+            .ToList();
+    }
+
     private static CoverageGaps BuildCoverage(
         DateTimeOffset rangeStart,
         DateTimeOffset rangeEnd,
@@ -592,7 +624,7 @@ public sealed class PcTrackerQualityService
             }
         }
 
-        return new CoverageGaps(gaps, missingHourStarts, lastDataAtUtc, trailingGapStart);
+        return new CoverageGaps(gaps, missingHourStarts, lastDataAtUtc, trailingGapStart, trackerEvents.Count);
     }
 
     /// <summary>缺数时段的最小上报长度：低于这个长度的空白不单列（避免逐日噪音）。</summary>
@@ -758,7 +790,8 @@ public sealed class PcTrackerQualityService
         IReadOnlyList<CoverageGap> Gaps,
         IReadOnlyList<DateTimeOffset> MissingHourStarts,
         DateTimeOffset? LastDataAtUtc,
-        DateTimeOffset? TrailingGapStartUtc)
+        DateTimeOffset? TrailingGapStartUtc,
+        int TrackerEventCount)
     {
         private const int MaxListedHours = 24;
 

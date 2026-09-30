@@ -162,6 +162,30 @@ public sealed class PcQualityLocatabilityTests
     }
 
     [Fact]
+    public async Task GetQualityAsync_EventCrossingTheRangeStartStillCountsAsCoverage()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
+        // 起点在业务日之前、伸进范围内的事件（真实数据里确实存在这类跨边界记录）：
+        // 19:50Z–20:10Z 覆盖了范围开头 10 分钟。取数阶段若只按「起点落在范围内」过滤，
+        // 这段数据会被整条丢掉，范围第一小时被当成没有数据。
+        AddTrackerEvent(db, dayStart.AddMinutes(-10), 1200, "window");
+        AddHeartbeat(db, Now.AddMinutes(-1));
+        await db.SaveChangesAsync();
+
+        var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
+
+        var tracker = Assert.Single(result.Components, c => c.Key == "tracker-events");
+        // AC-8.3 / AC-8.4：本库这段范围有数据，就不能报成「整段没有数据」。
+        Assert.Equal("False", tracker.Details["coverageEmpty"]);
+        Assert.Equal(dayStart.AddMinutes(10).ToString("O"), tracker.Details["lastDataAtUtc"]);
+        Assert.DoesNotContain(result.Issues, i => i.Code == "missing-tracker-events");
+        // 尾部空白仍然如实上报：最后一条数据 20:10Z 之后到范围末尾。
+        Assert.Equal(dayStart.AddMinutes(10).ToString("O"), tracker.Details["trailingGapFromUtc"]);
+        Assert.Equal("1430", tracker.Details["trailingGapMinutes"]);
+    }
+
+    [Fact]
     public async Task GetQualityAsync_TrackerEventsExposeBaselineAndVerdict()
     {
         await using var db = CreateDb();
