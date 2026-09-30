@@ -358,6 +358,16 @@ export default function KeyboardHeatmap({ keystats, error }: Props) {
     .filter(keyItem => keyItem.keyName.includes('+'))
     .sort((a, b) => b.count - a.count);
 
+  // 请求失败时不要画一张「全是 0 次」的键鼠矩阵 —— 那会被读成真实数据（REQ-6.3）。
+  if (error) {
+    return (
+      <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-800">
+        <span className="font-medium">键鼠统计请求未成功：</span>
+        <span className="break-words">{readableError(error)}</span>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -371,12 +381,7 @@ export default function KeyboardHeatmap({ keystats, error }: Props) {
         </div>
       </div>
 
-      {error ? (
-        <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          <span className="font-medium">键鼠统计请求未成功：</span>
-          <span className="break-words">{readableError(error)}</span>
-        </div>
-      ) : !keystats ? (
+      {!keystats ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
           当前日期暂无键鼠数据，已展示完整键鼠布局骨架。
         </div>

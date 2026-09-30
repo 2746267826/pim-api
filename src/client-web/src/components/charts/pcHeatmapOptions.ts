@@ -51,9 +51,20 @@ export interface ActivityGridMap {
   yLabels: string[];
 }
 
-function parseBucketDate(start: string): Date | null {
-  const d = new Date(start);
-  return Number.isNaN(d.getTime()) ? null : d;
+/**
+ * 桶 start → **业务日**坐标（该业务日的 UTC 午夜 Date）。
+ *
+ * `heatmap/grid` 的 day/month/year 桶起点是业务日窗口 `[前一日 20:00Z, 当日 20:00Z)`，
+ * 它的 UTC 日历日恰好是业务日的**前一天**。直接 `new Date(start)` 再取 UTC 字段，
+ * 会把格子画到前一天/上一周/上一个月（跨月时整格进错月）—— 这正是 REQ-3 要消除的
+ * 「整体偏移一天」。换算到固定 +08:00 后再归一到 UTC 午夜，后续用 UTC getter
+ * 读出的即业务日的星期、日、月、年。
+ */
+function parseBucketBusinessDate(start: string): Date | null {
+  const ms = Date.parse(start);
+  if (Number.isNaN(ms)) return null;
+  const shifted = new Date(ms + SHANGHAI_OFFSET_MS);
+  return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()));
 }
 
 /**
@@ -62,6 +73,8 @@ function parseBucketDate(start: string): Date | null {
  * - day：x = 周一起算的周内序号，y = 周一锚定周的行序号（跨周升序）；
  * - month：x = 当月第几天 - 1（1-31），y = 月份行序号（升序）；
  * - year：x = 年内周序号（周一锚定，0..52，GitHub calendar 形态），y = 周内序号。
+ *
+ * day/month/year 的坐标一律按**业务日**（+08:00）计算，与工具提示的日期同源。
  */
 export function mapActivityGrid(data: HeatmapGridResponse | undefined): ActivityGridMap | null {
   if (!data) return null;
@@ -86,7 +99,7 @@ export function mapActivityGrid(data: HeatmapGridResponse | undefined): Activity
   if (dimension === 'day') {
     const weekKeyOf = (ms: number) => Math.floor((ms - MONDAY_EPOCH_MS) / (7 * MS_PER_DAY));
     const entries = buckets.map(bucket => {
-      const d = parseBucketDate(bucket.start);
+      const d = parseBucketBusinessDate(bucket.start);
       if (!d) return null;
       const ms = d.getTime();
       return { bucket, ms, weekday: mondayWeekday(d), weekKey: weekKeyOf(ms - mondayWeekday(d) * MS_PER_DAY) };
@@ -103,7 +116,7 @@ export function mapActivityGrid(data: HeatmapGridResponse | undefined): Activity
 
   if (dimension === 'month') {
     const entries = buckets.map(bucket => {
-      const d = parseBucketDate(bucket.start);
+      const d = parseBucketBusinessDate(bucket.start);
       if (!d) return null;
       const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
       return { bucket, key, dayIndex: d.getUTCDate() - 1 };
@@ -117,7 +130,7 @@ export function mapActivityGrid(data: HeatmapGridResponse | undefined): Activity
 
   // year：53 周列 × 7 行
   for (const bucket of buckets) {
-    const d = parseBucketDate(bucket.start);
+    const d = parseBucketBusinessDate(bucket.start);
     if (!d) continue;
     const yearStart = Date.UTC(d.getUTCFullYear(), 0, 1);
     const dayOfYear = Math.floor((d.getTime() - yearStart) / MS_PER_DAY);
@@ -382,6 +395,22 @@ export function buildActivityHeatmapOption(data: HeatmapGridResponse | undefined
 }
 
 /**
+ * 块内活跃分钟（分钟，四舍五入）。
+ *
+ * 后端修复后 `activeDurationSeconds` 恒 ≤ 块时长；这里仍夹紧一次，保证任何异常数据下
+ * 界面都不会出现「活跃 99 分钟」这类超限数值。图表工具提示与详情面板共用本函数，
+ * 避免同一块在两处显示不同数字。
+ */
+export function blockActiveMinutes(block: PcActivityAnalysisBlock): number {
+  const raw = Math.round((block.activeDurationSeconds || 0) / 60);
+  const startMs = new Date(block.start).getTime();
+  const endMs = new Date(block.end).getTime();
+  const blockMinutes = Math.round((endMs - startMs) / 60000);
+  if (!Number.isFinite(blockMinutes) || blockMinutes < 0) return Math.max(raw, 0);
+  return Math.min(Math.max(raw, 0), blockMinutes);
+}
+
+/**
  * 时间块热力：x = 块序号 1..n，y 单行，value = intensityLevel（0–5 档），
  * 色阶上界取块自带的 intensityMax（后端固定 5，见 references/A §A-1）。
  */
@@ -402,8 +431,7 @@ export function buildAnalysisBlocksOption(
         const start = new Date(block.start);
         const end = new Date(block.end);
         // 后端修复后 activeDurationSeconds 恒 ≤ 块时长；仍夹紧一次，避免异常数据出现「活跃 99 分钟」。
-        const blockMinutes = (end.getTime() - start.getTime()) / 60000;
-        const activeMinutes = Math.min(Math.round(block.activeDurationSeconds / 60), Math.max(Math.round(blockMinutes), 0));
+        const activeMinutes = blockActiveMinutes(block);
         return `${formatClock(start.getTime())} - ${formatClock(end.getTime())} · 活跃 ${activeMinutes} 分钟\n${block.pendingClassificationCount} 条待分类 · ${block.contextSwitchCount} 次上下文切换`;
       },
       backgroundColor: 'rgba(15, 23, 42, 0.92)',

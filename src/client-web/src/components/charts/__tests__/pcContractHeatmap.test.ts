@@ -101,8 +101,75 @@ describe('REQ-1 · 四个维度热力图的着色取值改读 keyPressCount', ()
   });
 });
 
-describe('REQ-1 / REQ-9 · 网格工具提示显示原始键数与桶内活跃分钟', () => {
-  it('工具提示的键数与该单元格 keyPressCount 相等', () => {
+describe('REQ-3 · 跨日贡献图的格子必须落在业务日坐标上（不是 UTC 日历日）', () => {
+  // 后端 day/month/year 桶起点 = 业务日窗口 `[前一日 20:00Z, 当日 20:00Z)`，
+  // 其 UTC 日历日恰好是业务日的**前一天**。格子画在哪一天必须按 +08:00 算，
+  // 否则会出现「提示写 2026-09-27、格子画在 26 日/周六」的整体偏移（REQ-3 的反面行为）。
+  const dayBucket = (start: string) => gridCell(start, 100, { activeMinutes: 10 });
+
+  it('day 维度：业务日 2026-09-27（周日）画在「周日」列，不是周六', () => {
+    const map = mapActivityGrid(gridResponse('day', [dayBucket('2026-09-26T20:00:00.0000000+00:00')], 100));
+    expect(map?.cells[0].x).toBe(6); // 周日
+    expect(map?.yLabels).toEqual(['2026-09-21']); // 2026-09-21 是周一
+  });
+
+  it('day 维度：业务日 2026-09-21（周一）画在「周一」列，且与 09-27 同一周', () => {
+    const map = mapActivityGrid(gridResponse('day', [
+      dayBucket('2026-09-20T20:00:00.0000000+00:00'), // 业务日 2026-09-21 周一
+      dayBucket('2026-09-26T20:00:00.0000000+00:00'), // 业务日 2026-09-27 周日
+    ], 100));
+    const byStart = new Map(map!.cells.map(c => [c.bucket.start, c]));
+    expect(byStart.get('2026-09-20T20:00:00.0000000+00:00')?.x).toBe(0);
+    expect(byStart.get('2026-09-20T20:00:00.0000000+00:00')?.y).toBe(0);
+    expect(byStart.get('2026-09-26T20:00:00.0000000+00:00')?.x).toBe(6);
+    expect(byStart.get('2026-09-26T20:00:00.0000000+00:00')?.y).toBe(0);
+    expect(map?.yLabels).toEqual(['2026-09-21']);
+  });
+
+  it('month 维度：跨月桶归属业务月份（08-31T20:00Z → 9 月 1 日，09-30T20:00Z → 10 月 1 日）', () => {
+    const map = mapActivityGrid(gridResponse('month', [
+      dayBucket('2026-08-31T20:00:00.0000000+00:00'),
+      dayBucket('2026-09-26T20:00:00.0000000+00:00'),
+      dayBucket('2026-09-30T20:00:00.0000000+00:00'),
+    ], 100));
+    const byStart = new Map(map!.cells.map(c => [c.bucket.start, c]));
+    // 业务日 2026-09-01 → 9 月行、第 1 天（x=0）
+    expect(byStart.get('2026-08-31T20:00:00.0000000+00:00')?.x).toBe(0);
+    expect(byStart.get('2026-08-31T20:00:00.0000000+00:00')?.y).toBe(0);
+    // 业务日 2026-09-27 → 9 月行、第 27 天（x=26）
+    expect(byStart.get('2026-09-26T20:00:00.0000000+00:00')?.x).toBe(26);
+    expect(byStart.get('2026-09-26T20:00:00.0000000+00:00')?.y).toBe(0);
+    // 业务日 2026-10-01 → 10 月行、第 1 天（x=0）
+    expect(byStart.get('2026-09-30T20:00:00.0000000+00:00')?.x).toBe(0);
+    expect(byStart.get('2026-09-30T20:00:00.0000000+00:00')?.y).toBe(1);
+    expect(map?.yLabels).toEqual(['2026-09', '2026-10']);
+  });
+
+  it('year 维度：跨年桶归属业务年份（2025-12-31T20:00Z → 2026-01-01 周四）', () => {
+    const map = mapActivityGrid(gridResponse('year', [
+      dayBucket('2025-12-31T20:00:00.0000000+00:00'),
+      dayBucket('2026-09-26T20:00:00.0000000+00:00'),
+    ], 100));
+    const byStart = new Map(map!.cells.map(c => [c.bucket.start, c]));
+    // 2026-01-01 是周四 → 行 3；该年的第 0 周（周一锚定）
+    expect(byStart.get('2025-12-31T20:00:00.0000000+00:00')?.y).toBe(3);
+    expect(byStart.get('2025-12-31T20:00:00.0000000+00:00')?.x).toBe(0);
+    // 2026-09-27 是周日 → 行 6
+    expect(byStart.get('2026-09-26T20:00:00.0000000+00:00')?.y).toBe(6);
+  });
+
+  it('工具提示日期与格子坐标同源（同一业务日，两处不得互相矛盾）', () => {
+    const cell = dayBucket('2026-09-26T20:00:00.0000000+00:00');
+    const map = mapActivityGrid(gridResponse('day', [cell], 100))!;
+    const tooltipDate = tooltipFormatter(buildActivityHeatmapOption(gridResponse('day', [cell], 100)))({ data: { bucket: cell } });
+    const weekdayLabels = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    // 提示里的日期是 2026-09-27（周日）→ 格子必须在「周日」列
+    expect(tooltipDate).toContain('2026-09-27');
+    expect(weekdayLabels[map.cells[0].x]).toBe('周日');
+  });
+});
+
+describe('REQ-1 / REQ-9 · 网格工具提示显示原始键数与桶内活跃分钟', () => {  it('工具提示的键数与该单元格 keyPressCount 相等', () => {
     const cells = [
       gridCell('2026-09-26T20:00:00.0000000+00:00', 24949, { activeMinutes: 722 }),
       gridCell('2026-09-27T20:00:00.0000000+00:00', 1024, { activeMinutes: 90 }),

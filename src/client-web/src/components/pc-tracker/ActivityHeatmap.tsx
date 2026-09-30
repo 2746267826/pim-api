@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import EChartBox from '../charts/EChartBox';
-import { buildActivityHeatmapOption, mapActivityGrid } from '../charts/pcHeatmapOptions';
+import { bucketDatePart, buildActivityHeatmapOption, mapActivityGrid } from '../charts/pcHeatmapOptions';
 import { chartColors } from '../charts/chartColors';
 import type { HeatmapGridResponse } from '../../types';
 
@@ -62,7 +62,9 @@ export default function ActivityHeatmap({ data, isLoading, error, onDateClick }:
     const bucket = p?.data?.bucket;
     if (!bucket?.start) return;
     if (dimension === 'hour') return; // hour 维度无日期语义，不触发
-    onDateClick(bucket.start.slice(0, 10));
+    // 桶起点是业务日窗口（前一日 20:00Z），必须换算业务日后再回传，
+    // 否则点击会把页面切到前一天（与 REQ-3 同一处日期口径）。
+    onDateClick(bucketDatePart(bucket.start));
   };
 
   return (

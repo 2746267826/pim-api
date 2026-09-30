@@ -1,5 +1,5 @@
 import EChartBox from '../charts/EChartBox';
-import { buildAnalysisBlocksOption } from '../charts/pcHeatmapOptions';
+import { blockActiveMinutes, buildAnalysisBlocksOption } from '../charts/pcHeatmapOptions';
 import type { PcActivityAnalysisBlock, PcActivityAnalysisResponse } from '../../types';
 
 interface Props {
@@ -10,6 +10,11 @@ interface Props {
 
 function formatMinutes(seconds: number) {
   return Math.round(seconds / 60).toLocaleString('zh-CN');
+}
+
+/** 块内活跃分钟（与图上工具提示同一个夹紧函数，两处不得显示不同数字）。 */
+function formatBlockActiveMinutes(block: PcActivityAnalysisBlock) {
+  return blockActiveMinutes(block).toLocaleString('zh-CN');
 }
 
 function formatTime(value: string) {
@@ -43,11 +48,14 @@ function ShareList({
   title,
   blockSeconds,
   items,
+  hiddenCount = 0,
 }: {
   group: 'categories' | 'apps';
   title: string;
   blockSeconds: number;
   items: ShareItem[];
+  /** 被截断未展示的项数：占比条只画前若干项，需明示否则会被误读成「合计不到 100% 是 bug」 */
+  hiddenCount?: number;
 }) {
   if (items.length === 0) return null;
   const totalSeconds = items.reduce((acc, item) => acc + Math.max(item.durationSeconds, 0), 0);
@@ -77,6 +85,9 @@ function ShareList({
           </div>
         );
       })}
+      {hiddenCount > 0 && (
+        <p className="text-[10px] text-slate-400">另有 {hiddenCount} 项未展示（占比条只列出占比最高的 4 项）。</p>
+      )}
     </div>
   );
 }
@@ -129,7 +140,7 @@ export default function ActivityAnalysisHeatmap({ analysis, selectedStart, onSel
             {formatTime(selected.start)} - {formatTime(selected.end)}
           </div>
           <p className="mt-1 text-xs text-slate-600">
-            活跃 {formatMinutes(selected.activeDurationSeconds)} 分钟 | {selected.contextSwitchCount.toLocaleString('zh-CN')} 次上下文切换 | {selected.pendingClassificationCount.toLocaleString('zh-CN')} 条待分类
+            活跃 {formatBlockActiveMinutes(selected)} 分钟 | {selected.contextSwitchCount.toLocaleString('zh-CN')} 次上下文切换 | {selected.pendingClassificationCount.toLocaleString('zh-CN')} 条待分类
           </p>
 
           <div className="mt-2 grid gap-3 md:grid-cols-2">
@@ -143,6 +154,7 @@ export default function ActivityAnalysisHeatmap({ analysis, selectedStart, onSel
                 color: item.color,
                 durationSeconds: item.durationSeconds,
               }))}
+              hiddenCount={Math.max(selected.categories.length - 4, 0)}
             />
             <ShareList
               group="apps"
@@ -154,6 +166,7 @@ export default function ActivityAnalysisHeatmap({ analysis, selectedStart, onSel
                 color: null,
                 durationSeconds: item.durationSeconds,
               }))}
+              hiddenCount={Math.max(selected.apps.length - 4, 0)}
             />
           </div>
           <p className="mt-2 text-[11px] text-slate-400">占比 = 该项时长 ÷ 块时长（{Math.round(blockSeconds / 60)} 分钟），合计不超过 100%。</p>
