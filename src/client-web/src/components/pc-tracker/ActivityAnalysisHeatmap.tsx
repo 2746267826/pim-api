@@ -30,6 +30,33 @@ interface ShareItem {
   durationSeconds: number;
 }
 
+/** 占比条最多列出的项数（超出部分用 `hiddenCount` 明示）。 */
+export const SHARE_LIST_LIMIT = 4;
+
+/**
+ * 取时长最大的前 N 项（降序）。
+ *
+ * 后端目前已按降序返回，但这里仍显式排序 —— 否则文案里的「占比最高的 4 项」
+ * 与实际切片不一致，脏序数据下会展示任意 4 项。
+ */
+export function topByDuration<T>(
+  items: readonly T[],
+  keyOf: (item: T) => string,
+  durationOf: (item: T) => number,
+  colorOf: (item: T) => string | null,
+  limit = SHARE_LIST_LIMIT,
+): ShareItem[] {
+  return [...items]
+    .sort((a, b) => durationOf(b) - durationOf(a))
+    .slice(0, limit)
+    .map(item => ({
+      key: keyOf(item),
+      label: keyOf(item),
+      color: colorOf(item),
+      durationSeconds: durationOf(item),
+    }));
+}
+
 /**
  * 块内占比条（REQ-2）。
  *
@@ -148,25 +175,15 @@ export default function ActivityAnalysisHeatmap({ analysis, selectedStart, onSel
               group="categories"
               title="分类占比"
               blockSeconds={blockSeconds}
-              items={selected.categories.slice(0, 4).map(item => ({
-                key: item.categoryName,
-                label: item.categoryName,
-                color: item.color,
-                durationSeconds: item.durationSeconds,
-              }))}
-              hiddenCount={Math.max(selected.categories.length - 4, 0)}
+              items={topByDuration(selected.categories, item => item.categoryName, item => item.durationSeconds, item => item.color)}
+              hiddenCount={Math.max(selected.categories.length - SHARE_LIST_LIMIT, 0)}
             />
             <ShareList
               group="apps"
               title="应用占比"
               blockSeconds={blockSeconds}
-              items={selected.apps.slice(0, 4).map(item => ({
-                key: item.appName,
-                label: item.appName,
-                color: null,
-                durationSeconds: item.durationSeconds,
-              }))}
-              hiddenCount={Math.max(selected.apps.length - 4, 0)}
+              items={topByDuration(selected.apps, item => item.appName, item => item.durationSeconds, () => null)}
+              hiddenCount={Math.max(selected.apps.length - SHARE_LIST_LIMIT, 0)}
             />
           </div>
           <p className="mt-2 text-[11px] text-slate-400">占比 = 该项时长 ÷ 块时长（{Math.round(blockSeconds / 60)} 分钟），合计不超过 100%。</p>

@@ -358,8 +358,10 @@ export default function KeyboardHeatmap({ keystats, error }: Props) {
     .filter(keyItem => keyItem.keyName.includes('+'))
     .sort((a, b) => b.count - a.count);
 
-  // 请求失败时不要画一张「全是 0 次」的键鼠矩阵 —— 那会被读成真实数据（REQ-6.3）。
-  if (error) {
+  // 请求失败且**没有任何数据**时，不要画一张「全是 0 次」的矩阵 —— 那会被读成真实数据（REQ-6.3）。
+  // 但 React Query 在刷新失败时会同时给出 error 与上一份成功的 data；这种情形要保留矩阵，
+  // 只在下方叠加错误条，否则用户会因为一次刷新失败丢掉已经拿到的真实数据。
+  if (error && !keystats) {
     return (
       <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-800">
         <span className="font-medium">键鼠统计请求未成功：</span>
@@ -380,6 +382,13 @@ export default function KeyboardHeatmap({ keystats, error }: Props) {
           <MouseHeatmap keystats={safeKeystats} maxKey={maxKey} />
         </div>
       </div>
+
+      {error && keystats ? (
+        <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <span className="font-medium">上次刷新失败，以下为最近一次成功的数据：</span>
+          <span className="break-words">{readableError(error)}</span>
+        </div>
+      ) : null}
 
       {!keystats ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">

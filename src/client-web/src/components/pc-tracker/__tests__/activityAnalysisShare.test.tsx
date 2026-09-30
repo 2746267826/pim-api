@@ -97,6 +97,49 @@ describe('REQ-2 · 时间块热力：活跃分钟与块内占比', () => {
     expect(Number(categoryBar!.getAttribute('data-share-percent'))).toBeCloseTo(38.4, 0);
   });
 
+  it('占比条明示只列出占比最高的 4 项，且确实按占比降序取前 4', () => {
+    const many = Array.from({ length: 6 }, (_, i) => ({
+      appName: `app-${i}`,
+      durationSeconds: (i + 1) * 100,
+    }));
+    const { container } = render(
+      <ActivityAnalysisHeatmap
+        analysis={analysisWith({ apps: many })}
+        selectedStart={'2026-09-27T03:00:00.0000000+00:00'}
+        onSelectBlock={() => {}}
+      />,
+    );
+    const appBars = [...container.querySelectorAll('[data-share-bar][data-share-group="apps"]')];
+    expect(appBars.length).toBe(4);
+    // app-5 (600s) 最大，必须出现；app-0 (100s) 最小，必须被隐藏
+    const text = container.textContent ?? '';
+    expect(text).toContain('app-5');
+    expect(text).not.toContain('app-0');
+    expect(text).toContain('另有 2 项未展示');
+  });
+
+  it('后端返回乱序时仍取占比最高的前 4 项（文案与行为一致）', () => {
+    const shuffled = [
+      { appName: 'appSmall', durationSeconds: 60 },
+      { appName: 'appHuge', durationSeconds: 900 },
+      { appName: 'appMid', durationSeconds: 300 },
+      { appName: 'appLarge', durationSeconds: 600 },
+      { appName: 'appTiny', durationSeconds: 10 },
+    ];
+    const { container } = render(
+      <ActivityAnalysisHeatmap
+        analysis={analysisWith({ apps: shuffled })}
+        selectedStart={'2026-09-27T03:00:00.0000000+00:00'}
+        onSelectBlock={() => {}}
+      />,
+    );
+    const order = container.querySelector('[data-share-section="apps"]')!.textContent ?? '';
+    expect(order.indexOf('appHuge')).toBeLessThan(order.indexOf('appLarge'));
+    expect(order.indexOf('appLarge')).toBeLessThan(order.indexOf('appMid'));
+    expect(order.indexOf('appMid')).toBeLessThan(order.indexOf('appSmall'));
+    expect(order).not.toContain('appTiny');
+  });
+
   it('脏数据（各项之和超过块时长）时占比条仍合计 ≤ 100%', () => {
     const { container } = render(
       <ActivityAnalysisHeatmap

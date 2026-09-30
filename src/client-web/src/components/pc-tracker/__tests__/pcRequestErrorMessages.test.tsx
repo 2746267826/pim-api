@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
 import ActivityHeatmap from '../ActivityHeatmap';
-import KeyboardHeatmap from '../KeyboardHeatmap';
+import KeyboardHeatmap, { type KeystatsView } from '../KeyboardHeatmap';
 
 /**
  * WO-FRONTEND-PC-CONTRACT-20260930 · REQ-4 / REQ-6
@@ -46,12 +46,43 @@ describe('REQ-4 · hour 跨日 400 显示为可读提示', () => {
 });
 
 describe('REQ-6 · 键鼠范围聚合出错时显示可读提示', () => {
-  it('keystats 请求 400 时显示后端文案，而不是"暂无键鼠数据"骨架', () => {
+  const cached: KeystatsView = {
+    keyPresses: 24949,
+    totalClicks: 10474,
+    leftClicks: 7409,
+    rightClicks: 649,
+    middleClicks: 39,
+    sideBackClicks: 16,
+    sideForwardClicks: 2361,
+    mouseDistance: 100,
+    scrollDistance: 10,
+    peakKps: 15,
+    peakCps: 11,
+    keyPressCounts: { A: 3317 },
+    topKeys: [],
+  };
+
+  it('keystats 请求 400 且没有任何数据时：显示后端文案，而不是「暂无键鼠数据」骨架或全 0 矩阵', () => {
     const { container } = render(
       <KeyboardHeatmap keystats={null} error={new Error(KEYSTATS_400_MESSAGE)} />,
     );
     const text = container.textContent ?? '';
     expect(text).toContain('start 不能晚于 end');
     expect(text).not.toContain('当前日期暂无键鼠数据');
+    // 不能画一张「全是 0 次」的矩阵（会被读成真实数据）
+    expect(container.querySelector('[aria-label="鼠标热力图"]')).toBeNull();
+    expect(text).not.toContain('A\n0');
+  });
+
+  it('刷新失败但缓存里仍有上一次成功数据时：保留矩阵，只叠加错误条', () => {
+    const { container } = render(
+      <KeyboardHeatmap keystats={cached} error={new Error(KEYSTATS_400_MESSAGE)} />,
+    );
+    const text = container.textContent ?? '';
+    expect(text).toContain('start 不能晚于 end');
+    // 上一份成功数据必须还在（否则一次刷新失败会丢掉已经拿到的真实数据）
+    expect(container.querySelector('[aria-label="鼠标热力图"]')).not.toBeNull();
+    expect(text).toContain('7,409');
+    expect(text).toContain('上次刷新失败');
   });
 });

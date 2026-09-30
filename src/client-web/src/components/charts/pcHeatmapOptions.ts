@@ -397,17 +397,19 @@ export function buildActivityHeatmapOption(data: HeatmapGridResponse | undefined
 /**
  * 块内活跃分钟（分钟，四舍五入）。
  *
- * 后端修复后 `activeDurationSeconds` 恒 ≤ 块时长；这里仍夹紧一次，保证任何异常数据下
- * 界面都不会出现「活跃 99 分钟」这类超限数值。图表工具提示与详情面板共用本函数，
- * 避免同一块在两处显示不同数字。
+ * 后端修复后 `activeDurationSeconds` 恒 ≤ 块时长；这里仍夹紧一次，避免异常数据出现
+ * 「活跃 99 分钟」这类不可能值。图表工具提示与详情面板共用本函数，两处数字必然一致。
+ *
+ * 夹紧的前置条件是「块的起止时间可解析」：判断不了块长度时（`start`/`end` 缺失或非法）
+ * 原样返回，不做无依据的夹紧。起止颠倒时按区间长度（绝对值）夹紧。
  */
 export function blockActiveMinutes(block: PcActivityAnalysisBlock): number {
-  const raw = Math.round((block.activeDurationSeconds || 0) / 60);
+  const raw = Math.max(Math.round((block.activeDurationSeconds || 0) / 60), 0);
   const startMs = new Date(block.start).getTime();
   const endMs = new Date(block.end).getTime();
-  const blockMinutes = Math.round((endMs - startMs) / 60000);
-  if (!Number.isFinite(blockMinutes) || blockMinutes < 0) return Math.max(raw, 0);
-  return Math.min(Math.max(raw, 0), blockMinutes);
+  const blockMinutes = Math.abs(endMs - startMs) / 60000;
+  if (!Number.isFinite(blockMinutes)) return raw;
+  return Math.min(raw, Math.max(Math.round(blockMinutes), 0));
 }
 
 /**

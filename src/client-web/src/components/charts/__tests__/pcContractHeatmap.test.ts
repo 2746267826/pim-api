@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  blockActiveMinutes,
   bucketDatePart,
   buildActivityHeatmapOption,
   buildAnalysisBlocksOption,
@@ -240,5 +241,21 @@ describe('REQ-1 / REQ-2 · 时间块热力用 intensityLevel 档位着色', () =
     const text = tooltipFormatter(option)({ data: { blockIndex: 0 } });
     const m = text.match(/活跃\s*([0-9]+)\s*分钟/);
     expect(Number(m![1])).toBeLessThanOrEqual(60);
+  });
+
+  it('blockActiveMinutes 对缺失/非法时间与 NaN 秒数不产生 NaN', () => {
+    expect(blockActiveMinutes(block({ activeDurationSeconds: Number.NaN }))).toBe(0);
+    expect(blockActiveMinutes(block({ activeDurationSeconds: -100 }))).toBe(0);
+    // 起止时间不可解析 → 无法判断块长度，原样返回（不做无依据的夹紧）
+    expect(blockActiveMinutes(block({ end: '' }))).toBe(57);
+    expect(blockActiveMinutes(block({ start: 'nonsense', end: 'nonsense' }))).toBe(57);
+    // 起止颠倒 → 按区间长度夹紧
+    expect(blockActiveMinutes(block({
+      start: '2026-09-27T04:00:00.0000000+00:00',
+      end: '2026-09-27T03:00:00.0000000+00:00',
+      activeDurationSeconds: 5960,
+    }))).toBe(60);
+    // 图表提示与详情面板共用同一函数，两处数字必须一致
+    expect(blockActiveMinutes(block({ activeDurationSeconds: 5960 }))).toBe(60);
   });
 });
