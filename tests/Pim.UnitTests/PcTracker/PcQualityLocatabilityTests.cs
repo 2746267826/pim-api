@@ -144,6 +144,29 @@ public sealed class PcQualityLocatabilityTests
     }
 
     [Fact]
+    public async Task GetQualityAsync_KeystatsSamplesCountAsCoverageEvenWithoutTrackerEvents()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
+        AddTrackerEvent(db, dayStart.AddHours(2), 3600, "window");   // 本地 06:00–07:00
+        // 本地 08:00–09:00 只有 KeyStats 采样（没有窗口事件）—— 这段时间同样算「有数据」。
+        for (var minute = 0; minute < 60; minute += 5)
+            AddSample(db, dayStart.AddHours(4).AddMinutes(minute));
+        AddTrackerEvent(db, dayStart.AddHours(9), 3600, "window");   // 本地 13:00–14:00
+        AddHeartbeat(db, Now.AddMinutes(-1));
+        await db.SaveChangesAsync();
+
+        var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
+
+        var tracker = Assert.Single(result.Components, c => c.Key == "tracker-events");
+        // 缺数小时 = 07:00（1 个）+ 09:00–12:00（4 个）；08:00 因为采样而被视为有数据。
+        Assert.Equal("5", tracker.Details["missingHourCount"]);
+        Assert.Contains("2026-09-27 07:00", tracker.Details["missingHours"]);
+        Assert.DoesNotContain("2026-09-27 08:00", tracker.Details["missingHours"]);
+        Assert.Equal(dayStart.AddHours(3).ToString("O"), tracker.Details["disconnectedFromUtc"]);
+    }
+
+    [Fact]
     public async Task GetQualityAsync_ComponentMessagesDoNotRepeatTheOverviewText()
     {
         await using var db = CreateDb();
