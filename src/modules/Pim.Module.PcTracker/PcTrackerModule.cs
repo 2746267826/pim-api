@@ -734,12 +734,24 @@ public class PcTrackerModule : IModule
         {
             var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-30);
             var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
-            var result = await cache.GetOrCreateAsync(
-                AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
-                force,
-                () => svc.GetHeatmapGridAsync(s, e, dimension, ct),
-                ct);
-            return Results.Ok(ApiResponse<HeatmapGridResponse>.Ok(result));
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
+                    force,
+                    () => svc.GetHeatmapGridAsync(s, e, dimension, ct),
+                    ct);
+                return Results.Ok(ApiResponse<HeatmapGridResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                // REQ-6（#367）：hour + 跨日 = 400 + 明确文案，不再静默返回单日结果。
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
         });
 
         // App Knowledge Base endpoints

@@ -85,7 +85,7 @@ public sealed class PcServicePropertyTests
         Assert.NotNull(res);
         Assert.True(res.Heatmap.Any(b => b.TotalEvents > 0));
         Assert.NotEmpty(res.Timeline);
-        Assert.All(res.Heatmap, b => Assert.InRange(b.IntensityScore, 0, 5));
+        Assert.All(res.Heatmap, b => Assert.InRange(b.IntensityLevel, 0, PcActivityIntensity.MaxLevel));
     }
 
     [Fact]
@@ -122,7 +122,7 @@ public sealed class PcServicePropertyTests
         var end = TestDate.AddDays(1);
         var res = await svc.GetHeatmapAsync(start, end, CancellationToken.None);
         Assert.Equal(48, res.Count);
-        Assert.All(res, b => Assert.InRange(b.IntensityScore, 0, 5));
+        Assert.All(res, b => Assert.InRange(b.IntensityLevel, 0, PcActivityIntensity.MaxLevel));
     }
 
     [Fact]
@@ -280,7 +280,7 @@ public sealed class PcServicePropertyTests
         var res = await svc.GetDailyAnalysisAsync(TestDate, 60, CancellationToken.None);
         Assert.NotNull(res);
         Assert.Equal(24, res.Blocks.Count);
-        Assert.All(res.Blocks, b => Assert.InRange(b.IntensityScore, 0, 4));
+        Assert.All(res.Blocks, b => Assert.InRange(b.IntensityLevel, 0, PcActivityIntensity.MaxLevel));
     }
 
     [Fact]
