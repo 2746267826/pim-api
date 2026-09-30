@@ -20,7 +20,7 @@ public sealed class PcQualityLocatabilityTests
     private static readonly DateTime QueryDate = new(2026, 9, 27);
 
     [Fact]
-    public async Task GetQualityAsync_LaggingSnapshotDatabase_ReportsDatabaseLagNotDeadCollector()
+    public async Task GetQualityAsync_LaggingSnapshotDatabase_KeepsHeartbeatRedAndExplainsTheLag()
     {
         await using var db = CreateDb();
         var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
@@ -38,12 +38,38 @@ public sealed class PcQualityLocatabilityTests
 
         var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
         // AC-8.1（情形一）：判据直接写在 details 里，不看代码就能解释「为什么读数是旧的」。
-        Assert.Equal("database-lags-now", daemon.Details["staleReason"]);
+        Assert.Equal("database-or-collector-frozen", daemon.Details["staleCause"]);
         Assert.Equal(horizon.AddMinutes(-7).ToString("O"), daemon.Details["contentHorizonUtc"]);
         Assert.Equal(rangeEnd.ToString("O"), daemon.Details["rangeEndUtc"]);
         Assert.Equal("True", daemon.Details["libraryFrozenAtHorizon"]);
         Assert.Contains(result.Issues, i => i.Code == "database-lags-now");
+        // 心跳判据不被降级（WO「明确不做」第 6 条）：红灯照旧。
+        Assert.Equal("collector-heartbeat-stale", daemon.Details["staleReason"]);
+        Assert.Contains(result.Issues, i => i.Code == "stale-windows-daemon-heartbeat");
+        Assert.Equal(PimHealthStatus.Critical, daemon.Status);
+    }
+
+    [Fact]
+    public async Task GetQualityAsync_LiveDatabaseWithFreshHeartbeat_IsHealthyAndSaysSo()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
+        // 对照情形：同一个查询日，但本库是「活的」——内容与心跳都新鲜。
+        AddTrackerEvent(db, dayStart.AddHours(2), 3600, "window");
+        AddTrackerEvent(db, Now.AddMinutes(-2), 60, "window");
+        AddSample(db, Now.AddMinutes(-1));
+        AddHeartbeat(db, Now.AddMinutes(-1));
+        await db.SaveChangesAsync();
+
+        var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
+
+        var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
+        // AC-8.1（情形二）：两种情形的 overallStatus 差异可由 details 判据解释。
+        Assert.Equal("none", daemon.Details["staleCause"]);
+        Assert.Equal("none", daemon.Details["staleReason"]);
+        Assert.Equal("False", daemon.Details["libraryFrozenAtHorizon"]);
         Assert.DoesNotContain(result.Issues, i => i.Code == "stale-windows-daemon-heartbeat");
+        Assert.DoesNotContain(result.Issues, i => i.Code == "database-lags-now");
         Assert.NotEqual(PimHealthStatus.Critical, daemon.Status);
     }
 
@@ -62,32 +88,12 @@ public sealed class PcQualityLocatabilityTests
         var result = await Service(db).GetQualityAsync(new DateTime(2026, 9, 29), null, null, CancellationToken.None);
 
         var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
-        Assert.Equal("query-range-beyond-database-horizon", daemon.Details["staleReason"]);
+        Assert.Equal("query-range-beyond-database-horizon", daemon.Details["staleCause"]);
         Assert.True(int.Parse(daemon.Details["rangeShortfallMinutes"], CultureInfo.InvariantCulture) >= 24 * 60);
         var issue = Assert.Single(result.Issues, i => i.Code == "range-beyond-database-horizon");
         Assert.Equal(PimHealthStatus.Warning, issue.Severity);
-        Assert.DoesNotContain(result.Issues, i => i.Code == "stale-windows-daemon-heartbeat");
-    }
-
-    [Fact]
-    public async Task GetQualityAsync_CoveredRangeWithDeadHeartbeat_BlamesCollector()
-    {
-        await using var db = CreateDb();
-        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
-        // 本库覆盖到范围末尾（数据一直写到范围结束），但心跳停在 2 小时前 → 采集端停了。
-        AddTrackerEvent(db, dayStart.AddHours(2), 3600, "window");
-        AddTrackerEvent(db, dayStart.AddHours(23.5), 60, "window");
-        AddSample(db, dayStart.AddHours(3));
-        AddHeartbeat(db, Now.AddHours(-2));
-        await db.SaveChangesAsync();
-
-        var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
-
-        var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
-        // AC-8.1（情形二）：同样的「心跳旧」，但判据不同 —— 这是真正的采集端心跳过期。
-        Assert.Equal("collector-heartbeat-stale", daemon.Details["staleReason"]);
+        // 心跳判据同样保留（心跳确实过期了）。
         Assert.Contains(result.Issues, i => i.Code == "stale-windows-daemon-heartbeat");
-        Assert.Equal(PimHealthStatus.Critical, daemon.Status);
     }
 
     [Fact]

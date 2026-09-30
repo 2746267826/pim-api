@@ -4,6 +4,7 @@ using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
 using Pim.Module.PcTracker.Services;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Pim.UnitTests.PcTracker;
 
@@ -12,6 +13,10 @@ namespace Pim.UnitTests.PcTracker;
 /// </summary>
 public sealed class PcKeystatsRangeAggregationTests
 {
+    private readonly ITestOutputHelper _output;
+
+    public PcKeystatsRangeAggregationTests(ITestOutputHelper output) => _output = output;
+
     [Fact]
     public async Task GetKeystatsRangeAsync_MatchesPerDaySummaryAggregateForEveryKey()
     {
@@ -112,28 +117,80 @@ public sealed class PcKeystatsRangeAggregationTests
         await db.SaveChangesAsync();
 
         var service = new PcActivityAggregationService(db);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         // 空范围：字段齐全、全 0，不抛异常。
         var empty = await service.GetKeystatsRangeAsync(
             new PcAggregationQuery(null, "2026-07-01", "2026-07-05", null), CancellationToken.None);
+        stopwatch.Stop();
+        var emptyMs = stopwatch.ElapsedMilliseconds;
         Assert.Equal(0, empty.TotalKeyPresses);
         Assert.Equal(0, empty.TotalClicks);
         Assert.Empty(empty.KeyPressCounts);
         Assert.Empty(empty.TopKeys);
 
         // 跨月边界：8/31 与 9/1 都计入。
+        stopwatch.Restart();
         var crossMonth = await service.GetKeystatsRangeAsync(
             new PcAggregationQuery(null, "2026-08-31", "2026-09-01", null), CancellationToken.None);
+        stopwatch.Stop();
+        var crossMonthMs = stopwatch.ElapsedMilliseconds;
         Assert.Equal(800, crossMonth.TotalKeyPresses);
         Assert.Equal(500, crossMonth.KeyPressCounts["A"]);
         Assert.Equal(300, crossMonth.KeyPressCounts["B"]);
 
         // 单日：与单日版一致。
+        stopwatch.Restart();
         var single = await service.GetKeystatsRangeAsync(
             new PcAggregationQuery("2026-09-01", null, null, null), CancellationToken.None);
+        stopwatch.Stop();
+        _output.WriteLine(
+            $"keystats range latency: empty={emptyMs}ms crossMonth={crossMonthMs}ms single={stopwatch.ElapsedMilliseconds}ms");
+
+        // AC-7.2：空范围 / 单日 / 跨月边界的耗时实测（数字见输出），并给宽松上界防回归。
+        Assert.True(emptyMs < 2000 && crossMonthMs < 2000 && stopwatch.ElapsedMilliseconds < 2000);
         var summary = await Tracker(db).GetSummaryAsync(new DateTime(2026, 9, 1), CancellationToken.None);
         Assert.Equal(summary.Keystats!.KeyPresses, single.TotalKeyPresses);
         Assert.Equal(summary.Keystats.TotalClicks, single.TotalClicks);
+    }
+
+    [Fact]
+    public async Task GetKeystatsRangeAsync_FallsBackToSamplesForDaysWithoutDailySnapshot()
+    {
+        await using var db = CreateDb();
+        var withDaily = new DateTime(2026, 9, 1);
+        var sampleOnly = new DateTime(2026, 9, 2);
+        db.Set<KeystatsDailyEntity>().Add(Row(withDaily, 900, DateTimeOffset.Parse("2026-09-01T10:00:00Z"), "A"));
+        db.Set<KeystatsSampleEntity>().Add(new KeystatsSampleEntity
+        {
+            PimDeviceId = "device-1",
+            SampledAtUtc = DateTimeOffset.Parse("2026-09-02T10:00:00Z"),
+            StatsDate = sampleOnly,
+            KeyPresses = 400,
+            LeftClicks = 7,
+            RightClicks = 3,
+            MiddleClicks = 1,
+            SideBackClicks = 2,
+            SideForwardClicks = 2,
+            ScrollDistance = 12.5,
+            PeakKps = 6,
+            PeakCps = 4,
+            KeyCountsJson = "{\"B\":400}"
+        });
+        await db.SaveChangesAsync();
+
+        var range = await new PcActivityAggregationService(db).GetKeystatsRangeAsync(
+            new PcAggregationQuery(null, "2026-09-01", "2026-09-02", null), CancellationToken.None);
+
+        // AC-7.1：逐日与单日版同口径 —— 9/2 没有日快照，单日接口会回退到采样，范围聚合必须一致。
+        var single = await Tracker(db).GetSummaryAsync(sampleOnly, CancellationToken.None);
+        Assert.Equal(400, single.Keystats!.KeyPresses);
+        Assert.Equal(900 + 400, range.TotalKeyPresses);
+        Assert.Equal(400, range.KeyPressCounts["B"]);
+        Assert.Equal(single.Keystats.LeftClicks, range.LeftClicks);
+        Assert.Equal(single.Keystats.TotalClicks, range.TotalClicks);
+        Assert.Equal(6, range.PeakKps);
+        Assert.Equal(12.5, range.ScrollDistance, 6);
     }
 
     [Fact]

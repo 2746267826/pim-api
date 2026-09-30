@@ -42,6 +42,36 @@ public sealed class PcIntensityFieldConsistencyTests
     }
 
     [Fact]
+    public async Task ActivityAnalysis_HourBucketsClipSegmentsThatStraddleTwoHours()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
+        // 一条跨小时边界的 window 记录：本地 07:30–08:30（业务日第 3、4 个块各占一半）。
+        db.Set<AwEventEntity>().Add(WindowEvent(dayStart.AddHours(3).AddMinutes(30), 3600, "Code.exe"));
+        await db.SaveChangesAsync();
+
+        var tracker = Tracker(db);
+        var analysis = await new PcActivityAnalysisService(tracker).GetDailyAnalysisAsync(Day, 60, CancellationToken.None);
+        var summary = await tracker.GetSummaryAsync(Day, CancellationToken.None);
+
+        // 每个小时只应计入与本小时重叠的那一半（1800 秒 / 30 分钟）。
+        Assert.Equal(1800, analysis.Blocks[3].ActiveDurationSeconds, 3);
+        Assert.Equal(1800, analysis.Blocks[4].ActiveDurationSeconds, 3);
+        Assert.Equal(30, summary.Heatmap[3].ActiveMinutes);
+        Assert.Equal(30, summary.Heatmap[4].ActiveMinutes);
+        Assert.Equal(3, analysis.Blocks[3].IntensityLevel);
+        Assert.Equal(summary.Heatmap[3].IntensityLevel, analysis.Blocks[3].IntensityLevel);
+        Assert.Equal(summary.Heatmap[4].IntensityLevel, analysis.Blocks[4].IntensityLevel);
+        // AC-1.1：逐小时活跃秒数与 activeMinutes 的差 ≤ 1 分钟。
+        for (var hour = 0; hour < 24; hour++)
+        {
+            Assert.True(
+                Math.Abs(analysis.Blocks[hour].ActiveDurationSeconds - summary.Heatmap[hour].ActiveMinutes * 60) <= 60,
+                $"hour={hour} 块 {analysis.Blocks[hour].ActiveDurationSeconds}s vs 热力图 {summary.Heatmap[hour].ActiveMinutes} 分钟");
+        }
+    }
+
+    [Fact]
     public async Task ActivityAnalysis_IntensityLevelEqualsSummaryHeatmapForEveryHour()
     {
         await using var db = CreateDb();

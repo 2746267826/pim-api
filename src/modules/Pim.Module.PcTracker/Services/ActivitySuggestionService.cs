@@ -285,7 +285,8 @@ public class ActivitySuggestionService
                 TotalDurationSeconds: entity.TotalDurationSeconds,
                 SampleCount: entity.SampleCount,
                 Status: entity.Status,
-                CreatedAt: entity.CreatedAt));
+                CreatedAt: entity.CreatedAt,
+                GeneratedForDate: ResolveStoredGeneratedForDate(entity)));
         }
 
         return result;

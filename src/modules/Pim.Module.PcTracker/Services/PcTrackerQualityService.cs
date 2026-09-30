@@ -38,8 +38,6 @@ public sealed class PcTrackerQualityService
     /// <summary>REQ-8 判据：心跳与「本库最新内容」相差不超过该容差即视为两者一起停住。</summary>
     private static readonly TimeSpan HeartbeatAtHorizonTolerance = TimeSpan.FromHours(1);
 
-    private const string StaleReasonRangeBeyondDatabase = "query-range-beyond-database-horizon";
-    private const string StaleReasonDatabaseLagsNow = "database-lags-now";
     private const string StaleReasonCollectorStale = "collector-heartbeat-stale";
     private readonly PimDbContext _db;
     private readonly TimeProvider _timeProvider;
@@ -111,7 +109,7 @@ public sealed class PcTrackerQualityService
 
         if (isPostAw || trackerEvents.Count > 0)
         {
-            components.Add(CheckTrackerEvents(trackerEvents, baseline, coverage, rangeStart, rangeEnd, issues));
+            components.Add(CheckTrackerEvents(trackerEvents, baseline, coverage, rangeStart, rangeEnd, checkedAt, issues));
         }
 
         components.Add(CheckKeystats(samples, issues));
@@ -339,6 +337,7 @@ public sealed class PcTrackerQualityService
         CoverageGaps coverage,
         DateTimeOffset rangeStart,
         DateTimeOffset rangeEnd,
+        DateTimeOffset checkedAt,
         List<PcQualityIssueDto> issues)
     {
         var componentIssues = new List<PcQualityIssueDto>();
@@ -463,7 +462,10 @@ public sealed class PcTrackerQualityService
             ["missingHourCount"] = coverage.MissingHourCount.ToString(),
             ["missingHours"] = coverage.DescribeMissingHours(),
             ["disconnectedFromUtc"] = coverage.DisconnectedFromUtc?.ToString("O") ?? string.Empty,
-            ["lastDataAtUtc"] = coverage.LastDataAtUtc?.ToString("O") ?? string.Empty
+            ["lastDataAtUtc"] = coverage.LastDataAtUtc?.ToString("O") ?? string.Empty,
+            ["trailingGapMinutes"] = Math
+                .Round(TrailingGapMinutes(coverage, checkedAt < rangeEnd ? checkedAt : rangeEnd))
+                .ToString("0", CultureInfo.InvariantCulture)
         };
 
         return BuildComponent("tracker-events", "PC 原生追踪事件", componentIssues, details);
@@ -562,6 +564,16 @@ public sealed class PcTrackerQualityService
 
         return new CoverageGaps(gaps, missingHourStarts, lastDataAtUtc);
     }
+
+    /// <summary>
+    /// 查询范围内「最后一条数据之后」到范围末尾的空白（分钟）。
+    /// 这段不进 <c>issues</c>（范围末尾本来就可能是没人用电脑的时段，逐日报警会变成噪音），
+    /// 但作为 details 暴露出来，让「从哪个时刻起就再没有数据」同样可定位。
+    /// </summary>
+    private static double TrailingGapMinutes(CoverageGaps coverage, DateTimeOffset effectiveRangeEnd)
+        => coverage.LastDataAtUtc is null
+            ? 0
+            : Math.Max(0, (effectiveRangeEnd - coverage.LastDataAtUtc.Value).TotalMinutes);
 
     /// <summary>本库「最新数据」时刻：心跳、AW / 原生事件结束时刻、KeyStats 样本时刻的最大值。</summary>
     private static DateTimeOffset? ComputeDataHorizon(
@@ -810,13 +822,13 @@ public sealed class PcTrackerQualityService
         details["dataHorizonUtc"] = dataHorizonUtc?.ToString("O") ?? string.Empty;
         details["contentHorizonUtc"] = contentHorizonUtc?.ToString("O") ?? string.Empty;
 
-        // REQ-8（#369）：把「读数旧」拆成三种互斥的根因，判据全部写进 details，
-        // 不看代码只看响应就能判断「是采集停了，还是这本库本身就旧」：
-        //   1) 计划内下线（关机/休眠）→ 本就不该报故障；
-        //   2) 本库内容落后查询范围末尾一大截 → query-range-beyond-database-horizon（本库滞后于查询范围）；
-        //   3) 本库内容与心跳一起停在很久以前 → database-lags-now（本库整体滞后，不是采集端现在停机）；
-        //   4) 其余情况才按心跳年龄判 → collector-heartbeat-stale（真正的采集端心跳过期）。
-        // 「内容」不含心跳本身；只有心跳、没有任何事件/样本时无法判断覆盖，直接落到 4。
+        // REQ-8（#369）：心跳红灯**原样保留**（不为了消红而降级判据），
+        // 另外把「这本库是不是本身就旧」的判据作为附加说明写进 details + 一条 Warning issue，
+        // 让调用方既看得到红灯，也能判断红灯的成因：
+        //   1) 本库内容没覆盖到查询范围末尾        → query-range-beyond-database-horizon（本库滞后于查询范围）
+        //   2) 本库内容与心跳一起停在很久以前      → database-or-collector-frozen（滞后快照 / 同步中断 / 采集端停机都会长这样）
+        //   3) 本库内容另有新数据、只有心跳旧      → collector-heartbeat-stale（心跳通道本身停了）
+        // 「内容」不含心跳本身；只有心跳、没有任何事件/样本时无法判断覆盖，直接落到 3。
         var effectiveRangeEnd = rangeEnd < checkedAt ? rangeEnd : checkedAt;
         var rangeShortfall = contentHorizonUtc is null
             ? (TimeSpan?)null
@@ -826,6 +838,9 @@ public sealed class PcTrackerQualityService
             && dataHorizonUtc is not null
             && dataHorizonUtc.Value - contentHorizonUtc.Value <= HeartbeatAtHorizonTolerance
             && databaseLag >= DatabaseLagThreshold;
+        var rangeBeyondDatabase = rangeShortfall is not null && rangeShortfall.Value >= RangeBeyondDatabaseThreshold;
+        var contentNewerThanHeartbeat = contentHorizonUtc is not null
+            && contentHorizonUtc.Value - heartbeat.ReceivedAt > HeartbeatAtHorizonTolerance;
 
         details["effectiveRangeEndUtc"] = effectiveRangeEnd.ToString("O");
         details["rangeShortfallMinutes"] = rangeShortfall is null
@@ -833,6 +848,43 @@ public sealed class PcTrackerQualityService
             : Math.Round(Math.Max(0, rangeShortfall.Value.TotalMinutes)).ToString("0", CultureInfo.InvariantCulture);
         details["databaseLagMinutes"] = Math.Max(0, databaseLag.TotalMinutes).ToString("0.0");
         details["libraryFrozenAtHorizon"] = libraryFrozen.ToString();
+        details["heartbeatStaleAt"] = (age >= DaemonLifecycleClassifier.AbnormalDaemonAge).ToString();
+        details["staleCause"] = rangeBeyondDatabase
+            ? "query-range-beyond-database-horizon"
+            : libraryFrozen
+                ? "database-or-collector-frozen"
+                : contentNewerThanHeartbeat
+                    ? "collector-heartbeat-stale"
+                    : age < DaemonLifecycleClassifier.OnlineDaemonAge
+                        ? "none"
+                        : "unclear";
+
+        // 附加说明（Warning）：只在「本库确实没覆盖到 / 整体停住」时给，不取代心跳判据。
+        if (!string.Equals(lifecycle.State, "planned-offline", StringComparison.Ordinal))
+        {
+            if (rangeBeyondDatabase)
+            {
+                componentIssues.Add(new PcQualityIssueDto(
+                    "range-beyond-database-horizon",
+                    PimHealthStatus.Warning,
+                    "daemon-upload",
+                    $"本库最新内容止于 {FormatLocal(contentHorizonUtc!.Value)}，比查询范围末尾 " +
+                    $"{FormatLocal(effectiveRangeEnd)} 落后 {rangeShortfall!.Value.TotalHours:0.#} 小时 —— " +
+                    "这段范围在本库里就是没有数据（本库数据滞后于查询范围）。",
+                    "确认查询范围是否超出了本库已同步的数据；需要最新数据请先恢复数据同步。"));
+            }
+            else if (libraryFrozen)
+            {
+                componentIssues.Add(new PcQualityIssueDto(
+                    "database-lags-now",
+                    PimHealthStatus.Warning,
+                    "daemon-upload",
+                    $"本库最新内容与心跳同时停在 {FormatLocal(contentHorizonUtc!.Value)}（距今 {databaseLag.TotalHours:0.#} 小时）：" +
+                    "可能是滞后快照库 / 同步中断，也可能是采集端自那时起停机 —— " +
+                    "对照 dataHorizonUtc、contentHorizonUtc、databaseLagMinutes 判断。",
+                    "先确认本库是否来自滞后快照；若不是，再按心跳过期处理。"));
+            }
+        }
 
         if (lifecycle.State == "planned-offline")
         {
@@ -844,33 +896,9 @@ public sealed class PcTrackerQualityService
                 "守护程序已正常下线（关机/休眠）。",
                 "Windows 守护程序将在下次开机后自动恢复。"));
         }
-        else if (rangeShortfall is not null && rangeShortfall.Value >= RangeBeyondDatabaseThreshold)
-        {
-            details["staleReason"] = StaleReasonRangeBeyondDatabase;
-            componentIssues.Add(new PcQualityIssueDto(
-                "range-beyond-database-horizon",
-                PimHealthStatus.Warning,
-                "daemon-upload",
-                $"本库最新内容止于 {FormatLocal(contentHorizonUtc!.Value)}，比查询范围末尾 " +
-                $"{FormatLocal(effectiveRangeEnd)} 落后 {rangeShortfall.Value.TotalHours:0.#} 小时 —— " +
-                "这是本库数据滞后于查询范围，不是采集端停机。",
-                "确认查询范围是否超出了本库已同步的数据；需要最新数据请先恢复数据同步。"));
-        }
-        else if (libraryFrozen)
-        {
-            // 心跳与最新内容同时停住、且距今很久 —— 这是「本库本身就旧」（快照/停同步），
-            // 不能用它把整体判成采集端故障。
-            details["staleReason"] = StaleReasonDatabaseLagsNow;
-            componentIssues.Add(new PcQualityIssueDto(
-                "database-lags-now",
-                PimHealthStatus.Warning,
-                "daemon-upload",
-                $"本库最新内容/心跳停在 {FormatLocal(contentHorizonUtc!.Value)}，" +
-                $"距今 {databaseLag.TotalHours:0.#} 小时 —— 是这本库整体滞后，不是采集端现在停机。",
-                "确认本库是否来自滞后快照；需要最新数据请先恢复数据同步。"));
-        }
         else if (age >= DaemonLifecycleClassifier.AbnormalDaemonAge)
         {
+            // 心跳红灯不因「库可能旧」而降级（WO 明确不做第 6 条）。
             details["staleReason"] = StaleReasonCollectorStale;
             componentIssues.Add(new PcQualityIssueDto(
                 "stale-windows-daemon-heartbeat",

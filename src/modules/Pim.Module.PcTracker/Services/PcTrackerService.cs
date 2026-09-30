@@ -784,7 +784,15 @@ public partial class PcTrackerService
         var keystats = await _db.Set<KeystatsDailyEntity>()
             .Where(x => x.SnapshotDate >= start.Date && x.SnapshotDate <= end.Date)
             .ToListAsync(ct);
-        var maxKeyCount = keystats.Any() ? keystats.Max(x => x.KeyPresses) : 1;
+
+        // 与 summary.keystats / REQ-7 的取数口径一致：每个业务日只认**最近写入**的那条快照。
+        // 一天上报两次时，旧写法会按未排序的 FirstOrDefault 取到旧快照，而 maxKeyCount 又可能来自另一条，
+        // 导致格子里的按键数与色阶上界自相矛盾。
+        var dailyKeystats = keystats
+            .GroupBy(x => x.SnapshotDate.Date)
+            .Select(group => group.OrderByDescending(x => x.CreatedAt).First())
+            .ToList();
+        var maxKeyCount = dailyKeystats.Count > 0 ? dailyKeystats.Max(x => x.KeyPresses) : 1;
 
         // REQ-3（#364）：网格单元的强度档位与其它接口同量纲 —— 都是「活跃时长占桶时长比例」的 0–5 档，
         // 活跃区间取 window / web-page / input-minute 三类记录的并集（不含 gap/idle/afk），
@@ -793,10 +801,10 @@ public partial class PcTrackerService
         var rangeEnd = BusinessDayStart(end.Date).AddDays(1);
         var activeIntervals = await LoadActiveIntervalUnionAsync(rangeStart, rangeEnd, ct);
 
-        if (dimension == "hour")
+        if (string.Equals(dimension, "hour", StringComparison.OrdinalIgnoreCase))
         {
             var targetDate = start.Date;
-            var daily = keystats.FirstOrDefault(x => x.SnapshotDate == targetDate);
+            var daily = dailyKeystats.FirstOrDefault(x => x.SnapshotDate == targetDate);
             var dayStart = BusinessDayStart(targetDate);
             var dayEnd = dayStart.AddDays(1);
             // #303：与概览指标同一口径 —— 合并 AW 与原生 tracker 的 window 事件。
@@ -853,7 +861,7 @@ public partial class PcTrackerService
         var rowDays = new List<HeatmapGridCell>();
         for (var day = start.Date; day <= end.Date; day = day.AddDays(1))
         {
-            var daily = keystats.FirstOrDefault(x => x.SnapshotDate == day);
+            var daily = dailyKeystats.FirstOrDefault(x => x.SnapshotDate == day);
             // REQ-4（#365）：day 桶边界必须是业务日窗口 [前一日 20:00Z, 当日 20:00Z)，
             // 与同接口的 hour 维度、summary.heatmap 一致。此前用 UTC 零点，
             // 数值归属正确但边界标注错了（前端转 +08:00 后显示 08:00 而不是 04:00）。

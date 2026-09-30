@@ -283,7 +283,9 @@ public record ActivityClassificationSuggestionV2Dto(
     double TotalDurationSeconds,
     int SampleCount,
     string Status,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    /// <summary>该建议所属业务日（yyyy-MM-dd），与 v1 列表同口径（REQ-5 / #366）。</summary>
+    string? GeneratedForDate = null);
 
 public record BatchAcceptItem(
     Guid SuggestionId,
