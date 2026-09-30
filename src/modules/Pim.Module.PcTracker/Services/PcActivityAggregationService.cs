@@ -32,6 +32,8 @@ public sealed class PcActivityAggregationService
     private const double MaxWindowEventSeconds = 24 * 60 * 60;
     private const double MinAppDurationSeconds = 60;
     private const int DefaultAppUsageLimit = 8;
+    /// <summary>范围键鼠聚合的 Top 键数量（与单日版 summary.keystats 的 topKeys 同为 10）。</summary>
+    private const int MaxTopKeys = 10;
     private const int MaxAppUsageLimit = 50;
     private const string DefaultTimezoneName = "Asia/Shanghai";
     private const string ChinaFallbackTimezone = "China Standard Time";
@@ -157,6 +159,87 @@ public sealed class PcActivityAggregationService
 
         return new PcLateNightResponse(items);
     }
+
+    // === 键鼠范围聚合（REQ-7 / #368）===
+
+    /// <summary>
+    /// 一次请求聚合整段范围的键鼠统计（近 30 天只需一次调用），字段与单日版 <c>pc/summary.keystats</c> 同构。
+    /// <para>
+    /// 口径与单日版完全一致：每个业务日取该日**最近写入**的一条 keystats 快照（与
+    /// <c>PcTrackerService.LatestKeystatsForDate</c> 相同），再按键名合并、点击/滚动求和、
+    /// 峰值取最大值。范围按业务日切分（<c>Asia/Shanghai</c> 04:00 起算），与既有聚合组一致。
+    /// </para>
+    /// </summary>
+    public async Task<PcKeystatsRangeResponse> GetKeystatsRangeAsync(PcAggregationQuery query, CancellationToken ct)
+    {
+        var window = ResolveWindow(query);
+        var entities = await _db.Set<KeystatsDailyEntity>()
+            .Include(x => x.KeyCounts)
+            .Where(x => x.SnapshotDate >= window.StartLocalDate && x.SnapshotDate <= window.EndLocalDate)
+            .ToListAsync(ct);
+
+        var dailyRows = entities
+            .GroupBy(x => x.SnapshotDate.Date)
+            .Select(group => group.OrderByDescending(x => x.CreatedAt).First())
+            .OrderBy(x => x.SnapshotDate)
+            .ToList();
+
+        var keyPressCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var totalKeyPresses = 0;
+        var leftClicks = 0;
+        var middleClicks = 0;
+        var rightClicks = 0;
+        var totalClicks = 0;
+        var peakKps = 0;
+        var peakCps = 0;
+        double scrollDistance = 0;
+
+        foreach (var row in dailyRows)
+        {
+            totalKeyPresses += row.KeyPresses;
+            leftClicks += row.LeftClicks;
+            middleClicks += row.MiddleClicks;
+            rightClicks += row.RightClicks;
+            totalClicks += TotalClicks(row);
+            scrollDistance += row.ScrollDistance;
+            peakKps = Math.Max(peakKps, row.PeakKps);
+            peakCps = Math.Max(peakCps, row.PeakCps);
+
+            foreach (var keyCount in row.KeyCounts)
+                keyPressCounts[keyCount.KeyName] = keyPressCounts.GetValueOrDefault(keyCount.KeyName) + keyCount.Count;
+        }
+
+        // 输出顺序确定（按键名升序），避免同一数据两次请求产生不同 JSON 排列。
+        var orderedCounts = keyPressCounts
+            .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
+
+        var topKeys = orderedCounts
+            .OrderByDescending(kv => kv.Value)
+            .ThenBy(kv => kv.Key, StringComparer.Ordinal)
+            .Take(MaxTopKeys)
+            .Select(kv => new KeyCountItem(
+                kv.Key,
+                kv.Value,
+                totalKeyPresses > 0 ? (double)kv.Value / totalKeyPresses : 0))
+            .ToList();
+
+        return new PcKeystatsRangeResponse(
+            orderedCounts,
+            topKeys,
+            leftClicks,
+            middleClicks,
+            rightClicks,
+            scrollDistance,
+            peakKps,
+            peakCps,
+            totalKeyPresses,
+            totalClicks);
+    }
+
+    /// <summary>与单日版 <c>summary.keystats.totalClicks</c> 同口径：左右中键 + 侧键。</summary>
+    private static int TotalClicks(KeystatsDailyEntity row)
+        => row.LeftClicks + row.RightClicks + row.MiddleClicks + row.SideBackClicks + row.SideForwardClicks;
 
     // === 分类分布 ===
 

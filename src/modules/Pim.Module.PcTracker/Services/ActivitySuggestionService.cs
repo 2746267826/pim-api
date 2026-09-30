@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Pim.Infrastructure.Data;
@@ -9,6 +10,12 @@ namespace Pim.Module.PcTracker.Services;
 public class ActivitySuggestionService
 {
     private const string PendingStatus = "pending";
+    /// <summary>P-5（REQ-5）：既有空闲哨兵建议的处置状态 —— 置失效但保留行，便于追溯。</summary>
+    private const string InvalidatedStatus = "invalidated";
+    /// <summary>采集端空闲哨兵的应用名（Windows 客户端在空闲时段写死）。</summary>
+    private const string IdleSentinelAppName = "__IDLE__";
+    /// <summary>空闲哨兵对应的建议簇键（历史遗留待处理建议就长这样）。</summary>
+    private const string IdleSentinelClusterKey = "app:__idle__";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly PimDbContext _db;
@@ -25,6 +32,10 @@ public class ActivitySuggestionService
         int recommendedMinimumMinutes,
         CancellationToken ct)
     {
+        // P-5（REQ-5）：先把历史遗留的空闲哨兵建议置失效再扫描。
+        // 不删除行 —— 谁在什么时候生成过、样本是什么，都还能查到。
+        await RetireIdleSentinelSuggestionsAsync(ct);
+
         var candidates = records
             .Where(record => NeedsSuggestion(record, recommendedMinimumMinutes))
             .Select(record => new { Record = record, ClusterKey = GetClusterKey(record) })
@@ -37,6 +48,9 @@ public class ActivitySuggestionService
         {
             var groupRecords = group.Select(x => x.Record).ToList();
             var clusterKey = group.Key;
+            // REQ-5：这一簇样本属于哪个业务日 —— 列表接口的 date 参数只决定「扫描哪个业务日」，
+            // 归日信息由每条建议自己带出来，前端才能把建议放回正确的那一天。
+            var generatedForDate = ResolveGeneratedForDate(groupRecords);
             var existingSuggestions = await _db.Set<ActivityClassificationSuggestionEntity>()
                 .Where(s => s.ClusterKey == clusterKey)
                 .ToListAsync(ct);
@@ -65,6 +79,8 @@ public class ActivitySuggestionService
             entity.CurrentCategory = groupRecords
                 .Select(r => r.CategoryName)
                 .FirstOrDefault(c => !string.IsNullOrWhiteSpace(c));
+            if (generatedForDate is not null)
+                entity.GeneratedForDate = generatedForDate;
             entity.UpdatedAt = now;
         }
 
@@ -72,10 +88,54 @@ public class ActivitySuggestionService
         return await GetSuggestionsAsync(ct);
     }
 
+    /// <summary>把历史遗留的空闲哨兵建议置为失效（保留行，可追溯）。幂等：没有匹配行时不写库。</summary>
+    private async Task RetireIdleSentinelSuggestionsAsync(CancellationToken ct)
+    {
+        var stale = await _db.Set<ActivityClassificationSuggestionEntity>()
+            .Where(s => s.Status == PendingStatus && s.ClusterKey == IdleSentinelClusterKey)
+            .ToListAsync(ct);
+        if (stale.Count == 0)
+            return;
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var entity in stale)
+        {
+            entity.Status = InvalidatedStatus;
+            entity.UpdatedAt = now;
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>簇内样本所属业务日（取最新一条样本的业务日；全部无法解析时返回 null）。</summary>
+    private static DateTime? ResolveGeneratedForDate(IEnumerable<PcDetailRecord> records)
+    {
+        DateTime? latest = null;
+        foreach (var record in records)
+        {
+            if (!DateTimeOffset.TryParse(
+                    record.Start,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind,
+                    out var start))
+            {
+                continue;
+            }
+
+            var businessDay = PcTrackerService.GetBusinessDayForTimestamp(start);
+            if (latest is null || businessDay > latest)
+                latest = businessDay;
+        }
+
+        return latest;
+    }
+
     public async Task<List<ActivityClassificationSuggestionDto>> GetSuggestionsAsync(CancellationToken ct)
     {
         var entities = await _db.Set<ActivityClassificationSuggestionEntity>()
             .Where(s => s.Status == PendingStatus)
+            // REQ-5：空闲哨兵簇永不出现在列表里（置失效是持久化动作，这里是读取侧的兜底）。
+            .Where(s => s.ClusterKey != IdleSentinelClusterKey)
             .OrderByDescending(s => s.TotalDurationSeconds)
             .ToListAsync(ct);
 
@@ -119,6 +179,8 @@ public class ActivitySuggestionService
     {
         var entities = await _db.Set<ActivityClassificationSuggestionEntity>()
             .Where(s => s.Status == PendingStatus)
+            // REQ-5：空闲哨兵簇不出现在建议列表（v2 同样口径）。
+            .Where(s => s.ClusterKey != IdleSentinelClusterKey)
             .OrderByDescending(s => s.TotalDurationSeconds)
             .ToListAsync(ct);
 
@@ -431,9 +493,28 @@ public class ActivitySuggestionService
         if ((record.DurationSeconds ?? 0) < minimumDurationSeconds)
             return false;
 
+        // REQ-5：未活动记录（gap / idle / afk）与采集端空闲哨兵（__IDLE__）不参与建议候选 ——
+        // 空闲时段不是「某个应用的使用行为」，把它们聚成建议簇会让用户去给「空闲」建分类规则。
+        if (!IsSuggestible(record))
+            return false;
+
         return string.Equals(record.ClassificationSource, "fallback", StringComparison.OrdinalIgnoreCase)
             || (record.ClassificationConfidence is not null && record.ClassificationConfidence < 0.5);
     }
+
+    private static bool IsSuggestible(PcDetailRecord record)
+    {
+        if (PcActivityOverlapResolver.IsInactive(record.RecordType))
+            return false;
+
+        return !IsIdleSentinelName(record.AppName)
+            && !IsIdleSentinelName(record.BrowserAppName)
+            && !IsIdleSentinelName(record.DisplayName);
+    }
+
+    private static bool IsIdleSentinelName(string? value)
+        => !string.IsNullOrWhiteSpace(value)
+           && string.Equals(value.Trim(), IdleSentinelAppName, StringComparison.OrdinalIgnoreCase);
 
     private static string? GetClusterKey(PcDetailRecord record)
     {
@@ -442,6 +523,9 @@ public class ActivitySuggestionService
 
         var app = record.AppName ?? record.BrowserAppName;
         if (string.IsNullOrWhiteSpace(app))
+            return null;
+
+        if (IsIdleSentinelName(app))
             return null;
 
         return $"app:{AppNameNormalizer.Normalize(app)}";
@@ -520,7 +604,69 @@ public class ActivitySuggestionService
             entity.SuggestedRulesJson,
             entity.UserFeedback,
             entity.LlmResponseJson,
-            entity.Status);
+            entity.Status,
+            GeneratedForDate: ResolveStoredGeneratedForDate(entity));
+    }
+
+    /// <summary>
+    /// 建议的业务日：优先用落库的 <c>generated_for_date</c>；历史遗留行没有该列时，
+    /// 依次回退到「样本里最新的时刻」与「最后一次刷新时刻」，保证每条建议都能归日（AC-5.1）。
+    /// </summary>
+    private static string ResolveStoredGeneratedForDate(ActivityClassificationSuggestionEntity entity)
+    {
+        var date = entity.GeneratedForDate
+            ?? ParseLatestSampleBusinessDay(entity.SampleRecordsJson)
+            ?? PcTrackerService.GetBusinessDayForTimestamp(entity.UpdatedAt);
+
+        return date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+    private static DateTime? ParseLatestSampleBusinessDay(string? sampleRecordsJson)
+    {
+        if (string.IsNullOrWhiteSpace(sampleRecordsJson))
+            return null;
+
+        try
+        {
+            using var document = JsonDocument.Parse(sampleRecordsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+                return null;
+
+            DateTime? latest = null;
+            foreach (var element in document.RootElement.EnumerateArray())
+            {
+                if (element.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (!string.Equals(property.Name, "start", StringComparison.OrdinalIgnoreCase)
+                        || property.Value.ValueKind != JsonValueKind.String)
+                    {
+                        continue;
+                    }
+
+                    if (!DateTimeOffset.TryParse(
+                            property.Value.GetString(),
+                            CultureInfo.InvariantCulture,
+                            DateTimeStyles.RoundtripKind,
+                            out var start))
+                    {
+                        continue;
+                    }
+
+                    var businessDay = PcTrackerService.GetBusinessDayForTimestamp(start);
+                    if (latest is null || businessDay > latest)
+                        latest = businessDay;
+                }
+            }
+
+            return latest;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static ActivityClassificationRuleDto ToRuleDto(ActivityCategoryRuleEntity rule)
