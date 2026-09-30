@@ -30,7 +30,7 @@ public class PcActivityAnalysisServiceTests
         Assert.Equal("2026-07-05", result.Date);
         Assert.Equal(60, result.BlockMinutes);
         Assert.Equal(900, block.ActiveDurationSeconds);
-        Assert.True(block.IntensityScore > 0);
+        Assert.True(block.IntensityLevel > 0);
         Assert.True(block.PendingClassificationCount > 0);
         Assert.True(block.ContextSwitchCount > 0);
         Assert.True(block.CategoryChangeCount >= 0);

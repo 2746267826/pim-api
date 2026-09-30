@@ -89,7 +89,10 @@ public sealed class PcActivityAnalysisService
             blocks.Add(new PcActivityAnalysisBlockDto(
                 start.ToString("O"),
                 end.ToString("O"),
-                ToIntensity(activeSeconds, blockMinutes),
+                // REQ-3（#364, P-2 方案 a）：统一为「活跃时长 / 块时长」的 0–5 档。
+                // 60 分钟块的边界正好是 5/15/30/45 活跃分钟，与 summary.heatmap 同值（AC-3.2）。
+                PcActivityIntensity.ForSeconds(activeSeconds, blockMinutes * 60.0),
+                PcActivityIntensity.MaxLevel,
                 activeSeconds,
                 blockRecords.Count(IsPendingClassification),
                 CountSwitches(blockRecords.Select(record => record.AppName ?? record.Domain ?? record.DisplayName ?? string.Empty)),
@@ -109,16 +112,6 @@ public sealed class PcActivityAnalysisService
     private static bool IsPendingClassification(PcDetailRecord record) =>
         string.Equals(record.ClassificationSource, "fallback", StringComparison.OrdinalIgnoreCase)
         || record.ClassificationConfidence is < 0.5;
-
-    private static int ToIntensity(double activeSeconds, int blockMinutes)
-    {
-        var ratio = activeSeconds / (blockMinutes * 60.0);
-        if (ratio <= 0) return 0;
-        if (ratio <= 0.2) return 1;
-        if (ratio <= 0.45) return 2;
-        if (ratio <= 0.7) return 3;
-        return 4;
-    }
 
     private static int CountSwitches(IEnumerable<string> values)
     {

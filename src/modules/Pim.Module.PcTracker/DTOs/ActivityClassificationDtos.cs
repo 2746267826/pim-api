@@ -157,10 +157,15 @@ public record PcActivityAnalysisResponse(
     int BlockMinutes,
     IReadOnlyList<PcActivityAnalysisBlockDto> Blocks);
 
+/// <summary>
+/// 活动分析块。<see cref="IntensityLevel"/> / <see cref="IntensityMax"/> 是统一后的
+/// 「活跃时长占块时长比例」0–5 档（WO-PC-BACKEND-20260930 REQ-3，原字段名 <c>intensityScore</c>）。
+/// </summary>
 public record PcActivityAnalysisBlockDto(
     string Start,
     string End,
-    int IntensityScore,
+    int IntensityLevel,
+    int IntensityMax,
     double ActiveDurationSeconds,
     int PendingClassificationCount,
     int ContextSwitchCount,

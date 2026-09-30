@@ -74,13 +74,41 @@ public record KeystatsSummary(
 
 public record KeyCountItem(string KeyName, int Count, double Share);
 
+/// <summary>
+/// 热力图的小时 / 天桶（<c>summary.heatmap</c>、<c>aw/heatmap</c>）。
+/// <para>
+/// <see cref="IntensityLevel"/> 是「活跃时长占桶时长比例」的 0–5 档整数，
+/// 上界见 <see cref="IntensityMax"/>（WO-PC-BACKEND-20260930 REQ-3，原字段名 <c>intensityScore</c>）。
+/// </para>
+/// </summary>
 public record HeatmapBucket(
     string Start,
     string End,
     int Hour,
     int ActiveMinutes,
     int TotalEvents,
-    int IntensityScore
+    int IntensityLevel,
+    int IntensityMax = 5
+);
+
+/// <summary>
+/// <c>heatmap/grid</c> 的单元格。
+/// <para>
+/// WO-PC-BACKEND-20260930 REQ-3：原 <c>intensityScore</c> 实际是键盘原始计数，
+/// 已改名为 <see cref="KeyPressCount"/>（上界为响应级 <c>maxKeyCount</c>）；
+/// 强度档位统一为 <see cref="IntensityLevel"/>（0–5，上界 <see cref="IntensityMax"/>），
+/// 与 <c>summary.heatmap</c>、<c>activity-analysis</c> 同量纲。
+/// </para>
+/// </summary>
+public record HeatmapGridCell(
+    string Start,
+    string End,
+    int Hour,
+    int ActiveMinutes,
+    int TotalEvents,
+    int IntensityLevel,
+    int IntensityMax,
+    int KeyPressCount
 );
 
 public record AppRankingItem(
@@ -230,8 +258,15 @@ public record SaveCategoryRequest(
     int Priority
 );
 
+/// <summary>
+/// <c>heatmap/grid</c> 响应。
+/// <para>
+/// <see cref="MaxKeyCount"/> 是单元格 <see cref="HeatmapGridCell.KeyPressCount"/> 的**上界**
+/// （区间内单日最大按键数，无数据时为 1），供前端色阶归一化使用（REQ-3）。
+/// </para>
+/// </summary>
 public record HeatmapGridResponse(
-    List<List<HeatmapBucket>> Grid,
+    List<List<HeatmapGridCell>> Grid,
     string Dimension,
     double MaxKeyCount
 );
