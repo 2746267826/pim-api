@@ -436,8 +436,11 @@ public class PcTrackerModule : IModule
                 null,
                 1,
                 500);
-            var detail = await pcTrackerService.QueryCompleteDetailAsync(q, ct);
-            var records = detail.Items
+            // REQ-1（#362）：建议生成的扫描输入同样必须覆盖整个业务日 ——
+            // 走内部分析路径，不再被 /pc/detail 的分页上限（200 且只取第 1 页）截断。
+            // REQ-5（#366）：date 参数语义 = 「扫描该业务日的记录并刷新建议」，
+            // 列表本身仍返回全量待处理建议（结果每条带 generatedForDate 供归日）。
+            var records = (await pcTrackerService.QueryAllDetailRecordsAsync(q, ct))
                 .Where(NeedsClassificationSuggestion)
                 .ToList();
             var settings = await settingsService.GetSettingsAsync(ct);
@@ -734,12 +737,24 @@ public class PcTrackerModule : IModule
         {
             var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-30);
             var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
-            var result = await cache.GetOrCreateAsync(
-                AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
-                force,
-                () => svc.GetHeatmapGridAsync(s, e, dimension, ct),
-                ct);
-            return Results.Ok(ApiResponse<HeatmapGridResponse>.Ok(result));
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
+                    force,
+                    () => svc.GetHeatmapGridAsync(s, e, dimension, ct),
+                    ct);
+                return Results.Ok(ApiResponse<HeatmapGridResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                // REQ-6（#367）：hour + 跨日 = 400 + 明确文案，不再静默返回单日结果。
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
         });
 
         // App Knowledge Base endpoints
@@ -966,7 +981,7 @@ public class PcTrackerModule : IModule
                 : Results.BadRequest(ApiResponse<string>.Error(400, "内置项不可删除或不存在"));
         });
 
-        // === Phase 2: 服务端聚合（专注块 / 应用时长 / 深夜使用 / 分类分布）===
+        // === Phase 2: 服务端聚合（专注块 / 应用时长 / 深夜使用 / 分类分布 / 键鼠范围）===
         readGroup.MapGet("/aggregation/focus-blocks", async (
             [FromQuery] string? date,
             [FromQuery] string? start,
@@ -1106,6 +1121,45 @@ public class PcTrackerModule : IModule
                     () => svc.GetCategoryDistributionAsync(new PcAggregationQuery(date, start, end, timezone), ct),
                     ct);
                 return Results.Ok(ApiResponse<PcCategoryDistributionResponse>.Ok(result));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+        });
+
+        // REQ-7（#368）：键鼠范围聚合。与单日版 pc/summary.keystats 字段同构，前端复用同一组件；
+        // 结果规模不随天数线性膨胀（按键分布按 keyName 合并，Top 列表只留 TopN）。
+        readGroup.MapGet("/aggregation/keystats", async (
+            [FromQuery] string? date,
+            [FromQuery] string? start,
+            [FromQuery] string? end,
+            [FromQuery] string? timezone,
+            [FromServices] PcActivityAggregationService svc,
+            [FromServices] IAggregateResultCache cache,
+            HttpContext httpContext,
+            [FromQuery] bool force = false,
+            CancellationToken ct = default) =>
+        {
+            try
+            {
+                var result = await cache.GetOrCreateAsync(
+                    AggregateResultCacheKeys.Build(httpContext.Request,
+                        overrides:
+                        [
+                            new("date", date ?? string.Empty),
+                            new("start", start ?? string.Empty),
+                            new("end", end ?? string.Empty),
+                            new("timezone", timezone ?? string.Empty),
+                        ]),
+                    force,
+                    () => svc.GetKeystatsRangeAsync(new PcAggregationQuery(date, start, end, timezone), ct),
+                    ct);
+                return Results.Ok(ApiResponse<PcKeystatsRangeResponse>.Ok(result));
             }
             catch (ArgumentException ex)
             {

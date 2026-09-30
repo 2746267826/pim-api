@@ -81,7 +81,13 @@ public record ActivityClassificationSuggestionDto(
     string Status,
     string? AppDisplayName = null,
     string? AppIcon = null,
-    string? RecognitionSource = null);
+    string? RecognitionSource = null,
+    /// <summary>
+    /// 该建议所属业务日（yyyy-MM-dd，Asia/Shanghai 04:00 起算）。REQ-5 / #366：
+    /// 接口的 <c>date</c> 参数只决定「扫描哪个业务日」；列表本身仍返回全量待处理建议，
+    /// 每条用它标明归日。
+    /// </summary>
+    string? GeneratedForDate = null);
 
 public record AcceptActivityClassificationSuggestionRequest(
     string RuleName,
@@ -157,10 +163,15 @@ public record PcActivityAnalysisResponse(
     int BlockMinutes,
     IReadOnlyList<PcActivityAnalysisBlockDto> Blocks);
 
+/// <summary>
+/// 活动分析块。<see cref="IntensityLevel"/> / <see cref="IntensityMax"/> 是统一后的
+/// 「活跃时长占块时长比例」0–5 档（WO-PC-BACKEND-20260930 REQ-3，原字段名 <c>intensityScore</c>）。
+/// </summary>
 public record PcActivityAnalysisBlockDto(
     string Start,
     string End,
-    int IntensityScore,
+    int IntensityLevel,
+    int IntensityMax,
     double ActiveDurationSeconds,
     int PendingClassificationCount,
     int ContextSwitchCount,
@@ -272,7 +283,9 @@ public record ActivityClassificationSuggestionV2Dto(
     double TotalDurationSeconds,
     int SampleCount,
     string Status,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    /// <summary>该建议所属业务日（yyyy-MM-dd），与 v1 列表同口径（REQ-5 / #366）。</summary>
+    string? GeneratedForDate = null);
 
 public record BatchAcceptItem(
     Guid SuggestionId,

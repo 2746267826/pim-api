@@ -176,7 +176,7 @@ public sealed class RealDb2000PropertyTests : IClassFixture<PimDbFixture>
                 var res = await svc.GetSummaryAsync(new DateTime(2026, 7, 7), CancellationToken.None);
                 Assert.NotNull(res);
                 Assert.Equal(24, res.Heatmap.Count);
-                Assert.All(res.Heatmap, b => Assert.InRange(b.IntensityScore, 0, 5));
+                Assert.All(res.Heatmap, b => Assert.InRange(b.IntensityLevel, 0, PcActivityIntensity.MaxLevel));
                 break;
             }
             case 4:
