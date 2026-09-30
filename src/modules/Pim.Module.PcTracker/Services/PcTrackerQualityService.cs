@@ -32,10 +32,10 @@ public sealed class PcTrackerQualityService
     /// </summary>
     private static readonly TimeSpan RangeBeyondDatabaseThreshold = TimeSpan.FromHours(24);
 
-    /// <summary>REQ-8 判据：心跳与「本库最新内容」停在同一时刻、且整体滞后超过该阈值 → 「本库整体滞后」而非采集端停机。</summary>
+    /// <summary>REQ-8 判据：心跳与「本库最新内容」停在同一时刻、且整体滞后超过该阈值 → 归入「本库整体滞后或采集端自那时起停机」这一档（两者仅凭时间关系无法区分）。</summary>
     private static readonly TimeSpan DatabaseLagThreshold = TimeSpan.FromHours(24);
 
-    /// <summary>REQ-8 判据：心跳与「本库最新内容」相差不超过该容差即视为两者一起停住。</summary>
+    /// <summary>REQ-8 判据：心跳与「本库最新内容」相差不超过该容差（双向）即视为两者一起停住。</summary>
     private static readonly TimeSpan HeartbeatAtHorizonTolerance = TimeSpan.FromHours(1);
 
     private const string StaleReasonCollectorStale = "collector-heartbeat-stale";
@@ -96,7 +96,12 @@ public sealed class PcTrackerQualityService
         var daysInRange = Math.Max(1, (int)Math.Ceiling((rangeEnd - rangeStart).TotalDays));
         var baseline = (await BuildTrackerBaselineAsync(rangeStart, ct))
             .WithCurrentDailyEventCount(trackerEvents.Count / (double)daysInRange);
-        var coverage = BuildCoverage(rangeStart, rangeEnd, trackerEvents, samples);
+        var coverage = BuildCoverage(
+            rangeStart,
+            rangeEnd,
+            trackerEvents,
+            samples,
+            includeTrailingGap: heartbeat is not null && heartbeat.PlannedOfflineAt is null);
 
         var issues = new List<PcQualityIssueDto>();
         var components = new List<PcQualityComponentDto>();
@@ -464,8 +469,10 @@ public sealed class PcTrackerQualityService
             ["disconnectedFromUtc"] = coverage.DisconnectedFromUtc?.ToString("O") ?? string.Empty,
             ["lastDataAtUtc"] = coverage.LastDataAtUtc?.ToString("O") ?? string.Empty,
             ["trailingGapMinutes"] = Math
-                .Round(TrailingGapMinutes(coverage, checkedAt < rangeEnd ? checkedAt : rangeEnd))
-                .ToString("0", CultureInfo.InvariantCulture)
+                .Round(TrailingGapMinutes(coverage, rangeStart, checkedAt < rangeEnd ? checkedAt : rangeEnd))
+                .ToString("0", CultureInfo.InvariantCulture),
+            ["trailingGapFromUtc"] = coverage.TrailingGapStartUtc?.ToString("O") ?? string.Empty,
+            ["coverageEmpty"] = (coverage.LastDataAtUtc is null).ToString()
         };
 
         return BuildComponent("tracker-events", "PC 原生追踪事件", componentIssues, details);
@@ -500,7 +507,8 @@ public sealed class PcTrackerQualityService
         DateTimeOffset rangeStart,
         DateTimeOffset rangeEnd,
         IReadOnlyCollection<TrackerEventEntity> trackerEvents,
-        IReadOnlyCollection<KeystatsSampleEntity> samples)
+        IReadOnlyCollection<KeystatsSampleEntity> samples,
+        bool includeTrailingGap)
     {
         var coveredHours = new SortedSet<int>();
         DateTimeOffset? lastDataAtUtc = null;
@@ -562,18 +570,42 @@ public sealed class PcTrackerQualityService
             }
         }
 
-        return new CoverageGaps(gaps, missingHourStarts, lastDataAtUtc);
+        // 尾部断档：最后一条数据之后到（有效）范围末尾的连续空白。
+        // 这是「从哪个时刻起就再没有数据」的直接答案；只有 ≥1 小时才计入，避免把收工前的空档变成噪音。
+        // 计划内下线（关机/休眠）由调用方抑制 —— 那种空白有明确解释。
+        var trailingGapStart = default(DateTimeOffset?);
+        if (includeTrailingGap && lastDataAtUtc is not null)
+        {
+            var trailingStart = lastDataAtUtc.Value;
+            if (rangeEnd - trailingStart >= MinimumReportedGap)
+            {
+                trailingGapStart = trailingStart;
+                gaps.Add(new CoverageGap(trailingStart, rangeEnd));
+                // 第一个「整小时都没数据」的小时：数据恰好停在整点时，该小时本身就算全缺。
+                for (var hour = (int)Math.Ceiling((trailingStart - rangeStart).TotalHours);
+                     hour < totalHours;
+                     hour++)
+                {
+                    missingHourStarts.Add(rangeStart.AddHours(hour));
+                }
+            }
+        }
+
+        return new CoverageGaps(gaps, missingHourStarts, lastDataAtUtc, trailingGapStart);
     }
+
+    /// <summary>缺数时段的最小上报长度：低于这个长度的空白不单列（避免逐日噪音）。</summary>
+    private static readonly TimeSpan MinimumReportedGap = TimeSpan.FromHours(1);
 
     /// <summary>
     /// 查询范围内「最后一条数据之后」到范围末尾的空白（分钟）。
-    /// 这段不进 <c>issues</c>（范围末尾本来就可能是没人用电脑的时段，逐日报警会变成噪音），
-    /// 但作为 details 暴露出来，让「从哪个时刻起就再没有数据」同样可定位。
+    /// 范围内完全没有数据时返回整个有效范围长度（而不是 0）——「整段都没有数据」不该被读成「没有尾部空白」。
     /// </summary>
-    private static double TrailingGapMinutes(CoverageGaps coverage, DateTimeOffset effectiveRangeEnd)
-        => coverage.LastDataAtUtc is null
-            ? 0
-            : Math.Max(0, (effectiveRangeEnd - coverage.LastDataAtUtc.Value).TotalMinutes);
+    private static double TrailingGapMinutes(CoverageGaps coverage, DateTimeOffset rangeStart, DateTimeOffset effectiveRangeEnd)
+    {
+        var from = coverage.LastDataAtUtc ?? rangeStart;
+        return Math.Max(0, (effectiveRangeEnd - from).TotalMinutes);
+    }
 
     /// <summary>本库「最新数据」时刻：心跳、AW / 原生事件结束时刻、KeyStats 样本时刻的最大值。</summary>
     private static DateTimeOffset? ComputeDataHorizon(
@@ -603,28 +635,38 @@ public sealed class PcTrackerQualityService
     /// <summary>
     /// 全库范围的最新内容时刻（不含心跳）：AW 事件、原生事件、KeyStats 样本的最大时刻。
     /// 用于判断「这本库本身就旧」还是「采集端现在停了」——后者只有在内容另有新数据时才成立。
-    /// 口径说明：事件按**起点**计（单条时长最多再加几小时，相对于「几天」级别的滞后判断可忽略）。
+    /// 口径说明：事件按**结束时刻**（起点 + 时长）计，与 <see cref="ComputeDataHorizon"/> 一致。
     /// </summary>
     private async Task<DateTimeOffset?> ComputeDatabaseContentHorizonAsync(CancellationToken ct)
     {
-        var awMax = await _db.Set<AwEventEntity>().AsNoTracking()
-            .Select(e => (DateTimeOffset?)e.Timestamp)
-            .MaxAsync(ct);
-        var trackerMax = await _db.Set<TrackerEventEntity>().AsNoTracking()
-            .Select(e => (DateTimeOffset?)e.Timestamp)
-            .MaxAsync(ct);
-        var sampleMax = await _db.Set<KeystatsSampleEntity>().AsNoTracking()
+        // 事件按**结束时刻**（Timestamp + Duration）计，与 ComputeDataHorizon 同口径：
+        // 只取起点的话，最后一条长事件（数小时）会让「本库最新内容」比真实值早，
+        // 把「整库停住」误判成「内容比心跳旧」。
+        var awLatest = await _db.Set<AwEventEntity>().AsNoTracking()
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => new { e.Timestamp, e.Duration })
+            .FirstOrDefaultAsync(ct);
+        var trackerLatest = await _db.Set<TrackerEventEntity>().AsNoTracking()
+            .OrderByDescending(e => e.Timestamp)
+            .Select(e => new { e.Timestamp, e.Duration })
+            .FirstOrDefaultAsync(ct);
+        var sampleLatest = await _db.Set<KeystatsSampleEntity>().AsNoTracking()
+            .OrderByDescending(s => s.SampledAtUtc)
             .Select(s => (DateTimeOffset?)s.SampledAtUtc)
-            .MaxAsync(ct);
+            .FirstOrDefaultAsync(ct);
 
         DateTimeOffset? horizon = null;
-        foreach (var candidate in new[] { awMax, trackerMax, sampleMax })
+        Consider(awLatest is null ? null : awLatest.Timestamp.AddSeconds(Math.Max(0, awLatest.Duration)));
+        Consider(trackerLatest is null ? null : trackerLatest.Timestamp.AddSeconds(Math.Max(0, trackerLatest.Duration)));
+        Consider(sampleLatest);
+
+        return horizon;
+
+        void Consider(DateTimeOffset? candidate)
         {
             if (candidate is not null && (horizon is null || candidate > horizon))
                 horizon = candidate;
         }
-
-        return horizon;
     }
 
     /// <summary>近 7 个业务日事件数基线（中位数）与本次范围的日均对比。</summary>
@@ -677,7 +719,8 @@ public sealed class PcTrackerQualityService
     private sealed record CoverageGaps(
         IReadOnlyList<CoverageGap> Gaps,
         IReadOnlyList<DateTimeOffset> MissingHourStarts,
-        DateTimeOffset? LastDataAtUtc)
+        DateTimeOffset? LastDataAtUtc,
+        DateTimeOffset? TrailingGapStartUtc)
     {
         private const int MaxListedHours = 24;
 
@@ -823,25 +866,27 @@ public sealed class PcTrackerQualityService
         details["dataHorizonUtc"] = dataHorizonUtc?.ToString("O") ?? string.Empty;
         details["contentHorizonUtc"] = contentHorizonUtc?.ToString("O") ?? string.Empty;
 
-        // REQ-8（#369）：心跳红灯**原样保留**（不为了消红而降级判据），
-        // 另外把「这本库是不是本身就旧」的判据作为附加说明写进 details + 一条 Warning issue，
-        // 让调用方既看得到红灯，也能判断红灯的成因：
-        //   1) 本库内容没覆盖到查询范围末尾        → query-range-beyond-database-horizon（本库滞后于查询范围）
-        //   2) 本库内容与心跳一起停在很久以前      → database-or-collector-frozen（滞后快照 / 同步中断 / 采集端停机都会长这样）
-        //   3) 本库内容另有新数据、只有心跳旧      → collector-heartbeat-stale（心跳通道本身停了）
-        // 「内容」不含心跳本身；只有心跳、没有任何事件/样本时无法判断覆盖，直接落到 3。
+        // REQ-8（#369）：心跳红灯**原样保留**（不为了消红而降级判据）；
+        // 这里另外算一份「成因」，只描述本库/心跳的时间关系，**不参杂心跳年龄**，
+        // 也不断言「一定是本库旧」或「一定是采集端停机」（只有心跳时刻时无法断言）：
+        //   collector-heartbeat-stale        本库内容另有更新的数据，只有心跳停 → 心跳通道的问题
+        //   content-and-heartbeat-frozen     心跳与内容一起停在很久以前，且查询范围超出内容 → 两种可能
+        //   query-range-beyond-database-horizon 查询范围超出本库内容（心跳另有判断）→ 本库没有这段数据
+        //   database-or-collector-frozen     心跳与内容一起停在很久以前，范围未超出 → 两种可能
+        //   no-content                       本库没有任何事件/样本，无法判断
+        //   planned-offline / none           计划内下线 / 心跳新鲜
         var effectiveRangeEnd = rangeEnd < checkedAt ? rangeEnd : checkedAt;
         var rangeShortfall = contentHorizonUtc is null
             ? (TimeSpan?)null
             : effectiveRangeEnd - contentHorizonUtc.Value;
         var databaseLag = contentHorizonUtc is null ? TimeSpan.Zero : checkedAt - contentHorizonUtc.Value;
-        var libraryFrozen = contentHorizonUtc is not null
-            && dataHorizonUtc is not null
-            && dataHorizonUtc.Value - contentHorizonUtc.Value <= HeartbeatAtHorizonTolerance
-            && databaseLag >= DatabaseLagThreshold;
         var rangeBeyondDatabase = rangeShortfall is not null && rangeShortfall.Value >= RangeBeyondDatabaseThreshold;
+        // 「内容比心跳新」与「两者一起停住」都用双向容差判定，避免单边不等式把「内容更旧」也算成一起停住。
         var contentNewerThanHeartbeat = contentHorizonUtc is not null
             && contentHorizonUtc.Value - heartbeat.ReceivedAt > HeartbeatAtHorizonTolerance;
+        var heartbeatAtContentHorizon = contentHorizonUtc is not null
+            && (contentHorizonUtc.Value - heartbeat.ReceivedAt).Duration() <= HeartbeatAtHorizonTolerance;
+        var libraryFrozen = heartbeatAtContentHorizon && databaseLag >= DatabaseLagThreshold;
 
         details["effectiveRangeEndUtc"] = effectiveRangeEnd.ToString("O");
         details["rangeShortfallMinutes"] = rangeShortfall is null
@@ -850,40 +895,51 @@ public sealed class PcTrackerQualityService
         details["databaseLagMinutes"] = Math.Max(0, databaseLag.TotalMinutes).ToString("0.0");
         details["libraryFrozenAtHorizon"] = libraryFrozen.ToString();
         details["heartbeatStaleAt"] = (age >= DaemonLifecycleClassifier.AbnormalDaemonAge).ToString();
-        details["staleCause"] = rangeBeyondDatabase
-            ? "query-range-beyond-database-horizon"
-            : libraryFrozen
-                ? "database-or-collector-frozen"
-                : contentNewerThanHeartbeat || age >= DaemonLifecycleClassifier.AbnormalDaemonAge
+        details["staleCause"] = contentHorizonUtc is null
+            ? "no-content"
+            : string.Equals(lifecycle.State, "planned-offline", StringComparison.Ordinal)
+                ? "planned-offline"
+                : contentNewerThanHeartbeat
                     ? "collector-heartbeat-stale"
-                    : age >= DaemonLifecycleClassifier.OnlineDaemonAge
-                        ? "collector-heartbeat-old"
-                        : "none";
+                    : libraryFrozen && rangeBeyondDatabase
+                        ? "content-and-heartbeat-frozen"
+                        : rangeBeyondDatabase
+                            ? "query-range-beyond-database-horizon"
+                            : libraryFrozen
+                                ? "database-or-collector-frozen"
+                                // 心跳本身过期，且本库/内容关系没有其它异常 → 成因就是心跳通道。
+                                : age >= DaemonLifecycleClassifier.AbnormalDaemonAge
+                                    ? "collector-heartbeat-stale"
+                                    : "none";
 
-        // 附加说明（Warning）：只在「本库确实没覆盖到 / 整体停住」时给，不取代心跳判据。
-        if (!string.Equals(lifecycle.State, "planned-offline", StringComparison.Ordinal))
+        // 附加说明（Warning）：只描述「本库有没有覆盖这段范围 / 是不是整体停住」，
+        // 措辞不排除「采集端停机」这种可能（因为只有时间关系时两种情况无法区分）。
+        if (!string.Equals(lifecycle.State, "planned-offline", StringComparison.Ordinal)
+            && contentHorizonUtc is not null)
         {
-            if (rangeBeyondDatabase)
+            if (libraryFrozen)
+            {
+                componentIssues.Add(new PcQualityIssueDto(
+                    rangeBeyondDatabase ? "content-and-heartbeat-frozen" : "database-or-collector-frozen",
+                    PimHealthStatus.Warning,
+                    "daemon-upload",
+                    $"本库最新内容与心跳都停在 {FormatLocal(contentHorizonUtc.Value)}（距今 {databaseLag.TotalHours:0.#} 小时）" +
+                    (rangeBeyondDatabase
+                        ? $"，且查询范围末尾 {FormatLocal(effectiveRangeEnd)} 超出本库内容 {rangeShortfall!.Value.TotalHours:0.#} 小时。"
+                        : "。") +
+                    "可能是滞后快照 / 同步中断，也可能是采集端自那时起停机 —— 请对照 dataHorizonUtc、contentHorizonUtc、databaseLagMinutes 判断。",
+                    "先确认本库是否来自滞后快照；若不是，按采集端停机处理。"));
+            }
+            else if (rangeBeyondDatabase)
             {
                 componentIssues.Add(new PcQualityIssueDto(
                     "range-beyond-database-horizon",
                     PimHealthStatus.Warning,
                     "daemon-upload",
-                    $"本库最新内容止于 {FormatLocal(contentHorizonUtc!.Value)}，比查询范围末尾 " +
+                    $"本库最新内容止于 {FormatLocal(contentHorizonUtc.Value)}，比查询范围末尾 " +
                     $"{FormatLocal(effectiveRangeEnd)} 落后 {rangeShortfall!.Value.TotalHours:0.#} 小时 —— " +
-                    "这段范围在本库里就是没有数据（本库数据滞后于查询范围）。",
-                    "确认查询范围是否超出了本库已同步的数据；需要最新数据请先恢复数据同步。"));
-            }
-            else if (libraryFrozen)
-            {
-                componentIssues.Add(new PcQualityIssueDto(
-                    "database-lags-now",
-                    PimHealthStatus.Warning,
-                    "daemon-upload",
-                    $"本库最新内容与心跳同时停在 {FormatLocal(contentHorizonUtc!.Value)}（距今 {databaseLag.TotalHours:0.#} 小时）：" +
-                    "可能是滞后快照库 / 同步中断，也可能是采集端自那时起停机 —— " +
-                    "对照 dataHorizonUtc、contentHorizonUtc、databaseLagMinutes 判断。",
-                    "先确认本库是否来自滞后快照；若不是，再按心跳过期处理。"));
+                    "这段范围在本库里没有数据。",
+                    "确认查询范围是否超出了本库已同步的数据。"));
             }
         }
 

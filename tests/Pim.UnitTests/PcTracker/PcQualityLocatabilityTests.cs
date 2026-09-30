@@ -42,7 +42,7 @@ public sealed class PcQualityLocatabilityTests
         Assert.Equal(horizon.AddMinutes(-7).ToString("O"), daemon.Details["contentHorizonUtc"]);
         Assert.Equal(rangeEnd.ToString("O"), daemon.Details["rangeEndUtc"]);
         Assert.Equal("True", daemon.Details["libraryFrozenAtHorizon"]);
-        Assert.Contains(result.Issues, i => i.Code == "database-lags-now");
+        Assert.Contains(result.Issues, i => i.Code == "database-or-collector-frozen");
         // 心跳判据不被降级（WO「明确不做」第 6 条）：红灯照旧。
         Assert.Equal("collector-heartbeat-stale", daemon.Details["staleReason"]);
         Assert.Contains(result.Issues, i => i.Code == "stale-windows-daemon-heartbeat");
@@ -53,11 +53,10 @@ public sealed class PcQualityLocatabilityTests
     public async Task GetQualityAsync_CoveredRangeWithDeadHeartbeat_BlamesCollector()
     {
         await using var db = CreateDb();
+        // 本库内容还在更新（8 分钟前刚有事件），但心跳停在 2 小时前 → 采集端心跳通道的问题。
         var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
-        // 本库覆盖到范围末尾（数据一直写到查询日结束），但心跳停在 2 小时前 → 采集端心跳通道的问题。
         AddTrackerEvent(db, dayStart.AddHours(2), 3600, "window");
-        AddTrackerEvent(db, dayStart.AddHours(23.5), 60, "window");
-        AddSample(db, dayStart.AddHours(3));
+        AddSample(db, Now.AddMinutes(-8));
         AddHeartbeat(db, Now.AddHours(-2));
         await db.SaveChangesAsync();
 
@@ -111,9 +110,10 @@ public sealed class PcQualityLocatabilityTests
         var result = await Service(db).GetQualityAsync(new DateTime(2026, 9, 29), null, null, CancellationToken.None);
 
         var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
-        Assert.Equal("query-range-beyond-database-horizon", daemon.Details["staleCause"]);
+        // 心跳与内容一起停住，且查询范围还超出内容 → 成因码取更具体的那个（措辞同时给出两种可能）。
+        Assert.Equal("content-and-heartbeat-frozen", daemon.Details["staleCause"]);
         Assert.True(int.Parse(daemon.Details["rangeShortfallMinutes"], CultureInfo.InvariantCulture) >= 24 * 60);
-        var issue = Assert.Single(result.Issues, i => i.Code == "range-beyond-database-horizon");
+        var issue = Assert.Single(result.Issues, i => i.Code == "content-and-heartbeat-frozen");
         Assert.Equal(PimHealthStatus.Warning, issue.Severity);
         // 心跳判据同样保留（心跳确实过期了）。
         Assert.Contains(result.Issues, i => i.Code == "stale-windows-daemon-heartbeat");
@@ -155,7 +155,9 @@ public sealed class PcQualityLocatabilityTests
         var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
         // 本地 06:00–07:00 与 13:00–14:00 有数据 → 中间本地 07:00–13:00 连续 6 小时无数据。
         AddTrackerEvent(db, dayStart.AddHours(2), 3600, "window");
-        AddTrackerEvent(db, dayStart.AddHours(9), 3600, "window");
+        // 本地 13:00 起连续覆盖到业务日结束：本用例只验证「中间空洞」，不引入尾部空白。
+        for (var hour = 9; hour < 24; hour++)
+            AddTrackerEvent(db, dayStart.AddHours(hour), 3600, "window");
         AddHeartbeat(db, Now.AddMinutes(-1));
         await db.SaveChangesAsync();
 
@@ -181,7 +183,9 @@ public sealed class PcQualityLocatabilityTests
         // 本地 08:00–09:00 只有 KeyStats 采样（没有窗口事件）—— 这段时间同样算「有数据」。
         for (var minute = 0; minute < 60; minute += 5)
             AddSample(db, dayStart.AddHours(4).AddMinutes(minute));
-        AddTrackerEvent(db, dayStart.AddHours(9), 3600, "window");   // 本地 13:00–14:00
+        // 本地 13:00 起连续覆盖到业务日结束，避免尾部空白干扰本用例。
+        for (var hour = 9; hour < 24; hour++)
+            AddTrackerEvent(db, dayStart.AddHours(hour), 3600, "window");
         AddHeartbeat(db, Now.AddMinutes(-1));
         await db.SaveChangesAsync();
 
@@ -193,6 +197,46 @@ public sealed class PcQualityLocatabilityTests
         Assert.Contains("2026-09-27 07:00", tracker.Details["missingHours"]);
         Assert.DoesNotContain("2026-09-27 08:00", tracker.Details["missingHours"]);
         Assert.Equal(dayStart.AddHours(3).ToString("O"), tracker.Details["disconnectedFromUtc"]);
+    }
+
+    [Fact]
+    public async Task GetQualityAsync_ReportsTheTrailingBreakWhenDataStopsMidDay()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
+        // 本地 06:00–11:00 有数据，之后直到业务日结束再没有任何数据 → 尾部断档 17 小时。
+        for (var hour = 2; hour <= 6; hour++)
+            AddTrackerEvent(db, dayStart.AddHours(hour), 3600, "window");
+        AddHeartbeat(db, Now.AddMinutes(-1));
+        await db.SaveChangesAsync();
+
+        var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
+
+        var tracker = Assert.Single(result.Components, c => c.Key == "tracker-events");
+        // AC-8.3 / REQ-8：「从哪个时刻起断开」要能直接读出来。
+        var issue = Assert.Single(result.Issues, i => i.Code == "tracker-events-missing-hours");
+        Assert.Contains("2026-09-27 11:00", issue.Message);
+        Assert.Equal("17", tracker.Details["missingHourCount"]);
+        Assert.Equal(dayStart.AddHours(7).ToString("O"), tracker.Details["disconnectedFromUtc"]);
+        Assert.Equal(dayStart.AddHours(7).ToString("O"), tracker.Details["trailingGapFromUtc"]);
+        Assert.Equal("1020", tracker.Details["trailingGapMinutes"]);
+        Assert.Equal("False", tracker.Details["coverageEmpty"]);
+    }
+
+    [Fact]
+    public async Task GetQualityAsync_RangeWithNoDataAtAllReportsTheWholeRangeAsMissing()
+    {
+        await using var db = CreateDb();
+        // 整段查询范围没有任何事件与采样：不应被读成「没有尾部空白」。
+        AddHeartbeat(db, Now.AddMinutes(-1));
+        await db.SaveChangesAsync();
+
+        var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
+
+        var tracker = Assert.Single(result.Components, c => c.Key == "tracker-events");
+        Assert.Equal("True", tracker.Details["coverageEmpty"]);
+        Assert.Equal("1440", tracker.Details["trailingGapMinutes"]);
+        Assert.Contains(result.Issues, i => i.Code == "missing-tracker-events");
     }
 
     [Fact]

@@ -1282,29 +1282,6 @@ public partial class PcTrackerService
             .ToList();
     }
 
-    private static List<HeatmapBucket> BuildHourlyHeatmap(DateTimeOffset dayStart, List<AwEventEntity> events)
-    {
-        var timeZone = ResolveBusinessDayTimeZone();
-        // 去重后的全局并集区间，用于 activeMinutes 去重计算
-        var merged = MergeIntervalsForHeatmap(events.Where(e => e.Duration > 0).ToList());
-        return Enumerable.Range(0, 24).Select(hour =>
-        {
-            var bucketStart = dayStart.AddHours(hour);
-            var bucketEnd = bucketStart.AddHours(1);
-            var inBucket = events.Where(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd).ToList();
-            var activeMinutes = (int)Math.Min(60, SumOverlapSeconds(merged, bucketStart, bucketEnd) / 60);
-            var localHour = TimeZoneInfo.ConvertTime(bucketStart, timeZone).Hour;
-            return new HeatmapBucket(
-                bucketStart.ToString("O"),
-                bucketEnd.ToString("O"),
-                localHour,
-                activeMinutes,
-                inBucket.Count,
-                PcActivityIntensity.ForMinutes(activeMinutes),
-                PcActivityIntensity.MaxLevel);
-        }).ToList();
-    }
-
     private async Task<List<PcDetailRecord>> BuildInterpretedAwDetailRecordsAsync(List<AwEventEntity> awEvents, CancellationToken ct)
     {
         var rules = await GetActivityCategoryRulesAsync(ct);
@@ -1821,35 +1798,4 @@ public partial class PcTrackerService
         return e.LeftClicks + e.RightClicks + e.MiddleClicks + e.SideBackClicks + e.SideForwardClicks;
     }
 
-    private static List<(DateTimeOffset Start, DateTimeOffset End)> MergeIntervalsForHeatmap(List<AwEventEntity> events)
-    {
-        if (events.Count == 0) return new List<(DateTimeOffset, DateTimeOffset)>();
-        var sorted = events.OrderBy(e => e.Timestamp).ToList();
-        var merged = new List<(DateTimeOffset Start, DateTimeOffset End)>();
-        foreach (var e in sorted)
-        {
-            var s = e.Timestamp;
-            var en = e.Timestamp.AddSeconds(Math.Min(e.Duration, 3600));
-            if (merged.Count == 0) { merged.Add((s, en)); continue; }
-            var last = merged[^1];
-            if (s <= last.End)
-            {
-                if (en > last.End) merged[^1] = (last.Start, en);
-            }
-            else merged.Add((s, en));
-        }
-        return merged;
-    }
-
-    private static double SumOverlapSeconds(List<(DateTimeOffset Start, DateTimeOffset End)> merged, DateTimeOffset bucketStart, DateTimeOffset bucketEnd)
-    {
-        double sum = 0;
-        foreach (var (s, e) in merged)
-        {
-            var os = s > bucketStart ? s : bucketStart;
-            var oe = e < bucketEnd ? e : bucketEnd;
-            if (oe > os) sum += (oe - os).TotalSeconds;
-        }
-        return sum;
-    }
 }
