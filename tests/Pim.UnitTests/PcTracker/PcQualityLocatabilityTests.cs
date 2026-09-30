@@ -351,6 +351,25 @@ public sealed class PcQualityLocatabilityTests
     }
 
     [Fact]
+    public async Task GetQualityAsync_DataHorizonSeesEventsThatCrossTheRangeStart()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
+        // 心跳停在业务日开始之前，而跨起点的长事件在范围内结束得更晚：
+        // dataHorizonUtc（本库在本次范围内最新数据）必须取事件结束时刻 —— 只看起点落在范围内的事件会漏掉它。
+        AddTrackerEvent(db, dayStart.AddMinutes(-10), 3600, "window");
+        AddHeartbeat(db, dayStart.AddHours(-2));
+        await db.SaveChangesAsync();
+
+        var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
+
+        var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
+        Assert.Equal(dayStart.AddMinutes(50).ToString("O"), daemon.Details["dataHorizonUtc"]);
+        var tracker = Assert.Single(result.Components, c => c.Key == "tracker-events");
+        Assert.Equal(dayStart.AddMinutes(50).ToString("O"), tracker.Details["lastDataAtUtc"]);
+    }
+
+    [Fact]
     public async Task GetQualityAsync_TrackerEventsExposeBaselineAndVerdict()
     {
         await using var db = CreateDb();
