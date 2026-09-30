@@ -50,6 +50,29 @@ public sealed class PcQualityLocatabilityTests
     }
 
     [Fact]
+    public async Task GetQualityAsync_CoveredRangeWithDeadHeartbeat_BlamesCollector()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
+        // 本库覆盖到范围末尾（数据一直写到查询日结束），但心跳停在 2 小时前 → 采集端心跳通道的问题。
+        AddTrackerEvent(db, dayStart.AddHours(2), 3600, "window");
+        AddTrackerEvent(db, dayStart.AddHours(23.5), 60, "window");
+        AddSample(db, dayStart.AddHours(3));
+        AddHeartbeat(db, Now.AddHours(-2));
+        await db.SaveChangesAsync();
+
+        var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
+
+        var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
+        // AC-8.1（情形二）：同样的「读数旧」，但判据指向采集端心跳本身。
+        Assert.Equal("collector-heartbeat-stale", daemon.Details["staleCause"]);
+        Assert.Equal("collector-heartbeat-stale", daemon.Details["staleReason"]);
+        Assert.Equal("False", daemon.Details["libraryFrozenAtHorizon"]);
+        Assert.Contains(result.Issues, i => i.Code == "stale-windows-daemon-heartbeat");
+        Assert.Equal(PimHealthStatus.Critical, daemon.Status);
+    }
+
+    [Fact]
     public async Task GetQualityAsync_LiveDatabaseWithFreshHeartbeat_IsHealthyAndSaysSo()
     {
         await using var db = CreateDb();
