@@ -552,6 +552,36 @@ public partial class PcTrackerService
     {
         var page = Math.Max(1, q.Page);
         var pageSize = Math.Clamp(q.PageSize, 1, 200);
+        var records = await BuildCompleteDetailRecordsAsync(q, ct);
+
+        var totalCount = records.Count;
+        var items = records
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToList();
+
+        return new TypedDetailQueryResponse(
+            items,
+            page,
+            pageSize,
+            totalCount,
+            (int)Math.Ceiling((double)totalCount / pageSize));
+    }
+
+    /// <summary>
+    /// 内部分析路径（REQ-1 / #362）：返回所选范围的**全部**明细记录，不吃 <see cref="QueryCompleteDetailAsync"/>
+    /// 的对外分页契约（<c>PageSize</c> 被夹到 1–200 且只取第 1 页）。
+    /// <para>
+    /// 为什么单独开这个入口而不是放大 <c>Clamp</c> 上限：<c>/pc/detail</c> 的对外分页上限一旦放大，
+    /// 所有 detail 调用的内存与响应体都会一起变大（历史上已因此被审计）。聚合/建议这类内部调用
+    /// 需要的是「覆盖整个业务日」，因此只让内部路径不吃分页限制，对外契约保持不变。
+    /// </para>
+    /// </summary>
+    public async Task<List<PcDetailRecord>> QueryAllDetailRecordsAsync(DetailQueryParams q, CancellationToken ct)
+        => await BuildCompleteDetailRecordsAsync(q, ct);
+
+    private async Task<List<PcDetailRecord>> BuildCompleteDetailRecordsAsync(DetailQueryParams q, CancellationToken ct)
+    {
         var (start, end) = GetDetailQueryRange(q);
 
         var awEvents = await _db.Set<AwEventEntity>()
@@ -595,18 +625,7 @@ public partial class PcTrackerService
         records = ApplyCompleteDetailFilters(records, q).ToList();
         records = ApplyCompleteDetailSort(records, q).ToList();
 
-        var totalCount = records.Count;
-        var items = records
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .ToList();
-
-        return new TypedDetailQueryResponse(
-            items,
-            page,
-            pageSize,
-            totalCount,
-            (int)Math.Ceiling((double)totalCount / pageSize));
+        return records;
     }
 
     public async Task<List<AppCategoryRule>> GetAllCategoriesAsync(CancellationToken ct)

@@ -21,7 +21,10 @@ public sealed class PcActivityAnalysisService
             throw new ArgumentException("时间块分钟数必须在 15 到 240 之间。");
 
         var dateText = date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        var detail = await _tracker.QueryCompleteDetailAsync(
+        // REQ-1（#362）：聚合输入必须覆盖整个业务日。这里走**内部分析路径**，
+        // 不吃 /pc/detail 的对外分页契约（PageSize 被夹到 1–200 且只取第 1 页）——
+        // 之前传 pageSize:2000 实际只拿到 200 条，24 个块里只有 2 块有数据。
+        var records = await _tracker.QueryAllDetailRecordsAsync(
             new DetailQueryParams(
                 dateText,
                 dateText,
@@ -46,34 +49,39 @@ public sealed class PcActivityAnalysisService
         {
             var start = dayStart.AddMinutes(i * blockMinutes);
             var end = start.AddMinutes(blockMinutes);
-            var records = detail.Items
-                .Where(record => record.DurationSeconds is > 0)
+
+            // REQ-2（#363）：块内候选先过 PcActivityOverlapResolver 的统一口径再汇总。
+            // 直接 Sum(DurationSeconds) 会把同一时刻的多路记录（window / web-page / input-minute）
+            // 重复计费 —— 实测 1 小时块报 5960 秒（99.3 分钟）。
+            // 段已裁剪到块窗口，因此合计恒 ≤ 块时长。
+            var segments = PcActivityActiveSegments.Resolve(records, start, end);
+            var activeSeconds = PcActivityActiveSegments.SumSeconds(segments);
+
+            var blockRecords = records
+                .Where(record => (record.DurationSeconds ?? 0) > 0)
                 // #331：gap / idle / afk 表示「这里没有人」，不是活动。
                 // 不排除的话，空档会被算进 activeSeconds / 强度 / 类别分布，
                 // 把一天里没人的时段显示成「有活动」（与分类分布、生产力统计的口径保持一致）。
                 .Where(record => !PcActivityOverlapResolver.IsInactive(record.RecordType))
-                .Where(record => DateTimeOffset.TryParse(record.Start, out var recordStart)
-                    && recordStart >= start
-                    && recordStart < end)
+                .Where(record => PcActivityActiveSegments.TryGetInterval(record, out var recordStart, out var recordEnd)
+                    && recordStart < end
+                    && recordEnd > start)
                 .OrderBy(record => record.Start, StringComparer.Ordinal)
                 .ToList();
-            var activeSeconds = records.Sum(record => record.DurationSeconds ?? 0);
-            var categories = records
-                .GroupBy(record => record.CategoryName ?? "Other", StringComparer.OrdinalIgnoreCase)
+
+            var categories = segments
+                .GroupBy(segment => segment.Record.CategoryName ?? "Other", StringComparer.OrdinalIgnoreCase)
                 .Select(group => new PcActivityAnalysisCategoryDto(
                     group.Key,
-                    group.Select(record => record.CategoryColor).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "#64748b",
-                    group.Sum(record => record.DurationSeconds ?? 0)))
+                    group.Select(segment => segment.Record.CategoryColor).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "#64748b",
+                    PcActivityActiveSegments.SumSeconds(group)))
                 .OrderByDescending(item => item.DurationSeconds)
                 .ToList();
-            var apps = records
-                .GroupBy(record => record.RecordType == "web-page"
-                    ? record.Domain ?? record.BrowserAppName ?? "web"
-                    : record.AppName ?? record.DisplayName ?? "unknown",
-                    StringComparer.OrdinalIgnoreCase)
+            var apps = segments
+                .GroupBy(segment => ResolveAppName(segment.Record), StringComparer.OrdinalIgnoreCase)
                 .Select(group => new PcActivityAnalysisAppDto(
                     group.Key,
-                    group.Sum(record => record.DurationSeconds ?? 0)))
+                    PcActivityActiveSegments.SumSeconds(group)))
                 .OrderByDescending(item => item.DurationSeconds)
                 .Take(5)
                 .ToList();
@@ -83,15 +91,20 @@ public sealed class PcActivityAnalysisService
                 end.ToString("O"),
                 ToIntensity(activeSeconds, blockMinutes),
                 activeSeconds,
-                records.Count(IsPendingClassification),
-                CountSwitches(records.Select(record => record.AppName ?? record.Domain ?? record.DisplayName ?? string.Empty)),
-                CountSwitches(records.Select(record => record.CategoryName ?? string.Empty)),
+                blockRecords.Count(IsPendingClassification),
+                CountSwitches(blockRecords.Select(record => record.AppName ?? record.Domain ?? record.DisplayName ?? string.Empty)),
+                CountSwitches(blockRecords.Select(record => record.CategoryName ?? string.Empty)),
                 categories,
                 apps));
         }
 
         return new PcActivityAnalysisResponse(dateText, blockMinutes, blocks);
     }
+
+    private static string ResolveAppName(PcDetailRecord record)
+        => record.RecordType == "web-page"
+            ? record.Domain ?? record.BrowserAppName ?? "web"
+            : record.AppName ?? record.DisplayName ?? "unknown";
 
     private static bool IsPendingClassification(PcDetailRecord record) =>
         string.Equals(record.ClassificationSource, "fallback", StringComparison.OrdinalIgnoreCase)
