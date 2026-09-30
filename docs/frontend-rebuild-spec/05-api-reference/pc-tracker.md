@@ -196,8 +196,9 @@
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:340-368`；DTO `DTOs/PcQualityDtos.cs:5-26`；前端 `src/client-web/src/api/pcTracker.ts:162-170`
 - 备注：前端对 status 做数值/字符串双兼容归一化（pcTracker.ts:43-94），序列化可能为数字或枚举名。
 - 可定位性字段（REQ-8/#369，全部落在 `components[].details` 与 `issues`，不改状态枚举）：
-  - `daemon-upload`：`staleReason` ∈ `none` / `collector-heartbeat-stale`（真正的采集端心跳过期）/ `collector-heartbeat-old` / `database-lags-now`（本库整体滞后，不是采集端现在停机）/ `query-range-beyond-database-horizon`（本库数据滞后于查询范围）/ `planned-offline` / `heartbeat-missing`；并给出 `dataHorizonUtc`、`contentHorizonUtc`、`receivedAt`、`ageMinutes`、`rangeEndUtc`、`effectiveRangeEndUtc`、`rangeShortfallMinutes`、`databaseLagMinutes`、`libraryFrozenAtHorizon` 作为判据。
-  - `tracker-events`：事件基线判定 `baselineMethod`（近 7 个业务日事件数中位数）、`baselineEventCount`、`baselineDays`、`currentDailyEventCount`、`deviationRatio`、`verdict`（`偏低` / `在基线区间内` / `偏高` / `无基线`）、`verdictBasis`；缺数时段 `missingHourCount`、`missingHours`（本地时间，最多列 24 个）、`disconnectedFromUtc`（首次中断时刻）、`lastDataAtUtc`，并在存在「两侧都有数据的中间断档」时给出 `tracker-events-missing-hours` 问题项。
+  - `daemon-upload`：`staleReason` ∈ `none` / `collector-heartbeat-stale`（心跳 ≥ 15 分钟，照旧报 Critical）/ `collector-heartbeat-old` / `planned-offline` / `heartbeat-missing` —— **心跳判据不降级**；另给 `staleCause` ∈ `none` / `collector-heartbeat-stale`（本库内容另有新数据，只有心跳停了）/ `database-or-collector-frozen`（内容与心跳一起停在很久以前：滞后快照或采集端自那时起停机都会长这样）/ `query-range-beyond-database-horizon`（本库内容没覆盖到查询范围末尾）/ `unclear`，并给出 `dataHorizonUtc`、`contentHorizonUtc`、`receivedAt`、`ageMinutes`、`rangeEndUtc`、`effectiveRangeEndUtc`、`rangeShortfallMinutes`、`databaseLagMinutes`、`libraryFrozenAtHorizon`、`heartbeatStaleAt` 作为判据。
+  - 附加问题项：`range-beyond-database-horizon`（Warning，本库数据滞后于查询范围）、`database-lags-now`（Warning，内容与心跳一起停了很久，可能是滞后快照也可能是采集端停机）；两者都不取代 `stale-windows-daemon-heartbeat` 红灯。
+  - `tracker-events`：事件基线判定 `baselineMethod`（近 7 个业务日事件数中位数）、`baselineEventCount`、`baselineDays`、`currentDailyEventCount`、`deviationRatio`、`verdict`（`偏低` / `在基线区间内` / `偏高` / `无基线`）、`verdictBasis`；缺数时段 `missingHourCount`、`missingHours`（本地时间，最多列 24 个）、`disconnectedFromUtc`（首次中断时刻）、`lastDataAtUtc`、`trailingGapMinutes`（最后一条数据到范围末尾的空白，范围末尾的空白不进 issues 以免噪音），并在存在「两侧都有数据的中间断档」时给出 `tracker-events-missing-hours` 问题项。
   - 组件 `message` 只描述本组件，不复制总览文案（`overallStatus` / `message`）。
 
 ### GET /api/v1/pc/heatmap/grid
