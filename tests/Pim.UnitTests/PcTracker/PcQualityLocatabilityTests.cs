@@ -226,6 +226,52 @@ public sealed class PcQualityLocatabilityTests
     }
 
     [Fact]
+    public async Task GetQualityAsync_WindowEventCrossingTheRangeStartIsStillARangeWindowEvent()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
+        // 整天只有一条窗口事件，起点在业务日之前、伸进范围（跨业务日的会话）。
+        // 覆盖判定已经算上它，那么「范围内有没有窗口事件」「时间线输入是否完整」也必须用同一批事件，
+        // 否则会出现「覆盖说这段范围有数据、issues 说没有窗口事件」的自相矛盾。
+        AddTrackerEvent(db, dayStart.AddMinutes(-10), 1200, "window");
+        AddSample(db, dayStart.AddHours(1));
+        AddSample(db, dayStart.AddHours(2));
+        AddHeartbeat(db, Now.AddMinutes(-1));
+        await db.SaveChangesAsync();
+
+        var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
+
+        var tracker = Assert.Single(result.Components, c => c.Key == "tracker-events");
+        Assert.DoesNotContain(result.Issues, i => i.Code == "missing-tracker-events");
+        Assert.DoesNotContain(result.Issues, i => i.Code == "missing-tracker-window-events");
+        Assert.Equal("1", tracker.Details["eventCount"]);
+        Assert.Equal("1", tracker.Details["windowEventCount"]);
+
+        var timeline = Assert.Single(result.Components, c => c.Key == "interpreted-timeline");
+        Assert.Equal("True", timeline.Details["hasTrackerEvents"]);
+        Assert.DoesNotContain(result.Issues, i => i.Code == "timeline-inputs-incomplete");
+    }
+
+    [Fact]
+    public async Task GetQualityAsync_NaNDurationEventIsIgnoredButDoesNotBreakAnything()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
+        // NaN 时长（脏数据）：PostgreSQL 里 NaN 比任何有限值都大，不排除的话 MAX(duration) 会变成 NaN，
+        // 窗口估算与内容地平线都会跟着坏掉。这里锁定「NaN 不参与时长估算」。
+        AddTrackerEvent(db, dayStart.AddHours(2), double.NaN, "window");
+        AddTrackerEvent(db, dayStart.AddHours(10), 3600, "window");
+        AddHeartbeat(db, Now.AddMinutes(-1));
+        await db.SaveChangesAsync();
+
+        var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
+
+        var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
+        // 内容地平线来自那条正常事件（10:00Z + 1 小时），NaN 那条不贡献时长。
+        Assert.Equal(dayStart.AddHours(11).ToString("O"), daemon.Details["contentHorizonUtc"]);
+    }
+
+    [Fact]
     public async Task GetQualityAsync_TodaysUnfinishedRangeDoesNotReportFutureHoursAsMissing()
     {
         await using var db = CreateDb();
@@ -250,12 +296,13 @@ public sealed class PcQualityLocatabilityTests
     }
 
     [Fact]
-    public async Task GetQualityAsync_UnrepresentableEventDuration_DoesNotFailTheEndpoint()
+    public async Task GetQualityAsync_UnrepresentableEventDurationIsTreatedAsDirtyData()
     {
         await using var db = CreateDb();
         var dayStart = PcTrackerService.GetBusinessDayStartForQuery(QueryDate);
-        // 脏数据：时长 1e12 秒的事件，结束时刻超出 DateTimeOffset 能表示的范围。
-        // 这不该让整个体检接口 500 —— 结束时刻截到可表示的最大值。
+        // 脏数据：时长 1e12 秒的事件（结束时刻远超可表示范围）。
+        // 既不能抛异常，也不能被当成「内容一直延续到 9999 年」——那会把「内容是旧的」
+        // 误诊成 collector-heartbeat-stale（只有心跳停），还会盖住这条事件之后的真实空洞。
         AddTrackerEvent(db, dayStart.AddHours(2), 1e12, "window");
         AddSample(db, Now.AddMinutes(-1));
         AddHeartbeat(db, Now.AddMinutes(-1));
@@ -264,7 +311,15 @@ public sealed class PcQualityLocatabilityTests
         var result = await Service(db).GetQualityAsync(QueryDate, null, null, CancellationToken.None);
 
         var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
-        Assert.Equal(DateTimeOffset.MaxValue.ToString("O"), daemon.Details["contentHorizonUtc"]);
+        // 地平线来自那条采样，而不是脏事件的 9999 年。
+        Assert.Equal(Now.AddMinutes(-1).ToString("O"), daemon.Details["contentHorizonUtc"]);
+        Assert.NotEqual("collector-heartbeat-stale", daemon.Details["staleCause"]);
+
+        // 脏时长不覆盖任何时段：这条事件之后的真实空洞仍然可见。
+        var tracker = Assert.Single(result.Components, c => c.Key == "tracker-events");
+        Assert.True(int.Parse(tracker.Details["missingHourCount"]) > 0, tracker.Details["missingHourCount"]);
+        Assert.Contains("2026-09-27 23:00", tracker.Details["missingHours"]);
+        Assert.Contains(result.Issues, i => i.Code == "tracker-events-missing-hours");
     }
 
     [Fact]

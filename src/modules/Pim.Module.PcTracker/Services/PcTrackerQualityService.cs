@@ -124,12 +124,14 @@ public sealed class PcTrackerQualityService
 
         if (isPostAw || trackerEvents.Count > 0)
         {
-            components.Add(CheckTrackerEvents(trackerEvents, baseline, coverage, rangeStart, rangeEnd, coverageEnd, checkedAt, issues));
+            // 用「与范围重叠」的那批（含起点在范围之前、伸进范围的记录）：覆盖判定用的是它，
+            // 「有没有窗口事件 / 事件条数」也必须同源，否则会自相矛盾。
+            components.Add(CheckTrackerEvents(coverageEvents, baseline, coverage, rangeStart, rangeEnd, coverageEnd, checkedAt, issues));
         }
 
         components.Add(CheckKeystats(samples, issues));
         components.Add(CheckDaemon(heartbeat, checkedAt, isPostAw, rangeStart, rangeEnd, dataHorizonUtc, contentHorizonUtc, issues));
-        components.Add(CheckTimeline(events, trackerEvents, samples, isPostAw, issues));
+        components.Add(CheckTimeline(events, coverageEvents, samples, isPostAw, issues));
 
         AddDataReliabilityGate(components, issues, new[] { "S1", "S2", "S3", "S5", "S6", "S7", "S8", "S13" });
 
@@ -346,6 +348,9 @@ public sealed class PcTrackerQualityService
         return BuildComponent("aw-events", "ActivityWatch 事件", componentIssues, details);
     }
 
+    /// <param name="events">
+    /// 与查询范围重叠的原生事件（含起点在范围之前、伸进范围的记录）—— 与覆盖判定同源。
+    /// </param>
     private static PcQualityComponentDto CheckTrackerEvents(
         IReadOnlyCollection<TrackerEventEntity> events,
         TrackerEventBaseline baseline,
@@ -529,11 +534,15 @@ public sealed class PcTrackerQualityService
         CancellationToken ct)
     {
         var source = _db.Set<TrackerEventEntity>().AsNoTracking();
-        var maxDurationSeconds = await source.MaxAsync(e => (double?)e.Duration, ct) ?? 0;
-        if (double.IsNaN(maxDurationSeconds) || maxDurationSeconds <= 0)
+        var plausible = source.Where(e => e.Duration > 0 && e.Duration <= MaxPlausibleEventDurationSeconds);
+        var maxDurationSeconds = await plausible.AnyAsync(ct)
+            ? await plausible.MaxAsync(e => e.Duration, ct)
+            : 0;
+        var lookbackSeconds = LookbackSeconds(maxDurationSeconds);
+        if (lookbackSeconds <= 0)
             return new List<TrackerEventEntity>();
 
-        var lookbackStart = ClampAddSeconds(rangeStart, -maxDurationSeconds);
+        var lookbackStart = ClampAddSeconds(rangeStart, -lookbackSeconds);
         var candidates = await source
             .Where(e => e.Timestamp >= lookbackStart && e.Timestamp < rangeStart)
             .ToListAsync(ct);
@@ -642,11 +651,37 @@ public sealed class PcTrackerQualityService
         => rangeEnd < checkedAt ? rangeEnd : checkedAt;
 
     /// <summary>
-    /// 事件结束时刻：负时长（与 NaN）按「零长事件」处理；时长大到 <see cref="DateTimeOffset"/> 放不下时
-    /// 截到可表示的最大值 —— 脏数据不该让整个 quality 接口 500。
+    /// 单条事件的合理时长上界（30 天）：超过它的记录按脏数据对待（结束时刻记为该事件的起点，即零贡献）。
+    /// 既不该把内容地平线抬到 9999 年（那会把「内容是旧的」误诊成「只有心跳停」），
+    /// 也不该让回看窗口大到把整张表捞出来。
+    /// <para>用常量（而不是 <see cref="TimeSpan"/>）是因为它要进 SQL 过滤条件；
+    /// <c>Duration &lt;= 常量</c> 在 PostgreSQL 与 .NET 上都会把 <c>NaN</c> 排除掉
+    /// （PostgreSQL 里 <c>NaN</c> 比任何有限值都大，<c>NaN &lt;= x</c> 为假），
+    /// 否则一行 <c>NaN</c> 会让 <c>MAX(duration)</c> 变成 <c>NaN</c>。</para>
+    /// </summary>
+    private const double MaxPlausibleEventDurationSeconds = 30 * 24 * 60 * 60;
+
+    private static readonly TimeSpan MaxPlausibleEventDuration = TimeSpan.FromSeconds(MaxPlausibleEventDurationSeconds);
+
+    /// <summary>
+    /// 事件结束时刻。负时长、NaN、以及超过 <see cref="MaxPlausibleEventDuration"/> 的脏时长都按
+    /// 「零长事件」处理（结束时刻 = 起点），不抛异常、也不假装内容延续到很久以后。
     /// </summary>
     private static DateTimeOffset EventEnd(DateTimeOffset timestamp, double durationSeconds)
-        => ClampAddSeconds(timestamp, double.IsNaN(durationSeconds) || durationSeconds <= 0 ? 0 : durationSeconds);
+    {
+        if (double.IsNaN(durationSeconds) || durationSeconds <= 0)
+            return timestamp;
+
+        return durationSeconds > MaxPlausibleEventDuration.TotalSeconds
+            ? timestamp
+            : ClampAddSeconds(timestamp, durationSeconds);
+    }
+
+    /// <summary>按最大时长回推候选窗口时用的回看秒数（脏时长被截到合理上界）。</summary>
+    private static double LookbackSeconds(double maxDurationSeconds)
+        => double.IsNaN(maxDurationSeconds) || maxDurationSeconds <= 0
+            ? 0
+            : Math.Min(maxDurationSeconds, MaxPlausibleEventDuration.TotalSeconds);
 
     /// <summary>
     /// 加减秒数但把结果截在 <see cref="DateTimeOffset"/> 可表示范围内。用于两个地方：
@@ -658,14 +693,20 @@ public sealed class PcTrackerQualityService
         if (double.IsNaN(seconds) || seconds == 0)
             return value;
 
-        if (seconds > 0)
+        try
         {
-            var remaining = (DateTimeOffset.MaxValue - value).TotalSeconds;
-            return seconds >= remaining ? DateTimeOffset.MaxValue : value.AddSeconds(seconds);
+            return value.AddSeconds(seconds);
         }
-
-        var available = (value - DateTimeOffset.MinValue).TotalSeconds;
-        return -seconds >= available ? DateTimeOffset.MinValue : value.AddSeconds(seconds);
+        catch (ArgumentOutOfRangeException)
+        {
+            // 越界：截到可表示的一端。用 try/catch 而不是先比 TotalSeconds ——
+            // 非零偏移的 DateTimeOffset 能加到的钟面范围与 UTC 差值不是一回事。
+            return seconds > 0 ? DateTimeOffset.MaxValue : DateTimeOffset.MinValue;
+        }
+        catch (ArgumentException)
+        {
+            return value;
+        }
     }
 
     /// <summary>缺数时段的最小上报长度：低于这个长度的空白不单列（避免逐日噪音）。</summary>
@@ -718,12 +759,14 @@ public sealed class PcTrackerQualityService
             _db.Set<AwEventEntity>().AsNoTracking(),
             e => e.Timestamp,
             e => e.Duration,
+            e => e.Duration > 0 && e.Duration <= MaxPlausibleEventDurationSeconds,
             from => e => e.Timestamp >= from,
             ct);
         var trackerHorizon = await MaxEventEndAsync(
             _db.Set<TrackerEventEntity>().AsNoTracking(),
             e => e.Timestamp,
             e => e.Duration,
+            e => e.Duration > 0 && e.Duration <= MaxPlausibleEventDurationSeconds,
             from => e => e.Timestamp >= from,
             ct);
         var sampleLatest = await _db.Set<KeystatsSampleEntity>().AsNoTracking()
@@ -754,6 +797,7 @@ public sealed class PcTrackerQualityService
         IQueryable<TEntity> source,
         Expression<Func<TEntity, DateTimeOffset>> timestampSelector,
         Expression<Func<TEntity, double>> durationSelector,
+        Expression<Func<TEntity, bool>> plausibleDurationFilter,
         Func<DateTimeOffset, Expression<Func<TEntity, bool>>> windowFilter,
         CancellationToken ct)
         where TEntity : class
@@ -763,9 +807,13 @@ public sealed class PcTrackerQualityService
 
         // 只有起点落在 [maxTimestamp - maxDuration, maxTimestamp] 内的事件，其结束时刻才可能晚于 maxTimestamp；
         // 因此在这个窗口内取 max(Timestamp + Duration) 与全表结果一致，无需全表扫描。
+        // 窗口按「合理时长」估算：脏时长（NaN / 超过 30 天 / 负数）本来就不贡献内容时长。
         var maxTimestamp = await source.MaxAsync(timestampSelector, ct);
-        var maxDurationSeconds = Math.Max(0, await source.MaxAsync(durationSelector, ct));
-        var windowStart = ClampAddSeconds(maxTimestamp, -maxDurationSeconds);
+        var plausible = source.Where(plausibleDurationFilter);
+        var maxDurationSeconds = await plausible.AnyAsync(ct)
+            ? await plausible.MaxAsync(durationSelector, ct)
+            : 0;
+        var windowStart = ClampAddSeconds(maxTimestamp, -LookbackSeconds(maxDurationSeconds));
 
         var horizon = maxTimestamp;
         var timestampOf = timestampSelector.Compile();
@@ -1135,15 +1183,18 @@ public sealed class PcTrackerQualityService
         return BuildComponent("daemon-upload", "Windows 守护程序上传", componentIssues, details);
     }
 
+    /// <param name="rangeTrackerEvents">
+    /// 与查询范围重叠的原生事件（含起点在范围之前、伸进范围的记录）—— 与覆盖判定同源。
+    /// </param>
     private static PcQualityComponentDto CheckTimeline(
         IReadOnlyCollection<AwEventEntity> awEvents,
-        IReadOnlyCollection<TrackerEventEntity> trackerEvents,
+        IReadOnlyCollection<TrackerEventEntity> rangeTrackerEvents,
         IReadOnlyCollection<KeystatsSampleEntity> samples,
         bool isPostAw,
         List<PcQualityIssueDto> issues)
     {
         var componentIssues = new List<PcQualityIssueDto>();
-        var hasActivityEvents = awEvents.Count > 0 || trackerEvents.Count > 0;
+        var hasActivityEvents = awEvents.Count > 0 || rangeTrackerEvents.Count > 0;
         var hasKeystatsSamples = samples.Count > 0;
         var hasKeystatsDeltaPair = samples
             .GroupBy(s => s.PimDeviceId)
@@ -1177,7 +1228,7 @@ public sealed class PcTrackerQualityService
         {
             ["hasActivityEvents"] = hasActivityEvents.ToString(),
             ["hasActivityWatchEvents"] = (awEvents.Count > 0).ToString(),
-            ["hasTrackerEvents"] = (trackerEvents.Count > 0).ToString(),
+            ["hasTrackerEvents"] = (rangeTrackerEvents.Count > 0).ToString(),
             ["hasKeystatsSamples"] = hasKeystatsSamples.ToString(),
             ["hasKeystatsDeltaPair"] = hasKeystatsDeltaPair.ToString()
         };
