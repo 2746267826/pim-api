@@ -96,7 +96,9 @@ public sealed class PcTrackerQualityService
         // 1) 本库最新数据时刻（含心跳）→ 区分「采集端心跳过期」与「本库数据滞后于查询范围」；
         // 2) 近 7 个业务日的事件基线 → 给本次范围一个偏高/偏低判定；
         // 3) 范围内部的缺数时段 → 直接列出哪几小时无数据、从哪个时刻起断开。
-        var dataHorizonUtc = ComputeDataHorizon(heartbeat, events, trackerEvents, samples);
+        // 用「与范围重叠」的原生事件（含起点在范围之前、伸进范围的记录），与覆盖判定同源：
+        // 只用起点落在范围内的事件会让 dataHorizonUtc 早于本库在本次范围内真实存在的数据。
+        var dataHorizonUtc = ComputeDataHorizon(heartbeat, events, coverageEvents, samples);
         // 「这本库本身就旧」是整库属性，不是某次查询范围的属性 —— 所以内容地平线要跨全库取，
         // 否则查询一个较早的范围时，会把「本库停在很久以前」误判成「采集端刚停机」。
         var contentHorizonUtc = await ComputeDatabaseContentHorizonAsync(ct);
@@ -631,9 +633,12 @@ public sealed class PcTrackerQualityService
                 trailingGapStart = trailingStart;
                 gaps.Add(new CoverageGap(trailingStart, coverageEnd));
                 // 第一个「整小时都没数据」的小时：数据恰好停在整点时，该小时本身就算全缺。
-                for (var hour = (int)Math.Ceiling((trailingStart - rangeStart).TotalHours);
-                     hour < totalHours;
-                     hour++)
+                // 但如果尾部是「零长记录」（零时长 / 脏时长 / KeyStats 采样点）停在整点上，
+                // 该小时已经被记为有数据，就不能再列进缺数列表（同一小时不该同时出现两处）。
+                var firstMissingHour = (int)Math.Ceiling((trailingStart - rangeStart).TotalHours);
+                if (previousCovered is int covered)
+                    firstMissingHour = Math.Max(firstMissingHour, covered + 1);
+                for (var hour = firstMissingHour; hour < totalHours; hour++)
                 {
                     missingHourStarts.Add(rangeStart.AddHours(hour));
                 }
