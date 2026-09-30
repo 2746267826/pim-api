@@ -125,9 +125,12 @@ export default function ActivityAnalysisHeatmap({ analysis, selectedStart, onSel
     ?? blocks.find(block => block.activeDurationSeconds > 0)
     ?? blocks[0];
 
-  const blockSeconds = selected
-    ? Math.max((new Date(selected.end).getTime() - new Date(selected.start).getTime()) / 1000, 0)
+  // 块时长取区间长度（绝对值），与 blockActiveMinutes 的夹紧口径保持一致：
+  // 否则起止颠倒的脏数据会出现「活跃 60 分钟」但「块时长（0 分钟）」的自相矛盾。
+  const rawBlockSeconds = selected
+    ? Math.abs(new Date(selected.end).getTime() - new Date(selected.start).getTime()) / 1000
     : 0;
+  const blockSeconds = Number.isFinite(rawBlockSeconds) ? rawBlockSeconds : 0;
 
   if (!analysis || blocks.length === 0) {
     return (

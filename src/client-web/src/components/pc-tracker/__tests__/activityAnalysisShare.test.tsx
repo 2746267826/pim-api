@@ -140,6 +140,27 @@ describe('REQ-2 · 时间块热力：活跃分钟与块内占比', () => {
     expect(order).not.toContain('appTiny');
   });
 
+  it('起止颠倒的脏数据下，「活跃 X 分钟」与「块时长」用同一套长度（不自相矛盾）', () => {
+    const { container } = render(
+      <ActivityAnalysisHeatmap
+        analysis={analysisWith({
+          start: '2026-09-27T04:00:00.0000000+00:00',
+          end: '2026-09-27T03:00:00.0000000+00:00',
+          activeDurationSeconds: 5960,
+          categories: [{ categoryName: 'A', color: '#111111', durationSeconds: 600 }],
+          apps: [],
+        })}
+        selectedStart={'2026-09-27T04:00:00.0000000+00:00'}
+        onSelectBlock={() => {}}
+      />,
+    );
+    const text = container.textContent ?? '';
+    expect(text).toContain('活跃 60 分钟');
+    // 块时长也应是 60（绝对值），不能出现「块时长（0 分钟）」
+    expect(text).toContain('块时长（60 分钟）');
+    expect(text).not.toContain('块时长（0 分钟）');
+  });
+
   it('脏数据（各项之和超过块时长）时占比条仍合计 ≤ 100%', () => {
     const { container } = render(
       <ActivityAnalysisHeatmap
