@@ -22,6 +22,26 @@ public sealed class PcTrackerEndpointsE2ETests
     private static readonly DateTime Day = new(2026, 9, 27);
 
     [Fact]
+    public async Task ActivityAnalysis_DifferentBlockMinutesDoNotShareTheAggregateCacheEntry()
+    {
+        using var factory = CreateFactory();
+        var client = factory.CreateClient();
+
+        // 聚合结果缓存的键包含除 force 外的全部查询参数；本用例从 HTTP 层证明
+        // blockMinutes 不同不会命中同一份缓存（review 提出后补的回归）。
+        var hour = await GetJsonAsync(client, "/api/v1/pc/activity-analysis?date=2026-09-27&blockMinutes=60");
+        var fourHours = await GetJsonAsync(client, "/api/v1/pc/activity-analysis?date=2026-09-27&blockMinutes=240");
+        var quarter = await GetJsonAsync(client, "/api/v1/pc/activity-analysis?date=2026-09-27&blockMinutes=15");
+
+        Assert.Equal(60, hour.GetProperty("data").GetProperty("blockMinutes").GetInt32());
+        Assert.Equal(24, hour.GetProperty("data").GetProperty("blocks").GetArrayLength());
+        Assert.Equal(240, fourHours.GetProperty("data").GetProperty("blockMinutes").GetInt32());
+        Assert.Equal(6, fourHours.GetProperty("data").GetProperty("blocks").GetArrayLength());
+        Assert.Equal(15, quarter.GetProperty("data").GetProperty("blockMinutes").GetInt32());
+        Assert.Equal(96, quarter.GetProperty("data").GetProperty("blocks").GetArrayLength());
+    }
+
+    [Fact]
     public async Task HeatmapGrid_HourAcrossDays_Returns400WithExplicitMessage()
     {
         using var factory = CreateFactory();

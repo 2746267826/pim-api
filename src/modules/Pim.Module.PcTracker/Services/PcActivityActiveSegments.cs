@@ -110,6 +110,30 @@ public static class PcActivityActiveSegments
         return total;
     }
 
+    /// <summary>
+    /// 段与 <paramref name="from"/>–<paramref name="to"/> 的重叠时长合计（秒）。
+    /// <para>
+    /// 把整段时长直接加进每个有交集的小时桶会**重复计费**（一条跨 07:30–08:30 的段会让
+    /// 07 点与 08 点两个桶都记满 60 分钟），因此按桶裁剪后的求和必须走这里。
+    /// </para>
+    /// </summary>
+    public static double SumOverlapSeconds(IEnumerable<Segment> segments, DateTimeOffset from, DateTimeOffset to)
+    {
+        if (to <= from)
+            return 0;
+
+        double total = 0;
+        foreach (var segment in segments)
+        {
+            var start = segment.Start < from ? from : segment.Start;
+            var end = segment.End > to ? to : segment.End;
+            if (end > start)
+                total += (end - start).TotalSeconds;
+        }
+
+        return total;
+    }
+
     /// <summary>记录的时间区间：优先用显式 <c>End</c>，缺失时按 <c>Start + DurationSeconds</c> 推算。</summary>
     public static bool TryGetInterval(PcDetailRecord record, out DateTimeOffset start, out DateTimeOffset end)
     {

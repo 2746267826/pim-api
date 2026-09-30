@@ -339,7 +339,8 @@ public partial class PcTrackerService
             var bucketEnd = bucketStart.AddHours(1);
             var inBucketAw = awEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
             var inBucketTracker = trackerEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
-            var activeMinutes = (int)Math.Min(60, SumOverlapSecondsCombined(merged, bucketStart, bucketEnd) / 60);
+            var activeSeconds = SumOverlapSecondsCombined(merged, bucketStart, bucketEnd);
+            var activeMinutes = (int)Math.Min(60, activeSeconds / 60);
             var localHour = TimeZoneInfo.ConvertTime(bucketStart, timeZone).Hour;
             return new HeatmapBucket(
                 bucketStart.ToString("O"),
@@ -347,8 +348,9 @@ public partial class PcTrackerService
                 localHour,
                 activeMinutes,
                 inBucketAw + inBucketTracker,
-                // REQ-3：强度档位统一走 PcActivityIntensity（原 0–4 比值分档已废弃）。
-                PcActivityIntensity.ForMinutes(activeMinutes),
+                // REQ-3：与 summary / activity-analysis 用同一个「活跃时长占比」分档函数
+                // （此处活跃区间仍是 AW 遗留口径的 window 合并区间，见 PR 说明）。
+                PcActivityIntensity.ForSeconds(activeSeconds, 3600),
                 PcActivityIntensity.MaxLevel);
         }).ToList();
     }
@@ -371,8 +373,10 @@ public partial class PcTrackerService
         {
             var bucketStart = dayStart.AddHours(hour);
             var bucketEnd = bucketStart.AddHours(1);
-            var activeSeconds = PcActivityActiveSegments.SumSeconds(
-                segments.Where(segment => segment.Start < bucketEnd && segment.End > bucketStart));
+            // 关键：按桶裁剪后求和。直接累加整段时长会让跨小时的段在每个被跨到的小时里各记满一次
+            // （实测 07:30–08:30 的段会让 07、08 两个桶都报 60 分钟/满档），
+            // 与 activity-analysis 的逐块裁剪不一致 → AC-1.1 / AC-3.2 会失败。
+            var activeSeconds = PcActivityActiveSegments.SumOverlapSeconds(segments, bucketStart, bucketEnd);
             var activeMinutes = (int)Math.Min(60, activeSeconds / 60);
             var inBucketAw = awWindowEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
             var inBucketTracker = trackerWindowEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);

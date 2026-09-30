@@ -74,6 +74,55 @@ public sealed class PcHeatmapGridBoundaryTests
     }
 
     [Fact]
+    public async Task GetHeatmapGridAsync_UsesLatestSnapshotPerDayForCellsAndMaxKeyCount()
+    {
+        await using var db = CreateDb();
+        var day = new DateTime(2026, 9, 27);
+        db.Set<KeystatsDailyEntity>().AddRange(
+            new KeystatsDailyEntity
+            {
+                DeviceId = "device-1",
+                SnapshotDate = day,
+                KeyPresses = 999_999,
+                CreatedAt = DateTimeOffset.Parse("2026-09-27T09:00:00Z")
+            },
+            new KeystatsDailyEntity
+            {
+                DeviceId = "device-1",
+                SnapshotDate = day,
+                KeyPresses = 12_345,
+                CreatedAt = DateTimeOffset.Parse("2026-09-27T12:00:00Z")
+            });
+        await db.SaveChangesAsync();
+
+        var response = await Service(db).GetHeatmapGridAsync(day, day, "day", CancellationToken.None);
+        var cell = Assert.Single(Assert.Single(response.Grid));
+
+        // 与 summary / REQ-7 同口径：同一天取最近写入的一条快照，色阶上界也基于这一批。
+        Assert.Equal(12_345, cell.KeyPressCount);
+        Assert.Equal(12_345, response.MaxKeyCount);
+
+        var hour = await Service(db).GetHeatmapGridAsync(day, day, "hour", CancellationToken.None);
+        Assert.All(Assert.Single(hour.Grid), bucket => Assert.True(bucket.KeyPressCount <= 12_345));
+    }
+
+    [Fact]
+    public async Task GetHeatmapGridAsync_DimensionIsCaseInsensitive()
+    {
+        await using var db = CreateDb();
+        var service = Service(db);
+
+        // `Hour` 与 `hour` 走同一条分支（此前只有小写走 hour，其它大小写会掉进 day 网格）。
+        var response = await service.GetHeatmapGridAsync(
+            new DateTime(2026, 9, 27), new DateTime(2026, 9, 27), "Hour", CancellationToken.None);
+
+        Assert.Equal(24, Assert.Single(response.Grid).Count);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetHeatmapGridAsync(
+            new DateTime(2026, 9, 26), new DateTime(2026, 9, 27), "HOUR", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task GetHeatmapGridAsync_HourDimensionSingleDayKeeps24Buckets()
     {
         await using var db = CreateDb();

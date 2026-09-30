@@ -168,6 +168,38 @@ public sealed class PcActivityAnalysisCoverageTests
     }
 
     [Fact]
+    public async Task GetDailyAnalysisAsync_DailyTotalMatchesSummaryTimelineCoverageWithinTwoPercent()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
+        // 与镜像库同形：13 个活跃小时，每小时一条覆盖整点的 window 记录，
+        // 逐分钟输入记录与网页记录都落在这些小时内（不额外扩张活跃区间）。
+        for (var hour = 0; hour <= 12; hour++)
+        {
+            db.Set<AwEventEntity>().Add(WindowEvent(dayStart.AddHours(hour), 3600, "Code.exe", "A"));
+            if (hour is >= 1 and <= 6)
+                db.Set<KeystatsSampleEntity>().AddRange(BuildMinuteSamples(dayStart.AddHours(hour), minutes: 30, $"device-{hour}"));
+            if (hour % 3 == 0)
+                db.Set<AwEventEntity>().Add(WebPageEvent(dayStart.AddHours(hour).AddMinutes(10), 600, "docs"));
+        }
+
+        await db.SaveChangesAsync();
+        var tracker = Tracker(db);
+        var analysis = await new PcActivityAnalysisService(tracker).GetDailyAnalysisAsync(Day, 60, CancellationToken.None);
+        var summary = await tracker.GetSummaryAsync(Day, CancellationToken.None);
+
+        var analysisMinutes = analysis.Blocks.Sum(b => b.ActiveDurationSeconds) / 60.0;
+        var timelineMinutes = summary.Timeline.Sum(item => item.DurationMinutes);
+        var deviation = timelineMinutes > 0 ? Math.Abs(analysisMinutes - timelineMinutes) / timelineMinutes : 0;
+
+        // AC-2.3：单日合计 ≤ 86400 秒，且与 summary.timeline 覆盖分钟数差 ≤ 2%。
+        Assert.True(analysis.Blocks.Sum(b => b.ActiveDurationSeconds) <= 86400);
+        Assert.True(
+            deviation <= 0.02,
+            $"activity-analysis 合计 {analysisMinutes:0.##} 分钟 vs summary.timeline {timelineMinutes:0.##} 分钟，偏差 {deviation:P2}");
+    }
+
+    [Fact]
     public async Task GetDailyAnalysisAsync_FullBusinessDay_MeasuresLatencyAndAllocations()
     {
         await using var db = CreateDb();

@@ -45,6 +45,30 @@ public sealed class PcSuggestionBusinessDateTests
     }
 
     [Fact]
+    public async Task GetSuggestionsV2Async_AlsoCarriesGeneratedForDate()
+    {
+        await using var db = CreateDb();
+        db.Set<ActivityClassificationSuggestionEntity>().Add(new ActivityClassificationSuggestionEntity
+        {
+            Id = Guid.NewGuid(),
+            ClusterKey = "app:mystery",
+            Status = "pending",
+            SampleCount = 1,
+            TotalDurationSeconds = 600,
+            SampleRecordsJson = "[{\"start\":\"2026-07-05T01:00:00.0000000+00:00\",\"durationSeconds\":600}]",
+            UpdatedAt = DateTimeOffset.Parse("2026-07-05T02:00:00+00:00"),
+            CreatedAt = DateTimeOffset.Parse("2026-07-05T02:00:00+00:00")
+        });
+        await db.SaveChangesAsync();
+
+        var v2 = await Service(db).GetSuggestionsV2Async(CancellationToken.None);
+
+        // v2 列表与 v1 同口径，同样每条都能归日。
+        var suggestion = Assert.Single(v2);
+        Assert.Equal("2026-07-05", suggestion.GeneratedForDate);
+    }
+
+    [Fact]
     public async Task BuildSuggestionsAsync_NeverSuggestsIdleSentinelOrInactiveRecords()
     {
         await using var db = CreateDb();
