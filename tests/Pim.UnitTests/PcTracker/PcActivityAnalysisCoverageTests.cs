@@ -5,6 +5,7 @@ using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
 using Pim.Module.PcTracker.Services;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace Pim.UnitTests.PcTracker;
 
@@ -16,6 +17,12 @@ namespace Pim.UnitTests.PcTracker;
 public sealed class PcActivityAnalysisCoverageTests
 {
     private static readonly DateTime Day = new(2026, 7, 5);
+
+    private readonly ITestOutputHelper _output;
+
+    public PcActivityAnalysisCoverageTests(ITestOutputHelper output) => _output = output;
+
+    private ITestOutputHelper Output => _output;
 
     [Fact]
     public async Task GetDailyAnalysisAsync_CoversWholeBusinessDayBeyondLegacyPageCap()
@@ -159,6 +166,40 @@ public sealed class PcActivityAnalysisCoverageTests
             DetailQuery("2026-07-05", pageSize: 2000, page: 1), CancellationToken.None);
         Assert.Equal(250, all.Count);
     }
+
+    [Fact]
+    public async Task GetDailyAnalysisAsync_FullBusinessDay_MeasuresLatencyAndAllocations()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
+        // 与镜像库同量级：1210 条明细（window / web-page / input-minute 混合）。
+        for (var i = 0; i < 400; i++)
+            db.Set<AwEventEntity>().Add(WindowEvent(dayStart.AddMinutes(i * 2), 60, "Code.exe", "A"));
+        for (var i = 0; i < 400; i++)
+            db.Set<AwEventEntity>().Add(WebPageEvent(dayStart.AddMinutes(i * 2 + 1), 30, "docs"));
+        db.Set<KeystatsSampleEntity>().AddRange(BuildMinuteSamples(dayStart, minutes: 410, "device-1"));
+        await db.SaveChangesAsync();
+
+        var tracker = Tracker(db);
+        var service = new PcActivityAnalysisService(tracker);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        var analysis = await service.GetDailyAnalysisAsync(Day, 60, CancellationToken.None);
+
+        stopwatch.Stop();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Output.WriteLine(
+            $"full-day activity-analysis: seededRecords=1209, blocks={analysis.Blocks.Count}, " +
+            $"elapsed={stopwatch.ElapsedMilliseconds}ms, allocated≈{allocated / 1024.0:0}KiB");
+
+        // AC-1.4：覆盖全天后单次响应的耗时/内存实测（数字见测试输出），并给一个宽松上界防回归。
+        Assert.True(stopwatch.ElapsedMilliseconds < 10_000, $"单次 activity-analysis 耗时 {stopwatch.ElapsedMilliseconds}ms 超过 10s");
+        Assert.True(AllTotal(analysis) <= 86400);
+    }
+
+    private static double AllTotal(PcActivityAnalysisResponse analysis)
+        => analysis.Blocks.Sum(b => b.ActiveDurationSeconds);
 
     /// <summary>
     /// 与镜像库同形：前 200 条覆盖 2 个整点（每小时 100 条，升序取第一页时只看得到这两个小时），

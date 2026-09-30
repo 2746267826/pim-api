@@ -507,8 +507,20 @@ public sealed class PcTrackerQualityService
         {
             var clippedStart = start < rangeStart ? rangeStart : start;
             var clippedEnd = end > rangeEnd ? rangeEnd : end;
+
+            // 零长区间（零时长事件 / KeyStats 采样点）也要算「这个小时有数据」，
+            // 否则只有采样、没有窗口事件的小时会被误报成缺数。
             if (clippedEnd <= clippedStart)
+            {
+                if (start >= rangeStart && start < rangeEnd)
+                {
+                    coveredHours.Add((int)Math.Floor((start - rangeStart).TotalHours));
+                    if (lastDataAtUtc is null || start > lastDataAtUtc)
+                        lastDataAtUtc = start;
+                }
+
                 return;
+            }
 
             if (lastDataAtUtc is null || clippedEnd > lastDataAtUtc)
                 lastDataAtUtc = clippedEnd;

@@ -45,6 +45,9 @@ public sealed class PcActivityAnalysisService
         var blockCount = (int)Math.Ceiling(TimeSpan.FromDays(1).TotalMinutes / blockMinutes);
         var blocks = new List<PcActivityAnalysisBlockDto>();
 
+        // 区间只解析一次，24 个块复用（AC-1.4 的耗时/内存实测前提）。
+        var intervals = PcActivityActiveSegments.ParseIntervals(records);
+
         for (var i = 0; i < blockCount; i++)
         {
             var start = dayStart.AddMinutes(i * blockMinutes);
@@ -54,21 +57,14 @@ public sealed class PcActivityAnalysisService
             // 直接 Sum(DurationSeconds) 会把同一时刻的多路记录（window / web-page / input-minute）
             // 重复计费 —— 实测 1 小时块报 5960 秒（99.3 分钟）。
             // 段已裁剪到块窗口，因此合计恒 ≤ 块时长。
-            var segments = PcActivityActiveSegments.Resolve(records, start, end);
+            var segments = PcActivityActiveSegments.Resolve(intervals, start, end);
             var activeSeconds = PcActivityActiveSegments.SumSeconds(segments);
 
-            var blockRecords = records
-                .Where(record => (record.DurationSeconds ?? 0) > 0)
-                // #331：gap / idle / afk 表示「这里没有人」，不是活动。
-                // 不排除的话，空档会被算进 activeSeconds / 强度 / 类别分布，
-                // 把一天里没人的时段显示成「有活动」（与分类分布、生产力统计的口径保持一致）。
-                .Where(record => !PcActivityOverlapResolver.IsInactive(record.RecordType))
-                .Where(record => PcActivityActiveSegments.TryGetInterval(record, out var recordStart, out var recordEnd)
-                    && recordStart < end
-                    && recordEnd > start)
-                .OrderBy(record => record.Start, StringComparer.Ordinal)
+            var blockIntervals = intervals
+                .Where(interval => interval.Start < end && interval.End > start)
+                .OrderBy(interval => interval.Start)
                 .ToList();
-
+            var blockRecords = blockIntervals.Select(interval => interval.Record).ToList();
             var categories = segments
                 .GroupBy(segment => segment.Record.CategoryName ?? "Other", StringComparer.OrdinalIgnoreCase)
                 .Select(group => new PcActivityAnalysisCategoryDto(

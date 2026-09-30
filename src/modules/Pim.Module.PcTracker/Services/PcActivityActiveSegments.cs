@@ -22,39 +22,58 @@ public static class PcActivityActiveSegments
     /// <summary>消解并裁剪后的活跃段；<see cref="Record"/> 是该段的归属记录。</summary>
     public readonly record struct Segment(DateTimeOffset Start, DateTimeOffset End, PcDetailRecord Record);
 
+    /// <summary>预解析后的记录区间（已过滤未活动/非正时长），可跨多个窗口复用，避免重复解析时间字符串。</summary>
+    public readonly record struct Interval(PcDetailRecord Record, DateTimeOffset Start, DateTimeOffset End);
+
     /// <summary>
-    /// 在 <paramref name="windowStart"/>–<paramref name="windowEnd"/>（半开区间）内消解重叠并汇总活跃段。
-    /// 只有与窗口有交集的记录参与；跨界记录按重叠部分裁剪，不整条丢弃、也不重复计满。
+    /// 把明细记录解析成可复用的区间列表（过滤 <c>gap/idle/afk</c> 与非正时长）。
+    /// activity-analysis 要按 24 个块反复取数，解析一次即可。
     /// </summary>
-    public static List<Segment> Resolve(
-        IEnumerable<PcDetailRecord> records,
-        DateTimeOffset windowStart,
-        DateTimeOffset windowEnd)
+    public static List<Interval> ParseIntervals(IEnumerable<PcDetailRecord> records)
     {
-        if (windowEnd <= windowStart)
-            return [];
-
-        var candidates = new List<PcActivityOverlapResolver.Candidate>();
-        var owners = new List<PcDetailRecord>();
-
+        var intervals = new List<Interval>();
         foreach (var record in records)
         {
             if (PcActivityOverlapResolver.IsInactive(record.RecordType))
                 continue;
             if ((record.DurationSeconds ?? 0) <= 0)
                 continue;
-            if (!TryGetInterval(record, out var start, out var end))
+            if (!TryGetInterval(record, out var start, out var end) || end <= start)
                 continue;
-            if (end <= windowStart || start >= windowEnd)
+
+            intervals.Add(new Interval(record, start, end));
+        }
+
+        return intervals;
+    }
+
+    /// <summary>
+    /// 在 <paramref name="windowStart"/>–<paramref name="windowEnd"/>（半开区间）内消解重叠并汇总活跃段。
+    /// 只有与窗口有交集的记录参与；跨界记录按重叠部分裁剪，不整条丢弃、也不重复计满。
+    /// </summary>
+    public static List<Segment> Resolve(
+        IReadOnlyList<Interval> intervals,
+        DateTimeOffset windowStart,
+        DateTimeOffset windowEnd)
+    {
+        if (windowEnd <= windowStart || intervals.Count == 0)
+            return [];
+
+        var candidates = new List<PcActivityOverlapResolver.Candidate>();
+        var owners = new List<PcDetailRecord>();
+
+        foreach (var interval in intervals)
+        {
+            if (interval.End <= windowStart || interval.Start >= windowEnd)
                 continue;
 
             candidates.Add(new PcActivityOverlapResolver.Candidate(
-                start,
-                end,
-                record.RecordType,
-                record.ClassificationConfidence ?? 0,
-                StableKey(record)));
-            owners.Add(record);
+                interval.Start,
+                interval.End,
+                interval.Record.RecordType,
+                interval.Record.ClassificationConfidence ?? 0,
+                StableKey(interval.Record)));
+            owners.Add(interval.Record);
         }
 
         if (candidates.Count == 0)
@@ -74,6 +93,13 @@ public static class PcActivityActiveSegments
 
         return segments;
     }
+
+    /// <summary>记录列表 → 消解后的活跃段（内部先解析区间；多个窗口反复调用时请改用 <see cref="ParseIntervals"/>）。</summary>
+    public static List<Segment> Resolve(
+        IEnumerable<PcDetailRecord> records,
+        DateTimeOffset windowStart,
+        DateTimeOffset windowEnd)
+        => Resolve(ParseIntervals(records), windowStart, windowEnd);
 
     /// <summary>段时长合计（秒）＝该窗口内候选区间的并集长度。</summary>
     public static double SumSeconds(IEnumerable<Segment> segments)
