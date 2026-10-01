@@ -241,6 +241,36 @@ public sealed class PcHeatmapRangeInvarianceTests
             (int)(analysis.Blocks.Sum(block => block.ActiveDurationSeconds) / 60));
     }
 
+    /// <summary>
+    /// REQ-1（review round 5）：跨业务日的窗口不得让 `summary.timeline` 画出属于前一业务日的时段，
+    /// 也不得让同一条窗口在 summary 与内部分析路径下落到两个不同的 record_key。
+    /// </summary>
+    [Fact]
+    public async Task SummaryTimelineAndKeys_AreClippedToTheBusinessDay()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
+        AddTrackerWindow(db, dayStart.AddHours(-2), 3 * 3600); // 本地 D 02:00–05:00
+        await db.SaveChangesAsync();
+        var service = Service(db);
+
+        var summary = await service.GetSummaryAsync(Day, CancellationToken.None);
+        var item = Assert.Single(summary.Timeline);
+
+        // 时间线条目必须从业务日起点（本地 04:00）开始，且只覆盖本日内的那一小时。
+        Assert.Equal(dayStart.ToString("O"), item.Start);
+        Assert.Equal(dayStart.AddHours(1).ToString("O"), item.End);
+        Assert.Equal(60, item.DurationMinutes);
+
+        // 同一份输入下，内部分析路径给出同样的「本日那一段」。
+        var records = await service.QueryAllDetailRecordsAsync(
+            new DetailQueryParams(
+                Day.ToString("yyyy-MM-dd"), Day.ToString("yyyy-MM-dd"),
+                null, null, null, null, null, null, "date", "asc", 1, 2000, View: "interpreted"),
+            CancellationToken.None);
+        Assert.Equal(dayStart.ToString("O"), Assert.Single(records).Start);
+    }
+
     private static async Task<HeatmapGridCell> BucketForAsync(
         PcTrackerService service,
         DateTime start,
