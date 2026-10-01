@@ -271,11 +271,13 @@
     （跨边界记录与日内记录在同一批里解释，避免 AW window/web 的合并结果分叉），并经同一个
     重叠消解口径汇总，且**先裁剪到业务日窗口再落分类快照**（时间线不会画出属于前一业务日的时段，
     两侧 `record_key` 一致）。`heatmap/grid` 走**原始事件**并集（不经解释层），因此与两者存在两类
-    **修复前就有**的差异：逐小时取整带来的 ≤5 分钟差（实测 2026-09-27 grid 681 / summary 679），
+    **修复前就有**的差异：逐小时取整带来的零头差（生产数据实测 ≤5 分钟，例如 2026-09-27 
+    grid 681 / summary 679；理论上界是每天最多 24 个不足 1 分钟的零头），
     以及「同一条 AW 窗口被网页记录解释掉」时整段的差（实测 grid 120 分钟 / summary 与
     activity-analysis 5 分钟；该差异在事件完全落在日内时同样存在）。两者均与请求范围无关。
-  - `/pc/detail` **不在**本口径内：它仍只返回「起点落在所请求范围内」的记录（对外契约不变），
-    跨边界记录不会出现在明细页的相邻分页里。
+  - `/pc/detail` 与 `/pc/aw/timeline` **不在**本口径内：前者仍只返回「起点落在所请求范围内」的记录
+    （对外契约不变），后者的条目仍是未裁剪的整条记录（Web 端不调用该路由，MCP 的 `get_pc_timeline` 会）。
+    两者都保持原行为，本次未改动。
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:725-757`（服务 `Services/PcTrackerService.cs` `GetHeatmapGridAsync`）；DTO `DTOs/PcTrackerDtos.cs`（`HeatmapGridCell` / `HeatmapGridResponse`）
 - 备注：hour 维度合并 AW 与 tracker window 事件并跨来源去重（#303）；day 维度的活跃分钟同样走统一的区间并集口径（REQ-3）。
 
