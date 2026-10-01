@@ -422,7 +422,7 @@ public sealed class PcQualityLocatabilityTests
         // 文案不得称其为「最近一次中断」。本用例只有一段缺数，文案用「该段为 …」表述，
         // 并明确它既是 disconnectedFromUtc 的取值、也是最近一段。
         Assert.Contains("该段为", issue.Message);
-        Assert.Contains("disconnectedFromUtc", issue.Message);
+        Assert.Contains("该段起点即 disconnectedFromUtc", issue.Message);
         Assert.Contains("最近一段", issue.Message);
         Assert.DoesNotContain("最近一次中断", issue.Message);
         Assert.Equal("6", tracker.Details["missingHourCount"]);

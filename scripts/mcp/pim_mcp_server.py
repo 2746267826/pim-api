@@ -3311,7 +3311,7 @@ def _build_http_app() -> Any:
 
 
 def _run_check() -> None:
-    """Self-check: verify tool inventory (101 read + 50 write) without starting a server."""
+    """Self-check: verify tool inventory (99 read + 49 write) without starting a server."""
     tools = _list_tools_meta()
     read = [t for t in tools if t["group"] == "read"]
     write = [t for t in tools if t["group"] == "write"]
