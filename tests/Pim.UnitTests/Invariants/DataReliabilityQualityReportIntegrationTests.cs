@@ -90,7 +90,7 @@ public class DataReliabilityQualityReportIntegrationTests
 
         var component = Assert.Single(result.Components, c => c.Key == "data_reliability");
         Assert.Equal(PimHealthStatus.Critical, component.Status);
-        Assert.Contains("S1", component.Details["redRules"]);
+        Assert.Contains("S1", (string)component.Details["redRules"]!);
 
         var issue = Assert.Single(result.Issues, i => i.Code == "S1");
         Assert.Equal(PimHealthStatus.Critical, issue.Severity);

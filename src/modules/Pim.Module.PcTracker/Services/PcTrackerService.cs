@@ -924,7 +924,10 @@ public partial class PcTrackerService
                     eventCount,
                     PcActivityIntensity.ForSeconds(activeSeconds, 3600),
                     PcActivityIntensity.MaxLevel,
-                    keyCount);
+                    keyCount,
+                    // AC-7.2：业务日的 24 个小时桶（本地 04:00 → 次日 03:59）全部标同一个业务日，
+                    // 包括 Start 落在次日 UTC 时刻的本地 00:00–03:59 四个桶。
+                    targetDate.ToString("yyyy-MM-dd"));
             }).ToList();
 
             return new HeatmapGridResponse(new List<List<HeatmapGridCell>> { row }, dimension, maxKeyCount);
@@ -949,7 +952,9 @@ public partial class PcTrackerService
                 0,
                 PcActivityIntensity.ForSeconds(activeSeconds, TimeSpan.FromDays(1).TotalSeconds),
                 PcActivityIntensity.MaxLevel,
-                daily?.KeyPresses ?? 0));
+                daily?.KeyPresses ?? 0,
+                // AC-7.3：day / month / year 维度与 hour 维度共用同一个业务日字段。
+                day.ToString("yyyy-MM-dd")));
 
             if (rowDays.Count == 7)
             {
