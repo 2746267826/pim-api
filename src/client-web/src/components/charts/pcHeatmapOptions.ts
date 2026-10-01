@@ -40,32 +40,39 @@ export function bucketDatePart(start: string): string {
 /**
  * 桶自带的业务日字面量（`businessDay`，yyyy-MM-dd）。
  *
- * 后端在 WO-PC-BACKEND-20261001 REQ-7 给 hour 桶补了这个字段；格式不对或不是字符串
- * 一律按「字段缺失」处理（AC-2.3 不允许拿不合法的值当业务日）。
+ * 后端在 WO-PC-BACKEND-20261001 REQ-7 给 hour 桶补了这个字段；格式不对、日期不存在
+ * （如 `2026-99-99`）或不是字符串，一律按「字段缺失」处理（AC-2.3 不允许拿不合法的值当业务日）。
  */
 export function normalizeBusinessDay(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+  // 形状合法不等于日期存在：`2026-99-99` 也要拒掉，否则提示会把不存在的业务日当真。
+  const parsed = new Date(`${trimmed}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10) === trimmed ? trimmed : null;
 }
 
 /**
  * hour 桶 → 工具提示的日期段（AC-2.1 ~ AC-2.3）。
  *
- * hour 桶的 `start` 是**真实小时起点**（业务日 D 的最后 4 个桶 = 本地 D+1 00:00–03:00），
- * 所以 +08:00 日历日不等于业务日 —— 那正是 #380 把业务日标成次日的根因。
- * 因此：
- * - 有 `businessDay` → 显示「业务日 D HH:mm」；
- * - 没有 → 显示本地「D+1 HH:mm」但**显式标注成日历日**并说明业务日不可用，
- *   绝不把日历日冒充成业务日。
+ * hour 桶的 `start` 是**真实小时起点**，业务日 D 的最后 4 个桶落在本地 D+1 00:00–03:00，
+ * 所以 +08:00 日历日不等于业务日 —— 那正是 #380 把业务日标成次日的根因。因此：
+ * - 有 `businessDay` → `业务日 D · 本地 HH:mm`；
+ * - 没有 → `本地 <日历日> HH:mm（日历日；接口未提供业务日）`，绝不把日历日冒充成业务日。
+ *
+ * 业务日与钟点之间必须用分隔符隔开，不能拼成一个时间戳：业务日 D 的 0 点槽，本地墙钟是
+ * D+1 00:00，写成「业务日 D 00:00」会读成一个本身属于上一业务日的时刻。
  */
 export function hourBucketDatePart(bucket: HeatmapBucket): string {
   const ms = Date.parse(bucket.start);
   const clock = Number.isNaN(ms) ? null : formatClock(ms);
   const businessDay = normalizeBusinessDay(bucket.businessDay);
-  if (businessDay) return clock ? `业务日 ${businessDay} ${clock}` : `业务日 ${businessDay}`;
-  const calendar = clock ? `${bucketDatePart(bucket.start)} ${clock}` : bucketDatePart(bucket.start);
-  return `${calendar}（日历日；接口未提供业务日）`;
+  if (businessDay) return clock ? `业务日 ${businessDay} · 本地 ${clock}` : `业务日 ${businessDay}`;
+  if (!clock) {
+    return `${bucketDatePart(bucket.start)}（日历日；接口未提供业务日）`;
+  }
+  return `本地 ${bucketDatePart(bucket.start)} ${clock}（日历日；接口未提供业务日）`;
 }
 
 /** 活动热力单元格：x/y 网格坐标 + 原始桶 + 用于着色的强度值 */

@@ -65,6 +65,14 @@ describe('WO-FRONTEND-PC-20261001 AC-2.1 / AC-2.2 · hour 桶提示按业务日�
     }
   });
 
+  it('业务日与钟点必须分开写：业务日 D 的 0 点槽墙钟是本地 D+1 00:00，不能拼成「业务日 D 00:00」', () => {
+    const text = tooltipFor('hour', hourBucket('2026-09-27T16:00:00.0000000+00:00', 0, { businessDay: '2026-09-27' }));
+    expect(text).toContain('业务日 2026-09-27 · 本地 00:00');
+    // 拼成一个时刻会被读成本地 2026-09-27 00:00 —— 那属于**上一个**业务日
+    expect(text).not.toMatch(/业务日 2026-09-27 00:00(?! ·)/);
+    expect(text).not.toContain('业务日 2026-09-27 00:00 ·');
+  });
+
   it('同一业务日清晨的桶（本地 04:00 起）同样显示 2026-09-27，四个维度口径一致', () => {
     const text = tooltipFor('hour', hourBucket('2026-09-26T20:00:00.0000000+00:00', 4, { businessDay: '2026-09-27' }));
     expect(text).toContain('业务日 2026-09-27');
@@ -98,8 +106,8 @@ describe('WO-FRONTEND-PC-20261001 AC-2.3 · businessDay 缺失时不得把日历
     expect(text).toContain('00:00');
   });
 
-  it('字段非法（格式不对 / 非字符串）按缺失处理，不拿它当业务日', () => {
-    for (const bad of ['2026-9-27', '', '  ', 'not-a-date'] as unknown[]) {
+  it('字段非法（格式不对 / 日期不存在 / 非字符串）按缺失处理，不拿它当业务日', () => {
+    for (const bad of ['2026-9-27', '', '  ', 'not-a-date', '2026-99-99', '2026-02-30'] as unknown[]) {
       const text = tooltipFor('hour', hourBucket('2026-09-27T16:00:00.0000000+00:00', 0, { businessDay: bad as string }));
       expect(text, `businessDay=${JSON.stringify(bad)} 必须按缺失处理`).not.toMatch(/业务日 \d{4}/);
       expect(text).toContain('未提供业务日');
@@ -118,8 +126,8 @@ describe('WO-FRONTEND-PC-20261001 AC-2.4 · 覆盖字段存在与缺失两条分
     const withField = tooltipFor('hour', hourBucket('2026-09-27T16:00:00.0000000+00:00', 0, { businessDay: '2026-09-27' }));
     const withoutField = tooltipFor('hour', hourBucket('2026-09-27T16:00:00.0000000+00:00', 0));
     expect(withField).not.toBe(withoutField);
-    expect(withField.startsWith('业务日 2026-09-27')).toBe(true);
-    expect(withoutField.startsWith('2026-09-28 00:00')).toBe(true);
+    expect(withField.startsWith('业务日 2026-09-27 · 本地 00:00')).toBe(true);
+    expect(withoutField.startsWith('本地 2026-09-28 00:00（日历日；接口未提供业务日）')).toBe(true);
   });
 
   it('tooltip 只是标注，格子坐标不受影响（x 仍由 hour 字段决定）', () => {

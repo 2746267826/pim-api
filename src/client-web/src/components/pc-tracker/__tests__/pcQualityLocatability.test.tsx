@@ -57,6 +57,13 @@ function qualityFrozen(): PcQualityResponse {
         currentDailyEventCount: '385.6',
         missingHourCount: '8',
         missingHours: '2026-09-26 16:00、2026-09-26 17:00、2026-09-28 22:00、2026-09-28 23:00',
+        // 连续缺数时段改由结构化字段给出（WO-FRONTEND-PC-20261001 REQ-3 / AC-3.1）：
+        // 本地 2026-09-26 16:00–18:00 = UTC 08:00–10:00；本地 2026-09-28 21:44–2026-09-29 04:00
+        // = UTC 2026-09-28T13:44–2026-09-28T20:00。文案里的同形文字不再被解析。
+        missingSegments: JSON.stringify([
+          { startUtc: '2026-09-26T08:00:00.0000000+00:00', endUtc: '2026-09-26T10:00:00.0000000+00:00' },
+          { startUtc: '2026-09-28T13:44:00.0000000+00:00', endUtc: '2026-09-28T20:00:00.0000000+00:00' },
+        ]),
         coverageEmpty: 'False',
         disconnectedFromUtc: '2026-09-26T08:00:00.0000000+00:00',
       }),
@@ -171,7 +178,7 @@ describe('REQ-7 · AC-7.1 缺数时段可定位', () => {
     expect(text).toContain('2026-09-28 21:44–2026-09-29 04:00');
   });
 
-  it('缺数时段取自响应字段（details.missingHours / issue 文案），不是写死的', () => {
+  it('缺数时段取自响应字段（details.missingSegments / missingHours），不是写死的', () => {
     const loc = describePcQualityLocatability(qualityFrozen());
     expect(loc.missingHourCount).toBe(8);
     expect(loc.missingHours).toContain('2026-09-26 16:00');

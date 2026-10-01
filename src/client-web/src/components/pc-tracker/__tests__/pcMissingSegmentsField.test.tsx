@@ -9,11 +9,14 @@ import type { PcQualityComponent, PcQualityIssue, PcQualityResponse } from '../.
  *
  * 「连续缺数时段」过去唯一来源是 issue 的**本地化文案**正则（#377）：后端文案一改词、
  * 换分隔符或加单位，时段就静默消失。本组用例锁定新契约：
- * - AC-3.1 `details.missingSegments` 存在时直接按字段渲染，不再解析文案；
- * - AC-3.2 字段缺失或解析失败时，界面必须出现可读降级提示（说明时段不可用并给出小时清单），
+ * - AC-3.1 `details.missingSegments` 存在时直接按字段渲染，**不再解析文案**；
+ * - AC-3.2 字段缺失或解析失败时，界面出现可读降级提示（说明时段不可用并给出小时清单），
  *          不允许静默无时段；
- * - AC-3.3 覆盖字段存在 / 字段缺失 / 文案不含时刻三种情形；
- * - AC-3.4 后端字段未交付前按「字段缺失」分支实现并显式标注，不拿文案正则当长期方案。
+ * - AC-3.3 覆盖字段存在 / 字段缺失 / 文案不含时刻三种输入；
+ * - AC-3.4 后端字段未交付前按「字段缺失」分支实现并显式标注，**不拿文案正则当长期方案**。
+ *
+ * 因此本地化文案里的「起–止」**不会**被渲染：文案含时段与不含时段，界面都是「时段不可用
+ * ＋小时清单」，区别只在于不能静默 —— 这两条输入都要断言到。
  *
  * 响应形状取自隔离实例实测（127.0.0.1:5912 + 克隆库，业务日 2026-09-26，
  * 真实响应 details 只有 missingHourCount / missingHours，message 形如
@@ -148,13 +151,22 @@ describe('WO-FRONTEND-PC-20261001 AC-3.1 · details.missingSegments 存在时按
 });
 
 describe('WO-FRONTEND-PC-20261001 AC-3.2 / AC-3.4 · 字段缺失必须显式降级，不得静默', () => {
-  it('字段缺失 + 文案含时段：仍给出可读提示，说明时段不是结构化字段给的', () => {
+  it('字段缺失 + 文案含时段：不得把文案里的时段当数据渲染，但必须明说「不可用」并给出小时清单', () => {
+    const loc = describePcQualityLocatability(
+      quality({ missingHours: MISSING_HOURS_LOCAL, missingHourCount: MISSING_HOURS_COUNT }),
+    );
+    expect(loc.missingSegmentsSource).toBe('unavailable');
+    expect(loc.missingSegments).toEqual([]);
+    expect(loc.missingSegmentsNotice).toContain('不可用');
+
     const { container } = render(
       <PcQualitySummary quality={quality({ missingHours: MISSING_HOURS_LOCAL, missingHourCount: MISSING_HOURS_COUNT })} />,
     );
     const text = missingBlock(container) ?? '';
-    expect(text).toContain('missingSegments');
-    expect(text).toMatch(/临时兜底|兜底/);
+    expect(text).toContain('缺数时段');
+    expect(text).toContain('不可用');
+    // 文案里的那一段不得冒充结构化时段出现在列表里
+    expect(text).not.toContain('连续缺数：2026-09-26 16:00–2026-09-26 18:00');
     // 小时清单必须同时在场（AC-3.2：给出小时清单）
     expect(text).toContain('2026-09-26 16:00');
     expect(text).toContain('2026-09-26 17:00');
@@ -212,8 +224,8 @@ describe('WO-FRONTEND-PC-20261001 AC-3.2 / AC-3.4 · 字段缺失必须显式降
   });
 });
 
-describe('WO-FRONTEND-PC-20261001 AC-3.3 · 三种情形都覆盖到了', () => {
-  it('字段存在 / 字段缺失 / 文案不含时刻 → 三种 source 互不相同', () => {
+describe('WO-FRONTEND-PC-20261001 AC-3.3 · 字段存在 / 字段缺失 / 文案不含时刻', () => {
+  it('字段存在 → 按字段渲染且无提示；其余两种输入 → 不可用且有提示（都不静默）', () => {
     const withField = describePcQualityLocatability(
       quality({
         missingHours: MISSING_HOURS_LOCAL,
@@ -226,10 +238,18 @@ describe('WO-FRONTEND-PC-20261001 AC-3.3 · 三种情形都覆盖到了', () => 
     const noRangeAnywhere = describePcQualityLocatability(
       quality({ missingHours: MISSING_HOURS_LOCAL }, MESSAGE_WITHOUT_RANGE),
     );
+
     expect(withField.missingSegmentsSource).toBe('details');
-    expect(withoutField.missingSegmentsSource).toBe('message-fallback');
-    expect(noRangeAnywhere.missingSegmentsSource).toBe('unavailable');
-    expect(new Set([withField.missingSegmentsSource, withoutField.missingSegmentsSource, noRangeAnywhere.missingSegmentsSource]).size).toBe(3);
+    expect(withField.missingSegments).toEqual(['2026-09-26 16:00–2026-09-26 18:00']);
+    expect(withField.missingSegmentsNotice).toBeNull();
+
+    // 后端字段未交付（真实现状）与文案也不含时刻，界面表现一致：不可用 + 提示，绝不静默
+    for (const loc of [withoutField, noRangeAnywhere]) {
+      expect(loc.missingSegmentsSource).toBe('unavailable');
+      expect(loc.missingSegments).toEqual([]);
+      expect(loc.missingSegmentsNotice).toBeTruthy();
+      expect(loc.hasMissingHours).toBe(true);
+    }
   });
 
   it('没有缺数时，三种提示都不出现（不误报）', () => {
