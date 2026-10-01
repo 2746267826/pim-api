@@ -1366,34 +1366,8 @@ async def get_pc_quality(date: str, timezone: str = 'Asia/Shanghai') -> Any: ...
 }
 ```
 
-#### `get_pc_aw_heatmap` — AW heatmap.
-- **API**: `GET /pc/aw/heatmap?start&end`
-- **参数**: `start,end,timezone`
-- **返回**: `HeatmapBucket[]`
-
-**签名 / Signature**
-```python
-async def get_pc_aw_heatmap(start: str, end: str, timezone: str = 'Asia/Shanghai') -> Any: ...
-```
-
-**返回示例 / Success**
-```json
-{
-  "code": 0,
-  "data": "<HeatmapBucket[] example - see DTO>"
-}
-```
-
-**错误示例 / Error**
-```json
-{
-  "error": "HTTP 400: time range too large: max span 366 days",
-  "details": {
-    "code": 400
-  },
-  "code": 400
-}
-```
+<!-- WO-PC-BACKEND-20261001 REQ-6（#379）：get_pc_aw_heatmap 已随遗留端点 pc/aw/heatmap 下线（AW 退役后该端点 activeMinutes 恒为 0）。
+     热力图改用 get_pc_heatmap（/pc/heatmap/grid）。 -->
 
 #### `get_pc_keystats_range` — Keystats range.
 - **API**: `GET /pc/keystats/range?start&end`

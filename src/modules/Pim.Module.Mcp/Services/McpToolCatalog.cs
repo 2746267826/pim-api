@@ -77,7 +77,7 @@ public static class McpToolCatalog
         Add(tools, "calendar", "search_calendar_events", "Search events.");
         Add(tools, "calendar", "search_calendar_tasks", "Search tasks.");
 
-        // PcTracker 27
+        // PcTracker 26（WO-PC-BACKEND-20261001 REQ-6：get_pc_aw_heatmap 随遗留端点下线）
         Add(tools, "pctracker", "get_pc_summary", "PC activity summary.");
         Add(tools, "pctracker", "get_pc_detail", "PC activity detail.");
         Add(tools, "pctracker", "get_pc_timeline", "PC activity timeline.");
@@ -85,7 +85,6 @@ public static class McpToolCatalog
         Add(tools, "pctracker", "get_pc_heatmap", "PC activity heatmap.");
         Add(tools, "pctracker", "get_pc_activity_analysis", "PC activity analysis.");
         Add(tools, "pctracker", "get_pc_quality", "PC data quality.");
-        Add(tools, "pctracker", "get_pc_aw_heatmap", "PC AW heatmap.");
         Add(tools, "pctracker", "get_pc_keystats_range", "PC keystats in range.");
         Add(tools, "pctracker", "get_pc_focus_blocks", "PC focus blocks.");
         Add(tools, "pctracker", "get_pc_app_usage", "PC app usage.");

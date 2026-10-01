@@ -199,7 +199,15 @@
   - `daemon-upload`：`staleReason` ∈ `none` / `collector-heartbeat-stale`（心跳 ≥ 15 分钟 → 照旧 Critical）/ `collector-heartbeat-old` / `planned-offline` / `heartbeat-missing` —— **心跳判据不降级**；另给一份只描述时间关系、不参杂心跳年龄的成因 `staleCause` ∈ `none`（时间关系上无可归因异常；心跳是否过期只看 `staleReason`）/ `collector-heartbeat-stale`（本库内容另有更新的数据，只有心跳停）/ `content-and-heartbeat-frozen`（心跳与内容一起停在很久以前，且查询范围还超出内容）/ `query-range-beyond-database-horizon`（查询范围超出本库内容）/ `database-or-collector-frozen`（心跳与内容一起停在很久以前，范围未超出）/ `no-content`（本库没有任何事件/样本）/ `heartbeat-missing`（本库有内容但没有心跳，无可比较的时间关系）/ `planned-offline`，并给出 `dataHorizonUtc`（心跳与**本次范围内**内容的最大值：原生事件取「与范围重叠」的那批、AW 事件与 KeyStats 采样取落在范围内的 —— 它是「本次查询这段范围 + 心跳」的地平线，不是全库）、`contentHorizonUtc`（不含心跳的同口径内容终点，即全库 `max(事件起点+时长, 采样时刻)` —— 按**结束时刻**算，不是「起点最新的那一条」）、`receivedAt`、`ageMinutes`、`rangeEndUtc`、`effectiveRangeEndUtc`、`rangeShortfallMinutes`、`databaseLagMinutes`、`libraryFrozenAtHorizon`、`heartbeatStaleAt` 作为判据。
   - 附加问题项（都不取代 `stale-windows-daemon-heartbeat` 红灯）：`content-and-heartbeat-frozen`（心跳与内容一起停住且范围超出内容）、`database-or-collector-frozen`（两者一起停住、范围未超出）、`range-beyond-database-horizon`（查询范围超出本库内容）。前两者的文案都同时给出「滞后快照 / 同步中断」与「采集端自那时起停机」两种可能，不替调用方下结论；第三条只陈述可由 `contentHorizonUtc` 证实的事实（本库没有这段范围的数据）。
   - 覆盖判定（`coverageEmpty` / `missingHours` / `disconnectedFromUtc` / `trailingGapMinutes`）与「范围内有没有事件 / 有没有窗口事件」「时间线输入是否完整」使用同一批事件：**与查询范围重叠**的原生事件（含起点在范围之前、伸进范围的记录，按边界裁剪）。`currentDailyEventCount`（与近 7 日基线比较的当日日均）仍按事件**起点**落在业务日内统计。
-  - `tracker-events`：事件基线判定 `baselineMethod`（近 7 个业务日事件数中位数）、`baselineEventCount`、`baselineDays`、`currentDailyEventCount`、`deviationRatio`、`verdict`（`偏低` / `在基线区间内` / `偏高` / `无基线`）、`verdictBasis`；缺数时段 `missingHourCount`、`missingHours`（本地时间，最多列 24 个）、`disconnectedFromUtc`（首次中断时刻，含尾部断档）、`lastDataAtUtc`、`trailingGapFromUtc`、`trailingGapMinutes`（最后一条数据到范围末尾的空白；范围内完全没有数据时取整个有效范围长度）、`coverageEndUtc`（缺数判定/尾部断档实际使用的有效范围末尾 = `min(查询范围末尾, 现在)`，查询尚未结束的业务日时不会把还没到的小时报成缺数）、`coverageEmpty`（范围内是否零事件零采样；起点在范围之前、但伸进范围的事件按边界裁剪后同样算作有数据）—— 内部空洞与尾部断档（≥1 小时）都会进 `tracker-events-missing-hours` 问题项，`missingHours` 同时列出内部空洞与尾部整小时空白对应的小时（计划内下线时不报尾部断档）。
+  - `tracker-events`：事件基线判定 `baselineMethod`（近 7 个业务日事件数中位数）、`baselineEventCount`、`baselineDays`、`currentDailyEventCount`、`deviationRatio`、`verdict`（`偏低` / `在基线区间内` / `偏高` / `无基线`）、`verdictBasis`；缺数时段 `missingHourCount`、`missingHours`（本地时间，最多列 24 个）、`disconnectedFromUtc`（**最早一段**断档的起点，含尾部断档）、`lastDataAtUtc`、`trailingGapFromUtc`、`trailingGapMinutes`（最后一条数据到范围末尾的空白；范围内完全没有数据时取整个有效范围长度）、`coverageEndUtc`（缺数判定/尾部断档实际使用的有效范围末尾 = `min(查询范围末尾, 现在)`，查询尚未结束的业务日时不会把还没到的小时报成缺数）、`coverageEmpty`（范围内是否零事件零采样；起点在范围之前、但伸进范围的事件按边界裁剪后同样算作有数据）—— 内部空洞与尾部断档（≥1 小时）都会进 `tracker-events-missing-hours` 问题项，`missingHours` 同时列出内部空洞与尾部整小时空白对应的小时（计划内下线时不报尾部断档）。
+  - `tracker-events.details.missingSegments`（WO-PC-BACKEND-20261001 REQ-5/#377）：缺数时段的结构化表示，
+    **数组**，每项 `{ "startUtc": "...", "endUtc": "..." }`（ISO 8601，UTC），与 `missingHours` /
+    `disconnectedFromUtc` 及 issue 文案**同源生成**；`missingHourCount` 仍按**小时**计、`missingSegments` 按**段**计，
+    两者数量不一定相等（一段内部空洞可以横跨多个小时）。消费方不必再正则解析本地化文案。
+  - `tracker-events-missing-hours` 问题文案语义（WO-PC-BACKEND-20261001 REQ-4/#373）：
+    `details.disconnectedFromUtc` 是最早一段的起点，因此文案表述为「检测到 N 段连续缺数（本地时间）：…；
+    最早一段为 A 到 B（disconnectedFromUtc 即该段起点）」。「最近一段」由 `trailingGapFromUtc` 表达；
+    旧文案「最近一次中断自 …」与字段语义相反，已修正。
   - 组件 `message` 只描述本组件，不复制总览文案（`overallStatus` / `message`）。
 
 ### GET /api/v1/pc/heatmap/grid
@@ -223,11 +231,23 @@
   | grid[][].intensityLevel | number | 强度档位 0–5（活跃时长占桶时长比例分档，与 summary.heatmap / activity-analysis 同量纲） |
   | grid[][].intensityMax | number | 档位上界，恒 5 |
   | grid[][].keyPressCount | number | 原始按键数（旧字段名 `intensityScore`；hour 维度按事件数比例分摊当日按键数，day 维度=当日按键数） |
+  | grid[][].businessDay | string | **业务日**（`yyyy-MM-dd`，WO-PC-BACKEND-20261001 REQ-7/#380）。hour / day / month / year 四个维度一律返回，取值与同业务日的 day 桶一致。业务日自本地 04:00 起算，因此业务日 D 的**最后 4 个小时桶**（本地 00:00–03:59）的 `start` 落在次日 UTC 时刻（业务日 2026-09-27 → `2026-09-27T16:00Z`~`19:00Z`）：消费方不要再按 +08:00 日历日推断，直接读该字段 |
   | dimension | string | 回显维度 |
   | maxKeyCount | number | **`keyPressCount` 的上界**（区间内单日最大按键数，无数据为 1），供色阶归一化 |
 - 行为变更（WO-PC-BACKEND-20260930 REQ-4 / REQ-6）：
   - **day 桶边界**（REQ-4/#365）：由 UTC 零点改为业务日窗口 `[前一日 20:00Z, 当日 20:00Z)`；数值归属不变，前端按 `start` 转 `+08:00` 后为 04:00。
   - **hour + 跨日**（REQ-6/#367，P-4 方案 a）：返回 **400** + 明确文案（含实际收到的 start/end），不再静默返回起始日单行；单日 + `hour` 行为不变（24 桶、自业务日起点起算）。
+- 行为变更（WO-PC-BACKEND-20261001 REQ-1/#375 · 活跃分钟口径）：
+  - 同一个业务日、同一个桶的 `activeMinutes` **不再随请求范围变化**。此前 1 天 / 7 天 / 30 天 / 整月
+    四种请求对同一业务日分别给出 722 / 1145 / 1145 / 1440 等不同值（实测 2026-09-27），
+    因为活跃区间并集按整个请求范围取数、且 input-minute 区间由「相邻两条采样」拼出 ——
+    采样对一旦跨业务日，就把两段数据之间的空白整段算进当日桶。
+  - 修复后：input-minute 采样对**按业务日分别配对**，且跨过采样断档（> 2 分钟）的记录只计**至多 1 分钟**
+    （断档本身不计为活跃）。同一业务日在 1 天 / 7 天 / 30 天 / 整月下取值完全相同。
+  - **数值会变小**（属修正，不是数据丢失）：2026-09-27 由 722 收敛为 681、2026-09-26 852 → 679、
+    2026-09-21 639 → 320、2026-09-06（含 1463 分钟断档）由 1440 收敛为 500。
+    `intensityLevel` 同源收敛（9/27 由 4/5/5 → 3）。
+  - 同一口径同时作用于 `summary.heatmap` 与 `activity-analysis`（三个接口用同一批记录与同一消解口径）。
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:725-757`（服务 `Services/PcTrackerService.cs` `GetHeatmapGridAsync`）；DTO `DTOs/PcTrackerDtos.cs`（`HeatmapGridCell` / `HeatmapGridResponse`）
 - 备注：hour 维度合并 AW 与 tracker window 事件并跨来源去重（#303）；day 维度的活跃分钟同样走统一的区间并集口径（REQ-3）。
 
@@ -261,6 +281,21 @@
   | blocks[].apps[].appName | string | 应用名 |
   | blocks[].apps[].durationSeconds | number | 时长秒 |
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:495-522`；DTO `DTOs/ActivityClassificationDtos.cs:155-178`；前端 `src/client-web/src/api/pcTracker.ts:188-190、282-286`
+- 内部取数跨度上限（WO-PC-BACKEND-20261001 REQ-2/#371）：
+  本端点与 `/pc/classification/suggestions` 都走**内部全量取数路径** `PcTrackerService.QueryAllDetailRecordsAsync`，
+  单次最多覆盖 **7 个业务日**（`PcTrackerService.MaxInternalQuerySpanDays`）；超限返回 **400** + 可读文案
+  （含上限值、实际业务日跨度与「按业务日拆分」的建议），不静默截断。
+  取值依据与实测代价（克隆库，内部路径真实调用）：
+
+  | 跨度 | 记录数 | 分配内存 | 耗时 |
+  | --- | --- | --- | --- |
+  | 1 天 | 1,210 | 112 MiB | 3.4 s |
+  | 7 天（上限） | 6,972 | 473 MiB | 3.9 s |
+  | 30 天（超限） | 33,707 | 2,279 MiB | 18.1 s |
+  | 60 天（超限） | — | 3,573 MiB 后以写库异常告终 | 40.2 s |
+
+  即 30 天单次请求要吃 2.2 GiB 常驻内存，60 天直接失败 —— 上限取 7 天（现有单日需求的 7 倍余量，
+  单次驻留内存压在 ~0.5 GiB）。超限请求在 **0 ms / 0 MiB** 内被拒绝，不触发取数。
 
 ---
 
@@ -391,7 +426,7 @@
 | heatmap/grid 单元格 | —（无） | `intensityMax` | int，恒 5 | 同上 |
 | heatmap/grid（响应级） | `maxKeyCount` | `maxKeyCount`（保留） | number | **`keyPressCount` 的上界**（区间内单日最大按键数，无数据为 1） |
 
-**响应类型改名**：`heatmap/grid` 的单元格由 `HeatmapBucket` 改为 `HeatmapGridCell`（新增 `keyPressCount` / `intensityLevel` / `intensityMax`，`activeMinutes` 由恒 0 变为真实值）；`summary.heatmap` 与 `aw/heatmap` 仍为 `HeatmapBucket`（新增 `intensityMax`，`intensityScore` → `intensityLevel`）。
+**响应类型改名**：`heatmap/grid` 的单元格由 `HeatmapBucket` 改为 `HeatmapGridCell`（新增 `keyPressCount` / `intensityLevel` / `intensityMax`，`activeMinutes` 由恒 0 变为真实值）；`summary.heatmap` 仍为 `HeatmapBucket`（新增 `intensityMax`，`intensityScore` → `intensityLevel`）；`aw/heatmap` 已于 WO-PC-BACKEND-20261001 REQ-6 下线。
 
 ---
 
@@ -1429,18 +1464,19 @@
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:258-273`（服务 `Services/PcTrackerService.cs:403-426`）；前端 `src/client-web/src/api/pcTracker.ts:21-23`
 - 备注：上报方为守护进程链路写入的数据；Web 端时间线展示走 GET /pc/timeline/v2。
 
-### GET /api/v1/pc/aw/heatmap
-- 用途：v1 小时级活动热力（单层桶列表）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
-- Web 前端使用：否（前端封装 getPcHeatmap 无页面调用；Web 已改用 heatmap/grid）
-- Query 参数：
-  | 字段 | 类型 | 必填 | 说明 |
-  | start | string | 否 | 起始日，缺省今天-7 天 |
-  | end | string | 否 | 结束日，缺省今天 |
-  | force | boolean | 否 | 默认 false |
-- 响应 data：`HeatmapBucket[]`（字段同 GET /pc/summary 的 heatmap 条目）
-- 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:275-292`；前端 `src/client-web/src/api/pcTracker.ts:25-27`
-- 备注：上报方为守护进程链路写入的数据。
+### GET /api/v1/pc/aw/heatmap（已下线 / retired）
+- 状态：**已下线**，路由不再注册，请求返回 404。
+- 下线时间/依据：WO-PC-BACKEND-20261001 REQ-6（issue #379）。ActivityWatch 退役后（2026-09-01 起）
+  该端点的数据源 `pc_aw_events` 不再写入，`activeMinutes` 恒为 0 —— 实测业务日 2026-09-27：
+  返回 192 个桶全 0，而同业务日的 `summary.heatmap` 非零 13 小时、合计 721 分钟；
+  13 个小时与 `summary.heatmap` 不一致。这与 `summary.heatmap`「同名不同源」，
+  消费方无法分辨「真的没有活动」与「端点已废」，因此不再保留「仍在服务但返回全 0」的中间态。
+- 替代端点：
+  - `GET /api/v1/pc/heatmap/grid`（区间网格，day / hour / month / year 四个维度，含 `businessDay`）；
+  - `GET /api/v1/pc/summary` 的 `heatmap` 字段（单业务日 24 个小时桶）。
+- MCP：工具 `get_pc_aw_heatmap` 同步从工具表与工具目录移除；热力图调用请改用 `get_pc_heatmap`。
+- 迁移影响：Web 前端从未调用（前端封装 `getPcHeatmap` 无页面调用）；如仍有外部脚本调用本路由，
+  请改用上表中的替代端点。
 
 ### GET /api/v1/pc/keystats/range
 - 用途：区间逐日键鼠统计（热力图/趋势数据源）。

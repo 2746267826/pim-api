@@ -272,25 +272,6 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<List<TimelineItem>>.Ok(result));
         });
 
-        readGroup.MapGet("/aw/heatmap", async (
-            [FromQuery] string? start,
-            [FromQuery] string? end,
-            [FromServices] PcTrackerService svc,
-            [FromServices] IAggregateResultCache cache,
-            HttpContext httpContext,
-            [FromQuery] bool force = false,
-            CancellationToken ct = default) =>
-        {
-            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-7);
-            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
-            var result = await cache.GetOrCreateAsync(
-                AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
-                force,
-                () => svc.GetHeatmapAsync(s, e, ct),
-                ct);
-            return Results.Ok(ApiResponse<List<HeatmapBucket>>.Ok(result));
-        });
-
         readGroup.MapGet("/keystats/range", async (
             [FromQuery] string? start,
             [FromQuery] string? end,

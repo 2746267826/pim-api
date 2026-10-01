@@ -5,16 +5,18 @@ using Xunit;
 namespace Pim.UnitTests.Mcp;
 
 /// <summary>
-/// Equivalence contract tests: the embedded 150-tool wire contract (dumped from the Python
-/// reference, extended by the keepalive phase-1 read tool) must match the .NET catalog and tool
-/// table exactly — names, counts, schemas.
+/// Equivalence contract tests: the embedded wire contract (dumped from the Python
+/// reference, extended by the keepalive phase-1 read tool; WO-PC-BACKEND-20261001 REQ-6 removed
+/// get_pc_aw_heatmap → 149 tools) must match the .NET catalog and tool table exactly —
+/// names, counts, schemas.
 /// </summary>
 public sealed class McpToolContractTests
 {
     [Fact]
-    public void Contract_ContainsExactly150Tools()
+    public void Contract_ContainsExactly149Tools()
     {
-        Assert.Equal(150, McpToolExecutor.ToolContract.Count);
+        // WO-PC-BACKEND-20261001 REQ-6（#379）：get_pc_aw_heatmap 随遗留端点下线，150 → 149。
+        Assert.Equal(149, McpToolExecutor.ToolContract.Count);
     }
 
     [Fact]
@@ -25,7 +27,8 @@ public sealed class McpToolContractTests
         var readNames = McpToolCatalog.ReadTools.Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
         var writeNames = McpToolCatalog.WriteTools.Select(t => t.Name).ToHashSet(StringComparer.Ordinal);
 
-        Assert.Equal(101, readNames.Count);
+        // WO-PC-BACKEND-20261001 REQ-6：读工具 101 → 100。
+        Assert.Equal(100, readNames.Count);
         Assert.Equal(49, writeNames.Count);
         Assert.Equal(contractNames, readNames.Union(writeNames).ToHashSet(StringComparer.Ordinal));
         Assert.Empty(contractNames.Intersect(writeNames).Intersect(readNames));
