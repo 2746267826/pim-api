@@ -168,8 +168,9 @@ export interface ParsedMissingSegments {
  * 2. JSON 字符串（字符串数组，元素本身是「起–止」或含「起–止」的句子）；
  * 3. 裸字符串（整句提示或 `;`/`；`/换行 分隔的时段串）—— 只抽出其中的「起–止」。
  *
- * 空数组、认不出的内容都算**解析失败**（`ok: false`），由调用方给出降级提示，
- * 不允许默默当成「没有缺数时段」。
+ * 空列表（`[]` 或 `"[]"`）是**合法**取值 —— 后端明确表示「没有连续缺数」；只有非空列表里
+ * 出现产不出时段的元素、或裸字符串里抽不出任何「起–止」，才算**解析失败**（`ok: false`），
+ * 由调用方给出降级提示，不允许默默当成「没有缺数时段」。
  */
 export function parseMissingSegmentsField(raw: unknown): ParsedMissingSegments {
   if (raw === undefined || raw === null) return { present: false, ok: false, segments: [] };
