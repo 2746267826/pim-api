@@ -114,7 +114,8 @@ const activityAnalysis: PcActivityAnalysisResponse = {
   blocks: [{
     start: '2026-07-05T00:00:00Z',
     end: '2026-07-05T01:00:00Z',
-    intensityScore: 3,
+    intensityLevel: 3,
+    intensityMax: 5,
     activeDurationSeconds: 1800,
     pendingClassificationCount: 1,
     contextSwitchCount: 2,
@@ -134,7 +135,7 @@ const activityAnalysisHtml = renderToStaticMarkup(
 
 assert.equal(activityAnalysisHtml.includes('活动分析'), true);
 assert.equal(activityAnalysisHtml.includes('Keyboard'), false);
-assert.equal(activityAnalysisHtml.includes('30 活跃分钟'), true);
+assert.equal(activityAnalysisHtml.includes('活跃 30 分钟'), true);
 assert.equal(activityAnalysisHtml.includes('Programming'), true);
 assert.equal(activityAnalysisHtml.includes('aria-pressed'), false, 'button grid replaced by EChartBox');
 assert.equal(activityAnalysisHtml.includes('待分类'), true);
@@ -298,3 +299,24 @@ assert.equal(pcTrackerPageSource.includes("['app-knowledge-apps']"), true);
 assert.equal(pcTrackerPageSource.includes("['app-knowledge-contexts']"), true);
 assert.equal(pcTrackerPageSource.includes('ClassificationSuggestionPanel'), false);
 assert.equal(pcTrackerPageSource.includes('QuickClassificationDialog'), false);
+
+// REQ-8 回归锁：Workbench 的 PC 汇总必须按业务日取数。
+// 原实现用 `range.start.split('T')[0]`（本地午夜的 UTC 日期），UTC+8 下会整体差一天，
+// 「PC 活跃」显示成前一天的汇总，与 summary.heatmap 对不上（真实浏览器证据见 PR）。
+const workbenchPageSource = fs.readFileSync('src/client-web/src/pages/WorkbenchPage.tsx', 'utf8');
+assert.equal(
+  workbenchPageSource.includes("getPcSummary(formatPcDate(getPcBusinessDate()))") ||
+  workbenchPageSource.includes('getPcSummary(pcBusinessDateStr)'),
+  true,
+  'Workbench PC summary must query the PC business day'
+);
+assert.equal(
+  workbenchPageSource.includes('getPcSummary(todayStr)'),
+  false,
+  'Workbench PC summary must not use the UTC date of local midnight'
+);
+assert.equal(
+  workbenchPageSource.includes('formatPcDate(getPcBusinessDate())'),
+  true,
+  'business day must come from utils/pcBusinessDay'
+);

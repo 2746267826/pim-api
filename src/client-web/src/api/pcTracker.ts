@@ -10,6 +10,7 @@ import type {
   ActivityClassificationSuggestionPreview, ActivityClassificationSuggestionApply,
   SuggestionClassificationPreviewRequest, SuggestionClassificationApplyRequest,
   PcActivityAnalysisResponse,
+  KeystatsSummary,
   PcQualityResponse, PcQualityQueryParams, PcQualityComponent, PcQualityIssue,
   PimHealthStatus
 } from '../types';
@@ -457,7 +458,35 @@ export const pcAggregationApiPaths = {
   categoryDistribution(params: PcAggregationQueryParams = {}): string {
     return `/pc/aggregation/category-distribution${buildAggregationQuery(params)}`;
   },
+  /**
+   * 键鼠范围聚合（REQ-6，后端 PR #370 新增）。
+   * 字段与单日 `summary.keystats` 同构，额外返回 `totalKeyPresses`。
+   */
+  keystats(params: PcAggregationQueryParams = {}): string {
+    return `/pc/aggregation/keystats${buildAggregationQuery(params)}`;
+  },
 };
+
+/** 范围键鼠聚合结果：与单日同构，无 `date`，多一个范围内的键盘总次数。 */
+export type KeystatsRangeSummary = Omit<KeystatsSummary, 'date'> & { totalKeyPresses: number };
+
+/** 键盘热力卡片的数据源：单日取 `summary.keystats`，范围模式取 `/pc/aggregation/keystats`。 */
+export type PcKeystatsScope = 'single-day' | 'range';
+
+/**
+ * REQ-6：`dimension=hour` 是单日视图，用 `summary.keystats`（带 `date`）；
+ * day/month/year 是范围视图（近 30 天 / 近 12 月 / 近 60 月），用范围聚合端点。
+ * 范围端点在同一组件下复用（AC-6.2）。
+ */
+export function pcKeystatsScope(dimension: string): PcKeystatsScope {
+  return dimension === 'hour' ? 'single-day' : 'range';
+}
+
+export function getPcKeystatsRange(start: string, end: string) {
+  return apiGet<ApiResponse<KeystatsRangeSummary>>(
+    pcAggregationApiPaths.keystats({ start, end })
+  ).then(r => r.data);
+}
 
 export function getPcFocusBlocks(params: PcAggregationQueryParams = {}) {
   return apiGet<ApiResponse<PcFocusBlocksResponse>>(pcAggregationApiPaths.focusBlocks(params)).then(r => r.data);

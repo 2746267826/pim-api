@@ -896,7 +896,15 @@ export interface HeatmapBucket {
   hour: number;
   activeMinutes: number;
   totalEvents: number;
-  intensityScore: number;
+  /** 0–5 档强度（`summary.heatmap` 与 `heatmap/grid` 同算路） */
+  intensityLevel: number;
+  /** 档位上界（后端固定 5） */
+  intensityMax: number;
+  /**
+   * 键盘原始计数。仅 `heatmap/grid` 单元格返回（上界见响应顶层 `maxKeyCount`），
+   * `summary.heatmap` 不返回该字段 —— 它是四维度热力图的着色值来源。
+   */
+  keyPressCount?: number;
 }
 
 export interface AppRankingItem {
@@ -979,6 +987,12 @@ export interface ActivityClassificationRule {
 export interface ActivityClassificationSuggestion {
   id: string;
   clusterKey: string;
+  /**
+   * 该建议归属的业务日（yyyy-MM-dd）。
+   * 后端随建议返回；历史行由「样本最新时刻 → 最后刷新时刻」回退推导。
+   * 列表按日展示时以本字段为准，不能用请求的 `date` 参数代替。
+   */
+  generatedForDate: string;
   sampleCount: number;
   totalDurationSeconds: number;
   sampleRecordsJson: string;
@@ -1056,7 +1070,11 @@ export interface PcActivityAnalysisResponse {
 export interface PcActivityAnalysisBlock {
   start: string;
   end: string;
-  intensityScore: number;
+  /** 0–5 档强度（活跃时长占块时长比例分档） */
+  intensityLevel: number;
+  /** 档位上界（后端固定 5） */
+  intensityMax: number;
+  /** 与块相交活动记录的区间并集秒数，恒 ≤ 块时长 */
   activeDurationSeconds: number;
   pendingClassificationCount: number;
   contextSwitchCount: number;

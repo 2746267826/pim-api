@@ -1,4 +1,5 @@
 import type { ActivityClassificationSuggestion } from '../../types';
+import { formatSuggestionBusinessDate } from '../../utils/pcBusinessDay';
 
 interface Props {
   suggestions: ActivityClassificationSuggestion[];
@@ -70,7 +71,10 @@ export default function ContextConfirmationPanel({
         </div>
       ) : (
         <div className="mt-4 space-y-2">
-          {visibleSuggestions.map(suggestion => (
+          {visibleSuggestions.map(suggestion => {
+            // REQ-5：业务日以建议自带的 generatedForDate 为准（可能是历史业务日）
+            const businessDate = formatSuggestionBusinessDate(suggestion.generatedForDate);
+            return (
             <article
               key={suggestion.id}
               className="rounded-lg border border-slate-200 bg-white px-3 py-3"
@@ -84,6 +88,15 @@ export default function ContextConfirmationPanel({
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
                       待写入 App 知识库
                     </span>
+                    {businessDate && (
+                      <span
+                        data-suggestion-date={businessDate}
+                        className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700"
+                        title="该建议归属的业务日（后端 generatedForDate）"
+                      >
+                        业务日 {businessDate}
+                      </span>
+                    )}
                   </div>
 
                   <p className="mt-1 text-xs text-slate-600">
@@ -115,7 +128,8 @@ export default function ContextConfirmationPanel({
                 </div>
               </div>
             </article>
-          ))}
+            );
+          })}
 
           {suggestions.length > visibleSuggestions.length && (
             <p className="px-1 text-xs text-slate-500">

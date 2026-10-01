@@ -27,14 +27,16 @@ const ActivityAnalysisHeatmap = require('../../src/client-web/src/components/pc-
 
 function test(name: string, run: () => void) { run(); }
 
-function bucket(start: string, intensityScore: number, hour = 4, extra: Partial<HeatmapBucket> = {}): HeatmapBucket {
+function bucket(start: string, keyPressCount: number, hour = 4, extra: Partial<HeatmapBucket> = {}): HeatmapBucket {
   return {
     start,
     end: '',
     hour,
     activeMinutes: 10,
     totalEvents: 2,
-    intensityScore,
+    intensityLevel: 1,
+    intensityMax: 5,
+    keyPressCount,
     ...extra,
   };
 }
@@ -234,7 +236,8 @@ function makeBlocks(count: number): PcActivityAnalysisBlock[] {
   return Array.from({ length: count }, (_, i) => ({
     start: `2026-07-05T${String(i).padStart(2, '0')}:00:00Z`,
     end: `2026-07-05T${String(i + 1).padStart(2, '0')}:00:00Z`,
-    intensityScore: i % 5,
+    intensityLevel: i % 5,
+    intensityMax: 5,
     activeDurationSeconds: 1800,
     pendingClassificationCount: i % 3,
     contextSwitchCount: 2,
@@ -244,16 +247,17 @@ function makeBlocks(count: number): PcActivityAnalysisBlock[] {
   }));
 }
 
-test('buildAnalysisBlocksOption renders heatmap with ordinal columns and 0-4 intensity scale', () => {
+test('buildAnalysisBlocksOption renders heatmap with ordinal columns and 0-5 intensity scale', () => {
   const option = buildAnalysisBlocksOption(makeBlocks(12)) as any;
   assert.equal(option.series[0].type, 'heatmap');
   assert.deepEqual(option.xAxis[0].data, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], 'block ordinal 1..n');
   assert.equal(option.visualMap.min, 0);
-  assert.equal(option.visualMap.max, 4);
+  // REQ-1：后端 intensityMax = 5（0–5 档），色阶上界随之从 4 改为 5
+  assert.equal(option.visualMap.max, 5);
   assert.deepEqual(
     option.visualMap.inRange.color,
-    ['#f8fafc', '#d9f2ec', '#9fdacf', '#43afa3', '#0f8f88'],
-    'existing 0-4 teal scale preserved'
+    ['#f8fafc', '#d9f2ec', '#9fdacf', '#43afa3', '#0f8f88', '#0b6b66'],
+    '0-5 teal scale extended by one step'
   );
   assert.equal(option.series[0].data.length, 12);
   assert.equal(option.series[0].data[0].blockIndex, 0, 'data carries blockIndex for click reverse lookup');
@@ -284,11 +288,16 @@ test('ActivityAnalysisHeatmap statically renders chart placeholder and detail pa
   );
   assert.equal(html.includes('role="img"'), true, 'EChartBox placeholder renders');
   assert.equal(html.includes('活动分析'), true);
-  assert.equal(html.includes('活跃分钟'), true);
+  // REQ-2：文案统一为「活跃 X 分钟」（工单 AC-2.1 的检索口径）
+  assert.equal(html.includes('活跃'), true);
+  assert.equal(html.includes('分钟'), true);
   assert.equal(html.includes('上下文切换'), true);
   assert.equal(html.includes('待分类'), true);
   assert.equal(html.includes('Programming'), true, 'detail panel category list stays');
-  assert.equal(html.includes('30 活跃分钟'), true, 'detail panel minutes stay');
+  assert.equal(html.includes('活跃 30 分钟'), true, 'detail panel active minutes stay');
+  // REQ-2：块内占比条（分类/应用）随块详情一起渲染
+  assert.equal(html.includes('data-share-bar'), true, 'share bars render');
+  assert.equal(html.includes('分类占比'), true);
 });
 
 console.log('pcHeatmapCharts tests passed');

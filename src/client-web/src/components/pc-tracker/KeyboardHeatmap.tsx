@@ -265,7 +265,7 @@ function MouseZone({
   );
 }
 
-function MouseHeatmap({ keystats, maxKey }: { keystats: KeystatsSummary; maxKey: number }) {
+function MouseHeatmap({ keystats, maxKey }: { keystats: KeystatsView; maxKey: number }) {
   const maxMouse = Math.max(
     maxKey,
     keystats.leftClicks,
@@ -310,12 +310,26 @@ function MouseHeatmap({ keystats, maxKey }: { keystats: KeystatsSummary; maxKey:
 }
 
 interface Props {
-  keystats: KeystatsSummary | null;
+  /**
+   * 单日视图传 `summary.keystats`（带 `date`），范围视图传 `/pc/aggregation/keystats`
+   * 的结果（无 `date`、多 `totalKeyPresses`）—— 同一组件复用（REQ-6 / AC-6.2）。
+   */
+  keystats: KeystatsView | null;
+  /** 请求失败（如范围端点 400 起止颠倒）。显示可读提示，不静默空白（REQ-6.3）。 */
+  error?: unknown;
 }
 
-export default function KeyboardHeatmap({ keystats }: Props) {
-  const safeKeystats: KeystatsSummary = keystats ?? {
-    date: '',
+/** 单日 summary.keystats 与范围聚合结果共有的字段视图（范围结果没有 `date`）。 */
+export type KeystatsView = Omit<KeystatsSummary, 'date'> & { date?: string };
+
+function readableError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error) return error;
+  return '键鼠统计加载失败，请稍后重试。';
+}
+
+export default function KeyboardHeatmap({ keystats, error }: Props) {
+  const safeKeystats: KeystatsView = keystats ?? {
     keyPresses: 0,
     totalClicks: 0,
     leftClicks: 0,
@@ -344,6 +358,18 @@ export default function KeyboardHeatmap({ keystats }: Props) {
     .filter(keyItem => keyItem.keyName.includes('+'))
     .sort((a, b) => b.count - a.count);
 
+  // 请求失败且**没有任何数据**时，不要画一张「全是 0 次」的矩阵 —— 那会被读成真实数据（REQ-6.3）。
+  // 但 React Query 在刷新失败时会同时给出 error 与上一份成功的 data；这种情形要保留矩阵，
+  // 只在下方叠加错误条，否则用户会因为一次刷新失败丢掉已经拿到的真实数据。
+  if (error && !keystats) {
+    return (
+      <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-800">
+        <span className="font-medium">键鼠统计请求未成功：</span>
+        <span className="break-words">{readableError(error)}</span>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -357,11 +383,18 @@ export default function KeyboardHeatmap({ keystats }: Props) {
         </div>
       </div>
 
-      {!keystats && (
+      {error && keystats ? (
+        <div role="alert" className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <span className="font-medium">上次刷新失败，以下为最近一次成功的数据：</span>
+          <span className="break-words">{readableError(error)}</span>
+        </div>
+      ) : null}
+
+      {!keystats ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
           当前日期暂无键鼠数据，已展示完整键鼠布局骨架。
         </div>
-      )}
+      ) : null}
 
       {shortcuts.length > 0 && (
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">

@@ -9,8 +9,10 @@ import {
   getPcCategoryDistribution,
   getPcFocusBlocks,
   getPcHeatmapGrid,
+  getPcKeystatsRange,
   getPcLateNight,
   getPcSummary,
+  pcKeystatsScope,
   rejectActivityClassificationSuggestion,
 } from '../api/pcTracker';
 import { applyAppKnowledgeSuggestion, previewAppKnowledgeSuggestion } from '../api/appKnowledge';
@@ -142,10 +144,26 @@ export default function PcTrackerPage() {
         ? { start: formatPcDate(addPcMonths(selectedDate, -12)), end: dateStr }
         : { start: formatPcDate(addPcMonths(selectedDate, -60)), end: dateStr };
 
-  const { data: heatmapData, isLoading: heatmapLoading } = useQuery({
+  const { data: heatmapData, isLoading: heatmapLoading, error: heatmapError } = useQuery({
     queryKey: ['pc-heatmap-grid', heatmapRange.start, heatmapRange.end, dimension],
     queryFn: () => getPcHeatmapGrid(heatmapRange.start, heatmapRange.end, dimension),
   });
+
+  // REQ-6：单日（hour）用 summary.keystats，范围模式（day/month/year）用范围聚合端点；
+  // 同一 KeyboardHeatmap 组件承载两种数据源（AC-6.2）。
+  const keystatsScope = pcKeystatsScope(dimension);
+  const {
+    data: rangeKeystats,
+    isLoading: rangeKeystatsLoading,
+    error: keystatsError,
+  } = useQuery({
+    queryKey: ['pc-keystats-range', heatmapRange.start, heatmapRange.end],
+    queryFn: () => getPcKeystatsRange(heatmapRange.start, heatmapRange.end),
+    enabled: keystatsScope === 'range',
+  });
+
+  const keystats = keystatsScope === 'range' ? rangeKeystats ?? null : data?.keystats ?? null;
+  const keystatsLoading = keystatsScope === 'range' && rangeKeystatsLoading;
 
   const previewMutation = useMutation({
     mutationFn: ({
@@ -319,8 +337,15 @@ export default function PcTrackerPage() {
       </AnalysisCard>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(360px,0.9fr)]">
-        <AnalysisCard title="活动热力图" subtitle="按所选时间维度汇总输入强度">
-          <ActivityHeatmap data={heatmapData} isLoading={heatmapLoading} />
+        <AnalysisCard
+          title="活动热力图"
+          subtitle={
+            dimension === 'hour'
+              ? '按所选时间维度汇总输入强度（单日 04:00 起算）'
+              : `按所选时间维度汇总输入强度（${heatmapRange.start} ~ ${heatmapRange.end}）`
+          }
+        >
+          <ActivityHeatmap data={heatmapData} isLoading={heatmapLoading} error={heatmapError} />
         </AnalysisCard>
 
         <AnalysisCard title="当日活动排行" subtitle="分类和应用支持点击筛选">
@@ -338,8 +363,16 @@ export default function PcTrackerPage() {
       </div>
 
       <div className="space-y-4">
-        <AnalysisCard title="键盘鼠标热力图" subtitle="108 键键盘、鼠标按键与快捷键统计">
-          <KeyboardHeatmap keystats={data?.keystats || null} />
+        <AnalysisCard
+          title="键盘鼠标热力图"
+          subtitle={
+            keystatsScope === 'range'
+              ? `范围聚合 ${heatmapRange.start} ~ ${heatmapRange.end} · 108 键键盘、鼠标按键与快捷键统计`
+              : '单日汇总 · 108 键键盘、鼠标按键与快捷键统计'
+          }
+        >
+          <KeyboardHeatmap keystats={keystats} error={keystatsError} />
+          {keystatsLoading && <p className="mt-1 text-xs text-slate-400">正在加载键鼠统计...</p>}
         </AnalysisCard>
       </div>
 
