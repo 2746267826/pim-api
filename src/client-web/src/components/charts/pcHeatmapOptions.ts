@@ -91,7 +91,7 @@ export function mapActivityGrid(data: HeatmapGridResponse | undefined): Activity
   if (dimension === 'hour') {
     for (const bucket of buckets) {
       const x = ((bucket.hour - PC_BUSINESS_DAY_START_HOUR) % 24 + 24) % 24;
-      cells.push({ x, y: 0, bucket, value: bucket.keyPressCount ?? 0 });
+      cells.push({ x, y: 0, bucket, value: bucket.intensityLevel ?? 0 });
     }
     return { cells, xLabels: PC_BUSINESS_HOURS.map(pcHourLabel), yLabels: ['强度'] };
   }
