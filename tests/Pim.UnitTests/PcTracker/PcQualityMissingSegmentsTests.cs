@@ -100,6 +100,10 @@ public sealed class PcQualityMissingSegmentsTests
         // 最早一段（本地 07:00–13:00）的起止都要出现在文案里。
         Assert.Contains("2026-09-27 07:00", issue.Message);
         Assert.Contains("2026-09-27 13:00", issue.Message);
+        // AC-4.1：最近一段同样要点名（不能用 trailingGapFromUtc 代替 —— 它只覆盖尾部断档）。
+        Assert.Contains("最近一段", issue.Message);
+        Assert.Contains("2026-09-27 17:00", issue.Message);
+        Assert.Contains("2026-09-28 04:00", issue.Message);
         // 文案必须把「最早一段」与字段语义绑在一起，否则消费方仍要猜文案说的是哪一段。
         Assert.Contains("disconnectedFromUtc 即该段起点", issue.Message);
     }

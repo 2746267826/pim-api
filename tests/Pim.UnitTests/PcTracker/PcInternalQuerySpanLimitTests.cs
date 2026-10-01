@@ -65,8 +65,9 @@ public sealed class PcInternalQuerySpanLimitTests
     /// AC-2.4：超限请求必须在**取数之前**被拒 —— 不得先全量拉一遍再报错。
     /// <para>
     /// 断言对象是取数路径的副作用：<c>BuildCompleteDetailRecordsAsync</c> 会把分类快照写进
-    /// <c>pc_activity_classifications</c>。先在同等数据下跑一次合法跨度，证明该副作用确实会发生；
-    /// 再用超限跨度请求，断言一条快照都没多出来，即「没有触发全量取数」。
+    /// <c>pc_activity_classifications</c>。顺序很关键：先发超限请求并断言一条快照都没有
+    /// （守卫若被放到取数之后，这条记录就会被分类并落库 → 用例失败），再用同一天内的合法请求
+    /// 证明该副作用确实会发生（正对照）。
     /// </para>
     /// </summary>
     [Fact]
@@ -78,17 +79,16 @@ public sealed class PcInternalQuerySpanLimitTests
         await db.SaveChangesAsync();
         var service = Service(db);
 
-        var legalQuery = Query(Day, Day);
-        Assert.NotEmpty(await service.QueryAllDetailRecordsAsync(legalQuery, CancellationToken.None));
-        var snapshotsAfterLegalFetch = await db.Set<ActivityClassificationEntity>().CountAsync();
-        Assert.True(
-            snapshotsAfterLegalFetch > 0,
-            "前置条件不成立：合法跨度取数应当写入分类快照，否则本用例无法证明「超限未取数」");
-
+        // 1) 超限请求：记录本身落在范围内，一旦先取数就会被分类落库。
         await Assert.ThrowsAsync<ArgumentException>(() => service.QueryAllDetailRecordsAsync(
             Query(Day.AddDays(-30), Day), CancellationToken.None));
+        Assert.Equal(0, await db.Set<ActivityClassificationEntity>().CountAsync());
 
-        Assert.Equal(snapshotsAfterLegalFetch, await db.Set<ActivityClassificationEntity>().CountAsync());
+        // 2) 正对照：合法跨度取数确实会写入分类快照，说明上面的「0」不是断言写错。
+        Assert.NotEmpty(await service.QueryAllDetailRecordsAsync(Query(Day, Day), CancellationToken.None));
+        Assert.True(
+            await db.Set<ActivityClassificationEntity>().CountAsync() > 0,
+            "正对照不成立：合法跨度取数应当写入分类快照");
     }
 
     private static DetailQueryParams Query(DateTime from, DateTime to) => new(

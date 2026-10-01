@@ -263,8 +263,10 @@ public sealed class PcTrackerEndpointsE2ETests
         var issue = quality.GetProperty("data").GetProperty("issues")
             .EnumerateArray()
             .Single(i => i.GetProperty("code").GetString() == "tracker-events-missing-hours");
-        Assert.Contains("最早一段", issue.GetProperty("message").GetString()!);
-        Assert.DoesNotContain("最近一次中断", issue.GetProperty("message").GetString()!);
+        var issueMessage = issue.GetProperty("message").GetString()!;
+        Assert.Contains("最早一段", issueMessage);
+        Assert.Contains("最近一段", issueMessage);
+        Assert.DoesNotContain("最近一次中断", issueMessage);
     }
 
     [Fact]

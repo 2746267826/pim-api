@@ -456,17 +456,20 @@ public sealed class PcTrackerQualityService
         if (coverage.Gaps.Count > 0)
         {
             var first = coverage.Gaps[0];
+            var last = coverage.Gaps[^1];
+            // REQ-4（#373）：details.disconnectedFromUtc 取的是**最早一段**断档的起点。
+            // 旧文案写「最近一次中断自 …」，多段断档时会指向最早那段却声称是最近 —— 与字段语义相反。
+            // 现在两段都点名：最早一段（= disconnectedFromUtc）与最近一段各自给出起止。
+            var description = coverage.Gaps.Count == 1
+                ? $"该段为 {FormatLocal(first.StartUtc)} 到 {FormatLocal(first.EndUtc)}" +
+                  "（既是 disconnectedFromUtc 的取值，也是最近一段）。"
+                : $"最早一段为 {FormatLocal(first.StartUtc)} 到 {FormatLocal(first.EndUtc)}（disconnectedFromUtc 即该段起点）；" +
+                  $"最近一段为 {FormatLocal(last.StartUtc)} 到 {FormatLocal(last.EndUtc)}。";
             componentIssues.Add(new PcQualityIssueDto(
                 "tracker-events-missing-hours",
                 PimHealthStatus.Warning,
                 "tracker-events",
-                // REQ-4（#373）：details.disconnectedFromUtc 取的是**最早一段**断档的起点。
-                // 旧文案写「最近一次中断自 …」，多段断档时会指向最早那段却声称是最近 —— 与字段语义相反。
-                // 现在按语义表述：段数 + 全部时段 + 最早一段的起止；
-                // 「最近一段」由尾部断档字段（trailingGapFromUtc）表达，不再混用。
-                $"检测到 {coverage.Gaps.Count} 段连续缺数（本地时间）：{coverage.DescribeGaps()}；" +
-                $"最早一段为 {FormatLocal(first.StartUtc)} 到 {FormatLocal(first.EndUtc)}" +
-                $"（disconnectedFromUtc 即该段起点）。",
+                $"检测到 {coverage.Gaps.Count} 段连续缺数（本地时间）：{coverage.DescribeGaps()}；{description}",
                 "核对这段时间内 Windows 守护程序是否在运行、是否上报失败。"));
         }
 
@@ -676,7 +679,7 @@ public sealed class PcTrackerQualityService
     /// （PostgreSQL 里 <c>NaN</c> 比任何有限值都大，<c>NaN &lt;= x</c> 为假），
     /// 否则一行 <c>NaN</c> 会让 <c>MAX(duration)</c> 变成 <c>NaN</c>。</para>
     /// </summary>
-    private const double MaxPlausibleEventDurationSeconds = 30 * 24 * 60 * 60;
+    public const double MaxPlausibleEventDurationSeconds = 30 * 24 * 60 * 60;
 
     private static readonly TimeSpan MaxPlausibleEventDuration = TimeSpan.FromSeconds(MaxPlausibleEventDurationSeconds);
 

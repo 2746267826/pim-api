@@ -493,9 +493,21 @@ public partial class PcTrackerService
     {
         var intervals = new List<(DateTimeOffset Start, DateTimeOffset End)>();
 
+        // REQ-1 / AC-1.1（review round 2）：桶的取值不得随请求范围变化 —— 起点在**桶之前**、
+        // 但伸进桶里的记录必须一并取到。只按 `Timestamp >= rangeStart` 取数时，单日请求
+        // （rangeStart = 桶起点）会漏掉这类跨边界记录，而更宽的范围请求会算进去
+        // （实测：本地 02:00 起、跨 04:00 的窗口事件 → 单日 0 分钟 / 范围 60 分钟）。
+        // 回看窗口取两张表**合理时长**的最大值：比它更长的记录不可能跨进桶里，
+        // 因此「桶之前 D 秒」与「范围之前 D 秒」两种取数在每个桶上给出同一结果。
+        var lookbackSeconds = await ComputeActiveLookbackSecondsAsync(ct);
+        var lookbackStart = lookbackSeconds > 0
+            ? rangeStart.AddSeconds(-lookbackSeconds)
+            : rangeStart;
+
         var awEvents = await _db.Set<AwEventEntity>()
             .AsNoTracking()
-            .Where(e => e.Timestamp >= rangeStart && e.Timestamp < rangeEnd && e.Duration > 0)
+            .Where(e => e.Timestamp >= lookbackStart && e.Timestamp < rangeEnd)
+            .Where(e => e.Duration > 0 && e.Duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
             .Where(e => e.EventType == "window" || e.EventType == "web")
             .Where(e => e.AfkStatus == null || e.AfkStatus != "afk")
             .Select(e => new { e.Timestamp, e.Duration })
@@ -505,7 +517,8 @@ public partial class PcTrackerService
 
         var trackerEvents = await _db.Set<TrackerEventEntity>()
             .AsNoTracking()
-            .Where(e => e.Timestamp >= rangeStart && e.Timestamp < rangeEnd && e.Duration > 0)
+            .Where(e => e.Timestamp >= lookbackStart && e.Timestamp < rangeEnd)
+            .Where(e => e.Duration > 0 && e.Duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
             .Where(e => e.EventType == "window" || e.EventType == "web-page")
             .Select(e => new { e.Timestamp, e.Duration })
             .ToListAsync(ct);
@@ -527,6 +540,28 @@ public partial class PcTrackerService
         }
 
         return MergeIntervals(intervals);
+    }
+
+    /// <summary>
+    /// 活跃区间并集的回看窗口（秒）：两张事件表「合理时长」的最大值。
+    /// 与 <see cref="PcTrackerQualityService"/> 处理「跨范围起点事件」同一套做法；
+    /// 有 <c>duration</c> 索引后这两次聚合各约 0.04 ms（REQ-3）。
+    /// 空表或超出合理上界的脏数据一律记 0。
+    /// </summary>
+    private async Task<double> ComputeActiveLookbackSecondsAsync(CancellationToken ct)
+    {
+        var trackerMax = await _db.Set<TrackerEventEntity>()
+            .AsNoTracking()
+            .Where(e => e.Duration > 0 && e.Duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
+            .Select(e => (double?)e.Duration)
+            .MaxAsync(ct) ?? 0;
+        var awMax = await _db.Set<AwEventEntity>()
+            .AsNoTracking()
+            .Where(e => e.Duration > 0 && e.Duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
+            .Select(e => (double?)e.Duration)
+            .MaxAsync(ct) ?? 0;
+
+        return Math.Max(trackerMax, awMax);
     }
 
     public async Task<List<KeystatsSummary>> GetKeystatsRangeAsync(DateTime start, DateTime end, CancellationToken ct)
@@ -672,9 +707,10 @@ public partial class PcTrackerService
     /// <summary>
     /// 内部全量取数路径的单次跨度上限（REQ-2 / #371）：**7 个业务日**。
     /// <para>
-    /// 取值依据（实测于克隆库 pim_wo2，内部路径真实调用，见 PR 的 AC-2.3 表）：
-    /// 1 天 = 1,210 条 / 112 MiB / 4.1 s，7 天 = 6,972 条 / 539 MiB / 5.1 s，
-    /// 30 天 = 33,707 条 / 2,279 MiB / 18.1 s，60 天起直接以写库异常告终。
+    /// 取值依据（实测于克隆库 pim_wo2，内部路径真实调用，见 PR 的 AC-2.3 表；耗时随机器负载波动，
+    /// 记录数与内存量级稳定）：
+    /// 1 天 ≈ 1,210 条 / 112 MiB / 3–7 s，7 天 ≈ 6,972 条 / 470–540 MiB / 4–7 s，
+    /// 30 天 ≈ 33,707 条 / 2,279 MiB / 18 s，60 天起直接以写库异常告终（3,573 MiB 时）。
     /// 调用方语义只需要「覆盖整个业务日」，7 天给出 7 倍余量，同时把单次请求的驻留内存
     /// 压在 ~0.5 GiB 量级；再宽就会把「按天分片」的成本一次性压给单个请求。
     /// </para>
@@ -695,7 +731,8 @@ public partial class PcTrackerService
         throw new ArgumentException(
             $"内部取数路径单次最多覆盖 {MaxInternalQuerySpanDays} 个业务日，当前请求为 {days} 个业务日" +
             $"（{FormatBusinessDay(start)} ~ {FormatBusinessDay(end.AddSeconds(-1))}）。" +
-            $"请按业务日拆分请求（每个业务日一次），或改用 /pc/detail 的分页明细接口。");
+            "请按业务日拆分请求（每个业务日一次）；/pc/detail 的分页明细接口会先展开所请求范围的全部记录，" +
+            "不能用来绕过本上限。");
     }
 
     /// <summary>

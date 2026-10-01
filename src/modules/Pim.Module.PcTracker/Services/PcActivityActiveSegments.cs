@@ -33,13 +33,6 @@ public static class PcActivityActiveSegments
         TimeSpan.FromMinutes(KeystatsDeltaCalculator.GapThresholdMinutes);
 
     /// <summary>
-    /// 跨断档的 input-minute 记录最多计入的活跃时长。
-    /// <para>采样只证明「这段空白里有过输入」，不能证明空白本身就是活动时段；
-    /// 整段计入会让活跃分钟随请求范围膨胀（REQ-1 / #375：同一业务日 722 → 1145 → 1440）。</para>
-    /// </summary>
-    public static readonly TimeSpan SamplingGapActiveBudget = TimeSpan.FromMinutes(1);
-
-    /// <summary>
     /// 把明细记录解析成可复用的区间列表（过滤 <c>gap/idle/afk</c> 与非正时长）。
     /// activity-analysis 要按 24 个块反复取数，解析一次即可。
     /// </summary>
@@ -64,7 +57,11 @@ public static class PcActivityActiveSegments
     /// <summary>
     /// 记录在「活跃分钟」口径下的区间：与 <see cref="TryGetInterval"/> 相同，
     /// 但跨过采样断档的 <c>input-minute</c> 记录（区间长度 &gt; <see cref="MaxSamplingInterval"/>）
-    /// 截断为「起点 + <see cref="SamplingGapActiveBudget"/>」—— 断档本身不计为活跃（REQ-1 / AC-1.3）。
+    /// **整体不计入活跃**（REQ-1 / AC-1.3：断档时段不得进入并集）。
+    /// <para>采样只证明「这段空白里可能有过输入」，不能证明空白本身就是活动时段：
+    /// 整段计入会让活跃分钟随请求范围膨胀（722 → 1145 → 1440），
+    /// 折算成 1 分钟也仍然是把断档算进了并集。代价是采集端稀疏上报时那段时间显示为非活跃
+    /// （宁可少算，不可虚高），规则已写入 docs 的 PC 记录接口说明。</para>
     /// <para>明细接口（<c>/pc/detail</c>）仍按记录自身的 <c>DurationSeconds</c> 返回起止时刻，
     /// 本方法只影响活跃时长汇总，不改明细契约。</para>
     /// </summary>
@@ -76,7 +73,8 @@ public static class PcActivityActiveSegments
         if (string.Equals(record.RecordType, "input-minute", StringComparison.OrdinalIgnoreCase)
             && end - start > MaxSamplingInterval)
         {
-            end = start + SamplingGapActiveBudget;
+            end = start;
+            return false;
         }
 
         return true;
