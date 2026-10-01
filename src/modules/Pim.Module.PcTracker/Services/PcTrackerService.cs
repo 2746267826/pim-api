@@ -448,6 +448,39 @@ public partial class PcTrackerService
     }
 
     /// <summary>
+    /// 查询范围内的 input-minute 记录，**按业务日分别配对**（REQ-1 / #375）。
+    /// <para>
+    /// 采样记录由「相邻两条采样」的差值拼出，因此采样对决定了区间端点。若按整个请求范围配对，
+    /// 边界处的第一条采样会与前一业务日的最后一条配成跨日采样对，把两段数据之间十几小时的空白
+    /// 整段算进当日桶 —— 于是同一业务日的同一个桶在 1 天 / 30 天请求下得到不同值
+    /// （实测 2026-09-27：单日 722 / 30 天 1145 / 整月 1440）。
+    /// 按业务日配对后，桶的取值只取决于该业务日自己的采样，与请求范围无关（AC-1.1）。
+    /// </para>
+    /// </summary>
+    private async Task<List<PcDetailRecord>> LoadInputMinuteRecordsByBusinessDayAsync(
+        DateTimeOffset rangeStart,
+        DateTimeOffset rangeEnd,
+        CancellationToken ct)
+    {
+        var samples = await _db.Set<KeystatsSampleEntity>()
+            .AsNoTracking()
+            .Where(s => s.SampledAtUtc >= rangeStart && s.SampledAtUtc < rangeEnd)
+            .OrderBy(s => s.PimDeviceId)
+            .ThenBy(s => s.SampledAtUtc)
+            .ToListAsync(ct);
+
+        var records = new List<PcDetailRecord>();
+        foreach (var dayGroup in samples
+                     .GroupBy(s => GetBusinessDayForTimestamp(s.SampledAtUtc))
+                     .OrderBy(group => group.Key))
+        {
+            records.AddRange(ToInputMinuteRecords(dayGroup.ToList()));
+        }
+
+        return records;
+    }
+
+    /// <summary>
     /// 查询范围内的活跃区间并集（REQ-3 / REQ-4 的强度与活跃分钟口径）：
     /// AW 的 window / web 事件、原生 tracker 的 window / web-page 事件、逐分钟输入记录（input-minute）；
     /// gap / idle / afk 与 afk 状态的 AW 事件一律不参与（#331）。
@@ -479,9 +512,9 @@ public partial class PcTrackerService
         foreach (var e in trackerEvents)
             AddClip(e.Timestamp, e.Timestamp.AddSeconds(e.Duration));
 
-        foreach (var record in await LoadInputMinuteRecordsAsync(rangeStart, rangeEnd, ct))
+        foreach (var record in await LoadInputMinuteRecordsByBusinessDayAsync(rangeStart, rangeEnd, ct))
         {
-            if (PcActivityActiveSegments.TryGetInterval(record, out var start, out var end))
+            if (PcActivityActiveSegments.TryGetActiveInterval(record, out var start, out var end))
                 AddClip(start, end);
         }
 
