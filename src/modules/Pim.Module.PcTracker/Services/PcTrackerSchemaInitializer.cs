@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS pc_aw_events (
 CREATE INDEX IF NOT EXISTS ix_pc_aw_events_device_id ON pc_aw_events (device_id);
 CREATE INDEX IF NOT EXISTS ix_pc_aw_events_timestamp ON pc_aw_events (timestamp);
 CREATE INDEX IF NOT EXISTS ix_pc_aw_events_event_type ON pc_aw_events (event_type);
+-- REQ-3（#372）：体检冷缓存路径要对本表取 `max(duration)`（内容地平线 / 跨范围起点回看窗口）。
+-- 没有该索引时 PostgreSQL 只能全表顺序扫描（实测 231,666 行 349 ms）；有索引后是
+-- `Index Only Scan Backward`（0.038 ms），见 PR 的 EXPLAIN 对照。
+CREATE INDEX IF NOT EXISTS ix_pc_aw_events_duration ON pc_aw_events (duration);
 ALTER TABLE pc_aw_events ADD COLUMN IF NOT EXISTS aw_device_id VARCHAR(128);
 ALTER TABLE pc_aw_events ADD COLUMN IF NOT EXISTS aw_hostname VARCHAR(128);
 ALTER TABLE pc_aw_events ADD COLUMN IF NOT EXISTS bucket_id VARCHAR(256);
@@ -647,6 +651,9 @@ CREATE INDEX IF NOT EXISTS idx_tracker_events_timestamp ON pc_tracker_events(tim
 CREATE INDEX IF NOT EXISTS idx_tracker_events_app ON pc_tracker_events(app_name, date);
 CREATE INDEX IF NOT EXISTS idx_tracker_events_event_type ON pc_tracker_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_tracker_events_is_idle ON pc_tracker_events(is_idle);
+-- REQ-3（#372）：同 pc_aw_events.duration —— 体检冷缓存路径的 `max(duration)` 走索引，
+-- 不再对大表做顺序扫描（实测 13,782 行 22.6 ms → 0.027 ms）。
+CREATE INDEX IF NOT EXISTS idx_tracker_events_duration ON pc_tracker_events(duration);
 CREATE INDEX IF NOT EXISTS idx_tracker_events_browser ON pc_tracker_events(browser);
 CREATE INDEX IF NOT EXISTS idx_tracker_events_instance ON pc_tracker_events(instance_id);
 -- Rebuild the dedup index including browser/instance_id. COALESCE keeps the

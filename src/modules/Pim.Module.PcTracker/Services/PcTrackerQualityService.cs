@@ -537,9 +537,10 @@ public sealed class PcTrackerQualityService
     {
         var source = _db.Set<TrackerEventEntity>().AsNoTracking();
         var plausible = source.Where(e => e.Duration > 0 && e.Duration <= MaxPlausibleEventDurationSeconds);
-        var maxDurationSeconds = await plausible.AnyAsync(ct)
-            ? await plausible.MaxAsync(e => e.Duration, ct)
-            : 0;
+        // REQ-3（#372）：一次可空 MAX 代替「AnyAsync + MaxAsync」两次往返，且走 duration 索引。
+        var maxDurationSeconds = await plausible
+            .Select(NullableSelector((TrackerEventEntity e) => e.Duration))
+            .MaxAsync(ct) ?? 0;
         var lookbackSeconds = LookbackSeconds(maxDurationSeconds);
         if (lookbackSeconds <= 0)
             return new List<TrackerEventEntity>();
@@ -797,6 +798,12 @@ public sealed class PcTrackerQualityService
     /// 一张事件表的「内容结束时刻」：全表 <c>max(Timestamp + Duration)</c>（空表返回 null）。
     /// 不能只用「起点最新那一条 + 它自己的时长」推断 —— 一条更早开始、持续更久的事件可能结束得更晚，
     /// 会把本库的内容终点报早，让「读数为什么旧」给出错误的时刻。
+    /// <para>
+    /// REQ-3（#372）：聚合一律走**可空 <c>MAX(裸列)</c>**，一次往返即得结果 ——
+    /// 旧写法「<c>AnyAsync</c> 探空 + <c>MaxAsync</c>」把每条聚合拆成两次往返（两张表共多 4 次）。
+    /// 空集时 <c>MAX</c> 返回 NULL，语义与「先 Any 再 Max」完全一致，只是少了占位查询。
+    /// 配合 <c>duration</c> 索引，<c>max(duration)</c> 由全表顺序扫描变为索引反向扫描（AC-3.1）。
+    /// </para>
     /// </summary>
     private static async Task<DateTimeOffset?> MaxEventEndAsync<TEntity>(
         IQueryable<TEntity> source,
@@ -807,20 +814,22 @@ public sealed class PcTrackerQualityService
         CancellationToken ct)
         where TEntity : class
     {
-        if (!await source.AnyAsync(ct))
+        var maxTimestamp = await source
+            .Select(NullableSelector(timestampSelector))
+            .MaxAsync(ct);
+        if (maxTimestamp is null)
             return null;
 
         // 只有起点落在 [maxTimestamp - maxDuration, maxTimestamp] 内的事件，其结束时刻才可能晚于 maxTimestamp；
         // 因此在这个窗口内取 max(Timestamp + Duration) 与全表结果一致，无需全表扫描。
         // 窗口按「合理时长」估算：脏时长（NaN / 超过 30 天 / 负数）本来就不贡献内容时长。
-        var maxTimestamp = await source.MaxAsync(timestampSelector, ct);
-        var plausible = source.Where(plausibleDurationFilter);
-        var maxDurationSeconds = await plausible.AnyAsync(ct)
-            ? await plausible.MaxAsync(durationSelector, ct)
-            : 0;
-        var windowStart = ClampAddSeconds(maxTimestamp, -LookbackSeconds(maxDurationSeconds));
+        var maxDurationSeconds = await source
+            .Where(plausibleDurationFilter)
+            .Select(NullableSelector(durationSelector))
+            .MaxAsync(ct) ?? 0;
+        var windowStart = ClampAddSeconds(maxTimestamp.Value, -LookbackSeconds(maxDurationSeconds));
 
-        var horizon = maxTimestamp;
+        var horizon = maxTimestamp.Value;
         var timestampOf = timestampSelector.Compile();
         var durationOf = durationSelector.Compile();
         foreach (var entity in await source.Where(windowFilter(windowStart)).ToListAsync(ct))
@@ -832,6 +841,18 @@ public sealed class PcTrackerQualityService
 
         return horizon;
     }
+
+    /// <summary>
+    /// 把 <c>e =&gt; e.Column</c> 变成 <c>e =&gt; (T?)e.Column</c>，让 <c>MAX(裸列)</c> 在空集时返回 null。
+    /// <para>只加一层可空转换，不把算式写进聚合表达式 —— 后者是本仓库刻意避免的高翻译风险写法
+    /// （见 <c>PcQualityContentHorizonSqlTranslationTests</c>）。</para>
+    /// </summary>
+    private static Expression<Func<TEntity, TResult?>> NullableSelector<TEntity, TResult>(
+        Expression<Func<TEntity, TResult>> selector)
+        where TResult : struct
+        => Expression.Lambda<Func<TEntity, TResult?>>(
+            Expression.Convert(selector.Body, typeof(TResult?)),
+            selector.Parameters);
 
     /// <summary>近 7 个业务日事件数基线（中位数）与本次范围的日均对比。</summary>
     private sealed record TrackerEventBaseline(
