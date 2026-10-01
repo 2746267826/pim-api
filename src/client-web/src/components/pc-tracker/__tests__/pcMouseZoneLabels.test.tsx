@@ -50,7 +50,7 @@ function readMouseZones(container: HTMLElement): MouseZoneView[] {
 /** 卡片内除鼠标图形外另行呈现的滚轮量（AC-1.2：`scrollDistance` 必须在本卡片内有位置）。 */
 function readScrollDistanceText(container: HTMLElement): string {
   const node = container.querySelector('[data-mouse-metric="scrollDistance"]');
-  return (node?.textContent ?? '').replace(/\s+/g, '');
+  return (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
 }
 
 describe('WO-FRONTEND-PC-20261001 AC-1.1 · 鼠标区不得再把 middleClicks 挂在「滚轮」标签下', () => {
@@ -73,8 +73,72 @@ describe('WO-FRONTEND-PC-20261001 AC-1.1 · 鼠标区不得再把 middleClicks �
     const { container } = render(
       <KeyboardHeatmap keystats={{ ...RANGE_KEYSTATS, middleClicks: 999999 }} />,
     );
-    expect(container.textContent ?? '').not.toContain('滚轮 999,999');
+    // 没有任何鼠标区的可读标签是「滚轮: <中键次数>」
+    for (const zone of readMouseZones(container)) {
+      const [label, value] = zone.ariaLabel.split(': ');
+      expect(label === '滚轮' && value === '999,999').toBe(false);
+      expect(zone.ariaLabel).not.toContain('滚轮');
+    }
+    // 滚轮量只认 scrollDistance，与 middleClicks 无关
     expect(readScrollDistanceText(container)).toContain('474,069.94');
+  });
+});
+
+describe('WO-FRONTEND-PC-20261001 AC-1.2 · 中键标签必须始终可读（含高热度单日）', () => {
+  /**
+   * 真实数据反例（克隆库 pc_keystats_daily，单日 2026-07-28）：
+   * 左键 342 / 右键 1 / 中键 215 / 侧键 0 —— 中键占 maxMouse 的 0.63。
+   *
+   * 鼠标区的字色过去是按「字画在色块上」选的（占比 > 0.42 就填白）。滚轮槽只有 18px，
+   * 「中键」与计数被移到槽下方、落在浅色鼠标轮廓（#f1f5f9）上，白字会直接看不见。
+   */
+  const HIGH_MIDDLE_KEY = 215;
+  const HIGH_LEFT_CLICK = 342;
+
+  it('中键占比 > 0.42 时，槽下方的标签/计数不得用白字', () => {
+    const { container } = render(
+      <KeyboardHeatmap
+        keystats={{
+          ...RANGE_KEYSTATS,
+          date: '2026-07-28',
+          leftClicks: HIGH_LEFT_CLICK,
+          rightClicks: 1,
+          middleClicks: HIGH_MIDDLE_KEY,
+          sideBackClicks: 0,
+          sideForwardClicks: 0,
+          totalClicks: HIGH_LEFT_CLICK + 1 + HIGH_MIDDLE_KEY,
+        }}
+      />,
+    );
+    const zone = container.querySelector('[data-mouse-zone="middle"]');
+    expect(zone).not.toBeNull();
+    const fills = [...zone!.querySelectorAll('text')].map(t => t.getAttribute('fill'));
+    expect(fills.length).toBeGreaterThan(0);
+    for (const fill of fills) {
+      expect(fill, '槽下方的文字落在浅色鼠标轮廓上，不能是白色').not.toBe('#fff');
+      expect(fill).not.toBe('#ffffff');
+      expect(fill).not.toBe('white');
+    }
+    expect(zone!.textContent).toContain('215');
+  });
+
+  it('槽本身仍然按次数着色（热度不能被这次修复抹平）', () => {
+    const { container } = render(
+      <KeyboardHeatmap
+        keystats={{
+          ...RANGE_KEYSTATS,
+          leftClicks: HIGH_LEFT_CLICK,
+          rightClicks: 1,
+          middleClicks: HIGH_MIDDLE_KEY,
+          sideBackClicks: 0,
+          sideForwardClicks: 0,
+        }}
+      />,
+    );
+    const hot = container.querySelector('[data-mouse-zone="middle"] rect');
+    const cold = container.querySelector('[data-mouse-zone="side-back"] rect');
+    expect(hot?.getAttribute('fill')).toBeTruthy();
+    expect(hot?.getAttribute('fill')).not.toBe(cold?.getAttribute('fill'));
   });
 });
 
@@ -95,11 +159,11 @@ describe('WO-FRONTEND-PC-20261001 AC-1.2 · 中键次数与滚轮量分别呈现
     expect(text).toContain('474,069.94');
   });
 
-  it('滚轮量缺失（0）时不伪造数字：显示 0 而不是空', () => {
+  it('滚轮量为 0 时按原值渲染 0 px，不留空也不伪造', () => {
     const { container } = render(
       <KeyboardHeatmap keystats={{ ...RANGE_KEYSTATS, scrollDistance: 0 }} />,
     );
-    expect(readScrollDistanceText(container)).toContain('0');
+    expect(readScrollDistanceText(container)).toMatch(/滚轮量\s*0 px/);
   });
 });
 
@@ -111,6 +175,11 @@ describe('WO-FRONTEND-PC-20261001 AC-1.3 · 单日与范围两个数据源呈现
       readMouseZones(c).map(z => ({ zone: z.zone, ariaLabel: z.ariaLabel }));
     expect(pick(single.container)).toEqual(pick(range.container));
     expect(readScrollDistanceText(single.container)).toBe(readScrollDistanceText(range.container));
+    // 不只「两边一样」，还要「两边都对」：光有 date 字段差异不得改变任何取值。
+    for (const container of [range.container, single.container]) {
+      expect(container.textContent ?? '').toContain('1,230');
+      expect(readScrollDistanceText(container)).toMatch(/滚轮量\s*474,069\.94 px/);
+    }
   });
 });
 

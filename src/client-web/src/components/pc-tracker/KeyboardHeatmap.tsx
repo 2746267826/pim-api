@@ -224,7 +224,10 @@ function MouseZone({
   labelPlacement = 'inside',
 }: MouseZoneProps) {
   const bg = keyColor(count, maxKey);
-  const color = textColor(count, maxKey);
+  // 字色只有「字画在色块上」时才需要反白；槽下方的字落在浅色鼠标轮廓（#f1f5f9）上，
+  // 必须固定用深色，否则中键占比一高（真实单日 2026-07-28：中键 215 / 左键 342 = 0.63）
+  // 就会变成白字看不见。热度由那条 18px 的槽本身继续表达。
+  const color = labelPlacement === 'below' ? '#334155' : textColor(count, maxKey);
   const title = `${label}: ${count.toLocaleString('zh-CN')}`;
   const labelY = labelPlacement === 'below' ? y + height + 14 : y + height / 2 - 2;
   const countY = labelPlacement === 'below' ? y + height + 27 : y + height / 2 + 12;
