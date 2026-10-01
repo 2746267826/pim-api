@@ -149,7 +149,7 @@ public static class McpToolTable
             S("search_calendar_events", "GET", "/api/v1/calendar/events", Q("q=search", "start", "end", "page", "pageSize"), kind: McpToolKind.SearchEvents),
             S("search_calendar_tasks", "GET", "/api/v1/calendar/tasks", Q("q=search", "start", "end", "page", "pageSize"), kind: McpToolKind.SearchTasks),
 
-            // ===================== PcTracker reads (27) =====================
+            // ===================== PcTracker reads (26；WO-PC-BACKEND-20261001 REQ-6 下线 get_pc_aw_heatmap) =====================
             S("get_pc_summary", "GET", "/api/v1/pc/summary", Q("date", "timezone")),
             S("get_pc_detail", "GET", "/api/v1/pc/detail", Q("dateFrom", "dateTo", "date", "timezone", "page", "pageSize"), redact: true),
             S("get_pc_timeline", "GET", "/api/v1/pc/aw/timeline", Q("date", "timezone")),

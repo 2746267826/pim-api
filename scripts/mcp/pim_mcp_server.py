@@ -1755,27 +1755,6 @@ async def get_pc_quality(
 
 
 @mcp.tool()
-async def get_pc_aw_heatmap(
-    start: str,
-    end: str,
-    timezone: str = DEFAULT_TIMEZONE,
-) -> Any:
-    """Get PC active-window heatmap (raw). Returns HeatmapBucket[]."""
-    try:
-        s = _parse_iso8601(start)
-        e = _parse_iso8601(end)
-    except ValueError as ve:
-        return {"error": str(ve), "code": 400}
-    err = _validate_time_range(start, end)
-    if err:
-        return err
-    start_d = s.date().isoformat()
-    end_d = e.date().isoformat()
-    params = _clean_params(start=start_d, end=end_d, timezone=timezone)
-    return await _call_api("GET", "/api/v1/pc/aw/heatmap", params=params)
-
-
-@mcp.tool()
 async def get_pc_keystats_range(
     start: str,
     end: str,

@@ -419,8 +419,11 @@ public sealed class PcQualityLocatabilityTests
         Assert.Contains("2026-09-27 07:00", issue.Message);
         Assert.Contains("2026-09-27 13:00", issue.Message);
         // WO-PC-BACKEND-20261001 AC-4.1（#373）：details.disconnectedFromUtc 是最早一段的起点，
-        // 文案不得称其为「最近一次中断」；「最早一段」的起止要写在文案里。
-        Assert.Contains("最早一段", issue.Message);
+        // 文案不得称其为「最近一次中断」。本用例只有一段缺数，文案用「该段为 …」表述，
+        // 并明确它既是 disconnectedFromUtc 的取值、也是最近一段。
+        Assert.Contains("该段为", issue.Message);
+        Assert.Contains("disconnectedFromUtc", issue.Message);
+        Assert.Contains("最近一段", issue.Message);
         Assert.DoesNotContain("最近一次中断", issue.Message);
         Assert.Equal("6", tracker.Details["missingHourCount"]);
         Assert.Contains("2026-09-27 07:00", (string)tracker.Details["missingHours"]!);

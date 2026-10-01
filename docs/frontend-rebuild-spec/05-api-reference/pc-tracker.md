@@ -167,6 +167,15 @@
 ### GET /api/v1/pc/quality
 - 用途：PC 数据质量体检（总状态、组件状态、问题清单、下一步建议）。
 - 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 缓存：走聚合结果缓存；`force=true` 跳过缓存（即「冷缓存」路径）。
+- 性能（WO-PC-BACKEND-20261001 REQ-3/#372）：冷缓存路径此前对两张事件表做无索引的
+  `max(duration)`（内容地平线 / 跨范围起点回看窗口），实测 `pc_aw_events` 231,666 行走
+  `Parallel Seq Scan` 345.9 ms、`pc_tracker_events` 13,782 行走 `Seq Scan` 10.1 ms；
+  加 `duration` 索引后同样是 `Index Only Scan Backward`，分别 0.040 ms / 0.027 ms。
+  同一份二进制下只切换索引，`/pc/quality?date=…&force=true` 的 p50 由 268 ms 降到 129 ms；
+  单次冷缓存请求的 DB 往返由 20 次降到 15 次（其中 MAX/EXISTS 相关 10 → 5 次）。
+- 运维提示：`duration` 索引由启动时的 `CREATE INDEX IF NOT EXISTS` 建立，首次建索引会短暂持有
+  `SHARE` 锁（阻塞写入）；按当前表规模为秒级，后续启动只做目录检查。
 - Web 前端使用：是（PC 明细查询面板 PcDetailQueryPanel、状态页 StatusPage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -185,7 +194,7 @@
   | components[].name | string | 组件名 |
   | components[].status | PimHealthStatus | 组件状态（同上枚举） |
   | components[].message | string | 组件消息 |
-  | components[].details | Record<string, string> | 附加明细键值 |
+  | components[].details | Record<string, string \| object[]> | 附加明细键值。**既有键仍是字符串**；`tracker-events.details.missingSegments` 是对象数组（WO-PC-BACKEND-20261001 REQ-5/#377）。消费方取值时不要无脑 `String(value)`（数组会变成 `"[object Object]"`），请按键名区分 |
   | issues | PcQualityIssueDto[] | 问题列表 |
   | issues[].code | string | 问题码 |
   | issues[].severity | PimHealthStatus | 严重度（同上枚举） |
@@ -205,9 +214,12 @@
     `disconnectedFromUtc` 及 issue 文案**同源生成**；`missingHourCount` 仍按**小时**计、`missingSegments` 按**段**计，
     两者数量不一定相等（一段内部空洞可以横跨多个小时）。消费方不必再正则解析本地化文案。
   - `tracker-events-missing-hours` 问题文案语义（WO-PC-BACKEND-20261001 REQ-4/#373）：
-    `details.disconnectedFromUtc` 是最早一段的起点，因此文案表述为「检测到 N 段连续缺数（本地时间）：…；
-    最早一段为 A 到 B（disconnectedFromUtc 即该段起点）」。「最近一段」由 `trailingGapFromUtc` 表达；
+    `details.disconnectedFromUtc` 是最早一段的起点，因此文案把**最早一段**与**最近一段**分别点名：
+    多段时为「检测到 N 段连续缺数（本地时间）：…；最早一段为 A 到 B（disconnectedFromUtc 即该段起点）；
+    最近一段为 C 到 D。」；只有一段时为「该段为 A 到 B（既是 disconnectedFromUtc 的取值，也是最近一段）」。
     旧文案「最近一次中断自 …」与字段语义相反，已修正。
+    注意：`trailingGapFromUtc` 只描述**尾部**断档（最后一条数据到有效范围末尾，且 ≥1 小时、
+    非计划内下线），它不等于「最近一段」—— 内部空洞多段时它可以为空。
   - 组件 `message` 只描述本组件，不复制总览文案（`overallStatus` / `message`）。
 
 ### GET /api/v1/pc/heatmap/grid
@@ -287,15 +299,21 @@
   （含上限值、实际业务日跨度与「按业务日拆分」的建议），不静默截断。
   取值依据与实测代价（克隆库，内部路径真实调用）：
 
-  | 跨度 | 记录数 | 分配内存 | 耗时 |
+  | 跨度 | 记录数 | 分配内存 | 耗时（随机器负载波动） |
   | --- | --- | --- | --- |
-  | 1 天 | 1,210 | 112 MiB | 3.4 s |
-  | 7 天（上限） | 6,972 | 473 MiB | 3.9 s |
-  | 30 天（超限） | 33,707 | 2,279 MiB | 18.1 s |
-  | 60 天（超限） | — | 3,573 MiB 后以写库异常告终 | 40.2 s |
+  | 1 天 | 1,210 | 112 MiB | 3–7 s |
+  | 7 天（上限） | 6,972 | 470–540 MiB | 4–7 s |
+  | 30 天（超限） | 33,707 | 2,279 MiB | 18 s |
+  | 60 天（超限） | — | 3,573 MiB 后以写库异常告终 | 40 s |
 
   即 30 天单次请求要吃 2.2 GiB 常驻内存，60 天直接失败 —— 上限取 7 天（现有单日需求的 7 倍余量，
   单次驻留内存压在 ~0.5 GiB）。超限请求在 **0 ms / 0 MiB** 内被拒绝，不触发取数。
+- 已知边界（本次**未**处理，超出工单范围）：公开的 `GET /api/v1/pc/detail` 走同一个
+  `BuildCompleteDetailRecordsAsync`，一样会先把所请求范围的全部记录展开到内存再分页
+  （`QueryCompleteDetailAsync`），因此 `?dateFrom=…&dateTo=…&pageSize=1` 传 30 天同样是 2.2 GiB /
+  18 s 量级，且该路由匿名可访问。本次工单明确只允许改
+  `heatmap/grid` / `summary.heatmap` / `activity-analysis` 三个端点的口径，
+  `/pc/detail` 的契约不在授权范围内，故仅记录证据，建议另行提单。
 
 ---
 
@@ -1471,8 +1489,10 @@
   返回 192 个桶全 0，而同业务日的 `summary.heatmap` 非零 13 小时、合计 721 分钟；
   13 个小时与 `summary.heatmap` 不一致。这与 `summary.heatmap`「同名不同源」，
   消费方无法分辨「真的没有活动」与「端点已废」，因此不再保留「仍在服务但返回全 0」的中间态。
-- 替代端点：
-  - `GET /api/v1/pc/heatmap/grid`（区间网格，day / hour / month / year 四个维度，含 `businessDay`）；
+- 替代端点（注意：**没有**一个替代端点能在一次请求里给出「跨多日的逐小时序列」——
+  被删掉的能力正是这个形状，需要时请按业务日逐日请求 `heatmap/grid?dimension=hour`）：
+  - `GET /api/v1/pc/heatmap/grid`（区间网格：`dimension=day|month|year` 每业务日一格，含 `businessDay`；
+    `dimension=hour` 仅单业务日、每次 24 桶）；
   - `GET /api/v1/pc/summary` 的 `heatmap` 字段（单业务日 24 个小时桶）。
 - MCP：工具 `get_pc_aw_heatmap` 同步从工具表与工具目录移除；热力图调用请改用 `get_pc_heatmap`。
 - 迁移影响：Web 前端从未调用（前端封装 `getPcHeatmap` 无页面调用）；如仍有外部脚本调用本路由，

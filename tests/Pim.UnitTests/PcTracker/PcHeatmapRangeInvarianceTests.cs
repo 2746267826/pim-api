@@ -50,7 +50,7 @@ public sealed class PcHeatmapRangeInvarianceTests
 
     /// <summary>
     /// AC-1.3：采样断档不得被计为活跃。
-    /// <para>本地 D 12:00 → 20:00 之间 8 小时没有采样（与库内 2026-09-06 的 1463 分钟断档同型），
+    /// <para>本地 D 11:01 → 20:00 之间约 9 小时没有采样（与库内 2026-09-06 的 1463 分钟断档同型），
     /// 断档时段不得进入活跃并集。修复前该段被整段外推，当日桶报 540 分钟。</para>
     /// </summary>
     [Fact]
@@ -58,17 +58,17 @@ public sealed class PcHeatmapRangeInvarianceTests
     {
         await using var db = CreateDb();
         var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
-        AddSample(db, dayStart.AddHours(7));  // 本地 11:00
-        AddSample(db, dayStart.AddHours(8));  // 本地 12:00
-        AddSample(db, dayStart.AddHours(16)); // 本地 20:00（前一段 8 小时无采样）
+        AddSample(db, dayStart.AddHours(7));                 // 本地 11:00
+        AddSample(db, dayStart.AddHours(7).AddMinutes(1));   // 本地 11:01（正常 1 分钟采样）
+        AddSample(db, dayStart.AddHours(16));                // 本地 20:00（前一段 9 小时无采样）
         await db.SaveChangesAsync();
 
         var bucket = await BucketForAsync(Service(db), Day, Day);
 
-        // 真实活跃：11:00–12:00 一分钟 + 断档后至多一分钟（断档本身不计）。
+        // 真实活跃只有 11:00–11:01 这一分钟；9 小时断档一分钟都不许计入。
         Assert.True(
-            bucket.ActiveMinutes <= 3,
-            $"断档被算成活跃：activeMinutes={bucket.ActiveMinutes}（期望 ≤3，修复前为 540）");
+            bucket.ActiveMinutes == 1,
+            $"断档被算成活跃：activeMinutes={bucket.ActiveMinutes}（期望 1，修复前为 540）");
         Assert.True(bucket.ActiveMinutes <= 1440, $"AC-1.2：桶不得超过 1440 分钟，实际 {bucket.ActiveMinutes}");
     }
 
@@ -94,11 +94,13 @@ public sealed class PcHeatmapRangeInvarianceTests
     }
 
     /// <summary>
-    /// AC-1.6：同一业务日桶在「单日 / 30 天 / 整月」三种范围下必须收敛到同一个值，
-    /// 并且该值不超过当日真实活跃并集（≤1440）。
+    /// AC-1.1：生产形态的活跃来源（窗口事件 + 采样）同样必须范围不变 ——
+    /// 这一条在修复前是通过的（样本都落在目标日内，跨日配对不成立），
+    /// 保留它是为了防止「只在跨日采样对上修好」的回归。
+    /// AC-1.6 的三组生产数字（722/1145/1440 等）由克隆库实测对照表证明，不在单测里硬编码。
     /// </summary>
     [Fact]
-    public async Task GetHeatmapGridAsync_CellInsideGapKeepsRangeInvariance()
+    public async Task GetHeatmapGridAsync_ProductionShapedInputKeepsRangeInvariance()
     {
         await using var db = CreateDb();
         var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
@@ -117,6 +119,32 @@ public sealed class PcHeatmapRangeInvarianceTests
         Assert.Equal(single.ActiveMinutes, thirty.ActiveMinutes);
         Assert.Equal(single.ActiveMinutes, month.ActiveMinutes);
         Assert.InRange(single.ActiveMinutes, 1, 1440);
+    }
+
+    /// <summary>
+    /// AC-1.1 / AC-1.4（review round 2 补）：起点落在**前一业务日**、但跨过本地 04:00 伸进当日桶的
+    /// 窗口事件，也必须让两个请求范围给出同一个值。
+    /// <para>修复前该记录只按 <c>Timestamp &gt;= rangeStart</c> 取数：单日请求（rangeStart = 桶起点）
+    /// 整条漏掉，更宽的范围请求却算得进去 —— 实测单日 0 分钟 / 范围 60 分钟。</para>
+    /// </summary>
+    [Fact]
+    public async Task GetHeatmapGridAsync_WindowEventCrossingDayBoundary_IsRangeInvariant()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
+        // 本地 D 02:00 起、持续 3 小时：其中 60 分钟落在业务日 D（04:00 起）。
+        AddTrackerWindow(db, dayStart.AddHours(-2), 3 * 3600);
+        await db.SaveChangesAsync();
+        var service = Service(db);
+
+        var single = await BucketForAsync(service, Day, Day);
+        var ranged = await BucketForAsync(service, Day.AddDays(-1), Day);
+        var month = await BucketForAsync(service, Day.AddDays(-29), Day);
+
+        Assert.Equal(60, single.ActiveMinutes);
+        Assert.Equal(single.ActiveMinutes, ranged.ActiveMinutes);
+        Assert.Equal(single.ActiveMinutes, month.ActiveMinutes);
+        Assert.Equal(single.IntensityLevel, ranged.IntensityLevel);
     }
 
     private static async Task<HeatmapGridCell> BucketForAsync(

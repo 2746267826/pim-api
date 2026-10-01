@@ -72,7 +72,7 @@ public static class KeystatsDeltaCalculator
             leftClicks + rightClicks + middleClicks + sideBackClicks + sideForwardClicks,
             mouseDistance,
             scrollDistance,
-            (current.SampledAtUtc - previous.SampledAtUtc).TotalMinutes > 2,
+            (current.SampledAtUtc - previous.SampledAtUtc).TotalMinutes > GapThresholdMinutes,
             IsReset: false);
     }
 

@@ -10,7 +10,7 @@
 - [4. 通用约定 / Conventions](#4-通用约定--conventions)
 - [5. 工具全表 / Tools](#5-工具全表--tools)
   - [5.1 Calendar 31](#51-calendar-31)
-  - [5.2 PcTracker 27](#52-pctracker-27)
+  - [5.2 PcTracker 26](#52-pctracker-26)
   - [5.3 Mobile 18](#53-mobile-18)
   - [5.4 QuickNotes 3](#54-quicknotes-3)
   - [5.5 Files 8](#55-files-8)
@@ -28,7 +28,8 @@
 ### 是什么 / What it is
 - Python `FastMCP` 服务，地址 `scripts/mcp/pim_mcp_server.py`。
 - 双传输：`stdio`（默认，兼容 v2）+ `Streamable HTTP`（Phase 3，多客户端远程并发）。
-- 149 工具 = 读取 `100`（Calendar 31 + PcTracker 27 + Mobile 18 + QuickNotes 3 + Files 8 + Core/Infra 13）+ 写入 `49`（Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2）。
+- 149 工具 = 读取 `100`（Calendar 31 + PcTracker 26 + Mobile 19 + QuickNotes 3 + Files 7 + Core/Infra 14）+ 写入 `49`（Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2）。
+  （WO-PC-BACKEND-20261001 REQ-6：`get_pc_aw_heatmap` 随遗留端点下线，PcTracker 读工具 27 → 26。）
 - Python `FastMCP` service at `scripts/mcp/pim_mcp_server.py`. stdio (default) + Streamable HTTP.
 
 ### 能做什么 / What it can do
@@ -186,12 +187,12 @@ Content-Type: application/json
 
 ## 5. 工具全表 / Tools
 
-**总览 100**：`Calendar 31 | PcTracker 27 | Mobile 18 | QuickNotes 3 | Files 8 | Core 13`。
+**总览 100**：`Calendar 31 | PcTracker 26 | Mobile 19 | QuickNotes 3 | Files 7 | Core 14`。
 
 | 模块 | 工具数 | 常用 20 选 |
 |---|---|---|
 | Calendar | 31 | `get_events`, `get_tasks`, `get_calendar_layers`, `search_calendar_events`, `get_calendars` |
-| PcTracker | 27 | `get_pc_timeline_v2`, `get_pc_productivity_range`, `get_pc_focus_blocks`, `get_pc_category_distribution`, `get_pc_quality` |
+| PcTracker | 26 | `get_pc_timeline_v2`, `get_pc_productivity_range`, `get_pc_focus_blocks`, `get_pc_category_distribution`, `get_pc_quality` |
 | Mobile | 18 | `get_mobile_timeline`, `get_mobile_location_latest`, `get_mobile_analytics_overview`, `get_mobile_quality` |
 | QuickNotes | 3 | `get_quick_notes`, `get_quick_note` |
 | Files | 8 | `search_files`, `get_files`, `get_file` |
@@ -1172,7 +1173,7 @@ async def search_calendar_tasks(q: str, start: Optional[str] = None, end: Option
 }
 ```
 
-### 5.2 PcTracker 27
+### 5.2 PcTracker 26
 
 #### `get_pc_summary` — Daily summary.
 - **API**: `GET /pc/summary?date`
