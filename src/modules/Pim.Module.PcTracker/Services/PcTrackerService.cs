@@ -387,16 +387,21 @@ public partial class PcTrackerService
         // 跨边界记录与日内记录必须**一起**做解释（review round 4）：分两批解释时 AW 的
         // window/web 合并结果与 activity-analysis 的单批解释不同，会出现 grid/summary 120 分钟
         // 而 activity-analysis 5 分钟的分歧。
-        var awRecords = await BuildInterpretedAwDetailRecordsAsync(awEvents.Concat(crossingAwEvents).ToList(), ct);
-        var trackerRecords = await BuildInterpretedTrackerDetailRecordsAsync(trackerEvents.Concat(crossingTrackerEvents).ToList(), ct);
-        // REQ-1 / REQ-3：热力图与 activity-analysis 用同一批记录（window / web-page / input-minute）
-        // 与同一个重叠消解口径，两个接口的活跃时长与强度档位因此可交叉验证。
-        var activeRecords = awRecords
-            .Concat(trackerRecords)
+        // REQ-1（review round 4-5）：
+        // 1) 跨边界记录与日内记录**一起**解释（分两批时 AW 的 window/web 合并结果会与
+        //    activity-analysis 分叉：实测 120 分钟 vs 5 分钟）；
+        // 2) 解释结果**先裁剪到业务日窗口再落分类快照** —— 否则时间线会画出属于前一业务日的那一段
+        //    （本地 02:00–04:00），且同一条窗口在 summary 与内部分析路径下落到两个不同的 record_key。
+        var rules = await GetActivityCategoryRulesAsync(ct);
+        var activeRecords = BrowserPageTimelineBuilder
+            .BuildInterpretedAwRecords(awEvents.Concat(crossingAwEvents).ToList(), rules)
+            .Concat(TrackerPageTimelineBuilder.BuildInterpretedRecords(trackerEvents.Concat(crossingTrackerEvents).ToList(), rules))
             .Concat(await LoadInputMinuteRecordsAsync(dayStart, dayEnd, ct))
+            .Select(record => ClipRecordToRange(record, dayStart, dayEnd))
             .ToList();
+        activeRecords = await _classificationSnapshots.EnsureClassificationsAsync(activeRecords, rules, auditId: null, ct);
         var heatmap = BuildHourlyHeatmapFromRecords(dayStart, activeRecords, windowEvents, trackerWindowEvents);
-        var timeline = awRecords.Concat(trackerRecords)
+        var timeline = activeRecords
             .Where(IsSummaryTimelineRecord)
             .Select(ToTimelineItem)
             .ToList();

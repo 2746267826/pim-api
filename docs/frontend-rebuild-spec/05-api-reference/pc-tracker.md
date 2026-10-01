@@ -269,9 +269,11 @@
       边界处每设备每天最多少 1 分钟。
   - 同一口径同时作用于 `summary.heatmap` 与 `activity-analysis`：两者取自**同一批解释后记录**
     （跨边界记录与日内记录在同一批里解释，避免 AW window/web 的合并结果分叉），并经同一个
-    重叠消解口径汇总。`heatmap/grid` 走**原始事件**并集（不经解释层），因此同一业务日的日合计
-    与两者相差 ≤5 分钟（实测 2026-09-27 grid 681 / summary 679）—— 这是修复前就存在的
-    「原始事件 vs 解释后记录 + 逐小时取整」差异，与请求范围无关。
+    重叠消解口径汇总，且**先裁剪到业务日窗口再落分类快照**（时间线不会画出属于前一业务日的时段，
+    两侧 `record_key` 一致）。`heatmap/grid` 走**原始事件**并集（不经解释层），因此与两者存在两类
+    **修复前就有**的差异：逐小时取整带来的 ≤5 分钟差（实测 2026-09-27 grid 681 / summary 679），
+    以及「同一条 AW 窗口被网页记录解释掉」时整段的差（实测 grid 120 分钟 / summary 与
+    activity-analysis 5 分钟；该差异在事件完全落在日内时同样存在）。两者均与请求范围无关。
   - `/pc/detail` **不在**本口径内：它仍只返回「起点落在所请求范围内」的记录（对外契约不变），
     跨边界记录不会出现在明细页的相邻分页里。
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:725-757`（服务 `Services/PcTrackerService.cs` `GetHeatmapGridAsync`）；DTO `DTOs/PcTrackerDtos.cs`（`HeatmapGridCell` / `HeatmapGridResponse`）
