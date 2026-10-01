@@ -267,9 +267,13 @@
     - 采样稀疏（上报间隔 > 2 分钟）的那段时间显示为**非活跃** —— 宁可少算，不可把断档算成活跃；
     - 正常 1 分钟采样对跨业务日边界时（本地 03:59 → 04:00），该对整条丢弃，
       边界处每设备每天最多少 1 分钟。
-  - 同一口径同时作用于 `summary.heatmap` 与 `activity-analysis`（三个接口用同一批记录与同一消解口径）。
-    实测同一业务日 grid 与 summary 的日合计差 ≤5 分钟（2026-09-27 681 vs 679），
-    来源是「原始事件 vs 解释后记录 + 逐小时取整」的既有差异，与请求范围无关。
+  - 同一口径同时作用于 `summary.heatmap` 与 `activity-analysis`：两者取自**同一批解释后记录**
+    （跨边界记录与日内记录在同一批里解释，避免 AW window/web 的合并结果分叉），并经同一个
+    重叠消解口径汇总。`heatmap/grid` 走**原始事件**并集（不经解释层），因此同一业务日的日合计
+    与两者相差 ≤5 分钟（实测 2026-09-27 grid 681 / summary 679）—— 这是修复前就存在的
+    「原始事件 vs 解释后记录 + 逐小时取整」差异，与请求范围无关。
+  - `/pc/detail` **不在**本口径内：它仍只返回「起点落在所请求范围内」的记录（对外契约不变），
+    跨边界记录不会出现在明细页的相邻分页里。
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:725-757`（服务 `Services/PcTrackerService.cs` `GetHeatmapGridAsync`）；DTO `DTOs/PcTrackerDtos.cs`（`HeatmapGridCell` / `HeatmapGridResponse`）
 - 备注：hour 维度合并 AW 与 tracker window 事件并跨来源去重（#303）；day 维度的活跃分钟同样走统一的区间并集口径（REQ-3）。
 
