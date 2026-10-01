@@ -422,33 +422,46 @@ public class PcTrackerModule : IModule
             [FromServices] ActivityClassificationSettingsService settingsService,
             CancellationToken ct) =>
         {
-            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
-            var q = new DetailQueryParams(
-                d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                1,
-                500);
-            // REQ-1（#362）：建议生成的扫描输入同样必须覆盖整个业务日 ——
-            // 走内部分析路径，不再被 /pc/detail 的分页上限（200 且只取第 1 页）截断。
-            // REQ-5（#366）：date 参数语义 = 「扫描该业务日的记录并刷新建议」，
-            // 列表本身仍返回全量待处理建议（结果每条带 generatedForDate 供归日）。
-            var records = (await pcTrackerService.QueryAllDetailRecordsAsync(q, ct))
-                .Where(NeedsClassificationSuggestion)
-                .ToList();
-            var settings = await settingsService.GetSettingsAsync(ct);
-            var suggestions = await suggestionService.BuildSuggestionsAsync(
-                records,
-                settings.RecommendedMinimumClassificationDurationMinutes,
-                ct);
-            return Results.Ok(ApiResponse<List<ActivityClassificationSuggestionDto>>.Ok(suggestions));
+            try
+            {
+                var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
+                var q = new DetailQueryParams(
+                    d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    1,
+                    500);
+                // REQ-1（#362）：建议生成的扫描输入同样必须覆盖整个业务日 ——
+                // 走内部分析路径，不再被 /pc/detail 的分页上限（200 且只取第 1 页）截断。
+                // REQ-5（#366）：date 参数语义 = 「扫描该业务日的记录并刷新建议」，
+                // 列表本身仍返回全量待处理建议（结果每条带 generatedForDate 供归日）。
+                var records = (await pcTrackerService.QueryAllDetailRecordsAsync(q, ct))
+                    .Where(NeedsClassificationSuggestion)
+                    .ToList();
+                var settings = await settingsService.GetSettingsAsync(ct);
+                var suggestions = await suggestionService.BuildSuggestionsAsync(
+                    records,
+                    settings.RecommendedMinimumClassificationDurationMinutes,
+                    ct);
+                return Results.Ok(ApiResponse<List<ActivityClassificationSuggestionDto>>.Ok(suggestions));
+            }
+            // REQ-2（#371）：内部取数路径的跨度上限与非法参数必须以 400 返回，
+            // 不能变成 500 —— 与 /pc/activity-analysis 同一套映射。
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
         });
 
         readGroup.MapGet("/classification/project-tags/recent", async (
