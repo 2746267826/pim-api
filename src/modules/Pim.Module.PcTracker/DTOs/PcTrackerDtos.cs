@@ -99,6 +99,12 @@ public record HeatmapBucket(
 /// 强度档位统一为 <see cref="IntensityLevel"/>（0–5，上界 <see cref="IntensityMax"/>），
 /// 与 <c>summary.heatmap</c>、<c>activity-analysis</c> 同量纲。
 /// </para>
+/// <para>
+/// WO-PC-BACKEND-20261001 REQ-7（#380）：新增 <see cref="BusinessDay"/>（<c>yyyy-MM-dd</c>）。
+/// 业务日自本地 04:00 起算，因此一个业务日的最后 4 个小时桶（本地 00:00–03:59）
+/// 的 <see cref="Start"/> 落在**次日** UTC 时刻 —— 消费方按 +08:00 日历日推断会把它们归错天。
+/// 该字段对 hour / day / month / year 四个维度一律返回，取值与同业务日的 day 桶一致。
+/// </para>
 /// </summary>
 public record HeatmapGridCell(
     string Start,
@@ -108,7 +114,8 @@ public record HeatmapGridCell(
     int TotalEvents,
     int IntensityLevel,
     int IntensityMax,
-    int KeyPressCount
+    int KeyPressCount,
+    string BusinessDay
 );
 
 public record AppRankingItem(

@@ -179,7 +179,7 @@ public sealed class PcTrackerQualityService
             "数据可信度尺子",
             verdict.Status,
             verdict.Message,
-            new Dictionary<string, string>
+            new Dictionary<string, object?>
             {
                 ["redRules"] = string.Join(",", verdict.RedRules),
                 ["yellowRules"] = string.Join(",", verdict.YellowRules),
@@ -272,7 +272,7 @@ public sealed class PcTrackerQualityService
         }
 
         issues.AddRange(componentIssues);
-        var details = new Dictionary<string, string>
+        var details = new Dictionary<string, object?>
         {
             ["bucketCount"] = buckets.Count.ToString(),
             ["staleBucketCount"] = staleBuckets.ToString()
@@ -340,7 +340,7 @@ public sealed class PcTrackerQualityService
         }
 
         issues.AddRange(componentIssues);
-        var details = new Dictionary<string, string>
+        var details = new Dictionary<string, object?>
         {
             ["eventCount"] = events.Count.ToString(),
             ["windowEventCount"] = events.Count(IsWindowEvent).ToString(),
@@ -460,13 +460,18 @@ public sealed class PcTrackerQualityService
                 "tracker-events-missing-hours",
                 PimHealthStatus.Warning,
                 "tracker-events",
+                // REQ-4（#373）：details.disconnectedFromUtc 取的是**最早一段**断档的起点。
+                // 旧文案写「最近一次中断自 …」，多段断档时会指向最早那段却声称是最近 —— 与字段语义相反。
+                // 现在按语义表述：段数 + 全部时段 + 最早一段的起止；
+                // 「最近一段」由尾部断档字段（trailingGapFromUtc）表达，不再混用。
                 $"检测到 {coverage.Gaps.Count} 段连续缺数（本地时间）：{coverage.DescribeGaps()}；" +
-                $"最近一次中断自 {FormatLocal(first.StartUtc)} 起。",
+                $"最早一段为 {FormatLocal(first.StartUtc)} 到 {FormatLocal(first.EndUtc)}" +
+                $"（disconnectedFromUtc 即该段起点）。",
                 "核对这段时间内 Windows 守护程序是否在运行、是否上报失败。"));
         }
 
         issues.AddRange(componentIssues);
-        var details = new Dictionary<string, string>
+        var details = new Dictionary<string, object?>
         {
             ["eventCount"] = events.Count.ToString(),
             ["windowEventCount"] = events.Count(IsTrackerWindowEvent).ToString(),
@@ -489,6 +494,12 @@ public sealed class PcTrackerQualityService
             ["missingHourCount"] = coverage.MissingHourCount.ToString(),
             ["missingHours"] = coverage.DescribeMissingHours(),
             ["disconnectedFromUtc"] = coverage.DisconnectedFromUtc?.ToString("O") ?? string.Empty,
+            // REQ-5（#377）：缺数时段的机器可读版本，与同一份 CoverageGaps 同源生成 ——
+            // 与 issues 里的本地化文案不可能出现「文案里有、字段里没有」的时段（AC-5.2）。
+            // 既有 missingHours / missingHourCount 原样保留（AC-5.3）。
+            ["missingSegments"] = coverage.Gaps
+                .Select(gap => new PcQualityMissingSegmentDto(gap.StartUtc.ToString("O"), gap.EndUtc.ToString("O")))
+                .ToList(),
             ["lastDataAtUtc"] = coverage.LastDataAtUtc?.ToString("O") ?? string.Empty,
             ["trailingGapMinutes"] = Math
                 .Round(TrailingGapMinutes(coverage, rangeStart, coverageEnd))
@@ -994,7 +1005,7 @@ public sealed class PcTrackerQualityService
         }
 
         issues.AddRange(componentIssues);
-        var details = new Dictionary<string, string>
+        var details = new Dictionary<string, object?>
         {
             ["sampleCount"] = samples.Count.ToString(),
             ["gapCount"] = gaps.ToString(),
@@ -1015,7 +1026,7 @@ public sealed class PcTrackerQualityService
         List<PcQualityIssueDto> issues)
     {
         var componentIssues = new List<PcQualityIssueDto>();
-        var details = new Dictionary<string, string>
+        var details = new Dictionary<string, object?>
         {
             ["rangeStartUtc"] = rangeStart.ToString("O"),
             ["rangeEndUtc"] = rangeEnd.ToString("O")
@@ -1250,7 +1261,7 @@ public sealed class PcTrackerQualityService
         }
 
         issues.AddRange(componentIssues);
-        var details = new Dictionary<string, string>
+        var details = new Dictionary<string, object?>
         {
             ["hasActivityEvents"] = hasActivityEvents.ToString(),
             ["hasActivityWatchEvents"] = (awEvents.Count > 0).ToString(),
@@ -1299,7 +1310,7 @@ public sealed class PcTrackerQualityService
         string key,
         string name,
         IReadOnlyCollection<PcQualityIssueDto> issues,
-        IReadOnlyDictionary<string, string> details)
+        IReadOnlyDictionary<string, object?> details)
     {
         var status = issues.Count == 0
             ? PimHealthStatus.Healthy

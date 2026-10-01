@@ -152,7 +152,7 @@ public sealed class PcQualityLocatabilityTests
         var daemon = Assert.Single(result.Components, c => c.Key == "daemon-upload");
         // 心跳与内容一起停住，且查询范围还超出内容 → 成因码取更具体的那个（措辞同时给出两种可能）。
         Assert.Equal("content-and-heartbeat-frozen", daemon.Details["staleCause"]);
-        Assert.True(int.Parse(daemon.Details["rangeShortfallMinutes"], CultureInfo.InvariantCulture) >= 24 * 60);
+        Assert.True(int.Parse((string)daemon.Details["rangeShortfallMinutes"]!, CultureInfo.InvariantCulture) >= 24 * 60);
         var issue = Assert.Single(result.Issues, i => i.Code == "content-and-heartbeat-frozen");
         Assert.Equal(PimHealthStatus.Warning, issue.Severity);
         // 心跳判据同样保留（心跳确实过期了）。
@@ -289,7 +289,7 @@ public sealed class PcQualityLocatabilityTests
         var tracker = Assert.Single(result.Components, c => c.Key == "tracker-events");
         Assert.DoesNotContain(result.Issues, i => i.Code == "tracker-events-missing-hours");
         Assert.Equal("0", tracker.Details["missingHourCount"]);
-        Assert.Equal(string.Empty, tracker.Details["missingHours"]);
+        Assert.Equal(string.Empty, (string)tracker.Details["missingHours"]!);
         // 缺数判定与 trailingGapMinutes 用同一个有效范围末尾（= 现在，而不是还在未来的业务日末尾）。
         Assert.Equal(Now.ToString("O"), tracker.Details["coverageEndUtc"]);
         Assert.Equal("4", tracker.Details["trailingGapMinutes"]);
@@ -318,12 +318,12 @@ public sealed class PcQualityLocatabilityTests
 
         // 脏时长不覆盖任何时段：这条事件之后的真实空洞仍然可见。
         var tracker = Assert.Single(result.Components, c => c.Key == "tracker-events");
-        Assert.True(int.Parse(tracker.Details["missingHourCount"]) > 0, tracker.Details["missingHourCount"]);
-        Assert.Contains("2026-09-27 23:00", tracker.Details["missingHours"]);
+        Assert.True(int.Parse((string)tracker.Details["missingHourCount"]!) > 0, (string)tracker.Details["missingHourCount"]!);
+        Assert.Contains("2026-09-27 23:00", (string)tracker.Details["missingHours"]!);
         Assert.Contains(result.Issues, i => i.Code == "tracker-events-missing-hours");
         // 同一小时不能既被记为有数据（零长记录停在整点上）又列进缺数列表。
         Assert.Equal(dayStart.AddHours(2).ToString("O"), tracker.Details["lastDataAtUtc"]);
-        Assert.DoesNotContain("2026-09-27 06:00", tracker.Details["missingHours"]);
+        Assert.DoesNotContain("2026-09-27 06:00", (string)tracker.Details["missingHours"]!);
     }
 
     [Fact]
@@ -418,9 +418,13 @@ public sealed class PcQualityLocatabilityTests
         var issue = Assert.Single(result.Issues, i => i.Code == "tracker-events-missing-hours");
         Assert.Contains("2026-09-27 07:00", issue.Message);
         Assert.Contains("2026-09-27 13:00", issue.Message);
+        // WO-PC-BACKEND-20261001 AC-4.1（#373）：details.disconnectedFromUtc 是最早一段的起点，
+        // 文案不得称其为「最近一次中断」；「最早一段」的起止要写在文案里。
+        Assert.Contains("最早一段", issue.Message);
+        Assert.DoesNotContain("最近一次中断", issue.Message);
         Assert.Equal("6", tracker.Details["missingHourCount"]);
-        Assert.Contains("2026-09-27 07:00", tracker.Details["missingHours"]);
-        Assert.Contains("2026-09-27 12:00", tracker.Details["missingHours"]);
+        Assert.Contains("2026-09-27 07:00", (string)tracker.Details["missingHours"]!);
+        Assert.Contains("2026-09-27 12:00", (string)tracker.Details["missingHours"]!);
         Assert.Equal(dayStart.AddHours(3).ToString("O"), tracker.Details["disconnectedFromUtc"]);
     }
 
@@ -444,8 +448,8 @@ public sealed class PcQualityLocatabilityTests
         var tracker = Assert.Single(result.Components, c => c.Key == "tracker-events");
         // 缺数小时 = 07:00（1 个）+ 09:00–12:00（4 个）；08:00 因为采样而被视为有数据。
         Assert.Equal("5", tracker.Details["missingHourCount"]);
-        Assert.Contains("2026-09-27 07:00", tracker.Details["missingHours"]);
-        Assert.DoesNotContain("2026-09-27 08:00", tracker.Details["missingHours"]);
+        Assert.Contains("2026-09-27 07:00", (string)tracker.Details["missingHours"]!);
+        Assert.DoesNotContain("2026-09-27 08:00", (string)tracker.Details["missingHours"]!);
         Assert.Equal(dayStart.AddHours(3).ToString("O"), tracker.Details["disconnectedFromUtc"]);
     }
 
