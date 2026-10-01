@@ -27,12 +27,26 @@ export type PcQualityLagVerdict =
   | 'heartbeat-channel'
   | 'ambiguous-frozen';
 
+/**
+ * 「连续缺数时段」的来源（WO-FRONTEND-PC-20261001 REQ-3）。
+ *
+ * - `details`：后端结构化字段 `details.missingSegments`（WO-PC-BACKEND-20261001 REQ-5），首选；
+ * - `message-fallback`：字段缺失/解析失败时，退到本地化文案解析的**临时兜底**（必须同时给出
+ *   可读提示，界面不得假装它是结构化字段给的）；
+ * - `unavailable`：两条路都拿不到时刻 —— 时段不可用，界面必须明说并给出小时清单。
+ */
+export type PcMissingSegmentsSource = 'details' | 'message-fallback' | 'unavailable';
+
 export interface PcQualityLocatability {
   /** 缺数小时（本地时间字面量，来自响应字段） */
   missingHours: string[];
   missingHourCount: number | null;
-  /** 连续缺数时段（从后端 issue 文案里解析出的「起–止」） */
+  /** 连续缺数时段（展示用「起–止」本地时间串） */
   missingSegments: string[];
+  /** 上面的时段从哪来（AC-3.1 ~ AC-3.4） */
+  missingSegmentsSource: PcMissingSegmentsSource;
+  /** 时段不可用 / 只是兜底时的可读提示；字段可用时为 null */
+  missingSegmentsNotice: string | null;
   /** 是否检测到缺数 */
   hasMissingHours: boolean;
   /** 本库数据最后内容时刻（UTC ISO） */
@@ -90,6 +104,118 @@ export function parseMissingSegments(message: string | null | undefined): string
   return matches ? [...new Set(matches.map(m => m.replace(/-(\d{4}-\d{2}-\d{2})/g, '–$1')))] : [];
 }
 
+/** PC 模块墙钟固定 Asia/Shanghai（UTC+8，无夏令时），与后端业务日口径一致。 */
+const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+/**
+ * UTC ISO → 本地（Asia/Shanghai）「yyyy-MM-dd HH:mm」。
+ *
+ * 结构化字段给的是 `startUtc` / `endUtc`，而小时清单与旧文案都是本地时间；
+ * 两者必须同口径，否则同一张卡片上会出现相差 8 小时的时段。
+ */
+export function formatLocalDateTime(value: string): string | null {
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return null;
+  const shifted = new Date(ms + SHANGHAI_OFFSET_MS);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())} ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}`;
+}
+
+/** 「起–止」形状（本地或 UTC 均可），用于识别后端可能直接给的字符串时段。 */
+const SEGMENT_SHAPE = /\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}\s*[–—-]\s*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/;
+
+function normalizeSegmentSeparator(value: string): string {
+  return value.replace(/\s*[–—-]\s*(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})/, '–$1');
+}
+
+function segmentFromString(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!SEGMENT_SHAPE.test(trimmed)) return null;
+  return normalizeSegmentSeparator(trimmed);
+}
+
+/** 结构化元素 → 展示串；认不出来返回 null（不猜、不渲染半截）。 */
+function segmentFromItem(item: unknown): string | null {
+  if (typeof item === 'string') return segmentFromString(item);
+  if (item && typeof item === 'object') {
+    const record = item as Record<string, unknown>;
+    const start = record.startUtc ?? record.start;
+    const end = record.endUtc ?? record.end;
+    if (typeof start !== 'string' || typeof end !== 'string') return null;
+    const from = formatLocalDateTime(start);
+    const to = formatLocalDateTime(end);
+    if (!from || !to) return null;
+    return `${from}–${to}`;
+  }
+  return null;
+}
+
+export interface ParsedMissingSegments {
+  /** 字段在响应里是否有非空取值 */
+  present: boolean;
+  /** 是否所有元素都解析成功（present 且 ok 才按结构化字段呈现） */
+  ok: boolean;
+  /** 展示用「起–止」串 */
+  segments: string[];
+}
+
+/**
+ * 解析 `details.missingSegments`（AC-3.1）。
+ *
+ * 后端 `PcQualityComponentDto.Details` 是 `IReadOnlyDictionary<string, string>`，所以该字段
+ * 大概率是 JSON 字符串；这里同时接受三种形状，避免后端换序列化方式就整块失效：
+ * 1. JSON 字符串（对象数组，元素含 `startUtc` / `endUtc`）—— 工单约定的形状；
+ * 2. JSON 字符串（字符串数组，元素本身就是「起–止」）；
+ * 3. 裸「起–止」串（用 `;`/`；`/换行 分隔）。
+ *
+ * 空数组、认不出的内容都算**解析失败**（`ok: false`），由调用方给出降级提示，
+ * 不允许默默当成「没有缺数时段」。
+ */
+export function parseMissingSegmentsField(raw: unknown): ParsedMissingSegments {
+  if (raw === undefined || raw === null) return { present: false, ok: false, segments: [] };
+  if (Array.isArray(raw)) return fromList(raw, true);
+  if (typeof raw !== 'string') return fromList([raw], true);
+
+  const trimmed = raw.trim();
+  if (trimmed === '') return { present: false, ok: false, segments: [] };
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return fromList(parsed, true);
+    return fromList([parsed], true);
+  } catch {
+    // 不是 JSON：按分隔符拆「起–止」串。
+    const parts = trimmed
+      .split(/[;；\n]/)
+      .map(segmentFromString)
+      .filter((s): s is string => s !== null);
+    return { present: true, ok: parts.length > 0, segments: parts };
+  }
+}
+
+function fromList(items: unknown[], present: boolean): ParsedMissingSegments {
+  const parsed = items.map(segmentFromItem);
+  const segments = [...new Set(parsed.filter((s): s is string => s !== null))];
+  return { present, ok: segments.length > 0 && parsed.every(s => s !== null), segments };
+}
+
+function missingSegmentsNotice(
+  parsed: ParsedMissingSegments,
+  usedFallback: boolean,
+): string | null {
+  if (parsed.present && parsed.ok) return null;
+  if (parsed.present) {
+    // 字段在，但内容认不出来 —— 必须说出来，不能退化成「没有时段」。
+    return usedFallback
+      ? 'details.missingSegments 解析失败，以下时段由后端文案临时兜底解析；后端字段修好后会自动改为按字段渲染。'
+      : 'details.missingSegments 解析失败，且后端文案中也没有可识别的时刻 —— 连续缺数时段不可用，请以下方小时清单为准。';
+  }
+  return usedFallback
+    ? '接口未提供结构化缺数时段（details.missingSegments 缺失）：以下时段由后端文案临时兜底解析，后端补齐字段后会自动改为按字段渲染。'
+    : '连续缺数时段不可用：接口未提供结构化时段字段（details.missingSegments 缺失），后端文案中也没有可识别的时刻；请以下方小时清单为准。';
+}
+
 export function describePcQualityLocatability(quality: PcQualityResponse | undefined): PcQualityLocatability {
   const tracker = componentByKey(quality, 'tracker-events');
   const daemon = componentByKey(quality, 'daemon-upload');
@@ -100,7 +226,23 @@ export function describePcQualityLocatability(quality: PcQualityResponse | undef
     : [];
   const missingHourCount = readNumber(tracker?.details, 'missingHourCount');
   const missingIssue = quality?.issues.find(issue => issue.code === 'tracker-events-missing-hours');
-  const missingSegments = parseMissingSegments(missingIssue?.message);
+
+  // AC-3.1：优先按结构化字段渲染；只有字段缺失/解析失败时才退到文案兜底（D-2），
+  // 且无论哪条路都要留下可读提示（AC-3.2），不允许静默无时段。
+  const parsedField = parseMissingSegmentsField(
+    tracker?.details ? (tracker.details as Record<string, unknown>)['missingSegments'] : undefined,
+  );
+  const fallbackSegments = parsedField.present && parsedField.ok
+    ? []
+    : parseMissingSegments(missingIssue?.message);
+  const useField = parsedField.present && parsedField.ok;
+  const missingSegments = useField ? parsedField.segments : fallbackSegments;
+  const missingSegmentsSource: PcMissingSegmentsSource = useField
+    ? 'details'
+    : fallbackSegments.length > 0
+      ? 'message-fallback'
+      : 'unavailable';
+  const segmentsNotice = missingSegmentsNotice(parsedField, fallbackSegments.length > 0);
 
   const contentHorizonUtc = readDetail(daemon?.details, 'contentHorizonUtc');
   const dataHorizonUtc = readDetail(daemon?.details, 'dataHorizonUtc');
@@ -133,7 +275,12 @@ export function describePcQualityLocatability(quality: PcQualityResponse | undef
     missingHours,
     missingHourCount,
     missingSegments,
-    hasMissingHours: missingHours.length > 0 || missingSegments.length > 0,
+    missingSegmentsSource,
+    missingSegmentsNotice: segmentsNotice,
+    // `missingHourCount` 也算「有缺数」：字段解析不出来时小时清单可能为空串，但后端已经
+    // 明确报了缺数小时数 —— 那时缺数块（含降级提示）必须照常出现，不能整块消失。
+    hasMissingHours:
+      missingHours.length > 0 || missingSegments.length > 0 || (missingHourCount ?? 0) > 0,
     contentHorizonUtc,
     dataHorizonUtc,
     databaseLagMinutes,

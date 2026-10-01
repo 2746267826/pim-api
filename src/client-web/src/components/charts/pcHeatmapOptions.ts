@@ -37,6 +37,37 @@ export function bucketDatePart(start: string): string {
   return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
 }
 
+/**
+ * 桶自带的业务日字面量（`businessDay`，yyyy-MM-dd）。
+ *
+ * 后端在 WO-PC-BACKEND-20261001 REQ-7 给 hour 桶补了这个字段；格式不对或不是字符串
+ * 一律按「字段缺失」处理（AC-2.3 不允许拿不合法的值当业务日）。
+ */
+export function normalizeBusinessDay(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null;
+}
+
+/**
+ * hour 桶 → 工具提示的日期段（AC-2.1 ~ AC-2.3）。
+ *
+ * hour 桶的 `start` 是**真实小时起点**（业务日 D 的最后 4 个桶 = 本地 D+1 00:00–03:00），
+ * 所以 +08:00 日历日不等于业务日 —— 那正是 #380 把业务日标成次日的根因。
+ * 因此：
+ * - 有 `businessDay` → 显示「业务日 D HH:mm」；
+ * - 没有 → 显示本地「D+1 HH:mm」但**显式标注成日历日**并说明业务日不可用，
+ *   绝不把日历日冒充成业务日。
+ */
+export function hourBucketDatePart(bucket: HeatmapBucket): string {
+  const ms = Date.parse(bucket.start);
+  const clock = Number.isNaN(ms) ? null : formatClock(ms);
+  const businessDay = normalizeBusinessDay(bucket.businessDay);
+  if (businessDay) return clock ? `业务日 ${businessDay} ${clock}` : `业务日 ${businessDay}`;
+  const calendar = clock ? `${bucketDatePart(bucket.start)} ${clock}` : bucketDatePart(bucket.start);
+  return `${calendar}（日历日；接口未提供业务日）`;
+}
+
 /** 活动热力单元格：x/y 网格坐标 + 原始桶 + 用于着色的强度值 */
 export interface ActivityCell {
   x: number;
@@ -349,7 +380,13 @@ export function buildActivityHeatmapOption(data: HeatmapGridResponse | undefined
         if (!bucket) return '';
         // 键数取原始计数 keyPressCount（上界 maxKeyCount）；activeMinutes 为桶内真实活跃分钟
         // （day/month/year 维度后端已由恒 0 改为真实值，REQ-9）。
-        return `${bucketDatePart(bucket.start)} · ${bucket.keyPressCount ?? 0} 次输入 · 活跃 ${bucket.activeMinutes ?? 0} 分钟`;
+        // 日期段：hour 桶必须按业务日标注（REQ-2）；day/month/year 的桶窗口本身就是业务日窗口，
+        // 字段在时优先用字段，字段缺失时按 +08:00 换算仍是该桶的业务日。
+        const datePart =
+          dimension === 'hour'
+            ? hourBucketDatePart(bucket)
+            : normalizeBusinessDay(bucket.businessDay) ?? bucketDatePart(bucket.start);
+        return `${datePart} · ${bucket.keyPressCount ?? 0} 次输入 · 活跃 ${bucket.activeMinutes ?? 0} 分钟`;
       },
       backgroundColor: 'rgba(15, 23, 42, 0.92)',
       textStyle: { color: '#fff', fontSize: 11 },
