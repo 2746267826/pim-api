@@ -80,8 +80,11 @@ describe('WO-FRONTEND-PC-20261001 AC-2.1 / AC-2.2 · hour 桶提示按业务日�
   });
 
   it('day 维度提示也优先用 businessDay 字段（同一业务日口径）', () => {
-    const text = tooltipFor('day', hourBucket('2026-09-26T20:00:00.0000000+00:00', 0, { businessDay: '2026-09-27' }));
-    expect(text).toContain('2026-09-27');
+    // 用与 +08:00 换算结果**不同**的字段值，才能证明真的读了字段：
+    // 该桶的 start 按 +08:00 算是 2026-09-27，字段故意给 2026-09-25。
+    const text = tooltipFor('day', hourBucket('2026-09-26T20:00:00.0000000+00:00', 0, { businessDay: '2026-09-25' }));
+    expect(text).toContain('2026-09-25');
+    expect(text).not.toContain('2026-09-27');
   });
 
   it('键数与活跃分钟仍在同一行（修复标注不得丢掉原有取值）', () => {

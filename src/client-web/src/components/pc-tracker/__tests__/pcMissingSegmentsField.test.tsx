@@ -207,6 +207,17 @@ describe('WO-FRONTEND-PC-20261001 AC-3.2 / AC-3.4 · 字段缺失必须显式降
     expect((missingBlock(container) ?? '')).toContain('解析失败');
   });
 
+  it('字段是合法空数组时按「没有连续缺数」处理：不报解析失败，也不伪造时段', () => {
+    const loc = describePcQualityLocatability(
+      quality({ missingHours: MISSING_HOURS_LOCAL, missingHourCount: MISSING_HOURS_COUNT, missingSegments: '[]' }),
+    );
+    expect(loc.missingSegmentsSource).toBe('details');
+    expect(loc.missingSegments).toEqual([]);
+    expect(loc.missingSegmentsNotice).toBeNull();
+    // 小时清单还在（缺的是「时段」，不是「缺数」本身）
+    expect(loc.missingHours).toContain('2026-09-26 16:00');
+  });
+
   it('字段存在但元素缺 startUtc/endUtc：按解析失败处理，不渲染半截时段', () => {
     // 文案里也不给时段，隔离出「字段本身半截」这一条路。
     const loc = describePcQualityLocatability(

@@ -194,7 +194,9 @@ export function parseMissingSegmentsField(raw: unknown): ParsedMissingSegments {
 function fromList(items: unknown[], present: boolean): ParsedMissingSegments {
   const parsed = items.map(segmentsFromItem);
   const segments = [...new Set(parsed.flat())];
-  return { present, ok: segments.length > 0 && parsed.every(s => s.length > 0), segments };
+  // 空列表是**合法**取值（后端明确表示「没有连续缺数」），不能当成解析失败；
+  // 非空列表里只要有一个元素产不出时段，就是解析失败（逐元素交代，不静默丢弃）。
+  return { present, ok: parsed.every(s => s.length > 0), segments };
 }
 
 function missingSegmentsNotice(parsed: ParsedMissingSegments): string | null {
