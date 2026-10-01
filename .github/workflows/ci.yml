@@ -136,6 +136,7 @@ jobs:
               - '.github/actions/**'
             web:
               - 'src/client-web/**'
+              - 'tests/client-web/**'
               - 'branding/**'
               - 'scripts/branding/**'
               - '.github/workflows/build-web.yml'
