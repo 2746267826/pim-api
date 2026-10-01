@@ -163,6 +163,31 @@ public sealed class PcTrackerEndpointsE2ETests
         }
     }
 
+    /// <summary>
+    /// WO-PC-BACKEND-20261001 · AC-2.2：内部取数路径（<c>QueryAllDetailRecordsAsync</c>）的调用方
+    /// 在参数被拒绝时必须返回 400 + 可读文案，而不是 500。
+    /// <para>
+    /// 走 <c>/pc/classification/suggestions</c>：该端点的 date 语义是「扫描该业务日」，
+    /// 无法从 HTTP 构造出超限跨度（跨度守卫本身由
+    /// <c>PcInternalQuerySpanLimitTests</c> 在服务层断言），因此这里验证的是同一段
+    /// <c>ArgumentException</c>/<c>FormatException</c> → 400 映射在真实宿主上生效 ——
+    /// 修复前该请求是 500（内部服务器错误），修复后是 400 + 具体原因。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task ClassificationSuggestions_RejectedInputReturns400InsteadOf500()
+    {
+        using var factory = CreateFactory();
+        var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/v1/pc/classification/suggestions?date=not-a-date");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(400, document.RootElement.GetProperty("code").GetInt32());
+        Assert.False(string.IsNullOrWhiteSpace(document.RootElement.GetProperty("message").GetString()));
+    }
+
     [Fact]
     public async Task ClassificationSuggestions_ScanWholeBusinessDayAndCarryGeneratedForDate()
     {

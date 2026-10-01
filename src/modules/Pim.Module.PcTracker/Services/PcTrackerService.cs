@@ -686,7 +686,47 @@ public partial class PcTrackerService
     /// </para>
     /// </summary>
     public async Task<List<PcDetailRecord>> QueryAllDetailRecordsAsync(DetailQueryParams q, CancellationToken ct)
-        => await BuildCompleteDetailRecordsAsync(q, ct);
+    {
+        EnsureInternalQuerySpan(q);
+        return await BuildCompleteDetailRecordsAsync(q, ct);
+    }
+
+    /// <summary>
+    /// 内部全量取数路径的单次跨度上限（REQ-2 / #371）：**7 个业务日**。
+    /// <para>
+    /// 取值依据（实测于克隆库 pim_wo2，内部路径真实调用，见 PR 的 AC-2.3 表）：
+    /// 1 天 = 1,210 条 / 112 MiB / 4.1 s，7 天 = 6,972 条 / 539 MiB / 5.1 s，
+    /// 30 天 = 33,707 条 / 2,279 MiB / 18.1 s，60 天起直接以写库异常告终。
+    /// 调用方语义只需要「覆盖整个业务日」，7 天给出 7 倍余量，同时把单次请求的驻留内存
+    /// 压在 ~0.5 GiB 量级；再宽就会把「按天分片」的成本一次性压给单个请求。
+    /// </para>
+    /// </summary>
+    public const int MaxInternalQuerySpanDays = 7;
+
+    /// <summary>
+    /// 跨度校验：超过 <see cref="MaxInternalQuerySpanDays"/> 直接拒绝，不静默截断、不继续全量拉取。
+    /// 抛 <see cref="ArgumentException"/>，由端点层映射为 400（AC-2.2）。
+    /// </summary>
+    private static void EnsureInternalQuerySpan(DetailQueryParams q)
+    {
+        var (start, end) = GetDetailQueryRange(q);
+        var days = (int)Math.Round((end - start).TotalDays);
+        if (days <= MaxInternalQuerySpanDays)
+            return;
+
+        throw new ArgumentException(
+            $"内部取数路径单次最多覆盖 {MaxInternalQuerySpanDays} 个业务日，当前请求为 {days} 个业务日" +
+            $"（{FormatBusinessDay(start)} ~ {FormatBusinessDay(end.AddSeconds(-1))}）。" +
+            $"请按业务日拆分请求（每个业务日一次），或改用 /pc/detail 的分页明细接口。");
+    }
+
+    /// <summary>
+    /// 把范围端点换算成**业务日**再格式化（<c>yyyy-MM-dd</c>）。
+    /// 端点本身是 UTC 时刻：范围起点是当日 04:00、终点是次日 04:00 的开区间上界，
+    /// 直接按 UTC 或按本地日历日格式化都会整体差一天。
+    /// </summary>
+    private static string FormatBusinessDay(DateTimeOffset instant)
+        => GetBusinessDayForTimestamp(instant).ToString("yyyy-MM-dd");
 
     private async Task<List<PcDetailRecord>> BuildCompleteDetailRecordsAsync(DetailQueryParams q, CancellationToken ct)
     {
