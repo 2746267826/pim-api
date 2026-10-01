@@ -116,6 +116,35 @@ describe('WO-FRONTEND-PC-20261001 AC-3.1 · details.missingSegments 存在时按
     expect(loc.missingSegmentsSource).toBe('details');
     expect(loc.missingSegments).toEqual(['2026-09-26 16:00–2026-09-26 18:00']);
   });
+
+  it('字段里塞的是整句提示时，只抽出「起–止」，不把句子渲染到卡片上', () => {
+    const loc = describePcQualityLocatability(
+      quality({
+        missingHours: MISSING_HOURS_LOCAL,
+        missingSegments: '检测到 1 段连续缺数（本地时间）：2026-09-26 16:00–2026-09-26 18:00；最近一次中断自 2026-09-26 16:00 起。',
+      }),
+    );
+    expect(loc.missingSegmentsSource).toBe('details');
+    expect(loc.missingSegments).toEqual(['2026-09-26 16:00–2026-09-26 18:00']);
+    expect(loc.missingSegmentsNotice).toBeNull();
+  });
+
+  it('一句里有多段时全部抽出（去重），顺序按出现顺序', () => {
+    const loc = describePcQualityLocatability(
+      quality({
+        missingHours: MISSING_HOURS_LOCAL,
+        missingSegments: JSON.stringify([
+          '2026-09-26 16:00–2026-09-26 18:00 以及 2026-09-28 21:44–2026-09-29 04:00',
+          '2026-09-26 16:00–2026-09-26 18:00',
+        ]),
+      }),
+    );
+    expect(loc.missingSegmentsSource).toBe('details');
+    expect(loc.missingSegments).toEqual([
+      '2026-09-26 16:00–2026-09-26 18:00',
+      '2026-09-28 21:44–2026-09-29 04:00',
+    ]);
+  });
 });
 
 describe('WO-FRONTEND-PC-20261001 AC-3.2 / AC-3.4 · 字段缺失必须显式降级，不得静默', () => {

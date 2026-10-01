@@ -122,33 +122,37 @@ export function formatLocalDateTime(value: string): string | null {
 }
 
 /** 「起–止」形状（本地或 UTC 均可），用于识别后端可能直接给的字符串时段。 */
-const SEGMENT_SHAPE = /\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}\s*[–—-]\s*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/;
+const SEGMENT_SHAPE = /\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}\s*[–—-]\s*\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/g;
 
 function normalizeSegmentSeparator(value: string): string {
   return value.replace(/\s*[–—-]\s*(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})/, '–$1');
 }
 
-function segmentFromString(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (!SEGMENT_SHAPE.test(trimmed)) return null;
-  return normalizeSegmentSeparator(trimmed);
+/**
+ * 从一个字符串里**抽出**所有「起–止」时段。
+ *
+ * 只认形状、不认整串：后端若把整句提示（如「检测到 1 段连续缺数（本地时间）：…」）
+ * 塞进 `missingSegments`，也只取其中的时段，不把前后文案一起渲染到卡片上。
+ */
+function segmentsFromString(value: string): string[] {
+  const matches = value.match(SEGMENT_SHAPE);
+  return matches ? [...new Set(matches.map(normalizeSegmentSeparator))] : [];
 }
 
-/** 结构化元素 → 展示串；认不出来返回 null（不猜、不渲染半截）。 */
-function segmentFromItem(item: unknown): string | null {
-  if (typeof item === 'string') return segmentFromString(item);
+/** 结构化元素 → 展示串列表；认不出来的元素产不出任何时段（不猜、不渲染半截）。 */
+function segmentsFromItem(item: unknown): string[] {
+  if (typeof item === 'string') return segmentsFromString(item);
   if (item && typeof item === 'object') {
     const record = item as Record<string, unknown>;
     const start = record.startUtc ?? record.start;
     const end = record.endUtc ?? record.end;
-    if (typeof start !== 'string' || typeof end !== 'string') return null;
+    if (typeof start !== 'string' || typeof end !== 'string') return [];
     const from = formatLocalDateTime(start);
     const to = formatLocalDateTime(end);
-    if (!from || !to) return null;
-    return `${from}–${to}`;
+    if (!from || !to) return [];
+    return [`${from}–${to}`];
   }
-  return null;
+  return [];
 }
 
 export interface ParsedMissingSegments {
@@ -164,10 +168,10 @@ export interface ParsedMissingSegments {
  * 解析 `details.missingSegments`（AC-3.1）。
  *
  * 后端 `PcQualityComponentDto.Details` 是 `IReadOnlyDictionary<string, string>`，所以该字段
- * 大概率是 JSON 字符串；这里同时接受三种形状，避免后端换序列化方式就整块失效：
+ * 大概率是 JSON 字符串；这里同时接受几种形状，避免后端换序列化方式就整块失效：
  * 1. JSON 字符串（对象数组，元素含 `startUtc` / `endUtc`）—— 工单约定的形状；
- * 2. JSON 字符串（字符串数组，元素本身就是「起–止」）；
- * 3. 裸「起–止」串（用 `;`/`；`/换行 分隔）。
+ * 2. JSON 字符串（字符串数组，元素本身是「起–止」或含「起–止」的句子）；
+ * 3. 裸字符串（整句提示或 `;`/`；`/换行 分隔的时段串）—— 只抽出其中的「起–止」。
  *
  * 空数组、认不出的内容都算**解析失败**（`ok: false`），由调用方给出降级提示，
  * 不允许默默当成「没有缺数时段」。
@@ -180,24 +184,22 @@ export function parseMissingSegmentsField(raw: unknown): ParsedMissingSegments {
   const trimmed = raw.trim();
   if (trimmed === '') return { present: false, ok: false, segments: [] };
 
+  let items: unknown[];
   try {
     const parsed = JSON.parse(trimmed);
-    if (Array.isArray(parsed)) return fromList(parsed, true);
-    return fromList([parsed], true);
+    items = Array.isArray(parsed) ? parsed : [parsed];
   } catch {
-    // 不是 JSON：按分隔符拆「起–止」串。
-    const parts = trimmed
-      .split(/[;；\n]/)
-      .map(segmentFromString)
-      .filter((s): s is string => s !== null);
-    return { present: true, ok: parts.length > 0, segments: parts };
+    // 不是 JSON：整串按「起–止」抽取（分隔符与前后文案都不参与渲染）。
+    const segments = segmentsFromString(trimmed);
+    return { present: true, ok: segments.length > 0, segments };
   }
+  return fromList(items, true);
 }
 
 function fromList(items: unknown[], present: boolean): ParsedMissingSegments {
-  const parsed = items.map(segmentFromItem);
-  const segments = [...new Set(parsed.filter((s): s is string => s !== null))];
-  return { present, ok: segments.length > 0 && parsed.every(s => s !== null), segments };
+  const parsed = items.map(segmentsFromItem);
+  const segments = [...new Set(parsed.flat())];
+  return { present, ok: segments.length > 0 && parsed.every(s => s.length > 0), segments };
 }
 
 function missingSegmentsNotice(
