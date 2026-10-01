@@ -172,6 +172,75 @@ public sealed class PcHeatmapRangeInvarianceTests
         Assert.Equal(grid.ActiveMinutes, (int)(analysis.Blocks.Sum(block => block.ActiveDurationSeconds) / 60));
     }
 
+    /// <summary>
+    /// REQ-1（review round 4）：扩窗只允许带进**真正伸进本范围**的记录。
+    /// 只在「前一小时前结束」的窗口即便时长合理，也不得进入内部分析路径 / 建议生成
+    /// （review round 3 实测：这类记录会被写进 pending 建议，且归到前一业务日）。
+    /// </summary>
+    [Fact]
+    public async Task InternalQuery_DoesNotIncludeEventsThatEndBeforeTheRange()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
+        AddTrackerWindow(db, dayStart.AddHours(-9), 600);   // 本地 D-1 19:00–19:10，早于业务日 D（04:00）结束
+        AddTrackerWindow(db, dayStart.AddHours(-2), 3 * 3600); // 本地 D 02:00–05:00，真正跨进 D
+        await db.SaveChangesAsync();
+
+        var records = await Service(db).QueryAllDetailRecordsAsync(
+            new DetailQueryParams(
+                Day.ToString("yyyy-MM-dd"), Day.ToString("yyyy-MM-dd"),
+                null, null, null, null, null, null, "date", "asc", 1, 2000, View: "interpreted"),
+            CancellationToken.None);
+
+        // 只有跨边界那一条会被带进来，且已裁剪到业务日窗口（04:00–05:00 = 3600 秒）。
+        var record = Assert.Single(records);
+        Assert.Equal(3600, record.DurationSeconds);
+        Assert.Equal(dayStart.ToString("O"), record.Start);
+    }
+
+    /// <summary>
+    /// REQ-1（review round 4）：AW 的 window/web 需要在**同一批**里解释，
+    /// 否则 grid/summary 与 activity-analysis 会给出不同结论（实测 120 分钟 vs 5 分钟）。
+    /// 这里断言 summary 与 activity-analysis 对跨边界 AW 窗口口径一致。
+    /// </summary>
+    [Fact]
+    public async Task CrossingAwWindow_SummaryAndActivityAnalysisAgree()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
+        // AW 浏览器窗口：本地 D 02:00–06:00（跨进 D 两小时）+ D 04:30 的一条 5 分钟网页记录。
+        db.Set<AwEventEntity>().Add(new AwEventEntity
+        {
+            DeviceId = "device-1",
+            Timestamp = dayStart.AddHours(-2),
+            Duration = 4 * 3600,
+            EventType = "window",
+            AppName = "chrome.exe",
+            AppNameNormalized = "chrome",
+            DataJson = "{}"
+        });
+        db.Set<AwEventEntity>().Add(new AwEventEntity
+        {
+            DeviceId = "device-1",
+            Timestamp = dayStart.AddMinutes(30),
+            Duration = 300,
+            EventType = "web",
+            AppName = "chrome.exe",
+            AppNameNormalized = "chrome",
+            DataJson = "{}"
+        });
+        await db.SaveChangesAsync();
+        var service = Service(db);
+
+        var summary = await service.GetSummaryAsync(Day, CancellationToken.None);
+        var analysis = await new PcActivityAnalysisService(service)
+            .GetDailyAnalysisAsync(Day, 60, CancellationToken.None);
+
+        Assert.Equal(
+            summary.Heatmap.Sum(bucket => bucket.ActiveMinutes),
+            (int)(analysis.Blocks.Sum(block => block.ActiveDurationSeconds) / 60));
+    }
+
     private static async Task<HeatmapGridCell> BucketForAsync(
         PcTrackerService service,
         DateTime start,

@@ -360,14 +360,10 @@ public partial class PcTrackerService
         var trackerEvents = trackerEventsInWindow.Where(e => e.Timestamp >= dayStart).ToList();
         // 跨业务日边界的那部分只并入活跃记录（并过滤脏时长，与 grid 同一口径）。
         var crossingAwEvents = awEventsInWindow
-            .Where(e => e.Timestamp < dayStart
-                        && e.Duration > 0
-                        && e.Duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
+            .Where(e => e.Timestamp < dayStart && IsCrossingIntoRange(e.Timestamp, e.Duration, dayStart))
             .ToList();
         var crossingTrackerEvents = trackerEventsInWindow
-            .Where(e => e.Timestamp < dayStart
-                        && e.Duration > 0
-                        && e.Duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
+            .Where(e => e.Timestamp < dayStart && IsCrossingIntoRange(e.Timestamp, e.Duration, dayStart))
             .ToList();
         var combinedEventsForStats = awEvents
             .Select(e => new { e.Timestamp, e.Duration, e.EventType, e.AppName })
@@ -388,15 +384,15 @@ public partial class PcTrackerService
         // 闲置时长同样跟随数据源：AW 的 afk 事件 + tracker 的 idle 事件，取区间并集。
         var idleMinutes = ComputeIdleMinutes(awEvents, trackerEvents, dayStart, dayEnd);
 
-        var awRecords = await BuildInterpretedAwDetailRecordsAsync(awEvents, ct);
-        var trackerRecords = await BuildInterpretedTrackerDetailRecordsAsync(trackerEvents, ct);
-        var crossingRecords = (await BuildInterpretedAwDetailRecordsAsync(crossingAwEvents, ct))
-            .Concat(await BuildInterpretedTrackerDetailRecordsAsync(crossingTrackerEvents, ct));
+        // 跨边界记录与日内记录必须**一起**做解释（review round 4）：分两批解释时 AW 的
+        // window/web 合并结果与 activity-analysis 的单批解释不同，会出现 grid/summary 120 分钟
+        // 而 activity-analysis 5 分钟的分歧。
+        var awRecords = await BuildInterpretedAwDetailRecordsAsync(awEvents.Concat(crossingAwEvents).ToList(), ct);
+        var trackerRecords = await BuildInterpretedTrackerDetailRecordsAsync(trackerEvents.Concat(crossingTrackerEvents).ToList(), ct);
         // REQ-1 / REQ-3：热力图与 activity-analysis 用同一批记录（window / web-page / input-minute）
         // 与同一个重叠消解口径，两个接口的活跃时长与强度档位因此可交叉验证。
         var activeRecords = awRecords
             .Concat(trackerRecords)
-            .Concat(crossingRecords)
             .Concat(await LoadInputMinuteRecordsAsync(dayStart, dayEnd, ct))
             .ToList();
         var heatmap = BuildHourlyHeatmapFromRecords(dayStart, activeRecords, windowEvents, trackerWindowEvents);
@@ -564,9 +560,35 @@ public partial class PcTrackerService
     }
 
     /// <summary>
-    /// 取数窗口向前扩了一段时，把「起点在范围之前」的记录按与活跃口径相同的规则筛一遍：
-    /// 保留真正伸进范围的（时长合理），丢掉脏时长与完全落在范围之前的。范围之内的一律原样保留，
-    /// 因此扩窗不改变原有记录的集合。
+    /// 把记录裁剪到 <paramref name="rangeStart"/>–<paramref name="rangeEnd"/>：完全在范围内的记录原样返回；
+    /// 只有跨边界记录会被改写起止与时长。用于内部分析路径（`/pc/detail` 不走这里）。
+    /// </summary>
+    private static PcDetailRecord ClipRecordToRange(PcDetailRecord record, DateTimeOffset rangeStart, DateTimeOffset rangeEnd)
+    {
+        if (!PcActivityActiveSegments.TryGetInterval(record, out var start, out var end))
+            return record;
+        if (start >= rangeStart && end <= rangeEnd)
+            return record;
+
+        var clippedStart = start < rangeStart ? rangeStart : start;
+        var clippedEnd = end > rangeEnd ? rangeEnd : end;
+        if (clippedEnd <= clippedStart)
+            return record with { DurationSeconds = 0 };
+
+        return record with
+        {
+            Start = FormatUtc(clippedStart),
+            End = FormatUtc(clippedEnd),
+            DurationSeconds = (clippedEnd - clippedStart).TotalSeconds
+        };
+    }
+
+    /// <summary>
+    /// 取数窗口向前扩了一段时，把「起点在范围之前」的记录按与活跃口径相同的规则筛一遍：，把「起点在范围之前」的记录按与活跃口径相同的规则筛一遍：
+    /// **只有真正伸进范围的**才保留（结束时刻晚于范围起点，且时长合理）；完全落在范围之前的一律丢掉。
+    /// 范围之内的一律原样保留 —— 即扩窗不改变原有记录的集合。
+    /// <para>只按时长筛是不够的（review round 3 实测）：一段 5 小时前的窗口同样「时长合理」，
+    /// 却会让内部分析路径与建议生成拿到不属于本范围的记录。</para>
     /// </summary>
     private static List<TEntity> SelectCrossingAware<TEntity>(
         List<TEntity> events,
@@ -577,19 +599,20 @@ public partial class PcTrackerService
         var result = new List<TEntity>(events.Count);
         foreach (var entity in events)
         {
-            if (timestampOf(entity) >= rangeStart)
-            {
-                result.Add(entity);
-                continue;
-            }
-
-            var duration = durationOf(entity);
-            if (duration > 0 && duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
+            var timestamp = timestampOf(entity);
+            if (timestamp >= rangeStart || IsCrossingIntoRange(timestamp, durationOf(entity), rangeStart))
                 result.Add(entity);
         }
 
         return result;
     }
+
+    /// <summary>记录是否「伸进」范围：起点在范围之前，但结束时刻晚于范围起点，且时长合理（非脏数据）。</summary>
+    private static bool IsCrossingIntoRange(DateTimeOffset timestamp, double durationSeconds, DateTimeOffset rangeStart)
+        => timestamp < rangeStart
+           && durationSeconds > 0
+           && durationSeconds <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds
+           && timestamp.AddSeconds(durationSeconds) > rangeStart;
 
     /// <summary>
     /// 活跃区间并集的回看窗口（秒）：两张事件表「合理时长」的最大值。
@@ -850,6 +873,11 @@ public partial class PcTrackerService
 
         if (!rawMode)
             records.AddRange(ToInputMinuteRecords(samples));
+
+        // 跨边界记录裁剪到所请求范围（review round 4）：内部分析路径与建议生成拿到的是
+        // 「本范围内的那一段」，不是整条事件 —— 否则建议里的时长会包含属于前一业务日的部分。
+        if (includeCrossingRecords)
+            records = records.Select(record => ClipRecordToRange(record, start, end)).ToList();
 
         records = ApplyPreClassificationCompleteDetailFilters(records, q).ToList();
         records = await _classificationSnapshots.EnsureClassificationsAsync(
