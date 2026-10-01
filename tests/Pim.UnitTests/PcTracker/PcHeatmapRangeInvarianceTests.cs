@@ -147,6 +147,31 @@ public sealed class PcHeatmapRangeInvarianceTests
         Assert.Equal(single.IntensityLevel, ranged.IntensityLevel);
     }
 
+    /// <summary>
+    /// REQ-1（review round 3）：跨业务日边界的窗口事件必须被 grid / summary.heatmap / activity-analysis
+    /// **一致地**计入 —— 三个接口用同一批记录与同一消解口径（#370/#374 建立的契约）。
+    /// <para>修复前 grid 计 60 分钟而 summary 与 activity-analysis 计 0（它们只取起点落在业务日内的事件）。</para>
+    /// </summary>
+    [Fact]
+    public async Task CrossingWindowEvent_IsCountedConsistentlyByTheThreeEndpoints()
+    {
+        await using var db = CreateDb();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
+        // 本地 D 02:00 起、持续 3 小时：04:00–05:00 这一小时属于业务日 D。
+        AddTrackerWindow(db, dayStart.AddHours(-2), 3 * 3600);
+        await db.SaveChangesAsync();
+        var service = Service(db);
+
+        var grid = await BucketForAsync(service, Day, Day);
+        var summary = await service.GetSummaryAsync(Day, CancellationToken.None);
+        var analysis = await new PcActivityAnalysisService(service)
+            .GetDailyAnalysisAsync(Day, 60, CancellationToken.None);
+
+        Assert.Equal(60, grid.ActiveMinutes);
+        Assert.Equal(grid.ActiveMinutes, summary.Heatmap.Sum(bucket => bucket.ActiveMinutes));
+        Assert.Equal(grid.ActiveMinutes, (int)(analysis.Blocks.Sum(block => block.ActiveDurationSeconds) / 60));
+    }
+
     private static async Task<HeatmapGridCell> BucketForAsync(
         PcTrackerService service,
         DateTime start,

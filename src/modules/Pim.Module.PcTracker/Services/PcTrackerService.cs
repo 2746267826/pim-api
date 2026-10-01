@@ -343,14 +343,32 @@ public partial class PcTrackerService
         var keystatsSample = keystats is null
             ? await LatestKeystatsSampleForDate(date, ct)
             : null;
-        var awEvents = await _db.Set<AwEventEntity>()
-            .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd)
+        // REQ-1 / AC-1.1（review round 3）：取数窗口与 heatmap/grid 对齐 —— 起点在业务日之前、
+        // 跨过本地 04:00 伸进本日的记录属于本日的活跃分钟，不能因为「起点不在本日」被整条丢掉，
+        // 否则同一业务日 grid 报 60 分钟而 summary 报 0。既有用途（指标/闲置/会话）仍只看起点落在本日的记录。
+        var lookbackSeconds = await ComputeActiveLookbackSecondsAsync(ct);
+        var eventWindowStart = lookbackSeconds > 0 ? dayStart.AddSeconds(-lookbackSeconds) : dayStart;
+        var awEventsInWindow = await _db.Set<AwEventEntity>()
+            .Where(e => e.Timestamp >= eventWindowStart && e.Timestamp < dayEnd)
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
-        var trackerEvents = await _db.Set<TrackerEventEntity>()
-            .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd)
+        var trackerEventsInWindow = await _db.Set<TrackerEventEntity>()
+            .Where(e => e.Timestamp >= eventWindowStart && e.Timestamp < dayEnd)
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
+        var awEvents = awEventsInWindow.Where(e => e.Timestamp >= dayStart).ToList();
+        var trackerEvents = trackerEventsInWindow.Where(e => e.Timestamp >= dayStart).ToList();
+        // 跨业务日边界的那部分只并入活跃记录（并过滤脏时长，与 grid 同一口径）。
+        var crossingAwEvents = awEventsInWindow
+            .Where(e => e.Timestamp < dayStart
+                        && e.Duration > 0
+                        && e.Duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
+            .ToList();
+        var crossingTrackerEvents = trackerEventsInWindow
+            .Where(e => e.Timestamp < dayStart
+                        && e.Duration > 0
+                        && e.Duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
+            .ToList();
         var combinedEventsForStats = awEvents
             .Select(e => new { e.Timestamp, e.Duration, e.EventType, e.AppName })
             .Concat(trackerEvents.Select(e => new { e.Timestamp, e.Duration, EventType = e.EventType, e.AppName }))
@@ -372,10 +390,13 @@ public partial class PcTrackerService
 
         var awRecords = await BuildInterpretedAwDetailRecordsAsync(awEvents, ct);
         var trackerRecords = await BuildInterpretedTrackerDetailRecordsAsync(trackerEvents, ct);
+        var crossingRecords = (await BuildInterpretedAwDetailRecordsAsync(crossingAwEvents, ct))
+            .Concat(await BuildInterpretedTrackerDetailRecordsAsync(crossingTrackerEvents, ct));
         // REQ-1 / REQ-3：热力图与 activity-analysis 用同一批记录（window / web-page / input-minute）
         // 与同一个重叠消解口径，两个接口的活跃时长与强度档位因此可交叉验证。
         var activeRecords = awRecords
             .Concat(trackerRecords)
+            .Concat(crossingRecords)
             .Concat(await LoadInputMinuteRecordsAsync(dayStart, dayEnd, ct))
             .ToList();
         var heatmap = BuildHourlyHeatmapFromRecords(dayStart, activeRecords, windowEvents, trackerWindowEvents);
@@ -543,6 +564,34 @@ public partial class PcTrackerService
     }
 
     /// <summary>
+    /// 取数窗口向前扩了一段时，把「起点在范围之前」的记录按与活跃口径相同的规则筛一遍：
+    /// 保留真正伸进范围的（时长合理），丢掉脏时长与完全落在范围之前的。范围之内的一律原样保留，
+    /// 因此扩窗不改变原有记录的集合。
+    /// </summary>
+    private static List<TEntity> SelectCrossingAware<TEntity>(
+        List<TEntity> events,
+        DateTimeOffset rangeStart,
+        Func<TEntity, DateTimeOffset> timestampOf,
+        Func<TEntity, double> durationOf)
+    {
+        var result = new List<TEntity>(events.Count);
+        foreach (var entity in events)
+        {
+            if (timestampOf(entity) >= rangeStart)
+            {
+                result.Add(entity);
+                continue;
+            }
+
+            var duration = durationOf(entity);
+            if (duration > 0 && duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
+                result.Add(entity);
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// 活跃区间并集的回看窗口（秒）：两张事件表「合理时长」的最大值。
     /// 与 <see cref="PcTrackerQualityService"/> 处理「跨范围起点事件」同一套做法；
     /// 有 <c>duration</c> 索引后这两次聚合各约 0.04 ms（REQ-3）。
@@ -673,7 +722,7 @@ public partial class PcTrackerService
     {
         var page = Math.Max(1, q.Page);
         var pageSize = Math.Clamp(q.PageSize, 1, 200);
-        var records = await BuildCompleteDetailRecordsAsync(q, ct);
+        var records = await BuildCompleteDetailRecordsAsync(q, ct, includeCrossingRecords: false);
 
         var totalCount = records.Count;
         var items = records
@@ -701,7 +750,9 @@ public partial class PcTrackerService
     public async Task<List<PcDetailRecord>> QueryAllDetailRecordsAsync(DetailQueryParams q, CancellationToken ct)
     {
         EnsureInternalQuerySpan(q);
-        return await BuildCompleteDetailRecordsAsync(q, ct);
+        // REQ-1（review round 3）：内部分析路径要看到「起点在范围之前、伸进范围」的记录，
+        // 才能与 heatmap/grid 的活跃分钟结论一致；/pc/detail 的对外契约保持不变（见下）。
+        return await BuildCompleteDetailRecordsAsync(q, ct, includeCrossingRecords: true);
     }
 
     /// <summary>
@@ -743,18 +794,39 @@ public partial class PcTrackerService
     private static string FormatBusinessDay(DateTimeOffset instant)
         => GetBusinessDayForTimestamp(instant).ToString("yyyy-MM-dd");
 
-    private async Task<List<PcDetailRecord>> BuildCompleteDetailRecordsAsync(DetailQueryParams q, CancellationToken ct)
+    private async Task<List<PcDetailRecord>> BuildCompleteDetailRecordsAsync(
+        DetailQueryParams q,
+        CancellationToken ct,
+        bool includeCrossingRecords)
     {
         var (start, end) = GetDetailQueryRange(q);
 
-        var awEvents = await _db.Set<AwEventEntity>()
-            .Where(e => e.Timestamp >= start && e.Timestamp < end)
-            .OrderBy(e => e.Timestamp)
-            .ToListAsync(ct);
-        var trackerEvents = await _db.Set<TrackerEventEntity>()
-            .Where(e => e.Timestamp >= start && e.Timestamp < end)
-            .OrderBy(e => e.Timestamp)
-            .ToListAsync(ct);
+        // 只有内部分析路径会把取数窗口向前扩一个「合理时长」：起点在范围之前、但伸进范围的记录
+        // 同样属于本范围（REQ-1）。`/pc/detail` 传 false，取数与过滤行为与修复前逐字节一致。
+        var loadStart = start;
+        if (includeCrossingRecords)
+        {
+            var lookbackSeconds = await ComputeActiveLookbackSecondsAsync(ct);
+            if (lookbackSeconds > 0)
+                loadStart = start.AddSeconds(-lookbackSeconds);
+        }
+
+        var awEvents = SelectCrossingAware(
+            await _db.Set<AwEventEntity>()
+                .Where(e => e.Timestamp >= loadStart && e.Timestamp < end)
+                .OrderBy(e => e.Timestamp)
+                .ToListAsync(ct),
+            start,
+            e => e.Timestamp,
+            e => e.Duration);
+        var trackerEvents = SelectCrossingAware(
+            await _db.Set<TrackerEventEntity>()
+                .Where(e => e.Timestamp >= loadStart && e.Timestamp < end)
+                .OrderBy(e => e.Timestamp)
+                .ToListAsync(ct),
+            start,
+            e => e.Timestamp,
+            e => e.Duration);
         var samples = await _db.Set<KeystatsSampleEntity>()
             .Where(s => s.SampledAtUtc >= start && s.SampledAtUtc < end)
             .OrderBy(s => s.PimDeviceId)

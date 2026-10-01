@@ -131,7 +131,7 @@ public static class McpToolCatalog
         Add(tools, "quicknotes", "get_quick_note", "Get a quick note by id.");
         Add(tools, "quicknotes", "get_quick_note_attachment_meta", "Quick note attachment metadata.");
 
-        // Files 8
+        // Files 7
         Add(tools, "files", "get_file_providers", "List file providers.");
         Add(tools, "files", "get_files", "List files.");
         Add(tools, "files", "get_file", "Get file metadata.");
@@ -213,7 +213,7 @@ public static class McpToolCatalog
         AddW(tools, "quicknotes", "upload_quick_note_attachment", "Upload a quick note attachment.");
         AddW(tools, "quicknotes", "delete_quick_note_attachment", "Delete a quick note attachment.");
 
-        // Files 6
+        // Files 5
         AddW(tools, "files", "upload_file", "Upload a file to a provider path.");
         AddW(tools, "files", "move_file", "Move a file to another path.");
         AddW(tools, "files", "rename_file", "Rename a file.");

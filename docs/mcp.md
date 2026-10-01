@@ -11,10 +11,10 @@
 - [5. 工具全表 / Tools](#5-工具全表--tools)
   - [5.1 Calendar 31](#51-calendar-31)
   - [5.2 PcTracker 26](#52-pctracker-26)
-  - [5.3 Mobile 18](#53-mobile-18)
+  - [5.3 Mobile 19](#53-mobile-19)
   - [5.4 QuickNotes 3](#54-quicknotes-3)
-  - [5.5 Files 8](#55-files-8)
-  - [5.6 Core/Infra 13](#56-coreinfra-13)
+  - [5.5 Files 7](#55-files-7)
+  - [5.6 Core/Infra 14](#56-coreinfra-14)
   - [5.7 写入工具 49 / Write Tools 49](#57-写入工具-49--write-tools-49)
 - [6. HTTP 接入与 Token / HTTP Access & Tokens](#6-http-接入与-token--http-access--tokens)
 - [7. 典型调用流 / Recipes](#7-典型调用流--recipes)
@@ -26,10 +26,11 @@
 ## 1. 概览 / Overview
 
 ### 是什么 / What it is
-- Python `FastMCP` 服务，地址 `scripts/mcp/pim_mcp_server.py`。
+- Python `FastMCP` 服务，地址 `scripts/mcp/pim_mcp_server.py`（**已退役**，仅作行为基准；线上 `/mcp` 是 .NET 进程内服务）。
 - 双传输：`stdio`（默认，兼容 v2）+ `Streamable HTTP`（Phase 3，多客户端远程并发）。
-- 149 工具 = 读取 `100`（Calendar 31 + PcTracker 26 + Mobile 19 + QuickNotes 3 + Files 7 + Core/Infra 14）+ 写入 `49`（Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2）。
-  （WO-PC-BACKEND-20261001 REQ-6：`get_pc_aw_heatmap` 随遗留端点下线，PcTracker 读工具 27 → 26。）
+- 线上 `/mcp`（.NET，`McpToolCatalog`）：**149 工具** = 读取 `100`（Calendar 31 + PcTracker 26 + Mobile 19 + QuickNotes 3 + Files 7 + Core/Infra 14）+ 写入 `49`（Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2）。
+- 退役的 Python 基准脚本：**148 工具** = 读取 `99` + 写入 `49`（比 .NET 少 `get_mobile_liveness_summary`，且 WO-PC-BACKEND-20261001 REQ-6 又下线了 `get_pc_aw_heatmap`）。
+  （计数按 `scripts/mcp/pim_mcp_server.py --check` 与 `McpToolCatalog` 实际目录核对。）
 - Python `FastMCP` service at `scripts/mcp/pim_mcp_server.py`. stdio (default) + Streamable HTTP.
 
 ### 能做什么 / What it can do
@@ -1896,7 +1897,7 @@ async def get_classification_settings(-) -> Any: ...
 }
 ```
 
-### 5.3 Mobile 18
+### 5.3 Mobile 19
 
 #### `get_mobile_summary` — Mobile summary.
 - **API**: `GET /mobile/summary?date`
@@ -2498,7 +2499,7 @@ async def get_quick_note_attachment_meta(id) -> Any: ...
 }
 ```
 
-### 5.5 Files 8
+### 5.5 Files 7
 
 #### `get_file_providers` — Providers.
 - **API**: `GET /files/providers`
@@ -2719,7 +2720,7 @@ async def get_file_open_link(id) -> Any: ...
 }
 ```
 
-### 5.6 Core/Infra 13
+### 5.6 Core/Infra 14
 
 #### `get_today_sections` — Today registry.
 - **API**: `GET /today/sections?date`
@@ -3167,7 +3168,7 @@ async def get_version(-) -> Any: ...
 | `upload_quick_note_attachment` | `POST /api/v1/quick-notes/attachments` (multipart) | fileContentBase64, fileName |
 | `delete_quick_note_attachment` | `DELETE /api/v1/quick-notes/attachments/{id}` | — |
 
-**Files 6**
+**Files 5**
 
 | 工具 | 方法 + 路径 | 主要参数 |
 |---|---|---|

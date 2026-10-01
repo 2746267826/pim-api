@@ -462,7 +462,7 @@ public sealed class PcTrackerQualityService
             // 现在两段都点名：最早一段（= disconnectedFromUtc）与最近一段各自给出起止。
             var description = coverage.Gaps.Count == 1
                 ? $"该段为 {FormatLocal(first.StartUtc)} 到 {FormatLocal(first.EndUtc)}" +
-                  "（既是 disconnectedFromUtc 的取值，也是最近一段）。"
+                  "（该段起点即 disconnectedFromUtc，同时也是最近一段）。"
                 : $"最早一段为 {FormatLocal(first.StartUtc)} 到 {FormatLocal(first.EndUtc)}（disconnectedFromUtc 即该段起点）；" +
                   $"最近一段为 {FormatLocal(last.StartUtc)} 到 {FormatLocal(last.EndUtc)}。";
             componentIssues.Add(new PcQualityIssueDto(
