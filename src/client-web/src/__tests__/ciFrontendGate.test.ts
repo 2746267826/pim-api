@@ -26,6 +26,14 @@ const GATE_SCRIPT = 'test:frontend-gate';
 const workflow = fs.readFileSync(WORKFLOW, 'utf8');
 const scripts = JSON.parse(fs.readFileSync(PKG, 'utf8')).scripts as Record<string, string>;
 
+/** 工作流里所有 `run:` 步骤的命令正文（排除注释行）。 */
+function runLines(): string[] {
+  return workflow
+    .split('\n')
+    .filter(line => /^\s*run:\s*\S/.test(line))
+    .map(line => line.replace(/^\s*run:\s*/, '').trim());
+}
+
 /** 沿 `npm run <name>` / `npm --prefix <dir> run <name>` 逐层展开脚本正文。 */
 function expand(command: string, depth = 0): string {
   if (depth > 8) return command;
@@ -62,8 +70,8 @@ const PRE_EXISTING_ORPHANS = new Set([
 ]);
 
 describe('WO-FRONTEND-PC-20261001 AC-5.1 · CI 必须执行全量前端单测', () => {
-  it('build-web 的前端测试步骤调用 test:frontend-gate', () => {
-    expect(workflow).toContain(GATE_SCRIPT);
+  it('build-web 的某个 run 步骤**实际调用** test:frontend-gate（注释不算）', () => {
+    expect(runLines().some(command => command.includes(GATE_SCRIPT))).toBe(true);
   });
 
   it('test:frontend-gate 确实存在（不是 CI 里写了个空脚本名）', () => {
@@ -106,10 +114,10 @@ describe('WO-FRONTEND-PC-20261001 AC-5.2 · 不允许新增无执行者的用例
     expect(orphans, `以下用例文件没有任何执行者：${orphans.join(', ')}`).toEqual([]);
   });
 
-  it('白名单里的存量孤儿没有被悄悄加回来当挡箭牌（脚本里不该引用它们）', () => {
+  it('白名单必须保持准确：列出的文件仍然存在、且确实仍是孤儿（收编后要同步移除）', () => {
     const allScripts = Object.values(scripts).join('\n');
-    const referenced = [...PRE_EXISTING_ORPHANS].filter(f => allScripts.includes(f));
-    // 允许以后逐个收编：收编后从白名单移除即可，但那时本断言就要跟着改 —— 因此只提示不失败。
-    expect(Array.isArray(referenced)).toBe(true);
+    const present = new Set(fs.readdirSync(TESTS_DIR).filter(f => /\.test\.tsx?$/.test(f)));
+    const stale = [...PRE_EXISTING_ORPHANS].filter(f => !present.has(f) || allScripts.includes(f));
+    expect(stale, `白名单已过期（文件已消失或已被收编），请从白名单移除：${stale.join(', ')}`).toEqual([]);
   });
 });
