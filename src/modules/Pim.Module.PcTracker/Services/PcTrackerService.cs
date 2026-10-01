@@ -529,28 +529,6 @@ public partial class PcTrackerService
         return MergeIntervals(intervals);
     }
 
-    public async Task<List<HeatmapBucket>> GetHeatmapAsync(DateTime start, DateTime end, CancellationToken ct)
-    {
-        var s = BusinessDayStart(start);
-        var e = BusinessDayStart(end).AddDays(1);
-        var events = await _db.Set<AwEventEntity>()
-            .Where(ev => ev.Timestamp >= s && ev.Timestamp < e && ev.EventType == "window")
-            .ToListAsync(ct);
-        var trackerEvents = await _db.Set<TrackerEventEntity>()
-            .Where(ev => ev.Timestamp >= s && ev.Timestamp < e && ev.EventType == "window")
-            .ToListAsync(ct);
-
-        var buckets = new List<HeatmapBucket>();
-        for (var day = start.Date; day <= end.Date; day = day.AddDays(1))
-        {
-            var dayStart = BusinessDayStart(day);
-            var dayEvents = events.Where(ev => ev.Timestamp >= dayStart && ev.Timestamp < dayStart.AddDays(1)).ToList();
-            var dayTrackerEvents = trackerEvents.Where(ev => ev.Timestamp >= dayStart && ev.Timestamp < dayStart.AddDays(1)).ToList();
-            buckets.AddRange(BuildHourlyHeatmapCombined(dayStart, dayEvents, dayTrackerEvents));
-        }
-        return buckets;
-    }
-
     public async Task<List<KeystatsSummary>> GetKeystatsRangeAsync(DateTime start, DateTime end, CancellationToken ct)
     {
         var entities = await _db.Set<KeystatsDailyEntity>()

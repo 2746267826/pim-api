@@ -112,7 +112,7 @@ public sealed class PcServicePropertyTests
     }
 
     [Fact]
-    public async Task PcTracker_GetHeatmapAsync_Range_Returns24PerDay()
+    public async Task PcTracker_HeatmapGrid_Range_ReturnsOneCellPerDayAnd24HoursPerDay()
     {
         await using var db = ServiceTestBase.CreateDb();
         db.Set<AwEventEntity>().Add(MakeWindow("code.exe", DayStart.AddHours(2), 600));
@@ -120,9 +120,19 @@ public sealed class PcServicePropertyTests
         var svc = ServiceTestBase.CreatePcTrackerService(db);
         var start = TestDate;
         var end = TestDate.AddDays(1);
-        var res = await svc.GetHeatmapAsync(start, end, CancellationToken.None);
-        Assert.Equal(48, res.Count);
-        Assert.All(res, b => Assert.InRange(b.IntensityLevel, 0, PcActivityIntensity.MaxLevel));
+        // WO-PC-BACKEND-20261001 REQ-6（#379）：aw/heatmap 已下线，热力图能力改由 heatmap/grid 承担 ——
+        // day 维度每个业务日一格，hour 维度每个业务日 24 格。
+        var res = await svc.GetHeatmapGridAsync(start, end, "day", CancellationToken.None);
+        var cells = res.Grid.SelectMany(row => row).ToList();
+        Assert.Equal(2, cells.Count);
+        Assert.All(cells, b => Assert.InRange(b.IntensityLevel, 0, PcActivityIntensity.MaxLevel));
+
+        foreach (var day in new[] { start, end })
+        {
+            var hourly = await svc.GetHeatmapGridAsync(day, day, "hour", CancellationToken.None);
+            Assert.Equal(24, Assert.Single(hourly.Grid).Count);
+            Assert.All(Assert.Single(hourly.Grid), b => Assert.InRange(b.IntensityLevel, 0, PcActivityIntensity.MaxLevel));
+        }
     }
 
     [Fact]

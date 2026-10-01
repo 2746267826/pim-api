@@ -157,7 +157,6 @@ public static class McpToolTable
             S("get_pc_heatmap", "GET", "/api/v1/pc/heatmap/grid", Q("start", "end", "dimension", "timezone"), dateSpan: true),
             S("get_pc_activity_analysis", "GET", "/api/v1/pc/activity-analysis", Q("date", "blockMinutes", "timezone")),
             S("get_pc_quality", "GET", "/api/v1/pc/quality", Q("date", "dateFrom", "dateTo", "timezone")),
-            S("get_pc_aw_heatmap", "GET", "/api/v1/pc/aw/heatmap", Q("start", "end", "timezone"), dateSpan: true),
             S("get_pc_keystats_range", "GET", "/api/v1/pc/keystats/range", Q("start", "end", "timezone"), dateSpan: true),
             S("get_pc_focus_blocks", "GET", "/api/v1/pc/aggregation/focus-blocks", Q("start", "end", "timezone")),
             S("get_pc_app_usage", "GET", "/api/v1/pc/aggregation/app-usage", Q("start", "end", "timezone", "limit")),

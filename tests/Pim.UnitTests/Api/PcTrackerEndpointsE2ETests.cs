@@ -181,6 +181,26 @@ public sealed class PcTrackerEndpointsE2ETests
     /// <para>用 JSON 断言而不是强类型断言：这样在字段尚未加入响应时用例仍能编译，失败原因是缺字段。</para>
     /// </summary>
     /// <summary>
+    /// WO-PC-BACKEND-20261001 · AC-6.1 / AC-6.2：遗留端点 <c>pc/aw/heatmap</c> 已下线（404），
+    /// 不再有「仍在服务但 activeMinutes 全 0」的中间态；热力图能力由 <c>heatmap/grid</c> 与
+    /// <c>summary.heatmap</c> 承担。
+    /// </summary>
+    [Fact]
+    public async Task AwHeatmapEndpoint_IsRetiredAndReturns404()
+    {
+        using var factory = CreateFactory();
+        var client = factory.CreateClient();
+
+        var retired = await client.GetAsync("/api/v1/pc/aw/heatmap?start=2026-09-27&end=2026-09-27");
+        Assert.Equal(HttpStatusCode.NotFound, retired.StatusCode);
+
+        // 替代端点照常工作（同一业务日的活跃分钟不再全 0）。
+        var replacement = await GetJsonAsync(
+            client, "/api/v1/pc/heatmap/grid?start=2026-09-27&end=2026-09-27&dimension=hour");
+        Assert.Equal(24, replacement.GetProperty("data").GetProperty("grid")[0].GetArrayLength());
+    }
+
+    /// <summary>
     /// WO-PC-BACKEND-20261001 · AC-5.1 / AC-5.4：<c>pc/quality</c> 的 <c>tracker-events</c> 组件
     /// 必须把缺数时段以**数组**形式放进 <c>details.missingSegments</c>（每项 <c>startUtc</c>/<c>endUtc</c>），
     /// 消费方不再需要正则解析本地化文案。既有 <c>missingHours</c>/<c>missingHourCount</c> 保留。

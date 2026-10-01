@@ -75,7 +75,7 @@ public record KeystatsSummary(
 public record KeyCountItem(string KeyName, int Count, double Share);
 
 /// <summary>
-/// 热力图的小时 / 天桶（<c>summary.heatmap</c>、<c>aw/heatmap</c>）。
+/// 热力图的小时 / 天桶（<c>summary.heatmap</c>；<c>aw/heatmap</c> 已于 WO-PC-BACKEND-20261001 REQ-6 下线）。
 /// <para>
 /// <see cref="IntensityLevel"/> 是「活跃时长占桶时长比例」的 0–5 档整数，
 /// 上界见 <see cref="IntensityMax"/>（WO-PC-BACKEND-20260930 REQ-3，原字段名 <c>intensityScore</c>）。
