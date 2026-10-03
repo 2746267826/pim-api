@@ -1241,33 +1241,6 @@
     }
   },
   {
-    "name": "get_pc_aw_heatmap",
-    "description": "Get PC active-window heatmap (raw). Returns HeatmapBucket[].",
-    "inputSchema": {
-      "properties": {
-        "start": {
-          "title": "Start",
-          "type": "string"
-        },
-        "end": {
-          "title": "End",
-          "type": "string"
-        },
-        "timezone": {
-          "default": "Asia/Shanghai",
-          "title": "Timezone",
-          "type": "string"
-        }
-      },
-      "required": [
-        "start",
-        "end"
-      ],
-      "title": "get_pc_aw_heatmapArguments",
-      "type": "object"
-    }
-  },
-  {
     "name": "get_pc_keystats_range",
     "description": "Get PC keystats range. Returns KeystatsSummary[] per day.",
     "inputSchema": {

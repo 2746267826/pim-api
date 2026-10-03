@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 using Pim.Module.PcTracker.Entities;
 using Pim.Module.PcTracker.Services;
 using Xunit;
@@ -161,6 +162,157 @@ public sealed class PcTrackerEndpointsE2ETests
             Assert.Equal(4, start.ToOffset(TimeSpan.FromHours(8)).Hour);
             Assert.Equal(TimeSpan.FromHours(24), end - start);
         }
+    }
+
+    /// <summary>
+    /// WO-PC-BACKEND-20261001 · AC-2.2：内部取数路径（<c>QueryAllDetailRecordsAsync</c>）的调用方
+    /// 在参数被拒绝时必须返回 400 + 可读文案，而不是 500。
+    /// <para>
+    /// 走 <c>/pc/classification/suggestions</c>：该端点的 date 语义是「扫描该业务日」，
+    /// 无法从 HTTP 构造出超限跨度（跨度守卫本身由
+    /// <c>PcInternalQuerySpanLimitTests</c> 在服务层断言），因此这里验证的是同一段
+    /// <c>ArgumentException</c>/<c>FormatException</c> → 400 映射在真实宿主上生效 ——
+    /// 修复前该请求是 500（内部服务器错误），修复后是 400 + 具体原因。
+    /// </para>
+    /// </summary>
+    /// <summary>
+    /// WO-PC-BACKEND-20261001 · AC-7.1 / AC-7.2：hour 桶的 JSON 里必须带 <c>businessDay</c>，
+    /// 且业务日末尾四个桶（本地 00:00–03:59、Start 落在次日 UTC）标的是**本业务日**而不是次日。
+    /// <para>用 JSON 断言而不是强类型断言：这样在字段尚未加入响应时用例仍能编译，失败原因是缺字段。</para>
+    /// </summary>
+    /// <summary>
+    /// WO-PC-BACKEND-20261001 · AC-6.1 / AC-6.2：遗留端点 <c>pc/aw/heatmap</c> 已下线（404），
+    /// 不再有「仍在服务但 activeMinutes 全 0」的中间态；热力图能力由 <c>heatmap/grid</c> 与
+    /// <c>summary.heatmap</c> 承担。
+    /// </summary>
+    [Fact]
+    public async Task AwHeatmapEndpoint_IsRetiredAndReturns404()
+    {
+        using var factory = CreateFactory();
+        var client = factory.CreateClient();
+
+        var retired = await client.GetAsync("/api/v1/pc/aw/heatmap?start=2026-09-27&end=2026-09-27");
+        Assert.Equal(HttpStatusCode.NotFound, retired.StatusCode);
+
+        // 替代端点照常工作（同一业务日的活跃分钟不再全 0）。
+        var replacement = await GetJsonAsync(
+            client, "/api/v1/pc/heatmap/grid?start=2026-09-27&end=2026-09-27&dimension=hour");
+        Assert.Equal(24, replacement.GetProperty("data").GetProperty("grid")[0].GetArrayLength());
+    }
+
+    /// <summary>
+    /// WO-PC-BACKEND-20261001 · AC-5.1 / AC-5.4：<c>pc/quality</c> 的 <c>tracker-events</c> 组件
+    /// 必须把缺数时段以**数组**形式放进 <c>details.missingSegments</c>（每项 <c>startUtc</c>/<c>endUtc</c>），
+    /// 消费方不再需要正则解析本地化文案。既有 <c>missingHours</c>/<c>missingHourCount</c> 保留。
+    /// </summary>
+    [Fact]
+    public async Task QualityEndpoint_ExposesMissingSegmentsAsStructuredArray()
+    {
+        using var factory = CreateFactory();
+        var dayStart = PcTrackerService.GetBusinessDayStartForQuery(Day);
+        await SeedAsync(factory, db =>
+        {
+            // 本地 06:00–07:00 与 13:00–17:00 有数据 → 内部空洞 07:00–13:00 + 尾部空白 17:00–次日 04:00。
+            db.Set<TrackerEventEntity>().Add(TrackerWindowEvent(dayStart.AddHours(2), 3600, "Code.exe"));
+            for (var hour = 9; hour <= 12; hour++)
+                db.Set<TrackerEventEntity>().Add(TrackerWindowEvent(dayStart.AddHours(hour), 3600, "Code.exe"));
+            db.Set<DaemonHeartbeatEntity>().Add(new DaemonHeartbeatEntity
+            {
+                DeviceId = "device-1",
+                DaemonKind = "windows",
+                Version = "1.0.0",
+                ServerUrl = "http://127.0.0.1:5858",
+                LastSuccessfulUploadAt = new DateTimeOffset(2026, 9, 27, 18, 0, 0, TimeSpan.Zero),
+                LastAttemptedUploadAt = new DateTimeOffset(2026, 9, 27, 18, 0, 0, TimeSpan.Zero),
+                UploadQueueCount = 0,
+                ActivityWatchState = "Available",
+                KeyStatsState = "Available",
+                StatusJson = "{}",
+                ReceivedAt = new DateTimeOffset(2026, 9, 27, 18, 0, 0, TimeSpan.Zero)
+            });
+        });
+
+        var quality = await GetJsonAsync(factory.CreateClient(), "/api/v1/pc/quality?date=2026-09-27&force=true");
+        var tracker = quality.GetProperty("data").GetProperty("components")
+            .EnumerateArray()
+            .Single(c => c.GetProperty("key").GetString() == "tracker-events");
+        var details = tracker.GetProperty("details");
+
+        Assert.True(details.TryGetProperty("missingSegments", out var segments), "details 缺少 missingSegments");
+        Assert.Equal(JsonValueKind.Array, segments.ValueKind);
+        Assert.Equal(2, segments.GetArrayLength());
+
+        var expected = new[]
+        {
+            PcTrackerService.GetBusinessDayStartForQuery(Day).AddHours(3),
+            PcTrackerService.GetBusinessDayStartForQuery(Day).AddHours(9),
+        };
+        Assert.Equal(expected[0].ToString("O"), segments[0].GetProperty("startUtc").GetString());
+        Assert.Equal(expected[1].ToString("O"), segments[0].GetProperty("endUtc").GetString());
+        Assert.All(segments.EnumerateArray(), segment =>
+        {
+            Assert.EndsWith("+00:00", segment.GetProperty("startUtc").GetString()!);
+            Assert.EndsWith("+00:00", segment.GetProperty("endUtc").GetString()!);
+        });
+
+        // AC-5.3：既有键保持返回（形状未变，仍是字符串）。
+        Assert.Equal(JsonValueKind.String, details.GetProperty("missingHours").ValueKind);
+        Assert.Equal(JsonValueKind.String, details.GetProperty("missingHourCount").ValueKind);
+
+        // AC-4.1：issue 文案不再把最早一段说成「最近一次中断」。
+        var issue = quality.GetProperty("data").GetProperty("issues")
+            .EnumerateArray()
+            .Single(i => i.GetProperty("code").GetString() == "tracker-events-missing-hours");
+        var issueMessage = issue.GetProperty("message").GetString()!;
+        Assert.Contains("最早一段", issueMessage);
+        Assert.Contains("最近一段", issueMessage);
+        Assert.DoesNotContain("最近一次中断", issueMessage);
+    }
+
+    [Fact]
+    public async Task HeatmapGridHourBuckets_CarryBusinessDayInJson()
+    {
+        using var factory = CreateFactory();
+        var client = factory.CreateClient();
+
+        var hour = await GetJsonAsync(client, "/api/v1/pc/heatmap/grid?start=2026-09-27&end=2026-09-27&dimension=hour");
+        var cells = hour.GetProperty("data").GetProperty("grid")[0];
+
+        Assert.Equal(24, cells.GetArrayLength());
+        Assert.All(cells.EnumerateArray(), cell =>
+        {
+            Assert.True(cell.TryGetProperty("businessDay", out var businessDay), "hour 桶缺少 businessDay 字段");
+            Assert.Equal("2026-09-27", businessDay.GetString());
+        });
+
+        // 本地 2026-09-28 00:00–03:59 = UTC 2026-09-27T16:00Z ~ 19:00Z —— 消费方按日历日会算成 9/28。
+        var afterLocalMidnight = cells.EnumerateArray()
+            .Where(cell =>
+            {
+                var startUtc = DateTimeOffset.Parse(cell.GetProperty("start").GetString()!).UtcDateTime;
+                return startUtc.Date == new DateTime(2026, 9, 27) && startUtc.TimeOfDay >= TimeSpan.FromHours(16);
+            })
+            .ToList();
+        Assert.Equal(4, afterLocalMidnight.Count);
+        Assert.All(afterLocalMidnight, cell => Assert.Equal("2026-09-27", cell.GetProperty("businessDay").GetString()));
+
+        // AC-7.3：day 维度同一天的桶给出同一个业务日。
+        var day = await GetJsonAsync(client, "/api/v1/pc/heatmap/grid?start=2026-09-27&end=2026-09-27&dimension=day");
+        Assert.Equal("2026-09-27", day.GetProperty("data").GetProperty("grid")[0][0].GetProperty("businessDay").GetString());
+    }
+
+    [Fact]
+    public async Task ClassificationSuggestions_RejectedInputReturns400InsteadOf500()
+    {
+        using var factory = CreateFactory();
+        var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/v1/pc/classification/suggestions?date=not-a-date");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(400, document.RootElement.GetProperty("code").GetInt32());
+        Assert.False(string.IsNullOrWhiteSpace(document.RootElement.GetProperty("message").GetString()));
     }
 
     [Fact]
@@ -336,6 +488,18 @@ public sealed class PcTrackerEndpointsE2ETests
         using var document = JsonDocument.Parse(json);
         return document.RootElement.Clone();
     }
+
+    private static TrackerEventEntity TrackerWindowEvent(DateTimeOffset timestamp, double duration, string appName) => new()
+    {
+        Id = Random.Shared.NextInt64(1, long.MaxValue),
+        DeviceId = "device-1",
+        Timestamp = timestamp,
+        Duration = duration,
+        EventType = "window",
+        AppName = appName,
+        RawJson = "{}",
+        Date = timestamp.UtcDateTime.Date
+    };
 
     private static AwEventEntity WindowEvent(DateTimeOffset timestamp, double duration, string appName) => new()
     {

@@ -323,38 +323,6 @@ public partial class PcTrackerService
         return await _classificationSnapshots.EnsureClassificationsAsync(records, rules, auditId: null, ct);
     }
 
-    private static List<HeatmapBucket> BuildHourlyHeatmapCombined(DateTimeOffset dayStart, List<AwEventEntity> awEvents, List<TrackerEventEntity> trackerEvents)
-    {
-        var timeZone = ResolveBusinessDayTimeZone();
-        var allIntervals = new List<(DateTimeOffset Start, DateTimeOffset End)>();
-        foreach (var e in awEvents.Where(x => x.Duration > 0))
-            allIntervals.Add((e.Timestamp, e.Timestamp.AddSeconds(e.Duration)));
-        foreach (var e in trackerEvents.Where(x => x.Duration > 0 && x.EventType == "window"))
-            allIntervals.Add((e.Timestamp, e.Timestamp.AddSeconds(e.Duration)));
-
-        var merged = MergeIntervals(allIntervals);
-        return Enumerable.Range(0, 24).Select(hour =>
-        {
-            var bucketStart = dayStart.AddHours(hour);
-            var bucketEnd = bucketStart.AddHours(1);
-            var inBucketAw = awEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
-            var inBucketTracker = trackerEvents.Count(e => e.Timestamp >= bucketStart && e.Timestamp < bucketEnd);
-            var activeSeconds = SumOverlapSecondsCombined(merged, bucketStart, bucketEnd);
-            var activeMinutes = (int)Math.Min(60, activeSeconds / 60);
-            var localHour = TimeZoneInfo.ConvertTime(bucketStart, timeZone).Hour;
-            return new HeatmapBucket(
-                bucketStart.ToString("O"),
-                bucketEnd.ToString("O"),
-                localHour,
-                activeMinutes,
-                inBucketAw + inBucketTracker,
-                // REQ-3：与 summary / activity-analysis 用同一个「活跃时长占比」分档函数
-                // （此处活跃区间仍是 AW 遗留口径的 window 合并区间，见 PR 说明）。
-                PcActivityIntensity.ForSeconds(activeSeconds, 3600),
-                PcActivityIntensity.MaxLevel);
-        }).ToList();
-    }
-
     /// <summary>
     /// 概览热力图的小时桶（REQ-1 / REQ-3）：活跃时长与 <c>activity-analysis</c> 用**同一批记录**
     /// 走**同一个消解口径** <see cref="PcActivityOverlapResolver"/>，因此同一业务日、同一小时的

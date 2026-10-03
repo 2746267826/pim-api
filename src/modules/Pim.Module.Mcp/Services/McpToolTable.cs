@@ -149,7 +149,7 @@ public static class McpToolTable
             S("search_calendar_events", "GET", "/api/v1/calendar/events", Q("q=search", "start", "end", "page", "pageSize"), kind: McpToolKind.SearchEvents),
             S("search_calendar_tasks", "GET", "/api/v1/calendar/tasks", Q("q=search", "start", "end", "page", "pageSize"), kind: McpToolKind.SearchTasks),
 
-            // ===================== PcTracker reads (27) =====================
+            // ===================== PcTracker reads (26；WO-PC-BACKEND-20261001 REQ-6 下线 get_pc_aw_heatmap) =====================
             S("get_pc_summary", "GET", "/api/v1/pc/summary", Q("date", "timezone")),
             S("get_pc_detail", "GET", "/api/v1/pc/detail", Q("dateFrom", "dateTo", "date", "timezone", "page", "pageSize"), redact: true),
             S("get_pc_timeline", "GET", "/api/v1/pc/aw/timeline", Q("date", "timezone")),
@@ -157,7 +157,6 @@ public static class McpToolTable
             S("get_pc_heatmap", "GET", "/api/v1/pc/heatmap/grid", Q("start", "end", "dimension", "timezone"), dateSpan: true),
             S("get_pc_activity_analysis", "GET", "/api/v1/pc/activity-analysis", Q("date", "blockMinutes", "timezone")),
             S("get_pc_quality", "GET", "/api/v1/pc/quality", Q("date", "dateFrom", "dateTo", "timezone")),
-            S("get_pc_aw_heatmap", "GET", "/api/v1/pc/aw/heatmap", Q("start", "end", "timezone"), dateSpan: true),
             S("get_pc_keystats_range", "GET", "/api/v1/pc/keystats/range", Q("start", "end", "timezone"), dateSpan: true),
             S("get_pc_focus_blocks", "GET", "/api/v1/pc/aggregation/focus-blocks", Q("start", "end", "timezone")),
             S("get_pc_app_usage", "GET", "/api/v1/pc/aggregation/app-usage", Q("start", "end", "timezone", "limit")),

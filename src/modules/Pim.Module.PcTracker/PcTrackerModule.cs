@@ -272,25 +272,6 @@ public class PcTrackerModule : IModule
             return Results.Ok(ApiResponse<List<TimelineItem>>.Ok(result));
         });
 
-        readGroup.MapGet("/aw/heatmap", async (
-            [FromQuery] string? start,
-            [FromQuery] string? end,
-            [FromServices] PcTrackerService svc,
-            [FromServices] IAggregateResultCache cache,
-            HttpContext httpContext,
-            [FromQuery] bool force = false,
-            CancellationToken ct = default) =>
-        {
-            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-7);
-            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
-            var result = await cache.GetOrCreateAsync(
-                AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
-                force,
-                () => svc.GetHeatmapAsync(s, e, ct),
-                ct);
-            return Results.Ok(ApiResponse<List<HeatmapBucket>>.Ok(result));
-        });
-
         readGroup.MapGet("/keystats/range", async (
             [FromQuery] string? start,
             [FromQuery] string? end,
@@ -422,33 +403,46 @@ public class PcTrackerModule : IModule
             [FromServices] ActivityClassificationSettingsService settingsService,
             CancellationToken ct) =>
         {
-            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
-            var q = new DetailQueryParams(
-                d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                null,
-                1,
-                500);
-            // REQ-1（#362）：建议生成的扫描输入同样必须覆盖整个业务日 ——
-            // 走内部分析路径，不再被 /pc/detail 的分页上限（200 且只取第 1 页）截断。
-            // REQ-5（#366）：date 参数语义 = 「扫描该业务日的记录并刷新建议」，
-            // 列表本身仍返回全量待处理建议（结果每条带 generatedForDate 供归日）。
-            var records = (await pcTrackerService.QueryAllDetailRecordsAsync(q, ct))
-                .Where(NeedsClassificationSuggestion)
-                .ToList();
-            var settings = await settingsService.GetSettingsAsync(ct);
-            var suggestions = await suggestionService.BuildSuggestionsAsync(
-                records,
-                settings.RecommendedMinimumClassificationDurationMinutes,
-                ct);
-            return Results.Ok(ApiResponse<List<ActivityClassificationSuggestionDto>>.Ok(suggestions));
+            try
+            {
+                var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
+                var q = new DetailQueryParams(
+                    d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    1,
+                    500);
+                // REQ-1（#362）：建议生成的扫描输入同样必须覆盖整个业务日 ——
+                // 走内部分析路径，不再被 /pc/detail 的分页上限（200 且只取第 1 页）截断。
+                // REQ-5（#366）：date 参数语义 = 「扫描该业务日的记录并刷新建议」，
+                // 列表本身仍返回全量待处理建议（结果每条带 generatedForDate 供归日）。
+                var records = (await pcTrackerService.QueryAllDetailRecordsAsync(q, ct))
+                    .Where(NeedsClassificationSuggestion)
+                    .ToList();
+                var settings = await settingsService.GetSettingsAsync(ct);
+                var suggestions = await suggestionService.BuildSuggestionsAsync(
+                    records,
+                    settings.RecommendedMinimumClassificationDurationMinutes,
+                    ct);
+                return Results.Ok(ApiResponse<List<ActivityClassificationSuggestionDto>>.Ok(suggestions));
+            }
+            // REQ-2（#371）：内部取数路径的跨度上限与非法参数必须以 400 返回，
+            // 不能变成 500 —— 与 /pc/activity-analysis 同一套映射。
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
+            catch (FormatException ex)
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
+            }
         });
 
         readGroup.MapGet("/classification/project-tags/recent", async (

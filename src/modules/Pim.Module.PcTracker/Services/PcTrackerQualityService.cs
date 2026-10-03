@@ -179,7 +179,7 @@ public sealed class PcTrackerQualityService
             "数据可信度尺子",
             verdict.Status,
             verdict.Message,
-            new Dictionary<string, string>
+            new Dictionary<string, object?>
             {
                 ["redRules"] = string.Join(",", verdict.RedRules),
                 ["yellowRules"] = string.Join(",", verdict.YellowRules),
@@ -272,7 +272,7 @@ public sealed class PcTrackerQualityService
         }
 
         issues.AddRange(componentIssues);
-        var details = new Dictionary<string, string>
+        var details = new Dictionary<string, object?>
         {
             ["bucketCount"] = buckets.Count.ToString(),
             ["staleBucketCount"] = staleBuckets.ToString()
@@ -340,7 +340,7 @@ public sealed class PcTrackerQualityService
         }
 
         issues.AddRange(componentIssues);
-        var details = new Dictionary<string, string>
+        var details = new Dictionary<string, object?>
         {
             ["eventCount"] = events.Count.ToString(),
             ["windowEventCount"] = events.Count(IsWindowEvent).ToString(),
@@ -456,17 +456,25 @@ public sealed class PcTrackerQualityService
         if (coverage.Gaps.Count > 0)
         {
             var first = coverage.Gaps[0];
+            var last = coverage.Gaps[^1];
+            // REQ-4（#373）：details.disconnectedFromUtc 取的是**最早一段**断档的起点。
+            // 旧文案写「最近一次中断自 …」，多段断档时会指向最早那段却声称是最近 —— 与字段语义相反。
+            // 现在两段都点名：最早一段（= disconnectedFromUtc）与最近一段各自给出起止。
+            var description = coverage.Gaps.Count == 1
+                ? $"该段为 {FormatLocal(first.StartUtc)} 到 {FormatLocal(first.EndUtc)}" +
+                  "（该段起点即 disconnectedFromUtc，同时也是最近一段）。"
+                : $"最早一段为 {FormatLocal(first.StartUtc)} 到 {FormatLocal(first.EndUtc)}（disconnectedFromUtc 即该段起点）；" +
+                  $"最近一段为 {FormatLocal(last.StartUtc)} 到 {FormatLocal(last.EndUtc)}。";
             componentIssues.Add(new PcQualityIssueDto(
                 "tracker-events-missing-hours",
                 PimHealthStatus.Warning,
                 "tracker-events",
-                $"检测到 {coverage.Gaps.Count} 段连续缺数（本地时间）：{coverage.DescribeGaps()}；" +
-                $"最近一次中断自 {FormatLocal(first.StartUtc)} 起。",
+                $"检测到 {coverage.Gaps.Count} 段连续缺数（本地时间）：{coverage.DescribeGaps()}；{description}",
                 "核对这段时间内 Windows 守护程序是否在运行、是否上报失败。"));
         }
 
         issues.AddRange(componentIssues);
-        var details = new Dictionary<string, string>
+        var details = new Dictionary<string, object?>
         {
             ["eventCount"] = events.Count.ToString(),
             ["windowEventCount"] = events.Count(IsTrackerWindowEvent).ToString(),
@@ -489,6 +497,12 @@ public sealed class PcTrackerQualityService
             ["missingHourCount"] = coverage.MissingHourCount.ToString(),
             ["missingHours"] = coverage.DescribeMissingHours(),
             ["disconnectedFromUtc"] = coverage.DisconnectedFromUtc?.ToString("O") ?? string.Empty,
+            // REQ-5（#377）：缺数时段的机器可读版本，与同一份 CoverageGaps 同源生成 ——
+            // 与 issues 里的本地化文案不可能出现「文案里有、字段里没有」的时段（AC-5.2）。
+            // 既有 missingHours / missingHourCount 原样保留（AC-5.3）。
+            ["missingSegments"] = coverage.Gaps
+                .Select(gap => new PcQualityMissingSegmentDto(gap.StartUtc.ToString("O"), gap.EndUtc.ToString("O")))
+                .ToList(),
             ["lastDataAtUtc"] = coverage.LastDataAtUtc?.ToString("O") ?? string.Empty,
             ["trailingGapMinutes"] = Math
                 .Round(TrailingGapMinutes(coverage, rangeStart, coverageEnd))
@@ -537,9 +551,10 @@ public sealed class PcTrackerQualityService
     {
         var source = _db.Set<TrackerEventEntity>().AsNoTracking();
         var plausible = source.Where(e => e.Duration > 0 && e.Duration <= MaxPlausibleEventDurationSeconds);
-        var maxDurationSeconds = await plausible.AnyAsync(ct)
-            ? await plausible.MaxAsync(e => e.Duration, ct)
-            : 0;
+        // REQ-3（#372）：一次可空 MAX 代替「AnyAsync + MaxAsync」两次往返，且走 duration 索引。
+        var maxDurationSeconds = await plausible
+            .Select(NullableSelector((TrackerEventEntity e) => e.Duration))
+            .MaxAsync(ct) ?? 0;
         var lookbackSeconds = LookbackSeconds(maxDurationSeconds);
         if (lookbackSeconds <= 0)
             return new List<TrackerEventEntity>();
@@ -664,7 +679,7 @@ public sealed class PcTrackerQualityService
     /// （PostgreSQL 里 <c>NaN</c> 比任何有限值都大，<c>NaN &lt;= x</c> 为假），
     /// 否则一行 <c>NaN</c> 会让 <c>MAX(duration)</c> 变成 <c>NaN</c>。</para>
     /// </summary>
-    private const double MaxPlausibleEventDurationSeconds = 30 * 24 * 60 * 60;
+    public const double MaxPlausibleEventDurationSeconds = 30 * 24 * 60 * 60;
 
     private static readonly TimeSpan MaxPlausibleEventDuration = TimeSpan.FromSeconds(MaxPlausibleEventDurationSeconds);
 
@@ -797,6 +812,12 @@ public sealed class PcTrackerQualityService
     /// 一张事件表的「内容结束时刻」：全表 <c>max(Timestamp + Duration)</c>（空表返回 null）。
     /// 不能只用「起点最新那一条 + 它自己的时长」推断 —— 一条更早开始、持续更久的事件可能结束得更晚，
     /// 会把本库的内容终点报早，让「读数为什么旧」给出错误的时刻。
+    /// <para>
+    /// REQ-3（#372）：聚合一律走**可空 <c>MAX(裸列)</c>**，一次往返即得结果 ——
+    /// 旧写法「<c>AnyAsync</c> 探空 + <c>MaxAsync</c>」把每条聚合拆成两次往返（两张表共多 4 次）。
+    /// 空集时 <c>MAX</c> 返回 NULL，语义与「先 Any 再 Max」完全一致，只是少了占位查询。
+    /// 配合 <c>duration</c> 索引，<c>max(duration)</c> 由全表顺序扫描变为索引反向扫描（AC-3.1）。
+    /// </para>
     /// </summary>
     private static async Task<DateTimeOffset?> MaxEventEndAsync<TEntity>(
         IQueryable<TEntity> source,
@@ -807,20 +828,22 @@ public sealed class PcTrackerQualityService
         CancellationToken ct)
         where TEntity : class
     {
-        if (!await source.AnyAsync(ct))
+        var maxTimestamp = await source
+            .Select(NullableSelector(timestampSelector))
+            .MaxAsync(ct);
+        if (maxTimestamp is null)
             return null;
 
         // 只有起点落在 [maxTimestamp - maxDuration, maxTimestamp] 内的事件，其结束时刻才可能晚于 maxTimestamp；
         // 因此在这个窗口内取 max(Timestamp + Duration) 与全表结果一致，无需全表扫描。
         // 窗口按「合理时长」估算：脏时长（NaN / 超过 30 天 / 负数）本来就不贡献内容时长。
-        var maxTimestamp = await source.MaxAsync(timestampSelector, ct);
-        var plausible = source.Where(plausibleDurationFilter);
-        var maxDurationSeconds = await plausible.AnyAsync(ct)
-            ? await plausible.MaxAsync(durationSelector, ct)
-            : 0;
-        var windowStart = ClampAddSeconds(maxTimestamp, -LookbackSeconds(maxDurationSeconds));
+        var maxDurationSeconds = await source
+            .Where(plausibleDurationFilter)
+            .Select(NullableSelector(durationSelector))
+            .MaxAsync(ct) ?? 0;
+        var windowStart = ClampAddSeconds(maxTimestamp.Value, -LookbackSeconds(maxDurationSeconds));
 
-        var horizon = maxTimestamp;
+        var horizon = maxTimestamp.Value;
         var timestampOf = timestampSelector.Compile();
         var durationOf = durationSelector.Compile();
         foreach (var entity in await source.Where(windowFilter(windowStart)).ToListAsync(ct))
@@ -832,6 +855,18 @@ public sealed class PcTrackerQualityService
 
         return horizon;
     }
+
+    /// <summary>
+    /// 把 <c>e =&gt; e.Column</c> 变成 <c>e =&gt; (T?)e.Column</c>，让 <c>MAX(裸列)</c> 在空集时返回 null。
+    /// <para>只加一层可空转换，不把算式写进聚合表达式 —— 后者是本仓库刻意避免的高翻译风险写法
+    /// （见 <c>PcQualityContentHorizonSqlTranslationTests</c>）。</para>
+    /// </summary>
+    private static Expression<Func<TEntity, TResult?>> NullableSelector<TEntity, TResult>(
+        Expression<Func<TEntity, TResult>> selector)
+        where TResult : struct
+        => Expression.Lambda<Func<TEntity, TResult?>>(
+            Expression.Convert(selector.Body, typeof(TResult?)),
+            selector.Parameters);
 
     /// <summary>近 7 个业务日事件数基线（中位数）与本次范围的日均对比。</summary>
     private sealed record TrackerEventBaseline(
@@ -973,7 +1008,7 @@ public sealed class PcTrackerQualityService
         }
 
         issues.AddRange(componentIssues);
-        var details = new Dictionary<string, string>
+        var details = new Dictionary<string, object?>
         {
             ["sampleCount"] = samples.Count.ToString(),
             ["gapCount"] = gaps.ToString(),
@@ -994,7 +1029,7 @@ public sealed class PcTrackerQualityService
         List<PcQualityIssueDto> issues)
     {
         var componentIssues = new List<PcQualityIssueDto>();
-        var details = new Dictionary<string, string>
+        var details = new Dictionary<string, object?>
         {
             ["rangeStartUtc"] = rangeStart.ToString("O"),
             ["rangeEndUtc"] = rangeEnd.ToString("O")
@@ -1229,7 +1264,7 @@ public sealed class PcTrackerQualityService
         }
 
         issues.AddRange(componentIssues);
-        var details = new Dictionary<string, string>
+        var details = new Dictionary<string, object?>
         {
             ["hasActivityEvents"] = hasActivityEvents.ToString(),
             ["hasActivityWatchEvents"] = (awEvents.Count > 0).ToString(),
@@ -1278,7 +1313,7 @@ public sealed class PcTrackerQualityService
         string key,
         string name,
         IReadOnlyCollection<PcQualityIssueDto> issues,
-        IReadOnlyDictionary<string, string> details)
+        IReadOnlyDictionary<string, object?> details)
     {
         var status = issues.Count == 0
             ? PimHealthStatus.Healthy

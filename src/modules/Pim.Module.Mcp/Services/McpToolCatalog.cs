@@ -77,7 +77,7 @@ public static class McpToolCatalog
         Add(tools, "calendar", "search_calendar_events", "Search events.");
         Add(tools, "calendar", "search_calendar_tasks", "Search tasks.");
 
-        // PcTracker 27
+        // PcTracker 26（WO-PC-BACKEND-20261001 REQ-6：get_pc_aw_heatmap 随遗留端点下线）
         Add(tools, "pctracker", "get_pc_summary", "PC activity summary.");
         Add(tools, "pctracker", "get_pc_detail", "PC activity detail.");
         Add(tools, "pctracker", "get_pc_timeline", "PC activity timeline.");
@@ -85,7 +85,6 @@ public static class McpToolCatalog
         Add(tools, "pctracker", "get_pc_heatmap", "PC activity heatmap.");
         Add(tools, "pctracker", "get_pc_activity_analysis", "PC activity analysis.");
         Add(tools, "pctracker", "get_pc_quality", "PC data quality.");
-        Add(tools, "pctracker", "get_pc_aw_heatmap", "PC AW heatmap.");
         Add(tools, "pctracker", "get_pc_keystats_range", "PC keystats in range.");
         Add(tools, "pctracker", "get_pc_focus_blocks", "PC focus blocks.");
         Add(tools, "pctracker", "get_pc_app_usage", "PC app usage.");
@@ -132,7 +131,7 @@ public static class McpToolCatalog
         Add(tools, "quicknotes", "get_quick_note", "Get a quick note by id.");
         Add(tools, "quicknotes", "get_quick_note_attachment_meta", "Quick note attachment metadata.");
 
-        // Files 8
+        // Files 7
         Add(tools, "files", "get_file_providers", "List file providers.");
         Add(tools, "files", "get_files", "List files.");
         Add(tools, "files", "get_file", "Get file metadata.");
@@ -214,7 +213,7 @@ public static class McpToolCatalog
         AddW(tools, "quicknotes", "upload_quick_note_attachment", "Upload a quick note attachment.");
         AddW(tools, "quicknotes", "delete_quick_note_attachment", "Delete a quick note attachment.");
 
-        // Files 6
+        // Files 5
         AddW(tools, "files", "upload_file", "Upload a file to a provider path.");
         AddW(tools, "files", "move_file", "Move a file to another path.");
         AddW(tools, "files", "rename_file", "Rename a file.");

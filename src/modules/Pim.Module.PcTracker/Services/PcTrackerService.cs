@@ -343,14 +343,28 @@ public partial class PcTrackerService
         var keystatsSample = keystats is null
             ? await LatestKeystatsSampleForDate(date, ct)
             : null;
-        var awEvents = await _db.Set<AwEventEntity>()
-            .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd)
+        // REQ-1 / AC-1.1（review round 3）：取数窗口与 heatmap/grid 对齐 —— 起点在业务日之前、
+        // 跨过本地 04:00 伸进本日的记录属于本日的活跃分钟，不能因为「起点不在本日」被整条丢掉，
+        // 否则同一业务日 grid 报 60 分钟而 summary 报 0。既有用途（指标/闲置/会话）仍只看起点落在本日的记录。
+        var lookbackSeconds = await ComputeActiveLookbackSecondsAsync(ct);
+        var eventWindowStart = lookbackSeconds > 0 ? dayStart.AddSeconds(-lookbackSeconds) : dayStart;
+        var awEventsInWindow = await _db.Set<AwEventEntity>()
+            .Where(e => e.Timestamp >= eventWindowStart && e.Timestamp < dayEnd)
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
-        var trackerEvents = await _db.Set<TrackerEventEntity>()
-            .Where(e => e.Timestamp >= dayStart && e.Timestamp < dayEnd)
+        var trackerEventsInWindow = await _db.Set<TrackerEventEntity>()
+            .Where(e => e.Timestamp >= eventWindowStart && e.Timestamp < dayEnd)
             .OrderBy(e => e.Timestamp)
             .ToListAsync(ct);
+        var awEvents = awEventsInWindow.Where(e => e.Timestamp >= dayStart).ToList();
+        var trackerEvents = trackerEventsInWindow.Where(e => e.Timestamp >= dayStart).ToList();
+        // 跨业务日边界的那部分只并入活跃记录（并过滤脏时长，与 grid 同一口径）。
+        var crossingAwEvents = awEventsInWindow
+            .Where(e => e.Timestamp < dayStart && IsCrossingIntoRange(e.Timestamp, e.Duration, dayStart))
+            .ToList();
+        var crossingTrackerEvents = trackerEventsInWindow
+            .Where(e => e.Timestamp < dayStart && IsCrossingIntoRange(e.Timestamp, e.Duration, dayStart))
+            .ToList();
         var combinedEventsForStats = awEvents
             .Select(e => new { e.Timestamp, e.Duration, e.EventType, e.AppName })
             .Concat(trackerEvents.Select(e => new { e.Timestamp, e.Duration, EventType = e.EventType, e.AppName }))
@@ -370,16 +384,24 @@ public partial class PcTrackerService
         // 闲置时长同样跟随数据源：AW 的 afk 事件 + tracker 的 idle 事件，取区间并集。
         var idleMinutes = ComputeIdleMinutes(awEvents, trackerEvents, dayStart, dayEnd);
 
-        var awRecords = await BuildInterpretedAwDetailRecordsAsync(awEvents, ct);
-        var trackerRecords = await BuildInterpretedTrackerDetailRecordsAsync(trackerEvents, ct);
-        // REQ-1 / REQ-3：热力图与 activity-analysis 用同一批记录（window / web-page / input-minute）
-        // 与同一个重叠消解口径，两个接口的活跃时长与强度档位因此可交叉验证。
-        var activeRecords = awRecords
-            .Concat(trackerRecords)
+        // 跨边界记录与日内记录必须**一起**做解释（review round 4）：分两批解释时 AW 的
+        // window/web 合并结果与 activity-analysis 的单批解释不同，会出现 grid/summary 120 分钟
+        // 而 activity-analysis 5 分钟的分歧。
+        // REQ-1（review round 4-5）：
+        // 1) 跨边界记录与日内记录**一起**解释（分两批时 AW 的 window/web 合并结果会与
+        //    activity-analysis 分叉：实测 120 分钟 vs 5 分钟）；
+        // 2) 解释结果**先裁剪到业务日窗口再落分类快照** —— 否则时间线会画出属于前一业务日的那一段
+        //    （本地 02:00–04:00），且同一条窗口在 summary 与内部分析路径下落到两个不同的 record_key。
+        var rules = await GetActivityCategoryRulesAsync(ct);
+        var activeRecords = BrowserPageTimelineBuilder
+            .BuildInterpretedAwRecords(awEvents.Concat(crossingAwEvents).ToList(), rules)
+            .Concat(TrackerPageTimelineBuilder.BuildInterpretedRecords(trackerEvents.Concat(crossingTrackerEvents).ToList(), rules))
             .Concat(await LoadInputMinuteRecordsAsync(dayStart, dayEnd, ct))
+            .Select(record => ClipRecordToRange(record, dayStart, dayEnd))
             .ToList();
+        activeRecords = await _classificationSnapshots.EnsureClassificationsAsync(activeRecords, rules, auditId: null, ct);
         var heatmap = BuildHourlyHeatmapFromRecords(dayStart, activeRecords, windowEvents, trackerWindowEvents);
-        var timeline = awRecords.Concat(trackerRecords)
+        var timeline = activeRecords
             .Where(IsSummaryTimelineRecord)
             .Select(ToTimelineItem)
             .ToList();
@@ -448,6 +470,39 @@ public partial class PcTrackerService
     }
 
     /// <summary>
+    /// 查询范围内的 input-minute 记录，**按业务日分别配对**（REQ-1 / #375）。
+    /// <para>
+    /// 采样记录由「相邻两条采样」的差值拼出，因此采样对决定了区间端点。若按整个请求范围配对，
+    /// 边界处的第一条采样会与前一业务日的最后一条配成跨日采样对，把两段数据之间十几小时的空白
+    /// 整段算进当日桶 —— 于是同一业务日的同一个桶在 1 天 / 30 天请求下得到不同值
+    /// （实测 2026-09-27：单日 722 / 30 天 1145 / 整月 1440）。
+    /// 按业务日配对后，桶的取值只取决于该业务日自己的采样，与请求范围无关（AC-1.1）。
+    /// </para>
+    /// </summary>
+    private async Task<List<PcDetailRecord>> LoadInputMinuteRecordsByBusinessDayAsync(
+        DateTimeOffset rangeStart,
+        DateTimeOffset rangeEnd,
+        CancellationToken ct)
+    {
+        var samples = await _db.Set<KeystatsSampleEntity>()
+            .AsNoTracking()
+            .Where(s => s.SampledAtUtc >= rangeStart && s.SampledAtUtc < rangeEnd)
+            .OrderBy(s => s.PimDeviceId)
+            .ThenBy(s => s.SampledAtUtc)
+            .ToListAsync(ct);
+
+        var records = new List<PcDetailRecord>();
+        foreach (var dayGroup in samples
+                     .GroupBy(s => GetBusinessDayForTimestamp(s.SampledAtUtc))
+                     .OrderBy(group => group.Key))
+        {
+            records.AddRange(ToInputMinuteRecords(dayGroup.ToList()));
+        }
+
+        return records;
+    }
+
+    /// <summary>
     /// 查询范围内的活跃区间并集（REQ-3 / REQ-4 的强度与活跃分钟口径）：
     /// AW 的 window / web 事件、原生 tracker 的 window / web-page 事件、逐分钟输入记录（input-minute）；
     /// gap / idle / afk 与 afk 状态的 AW 事件一律不参与（#331）。
@@ -460,9 +515,21 @@ public partial class PcTrackerService
     {
         var intervals = new List<(DateTimeOffset Start, DateTimeOffset End)>();
 
+        // REQ-1 / AC-1.1（review round 2）：桶的取值不得随请求范围变化 —— 起点在**桶之前**、
+        // 但伸进桶里的记录必须一并取到。只按 `Timestamp >= rangeStart` 取数时，单日请求
+        // （rangeStart = 桶起点）会漏掉这类跨边界记录，而更宽的范围请求会算进去
+        // （实测：本地 02:00 起、跨 04:00 的窗口事件 → 单日 0 分钟 / 范围 60 分钟）。
+        // 回看窗口取两张表**合理时长**的最大值：比它更长的记录不可能跨进桶里，
+        // 因此「桶之前 D 秒」与「范围之前 D 秒」两种取数在每个桶上给出同一结果。
+        var lookbackSeconds = await ComputeActiveLookbackSecondsAsync(ct);
+        var lookbackStart = lookbackSeconds > 0
+            ? rangeStart.AddSeconds(-lookbackSeconds)
+            : rangeStart;
+
         var awEvents = await _db.Set<AwEventEntity>()
             .AsNoTracking()
-            .Where(e => e.Timestamp >= rangeStart && e.Timestamp < rangeEnd && e.Duration > 0)
+            .Where(e => e.Timestamp >= lookbackStart && e.Timestamp < rangeEnd)
+            .Where(e => e.Duration > 0 && e.Duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
             .Where(e => e.EventType == "window" || e.EventType == "web")
             .Where(e => e.AfkStatus == null || e.AfkStatus != "afk")
             .Select(e => new { e.Timestamp, e.Duration })
@@ -472,16 +539,17 @@ public partial class PcTrackerService
 
         var trackerEvents = await _db.Set<TrackerEventEntity>()
             .AsNoTracking()
-            .Where(e => e.Timestamp >= rangeStart && e.Timestamp < rangeEnd && e.Duration > 0)
+            .Where(e => e.Timestamp >= lookbackStart && e.Timestamp < rangeEnd)
+            .Where(e => e.Duration > 0 && e.Duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
             .Where(e => e.EventType == "window" || e.EventType == "web-page")
             .Select(e => new { e.Timestamp, e.Duration })
             .ToListAsync(ct);
         foreach (var e in trackerEvents)
             AddClip(e.Timestamp, e.Timestamp.AddSeconds(e.Duration));
 
-        foreach (var record in await LoadInputMinuteRecordsAsync(rangeStart, rangeEnd, ct))
+        foreach (var record in await LoadInputMinuteRecordsByBusinessDayAsync(rangeStart, rangeEnd, ct))
         {
-            if (PcActivityActiveSegments.TryGetInterval(record, out var start, out var end))
+            if (PcActivityActiveSegments.TryGetActiveInterval(record, out var start, out var end))
                 AddClip(start, end);
         }
 
@@ -496,26 +564,81 @@ public partial class PcTrackerService
         return MergeIntervals(intervals);
     }
 
-    public async Task<List<HeatmapBucket>> GetHeatmapAsync(DateTime start, DateTime end, CancellationToken ct)
+    /// <summary>
+    /// 把记录裁剪到 <paramref name="rangeStart"/>–<paramref name="rangeEnd"/>：完全在范围内的记录原样返回；
+    /// 只有跨边界记录会被改写起止与时长。用于内部分析路径（`/pc/detail` 不走这里）。
+    /// </summary>
+    private static PcDetailRecord ClipRecordToRange(PcDetailRecord record, DateTimeOffset rangeStart, DateTimeOffset rangeEnd)
     {
-        var s = BusinessDayStart(start);
-        var e = BusinessDayStart(end).AddDays(1);
-        var events = await _db.Set<AwEventEntity>()
-            .Where(ev => ev.Timestamp >= s && ev.Timestamp < e && ev.EventType == "window")
-            .ToListAsync(ct);
-        var trackerEvents = await _db.Set<TrackerEventEntity>()
-            .Where(ev => ev.Timestamp >= s && ev.Timestamp < e && ev.EventType == "window")
-            .ToListAsync(ct);
+        if (!PcActivityActiveSegments.TryGetInterval(record, out var start, out var end))
+            return record;
+        if (start >= rangeStart && end <= rangeEnd)
+            return record;
 
-        var buckets = new List<HeatmapBucket>();
-        for (var day = start.Date; day <= end.Date; day = day.AddDays(1))
+        var clippedStart = start < rangeStart ? rangeStart : start;
+        var clippedEnd = end > rangeEnd ? rangeEnd : end;
+        if (clippedEnd <= clippedStart)
+            return record with { DurationSeconds = 0 };
+
+        return record with
         {
-            var dayStart = BusinessDayStart(day);
-            var dayEvents = events.Where(ev => ev.Timestamp >= dayStart && ev.Timestamp < dayStart.AddDays(1)).ToList();
-            var dayTrackerEvents = trackerEvents.Where(ev => ev.Timestamp >= dayStart && ev.Timestamp < dayStart.AddDays(1)).ToList();
-            buckets.AddRange(BuildHourlyHeatmapCombined(dayStart, dayEvents, dayTrackerEvents));
+            Start = FormatUtc(clippedStart),
+            End = FormatUtc(clippedEnd),
+            DurationSeconds = (clippedEnd - clippedStart).TotalSeconds
+        };
+    }
+
+    /// <summary>
+    /// 取数窗口向前扩了一段时，把「起点在范围之前」的记录按与活跃口径相同的规则筛一遍：，把「起点在范围之前」的记录按与活跃口径相同的规则筛一遍：
+    /// **只有真正伸进范围的**才保留（结束时刻晚于范围起点，且时长合理）；完全落在范围之前的一律丢掉。
+    /// 范围之内的一律原样保留 —— 即扩窗不改变原有记录的集合。
+    /// <para>只按时长筛是不够的（review round 3 实测）：一段 5 小时前的窗口同样「时长合理」，
+    /// 却会让内部分析路径与建议生成拿到不属于本范围的记录。</para>
+    /// </summary>
+    private static List<TEntity> SelectCrossingAware<TEntity>(
+        List<TEntity> events,
+        DateTimeOffset rangeStart,
+        Func<TEntity, DateTimeOffset> timestampOf,
+        Func<TEntity, double> durationOf)
+    {
+        var result = new List<TEntity>(events.Count);
+        foreach (var entity in events)
+        {
+            var timestamp = timestampOf(entity);
+            if (timestamp >= rangeStart || IsCrossingIntoRange(timestamp, durationOf(entity), rangeStart))
+                result.Add(entity);
         }
-        return buckets;
+
+        return result;
+    }
+
+    /// <summary>记录是否「伸进」范围：起点在范围之前，但结束时刻晚于范围起点，且时长合理（非脏数据）。</summary>
+    private static bool IsCrossingIntoRange(DateTimeOffset timestamp, double durationSeconds, DateTimeOffset rangeStart)
+        => timestamp < rangeStart
+           && durationSeconds > 0
+           && durationSeconds <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds
+           && timestamp.AddSeconds(durationSeconds) > rangeStart;
+
+    /// <summary>
+    /// 活跃区间并集的回看窗口（秒）：两张事件表「合理时长」的最大值。
+    /// 与 <see cref="PcTrackerQualityService"/> 处理「跨范围起点事件」同一套做法；
+    /// 有 <c>duration</c> 索引后这两次聚合各约 0.04 ms（REQ-3）。
+    /// 空表或超出合理上界的脏数据一律记 0。
+    /// </summary>
+    private async Task<double> ComputeActiveLookbackSecondsAsync(CancellationToken ct)
+    {
+        var trackerMax = await _db.Set<TrackerEventEntity>()
+            .AsNoTracking()
+            .Where(e => e.Duration > 0 && e.Duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
+            .Select(e => (double?)e.Duration)
+            .MaxAsync(ct) ?? 0;
+        var awMax = await _db.Set<AwEventEntity>()
+            .AsNoTracking()
+            .Where(e => e.Duration > 0 && e.Duration <= PcTrackerQualityService.MaxPlausibleEventDurationSeconds)
+            .Select(e => (double?)e.Duration)
+            .MaxAsync(ct) ?? 0;
+
+        return Math.Max(trackerMax, awMax);
     }
 
     public async Task<List<KeystatsSummary>> GetKeystatsRangeAsync(DateTime start, DateTime end, CancellationToken ct)
@@ -627,7 +750,7 @@ public partial class PcTrackerService
     {
         var page = Math.Max(1, q.Page);
         var pageSize = Math.Clamp(q.PageSize, 1, 200);
-        var records = await BuildCompleteDetailRecordsAsync(q, ct);
+        var records = await BuildCompleteDetailRecordsAsync(q, ct, includeCrossingRecords: false);
 
         var totalCount = records.Count;
         var items = records
@@ -653,20 +776,85 @@ public partial class PcTrackerService
     /// </para>
     /// </summary>
     public async Task<List<PcDetailRecord>> QueryAllDetailRecordsAsync(DetailQueryParams q, CancellationToken ct)
-        => await BuildCompleteDetailRecordsAsync(q, ct);
+    {
+        EnsureInternalQuerySpan(q);
+        // REQ-1（review round 3）：内部分析路径要看到「起点在范围之前、伸进范围」的记录，
+        // 才能与 heatmap/grid 的活跃分钟结论一致；/pc/detail 的对外契约保持不变（见下）。
+        return await BuildCompleteDetailRecordsAsync(q, ct, includeCrossingRecords: true);
+    }
 
-    private async Task<List<PcDetailRecord>> BuildCompleteDetailRecordsAsync(DetailQueryParams q, CancellationToken ct)
+    /// <summary>
+    /// 内部全量取数路径的单次跨度上限（REQ-2 / #371）：**7 个业务日**。
+    /// <para>
+    /// 取值依据（实测于克隆库 pim_wo2，内部路径真实调用，见 PR 的 AC-2.3 表；耗时随机器负载波动，
+    /// 记录数与内存量级稳定）：
+    /// 1 天 ≈ 1,210 条 / 112 MiB / 3–7 s，7 天 ≈ 6,972 条 / 470–540 MiB / 4–7 s，
+    /// 30 天 ≈ 33,707 条 / 2,279 MiB / 18 s，60 天起直接以写库异常告终（3,573 MiB 时）。
+    /// 调用方语义只需要「覆盖整个业务日」，7 天给出 7 倍余量，同时把单次请求的驻留内存
+    /// 压在 ~0.5 GiB 量级；再宽就会把「按天分片」的成本一次性压给单个请求。
+    /// </para>
+    /// </summary>
+    public const int MaxInternalQuerySpanDays = 7;
+
+    /// <summary>
+    /// 跨度校验：超过 <see cref="MaxInternalQuerySpanDays"/> 直接拒绝，不静默截断、不继续全量拉取。
+    /// 抛 <see cref="ArgumentException"/>，由端点层映射为 400（AC-2.2）。
+    /// </summary>
+    private static void EnsureInternalQuerySpan(DetailQueryParams q)
+    {
+        var (start, end) = GetDetailQueryRange(q);
+        var days = (int)Math.Round((end - start).TotalDays);
+        if (days <= MaxInternalQuerySpanDays)
+            return;
+
+        throw new ArgumentException(
+            $"内部取数路径单次最多覆盖 {MaxInternalQuerySpanDays} 个业务日，当前请求为 {days} 个业务日" +
+            $"（{FormatBusinessDay(start)} ~ {FormatBusinessDay(end.AddSeconds(-1))}）。" +
+            "请按业务日拆分请求（每个业务日一次）；/pc/detail 的分页明细接口会先展开所请求范围的全部记录，" +
+            "不能用来绕过本上限。");
+    }
+
+    /// <summary>
+    /// 把范围端点换算成**业务日**再格式化（<c>yyyy-MM-dd</c>）。
+    /// 端点本身是 UTC 时刻：范围起点是当日 04:00、终点是次日 04:00 的开区间上界，
+    /// 直接按 UTC 或按本地日历日格式化都会整体差一天。
+    /// </summary>
+    private static string FormatBusinessDay(DateTimeOffset instant)
+        => GetBusinessDayForTimestamp(instant).ToString("yyyy-MM-dd");
+
+    private async Task<List<PcDetailRecord>> BuildCompleteDetailRecordsAsync(
+        DetailQueryParams q,
+        CancellationToken ct,
+        bool includeCrossingRecords)
     {
         var (start, end) = GetDetailQueryRange(q);
 
-        var awEvents = await _db.Set<AwEventEntity>()
-            .Where(e => e.Timestamp >= start && e.Timestamp < end)
-            .OrderBy(e => e.Timestamp)
-            .ToListAsync(ct);
-        var trackerEvents = await _db.Set<TrackerEventEntity>()
-            .Where(e => e.Timestamp >= start && e.Timestamp < end)
-            .OrderBy(e => e.Timestamp)
-            .ToListAsync(ct);
+        // 只有内部分析路径会把取数窗口向前扩一个「合理时长」：起点在范围之前、但伸进范围的记录
+        // 同样属于本范围（REQ-1）。`/pc/detail` 传 false，取数与过滤行为与修复前逐字节一致。
+        var loadStart = start;
+        if (includeCrossingRecords)
+        {
+            var lookbackSeconds = await ComputeActiveLookbackSecondsAsync(ct);
+            if (lookbackSeconds > 0)
+                loadStart = start.AddSeconds(-lookbackSeconds);
+        }
+
+        var awEvents = SelectCrossingAware(
+            await _db.Set<AwEventEntity>()
+                .Where(e => e.Timestamp >= loadStart && e.Timestamp < end)
+                .OrderBy(e => e.Timestamp)
+                .ToListAsync(ct),
+            start,
+            e => e.Timestamp,
+            e => e.Duration);
+        var trackerEvents = SelectCrossingAware(
+            await _db.Set<TrackerEventEntity>()
+                .Where(e => e.Timestamp >= loadStart && e.Timestamp < end)
+                .OrderBy(e => e.Timestamp)
+                .ToListAsync(ct),
+            start,
+            e => e.Timestamp,
+            e => e.Duration);
         var samples = await _db.Set<KeystatsSampleEntity>()
             .Where(s => s.SampledAtUtc >= start && s.SampledAtUtc < end)
             .OrderBy(s => s.PimDeviceId)
@@ -690,6 +878,11 @@ public partial class PcTrackerService
 
         if (!rawMode)
             records.AddRange(ToInputMinuteRecords(samples));
+
+        // 跨边界记录裁剪到所请求范围（review round 4）：内部分析路径与建议生成拿到的是
+        // 「本范围内的那一段」，不是整条事件 —— 否则建议里的时长会包含属于前一业务日的部分。
+        if (includeCrossingRecords)
+            records = records.Select(record => ClipRecordToRange(record, start, end)).ToList();
 
         records = ApplyPreClassificationCompleteDetailFilters(records, q).ToList();
         records = await _classificationSnapshots.EnsureClassificationsAsync(
@@ -851,7 +1044,10 @@ public partial class PcTrackerService
                     eventCount,
                     PcActivityIntensity.ForSeconds(activeSeconds, 3600),
                     PcActivityIntensity.MaxLevel,
-                    keyCount);
+                    keyCount,
+                    // AC-7.2：业务日的 24 个小时桶（本地 04:00 → 次日 03:59）全部标同一个业务日，
+                    // 包括 Start 落在次日 UTC 时刻的本地 00:00–03:59 四个桶。
+                    targetDate.ToString("yyyy-MM-dd"));
             }).ToList();
 
             return new HeatmapGridResponse(new List<List<HeatmapGridCell>> { row }, dimension, maxKeyCount);
@@ -876,7 +1072,9 @@ public partial class PcTrackerService
                 0,
                 PcActivityIntensity.ForSeconds(activeSeconds, TimeSpan.FromDays(1).TotalSeconds),
                 PcActivityIntensity.MaxLevel,
-                daily?.KeyPresses ?? 0));
+                daily?.KeyPresses ?? 0,
+                // AC-7.3：day / month / year 维度与 hour 维度共用同一个业务日字段。
+                day.ToString("yyyy-MM-dd")));
 
             if (rowDays.Count == 7)
             {
