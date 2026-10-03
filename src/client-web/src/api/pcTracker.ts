@@ -1,7 +1,7 @@
 import { apiGet, apiPost, apiPut, apiDelete } from './client';
 import type { ApiResponse } from '../types';
 import type {
-  PcSummaryResponse, TimelineItem, HeatmapBucket,
+  PcSummaryResponse,
   DetailQueryParams, DetailQueryResponse,
   AppCategoryRule, HeatmapGridResponse,
   ActivityClassificationRule, ActivityClassificationSuggestion,
@@ -17,14 +17,6 @@ import type {
 
 export function getPcSummary(date: string) {
   return apiGet<ApiResponse<PcSummaryResponse>>(`/pc/summary?date=${date}`).then(r => r.data);
-}
-
-export function getPcTimeline(date: string) {
-  return apiGet<ApiResponse<TimelineItem[]>>(`/pc/aw/timeline?date=${date}`).then(r => r.data);
-}
-
-export function getPcHeatmap(start: string, end: string) {
-  return apiGet<ApiResponse<HeatmapBucket[]>>(`/pc/aw/heatmap?start=${start}&end=${end}`).then(r => r.data);
 }
 
 export function getPcHeatmapGrid(start: string, end: string, dimension: string) {
