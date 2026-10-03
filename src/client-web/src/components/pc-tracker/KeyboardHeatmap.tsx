@@ -201,6 +201,14 @@ interface MouseZoneProps {
   width: number;
   height: number;
   rx: number;
+  /**
+   * 标签与计数画在区块内还是区块下方。
+   *
+   * 滚轮槽只有 18px 宽（滚轮键 =「中键」），两个字 + 五位计数塞不进去，硬塞会压到
+   * 左/右键区块上（见 WO-FRONTEND-PC-20261001 REQ-1 的界面实测）。该槽改为在下方
+   * 居中标注，位置由 `x + width / 2` 与滚轮槽对齐。
+   */
+  labelPlacement?: 'inside' | 'below';
 }
 
 function MouseZone({
@@ -213,10 +221,16 @@ function MouseZone({
   width,
   height,
   rx,
+  labelPlacement = 'inside',
 }: MouseZoneProps) {
   const bg = keyColor(count, maxKey);
-  const color = textColor(count, maxKey);
+  // 字色只有「字画在色块上」时才需要反白；槽下方的字落在浅色鼠标轮廓（#f1f5f9）上，
+  // 必须固定用深色，否则中键占比一高（真实单日 2026-07-28：中键 215 / 左键 342 = 0.63）
+  // 就会变成白字看不见。热度由那条 18px 的槽本身继续表达。
+  const color = labelPlacement === 'below' ? '#334155' : textColor(count, maxKey);
   const title = `${label}: ${count.toLocaleString('zh-CN')}`;
+  const labelY = labelPlacement === 'below' ? y + height + 14 : y + height / 2 - 2;
+  const countY = labelPlacement === 'below' ? y + height + 27 : y + height / 2 + 12;
 
   return (
     <g
@@ -239,7 +253,7 @@ function MouseZone({
       />
       <text
         x={x + width / 2}
-        y={y + height / 2 - 2}
+        y={labelY}
         textAnchor="middle"
         dominantBaseline="middle"
         fill={color}
@@ -251,7 +265,7 @@ function MouseZone({
       {count > 0 && (
         <text
           x={x + width / 2}
-          y={y + height / 2 + 12}
+          y={countY}
           textAnchor="middle"
           dominantBaseline="middle"
           fill={color}
@@ -265,7 +279,21 @@ function MouseZone({
   );
 }
 
+/**
+ * 滚轮量（`scrollDistance`，单位 px）的界面取值。
+ *
+ * 与点击次数（次数）量级差 3 个数量级，所以不参与鼠标区的色阶归一化，单独成列展示
+ * （WO-FRONTEND-PC-20261001 D-1 / P 表默认方案：卡片内单列数字、原始量级）。
+ * 保留两位小数，与接口原值（实测 474069.94）对得上，不做四舍五入到整数。
+ */
+function formatScrollDistance(value: number): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return `${safe.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} px`;
+}
+
 function MouseHeatmap({ keystats, maxKey }: { keystats: KeystatsView; maxKey: number }) {
+  // 色阶只按点击次数归一化：`scrollDistance` 是滚动距离（px），混进来会把所有按键/点击
+  // 都压成接近 0 的浅色。
   const maxMouse = Math.max(
     maxKey,
     keystats.leftClicks,
@@ -294,7 +322,8 @@ function MouseHeatmap({ keystats, maxKey }: { keystats: KeystatsView; maxKey: nu
         <path d="M127 18v104" stroke="#dbe3ee" strokeWidth="2" strokeLinecap="round" />
         <MouseZone label="左键" zone="left" count={keystats.leftClicks} maxKey={maxMouse} x={68} y={24} width={56} height={92} rx={26} />
         <MouseZone label="右键" zone="right" count={keystats.rightClicks} maxKey={maxMouse} x={130} y={24} width={56} height={92} rx={26} />
-        <MouseZone label="滚轮" zone="wheel" count={keystats.middleClicks} maxKey={maxMouse} x={112} y={50} width={18} height={64} rx={9} />
+        {/* 滚轮键（中键）：取值是 `middleClicks`（被按下的次数），不再是「滚轮」量。 */}
+        <MouseZone label="中键" zone="middle" count={keystats.middleClicks} maxKey={maxMouse} x={112} y={50} width={18} height={64} rx={9} labelPlacement="below" />
         <MouseZone label="侧后" zone="side-back" count={keystats.sideBackClicks} maxKey={maxMouse} x={28} y={118} width={38} height={48} rx={16} />
         <MouseZone label="侧前" zone="side-forward" count={keystats.sideForwardClicks} maxKey={maxMouse} x={28} y={176} width={38} height={48} rx={16} />
         <circle cx="127" cy="242" r="11" fill="#e2e8f0" stroke="rgba(255,255,255,0.9)" strokeWidth="2" />
@@ -305,6 +334,15 @@ function MouseHeatmap({ keystats, maxKey }: { keystats: KeystatsView; maxKey: nu
           总点击
         </text>
       </svg>
+
+      {/* 滚轮的真实物理量：滚动距离（与点击次数不是同一个量纲，单列）。 */}
+      <div
+        data-mouse-metric="scrollDistance"
+        className="mt-3 flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2"
+      >
+        <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">滚轮量</span>
+        <span className="text-sm font-bold text-slate-700">{formatScrollDistance(keystats.scrollDistance)}</span>
+      </div>
     </div>
   );
 }
