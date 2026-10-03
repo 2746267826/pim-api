@@ -896,6 +896,14 @@ export interface HeatmapBucket {
   hour: number;
   activeMinutes: number;
   totalEvents: number;
+  /**
+   * 该桶所属**业务日**（yyyy-MM-dd，Asia/Shanghai 04:00 起算）。
+   *
+   * WO-PC-BACKEND-20261001 REQ-7 新增。hour 桶的 `start` 是真实小时起点，
+   * 业务日 D 的最后 4 个桶落在本地 D+1 00:00–03:00，光看 `start` 的 +08:00 日历日
+   * 会把它们标成次日（#380）。字段缺失时不得用日历日冒充业务日，界面要显式标注。
+   */
+  businessDay?: string;
   /** 0–5 档强度（`summary.heatmap` 与 `heatmap/grid` 同算路） */
   intensityLevel: number;
   /** 档位上界（后端固定 5） */

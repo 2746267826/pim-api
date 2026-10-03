@@ -141,6 +141,16 @@ export default function PcQualitySummary({
       {locatability.hasMissingHours && (
         <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3" data-pc-quality-section="missing-hours">
           <h3 className="text-xs font-semibold text-amber-800">缺数时段</h3>
+          {/* AC-3.2：结构化字段缺失/解析失败时必须显式说出来，不能静默只剩小时清单。 */}
+          {locatability.missingSegmentsNotice && (
+            <p
+              role="status"
+              data-missing-segments-source={locatability.missingSegmentsSource}
+              className="mt-2 rounded-md border border-amber-300 bg-white/70 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800"
+            >
+              {locatability.missingSegmentsNotice}
+            </p>
+          )}
           {locatability.missingSegments.length > 0 && (
             <ul className="mt-2 space-y-1">
               {locatability.missingSegments.map(segment => (
