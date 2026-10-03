@@ -76,8 +76,13 @@ jobs:
       - name: Install Playwright Chromium
         run: npm exec playwright -- install --with-deps chromium
 
-      - name: Schedule workbench tests
-        run: npm run test:schedule-workbench-complete
+      # 前端门禁 = 既有 schedule-workbench 链 + pcRoute3Types 契约类型用例 + **全量** vitest。
+      # 过去的固定脚本链不覆盖 `src/components/charts/__tests__`、`src/components/pc-tracker/__tests__`、
+      # `src/utils/__tests__`，等于 CI 全绿而新增用例根本没跑（#376）。
+      # vitest 会打印 `Test Files / Tests / Duration`，用例总数与耗时直接可见。
+      # 门禁内容由 src/client-web/src/__tests__/ciFrontendGate.test.ts 自检，防止被悄悄摘掉。
+      - name: Frontend tests (full unit suite + tsx contract suites)
+        run: npm run test:frontend-gate
 
       - name: Build
         run: npm run build
