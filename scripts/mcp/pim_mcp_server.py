@@ -4,8 +4,9 @@ PIM MCP v3 - Read + Write server for AI Agent
 DEPRECATED (2026-09-01): MCP Server 已集成进 Pim.Api（.NET 8）进程内（/mcp + --mcp-stdio），
 本脚本退役，仅保留为行为基准（工具契约/参数/返回形状以本文件为参考）。
 
-Exposes 149 tools: 100 read-only (Calendar / PcTracker / Mobile / QuickNotes / Files / Core/Infra)
+Exposes 148 tools: 99 read-only (Calendar / PcTracker / Mobile / QuickNotes / Files / Core/Infra)
 plus 49 write tools (Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2).
+（WO-PC-BACKEND-20261001 REQ-6：get_pc_aw_heatmap 随遗留端点 pc/aw/heatmap 下线，149 → 148 / 100 → 99。）
 
 Transports:
 - stdio (default, v2-compatible): Bearer pass-through. Client obtains JWT via
@@ -1755,27 +1756,6 @@ async def get_pc_quality(
 
 
 @mcp.tool()
-async def get_pc_aw_heatmap(
-    start: str,
-    end: str,
-    timezone: str = DEFAULT_TIMEZONE,
-) -> Any:
-    """Get PC active-window heatmap (raw). Returns HeatmapBucket[]."""
-    try:
-        s = _parse_iso8601(start)
-        e = _parse_iso8601(end)
-    except ValueError as ve:
-        return {"error": str(ve), "code": 400}
-    err = _validate_time_range(start, end)
-    if err:
-        return err
-    start_d = s.date().isoformat()
-    end_d = e.date().isoformat()
-    params = _clean_params(start=start_d, end=end_d, timezone=timezone)
-    return await _call_api("GET", "/api/v1/pc/aw/heatmap", params=params)
-
-
-@mcp.tool()
 async def get_pc_keystats_range(
     start: str,
     end: str,
@@ -3331,7 +3311,7 @@ def _build_http_app() -> Any:
 
 
 def _run_check() -> None:
-    """Self-check: verify tool inventory (101 read + 50 write) without starting a server."""
+    """Self-check: verify tool inventory (99 read + 49 write) without starting a server."""
     tools = _list_tools_meta()
     read = [t for t in tools if t["group"] == "read"]
     write = [t for t in tools if t["group"] == "write"]

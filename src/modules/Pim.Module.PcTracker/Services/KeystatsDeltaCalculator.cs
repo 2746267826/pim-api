@@ -14,6 +14,13 @@ public record KeystatsMinuteDelta(
 
 public static class KeystatsDeltaCalculator
 {
+    /// <summary>
+    /// 两条采样之间超过该分钟数即视为「采样断档」（<see cref="KeystatsMinuteDelta.IsGap"/>）。
+    /// <para>既是 delta 的类型判定，也是活跃分钟口径里「断档不得被外推成活跃」的阈值，
+    /// 两处必须同源，否则同一段空白会在一个口径里是断档、在另一个口径里是活动。</para>
+    /// </summary>
+    public const double GapThresholdMinutes = 2;
+
     public static KeystatsMinuteDelta Calculate(KeystatsSampleEntity? previous, KeystatsSampleEntity current)
     {
         if (previous is null || previous.StatsDate != current.StatsDate)
@@ -54,7 +61,7 @@ public static class KeystatsDeltaCalculator
                 TotalClicks: 0,
                 MouseDistance: 0,
                 ScrollDistance: 0,
-                IsGap: (current.SampledAtUtc - previous.SampledAtUtc).TotalMinutes > 2,
+                IsGap: (current.SampledAtUtc - previous.SampledAtUtc).TotalMinutes > GapThresholdMinutes,
                 IsReset: true);
         }
 
@@ -65,7 +72,7 @@ public static class KeystatsDeltaCalculator
             leftClicks + rightClicks + middleClicks + sideBackClicks + sideForwardClicks,
             mouseDistance,
             scrollDistance,
-            (current.SampledAtUtc - previous.SampledAtUtc).TotalMinutes > 2,
+            (current.SampledAtUtc - previous.SampledAtUtc).TotalMinutes > GapThresholdMinutes,
             IsReset: false);
     }
 

@@ -32,8 +32,10 @@ def test_tool_inventory_counts():
     tools = s._list_tools_meta()
     read = [t for t in tools if t["group"] == "read"]
     write = [t for t in tools if t["group"] == "write"]
-    assert len(tools) == 149
-    assert len(read) == 100
+    # WO-PC-BACKEND-20261001 REQ-6（#379）：get_pc_aw_heatmap 随遗留端点 pc/aw/heatmap 下线，
+    # 149 → 148 工具 / 读 100 → 99。
+    assert len(tools) == 148
+    assert len(read) == 99
     assert len(write) == 49
 
 

@@ -181,13 +181,16 @@ public sealed class RealDb2000PropertyTests : IClassFixture<PimDbFixture>
             }
             case 4:
             {
-                // PcTrackerService.GetHeatmapAsync + CalendarService.GetEventsAsync (combined to cover both)
+                // PcTrackerService.GetHeatmapGridAsync + CalendarService.GetEventsAsync (combined to cover both)
+                // WO-PC-BACKEND-20261001 REQ-6：aw/heatmap 下线，改压 heatmap/grid（day 每业务日一格 + hour 24 格）。
                 var svc = ServiceTestBase.CreatePcTrackerService(db);
                 var start = new DateTime(2026, 7, 7);
                 var end = start.AddDays(1);
-                var heat = await svc.GetHeatmapAsync(start, end, CancellationToken.None);
+                var heat = await svc.GetHeatmapGridAsync(start, end, "day", CancellationToken.None);
                 Assert.NotNull(heat);
-                Assert.Equal(48, heat.Count);
+                Assert.Equal(2, heat.Grid.SelectMany(row => row).Count());
+                var hourly = await svc.GetHeatmapGridAsync(start, start, "hour", CancellationToken.None);
+                Assert.Equal(24, Assert.Single(hourly.Grid).Count);
 
                 // also verify CalendarService via same batch (extra service call)
                 var calSvc = ServiceTestBase.CreateCalendarService(db);
