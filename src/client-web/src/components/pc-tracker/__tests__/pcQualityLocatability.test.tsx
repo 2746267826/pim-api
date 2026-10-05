@@ -250,3 +250,79 @@ describe('REQ-7 · 原有内容不回归', () => {
     expect(text).toContain('Windows 守护程序心跳已过期');
   });
 });
+
+describe('#388 / REQ-6 · 缺数卡提示与实际渲染内容一致', () => {
+  /** 只控制缺数相关字段，其余与真实响应同形。 */
+  function qualityWithDetails(details: Record<string, string>): PcQualityResponse {
+    return {
+      overallStatus: 'Warning',
+      label: '警告',
+      message: '组件存在采集质量警告。',
+      checkedAt: '2026-09-30T17:44:35.0000000+00:00',
+      components: [trackerComponent({ eventCount: '1928', ...details })],
+      issues: [],
+      nextSteps: [],
+    };
+  }
+
+  const missingBlock = (container: HTMLElement) =>
+    container.querySelector('[data-pc-quality-section="missing-hours"]');
+
+  it('AC-6.1 有计数、小时清单为空：提示不指向清单，且计数出现在提示元素内', () => {
+    const { container } = render(
+      <PcQualitySummary quality={qualityWithDetails({ missingHourCount: '2', missingHours: '' })} />,
+    );
+    const block = missingBlock(container);
+    expect(block).not.toBeNull();
+    const notice = block!.querySelector('[role="status"]');
+    expect(notice, '缺数卡必须给出降级提示').not.toBeNull();
+    // 指向下方清单的措辞不得出现（清单此时是空的，指向它就是指向不存在的内容）
+    expect(notice!.textContent ?? '').not.toContain('请以下方小时清单为准');
+    // 计数必须直接写在提示所在元素里，而不是只在卡片底部那句固定计数语句里
+    expect(notice!.textContent ?? '').toContain('2');
+    // 空串与「键缺失」不是同一回事：键在但值为空时说「清单为空」，不说「接口未提供该字段」。
+    expect(notice!.textContent ?? '').toContain('小时清单为空');
+    expect(notice!.textContent ?? '').not.toContain('未由接口提供');
+    expect(container.textContent ?? '').not.toContain('请以下方小时清单为准');
+  });
+
+  it('AC-6.2 有计数、小时清单可用：提示指向清单，清单渲染两个条目', () => {
+    const { container } = render(
+      <PcQualitySummary quality={qualityWithDetails({ missingHourCount: '2', missingHours: '04、05' })} />,
+    );
+    const block = missingBlock(container);
+    expect(block).not.toBeNull();
+    const notice = block!.querySelector('[role="status"]');
+    expect(notice!.textContent ?? '').toContain('请以下方小时清单为准');
+    const chips = [...block!.querySelectorAll('span')].map(node => (node.textContent ?? '').trim());
+    expect(chips.filter(text => text === '04' || text === '05')).toEqual(['04', '05']);
+  });
+
+  it('AC-6.3 三个字段全缺失：整个缺数块不渲染', () => {
+    const { container } = render(<PcQualitySummary quality={qualityWithDetails({})} />);
+    expect(missingBlock(container)).toBeNull();
+    expect(container.textContent ?? '').not.toContain('缺数时段');
+  });
+
+  it('AC-6.4 取值都来自响应对象（三种形态的渲染覆盖见上面三条用例）', () => {
+    const withHours = describePcQualityLocatability(
+      qualityWithDetails({ missingHourCount: '3', missingHours: '07、08、09' }),
+    );
+    expect(withHours.missingHourCount).toBe(3);
+    expect(withHours.missingHours).toEqual(['07', '08', '09']);
+
+    const withoutHours = describePcQualityLocatability(
+      qualityWithDetails({ missingHourCount: '2', missingHours: '' }),
+    );
+    expect(withoutHours.missingHours).toEqual([]);
+    expect(withoutHours.missingHourCount).toBe(2);
+    expect(withoutHours.missingSegmentsNotice).toContain('2');
+    expect(withoutHours.missingSegmentsNotice).not.toContain('请以下方小时清单为准');
+
+    // 第三种形态：三个字段全缺 → 整个缺数块不渲染（渲染覆盖见 AC-6.3 那条用例）
+    const nothing = describePcQualityLocatability(qualityWithDetails({}));
+    expect(nothing.hasMissingHours).toBe(false);
+    expect(nothing.missingHourCount).toBeNull();
+    expect(nothing.missingHours).toEqual([]);
+  });
+});
