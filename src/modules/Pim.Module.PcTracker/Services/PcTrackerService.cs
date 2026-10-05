@@ -809,7 +809,7 @@ public partial class PcTrackerService
             // 变更跟踪器按窗口清空：分类快照已在本窗口内落库，跟踪器不再持有已处理窗口的实体，
             // 这样峰值内存才真正只与单个窗口有关（REQ-10 / AC-10.1）。
             _db.ChangeTracker.Clear();
-            GC.Collect(2, GCCollectionMode.Forced, blocking: false, compacting: false);
+            GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
         }
 
         var total = (int)Math.Min(int.MaxValue, totalCount);
