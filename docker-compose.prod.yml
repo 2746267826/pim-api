@@ -37,7 +37,8 @@ services:
     volumes:
       - pim_data:/data
       - /data/pim/logs:/data/pim/logs
-      - /data/keys:/data/keys:ro
+      - /data/keys/jwt_private.pem:/data/keys/jwt_private.pem:ro
+      - /data/keys/data-protection:/data/keys/data-protection
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/5000; printf \"GET /health HTTP/1.0\\r\\n\\r\\n\" >&3; grep -q healthy <&3'"]
       interval: 15s
