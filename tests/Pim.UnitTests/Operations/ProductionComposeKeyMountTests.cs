@@ -34,9 +34,10 @@ public class ProductionComposeKeyMountTests
     {
         var compose = RepoFile("docker-compose.prod.yml");
 
-        // 整目录只读 = #386 的缺陷形态；整目录可写 = 私钥失去保护。两者都不允许。
-        Assert.DoesNotContain("- /data/keys:/data/keys:ro", compose);
-        Assert.DoesNotContain("- /data/keys:/data/keys\n", compose);
+        // 整目录只读 = #386 的缺陷形态；整目录可写 = 私钥失去保护。两者都不允许，
+        // 也不允许「两条具体挂载之外再追加一条整目录挂载」—— 因此这里按**前缀子串**判定，
+        // 后缀是 `:ro`、`:rw` 还是没有后缀都要拦下。
+        Assert.DoesNotContain("- /data/keys:/data/keys", compose);
     }
 
     [Fact]
