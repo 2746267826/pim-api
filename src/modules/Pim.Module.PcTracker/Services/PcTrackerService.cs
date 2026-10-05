@@ -786,6 +786,11 @@ public partial class PcTrackerService
             // 分类补全（`EnsureClassificationsAsync`）只影响记录上的分类字段，而计数的过滤条件里
             // 只有 `CategoryName` 依赖它。因此：**已经取满本页之后的窗口不再分类**（只要没有按分类过滤），
             // 计数不受影响，省掉整段范围里绝大多数的分类工作（REQ-10 的「不做多余的活」）。
+            //
+            // 取舍（cross review Important 2）：`EnsureClassificationsAsync` 还会把分类快照写库，
+            // 因此本端点不再为「取满之后」的那部分范围回填快照（改造前会为整段回填）。快照是缓存，
+            // 其它读路径各自按需补算，返回内容不受影响 —— 由 PcDetailWindowPaginationTests 的
+            // 逐字段对拍（含按 CategoryName 过滤的情形）锁住。
             var needsClassification = items.Count < pageSize
                 || !string.IsNullOrWhiteSpace(q.CategoryName);
 
@@ -803,17 +808,19 @@ public partial class PcTrackerService
             var windowCount = records.Count;
             if (items.Count < pageSize)
             {
-                var localSkip = (int)Math.Max(0, skip - totalCount);
+                // 先按 long 比较再收窄：page 极大时 skip - totalCount 可能超过 int 范围。
+                var localSkip = Math.Max(0, skip - totalCount);
                 if (localSkip < windowCount)
-                    items.AddRange(records.Skip(localSkip).Take(pageSize - items.Count));
+                    items.AddRange(records.Skip((int)localSkip).Take(pageSize - items.Count));
             }
 
             totalCount += windowCount;
 
             // 变更跟踪器按窗口清空：分类快照已在本窗口内落库，跟踪器不再持有已处理窗口的实体，
-            // 这样峰值内存才真正只与单个窗口有关（REQ-10 / AC-10.1）。
+            // 这样峰值内存才真正只与单个窗口有关（REQ-10 / AC-10.1）。这里**不**主动触发 GC ——
+            // 进程跑的是 Server GC，请求路径上强制 2 代回收会把停顿转嫁给同进程的其它请求；
+            // 峰值由「每窗口只驻留一个窗口的数据」保证，回收交给运行时（实测已满足 AC-10.1）。
             _db.ChangeTracker.Clear();
-            GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
         }
 
         var total = (int)Math.Min(int.MaxValue, totalCount);
@@ -825,6 +832,9 @@ public partial class PcTrackerService
             (int)Math.Ceiling((double)total / pageSize));
     }
 
+    /// <summary>短页阈值：与 <c>BrowserPageTimelineBuilder</c> / <c>TrackerPageTimelineBuilder</c> 保持一致（5 秒）。</summary>
+    private const double ShortPageThresholdSeconds = 5;
+
     /// <summary>窗口切分用的静默带：两边 builder 的短页阈值（5s）与合并间隔（30s）取大者再加余量。</summary>
     private static readonly TimeSpan WindowQuietBand = TimeSpan.FromSeconds(31);
 
@@ -833,6 +843,9 @@ public partial class PcTrackerService
 
     /// <summary>找不到静默点时向后搜索的上界（逐日顺延合并窗口，最多 7 天）。</summary>
     private const int MaxWindowMergeDays = 7;
+
+    /// <summary>单次请求的窗口数上限（防御性上限，正常范围远达不到）。</summary>
+    private const int MaxWindowCount = 400;
 
     /// <summary>
     /// 把请求范围切成若干窗口。边界优先落在「两侧静默」的时刻；找不到静默点就把该日并入下一个窗口
@@ -847,12 +860,13 @@ public partial class PcTrackerService
         var cursor = start;
         var guard = 0;
 
-        while (cursor < end && guard++ < 400)
+        while (cursor < end && guard++ < MaxWindowCount)
         {
             var target = cursor.Add(TargetWindowSpan);
             if (target >= end)
             {
                 windows.Add((cursor, end));
+                cursor = end;
                 break;
             }
 
@@ -868,14 +882,74 @@ public partial class PcTrackerService
             cursor = boundary;
         }
 
+        if (cursor < end)
+        {
+            _logger?.LogWarning(
+                "PC 明细分页：窗口数达到上限 {MaxWindows}，剩余范围 {Cursor:o} ~ {End:o} 并入最后一个窗口。",
+                MaxWindowCount, cursor, end);
+            windows.Add((cursor, end));
+        }
+
         if (windows.Count == 0)
             windows.Add((start, end));
 
-        if (windows.Count == 1 && end - start > TargetWindowSpan)
+        return await MergeNonComposableWindowsAsync(windows, start, end, ct);
+    }
+
+    /// <summary>
+    /// 把「收尾时没有主角事件」的窗口并到相邻窗口，直到每个窗口都能与整段合成逐字段一致；
+    /// 整段都并成一个窗口时记 Warning（正确性由整段合成保证，但峰值内存不再有界）。
+    /// <para>
+    /// 为什么必须并：网页 cluster 与 tracker 短页合并都依赖「同窗前后的记录」。窗口收尾时若没有
+    /// 主角（AW：该设备在窗内没有 duration &gt; 短页阈值的网页事件；tracker：窗内记录全是短 web-page），
+    /// builder 会走 `FromShortEvents` / 「只剩短页就并成一条」这两条分支，把整段合成里**会被吸附到
+    /// 上一个 cluster 或被丢弃**的短页单独合成一条记录 —— 结果就与改造前不一致（REQ-11）。
+    /// </para>
+    /// </summary>
+    private async Task<List<(DateTimeOffset Start, DateTimeOffset End)>> MergeNonComposableWindowsAsync(
+        List<(DateTimeOffset Start, DateTimeOffset End)> windows,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken ct)
+    {
+        while (windows.Count > 1)
+        {
+            var index = -1;
+            for (var i = 0; i < windows.Count; i++)
+            {
+                if (!await WindowIsComposableAsync(windows[i].Start, windows[i].End, ct))
+                {
+                    index = i;
+                    break;
+                }
+            }
+
+            if (index < 0)
+                break;
+
+            if (index == 0)
+            {
+                _logger?.LogInformation(
+                    "PC 明细分页：首个窗口（{Start:o} ~ {End:o}）没有可用于收尾的主角事件，与下一个窗口合并。",
+                    windows[0].Start, windows[0].End);
+                windows[0] = (windows[0].Start, windows[1].End);
+                windows.RemoveAt(1);
+            }
+            else
+            {
+                _logger?.LogInformation(
+                    "PC 明细分页：窗口（{Start:o} ~ {End:o}）没有可用于收尾的主角事件，并回上一个窗口。",
+                    windows[index].Start, windows[index].End);
+                windows[index - 1] = (windows[index - 1].Start, windows[index].End);
+                windows.RemoveAt(index);
+            }
+        }
+
+        if (windows.Count == 1 && !await WindowIsComposableAsync(start, end, ct))
         {
             _logger?.LogWarning(
-                "PC 明细分页：{Start:o} ~ {End:o} 内没有找到任何静默点，退化为整段单窗口处理 —— "
-                + "峰值内存将随请求跨度增长（最长搜索 {MaxDays} 天）。", start, end, MaxWindowMergeDays);
+                "PC 明细分页：{Start:o} ~ {End:o} 内找不到可自洽的切分点，退化为整段单窗口处理 —— "
+                + "结果仍然正确，但峰值内存将随请求跨度增长。", start, end);
         }
 
         return windows;
@@ -907,10 +981,7 @@ public partial class PcTrackerService
                 continue;
             }
 
-            // 窗口里如果只有短事件、一条可作 cluster 主角的长事件都没有，窗口收尾会与全局跑法不同
-            // （全局会把待吸附的短事件丢掉，分窗口会合成出一条记录），因此这种窗口不切。
-            if (await WindowIsComposableAsync(windowStart, quiet.Value, ct))
-                return quiet.Value;
+            return quiet.Value;
         }
 
         return end;
@@ -961,19 +1032,44 @@ public partial class PcTrackerService
         return candidate < to ? candidate : null;
     }
 
-    /// <summary>窗口 [start, end) 内是否有可作 cluster 主角（> 短页阈值）的事件；没有事件也算可切。</summary>
+    /// <summary>
+    /// 窗口是否「可自洽收尾」：窗内每个设备的网页事件里都要有 cluster 主角（&gt; 短页阈值），
+    /// 且窗内 tracker 记录不能全是短 web-page。判据按**管道**区分 —— AW 的主角只算网页事件
+    /// （普通窗口 / afk 事件不是 cluster 主角），tracker 的主角只算非短 web-page 记录。
+    /// </summary>
     private async Task<bool> WindowIsComposableAsync(DateTimeOffset start, DateTimeOffset end, CancellationToken ct)
     {
-        var shortThreshold = 5.0;
-        var awAny = await _db.Set<AwEventEntity>().AnyAsync(e => e.Timestamp >= start && e.Timestamp < end, ct);
-        if (awAny && !await _db.Set<AwEventEntity>()
-                .AnyAsync(e => e.Timestamp >= start && e.Timestamp < end && e.Duration > shortThreshold, ct))
-            return false;
+        var threshold = ShortPageThresholdSeconds;
 
-        var trackerAny = await _db.Set<TrackerEventEntity>().AnyAsync(e => e.Timestamp >= start && e.Timestamp < end, ct);
-        if (trackerAny && !await _db.Set<TrackerEventEntity>()
-                .AnyAsync(e => e.Timestamp >= start && e.Timestamp < end && e.Duration > shortThreshold, ct))
-            return false;
+        // AW 管道按设备分组聚类：某设备在窗内有网页事件、却一个主角都没有 → 收尾会走 FromShortEvents
+        var webDevices = await _db.Set<AwEventEntity>()
+            .Where(e => e.Timestamp >= start && e.Timestamp < end
+                && (e.EventType == "web" || e.BucketType == "web.tab.current"))
+            .Select(e => e.DeviceId)
+            .Distinct()
+            .ToListAsync(ct);
+        if (webDevices.Count > 0)
+        {
+            var primaryDevices = await _db.Set<AwEventEntity>()
+                .Where(e => e.Timestamp >= start && e.Timestamp < end
+                    && e.Duration > threshold
+                    && (e.EventType == "web" || e.BucketType == "web.tab.current"))
+                .Select(e => e.DeviceId)
+                .Distinct()
+                .ToListAsync(ct);
+            if (webDevices.Except(primaryDevices).Any())
+                return false;
+        }
+
+        // tracker 管道：窗内记录全是短 web-page 时，收尾会把它们并成一条（整段合成是逐条吐出）
+        if (await _db.Set<TrackerEventEntity>().AnyAsync(e => e.Timestamp >= start && e.Timestamp < end, ct))
+        {
+            var hasPrimary = await _db.Set<TrackerEventEntity>()
+                .AnyAsync(e => e.Timestamp >= start && e.Timestamp < end
+                    && !(e.EventType.ToLower() == "web-page" && e.Duration <= threshold), ct);
+            if (!hasPrimary)
+                return false;
+        }
 
         return true;
     }
@@ -1178,6 +1274,7 @@ public partial class PcTrackerService
             if (includePreviousSample)
             {
                 var previous = await _db.Set<KeystatsSampleEntity>()
+                    .AsNoTracking()
                     .Where(s => s.PimDeviceId == deviceId && s.SampledAtUtc < start)
                     .OrderByDescending(s => s.SampledAtUtc)
                     .FirstOrDefaultAsync(ct);
@@ -1190,6 +1287,7 @@ public partial class PcTrackerService
             if (includeNextSample)
             {
                 var next = await _db.Set<KeystatsSampleEntity>()
+                    .AsNoTracking()
                     .Where(s => s.PimDeviceId == deviceId && s.SampledAtUtc >= end)
                     .OrderBy(s => s.SampledAtUtc)
                     .FirstOrDefaultAsync(ct);
