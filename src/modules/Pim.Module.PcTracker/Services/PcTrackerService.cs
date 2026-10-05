@@ -842,6 +842,9 @@ public partial class PcTrackerService
             (int)Math.Ceiling((double)total / pageSize));
     }
 
+    /// <summary>找静默点时的向前取数长度：覆盖「起点更早、但跨进探查窗口」的长事件。</summary>
+    private static readonly TimeSpan QuietProbeLookback = TimeSpan.FromHours(24);
+
     /// <summary>短页阈值：与 <c>BrowserPageTimelineBuilder</c> / <c>TrackerPageTimelineBuilder</c> 保持一致（5 秒）。</summary>
     private const double ShortPageThresholdSeconds = 5;
 
@@ -1015,16 +1018,26 @@ public partial class PcTrackerService
         var band = WindowQuietBand;
         var probeStart = from - band;
         var probeEnd = to + band;
+        // 往前多看一段：起点早于探查窗口、但**跨进**探查窗口的长事件同样会占住候选点。
+        // 取数窗口若被占满（说明更早还有事件），保守地认为这段时间没有静默点。
+        var fetchStart = probeStart - QuietProbeLookback;
 
         var busy = new List<(DateTimeOffset Start, DateTimeOffset End)>();
         var awRows = await _db.Set<AwEventEntity>()
-            .Where(e => e.Timestamp >= probeStart && e.Timestamp < probeEnd)
+            .Where(e => e.Timestamp >= fetchStart && e.Timestamp < probeEnd)
             .Select(e => new { e.Timestamp, e.Duration })
             .ToListAsync(ct);
         var trackerRows = await _db.Set<TrackerEventEntity>()
-            .Where(e => e.Timestamp >= probeStart && e.Timestamp < probeEnd)
+            .Where(e => e.Timestamp >= fetchStart && e.Timestamp < probeEnd)
             .Select(e => new { e.Timestamp, e.Duration })
             .ToListAsync(ct);
+
+        if (awRows.Any(r => r.Timestamp <= fetchStart.AddMinutes(1))
+            || trackerRows.Any(r => r.Timestamp <= fetchStart.AddMinutes(1)))
+        {
+            // 探查窗被占满，无法判断更早是否还有事件跨进来 —— 当作「没有静默点」，让窗口合并。
+            return null;
+        }
 
         foreach (var row in awRows)
             busy.Add((row.Timestamp - band, row.Timestamp.AddSeconds(row.Duration) + band));
