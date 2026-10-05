@@ -213,7 +213,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 部署步骤：
 
 1. 复制模板：`cp .env.prod.example .env.prod`，逐项填入（见[配置参考](#配置参考)）。
-2. 预置密钥目录与 JWT 私钥（JWT 私钥文件按只读方式挂载、数据保护密钥目录按可写方式挂载，缺失将导致启动失败）：
+2. 预置密钥目录与 JWT 私钥（JWT 私钥文件按只读方式挂载、数据保护密钥目录按可写方式挂载）：
 
    ```bash
    sudo mkdir -p /data/keys/data-protection
@@ -221,7 +221,10 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
    # 容器内运行用户对 jwt_private.pem 需可读、对 data-protection 目录需可写
    ```
 
-   > **密钥目录权限**：生产编排按上述两条具体路径挂载 —— `/data/keys/jwt_private.pem` 按只读方式挂载，应用运行期间无法改写该私钥文件；`/data/keys/data-protection` 按可写方式挂载，DataProtection 在主密钥轮换（默认 90 天）时需要在其中写入新密钥。两条宿主机路径都须在启动前预置。
+   > **密钥目录权限与预置要求**：生产编排只按两条具体路径挂载 —— `/data/keys/jwt_private.pem` 按只读方式挂载，应用运行期间无法改写该私钥文件；`/data/keys/data-protection` 按可写方式挂载，DataProtection 需要在其中写入主密钥（框架默认寿命 90 天，本仓库未另行设置 `.SetDefaultKeyLifetime()`）。两条宿主机路径都必须在**首次启动前**预置，两种缺失的后果不同：
+   >
+   > - **私钥文件缺失**：健康检查会持续失败，容器日志中出现该文件的完整路径（不出现私钥内容）。注意 Docker 会把缺失的绑定源自动建成同名**目录**，此时直接写入 PEM 会失败 —— 需先删除该同名目录，再放置 PEM 文件。
+   > - **数据保护密钥目录缺失**：容器仍会启动并通过健康检查，但会在该目录就地生成一整套新密钥。若这台机器上原本有密钥环（升级、迁机、只从别处拷了私钥文件），新密钥解不开库里已有的 Outlook / OneDrive 密文，绑定会**静默失效**。请连同已有的 `key-*.xml` 一起预置该目录。
 
 3. 生成容器 SSH 公钥（base64 单行，`AAAA...` 替换为你的公钥内容，可多行）：
 
