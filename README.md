@@ -195,7 +195,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 单容器形态：HTTP（容器内 5000）+ SSH（容器内 22，用于远程管理）。编排文件 `docker-compose.prod.yml` 包含：
 
 - **数据卷** `pim_data`：应用数据与备份仓库（Kopia）。
-- **密钥卷**（只读挂载）：`/data/keys` 存放 JWT 私钥与数据保护密钥，容器重建不丢登录态；部署前需预置。
+- **密钥目录**（最小权限挂载）：`/data/keys/jwt_private.pem`（JWT 私钥文件）按只读方式挂载，`/data/keys/data-protection`（数据保护密钥目录）按可写方式挂载；容器重建不丢登录态；部署前需预置这两条宿主机路径。
 - **健康检查**：`GET /health`、`GET /health/live`、`GET /health/ready`。
 - **日志**：JSON 日志轮转（10m × 3），支持配置 `LOKI_URL` 推送到统一日志系统。
 
@@ -213,7 +213,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 部署步骤：
 
 1. 复制模板：`cp .env.prod.example .env.prod`，逐项填入（见[配置参考](#配置参考)）。
-2. 预置密钥目录与 JWT 私钥（容器只读挂载，缺失将导致启动失败）：
+2. 预置密钥目录与 JWT 私钥（JWT 私钥文件按只读方式挂载、数据保护密钥目录按可写方式挂载，缺失将导致启动失败）：
 
    ```bash
    sudo mkdir -p /data/keys/data-protection
@@ -221,7 +221,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
    # 确保容器内运行用户对以上路径可读
    ```
 
-   > **已知限制**：当前生产编排将 `/data/keys` 挂载为只读。依赖数据保护密钥写入的功能（如 Outlook 日历同步、文件提供商绑定）在此挂载下无法保存新密钥；如需使用这些功能，请将宿主机目录调整为可写挂载。
+   > **密钥目录权限**：生产编排按上述两条具体路径挂载 —— `/data/keys/jwt_private.pem` 按只读方式挂载，应用运行期间无法改写该私钥文件；`/data/keys/data-protection` 按可写方式挂载，DataProtection 在主密钥轮换（默认 90 天）时需要在其中写入新密钥。两条宿主机路径都须在启动前预置。
 
 3. 生成容器 SSH 公钥（base64 单行，`AAAA...` 替换为你的公钥内容，可多行）：
 
