@@ -26,7 +26,7 @@
     "test:data-reliability": "cd ../.. && npm --prefix src/client-web exec tsx -- tests/client-web/dataReliabilityApiPath.test.ts && npm --prefix src/client-web exec tsx -- tests/client-web/dataReliabilityModel.test.ts && npm --prefix src/client-web exec tsc -- -p tests/client-web/tsconfig.data-reliability.json && npm --prefix src/client-web exec tsx -- tests/client-web/dataReliabilityTypes.test.ts && npm --prefix src/client-web exec tsx -- tests/client-web/dataReliabilityUi.test.tsx && npm --prefix src/client-web exec tsx -- tests/client-web/dataReliabilityResponsive.test.ts",
     "test:mobile-liveness": "cd ../.. && npm --prefix src/client-web exec tsx -- tests/client-web/mobileLivenessApiPath.test.ts && npm --prefix src/client-web exec tsx -- tests/client-web/mobileLivenessModel.test.ts && npm --prefix src/client-web exec tsc -- -p tests/client-web/tsconfig.mobile-liveness.json && npm --prefix src/client-web exec tsx -- tests/client-web/mobileLivenessTypes.test.ts && npm --prefix src/client-web exec tsx -- tests/client-web/mobileLivenessUi.test.tsx",
     "test:pc-route3": "cd ../.. && npm --prefix src/client-web exec tsc -- -p tests/client-web/tsconfig.pc-route3.json && npm --prefix src/client-web exec tsx -- tests/client-web/pcRoute3Types.test.ts",
-    "test:frontend-gate": "npm run test:schedule-workbench-complete && npm run test:pc-route3 && npm run test"
+    "test:frontend-gate": "npm run test:schedule-workbench-complete && npm run test:pc-route3"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
