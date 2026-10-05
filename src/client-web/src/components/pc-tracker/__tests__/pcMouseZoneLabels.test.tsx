@@ -322,7 +322,7 @@ describe('WO-FRONTEND-PC-20261001 AC-1.3 · 单日与范围两个数据源（经
     expect(container.textContent ?? '').toContain('242,456');
   });
 
-  it('两条链路对同一份原始数据渲染出相同结果（相等是断言出来的，不是构造保证的）', async () => {
+  it('夹具数值相同时，两条取数路径渲染出一致结果（字段绑定的证明在上面两条字面量断言里）', async () => {
     const range = render(<KeyboardHeatmap keystats={await loadRangeKeystats(RANGE_RAW)} />);
     vi.unstubAllGlobals();
     const single = render(<KeyboardHeatmap keystats={await loadSingleDayKeystats(SINGLE_DAY_RAW)} />);

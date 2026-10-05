@@ -204,6 +204,8 @@ function missingSegmentsNotice(
   parsed: ParsedMissingSegments,
   missingHours: string[],
   missingHourCount: number | null,
+  /** 响应里到底有没有这个键：空串与「键缺失」不是同一回事，提示要说准。 */
+  missingHoursProvided: boolean,
 ): string | null {
   if (parsed.present && parsed.ok) return null;
   const reason = parsed.present
@@ -215,9 +217,10 @@ function missingSegmentsNotice(
   if (missingHours.length > 0) {
     return `${reason}请以下方小时清单为准。`;
   }
+  const hoursState = missingHoursProvided ? '小时清单为空' : '小时清单未由接口提供';
   return missingHourCount !== null
-    ? `${reason}小时清单未由接口提供；本次体检记录 ${missingHourCount} 个小时缺数。`
-    : `${reason}小时清单未由接口提供。`;
+    ? `${reason}${hoursState}；本次体检记录 ${missingHourCount} 个小时缺数。`
+    : `${reason}${hoursState}。`;
 }
 
 export function describePcQualityLocatability(quality: PcQualityResponse | undefined): PcQualityLocatability {
@@ -225,6 +228,8 @@ export function describePcQualityLocatability(quality: PcQualityResponse | undef
   const daemon = componentByKey(quality, 'daemon-upload');
 
   const missingHoursRaw = readDetail(tracker?.details, 'missingHours');
+  const missingHoursProvided = tracker?.details !== undefined
+    && Object.prototype.hasOwnProperty.call(tracker.details, 'missingHours');
   const missingHours = missingHoursRaw
     ? missingHoursRaw.split(/[、,;；]/).map(item => item.trim()).filter(Boolean)
     : [];
@@ -239,7 +244,7 @@ export function describePcQualityLocatability(quality: PcQualityResponse | undef
   const useField = parsedField.present && parsedField.ok;
   const missingSegments = useField ? parsedField.segments : [];
   const missingSegmentsSource: PcMissingSegmentsSource = useField ? 'details' : 'unavailable';
-  const segmentsNotice = missingSegmentsNotice(parsedField, missingHours, missingHourCount);
+  const segmentsNotice = missingSegmentsNotice(parsedField, missingHours, missingHourCount, missingHoursProvided);
 
   const contentHorizonUtc = readDetail(daemon?.details, 'contentHorizonUtc');
   const dataHorizonUtc = readDetail(daemon?.details, 'dataHorizonUtc');

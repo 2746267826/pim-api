@@ -280,6 +280,9 @@ describe('#388 / REQ-6 · 缺数卡提示与实际渲染内容一致', () => {
     expect(notice!.textContent ?? '').not.toContain('请以下方小时清单为准');
     // 计数必须直接写在提示所在元素里，而不是只在卡片底部那句固定计数语句里
     expect(notice!.textContent ?? '').toContain('2');
+    // 空串与「键缺失」不是同一回事：键在但值为空时说「清单为空」，不说「接口未提供该字段」。
+    expect(notice!.textContent ?? '').toContain('小时清单为空');
+    expect(notice!.textContent ?? '').not.toContain('未由接口提供');
     expect(container.textContent ?? '').not.toContain('请以下方小时清单为准');
   });
 
@@ -301,7 +304,7 @@ describe('#388 / REQ-6 · 缺数卡提示与实际渲染内容一致', () => {
     expect(container.textContent ?? '').not.toContain('缺数时段');
   });
 
-  it('AC-6.4 三种形态都走真实响应对象（计数与清单取值来自 details，不是写死的）', () => {
+  it('AC-6.4 取值都来自响应对象（三种形态的渲染覆盖见上面三条用例）', () => {
     const withHours = describePcQualityLocatability(
       qualityWithDetails({ missingHourCount: '3', missingHours: '07、08、09' }),
     );
@@ -315,5 +318,11 @@ describe('#388 / REQ-6 · 缺数卡提示与实际渲染内容一致', () => {
     expect(withoutHours.missingHourCount).toBe(2);
     expect(withoutHours.missingSegmentsNotice).toContain('2');
     expect(withoutHours.missingSegmentsNotice).not.toContain('请以下方小时清单为准');
+
+    // 第三种形态：三个字段全缺 → 整个缺数块不渲染（渲染覆盖见 AC-6.3 那条用例）
+    const nothing = describePcQualityLocatability(qualityWithDetails({}));
+    expect(nothing.hasMissingHours).toBe(false);
+    expect(nothing.missingHourCount).toBeNull();
+    expect(nothing.missingHours).toEqual([]);
   });
 });
