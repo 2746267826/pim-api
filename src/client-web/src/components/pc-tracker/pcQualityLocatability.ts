@@ -200,12 +200,24 @@ function fromList(items: unknown[], present: boolean): ParsedMissingSegments {
   return { present, ok: parsed.every(s => s.length > 0), segments };
 }
 
-function missingSegmentsNotice(parsed: ParsedMissingSegments): string | null {
+function missingSegmentsNotice(
+  parsed: ParsedMissingSegments,
+  missingHours: string[],
+  missingHourCount: number | null,
+): string | null {
   if (parsed.present && parsed.ok) return null;
-  if (parsed.present) {
-    return '详情字段 details.missingSegments 解析失败（内容不是可识别的时段），连续缺数时段不可用；请以下方小时清单为准。';
+  const reason = parsed.present
+    ? '详情字段 details.missingSegments 解析失败（内容不是可识别的时段），连续缺数时段不可用；'
+    : '连续缺数时段不可用：接口未提供结构化时段字段 details.missingSegments（后端补齐后本卡片会自动改为按字段渲染）；';
+  // REQ-6（#388）：指向「下方小时清单」的措辞必须与实际渲染出来的清单一致 —— 小时清单
+  // 只在 `missingHours.length > 0` 时才渲染，为空时提示不得指向它，改把缺数计数直接写进
+  // 提示本身（计数不再只出现在卡片底部那句固定语句里）。
+  if (missingHours.length > 0) {
+    return `${reason}请以下方小时清单为准。`;
   }
-  return '连续缺数时段不可用：接口未提供结构化时段字段 details.missingSegments（后端补齐后本卡片会自动改为按字段渲染）；请以下方小时清单为准。';
+  return missingHourCount !== null
+    ? `${reason}小时清单未由接口提供；本次体检记录 ${missingHourCount} 个小时缺数。`
+    : `${reason}小时清单未由接口提供。`;
 }
 
 export function describePcQualityLocatability(quality: PcQualityResponse | undefined): PcQualityLocatability {
@@ -227,7 +239,7 @@ export function describePcQualityLocatability(quality: PcQualityResponse | undef
   const useField = parsedField.present && parsedField.ok;
   const missingSegments = useField ? parsedField.segments : [];
   const missingSegmentsSource: PcMissingSegmentsSource = useField ? 'details' : 'unavailable';
-  const segmentsNotice = missingSegmentsNotice(parsedField);
+  const segmentsNotice = missingSegmentsNotice(parsedField, missingHours, missingHourCount);
 
   const contentHorizonUtc = readDetail(daemon?.details, 'contentHorizonUtc');
   const dataHorizonUtc = readDetail(daemon?.details, 'dataHorizonUtc');

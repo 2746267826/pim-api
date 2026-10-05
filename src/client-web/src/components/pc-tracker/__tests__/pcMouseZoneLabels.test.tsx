@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render } from '@testing-library/react';
 import KeyboardHeatmap, { type KeystatsView } from '../KeyboardHeatmap';
+import { getPcKeystatsRange, getPcSummary, pcAggregationApiPaths, type KeystatsRangeSummary } from '../../../api/pcTracker';
+import type { KeystatsSummary } from '../../../types';
 
 /**
  * WO-FRONTEND-PC-20261001 · REQ-1 / AC-1.1 · AC-1.2 · AC-1.3 · AC-1.5
@@ -31,6 +33,115 @@ const RANGE_KEYSTATS: KeystatsView = {
 /** 同一份字段的单日视图（`summary.keystats`，多一个 `date`）——两条数据源共用同一渲染路径。 */
 const SINGLE_DAY_KEYSTATS: KeystatsView = { ...RANGE_KEYSTATS, date: '2026-09-27' };
 
+// ---------------------------------------------------------------------------
+// REQ-4（#387）：两条数据源必须**由原始响应体驱动**并在取数层上被分别断言。
+//
+// 端点契约（`src/client-web/src/api/pcTracker.ts`）：
+// - 范围：`pcAggregationApiPaths.keystats({start,end})` = `/pc/aggregation/keystats?start=…&end=…`
+//   → `getPcKeystatsRange(start, end)` → `KeystatsRangeSummary`（与单日同构、无 `date`、多 `totalKeyPresses`）。
+// - 单日：`/pc/summary?date=…` → `getPcSummary(date)` → `PcSummaryResponse.keystats`（`KeystatsSummary`，带 `date`）。
+// 两个端点共用 `pcKeystatsScope()` 的选择逻辑，最终都渲染同一个 `KeyboardHeatmap`。
+// ---------------------------------------------------------------------------
+
+const RANGE_START = '2026-08-29';
+const RANGE_END = '2026-09-27';
+const SINGLE_DAY_DATE = '2026-09-27';
+
+/** 范围端点原始响应体（键名即接口契约字段名，含实测样本值）。 */
+const RANGE_RAW: KeystatsRangeSummary = {
+  keyPresses: 0,
+  totalClicks: 242456,
+  leftClicks: 185320,
+  rightClicks: 32970,
+  middleClicks: 1230,
+  sideBackClicks: 573,
+  sideForwardClicks: 22363,
+  mouseDistance: 0,
+  scrollDistance: 474069.9416666676,
+  peakKps: 0,
+  peakCps: 0,
+  keyPressCounts: {},
+  topKeys: [],
+  totalKeyPresses: 0,
+};
+
+/** 单日端点原始响应体中的 `keystats`（`PcSummaryResponse.keystats`，带 `date`）。 */
+const SINGLE_DAY_RAW: KeystatsSummary = {
+  date: SINGLE_DAY_DATE,
+  keyPresses: 0,
+  totalClicks: 242456,
+  leftClicks: 185320,
+  rightClicks: 32970,
+  middleClicks: 1230,
+  sideBackClicks: 573,
+  sideForwardClicks: 22363,
+  mouseDistance: 0,
+  scrollDistance: 474069.9416666676,
+  peakKps: 0,
+  peakCps: 0,
+  keyPressCounts: {},
+  topKeys: [],
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+/** 把 `fetch` 换成按端点返回原始响应体的桩，记录请求 URL。 */
+function stubRawResponses(responseFor: (url: string) => unknown) {
+  const calls: string[] = [];
+  const fetchStub = vi.fn(async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : String(input);
+    calls.push(url);
+    return new Response(JSON.stringify(responseFor(url)), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  vi.stubGlobal('fetch', fetchStub);
+  return calls;
+}
+
+/** 范围数据源：原始响应体 → 取数层（真实 `apiGet`）→ 视图对象。 */
+async function loadRangeKeystats(raw: KeystatsRangeSummary): Promise<KeystatsView> {
+  const calls = stubRawResponses(url => {
+    expect(url, '范围数据源必须走 /pc/aggregation/keystats').toContain(pcAggregationApiPaths.keystats());
+    return { code: 0, message: 'ok', data: raw, timestamp: '2026-09-27T00:00:00Z' };
+  });
+  const data = await getPcKeystatsRange(RANGE_START, RANGE_END);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toContain(`start=${RANGE_START}`);
+  expect(calls[0]).toContain(`end=${RANGE_END}`);
+  return data as KeystatsView;
+}
+
+/** 单日数据源：原始响应体 → 取数层（真实 `apiGet`）→ `summary.keystats`。 */
+async function loadSingleDayKeystats(raw: KeystatsSummary): Promise<KeystatsView> {
+  const calls = stubRawResponses(url => {
+    expect(url, '单日数据源必须走 /pc/summary').toContain(`/pc/summary?date=${SINGLE_DAY_DATE}`);
+    return {
+      code: 0,
+      message: 'ok',
+      data: { keystats: raw, heatmap: [], appRanking: [], timeline: [], sessions: [], metrics: null, categories: [] },
+      timestamp: '2026-09-27T00:00:00Z',
+    };
+  });
+  const summary = await getPcSummary(SINGLE_DAY_DATE);
+  expect(calls).toHaveLength(1);
+  expect(summary.keystats).not.toBeNull();
+  return summary.keystats as KeystatsView;
+}
+
+/** `aria-label` → 取值 的映射（逐项字段绑定的读数方式）。 */
+function labelValueMap(container: HTMLElement): Map<string, string> {
+  return new Map(
+    readMouseZones(container).map(z => {
+      const [label, value] = z.ariaLabel.split(': ');
+      return [label, value];
+    }),
+  );
+}
+
 interface MouseZoneView {
   zone: string;
   /** 该区自己的可读标签，如「左键: 185,320」 */
@@ -59,7 +170,19 @@ describe('WO-FRONTEND-PC-20261001 AC-1.1 · 鼠标区不得再把 middleClicks �
     for (const zone of readMouseZones(container)) {
       expect(zone.ariaLabel).not.toContain('滚轮');
     }
-    expect(container.textContent ?? '').not.toContain('滚轮 1,230');
+    // #387 / REQ-5 / AC-5.1：对**真实渲染结构**断言，而不是对不可能出现的字符串做否定。
+    // 中键区的可读标签必须是「中键: 1,230」，且其文本节点里不得出现「滚轮」。
+    const middle = container.querySelector('[data-mouse-zone="middle"]');
+    expect(middle).not.toBeNull();
+    expect(middle!.getAttribute('aria-label')).toBe('中键: 1,230');
+    const middleText = [...middle!.querySelectorAll('text')]
+      .map(node => (node.textContent ?? '').replace(/\s+/g, ''))
+      .join('');
+    expect(middleText).toContain('中键');
+    expect(middleText).toContain('1,230');
+    expect(middleText).not.toContain('滚轮');
+    // 滚轮量只出现在 `data-mouse-metric="scrollDistance"` 那一处，且为接口原值。
+    expect(readScrollDistanceText(container)).toContain('474,069.94');
   });
 
   it('单日数据源：同样不出现「滚轮 = 中键次数」', () => {
@@ -167,19 +290,46 @@ describe('WO-FRONTEND-PC-20261001 AC-1.2 · 中键次数与滚轮量分别呈现
   });
 });
 
-describe('WO-FRONTEND-PC-20261001 AC-1.3 · 单日与范围两个数据源呈现一致', () => {
-  it('同一份数值下，单日视图与范围视图的鼠标区标签+取值逐项相同', () => {
-    const range = render(<KeyboardHeatmap keystats={RANGE_KEYSTATS} />);
-    const single = render(<KeyboardHeatmap keystats={SINGLE_DAY_KEYSTATS} />);
+describe('WO-FRONTEND-PC-20261001 AC-1.3 · 单日与范围两个数据源（经取数层驱动）', () => {
+  /**
+   * #387 / REQ-4 / AC-4.5：输入是**原始响应体**，经真实取数层（`getPcKeystatsRange` /
+   * `getPcSummary`）变成视图对象后渲染；两条数据源各自断言一次，取值一律写成字面量期望，
+   * 所以「响应里字段名错位」与「两个字段取值被互换」都会让用例失败（见 PR 中的变异证据）。
+   */
+  it('范围端点：原始响应字段与渲染取值一一对应', async () => {
+    const keystats = await loadRangeKeystats(RANGE_RAW);
+    const { container } = render(<KeyboardHeatmap keystats={keystats} />);
+    const byLabel = labelValueMap(container);
+    expect(byLabel.get('左键')).toBe('185,320');
+    expect(byLabel.get('右键')).toBe('32,970');
+    expect(byLabel.get('中键')).toBe('1,230');
+    expect(byLabel.get('侧后')).toBe('573');
+    expect(byLabel.get('侧前')).toBe('22,363');
+    expect(readScrollDistanceText(container)).toMatch(/滚轮量\s*474,069\.94 px/);
+    expect(container.textContent ?? '').toContain('242,456');
+  });
+
+  it('单日端点：同一组断言在 `summary.keystats` 链路上独立成立', async () => {
+    const keystats = await loadSingleDayKeystats(SINGLE_DAY_RAW);
+    const { container } = render(<KeyboardHeatmap keystats={keystats} />);
+    const byLabel = labelValueMap(container);
+    expect(byLabel.get('左键')).toBe('185,320');
+    expect(byLabel.get('右键')).toBe('32,970');
+    expect(byLabel.get('中键')).toBe('1,230');
+    expect(byLabel.get('侧后')).toBe('573');
+    expect(byLabel.get('侧前')).toBe('22,363');
+    expect(readScrollDistanceText(container)).toMatch(/滚轮量\s*474,069\.94 px/);
+    expect(container.textContent ?? '').toContain('242,456');
+  });
+
+  it('两条链路对同一份原始数据渲染出相同结果（相等是断言出来的，不是构造保证的）', async () => {
+    const range = render(<KeyboardHeatmap keystats={await loadRangeKeystats(RANGE_RAW)} />);
+    vi.unstubAllGlobals();
+    const single = render(<KeyboardHeatmap keystats={await loadSingleDayKeystats(SINGLE_DAY_RAW)} />);
     const pick = (c: HTMLElement) =>
       readMouseZones(c).map(z => ({ zone: z.zone, ariaLabel: z.ariaLabel }));
     expect(pick(single.container)).toEqual(pick(range.container));
     expect(readScrollDistanceText(single.container)).toBe(readScrollDistanceText(range.container));
-    // 不只「两边一样」，还要「两边都对」：光有 date 字段差异不得改变任何取值。
-    for (const container of [range.container, single.container]) {
-      expect(container.textContent ?? '').toContain('1,230');
-      expect(readScrollDistanceText(container)).toMatch(/滚轮量\s*474,069\.94 px/);
-    }
   });
 });
 
