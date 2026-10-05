@@ -84,6 +84,12 @@ jobs:
       - name: Frontend tests (full unit suite + tsx contract suites)
         run: npm run test:frontend-gate
 
+      # 独立执行者（#389 / REQ-7）：自检文件过去只被上一行的全量 vitest 拉起 —— 谁把 `npm run test`
+      # 从 `test:frontend-gate` 里摘掉，自检就随之不跑，门禁静默退化。这一步**直接**执行自检文件，
+      # 使判定不再依赖它守护的那条链路；自检本身也会拒绝 `continue-on-error` / `if: false` 这类架空写法。
+      - name: Frontend gate self-check
+        run: npx vitest run src/__tests__/ciFrontendGate.test.ts
+
       - name: Build
         run: npm run build
         env:
