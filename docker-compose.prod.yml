@@ -37,7 +37,9 @@ services:
     volumes:
       - pim_data:/data
       - /data/pim/logs:/data/pim/logs
-      # 最小权限挂载：JWT 私钥文件按只读提供；DataProtection 密钥目录按可写提供（主密钥轮换需要写入）。二者缺一容器即无法正常提供服务。
+      # 最小权限挂载：JWT 私钥文件按只读提供；DataProtection 密钥目录按可写提供（主密钥轮换需要写入）。
+      # 两条宿主机路径都必须在首次启动前预置：私钥缺失会让健康检查持续失败；数据保护密钥目录缺失时容器
+      # 仍会 healthy，并就地生成一整套新密钥 —— 已有密文将无法解开，属静默失效。
       - /data/keys/jwt_private.pem:/data/keys/jwt_private.pem:ro
       - /data/keys/data-protection:/data/keys/data-protection
     healthcheck:
