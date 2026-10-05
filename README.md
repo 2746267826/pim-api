@@ -195,7 +195,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 单容器形态：HTTP（容器内 5000）+ SSH（容器内 22，用于远程管理）。编排文件 `docker-compose.prod.yml` 包含：
 
 - **数据卷** `pim_data`：应用数据与备份仓库（Kopia）。
-- **密钥卷**（只读挂载）：`/data/keys` 存放 JWT 私钥与数据保护密钥，容器重建不丢登录态；部署前需预置。
+- **密钥目录**（最小权限挂载）：`/data/keys/jwt_private.pem`（JWT 私钥文件）按只读方式挂载，`/data/keys/data-protection`（数据保护密钥目录）按可写方式挂载；容器重建不丢登录态；部署前需预置这两条宿主机路径。
 - **健康检查**：`GET /health`、`GET /health/live`、`GET /health/ready`。
 - **日志**：JSON 日志轮转（10m × 3），支持配置 `LOKI_URL` 推送到统一日志系统。
 
@@ -213,15 +213,18 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 部署步骤：
 
 1. 复制模板：`cp .env.prod.example .env.prod`，逐项填入（见[配置参考](#配置参考)）。
-2. 预置密钥目录与 JWT 私钥（容器只读挂载，缺失将导致启动失败）：
+2. 预置密钥目录与 JWT 私钥（JWT 私钥文件按只读方式挂载、数据保护密钥目录按可写方式挂载）：
 
    ```bash
    sudo mkdir -p /data/keys/data-protection
    sudo openssl genrsa -out /data/keys/jwt_private.pem 2048
-   # 确保容器内运行用户对以上路径可读
+   # 容器内运行用户对 jwt_private.pem 需可读、对 data-protection 目录需可写
    ```
 
-   > **已知限制**：当前生产编排将 `/data/keys` 挂载为只读。依赖数据保护密钥写入的功能（如 Outlook 日历同步、文件提供商绑定）在此挂载下无法保存新密钥；如需使用这些功能，请将宿主机目录调整为可写挂载。
+   > **密钥目录权限与预置要求**：生产编排只按两条具体路径挂载 —— `/data/keys/jwt_private.pem` 按只读方式挂载，应用运行期间无法改写该私钥文件；`/data/keys/data-protection` 按可写方式挂载，DataProtection 需要在其中写入主密钥（框架默认寿命 90 天，本仓库未另行设置 `.SetDefaultKeyLifetime()`）。两条宿主机路径都必须在**首次启动前**预置，两种缺失的后果不同：
+   >
+   > - **私钥文件缺失**：健康检查会持续失败（`start_period` 过后进入 `unhealthy`），容器日志中出现该文件的完整路径（不出现私钥内容）。注意 Docker 会把缺失的绑定源自动建成同名**目录**，而且该路径同时存在于宿主机与命名卷 `pim_data`（Docker 里的实际卷名是 `<compose 项目名>_pim_data`，卷内路径为 `keys/jwt_private.pem`）里。恢复步骤：停止并移除容器 → 删除宿主机上的同名目录 → 删除卷内被挡住的同路径 → 放回 PEM 文件 → `docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --force-recreate`。只删宿主机目录、不处理卷内路径、不重建容器，服务起不来。另一种形态：卷内若留着上一次成功挂载产生的 0 字节同名文件，容器会在**创建阶段**就失败（同样报 `not a directory`），此时按上面的完整步骤同样能恢复，不要 `down -v` 清掉整个数据卷。
+   > - **数据保护密钥目录缺失**：容器仍会在约 20 秒内通过健康检查，并在该目录就地生成一把新的 `key-*.xml`。用旧密钥环保护的密文因此解不开（依赖 `ISecretProtector` 的令牌/绑定链路会失败），而健康检查仍是绿的 —— 故障不会自己暴露出来。请连同已有的 `key-*.xml` 一起预置该目录。
 
 3. 生成容器 SSH 公钥（base64 单行，`AAAA...` 替换为你的公钥内容，可多行）：
 
