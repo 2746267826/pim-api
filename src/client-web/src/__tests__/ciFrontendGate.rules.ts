@@ -115,7 +115,11 @@ export function parseWorkflowSteps(text: string): WorkflowStep[] {
   lines.forEach((line, idx) => {
     const m = /^(\s*)- /.exec(line);
     const next = lines[idx + 1] ?? '';
-    const isStepStart = !!m && next.length - next.trimStart().length > m[1].length && STEP_KEY.test(next);
+    // 单行形式（`- run: ...` / `- name: ...`）本身就是一个 step 起点；
+    // 否则必须紧跟一个更缩进的步骤键（多行形式）。
+    const singleLineKey = !!m && /^(name|uses|run|id|if|with|env|shell|working-directory|continue-on-error|timeout-minutes):/.test(line.slice(m[1].length + 2));
+    const isStepStart = !!m && (singleLineKey
+      || (next.length - next.trimStart().length > m[1].length && STEP_KEY.test(next)));
     if (isStepStart) {
       if (block) steps.push(toStep(block));
       block = { line: idx + 1, indent: m![1].length, lines: [line] };
@@ -127,25 +131,44 @@ export function parseWorkflowSteps(text: string): WorkflowStep[] {
   return steps;
 }
 
-const normalize = (value: string) => value.trim().replace(/^['"]|['"]$/g, '');
-const isFalsyCondition = (value: string) => normalize(value) === 'false' || normalize(value) === '${{ false }}';
-const isTruthyFlag = (value: string) => normalize(value) === 'true' || normalize(value) === '${{ true }}';
+/** YAML 里 `if: false # disabled` 与 `if: false` 等价：先去掉行尾注释，再剥一层引号。 */
+const stripComment = (value: string) => value.split('#')[0].trim();
+/** 去掉行尾注释、外层引号与**全部空白**：`${{ true }}` 与 `${{true}}` 必须归一成同一串。 */
+const normalize = (value: string) => stripComment(value).replace(/^['"]|['"]$/g, '').replace(/\s+/g, '');
+/** 静态为真 / 静态为假：表达式一律不算（无法静态证明）。 */
+const isStaticTrue = (value: string) => normalize(value) === 'true';
+const isStaticFalse = (value: string) => normalize(value) === 'false' || normalize(value) === '0';
 
-const SHORT_CIRCUIT = ['|| true', '||true', '&& true', '&&true'];
+/**
+ * 会「洗绿」的写法：把失败码换成 0 的任何组合。工作流默认 shell 是
+ * `bash --noprofile --norc -eo pipefail`，因此只做子串匹配会漏掉 `|| :`、`|| exit 0`、
+ * `|| /bin/true`、`||  true`（多空格）、`set +o errexit; …; true`、`|| $OK`（env 间接）等。
+ * 这里先把空白归一，再按「连接符 + 必定成功的命令」判定。
+ */
+const GREEN_WASH_PATTERNS: Array<{ re: RegExp; label: string }> = [
+  { re: /(\|\||&&|;)\s*(:|true|\/bin\/true|\/usr\/bin\/true|exit\s+0)\s*(?=$|[;&|\n])/m, label: '短路到必定成功的命令' },
+  { re: /\bset\s+\+e\b/, label: '`set +e`（关掉失败即退出）' },
+  { re: /\bset\s+\+o\s+errexit\b/, label: '`set +o errexit`（关掉失败即退出）' },
+  { re: /\|\|\s*\$/, label: '短路到一个变量（可能是必定成功的命令）' },
+];
+
+const collapseSpaces = (value: string) => value.replace(/[ \t]+/g, ' ');
 
 /** 单个步骤级「永远绿」写法（不改变 run 行正文的那些）。 */
 export function checkStepAlwaysGreen(step: WorkflowStep, findings: GateFinding[]): void {
   const push = (reason: string) => findings.push({ stepLine: step.line, stepName: step.name || '(未命名步骤)', reason });
-  if (step.continueOnError && isTruthyFlag(step.continueOnError)) {
-    push(`步骤带 \`continue-on-error: ${step.continueOnError.trim()}\`，失败不会让 job 变红`);
+  // 只有「静态 false」可以接受；`${{ … }}` 表达式、`always()` 等都无法静态证明失败会变红。
+  if (step.continueOnError && !isStaticFalse(step.continueOnError)) {
+    push(`步骤带 \`continue-on-error: ${stripComment(step.continueOnError)}\`，不能证明失败会让 job 变红`);
   }
-  if (step.ifValue && isFalsyCondition(step.ifValue)) {
-    push(`步骤带 \`if: ${step.ifValue.trim()}\`，步骤根本不会执行`);
+  // 只有「无 if」或「静态 true」可以接受：动态条件无法静态证明这一步一定会执行。
+  if (step.ifValue && !isStaticTrue(step.ifValue)) {
+    push(`步骤带 \`if: ${stripComment(step.ifValue)}\`，不能证明步骤一定会执行`);
   }
-  for (const pattern of SHORT_CIRCUIT) {
-    if (step.run.includes(pattern)) push(`run 正文含短路成功写法 \`${pattern}\``);
+  const run = collapseSpaces(step.run);
+  for (const { re, label } of GREEN_WASH_PATTERNS) {
+    if (re.test(run)) push(`run 正文含${label}：\`${run.trim().slice(0, 120)}\``);
   }
-  if (/(^|[;&\s])set \+e(\s|;|$)/.test(step.run)) push('run 正文含 `set +e`，失败码被吞掉');
 }
 
 /**
@@ -172,13 +195,11 @@ export function checkGateWorkflow(text: string): GateFinding[] {
   }
   selfCheckSteps.forEach(step => checkStepAlwaysGreen(step, findings));
 
-  for (const pattern of SHORT_CIRCUIT) {
-    if (gateExpanded.includes(pattern)) {
-      findings.push({ stepLine: 0, stepName: GATE_SCRIPT, reason: `展开后含短路成功写法 \`${pattern}\`` });
+  const expanded = collapseSpaces(gateExpanded);
+  for (const { re, label } of GREEN_WASH_PATTERNS) {
+    if (re.test(expanded)) {
+      findings.push({ stepLine: 0, stepName: GATE_SCRIPT, reason: `${GATE_SCRIPT} 展开后含${label}` });
     }
-  }
-  if (/(^|[;&\s])set \+e(\s|;|$)/.test(gateExpanded)) {
-    findings.push({ stepLine: 0, stepName: GATE_SCRIPT, reason: '展开后含 `set +e`' });
   }
   return findings;
 }
@@ -224,9 +245,15 @@ export function listTestFiles(dir: string, base: string = dir): string[] {
   return out.sort();
 }
 
-/** 判据不变：文件名（或子目录相对路径）必须出现在某个 npm script 正文里。 */
+/**
+ * 判据不变：用例文件必须被某个 npm script 按文件名显式引用。
+ * - 顶层文件：按文件名（= 相对路径）判定，与旧棘轮一致。
+ * - 子目录文件：只认**相对路径**，不再用 basename 兜底 —— 否则
+ *   `playwright/autoRefreshInterval.test.ts` 会因为顶层同名文件被引用而躲过棘轮。
+ */
 export function isReferenced(file: string, scriptText: string): boolean {
-  return scriptText.includes(file) || scriptText.includes(path.posix.basename(file));
+  // 顶层文件时 file 就是文件名本身；嵌套文件时它是相对路径，两者都按「整串出现」判定。
+  return scriptText.includes(file);
 }
 
 /** 视野内、未被脚本引用、且不在累积白名单里的用例文件。 */

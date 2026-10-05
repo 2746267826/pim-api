@@ -130,6 +130,38 @@ describe('REQ-8 · 自检必须拒绝「永远绿」的写法（#389）', () => 
     expect(findings.some(f => f.stepName.includes('Frontend tests') && f.stepLine > 0)).toBe(true);
   });
 
+  it.each([
+    ['短路到 `:`', appendToRunLine(' || :')],
+    ['短路到 `exit 0`', appendToRunLine(' || exit 0')],
+    ['短路到 `/bin/true`', appendToRunLine(' || /bin/true')],
+    ['短路到 `true` 但多打一个空格', appendToRunLine(' ||  true')],
+    ['短路到变量（env 间接）', appendToRunLine(' || $OK')],
+    ['关掉 errexit 再兜一个成功命令', workflow.replace(GATE_RUN_RE, '        run: set +o errexit; npm run test:frontend-gate; true')],
+    ['`set +e` 后接成功命令', workflow.replace(GATE_RUN_RE, '        run: set +e; npm run test:frontend-gate; true')],
+  ])('%s 也要被判红（#389 cross review 指出的等价写法）', (_label, mutated) => {
+    expect(mutated, '变异未生效').not.toBe(workflow);
+    expect(checkGateWorkflow(mutated).length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['`if: false` 带行尾注释', addStepKey('        if: false # disabled')],
+    ['`continue-on-error: true` 带行尾注释', addStepKey('        continue-on-error: true # tolerated')],
+    ['`continue-on-error: ${{ true }}` 无空格写法', addStepKey('        continue-on-error: ${{true}}')],
+    ['`if: ${{ 1 == 0 }}`', addStepKey('        if: ${{ 1 == 0 }}')],
+  ])('%s 也要被判红', (_label, mutated) => {
+    expect(checkGateWorkflow(mutated).length).toBeGreaterThan(0);
+  });
+
+  it('把门禁步骤写成单行 `- run:` 并配一个诱饵步骤时仍然判红', () => {
+    const mutated = workflow.replace(
+      '      - name: Frontend tests (full unit suite + tsx contract suites)\n        run: npm run test:frontend-gate\n',
+      '      - name: Decoy\n        run: echo test:frontend-gate\n      - run: set +e; npm run test:frontend-gate\n',
+    );
+    expect(mutated, '变异未生效').not.toBe(workflow);
+    const findings = checkGateWorkflow(mutated);
+    expect(findings.length, '单行 step 被漏判').toBeGreaterThan(0);
+  });
+
   it('独立执行者被架空（continue-on-error / if: false）时同样报错', () => {
     const steps = parseWorkflowSteps(workflow).filter(step => step.run.includes(GATE_SELFCHECK));
     const name = steps[0].name;
@@ -174,6 +206,14 @@ describe('REQ-9 · 孤儿棘轮覆盖子目录与 *.spec.ts（#389）', () => {
   it('白名单必须保持准确：列出的文件仍然存在、且确实仍是孤儿（AC-9.3）', () => {
     const stale = staleWhitelist(testFiles, allScripts);
     expect(stale, `白名单已过期（文件已消失或已被收编），请从白名单移除：${stale.join(', ')}`).toEqual([]);
+  });
+
+  it('嵌套用例不会因为顶层同名文件被引用而躲过棘轮', () => {
+    const orphans = findOrphans(
+      ['autoRefreshInterval.test.ts', 'playwright/autoRefreshInterval.test.ts'],
+      allScripts,
+    );
+    expect(orphans).toEqual(['playwright/autoRefreshInterval.test.ts']);
   });
 
   it('白名单里的嵌套 spec 条目被删掉时会指名报错（AC-9.3 的纯函数形态）', () => {
