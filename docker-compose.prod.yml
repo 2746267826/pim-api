@@ -37,7 +37,11 @@ services:
     volumes:
       - pim_data:/data
       - /data/pim/logs:/data/pim/logs
-      - /data/keys:/data/keys:ro
+      # 最小权限挂载：JWT 私钥文件按只读提供；DataProtection 密钥目录按可写提供（主密钥轮换需要写入）。
+      # 两条宿主机路径都必须在首次启动前预置：私钥缺失会让健康检查持续失败；数据保护密钥目录缺失时容器
+      # 仍会通过健康检查，并就地生成新的 key-*.xml —— 旧密钥环保护的密文将解不开（健康检查看不出来）。
+      - /data/keys/jwt_private.pem:/data/keys/jwt_private.pem:ro
+      - /data/keys/data-protection:/data/keys/data-protection
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/5000; printf \"GET /health HTTP/1.0\\r\\n\\r\\n\" >&3; grep -q healthy <&3'"]
       interval: 15s
