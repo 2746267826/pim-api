@@ -189,6 +189,114 @@ public sealed class PcDetailWindowPaginationTests
         Assert.Equal(full.Select(Signature), paged.Select(Signature));
     }
 
+    /// <summary>
+    /// 反面回归（第二轮 cross review Critical）：**起点早于探查窗口、但跨过业务日边界**的长窗口事件，
+    /// 会让边界落在它的中间 —— 后一窗里那条网页会因为「前台被别的窗口占着」被整段合成丢掉，
+    /// 分页却会把它留下，凭空多一条记录。
+    /// </summary>
+    [Fact]
+    public async Task LongForegroundWindowAcrossBoundary_DoesNotInventAWebPage()
+    {
+        await using var db = CreateDb();
+        var boundary = new DateTimeOffset(2026, 5, 20, 20, 0, 0, TimeSpan.Zero);   // 业务日 05-21 起点
+        AddAw(db, boundary.AddSeconds(-40), 10800, "window", "notepad.exe", null); // 起点早于静默探查窗
+        AddAw(db, boundary.AddMinutes(1), 120, "web", "chrome.exe", "https://example.com/during-notepad");
+        await db.SaveChangesAsync();
+
+        var service = Service(db);
+        var q = Query(new DateTime(2026, 5, 20), new DateTime(2026, 5, 21));
+        var full = await service.BuildCompleteDetailRecordsAsync(q, CancellationToken.None, includeCrossingRecords: false);
+        var paged = await CollectAllPages(service, q);
+
+        Assert.Equal(full.Select(Signature), paged.Select(Signature));
+    }
+
+    /// <summary>
+    /// 同一条长事件换成浏览器窗口时，网页的归属字段（`BrowserAppName`）与「窗口事件是否并入网页」
+    /// 同样不能在分页后改变。
+    /// </summary>
+    [Fact]
+    public async Task LongBrowserWindowAcrossBoundary_KeepsTheSameFields()
+    {
+        await using var db = CreateDb();
+        var boundary = new DateTimeOffset(2026, 5, 20, 20, 0, 0, TimeSpan.Zero);
+        AddAw(db, boundary.AddSeconds(-40), 10800, "window", "chrome.exe", null);
+        AddAw(db, boundary.AddMinutes(1), 120, "web", "chrome.exe", "https://example.com/during-chrome");
+        await db.SaveChangesAsync();
+
+        var service = Service(db);
+        var q = Query(new DateTime(2026, 5, 20), new DateTime(2026, 5, 21));
+        var full = await service.BuildCompleteDetailRecordsAsync(q, CancellationToken.None, includeCrossingRecords: false);
+        var paged = await CollectAllPages(service, q);
+
+        Assert.Equal(full.Select(Signature), paged.Select(Signature));
+    }
+
+    /// <summary>
+    /// 长网页的持续时间内含一条短页、后面另有主角时，`AbsorbedShortEventsCount` 这类**条数不变**
+    /// 的字段也必须与整段合成一致（条数对不上才能发现差异的用例挡不住这种错位）。
+    /// </summary>
+    [Fact]
+    public async Task ShortPageInsideALongPage_KeepsTheSameAbsorbedCount()
+    {
+        await using var db = CreateDb();
+        var boundary = new DateTimeOffset(2026, 5, 20, 20, 0, 0, TimeSpan.Zero);
+        AddAw(db, boundary.AddSeconds(-40), 10800, "web", "chrome.exe", "https://example.com/long-across");
+        AddAw(db, boundary.AddMinutes(30), 2, "web", "chrome.exe", "https://example.com/short-inside");
+        AddAw(db, boundary.AddHours(4), 300, "web", "chrome.exe", "https://example.com/later-primary");
+        await db.SaveChangesAsync();
+
+        var service = Service(db);
+        var q = Query(new DateTime(2026, 5, 20), new DateTime(2026, 5, 21));
+        var full = await service.BuildCompleteDetailRecordsAsync(q, CancellationToken.None, includeCrossingRecords: false);
+        var paged = await CollectAllPages(service, q);
+
+        Assert.Equal(full.Select(Signature), paged.Select(p => Signature(p)));
+        Assert.Equal(
+            full.Where(r => r.Url?.Contains("long-across") == true).Select(r => r.AbsorbedShortEventsCount),
+            paged.Where(r => r.Url?.Contains("long-across") == true).Select(r => r.AbsorbedShortEventsCount));
+    }
+
+    /// <summary>
+    /// 反面回归（第二轮 cross review Critical）：查询终点之后仍有键盘采样时，非末窗不得把它配成
+    /// 一条 `input-minute` 记录 —— 那条记录的 Start 落在范围内，整段合成里根本不存在。
+    /// </summary>
+    [Fact]
+    public async Task SampleAfterTheQueryRange_IsNotPairedIntoARecord()
+    {
+        await using var db = CreateDb();
+        var rangeStart = new DateTimeOffset(2026, 5, 19, 20, 0, 0, TimeSpan.Zero);
+        AddSample(db, rangeStart.AddHours(5), keyPresses: 100);
+        AddSample(db, rangeStart.AddHours(6), keyPresses: 140);
+        AddSample(db, rangeStart.AddHours(50), keyPresses: 900);   // 范围终点之后
+        await db.SaveChangesAsync();
+
+        var service = Service(db);
+        var q = Query(new DateTime(2026, 5, 20), new DateTime(2026, 5, 21));
+        var full = await service.BuildCompleteDetailRecordsAsync(q, CancellationToken.None, includeCrossingRecords: false);
+        var paged = await CollectAllPages(service, q);
+
+        Assert.Equal(full.Select(Signature), paged.Select(Signature));
+    }
+
+    /// <summary>范围内只有一条采样、范围外另有一条时，也不得凭空产出一条记录。</summary>
+    [Fact]
+    public async Task LoneSampleInsideRange_WithSampleAfterRange_ProducesNoRecord()
+    {
+        await using var db = CreateDb();
+        var rangeStart = new DateTimeOffset(2026, 5, 19, 20, 0, 0, TimeSpan.Zero);
+        AddSample(db, rangeStart.AddHours(5), keyPresses: 40);
+        AddSample(db, rangeStart.AddHours(49), keyPresses: 80);   // 范围终点之后
+        await db.SaveChangesAsync();
+
+        var service = Service(db);
+        var q = Query(new DateTime(2026, 5, 20), new DateTime(2026, 5, 21));
+        var full = await service.BuildCompleteDetailRecordsAsync(q, CancellationToken.None, includeCrossingRecords: false);
+        var paged = await CollectAllPages(service, q);
+
+        Assert.Equal(full.Select(Signature), paged.Select(Signature));
+    }
+
     private static async Task<List<PcDetailRecord>> CollectAllPages(PcTrackerService service, DetailQueryParams q)
     {
         var collected = new List<PcDetailRecord>();
