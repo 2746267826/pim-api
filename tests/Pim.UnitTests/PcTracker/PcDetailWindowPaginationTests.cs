@@ -199,7 +199,9 @@ public sealed class PcDetailWindowPaginationTests
     {
         await using var db = CreateDb();
         var boundary = new DateTimeOffset(2026, 5, 20, 20, 0, 0, TimeSpan.Zero);   // 业务日 05-21 起点
-        AddAw(db, boundary.AddSeconds(-40), 10800, "window", "notepad.exe", null); // 起点早于静默探查窗
+        // 起点在边界前 6 小时、持续 8 小时：只探 ±31 秒的实现取不到这条事件，
+        // 边界会落在它中间（cross review 第二轮 Critical 1 的形状）
+        AddAw(db, boundary.AddHours(-6), 28800, "window", "notepad.exe", null);
         AddAw(db, boundary.AddMinutes(1), 120, "web", "chrome.exe", "https://example.com/during-notepad");
         await db.SaveChangesAsync();
 
@@ -220,7 +222,7 @@ public sealed class PcDetailWindowPaginationTests
     {
         await using var db = CreateDb();
         var boundary = new DateTimeOffset(2026, 5, 20, 20, 0, 0, TimeSpan.Zero);
-        AddAw(db, boundary.AddSeconds(-40), 10800, "window", "chrome.exe", null);
+        AddAw(db, boundary.AddHours(-6), 28800, "window", "chrome.exe", null);
         AddAw(db, boundary.AddMinutes(1), 120, "web", "chrome.exe", "https://example.com/during-chrome");
         await db.SaveChangesAsync();
 
@@ -241,7 +243,8 @@ public sealed class PcDetailWindowPaginationTests
     {
         await using var db = CreateDb();
         var boundary = new DateTimeOffset(2026, 5, 20, 20, 0, 0, TimeSpan.Zero);
-        AddAw(db, boundary.AddSeconds(-40), 10800, "web", "chrome.exe", "https://example.com/long-across");
+        // 长网页同样跨过边界数小时，其吸收窗口落在边界之后
+        AddAw(db, boundary.AddHours(-6), 28800, "web", "chrome.exe", "https://example.com/long-across");
         AddAw(db, boundary.AddMinutes(30), 2, "web", "chrome.exe", "https://example.com/short-inside");
         AddAw(db, boundary.AddHours(4), 300, "web", "chrome.exe", "https://example.com/later-primary");
         await db.SaveChangesAsync();
