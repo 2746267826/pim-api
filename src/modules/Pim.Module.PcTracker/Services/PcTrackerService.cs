@@ -1009,7 +1009,12 @@ public partial class PcTrackerService
     private static string FormatBusinessDay(DateTimeOffset instant)
         => GetBusinessDayForTimestamp(instant).ToString("yyyy-MM-dd");
 
-    private async Task<List<PcDetailRecord>> BuildCompleteDetailRecordsAsync(
+    /// <summary>
+    /// 整段范围的合成管道（内部路径直接用；`/pc/detail` 现在按窗口逐段调用
+    /// <see cref="BuildCompleteDetailRecordsForRangeAsync"/>）。保留为 `internal` 是为了让测试能拿它
+    /// 当「改造前的整段合成」基准，逐字段对拍窗口化分页的结果（REQ-11）。
+    /// </summary>
+    internal async Task<List<PcDetailRecord>> BuildCompleteDetailRecordsAsync(
         DetailQueryParams q,
         CancellationToken ct,
         bool includeCrossingRecords)
