@@ -21,8 +21,12 @@ public class ProductionComposeKeyMountTests
     {
         var compose = RepoFile("docker-compose.prod.yml");
 
-        Assert.Contains(JwtKeyMount, compose);
-        Assert.Contains(DataProtectionKeyMount, compose);
+        // 整行相等（trim 后按行比对）：单纯的 `Contains` 允许在数据保护目录那行尾部再加一个
+        // `:ro`（那正是 #386 在新挂载形态下的回归），所以这里按「整行」而非「子串」判定。
+        var lines = compose.Split('\n').Select(line => line.Trim()).ToList();
+        Assert.Contains(JwtKeyMount, lines);
+        Assert.Contains(DataProtectionKeyMount, lines);
+        Assert.DoesNotContain($"{DataProtectionKeyMount}:ro", lines);
     }
 
     [Fact]
@@ -32,7 +36,7 @@ public class ProductionComposeKeyMountTests
 
         // 整目录只读 = #386 的缺陷形态；整目录可写 = 私钥失去保护。两者都不允许。
         Assert.DoesNotContain("- /data/keys:/data/keys:ro", compose);
-        Assert.DoesNotContain("- /data/keys:/data/keys", compose);
+        Assert.DoesNotContain("- /data/keys:/data/keys\n", compose);
     }
 
     [Fact]
@@ -47,18 +51,34 @@ public class ProductionComposeKeyMountTests
     [Fact]
     public void Readme_DoesNotDescribeTheKeysDirectoryAsMountedReadOnlyAsAWhole()
     {
-        var lines = RepoFile("README.md")
-            .Split('\n')
-            .Where(line => line.Contains("/data/keys"));
+        var readme = RepoFile("README.md");
 
-        Assert.NotEmpty(lines);
-        foreach (var line in lines)
+        // AC-2.1 点名的变体：只对含 `/data/keys` 的行做检查（`挂载为只读` 是原「已知限制」引用块的原文）。
+        foreach (var line in readme.Split('\n').Where(line => line.Contains("/data/keys")))
         {
-            Assert.DoesNotContain("只读挂载", line);
             Assert.DoesNotContain("挂载为只读", line);
+            Assert.DoesNotContain("只读挂载", line);
         }
 
-        Assert.DoesNotContain("/data/keys:ro", RepoFile("README.md"));
+        Assert.DoesNotContain("/data/keys:ro", readme);
+        Assert.DoesNotContain("已知限制", readme);
+    }
+
+    [Fact]
+    public void Readme_LocksTheTwoMissingKeyPathConsequences()
+    {
+        // 锁住**要守的那两句话**，而不是对全部含路径的行禁用普通说法：
+        // 私钥缺失 → 健康检查持续失败；数据保护目录缺失 → 容器仍 healthy，但已有密文解不开。
+        var readme = RepoFile("README.md");
+
+        Assert.Contains("私钥文件缺失", readme);
+        Assert.Contains("健康检查会持续失败", readme);
+        Assert.Contains("数据保护密钥目录缺失", readme);
+        Assert.Contains("key-*.xml", readme);
+        Assert.Contains("密文因此解不开", readme);
+        // 缺失私钥的补救必须点名命名卷里的同路径，否则按文档操作恢复不了（第二十轮 review 的实测）
+        Assert.Contains("_pim_data", readme);
+        Assert.Contains("--force-recreate", readme);
     }
 
     [Fact]
