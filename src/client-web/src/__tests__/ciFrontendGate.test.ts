@@ -1,6 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  GATE_SCRIPT,
+  GATE_SELFCHECK,
+  PRE_EXISTING_ORPHANS,
+  TESTS_DIR,
+  checkGateWorkflow,
+  findOrphans,
+  gateBody,
+  gateExpanded,
+  listTestFiles,
+  parseWorkflowSteps,
+  readScripts,
+  readWorkflowText,
+  runLines,
+  staleWhitelist,
+} from './ciFrontendGate.rules';
 
 /**
  * WO-FRONTEND-PC-20261001 · REQ-5 / AC-5.1 · AC-5.2
@@ -22,265 +38,25 @@ import path from 'node:path';
  * - **REQ-7 独立执行者**：本文件过去唯一的执行者是它自己守护的 `npm run test`（裸 `vitest run`），
  *   谁把全量 vitest 从 `test:frontend-gate` 摘掉，自检就一起不跑。现在 `build-web.yml`
  *   必须有一条**独立 step** 直接执行本文件，且该 step 本身不能被「永远绿」写法架空。
- * - **REQ-8 结构判定**：判定从「run 行里有没有 `test:frontend-gate` 这个子串」升级为结构判定 ——
- *   `run` 行里的 `|| true` / `&& true` / `set +e`，以及步骤上的 `continue-on-error: true` / `if: false`，
- *   都必须让自检失败（这些写法不改变 `run:` 行正文，只看子串是看不见的）。
+ * - **REQ-8 结构判定**：判定从「run 行里有没有 `test:frontend-gate` 这个子串」升级为结构判定
+ *   （实现见 `ciFrontendGate.rules.ts`）—— `run` 行里的 `|| true` / `&& true` / `set +e`，
+ *   以及步骤上的 `continue-on-error: true` / `if: false`，都必须让自检失败。下面还有一组
+ *   用例把**真实工作流文本**改坏后直接复算判定结论（不只靠人工试）。
  * - **REQ-9 视野扩展**：孤儿棘轮从「`tests/client-web` 顶层 `*.test.ts(x)`」扩到
  *   「`tests/client-web` 递归的 `*.test.ts(x)` 与 `*.spec.ts`」。判据不变（仍以「被某个 npm script
  *   按文件名显式引用」为准），因此**不**把 `src/client-web/src/**` 纳入视野：那批用例由无路径过滤的
  *   全量 `vitest run` 直接覆盖，而该命令正文里没有任何文件名，纳入即全红。
  */
 
-const REPO_ROOT = path.resolve(__dirname, '../../../..');
-const WORKFLOW = path.join(REPO_ROOT, '.github/workflows/build-web.yml');
-const PKG = path.join(REPO_ROOT, 'src/client-web/package.json');
-const TESTS_DIR = path.join(REPO_ROOT, 'tests/client-web');
-const GATE_SCRIPT = 'test:frontend-gate';
-/** 本自检文件自身（相对 `src/client-web`）。REQ-7 要求它在工作流里有一个独立执行者。 */
-const GATE_SELFCHECK = 'src/__tests__/ciFrontendGate.test.ts';
-
-const workflow = fs.readFileSync(WORKFLOW, 'utf8');
-const scripts = JSON.parse(fs.readFileSync(PKG, 'utf8')).scripts as Record<string, string>;
-
-/** 工作流里所有 `run:` 步骤的命令正文（排除注释行）。 */
-function runLines(): string[] {
-  return workflow
-    .split('\n')
-    .filter(line => /^\s*run:\s*\S/.test(line))
-    .map(line => line.replace(/^\s*run:\s*/, '').trim());
-}
-
-/** 沿 `npm run <name>` / `npm --prefix <dir> run <name>` 逐层展开脚本正文。 */
-function expand(command: string, depth = 0): string {
-  if (depth > 8) return command;
-  const names = [...command.matchAll(/npm(?:\s+--prefix\s+\S+)?\s+run\s+([\w:.-]+)/g)].map(m => m[1]);
-  let out = command;
-  for (const name of new Set(names)) {
-    if (scripts[name]) out += `\n${expand(scripts[name], depth + 1)}`;
-  }
-  return out;
-}
-
-const gateBody = scripts[GATE_SCRIPT] ?? '';
-const gateExpanded = expand(gateBody);
-
-// ---------------------------------------------------------------------------
-// REQ-8：工作流结构解析与「永远绿」判定
-// ---------------------------------------------------------------------------
-
-interface WorkflowStep {
-  /** 步骤起始行号（1 基），用于失败信息定位。 */
-  line: number;
-  name: string;
-  /** 该步骤所有 `run:` 的正文（多行 `run: |` 以换行拼接）。 */
-  run: string;
-  ifValue: string;
-  continueOnError: string;
-}
-
-interface GateFinding {
-  stepLine: number;
-  stepName: string;
-  reason: string;
-}
-
-/** `- ` 列表项后紧跟这些键之一时才算一个 step（本文件里 steps 是唯一的列表）。 */
-const STEP_KEY = /^\s+(name|uses|run|id|if|with|env|shell|working-directory|continue-on-error|timeout-minutes):/;
-
-function toStep(block: { line: number; indent: number; lines: string[] }): WorkflowStep {
-  // 把首行 `- key: value` 归一成 `  key: value`，后续解析对所有行一视同仁。
-  const lines = block.lines.map((line, idx) => (idx === 0 ? line.replace(/^(\s*)- /, '$1  ') : line));
-  const keyValue = (key: string): string => {
-    for (const line of lines) {
-      const m = /^(\s*)([\w-]+):\s*(.*)$/.exec(line);
-      if (!m) continue;
-      if (m[1].length <= block.indent) break; // 回到同级/外层，step 块结束
-      if (m[2] === key && !m[3].trim().startsWith('|')) return m[3].trim();
-    }
-    return '';
-  };
-  const runParts: string[] = [];
-  for (let i = 0; i < lines.length; i += 1) {
-    const m = /^(\s*)run:\s*(.*)$/.exec(lines[i]);
-    if (!m) continue;
-    const runIndent = m[1].length;
-    if (runIndent <= block.indent) break;
-    const value = m[2].trim();
-    if (value === '|' || value === '>' || value.startsWith('|') || value.startsWith('>')) {
-      const body: string[] = [];
-      for (let j = i + 1; j < lines.length; j += 1) {
-        const line = lines[j];
-        if (line.trim() === '') continue;
-        const indent = line.length - line.trimStart().length;
-        if (indent <= runIndent) break;
-        body.push(line.trim());
-      }
-      runParts.push(body.join('\n'));
-    } else {
-      runParts.push(value);
-    }
-  }
-  return {
-    line: block.line,
-    name: keyValue('name'),
-    run: runParts.join('\n'),
-    ifValue: keyValue('if'),
-    continueOnError: keyValue('continue-on-error'),
-  };
-}
-
-/** 把工作流文本拆成 step 块（含 `run: |` 多行正文）。 */
-export function parseWorkflowSteps(text: string): WorkflowStep[] {
-  const lines = text.split('\n');
-  const steps: WorkflowStep[] = [];
-  let block: { line: number; indent: number; lines: string[] } | null = null;
-  lines.forEach((line, idx) => {
-    const m = /^(\s*)- /.exec(line);
-    const next = lines[idx + 1] ?? '';
-    const isStepStart =
-      !!m && next.length - next.trimStart().length > m[1].length && STEP_KEY.test(next);
-    if (isStepStart) {
-      if (block) steps.push(toStep(block));
-      block = { line: idx + 1, indent: m![1].length, lines: [line] };
-      return;
-    }
-    if (block) block.lines.push(line);
-  });
-  if (block) steps.push(toStep(block));
-  return steps;
-}
-
-const normalize = (value: string) => value.trim().replace(/^['"]|['"]$/g, '');
-const isFalsyCondition = (value: string) => normalize(value) === 'false' || normalize(value) === '${{ false }}';
-const isTruthyFlag = (value: string) => normalize(value) === 'true' || normalize(value) === '${{ true }}';
-
-const SHORT_CIRCUIT = ['|| true', '||true', '&& true', '&&true'];
-
-/** 单个步骤级「永远绿」写法（不改变 run 行正文的那些）。 */
-function checkStepAlwaysGreen(step: WorkflowStep, findings: GateFinding[]): void {
-  const push = (reason: string) => findings.push({ stepLine: step.line, stepName: step.name || '(未命名步骤)', reason });
-  if (step.continueOnError && isTruthyFlag(step.continueOnError)) {
-    push(`步骤带 \`continue-on-error: ${step.continueOnError.trim()}\`，失败不会让 job 变红`);
-  }
-  if (step.ifValue && isFalsyCondition(step.ifValue)) {
-    push(`步骤带 \`if: ${step.ifValue.trim()}\`，步骤根本不会执行`);
-  }
-  for (const pattern of SHORT_CIRCUIT) {
-    if (step.run.includes(pattern)) push(`run 正文含短路成功写法 \`${pattern}\``);
-  }
-  if (/(^|[;&\s])set \+e(\s|;|$)/.test(step.run)) push('run 正文含 `set +e`，失败码被吞掉');
-}
-
-/**
- * 对**工作流文本**做结构判定，返回全部「永远绿」违规。
- * 空数组 = 门禁内容可信（步骤级 + 门禁脚本展开后都没有短路/关停写法）。
- */
-export function checkGateWorkflow(text: string): GateFinding[] {
-  const findings: GateFinding[] = [];
-  const steps = parseWorkflowSteps(text);
-
-  const gateSteps = steps.filter(step => step.run.includes(GATE_SCRIPT));
-  if (gateSteps.length === 0) {
-    findings.push({ stepLine: 0, stepName: '(整个工作流)', reason: `没有任何 step 的 run 正文调用 ${GATE_SCRIPT}` });
-  }
-  gateSteps.forEach(step => checkStepAlwaysGreen(step, findings));
-
-  const selfCheckSteps = steps.filter(step => step.run.includes(GATE_SELFCHECK));
-  if (selfCheckSteps.length === 0) {
-    findings.push({
-      stepLine: 0,
-      stepName: '(整个工作流)',
-      reason: `没有独立 step 执行门禁自检文件 ${GATE_SELFCHECK}（自检仍只被它守护的全量 vitest 拉起）`,
-    });
-  }
-  selfCheckSteps.forEach(step => checkStepAlwaysGreen(step, findings));
-
-  for (const pattern of SHORT_CIRCUIT) {
-    if (gateExpanded.includes(pattern)) {
-      findings.push({ stepLine: 0, stepName: GATE_SCRIPT, reason: `展开后含短路成功写法 \`${pattern}\`` });
-    }
-  }
-  if (/(^|[;&\s])set \+e(\s|;|$)/.test(gateExpanded)) {
-    findings.push({ stepLine: 0, stepName: GATE_SCRIPT, reason: '展开后含 `set +e`' });
-  }
-  return findings;
-}
-
-// ---------------------------------------------------------------------------
-// REQ-9：孤儿棘轮（视野 = tests/client-web 递归的 *.test.ts(x) 与 *.spec.ts）
-// ---------------------------------------------------------------------------
-
-/**
- * `tests/client-web` 里在本工单之前就没有任何 npm script 引用的用例文件。
- *
- * 它们与 #376 同源（同一批「改了却永远不跑」），但修好它们要逐个补 tsconfig/脚本并确认
- * 用例本身能过，超出本工单范围 —— 已在 PR 里作为发现项列出。这里钉住存量，禁止再添新的。
- * 子目录用例用相对 `tests/client-web` 的 posix 路径登记（REQ-9 视野扩展后新增
- * `playwright/shellResponsive.spec.ts`：本次只纳入视野并登记，不补执行者）。
- */
-const PRE_EXISTING_ORPHANS = new Set([
-  'aPagesResponsive.test.ts', 'appKnowledgeApiPath.test.ts', 'appKnowledgeComponents.test.tsx',
-  'appKnowledgeNavigation.test.tsx', 'appKnowledgeTypes.test.ts', 'authApiError.test.ts',
-  'bdPagesResponsive.test.ts', 'cPagesResponsive.test.ts', 'calendarApiPath.test.ts',
-  'calendarStage5Types.test.ts', 'confirmActionDialogModel.test.ts', 'localizationSmoke.test.ts',
-  'mobileAnalyticsComponents.test.tsx', 'mobileAnalyticsInteractions.test.tsx', 'mobileApiPath.test.ts',
-  'mobileComponents.test.tsx', 'mobileFormatting.test.ts', 'mobileNav.test.ts',
-  'mobileNavigation.test.tsx', 'mobileTypes.test.ts', 'pcClassificationApiPath.test.ts',
-  'pcClassificationTypes.test.ts', 'pcQualityApiNormalization.test.ts', 'pcRecordsReviewLayout.test.tsx',
-  'pcRoute3ApiPath.test.ts', 'quickNoteFloatingState.test.ts', 'quickNotesApiPath.test.ts',
-  'quickNotesAttachmentUrls.test.ts', 'quickNotesPrefill.test.ts', 'quickNotesTypes.test.ts',
-  'recurrenceRuleEditor.test.tsx', 'recycleBinApiPath.test.ts', 'scheduleWorkbenchAiPlanning.test.ts',
-  'scheduleWorkbenchFoundationParity.test.ts', 'statusApiNormalization.test.ts', 'statusApiPath.test.ts',
-  'playwright/shellResponsive.spec.ts',
-]);
-
-/** 用例文件判定：`*.test.ts(x)` 与 `*.spec.ts(x)`（REQ-9 的视野）。 */
-const TEST_FILE_RE = /\.(test|spec)\.tsx?$/;
-
-/** 递归列出用例文件，返回相对 `tests/client-web` 的 posix 路径。 */
-export function listTestFiles(dir: string, base: string = dir): string[] {
-  const out: string[] = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      out.push(...listTestFiles(full, base));
-    } else if (TEST_FILE_RE.test(entry.name)) {
-      out.push(path.relative(base, full).split(path.sep).join('/'));
-    }
-  }
-  return out.sort();
-}
-
-/** 判据不变：文件名（或子目录相对路径）必须出现在某个 npm script 正文里。 */
-function isReferenced(file: string, scriptText: string): boolean {
-  return scriptText.includes(file) || scriptText.includes(path.posix.basename(file));
-}
-
-/** 视野内、未被脚本引用、且不在累积白名单里的用例文件。 */
-export function findOrphans(
-  files: string[],
-  scriptText: string,
-  whitelist: ReadonlySet<string> = PRE_EXISTING_ORPHANS,
-): string[] {
-  return files.filter(file => !isReferenced(file, scriptText) && !whitelist.has(file)).sort();
-}
-
-/** 白名单里已过期（文件消失、或已被收编获得执行者）的条目。 */
-export function staleWhitelist(
-  files: string[],
-  scriptText: string,
-  whitelist: ReadonlySet<string> = PRE_EXISTING_ORPHANS,
-): string[] {
-  const present = new Set(files);
-  return [...whitelist].filter(entry => !present.has(entry) || isReferenced(entry, scriptText)).sort();
-}
+const workflow = readWorkflowText();
+const scripts = readScripts();
 
 const allScripts = Object.values(scripts).join('\n');
 const testFiles = listTestFiles(TESTS_DIR);
 
 describe('WO-FRONTEND-PC-20261001 AC-5.1 · CI 必须执行全量前端单测', () => {
   it('build-web 的某个 run 步骤**实际调用** test:frontend-gate（注释不算）', () => {
-    expect(runLines().some(command => command.includes(GATE_SCRIPT))).toBe(true);
+    expect(runLines(workflow).some(command => command.includes(GATE_SCRIPT))).toBe(true);
   });
 
   it('test:frontend-gate 确实存在（不是 CI 里写了个空脚本名）', () => {
@@ -327,10 +103,12 @@ describe('REQ-7 · 门禁自检必须有独立执行者（#389）', () => {
 
 describe('REQ-8 · 自检必须拒绝「永远绿」的写法（#389）', () => {
   const GATE_RUN_LINE = '        run: npm run test:frontend-gate';
+  /** 整行匹配（含行尾可能的其它写法），保证变异只作用于这一行本身。 */
+  const GATE_RUN_RE = /^[ \t]*run: npm run test:frontend-gate.*$/m;
   expect(workflow, '工作流里找不到门禁步骤的 run 行，变异用例需要它').toContain(GATE_RUN_LINE);
 
-  const appendToRunLine = (suffix: string) => workflow.replace(GATE_RUN_LINE, `${GATE_RUN_LINE}${suffix}`);
-  const addStepKey = (line: string) => workflow.replace(GATE_RUN_LINE, `${GATE_RUN_LINE}\n${line}`);
+  const appendToRunLine = (suffix: string) => workflow.replace(GATE_RUN_RE, m => `${m}${suffix}`);
+  const addStepKey = (key: string) => workflow.replace(GATE_RUN_RE, m => `${m}\n${key}`);
 
   it('反面（AC-8.6）：不加任何变异时，结构判定无违规', () => {
     expect(checkGateWorkflow(workflow)).toEqual([]);
@@ -341,7 +119,7 @@ describe('REQ-8 · 自检必须拒绝「永远绿」的写法（#389）', () => 
     ['run 行尾追加 `&& true`（AC-8.2）', appendToRunLine(' && true')],
     ['步骤加 `continue-on-error: true`（AC-8.3）', addStepKey('        continue-on-error: true')],
     ['步骤加 `if: false`（AC-8.4）', addStepKey('        if: false')],
-    ['run 行内插入 `set +e`（AC-8.7）', workflow.replace(GATE_RUN_LINE, '        run: set +e; npm run test:frontend-gate')],
+    ['run 行内插入 `set +e`（AC-8.7）', workflow.replace(GATE_RUN_RE, '        run: set +e; npm run test:frontend-gate')],
   ])('%s 时自检报错，并指出该步骤', (_label, mutated) => {
     expect(mutated, '变异未生效').not.toBe(workflow);
     const findings = checkGateWorkflow(mutated);
@@ -350,22 +128,23 @@ describe('REQ-8 · 自检必须拒绝「永远绿」的写法（#389）', () => 
   });
 
   it('独立执行者被架空（continue-on-error / if: false）时同样报错', () => {
-    const selfCheckStepName = /- name: (.+)\n\s+run: [^\n]*ciFrontendGate\.test\.ts/;
-    const name = selfCheckStepName.exec(workflow)?.[1];
+    const steps = parseWorkflowSteps(workflow).filter(step => step.run.includes(GATE_SELFCHECK));
+    const name = steps[0].name;
     expect(name, '找不到自检独立执行者步骤').toBeTruthy();
-    for (const variant of [
-      `- name: ${name}\n        continue-on-error: true\n`,
-      `- name: ${name}\n        if: false\n`,
-    ]) {
-      const mutated = workflow.replace(`- name: ${name}\n`, variant);
+    for (const variant of [`        continue-on-error: true`, `        if: false`]) {
+      const mutated = workflow.replace(
+        `      - name: ${name}\n`,
+        `      - name: ${name}\n${variant}\n`,
+      );
+      expect(mutated, `变异未生效：${variant}`).not.toBe(workflow);
       const findings = checkGateWorkflow(mutated);
-      expect(findings.length, `变异未生效：${variant}`).toBeGreaterThan(0);
+      expect(findings.length, `未检出：${variant}`).toBeGreaterThan(0);
       expect(findings.some(f => f.stepName === name)).toBe(true);
     }
   });
 
   it('整个门禁步骤被删掉时自检报错（不允许「谁都不调用门禁」）', () => {
-    const mutated = workflow.replace(GATE_RUN_LINE, '        run: echo skipped');
+    const mutated = workflow.replace(GATE_RUN_RE, '        run: echo skipped');
     expect(checkGateWorkflow(mutated).length).toBeGreaterThan(0);
   });
 });
@@ -397,5 +176,10 @@ describe('REQ-9 · 孤儿棘轮覆盖子目录与 *.spec.ts（#389）', () => {
   it('白名单里的嵌套 spec 条目被删掉时会指名报错（AC-9.3 的纯函数形态）', () => {
     const withoutNestedSpec = testFiles.filter(f => f !== 'playwright/shellResponsive.spec.ts');
     expect(staleWhitelist(withoutNestedSpec, allScripts)).toEqual(['playwright/shellResponsive.spec.ts']);
+  });
+
+  it('白名单确实是累积型（存量条目仍在），且新增的嵌套 spec 条目已登记', () => {
+    expect(PRE_EXISTING_ORPHANS.size).toBe(37);
+    expect(PRE_EXISTING_ORPHANS.has('playwright/shellResponsive.spec.ts')).toBe(true);
   });
 });
