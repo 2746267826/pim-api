@@ -23,5 +23,8 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.*"]
+  // 门禁自检的判定模块与用例同处 __tests__ 下：它要读工作流文件与 package.json
+  // （`node:fs` / `__dirname`），而 app 侧 tsconfig 不带 node 类型 —— 与 `src/**/*.test.*`
+  // 同因，故一并排除（用例文件本身也是被 app tsconfig 排除的）。
+  "exclude": ["src/**/*.test.*", "src/__tests__/ciFrontendGate.rules.ts"]
 }
