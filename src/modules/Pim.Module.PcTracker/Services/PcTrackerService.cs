@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
@@ -20,6 +21,7 @@ public partial class PcTrackerService
     private readonly ActivityClassificationSettingsService _classificationSettings;
     private readonly ActivityTimelineSmoothingService _timelineSmoothing;
     private readonly ActivityClassificationRuleService _classificationRules;
+    private readonly ILogger<PcTrackerService>? _logger;
     private List<AppCategoryRule>? _cachedLegacyRules;
     private List<ActivityCategoryRuleEntity>? _cachedActivityRules;
 
@@ -28,13 +30,15 @@ public partial class PcTrackerService
         ActivityClassificationSnapshotService classificationSnapshots,
         ActivityClassificationSettingsService classificationSettings,
         ActivityTimelineSmoothingService timelineSmoothing,
-        ActivityClassificationRuleService? classificationRules = null)
+        ActivityClassificationRuleService? classificationRules = null,
+        ILogger<PcTrackerService>? logger = null)
     {
         _db = db;
         _classificationSnapshots = classificationSnapshots;
         _classificationSettings = classificationSettings;
         _timelineSmoothing = timelineSmoothing;
         _classificationRules = classificationRules ?? new ActivityClassificationRuleService(db);
+        _logger = logger;
     }
 
     public async Task UpsertKeystatsAsync(KeystatsUploadRequest req, CancellationToken ct)
@@ -853,12 +857,26 @@ public partial class PcTrackerService
             }
 
             var boundary = await FindQuietWindowBoundaryAsync(cursor, target, end, ct);
+            if (boundary > target)
+            {
+                _logger?.LogInformation(
+                    "PC 明细分页：窗口因缺少静默点被拉长（{WindowStart:o} → {Boundary:o}，目标为 {Target:o}）。",
+                    cursor, boundary, target);
+            }
+
             windows.Add((cursor, boundary));
             cursor = boundary;
         }
 
         if (windows.Count == 0)
             windows.Add((start, end));
+
+        if (windows.Count == 1 && end - start > TargetWindowSpan)
+        {
+            _logger?.LogWarning(
+                "PC 明细分页：{Start:o} ~ {End:o} 内没有找到任何静默点，退化为整段单窗口处理 —— "
+                + "峰值内存将随请求跨度增长（最长搜索 {MaxDays} 天）。", start, end, MaxWindowMergeDays);
+        }
 
         return windows;
     }
@@ -875,13 +893,19 @@ public partial class PcTrackerService
             if (candidateDay >= end)
                 return end;
 
-            var searchEnd = candidateDay.AddHours(6);
+            // 在目标点之后的**一整天**里找静默点：只搜前 6 小时的话，白天一直有事件时会把整日顺延，
+            // 窗口无谓地翻倍（峰值内存也跟着翻倍）。
+            var searchEnd = candidateDay.Add(TargetWindowSpan);
             if (searchEnd > end)
                 searchEnd = end;
 
             var quiet = await FindQuietInstantAsync(candidateDay, searchEnd, ct);
             if (quiet is null)
+            {
+                _logger?.LogInformation(
+                    "PC 明细分页：{CandidateDay:o} 之后一整天没有静默点，窗口与后一天合并。", candidateDay);
                 continue;
+            }
 
             // 窗口里如果只有短事件、一条可作 cluster 主角的长事件都没有，窗口收尾会与全局跑法不同
             // （全局会把待吸附的短事件丢掉，分窗口会合成出一条记录），因此这种窗口不切。
