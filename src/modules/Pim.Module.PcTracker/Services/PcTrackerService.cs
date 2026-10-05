@@ -779,6 +779,12 @@ public partial class PcTrackerService
         foreach (var index in order)
         {
             var (windowStart, windowEnd) = windows[index];
+            // 分类补全（`EnsureClassificationsAsync`）只影响记录上的分类字段，而计数的过滤条件里
+            // 只有 `CategoryName` 依赖它。因此：**已经取满本页之后的窗口不再分类**（只要没有按分类过滤），
+            // 计数不受影响，省掉整段范围里绝大多数的分类工作（REQ-10 的「不做多余的活」）。
+            var needsClassification = items.Count < pageSize
+                || !string.IsNullOrWhiteSpace(q.CategoryName);
+
             var records = await BuildCompleteDetailRecordsForRangeAsync(
                 windowStart,
                 windowEnd,
@@ -786,6 +792,7 @@ public partial class PcTrackerService
                 includeCrossingRecords: false,
                 includePreviousSample: index > 0,
                 includeNextSample: index < windows.Count - 1,
+                classify: needsClassification,
                 rules,
                 ct);
 
@@ -802,7 +809,7 @@ public partial class PcTrackerService
             // 变更跟踪器按窗口清空：分类快照已在本窗口内落库，跟踪器不再持有已处理窗口的实体，
             // 这样峰值内存才真正只与单个窗口有关（REQ-10 / AC-10.1）。
             _db.ChangeTracker.Clear();
-            GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
+            GC.Collect(2, GCCollectionMode.Forced, blocking: false, compacting: false);
         }
 
         var total = (int)Math.Min(int.MaxValue, totalCount);
@@ -1015,6 +1022,7 @@ public partial class PcTrackerService
             includeCrossingRecords,
             includePreviousSample: false,
             includeNextSample: false,
+            classify: true,
             await GetActivityCategoryRulesAsync(ct),
             ct);
     }
@@ -1030,6 +1038,7 @@ public partial class PcTrackerService
         bool includeCrossingRecords,
         bool includePreviousSample,
         bool includeNextSample,
+        bool classify,
         IReadOnlyCollection<ActivityCategoryRuleEntity> rules,
         CancellationToken ct)
     {
@@ -1097,11 +1106,14 @@ public partial class PcTrackerService
             records = records.Select(record => ClipRecordToRange(record, start, end)).ToList();
 
         records = ApplyPreClassificationCompleteDetailFilters(records, q).ToList();
-        records = await _classificationSnapshots.EnsureClassificationsAsync(
-            records,
-            rules,
-            auditId: null,
-            ct);
+        if (classify)
+        {
+            records = await _classificationSnapshots.EnsureClassificationsAsync(
+                records,
+                rules,
+                auditId: null,
+                ct);
+        }
         records = ApplyCompleteDetailFilters(records, q).ToList();
         records = ApplyCompleteDetailSort(records, q).ToList();
 
