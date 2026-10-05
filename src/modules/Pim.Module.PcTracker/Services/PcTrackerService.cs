@@ -779,21 +779,18 @@ public partial class PcTrackerService
         var skip = (long)(page - 1) * pageSize;
         var items = new List<PcDetailRecord>();
         long totalCount = 0;
+        var lastCollectionBytes = GC.GetTotalAllocatedBytes(precise: false);
+        var categoryFilter = !string.IsNullOrWhiteSpace(q.CategoryName);
 
         foreach (var index in order)
         {
             var (windowStart, windowEnd) = windows[index];
-            // 分类补全（`EnsureClassificationsAsync`）只影响记录上的分类字段，而计数的过滤条件里
-            // 只有 `CategoryName` 依赖它。因此：**已经取满本页之后的窗口不再分类**（只要没有按分类过滤），
-            // 计数不受影响，省掉整段范围里绝大多数的分类工作（REQ-10 的「不做多余的活」）。
-            //
-            // 取舍（cross review Important 2）：`EnsureClassificationsAsync` 还会把分类快照写库，
-            // 因此本端点不再为「取满之后」的那部分范围回填快照（改造前会为整段回填）。快照是缓存，
-            // 其它读路径各自按需补算，返回内容不受影响 —— 由 PcDetailWindowPaginationTests 的
-            // 逐字段对拍（含按 CategoryName 过滤的情形）锁住。
-            var needsClassification = items.Count < pageSize
-                || !string.IsNullOrWhiteSpace(q.CategoryName);
-
+            // 分类补全（`EnsureClassificationsAsync`）只改记录上的分类字段，而**过滤条件里只有
+            // `CategoryName` 依赖它**。所以：
+            // - 没按分类过滤时，逐窗口合成**不做**分类（计数不受影响），等本页条目选出来之后
+            //   只给这一页（≤ 200 条）补一次分类 —— 与改造前在整段记录上补分类的结果一致，
+            //   但省掉了整段范围的分类与快照写入（REQ-10 的「不做多余的活」）。
+            // - 按分类过滤时必须逐窗口分类，否则无法判定每条记录是否入选。
             var records = await BuildCompleteDetailRecordsForRangeAsync(
                 windowStart,
                 windowEnd,
@@ -801,7 +798,7 @@ public partial class PcTrackerService
                 includeCrossingRecords: false,
                 includePreviousSample: index > 0,
                 includeNextSample: index < windows.Count - 1,
-                classify: needsClassification,
+                classify: categoryFilter,
                 rules,
                 ct);
 
@@ -817,11 +814,24 @@ public partial class PcTrackerService
             totalCount += windowCount;
 
             // 变更跟踪器按窗口清空：分类快照已在本窗口内落库，跟踪器不再持有已处理窗口的实体，
-            // 这样峰值内存才真正只与单个窗口有关（REQ-10 / AC-10.1）。这里**不**主动触发 GC ——
-            // 进程跑的是 Server GC，请求路径上强制 2 代回收会把停顿转嫁给同进程的其它请求；
-            // 峰值由「每窗口只驻留一个窗口的数据」保证，回收交给运行时（实测已满足 AC-10.1）。
+            // 这样峰值内存才真正只与单个窗口有关（REQ-10 / AC-10.1）。
             _db.ChangeTracker.Clear();
+
+            // 回收策略：Server GC 下没有内存压力信号，长请求里堆会一直涨到宿主内存上界；
+            // 而「每窗一次阻塞式 2 代回收」又会把停顿转嫁给同进程的其它请求。
+            // 这里按**本请求累计分配量**触发（每 WindowGcAllocationThresholdBytes 一次），
+            // 既不频繁、又能把峰值压在同量级（实测见 PR 的 AC-10 表）。
+            var allocated = GC.GetTotalAllocatedBytes(precise: false);
+            if (allocated - lastCollectionBytes >= WindowGcAllocationThresholdBytes)
+            {
+                lastCollectionBytes = allocated;
+                GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
+            }
         }
+
+        // 本页条目补分类（顺序由 EnsureClassificationsAsync 保证不变）
+        if (!categoryFilter && items.Count > 0)
+            items = await _classificationSnapshots.EnsureClassificationsAsync(items, rules, auditId: null, ct);
 
         var total = (int)Math.Min(int.MaxValue, totalCount);
         return new TypedDetailQueryResponse(
@@ -846,6 +856,12 @@ public partial class PcTrackerService
 
     /// <summary>单次请求的窗口数上限（防御性上限，正常范围远达不到）。</summary>
     private const int MaxWindowCount = 400;
+
+    /// <summary>
+    /// 单个请求内累计分配多少字节后触发一次回收（用来把峰值内存压在窗口量级，
+    /// 同时避免「每个窗口都阻塞回收一次」把停顿转嫁给同进程的其它请求）。
+    /// </summary>
+    private const long WindowGcAllocationThresholdBytes = 64L * 1024 * 1024;
 
     /// <summary>
     /// 把请求范围切成若干窗口。边界优先落在「两侧静默」的时刻；找不到静默点就把该日并入下一个窗口
