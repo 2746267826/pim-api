@@ -46,6 +46,34 @@ public sealed class PcInternalQuerySpanLimitTests
         Assert.Contains(Day.ToString("yyyy-MM-dd"), ex.Message);
     }
 
+    /// <summary>
+    /// #390 / REQ-12 / AC-12.1 + AC-12.2：守卫文案必须与实现一致 ——
+    /// 不得再声称对外明细端点「不能用来绕过本上限」（该端点根本不执行本上限），
+    /// 但必须继续给出「按业务日拆分请求」这一可执行动作。
+    /// <para>
+    /// 该守卫**没有可触发的 HTTP 入口**（两个内部调用方都只传单一业务日），
+    /// 因此这里按 AC-12.1 的要求直接调用内部取数路径。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task QueryAllDetailRecordsAsync_GuardMessageMatchesTheActualBehaviour()
+    {
+        await using var db = CreateDb();
+        var service = Service(db);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => service.QueryAllDetailRecordsAsync(
+            Query(Day.AddDays(-30), Day), CancellationToken.None));
+
+        // AC-12.1：不再出现与实现相反的说法
+        Assert.DoesNotContain("/pc/detail", ex.Message);
+        Assert.DoesNotContain("不能用来绕过", ex.Message);
+        Assert.DoesNotContain("绕过", ex.Message);
+
+        // AC-12.2：可执行动作仍在
+        Assert.Contains("按业务日拆分请求", ex.Message);
+        Assert.Contains("每个业务日一次", ex.Message);
+    }
+
     /// <summary>AC-2.1：正好等于上限的跨度合法，不得误伤。</summary>
     [Fact]
     public async Task QueryAllDetailRecordsAsync_AllowsRequestAtSpanLimit()
