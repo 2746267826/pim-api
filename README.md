@@ -218,7 +218,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
    ```bash
    sudo mkdir -p /data/keys/data-protection
    sudo openssl genrsa -out /data/keys/jwt_private.pem 2048
-   # 确保容器内运行用户对以上路径可读
+   # 容器内运行用户对 jwt_private.pem 需可读、对 data-protection 目录需可写
    ```
 
    > **密钥目录权限**：生产编排按上述两条具体路径挂载 —— `/data/keys/jwt_private.pem` 按只读方式挂载，应用运行期间无法改写该私钥文件；`/data/keys/data-protection` 按可写方式挂载，DataProtection 在主密钥轮换（默认 90 天）时需要在其中写入新密钥。两条宿主机路径都须在启动前预置。
