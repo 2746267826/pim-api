@@ -779,7 +779,6 @@ public partial class PcTrackerService
         var skip = (long)(page - 1) * pageSize;
         var items = new List<PcDetailRecord>();
         long totalCount = 0;
-        var lastCollectionBytes = GC.GetTotalAllocatedBytes(precise: false);
         var categoryFilter = !string.IsNullOrWhiteSpace(q.CategoryName);
 
         foreach (var index in order)
@@ -799,6 +798,7 @@ public partial class PcTrackerService
                 includePreviousSample: index > 0,
                 includeNextSample: index < windows.Count - 1,
                 classify: categoryFilter,
+                rangeEnd: end,
                 rules,
                 ct);
 
@@ -817,16 +817,14 @@ public partial class PcTrackerService
             // 这样峰值内存才真正只与单个窗口有关（REQ-10 / AC-10.1）。
             _db.ChangeTracker.Clear();
 
-            // 回收策略：Server GC 下没有内存压力信号，长请求里堆会一直涨到宿主内存上界；
-            // 而「每窗一次阻塞式 2 代回收」又会把停顿转嫁给同进程的其它请求。
-            // 这里按**本请求累计分配量**触发（每 WindowGcAllocationThresholdBytes 一次），
-            // 既不频繁、又能把峰值压在同量级（实测见 PR 的 AC-10 表）。
-            var allocated = GC.GetTotalAllocatedBytes(precise: false);
-            if (allocated - lastCollectionBytes >= WindowGcAllocationThresholdBytes)
-            {
-                lastCollectionBytes = allocated;
-                GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
-            }
+            // 回收策略：**每窗口一次** 2 代回收。Server GC 没有内存压力信号，长请求的堆会一路涨 ——
+            // 实测（15 天 / 31130 条，独立进程、50 ms 采样 VmRSS）：
+            //   不回收               → 峰值增量 283.6 MiB，窄档 79.0 MiB，比值 3.59，深页 439.3 MiB
+            //   非阻塞 + 存活堆上限   → 306–390 MiB，比值 4.8~6.3（回收跟不上窗口之间的垃圾）
+            //   每窗口阻塞一次        → 154.9 MiB，窄档 76.8 MiB，比值 2.02（满足 AC-10.1 / AC-10.2）
+            // 代价是一次 2 代回收的停顿（同进程其它请求会等），换来的是峰值与窗口量级绑定、
+            // 不再随请求跨度增长；这是本端点在 AC-10 下的取舍。
+            GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
         }
 
         // 本页条目补分类（顺序由 EnsureClassificationsAsync 保证不变）
@@ -841,9 +839,6 @@ public partial class PcTrackerService
             total,
             (int)Math.Ceiling((double)total / pageSize));
     }
-
-    /// <summary>找静默点时的向前取数长度：覆盖「起点更早、但跨进探查窗口」的长事件。</summary>
-    private static readonly TimeSpan QuietProbeLookback = TimeSpan.FromHours(24);
 
     /// <summary>短页阈值：与 <c>BrowserPageTimelineBuilder</c> / <c>TrackerPageTimelineBuilder</c> 保持一致（5 秒）。</summary>
     private const double ShortPageThresholdSeconds = 5;
@@ -861,12 +856,6 @@ public partial class PcTrackerService
     private const int MaxWindowCount = 400;
 
     /// <summary>
-    /// 单个请求内累计分配多少字节后触发一次回收（用来把峰值内存压在窗口量级，
-    /// 同时避免「每个窗口都阻塞回收一次」把停顿转嫁给同进程的其它请求）。
-    /// </summary>
-    private const long WindowGcAllocationThresholdBytes = 64L * 1024 * 1024;
-
-    /// <summary>
     /// 把请求范围切成若干窗口。边界优先落在「两侧静默」的时刻；找不到静默点就把该日并入下一个窗口
     /// （窗口变大但结果不变），最多顺延 7 天，仍找不到则整段作为一个窗口。
     /// </summary>
@@ -878,6 +867,7 @@ public partial class PcTrackerService
         var windows = new List<(DateTimeOffset Start, DateTimeOffset End)>();
         var cursor = start;
         var guard = 0;
+        var maxEventDuration = await ComputeMaxEventDurationAsync(ct);
 
         while (cursor < end && guard++ < MaxWindowCount)
         {
@@ -889,7 +879,7 @@ public partial class PcTrackerService
                 break;
             }
 
-            var boundary = await FindQuietWindowBoundaryAsync(cursor, target, end, ct);
+            var boundary = await FindQuietWindowBoundaryAsync(cursor, target, end, maxEventDuration, ct);
             if (boundary > target)
             {
                 _logger?.LogInformation(
@@ -978,6 +968,7 @@ public partial class PcTrackerService
         DateTimeOffset windowStart,
         DateTimeOffset target,
         DateTimeOffset end,
+        TimeSpan maxEventDuration,
         CancellationToken ct)
     {
         for (var dayOffset = 0; dayOffset < MaxWindowMergeDays; dayOffset++)
@@ -992,7 +983,7 @@ public partial class PcTrackerService
             if (searchEnd > end)
                 searchEnd = end;
 
-            var quiet = await FindQuietInstantAsync(candidateDay, searchEnd, ct);
+            var quiet = await FindQuietInstantAsync(candidateDay, searchEnd, maxEventDuration, ct);
             if (quiet is null)
             {
                 _logger?.LogInformation(
@@ -1006,10 +997,18 @@ public partial class PcTrackerService
         return end;
     }
 
-    /// <summary>在 [from, to) 内找最早的一个「静默时刻」：两侧 ±<see cref="WindowQuietBand"/> 内都没有事件。</summary>
+    /// <summary>
+    /// 在 [from, to) 内找最早的一个「静默时刻」：两侧 ±<see cref="WindowQuietBand"/> 内都没有事件。
+    /// <para>
+    /// 事件可能「起点更早、但跨进探查窗口」（克隆库里 AW 最长约 22 小时），所以取数窗口按**重叠**
+    /// 打开：先取该表最长的持续时间，再把取数起点前移到 <c>probeStart - maxDuration</c>，
+    /// 最后按 <c>timestamp + duration &gt; probeStart</c> 过滤掉完全在探查窗口之前结束的事件。
+    /// </para>
+    /// </summary>
     private async Task<DateTimeOffset?> FindQuietInstantAsync(
         DateTimeOffset from,
         DateTimeOffset to,
+        TimeSpan maxEventDuration,
         CancellationToken ct)
     {
         if (from >= to)
@@ -1018,31 +1017,33 @@ public partial class PcTrackerService
         var band = WindowQuietBand;
         var probeStart = from - band;
         var probeEnd = to + band;
-        // 往前多看一段：起点早于探查窗口、但**跨进**探查窗口的长事件同样会占住候选点。
-        // 取数窗口若被占满（说明更早还有事件），保守地认为这段时间没有静默点。
-        var fetchStart = probeStart - QuietProbeLookback;
+        var fetchStart = probeStart - maxEventDuration;
 
         var busy = new List<(DateTimeOffset Start, DateTimeOffset End)>();
         var awRows = await _db.Set<AwEventEntity>()
+            .Where(AwBoundaryRelevant)
             .Where(e => e.Timestamp >= fetchStart && e.Timestamp < probeEnd)
             .Select(e => new { e.Timestamp, e.Duration })
             .ToListAsync(ct);
         var trackerRows = await _db.Set<TrackerEventEntity>()
+            .Where(TrackerBoundaryRelevant)
             .Where(e => e.Timestamp >= fetchStart && e.Timestamp < probeEnd)
             .Select(e => new { e.Timestamp, e.Duration })
             .ToListAsync(ct);
 
-        if (awRows.Any(r => r.Timestamp <= fetchStart.AddMinutes(1))
-            || trackerRows.Any(r => r.Timestamp <= fetchStart.AddMinutes(1)))
+        foreach (var row in awRows)
         {
-            // 探查窗被占满，无法判断更早是否还有事件跨进来 —— 当作「没有静默点」，让窗口合并。
-            return null;
+            var eventEnd = row.Timestamp.AddSeconds(row.Duration);
+            if (eventEnd > probeStart)
+                busy.Add((row.Timestamp - band, eventEnd + band));
         }
 
-        foreach (var row in awRows)
-            busy.Add((row.Timestamp - band, row.Timestamp.AddSeconds(row.Duration) + band));
         foreach (var row in trackerRows)
-            busy.Add((row.Timestamp - band, row.Timestamp.AddSeconds(row.Duration) + band));
+        {
+            var eventEnd = row.Timestamp.AddSeconds(row.Duration);
+            if (eventEnd > probeStart)
+                busy.Add((row.Timestamp - band, eventEnd + band));
+        }
 
         busy.Sort((a, b) => a.Start.CompareTo(b.Start));
 
@@ -1059,6 +1060,34 @@ public partial class PcTrackerService
         }
 
         return candidate < to ? candidate : null;
+    }
+
+    /// <summary>
+    /// 会「跨记录」的组合只发生在这些事件上，因此切窗边界只需要避开它们：
+    /// <list type="bullet">
+    ///   <item><description>AW：网页事件参与 cluster 聚类与尾部吸附（`BrowserPageTimelineBuilder.BuildWebPageClusters`）；
+    ///     普通窗口事件会被并进重叠的网页（同文件 `explainedBrowserWindows`），所以也算。</description></item>
+    ///   <item><description>tracker：只有 `web-page` 事件参与短页合并（`TrackerPageTimelineBuilder.MergeShortWebPages`）。</description></item>
+    /// </list>
+    /// afk / idle / gap 等事件都是一条事件一条记录，不参与任何跨记录组合 —— 把它们算进静默带
+    /// 会让边界被一条 22 小时的 afk 事件挡住，窗口被迫整日合并（实测会因此把峰值与耗时一起推高）。
+    /// </summary>
+    private static readonly System.Linq.Expressions.Expression<Func<AwEventEntity, bool>> AwBoundaryRelevant =
+        e => e.EventType == "web" || e.BucketType == "web.tab.current" || e.EventType == "window";
+
+    /// <summary>同 <see cref="AwBoundaryRelevant"/>：tracker 侧只有 `web-page` 事件参与跨记录合并。</summary>
+    private static readonly System.Linq.Expressions.Expression<Func<TrackerEventEntity, bool>> TrackerBoundaryRelevant =
+        e => e.EventType.ToLower() == "web-page";
+
+    /// <summary>
+    /// 参与跨记录组合的事件里最长的持续时间：找静默点时要按这个长度向前取数，才能覆盖
+    /// 「起点更早、但跨进探查窗口」的事件。整段请求只取一次。
+    /// </summary>
+    private async Task<TimeSpan> ComputeMaxEventDurationAsync(CancellationToken ct)
+    {
+        var maxAw = await _db.Set<AwEventEntity>().Where(AwBoundaryRelevant).MaxAsync(e => (double?)e.Duration, ct) ?? 0;
+        var maxTracker = await _db.Set<TrackerEventEntity>().Where(TrackerBoundaryRelevant).MaxAsync(e => (double?)e.Duration, ct) ?? 0;
+        return TimeSpan.FromSeconds(Math.Max(maxAw, maxTracker));
     }
 
     /// <summary>
@@ -1177,6 +1206,7 @@ public partial class PcTrackerService
             includePreviousSample: false,
             includeNextSample: false,
             classify: true,
+            rangeEnd: end,
             await GetActivityCategoryRulesAsync(ct),
             ct);
     }
@@ -1193,6 +1223,7 @@ public partial class PcTrackerService
         bool includePreviousSample,
         bool includeNextSample,
         bool classify,
+        DateTimeOffset rangeEnd,
         IReadOnlyCollection<ActivityCategoryRuleEntity> rules,
         CancellationToken ct)
     {
@@ -1224,7 +1255,7 @@ public partial class PcTrackerService
             start,
             e => e.Timestamp,
             e => e.Duration);
-        var samples = await LoadKeystatsSamplesAsync(start, end, includePreviousSample, includeNextSample, ct);
+        var samples = await LoadKeystatsSamplesAsync(start, end, rangeEnd, includePreviousSample, includeNextSample, ct);
 
         var records = new List<PcDetailRecord>();
         var rawMode = string.Equals(q.View, "raw", StringComparison.OrdinalIgnoreCase)
@@ -1283,6 +1314,7 @@ public partial class PcTrackerService
     private async Task<List<KeystatsSampleEntity>> LoadKeystatsSamplesAsync(
         DateTimeOffset start,
         DateTimeOffset end,
+        DateTimeOffset rangeEnd,
         bool includePreviousSample,
         bool includeNextSample,
         CancellationToken ct)
@@ -1315,9 +1347,11 @@ public partial class PcTrackerService
 
             if (includeNextSample)
             {
+                // 只在**本次查询范围之内**取下一条采样：越过范围终点取会把范围外的采样
+                // 配上范围内那条，凭空多出一条 input-minute 记录。
                 var next = await _db.Set<KeystatsSampleEntity>()
                     .AsNoTracking()
-                    .Where(s => s.PimDeviceId == deviceId && s.SampledAtUtc >= end)
+                    .Where(s => s.PimDeviceId == deviceId && s.SampledAtUtc >= end && s.SampledAtUtc < rangeEnd)
                     .OrderBy(s => s.SampledAtUtc)
                     .FirstOrDefaultAsync(ct);
                 if (next is not null)
