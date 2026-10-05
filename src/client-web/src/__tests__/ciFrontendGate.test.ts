@@ -105,10 +105,13 @@ describe('REQ-8 · 自检必须拒绝「永远绿」的写法（#389）', () => 
   const GATE_RUN_LINE = '        run: npm run test:frontend-gate';
   /** 整行匹配（含行尾可能的其它写法），保证变异只作用于这一行本身。 */
   const GATE_RUN_RE = /^[ \t]*run: npm run test:frontend-gate.*$/m;
-  expect(workflow, '工作流里找不到门禁步骤的 run 行，变异用例需要它').toContain(GATE_RUN_LINE);
 
   const appendToRunLine = (suffix: string) => workflow.replace(GATE_RUN_RE, m => `${m}${suffix}`);
   const addStepKey = (key: string) => workflow.replace(GATE_RUN_RE, m => `${m}\n${key}`);
+
+  it('工作流里能找到门禁步骤的 run 行（下面是变异用例的锚点）', () => {
+    expect(workflow).toContain(GATE_RUN_LINE);
+  });
 
   it('反面（AC-8.6）：不加任何变异时，结构判定无违规', () => {
     expect(checkGateWorkflow(workflow)).toEqual([]);
