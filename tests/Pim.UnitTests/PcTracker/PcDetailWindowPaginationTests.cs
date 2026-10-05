@@ -122,6 +122,85 @@ public sealed class PcDetailWindowPaginationTests
         Assert.Equal(crossing.Count, crossing.Select(Signature).Distinct().Count());
     }
 
+    /// <summary>
+    /// 反面回归（cross review Critical）：某一天的网页全是短页（<c>duration &lt;= 5</c>）、前一天才有主角时，
+    /// 整段合成会把这段短页**丢掉**；窗口切分后它单独成窗，收尾会走 <c>FromShortEvents</c> 多合成一条记录。
+    /// 窗口计划因此必须把这扇窗并回去。
+    /// </summary>
+    [Fact]
+    public async Task ShortWebPageTail_AfterABoundary_DoesNotInventARecord()
+    {
+        await using var db = CreateDb();
+        var dayA = new DateTimeOffset(2026, 5, 20, 0, 0, 0, TimeSpan.Zero);
+        AddAw(db, dayA.AddHours(18), 300, "web", "chrome.exe", "https://example.com/long");           // 主角
+        AddAw(db, dayA.AddDays(1).AddHours(10), 2, "web", "chrome.exe", "https://example.com/short"); // 次日只有短页
+        await db.SaveChangesAsync();
+
+        var service = Service(db);
+        var q = Query(new DateTime(2026, 5, 20), new DateTime(2026, 5, 21));
+        var full = await service.BuildCompleteDetailRecordsAsync(q, CancellationToken.None, includeCrossingRecords: false);
+        var paged = await CollectAllPages(service, q);
+
+        Assert.Equal(1, full.Count);                    // 整段合成：短页被吸附判定拒绝后丢弃
+        Assert.Equal(full.Select(Signature), paged.Select(Signature));
+    }
+
+    /// <summary>
+    /// 同类反面：次日那段短页旁边有一条**非网页**的长事件（普通窗口/afk），它不算 cluster 主角 ——
+    /// 判据若只看 <c>Duration &gt; 5</c> 就会误判为「可自洽」。
+    /// </summary>
+    [Fact]
+    public async Task ShortWebPageTail_WithLongNonWebEvent_StillDoesNotInventARecord()
+    {
+        await using var db = CreateDb();
+        var dayA = new DateTimeOffset(2026, 5, 20, 0, 0, 0, TimeSpan.Zero);
+        AddAw(db, dayA.AddHours(18), 300, "web", "chrome.exe", "https://example.com/long");
+        AddAw(db, dayA.AddDays(1).AddHours(9), 60, "window", "notepad.exe", null);                   // 非网页长事件
+        AddAw(db, dayA.AddDays(1).AddHours(10), 2, "web", "chrome.exe", "https://example.com/short");
+        await db.SaveChangesAsync();
+
+        var service = Service(db);
+        var q = Query(new DateTime(2026, 5, 20), new DateTime(2026, 5, 21));
+        var full = await service.BuildCompleteDetailRecordsAsync(q, CancellationToken.None, includeCrossingRecords: false);
+        var paged = await CollectAllPages(service, q);
+
+        Assert.Equal(full.Select(Signature), paged.Select(Signature));
+    }
+
+    /// <summary>
+    /// tracker 管道方向相反：整段合成会把尾部短 web-page 逐条吐出，而只剩短页的窗口会把它们并成一条。
+    /// </summary>
+    [Fact]
+    public async Task ShortTrackerWebPageChain_DoesNotGetMergedByWindowBoundary()
+    {
+        await using var db = CreateDb();
+        var dayA = new DateTimeOffset(2026, 5, 20, 0, 0, 0, TimeSpan.Zero);
+        AddTracker(db, dayA.AddHours(18), 60, "web-page", "chrome.exe", "https://example.com/t-long");
+        for (var i = 0; i < 3; i++)
+            AddTracker(db, dayA.AddDays(1).AddHours(10).AddSeconds(i * 10), 2, "web-page", "chrome.exe", $"https://example.com/t-short-{i}");
+        await db.SaveChangesAsync();
+
+        var service = Service(db);
+        var q = Query(new DateTime(2026, 5, 20), new DateTime(2026, 5, 21));
+        var full = await service.BuildCompleteDetailRecordsAsync(q, CancellationToken.None, includeCrossingRecords: false);
+        var paged = await CollectAllPages(service, q);
+
+        Assert.Equal(4, full.Count);                    // 长页 1 条 + 三条短页各一条
+        Assert.Equal(full.Select(Signature), paged.Select(Signature));
+    }
+
+    private static async Task<List<PcDetailRecord>> CollectAllPages(PcTrackerService service, DetailQueryParams q)
+    {
+        var collected = new List<PcDetailRecord>();
+        for (var page = 1; page <= 200; page++)
+        {
+            var resp = await service.QueryCompleteDetailAsync(q with { Page = page, PageSize = 200 }, CancellationToken.None);
+            if (resp.Items.Count == 0) break;
+            collected.AddRange(resp.Items);
+        }
+        return collected;
+    }
+
     private static string Signature(PcDetailRecord record) => JsonSerializer.Serialize(record);
 
     private static DetailQueryParams Query(DateTime from, DateTime to) => new(
