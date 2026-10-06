@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
 using Pim.Module.PcTracker.Entities;
@@ -20,6 +21,7 @@ public partial class PcTrackerService
     private readonly ActivityClassificationSettingsService _classificationSettings;
     private readonly ActivityTimelineSmoothingService _timelineSmoothing;
     private readonly ActivityClassificationRuleService _classificationRules;
+    private readonly ILogger<PcTrackerService>? _logger;
     private List<AppCategoryRule>? _cachedLegacyRules;
     private List<ActivityCategoryRuleEntity>? _cachedActivityRules;
 
@@ -28,13 +30,15 @@ public partial class PcTrackerService
         ActivityClassificationSnapshotService classificationSnapshots,
         ActivityClassificationSettingsService classificationSettings,
         ActivityTimelineSmoothingService timelineSmoothing,
-        ActivityClassificationRuleService? classificationRules = null)
+        ActivityClassificationRuleService? classificationRules = null,
+        ILogger<PcTrackerService>? logger = null)
     {
         _db = db;
         _classificationSnapshots = classificationSnapshots;
         _classificationSettings = classificationSettings;
         _timelineSmoothing = timelineSmoothing;
         _classificationRules = classificationRules ?? new ActivityClassificationRuleService(db);
+        _logger = logger;
     }
 
     public async Task UpsertKeystatsAsync(KeystatsUploadRequest req, CancellationToken ct)
@@ -746,24 +750,388 @@ public partial class PcTrackerService
             (int)Math.Ceiling((double)totalCount / pageSize));
     }
 
+    /// <summary>
+    /// 对外分页明细端点（REQ-10 / #390）：不再把整段范围的记录展开后再分页，而是把范围切成若干
+    /// **合成安全**的窗口，逐窗口跑同一套合成管道，边合成边计数、边取所需的那一页。
+    /// <para>
+    /// 峰值内存增量因此只与**单个窗口**有关，与请求跨度解耦；`TotalCount` 仍是对全部窗口求和得到的
+    /// **精确值**，`Page` / `PageSize` / `TotalPages` 语义不变。窗口边界取在「两侧都没有事件」的
+    /// 静默时刻，保证 cluster 聚类与尾部吸附不会跨窗口 —— 同一条被吸收的记录既不会在两页重复，
+    /// 也不会整体消失（REQ-11 / AC-11.4）。
+    /// </para>
+    /// </summary>
     public async Task<TypedDetailQueryResponse> QueryCompleteDetailAsync(DetailQueryParams q, CancellationToken ct)
     {
         var page = Math.Max(1, q.Page);
         var pageSize = Math.Clamp(q.PageSize, 1, 200);
-        var records = await BuildCompleteDetailRecordsAsync(q, ct, includeCrossingRecords: false);
+        var (start, end) = GetDetailQueryRange(q);
 
-        var totalCount = records.Count;
-        var items = records
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .ToList();
+        var ascending = q.SortDir?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true;
+        var windows = await PlanCompleteDetailWindowsAsync(start, end, ct);
+        var rules = await GetActivityCategoryRulesAsync(ct);
 
+        // 全局顺序 = 窗口顺序（升序按时间正序、降序按时间倒序），窗口内部由同一套排序保证；
+        // 相等 Start 的记录必然落在同一个窗口内，稳定性与改造前一致。
+        var order = Enumerable.Range(0, windows.Count);
+        if (!ascending)
+            order = order.Reverse();
+
+        var skip = (long)(page - 1) * pageSize;
+        var items = new List<PcDetailRecord>();
+        long totalCount = 0;
+        var categoryFilter = !string.IsNullOrWhiteSpace(q.CategoryName);
+
+        foreach (var index in order)
+        {
+            var (windowStart, windowEnd) = windows[index];
+            // 分类补全（`EnsureClassificationsAsync`）只改记录上的分类字段，而**过滤条件里只有
+            // `CategoryName` 依赖它**。所以：
+            // - 没按分类过滤时，逐窗口合成**不做**分类（计数不受影响），等本页条目选出来之后
+            //   只给这一页（≤ 200 条）补一次分类 —— 与改造前在整段记录上补分类的结果一致，
+            //   但省掉了整段范围的分类与快照写入（REQ-10 的「不做多余的活」）。
+            // - 按分类过滤时必须逐窗口分类，否则无法判定每条记录是否入选。
+            var records = await BuildCompleteDetailRecordsForRangeAsync(
+                windowStart,
+                windowEnd,
+                q,
+                includeCrossingRecords: false,
+                includePreviousSample: index > 0,
+                includeNextSample: index < windows.Count - 1,
+                classify: categoryFilter,
+                rangeEnd: end,
+                rules,
+                ct);
+
+            var windowCount = records.Count;
+            if (items.Count < pageSize)
+            {
+                // 先按 long 比较再收窄：page 极大时 skip - totalCount 可能超过 int 范围。
+                var localSkip = Math.Max(0, skip - totalCount);
+                if (localSkip < windowCount)
+                    items.AddRange(records.Skip((int)localSkip).Take(pageSize - items.Count));
+            }
+
+            totalCount += windowCount;
+
+            // 变更跟踪器按窗口清空：分类快照已在本窗口内落库，跟踪器不再持有已处理窗口的实体，
+            // 这样峰值内存才真正只与单个窗口有关（REQ-10 / AC-10.1）。
+            _db.ChangeTracker.Clear();
+
+            // 回收策略：**每窗口一次** 2 代回收。Server GC 没有内存压力信号，长请求的堆会一路涨 ——
+            // 实测（15 天 / 31130 条，独立进程、50 ms 采样 VmRSS；同一配置下宽带在 128~159 MiB
+            // 之间摆动，约 ±30 MiB 噪声）：
+            //   不回收               → 峰值增量 283.6 MiB，窄档 79.0 MiB，比值 3.59，深页 439.3 MiB
+            //   非阻塞 + 存活堆上限   → 306–390 MiB，比值 4.8~6.3（回收跟不上窗口之间的垃圾）
+            //   每窗口阻塞一次        → 宽带 128–159 MiB、窄档 57.6–76.8 MiB、比值 2.60~2.75
+            //                          （AC-10.1 ≤ 512 MiB 与 AC-10.2 比值 ≤ 3 都满足）
+            // 代价是一次 2 代回收的停顿（同进程其它请求会等），换来的是峰值与窗口量级绑定、
+            // 不再随请求跨度增长；这是本端点在 AC-10 下的取舍。
+            GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
+        }
+
+        // 本页条目补分类（顺序由 EnsureClassificationsAsync 保证不变）
+        if (!categoryFilter && items.Count > 0)
+            items = await _classificationSnapshots.EnsureClassificationsAsync(items, rules, auditId: null, ct);
+
+        var total = (int)Math.Min(int.MaxValue, totalCount);
         return new TypedDetailQueryResponse(
             items,
             page,
             pageSize,
-            totalCount,
-            (int)Math.Ceiling((double)totalCount / pageSize));
+            total,
+            (int)Math.Ceiling((double)total / pageSize));
+    }
+
+    /// <summary>短页阈值：与 <c>BrowserPageTimelineBuilder</c> / <c>TrackerPageTimelineBuilder</c> 保持一致（5 秒）。</summary>
+    private const double ShortPageThresholdSeconds = 5;
+
+    /// <summary>窗口切分用的静默带：两边 builder 的短页阈值（5s）与合并间隔（30s）取大者再加余量。</summary>
+    private static readonly TimeSpan WindowQuietBand = TimeSpan.FromSeconds(31);
+
+    /// <summary>单个窗口的目标跨度：1 个自然日（业务日边界对齐，04:00–04:00）。</summary>
+    private static readonly TimeSpan TargetWindowSpan = TimeSpan.FromDays(1);
+
+    /// <summary>找不到静默点时向后搜索的上界（逐日顺延合并窗口，最多 7 天）。</summary>
+    private const int MaxWindowMergeDays = 7;
+
+    /// <summary>单次请求的窗口数上限（防御性上限，正常范围远达不到）。</summary>
+    private const int MaxWindowCount = 400;
+
+    /// <summary>
+    /// 把请求范围切成若干窗口。边界优先落在「两侧静默」的时刻；找不到静默点就把该日并入下一个窗口
+    /// （窗口变大但结果不变），最多顺延 7 天，仍找不到则整段作为一个窗口。
+    /// </summary>
+    private async Task<List<(DateTimeOffset Start, DateTimeOffset End)>> PlanCompleteDetailWindowsAsync(
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken ct)
+    {
+        var windows = new List<(DateTimeOffset Start, DateTimeOffset End)>();
+        var cursor = start;
+        var guard = 0;
+        var maxEventDuration = await ComputeMaxEventDurationAsync(ct);
+
+        while (cursor < end && guard++ < MaxWindowCount)
+        {
+            var target = cursor.Add(TargetWindowSpan);
+            if (target >= end)
+            {
+                windows.Add((cursor, end));
+                cursor = end;
+                break;
+            }
+
+            var boundary = await FindQuietWindowBoundaryAsync(cursor, target, end, maxEventDuration, ct);
+            if (boundary > target)
+            {
+                _logger?.LogInformation(
+                    "PC 明细分页：窗口因缺少静默点被拉长（{WindowStart:o} → {Boundary:o}，目标为 {Target:o}）。",
+                    cursor, boundary, target);
+            }
+
+            windows.Add((cursor, boundary));
+            cursor = boundary;
+        }
+
+        if (cursor < end)
+        {
+            _logger?.LogWarning(
+                "PC 明细分页：窗口数达到上限 {MaxWindows}，剩余范围 {Cursor:o} ~ {End:o} 并入最后一个窗口。",
+                MaxWindowCount, cursor, end);
+            windows.Add((cursor, end));
+        }
+
+        if (windows.Count == 0)
+            windows.Add((start, end));
+
+        return await MergeNonComposableWindowsAsync(windows, start, end, ct);
+    }
+
+    /// <summary>
+    /// 把「收尾时没有主角事件」的窗口并到相邻窗口，直到每个窗口都能与整段合成逐字段一致；
+    /// 整段都并成一个窗口时记 Warning（正确性由整段合成保证，但峰值内存不再有界）。
+    /// <para>
+    /// 为什么必须并：网页 cluster 与 tracker 短页合并都依赖「同窗前后的记录」。窗口收尾时若没有
+    /// 主角（AW：该设备在窗内没有 duration &gt; 短页阈值的网页事件；tracker：窗内记录全是短 web-page），
+    /// builder 会走 `FromShortEvents` / 「只剩短页就并成一条」这两条分支，把整段合成里**会被吸附到
+    /// 上一个 cluster 或被丢弃**的短页单独合成一条记录 —— 结果就与改造前不一致（REQ-11）。
+    /// </para>
+    /// </summary>
+    private async Task<List<(DateTimeOffset Start, DateTimeOffset End)>> MergeNonComposableWindowsAsync(
+        List<(DateTimeOffset Start, DateTimeOffset End)> windows,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken ct)
+    {
+        while (windows.Count > 1)
+        {
+            var index = -1;
+            for (var i = 0; i < windows.Count; i++)
+            {
+                if (!await WindowIsComposableAsync(windows[i].Start, windows[i].End, ct))
+                {
+                    index = i;
+                    break;
+                }
+            }
+
+            if (index < 0)
+                break;
+
+            if (index == 0)
+            {
+                _logger?.LogInformation(
+                    "PC 明细分页：首个窗口（{Start:o} ~ {End:o}）没有可用于收尾的主角事件，与下一个窗口合并。",
+                    windows[0].Start, windows[0].End);
+                windows[0] = (windows[0].Start, windows[1].End);
+                windows.RemoveAt(1);
+            }
+            else
+            {
+                _logger?.LogInformation(
+                    "PC 明细分页：窗口（{Start:o} ~ {End:o}）没有可用于收尾的主角事件，并回上一个窗口。",
+                    windows[index].Start, windows[index].End);
+                windows[index - 1] = (windows[index - 1].Start, windows[index].End);
+                windows.RemoveAt(index);
+            }
+        }
+
+        if (windows.Count == 1 && !await WindowIsComposableAsync(start, end, ct))
+        {
+            _logger?.LogWarning(
+                "PC 明细分页：{Start:o} ~ {End:o} 内找不到可自洽的切分点，退化为整段单窗口处理 —— "
+                + "结果仍然正确，但峰值内存将随请求跨度增长。", start, end);
+        }
+
+        return windows;
+    }
+
+    private async Task<DateTimeOffset> FindQuietWindowBoundaryAsync(
+        DateTimeOffset windowStart,
+        DateTimeOffset target,
+        DateTimeOffset end,
+        TimeSpan maxEventDuration,
+        CancellationToken ct)
+    {
+        for (var dayOffset = 0; dayOffset < MaxWindowMergeDays; dayOffset++)
+        {
+            var candidateDay = target.AddDays(dayOffset);
+            if (candidateDay >= end)
+                return end;
+
+            // 在目标点之后的**一整天**里找静默点：只搜前 6 小时的话，白天一直有事件时会把整日顺延，
+            // 窗口无谓地翻倍（峰值内存也跟着翻倍）。
+            var searchEnd = candidateDay.Add(TargetWindowSpan);
+            if (searchEnd > end)
+                searchEnd = end;
+
+            var quiet = await FindQuietInstantAsync(candidateDay, searchEnd, maxEventDuration, ct);
+            if (quiet is null)
+            {
+                _logger?.LogInformation(
+                    "PC 明细分页：{CandidateDay:o} 之后一整天没有静默点，窗口与后一天合并。", candidateDay);
+                continue;
+            }
+
+            return quiet.Value;
+        }
+
+        return end;
+    }
+
+    /// <summary>
+    /// 在 [from, to) 内找最早的一个「静默时刻」：两侧 ±<see cref="WindowQuietBand"/> 内都没有事件。
+    /// <para>
+    /// 事件可能「起点更早、但跨进探查窗口」（克隆库里 AW 最长约 22 小时），所以取数窗口按**重叠**
+    /// 打开：先取该表最长的持续时间，再把取数起点前移到 <c>probeStart - maxDuration</c>，
+    /// 最后按 <c>timestamp + duration &gt; probeStart</c> 过滤掉完全在探查窗口之前结束的事件。
+    /// </para>
+    /// </summary>
+    private async Task<DateTimeOffset?> FindQuietInstantAsync(
+        DateTimeOffset from,
+        DateTimeOffset to,
+        TimeSpan maxEventDuration,
+        CancellationToken ct)
+    {
+        if (from >= to)
+            return null;
+
+        var band = WindowQuietBand;
+        var probeStart = from - band;
+        var probeEnd = to + band;
+        var fetchStart = probeStart - maxEventDuration;
+
+        var busy = new List<(DateTimeOffset Start, DateTimeOffset End)>();
+        var awRows = await _db.Set<AwEventEntity>()
+            .Where(AwBoundaryRelevant)
+            .Where(e => e.Timestamp >= fetchStart && e.Timestamp < probeEnd)
+            .Select(e => new { e.Timestamp, e.Duration })
+            .ToListAsync(ct);
+        var trackerRows = await _db.Set<TrackerEventEntity>()
+            .Where(TrackerBoundaryRelevant)
+            .Where(e => e.Timestamp >= fetchStart && e.Timestamp < probeEnd)
+            .Select(e => new { e.Timestamp, e.Duration })
+            .ToListAsync(ct);
+
+        foreach (var row in awRows)
+        {
+            var eventEnd = row.Timestamp.AddSeconds(row.Duration);
+            if (eventEnd > probeStart)
+                busy.Add((row.Timestamp - band, eventEnd + band));
+        }
+
+        foreach (var row in trackerRows)
+        {
+            var eventEnd = row.Timestamp.AddSeconds(row.Duration);
+            if (eventEnd > probeStart)
+                busy.Add((row.Timestamp - band, eventEnd + band));
+        }
+
+        busy.Sort((a, b) => a.Start.CompareTo(b.Start));
+
+        var candidate = from;
+        foreach (var interval in busy)
+        {
+            if (interval.End <= candidate)
+                continue;
+            if (interval.Start > candidate)
+                return candidate;   // 落在两段忙碌之间
+            candidate = interval.End;   // 仍被覆盖，往后推
+            if (candidate >= to)
+                return null;
+        }
+
+        return candidate < to ? candidate : null;
+    }
+
+    /// <summary>
+    /// 会「跨记录」的组合只发生在这些事件上，因此切窗边界只需要避开它们：
+    /// <list type="bullet">
+    ///   <item><description>AW：网页事件参与 cluster 聚类与尾部吸附（`BrowserPageTimelineBuilder.BuildWebPageClusters`）；
+    ///     普通窗口事件会被并进重叠的网页（同文件 `explainedBrowserWindows`），所以也算。</description></item>
+    ///   <item><description>tracker：只有 `web-page` 事件参与短页合并（`TrackerPageTimelineBuilder.MergeShortWebPages`）。</description></item>
+    /// </list>
+    /// afk / idle / gap 等事件都是一条事件一条记录，不参与任何跨记录组合 —— 把它们算进静默带
+    /// 会让边界被一条 22 小时的 afk 事件挡住，窗口被迫整日合并（实测会因此把峰值与耗时一起推高）。
+    /// </summary>
+    private static readonly System.Linq.Expressions.Expression<Func<AwEventEntity, bool>> AwBoundaryRelevant =
+        e => e.EventType == "web" || e.BucketType == "web.tab.current" || e.EventType == "window";
+
+    /// <summary>同 <see cref="AwBoundaryRelevant"/>：tracker 侧只有 `web-page` 事件参与跨记录合并。</summary>
+    private static readonly System.Linq.Expressions.Expression<Func<TrackerEventEntity, bool>> TrackerBoundaryRelevant =
+        e => e.EventType.ToLower() == "web-page";
+
+    /// <summary>
+    /// 参与跨记录组合的事件里最长的持续时间：找静默点时要按这个长度向前取数，才能覆盖
+    /// 「起点更早、但跨进探查窗口」的事件。整段请求只取一次。
+    /// </summary>
+    private async Task<TimeSpan> ComputeMaxEventDurationAsync(CancellationToken ct)
+    {
+        var maxAw = await _db.Set<AwEventEntity>().Where(AwBoundaryRelevant).MaxAsync(e => (double?)e.Duration, ct) ?? 0;
+        var maxTracker = await _db.Set<TrackerEventEntity>().Where(TrackerBoundaryRelevant).MaxAsync(e => (double?)e.Duration, ct) ?? 0;
+        return TimeSpan.FromSeconds(Math.Max(maxAw, maxTracker));
+    }
+
+    /// <summary>
+    /// 窗口是否「可自洽收尾」：窗内每个设备的网页事件里都要有 cluster 主角（&gt; 短页阈值），
+    /// 且窗内 tracker 记录不能全是短 web-page。判据按**管道**区分 —— AW 的主角只算网页事件
+    /// （普通窗口 / afk 事件不是 cluster 主角），tracker 的主角只算非短 web-page 记录。
+    /// </summary>
+    private async Task<bool> WindowIsComposableAsync(DateTimeOffset start, DateTimeOffset end, CancellationToken ct)
+    {
+        var threshold = ShortPageThresholdSeconds;
+
+        // AW 管道按设备分组聚类：某设备在窗内有网页事件、却一个主角都没有 → 收尾会走 FromShortEvents
+        var webDevices = await _db.Set<AwEventEntity>()
+            .Where(e => e.Timestamp >= start && e.Timestamp < end
+                && (e.EventType == "web" || e.BucketType == "web.tab.current"))
+            .Select(e => e.DeviceId)
+            .Distinct()
+            .ToListAsync(ct);
+        if (webDevices.Count > 0)
+        {
+            var primaryDevices = await _db.Set<AwEventEntity>()
+                .Where(e => e.Timestamp >= start && e.Timestamp < end
+                    && e.Duration > threshold
+                    && (e.EventType == "web" || e.BucketType == "web.tab.current"))
+                .Select(e => e.DeviceId)
+                .Distinct()
+                .ToListAsync(ct);
+            if (webDevices.Except(primaryDevices).Any())
+                return false;
+        }
+
+        // tracker 管道：窗内记录全是短 web-page 时，收尾会把它们并成一条（整段合成是逐条吐出）
+        if (await _db.Set<TrackerEventEntity>().AnyAsync(e => e.Timestamp >= start && e.Timestamp < end, ct))
+        {
+            var hasPrimary = await _db.Set<TrackerEventEntity>()
+                .AnyAsync(e => e.Timestamp >= start && e.Timestamp < end
+                    && !(e.EventType.ToLower() == "web-page" && e.Duration <= threshold), ct);
+            if (!hasPrimary)
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -810,8 +1178,7 @@ public partial class PcTrackerService
         throw new ArgumentException(
             $"内部取数路径单次最多覆盖 {MaxInternalQuerySpanDays} 个业务日，当前请求为 {days} 个业务日" +
             $"（{FormatBusinessDay(start)} ~ {FormatBusinessDay(end.AddSeconds(-1))}）。" +
-            "请按业务日拆分请求（每个业务日一次）；/pc/detail 的分页明细接口会先展开所请求范围的全部记录，" +
-            "不能用来绕过本上限。");
+            "请按业务日拆分请求（每个业务日一次）。");
     }
 
     /// <summary>
@@ -822,13 +1189,46 @@ public partial class PcTrackerService
     private static string FormatBusinessDay(DateTimeOffset instant)
         => GetBusinessDayForTimestamp(instant).ToString("yyyy-MM-dd");
 
-    private async Task<List<PcDetailRecord>> BuildCompleteDetailRecordsAsync(
+    /// <summary>
+    /// 整段范围的合成管道（内部路径直接用；`/pc/detail` 现在按窗口逐段调用
+    /// <see cref="BuildCompleteDetailRecordsForRangeAsync"/>）。保留为 `internal` 是为了让测试能拿它
+    /// 当「改造前的整段合成」基准，逐字段对拍窗口化分页的结果（REQ-11）。
+    /// </summary>
+    internal async Task<List<PcDetailRecord>> BuildCompleteDetailRecordsAsync(
         DetailQueryParams q,
         CancellationToken ct,
         bool includeCrossingRecords)
     {
         var (start, end) = GetDetailQueryRange(q);
+        return await BuildCompleteDetailRecordsForRangeAsync(
+            start,
+            end,
+            q,
+            includeCrossingRecords,
+            includePreviousSample: false,
+            includeNextSample: false,
+            classify: true,
+            rangeEnd: end,
+            await GetActivityCategoryRulesAsync(ct),
+            ct);
+    }
 
+    /// <summary>
+    /// 合成管道（按显式范围）：三表取数 → 合成 → 补分类 → 过滤排序。
+    /// 分页路径按窗口逐段调用它，内部路径一次调用覆盖整个范围。
+    /// </summary>
+    private async Task<List<PcDetailRecord>> BuildCompleteDetailRecordsForRangeAsync(
+        DateTimeOffset start,
+        DateTimeOffset end,
+        DetailQueryParams q,
+        bool includeCrossingRecords,
+        bool includePreviousSample,
+        bool includeNextSample,
+        bool classify,
+        DateTimeOffset rangeEnd,
+        IReadOnlyCollection<ActivityCategoryRuleEntity> rules,
+        CancellationToken ct)
+    {
         // 只有内部分析路径会把取数窗口向前扩一个「合理时长」：起点在范围之前、但伸进范围的记录
         // 同样属于本范围（REQ-1）。`/pc/detail` 传 false，取数与过滤行为与修复前逐字节一致。
         var loadStart = start;
@@ -841,6 +1241,7 @@ public partial class PcTrackerService
 
         var awEvents = SelectCrossingAware(
             await _db.Set<AwEventEntity>()
+                .AsNoTracking()
                 .Where(e => e.Timestamp >= loadStart && e.Timestamp < end)
                 .OrderBy(e => e.Timestamp)
                 .ToListAsync(ct),
@@ -849,18 +1250,14 @@ public partial class PcTrackerService
             e => e.Duration);
         var trackerEvents = SelectCrossingAware(
             await _db.Set<TrackerEventEntity>()
+                .AsNoTracking()
                 .Where(e => e.Timestamp >= loadStart && e.Timestamp < end)
                 .OrderBy(e => e.Timestamp)
                 .ToListAsync(ct),
             start,
             e => e.Timestamp,
             e => e.Duration);
-        var samples = await _db.Set<KeystatsSampleEntity>()
-            .Where(s => s.SampledAtUtc >= start && s.SampledAtUtc < end)
-            .OrderBy(s => s.PimDeviceId)
-            .ThenBy(s => s.SampledAtUtc)
-            .ToListAsync(ct);
-        var rules = await GetActivityCategoryRulesAsync(ct);
+        var samples = await LoadKeystatsSamplesAsync(start, end, rangeEnd, includePreviousSample, includeNextSample, ct);
 
         var records = new List<PcDetailRecord>();
         var rawMode = string.Equals(q.View, "raw", StringComparison.OrdinalIgnoreCase)
@@ -877,7 +1274,18 @@ public partial class PcTrackerService
         }
 
         if (!rawMode)
-            records.AddRange(ToInputMinuteRecords(samples));
+        {
+            var minuteRecords = ToInputMinuteRecords(samples);
+            if (includePreviousSample || includeNextSample)
+            {
+                // `input-minute` 记录是相邻两条采样的增量，Start = 前一条采样时刻。补进来的邻居采样
+                // （窗口前最后一条 / 窗口后第一条）只用于配对：它们自己产出的记录分别属于上/下一个窗口。
+                minuteRecords = minuteRecords.Where(r =>
+                    r.RecordType != "input-minute" || ParseRecordTime(r.Start) >= start);
+            }
+
+            records.AddRange(minuteRecords);
+        }
 
         // 跨边界记录裁剪到所请求范围（review round 4）：内部分析路径与建议生成拿到的是
         // 「本范围内的那一段」，不是整条事件 —— 否则建议里的时长会包含属于前一业务日的部分。
@@ -885,15 +1293,75 @@ public partial class PcTrackerService
             records = records.Select(record => ClipRecordToRange(record, start, end)).ToList();
 
         records = ApplyPreClassificationCompleteDetailFilters(records, q).ToList();
-        records = await _classificationSnapshots.EnsureClassificationsAsync(
-            records,
-            rules,
-            auditId: null,
-            ct);
+        if (classify)
+        {
+            records = await _classificationSnapshots.EnsureClassificationsAsync(
+                records,
+                rules,
+                auditId: null,
+                ct);
+        }
         records = ApplyCompleteDetailFilters(records, q).ToList();
         records = ApplyCompleteDetailSort(records, q).ToList();
 
         return records;
+    }
+
+    /// <summary>
+    /// 取键盘采样。分页窗口在 <paramref name="includePreviousSample"/> 为真时，会为每个设备补上
+    /// 「窗口起点之前的最后一条采样」：`input-minute` 记录是相邻两条采样的增量，没有它，
+    /// 跨窗口的那条记录会整体消失（REQ-11 / AC-11.4）。补进来的采样只用于配对，
+    /// 其自身产出的记录由调用方按 Start 过滤掉。
+    /// </summary>
+    private async Task<List<KeystatsSampleEntity>> LoadKeystatsSamplesAsync(
+        DateTimeOffset start,
+        DateTimeOffset end,
+        DateTimeOffset rangeEnd,
+        bool includePreviousSample,
+        bool includeNextSample,
+        CancellationToken ct)
+    {
+        var inWindow = await _db.Set<KeystatsSampleEntity>()
+            .AsNoTracking()
+            .Where(s => s.SampledAtUtc >= start && s.SampledAtUtc < end)
+            .OrderBy(s => s.PimDeviceId)
+            .ThenBy(s => s.SampledAtUtc)
+            .ToListAsync(ct);
+
+        if ((!includePreviousSample && !includeNextSample) || inWindow.Count == 0)
+            return inWindow;
+
+        var merged = new List<KeystatsSampleEntity>(inWindow.Count + 4);
+        foreach (var deviceId in inWindow.Select(s => s.PimDeviceId).Distinct().ToList())
+        {
+            if (includePreviousSample)
+            {
+                var previous = await _db.Set<KeystatsSampleEntity>()
+                    .AsNoTracking()
+                    .Where(s => s.PimDeviceId == deviceId && s.SampledAtUtc < start)
+                    .OrderByDescending(s => s.SampledAtUtc)
+                    .FirstOrDefaultAsync(ct);
+                if (previous is not null)
+                    merged.Add(previous);
+            }
+
+            merged.AddRange(inWindow.Where(s => s.PimDeviceId == deviceId));
+
+            if (includeNextSample)
+            {
+                // 只在**本次查询范围之内**取下一条采样：越过范围终点取会把范围外的采样
+                // 配上范围内那条，凭空多出一条 input-minute 记录。
+                var next = await _db.Set<KeystatsSampleEntity>()
+                    .AsNoTracking()
+                    .Where(s => s.PimDeviceId == deviceId && s.SampledAtUtc >= end && s.SampledAtUtc < rangeEnd)
+                    .OrderBy(s => s.SampledAtUtc)
+                    .FirstOrDefaultAsync(ct);
+                if (next is not null)
+                    merged.Add(next);
+            }
+        }
+
+        return merged;
     }
 
     public async Task<List<AppCategoryRule>> GetAllCategoriesAsync(CancellationToken ct)
