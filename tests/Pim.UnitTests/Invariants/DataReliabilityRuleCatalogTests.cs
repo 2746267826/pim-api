@@ -103,9 +103,9 @@ public class DataReliabilityRuleCatalogTests
         Assert.Equal(new[] { 249 }, DataReliabilityRuleCatalog.Find("S1")!.RelatedIssues);
         Assert.Equal(new[] { 251 }, DataReliabilityRuleCatalog.Find("S2")!.RelatedIssues);
         Assert.Empty(DataReliabilityRuleCatalog.Find("S3")!.RelatedIssues);
-        Assert.Equal(new[] { 246 }, DataReliabilityRuleCatalog.Find("S4")!.RelatedIssues);
-        Assert.Equal(new[] { 252 }, DataReliabilityRuleCatalog.Find("S6")!.RelatedIssues);
-        Assert.Equal(new[] { 252 }, DataReliabilityRuleCatalog.Find("S7")!.RelatedIssues);
+        Assert.Equal(new[] { 246, 399 }, DataReliabilityRuleCatalog.Find("S4")!.RelatedIssues);
+        Assert.Equal(new[] { 252, 397 }, DataReliabilityRuleCatalog.Find("S6")!.RelatedIssues);
+        Assert.Equal(new[] { 252, 396 }, DataReliabilityRuleCatalog.Find("S7")!.RelatedIssues);
         Assert.Contains(236, DataReliabilityRuleCatalog.Find("S8")!.RelatedIssues);
         Assert.Contains(239, DataReliabilityRuleCatalog.Find("S8")!.RelatedIssues);
         Assert.Equal(new[] { 244 }, DataReliabilityRuleCatalog.Find("S9")!.RelatedIssues);

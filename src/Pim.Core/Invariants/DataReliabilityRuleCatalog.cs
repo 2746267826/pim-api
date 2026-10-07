@@ -87,10 +87,10 @@ public static class DataReliabilityRuleCatalog
             Name: "业务键唯一（不重复）",
             Group: DataReliabilityGroup.SelfConsistency,
             GroupLabel: "数据自洽",
-            Criterion: "定位按 (device, recorded_at, lat, lon) 唯一；手机事件按 (device, package, event_time, event_type, class_name) 唯一；PC 事件按 (device, timestamp, duration, event_type, app_name, browser, instance_id) 唯一。",
+            Criterion: "定位按 (device, recorded_at, lat, lon) 唯一；手机事件按库层唯一索引同维度 (user_id, device_id, package_name, event_type, event_timestamp_utc, class_name) 唯一；PC 事件按 (device, timestamp, duration, event_type, app_name, browser, instance_id) 唯一。",
             Threshold: "重复行 = 0；考核线之后的重复行计为「窗内」红线，之前的计入「历史欠账」只计数、不参与颜色判定。",
-            Rationale: "重复事件会导致时长与频次双重虚高，破坏聚合指标的可信度；实测定位 1065/6280 行重复、手机同刻重复 1245 条，都属于无唯一键约束的历史欠账。手机事件的业务键含 class_name：同一时刻同一包名的多行实测是**不同 Activity**（class_name 各异），与写入侧幂等键及数据库唯一索引口径一致。",
-            RelatedIssues: new[] { 246 }),
+            Rationale: "重复事件会导致时长与频次双重虚高，破坏聚合指标的可信度；实测定位 1065/6280 行重复、手机同刻重复 1245 条，都属于无唯一键约束的历史欠账。手机事件的业务键必须与库层唯一索引同维度：同一时刻同一包名的多行实测是**不同 class_name（Activity）**，只按 (device, package, event_time, event_type) 分组会把它们误判成重复；同 user_id 且同 class_name 的真实重复仍会被判出。",
+            RelatedIssues: new[] { 246, 399 }),
 
         new DataReliabilityRuleDefinition(
             Code: "S5",
@@ -112,9 +112,9 @@ public static class DataReliabilityRuleCatalog
             Group: DataReliabilityGroup.Coverage,
             GroupLabel: "覆盖完整",
             Criterion: "设备停止出数必须自己有交代：没有下线声明的空档超过阈值判红；上传滞后 p99 超过阈值同样判红。空档按「上一段结束 → 下一段开始」计算；下线声明取自客户端主动上报的离线记录。",
-            Threshold: "无声明空档 30 分钟（T2）；上传滞后 p99 30 分钟（T2）。实测上传滞后 p99 = 23 分钟、相邻事件间隔 p99 = 22.7 分钟。系统合成的 gap 事件不计入上传滞后（其差值恒等于断档时长，不是链路延迟）。",
+            Threshold: "无声明空档 30 分钟（T2）；上传滞后 p99 30 分钟（T2）。实测上传滞后 p99 = 23 分钟、相邻事件间隔 p99 = 22.7 分钟。系统合成的 gap 事件不计入上传滞后（其差值恒等于断档时长，不是链路延迟）。上传滞后的**基准时刻是「事件区间结束、该条事件可以上传的时刻」**，不是区间起点 —— 以起点为基准会把切片自身的采集时长算成链路延迟（30 分钟切片必然贴线），而命中样本在区间结束后 22 秒即完成上传。",
             Rationale: "现代操作系统的关机与睡眠都有系统钩子，停摆本身可以被告知；没有声明就突然停止 30 分钟，说明采集端崩溃或掉线，用户看到的「没记录」与真实行为无法区分。",
-            RelatedIssues: new[] { 252 }),
+            RelatedIssues: new[] { 252, 397 }),
 
         new DataReliabilityRuleDefinition(
             Code: "S7",
@@ -123,10 +123,10 @@ public static class DataReliabilityRuleCatalog
             Name: "断档必须在时间轴上被标记",
             Group: DataReliabilityGroup.Coverage,
             GroupLabel: "覆盖完整",
-            Criterion: "相邻时间线区间之间超过阈值的空洞，必须被「缺数据」类事件（gap 或等价标记）完整覆盖，不得留无解释的空白。",
-            Threshold: "未标记空洞 = 0；断档判定阈值 15 分钟。",
-            Rationale: "超过 15 分钟的无数据空洞若在 UI 上被直接拼接或留白，用户无法分辨是设备没用还是系统漏记；实测 29/29 处空洞全都没有标记。",
-            RelatedIssues: new[] { 252 }),
+            Criterion: "相邻时间线区间之间超过阈值的空洞，必须被「缺数据」类事件（gap 或等价标记）合并后的**并集**完整覆盖，不得留无解释的空白。",
+            Threshold: "未标记空洞 = 0；断档判定阈值 15 分钟。覆盖判定 = 多段 gap 分片合并后的并集：相邻分片之间 ≤1 秒的拼接缝隙（实测 1 毫秒）并入同一段；并集端点与洞端点之差 ≤1 秒（实测 26 毫秒）视为已覆盖。容差上限 1 秒，10 秒级端点差仍判未标记。",
+            Rationale: "超过 15 分钟的无数据空洞若在 UI 上被直接拼接或留白，用户无法分辨是设备没用还是系统漏记；实测 29/29 处空洞全都没有标记。客户端按 30 分钟切片上报 gap，分片端点之间存在毫秒级缝隙，且分片末端与真实洞端点也有毫秒级偏差 —— 只接受「单个覆盖段完整包住洞」会把已被完整声明的断档判成未标记。",
+            RelatedIssues: new[] { 252, 396 }),
 
         new DataReliabilityRuleDefinition(
             Code: "S8",

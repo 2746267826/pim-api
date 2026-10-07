@@ -369,7 +369,7 @@ public class DataReliabilityGroupOneTests
         {
             BusinessRecordKey.ForLocation("DEV-1", _baseTime, 31.2304, 121.4737),
             BusinessRecordKey.ForLocation("DEV-1", _baseTime.AddMinutes(5), 31.2305, 121.4738),
-            BusinessRecordKey.ForMobile("DEV-1", "com.wechat", _baseTime, "foreground"),
+            BusinessRecordKey.ForMobile("DEV-1", "com.wechat", _baseTime, "foreground", "com.wechat.ui.ChatActivity", "user-1"),
             BusinessRecordKey.ForPc("DEV-1", _baseTime, 60, "active", "chrome.exe", "Chrome", "inst-1")
         };
 

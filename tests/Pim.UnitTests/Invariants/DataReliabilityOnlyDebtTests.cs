@@ -341,7 +341,7 @@ public class DataReliabilityOnlyDebtTests
             EventIntervals = new (DateTime, DateTime)[] { (DebtTimeUtc, DebtTimeUtc.AddMinutes(10)) },
             UploadLagSamples = new[]
             {
-                new UploadLagSample { EventTime = DebtTimeUtc, CreatedAt = DebtTimeUtc.AddMinutes(1000) }
+                new UploadLagSample { UploadableAt = DebtTimeUtc, CreatedAt = DebtTimeUtc.AddMinutes(1000) }
             }
         };
 
@@ -352,9 +352,9 @@ public class DataReliabilityOnlyDebtTests
             UploadLagSamples = new[]
             {
                 // 窗外：滞后 1000 分钟（"最差一条"落在欠账侧）
-                new UploadLagSample { EventTime = DebtTimeUtc, CreatedAt = DebtTimeUtc.AddMinutes(1000) },
+                new UploadLagSample { UploadableAt = DebtTimeUtc, CreatedAt = DebtTimeUtc.AddMinutes(1000) },
                 // 窗内：滞后 40 分钟（窗内这一批的 p99 已经超过 30 分钟阈值）
-                new UploadLagSample { EventTime = WindowTimeUtc.AddMinutes(-40), CreatedAt = WindowTimeUtc }
+                new UploadLagSample { UploadableAt = WindowTimeUtc.AddMinutes(-40), CreatedAt = WindowTimeUtc }
             }
         };
 
@@ -370,7 +370,7 @@ public class DataReliabilityOnlyDebtTests
                 EventIntervals = new (DateTime, DateTime)[] { (WindowTimeUtc.AddHours(-1), WindowTimeUtc) },
                 UploadLagSamples = new[]
                 {
-                    new UploadLagSample { EventTime = WindowTimeUtc.AddMinutes(-40), CreatedAt = WindowTimeUtc }
+                    new UploadLagSample { UploadableAt = WindowTimeUtc.AddMinutes(-40), CreatedAt = WindowTimeUtc }
                 }
             },
             referenceTimeUtc: NowUtc);
