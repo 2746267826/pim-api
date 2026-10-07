@@ -1045,7 +1045,8 @@ public static class DataReliabilityInvariants
         }
 
         // 2. 检查上传滞后 p99。系统合成的 gap 事件必须排除：它们的 timestamp 是断档起点、
-        //    created_at 是重启后补传时刻，两者之差恒等于断档时长，不代表上传链路延迟。
+        //    created_at 是重启后补传时刻 —— 按新基准（区间结束）算出的差值仍然只是"这段断档等了多久才被补传"，
+        //    不是链路延迟。
         //
         //    基准时刻取 UploadLagSample.UploadableAt = **事件区间结束**（该条事件何时可以上传），
         //    不是区间起点（WO-ISSUES-396-400-20261007 REQ-2 / issue #397）。以起点为基准会把
