@@ -192,8 +192,9 @@ public sealed class UploadLagSample
 
     /// <summary>
     /// 该样本是否为**系统合成的"缺数据"标记**（gap/离线补报）而不是真实采集事件。
-    /// 合成 gap 事件的 timestamp 是断档起点、created_at 是重启后补传时刻，
-    /// 两者之差恒等于断档时长，**不代表上传链路延迟**，必须排除出 S6 的滞后统计
+    /// 合成 gap 事件的 timestamp 是断档起点、created_at 是重启后补传时刻 —— 按
+    /// <see cref="UploadableAt"/>（区间结束）算出的差值仍然只是"这段断档等了多久才被补传"，
+    /// **不代表上传链路延迟**，必须排除出 S6 的滞后统计
     /// （实测：含 gap 时 p99 = 425.9 分钟，排除后 p99 = 19.2 分钟）。
     /// </summary>
     public bool IsSyntheticGap { get; set; }

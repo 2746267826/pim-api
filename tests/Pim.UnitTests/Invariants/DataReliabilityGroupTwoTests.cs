@@ -153,7 +153,7 @@ public class DataReliabilityGroupTwoTests
     public void S6_SyntheticGapEvents_AreExcludedFromUploadLagP99()
     {
         // 100 个真实样本滞后仅 1 分钟；另有 2 个系统合成 gap 事件"滞后" 700 分钟。
-        // 合成 gap 的 timestamp 是断档起点、created_at 是重启后补传时刻，其差值恒等于断档时长，
+        // 合成 gap 的 timestamp 是断档起点、created_at 是重启后补传时刻，其差值是"等待补传"的时长，
         // 不代表链路延迟 —— 排除后 p99 应回到 1 分钟左右并通过。
         var samples = new List<UploadLagSample>();
         for (int i = 0; i < 100; i++)

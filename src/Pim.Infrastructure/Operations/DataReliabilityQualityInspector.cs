@@ -1193,7 +1193,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
 
         // 取事件**区间**（起点 + 时长）而不是裸时刻：空档必须按"上一段结束 → 下一段开始"判定，
         // 用起点差会把事件自身时长也算成空档（实测 29 处真实空档被放大成 72 处）。
-        // 同时取 event_type 以标记系统合成的 gap 事件（它们的"上传滞后"恒等于断档时长，不是链路延迟）。
+        // 同时取 event_type 以标记系统合成的 gap 事件（它们的"上传滞后"是等待补传的时长，不是链路延迟）。
         await using var cmd = conn.CreateCommand();
         cmd.CommandTimeout = 20;
         cmd.CommandText = $"""
