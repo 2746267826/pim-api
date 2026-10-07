@@ -17,6 +17,11 @@ public sealed class NativeTrackerService : IDisposable
     private readonly TrackerSessionManager _sessionManager;
     private readonly TrackerStateManager _stateManager;
     private readonly TrackerLogger _logger;
+    /// <summary>
+    /// 采集循环使用的时钟。生产用系统时钟；测试注入固定时钟以验证"休眠/断档补齐"这类时间相关行为
+    /// （WO-ISSUES-396-400-20261007 §七.9 允许为 src/client-windows 做时钟注入）。
+    /// </summary>
+    private readonly TimeProvider _timeProvider;
     private readonly CancellationTokenSource _cts = new();
     private readonly Channel<TrackerWindowInfo> _windowChannel = Channel.CreateUnbounded<TrackerWindowInfo>();
     private readonly ConcurrentQueue<TrackerEventForUpload> _uploadQueue = new();
@@ -38,8 +43,8 @@ public sealed class NativeTrackerService : IDisposable
     private Task? _healthTask;
     private Task? _browserTask;
     private Task? _siteUploadTask;
-    private DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
-    private DateTimeOffset _lastPollTime = DateTimeOffset.UtcNow;
+    private DateTimeOffset _startedAt;
+    private DateTimeOffset _lastPollTime;
     private DateTimeOffset _lastEmittedEventEnd = DateTimeOffset.MinValue;
     private TrackerWindowInfo? _lastWindow;
     private IntPtr _hookHandle = IntPtr.Zero;
@@ -91,9 +96,11 @@ public sealed class NativeTrackerService : IDisposable
         IIdleDetector? idleDetector = null,
         BrowserBridgeService? bridge = null,
         TrackerLogger? logger = null,
-        TrackerStateManager? stateManager = null)
+        TrackerStateManager? stateManager = null,
+        TimeProvider? timeProvider = null)
     {
         _api = api;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _config = config ?? new TrackerConfig();
         _windowResolver = windowResolver ?? new DefaultWindowResolver();
         _idleDetector = idleDetector ?? new WindowsIdleDetector();
@@ -102,6 +109,8 @@ public sealed class NativeTrackerService : IDisposable
         _stateManager = stateManager ?? new TrackerStateManager();
         _sessionManager = new TrackerSessionManager(_config, _logger);
         _sessionManager.SessionClosed += OnSessionClosed;
+        _startedAt = _timeProvider.GetUtcNow();
+        _lastPollTime = _startedAt;
     }
 
     public void Start()
@@ -113,7 +122,7 @@ public sealed class NativeTrackerService : IDisposable
         }
 
         _running = true;
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
         _startedAt = now;
 
         // Startup gap detection: check if there is an unrecorded offline gap since last daemon exit/shutdown
@@ -151,7 +160,7 @@ public sealed class NativeTrackerService : IDisposable
         if (!_running) return;
         _running = false;
 
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
         _sessionManager.CloseCurrent(now);
         _stateManager.SaveState(now, now, Environment.MachineName);
 
@@ -186,7 +195,7 @@ public sealed class NativeTrackerService : IDisposable
     public void HandleSuspend()
     {
         _logger.Info("Tracker", "Suspend signal received, closing current session and flushing");
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
         _sessionManager.CloseCurrent(now);
         _stateManager.SaveState(now, now, Environment.MachineName);
         try
@@ -201,7 +210,7 @@ public sealed class NativeTrackerService : IDisposable
 
     public void HandleResume()
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = _timeProvider.GetUtcNow();
         _logger.Info("Tracker", $"Resume signal received at {now:O}");
         var persisted = _stateManager.LoadState();
         if (persisted?.LastPollTime is not null)
@@ -256,6 +265,10 @@ public sealed class NativeTrackerService : IDisposable
                         _uploadFailures++;
                         _lastError = "Flush upload returned null";
                     }
+                    // 失败必须把这批放回队列：FlushQueueAsync 是**进程即将停止**时（休眠/关机/Stop）
+                    // 的最后一次送数机会，取出来又不还回去等于直接丢数据
+                    // （WO-ISSUES-396-400-20261007 REQ-5 反面行为：不得丢弃待上报数据）。
+                    foreach (var ev in batch) _uploadQueue.Enqueue(ev);
                     break;
                 }
             }
@@ -266,6 +279,7 @@ public sealed class NativeTrackerService : IDisposable
                     _uploadFailures++;
                     _lastError = ex.Message;
                 }
+                foreach (var ev in batch) _uploadQueue.Enqueue(ev);
                 break;
             }
         }
@@ -516,7 +530,7 @@ public sealed class NativeTrackerService : IDisposable
     {
         try
         {
-            var now = DateTimeOffset.UtcNow;
+            var now = _timeProvider.GetUtcNow();
             // Gap detection
             var elapsed = now - _lastPollTime;
             if (elapsed.TotalSeconds > _config.GapThresholdSeconds)
@@ -699,7 +713,13 @@ public sealed class NativeTrackerService : IDisposable
                 _logger.Error("Tracker", $"Upload Http error: {ex.Message}", ex);
                 var status = ex.StatusCode;
                 var isClientError = status.HasValue && (int)status.Value >= 400 && (int)status.Value < 500;
-                var isRetryableClientError = status == HttpStatusCode.RequestTimeout || (int?)status == 429;
+                // 401 必须按"可重试"处理（WO-ISSUES-396-400-20261007 REQ-5 反面行为）：
+                // 它表示"令牌没续上"，不是"这批数据不合格"。旧行为把 401 当客户端错误丢掉整批，
+                // 于是休眠唤醒后那批 gap 补齐分片被静默丢弃 —— 数据永久丢失。
+                // 现在改为重投队列，等续期成功后随下一轮补传（不丢队列、不登出）。
+                var isRetryableClientError = status == HttpStatusCode.RequestTimeout
+                    || status == HttpStatusCode.Unauthorized
+                    || (int?)status == 429;
                 if ((!isClientError || isRetryableClientError) && batch is not null)
                 {
                     foreach (var ev in batch) _uploadQueue.Enqueue(ev);
@@ -790,7 +810,10 @@ public sealed class NativeTrackerService : IDisposable
                 _logger.Error("Tracker", $"Site upload Http error: {ex.Message}", ex);
                 var status = ex.StatusCode;
                 var isClientError = status.HasValue && (int)status.Value >= 400 && (int)status.Value < 500;
-                var isRetryableClientError = status == HttpStatusCode.RequestTimeout || (int?)status == 429;
+                // 同上传主链路：401 = 令牌没续上，按可重试处理，不丢队列（REQ-5 反面行为）。
+                var isRetryableClientError = status == HttpStatusCode.RequestTimeout
+                    || status == HttpStatusCode.Unauthorized
+                    || (int?)status == 429;
                 if ((!isClientError || isRetryableClientError) && batch is not null)
                 {
                     foreach (var ev in batch) _siteUploadQueue.Enqueue(ev);

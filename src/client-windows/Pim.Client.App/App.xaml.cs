@@ -87,13 +87,22 @@ public partial class App : Application
             {
                 if (e.Mode == PowerModes.Suspend)
                 {
+                    // WO-ISSUES-396-400-20261007 REQ-4 ①：计划内下线声明必须**在这个钩子的执行窗口内**
+                    // 送达并被服务端接受 —— 本窗口内进程随时可能被系统冻结，交给挂起之后才跑的后台任务
+                    // 等于把声明交给"可能永远不执行"的时机（issue #398：休眠前那次声明就是这样丢的）。
+                    // 因此这里改为同步等待（wait: true），且**先发声明再关会话/刷队列**，
+                    // 尽量把声明挤进冻结前的那几百毫秒。
+                    // OccurredAt 取钩子入口时刻：它就是"休眠起点"（最后一条事件的时间戳就在此刻附近）。
+                    var suspendAt = DateTimeOffset.UtcNow;
+                    TryReportPlannedOffline("suspend", wait: true, occurredAt: suspendAt);
                     try { Services.GetService<NativeTrackerService>()?.HandleSuspend(); } catch { }
-                    TryReportPlannedOffline("suspend");
                 }
                 else if (e.Mode == PowerModes.Resume)
                 {
                     try { Services.GetService<NativeTrackerService>()?.HandleResume(); } catch { }
-                    // 等待在途 suspend 上报 ≤2s 结束或超时，再重置防重并立即心跳清服务端 planned 标记。
+                    // 等待在途 suspend 上报 ≤3s 结束或超时，再重置防重并立即心跳宣告"我回来了"。
+                    // 注意：这条心跳不再清服务端的 planned 标记（REQ-4 ②：声明必须在唤醒后仍能被读到，
+                    // 由 DaemonHeartbeatService 保证），它只是让服务端尽快看到设备已恢复。
                     lock (_plannedOfflineLock)
                     {
                         if (_plannedOfflineTask is { } t)
@@ -336,7 +345,7 @@ public partial class App : Application
         return a > b ? a : b;
     }
 
-    private void TryReportPlannedOffline(string reason, bool wait = false)
+    private void TryReportPlannedOffline(string reason, bool wait = false, DateTimeOffset? occurredAt = null)
     {
         // 置位、创建 task、保存 _plannedOfflineTask、等待逻辑全部在锁内，保证防重语义严格。
         // 调用点都在 UI 线程串行，锁内等待可接受；CTS 在 Task.Run 之前创建，生命周期从创建起 2 秒有界。
@@ -366,7 +375,7 @@ public partial class App : Application
                 return;
             }
 
-            var request = PlannedOfflineReporter.BuildRequest(Environment.MachineName, reason, DateTimeOffset.UtcNow);
+            var request = PlannedOfflineReporter.BuildRequest(Environment.MachineName, reason, occurredAt ?? DateTimeOffset.UtcNow);
             var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             var task = Task.Run(async () =>
             {
