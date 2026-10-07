@@ -232,20 +232,24 @@ public class DaemonHeartbeatServiceTests
     }
 
     [Fact]
-    public async Task RecordPlannedOfflineAsync_ClampsClientClockBeforeServerReceivedAt()
+    public async Task RecordPlannedOfflineAsync_KeepsClientReportedInstant_DoesNotRewriteIt()
     {
-        // 客户端时钟早于服务端最近心跳：planned_at 钳制到 received_at，避免分类器判 stale。
+        // 复审 Important（#398）：声明时刻必须**原样存储**，不得改写成"最近一次心跳时刻"。
+        // 改写会让 S6 拿一个被挪动的时点去匹配空档（可能落进另一段真实断档的 ±5 分钟宽限里把它涂绿），
+        // 也会破坏 AC-4.5「planned_offline_at 仍等于休眠起点」。
         await using var db = CreateDb();
         var existing = new DaemonHeartbeatEntity { DeviceId = "PC-1", DaemonKind = "windows", ReceivedAt = FixedNow };
         db.DaemonHeartbeats.Add(existing);
         await db.SaveChangesAsync();
         var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
         await service.RecordPlannedOfflineAsync(
-            new PlannedOfflineRequest("PC-1", "windows", "shutdown", FixedNow.AddMinutes(-5)), CancellationToken.None);
-        Assert.Equal(FixedNow, existing.PlannedOfflineAt);
-        Assert.Equal(FixedNow, existing.ReceivedAt);
+            new PlannedOfflineRequest("PC-1", "windows", "suspend", FixedNow.AddMinutes(-5)), CancellationToken.None);
+        Assert.Equal(FixedNow.AddMinutes(-5), existing.PlannedOfflineAt);
+        Assert.Equal(FixedNow, existing.ReceivedAt);   // 心跳时刻不受声明影响
+
+        // 时钟偏慢的客户端：声明时刻早于最近心跳，"此刻是否计划内离线"由比较判断，不改写存储时刻。
         var lifecycle = DaemonLifecycleClassifier.Classify(existing, FixedNow);
-        Assert.Equal("planned-offline", lifecycle.State);
+        Assert.NotEqual("planned-offline", lifecycle.State);
     }
 
     [Fact]

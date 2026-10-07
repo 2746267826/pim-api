@@ -149,6 +149,38 @@ public sealed class Wo398SuspendGapTests : IDisposable
     }
 
     [Fact]
+    public void Ac4_4_SevenSecondRecoveryThenAGap_IsCoveredByTheExistingBoundedGrace()
+    {
+        // 工单 AC-4.4 里"声明后 7 秒恢复出数"这一形态的**实际**行为，按现有 S6 语义钉住：
+        // 时点声明有 ±5 分钟宽限（声明之后 5 分钟内开始的空档仍算已声明）。
+        // 7 秒 < 5 分钟，因此紧跟在 7 秒恢复之后的那段空档算已声明。
+        //
+        // 这是**有界**宽限，不是"此后永久离线"：工单要求"沿用现有语义"，而宽限用于吸收
+        // 客户端上报时刻与断档边界之间的正常抖动（休眠钩子里的声明必然略早于会话关闭时刻）。
+        // 超出宽限窗口的真实断档仍然判红 —— 见 Ac4_4_PointDeclaration_DoesNotMaskALaterRealGap。
+        var declarationAt = T0.UtcDateTime;
+        var trace = new DeviceActivityTrace
+        {
+            DeviceId = "PC-01",
+            EventIntervals = new List<(DateTime, DateTime)>
+            {
+                (declarationAt.AddMinutes(-30), declarationAt),
+                (declarationAt.AddSeconds(7), declarationAt.AddSeconds(14)),
+                (declarationAt.AddMinutes(40).AddSeconds(14), declarationAt.AddMinutes(41).AddSeconds(14))
+            },
+            Declarations = new List<OfflineDeclaration>
+            {
+                new() { DeviceId = "PC-01", StartTime = declarationAt, EndTime = declarationAt, Reason = "suspend" }
+            }
+        };
+
+        var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(trace, referenceTimeUtc: declarationAt.AddDays(1));
+
+        Assert.True(result.Pass, result.Detail);
+        Assert.Equal(0, result.TotalViolations);
+    }
+
+    [Fact]
     public void Ac4_4_DeclarationCoveringTheSleepInterval_MarksThatGapAsDeclared()
     {
         // 正向：休眠前留下的时点声明，必须让整段休眠区间被 S6 认成「已声明」。

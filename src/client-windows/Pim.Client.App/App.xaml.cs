@@ -22,6 +22,15 @@ public partial class App : Application
     private readonly object _plannedOfflineLock = new();
     private readonly SemaphoreSlim _reportSemaphore = new(1, 1);
 
+    /// <summary>最近一次「计划内下线」请求是否真的被服务端接受（1 = 已送达）。</summary>
+    private int _plannedOfflineDelivered;
+
+    /// <summary>最近一次「计划内下线」声明的时刻（= 休眠起点），用于唤醒后按原时刻补发。</summary>
+    private DateTimeOffset? _plannedOfflineOccurredAt;
+
+    /// <summary>最近一次声明的 reason，只有 suspend 才值得在唤醒后补发。</summary>
+    private string? _plannedOfflineReason;
+
     /// <summary>
     /// 安装全局崩溃钩子（在 Program.Main 中、App.Run 之前调用一次，避免重复注册）：
     /// AppDomain 未处理异常 / TaskScheduler 未观察异常 / Dispatcher 未处理异常（决策 D2-1：吞掉继续运行）。
@@ -100,9 +109,9 @@ public partial class App : Application
                 else if (e.Mode == PowerModes.Resume)
                 {
                     try { Services.GetService<NativeTrackerService>()?.HandleResume(); } catch { }
-                    // 等待在途 suspend 上报 ≤3s 结束或超时，再重置防重并立即心跳宣告"我回来了"。
-                    // 注意：这条心跳不再清服务端的 planned 标记（REQ-4 ②：声明必须在唤醒后仍能被读到，
-                    // 由 DaemonHeartbeatService 保证），它只是让服务端尽快看到设备已恢复。
+
+                    // 等待在途 suspend 上报 ≤3s 结束或超时，再重置防重。
+                    DateTimeOffset? undeliveredSuspendAt = null;
                     lock (_plannedOfflineLock)
                     {
                         if (_plannedOfflineTask is { } t)
@@ -116,10 +125,29 @@ public partial class App : Application
                             }
                         }
 
+                        // 休眠前那次声明若**没送达**（网络未就绪、被 2 秒 CTS 取消、与在途心跳抢信号量失败），
+                        // 就在这里用**同一个休眠起点**补发一次：这是 REQ-4 ① 的另一半 ——
+                        // 钩子窗口内送达失败不得等于这次休眠没有声明（否则整段休眠会被判成无声明空档）。
+                        if (Volatile.Read(ref _plannedOfflineDelivered) == 0
+                            && string.Equals(_plannedOfflineReason, "suspend", StringComparison.Ordinal)
+                            && _plannedOfflineOccurredAt is { } pendingAt)
+                        {
+                            undeliveredSuspendAt = pendingAt;
+                        }
+
                         Interlocked.Exchange(ref _plannedOfflineSent, 0);
                         _plannedOfflineTask = null;
                     }
 
+                    // 补发必须**早于**唤醒后的第一跳心跳：心跳会把 received_at 推到唤醒时刻，
+                    // 声明随后到达就会显得"比心跳还旧"（服务端不再改写声明时刻，但顺序仍然应当是声明在前）。
+                    if (undeliveredSuspendAt is { } retryAt)
+                    {
+                        TryReportPlannedOffline("suspend", wait: true, occurredAt: retryAt);
+                    }
+
+                    // 立即心跳宣告"我回来了"。注意：这条心跳不再清服务端的 planned 标记
+                    // （REQ-4 ②：声明必须在唤醒后仍能被读到，由 DaemonHeartbeatService 保证）。
                     Task.Run(async () =>
                     {
                         try
@@ -351,6 +379,15 @@ public partial class App : Application
         // 调用点都在 UI 线程串行，锁内等待可接受；CTS 在 Task.Run 之前创建，生命周期从创建起 2 秒有界。
         lock (_plannedOfflineLock)
         {
+            // 上一次声明若已经结束（成功或失败），本次休眠可以重新上报：
+            // 防重只用于"同一次休眠里重复触发 Suspend"（在途任务仍在跑）这种情形。
+            // 否则一次"被系统取消的休眠"会把标志永久留在 1，下一次休眠就再也不会声明。
+            if (_plannedOfflineTask is { IsCompleted: true })
+            {
+                Interlocked.Exchange(ref _plannedOfflineSent, 0);
+                _plannedOfflineTask = null;
+            }
+
             if (Interlocked.Exchange(ref _plannedOfflineSent, 1) == 1)
             {
                 // 已在途：等待既有上报，不重发。
@@ -375,7 +412,13 @@ public partial class App : Application
                 return;
             }
 
-            var request = PlannedOfflineReporter.BuildRequest(Environment.MachineName, reason, occurredAt ?? DateTimeOffset.UtcNow);
+            var declaredAt = occurredAt ?? DateTimeOffset.UtcNow;
+            var request = PlannedOfflineReporter.BuildRequest(Environment.MachineName, reason, declaredAt);
+            // 记下本次声明的时刻与原因：唤醒后若发现它没送达，用**同一个时刻**补发（见 Resume 分支）。
+            _plannedOfflineReason = reason;
+            _plannedOfflineOccurredAt = declaredAt;
+            Volatile.Write(ref _plannedOfflineDelivered, 0);
+
             var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             var task = Task.Run(async () =>
             {
@@ -385,6 +428,7 @@ public partial class App : Application
                     try
                     {
                         await reporter.ReportAsync(request, cts.Token);
+                        Volatile.Write(ref _plannedOfflineDelivered, 1);
                         Logger.Info($"Planned offline reported ({reason})");
                     }
                     finally

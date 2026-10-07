@@ -142,6 +142,19 @@ public class ApiClient
             () => _httpClient.PostAsJsonAsync(Resolve(endpoint), body, ct), ct);
     }
 
+    /// <summary>
+    /// 与 <see cref="PostAsync{T}"/> 相同，但**不触发任何令牌续期**（到期前主动续期与 401 被动续期都不触发）。
+    ///
+    /// 续期接口自身必须走这条路径（WO-ISSUES-396-400-20261007 REQ-5 / issue #400）：
+    /// 否则会出现「续期 → 发 /auth/refresh → 此时令牌仍然临期 → 又触发续期 → 单飞复用自己 → 自等待」的死锁。
+    /// 直接调用 RefreshAsync 的路径（例如启动时用已过期的令牌恢复会话）正是这样踩进去的。
+    /// </summary>
+    public async Task<T?> PostWithoutTokenRenewalAsync<T>(string endpoint, object body, CancellationToken ct = default)
+    {
+        return await SendWithAuthRetryAsync<T>(
+            () => _httpClient.PostAsJsonAsync(Resolve(endpoint), body, ct), ct, allowTokenRenewal: false);
+    }
+
     public async Task<T?> PutAsync<T>(string endpoint, object body, CancellationToken ct = default)
     {
         return await SendWithAuthRetryAsync<T>(
@@ -162,10 +175,13 @@ public class ApiClient
     }
 
     private async Task<T?> SendWithAuthRetryAsync<T>(
-        Func<Task<HttpResponseMessage>> request, CancellationToken ct)
+        Func<Task<HttpResponseMessage>> request, CancellationToken ct, bool allowTokenRenewal = true)
     {
         // 到期前主动续期（REQ-5）：令牌进入临期窗口就先换新，再发本次请求。
-        await EnsureTokenRenewedBeforeRequestAsync(ct);
+        if (allowTokenRenewal)
+        {
+            await EnsureTokenRenewedBeforeRequestAsync(ct);
+        }
 
         var sw = Stopwatch.StartNew();
         // 记下**发送前**的续期代数：收到 401 时用它判断"这次 401 之后有没有别人已经换过令牌"。
@@ -175,7 +191,9 @@ public class ApiClient
         var response = await request();
         var firstHopMs = sw.ElapsedMilliseconds;
 
-        if (response.StatusCode == HttpStatusCode.Unauthorized && RenewTokenAsync is not null)
+        if (allowTokenRenewal
+            && response.StatusCode == HttpStatusCode.Unauthorized
+            && RenewTokenAsync is not null)
         {
             // 被动兜底：仍然保留"401 → 续期 → 重试一次"，但并发到达的多个 401 只会产生**一次**
             // 真实续期（旧实现用 volatile bool 直接跳过后来者，被跳过的请求拿着旧令牌继续走，

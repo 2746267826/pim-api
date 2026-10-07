@@ -277,7 +277,8 @@ public class AuthService
 
         try
         {
-            var result = await _apiClient.PostAsync<ApiResponse<AuthResponse>>("/auth/refresh",
+            // 走"不触发续期"的那条路径：续期接口自己再触发续期会自等待（见 ApiClient.PostWithoutTokenRenewalAsync）。
+            var result = await _apiClient.PostWithoutTokenRenewalAsync<ApiResponse<AuthResponse>>("/auth/refresh",
                 new { refreshToken = _refreshToken });
 
             if (result?.Data is null) return false;

@@ -109,6 +109,37 @@ public sealed class Wo400TokenRenewalTests : IDisposable
     }
 
     [Fact]
+    public async Task Ac5_3_RestoreWithExpiredToken_DoesNotDeadlockOnRenewalReentry()
+    {
+        // 启动恢复路径会**直接**调用 RefreshAsync（不是从"发请求前"那条路进来的）。
+        // 若续期接口自身也会触发票据续期，就会形成
+        // 「续期 → 发 /auth/refresh → 令牌仍临期 → 触发续期 → 单飞复用自己 → 自等待」的死锁。
+        var clock = new MutableTimeProvider(T0);
+        var handler = new AuthStubHandler(() => clock.GetUtcNow());
+        var api = CreateApi(handler);
+        var auth = new AuthService(api, _tokenPath, clock);
+        handler.SeedRefreshToken("refresh-0");
+
+        await File.WriteAllTextAsync(_tokenPath, JsonSerializer.Serialize(new
+        {
+            AccessToken = "expired-access",
+            RefreshToken = "refresh-0",
+            ExpiresAt = T0.AddMinutes(-30),
+            UserId = "u1",
+            Username = "u",
+            DisplayName = "U"
+        }));
+
+        var restore = await auth.TryRestoreTokenDetailedAsync().WaitAsync(TimeSpan.FromSeconds(15));
+
+        Assert.Equal(TokenRestoreResult.Success, restore);
+        Assert.Equal(1, handler.RefreshCalls);          // 恢复路径恰好刷新一次，没有嵌套自等待
+        Assert.Equal(0, handler.ReplayedRefreshTokens); // 没有拿已被轮换掉的 refresh token 再打一次
+        Assert.True(auth.IsAuthenticated);
+        Assert.True(auth.HasSavedToken, "续期成功路径不得登出");
+    }
+
+    [Fact]
     public async Task Concurrent401s_TriggerExactlyOneRealRefresh()
     {
         var clock = new MutableTimeProvider(T0);
@@ -179,6 +210,7 @@ public sealed class Wo400TokenRenewalTests : IDisposable
         private readonly object _lock = new();
         private int _tokenSeq;
         private string _serverToken = string.Empty;
+        private string _validRefreshToken = "refresh-seed";
 
         public AuthStubHandler(Func<DateTimeOffset> clock) => Clock = clock;
 
@@ -186,6 +218,10 @@ public sealed class Wo400TokenRenewalTests : IDisposable
         public int RefreshFailuresRemaining { get; set; }
         public int BusinessResponseDelayMs { get; set; }
         public int RefreshCalls { get; private set; }
+
+        /// <summary>出示已被轮换掉的 refresh token 的次数（正常实现必须为 0）。</summary>
+        public int ReplayedRefreshTokens { get; private set; }
+
         public int BusinessUnauthorized { get; private set; }
         public int SuccessfulUploads { get; private set; }
         public List<string> UploadBodies { get; } = new();
@@ -193,6 +229,12 @@ public sealed class Wo400TokenRenewalTests : IDisposable
         public void InvalidateServerSideToken()
         {
             lock (_lock) _serverToken = "server-side-rotated";
+        }
+
+        /// <summary>把服务端当前有效的 refresh token 设成指定值（供"本地已存有旧凭证"的场景使用）。</summary>
+        public void SeedRefreshToken(string refreshToken)
+        {
+            lock (_lock) _validRefreshToken = refreshToken;
         }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -213,6 +255,17 @@ public sealed class Wo400TokenRenewalTests : IDisposable
                     RefreshFailuresRemaining--;
                     // 网络未就绪 / 服务端不可用：传输层异常，不是 401。
                     throw new HttpRequestException("refresh endpoint unavailable (simulated)");
+                }
+
+                // 单次使用的 refresh token：第二次出示同一个（已被轮换掉的）令牌必须 401。
+                var presented = ExtractRefreshToken(body);
+                lock (_lock)
+                {
+                    if (presented is null || presented != _validRefreshToken)
+                    {
+                        ReplayedRefreshTokens++;
+                        return Error(HttpStatusCode.Unauthorized);
+                    }
                 }
 
                 return IssueTokens();
@@ -242,8 +295,14 @@ public sealed class Wo400TokenRenewalTests : IDisposable
 
         private HttpResponseMessage IssueTokens()
         {
-            var token = "access-" + Interlocked.Increment(ref _tokenSeq);
-            lock (_lock) _serverToken = token;
+            var seq = Interlocked.Increment(ref _tokenSeq);
+            var token = "access-" + seq;
+            lock (_lock)
+            {
+                _serverToken = token;
+                // 服务端每次刷新都轮换 refresh token，旧的那个立即作废（AuthEndpoints 的真实语义）。
+                _validRefreshToken = "refresh-" + seq;
+            }
             var payload = new
             {
                 code = 0,
@@ -257,6 +316,19 @@ public sealed class Wo400TokenRenewalTests : IDisposable
                 }
             };
             return Json(HttpStatusCode.OK, JsonSerializer.Serialize(payload));
+        }
+
+        private static string? ExtractRefreshToken(string body)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                return doc.RootElement.TryGetProperty("refreshToken", out var value) ? value.GetString() : null;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
         }
 
         private static HttpResponseMessage Json(HttpStatusCode status, string json)
