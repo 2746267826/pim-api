@@ -173,9 +173,9 @@ public static class MultiDeviceGenerator
                 Declarations = new List<OfflineDeclaration>(),
                 UploadLagSamples = new List<UploadLagSample>
                 {
-                    new() { EventTime = baseTime, CreatedAt = baseTime.AddMinutes(45) },
-                    new() { EventTime = baseTime.AddMinutes(5), CreatedAt = baseTime.AddMinutes(50) },
-                    new() { EventTime = baseTime.AddMinutes(10), CreatedAt = baseTime.AddMinutes(55) }
+                    new() { UploadableAt = baseTime, CreatedAt = baseTime.AddMinutes(45) },
+                    new() { UploadableAt = baseTime.AddMinutes(5), CreatedAt = baseTime.AddMinutes(50) },
+                    new() { UploadableAt = baseTime.AddMinutes(10), CreatedAt = baseTime.AddMinutes(55) }
                 }
             };
         }
@@ -192,8 +192,8 @@ public static class MultiDeviceGenerator
             Declarations = new List<OfflineDeclaration>(), // 空声明列表 -> 触发无声明空档
             UploadLagSamples = new List<UploadLagSample>
             {
-                new() { EventTime = baseTime, CreatedAt = baseTime.AddMinutes(1) },
-                new() { EventTime = baseTime.AddMinutes(90), CreatedAt = baseTime.AddMinutes(91) }
+                new() { UploadableAt = baseTime, CreatedAt = baseTime.AddMinutes(1) },
+                new() { UploadableAt = baseTime.AddMinutes(90), CreatedAt = baseTime.AddMinutes(91) }
             }
         };
     }
@@ -227,8 +227,8 @@ public static class MultiDeviceGenerator
             },
             UploadLagSamples = new List<UploadLagSample>
             {
-                new() { EventTime = baseTime, CreatedAt = baseTime.AddMinutes(1) },
-                new() { EventTime = baseTime.AddMinutes(90), CreatedAt = baseTime.AddMinutes(91) }
+                new() { UploadableAt = baseTime, CreatedAt = baseTime.AddMinutes(1) },
+                new() { UploadableAt = baseTime.AddMinutes(90), CreatedAt = baseTime.AddMinutes(91) }
             }
         };
     }

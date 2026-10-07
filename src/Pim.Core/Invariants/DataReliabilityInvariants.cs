@@ -715,7 +715,9 @@ public static class DataReliabilityInvariants
     /// S4 (INV-C18): 业务键唯一（不重复）
     /// 判据:
     ///   定位: (device, recorded_at, lat, lon) 唯一
-    ///   手机事件: (device, package, event_time, event_type) 唯一
+    ///   手机事件: (user_id, device, package, event_time, event_type, class_name) 唯一
+    ///             —— 与库层唯一索引 <c>IX_mobile_usage_events_...</c> 同维度（WO-ISSUES-396-400-20261007 REQ-3 / #399）；
+    ///             旧键漏掉 class_name 与 user_id，把"同一毫秒切换的两个 Activity"误判成重复。
     ///   PC 事件: (device, timestamp, duration, event_type, app_name, browser, instance_id) 唯一
     /// 阈值: 重复行 = 0；按考核线分档——**窗内**重复判红，**历史欠账**（窗外）只计数不参与颜色（REQ-3）。
     /// 分档时间字段（沿用现状，本单不改）: 业务记录时间戳。
@@ -925,6 +927,12 @@ public static class DataReliabilityInvariants
     ///   2. 上传滞后 p99 排除系统合成的 gap 事件（其 created_at - timestamp 恒等于断档时长，不是链路延迟。
     ///      实测：含 gap 时 p99 = 425.9 分钟，排除后 19.2 分钟，阈值 30 分钟）；
     ///   3. 分档按考核线：窗内违规判红，窗外只计历史欠账（REQ-3，取消"仅存量 → 黄"）。
+    ///
+    /// 实现口径（WO-ISSUES-396-400-20261007 REQ-2 / issue #397，本轮修正）：
+    ///   上传滞后的基准时刻取 <see cref="UploadLagSample.UploadableAt"/> =「事件区间结束、该条事件可以上传的时刻」，
+    ///   **不再**取区间起点。以起点为基准等于把切片自身的采集时长算成链路延迟：30 分钟切片必然贴线
+    ///   （生产实测 p99 = 30.0 / 最差 30.3 分钟），而该样本在区间结束后 22 秒就完成了上传（p50 = 0.8 分钟、p90 = 3.4 分钟）。
+    ///   阈值仍是 30 分钟（<see cref="InvariantOptions.MaxUploadLagP99Minutes"/>），本次只换基准不换阈值。
     /// </summary>
     public static InvariantResult CheckS6_OfflineDeclared(
         DeviceActivityTrace trace,
@@ -1035,6 +1043,12 @@ public static class DataReliabilityInvariants
 
         // 2. 检查上传滞后 p99。系统合成的 gap 事件必须排除：它们的 timestamp 是断档起点、
         //    created_at 是重启后补传时刻，两者之差恒等于断档时长，不代表上传链路延迟。
+        //
+        //    基准时刻取 UploadLagSample.UploadableAt = **事件区间结束**（该条事件何时可以上传），
+        //    不是区间起点（WO-ISSUES-396-400-20261007 REQ-2 / issue #397）。以起点为基准会把
+        //    "切片自身的采集时长"算成链路延迟：30 分钟切片必然贴线（生产实测 p99 = 30.0 分钟 /
+        //    最差 30.3 分钟），而命中样本其实在区间结束后 22 秒就完成了上传，链路本身是健康的
+        //    （同批 p50 = 0.8 分钟、p90 = 3.4 分钟）。阈值 30 分钟不变，改的是基准。
         var realSamples = trace.UploadLagSamples?.Where(s => !s.IsSyntheticGap).ToList()
             ?? new List<UploadLagSample>();
 
@@ -1056,7 +1070,7 @@ public static class DataReliabilityInvariants
                 }
 
                 var lags = bucketSamples
-                    .Select(s => Math.Max(0, (s.CreatedAt - s.EventTime).TotalMinutes))
+                    .Select(s => Math.Max(0, (s.CreatedAt - s.UploadableAt).TotalMinutes))
                     .OrderBy(v => v)
                     .ToList();
 
@@ -1070,27 +1084,27 @@ public static class DataReliabilityInvariants
                 }
 
                 var worst = bucketSamples
-                    .OrderByDescending(s => (s.CreatedAt - s.EventTime).TotalMinutes)
+                    .OrderByDescending(s => (s.CreatedAt - s.UploadableAt).TotalMinutes)
                     .First();
 
                 if (windowBucket) windowViolations++; else historicalViolations++;
 
                 totalViolations++;
-                earliest = earliest == null || worst.EventTime < earliest ? worst.EventTime : earliest;
+                earliest = earliest == null || worst.UploadableAt < earliest ? worst.UploadableAt : earliest;
                 latest = latest == null || worst.CreatedAt > latest ? worst.CreatedAt : latest;
 
                 if (samples.Count < opt.MaxSampleCount)
                 {
-                    samples.Add($"Device={trace.DeviceId}: 上传滞后 p99={p99Lag:F1}m 超过阈值 {p99LagMinutesThreshold:F1}m（{bucketSamples.Count} 个样本） [{DescribeScope(windowBucket)}]");
+                    samples.Add($"Device={trace.DeviceId}: 上传滞后 p99={p99Lag:F1}m 超过阈值 {p99LagMinutesThreshold:F1}m（{bucketSamples.Count} 个样本，基准=事件区间结束） [{DescribeScope(windowBucket)}]");
                     violations.Add(new InvariantViolation(
                         Id: $"{trace.DeviceId}:upload-lag-p99:{(windowBucket ? "window" : "historical")}",
                         DeviceId: trace.DeviceId,
-                        OccurredAtUtc: ToUtc(worst.EventTime),
+                        OccurredAtUtc: ToUtc(worst.UploadableAt),
                         Fields: Fields(
                             ("kind", "upload-lag-p99"),
                             ("p99LagMinutes", p99Lag.ToString("F1")),
                             ("sampleCount", bucketSamples.Count.ToString()),
-                            ("worstLagMinutes", Math.Max(0, (worst.CreatedAt - worst.EventTime).TotalMinutes).ToString("F1")),
+                            ("worstLagMinutes", Math.Max(0, (worst.CreatedAt - worst.UploadableAt).TotalMinutes).ToString("F1")),
                             ("isNew", windowBucket ? "true" : "false"))));
                 }
             }
@@ -1143,6 +1157,12 @@ public static class DataReliabilityInvariants
     ///   判据的覆盖检查变成永远不可达的死代码（空洞只可能出现在非 gap 区间之间，
     ///   而覆盖它的 gap 区间本身又会被当成时间线的一部分，矛盾）。因此这里按 <see cref="TimelineInterval.IsGap"/>
     ///   把输入拆成两份：空洞在非 gap 区间上寻找，再用合并后的 gap 区间判断是否被完整覆盖。
+    ///
+    /// 实现口径（WO-ISSUES-396-400-20261007 REQ-1 / issue #396，本轮修正）：
+    ///   覆盖判定以 **多段 gap 合并后的并集** 是否盖住整个洞为准，而不是"某一段单独包住整个洞"：
+    ///   * 合并阶段：相邻分片之间 ≤ <see cref="CoverageTolerance"/>（1 秒，生产实测 1 毫秒）的缝隙视为拼接缝隙，直接合并；
+    ///   * 判定阶段：并集端点与洞端点之差 ≤ <see cref="CoverageTolerance"/>（生产实测 26 毫秒）视为已覆盖。
+    ///   容差上限 1 秒，因此 10 秒级端点差（历史欠账形态）与真实未声明空洞仍照常判红。
     /// </summary>
     public static InvariantResult CheckS7_TimelineGapMarked(
         IEnumerable<TimelineInterval> intervals,
@@ -1183,8 +1203,10 @@ public static class DataReliabilityInvariants
                 .ToList();
 
             // 先把"缺数据"类区间合并成互不重叠的覆盖段（多个 30 分钟 gap 分片拼接成一段完整断档）。
+            // 合并缝隙上限 = CoverageTolerance：分片之间毫秒级的拼接缝隙必须被合并（issue #396）。
             var coverage = MergeIntervals(
-                deviceIntervals.Where(i => i.IsGap).Select(i => (i.StartTime, i.EndTime)));
+                deviceIntervals.Where(i => i.IsGap).Select(i => (i.StartTime, i.EndTime)),
+                CoverageTolerance);
 
             // 时间线上没有真实事件时无从判断空洞（全是 gap 声明，说明整段都没采到）。
             if (timeline.Count == 0)
@@ -1193,6 +1215,7 @@ public static class DataReliabilityInvariants
             }
 
             // 先把时间线自身合并（重叠事件不应产生重复游标），再找相邻段之间的空洞。
+            // 这里**必须**传 0 容差：时间线是"真实采集到的事件"，把缝隙合并掉会吞掉真实空白。
             var mergedTimeline = MergeIntervals(timeline.Select(i => (i.StartTime, i.EndTime)));
 
             for (int i = 1; i < mergedTimeline.Count; i++)
@@ -1266,9 +1289,14 @@ public static class DataReliabilityInvariants
     /// 这类输入本身没有意义，但若不处理，它的 End 会小于 Start，
     /// 可能让后续区间被误判为"不相接"从而凭空产生空洞。取数层已保证 End &gt;= Start，
     /// 这里只是让判据作为公开 API 对非法输入也保持稳健。
+    ///
+    /// <paramref name="seamTolerance"/> 是"视为相接"的缝隙上限：相邻区间的空隙不超过它时直接合并
+    /// （合并后覆盖段取两者的并集）。它只对 **coverage（gap 覆盖标记）** 传入非零值 —— 见
+    /// <see cref="CoverageTolerance"/>；时间线合并必须传 0，否则会把真实的短空白吞掉。
     /// </summary>
     private static List<(DateTime Start, DateTime End)> MergeIntervals(
-        IEnumerable<(DateTime Start, DateTime End)> source)
+        IEnumerable<(DateTime Start, DateTime End)> source,
+        TimeSpan seamTolerance = default)
     {
         var merged = new List<(DateTime Start, DateTime End)>();
         var normalized = source
@@ -1278,7 +1306,7 @@ public static class DataReliabilityInvariants
 
         foreach (var interval in normalized)
         {
-            if (merged.Count == 0 || interval.Start > merged[^1].End)
+            if (merged.Count == 0 || interval.Start > merged[^1].End + seamTolerance)
             {
                 merged.Add(interval);
                 continue;
@@ -1294,22 +1322,60 @@ public static class DataReliabilityInvariants
     }
 
     /// <summary>
-    /// 空洞是否被"缺数据"覆盖段**完整**覆盖（判据原文要求"完整覆盖"，留白即未标记）。
+    /// 覆盖判定的唯一容差口子，取 1 秒（工单 WO-ISSUES-396-400-20261007 D-1）。它同时用于两处：
+    /// <list type="bullet">
+    ///   <item><description><b>合并缝隙</b>：相邻 gap 分片之间的空隙不超过 1 秒时视为分片拼接的自然缝隙，
+    ///     直接合并成同一段 coverage。客户端按 30 分钟切片上报，分片端点在生产实测中相差
+    ///     <b>1 毫秒</b>（<c>19:59:59.999</c> → <c>20:00:00.000</c>），旧实现要求严格相接，
+    ///     于是一段已被 29 个分片完整声明的断档被判成"未标记"（issue #396）。</description></item>
+    ///   <item><description><b>覆盖端点差</b>：合并后的 coverage 并集端点与洞端点之差不超过 1 秒时视为已覆盖。
+    ///     生产实测端到端相差 <b>26 毫秒</b>（分片末端 <c>03:18:58.337</c> 对洞右端点 <c>03:18:58.363</c>），
+    ///     旧容差只有 1 毫秒。</description></item>
+    /// </list>
+    /// 1 秒远小于最小洞阈值（15 分钟，<see cref="InvariantOptions.TimelineGapThresholdMinutes"/>），
+    /// 因此不会放过肉眼可见的空白：窗外另有一例端点差为 10 秒的历史欠账，本容差**不承诺**吸收它。
+    /// </summary>
+    internal static readonly TimeSpan CoverageTolerance = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// 空洞是否被"缺数据"覆盖段的**并集**完整覆盖（判据原文要求"完整覆盖"，留白即未标记）。
     ///
-    /// 容差取**毫秒级**而不是秒级：事件的起止时间在入库时已归一到毫秒，
-    /// 秒级容差会让"覆盖段比空洞短最多 1 秒"也算完整覆盖 —— 对一个 15 分钟的空洞而言
-    /// 这等于放行 0.1% 的留白，与"完整覆盖"的判据原文不符。
-    /// 毫秒级既容纳了入库精度，又不会放过肉眼可见的空白。
+    /// 判定按集合语义做：从洞左端点开始推进游标，逐段吃掉能与游标接上的 coverage，
+    /// 段与段之间允许 <see cref="CoverageTolerance"/> 的缝隙（gap 分片拼接缝隙 / 入库精度抖动），
+    /// 右端只要求落在洞右端点的同一容差内。**单个** coverage 段完整包住洞只是它的一种特例 ——
+    /// 生产实测的假红正是"两块拼起来才盖住、单独一块都盖不住"（issue #396）。
+    ///
+    /// 容差取 1 秒而不是毫秒级：见 <see cref="CoverageTolerance"/> 的口径说明。
     /// </summary>
     private static bool IsFullyCovered(
         IReadOnlyList<(DateTime Start, DateTime End)> coverage,
         DateTime holeStart,
         DateTime holeEnd)
     {
-        var tolerance = TimeSpan.FromMilliseconds(1);
+        // 游标 = 已经被 coverage 解释到的时刻；只有推进到洞右端点的容差内才算"完整覆盖"。
+        var cursor = holeStart;
+        var requiredEnd = holeEnd - CoverageTolerance;
+
         foreach (var (start, end) in coverage)
         {
-            if (start <= holeStart.Add(tolerance) && end >= holeEnd.Subtract(tolerance))
+            if (end < cursor)
+            {
+                // 整段落在游标左侧，对本次覆盖没有贡献。
+                continue;
+            }
+
+            if (start > cursor + CoverageTolerance)
+            {
+                // 与游标之间隔着一个超过容差的真实空白 —— 并集在这里断开，后面的段接不上。
+                return false;
+            }
+
+            if (end > cursor)
+            {
+                cursor = end;
+            }
+
+            if (cursor >= requiredEnd)
             {
                 return true;
             }

@@ -84,7 +84,7 @@ public class DataReliabilityGroupTwoTests
         {
             var eventTime = _baseUtc.AddMinutes(i);
             // 99% 的样本滞后 45 分钟 (> 30m)
-            lagSamples.Add(new UploadLagSample { EventTime = eventTime, CreatedAt = eventTime.AddMinutes(45) });
+            lagSamples.Add(new UploadLagSample { UploadableAt = eventTime, CreatedAt = eventTime.AddMinutes(45) });
         }
 
         var trace = new DeviceActivityTrace
@@ -159,10 +159,10 @@ public class DataReliabilityGroupTwoTests
         for (int i = 0; i < 100; i++)
         {
             var t = _baseUtc.AddMinutes(i);
-            samples.Add(new UploadLagSample { EventTime = t, CreatedAt = t.AddMinutes(1) });
+            samples.Add(new UploadLagSample { UploadableAt = t, CreatedAt = t.AddMinutes(1) });
         }
-        samples.Add(new UploadLagSample { EventTime = _baseUtc, CreatedAt = _baseUtc.AddMinutes(700), IsSyntheticGap = true });
-        samples.Add(new UploadLagSample { EventTime = _baseUtc.AddMinutes(1), CreatedAt = _baseUtc.AddMinutes(701), IsSyntheticGap = true });
+        samples.Add(new UploadLagSample { UploadableAt = _baseUtc, CreatedAt = _baseUtc.AddMinutes(700), IsSyntheticGap = true });
+        samples.Add(new UploadLagSample { UploadableAt = _baseUtc.AddMinutes(1), CreatedAt = _baseUtc.AddMinutes(701), IsSyntheticGap = true });
 
         var trace = new DeviceActivityTrace
         {
@@ -186,9 +186,9 @@ public class DataReliabilityGroupTwoTests
         // 排除合成 gap 之后，真实样本的滞后仍必须被计入：不能因为过滤而放过真实积压。
         var samples = new List<UploadLagSample>
         {
-            new() { EventTime = _baseUtc, CreatedAt = _baseUtc.AddMinutes(45) },
-            new() { EventTime = _baseUtc.AddMinutes(1), CreatedAt = _baseUtc.AddMinutes(46) },
-            new() { EventTime = _baseUtc.AddMinutes(2), CreatedAt = _baseUtc.AddMinutes(700), IsSyntheticGap = true }
+            new() { UploadableAt = _baseUtc, CreatedAt = _baseUtc.AddMinutes(45) },
+            new() { UploadableAt = _baseUtc.AddMinutes(1), CreatedAt = _baseUtc.AddMinutes(46) },
+            new() { UploadableAt = _baseUtc.AddMinutes(2), CreatedAt = _baseUtc.AddMinutes(700), IsSyntheticGap = true }
         };
 
         var trace = new DeviceActivityTrace
@@ -441,10 +441,13 @@ public class DataReliabilityGroupTwoTests
     }
 
     [Fact]
-    public void S7_HoleLongerThanGapCoverage_BySubSecond_Fails()
+    public void S7_HoleLongerThanGapCoverage_ByTwoSeconds_Fails()
     {
-        // 复审回归：容差必须是毫秒级。gap 覆盖段比空洞短 500 毫秒时，
-        // 仍然属于"没有完整覆盖" —— 秒级容差会把这种留白放行。
+        // WO-ISSUES-396-400-20261007 REQ-1 / D-1：覆盖端点容差由**毫秒级**改为 **≤1 秒**
+        // （生产实测端点差 26 毫秒、合并缝隙 1 毫秒）。因此"短 500 毫秒"现在算已覆盖，
+        // 这里改用**短 2 秒**来锁住"超过容差即未覆盖"这一侧；"刚好在容差内"那侧见
+        // S7_HoleCoveredWithinOneSecondTolerance_Passes()。
+        // 1 秒远小于最小洞阈值 15 分钟，因此不会放过肉眼可见的空白。
         var intervals = new List<TimelineInterval>
         {
             new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(10), EventType = "window" },
@@ -452,8 +455,8 @@ public class DataReliabilityGroupTwoTests
             {
                 DeviceId = "DEV-1",
                 StartTime = _baseUtc.AddMinutes(10),
-                // 覆盖段比真实空洞短 0.5 秒
-                EndTime = _baseUtc.AddMinutes(40).AddMilliseconds(-500),
+                // 覆盖段比真实空洞短 2 秒（超过 1 秒容差）
+                EndTime = _baseUtc.AddMinutes(40).AddSeconds(-2),
                 IsGap = true,
                 EventType = "gap"
             },
@@ -464,6 +467,30 @@ public class DataReliabilityGroupTwoTests
 
         Assert.False(result.Pass);
         Assert.Equal(1, result.TotalViolations);
+    }
+
+    [Fact]
+    public void S7_HoleCoveredWithinOneSecondTolerance_Passes()
+    {
+        // WO-ISSUES-396-400-20261007 REQ-1 / D-1：覆盖段与洞端点相差 1 秒以内视为已覆盖。
+        var intervals = new List<TimelineInterval>
+        {
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc, EndTime = _baseUtc.AddMinutes(10), EventType = "window" },
+            new()
+            {
+                DeviceId = "DEV-1",
+                StartTime = _baseUtc.AddMinutes(10),
+                EndTime = _baseUtc.AddMinutes(40).AddMilliseconds(-500),
+                IsGap = true,
+                EventType = "gap"
+            },
+            new() { DeviceId = "DEV-1", StartTime = _baseUtc.AddMinutes(40), EndTime = _baseUtc.AddMinutes(50), EventType = "window" }
+        };
+
+        var result = DataReliabilityInvariants.CheckS7_TimelineGapMarked(intervals, referenceTimeUtc: _baseUtc.AddDays(1));
+
+        Assert.True(result.Pass, result.Detail);
+        Assert.Equal(0, result.TotalViolations);
     }
 
     [Fact]

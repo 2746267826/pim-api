@@ -85,12 +85,22 @@ public sealed class BusinessRecordKey
             Timestamp = timestamp
         };
 
-    public static BusinessRecordKey ForMobile(string deviceId, string packageName, DateTime timestamp, string eventType) =>
+    /// <summary>
+    /// 手机端业务键。维度必须与库层唯一约束**一致**
+    /// （<c>IX_mobile_usage_events_user_id_device_id_package_name_event_ty...</c>：
+    /// <c>(user_id, device_id, package_name, event_type, event_timestamp_utc, class_name)</c>）。
+    ///
+    /// WO-ISSUES-396-400-20261007 REQ-3 / issue #399：旧键只有 <c>(package, timestamp, eventType)</c>，
+    /// 漏掉 <c>class_name</c> 与 <c>user_id</c>，于是"同一毫秒切换的两个 Activity"被判成重复 ——
+    /// 生产 219 条 S4 违规全部来自这一类（200 组 / 419 行，200/200 组的 class_name 互不相同）。
+    /// 同 <c>user_id</c> 且同 <c>class_name</c> 的真实重复仍然会被这条键判出。
+    /// </summary>
+    public static BusinessRecordKey ForMobile(string deviceId, string packageName, DateTime timestamp, string eventType, string? className, string? userId) =>
         new()
         {
             Domain = "Mobile",
             DeviceId = deviceId,
-            UniqueKey = $"{packageName}:{timestamp:O}:{eventType}",
+            UniqueKey = $"{userId}:{deviceId}:{packageName}:{eventType}:{timestamp:O}:{className}",
             Timestamp = timestamp
         };
 
@@ -140,7 +150,15 @@ public sealed class OfflineDeclaration
 
 public sealed class UploadLagSample
 {
-    public DateTime EventTime { get; set; }
+    /// <summary>
+    /// 该条事件**可以上传的时刻** —— 事件区间结束时刻（切片写完后才可能被上传）。
+    ///
+    /// S6 的上传滞后必须以此为准（WO-ISSUES-396-400-20261007 REQ-2 / issue #397）：
+    /// 以区间**起点**为基准会把"切片自身的采集时长"算成链路延迟，
+    /// 30 分钟切片因此必然贴线（生产实测 p99 = 30.0 分钟，而命中样本在区间结束后 22 秒就完成了上传）。
+    /// </summary>
+    public DateTime UploadableAt { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     /// <summary>
