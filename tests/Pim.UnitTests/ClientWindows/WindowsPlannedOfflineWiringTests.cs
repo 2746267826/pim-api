@@ -54,6 +54,29 @@ public class WindowsPlannedOfflineWiringTests
     }
 
     [Fact]
+    public void ResumeHookRetriesAnUndeliveredSuspendDeclarationBeforeTheWakeHeartbeat()
+    {
+        // App.xaml.cs 属于 WPF 工程，Linux 上不参与编译，因此这里只能做结构断言（真机结论仍以 AC-4.1~4.3 为准）：
+        // ① 休眠前那次声明若没送达（网络未就绪 / 被 2 秒 CTS 取消 / 抢不到心跳信号量），
+        //    唤醒时必须用**同一个休眠起点**补发一次；
+        // ② 补发必须早于唤醒后的第一跳心跳（心跳会把 received_at 推到唤醒时刻，顺序反了声明就"比心跳还旧"）。
+        var source = File.ReadAllText(RepoPath("src", "client-windows", "Pim.Client.App", "App.xaml.cs"));
+
+        Assert.Contains("_plannedOfflineDelivered", source);
+        Assert.Contains("_plannedOfflineOccurredAt", source);
+
+        var resumeStart = source.IndexOf("else if (e.Mode == PowerModes.Resume)", StringComparison.Ordinal);
+        Assert.True(resumeStart > 0, "未找到唤醒分支");
+        var resumeBranch = source[resumeStart..];
+
+        var retryIndex = resumeBranch.IndexOf("TryReportPlannedOffline(\"suspend\", wait: true, occurredAt: retryAt)", StringComparison.Ordinal);
+        Assert.True(retryIndex >= 0, "唤醒分支必须用同一个休眠起点补发未送达的声明");
+
+        var heartbeatIndex = resumeBranch.IndexOf("ReportHeartbeatOnceAsync(CancellationToken.None)", StringComparison.Ordinal);
+        Assert.True(heartbeatIndex > retryIndex, "补发声明必须早于唤醒后的第一跳心跳");
+    }
+
+    [Fact]
     public void StartupRegistersPlannedOfflineReporter()
     {
         var startup = File.ReadAllText(RepoPath("src", "client-windows", "Pim.Client.App", "Startup.cs"));

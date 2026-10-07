@@ -204,19 +204,23 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         bool isNew)
     {
         // planned_offline 只写 planned 标记，不刷新 received_at（received_at 语义 = 最近普通心跳）。
-        // 客户端时钟可能早于服务端时钟：钳制 planned_at >= received_at，保证分类器不把正常下线误判为 stale。
-        // 注意：钳制只影响**存储的时点**，不影响 S6 的声明匹配（S6 对时点声明有 ±5 分钟宽限，
-        // 见 DataReliabilityQualityInspector.LoadOfflineDeclarationsAsync 与 CheckS6_OfflineDeclared）。
+        //
+        // 声明时刻**原样存储客户端上报的 occurredAt**，不做任何改写
+        // （WO-ISSUES-396-400-20261007 REQ-4 / issue #398；复审 Important 修正）：
+        //   * S6 用这个时刻判断"这个空档是否被声明覆盖"，S7 也跟着变；
+        //     把迟到声明的时刻改写成"最近一次心跳时刻"，会让它落进另一段空档的 ±5 分钟宽限里，
+        //     从而把一段**没有声明的真实断档**判成已声明；
+        //   * 验收项 AC-4.5 要求唤醒后 planned_offline_at 仍等于休眠起点，改写同样会破坏它。
+        // 旧实现有一条"planned_at >= received_at"的时钟钳制；"设备此刻是否处于计划内离线"改由
+        // <see cref="DaemonLifecycleClassifier.IsCurrentlyPlannedOffline"/> 用比较判断（声明比最近心跳新），
+        // 不再靠改写存储时刻实现。
         var plannedAt = request.OccurredAt ?? _timeProvider.GetUtcNow();
-        if (!isNew && plannedAt < entity.ReceivedAt)
-        {
-            plannedAt = entity.ReceivedAt;
-        }
 
         entity.PlannedOfflineAt = plannedAt;
         entity.OfflineReason = Truncate(request.Reason, 32);
 
-        // 新建行时用同一注入时钟统一 received_at/planned_offline_at，保证 planned_offline_at >= received_at 恒成立。
+        // 新建行时用同一注入时钟统一 received_at/planned_offline_at，保证 planned_offline_at >= received_at
+        // 对"刚从声明建出来的行"恒成立（该设备确实还没有新的心跳）。
         if (isNew)
         {
             entity.ReceivedAt = plannedAt;
