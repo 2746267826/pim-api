@@ -65,7 +65,9 @@ public sealed class HeartbeatFreshnessInspector : IDataQualityInspector
                 // metrics export best-effort
             }
 
-            var isPlannedOffline = hb.PlannedOfflineAt.HasValue && hb.PlannedOfflineAt.Value <= now;
+            // 声明必须比最近心跳更新才算"此刻处于计划内离线"（见 DaemonLifecycleClassifier.IsCurrentlyPlannedOffline）。
+            // 心跳不再清空 planned 标记，若沿用"非空即计划内离线"，任何声明过一次的设备都会永久豁免陈旧告警。
+            var isPlannedOffline = DaemonLifecycleClassifier.IsCurrentlyPlannedOffline(hb);
             if (!isPlannedOffline && freshnessSeconds > StaleThresholdSeconds)
             {
                 staleCount++;

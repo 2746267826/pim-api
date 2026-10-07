@@ -249,32 +249,29 @@ public class DaemonHeartbeatServiceTests
     }
 
     [Fact]
-    public async Task RecordPlannedOfflineAsync_StaleRequestIgnored()
+    public async Task RecordPlannedOfflineAsync_LateRequestAfterWakeIsStillAccepted()
     {
-        // 陈旧 planned 请求：不建行，已存在行也不动 planned 字段。
+        // WO-ISSUES-396-400-20261007 REQ-4 / #398：休眠钩子里发出、进程被系统冻结、唤醒后才送达的
+        // "迟到声明"不得被丢弃。旧实现有一条 5 分钟陈旧窗口，把这种形态直接扔掉 —— 声明没了，
+        // 整段休眠在 S6 里就变成「无声明空档」。
         await using var db = CreateDb();
         var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
 
-        // 行不存在 → 不建行，返回 null。
-        var missing = await service.RecordPlannedOfflineAsync(
+        // 行不存在 → 迟到 6 分钟也要建行并写入。
+        var created = await service.RecordPlannedOfflineAsync(
             new PlannedOfflineRequest("PC-1", "windows", "suspend", FixedNow.AddMinutes(-6)), CancellationToken.None);
-        Assert.Null(missing);
-        Assert.Equal(0, await db.DaemonHeartbeats.CountAsync());
+        Assert.NotNull(created);
+        var row = await db.DaemonHeartbeats.SingleAsync();
+        Assert.Equal(FixedNow.AddMinutes(-6), row.PlannedOfflineAt);
+        Assert.Equal("suspend", row.OfflineReason);
 
-        // 行已存在 → planned 字段不动。
-        db.DaemonHeartbeats.Add(new DaemonHeartbeatEntity
-        {
-            DeviceId = "PC-2", DaemonKind = "windows",
-            ReceivedAt = FixedNow.AddMinutes(-10)
-        });
-        await db.SaveChangesAsync();
+        // 行已存在 → 同样要写入 planned 字段。
         var existing = await service.RecordPlannedOfflineAsync(
-            new PlannedOfflineRequest("PC-2", "windows", "shutdown", FixedNow.AddMinutes(-6)), CancellationToken.None);
+            new PlannedOfflineRequest("PC-1", "windows", "suspend", FixedNow.AddHours(-2)), CancellationToken.None);
         Assert.NotNull(existing);
-        var row = await db.DaemonHeartbeats.SingleAsync(h => h.DeviceId == "PC-2");
-        Assert.Null(row.PlannedOfflineAt);
-        Assert.Null(row.OfflineReason);
-        Assert.Equal(FixedNow.AddMinutes(-10), row.ReceivedAt);
+        row = await db.DaemonHeartbeats.SingleAsync();
+        Assert.NotNull(row.PlannedOfflineAt);
+        Assert.Equal("suspend", row.OfflineReason);
     }
 
     [Fact]
@@ -292,8 +289,10 @@ public class DaemonHeartbeatServiceTests
     }
 
     [Fact]
-    public async Task UpsertAsync_ClearsPlannedOfflineOnRegularHeartbeat()
+    public async Task UpsertAsync_KeepsPlannedOfflineAcrossRegularHeartbeats()
     {
+        // WO-ISSUES-396-400-20261007 REQ-4 ② / AC-4.5：唤醒后（含首次心跳之后）声明必须仍能被判定读取到。
+        // 旧实现每次普通心跳都把 planned_offline_at / offline_reason 置空，唤醒后第一跳就把声明吃掉。
         await using var db = CreateDb();
         db.DaemonHeartbeats.Add(new DaemonHeartbeatEntity
         {
@@ -305,8 +304,31 @@ public class DaemonHeartbeatServiceTests
         var service = new DaemonHeartbeatService(db, StubClock(FixedNow));
         await service.UpsertAsync(HeartbeatRequest("PC-1"), CancellationToken.None);
         var row = await db.DaemonHeartbeats.SingleAsync();
-        Assert.Null(row.PlannedOfflineAt);
-        Assert.Null(row.OfflineReason);
+        Assert.Equal(FixedNow.AddMinutes(-5), row.PlannedOfflineAt);
+        Assert.Equal("suspend", row.OfflineReason);
+        Assert.Equal(FixedNow, row.ReceivedAt);   // 心跳只刷新 received_at
+    }
+
+    [Fact]
+    public async Task UpsertAsync_AfterWake_DeclarationIsReadableButDeviceIsNotPermanentlyOffline()
+    {
+        // 反面行为：保留声明不得把设备当成"永久离线"。
+        // 生命周期分类器要求 planned_offline_at >= received_at 才算「计划内下线」，
+        // 唤醒后 received_at 已经晚于声明时刻 → 必须回到在线/退化分支。
+        await using var db = CreateDb();
+        var service = new DaemonHeartbeatService(db, StubClock(FixedNow.AddHours(-3)));
+        await service.RecordPlannedOfflineAsync(
+            new PlannedOfflineRequest("PC-1", "windows", "suspend", FixedNow.AddHours(-3)), CancellationToken.None);
+        var offlineRow = await db.DaemonHeartbeats.SingleAsync();
+        Assert.Equal("planned-offline", DaemonLifecycleClassifier.Classify(offlineRow, FixedNow.AddHours(-3)).State);
+
+        // 唤醒：3 小时后的一跳普通心跳
+        var wake = new DaemonHeartbeatService(db, StubClock(FixedNow));
+        await wake.UpsertAsync(HeartbeatRequest("PC-1"), CancellationToken.None);
+
+        var row = await db.DaemonHeartbeats.SingleAsync();
+        Assert.Equal(FixedNow.AddHours(-3), row.PlannedOfflineAt);          // 声明仍可读
+        Assert.Equal("online", DaemonLifecycleClassifier.Classify(row, FixedNow).State); // 但不是永久离线
     }
 
     [Fact]
