@@ -100,9 +100,38 @@ public sealed class BusinessRecordKey
         {
             Domain = "Mobile",
             DeviceId = deviceId,
-            UniqueKey = $"{userId}:{deviceId}:{packageName}:{eventType}:{timestamp:O}:{className}",
+            UniqueKey = BuildMobileUniqueKey(deviceId, packageName, timestamp, eventType, className, userId),
             Timestamp = timestamp
         };
+
+    /// <summary>
+    /// 手机端业务键的拼装：维度与库层唯一索引一致，且**不会因为字段内容含分隔符而撞键**。
+    ///
+    /// 不能直接用 <c>":"</c> 拼接：<c>timestamp:O</c> 本身含冒号，device / package / class_name
+    /// 又都是自由文本 —— 例如 (device="D:P", package="PKG") 与 (device="D", package="P:PKG")
+    /// 拼出来完全相同，两个互不相干的重复组会被并成一组，重复条数多算一条。
+    /// 这里改用**长度前缀**编码：每个字段编码成 <c>{长度}:{值}</c>，空串是 <c>0:</c>，
+    /// NULL 单独编码成 <c>!</c>（长度前缀一定以数字开头，因此 <c>!</c> 与任何值编码都不冲突）。
+    ///
+    /// NULL 必须与空串区分开：库层唯一索引里多个 NULL 互不相等、而空串互相相等，两者不是同一语义。
+    /// </summary>
+    private static string BuildMobileUniqueKey(
+        string deviceId,
+        string packageName,
+        DateTime timestamp,
+        string eventType,
+        string? className,
+        string? userId)
+        => string.Concat(
+            EncodePart(userId),
+            EncodePart(deviceId),
+            EncodePart(packageName),
+            EncodePart(eventType),
+            EncodePart(timestamp.ToString("O", System.Globalization.CultureInfo.InvariantCulture)),
+            EncodePart(className));
+
+    private static string EncodePart(string? value)
+        => value is null ? "!" : $"{value.Length}:{value}";
 
     public static BusinessRecordKey ForPc(string deviceId, DateTime timestamp, double duration, string eventType, string? appName, string? browser, string? instanceId) =>
         new()

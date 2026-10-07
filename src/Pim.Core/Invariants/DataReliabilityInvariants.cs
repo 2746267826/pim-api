@@ -715,7 +715,7 @@ public static class DataReliabilityInvariants
     /// S4 (INV-C18): 业务键唯一（不重复）
     /// 判据:
     ///   定位: (device, recorded_at, lat, lon) 唯一
-    ///   手机事件: (user_id, device, package, event_time, event_type, class_name) 唯一
+    ///   手机事件: (user_id, device_id, package_name, event_type, event_timestamp_utc, class_name) 唯一
     ///             —— 与库层唯一索引 <c>IX_mobile_usage_events_...</c> 同维度（WO-ISSUES-396-400-20261007 REQ-3 / #399）；
     ///             旧键漏掉 class_name 与 user_id，把"同一毫秒切换的两个 Activity"误判成重复。
     ///   PC 事件: (device, timestamp, duration, event_type, app_name, browser, instance_id) 唯一
@@ -916,17 +916,20 @@ public static class DataReliabilityInvariants
     /// S6 (INV-P20): 设备必须自己声明下线
     /// 判据:
     ///   1. 空档必须被声明：设备无数据的时间段必须有"正常下线"声明（关机/休眠/planned offline）；没有声明的空档 &gt; 30 分钟 = 红
-    ///   2. 上传必须及时：created_at - 事件时间 的 p99 &lt;= 30 分钟 (T2)
+    ///   2. 上传必须及时：服务端接收时刻 − 该条事件**可上传时刻** 的 p99 &lt;= 30 分钟 (T2)
     ///   3. 停摆必须可解释：相邻事件间隔 &gt; 30 分钟且未声明下线 = 红
     /// 阈值: 无声明空档阈值 30.0 分钟 (T2)，上传滞后 p99 阈值 30.0 分钟 (T2)。
-    /// 为什么是这个阈值: 现代操作系统关机与睡眠都有系统钩子；若无声明突然停止 30m，说明采集端崩溃或掉线；上传 p99 超过 30m 表明链路堆积积压严重。
+    /// 为什么是这个阈值: 现代操作系统关机与睡眠都有系统钩子；若无声明突然停止 30m，说明采集端崩溃或掉线；
+    /// 上传 p99 超过 30m 表明链路堆积积压严重（基准见下面的「实现口径 4」）。
     ///
     /// 实现口径（#254 S6，本轮修正）：
     ///   1. 空档按「上一段**结束**（滚动最大值）→ 下一段**开始**」计算，并按业务时间做考核线分档。
     ///      旧实现取「相邻起点之差」，把事件自身时长也当成空档 —— 实测把 29 处真实空档放大成 72 处；
-    ///   2. 上传滞后 p99 排除系统合成的 gap 事件（其 created_at - timestamp 恒等于断档时长，不是链路延迟。
+    ///   2. 上传滞后 p99 排除系统合成的 gap 事件（它们的 timestamp 是断档起点、created_at 是补传时刻，
+    ///      按新基准算出的差值仍等于"这段断档等了多久才被补传"，不是链路延迟。
     ///      实测：含 gap 时 p99 = 425.9 分钟，排除后 19.2 分钟，阈值 30 分钟）；
-    ///   3. 分档按考核线：窗内违规判红，窗外只计历史欠账（REQ-3，取消"仅存量 → 黄"）。
+    ///   3. 分档按考核线：窗内违规判红，窗外只计历史欠账（REQ-3，取消"仅存量 → 黄"）；
+    ///   4. 上传滞后的基准是「事件区间结束、该条事件可以上传的时刻」（REQ-2 / issue #397，见下）。
     ///
     /// 实现口径（WO-ISSUES-396-400-20261007 REQ-2 / issue #397，本轮修正）：
     ///   上传滞后的基准时刻取 <see cref="UploadLagSample.UploadableAt"/> =「事件区间结束、该条事件可以上传的时刻」，

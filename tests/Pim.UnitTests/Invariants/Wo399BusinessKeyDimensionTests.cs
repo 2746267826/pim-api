@@ -86,6 +86,41 @@ public class Wo399BusinessKeyDimensionTests
     }
 
     [Fact]
+    public void Ac3_2_KeyCannotCollideWhenFieldContentContainsTheDelimiter()
+    {
+        // 复审（Minor）：业务键不能靠 ":" 拼接 —— timestamp:O 本身含冒号，device / package 又是自由文本，
+        // 否则 (device="D:P", package="PKG") 与 (device="D", package="P:PKG") 会拼出同一个键，
+        // 两个互不相干的重复组被并成一组、重复条数多算。
+        var a = BusinessRecordKey.ForMobile("D:P", "PKG", At, EventType, Class, User);
+        var b = BusinessRecordKey.ForMobile("D", "P:PKG", At, EventType, Class, User);
+        Assert.NotEqual(a.UniqueKey, b.UniqueKey);
+
+        var result = DataReliabilityInvariants.CheckS4_BusinessKeyUnique(
+            new List<BusinessRecordKey> { a, b }, referenceTimeUtc: Now);
+        Assert.True(result.Pass, result.Detail);
+    }
+
+    [Fact]
+    public void Ac3_2_NullClassNameAndEmptyClassNameAreDifferentKeys()
+    {
+        // 库层唯一索引里多个 NULL 互不相等、而空串互相相等 —— 两者不是同一语义，键必须区分。
+        var nullClass = BusinessRecordKey.ForMobile(Device, Package, At, EventType, null, User);
+        var emptyClass = BusinessRecordKey.ForMobile(Device, Package, At, EventType, string.Empty, User);
+        Assert.NotEqual(nullClass.UniqueKey, emptyClass.UniqueKey);
+
+        // 两个 NULL 键完全相同 → 仍然是重复（库层允许它们同时存在，见真机探针 WO396-DUP-PROBE）。
+        var nullTwice = DataReliabilityInvariants.CheckS4_BusinessKeyUnique(
+            new List<BusinessRecordKey>
+            {
+                BusinessRecordKey.ForMobile(Device, Package, At, EventType, null, User),
+                BusinessRecordKey.ForMobile(Device, Package, At, EventType, null, User)
+            },
+            referenceTimeUtc: Now);
+        Assert.False(nullTwice.Pass);
+        Assert.Equal(1, nullTwice.WindowViolations);
+    }
+
+    [Fact]
     public void Ac3_3_LocationAndPcDomains_StillDetectTheirOwnDuplicates()
     {
         // AC-3.3：另两个域的判据行为不得变化 —— 定位域与 PC 域的真实重复仍要被判出。

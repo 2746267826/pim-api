@@ -69,6 +69,9 @@ public class Wo397UploadLagBasisTests
         // 生产命中样本：1800 秒切片在区间结束后 22 秒完成上传。
         // 旧口径按区间**起点**算得 30.4 分钟 → 超过 30 分钟阈值 → 假红；
         // 新口径按区间**结束**算得 22 秒 → 不违规。
+        // 注意：这里喂的是判据层的输入（已经是可上传时刻），"取数层把区间结束填进
+        // UploadableAt" 这条接线由真库用例
+        // DataReliabilityS6UploadLagRealDbTests 锁住（改回 row.Start 时它会失败）。
         var trace = Trace(T, 1800, 22.0 / 60.0);
         var result = DataReliabilityInvariants.CheckS6_OfflineDeclared(
             trace, referenceTimeUtc: T.AddDays(1));
@@ -76,10 +79,24 @@ public class Wo397UploadLagBasisTests
         Assert.True(result.Pass, result.Detail);
         Assert.Equal(0, result.TotalViolations);
 
-        // 反向确认：同一份输入若按区间**起点**计滞后是 1800 秒 + 22 秒 = 30.37 分钟（> 30 分钟阈值），
-        // 这正是本次从指标里去掉的那个量 —— 它不是链路延迟。
-        double legacyLagMinutes = ((T.AddSeconds(1800).AddSeconds(22)) - T).TotalMinutes;
-        Assert.True(legacyLagMinutes > 30.0, $"按区间起点计的滞后应超过阈值，实际 {legacyLagMinutes:F2} 分钟");
+        // 反向确认（走判据本身，而不是自己算一遍算式）：把同一批样本按"区间起点"作为基准喂进去，
+        // 必须真的报红 —— 证明这条用例的判别力来自基准选择。
+        var legacyTrace = new DeviceActivityTrace
+        {
+            DeviceId = "PC-01",
+            EventIntervals = new List<(DateTime, DateTime)> { (T, T.AddSeconds(1800)) },
+            Declarations = Array.Empty<OfflineDeclaration>(),
+            UploadLagSamples = new List<UploadLagSample>
+            {
+                new() { UploadableAt = T, CreatedAt = T.AddSeconds(1800).AddSeconds(22) }
+            }
+        };
+
+        var legacyResult = DataReliabilityInvariants.CheckS6_OfflineDeclared(
+            legacyTrace, referenceTimeUtc: T.AddDays(1));
+
+        Assert.False(legacyResult.Pass);
+        Assert.Equal("30.4", Assert.Single(legacyResult.Violations).Fields["worstLagMinutes"]);
     }
 
     [Fact]
