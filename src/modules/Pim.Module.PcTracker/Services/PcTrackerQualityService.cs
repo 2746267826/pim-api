@@ -113,7 +113,9 @@ public sealed class PcTrackerQualityService
             coverageEnd,
             coverageEvents,
             samples,
-            includeTrailingGap: heartbeat is not null && heartbeat.PlannedOfflineAt is null);
+            // 尾部断档只在"设备此刻不属于已声明的计划内离线"时才补：声明比最近心跳更新 = 设备还停着。
+            // 不能再用"planned_offline_at 非空"—— 心跳不再清空该标记，否则尾部断档会永久不再上报。
+            includeTrailingGap: heartbeat is not null && !DaemonLifecycleClassifier.IsCurrentlyPlannedOffline(heartbeat));
 
         var issues = new List<PcQualityIssueDto>();
         var components = new List<PcQualityComponentDto>();

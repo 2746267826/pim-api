@@ -71,7 +71,8 @@ public sealed class HeartbeatStaleInspectionJob
                 // metrics export best-effort
             }
 
-            var isPlannedOffline = hb.PlannedOfflineAt.HasValue && hb.PlannedOfflineAt.Value <= now;
+            // 同 HeartbeatFreshnessInspector：只有"声明比最近心跳更新"才豁免陈旧告警。
+            var isPlannedOffline = DaemonLifecycleClassifier.IsCurrentlyPlannedOffline(hb);
             if (isPlannedOffline)
             {
                 continue;
