@@ -996,15 +996,20 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
         }
 
         // 2. 手机事件去重 (mobile_usage_events)
+        //    分组维度必须与库层唯一索引同维度：
+        //    (user_id, device_id, package_name, event_type, event_timestamp_utc, class_name)。
+        //    WO-ISSUES-396-400-20261007 REQ-3 / issue #399：旧分组漏掉 class_name 与 user_id，
+        //    把"同一毫秒切换的两个 Activity"（同 user/device/package/type/毫秒、不同 class_name）
+        //    误判成重复 —— 生产 219 条 S4 违规全部来自这一类。
         if (await TableExistsAsync(conn, "mobile_usage_events", context.Ct))
         {
             anyTableExists = true;
             await using var cmd = conn.CreateCommand();
             cmd.CommandTimeout = 15;
             cmd.CommandText = $"""
-                SELECT device_id, package_name, event_timestamp_utc, event_type, count(*)
+                SELECT device_id, package_name, event_timestamp_utc, event_type, class_name, user_id, count(*)
                 FROM mobile_usage_events
-                GROUP BY device_id, package_name, event_timestamp_utc, event_type
+                GROUP BY device_id, package_name, event_timestamp_utc, event_type, class_name, user_id
                 HAVING count(*) > 1
                 LIMIT {context.Options.MaxScanRows + 1};
                 """;
@@ -1015,10 +1020,14 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                 string pkg = r.GetString(1);
                 DateTime t = r.GetDateTime(2);
                 string type = r.GetString(3);
-                long cnt = r.GetInt64(4);
+                string? className = r.IsDBNull(4) ? null : r.GetString(4);
+                // mobile_usage_events.user_id 是 uuid 列（库层唯一索引的首列），必须按 Guid 读，
+                // 用 GetString 会在真正出现重复组时抛 InvalidCastException —— 那正是这条尺子唯一要报的场景。
+                string? userId = r.IsDBNull(5) ? null : r.GetGuid(5).ToString();
+                long cnt = r.GetInt64(6);
                 for (int i = 0; i < cnt; i++)
                 {
-                    keys.Add(BusinessRecordKey.ForMobile(dev, pkg, t, type));
+                    keys.Add(BusinessRecordKey.ForMobile(dev, pkg, t, type, className, userId));
                 }
             }
         }
@@ -1184,7 +1193,7 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
 
         // 取事件**区间**（起点 + 时长）而不是裸时刻：空档必须按"上一段结束 → 下一段开始"判定，
         // 用起点差会把事件自身时长也算成空档（实测 29 处真实空档被放大成 72 处）。
-        // 同时取 event_type 以标记系统合成的 gap 事件（它们的"上传滞后"恒等于断档时长，不是链路延迟）。
+        // 同时取 event_type 以标记系统合成的 gap 事件（它们的"上传滞后"是等待补传的时长，不是链路延迟）。
         await using var cmd = conn.CreateCommand();
         cmd.CommandTimeout = 20;
         cmd.CommandText = $"""
@@ -1235,7 +1244,9 @@ public sealed class DataReliabilityQualityInspector : IDataQualityInspector, IDa
                 UploadLagSamples = group
                     .Select(row => new UploadLagSample
                     {
-                        EventTime = row.Start,
+                        // 基准 = 事件区间结束（该条事件何时可以上传），不是区间起点。
+                        // 见 UploadLagSample.UploadableAt 与 REQ-2 / issue #397。
+                        UploadableAt = row.End,
                         CreatedAt = row.CreatedAt,
                         IsSyntheticGap = row.IsSyntheticGap
                     })

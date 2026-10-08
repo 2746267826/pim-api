@@ -85,14 +85,53 @@ public sealed class BusinessRecordKey
             Timestamp = timestamp
         };
 
-    public static BusinessRecordKey ForMobile(string deviceId, string packageName, DateTime timestamp, string eventType) =>
+    /// <summary>
+    /// 手机端业务键。维度必须与库层唯一约束**一致**
+    /// （<c>IX_mobile_usage_events_user_id_device_id_package_name_event_ty...</c>：
+    /// <c>(user_id, device_id, package_name, event_type, event_timestamp_utc, class_name)</c>）。
+    ///
+    /// WO-ISSUES-396-400-20261007 REQ-3 / issue #399：旧键只有 <c>(package, timestamp, eventType)</c>，
+    /// 漏掉 <c>class_name</c> 与 <c>user_id</c>，于是"同一毫秒切换的两个 Activity"被判成重复 ——
+    /// 生产 219 条 S4 违规全部来自这一类（200 组 / 419 行，200/200 组的 class_name 互不相同）。
+    /// 同 <c>user_id</c> 且同 <c>class_name</c> 的真实重复仍然会被这条键判出。
+    /// </summary>
+    public static BusinessRecordKey ForMobile(string deviceId, string packageName, DateTime timestamp, string eventType, string? className, string? userId) =>
         new()
         {
             Domain = "Mobile",
             DeviceId = deviceId,
-            UniqueKey = $"{packageName}:{timestamp:O}:{eventType}",
+            UniqueKey = BuildMobileUniqueKey(deviceId, packageName, timestamp, eventType, className, userId),
             Timestamp = timestamp
         };
+
+    /// <summary>
+    /// 手机端业务键的拼装：维度与库层唯一索引一致，且**不会因为字段内容含分隔符而撞键**。
+    ///
+    /// 不能直接用 <c>":"</c> 拼接：<c>timestamp:O</c> 本身含冒号，device / package / class_name
+    /// 又都是自由文本 —— 例如 (device="D:P", package="PKG") 与 (device="D", package="P:PKG")
+    /// 拼出来完全相同，两个互不相干的重复组会被并成一组，重复条数多算一条。
+    /// 这里改用**长度前缀**编码：每个字段编码成 <c>{长度}:{值}</c>，空串是 <c>0:</c>，
+    /// NULL 单独编码成 <c>!</c>（长度前缀一定以数字开头，因此 <c>!</c> 与任何值编码都不冲突）。
+    ///
+    /// NULL 必须与空串区分开：库层唯一索引里多个 NULL 互不相等、而空串互相相等，两者不是同一语义。
+    /// </summary>
+    private static string BuildMobileUniqueKey(
+        string deviceId,
+        string packageName,
+        DateTime timestamp,
+        string eventType,
+        string? className,
+        string? userId)
+        => string.Concat(
+            EncodePart(userId),
+            EncodePart(deviceId),
+            EncodePart(packageName),
+            EncodePart(eventType),
+            EncodePart(timestamp.ToString("O", System.Globalization.CultureInfo.InvariantCulture)),
+            EncodePart(className));
+
+    private static string EncodePart(string? value)
+        => value is null ? "!" : $"{value.Length}:{value}";
 
     public static BusinessRecordKey ForPc(string deviceId, DateTime timestamp, double duration, string eventType, string? appName, string? browser, string? instanceId) =>
         new()
@@ -140,13 +179,22 @@ public sealed class OfflineDeclaration
 
 public sealed class UploadLagSample
 {
-    public DateTime EventTime { get; set; }
+    /// <summary>
+    /// 该条事件**可以上传的时刻** —— 事件区间结束时刻（切片写完后才可能被上传）。
+    ///
+    /// S6 的上传滞后必须以此为准（WO-ISSUES-396-400-20261007 REQ-2 / issue #397）：
+    /// 以区间**起点**为基准会把"切片自身的采集时长"算成链路延迟，
+    /// 30 分钟切片因此必然贴线（生产实测 p99 = 30.0 分钟，而命中样本在区间结束后 22 秒就完成了上传）。
+    /// </summary>
+    public DateTime UploadableAt { get; set; }
+
     public DateTime CreatedAt { get; set; }
 
     /// <summary>
     /// 该样本是否为**系统合成的"缺数据"标记**（gap/离线补报）而不是真实采集事件。
-    /// 合成 gap 事件的 timestamp 是断档起点、created_at 是重启后补传时刻，
-    /// 两者之差恒等于断档时长，**不代表上传链路延迟**，必须排除出 S6 的滞后统计
+    /// 合成 gap 事件的 timestamp 是断档起点、created_at 是重启后补传时刻 —— 按
+    /// <see cref="UploadableAt"/>（区间结束）算出的差值仍然只是"这段断档等了多久才被补传"，
+    /// **不代表上传链路延迟**，必须排除出 S6 的滞后统计
     /// （实测：含 gap 时 p99 = 425.9 分钟，排除后 p99 = 19.2 分钟）。
     /// </summary>
     public bool IsSyntheticGap { get; set; }
