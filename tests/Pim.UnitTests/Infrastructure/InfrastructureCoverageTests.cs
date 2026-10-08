@@ -358,7 +358,7 @@ public class InfrastructureCoverageTests : ServiceTestBase
     }
 
     [Fact]
-    public async Task DaemonHeartbeatService_RecordPlannedOffline_clamps_time()
+    public async Task DaemonHeartbeatService_RecordPlannedOffline_keeps_time_and_truncates_reason()
     {
         var now = new DateTimeOffset(2026, 3, 1, 10, 0, 0, TimeSpan.Zero);
         using var db = CreateDb();
@@ -366,11 +366,11 @@ public class InfrastructureCoverageTests : ServiceTestBase
         // first create heartbeat at now
         var req = new Pim.Core.Operations.DaemonHeartbeatRequest("dev-3", "windows", "1.0", "http://localhost", null, null, null, 0, Pim.Core.Operations.DaemonSourceState.Available, Pim.Core.Operations.DaemonSourceState.Available, false, "{}");
         await svc.UpsertAsync(req);
-        // planned with earlier OccurredAt should clamp to ReceivedAt
+        // WO-ISSUES-396-400-20261007 REQ-4 复审：声明时刻原样存储，不再改写成最近心跳时刻
         var early = now.AddMinutes(-5);
         var planned = await svc.RecordPlannedOfflineAsync(new Pim.Core.Operations.PlannedOfflineRequest("dev-3", "windows", "sleep", early));
         Assert.NotNull(planned);
-        Assert.Equal(now, planned!.PlannedOfflineAt);
+        Assert.Equal(early, planned!.PlannedOfflineAt);
         // reason truncated to 32
         var longReason = new string('x', 100);
         var planned2 = await svc.RecordPlannedOfflineAsync(new Pim.Core.Operations.PlannedOfflineRequest("dev-3", "windows", longReason, now.AddMinutes(1)));
@@ -378,21 +378,27 @@ public class InfrastructureCoverageTests : ServiceTestBase
     }
 
     [Fact]
-    public async Task DaemonHeartbeatService_RecordPlannedOffline_stale_guard()
+    public async Task DaemonHeartbeatService_RecordPlannedOffline_late_request_is_accepted()
     {
         var now = new DateTimeOffset(2026, 3, 1, 10, 0, 0, TimeSpan.Zero);
         using var db = CreateDb();
         var svc = new DaemonHeartbeatService(db, Time(() => now));
-        // stale with no existing -> null
-        var stale = now.AddMinutes(-10);
-        var resultNull = await svc.RecordPlannedOfflineAsync(new Pim.Core.Operations.PlannedOfflineRequest("dev-new", "windows", "sleep", stale));
-        Assert.Null(resultNull);
-        // create existing then stale should return existing without modifying
+        // WO-ISSUES-396-400-20261007 REQ-4：迟到 10 分钟的 suspend 声明**不得**被丢弃
+        // （休眠钩子里发出、进程随即被冻结，唤醒后才送达的正是这种形态）。没有行就建行。
+        var late = now.AddMinutes(-10);
+        var created = await svc.RecordPlannedOfflineAsync(new Pim.Core.Operations.PlannedOfflineRequest("dev-new", "windows", "sleep", late));
+        Assert.NotNull(created);
+        Assert.Equal(late, created!.PlannedOfflineAt);
+        Assert.Equal("sleep", created.OfflineReason);
+
+        // 已有行时同样要写入，且**时刻保持客户端上报值**（不得改写成最近心跳时刻，
+        // 否则 S6 会拿被挪动的时点去匹配空档，见 DaemonHeartbeatServiceTests 的复审用例）。
         var req = new Pim.Core.Operations.DaemonHeartbeatRequest("dev-4", "windows", "1.0", "http://localhost", null, null, null, 0, Pim.Core.Operations.DaemonSourceState.Available, Pim.Core.Operations.DaemonSourceState.Available, false, "{}");
         await svc.UpsertAsync(req);
-        var stale2 = await svc.RecordPlannedOfflineAsync(new Pim.Core.Operations.PlannedOfflineRequest("dev-4", "windows", "sleep", stale));
-        Assert.NotNull(stale2);
-        Assert.Null(stale2!.PlannedOfflineAt); // not set because stale guard returned existing before planned
+        var existing = await svc.RecordPlannedOfflineAsync(new Pim.Core.Operations.PlannedOfflineRequest("dev-4", "windows", "sleep", late));
+        Assert.NotNull(existing);
+        Assert.Equal(late, existing!.PlannedOfflineAt);
+        Assert.Equal("sleep", existing.OfflineReason);
     }
 
     [Fact]

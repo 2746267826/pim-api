@@ -98,6 +98,32 @@ public class DataQualityInspectionJobTests
     }
 
     [Fact]
+    public async Task HeartbeatFreshnessInspector_WhenDeclarationIsOlderThanLastHeartbeat_StillReportsStale()
+    {
+        // WO-ISSUES-396-400-20261007 REQ-4 回归：普通心跳不再清空 planned_offline_at（#398），
+        // 因此"字段非空即计划内离线"会让任何声明过一次的设备**永久**豁免心跳陈旧告警。
+        // 正确判据是"声明比最近一次心跳更新"（设备还停着）；声明之后又报过到，就回到正常判据。
+        using var db = CreateInMemoryDb(Guid.NewGuid().ToString());
+        var now = DateTimeOffset.UtcNow;
+        db.DaemonHeartbeats.Add(new DaemonHeartbeatEntity
+        {
+            DeviceId = "win-dev-woke-up",
+            DaemonKind = "windows",
+            ReceivedAt = now.AddMinutes(-15),      // 心跳已陈旧
+            PlannedOfflineAt = now.AddHours(-3),   // 但 3 小时前声明过休眠，之后又报过到
+            OfflineReason = "suspend",
+            Version = "1.0.0"
+        });
+        await db.SaveChangesAsync();
+
+        var inspector = new HeartbeatFreshnessInspector(db, NullLogger<HeartbeatFreshnessInspector>.Instance);
+        var result = await inspector.InspectAsync(now);
+
+        Assert.False(result.IsHealthy);
+        Assert.Equal(1, result.IssueCount);
+    }
+
+    [Fact]
     public async Task AiGatewayQualityInspector_WhenNoRequests_ReturnsHealthy()
     {
         using var db = CreateInMemoryDb(Guid.NewGuid().ToString());

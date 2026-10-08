@@ -64,25 +64,22 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         return Map(entity);
     }
 
-    /// <summary>迟到 planned 请求的容忍窗口：超过该窗口即丢弃，避免污染已恢复的状态。</summary>
-    private static readonly TimeSpan PlannedOfflineStaleTolerance = TimeSpan.FromMinutes(5);
-
+    /// <summary>
+    /// 接收客户端在休眠/关机/注销钩子里上报的「计划内下线」声明。
+    ///
+    /// 实现口径（WO-ISSUES-396-400-20261007 REQ-4 / issue #398，本轮修正）：
+    ///   这里**不做陈旧性丢弃**。旧实现有一条 5 分钟容忍窗（<c>PlannedOfflineStaleTolerance</c>），
+    ///   迟到超过 5 分钟的 suspend 声明被直接丢弃、连行都不建。而"钩子里发出、进程随即被系统冻结"
+    ///   正是这种迟到形态：请求在挂起瞬间未送达，唤醒后重传，抵达时早已超过 5 分钟 —— 声明被吃掉，
+    ///   整段休眠区间在 S6 里变成「无声明空档」。
+    ///   声明本身带 <c>occurredAt</c>（休眠起点），迟到与否不影响它对**那段区间**的解释力：
+    ///   S6 按「声明时刻是否落在这个空档 ±5 分钟内」认定覆盖，因此迟到声明既不会失效，
+    ///   也不会被当成"此后永久离线"（时点声明只对它覆盖的那一段负责）。
+    /// </summary>
     public async Task<DaemonHeartbeatDto?> RecordPlannedOfflineAsync(
         PlannedOfflineRequest request,
         CancellationToken ct = default)
     {
-        // 陈旧守卫：迟到的 suspend 请求（客户端挂起时网络未送达、恢复后晚到）不再建行/改行。
-        if (request.OccurredAt is { } occurredAt
-            && _timeProvider.GetUtcNow() - occurredAt > PlannedOfflineStaleTolerance)
-        {
-            var existing = await _db.DaemonHeartbeats
-                .AsNoTracking()
-                .Where(d => d.DeviceId == request.DeviceId && d.DaemonKind == request.DaemonKind)
-                .OrderByDescending(d => d.ReceivedAt)
-                .FirstOrDefaultAsync(ct);
-            return existing is null ? null : Map(existing);
-        }
-
         var entity = await FindLatestDeviceEntityAsync(request.DeviceId, request.DaemonKind, ct);
 
         var isNew = entity is null;
@@ -207,17 +204,23 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         bool isNew)
     {
         // planned_offline 只写 planned 标记，不刷新 received_at（received_at 语义 = 最近普通心跳）。
-        // 客户端时钟可能早于服务端时钟：钳制 planned_at >= received_at，保证分类器不把正常下线误判为 stale。
+        //
+        // 声明时刻**原样存储客户端上报的 occurredAt**，不做任何改写
+        // （WO-ISSUES-396-400-20261007 REQ-4 / issue #398；复审 Important 修正）：
+        //   * S6 用这个时刻判断"这个空档是否被声明覆盖"，S7 也跟着变；
+        //     把迟到声明的时刻改写成"最近一次心跳时刻"，会让它落进另一段空档的 ±5 分钟宽限里，
+        //     从而把一段**没有声明的真实断档**判成已声明；
+        //   * 验收项 AC-4.5 要求唤醒后 planned_offline_at 仍等于休眠起点，改写同样会破坏它。
+        // 旧实现有一条"planned_at >= received_at"的时钟钳制；"设备此刻是否处于计划内离线"改由
+        // <see cref="DaemonLifecycleClassifier.IsCurrentlyPlannedOffline"/> 用比较判断（声明比最近心跳新），
+        // 不再靠改写存储时刻实现。
         var plannedAt = request.OccurredAt ?? _timeProvider.GetUtcNow();
-        if (!isNew && plannedAt < entity.ReceivedAt)
-        {
-            plannedAt = entity.ReceivedAt;
-        }
 
         entity.PlannedOfflineAt = plannedAt;
         entity.OfflineReason = Truncate(request.Reason, 32);
 
-        // 新建行时用同一注入时钟统一 received_at/planned_offline_at，保证 planned_offline_at >= received_at 恒成立。
+        // 新建行时用同一注入时钟统一 received_at/planned_offline_at，保证 planned_offline_at >= received_at
+        // 对"刚从声明建出来的行"恒成立（该设备确实还没有新的心跳）。
         if (isNew)
         {
             entity.ReceivedAt = plannedAt;
@@ -250,8 +253,17 @@ public sealed class DaemonHeartbeatService : IDaemonHeartbeatService
         entity.CollectionPaused = request.CollectionPaused;
         entity.StatusJson = statusJson;
         entity.ReceivedAt = _timeProvider.GetUtcNow();
-        entity.PlannedOfflineAt = null;
-        entity.OfflineReason = null;
+
+        // 普通心跳**不得**清空 planned_offline_at / offline_reason
+        // （WO-ISSUES-396-400-20261007 REQ-4 / issue #398）。
+        //
+        // 旧实现每次心跳都把这两个字段置空，于是"休眠前留下声明 → 唤醒后第一跳心跳"必然把声明吃掉：
+        // 服务端再也读不到它，S6 只能把整段休眠判成「无声明空档」，S7 判成「未标记空洞」。
+        //
+        // 保留声明不会把设备当成"永久离线"：声明是**时点**语义（客户端只报"我正要下线"），
+        // 生命周期分类器要求 planned_offline_at >= received_at 才算「计划内下线」，
+        // 唤醒后 received_at 已经晚于声明时刻，分类自动回到在线/退化分支；
+        // S6 也只要求声明时刻落在**那一个**空档内，之后 40 分钟的真实断档照常报红（REQ-4 反面行为）。
     }
 
     private static string NormalizeStatusJson(string statusJson)

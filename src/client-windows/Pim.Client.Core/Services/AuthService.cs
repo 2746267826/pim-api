@@ -10,13 +10,26 @@ public class AuthService
     private readonly ApiClient _apiClient;
     private readonly string _tokenPath;
     private readonly string _tokenDir;
+    private readonly TimeProvider _timeProvider;
     private string? _accessToken;
     private string? _refreshToken;
     private DateTimeOffset _accessTokenExpiry;
 
-    public AuthService(ApiClient apiClient, string? tokenPath = null)
+    /// <summary>
+    /// 到期前续期的提前量（WO-ISSUES-396-400-20261007 REQ-5 / issue #400）。
+    /// access token 有效期约 15 分钟，客户端循环最快 30 秒一跑，
+    /// 提前 2 分钟续期保证在令牌失效**之前**就换好新令牌，不再制造 401。
+    /// </summary>
+    internal static readonly TimeSpan AccessTokenRenewalSkew = TimeSpan.FromMinutes(2);
+
+    /// <summary>续期单飞：并发到达的多个请求共享同一次刷新，不重复打 /auth/refresh。</summary>
+    private readonly object _refreshSync = new();
+    private Task<bool>? _refreshInFlight;
+
+    public AuthService(ApiClient apiClient, string? tokenPath = null, TimeProvider? timeProvider = null)
     {
         _apiClient = apiClient;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _tokenPath = tokenPath ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "PIM", "token.json");
@@ -26,10 +39,19 @@ public class AuthService
     }
 
     public bool IsAuthenticated => !string.IsNullOrEmpty(_accessToken) &&
-                                    DateTimeOffset.UtcNow < _accessTokenExpiry;
+                                    _timeProvider.GetUtcNow() < _accessTokenExpiry;
+
+    /// <summary>
+    /// 是否需要在**下一次请求之前**主动续期（已过期或进入 <see cref="AccessTokenRenewalSkew"/> 窗口）。
+    /// 没有 access token（尚未登录）或没有 refresh token（无法续期）时为 false —— 此时不该拦截请求。
+    /// </summary>
+    public bool IsAccessTokenRenewalDue =>
+        !string.IsNullOrEmpty(_accessToken) &&
+        !string.IsNullOrEmpty(_refreshToken) &&
+        _timeProvider.GetUtcNow() >= _accessTokenExpiry - AccessTokenRenewalSkew;
 
     public bool HasSavedToken => File.Exists(_tokenPath);
-    public bool IsTokenExpired => !string.IsNullOrEmpty(_accessToken) && DateTimeOffset.UtcNow >= _accessTokenExpiry;
+    public bool IsTokenExpired => !string.IsNullOrEmpty(_accessToken) && _timeProvider.GetUtcNow() >= _accessTokenExpiry;
 
     public string? CurrentUserId { get; private set; }
     public string? CurrentUsername { get; private set; }
@@ -92,7 +114,8 @@ public class AuthService
             {
                 _apiClient.SetAccessToken(_accessToken);
             }
-            _apiClient.OnUnauthorized = RefreshAsync;
+            _apiClient.RenewTokenAsync = RefreshAsync;
+            _apiClient.IsTokenRenewalDue = () => IsAccessTokenRenewalDue;
 
             // If token not expired, restored successfully
             if (IsAuthenticated)
@@ -226,16 +249,36 @@ public class AuthService
         }
 
         _apiClient.SetAccessToken(_accessToken);
-        _apiClient.OnUnauthorized = RefreshAsync;
+        _apiClient.RenewTokenAsync = RefreshAsync;
+        _apiClient.IsTokenRenewalDue = () => IsAccessTokenRenewalDue;
     }
 
-    public async Task<bool> RefreshAsync()
+    /// <summary>
+    /// 续期（主动到期前 / 401 被动共用）。并发调用共享同一次刷新：
+    /// 否则一次令牌过期会同时触发多个 /auth/refresh，旧 refresh token 轮换后其余请求全部失败。
+    /// </summary>
+    public Task<bool> RefreshAsync()
+    {
+        lock (_refreshSync)
+        {
+            if (_refreshInFlight is { IsCompleted: false })
+            {
+                return _refreshInFlight;
+            }
+
+            _refreshInFlight = RefreshCoreAsync();
+            return _refreshInFlight;
+        }
+    }
+
+    private async Task<bool> RefreshCoreAsync()
     {
         if (string.IsNullOrEmpty(_refreshToken)) return false;
 
         try
         {
-            var result = await _apiClient.PostAsync<ApiResponse<AuthResponse>>("/auth/refresh",
+            // 走"不触发续期"的那条路径：续期接口自己再触发续期会自等待（见 ApiClient.PostWithoutTokenRenewalAsync）。
+            var result = await _apiClient.PostWithoutTokenRenewalAsync<ApiResponse<AuthResponse>>("/auth/refresh",
                 new { refreshToken = _refreshToken });
 
             if (result?.Data is null) return false;
