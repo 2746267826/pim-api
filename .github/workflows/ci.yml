@@ -331,17 +331,20 @@ jobs:
           TAG="$(bash "$GITHUB_WORKSPACE/scripts/ci/latest-release-tag.sh" \
             --repo "$GITHUB_REPOSITORY" \
             --exclude "v${{ needs.resolve-version.outputs.version }}" || true)"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Previous release: ${TAG:-(none)}"
-          if [[ -n "$TAG" ]]; then
+          if [[ -n "$TAG" ]] && ! git merge-base --is-ancestor "$TAG" HEAD; then
             # Carried-over assets and the changelog window are both defined as
-            # "the diff between TAG and this release". If TAG is not an ancestor
-            # of HEAD that comparison is meaningless - which is exactly how a
-            # release ends up advertising a commit it did not build - so fail
-            # loudly instead of publishing a misleading release.
-            git merge-base --is-ancestor "$TAG" HEAD \
-              || { echo "::error::$TAG is not an ancestor of HEAD; refusing to publish a release built on an incomparable base" >&2; exit 1; }
+            # "the diff between TAG and this release". When the repository
+            # history has been rewritten (e.g. the split into pim-api / pim-web /
+            # pim-android / pim-windows), the previous tag no longer belongs to
+            # this history: the diff is meaningless and the carry-over would
+            # copy assets built on an unrelated base. Fall back to "no previous
+            # release" instead - every component is rebuilt in that case, which
+            # is exactly what a history-rewriting change requires anyway.
+            echo "::warning::$TAG is not an ancestor of HEAD (history rewritten); discarding the previous-release baseline and publishing a full build"
+            TAG=""
           fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       # For components that were not rebuilt this run, reuse the asset from the
       # previous release as-is (same file name and version number - the artifact
