@@ -1,10 +1,6 @@
-FROM node:22-alpine AS client-build
-WORKDIR /client
-COPY src/client-web/package.json src/client-web/package-lock.json ./
-RUN npm ci
-COPY src/client-web .
-RUN npx vite build --outDir /dist
-
+# 注：前端（pim-web 仓）的构建产物不再内嵌本镜像。
+# 需要 PIM API 同源伺服 SPA 时，把 pim-web 的构建产物解包到 src/Pim.Api/wwwroot 之后再构建本镜像，
+# 或由部署层的反向代理伺服前端静态文件。
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS server-build
 ARG PIM_VERSION=0.0.0-local
 ARG ASSEMBLY_VERSION=0.0.0.0
@@ -19,7 +15,6 @@ COPY ["src/modules/Pim.Module.QuickNotes/Pim.Module.QuickNotes.csproj", "modules
 COPY ["src/modules/Pim.Module.Mobile/Pim.Module.Mobile.csproj", "modules/Pim.Module.Mobile/"]
 RUN dotnet restore "Pim.Api/Pim.Api.csproj"
 COPY . .
-COPY --from=client-build /dist/ src/Pim.Api/wwwroot/
 WORKDIR "/src/src/Pim.Api"
 RUN dotnet publish "Pim.Api.csproj" -c Release -o /app/publish \
   -p:InformationalVersion="$PIM_VERSION" -p:Version="$ASSEMBLY_VERSION" -p:FileVersion="$ASSEMBLY_VERSION"
