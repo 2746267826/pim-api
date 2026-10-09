@@ -88,26 +88,28 @@ PR_NUMBERS="$(git log --first-parent --format='%ct %s' "${PREV_SHA}..${TO_SHA}" 
   PRODUCED_ANY=false
   TRUNCATED=false
   if [[ -n "$PR_NUMBERS" ]]; then
-    # 每个 PR 渲染成若干行后作为 release body 传给发布 action —— 而 body 是作为
-    # 命令行参数传入的，Linux 对单个参数有 128 KB 上限（MAX_ARG_STRLEN）。
+    # release body 由发布 action 通过**环境变量**传给 node 进程，而 Linux 对
+    # 单个参数字符串有 128 KB 上限（MAX_ARG_STRLEN），超出即报
+    # "An error occurred trying to start process ... Argument list too long"。
     # 正常情况下窗口里只有上次发布以来的几个 PR；但当窗口覆盖全部历史
-    # （首次发布，或历史被改写而基线不可比）时就会超出上限，报
-    # "Argument list too long"。这里按字符预算渲染（从最新的 PR 开始），
-    # 超出即停止并注明省略，保证这种退化情形仍能发出版本。
-    BUDGET="${PIM_RELEASE_NOTES_BUDGET:-90000}"
-    RENDERED_CHARS=0
+    # （首次发布，或历史被改写而基线不可比）时就会超限。这里按**字节**预算渲染
+    # （从最新的 PR 开始），超出即停止并注明省略。预算按字节而非字符计算，
+    # 因为中文与 emoji 每个字符占 3~4 字节。
+    BUDGET="${PIM_RELEASE_NOTES_BUDGET:-50000}"
+    RENDERED_BYTES=0
     NEWEST_FIRST="$(printf '%s\n' "$PR_NUMBERS" | tac)"
     for N in $NEWEST_FIRST; do
       [[ -z "$N" ]] && continue
       PR_JSON="$(gh pr view "$N" --repo "$REPO" --json number,title,body,url,mergedAt 2>/dev/null || true)"
       [[ -z "$PR_JSON" ]] && continue
       BLOCK="$("$PYTHON_BIN" "$PARSER" <<< "$PR_JSON")"
-      if (( RENDERED_CHARS + ${#BLOCK} > BUDGET )); then
+      BLOCK_BYTES=$(printf '%s' "$BLOCK" | wc -c)
+      if (( RENDERED_BYTES + BLOCK_BYTES > BUDGET )); then
         TRUNCATED=true
         break
       fi
       echo "$BLOCK"
-      RENDERED_CHARS=$((RENDERED_CHARS + ${#BLOCK}))
+      RENDERED_BYTES=$((RENDERED_BYTES + BLOCK_BYTES))
       PRODUCED_ANY=true
     done
     if [[ "$TRUNCATED" == "true" ]]; then
