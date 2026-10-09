@@ -106,7 +106,6 @@ jobs:
       #
       # `base` is ignored for pull_request events, so PR checks are unchanged.
       - id: filter
-        if: github.event_name != 'repository_dispatch'
         uses: dorny/paths-filter@v3
         with:
           base: ${{ steps.rel.outputs.previous_tag }}
@@ -141,8 +140,6 @@ jobs:
       - id: flags
         shell: bash
         run: |
-          # repository_dispatch（浏览器插件发版）：只需重建 windows 安装器与
-          # 插件 zip，其余组件沿用上一 release 资产。
           if [ "$FORCE_ALL" = "true" ] \
             || [ "$FIRST_PUSH" = "true" ] \
             || [ "$NO_RELEASE" = "true" ] \
@@ -322,22 +319,6 @@ jobs:
           merge-multiple: true
           path: release-assets
 
-      - name: Download installer artifact
-        if: steps.decide.outputs.do_release == 'true'
-        uses: actions/download-artifact@v8
-        with:
-          pattern: PIM-Setup-*
-          merge-multiple: true
-          path: release-assets
-
-      - name: Download browser extension artifact
-        if: steps.decide.outputs.do_release == 'true'
-        uses: actions/download-artifact@v8
-        with:
-          pattern: pim-browser-extension-*
-          merge-multiple: true
-          path: release-assets
-
       # Previous release, used for asset carry-over AND for the changelog
       # window. Resolved once, by version number, excluding this run's own tag
       # (on a re-run the tag already exists and must not be seen as "previous").
@@ -395,11 +376,10 @@ jobs:
             fi
           }
           fill_if_skipped "${{ needs.build-api.result }}" 'pim-api-*.tar.gz'
-          # Installer is part of windows build
           fill_if_skipped "${{ needs.build-docker.result }}" 'pim-platform-server-*.tar.gz'
           fill_if_skipped "${{ needs.build-mcp.result }}" 'pim-mcp-server-*.tar.gz'
           # Sanity check: every asset family must be present before uploading.
-          for p in pim-api-*.tar.gz pim-web-*.tar.gz pim-windows-*.zip PIM-Setup-*.exe pim-android-*.apk pim-platform-server-*.tar.gz pim-shell-windows-*.zip pim-shell-android-*.apk pim-browser-extension-v*.zip pim-browser-extension-firefox-*.zip pim-mcp-server-*.tar.gz; do
+          for p in pim-api-*.tar.gz pim-platform-server-*.tar.gz pim-mcp-server-*.tar.gz; do
             ls release-assets/${p} >/dev/null 2>&1 \
               || { echo "::error::Missing release asset family: ${p}" >&2; exit 1; }
           done
