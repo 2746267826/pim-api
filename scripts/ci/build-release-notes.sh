@@ -86,15 +86,34 @@ PR_NUMBERS="$(git log --first-parent --format='%ct %s' "${PREV_SHA}..${TO_SHA}" 
   echo ""
 
   PRODUCED_ANY=false
+  TRUNCATED=false
   if [[ -n "$PR_NUMBERS" ]]; then
-    while IFS= read -r N; do
+    # 每个 PR 渲染成若干行后作为 release body 传给发布 action —— 而 body 是作为
+    # 命令行参数传入的，Linux 对单个参数有 128 KB 上限（MAX_ARG_STRLEN）。
+    # 正常情况下窗口里只有上次发布以来的几个 PR；但当窗口覆盖全部历史
+    # （首次发布，或历史被改写而基线不可比）时就会超出上限，报
+    # "Argument list too long"。这里按字符预算渲染（从最新的 PR 开始），
+    # 超出即停止并注明省略，保证这种退化情形仍能发出版本。
+    BUDGET="${PIM_RELEASE_NOTES_BUDGET:-90000}"
+    RENDERED_CHARS=0
+    NEWEST_FIRST="$(printf '%s\n' "$PR_NUMBERS" | tac)"
+    for N in $NEWEST_FIRST; do
       [[ -z "$N" ]] && continue
       PR_JSON="$(gh pr view "$N" --repo "$REPO" --json number,title,body,url,mergedAt 2>/dev/null || true)"
-      if [[ -n "$PR_JSON" ]]; then
-        echo "$PR_JSON" | "$PYTHON_BIN" "$PARSER"
-        PRODUCED_ANY=true
+      [[ -z "$PR_JSON" ]] && continue
+      BLOCK="$("$PYTHON_BIN" "$PARSER" <<< "$PR_JSON")"
+      if (( RENDERED_CHARS + ${#BLOCK} > BUDGET )); then
+        TRUNCATED=true
+        break
       fi
-    done <<< "$PR_NUMBERS"
+      echo "$BLOCK"
+      RENDERED_CHARS=$((RENDERED_CHARS + ${#BLOCK}))
+      PRODUCED_ANY=true
+    done
+    if [[ "$TRUNCATED" == "true" ]]; then
+      echo "> 本次窗口覆盖的 PR 过多，已按体积省略较早的部分（历史改写或首次发布时窗口会覆盖全部历史）。"
+      echo ""
+    fi
   fi
 
   if [[ "$PRODUCED_ANY" != "true" ]]; then
