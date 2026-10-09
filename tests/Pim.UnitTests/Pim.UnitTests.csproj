@@ -39,7 +39,6 @@
     <ProjectReference Include="..\..\src\Pim.Api\Pim.Api.csproj" />
     <ProjectReference Include="..\..\src\modules\Pim.Module.Calendar\Pim.Module.Calendar.csproj" />
     <ProjectReference Include="..\..\src\modules\Pim.Module.PcTracker\Pim.Module.PcTracker.csproj" />
-    <ProjectReference Include="..\..\src\client-windows\Pim.Client.Core\Pim.Client.Core.csproj" />
     <ProjectReference Include="..\..\src\modules\Pim.Module.QuickNotes\Pim.Module.QuickNotes.csproj" />
     <ProjectReference Include="..\..\src\modules\Pim.Module.Files\Pim.Module.Files.csproj" />
     <ProjectReference Include="..\..\src\modules\Pim.Module.Mobile\Pim.Module.Mobile.csproj" />
@@ -48,11 +47,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="..\..\src\client-windows\Pim.Client.Core\Services\UpdateChecker.cs" Link="ClientWindows\UpdateChecker.cs" />
-    <Compile Include="..\..\src\client-windows\Pim.Client.App\TrayIcon.BuildMenu.cs" Link="ClientWindows\TrayIcon.BuildMenu.cs" />
-    <Compile Include="..\..\src\client-windows\Pim.Client.App\Services\BootstrapLog.cs" Link="ClientWindows\BootstrapLog.cs" />
-    <Compile Include="..\..\src\client-windows\Pim.Client.App\Services\Logger.cs" Link="ClientWindows\Logger.cs" />
-    <Compile Include="..\..\src\client-windows\Pim.Client.App\Services\SingleInstanceGuard.cs" Link="ClientWindows\SingleInstanceGuard.cs" />
   </ItemGroup>
 
   <ItemGroup>
