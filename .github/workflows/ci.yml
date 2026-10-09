@@ -13,15 +13,10 @@ on:
         default: ''
         type: string
       force_all:
-        description: Force all platform builds
+        description: Force all builds
         required: false
         default: true
         type: boolean
-  # 浏览器插件独立仓库（2746267826/tracker-web 等）发版后触发：重建携带
-  # 新插件的 Windows 安装器并发布（资产族与 changelog 沿用现有流程）。
-  repository_dispatch:
-    types: [browser-extension-release]
-
 permissions:
   contents: read
   packages: write
@@ -72,13 +67,7 @@ jobs:
     outputs:
       all: ${{ steps.flags.outputs.all }}
       api: ${{ steps.flags.outputs.api }}
-      web: ${{ steps.flags.outputs.web }}
-      windows: ${{ steps.flags.outputs.windows }}
-      android: ${{ steps.flags.outputs.android }}
       docker: ${{ steps.flags.outputs.docker }}
-      shellWindows: ${{ steps.flags.outputs.shellWindows }}
-      shellAndroid: ${{ steps.flags.outputs.shellAndroid }}
-      browserExtension: ${{ steps.flags.outputs.browserExtension }}
       mcp: ${{ steps.flags.outputs.mcp }}
     steps:
       - uses: actions/checkout@v4
@@ -134,28 +123,6 @@ jobs:
               - '.github/workflows/build-api.yml'
               - '.github/workflows/ci.yml'
               - '.github/actions/**'
-            web:
-              - 'src/client-web/**'
-              - 'tests/client-web/**'
-              - 'branding/**'
-              - 'scripts/branding/**'
-              - '.github/workflows/build-web.yml'
-              - '.github/workflows/ci.yml'
-            windows:
-              - 'src/client-windows/**'
-              - 'src/Directory.Build.props'
-              - 'branding/**'
-              - '.github/workflows/build-windows.yml'
-              - '.github/workflows/ci.yml'
-              - 'installer/**'
-              - '**/*.iss'
-              # build-windows 会内嵌扩展到安装包，扩展构建流程变更必须触发 windows 重建
-              - '.github/workflows/build-browser-extension.yml'
-            android:
-              - 'src/client-android/**'
-              - 'branding/**'
-              - '.github/workflows/build-android.yml'
-              - '.github/workflows/ci.yml'
             docker:
               - 'src/Pim.Api/Dockerfile'
               - 'scripts/docker/**'
@@ -163,20 +130,6 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'docker-compose.prod.yml'
               - '.env.prod.example'
-            shellWindows:
-              - 'src/client-shell-windows/**'
-              - 'src/Directory.Build.props'
-              - 'branding/**'
-              - '.github/workflows/build-shell-windows.yml'
-              - '.github/workflows/ci.yml'
-            browserExtension:
-              - '.github/workflows/build-browser-extension.yml'
-              - '.github/workflows/ci.yml'
-            shellAndroid:
-              - 'src/client-shell-android/**'
-              - 'branding/**'
-              - '.github/workflows/build-shell-android.yml'
-              - '.github/workflows/ci.yml'
             mcp:
               - 'scripts/mcp/**'
               - '.github/workflows/build-mcp.yml'
@@ -190,47 +143,18 @@ jobs:
         run: |
           # repository_dispatch（浏览器插件发版）：只需重建 windows 安装器与
           # 插件 zip，其余组件沿用上一 release 资产。
-          DISPATCH_EXT="${{ github.event_name == 'repository_dispatch' && github.event.action == 'browser-extension-release' || false }}"
-          # workflow_dispatch: force_all or always build all
-          # push (master) / pull_request: path filters; infra changes or first push => all
-          FORCE_ALL="${{ github.event_name == 'workflow_dispatch' && inputs.force_all || false }}"
-          FIRST_PUSH="${{ github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000' || false }}"
-          NO_RELEASE="${{ github.event_name == 'push' && steps.rel.outputs.has_release == 'false' || false }}"
-          if [ "$DISPATCH_EXT" = "true" ]; then
-            echo "all=false" >> "$GITHUB_OUTPUT"
-            echo "api=false" >> "$GITHUB_OUTPUT"
-            echo "web=false" >> "$GITHUB_OUTPUT"
-            echo "windows=true" >> "$GITHUB_OUTPUT"
-            echo "android=false" >> "$GITHUB_OUTPUT"
-            echo "docker=false" >> "$GITHUB_OUTPUT"
-            echo "shellWindows=false" >> "$GITHUB_OUTPUT"
-            echo "shellAndroid=false" >> "$GITHUB_OUTPUT"
-            echo "browserExtension=true" >> "$GITHUB_OUTPUT"
-            echo "mcp=false" >> "$GITHUB_OUTPUT"
-          elif [ "$FORCE_ALL" = "true" ] \
+          if [ "$FORCE_ALL" = "true" ] \
             || [ "$FIRST_PUSH" = "true" ] \
             || [ "$NO_RELEASE" = "true" ] \
             || [ "${{ steps.filter.outputs.infra }}" = "true" ]; then
             echo "all=true" >> "$GITHUB_OUTPUT"
             echo "api=true" >> "$GITHUB_OUTPUT"
-            echo "web=true" >> "$GITHUB_OUTPUT"
-            echo "windows=true" >> "$GITHUB_OUTPUT"
-            echo "android=true" >> "$GITHUB_OUTPUT"
             echo "docker=true" >> "$GITHUB_OUTPUT"
-            echo "shellWindows=true" >> "$GITHUB_OUTPUT"
-            echo "shellAndroid=true" >> "$GITHUB_OUTPUT"
-            echo "browserExtension=true" >> "$GITHUB_OUTPUT"
             echo "mcp=true" >> "$GITHUB_OUTPUT"
           else
             echo "all=false" >> "$GITHUB_OUTPUT"
             echo "api=${{ steps.filter.outputs.api }}" >> "$GITHUB_OUTPUT"
-            echo "web=${{ steps.filter.outputs.web }}" >> "$GITHUB_OUTPUT"
-            echo "windows=${{ steps.filter.outputs.windows }}" >> "$GITHUB_OUTPUT"
-            echo "android=${{ steps.filter.outputs.android }}" >> "$GITHUB_OUTPUT"
             echo "docker=${{ steps.filter.outputs.docker }}" >> "$GITHUB_OUTPUT"
-            echo "shellWindows=${{ steps.filter.outputs.shellWindows }}" >> "$GITHUB_OUTPUT"
-            echo "shellAndroid=${{ steps.filter.outputs.shellAndroid }}" >> "$GITHUB_OUTPUT"
-            echo "browserExtension=${{ steps.filter.outputs.browserExtension }}" >> "$GITHUB_OUTPUT"
             echo "mcp=${{ steps.filter.outputs.mcp }}" >> "$GITHUB_OUTPUT"
           fi
 
@@ -245,105 +169,9 @@ jobs:
       assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
       git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
 
-  build-web:
-    needs: [resolve-version, changes]
-    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.web == 'true'
-    uses: ./.github/workflows/build-web.yml
-    with:
-      version: ${{ needs.resolve-version.outputs.version }}
-      version_code: ${{ needs.resolve-version.outputs.version_code }}
-      artifact_slug: ${{ needs.resolve-version.outputs.artifact_slug }}
-      assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
-      git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
-
-  build-windows:
-    needs: [resolve-version, changes]
-    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.windows == 'true'
-    uses: ./.github/workflows/build-windows.yml
-    with:
-      version: ${{ needs.resolve-version.outputs.version }}
-      version_code: ${{ needs.resolve-version.outputs.version_code }}
-      artifact_slug: ${{ needs.resolve-version.outputs.artifact_slug }}
-      assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
-      git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
-      # dispatch 来自哪个插件仓库，就把它指向新 tag；另一个保持默认分支。
-      # URL 级与站点级插件是两个不同仓库，必须分别解析。
-      extension_repo: ${{ github.event_name == 'repository_dispatch' && !contains(github.event.client_payload.repo, 'time-tracker') && github.event.client_payload.repo || '2746267826/tracker-web' }}
-      extension_ref: ${{ github.event_name == 'repository_dispatch' && !contains(github.event.client_payload.repo, 'time-tracker') && github.event.client_payload.tag || 'master' }}
-      site_extension_repo: ${{ github.event_name == 'repository_dispatch' && contains(github.event.client_payload.repo, 'time-tracker') && github.event.client_payload.repo || '2746267826/time-tracker-4-browser' }}
-      site_extension_ref: ${{ github.event_name == 'repository_dispatch' && contains(github.event.client_payload.repo, 'time-tracker') && github.event.client_payload.tag || 'main' }}
-
-  build-android:
-    needs: [resolve-version, changes]
-    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.android == 'true'
-    uses: ./.github/workflows/build-android.yml
-    with:
-      version: ${{ needs.resolve-version.outputs.version }}
-      version_code: ${{ needs.resolve-version.outputs.version_code }}
-      artifact_slug: ${{ needs.resolve-version.outputs.artifact_slug }}
-      assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
-      git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
-    secrets: inherit
-
-  build-shell-windows:
-    needs: [resolve-version, changes]
-    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.shellWindows == 'true'
-    uses: ./.github/workflows/build-shell-windows.yml
-    with:
-      version: ${{ needs.resolve-version.outputs.version }}
-      version_code: ${{ needs.resolve-version.outputs.version_code }}
-      artifact_slug: ${{ needs.resolve-version.outputs.artifact_slug }}
-      assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
-      git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
-
-  build-shell-android:
-    needs: [resolve-version, changes]
-    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.shellAndroid == 'true'
-    uses: ./.github/workflows/build-shell-android.yml
-    with:
-      version: ${{ needs.resolve-version.outputs.version }}
-      version_code: ${{ needs.resolve-version.outputs.version_code }}
-      artifact_slug: ${{ needs.resolve-version.outputs.artifact_slug }}
-      assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
-      git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
-    secrets: inherit
-
-  build-browser-extension:
-    needs: [resolve-version, changes]
-    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.browserExtension == 'true'
-    uses: ./.github/workflows/build-browser-extension.yml
-    with:
-      version: ${{ needs.resolve-version.outputs.version }}
-      version_code: ${{ needs.resolve-version.outputs.version_code }}
-      artifact_slug: ${{ needs.resolve-version.outputs.artifact_slug }}
-      assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
-      git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
-      extension_repo: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.repo || '2746267826/tracker-web' }}
-      extension_ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.tag || 'master' }}
-      # 站点级插件（time-tracker fork）也会打 tag 并发 dispatch，用 kind 区分产物校验
-      extension_kind: ${{ github.event_name == 'repository_dispatch' && (contains(github.event.client_payload.repo, 'time-tracker') && 'site' || 'url') || 'url' }}
-      extension_browser: chrome
-
-  # #312：Firefox 用户需要一份能直接加载的产物（MV2）。它与 Chrome 产物互不替代，
-  # 因此单独构建并作为独立发布资产提供。
-  build-browser-extension-firefox:
-    needs: [resolve-version, changes]
-    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.browserExtension == 'true'
-    uses: ./.github/workflows/build-browser-extension.yml
-    with:
-      version: ${{ needs.resolve-version.outputs.version }}
-      version_code: ${{ needs.resolve-version.outputs.version_code }}
-      artifact_slug: ${{ needs.resolve-version.outputs.artifact_slug }}
-      assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
-      git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
-      extension_repo: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.repo || '2746267826/tracker-web' }}
-      extension_ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.tag || 'master' }}
-      extension_kind: ${{ github.event_name == 'repository_dispatch' && (contains(github.event.client_payload.repo, 'time-tracker') && 'site' || 'url') || 'url' }}
-      extension_browser: firefox
-
   build-docker:
     needs: [resolve-version, changes]
-    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.docker == 'true'
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.docker == 'true'
     uses: ./.github/workflows/build-docker.yml
     with:
       version: ${{ needs.resolve-version.outputs.version }}
@@ -360,7 +188,7 @@ jobs:
       version: ${{ needs.resolve-version.outputs.version }}
 
   summarize:
-    needs: [resolve-version, changes, build-api, build-web, build-windows, build-android, build-docker, build-shell-windows, build-shell-android, build-browser-extension, build-browser-extension-firefox, build-mcp]
+    needs: [resolve-version, changes, build-api, build-docker, build-mcp]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -372,13 +200,7 @@ jobs:
           echo "| Platform | Status |"
           echo "|:---------|:-------|"
           echo "| 🖥️  API     | ${{ needs.build-api.result == 'success' && '✅ Built' || needs.build-api.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
-          echo "| 🌐  Web     | ${{ needs.build-web.result == 'success' && '✅ Built' || needs.build-web.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
-          echo "| 🪟  Windows | ${{ needs.build-windows.result == 'success' && '✅ Built' || needs.build-windows.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo "| 🐳  Docker  | ${{ needs.build-docker.result == 'success' && '✅ Built' || needs.build-docker.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
-          echo "| 📱  Android | ${{ needs.build-android.result == 'success' && '✅ Built' || needs.build-android.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
-          echo "| 🪟 Shell-Windows | ${{ needs.build-shell-windows.result == 'success' && '✅ Built' || needs.build-shell-windows.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
-          echo "| 📱 Shell-Android | ${{ needs.build-shell-android.result == 'success' && '✅ Built' || needs.build-shell-android.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
-          echo "| 🧩 Browser Ext | ${{ needs.build-browser-extension.result == 'success' && '✅ Built' || needs.build-browser-extension.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo "| 🤖 MCP | ${{ needs.build-mcp.result == 'success' && '✅ Built' || needs.build-mcp.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo ""
           echo "> Artifacts: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -396,7 +218,7 @@ jobs:
   # 修改那些 if 条件（例如新增组件、调整路径过滤）时，请同步更新这里，否则会漏报或误报。
   gate:
     name: CI Gate
-    needs: [resolve-version, changes, build-api, build-web, build-windows, build-android, build-docker, build-shell-windows, build-shell-android, build-browser-extension, build-browser-extension-firefox, build-mcp]
+    needs: [resolve-version, changes, build-api, build-docker, build-mcp]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -405,24 +227,11 @@ jobs:
           R_RESOLVE: ${{ needs.resolve-version.result }}
           R_CHANGES: ${{ needs.changes.result }}
           R_API: ${{ needs.build-api.result }}
-          R_WEB: ${{ needs.build-web.result }}
-          R_WINDOWS: ${{ needs.build-windows.result }}
-          R_ANDROID: ${{ needs.build-android.result }}
           R_DOCKER: ${{ needs.build-docker.result }}
-          R_SHELL_WINDOWS: ${{ needs.build-shell-windows.result }}
-          R_SHELL_ANDROID: ${{ needs.build-shell-android.result }}
-          R_EXT: ${{ needs.build-browser-extension.result }}
-          R_EXT_FIREFOX: ${{ needs.build-browser-extension-firefox.result }}
           R_MCP: ${{ needs.build-mcp.result }}
           W_ALL: ${{ needs.changes.outputs.all }}
           W_API: ${{ needs.changes.outputs.api }}
-          W_WEB: ${{ needs.changes.outputs.web }}
-          W_WINDOWS: ${{ needs.changes.outputs.windows }}
-          W_ANDROID: ${{ needs.changes.outputs.android }}
           W_DOCKER: ${{ needs.changes.outputs.docker }}
-          W_SHELL_WINDOWS: ${{ needs.changes.outputs.shellWindows }}
-          W_SHELL_ANDROID: ${{ needs.changes.outputs.shellAndroid }}
-          W_EXT: ${{ needs.changes.outputs.browserExtension }}
           W_MCP: ${{ needs.changes.outputs.mcp }}
         run: |
           set -uo pipefail
@@ -458,14 +267,7 @@ jobs:
           check "changes"         "$R_CHANGES" "true"
 
           check "build-api"                       "$R_API"           "$(should "$W_API")"
-          check "build-web"                       "$R_WEB"           "$(should "$W_WEB")"
-          check "build-windows"                   "$R_WINDOWS"       "$(should "$W_WINDOWS")"
-          check "build-android"                   "$R_ANDROID"       "$(should "$W_ANDROID")"
-          check "build-docker"                    "$R_DOCKER"        "$(should "$W_API" "$W_WEB" "$W_DOCKER")"
-          check "build-shell-windows"             "$R_SHELL_WINDOWS" "$(should "$W_SHELL_WINDOWS")"
-          check "build-shell-android"             "$R_SHELL_ANDROID" "$(should "$W_SHELL_ANDROID")"
-          check "build-browser-extension"         "$R_EXT"           "$(should "$W_EXT")"
-          check "build-browser-extension-firefox" "$R_EXT_FIREFOX"   "$(should "$W_EXT")"
+          check "build-docker"                    "$R_DOCKER"        "$(should "$W_API" "$W_DOCKER")"
           check "build-mcp"                       "$R_MCP"           "$(should "$W_MCP")"
 
           if [ "$fail" -ne 0 ]; then
@@ -478,7 +280,7 @@ jobs:
           echo "CI Gate 通过：所有必需 job 均成功，或因组件无变化而按设计跳过。"
 
   release:
-    needs: [resolve-version, summarize, build-api, build-web, build-windows, build-android, build-docker, build-shell-windows, build-shell-android, build-browser-extension, build-browser-extension-firefox, build-mcp]
+    needs: [resolve-version, summarize, build-api, build-docker, build-mcp]
     # Release on every master push where no build failed. Skipped (unchanged)
     # components are fine: their assets are copied from the previous release.
     if: |
@@ -500,10 +302,8 @@ jobs:
         id: decide
         run: |
           BUILT=0
-          for r in "${{ needs.build-api.result }}" "${{ needs.build-web.result }}" \
-                    "${{ needs.build-windows.result }}" "${{ needs.build-android.result }}" \
-                    "${{ needs.build-docker.result }}" "${{ needs.build-shell-windows.result }}" \
-                    "${{ needs.build-shell-android.result }}" "${{ needs.build-browser-extension.result }}" "${{ needs.build-browser-extension-firefox.result }}" \
+          for r in "${{ needs.build-api.result }}" \
+                    "${{ needs.build-docker.result }}" \
                     "${{ needs.build-mcp.result }}"; do
             if [ "$r" = "success" ]; then BUILT=$((BUILT+1)); fi
           done
@@ -595,16 +395,8 @@ jobs:
             fi
           }
           fill_if_skipped "${{ needs.build-api.result }}" 'pim-api-*.tar.gz'
-          fill_if_skipped "${{ needs.build-web.result }}" 'pim-web-*.tar.gz'
-          fill_if_skipped "${{ needs.build-windows.result }}" 'pim-windows-*.zip'
           # Installer is part of windows build
-          fill_if_skipped "${{ needs.build-windows.result }}" 'PIM-Setup-*.exe'
-          fill_if_skipped "${{ needs.build-android.result }}" 'pim-android-*.apk'
           fill_if_skipped "${{ needs.build-docker.result }}" 'pim-platform-server-*.tar.gz'
-          fill_if_skipped "${{ needs.build-shell-windows.result }}" 'pim-shell-windows-*.zip'
-          fill_if_skipped "${{ needs.build-shell-android.result }}" 'pim-shell-android-*.apk'
-          fill_if_skipped "${{ needs.build-browser-extension.result }}" 'pim-browser-extension-v*.zip'
-          fill_if_skipped "${{ needs.build-browser-extension-firefox.result }}" 'pim-browser-extension-firefox-*.zip'
           fill_if_skipped "${{ needs.build-mcp.result }}" 'pim-mcp-server-*.tar.gz'
           # Sanity check: every asset family must be present before uploading.
           for p in pim-api-*.tar.gz pim-web-*.tar.gz pim-windows-*.zip PIM-Setup-*.exe pim-android-*.apk pim-platform-server-*.tar.gz pim-shell-windows-*.zip pim-shell-android-*.apk pim-browser-extension-v*.zip pim-browser-extension-firefox-*.zip pim-mcp-server-*.tar.gz; do
@@ -630,21 +422,6 @@ jobs:
             --repo "${{ github.repository }}" \
             --to-tag "v${{ needs.resolve-version.outputs.version }}" \
             "${FROM_ARGS[@]}")"
-          # 浏览器插件 dispatch 触发的发版：把插件仓库的 release 说明附在
-          # changelog 末尾，保持双语四节惯例之外的来源可追溯。
-          EXT_NOTES="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.release_notes || '' }}"
-          EXT_REPO="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.repo || '2746267826/tracker-web' }}"
-          if [ -n "$EXT_NOTES" ]; then
-            NOTES="$NOTES
-
-            ---
-
-            ## 浏览器插件更新 / Browser extension update
-
-            来自 [$EXT_REPO](https://github.com/$EXT_REPO) 的插件发版说明 / Notes from the extension release:
-
-            $EXT_NOTES"
-          fi
           echo "notes<<EOF" >> "$GITHUB_OUTPUT"
           echo "$NOTES" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -664,14 +441,7 @@ jobs:
           body: ${{ steps.notes.outputs.notes }}
           files: |
             release-assets/pim-api-*.tar.gz
-            release-assets/pim-web-*.tar.gz
-            release-assets/pim-windows-*.zip
-            release-assets/PIM-Setup-*.exe
-            release-assets/pim-android-*.apk
             release-assets/pim-platform-server-*.tar.gz
-            release-assets/pim-shell-windows-*.zip
-            release-assets/pim-shell-android-*.apk
-            release-assets/pim-browser-extension-*.zip
             release-assets/pim-mcp-server-*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
