@@ -133,10 +133,10 @@ jobs:
           done
           # 顺便导出客户端契约（Test 环境映射了 /openapi/v1.json）
           if [ "$READY" = "1" ]; then
-            if curl -sf http://127.0.0.1:5999/openapi/v1.json -o "$RUNNER_TEMP/openapi.generated.json"; then
+            if curl -sf http://127.0.0.1:5999/swagger/v1/swagger.json -o "$RUNNER_TEMP/openapi.generated.json"; then
               echo "已导出契约：$(wc -c < "$RUNNER_TEMP/openapi.generated.json") 字节"
             else
-              echo "::warning::未能导出 /openapi/v1.json"
+              echo "::warning::未能导出 /swagger/v1/swagger.json"
             fi
           fi
           kill "$API_PID" 2>/dev/null || true

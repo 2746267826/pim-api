@@ -76,9 +76,10 @@ if (isMcpStdio)
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog();
 
-// 客户端契约（OpenAPI）：文档由运行时按端点元数据生成，CI 启动开发环境实例导出
-// 到 contract/openapi.json 供客户端仓生成类型。生产环境不映射该端点（见下方 MapOpenApi）。
-builder.Services.AddOpenApi();
+// 客户端契约（OpenAPI）：文档由端点元数据生成，CI 启动 Test 环境实例导出到
+// contract/openapi.json 供客户端仓生成类型。生产环境不映射该端点（见下方 UseSwagger）。
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 
 // Observability: health checks + metrics refresh
 builder.Services.AddPimHealthChecks(builder.Configuration);
@@ -245,7 +246,7 @@ catch (Exception ex)
 // 构建期导出的 contract/openapi.json 为准，不开放运行时文档入口。
 if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Test"))
 {
-    app.MapOpenApi();
+    app.UseSwagger();
 }
 
 app.UseDefaultFiles();
