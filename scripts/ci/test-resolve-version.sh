@@ -69,6 +69,33 @@ run_case patch \
 assert_eq version "26.07.42+android.1" $WORKDIR/rv-patch.env
 assert_eq is_release "true" $WORKDIR/rv-patch.env
 
+# ---- composite action 必须声明脚本输出的每一个键 ----
+# action.yml 里没声明的 output 不会透出给调用方，上游拿到的是空字符串。
+# 症状是发版时报「GitHub Releases requires a tag」这类看不懂的错，而且直接跑
+# 这个脚本是测不出来的（脚本本身输出正常）。这里把两者钉在一起。
+ACTION_YML="$ROOT/.github/actions/resolve-version/action.yml"
+missing=""
+declared_keys=0
+while IFS= read -r key; do
+  [[ -z "$key" ]] && continue
+  declared_keys=$((declared_keys + 1))
+  if ! grep -qE "^  ${key}:" "$ACTION_YML"; then
+    missing="$missing $key"
+  fi
+done < <(env GITHUB_REPOSITORY=2746267826/pim-api GITHUB_REF=refs/heads/master \
+             GITHUB_RUN_NUMBER=42 GITHUB_SHA=abcdef1 GITHUB_EVENT_NAME=push \
+             bash "$SCRIPT" --date 2026-07-12 --print-env | sed 's/=.*//')
+# 键数为 0 说明脚本没输出（例如它自己报错退出）—— 这同样是失败，不能当成"全都没漏"。
+if [[ "$declared_keys" -eq 0 ]]; then
+  echo "FAIL action-outputs-declared: 脚本没有输出任何键，检查本身失效"
+  fail=1
+elif [[ -n "$missing" ]]; then
+  echo "FAIL action.yml 未声明脚本输出的键:$missing"
+  fail=1
+else
+  echo "OK   action-outputs-declared ($declared_keys keys)"
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   echo "resolve-version tests failed"
   exit 1
