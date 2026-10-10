@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Resolve the NEWEST GitHub release tag by VERSION NUMBER (v<year>.<month>.<run>),
+# Resolve the NEWEST GitHub release tag by VERSION NUMBER.
+# Accepts both <repo>-v<yy>.<mm>.<run> (current) and v<yyyy>.<mm>.<run> (legacy).
 # not by release creation time.
 #
 # Why this exists: version numbers come from GITHUB_RUN_NUMBER, which is
@@ -47,7 +48,7 @@ else
   TAGS="$(gh release list --repo "$REPO" --limit 200 --json tagName -q '.[].tagName' 2>/dev/null || true)"
 fi
 
-BEST_NUM=-1
+BEST_KEY=""
 BEST_TAG=""
 
 while IFS= read -r TAG; do
@@ -55,12 +56,28 @@ while IFS= read -r TAG; do
   [[ -n "$EXCLUDE" && "$TAG" == "$EXCLUDE" ]] && continue
   # Strip a client-patch suffix (v2026.09.466+android.1) before parsing.
   BASE="${TAG%%+*}"
-  if [[ ! "$BASE" =~ ^v[0-9]{4}\.[0-9]{2}\.([0-9]+)$ ]]; then
+
+  # Two shapes are accepted, because the tag format changed when the repository
+  # was split into per-component repos:
+  #   v2026.10.815        (legacy: four-digit year, no repo prefix)
+  #   api-v26.10.815      (current: repo prefix + two-digit year)
+  # Normalising the year back to four digits keeps a legacy tag comparable with
+  # a current one, so the "previous release" stays correct across the switchover.
+  if [[ "$BASE" =~ ^([a-z]+-)?v([0-9]{4})\.([0-9]{2})\.([0-9]+)$ ]]; then
+    Y4="${BASH_REMATCH[2]}"; MM="${BASH_REMATCH[3]}"; NUM="${BASH_REMATCH[4]}"
+  elif [[ "$BASE" =~ ^([a-z]+-)?v([0-9]{2})\.([0-9]{2})\.([0-9]+)$ ]]; then
+    Y4="20${BASH_REMATCH[2]}"; MM="${BASH_REMATCH[3]}"; NUM="${BASH_REMATCH[4]}"
+  else
     continue
   fi
-  NUM="${BASH_REMATCH[1]}"
-  if (( NUM > BEST_NUM )); then
-    BEST_NUM="$NUM"
+
+  # Zero-padded string key: compares chronologically and does not overflow when
+  # the run number grows past the width of a small integer product.
+  # 10# 强制十进制：bash 的 printf 会把 08/09 当成八进制并报
+  # "invalid octal number"，一旦月份是 08 或 09 就会静默丢掉这个 tag。
+  KEY="$(printf '%04d%02d%09d' "$((10#$Y4))" "$((10#$MM))" "$((10#$NUM))")"
+  if [[ -z "$BEST_KEY" || "$KEY" > "$BEST_KEY" ]]; then
+    BEST_KEY="$KEY"
     BEST_TAG="$TAG"
   fi
 done <<< "$TAGS"
