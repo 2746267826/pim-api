@@ -76,6 +76,10 @@ if (isMcpStdio)
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog();
 
+// 客户端契约（OpenAPI）：文档由运行时按端点元数据生成，CI 启动开发环境实例导出
+// 到 contract/openapi.json 供客户端仓生成类型。生产环境不映射该端点（见下方 MapOpenApi）。
+builder.Services.AddOpenApi();
+
 // Observability: health checks + metrics refresh
 builder.Services.AddPimHealthChecks(builder.Configuration);
 builder.Services.AddHostedService<Pim.Infrastructure.Metrics.MetricsRefreshService>();
@@ -237,6 +241,13 @@ catch (Exception ex)
 }
 
 // Serve React SPA static files from wwwroot
+// 客户端契约端点：只在开发环境（以及 CI 用的 Test 环境）暴露。生产环境的契约以
+// 构建期导出的 contract/openapi.json 为准，不开放运行时文档入口。
+if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Test"))
+{
+    app.MapOpenApi();
+}
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
