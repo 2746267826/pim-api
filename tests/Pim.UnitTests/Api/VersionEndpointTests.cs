@@ -50,12 +50,9 @@ public sealed class VersionEndpointTests
     [Fact]
     public async Task MapVersionEndpoints_ExposesLatestAndCheckedAt()
     {
-        var handler = new FakeHandler(_ => new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
-        {
-            Content = new StringContent("{\"tag_name\":\"v2026.08.212\",\"assets\":[{\"name\":\"pim-windows-v2026.08.212.zip\",\"browser_download_url\":\"https://github.com/2746267826/pim-api/releases/download/v2026.08.212/pim-windows-v2026.08.212.zip\"}]}"),
-            Headers = { ETag = new EntityTagHeaderValue("\"abc\"") }
-        });
-        var gh = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions { Repo = "2746267826/pim-api" }), NullLogger<GitHubReleaseService>.Instance);
+        // latestVersion 语义为「本服务自身的最新版本」，取程序集版本，不再依赖网络查 release
+        var handler = new FakeHandler(_ => new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+        var gh = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), NullLogger<GitHubReleaseService>.Instance);
         await gh.RefreshAsync(CancellationToken.None);
 
         var builder = WebApplication.CreateBuilder();
@@ -67,8 +64,39 @@ public sealed class VersionEndpointTests
         using var client = new HttpClient { BaseAddress = new Uri(app.Urls.Single()) };
         var resp = await client.GetFromJsonAsync<ApiVersionResponse>("/api/version");
         Assert.NotNull(resp!.LatestVersion);
-        Assert.Equal("2026.08.212", resp.LatestVersion);
+        Assert.Equal(resp.Version, resp.LatestVersion);   // 与自身版本一致
         Assert.NotNull(resp.CheckedAt);
+    }
+
+    [Fact]
+    public async Task MapVersionEndpoints_ExposesClientComponentVersionsFromVersionFiles()
+    {
+        var handler = new FakeHandler(req =>
+        {
+            var isWin = req.RequestUri!.ToString().Contains("pim-windows");
+            return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(isWin
+                    ? "{\"version\":\"2026.10.810\",\"assets\":{\"windows\":{\"version\":\"2026.10.810\",\"url\":\"https://github.com/2746267826/pim-windows/releases/download/v2026.10.810/pim-windows-v2026.10.810.zip\"}}}"
+                    : "{\"version\":\"2026.10.811\",\"assets\":{\"android\":{\"version\":\"2026.10.811\",\"url\":\"https://github.com/2746267826/pim-android/releases/download/v2026.10.811/pim-android-v2026.10.811.apk\"}}}")
+            };
+        });
+        var gh = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), NullLogger<GitHubReleaseService>.Instance);
+        await gh.RefreshAsync(CancellationToken.None);
+
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddSingleton(gh);
+        await using var app = builder.Build();
+        app.MapVersionEndpoints();
+        await app.StartAsync();
+        using var client = new HttpClient { BaseAddress = new Uri(app.Urls.Single()) };
+        var resp = await client.GetFromJsonAsync<ApiVersionResponse>("/api/version");
+        Assert.Equal("2026.10.810", resp!.WindowsVersion);
+        Assert.Equal("2026.10.811", resp.AndroidVersion);
+        // /api/version 只暴露各组件版本号；下载地址由 /api/client/shell/latest 提供
+        Assert.Null(resp.ShellWindowsVersion);   // 该仓的 version.json 里没有 shellWindows
+        Assert.Null(resp.ShellAndroidVersion);
     }
 
     [Fact]

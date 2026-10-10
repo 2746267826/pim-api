@@ -31,7 +31,8 @@ public static class VersionEndpoints
             return Results.Ok(new ApiVersionResponse(
                 version,
                 Capabilities,
-                snap.LatestVersion,
+                // 最新版 = 本服务自身的版本（程序集版本）；客户端版本走 snap 的各组件字段
+                version,
                 snap.CheckedAt,
                 snap.Error,
                 snap.WindowsUrl != null ? (snap.WindowsVersion ?? snap.LatestVersion) : null,
