@@ -197,7 +197,7 @@ builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
 });
 builder.Services.Configure<GitHubReleaseOptions>(o =>
 {
-    o.Repo = builder.Configuration["GitHub:Repo"] ?? "2746267826/pim-platform";
+    o.Repo = builder.Configuration["GitHub:Repo"] ?? "2746267826/pim-api";
     o.Token = builder.Configuration["GITHUB_TOKEN"] ?? builder.Configuration["GitHub:Token"];
 });
 builder.Services.AddHttpClient("GitHubRelease");

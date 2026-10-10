@@ -24,11 +24,11 @@ public sealed class GitHubReleaseServiceTests
             Assert.Contains("api.github.com", req.RequestUri!.ToString());
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent("{\"tag_name\":\"v2026.08.212\",\"assets\":[{\"name\":\"pim-windows-v2026.08.212.zip\",\"browser_download_url\":\"https://github.com/2746267826/pim-platform/releases/download/v2026.08.212/pim-windows-v2026.08.212.zip\"},{\"name\":\"pim-android-v2026.08.212.apk\",\"browser_download_url\":\"https://github.com/2746267826/pim-platform/releases/download/v2026.08.212/pim-android-v2026.08.212.apk\"}]}"),
+                Content = new StringContent("{\"tag_name\":\"v2026.08.212\",\"assets\":[{\"name\":\"pim-windows-v2026.08.212.zip\",\"browser_download_url\":\"https://github.com/2746267826/pim-api/releases/download/v2026.08.212/pim-windows-v2026.08.212.zip\"},{\"name\":\"pim-android-v2026.08.212.apk\",\"browser_download_url\":\"https://github.com/2746267826/pim-api/releases/download/v2026.08.212/pim-android-v2026.08.212.apk\"}]}"),
                 Headers = { ETag = new EntityTagHeaderValue("\"abc\"") }
             };
         });
-        var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions { Repo = "2746267826/pim-platform" }), NullLogger<GitHubReleaseService>.Instance);
+        var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions { Repo = "2746267826/pim-api" }), NullLogger<GitHubReleaseService>.Instance);
         var result = await svc.RefreshAsync(CancellationToken.None);
         Assert.Equal("2026.08.212", result.LatestVersion);
         Assert.Contains("pim-windows", result.WindowsUrl);
@@ -53,7 +53,7 @@ public sealed class GitHubReleaseServiceTests
     {
         var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = new StringContent("{\"tag_name\":\"v2026.08.213\",\"assets\":[{\"name\":\"pim-windows-v2026.08.213.zip\",\"browser_download_url\":\"https://evil.com/pim-windows-v2026.08.213.zip\"},{\"name\":\"pim-android-v2026.08.213.apk\",\"browser_download_url\":\"https://github.com/2746267826/pim-platform/releases/download/v2026.08.213/pim-android-v2026.08.213.apk\"}]}")
+            Content = new StringContent("{\"tag_name\":\"v2026.08.213\",\"assets\":[{\"name\":\"pim-windows-v2026.08.213.zip\",\"browser_download_url\":\"https://evil.com/pim-windows-v2026.08.213.zip\"},{\"name\":\"pim-android-v2026.08.213.apk\",\"browser_download_url\":\"https://github.com/2746267826/pim-api/releases/download/v2026.08.213/pim-android-v2026.08.213.apk\"}]}")
         });
         var svc = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions()), NullLogger<GitHubReleaseService>.Instance);
         var r = await svc.RefreshAsync(CancellationToken.None);

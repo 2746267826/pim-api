@@ -379,10 +379,10 @@ jobs:
             fi
           }
           fill_if_skipped "${{ needs.build-api.result }}" 'pim-api-*.tar.gz'
-          fill_if_skipped "${{ needs.build-docker.result }}" 'pim-platform-server-*.tar.gz'
+          fill_if_skipped "${{ needs.build-docker.result }}" 'pim-api-server-*.tar.gz'
           fill_if_skipped "${{ needs.build-mcp.result }}" 'pim-mcp-server-*.tar.gz'
           # Sanity check: every asset family must be present before uploading.
-          for p in pim-api-*.tar.gz pim-platform-server-*.tar.gz pim-mcp-server-*.tar.gz; do
+          for p in pim-api-*.tar.gz pim-api-server-*.tar.gz pim-mcp-server-*.tar.gz; do
             ls release-assets/${p} >/dev/null 2>&1 \
               || { echo "::error::Missing release asset family: ${p}" >&2; exit 1; }
           done
@@ -424,7 +424,7 @@ jobs:
           body: ${{ steps.notes.outputs.notes }}
           files: |
             release-assets/pim-api-*.tar.gz
-            release-assets/pim-platform-server-*.tar.gz
+            release-assets/pim-api-server-*.tar.gz
             release-assets/pim-mcp-server-*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

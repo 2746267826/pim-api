@@ -21,7 +21,7 @@ public static class TileServiceCollectionExtensions
             client.BaseAddress = new Uri(options.UpstreamBaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
             client.Timeout = options.RequestTimeout;
             client.DefaultRequestHeaders.UserAgent.ParseAdd(
-                "PimPlatform/1.0 (+https://github.com/2746267826/pim-platform)");
+                "PimApi/1.0 (+https://github.com/2746267826/pim-api)");
         });
         return services;
     }

@@ -57,9 +57,9 @@ public class ClientShellLatestTests : IClassFixture<WebApplicationFactory<Progra
     {
         var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = new StringContent("{\"tag_name\":\"v2026.08.212\",\"assets\":[{\"name\":\"pim-windows-v2026.08.212.zip\",\"browser_download_url\":\"https://github.com/2746267826/pim-platform/releases/download/v2026.08.212/pim-windows-v2026.08.212.zip\"},{\"name\":\"pim-android-v2026.08.212.apk\",\"browser_download_url\":\"https://github.com/2746267826/pim-platform/releases/download/v2026.08.212/pim-android-v2026.08.212.apk\"}]}")
+            Content = new StringContent("{\"tag_name\":\"v2026.08.212\",\"assets\":[{\"name\":\"pim-windows-v2026.08.212.zip\",\"browser_download_url\":\"https://github.com/2746267826/pim-api/releases/download/v2026.08.212/pim-windows-v2026.08.212.zip\"},{\"name\":\"pim-android-v2026.08.212.apk\",\"browser_download_url\":\"https://github.com/2746267826/pim-api/releases/download/v2026.08.212/pim-android-v2026.08.212.apk\"}]}")
         });
-        var gh = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions { Repo = "2746267826/pim-platform" }), NullLogger<GitHubReleaseService>.Instance);
+        var gh = new GitHubReleaseService(new HttpClient(handler), Options.Create(new GitHubReleaseOptions { Repo = "2746267826/pim-api" }), NullLogger<GitHubReleaseService>.Instance);
         await gh.RefreshAsync(CancellationToken.None);
 
         var builder = WebApplication.CreateBuilder();
