@@ -197,8 +197,15 @@ builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
 });
 builder.Services.Configure<GitHubReleaseOptions>(o =>
 {
-    o.Repo = builder.Configuration["GitHub:Repo"] ?? "2746267826/pim-api";
+    // 客户端更新检查：读各客户端仓发版时上传的 version.json（releases/latest/download 直链）
+    o.WindowsRepo = builder.Configuration["GitHub:WindowsRepo"] ?? "2746267826/pim-windows";
+    o.AndroidRepo = builder.Configuration["GitHub:AndroidRepo"] ?? "2746267826/pim-android";
+    o.VersionFileName = builder.Configuration["GitHub:VersionFileName"] ?? "version.json";
     o.Token = builder.Configuration["GITHUB_TOKEN"] ?? builder.Configuration["GitHub:Token"];
+    if (TimeSpan.TryParse(builder.Configuration["GitHub:PollInterval"], out var poll) && poll > TimeSpan.Zero)
+    {
+        o.PollInterval = poll;
+    }
 });
 builder.Services.AddHttpClient("GitHubRelease");
 builder.Services.AddSingleton<GitHubReleaseService>(sp => new GitHubReleaseService(
