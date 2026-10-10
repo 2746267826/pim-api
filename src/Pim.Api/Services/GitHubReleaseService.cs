@@ -107,7 +107,7 @@ public class GitHubReleaseService : IHostedService, IDisposable
         try
         {
             var req = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{_opts.Repo}/releases/latest");
-            req.Headers.UserAgent.ParseAdd("pim-platform");
+            req.Headers.UserAgent.ParseAdd("pim-api");
             if (!string.IsNullOrEmpty(_snapshot.ETag)) req.Headers.IfNoneMatch.Add(new EntityTagHeaderValue(_snapshot.ETag));
             if (!string.IsNullOrEmpty(_opts.Token)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _opts.Token);
             var resp = await _http.SendAsync(req, ct);

@@ -1,6 +1,6 @@
 services:
   pim:
-    image: ghcr.io/2746267826/pim-platform-server:${PIM_IMAGE_TAG:-latest}
+    image: ghcr.io/2746267826/pim-api-server:${PIM_IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
       - "0.0.0.0:${PIM_HTTP_PORT:-5858}:5000"
