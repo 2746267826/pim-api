@@ -36,6 +36,9 @@ outputs:
   base_version:
     description: Base CalVer without suffix
     value: ${{ steps.run.outputs.base_version }}
+  release_tag:
+    description: Release tag with repo prefix (e.g. android-v26.10.815)
+    value: ${{ steps.run.outputs.release_tag }}
 runs:
   using: composite
   steps:

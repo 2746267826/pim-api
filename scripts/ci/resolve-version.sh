@@ -35,7 +35,10 @@ VERSION_CODE=$((100000 + N))
 
 # Release tag 带仓库前缀：pim-android -> android-v26.10.42
 # 前缀由仓库名推导（去掉 pim-），四个仓共用同一份脚本而无需各自传参。
-REPO_NAME="${GITHUB_REPOSITORY##*/}"
+# GITHUB_REPOSITORY 是 "owner/repo"，先取最后一段；再以 :- 兜底，因为脚本
+# 在 set -u 下运行，本地直接跑（无该变量）时裸引用会以 unbound variable 崩掉。
+REPO_NAME="${GITHUB_REPOSITORY:-}"
+REPO_NAME="${REPO_NAME##*/}"
 PREFIX="${REPO_NAME#pim-}"
 if [[ -z "$PREFIX" || "$PREFIX" == "$REPO_NAME" ]]; then
   # 本地运行（无 GITHUB_REPOSITORY）或仓库名不带 pim- 前缀时的兜底
