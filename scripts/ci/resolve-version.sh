@@ -27,9 +27,21 @@ fi
 
 SHA_FULL="${GITHUB_SHA:-0000000000000000000000000000000000000000}"
 SHA7="${SHA_FULL:0:7}"
-YEAR_MONTH="${YEAR}.${MONTH}"
+# 对外显示的版本号用两位年份（26.10.42）；程序集版本（assembly_version）仍用四位
+# 年份，因为 .NET 程序集版本不值得为了好看去动。
+YEAR_MONTH="${YEAR:2}.${MONTH}"
 BASE="${YEAR_MONTH}.${N}"
 VERSION_CODE=$((100000 + N))
+
+# Release tag 带仓库前缀：pim-android -> android-v26.10.42
+# 前缀由仓库名推导（去掉 pim-），四个仓共用同一份脚本而无需各自传参。
+REPO_NAME="${GITHUB_REPOSITORY##*/}"
+PREFIX="${REPO_NAME#pim-}"
+if [[ -z "$PREFIX" || "$PREFIX" == "$REPO_NAME" ]]; then
+  # 本地运行（无 GITHUB_REPOSITORY）或仓库名不带 pim- 前缀时的兜底
+  PREFIX="${PIM_REPO_PREFIX:-pim}"
+fi
+RELEASE_TAG="${PREFIX}-v${BASE}"
 
 REF="${GITHUB_REF:-}"
 EVENT="${GITHUB_EVENT_NAME:-}"
@@ -71,6 +83,7 @@ is_release=$is_release
 year_month=$YEAR_MONTH
 assembly_version=$assembly_version
 base_version=$BASE
+release_tag=$RELEASE_TAG
 EOF
   exit 0
 fi
@@ -85,7 +98,8 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     echo "year_month=$YEAR_MONTH"
     echo "assembly_version=$assembly_version"
     echo "base_version=$BASE"
+    echo "release_tag=$RELEASE_TAG"
   } >> "$GITHUB_OUTPUT"
 fi
 
-echo "Resolved version=$version code=$VERSION_CODE release=$is_release"
+echo "Resolved version=$version code=$VERSION_CODE tag=$RELEASE_TAG release=$is_release"

@@ -68,8 +68,8 @@ public sealed class GitHubReleaseServiceTests
                 {
                   "version": "2026.10.810",
                   "assets": {
-                    "windows":      { "version": "2026.10.810", "url": "https://github.com/2746267826/pim-windows/releases/download/v2026.10.810/pim-windows-v2026.10.810.zip" },
-                    "shellWindows": { "version": "2026.10.810", "url": "https://github.com/2746267826/pim-windows/releases/download/v2026.10.810/pim-shell-windows-v2026.10.810.zip" }
+                    "windows":      { "version": "2026.10.810", "url": "https://github.com/2746267826/pim-windows/releases/download/windows-v26.10.810/pim-windows-v2026.10.810.zip" },
+                    "shellWindows": { "version": "2026.10.810", "url": "https://github.com/2746267826/pim-windows/releases/download/windows-v26.10.810/pim-shell-windows-v2026.10.810.zip" }
                   }
                 }
                 """);
@@ -79,8 +79,8 @@ public sealed class GitHubReleaseServiceTests
             {
               "version": "2026.10.810",
               "assets": {
-                "android":      { "version": "2026.10.810", "url": "https://github.com/2746267826/pim-android/releases/download/v2026.10.810/pim-android-v2026.10.810.apk" },
-                "shellAndroid": { "version": "2026.10.810", "url": "https://github.com/2746267826/pim-android/releases/download/v2026.10.810/pim-shell-android-v2026.10.810.apk" }
+                "android":      { "version": "2026.10.810", "url": "https://github.com/2746267826/pim-android/releases/download/android-v26.10.810/pim-android-v2026.10.810.apk" },
+                "shellAndroid": { "version": "2026.10.810", "url": "https://github.com/2746267826/pim-android/releases/download/android-v26.10.810/pim-shell-android-v2026.10.810.apk" }
               }
             }
             """);
@@ -142,7 +142,7 @@ public sealed class GitHubReleaseServiceTests
             {
                 return Ok("""
                 { "version": "2026.10.810", "assets": {
-                    "windows": { "version": "2026.10.810", "url": "https://github.com/2746267826/pim-windows/releases/download/v2026.10.810/pim-windows-v2026.10.810.zip" } } }
+                    "windows": { "version": "2026.10.810", "url": "https://github.com/2746267826/pim-windows/releases/download/windows-v26.10.810/pim-windows-v2026.10.810.zip" } } }
                 """);
             }
             return new HttpResponseMessage(HttpStatusCode.InternalServerError);

@@ -77,7 +77,7 @@ public sealed class VersionEndpointTests
             return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
             {
                 Content = new StringContent(isWin
-                    ? "{\"version\":\"2026.10.810\",\"assets\":{\"windows\":{\"version\":\"2026.10.810\",\"url\":\"https://github.com/2746267826/pim-windows/releases/download/v2026.10.810/pim-windows-v2026.10.810.zip\"}}}"
+                    ? "{\"version\":\"2026.10.810\",\"assets\":{\"windows\":{\"version\":\"2026.10.810\",\"url\":\"https://github.com/2746267826/pim-windows/releases/download/windows-v26.10.810/pim-windows-v2026.10.810.zip\"}}}"
                     : "{\"version\":\"2026.10.811\",\"assets\":{\"android\":{\"version\":\"2026.10.811\",\"url\":\"https://github.com/2746267826/pim-android/releases/download/v2026.10.811/pim-android-v2026.10.811.apk\"}}}")
             };
         });

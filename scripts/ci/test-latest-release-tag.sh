@@ -53,6 +53,37 @@ check "patch-suffix" "v2026.09.466+android.1" \
 check "ignores-non-version-tags" "v2026.09.42" \
   "$(run $'nightly\nv2026.09.42\nrelease-candidate-v2\nv2026.09.x')"
 
+# ---- 拆仓后的 tag 形状：<repo>-v<yy>.<mm>.<run> ----
+# 前缀与两位年份都变了，且新旧 tag 会在切换期共存，因此这里同时钉住两者。
+check "prefixed-picks-highest" "api-v26.10.815" \
+  "$(run $'api-v26.10.815\napi-v26.10.793\napi-v26.09.500')"
+check "prefixed-exclude-self" "api-v26.10.793" \
+  "$(run $'api-v26.10.815\napi-v26.10.793\napi-v26.09.500' --exclude api-v26.10.815)"
+
+# 切换期：老 tag 与带前缀的新 tag 混在一起也必须比得对，
+# 且被排除的必须是"本次要发的那个"，不能因为形状不同就漏掉。
+check "legacy-and-prefixed-mixed" "api-v26.10.815" \
+  "$(run $'v2026.10.802\napi-v26.10.815\nv2026.09.900\napi-v26.09.1000')"
+check "legacy-exclude-self" "v2026.10.793" \
+  "$(run $'v2026.10.815\nv2026.10.793' --exclude v2026.10.815)"
+
+# 08 / 09 月踩过的坑：printf 会把 08/09 当八进制并报 invalid octal number，
+# 一旦这样，该 tag 会被静默跳过、上一个版本解析错误。
+check "zero-padded-month-08-09" "api-v26.09.100" \
+  "$(run $'api-v26.08.900\napi-v26.09.100')"
+check "zero-padded-month-legacy" "v2026.09.100" \
+  "$(run $'v2026.08.900\nv2026.09.100')"
+
+# 两位数年份要能跨年比较（25.12 < 26.01）。
+check "cross-year-prefixed" "api-v26.01.10" \
+  "$(run $'api-v25.12.900\napi-v26.01.10')"
+check "cross-year-legacy" "v2026.01.10" \
+  "$(run $'v2025.12.900\nv2026.01.10')"
+
+# 非 release 形状的 tag 仍然忽略（脚本不校验前缀：同仓只会出现自己那一套）。
+check "ignores-non-release-shapes" "api-v26.10.5" \
+  "$(run $'nightly\napi-v26.10.5\nrelease-candidate-v2\napi-v26.10.x')"
+
 # No releases yet (first-ever master push) => empty output, success exit code.
 check "empty-when-no-tags" "" "$(run '')"
 check "empty-when-only-excluded" "" "$(run $'v2026.09.489' --exclude v2026.09.489)"

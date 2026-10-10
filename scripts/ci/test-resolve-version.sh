@@ -30,41 +30,43 @@ assert_eq() {
 
 # master
 run_case master \
-  env GITHUB_REF=refs/heads/master GITHUB_RUN_NUMBER=42 GITHUB_SHA=abcdef1234567890 \
+  env GITHUB_REPOSITORY=2746267826/pim-api GITHUB_REF=refs/heads/master GITHUB_RUN_NUMBER=42 GITHUB_SHA=abcdef1234567890 \
       GITHUB_EVENT_NAME=push \
       bash "$SCRIPT" --date 2026-07-12 --print-env
-assert_eq version "2026.07.42" $WORKDIR/rv-master.env
+assert_eq version "26.07.42" $WORKDIR/rv-master.env
+assert_eq release_tag "api-v26.07.42" $WORKDIR/rv-master.env
 assert_eq version_code "100042" $WORKDIR/rv-master.env
 assert_eq is_release "true" $WORKDIR/rv-master.env
 assert_eq git_sha_short "abcdef1" $WORKDIR/rv-master.env
-assert_eq year_month "2026.07" $WORKDIR/rv-master.env
-assert_eq artifact_slug "2026.07.42" $WORKDIR/rv-master.env
+assert_eq year_month "26.07" $WORKDIR/rv-master.env
+assert_eq artifact_slug "26.07.42" $WORKDIR/rv-master.env
 
 # PR
 run_case pr \
-  env GITHUB_REF=refs/pull/12/merge GITHUB_RUN_NUMBER=42 GITHUB_SHA=abcdef1234567890 \
+  env GITHUB_REPOSITORY=2746267826/pim-api GITHUB_REF=refs/pull/12/merge GITHUB_RUN_NUMBER=42 GITHUB_SHA=abcdef1234567890 \
       GITHUB_EVENT_NAME=pull_request GITHUB_REF_NAME=12/merge \
       PR_NUMBER=12 \
       bash "$SCRIPT" --date 2026-07-12 --print-env
-assert_eq version "2026.07.42-pr.12+abcdef1" $WORKDIR/rv-pr.env
+assert_eq version "26.07.42-pr.12+abcdef1" $WORKDIR/rv-pr.env
+assert_eq release_tag "api-v26.07.42" $WORKDIR/rv-pr.env
 assert_eq version_code "100042" $WORKDIR/rv-pr.env
 assert_eq is_release "false" $WORKDIR/rv-pr.env
-assert_eq artifact_slug "2026.07.42-pr.12-abcdef1" $WORKDIR/rv-pr.env
+assert_eq artifact_slug "26.07.42-pr.12-abcdef1" $WORKDIR/rv-pr.env
 
 # dispatch non-master
 run_case dev \
-  env GITHUB_REF=refs/heads/codex/foo GITHUB_RUN_NUMBER=7 GITHUB_SHA=deadbeefcafebabe \
+  env GITHUB_REPOSITORY=2746267826/pim-api GITHUB_REF=refs/heads/codex/foo GITHUB_RUN_NUMBER=7 GITHUB_SHA=deadbeefcafebabe \
       GITHUB_EVENT_NAME=workflow_dispatch \
       bash "$SCRIPT" --date 2026-07-12 --print-env
-assert_eq version "2026.07.7-dev+deadbee" $WORKDIR/rv-dev.env
+assert_eq version "26.07.7-dev+deadbee" $WORKDIR/rv-dev.env
 assert_eq is_release "false" $WORKDIR/rv-dev.env
 
 # client patch on master
 run_case patch \
-  env GITHUB_REF=refs/heads/master GITHUB_RUN_NUMBER=42 GITHUB_SHA=abcdef1234567890 \
+  env GITHUB_REPOSITORY=2746267826/pim-api GITHUB_REF=refs/heads/master GITHUB_RUN_NUMBER=42 GITHUB_SHA=abcdef1234567890 \
       GITHUB_EVENT_NAME=workflow_dispatch CLIENT_PATCH=android.1 \
       bash "$SCRIPT" --date 2026-07-12 --print-env
-assert_eq version "2026.07.42+android.1" $WORKDIR/rv-patch.env
+assert_eq version "26.07.42+android.1" $WORKDIR/rv-patch.env
 assert_eq is_release "true" $WORKDIR/rv-patch.env
 
 if [[ "$fail" -ne 0 ]]; then
