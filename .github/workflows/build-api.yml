@@ -133,7 +133,9 @@ jobs:
           done
           # 顺便导出客户端契约（Test 环境映射了 Swagger 文档端点）
           if [ "$READY" = "1" ]; then
-            if curl -sf http://127.0.0.1:5999/swagger/v1/swagger.json -o "$RUNNER_TEMP/openapi.generated.json"; then
+            if curl -sf http://127.0.0.1:5999/swagger/v1/swagger.json -o "$RUNNER_TEMP/openapi.raw.json"; then
+              # 规范化：Swashbuckle 输出的键顺序不稳定，不排序会导致校验永远失败
+              jq -S . "$RUNNER_TEMP/openapi.raw.json" > "$RUNNER_TEMP/openapi.generated.json"
               echo "已导出契约：$(wc -c < "$RUNNER_TEMP/openapi.generated.json") 字节"
             else
               echo "::error::未能从运行中的实例导出 /swagger/v1/swagger.json"
