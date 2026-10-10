@@ -131,6 +131,17 @@ jobs:
             if curl -sf http://127.0.0.1:5999/health >/dev/null 2>&1; then READY=1; break; fi
             sleep 2
           done
+          # 顺便导出客户端契约（Test 环境映射了 Swagger 文档端点）
+          if [ "$READY" = "1" ]; then
+            if curl -sf http://127.0.0.1:5999/swagger/v1/swagger.json -o "$RUNNER_TEMP/openapi.raw.json"; then
+              # 规范化：Swashbuckle 输出的键顺序不稳定，不排序会导致校验永远失败
+              jq -S . "$RUNNER_TEMP/openapi.raw.json" > "$RUNNER_TEMP/openapi.generated.json"
+              echo "已导出契约：$(wc -c < "$RUNNER_TEMP/openapi.generated.json") 字节"
+            else
+              echo "::error::未能从运行中的实例导出 /swagger/v1/swagger.json"
+              exit 1
+            fi
+          fi
           kill "$API_PID" 2>/dev/null || true
           wait "$API_PID" 2>/dev/null || true
           # dotnet run 会再派生实际的应用进程；一并结束，避免残留进程占用构建输出
@@ -144,6 +155,36 @@ jobs:
           echo "schema 初始化完成（迁移链 + 运行时初始化器）"
           # 保险：确认带 RID 的 assets 仍然可用
           dotnet restore Pim.sln --runtime linux-x64
+
+      # 用 Swashbuckle 官方 CLI 从程序集直接生成文档：不需要起服务、不猜端点路径。
+      # 契约必须与代码同步：客户端仓按 contract/openapi.json 生成类型，
+      # 过期会让前端拿到错的接口形状，所以这里硬校验。
+      - name: Verify client contract is up to date
+        shell: bash
+        run: |
+          set -uo pipefail
+          GEN="$RUNNER_TEMP/openapi.generated.json"
+          if [ ! -s "$GEN" ]; then
+            echo "::error::未生成契约文件，无法校验"
+            exit 1
+          fi
+          mkdir -p contract
+          if [ -f contract/openapi.json ] && diff -q contract/openapi.json "$GEN" >/dev/null 2>&1; then
+            echo "✅ contract/openapi.json 与当前代码一致"
+          else
+            cp "$GEN" contract/openapi.json.generated
+            echo "::error::contract/openapi.json 与当前代码不一致；最新契约已作为 artifact 上传，下载后覆盖提交即可。"
+            exit 1
+          fi
+
+      - name: Upload generated contract (stale)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-contract-generated
+          path: contract/openapi.json.generated
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Test
         run: |

@@ -76,6 +76,16 @@ if (isMcpStdio)
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog();
 
+// 客户端契约（OpenAPI）：文档由端点元数据生成，CI 启动 Test 环境实例导出到
+// contract/openapi.json 供客户端仓生成类型。生产环境不映射该端点（见下方 UseSwagger）。
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(c =>
+{
+    // 项目里存在等价的尾斜杠路由（例如 GET /api/v1/pc/categories 与 .../categories/），
+    // Swagger 要求 method+path 组合唯一；文档保留第一个即可，不影响运行时路由行为。
+    c.ResolveConflictingActions(apiDescriptions => apiDescriptions.First());
+});
+
 // Observability: health checks + metrics refresh
 builder.Services.AddPimHealthChecks(builder.Configuration);
 builder.Services.AddHostedService<Pim.Infrastructure.Metrics.MetricsRefreshService>();
@@ -237,6 +247,13 @@ catch (Exception ex)
 }
 
 // Serve React SPA static files from wwwroot
+// 客户端契约端点：只在开发环境（以及 CI 用的 Test 环境）暴露。生产环境的契约以
+// 构建期导出的 contract/openapi.json 为准，不开放运行时文档入口。
+if (app.Environment.IsDevelopment() || app.Environment.IsEnvironment("Test"))
+{
+    app.UseSwagger();
+}
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
