@@ -17955,6 +17955,20 @@
         ],
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "bearerFormat": "JWT",
+        "description": "JwtBearer 认证（Authorization: Bearer &lt;token&gt;）。/api/v1/auth/login 或 /register 获取。",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "opsKey": {
+        "description": "运维端点专用（/api/v1/ops/*）：与 PIM_OPS_KEY 配置比对（可多值，逗号分隔）。",
+        "in": "header",
+        "name": "X-PIM-Ops-Key",
+        "type": "apiKey"
+      }
     }
   },
   "info": {
@@ -18022,6 +18036,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18098,6 +18117,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18174,6 +18198,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18209,6 +18238,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18338,6 +18372,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18394,6 +18433,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18429,6 +18473,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18464,6 +18513,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18527,6 +18581,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18624,6 +18683,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18786,6 +18850,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18836,6 +18905,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18887,6 +18961,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18940,6 +19019,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -18993,6 +19077,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19035,6 +19124,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19085,6 +19179,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19136,6 +19235,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19186,6 +19290,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19239,6 +19348,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19300,6 +19414,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19353,6 +19472,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19406,6 +19530,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19466,6 +19595,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19518,6 +19652,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19570,6 +19709,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19622,6 +19766,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19674,6 +19823,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19726,6 +19880,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19778,6 +19937,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19869,6 +20033,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19919,6 +20088,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -19971,6 +20145,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20046,6 +20225,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20121,6 +20305,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20204,6 +20393,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20266,6 +20460,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20324,6 +20523,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20366,6 +20570,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20416,6 +20625,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20469,6 +20683,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20520,6 +20739,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20581,6 +20805,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20634,6 +20863,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20697,6 +20931,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20739,6 +20978,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20822,6 +21066,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20864,6 +21113,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20906,6 +21160,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -20958,6 +21217,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21000,6 +21264,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21042,6 +21311,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21104,6 +21378,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21157,6 +21436,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21199,6 +21483,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21261,6 +21550,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21303,6 +21597,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21345,6 +21644,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21387,6 +21691,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21437,6 +21746,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21489,6 +21803,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21549,6 +21868,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21612,6 +21936,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21654,6 +21983,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21704,6 +22038,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21794,6 +22133,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21864,6 +22208,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21925,6 +22274,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -21967,6 +22321,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22017,6 +22376,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22059,6 +22423,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22120,6 +22489,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22173,6 +22547,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22234,6 +22613,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22276,6 +22660,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22328,6 +22717,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22381,6 +22775,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22434,6 +22833,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22487,6 +22891,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22539,6 +22948,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22581,6 +22995,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22631,6 +23050,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22760,6 +23184,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22810,6 +23239,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22862,6 +23296,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22914,6 +23353,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -22967,6 +23411,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23028,6 +23477,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23091,6 +23545,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23153,6 +23612,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23223,6 +23687,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23286,6 +23755,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23349,6 +23823,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23411,6 +23890,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23464,6 +23948,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23525,6 +24014,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23587,6 +24081,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23668,6 +24167,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23710,6 +24214,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23762,6 +24271,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23794,6 +24308,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23826,6 +24345,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23886,6 +24410,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23918,6 +24447,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -23960,6 +24494,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -24022,6 +24561,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -24084,6 +24628,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -24166,6 +24715,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -24261,6 +24815,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -24333,6 +24892,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -24415,6 +24979,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -24477,6 +25046,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -24560,6 +25134,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -24611,6 +25190,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -24690,6 +25274,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -24766,6 +25355,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -24849,6 +25443,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -24943,6 +25542,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -25036,6 +25640,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -25122,6 +25731,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -25208,6 +25822,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -25301,6 +25920,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -25384,6 +26008,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -25480,6 +26109,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -25563,6 +26197,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -25644,6 +26283,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -25720,6 +26364,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -25815,6 +26464,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -25901,6 +26555,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -25995,6 +26654,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -26081,6 +26745,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -26113,6 +26782,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -26195,6 +26869,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -26278,6 +26957,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -26361,6 +27045,11 @@
             "description": "Bad Gateway"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -26454,6 +27143,11 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -26507,6 +27201,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -26581,6 +27280,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -26633,6 +27337,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -26665,6 +27374,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -26728,6 +27442,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -26791,6 +27510,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "FilesModule"
         ]
@@ -26823,6 +27547,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -26855,6 +27584,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -26887,6 +27621,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -26937,6 +27676,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -26986,6 +27730,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -27060,6 +27809,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -27116,6 +27870,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -27343,6 +28102,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -27385,6 +28149,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -27435,6 +28204,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -27487,6 +28261,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -27635,6 +28414,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -27783,6 +28567,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -27835,6 +28624,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -27983,6 +28777,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28131,6 +28930,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28173,6 +28977,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28223,6 +29032,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28275,6 +29089,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28335,6 +29154,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28377,6 +29201,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28427,6 +29256,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28479,6 +29313,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28539,6 +29378,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28614,6 +29458,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28656,6 +29505,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28707,6 +29561,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28759,6 +29618,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28811,6 +29675,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28863,6 +29732,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28915,6 +29789,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -28967,6 +29846,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -29019,6 +29903,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -29087,6 +29976,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -29140,6 +30034,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -29218,6 +30117,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -29302,6 +30206,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -29364,6 +30273,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -29416,6 +30330,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -29476,6 +30395,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -29588,6 +30512,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -29700,6 +30629,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -29812,6 +30746,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -29942,6 +30881,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30054,6 +30998,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30166,6 +31115,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30257,6 +31211,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30309,6 +31268,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30361,6 +31325,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30435,6 +31404,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30509,6 +31483,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30561,6 +31540,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30651,6 +31635,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30703,6 +31692,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30763,6 +31757,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30816,6 +31815,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30877,6 +31881,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30919,6 +31928,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -30972,6 +31986,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -31025,6 +32044,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -31078,6 +32102,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -31131,6 +32160,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -31184,6 +32218,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -31255,6 +32294,11 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "opsKey": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -31326,6 +32370,11 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "opsKey": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -31367,6 +32416,11 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "opsKey": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -31408,6 +32462,11 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "opsKey": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -31446,6 +32505,11 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "opsKey": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -31567,6 +32631,11 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "opsKey": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -31667,6 +32736,11 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "opsKey": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32175,6 +33249,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32228,6 +33307,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32280,6 +33364,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32343,6 +33432,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32426,6 +33520,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32509,6 +33608,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32560,6 +33664,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32610,6 +33719,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32652,6 +33766,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32694,6 +33813,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32749,6 +33873,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32811,6 +33940,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32873,6 +34007,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -32926,6 +34065,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33034,6 +34178,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33086,6 +34235,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33200,6 +34354,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33363,6 +34522,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33442,6 +34606,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33484,6 +34653,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33536,6 +34710,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33568,6 +34747,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33610,6 +34794,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33673,6 +34862,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33725,6 +34919,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33863,6 +35062,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -33952,6 +35156,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -34014,6 +35223,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -34066,6 +35280,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -34145,6 +35364,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -34245,6 +35469,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -34357,6 +35586,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -34440,6 +35674,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -34523,6 +35762,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -34596,6 +35840,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -34939,6 +36188,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -34991,6 +36245,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -35050,6 +36309,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -35129,6 +36393,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -35195,6 +36464,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -35486,6 +36760,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -35577,6 +36856,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -35651,6 +36935,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -35701,6 +36990,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -35743,6 +37037,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -35806,6 +37105,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -35883,6 +37187,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -35936,6 +37245,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -35987,6 +37301,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -36058,6 +37377,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -36111,6 +37435,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -36174,6 +37503,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -36247,6 +37581,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -36313,6 +37652,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -36345,6 +37689,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -36377,6 +37726,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -36498,6 +37852,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -36575,6 +37934,11 @@
             "description": "Internal Server Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -36836,6 +38200,11 @@
             "description": "OK"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -36846,6 +38215,11 @@
             "description": "OK"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
@@ -36856,6 +38230,11 @@
             "description": "OK"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "tags": [
           "Pim.Api"
         ]
