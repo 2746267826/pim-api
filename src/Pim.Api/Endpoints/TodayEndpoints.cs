@@ -39,7 +39,11 @@ public static class TodayEndpoints
                     ct);
                 return Results.Ok(ApiResponse<TodaySectionRegistryDto>.Ok(result));
             });
-        });
+        })
+        .Produces<ApiResponse<TodaySectionRegistryDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/sections/{sectionId}", async (
             string sectionId,
@@ -61,7 +65,12 @@ public static class TodayEndpoints
                     ? Results.NotFound(ApiResponse<string>.Error(404, "今日模块不存在。"))
                     : Results.Ok(ApiResponse<TodaySectionDto>.Ok(result));
             });
-        });
+        })
+        .Produces<ApiResponse<TodaySectionDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
     }
 
     public static IResult ToInvalidDateResult()

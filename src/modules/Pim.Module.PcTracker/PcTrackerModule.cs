@@ -68,7 +68,11 @@ public class PcTrackerModule : IModule
         {
             await svc.UpsertKeystatsAsync(req, ct);
             return Results.Ok(ApiResponse<string>.Ok("已接收"));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/keystats/samples", async (
             [FromBody] KeystatsSampleUploadRequest req,
@@ -77,7 +81,11 @@ public class PcTrackerModule : IModule
         {
             await svc.UpsertKeystatsSampleAsync(req, ct);
             return Results.Ok(ApiResponse<string>.Ok("已接收"));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/aw/upload", async (
             [FromBody] AwEventsUploadRequest req,
@@ -86,7 +94,11 @@ public class PcTrackerModule : IModule
         {
             var count = await svc.UploadAwEventsAsync(req, ct);
             return Results.Ok(ApiResponse<int>.Ok(count));
-        });
+        })
+        .Produces<ApiResponse<int>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/aw/upload-complete", async (
             [FromBody] CompleteAwUploadRequest req,
@@ -95,7 +107,11 @@ public class PcTrackerModule : IModule
         {
             var count = await svc.UploadCompleteAwEventsAsync(req, ct);
             return Results.Ok(ApiResponse<int>.Ok(count));
-        });
+        })
+        .Produces<ApiResponse<int>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/tracker/upload", async (
             [FromBody] TrackerEventsUploadRequest req,
@@ -111,7 +127,11 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<int>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/tracker/health", async (
             [FromBody] TrackerHealthRequest req,
@@ -127,7 +147,11 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/tracker/health/latest", async (
             [FromServices] PcTrackerService svc,
@@ -137,7 +161,11 @@ public class PcTrackerModule : IModule
             if (health is null)
                 return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
             return Results.Ok(ApiResponse<TrackerHealthEntity>.Ok(health));
-        });
+        })
+        // readGroup 当前未挂 RequireAuthorization(现状),无 401。
+        .Produces<ApiResponse<TrackerHealthEntity>>(200)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/tracker/health", async (
             [FromQuery] string deviceId,
@@ -150,7 +178,11 @@ public class PcTrackerModule : IModule
             if (health is null)
                 return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
             return Results.Ok(ApiResponse<TrackerHealthEntity>.Ok(health));
-        });
+        })
+        .Produces<ApiResponse<TrackerHealthEntity>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         // —— 站点级数据（Time Tracker fork 通道） ——
         writeGroup.MapPost("/browser-tt/upload", async (
@@ -167,7 +199,11 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<int>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/browser-tt/import", async (
             [FromBody] SiteImportRequest req,
@@ -183,7 +219,11 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<SiteImportResultDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/browser-tt/daily", async (
             [FromQuery] string? date,
@@ -201,7 +241,10 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<List<SiteDailyRowDto>>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/browser-tt/timeline", async (
             [FromQuery] string date,
@@ -217,7 +260,10 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<List<SiteTimelineRowDto>>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/browser-tt/summary", async (
             [FromQuery] string? date,
@@ -236,7 +282,10 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<SiteSummaryDto>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/summary", async (
             [FromQuery] string? date,
@@ -253,7 +302,10 @@ public class PcTrackerModule : IModule
                 () => svc.GetSummaryAsync(d, ct),
                 ct);
             return Results.Ok(ApiResponse<PcSummaryResponse>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<PcSummaryResponse>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/aw/timeline", async (
             [FromQuery] string? date,
@@ -270,7 +322,10 @@ public class PcTrackerModule : IModule
                 () => svc.GetTimelineAsync(d, ct),
                 ct);
             return Results.Ok(ApiResponse<List<TimelineItem>>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<List<TimelineItem>>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/keystats/range", async (
             [FromQuery] string? start,
@@ -289,7 +344,10 @@ public class PcTrackerModule : IModule
                 () => svc.GetKeystatsRangeAsync(s, e, ct),
                 ct);
             return Results.Ok(ApiResponse<List<KeystatsSummary>>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<List<KeystatsSummary>>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/detail", async (
             [FromQuery] string? dateFrom,
@@ -316,7 +374,10 @@ public class PcTrackerModule : IModule
                 domain, title, url, view);
             var result = await svc.QueryCompleteDetailAsync(q, ct);
             return Results.Ok(ApiResponse<TypedDetailQueryResponse>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<TypedDetailQueryResponse>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/quality", async (
             [FromQuery] string? date,
@@ -346,7 +407,10 @@ public class PcTrackerModule : IModule
                     ct),
                 ct);
             return Results.Ok(ApiResponse<PcQualityResponse>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<PcQualityResponse>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/categories", async (
             [FromServices] PcTrackerService svc,
@@ -354,7 +418,9 @@ public class PcTrackerModule : IModule
         {
             var list = await svc.GetAllCategoriesAsync(ct);
             return Results.Ok(ApiResponse<List<AppCategoryRule>>.Ok(list));
-        });
+        })
+        .Produces<ApiResponse<List<AppCategoryRule>>>(200)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/categories", async (
             [FromBody] SaveCategoryRequest req,
@@ -365,7 +431,11 @@ public class PcTrackerModule : IModule
             var result = await svc.SaveCategoryAsync(req, ct);
             cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<AppCategoryRule>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<AppCategoryRule>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapDelete("/categories/{id}", async (
             Guid id,
@@ -378,7 +448,12 @@ public class PcTrackerModule : IModule
             return ok
                 ? Results.Ok(ApiResponse<string>.Ok("已删除"))
                 : Results.NotFound(ApiResponse<string>.Error(404, "不存在或为内置项"));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/classification/rules", async (
             [FromServices] ActivityClassificationRuleService svc,
@@ -386,7 +461,9 @@ public class PcTrackerModule : IModule
         {
             var rules = await svc.ListAsync(ct);
             return Results.Ok(ApiResponse<List<ActivityClassificationRuleDto>>.Ok(rules));
-        });
+        })
+        .Produces<ApiResponse<List<ActivityClassificationRuleDto>>>(200)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/classification/suggestions/v2", async (
             [FromServices] ActivitySuggestionService suggestionService,
@@ -394,7 +471,9 @@ public class PcTrackerModule : IModule
         {
             var suggestions = await suggestionService.GetSuggestionsV2Async(ct);
             return Results.Ok(ApiResponse<List<ActivityClassificationSuggestionV2Dto>>.Ok(suggestions));
-        });
+        })
+        .Produces<ApiResponse<List<ActivityClassificationSuggestionV2Dto>>>(200)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/classification/suggestions", async (
             [FromQuery] string? date,
@@ -443,7 +522,10 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<List<ActivityClassificationSuggestionDto>>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/classification/project-tags/recent", async (
             [FromServices] ActivitySuggestionService suggestionService,
@@ -451,7 +533,9 @@ public class PcTrackerModule : IModule
         {
             var tags = await suggestionService.GetRecentProjectTagsAsync(ct);
             return Results.Ok(ApiResponse<List<string>>.Ok(tags));
-        });
+        })
+        .Produces<ApiResponse<List<string>>>(200)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/classification/settings", async (
             [FromServices] ActivityClassificationSettingsService settingsService,
@@ -459,7 +543,9 @@ public class PcTrackerModule : IModule
         {
             var settings = await settingsService.GetSettingsAsync(ct);
             return Results.Ok(ApiResponse<ActivityClassificationSettingsDto>.Ok(settings));
-        });
+        })
+        .Produces<ApiResponse<ActivityClassificationSettingsDto>>(200)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/classification/queue", async (
             [FromQuery] int limit,
@@ -470,7 +556,10 @@ public class PcTrackerModule : IModule
         {
             var result = await svc.BuildQueueAsync(limit, currentUser.UserId, mode ?? "queue", ct);
             return Results.Ok(ApiResponse<ActivityLabelingQueueResponse>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<ActivityLabelingQueueResponse>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/classification/label", async (
             [FromBody] ActivityLabelingRequest req,
@@ -487,7 +576,11 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<ActivityLabelingResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/activity-analysis", async (
             [FromQuery] string? date,
@@ -516,7 +609,10 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<PcActivityAnalysisResponse>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/classification/rules", async (
             [FromBody] SaveActivityClassificationRuleRequest req,
@@ -538,7 +634,12 @@ public class PcTrackerModule : IModule
             {
                 return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<ActivityClassificationRuleDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/classification/rules/preview", async (
             [FromBody] ActivityClassificationPreviewRequest req,
@@ -554,7 +655,11 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<ActivityClassificationPreviewDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/classification/rules/apply", async (
             [FromBody] ApplyActivityClassificationRuleRequest req,
@@ -576,7 +681,12 @@ public class PcTrackerModule : IModule
             {
                 return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<ActivityClassificationPreviewDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPut("/classification/settings", async (
             [FromBody] SaveActivityClassificationSettingsRequest req,
@@ -589,7 +699,11 @@ public class PcTrackerModule : IModule
                 ct);
             cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<ActivityClassificationSettingsDto>.Ok(settings));
-        });
+        })
+        .Produces<ApiResponse<ActivityClassificationSettingsDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/classification/suggestions/{id:guid}/preview", async (
             Guid id,
@@ -615,7 +729,14 @@ public class PcTrackerModule : IModule
             {
                 return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
             }
-        });
+        })
+        // 亦被 app-knowledge/suggestions/{id}/preview 复用
+        .Produces<ApiResponse<ActivityClassificationSuggestionPreviewDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/classification/suggestions/{id:guid}/apply", async (
             Guid id,
@@ -643,7 +764,13 @@ public class PcTrackerModule : IModule
             {
                 return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<ActivityClassificationSuggestionApplyDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/classification/suggestions/{id:guid}/accept", async (
             Guid id,
@@ -666,7 +793,13 @@ public class PcTrackerModule : IModule
             {
                 return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<ActivityClassificationRuleDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/classification/suggestions/batch-accept", async (
             [FromBody] BatchAcceptSuggestionsRequest req,
@@ -677,7 +810,11 @@ public class PcTrackerModule : IModule
             var result = await suggestionService.BatchAcceptAsync(req, ct);
             cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<BatchAcceptResultDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<BatchAcceptResultDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/classification/suggestions/{id:guid}/reject", async (
             Guid id,
@@ -699,7 +836,13 @@ public class PcTrackerModule : IModule
             {
                 return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/classification/recompute", async (
             [FromBody] ActivityClassificationRecomputeRequest req,
@@ -717,7 +860,11 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<ActivityClassificationRecomputeDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/heatmap/grid", async (
             [FromQuery] string? start,
@@ -749,7 +896,10 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<HeatmapGridResponse>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         // App Knowledge Base endpoints
         var appKnowledgeRead = endpoints.MapGroup("/api/v1/pc/app-knowledge").RequireAuthorization();
@@ -762,7 +912,11 @@ public class PcTrackerModule : IModule
         {
             var list = await svc.GetKnowledgeAppsAsync(search, ct);
             return Results.Ok(ApiResponse<List<AppKnowledgeAppDto>>.Ok(list));
-        });
+        })
+        .Produces<ApiResponse<List<AppKnowledgeAppDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         appKnowledgeRead.MapGet("/apps/{appId:guid}/contexts", async (
             Guid appId,
@@ -771,7 +925,11 @@ public class PcTrackerModule : IModule
         {
             var list = await svc.GetByAppAsync(appId, ct);
             return Results.Ok(ApiResponse<List<AppKnowledgeContextDto>>.Ok(list));
-        });
+        })
+        .Produces<ApiResponse<List<AppKnowledgeContextDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         appKnowledgeWrite.MapPost("/contexts", async (
             [FromBody] SaveAppKnowledgeContextRequest req,
@@ -787,7 +945,11 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<AppKnowledgeContextDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         appKnowledgeWrite.MapDelete("/contexts/{id:guid}", async (
             Guid id,
@@ -798,7 +960,12 @@ public class PcTrackerModule : IModule
             return ok
                 ? Results.Ok(ApiResponse<string>.Ok("已删除。"))
                 : Results.NotFound(ApiResponse<string>.Error(404, "未找到上下文知识。"));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         appKnowledgeWrite.MapPost("/suggestions/{id:guid}/preview", async (
             Guid id,
@@ -830,7 +997,13 @@ public class PcTrackerModule : IModule
             {
                 return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<AppKnowledgeSuggestionPreviewDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
 
         appKnowledgeWrite.MapPost("/suggestions/{id:guid}/apply", async (
             Guid id,
@@ -894,7 +1067,13 @@ public class PcTrackerModule : IModule
             {
                 return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<AppKnowledgeSuggestionApplyDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
 
         var kbRead = endpoints.MapGroup("/api/v1/pc/app-signatures").RequireAuthorization();
         var kbWrite = endpoints.MapGroup("/api/v1/pc/app-signatures").RequireAuthorization();
@@ -906,7 +1085,11 @@ public class PcTrackerModule : IModule
         {
             var list = await svc.GetAllAsync(search, ct);
             return Results.Ok(ApiResponse<List<AppSignatureDto>>.Ok(list));
-        });
+        })
+        .Produces<ApiResponse<List<AppSignatureDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         kbRead.MapGet("/export", async (
             [FromServices] AppSignatureService svc,
@@ -914,7 +1097,11 @@ public class PcTrackerModule : IModule
         {
             var data = await svc.ExportAsync(ct);
             return Results.Ok(ApiResponse<List<AppSignatureDto>>.Ok(data));
-        });
+        })
+        .Produces<ApiResponse<List<AppSignatureDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         kbWrite.MapPost("/import", async (
             [FromBody] List<SaveAppSignatureRequest> req,
@@ -922,8 +1109,12 @@ public class PcTrackerModule : IModule
             CancellationToken ct) =>
         {
             var (imported, updated) = await svc.ImportAsync(req, ct);
-            return Results.Ok(ApiResponse<object>.Ok(new { imported, updated }));
-        });
+            return Results.Ok(ApiResponse<AppSignatureImportResultDto>.Ok(new AppSignatureImportResultDto(imported, updated)));
+        })
+        .Produces<ApiResponse<AppSignatureImportResultDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         kbWrite.MapPost("/lookup", async (
             [FromBody] LookupAppSignatureRequest req,
@@ -934,7 +1125,12 @@ public class PcTrackerModule : IModule
             if (result is null)
                 return Results.NotFound(ApiResponse<string>.Error(404, "未找到应用签名"));
             return Results.Ok(ApiResponse<AppSignatureDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<AppSignatureDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         kbRead.MapGet("/count", async (
             [FromServices] AppSignatureService svc,
@@ -942,7 +1138,11 @@ public class PcTrackerModule : IModule
         {
             var count = await svc.GetCountAsync(ct);
             return Results.Ok(ApiResponse<int>.Ok(count));
-        });
+        })
+        .Produces<ApiResponse<int>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         kbRead.MapGet("/lookup/{processName}", async (
             string processName,
@@ -953,7 +1153,12 @@ public class PcTrackerModule : IModule
             if (result is null)
                 return Results.NotFound(ApiResponse<string>.Error(404, "未找到"));
             return Results.Ok(ApiResponse<AppSignatureDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<AppSignatureDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         kbWrite.MapPost("/", async (
             [FromBody] SaveAppSignatureRequest req,
@@ -962,7 +1167,11 @@ public class PcTrackerModule : IModule
         {
             var result = await svc.SaveAsync(req, ct);
             return Results.Ok(ApiResponse<AppSignatureDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<AppSignatureDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         kbWrite.MapDelete("/{id:guid}", async (
             Guid id,
@@ -973,7 +1182,11 @@ public class PcTrackerModule : IModule
             return ok
                 ? Results.Ok(ApiResponse<string>.Ok("已删除"))
                 : Results.BadRequest(ApiResponse<string>.Error(400, "内置项不可删除或不存在"));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         // === Phase 2: 服务端聚合（专注块 / 应用时长 / 深夜使用 / 分类分布 / 键鼠范围）===
         readGroup.MapGet("/aggregation/focus-blocks", async (
@@ -1011,7 +1224,10 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<PcFocusBlocksResponse>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/aggregation/app-usage", async (
             [FromQuery] string? date,
@@ -1050,7 +1266,10 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<PcAppUsageResponse>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/aggregation/late-night", async (
             [FromQuery] string? date,
@@ -1087,7 +1306,10 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<PcLateNightResponse>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/aggregation/category-distribution", async (
             [FromQuery] string? date,
@@ -1124,7 +1346,10 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<PcCategoryDistributionResponse>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         // REQ-7（#368）：键鼠范围聚合。与单日版 pc/summary.keystats 字段同构，前端复用同一组件；
         // 结果规模不随天数线性膨胀（按键分布按 keyName 合并，Top 列表只留 TopN）。
@@ -1163,7 +1388,10 @@ public class PcTrackerModule : IModule
             {
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<PcKeystatsRangeResponse>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         // === Phase 2: 分类树 ===
         var catRead = endpoints.MapGroup("/api/v1/pc/categories").RequireAuthorization();
@@ -1175,7 +1403,11 @@ public class PcTrackerModule : IModule
         {
             var tree = await svc.GetTreeAsync(ct);
             return Results.Ok(ApiResponse<List<CategoryTreeNode>>.Ok(tree));
-        });
+        })
+        .Produces<ApiResponse<List<CategoryTreeNode>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         catRead.MapGet("/tree", async (
             [FromServices] PcCategoryService svc,
@@ -1183,7 +1415,11 @@ public class PcTrackerModule : IModule
         {
             var tree = await svc.GetTreeAsync(ct);
             return Results.Ok(ApiResponse<List<CategoryTreeNode>>.Ok(tree));
-        });
+        })
+        .Produces<ApiResponse<List<CategoryTreeNode>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         catRead.MapGet("/dictionary", async (
             [FromServices] PcCategoryService svc,
@@ -1191,7 +1427,11 @@ public class PcTrackerModule : IModule
         {
             var list = await svc.GetDictionaryAsync(ct);
             return Results.Ok(ApiResponse<List<CategoryDictionaryItemDto>>.Ok(list));
-        });
+        })
+        .Produces<ApiResponse<List<CategoryDictionaryItemDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         catWrite.MapPost("/", async (
             [FromBody] CategorySaveRequest req,
@@ -1202,7 +1442,11 @@ public class PcTrackerModule : IModule
             var result = await svc.SaveAsync(req, ct);
             cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<CategoryTreeNode>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<CategoryTreeNode>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         catWrite.MapDelete("/{id:guid}", async (
             Guid id,
@@ -1222,7 +1466,12 @@ public class PcTrackerModule : IModule
             {
                 return Results.Conflict(ApiResponse<string>.Error(409, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
 
         catWrite.MapPut("/reorder", async (
             [FromBody] ReorderCategoriesRequest req,
@@ -1233,7 +1482,11 @@ public class PcTrackerModule : IModule
             await svc.ReorderAsync(req, ct);
             cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<string>.Ok("排序已更新"));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         catWrite.MapPost("/seed", async (
             [FromServices] PcCategoryService svc,
@@ -1243,7 +1496,10 @@ public class PcTrackerModule : IModule
             await svc.SeedDefaultsAsync(ct);
             cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<string>.Ok("种子数据已初始化"));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
 
         // === Phase 2: Productivity ===
         var prodRead = endpoints.MapGroup("/api/v1/pc/productivity").RequireAuthorization();
@@ -1263,7 +1519,11 @@ public class PcTrackerModule : IModule
                 () => svc.GetDashboardAsync(d, ct),
                 ct);
             return Results.Ok(ApiResponse<ProductivityDashboardDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<ProductivityDashboardDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         prodRead.MapGet("/range", async (
             [FromQuery] string? start,
@@ -1282,7 +1542,11 @@ public class PcTrackerModule : IModule
                 () => svc.GetRangeAsync(s, e, ct),
                 ct);
             return Results.Ok(ApiResponse<List<DailyProductivityDto>>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<List<DailyProductivityDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         // === Phase 2: 时间线 v2 ===
         readGroup.MapGet("/productivity/goals", async (
@@ -1291,7 +1555,9 @@ public class PcTrackerModule : IModule
         {
             var goal = await svc.GetGoalsAsync(ct);
             return Results.Ok(ApiResponse<ProductivityGoalDto>.Ok(goal));
-        });
+        })
+        .Produces<ApiResponse<ProductivityGoalDto>>(200)
+        .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPut("/productivity/goals", async (
             [FromBody] ProductivityGoalDto req,
@@ -1302,7 +1568,11 @@ public class PcTrackerModule : IModule
             var goal = await svc.UpdateGoalsAsync(req, ct);
             cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<ProductivityGoalDto>.Ok(goal));
-        });
+        })
+        .Produces<ApiResponse<ProductivityGoalDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         readGroup.MapGet("/timeline/v2", async (
             [FromQuery] string? date,
@@ -1321,7 +1591,10 @@ public class PcTrackerModule : IModule
                 () => svc.GetTimelineV2Async(d, ct),
                 ct);
             return Results.Ok(ApiResponse<List<TimelineV2Item>>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<List<TimelineV2Item>>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
     }
 
     public async Task InitializeAsync(IServiceProvider serviceProvider)
@@ -1371,3 +1644,6 @@ public class PcTrackerModule : IModule
             || (record.ClassificationConfidence is not null && record.ClassificationConfidence < 0.5);
     }
 }
+
+/// <summary>契约注解用：签名导入结果（与原匿名对象 JSON 等价：camelCase 属性、同字段同序）。</summary>
+public sealed record AppSignatureImportResultDto(int Imported, int Updated);

@@ -64,58 +64,110 @@ public sealed class MobileModule : IModule
         group.MapGet("/devices", async (
             [FromServices] MobileDeviceService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<MobileDeviceDto>>.Ok(await service.ListAsync(ct))));
+            Results.Ok(ApiResponse<IReadOnlyList<MobileDeviceDto>>.Ok(await service.ListAsync(ct))))
+        .Produces<ApiResponse<IReadOnlyList<MobileDeviceDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/devices/manage", async ([FromServices] DeviceManagementService svc, [FromQuery] string? sortBy, CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<DeviceListDto>>.Ok(await svc.ListDevicesAsync(sortBy, ct))));
+            Results.Ok(ApiResponse<IReadOnlyList<DeviceListDto>>.Ok(await svc.ListDevicesAsync(sortBy, ct))))
+        .Produces<ApiResponse<IReadOnlyList<DeviceListDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
         group.MapGet("/devices/{deviceId}/detail", async ([FromRoute] string deviceId, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
-            Results.Ok(ApiResponse<DeviceDetailDto>.Ok(await svc.GetDetailAsync(deviceId, ct))));
+            Results.Ok(ApiResponse<DeviceDetailDto>.Ok(await svc.GetDetailAsync(deviceId, ct))))
+        .Produces<ApiResponse<DeviceDetailDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
         group.MapPost("/devices/{deviceId}/rename", async ([FromRoute] string deviceId, [FromBody] DeviceRenameRequest req, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
-            Results.Ok(ApiResponse<DeviceDto>.Ok(await svc.RenameAsync(deviceId, req.DisplayName, ct))));
+            Results.Ok(ApiResponse<DeviceDto>.Ok(await svc.RenameAsync(deviceId, req.DisplayName, ct))))
+        .Produces<ApiResponse<DeviceDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
         group.MapPost("/devices/merge/preview", async ([FromBody] DeviceMergeRequest req, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
-            Results.Ok(ApiResponse<DeviceMergePreviewDto>.Ok(await svc.PreviewMergeAsync(req.SourceDeviceIds, req.TargetDeviceId, ct))));
+            Results.Ok(ApiResponse<DeviceMergePreviewDto>.Ok(await svc.PreviewMergeAsync(req.SourceDeviceIds, req.TargetDeviceId, ct))))
+        .Produces<ApiResponse<DeviceMergePreviewDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
         group.MapPost("/devices/merge", async ([FromBody] DeviceMergeRequest req, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
         {
             await svc.MergeAsync(req.SourceDeviceIds, req.TargetDeviceId, ct);
             return Results.Ok(ApiResponse<string>.Ok("merged"));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
         group.MapGet("/devices/{deviceId}/delete-preview", async ([FromRoute] string deviceId, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
-            Results.Ok(ApiResponse<DeviceDeletePreviewDto>.Ok(await svc.PreviewDeleteAsync(deviceId, ct))));
+            Results.Ok(ApiResponse<DeviceDeletePreviewDto>.Ok(await svc.PreviewDeleteAsync(deviceId, ct))))
+        .Produces<ApiResponse<DeviceDeletePreviewDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
         group.MapDelete("/devices/{deviceId}", async ([FromRoute] string deviceId, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
         {
             await svc.DeleteAsync(deviceId, ct);
             return Results.Ok(ApiResponse<string>.Ok("deleted"));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
         group.MapGet("/devices/{deviceId}/export", async ([FromRoute] string deviceId, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
         {
             var exp = await svc.ExportAsync(deviceId, ct);
             return Results.File(System.Text.Encoding.UTF8.GetBytes(exp.Json), "application/json", exp.FileName);
-        });
+        })
+        .Produces<byte[]>(200, "application/json")
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/devices/register", async (
             [FromBody] MobileDeviceRegisterRequest request,
             [FromServices] MobileDeviceService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileDeviceDto>.Ok(await service.RegisterAsync(request, ct))));
+            Results.Ok(ApiResponse<MobileDeviceDto>.Ok(await service.RegisterAsync(request, ct))))
+        .Produces<ApiResponse<MobileDeviceDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/sync/gaps", async (
             [FromBody] MobileGapRequest request,
             [FromServices] MobileGapService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileGapResponse>.Ok(await service.GetGapsAsync(request, ct))));
+            Results.Ok(ApiResponse<MobileGapResponse>.Ok(await service.GetGapsAsync(request, ct))))
+        .Produces<ApiResponse<MobileGapResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/usage/events", async (
             [FromBody] MobileUsageEventsUploadRequest request,
             [FromServices] MobileUsageIngestService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileUsageIngestResult>.Ok(await service.IngestAsync(request, ct))));
+            Results.Ok(ApiResponse<MobileUsageIngestResult>.Ok(await service.IngestAsync(request, ct))))
+        .Produces<ApiResponse<MobileUsageIngestResult>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         // ===== 阶段一取证通道（REQ-5 / REQ-6 / REQ-9）：独立于 mobile_sync_batches 既有语义 =====
         group.MapPost("/forensics/events", async (
             [FromBody] MobileForensicsUploadRequest request,
             [FromServices] MobileForensicIngestService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileForensicsIngestResult>.Ok(await service.IngestAsync(request, ct))));
+            Results.Ok(ApiResponse<MobileForensicsIngestResult>.Ok(await service.IngestAsync(request, ct))))
+        .Produces<ApiResponse<MobileForensicsIngestResult>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         // 存活页 / 摘要 / 体检共用同一份摘要实现，四条路径的数字必须一致（AC-11.2 / AC-13.1）。
         group.MapGet("/liveness/overview", async (
@@ -124,7 +176,11 @@ public sealed class MobileModule : IModule
             [FromServices] MobileLivenessService service,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<MobileLivenessOverviewResponse>.Ok(
-                await service.GetOverviewAsync(rangeStartUtc, rangeEndUtc, ct))));
+                await service.GetOverviewAsync(rangeStartUtc, rangeEndUtc, ct))))
+        .Produces<ApiResponse<MobileLivenessOverviewResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/devices/{deviceId}/liveness", async (
             [FromRoute] string deviceId,
@@ -139,7 +195,12 @@ public sealed class MobileModule : IModule
             return block is null
                 ? Results.NotFound(ApiResponse<string>.Error(404, "设备不存在。"))
                 : Results.Ok(ApiResponse<MobileDeviceLivenessDto>.Ok(block));
-        });
+        })
+        .Produces<ApiResponse<MobileDeviceLivenessDto>>(200)
+        .Produces<ApiResponse<string>>(404)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/devices/{deviceId}/liveness/events", async (
             [FromRoute] string deviceId,
@@ -150,7 +211,11 @@ public sealed class MobileModule : IModule
             [FromServices] MobileLivenessService service,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<MobileLivenessEventPageDto>.Ok(
-                await service.GetEventsAsync(deviceId, rangeStartUtc, rangeEndUtc, page, pageSize, ct))));
+                await service.GetEventsAsync(deviceId, rangeStartUtc, rangeEndUtc, page, pageSize, ct))))
+        .Produces<ApiResponse<MobileLivenessEventPageDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/devices/{deviceId}/dropped-reasons", async (
             [FromRoute] string deviceId,
@@ -159,20 +224,32 @@ public sealed class MobileModule : IModule
             [FromServices] MobileLivenessService service,
             CancellationToken ct) =>
             Results.Ok(ApiResponse<MobileDroppedReasonResponse>.Ok(
-                await service.GetDroppedReasonsAsync(deviceId, rangeStartUtc, rangeEndUtc, ct))));
+                await service.GetDroppedReasonsAsync(deviceId, rangeStartUtc, rangeEndUtc, ct))))
+        .Produces<ApiResponse<MobileDroppedReasonResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/location/points", async (
             [FromBody] MobileLocationPointRequest request,
             [FromServices] MobileLocationService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileLocationPointDto>.Ok(await service.SubmitAsync(request, ct))));
+            Results.Ok(ApiResponse<MobileLocationPointDto>.Ok(await service.SubmitAsync(request, ct))))
+        .Produces<ApiResponse<MobileLocationPointDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         // 批量补传通道（#246）：客户端积压时一次请求上传多个点，逐条返回结果。
         group.MapPost("/location/points/batch", async (
             [FromBody] MobileLocationPointsUploadRequest request,
             [FromServices] MobileLocationService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileLocationPointsUploadResult>.Ok(await service.SubmitBatchAsync(request, ct))));
+            Results.Ok(ApiResponse<MobileLocationPointsUploadResult>.Ok(await service.SubmitBatchAsync(request, ct))))
+        .Produces<ApiResponse<MobileLocationPointsUploadResult>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/summary", async (
             [FromQuery] string? date,
@@ -183,7 +260,11 @@ public sealed class MobileModule : IModule
             CancellationToken ct) =>
             Results.Ok(ApiResponse<MobileUsageSummaryResponse>.Ok(await service.GetSummaryAsync(
                 BuildSummaryQuery(deviceId, date, rangeStartUtc, rangeEndUtc),
-                ct))));
+                ct))))
+        .Produces<ApiResponse<MobileUsageSummaryResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/timeline", async (
             [FromQuery] string? date,
@@ -206,7 +287,11 @@ public sealed class MobileModule : IModule
                 // 分页偏移超过可读上限：明确 400，而不是静默物化整段历史（#330 review）。
                 return Results.BadRequest(ApiResponse<string>.Error(400, ex.Message));
             }
-        });
+        })
+        .Produces<ApiResponse<MobileTimelineResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/location/history", async (
             [FromQuery] string? deviceId,
@@ -233,7 +318,11 @@ public sealed class MobileModule : IModule
                 deviceId,
                 effectiveMaxAccuracy,
                 points)));
-        });
+        })
+        .Produces<ApiResponse<MobileLocationHistoryResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/location/analytics/overview", async (
             [AsParameters] MobileLocationEndpointQuery query,
@@ -246,7 +335,11 @@ public sealed class MobileModule : IModule
                 AggregateResultCacheKeys.Build(httpContext.Request),
                 force,
                 () => service.GetOverviewAsync(query.ToRequest(), ct),
-                ct))));
+                ct))))
+        .Produces<ApiResponse<MobileLocationAnalyticsOverviewResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/location/analytics/tracks", async (
             [AsParameters] MobileLocationEndpointQuery query,
@@ -259,7 +352,11 @@ public sealed class MobileModule : IModule
                 AggregateResultCacheKeys.Build(httpContext.Request),
                 force,
                 () => service.GetTracksAsync(query.ToRequest(), ct),
-                ct))));
+                ct))))
+        .Produces<ApiResponse<IReadOnlyList<MobileLocationTrackDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/location/analytics/segments/{segmentId}", async (
             [FromRoute] string segmentId,
@@ -278,7 +375,12 @@ public sealed class MobileModule : IModule
             return segment is null
                 ? Results.NotFound(ApiResponse<string>.Error(404, "Location segment not found."))
                 : Results.Ok(ApiResponse<MobileLocationSegmentDto>.Ok(segment));
-        });
+        })
+        .Produces<ApiResponse<MobileLocationSegmentDto>>(200)
+        .Produces<ApiResponse<string>>(404)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/location/analytics/frequent-places", async (
             [AsParameters] MobileLocationEndpointQuery query,
@@ -291,7 +393,11 @@ public sealed class MobileModule : IModule
                 AggregateResultCacheKeys.Build(httpContext.Request),
                 force,
                 () => service.GetFrequentPlacesAsync(query.ToRequest(), ct),
-                ct))));
+                ct))))
+        .Produces<ApiResponse<MobileFrequentPlacesResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/location/analytics/movement-stats", async (
             [AsParameters] MobileLocationEndpointQuery query,
@@ -304,14 +410,22 @@ public sealed class MobileModule : IModule
                 AggregateResultCacheKeys.Build(httpContext.Request),
                 force,
                 () => service.GetMovementStatsAsync(query.ToRequest(), ct),
-                ct))));
+                ct))))
+        .Produces<ApiResponse<MobileMovementStatsResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/location/analytics/segments/{segmentId}/points", async (
             [FromRoute] string segmentId,
             [AsParameters] MobileLocationEndpointQuery query,
             [FromServices] MobileLocationAggregationService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileLocationSegmentPointPageDto>.Ok(await service.GetSegmentPointsAsync(segmentId, query.ToRequest(), ct))));
+            Results.Ok(ApiResponse<MobileLocationSegmentPointPageDto>.Ok(await service.GetSegmentPointsAsync(segmentId, query.ToRequest(), ct))))
+        .Produces<ApiResponse<MobileLocationSegmentPointPageDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/apps/missing-metadata", async (
             [FromQuery] string? deviceId,
@@ -326,7 +440,11 @@ public sealed class MobileModule : IModule
                     rangeEndUtc,
                     deviceId,
                     limit ?? 200,
-                    ct))));
+                    ct))))
+        .Produces<ApiResponse<MobileMissingAppMetadataResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/quality", async (
             [FromQuery] string? date,
@@ -342,7 +460,11 @@ public sealed class MobileModule : IModule
                 query.RangeEndUtc,
                 ct,
                 query.DeviceId)));
-        });
+        })
+        .Produces<ApiResponse<MobileQualityResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/analytics/overview", async (
             [AsParameters] MobileAnalyticsEndpointQuery query,
@@ -355,7 +477,11 @@ public sealed class MobileModule : IModule
                 AggregateResultCacheKeys.Build(httpContext.Request),
                 force,
                 () => service.GetOverviewAsync(query.ToRequest(), ct),
-                ct))));
+                ct))))
+        .Produces<ApiResponse<MobileAnalyticsOverviewResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/analytics/heatmap", async (
             [AsParameters] MobileAnalyticsEndpointQuery query,
@@ -368,7 +494,11 @@ public sealed class MobileModule : IModule
                 AggregateResultCacheKeys.Build(httpContext.Request),
                 force,
                 () => service.GetHeatmapAsync(query.ToRequest(), ct),
-                ct))));
+                ct))))
+        .Produces<ApiResponse<IReadOnlyList<MobileHeatmapBucketDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/analytics/charts", async (
             [AsParameters] MobileAnalyticsEndpointQuery query,
@@ -381,7 +511,11 @@ public sealed class MobileModule : IModule
                 AggregateResultCacheKeys.Build(httpContext.Request),
                 force,
                 () => service.GetChartsAsync(query.ToRequest(), ct),
-                ct))));
+                ct))))
+        .Produces<ApiResponse<IReadOnlyList<MobileAnalyticsChartDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/analytics/timeline-blocks", async (
             [AsParameters] MobileAnalyticsEndpointQuery query,
@@ -394,25 +528,41 @@ public sealed class MobileModule : IModule
                 AggregateResultCacheKeys.Build(httpContext.Request),
                 force,
                 () => service.GetBlocksAsync(query.ToRequest(), ct),
-                ct))));
+                ct))))
+        .Produces<ApiResponse<MobileTimelineBlockPageDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/analytics/timeline-blocks/{blockId}/sessions", async (
             [FromRoute] string blockId,
             [AsParameters] MobileAnalyticsEndpointQuery query,
             [FromServices] MobileTimelineBlockService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<MobileTimelineBlockSessionDto>>.Ok(await service.GetSessionsForBlockAsync(blockId, query.ToRequest(), ct))));
+            Results.Ok(ApiResponse<IReadOnlyList<MobileTimelineBlockSessionDto>>.Ok(await service.GetSessionsForBlockAsync(blockId, query.ToRequest(), ct))))
+        .Produces<ApiResponse<IReadOnlyList<MobileTimelineBlockSessionDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/analytics/sessions/{sessionId}/events", async (
             [FromRoute] string sessionId,
             [FromServices] MobileTimelineBlockService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<MobileSessionEventDto>>.Ok(await service.GetSessionEventsAsync(sessionId, ct))));
+            Results.Ok(ApiResponse<IReadOnlyList<MobileSessionEventDto>>.Ok(await service.GetSessionEventsAsync(sessionId, ct))))
+        .Produces<ApiResponse<IReadOnlyList<MobileSessionEventDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/analytics/goals", async (
             [FromServices] MobileUsageGoalService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<MobileUsageGoalDto>>.Ok(await service.ListAsync(ct))));
+            Results.Ok(ApiResponse<IReadOnlyList<MobileUsageGoalDto>>.Ok(await service.ListAsync(ct))))
+        .Produces<ApiResponse<IReadOnlyList<MobileUsageGoalDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/analytics/goals", async (
             [FromBody] MobileUsageGoalUpsertRequest request,
@@ -423,7 +573,11 @@ public sealed class MobileModule : IModule
             var result = await service.SaveAsync(request, ct);
             cache.EvictByPrefix("/api/v1/mobile/");
             return Results.Ok(ApiResponse<MobileUsageGoalDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<MobileUsageGoalDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapDelete("/analytics/goals/{goalId}", async (
             [FromRoute] string goalId,
@@ -434,12 +588,20 @@ public sealed class MobileModule : IModule
             var ok = await service.DeleteAsync(goalId, ct);
             cache.EvictByPrefix("/api/v1/mobile/");
             return Results.Ok(ApiResponse<string>.Ok(ok ? goalId : string.Empty));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/apps/catalog-overrides", async (
             [FromServices] MobileAppCatalogOverrideService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<MobileAppCatalogOverrideDto>>.Ok(await service.ListOverridesAsync(ct))));
+            Results.Ok(ApiResponse<IReadOnlyList<MobileAppCatalogOverrideDto>>.Ok(await service.ListOverridesAsync(ct))))
+        .Produces<ApiResponse<IReadOnlyList<MobileAppCatalogOverrideDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPut("/apps/catalog-overrides", async (
             [FromBody] MobileAppCatalogOverrideUpsertRequest request,
@@ -450,7 +612,11 @@ public sealed class MobileModule : IModule
             var result = await service.UpsertOverrideAsync(request, ct);
             cache.EvictByPrefix("/api/v1/mobile/");
             return Results.Ok(ApiResponse<MobileAppCatalogOverrideDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<MobileAppCatalogOverrideDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPut("/apps/catalog-overrides/{packageName}", async (
             [FromRoute] string packageName,
@@ -462,7 +628,11 @@ public sealed class MobileModule : IModule
             var result = await service.UpsertOverrideAsync(request with { PackageName = packageName }, ct);
             cache.EvictByPrefix("/api/v1/mobile/");
             return Results.Ok(ApiResponse<MobileAppCatalogOverrideDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<MobileAppCatalogOverrideDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapDelete("/apps/catalog-overrides/{packageName}", async (
             [FromRoute] string packageName,
@@ -473,12 +643,20 @@ public sealed class MobileModule : IModule
             var ok = await service.DeleteOverrideAsync(packageName, ct);
             cache.EvictByPrefix("/api/v1/mobile/");
             return Results.Ok(ApiResponse<string>.Ok(ok ? packageName : string.Empty));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/apps/category-rules", async (
             [FromServices] MobileAppCatalogOverrideService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<MobileAppCategoryRuleDto>>.Ok(await service.ListCategoryRulesAsync(ct))));
+            Results.Ok(ApiResponse<IReadOnlyList<MobileAppCategoryRuleDto>>.Ok(await service.ListCategoryRulesAsync(ct))))
+        .Produces<ApiResponse<IReadOnlyList<MobileAppCategoryRuleDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/apps/category-rules", async (
             [FromBody] MobileAppCategoryRuleUpsertRequest request,
@@ -489,7 +667,11 @@ public sealed class MobileModule : IModule
             var result = await service.CreateCategoryRuleAsync(request, ct);
             cache.EvictByPrefix("/api/v1/mobile/");
             return Results.Ok(ApiResponse<MobileAppCategoryRuleDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<MobileAppCategoryRuleDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPut("/apps/category-rules/{ruleId}", async (
             [FromRoute] string ruleId,
@@ -501,7 +683,11 @@ public sealed class MobileModule : IModule
             var result = await service.UpdateCategoryRuleAsync(ruleId, request, ct);
             cache.EvictByPrefix("/api/v1/mobile/");
             return Results.Ok(ApiResponse<MobileAppCategoryRuleDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<MobileAppCategoryRuleDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapDelete("/apps/category-rules/{ruleId}", async (
             [FromRoute] string ruleId,
@@ -512,7 +698,11 @@ public sealed class MobileModule : IModule
             var ok = await service.DeleteCategoryRuleAsync(ruleId, ct);
             cache.EvictByPrefix("/api/v1/mobile/");
             return Results.Ok(ApiResponse<string>.Ok(ok ? ruleId : string.Empty));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
     }
 
     public async Task InitializeAsync(IServiceProvider serviceProvider)

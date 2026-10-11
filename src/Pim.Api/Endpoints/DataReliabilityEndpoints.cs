@@ -31,7 +31,10 @@ public static class DataReliabilityEndpoints
         {
             var report = await runner.GetLatestAsync(ct);
             return Results.Ok(ApiResponse<DataReliabilityInspectionReport>.Ok(report));
-        });
+        })
+        .Produces<ApiResponse<DataReliabilityInspectionReport>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/inspection/refresh", async (
             IDataReliabilityInspectionRunner runner,
@@ -39,7 +42,10 @@ public static class DataReliabilityEndpoints
         {
             var report = await runner.RefreshAsync(ct);
             return Results.Ok(ApiResponse<DataReliabilityInspectionReport>.Ok(report));
-        });
+        })
+        .Produces<ApiResponse<DataReliabilityInspectionReport>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/rules/{code}/violations", async (
             string code,
@@ -56,7 +62,11 @@ public static class DataReliabilityEndpoints
             var effectiveLimit = Math.Clamp(limit ?? DefaultViolationExportLimit, 1, MaxViolationExportLimit);
             var export = await exporter.GetViolationsAsync(definition.Code, effectiveLimit, ct);
             return Results.Ok(ApiResponse<DataReliabilityViolationExport>.Ok(export));
-        });
+        })
+        .Produces<ApiResponse<DataReliabilityViolationExport>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
 
         return group;
     }

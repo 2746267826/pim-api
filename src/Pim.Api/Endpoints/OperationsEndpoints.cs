@@ -19,7 +19,11 @@ public static class OperationsEndpoints
         {
             var result = await confirmations.ListPendingForUserAsync(RequireCurrentUserId(currentUser), ct);
             return Results.Ok(ApiResponse<IReadOnlyList<OperationConfirmationDto>>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<IReadOnlyList<OperationConfirmationDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/confirmations/{id:guid}", async (
             Guid id,
@@ -36,7 +40,11 @@ public static class OperationsEndpoints
             }
 
             return Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<OperationConfirmationDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/confirmations/{id:guid}/confirm", async (
             Guid id,
@@ -46,7 +54,11 @@ public static class OperationsEndpoints
         {
             var result = await confirmations.ConfirmAsync(id, RequireCurrentUserId(currentUser), ct);
             return Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<OperationConfirmationDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/confirmations/{id:guid}/confirm-second-level", async (
             Guid id,
@@ -56,7 +68,11 @@ public static class OperationsEndpoints
         {
             var result = await confirmations.ConfirmSecondLevelAsync(id, RequireCurrentUserId(currentUser), ct);
             return Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<OperationConfirmationDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/confirmations/{id:guid}/confirm-strict", async (
             Guid id,
@@ -66,7 +82,11 @@ public static class OperationsEndpoints
         {
             var result = await confirmations.ConfirmStrictAsync(id, RequireCurrentUserId(currentUser), ct);
             return Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<OperationConfirmationDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/confirmations/{id:guid}/reject", async (
             Guid id,
@@ -76,7 +96,11 @@ public static class OperationsEndpoints
         {
             var result = await confirmations.RejectAsync(id, RequireCurrentUserId(currentUser), ct);
             return Results.Ok(ApiResponse<OperationConfirmationDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<OperationConfirmationDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/audit/{objectType}/{objectId:guid}", async (
             string objectType,
@@ -87,8 +111,12 @@ public static class OperationsEndpoints
         {
             var userId = RequireCurrentUserId(currentUser);
             var result = await audit.GetTimelineAsync(objectType, objectId, userId, ct);
-            return Results.Ok(ApiResponse<object>.Ok(result));
-        });
+            return Results.Ok(ApiResponse<Pim.Core.Audit.AuditTimelineResponse>.Ok(result));
+        })
+        .Produces<ApiResponse<Pim.Core.Audit.AuditTimelineResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/audit/{auditVersionId:guid}/restore-preview", async (
             Guid auditVersionId,
@@ -98,8 +126,12 @@ public static class OperationsEndpoints
         {
             var userId = RequireCurrentUserId(currentUser);
             var result = await audit.PreviewRestoreAsync(auditVersionId, userId, ct);
-            return Results.Ok(ApiResponse<object>.Ok(result));
-        });
+            return Results.Ok(ApiResponse<Pim.Core.Audit.RestorePreviewResponse>.Ok(result));
+        })
+        .Produces<ApiResponse<Pim.Core.Audit.RestorePreviewResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/audit/export", async (
             DateTimeOffset? start,
@@ -114,8 +146,12 @@ public static class OperationsEndpoints
                 end ?? DateTimeOffset.MaxValue,
                 userId,
                 ct);
-            return Results.Ok(ApiResponse<object>.Ok(result));
-        });
+            return Results.Ok(ApiResponse<Pim.Core.Audit.AuditExportResponse>.Ok(result));
+        })
+        .Produces<ApiResponse<Pim.Core.Audit.AuditExportResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
     }
 
     private static Guid RequireCurrentUserId(ICurrentUserService currentUser)

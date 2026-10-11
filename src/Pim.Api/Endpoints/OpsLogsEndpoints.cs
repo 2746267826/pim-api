@@ -41,7 +41,12 @@ public static class OpsLogsEndpoints
                 }, AuditResult.Failure, code, ex.Message);
                 throw;
             }
-        });
+        })
+        .Produces<ApiResponse<IReadOnlyList<LogFileInfo>>>(200)
+        .Produces(401)
+        .Produces(429)
+        .Produces(503)
+        .Produces<ApiResponse<string>>(500);
         g.MapGet("/tail", async (string file, int? lines, string? level, string? keyword, OpsLogsService svc, HttpContext ctx, CancellationToken ct) =>
         {
             var ip = GetIp(ctx);
@@ -74,7 +79,15 @@ public static class OpsLogsEndpoints
                 }, AuditResult.Failure, code, ex.Message);
                 throw;
             }
-        });
+        })
+        .Produces<ApiResponse<OpsLogsResult>>(200)
+        .Produces<ApiResponse<OpsLogsResult>>(206)
+        .Produces(401)
+        .Produces(429)
+        .Produces(503)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
         g.MapGet("/query", async ([AsParameters] OpsLogsQuery q, OpsLogsService svc, HttpContext ctx, CancellationToken ct) =>
         {
             // default limit if not provided
@@ -108,7 +121,15 @@ public static class OpsLogsEndpoints
                 }, AuditResult.Failure, code, ex.Message);
                 throw;
             }
-        });
+        })
+        .Produces<ApiResponse<OpsLogsResult>>(200)
+        .Produces<ApiResponse<OpsLogsResult>>(206)
+        .Produces(401)
+        .Produces(429)
+        .Produces(503)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
     }
 
     private static string GetIp(HttpContext ctx) => OpsIpHelper.GetClientIp(ctx);

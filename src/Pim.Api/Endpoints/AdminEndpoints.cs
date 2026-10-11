@@ -16,7 +16,11 @@ public static class AdminEndpoints
             .RequireAuthorization(new AuthorizeAttribute { Roles = AdminBootstrap.AdminRole });
 
         group.MapGet("/users", async (IAdminUserService svc, CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<AdminUserDto>>.Ok(await svc.ListUsersAsync(ct))));
+            Results.Ok(ApiResponse<IReadOnlyList<AdminUserDto>>.Ok(await svc.ListUsersAsync(ct))))
+        .Produces<ApiResponse<IReadOnlyList<AdminUserDto>>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/users/{id:guid}/role", async (
             Guid id,
@@ -38,7 +42,13 @@ public static class AdminEndpoints
                 _ => Results.BadRequest(ApiResponse<string>.Error(40043, "操作失败"))
             };
             return response;
-        });
+        })
+        .Produces<ApiResponse<AdminUserDto>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/users/{id:guid}/status", async (
             Guid id,
@@ -59,6 +69,12 @@ public static class AdminEndpoints
                 _ => Results.BadRequest(ApiResponse<string>.Error(40043, "操作失败"))
             };
             return response;
-        });
+        })
+        .Produces<ApiResponse<AdminUserDto>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
     }
 }

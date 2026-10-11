@@ -44,13 +44,21 @@ public class QuickNotesModule : IModule
         {
             var result = await service.ListAsync(new QuickNoteListQuery(status, search, page ?? 1, pageSize ?? 30), ct);
             return Results.Ok(ApiResponse<PagedResult<QuickNoteListItemDto>>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<PagedResult<QuickNoteListItemDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/{id:guid}", async (
             Guid id,
             [FromServices] QuickNoteService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<QuickNoteDetailDto>.Ok(await service.GetAsync(id, ct))));
+            Results.Ok(ApiResponse<QuickNoteDetailDto>.Ok(await service.GetAsync(id, ct))))
+        .Produces<ApiResponse<QuickNoteDetailDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("", async (
             [FromBody] CreateQuickNoteRequest request,
@@ -61,33 +69,56 @@ public class QuickNotesModule : IModule
             return Results.Created(
                 QuickNoteEndpointPaths.Note(result.Id.ToString()),
                 ApiResponse<QuickNoteDetailDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<QuickNoteDetailDto>>(201)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPut("/{id:guid}", async (
             Guid id,
             [FromBody] UpdateQuickNoteRequest request,
             [FromServices] QuickNoteService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<QuickNoteDetailDto>.Ok(await service.UpdateAsync(id, request, ct))));
+            Results.Ok(ApiResponse<QuickNoteDetailDto>.Ok(await service.UpdateAsync(id, request, ct))))
+        .Produces<ApiResponse<QuickNoteDetailDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/{id:guid}/process", async (
             Guid id,
             [FromServices] QuickNoteService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<QuickNoteDetailDto>.Ok(await service.ProcessAsync(id, ct))));
+            Results.Ok(ApiResponse<QuickNoteDetailDto>.Ok(await service.ProcessAsync(id, ct))))
+        .Produces<ApiResponse<QuickNoteDetailDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/{id:guid}/archive", async (
             Guid id,
             [FromServices] QuickNoteService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<QuickNoteDetailDto>.Ok(await service.ArchiveAsync(id, ct))));
+            Results.Ok(ApiResponse<QuickNoteDetailDto>.Ok(await service.ArchiveAsync(id, ct))))
+        .Produces<ApiResponse<QuickNoteDetailDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/{id:guid}/restore", async (
             Guid id,
             [FromBody] RestoreQuickNoteRequest request,
             [FromServices] QuickNoteService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<QuickNoteDetailDto>.Ok(await service.RestoreAsync(id, request, ct))));
+            Results.Ok(ApiResponse<QuickNoteDetailDto>.Ok(await service.RestoreAsync(id, request, ct))))
+        .Produces<ApiResponse<QuickNoteDetailDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapDelete("/{id:guid}", async (
             Guid id,
@@ -96,7 +127,11 @@ public class QuickNotesModule : IModule
         {
             await service.DeleteAsync(id, ct);
             return Results.Ok(ApiResponse<string>.Ok("已删除"));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/attachments", async (
             HttpRequest request,
@@ -127,7 +162,11 @@ public class QuickNotesModule : IModule
             await using var stream = file.OpenReadStream();
             var result = await service.UploadAsync(stream, file.FileName, file.ContentType, file.Length, ct);
             return Results.Ok(ApiResponse<QuickNoteAttachmentUploadDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<QuickNoteAttachmentUploadDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/attachments/{id:guid}/download", async (
             Guid id,
@@ -144,7 +183,14 @@ public class QuickNotesModule : IModule
 
             var download = await service.DownloadAsync(id, ct);
             return Results.File(download.Content, download.ContentType, download.FileName);
-        });
+        })
+        .Produces(302)
+        .Produces<byte[]>(200, "application/octet-stream")
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(403)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapDelete("/attachments/{id:guid}", async (
             Guid id,
@@ -153,7 +199,12 @@ public class QuickNotesModule : IModule
         {
             await service.DeleteAsync(id, ct);
             return Results.Ok(ApiResponse<string>.Ok("已删除"));
-        });
+        })
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(403)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
     }
 
     public async Task InitializeAsync(IServiceProvider serviceProvider)

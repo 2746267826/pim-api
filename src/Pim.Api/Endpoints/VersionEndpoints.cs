@@ -1,4 +1,5 @@
 using Pim.Api.Services;
+using Pim.Core.Common;
 
 namespace Pim.Api.Endpoints;
 
@@ -39,7 +40,9 @@ public static class VersionEndpoints
                 snap.AndroidUrl != null ? (snap.AndroidVersion ?? snap.LatestVersion) : null,
                 snap.ShellWindowsUrl != null ? (snap.ShellWindowsVersion ?? snap.LatestVersion) : null,
                 snap.ShellAndroidUrl != null ? (snap.ShellAndroidVersion ?? snap.LatestVersion) : null));
-        }).AllowAnonymous();
+        }).AllowAnonymous()
+        .Produces<ApiVersionResponse>(200)
+        .Produces<ApiResponse<string>>(500);
         return endpoints;
     }
 }

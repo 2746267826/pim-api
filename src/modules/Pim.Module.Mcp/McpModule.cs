@@ -41,7 +41,10 @@ public class McpModule : IModule
             if (currentUser.UserId is not { } userId)
                 return Results.Unauthorized();
             return Results.Ok(ApiResponse<List<McpClientDto>>.Ok(await service.ListAsync(userId, ct)));
-        });
+        })
+        .Produces<ApiResponse<List<McpClientDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
 
         mgmt.MapPost("/clients", async (
             [FromBody] McpCreateClientRequest request,
@@ -54,7 +57,11 @@ public class McpModule : IModule
             var result = await service.CreateAsync(request.Name ?? string.Empty, userId, ct);
             return Results.Created(McpEndpointPaths.Client(result.Client.Id.ToString()),
                 ApiResponse<McpClientCreateResult>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<McpClientCreateResult>>(201)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         mgmt.MapPut("/clients/{id:guid}", async (
             Guid id,
@@ -67,7 +74,13 @@ public class McpModule : IModule
                 return Results.Unauthorized();
             var dto = await service.UpdateAsync(id, request.Name, request.Permissions, userId, ct);
             return Results.Ok(ApiResponse<McpClientDto>.Ok(dto));
-        });
+        })
+        .Produces<ApiResponse<McpClientDto>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         mgmt.MapPost("/clients/{id:guid}/revoke", async (
             Guid id,
@@ -79,7 +92,12 @@ public class McpModule : IModule
                 return Results.Unauthorized();
             var dto = await service.RevokeAsync(id, userId, ct);
             return Results.Ok(ApiResponse<McpClientDto>.Ok(dto));
-        });
+        })
+        .Produces<ApiResponse<McpClientDto>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         mgmt.MapDelete("/clients/{id:guid}", async (
             Guid id,
@@ -91,7 +109,12 @@ public class McpModule : IModule
                 return Results.Unauthorized();
             await service.DeleteAsync(id, userId, ct);
             return Results.NoContent();
-        });
+        })
+        .Produces(204)
+        .Produces(401)
+        .Produces(403)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         mgmt.MapGet("/activity", (
             [FromServices] ICurrentUserService currentUser) =>
@@ -99,11 +122,17 @@ public class McpModule : IModule
             if (currentUser.UserId is not { } userId)
                 return Results.Unauthorized();
             return Results.Ok(ApiResponse<IReadOnlyList<McpActivityEntry>>.Ok(McpToolExecutor.GetRecentActivity(userId)));
-        });
+        })
+        .Produces<ApiResponse<IReadOnlyList<McpActivityEntry>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
 
         mgmt.MapGet("/catalog", (
             [FromServices] McpClientService service) =>
-            Results.Ok(ApiResponse<McpCatalogDto>.Ok(service.Catalog())));
+            Results.Ok(ApiResponse<McpCatalogDto>.Ok(service.Catalog())))
+        .Produces<ApiResponse<McpCatalogDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
 
         // Internal verify endpoint used by the MCP server. NOT JWT-protected on purpose:
         // it authenticates via the mcp_clients token itself. It is expected to be reached
@@ -141,7 +170,13 @@ public class McpModule : IModule
                 403 => Results.Json(ApiResponse<string>.Error(40301, outcome.Error ?? "forbidden"), statusCode: StatusCodes.Status403Forbidden),
                 _ => Results.Ok(ApiResponse<McpVerifyResult>.Ok(outcome.Result!)),
             };
-        });
+        })
+        .Produces<ApiResponse<McpVerifyResult>>(200)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(401)
+        .Produces<ApiResponse<string>>(403)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
     }
 
     /// <summary>
