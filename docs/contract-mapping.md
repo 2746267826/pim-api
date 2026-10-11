@@ -487,3 +487,17 @@
   - `CreateShareRequest.permissionType`：代码里声明了 `SupportedPermissionTypes = ["view","edit"]` 但**从未使用**（不校验）→ 不标 enum，记录为设计备注；
   - 其余字符串字段（calendar kind、events scope、pc mode 等）服务端校验宽松或不校验 → 不标 enum。
 - 运行时行为不变：以上全部是 OpenAPI 文档元数据（SwaggerGen 选项与 SchemaFilter）+ attribute target 重定向（DataAnnotations 在 Minimal API 中本就不参与自动校验）。
+
+## 批次 3：鉴权定义 / Batch 3: security definitions
+
+- **securitySchemes**（`components.securitySchemes`，此前为 0）：
+  | scheme | 类型 | 依据 |
+  |---|---|---|
+  | `bearerAuth` | http bearer (JWT) | JwtBearer 认证（AuthExtensions.AddPimAuth） |
+  | `opsKey` | apiKey in header `X-PIM-Ops-Key` | OpsKeyMiddleware（src/Pim.Api/Infrastructure/Ops/OpsKeyMiddleware.cs，仅拦 /api/v1/ops 前缀；未配置 key → 503，不匹配 → 401，体为 `{code,message}` 裸 JSON） |
+- **per-operation security**：273/313 标注 —— 266 个 `bearerAuth`（RequireAuthorization 组/端点 + /mcp bearer guard）、7 个 `opsKey`（/api/v1/ops/*）。
+- **照实不标 security 的 40 个**（现状即匿名）：
+  - `/api/v1/auth/login|register|refresh`（登录入口）、`/api/v1/mcp/verify`（用 mcp_clients token 自证）；
+  - `/health`、`/api/version`、`/api/v1/tiles/*`、`/api/client/shell/latest`、`/api/v1/client/shell/latest`、`/api/{path}` 兜底；
+  - **`/api/v1/pc` 的 readGroup 全部 GET（tracker/health、browser-tt/*、summary、aw/timeline、keystats/range、detail、quality、categories、classification/*、activity-analysis、heatmap/grid、aggregation/*、productivity/goals、timeline/v2 等）当前无鉴权**（PcTrackerModule 的 readGroup 未挂 RequireAuthorization，且无全局 FallbackPolicy）——现状描述，建议单独评估是否为设计意图。
+- 注意事项（写入 scheme 描述与现状说明）：持 `mcp_tool` 作用域 JWT 的调用方还会经 `McpScopedTokenMiddleware` 做工具级权限校验（403，`{code:40302,...}` 包络），这是 bearer 之上的附加层，不改变 security 要求。

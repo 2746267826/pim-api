@@ -94,6 +94,10 @@ builder.Services.AddSwaggerGen(c =>
     c.SchemaFilter<Pim.Api.Infrastructure.OpenApi.NullabilityRequiredSchemaFilter>();
     // 契约批次2：服务端严格校验的取值集合 → enum（每条都有代码依据，见 filter 注释）。
     c.SchemaFilter<Pim.Api.Infrastructure.OpenApi.StrictValueSetsSchemaFilter>();
+    // 契约批次3：securitySchemes（bearer JWT + X-PIM-Ops-Key）与逐 operation 的 security，
+    // 均按端点真实鉴权现状映射（见 SecurityMetadataOperationFilter 注释），不改变行为。
+    c.OperationFilter<Pim.Api.Infrastructure.OpenApi.SecurityMetadataOperationFilter>();
+    c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.SecuritySchemesDocumentFilter>();
 });
 
 // Observability: health checks + metrics refresh
