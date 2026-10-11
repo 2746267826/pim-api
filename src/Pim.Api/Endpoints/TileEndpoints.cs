@@ -15,7 +15,7 @@ public static class TileEndpoints
             CancellationToken cancellationToken) =>
         {
             if (!TileCoordinate.TryParse(z, x, y, out var coordinate))
-                return Results.BadRequest(new { message = "Invalid tile coordinates." });
+                return Results.BadRequest(new TileErrorDto("Invalid tile coordinates."));
 
             try
             {
@@ -28,8 +28,15 @@ public static class TileEndpoints
             {
                 return Results.StatusCode(StatusCodes.Status502BadGateway);
             }
-        }).AllowAnonymous();
+        }).AllowAnonymous()
+        .Produces<byte[]>(200, "image/png")
+        .Produces<TileErrorDto>(400)
+        .Produces(502)
+        .Produces(500);
 
         return endpoints;
     }
 }
+
+/// <summary>契约注解用：瓦片坐标错误的响应形状（与原匿名对象 JSON 等价）。</summary>
+public record TileErrorDto(string Message);

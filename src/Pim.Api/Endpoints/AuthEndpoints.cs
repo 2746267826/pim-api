@@ -99,7 +99,11 @@ public static class AuthEndpoints
                     refreshToken,
                     DateTimeOffset.UtcNow.AddMinutes(15),
                     new UserInfo(user.Id, user.Username, user.DisplayName!, user.Role))));
-        });
+        })
+        .Produces<ApiResponse<AuthResponse>>(201)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(409)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/login", async (
             LoginRequest request,
@@ -187,7 +191,13 @@ public static class AuthEndpoints
                 refreshToken,
                 DateTimeOffset.UtcNow.AddMinutes(15),
                 new UserInfo(user.Id, user.Username, user.DisplayName!, user.Role))));
-        });
+        })
+        .Produces<ApiResponse<AuthResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(403)
+        .Produces(429)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/refresh", async (
             RefreshRequest request,
@@ -230,7 +240,11 @@ public static class AuthEndpoints
                 newRefreshToken,
                 DateTimeOffset.UtcNow.AddMinutes(15),
                 new UserInfo(user.Id, user.Username, user.DisplayName!, user.Role))));
-        });
+        })
+        .Produces<ApiResponse<AuthResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         // 当前登录用户信息（前端刷新页面后恢复用户名与角色）
         group.MapGet("/me", async (
@@ -246,6 +260,9 @@ public static class AuthEndpoints
 
             return Results.Ok(ApiResponse<UserInfo>.Ok(
                 new UserInfo(user.Id, user.Username, user.DisplayName!, user.Role)));
-        }).RequireAuthorization();
+        }).RequireAuthorization()
+        .Produces<ApiResponse<UserInfo>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
     }
 }

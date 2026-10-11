@@ -88,50 +88,278 @@ public sealed class FilesModule : IModule
         group.MapGet("/providers", async (
             [FromServices] FileProviderBindingService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<IReadOnlyList<FileProviderDto>>.Ok(await service.ListProvidersAsync(ct))));
+            Results.Ok(ApiResponse<IReadOnlyList<FileProviderDto>>.Ok(await service.ListProvidersAsync(ct))))
+        .Produces<ApiResponse<IReadOnlyList<FileProviderDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
 
-        group.MapPost("/providers/onedrive", StartOneDriveBindingAsync);
-        group.MapGet("/providers/{id:guid}/binding-status", GetOneDriveBindingStatusAsync);
-        group.MapDelete("/providers/{id:guid}", DisconnectProviderAsync);
+        group.MapPost("/providers/onedrive", StartOneDriveBindingAsync)
+        .Produces<ApiResponse<OneDriveBindingStartDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/providers/{id:guid}/binding-status", GetOneDriveBindingStatusAsync)
+        .Produces<ApiResponse<OneDriveBindingStatusDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapDelete("/providers/{id:guid}", DisconnectProviderAsync)
+        .Produces<ApiResponse<bool>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
 
-        group.MapPost("/providers/{id:guid}/sync", SyncProviderAsync);
-        group.MapGet("/providers/{id:guid}/sync-status", SyncStatusAsync);
-        group.MapGet("/items", ListItemsAsync);
-        group.MapGet("/items/{id:guid}", GetItemAsync);
-        group.MapPost("/items/upload", UploadItemAsync);
-        group.MapGet("/items/{id:guid}/download", DownloadItemAsync);
+        group.MapPost("/providers/{id:guid}/sync", SyncProviderAsync)
+        // 双形态 200：Hangfire 可用时返回 OneDriveSyncStartedDto（常态）；后台设施不可用时
+        // 退回同步执行并返回 OneDriveSyncResultDto（见 SyncProviderAsync）。OpenAPI 单响应码
+        // 只能承载一个 schema，这里标注常态形态，回退形态记录在契约映射清单。
+        .Produces<ApiResponse<OneDriveSyncStartedDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(503)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/providers/{id:guid}/sync-status", SyncStatusAsync)
+        .Produces<ApiResponse<OneDriveSyncStatusDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/items", ListItemsAsync)
+        .Produces<ApiResponse<FileListResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/items/{id:guid}", GetItemAsync)
+        .Produces<ApiResponse<FileItemDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
+        group.MapPost("/items/upload", UploadItemAsync)
+        .Produces<ApiResponse<FileItemDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/items/{id:guid}/download", DownloadItemAsync)
+        .Produces(302)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
         // REQ-20 / AC-20.1：下载直链以 **JSON** 形式返回，页面 window.open 直链。
         // 不再让前端用 fetch 跟随 302 去「读 response.url」——那会把整个文件体真拉一遍
         // （验收 F-3）。与 preview-url 同一模式，服务器只给链接、不搬字节。
-        group.MapGet("/items/{id:guid}/download-url", DownloadUrlAsync);
-        group.MapPost("/items/{id:guid}/move", MoveItemAsync);
-        group.MapPost("/items/{id:guid}/rename", RenameItemAsync);
-        group.MapDelete("/items/{id:guid}", DeleteItemAsync);
-        group.MapGet("/items/{id:guid}/content", OneDriveContentAsync);
-        group.MapGet("/items/{id:guid}/thumbnail", OneDriveThumbnailAsync);
-        group.MapGet("/items/{id:guid}/preview-url", OneDrivePreviewUrlAsync);
-        group.MapGet("/items/{id:guid}/text", OneDriveGetTextAsync);
-        group.MapPut("/items/{id:guid}/text", OneDriveSaveTextAsync);
-        group.MapGet("/items/{id:guid}/snapshots", OneDriveListSnapshotsAsync);
-        group.MapPost("/items/{id:guid}/snapshots/{snapshotId:guid}/restore", OneDriveRestoreSnapshotAsync);
+        group.MapGet("/items/{id:guid}/download-url", DownloadUrlAsync)
+        .Produces<ApiResponse<OneDriveLinkDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapPost("/items/{id:guid}/move", MoveItemAsync)
+        .Produces<ApiResponse<FileItemDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapPost("/items/{id:guid}/rename", RenameItemAsync)
+        .Produces<ApiResponse<FileItemDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapDelete("/items/{id:guid}", DeleteItemAsync)
+        .Produces<ApiResponse<string>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/items/{id:guid}/content", OneDriveContentAsync)
+        .Produces(302)
+        .Produces(403)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/items/{id:guid}/thumbnail", OneDriveThumbnailAsync)
+        .Produces(302)
+        .Produces(403)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/items/{id:guid}/preview-url", OneDrivePreviewUrlAsync)
+        .Produces<ApiResponse<OneDriveLinkDto>>(200)
+        .Produces(403)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/items/{id:guid}/text", OneDriveGetTextAsync)
+        .Produces<ApiResponse<OneDriveTextDto>>(200)
+        .Produces(403)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapPut("/items/{id:guid}/text", OneDriveSaveTextAsync)
+        .Produces<ApiResponse<bool>>(200)
+        .Produces(403)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/items/{id:guid}/snapshots", OneDriveListSnapshotsAsync)
+        .Produces<ApiResponse<IReadOnlyList<FileTextSnapshotDto>>>(200)
+        .Produces(403)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapPost("/items/{id:guid}/snapshots/{snapshotId:guid}/restore", OneDriveRestoreSnapshotAsync)
+        .Produces<ApiResponse<bool>>(200)
+        .Produces(403)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
         // read_file_text（MCP）与 item 级恢复此前只有处理器、没有路由，工具调用恒 404（复审 C-3/C-4）
-        group.MapGet("/items/{id:guid}/extracted-text", OneDriveReadTextAsync);
-        group.MapPost("/items/{id:guid}/restore", OneDriveRestoreItemAsync);
-        group.MapGet("/search", SearchAsync);
-        group.MapGet("/suggestions", ListSuggestionsAsync);
-        group.MapPost("/suggestions/{id:guid}/dismiss", DismissSuggestionAsync);
-        group.MapPost("/suggestions/{id:guid}/accept", AcceptSuggestionAsync);
-        group.MapGet("/items/{id:guid}/open-link", BuildOpenLinkAsync);
+        group.MapGet("/items/{id:guid}/extracted-text", OneDriveReadTextAsync)
+        .Produces<ApiResponse<OneDriveTextDto>>(200)
+        .Produces(403)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapPost("/items/{id:guid}/restore", OneDriveRestoreItemAsync)
+        .Produces<ApiResponse<OneDriveWriteResultDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/search", SearchAsync)
+        .Produces<ApiResponse<FileSearchResultDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/suggestions", ListSuggestionsAsync)
+        .Produces<ApiResponse<IReadOnlyList<FileSuggestionDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
+        group.MapPost("/suggestions/{id:guid}/dismiss", DismissSuggestionAsync)
+        .Produces<ApiResponse<FileSuggestionDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
+        group.MapPost("/suggestions/{id:guid}/accept", AcceptSuggestionAsync)
+        .Produces<ApiResponse<FileSuggestionDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/items/{id:guid}/open-link", BuildOpenLinkAsync)
+        .Produces<ApiResponse<FileOpenLinkDto>>(200)
+        .Produces(403)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
         // REQ-15：在当前目录新建文件夹
-        group.MapPost("/folders", CreateFolderAsync);
+        group.MapPost("/folders", CreateFolderAsync)
+        .Produces<ApiResponse<FileItemDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
         // REQ-14：大文件浏览器直传——服务器只创建会话与登记结果，不搬字节
-        group.MapPost("/items/upload-session", CreateUploadSessionAsync);
-        group.MapPost("/items/upload-session/complete", CompleteUploadSessionAsync);
+        group.MapPost("/items/upload-session", CreateUploadSessionAsync)
+        .Produces<ApiResponse<UploadSessionDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapPost("/items/upload-session/complete", CompleteUploadSessionAsync)
+        .Produces<ApiResponse<FileItemDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
         // REQ-21：分享链接（生成 / 撤销 / 我的分享）
-        group.MapPost("/items/{id:guid}/share", CreateShareAsync);
-        group.MapGet("/items/{id:guid}/shares", ListSharesAsync);
-        group.MapDelete("/items/{id:guid}/shares/{permissionId}", RevokeShareAsync);
-        group.MapGet("/shares", ListAllSharesAsync);
+        group.MapPost("/items/{id:guid}/share", CreateShareAsync)
+        .Produces<ApiResponse<FileShareDto>>(200)
+        .Produces(403)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/items/{id:guid}/shares", ListSharesAsync)
+        .Produces<ApiResponse<IReadOnlyList<FileShareDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapDelete("/items/{id:guid}/shares/{permissionId}", RevokeShareAsync)
+        .Produces<ApiResponse<bool>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(502)
+        .Produces<ApiResponse<string>>(429)
+        .Produces<ApiResponse<string>>(500);
+        group.MapGet("/shares", ListAllSharesAsync)
+        .Produces<ApiResponse<IReadOnlyList<FileShareDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
     }
 
     public async Task InitializeAsync(IServiceProvider serviceProvider)

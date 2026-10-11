@@ -15,7 +15,10 @@ public static class StatusEndpoints
         {
             var result = await status.GetSummaryAsync(ct);
             return Results.Ok(ApiResponse<SystemStatusSummaryDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<SystemStatusSummaryDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/", async (
             ISystemStatusService status,
@@ -23,6 +26,9 @@ public static class StatusEndpoints
         {
             var result = await status.GetDetailAsync(ct);
             return Results.Ok(ApiResponse<SystemStatusDetailDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<SystemStatusDetailDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
     }
 }

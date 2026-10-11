@@ -39,7 +39,11 @@ public class StatsModule : IModule
 
             var count = await svc.IngestBatchAsync(batch, ct);
             return Results.Ok(ApiResponse<int>.Ok(count));
-        });
+        })
+        .Produces<ApiResponse<int>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
     }
 
     public async Task InitializeAsync(IServiceProvider serviceProvider)

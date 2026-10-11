@@ -16,7 +16,10 @@ public static class EndpointEndpoints
         {
             var result = await endpointStatus.ListAsync(ct);
             return Results.Ok(ApiResponse<IReadOnlyList<EndpointStatusDto>>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<IReadOnlyList<EndpointStatusDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/{deviceId}/heartbeat", async (
             string deviceId,
@@ -26,7 +29,11 @@ public static class EndpointEndpoints
         {
             var result = await endpointStatus.UpsertHeartbeatAsync(deviceId, request, ct);
             return Results.Ok(ApiResponse<EndpointStatusDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<EndpointStatusDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/{deviceId}/collection-quality", async (
             string deviceId,
@@ -35,7 +42,10 @@ public static class EndpointEndpoints
         {
             var result = await endpointStatus.GetCollectionQualityAsync(deviceId, ct);
             return Results.Ok(ApiResponse<EndpointCollectionQualityDto>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<EndpointCollectionQualityDto>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/{deviceId}/notification-actions", async (
             string deviceId,
@@ -45,6 +55,10 @@ public static class EndpointEndpoints
         {
             var result = await endpointStatus.HandleNotificationActionAsync(deviceId, request, ct);
             return Results.Ok(ApiResponse<EndpointNotificationActionResponse>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<EndpointNotificationActionResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
     }
 }

@@ -1,5 +1,6 @@
 using Pim.Api.Infrastructure.Ops;
 using Pim.Api.Services;
+using Pim.Core.Common;
 
 namespace Pim.Api.Endpoints;
 
@@ -29,7 +30,16 @@ public static class OpsHealthEndpoints
             }
             catch { }
 
-            return Results.Ok(new { opsEnabled, tablesCount, logFiles = logFilesCount });
-        });
+            return Results.Ok(new OpsHealthResponse(opsEnabled, tablesCount, logFilesCount));
+        })
+        .Produces<OpsHealthResponse>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces(429)
+        .Produces(503)
+        .Produces<ApiResponse<string>>(500);
     }
 }
+
+/// <summary>契约注解用：ops 健康摘要（与原匿名对象 JSON 等价：camelCase 属性、同字段同序）。</summary>
+public sealed record OpsHealthResponse(bool OpsEnabled, int TablesCount, int LogFiles);

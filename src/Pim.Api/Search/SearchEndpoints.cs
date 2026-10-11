@@ -44,6 +44,10 @@ public static class SearchEndpoints
             return Results.Ok(ApiResponse<PagedResult<SearchResult>>.Ok(
                 new PagedResult<SearchResult>(merged, 1, maxLimit, totalCount,
                     (int)Math.Ceiling(totalCount / (double)maxLimit))));
-        });
+        })
+        .Produces<ApiResponse<PagedResult<SearchResult>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
     }
 }

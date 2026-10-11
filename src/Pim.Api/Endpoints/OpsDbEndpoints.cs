@@ -32,7 +32,13 @@ public static class OpsDbEndpoints
                 await TryAuditAsync(ctx, ip, corr, sqlHash: "", rowCount: 0, bytes: 0, truncated: false, result: AuditResult.Failure, code: code, msg: ex.Message);
                 throw;
             }
-        });
+        })
+        .Produces<ApiResponse<IReadOnlyList<TableInfo>>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces(429)
+        .Produces(503)
+        .Produces<ApiResponse<string>>(500);
         g.MapGet("/describe", async (string table, OpsDbService svc, HttpContext ctx, CancellationToken ct) =>
         {
             var ip = GetIp(ctx);
@@ -49,7 +55,15 @@ public static class OpsDbEndpoints
                 await TryAuditAsync(ctx, ip, corr, sqlHash: "", rowCount: 0, bytes: 0, truncated: false, result: AuditResult.Failure, code: code, msg: ex.Message);
                 throw;
             }
-        });
+        })
+        .Produces<ApiResponse<IReadOnlyList<ColumnInfo>>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces(429)
+        .Produces(503)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
         g.MapPost("/query", async (OpsDbQueryRequest req, OpsDbService svc, HttpContext ctx, CancellationToken ct) =>
         {
             var ip = GetIp(ctx);
@@ -71,7 +85,15 @@ public static class OpsDbEndpoints
                 await TryAuditAsync(ctx, ip, corr, sqlHash, 0, 0, false, AuditResult.Failure, code, ex.Message);
                 throw;
             }
-        });
+        })
+        .Produces<ApiResponse<OpsDbQueryResult>>(200)
+        .Produces<ApiResponse<OpsDbQueryResult>>(206)
+        .Produces(401)
+        .Produces(403)
+        .Produces(429)
+        .Produces(503)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
     }
 
     private static string GetIp(HttpContext ctx) => OpsIpHelper.GetClientIp(ctx);

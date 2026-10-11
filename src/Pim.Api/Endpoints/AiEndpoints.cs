@@ -13,7 +13,11 @@ public static class AiEndpoints
             .RequireAuthorization(new AuthorizeAttribute { Roles = "admin" });
 
         group.MapGet("/status", async (IAiUsageService usage, CancellationToken ct) =>
-            Results.Ok(ApiResponse<AiStatusDto>.Ok(await usage.GetStatusAsync(ct))));
+            Results.Ok(ApiResponse<AiStatusDto>.Ok(await usage.GetStatusAsync(ct))))
+        .Produces<ApiResponse<AiStatusDto>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/test", async (IAiGateway gateway, CancellationToken ct) =>
         {
@@ -30,7 +34,11 @@ public static class AiEndpoints
                 MaxAttempts: 1,
                 Metadata: new Dictionary<string, string> { ["endpoint"] = "/api/v1/ai/test" }), ct);
             return Results.Ok(ApiResponse<AiResult>.Ok(result));
-        });
+        })
+        .Produces<ApiResponse<AiResult>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/requests", async (
             DateTimeOffset? from,
@@ -54,7 +62,12 @@ public static class AiEndpoints
 
             var filter = new AiRequestLogFilter(from, to, module, purpose, sourceObjectType, sourceObjectId, model, parsedStatus, userId, page ?? 1, pageSize ?? 50);
             return Results.Ok(ApiResponse<PagedResult<AiRequestLogListItemDto>>.Ok(await usage.ListRequestsAsync(filter, ct)));
-        });
+        })
+        .Produces<ApiResponse<PagedResult<AiRequestLogListItemDto>>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/requests/{id:guid}", async (Guid id, IAiUsageService usage, CancellationToken ct) =>
         {
@@ -62,16 +75,30 @@ public static class AiEndpoints
             return detail is null
                 ? Results.NotFound(ApiResponse<string>.Error(404, "AI 请求日志不存在。"))
                 : Results.Ok(ApiResponse<AiRequestLogDetailDto>.Ok(detail));
-        });
+        })
+        .Produces<ApiResponse<AiRequestLogDetailDto>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces<ApiResponse<string>>(404)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapGet("/usage/summary", async (DateTimeOffset? from, DateTimeOffset? to, IAiUsageService usage, CancellationToken ct) =>
-            Results.Ok(ApiResponse<AiUsageSummaryDto>.Ok(await usage.GetUsageSummaryAsync(from, to, ct))));
+            Results.Ok(ApiResponse<AiUsageSummaryDto>.Ok(await usage.GetUsageSummaryAsync(from, to, ct))))
+        .Produces<ApiResponse<AiUsageSummaryDto>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/health-check", async (IAiProviderHealthService health, IAiUsageService usage, CancellationToken ct) =>
         {
             await health.CheckAsync(ct);
             return Results.Ok(ApiResponse<AiStatusDto>.Ok(await usage.GetStatusAsync(ct)));
-        });
+        })
+        .Produces<ApiResponse<AiStatusDto>>(200)
+        .Produces(401)
+        .Produces(403)
+        .Produces<ApiResponse<string>>(500);
     }
 
     public static bool TryParseStatus(string? value, out AiRequestStatus? status)
