@@ -512,6 +512,113 @@ public sealed class PcTrackerEndpointsE2ETests
         return document.RootElement.Clone();
     }
 
+    private static async Task<JsonElement> PostJsonAsync(HttpClient client, string url, object body)
+    {
+        var response = await client.PostAsJsonAsync(url, body);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = await response.Content.ReadAsStringAsync();
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+
+    // ===== /api/v1/pc/categories 路由歧义修复回归（2026-10）=====
+    // 历史：readGroup 与 catRead/catWrite 把 GET/POST /categories 各注册了两遍
+    //（裸路径 vs 组根 "/"），运行时路由匹配抛 AmbiguousMatchException → 一律 500。
+    // 修复：GET 保留扁平规则列表，冗余树形 GET 删除（/tree 是唯一树读入口）；
+    // POST 归树形保存（web 分类页），扁平规则保存迁移到 /app-category-rules。
+    // 以下用例锁住：裸路径与尾斜杠两种形态都必须正常工作且数据一致。
+
+    [Fact]
+    public async Task Categories_Get_BareAndTrailingSlash_ReturnIdenticalFlatRules()
+    {
+        using var factory = CreateFactory();
+        await SeedAsync(factory, db => db.Set<AppCategoryEntity>().Add(new AppCategoryEntity
+        {
+            Id = Guid.NewGuid(),
+            AppPattern = "code.exe",
+            CategoryName = "开发",
+            Color = "#2563eb",
+            Priority = 10
+        }));
+
+        var bare = await GetJsonAsync(await CreateAuthedClientAsync(factory), "/api/v1/pc/categories");
+        var slash = await GetJsonAsync(await CreateAuthedClientAsync(factory), "/api/v1/pc/categories/");
+
+        // 两种形态必须等价（修复前两者都 500 AmbiguousMatchException）。
+        // 只比 data：包络里的 timestamp 是每次请求生成的，本就不应相同。
+        Assert.Equal(bare.GetProperty("data").GetRawText(), slash.GetProperty("data").GetRawText());
+        var rule = Assert.Single(bare.GetProperty("data").EnumerateArray());
+        Assert.Equal("code.exe", rule.GetProperty("appPattern").GetString());
+        Assert.Equal("开发", rule.GetProperty("categoryName").GetString());
+        Assert.Equal("#2563eb", rule.GetProperty("color").GetString());
+        Assert.Equal(10, rule.GetProperty("priority").GetInt32());
+    }
+
+    [Fact]
+    public async Task Categories_Post_TreeSave_BareAndTrailingSlash_RoundTrip()
+    {
+        using var factory = CreateFactory();
+        var client = await CreateAuthedClientAsync(factory);
+
+        // 裸路径：新建根分类（web「新建分类」语义）
+        var created = await PostJsonAsync(client, "/api/v1/pc/categories", new
+        {
+            name = "开发",
+            color = "#3b82f6",
+            productivity = "productive",
+            sortOrder = 1
+        });
+        var parentId = created.GetProperty("data").GetProperty("id").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(parentId));
+        Assert.Equal("开发", created.GetProperty("data").GetProperty("name").GetString());
+        Assert.Equal("productive", created.GetProperty("data").GetProperty("productivity").GetString());
+
+        // 尾斜杠：添加子分类（web「添加子分类」语义）
+        var child = await PostJsonAsync(await CreateAuthedClientAsync(factory), "/api/v1/pc/categories/", new
+        {
+            name = "子分类",
+            parentId = parentId,
+            color = "#111827",
+            productivity = "neutral",
+            sortOrder = 2
+        });
+        Assert.Equal(parentId, child.GetProperty("data").GetProperty("parentId").GetString());
+        Assert.Equal("子分类", child.GetProperty("data").GetProperty("name").GetString());
+
+        // 树上可见：根节点带子节点
+        var tree = await GetJsonAsync(client, "/api/v1/pc/categories/tree");
+        var root = tree.GetProperty("data").EnumerateArray()
+            .Single(n => n.GetProperty("id").GetString() == parentId);
+        Assert.Equal("开发", root.GetProperty("name").GetString());
+        Assert.Equal("子分类", root.GetProperty("children")[0].GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task AppCategoryRules_Post_SavesFlatRuleAndShowsInCategories()
+    {
+        using var factory = CreateFactory();
+        var client = await CreateAuthedClientAsync(factory);
+
+        // 扁平规则保存（原 POST /categories 语义，迁移后的新路径；MCP create_category 走这里）
+        var created = await PostJsonAsync(client, "/api/v1/pc/app-category-rules", new
+        {
+            appPattern = "idea64.exe",
+            categoryName = "开发",
+            color = "#2563eb",
+            priority = 5
+        });
+        var rule = created.GetProperty("data");
+        Assert.False(rule.GetProperty("id").GetString() is null);
+        Assert.Equal("idea64.exe", rule.GetProperty("appPattern").GetString());
+        Assert.Equal(5, rule.GetProperty("priority").GetInt32());
+
+        // 往返：扁平列表可见
+        var list = await GetJsonAsync(client, "/api/v1/pc/categories");
+        var saved = list.GetProperty("data").EnumerateArray()
+            .Single(r => r.GetProperty("appPattern").GetString() == "idea64.exe");
+        Assert.Equal("开发", saved.GetProperty("categoryName").GetString());
+    }
+
     private static TrackerEventEntity TrackerWindowEvent(DateTimeOffset timestamp, double duration, string appName) => new()
     {
         Id = Random.Shared.NextInt64(1, long.MaxValue),
