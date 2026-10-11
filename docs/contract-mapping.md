@@ -469,3 +469,21 @@
 
 - 全局映射：`src/Pim.Api/Middleware/ExceptionMiddleware.cs`（ResolveDomainStatusCode）。
 - 各模块 DomainException 抛出点与 OneDriveGraphException 传播路径：见 PR 描述附录（Calendar 02xxx 全系→400；Files 5xxx 404/400 + 40303→403 + Graph 404/429/502；Mobile 04xxx/62xx→400；PcTracker 服务层无 DomainException；QuickNotes 400x→404/400、40301→403；McpClientService 40401→404、40301→403；OpsDb/OpsLogs 40002/40003→400、40401→404、40302→403、50301→503）。
+
+## 批次 2：请求体字段级约束 / Batch 2: field-level constraints
+
+- **required[]**：请求 DTO 树内 540 个属性中 271 个标注 required（批次 2 之前全契约仅 2 处）。来源（全部代码事实）：
+  - C# 可空性（record 位置参数）：非空引用类型与非空值类型（无默认值）→ required（`NullabilityRequiredSchemaFilter`，因 Swashbuckle 6.9 的 `SupportNonNullableReferenceTypes` 对 record 属性不生效）；
+  - DTO 上既有 DataAnnotations 重定向到 `[property:]` 后渲染（`[Required]`/`[MaxLength]`/`[MinLength]`/`[EmailAddress]`/`[Range]`，共 4 个文件 92 行：CalendarDtos 39、BrowserSiteDtos 44、AuthDtos 7、AdminDtos 2）；
+  - 可空属性（`string?`/`Guid?`）与带默认值的参数一律不标。
+- **enum（仅限服务端严格校验的取值集合，每条有代码依据）**：
+  | 字段 | 取值 | 服务端校验依据 |
+  |---|---|---|
+  | `UpdateUserRoleRequest.role` | `admin`, `user` | AdminUserService.ChangeRoleAsync（非法值 → 40041） |
+  | `RestoreQuickNoteRequest.status`、`UpdateQuickNoteRequest.status` | `inbox`, `processed`, `archived` | QuickNoteService.ValidateStatus → QuickNoteStatuses.IsValid（非法值 → 4003） |
+  | `DataCenterBatchOperationRequest.action` | `archive` | DataCenterGovernanceService（其余 → 02049） |
+- **格式约束**：`maxLength/minLength`（来自既有 MaxLength/MinLength）、`format: email`（EmailAddress）、`format: date-time/int32/int64/uuid/binary`（来自字段类型）。
+- **如实不标（避免臆造）**：
+  - `CreateShareRequest.permissionType`：代码里声明了 `SupportedPermissionTypes = ["view","edit"]` 但**从未使用**（不校验）→ 不标 enum，记录为设计备注；
+  - 其余字符串字段（calendar kind、events scope、pc mode 等）服务端校验宽松或不校验 → 不标 enum。
+- 运行时行为不变：以上全部是 OpenAPI 文档元数据（SwaggerGen 选项与 SchemaFilter）+ attribute target 重定向（DataAnnotations 在 Minimal API 中本就不参与自动校验）。

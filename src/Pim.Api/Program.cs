@@ -85,6 +85,15 @@ builder.Services.AddSwaggerGen(c =>
     // 项目里存在等价的尾斜杠路由（例如 GET /api/v1/pc/categories 与 .../categories/），
     // Swagger 要求 method+path 组合唯一；文档保留第一个即可，不影响运行时路由行为。
     c.ResolveConflictingActions(apiDescriptions => apiDescriptions.First());
+    // 契约批次2：非空引用类型属性进 required[]（C# 可空性即权威定义；仅影响文档元数据，
+    // 不参与运行时绑定/校验，行为不变）。请求 DTO 上的 DataAnnotations（property target）
+    // 同步渲染为 maxLength/minLength/format 等字段级约束。
+    // 注：SupportNonNullableReferenceTypes 对 record 位置参数属性不生效（6.9 已知局限），
+    // record 的 required 由 NullabilityRequiredSchemaFilter 推导；此开关兜底处理非 record 类型。
+    c.SupportNonNullableReferenceTypes();
+    c.SchemaFilter<Pim.Api.Infrastructure.OpenApi.NullabilityRequiredSchemaFilter>();
+    // 契约批次2：服务端严格校验的取值集合 → enum（每条都有代码依据，见 filter 注释）。
+    c.SchemaFilter<Pim.Api.Infrastructure.OpenApi.StrictValueSetsSchemaFilter>();
 });
 
 // Observability: health checks + metrics refresh

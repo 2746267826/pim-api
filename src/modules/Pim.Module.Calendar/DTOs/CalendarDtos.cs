@@ -3,8 +3,8 @@ using System.ComponentModel.DataAnnotations;
 namespace Pim.Module.Calendar.DTOs;
 
 public record CreateCalendarRequest(
-    [Required][MaxLength(100)] string Name,
-    [MaxLength(7)] string? Color,
+    [property:Required][property:MaxLength(100)] string Name,
+    [property:MaxLength(7)] string? Color,
     string? Kind = null
 );
 
@@ -43,12 +43,12 @@ public record OutlookAdditionalInfoDto(
     int HiddenFieldCount);
 
 public record CreateEventRequest(
-    [Required] Guid CalendarId,
-    [Required][MaxLength(255)] string Title,
+    [property:Required] Guid CalendarId,
+    [property:Required][property:MaxLength(255)] string Title,
     string? Description,
-    [MaxLength(500)] string? Location,
-    [Required] DateTimeOffset DtStart,
-    [Required] DateTimeOffset DtEnd,
+    [property:MaxLength(500)] string? Location,
+    [property:Required] DateTimeOffset DtStart,
+    [property:Required] DateTimeOffset DtEnd,
     string? RRule,
     string? Uid = null,
     bool IsAllDay = false,
@@ -80,12 +80,12 @@ public enum UpdateEventScope
 }
 
 public record UpdateEventRequest(
-    [Required] Guid CalendarId,
-    [Required][MaxLength(255)] string Title,
+    [property:Required] Guid CalendarId,
+    [property:Required][property:MaxLength(255)] string Title,
     string? Description,
-    [MaxLength(500)] string? Location,
-    [Required] DateTimeOffset DtStart,
-    [Required] DateTimeOffset DtEnd,
+    [property:MaxLength(500)] string? Location,
+    [property:Required] DateTimeOffset DtStart,
+    [property:Required] DateTimeOffset DtEnd,
     string? RRule,
     string? Uid = null,
     bool? IsAllDay = null,
@@ -150,7 +150,7 @@ public record EventResponse(
 
 public record CreateTaskRequest(
     Guid? CalendarId,
-    [Required][MaxLength(255)] string Title,
+    [property:Required][property:MaxLength(255)] string Title,
     string? Description,
     int Priority,
     string? EstimatedDuration,
@@ -165,7 +165,7 @@ public record CreateTaskRequest(
 
 public record UpdateTaskRequest(
     Guid? CalendarId,
-    [Required][MaxLength(255)] string Title,
+    [property:Required][property:MaxLength(255)] string Title,
     string? Description,
     int Priority,
     string? EstimatedDuration,
@@ -308,8 +308,8 @@ public record PlanTaskRequest(
 public record CreateTaskExecutionSegmentRequest(
     DateTimeOffset StartsAt,
     DateTimeOffset EndsAt,
-    [Required][MaxLength(40)] string Status,
-    [Required][MaxLength(40)] string Source,
+    [property:Required][property:MaxLength(40)] string Status,
+    [property:Required][property:MaxLength(40)] string Source,
     string? PlanningReason
 );
 
@@ -326,20 +326,20 @@ public record TaskExecutionSegmentResponse(
 );
 
 public record CreateDomainProjectRequest(
-    [Required][MaxLength(255)] string Name,
+    [property:Required][property:MaxLength(255)] string Name,
     string? Description,
-    [MaxLength(40)] string? Status = null
+    [property:MaxLength(40)] string? Status = null
 );
 
 public record CreateTaskBookRequest(
     Guid? DomainProjectId,
-    [Required][MaxLength(255)] string Name,
-    [MaxLength(40)] string? Kind = null,
-    [MaxLength(40)] string? Status = null
+    [property:Required][property:MaxLength(255)] string Name,
+    [property:MaxLength(40)] string? Kind = null,
+    [property:MaxLength(40)] string? Status = null
 );
 
 public record AddTaskChecklistItemRequest(
-    [Required][MaxLength(255)] string Title,
+    [property:Required][property:MaxLength(255)] string Title,
     int? SortOrder = null
 );
 
@@ -349,11 +349,11 @@ public record UpdateTaskChecklistItemRequest(
 );
 
 public record CreateHabitRequest(
-    [Required][MaxLength(255)] string Title,
+    [property:Required][property:MaxLength(255)] string Title,
     string? Description,
-    [MaxLength(40)] string? Cadence = null,
-    [MaxLength(40)] string? Source = null,
-    [MaxLength(40)] string? Status = null,
+    [property:MaxLength(40)] string? Cadence = null,
+    [property:MaxLength(40)] string? Source = null,
+    [property:MaxLength(40)] string? Status = null,
     string? RuleJson = null
 );
 
@@ -362,38 +362,38 @@ public record CreateHabitRequest(
 /// 未传的字段保持原值，避免调用方漏传就静默清空长期习惯事实。
 /// </summary>
 public record UpdateHabitRequest(
-    [MaxLength(255)] string? Title = null,
+    [property:MaxLength(255)] string? Title = null,
     string? Description = null,
-    [MaxLength(40)] string? Cadence = null,
-    [MaxLength(40)] string? Status = null,
+    [property:MaxLength(40)] string? Cadence = null,
+    [property:MaxLength(40)] string? Status = null,
     string? RuleJson = null
 );
 
 public record CreateHabitOccurrenceRequest(
     DateTimeOffset StartsAt,
     DateTimeOffset EndsAt,
-    [MaxLength(40)] string? Status = null,
-    [MaxLength(40)] string? Source = null
+    [property:MaxLength(40)] string? Status = null,
+    [property:MaxLength(40)] string? Source = null
 );
 
 public record CreateAvailabilityWindowRequest(
-    [Required][MaxLength(255)] string Title,
+    [property:Required][property:MaxLength(255)] string Title,
     DateTimeOffset StartsAt,
     DateTimeOffset EndsAt,
-    [MaxLength(40)] string? Kind = null,
-    [MaxLength(40)] string? Source = null
+    [property:MaxLength(40)] string? Kind = null,
+    [property:MaxLength(40)] string? Source = null
 );
 
 public record CreateAiPlanningPlaceholderRequest(
-    [Required][MaxLength(255)] string Title,
+    [property:Required][property:MaxLength(255)] string Title,
     DateTimeOffset StartsAt,
     DateTimeOffset EndsAt,
-    [Required] string Reason,
-    [MaxLength(40)] string? Source = null
+    [property:Required] string Reason,
+    [property:MaxLength(40)] string? Source = null
 );
 
 public record GenerateAiPlanRequest(
-    [Range(1, 30)] int? HorizonDays = null,
+    [property:Range(1, 30)] int? HorizonDays = null,
     IReadOnlyList<Guid>? TaskIds = null
 );
 
@@ -543,7 +543,7 @@ public record OutlookDeviceCodeRequestResponse(
 );
 
 public record OutlookDeviceCodePollRequest(
-    [Required] string DeviceCode
+    [property:Required] string DeviceCode
 );
 
 public record OutlookSyncStep(
