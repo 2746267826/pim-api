@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
@@ -26,7 +27,7 @@ public sealed class PcTrackerEndpointsE2ETests
     public async Task ActivityAnalysis_DifferentBlockMinutesDoNotShareTheAggregateCacheEntry()
     {
         using var factory = CreateFactory();
-        var client = factory.CreateClient();
+        var client = await CreateAuthedClientAsync(factory);
 
         // 聚合结果缓存的键包含除 force 外的全部查询参数；本用例从 HTTP 层证明
         // blockMinutes 不同不会命中同一份缓存（review 提出后补的回归）。
@@ -46,7 +47,7 @@ public sealed class PcTrackerEndpointsE2ETests
     public async Task HeatmapGrid_HourAcrossDays_Returns400WithExplicitMessage()
     {
         using var factory = CreateFactory();
-        var client = factory.CreateClient();
+        var client = await CreateAuthedClientAsync(factory);
 
         // AC-6.1（P-4 方案 a）：跨日 + hour = 400 + 明确文案，不再静默返回起始日单行。
         var response = await client.GetAsync(
@@ -67,7 +68,7 @@ public sealed class PcTrackerEndpointsE2ETests
     public async Task HeatmapGrid_SingleDayHour_StillReturns24BusinessDayBuckets()
     {
         using var factory = CreateFactory();
-        var client = factory.CreateClient();
+        var client = await CreateAuthedClientAsync(factory);
 
         var response = await client.GetAsync(
             "/api/v1/pc/heatmap/grid?start=2026-09-27&end=2026-09-27&dimension=hour");
@@ -94,7 +95,7 @@ public sealed class PcTrackerEndpointsE2ETests
             db.Set<AwEventEntity>().Add(WindowEvent(dayStart.AddHours(1), 3600, "Code.exe"));
             db.Set<AwEventEntity>().Add(WindowEvent(dayStart.AddHours(2), 900, "Code.exe"));
         });
-        var client = factory.CreateClient();
+        var client = await CreateAuthedClientAsync(factory);
 
         var analysis = await GetJsonAsync(client, "/api/v1/pc/activity-analysis?date=2026-09-27&blockMinutes=60");
         var summary = await GetJsonAsync(client, "/api/v1/pc/summary?date=2026-09-27");
@@ -146,7 +147,7 @@ public sealed class PcTrackerEndpointsE2ETests
     public async Task HeatmapGrid_DayBucketsUseBusinessDayWindowThatFrontendSeesAs0400()
     {
         using var factory = CreateFactory();
-        var client = factory.CreateClient();
+        var client = await CreateAuthedClientAsync(factory);
 
         var grid = await GetJsonAsync(client, "/api/v1/pc/heatmap/grid?start=2026-09-21&end=2026-09-23&dimension=day");
         var buckets = grid.GetProperty("data").GetProperty("grid")[0];
@@ -189,7 +190,7 @@ public sealed class PcTrackerEndpointsE2ETests
     public async Task AwHeatmapEndpoint_IsRetiredAndReturns404()
     {
         using var factory = CreateFactory();
-        var client = factory.CreateClient();
+        var client = await CreateAuthedClientAsync(factory);
 
         var retired = await client.GetAsync("/api/v1/pc/aw/heatmap?start=2026-09-27&end=2026-09-27");
         Assert.Equal(HttpStatusCode.NotFound, retired.StatusCode);
@@ -232,7 +233,7 @@ public sealed class PcTrackerEndpointsE2ETests
             });
         });
 
-        var quality = await GetJsonAsync(factory.CreateClient(), "/api/v1/pc/quality?date=2026-09-27&force=true");
+        var quality = await GetJsonAsync(await CreateAuthedClientAsync(factory), "/api/v1/pc/quality?date=2026-09-27&force=true");
         var tracker = quality.GetProperty("data").GetProperty("components")
             .EnumerateArray()
             .Single(c => c.GetProperty("key").GetString() == "tracker-events");
@@ -273,7 +274,7 @@ public sealed class PcTrackerEndpointsE2ETests
     public async Task HeatmapGridHourBuckets_CarryBusinessDayInJson()
     {
         using var factory = CreateFactory();
-        var client = factory.CreateClient();
+        var client = await CreateAuthedClientAsync(factory);
 
         var hour = await GetJsonAsync(client, "/api/v1/pc/heatmap/grid?start=2026-09-27&end=2026-09-27&dimension=hour");
         var cells = hour.GetProperty("data").GetProperty("grid")[0];
@@ -305,7 +306,7 @@ public sealed class PcTrackerEndpointsE2ETests
     public async Task ClassificationSuggestions_RejectedInputReturns400InsteadOf500()
     {
         using var factory = CreateFactory();
-        var client = factory.CreateClient();
+        var client = await CreateAuthedClientAsync(factory);
 
         var response = await client.GetAsync("/api/v1/pc/classification/suggestions?date=not-a-date");
 
@@ -328,7 +329,7 @@ public sealed class PcTrackerEndpointsE2ETests
                 db.Set<AwEventEntity>().Add(WindowEvent(dayStart.AddMinutes(i * 4), 60, "Code.exe"));
             db.Set<AwEventEntity>().Add(WindowEvent(dayStart.AddHours(20), 1200, "Mystery.exe"));
         });
-        var client = factory.CreateClient();
+        var client = await CreateAuthedClientAsync(factory);
         var detail = await GetJsonAsync(
             client, "/api/v1/pc/detail?dateFrom=2026-09-27&dateTo=2026-09-27&view=interpreted&pageSize=1&page=1");
         var totalCount = detail.GetProperty("data").GetProperty("totalCount").GetInt32();
@@ -380,7 +381,7 @@ public sealed class PcTrackerEndpointsE2ETests
                 db.Set<KeystatsDailyEntity>().Add(row);
             }
         });
-        var client = factory.CreateClient();
+        var client = await CreateAuthedClientAsync(factory);
 
         var range = await GetJsonAsync(client, "/api/v1/pc/aggregation/keystats?start=2026-08-01&end=2026-08-30");
         var data = range.GetProperty("data");
@@ -446,13 +447,35 @@ public sealed class PcTrackerEndpointsE2ETests
     public async Task KeystatsRangeEndpoint_EmptyRangeReturnsZerosNotAnError()
     {
         using var factory = CreateFactory();
-        var client = factory.CreateClient();
+        var client = await CreateAuthedClientAsync(factory);
 
         var range = await GetJsonAsync(client, "/api/v1/pc/aggregation/keystats?start=2026-08-01&end=2026-08-05");
         var data = range.GetProperty("data");
         Assert.Equal(0, data.GetProperty("totalKeyPresses").GetInt32());
         Assert.Equal(0, data.GetProperty("totalClicks").GetInt32());
         Assert.Empty(data.GetProperty("keyPressCounts").EnumerateObject());
+    }
+
+    /// <summary>
+    /// 创建带 Bearer 的客户端：/api/v1/pc 的读组自 2026-10 起要求鉴权（修复匿名可读），
+    /// 测试与真实客户端一致走 register 拿 token（内存库上 register 可用）。
+    /// </summary>
+    private static async Task<HttpClient> CreateAuthedClientAsync(WebApplicationFactory<Program> factory)
+    {
+        var client = factory.CreateClient();
+        var username = $"pc-e2e-{Guid.NewGuid():N}"[..24];
+        var resp = await client.PostAsJsonAsync("/api/v1/auth/register", new
+        {
+            username,
+            email = $"{username}@example.com",
+            password = "password123",
+            displayName = "pc-e2e"
+        });
+        resp.EnsureSuccessStatusCode();
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var token = doc.RootElement.GetProperty("data").GetProperty("accessToken").GetString();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return client;
     }
 
     /// <summary>每个 factory 绑定一个固定的内存库名（名字必须在所有 scope 间稳定，否则各 scope 各建一个库）。</summary>

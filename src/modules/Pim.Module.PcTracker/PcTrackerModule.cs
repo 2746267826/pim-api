@@ -57,7 +57,12 @@ public class PcTrackerModule : IModule
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
     {
-        var readGroup = endpoints.MapGroup("/api/v1/pc");
+        // readGroup 曾漏挂鉴权（写组一直有），导致 /api/v1/pc 下的查询端点匿名可读
+        // （公网实测 /pc/summary 200 返回真实数据）。与同文件其他组对齐补上；
+        // 三个客户端均统一注入 Bearer（web apiFetch 默认 auth=true、windows 全局默认头、
+        // android AuthInterceptor），不存在依赖匿名读取的调用方。
+        var readGroup = endpoints.MapGroup("/api/v1/pc")
+            .RequireAuthorization();
         var writeGroup = endpoints.MapGroup("/api/v1/pc")
             .RequireAuthorization();
 
