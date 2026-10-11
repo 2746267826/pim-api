@@ -99,48 +99,62 @@ describe('apiFetch 基础行为', () => {
     ).resolves.toMatchObject({ status: 'conflict' })
   })
 
-  it('429 按 Retry-After 等待后重试一次并成功', async () => {
-    const sleeps: number[] = []
+  it('429 不再自动二次请求：抛 ApiError 并带出服务端 Retry-After 的真实时长', async () => {
+    let requests = 0
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockImplementationOnce(async () =>
-          new Response(JSON.stringify({ code: 42901, message: 'too many', data: null }), {
-            status: 429,
-            headers: { 'content-type': 'application/json', 'retry-after': '2' },
-          }),
-        )
-        .mockImplementationOnce(async () => jsonResponse({ code: 0, message: 'ok', data: { ok: true }, timestamp: 't' })),
-    )
-    vi.stubGlobal(
-      'setTimeout',
-      vi.fn((fn: () => void, ms: number) => {
-        sleeps.push(ms)
-        fn()
-        return 0 as unknown as ReturnType<typeof setTimeout>
+      vi.fn(async () => {
+        requests += 1
+        return jsonResponse({ code: 42901, message: 'too many', data: null }, 429)
       }),
     )
-    await expect(apiFetch('/api/v1/x')).resolves.toEqual({ ok: true })
-    expect(sleeps).toContain(2000)
+    const err = (await apiFetch('/api/v1/x').catch((e) => e)) as ApiError
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.status).toBe(429)
+    // 缺 Retry-After 时也必须是「不重试、时长未知」
+    expect(requests).toBe(1)
+    expect(err.retryAfterMs).toBeNull()
   })
 
-  it('429 重试一次仍失败则抛错（不无限重试）', async () => {
+  it('429 + Retry-After: 900 → 只发一次请求，错误里带 900 秒的真实时长', async () => {
+    let requests = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        requests += 1
+        return new Response(JSON.stringify({ code: 42901, message: 'too many attempts', data: null }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '900' },
+        })
+      }),
+    )
+    const err = (await apiFetch('/api/v1/auth/login').catch((e) => e)) as ApiError
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err.retryAfterMs).toBe(900_000)
+    expect(err.message).toContain('15 分钟')
+    expect(requests, '被锁定 15 分钟时又打了一次请求，会再消耗一次失败计数').toBe(1)
+  })
+
+  it('Retry-After 支持 HTTP-date（RFC 9110），并被换算成剩余毫秒', async () => {
+    const now = Date.now()
+    const { parseRetryAfter } = await import('./client')
+    expect(parseRetryAfter('120')).toBe(120_000)
+    expect(parseRetryAfter(null)).toBeNull()
+    expect(parseRetryAfter('not-a-value')).toBeNull()
+    expect(parseRetryAfter(new Date(now + 90_000).toUTCString(), now)).toBeGreaterThan(85_000)
+    expect(parseRetryAfter(new Date(now - 90_000).toUTCString(), now)).toBe(0)
+  })
+
+  it('429 在 allowStatuses 里时不带等待时长（当作正常业务体解包）', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
-        jsonResponse({ code: 42901, message: 'too many', data: null }, 429),
+        jsonResponse({ code: 0, message: 'ok', data: { limited: true }, timestamp: 't' }, 429),
       ),
     )
-    vi.stubGlobal(
-      'setTimeout',
-      vi.fn((fn: () => void) => {
-        fn()
-        return 0 as unknown as ReturnType<typeof setTimeout>
-      }),
-    )
-    const err = await apiFetch('/api/v1/x').catch((e) => e)
-    expect(err).toBeInstanceOf(ApiError)
+    await expect(apiFetch('/api/v1/x', {}, { allowStatuses: [429] })).resolves.toEqual({
+      limited: true,
+    })
   })
 })
 

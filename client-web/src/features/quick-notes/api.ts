@@ -1,4 +1,5 @@
 import { apiDelete, apiGet, apiPost, apiPut, apiUpload } from '@/api/client'
+import type { components } from '@/api/generated'
 import type { PagedResult } from '@/api/types'
 import type { QuickNoteAttachment, QuickNoteDetail, QuickNoteListItem } from './types'
 
@@ -12,9 +13,9 @@ export const quickNotesApi = {
     return apiGet<PagedResult<QuickNoteListItem>>(`/api/v1/quick-notes?${q}`)
   },
   get: (id: string) => apiGet<QuickNoteDetail>(`/api/v1/quick-notes/${id}`),
-  create: (body: { contentMarkdown: string; source?: string; attachmentIds?: string[] }) =>
+  create: (body: components['schemas']['CreateQuickNoteRequest']) =>
     apiPost<QuickNoteDetail>('/api/v1/quick-notes', body),
-  update: (id: string, body: { contentMarkdown: string; attachmentIds?: string[] }) =>
+  update: (id: string, body: components['schemas']['UpdateQuickNoteRequest']) =>
     apiPut<QuickNoteDetail>(`/api/v1/quick-notes/${id}`, body),
   /** 仅标记为已处理（规格：不要实现"触发 AI 处理"） */
   process: (id: string) => apiPost<QuickNoteDetail>(`/api/v1/quick-notes/${id}/process`, {}),

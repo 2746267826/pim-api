@@ -1,4 +1,5 @@
 import { apiDelete, apiFetch, apiGet, apiPost, apiPut, apiUpload } from '@/api/client'
+import type { components } from '@/api/generated'
 import type { PagedResult } from '@/api/types'
 import type {
   FileItem,
@@ -63,7 +64,10 @@ export const filesApi = {
   /* 下载与预览 */
   downloadUrl: (id: string) => apiGet<{ url: string }>(`/api/v1/files/items/${id}/download-url`),
   previewUrl: (id: string) => apiGet<{ url: string }>(`/api/v1/files/items/${id}/preview-url`),
-  openLink: (id: string) => apiGet<{ url: string; mode: string }>(`/api/v1/files/items/${id}/open-link?mode=view`),
+  // 契约该 operation 只声明 path 参数 id（pim-api FilesModule.cs:596-600 的
+  // BuildOpenLinkAsync(Guid id, …) 也不接收 query）—— 停发契约外的 ?mode=view。
+  // 响应类型里的 mode 是服务端返回字段，保留。
+  openLink: (id: string) => apiGet<{ url: string; mode: string }>(`/api/v1/files/items/${id}/open-link`),
   readText: (id: string) =>
     apiGet<{ content: string; mimeType: string | null; size: number; truncated: boolean }>(
       `/api/v1/files/items/${id}/text`,
@@ -75,7 +79,7 @@ export const filesApi = {
     apiPost<boolean>(`/api/v1/files/items/${id}/snapshots/${snapshotId}/restore`, {}),
 
   /* 分享 */
-  share: (id: string, body: { permissionType: 'view' | 'edit'; expiresInDays?: 7 | 30 | null }) =>
+  share: (id: string, body: components['schemas']['CreateShareRequest']) =>
     apiPost<FileShare>(`/api/v1/files/items/${id}/share`, body),
   shares: (id: string) => apiGet<FileShare[]>(`/api/v1/files/items/${id}/shares`),
   revokeShare: (id: string, permissionId: string) =>

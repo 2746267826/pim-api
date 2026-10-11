@@ -1,4 +1,5 @@
 import { apiDelete, apiGet, apiPost, apiPut } from '@/api/client'
+import type { components } from '@/api/generated'
 import { normalizeHabitCadence } from '@/lib/enums'
 import type { PagedResult } from '@/api/types'
 import type {
@@ -19,9 +20,9 @@ import type {
 export const calendarsApi = {
   list: (kind?: 'calendar' | 'task') =>
     apiGet<CalendarBook[]>(`/api/v1/calendar/calendars${kind ? `?kind=${kind}` : ''}`),
-  create: (body: { name: string; color?: string; kind?: string }) =>
+  create: (body: components['schemas']['CreateCalendarRequest']) =>
     apiPost<CalendarBook>('/api/v1/calendar/calendars', body),
-  rename: (id: string, body: { name?: string; color?: string }) =>
+  rename: (id: string, body: components['schemas']['CreateCalendarRequest']) =>
     apiPut<CalendarBook>(`/api/v1/calendar/calendars/${id}`, body),
   deletePreview: (id: string) =>
     apiPost<CalendarDeletePreview>(`/api/v1/calendar/calendars/${id}/delete-preview`, {}),
@@ -45,10 +46,11 @@ export const eventsApi = {
     })
     return apiGet<PagedResult<EventResponse>>(`/api/v1/calendar/events?${q}`)
   },
-  create: (body: Record<string, unknown>) => apiPost<EventResponse>('/api/v1/calendar/events', body),
+  create: (body: components['schemas']['CreateEventRequest']) =>
+    apiPost<EventResponse>('/api/v1/calendar/events', body),
   update: (
     id: string,
-    body: Record<string, unknown>,
+    body: components['schemas']['UpdateEventRequest'],
     scope?: { scope?: 'this' | 'series'; recurrenceId?: string; originalEventId?: string },
   ) => {
     const q = new URLSearchParams()
@@ -102,24 +104,25 @@ export const tasksApi = {
     const q = params.inbox !== undefined ? `?inbox=${params.inbox}` : ''
     return apiGet<TaskResponse[]>(`/api/v1/calendar/tasks${q}`)
   },
-  create: (body: Record<string, unknown>) => apiPost<TaskResponse>('/api/v1/calendar/tasks', body),
-  update: (id: string, body: Record<string, unknown>) =>
+  create: (body: components['schemas']['CreateTaskRequest']) =>
+    apiPost<TaskResponse>('/api/v1/calendar/tasks', body),
+  update: (id: string, body: components['schemas']['UpdateTaskRequest']) =>
     apiPut<TaskResponse>(`/api/v1/calendar/tasks/${id}`, body),
   remove: (id: string) =>
     apiDelete<CalendarOperationResult>(`/api/v1/calendar/tasks/${id}`),
   batchDelete: (ids: string[]) =>
     apiPost<CalendarOperationResult>('/api/v1/calendar/tasks/batch-delete', { ids }),
   /** 拖放排期（收件箱任务拖到日历时间槽） */
-  plan: (id: string, body: { plannedStart: string; plannedEnd?: string; estimatedDuration?: string }) =>
+  plan: (id: string, body: components['schemas']['PlanTaskRequest']) =>
     apiPost<TaskResponse>(`/api/v1/calendar/tasks/${id}/plan`, body),
 }
 
 /* ── 任务清单 / 时间段 ────────────────────────────────────── */
 
 export const checklistApi = {
-  add: (taskId: string, body: { title: string; sortOrder?: number }) =>
+  add: (taskId: string, body: components['schemas']['AddTaskChecklistItemRequest']) =>
     apiPost<TaskChecklistItem>(`/api/v1/calendar/tasks/${taskId}/checklist`, body),
-  update: (taskId: string, itemId: string, body: { title?: string; isDone?: boolean }) =>
+  update: (taskId: string, itemId: string, body: components['schemas']['UpdateTaskChecklistItemRequest']) =>
     apiPut<TaskChecklistItem>(`/api/v1/calendar/tasks/${taskId}/checklist/${itemId}`, body),
   remove: (taskId: string, itemId: string) =>
     apiDelete<string>(`/api/v1/calendar/tasks/${taskId}/checklist/${itemId}`),
@@ -128,7 +131,7 @@ export const checklistApi = {
 export const segmentsApi = {
   list: (taskId: string) =>
     apiGet<TaskExecutionSegment[]>(`/api/v1/calendar/tasks/${taskId}/segments`),
-  add: (taskId: string, body: { startsAt: string; endsAt: string; status: string; source: string }) =>
+  add: (taskId: string, body: components['schemas']['CreateTaskExecutionSegmentRequest']) =>
     apiPost<TaskExecutionSegment>(`/api/v1/calendar/tasks/${taskId}/segments`, body),
 }
 
@@ -188,7 +191,7 @@ export const remindersApi = {
 
 export const reportsApi = {
   list: () => apiGet<import('./types').ReportArtifact[]>('/api/v1/calendar/reports'),
-  generate: (body: { kind: string; date: string; projectId?: string }) =>
+  generate: (body: components['schemas']['GenerateReportRequest']) =>
     apiPost<import('./types').ReportArtifact>('/api/v1/calendar/reports/generate', body),
   requestSuggestionAction: (suggestionId: string) =>
     apiPost<unknown>(`/api/v1/calendar/reports/suggestions/${suggestionId}/request-action`, {}),
@@ -206,10 +209,10 @@ export const habitsApi = {
     const h = await apiGet<import('./types').HabitRoutine>(`/api/v1/calendar/habits/${id}`)
     return { ...h, cadence: normalizeHabitCadence(h.cadence) }
   },
-  create: (body: { title: string; cadence?: string; ruleJson?: string }) =>
+  create: (body: components['schemas']['CreateHabitRequest']) =>
     apiPost<import('./types').HabitRoutine>('/api/v1/calendar/habits', body),
   /** 部分更新语义：null/缺省字段保持原值；description 空串=清空；ruleJson 空白=落 "{}" */
-  update: (id: string, body: import('./types').UpdateHabitRequest) =>
+  update: (id: string, body: components['schemas']['UpdateHabitRequest']) =>
     apiPut<import('./types').HabitRoutine>(`/api/v1/calendar/habits/${id}`, body),
   /** 软删除（幂等）：历史 occurrence 一并软删，日历图层 habits 同步消失 */
   remove: (id: string) => apiDelete<{ id: string }>(`/api/v1/calendar/habits/${id}`),
@@ -242,14 +245,8 @@ export const outlookApi = {
 /* ── 数据中心（跨对象治理） ───────────────────────────────── */
 
 export const dataCenterApi = {
-  query: (body: {
-    search?: string
-    objectType?: string
-    source?: string
-    pendingOnly?: boolean
-    page?: number
-    pageSize?: number
-  }) => apiPost<import('./types').DataCenterQueryResponse>('/api/v1/calendar/data-center/query', body),
+  query: (body: components['schemas']['DataCenterQueryRequest']) =>
+    apiPost<import('./types').DataCenterQueryResponse>('/api/v1/calendar/data-center/query', body),
   auditExport: (params?: { start?: string; end?: string }) => {
     const q = new URLSearchParams()
     if (params?.start) q.set('start', params.start)
@@ -258,9 +255,9 @@ export const dataCenterApi = {
       `/api/v1/calendar/data-center/audit/export${q.toString() ? `?${q}` : ''}`,
     )
   },
-  restorePreview: (body: { auditVersionId: string; reason?: string }) =>
+  restorePreview: (body: components['schemas']['DataCenterRestoreRequest']) =>
     apiPost<import('./types').RestorePreviewResponse>('/api/v1/calendar/data-center/restore/preview', body),
-  batchPreview: (body: { action: string; objects: { objectType: string; objectId: string }[]; reason?: string }) =>
+  batchPreview: (body: components['schemas']['DataCenterBatchOperationRequest']) =>
     apiPost<{
       riskLevel: string
       requiresStrictConfirmation: boolean

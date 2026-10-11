@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { Link, useLocation } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { BatteryWarning, RefreshCw, Smartphone } from 'lucide-react'
-import { apiGet } from '@/api/client'
+import { ApiError, apiGet } from '@/api/client'
 import { hasNativeBridge, reportPageState, requestNativeState, type NativeCollectionState } from './bridge'
 import { todayBusinessDay } from '@/lib/businessDay'
 import { formatDuration, formatTime } from '@/lib/datetime'
@@ -85,10 +85,17 @@ function CollectionStateCard() {
       ) : state ? (
         <div className="mt-2 space-y-1.5 text-[12px]">
           <div className="flex items-center gap-2">
-            <StatusBadge tone={state.continuousCollection ? 'ok' : 'warn'} dot={false}>
-              {state.continuousCollection ? '持续采集中' : '采集已中断'}
+            {/*
+              §8.3：只有 `collectionMode === true/false` 才映射到持续采集状态；
+              缺失或非布尔显示中性「状态未知」，不得显示「采集已中断」。
+            */}
+            <StatusBadge
+              tone={state.continuousCollection === true ? 'ok' : state.continuousCollection === false ? 'warn' : 'neutral'}
+              dot={false}
+            >
+              {state.continuousCollection === true ? '持续采集中' : state.continuousCollection === false ? '采集已中断' : '状态未知'}
             </StatusBadge>
-            {state.batteryOptimized && (
+            {state.batteryOptimized === true && (
               <span className="flex items-center gap-1 text-[11px] text-warn">
                 <BatteryWarning className="size-3" aria-hidden /> 电池优化可能影响采集
               </span>
@@ -97,7 +104,9 @@ function CollectionStateCard() {
           <div className="text-text-3">触发原因：{state.triggerReason || '—'}</div>
           <div className="text-text-3">
             下次定位：{state.nextLocationAt ? formatTime(state.nextLocationAt) : '—'}
-            {state.pendingUpload > 0 && <span className="ml-2 text-warn">待上传 {state.pendingUpload}</span>}
+            {typeof state.pendingUpload === 'number' && state.pendingUpload > 0 && (
+              <span className="ml-2 text-warn">待上传 {state.pendingUpload}</span>
+            )}
           </div>
         </div>
       ) : (
@@ -123,6 +132,30 @@ function FreshnessBar({ generatedAt }: { generatedAt: string | undefined }) {
 function state0(age: number | null) {
   if (age == null) return null
   return <span className="tnum ml-auto">{age <= 0 ? '刚刚' : `${age} 分钟前`}</span>
+}
+
+/* ── §8.4 上报口径 ───────────────────────────────────────── */
+
+/** 「数字 0」：`undefined`/`null`/字符串都不算。 */
+function isNumericZero(value: unknown): boolean {
+  return typeof value === 'number' && value === 0
+}
+
+/** `generatedAt` = 成功查询里 `dataUpdatedAt` 最大值的 ISO；没有成功查询则为 null。 */
+function maxDataUpdatedAt(queries: { isSuccess: boolean; dataUpdatedAt: number }[]): string | null {
+  const stamps = queries.filter((query) => query.isSuccess).map((query) => query.dataUpdatedAt)
+  if (stamps.length === 0) return null
+  return new Date(Math.max(...stamps)).toISOString()
+}
+
+/**
+ * 安全文案：只取 `ApiError.message`（没有则用固定「请求失败」），最长 200 个 Unicode 码位，
+ * 去掉 `\u0000..\u001F` 与 `\u007F`；不附带响应体、URL、堆栈。
+ */
+function safePageErrorText(error: unknown): string {
+  const raw = error instanceof ApiError && error.message ? error.message : '请求失败'
+  const cleaned = Array.from(raw.replace(/[\u0000-\u001F\u007F]/g, '')).slice(0, 200).join('')
+  return cleaned.length > 0 ? cleaned : '请求失败'
 }
 
 /* ── /embed/android/today ─────────────────────────────────── */
@@ -164,13 +197,42 @@ export function AndroidTodayEmbedPage() {
     retry: false,
   })
 
-  /* 页面数据状态上报（30 秒重试由壳侧负责，这里按状态变化上报） */
+  /*
+   * 页面数据状态上报（§8.4）。只在今日嵌入页发送，轨迹页不调用 `reportPageState`；
+   * 等 location 与 usage 的首次 `isLoading` 都结束（不等 tracks）。
+   * 30 秒重试由壳侧负责，这里按状态变化上报。
+   */
+  const pageReport = useMemo(() => {
+    if (location.isLoading || usage.isLoading) return null
+    const failure = location.isError ? location.error : usage.isError ? usage.error : null
+    const hasServerData = failure
+      ? null
+      : isNumericZero(location.data?.pointCount) && isNumericZero(usage.data?.totalForegroundSeconds)
+        ? false
+        : true
+    return {
+      hasServerData,
+      generatedAt: maxDataUpdatedAt([location, tracks, usage]),
+      error: failure ? safePageErrorText(failure) : null,
+    }
+  }, [
+    location.isLoading,
+    location.isError,
+    location.error,
+    location.data,
+    location.dataUpdatedAt,
+    usage.isLoading,
+    usage.isError,
+    usage.error,
+    usage.data,
+    usage.dataUpdatedAt,
+    tracks.isSuccess,
+    tracks.dataUpdatedAt,
+  ])
+
   useEffect(() => {
-    if (location.isLoading) return
-    if (location.isError) reportPageState('error', String(location.error))
-    else if ((location.data?.pointCount ?? 0) === 0 && (usage.data?.totalForegroundSeconds ?? 0) === 0) reportPageState('empty')
-    else reportPageState('success')
-  }, [location.isLoading, location.isError, location.data, usage.data])
+    if (pageReport) reportPageState(pageReport)
+  }, [pageReport])
 
   const trackPoints = useMemo(() => {
     const seg = tracks.data?.[0]?.segments?.find((s) => s.kind === 'move') ?? tracks.data?.[0]?.segments?.[0]

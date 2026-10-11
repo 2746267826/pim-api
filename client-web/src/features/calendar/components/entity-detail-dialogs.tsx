@@ -5,6 +5,7 @@ import { formatRange, formatTime, durationToMinutes, formatDuration } from '@/li
 import { htmlToPlainText } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import type { EventResponse, TaskResponse } from '../types'
+import { readEventRrule } from '../rrule'
 
 /*
  * 日程 / 任务详情弹窗（先看后改）：
@@ -155,7 +156,7 @@ export function EventDetailDialog({
             <Row label="闲忙">{SHOW_AS_LABEL[event.showAs ?? ''] ?? event.showAs ?? <Empty />}</Row>
             <Row label="重要度">{IMPORTANCE_LABEL[event.importance ?? ''] ?? event.importance ?? <Empty />}</Row>
             <Row label="敏感度">{SENSITIVITY_LABEL[event.sensitivity ?? ''] ?? event.sensitivity ?? <Empty />}</Row>
-            <Row label="重复">{formatRrule(event.rrule) ?? <Empty />}</Row>
+            <Row label="重复">{formatRrule(readEventRrule(event)) ?? <Empty />}</Row>
             <Row label="提醒">
               {event.isReminderOn ? (
                 <span className="flex items-center gap-1.5">

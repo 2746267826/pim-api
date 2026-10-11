@@ -14,6 +14,7 @@ import '../styles/calendar-skins.css'
 import { useCalendarVisibility } from '../calendar-visibility'
 import { useCalendars, useEvents, useInboxTasks, useLayers, usePlanTask, useTaskBooks } from '../queries'
 import { EventEditorDialog } from '../components/event-editor-dialog'
+import { isRepeatedEvent } from '../rrule'
 import { EventDetailDialog } from '../components/entity-detail-dialogs'
 import { TaskEditorDialog } from '../components/task-editor-dialog'
 import { InboxPanel } from '../components/inbox-panel'
@@ -172,7 +173,7 @@ export function CalendarPage() {
           allDay: ev.isAllDay,
           backgroundColor: color,
           borderColor: 'transparent',
-          extendedProps: { kind: 'event', event: ev, cancelled: ev.isCancelled, repeated: Boolean(ev.rrule) || ev.isSeriesMaster },
+          extendedProps: { kind: 'event', event: ev, cancelled: ev.isCancelled, repeated: isRepeatedEvent(ev) },
         })
       }
     }

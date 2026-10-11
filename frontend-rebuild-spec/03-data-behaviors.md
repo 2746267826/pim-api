@@ -55,12 +55,13 @@
 
 ## 6. Android 原生桥（/embed/android/* 专用）
 
-`window.pimAndroid` postMessage 桥，消息类型：
+产品 Android 壳只通过 `window.pimAndroid` postMessage 桥交换非敏感状态。内嵌页的三条业务 GET
+由原生 OkHttp 代发，access/refresh token 不进入页面、DOM、storage 或桥消息。消息类型：
 
 | 消息 | 方向 | 用途 |
 |---|---|---|
-| `token.request` / `token.refresh` | 页 → 原生 | 内嵌页令牌由原生注入，**不落 localStorage** |
-| `native.state.request` | 页 → 原生 | 拉取原生采集状态（持续采集/触发原因/下个位置），30 秒轮询 |
+| `token.request` / `token.refresh` | 页 → 原生 | 兼容类型，仅固定回复 `auth_unavailable`；不读取或返回令牌 |
+| `native.state.request` | 页 → 原生 | 拉取原生采集状态（持续采集/触发原因/下个位置/电池优化），30 秒轮询 |
 | `page.report` | 页 → 原生 | 向壳上报页面数据状态（成功/失败/空），30 秒重试 |
 
 ## 7. 缓存失效要点

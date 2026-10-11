@@ -4,6 +4,7 @@
  * - 所有请求/瓦片/下载 URL 必须经 apiUrl() 拼接，禁止散落拼接
  * - 壳（Capacitor/Tauri）无同源概念：未配置地址时强制进入 /setup
  */
+import { detectHostChannel } from './host-channel'
 import { STORAGE_KEYS, getJSON, getString, setJSON, setString } from './storage'
 
 const HISTORY_LIMIT = 5
@@ -42,7 +43,17 @@ export function getApiBaseHistory(): string[] {
   return cleaned
 }
 
+/**
+ * host 通道（规格 §6.1）：基址恒为**文档 origin**，忽略 localStorage 的 `pim.apiBase`。
+ * 嵌入宿主页面的地址由 Windows 宿主决定，页面里的服务器地址既不可信也不该被使用。
+ */
+function hostChannel(): boolean {
+  return detectHostChannel() === 'host'
+}
+
 export function setApiBase(raw: string): void {
+  // host 通道不允许保存服务器地址（规格 §6.1）：不写 storage，也不广播变更
+  if (hostChannel()) return
   const value = normalizeApiBaseInput(raw)
   if (value) {
     try {
@@ -65,6 +76,8 @@ export function setApiBase(raw: string): void {
 
 /** 拼接 API 相对路径（path 以 / 开头，如 /api/v1/...） */
 export function apiUrl(path: string): string {
+  // host 通道：同源相对路径 = 文档 origin（规格 §6.1），不拼 pim.apiBase
+  if (hostChannel()) return path
   const base = getApiBase()
   if (!base) return path
   return path.startsWith('/') ? base + path : `${base}/${path}`
@@ -87,7 +100,8 @@ export function isNativeShell(): boolean {
   return Boolean(w.Capacitor?.isNativePlatform?.()) || Boolean(w.__TAURI_INTERNALS__ ?? w.__TAURI__)
 }
 
-/** 壳内且未配置 API 地址 → 全路由重定向 /setup */
+/** 壳内且未配置 API 地址 → 全路由重定向 /setup（host 通道用文档 origin，不需要向导） */
 export function needsServerSetup(): boolean {
+  if (hostChannel()) return false
   return isNativeShell() && !getApiBase()
 }

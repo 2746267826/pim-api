@@ -3,9 +3,9 @@ import { Navigate, Link, useLocation, useNavigate } from 'react-router'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { ApiError } from '@/api/client'
+import { ApiError, formatRetryAfter } from '@/api/client'
 import { useAuth } from '@/features/auth/auth-context'
-import { Button, Input, InlineAlert, Label, Segmented } from '@/components/ui'
+import { Button, EmptyState, Input, InlineAlert, Label, Segmented } from '@/components/ui'
 
 const loginSchema = z.object({
   username: z.string().min(1, '请输入用户名或邮箱'),
@@ -22,7 +22,7 @@ const registerSchema = z.object({
 type Mode = 'login' | 'register'
 
 export function LoginPage() {
-  const { user, login, register } = useAuth()
+  const { user, login, register, hostChannel, retryBoot } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const [mode, setMode] = useState<Mode>('login')
@@ -41,9 +41,37 @@ export function LoginPage() {
 
   if (user) return <Navigate to={from} replace />
 
+  /*
+   * host 通道（规格 §6.1）：直接打开 /login 或注册页也显示同一张非账密说明。
+   * 宿主里没有网页账密表单——登录/注册由桌面客户端的登录窗口完成。
+   */
+  if (hostChannel === 'host') {
+    return (
+      <div className="grid min-h-dvh place-items-center bg-surface px-4">
+        <div className="w-full max-w-[380px]">
+          <EmptyState
+            title="请在桌面客户端登录"
+            description="嵌入页面不提供账号密码登录或注册。请使用桌面客户端的登录窗口登录，然后点重试。"
+            action={
+              <Button variant="primary" onClick={retryBoot}>
+                重试
+              </Button>
+            }
+          />
+        </div>
+      </div>
+    )
+  }
+
   function toErrorMessage(err: unknown): string {
     if (err instanceof ApiError) {
-      if (err.status === 429) return '尝试次数过多，请 15 分钟后再试'
+      // 429：服务端给了真实等待时长（Retry-After），页面必须把它显示出来，
+      // 不能再写死一个猜测值（PW-18）。
+      if (err.status === 429) {
+        return err.retryAfterMs != null
+          ? `尝试次数过多，请 ${formatRetryAfter(err.retryAfterMs)}后再试`
+          : '尝试次数过多，请稍后再试'
+      }
       return err.message || '请求失败，请稍后重试'
     }
     return '无法连接服务器：请检查网络或服务器地址'
