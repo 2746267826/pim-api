@@ -9,7 +9,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - 本仓与 `pim-api` 的接口以 `contract/openapi.json` 为准（快照随本仓提交，说明见 `contract/README.md`）。
 - **不要凭猜测调用接口**：不得手写或臆测契约里不存在的路径、字段、枚举值。改动涉及接口时，先对照契约确认形状。
 - **需要新接口时不要自己造**：把需求写给用户转交后端实现 —— 说明用途、请求方法与路径、请求字段、响应字段、示例。后端在 `pim-api` 实现并更新契约后，本仓再刷新快照并接入。
-- 后端契约更新后，用 `scripts/ci/fetch-contract.sh` 刷新本仓快照再提交。快照落后不影响本仓 CI（不阻塞），但接入新字段前必须先刷新。
+- 后端契约更新后，用 `scripts/ci/fetch-contract.sh` 刷新本仓快照再提交。**快照落后会让本仓 CI 变红**（`CI Gate` 里的 `Verify client contract is up to date` 步骤会逐字节比对上游），这是预期行为；正确做法是刷新并提交，不是跳过或放宽门禁。
 
 ### 门禁怎么过
 - 四个公开仓（api / web / android / windows）的 `master` 有两把锁：**`CI Gate`** 与 **`PIM Independent Acceptance`**。
@@ -19,6 +19,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 
 ### 本仓特有的两条
 - `client-web/src/api/generated.ts` 由 `scripts/ci/fetch-contract.sh` 生成，**禁止手工编辑**；契约更新后重跑该脚本并提交结果。
+- 契约新鲜度由 `scripts/ci/check-contract-freshness.sh`（**只读**，不写仓）校验：快照与 pim-api 当前上游逐字节比较，`generated.ts` 与「由仓内快照重新生成」的结果逐字节比较，并核对 `contract/provenance.json`。谁写（refresh）与谁只读（check）是分开的两个入口。
 - 本仓产物不单独发 release（打进 `pim-api` 镜像）。
 
 ## Communication And Planning

@@ -63,19 +63,21 @@ jobs:
       - name: Unit tests
         run: npm run test
 
-      # 契约新鲜度：前端类型由 pim-api 的 contract/openapi.json 生成。
-      # 契约变了而生成文件没跟上，说明接口形状已改，必须显式更新并提交。
+      # 契约新鲜度（只读，绝不写仓）：把本仓 contract/openapi.json 与 pim-api 当前上游
+      # 的字节做逐字节比较，并用仓内锁定的 openapi-typescript 从本仓快照重新生成，
+      # 与 client-web/src/api/generated.ts 逐字节比较（覆盖「快照陈旧」与「生成物陈旧」两个方向）。
+      # 上游契约一变、本仓没刷新 → 本 job 红；人工执行 scripts/ci/fetch-contract.sh 并提交刷新结果即恢复。
+      # 取不到权威源（网络/404/空体/非 OpenAPI3）一律 fail-closed，不跳过、不降级。
+      #
+      # 说明：为什么沿用 build-web 而不是新建 job —— 该 job 已在 CI Gate 的 needs 里，且本校验
+      # 需要 build-web 已 npm ci 出来的 client-web/node_modules（仓内锁定的生成器）；新建 job
+      # 会重复 checkout + npm ci 且需要再把它接进 gate.needs（漏接即等于没门禁）。
       - name: Verify client contract is up to date
         working-directory: ${{ github.workspace }}
         run: |
-          set -uo pipefail
-          bash scripts/ci/fetch-contract.sh
-          if ! git diff --quiet -- client-web/src/api/generated.ts; then
-            echo "::error::client-web/src/api/generated.ts 与 pim-api 的契约不一致；请运行 scripts/ci/fetch-contract.sh 并提交结果。"
-            git --no-pager diff --stat -- client-web/src/api/generated.ts
-            exit 1
-          fi
-          echo "✅ 契约类型与 pim-api 一致"
+          set -euo pipefail
+          bash scripts/ci/check-contract-freshness.sh
+          echo "✅ 契约快照、provenance 与生成类型均与 pim-api 当前上游一致"
 
       - name: Build (tsc -b && vite build)
         run: npm run build
