@@ -387,7 +387,8 @@
 | GET | `/api/v1/pc/browser-tt/timeline` | 200:`SiteTimelineRowDtoListApiResponse`、400:`StringApiResponse`、500:`StringApiResponse` |
 | POST | `/api/v1/pc/browser-tt/upload` | 200:`Int32ApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/pc/categories` | 200:`AppCategoryRuleListApiResponse`、500:`StringApiResponse` |
-| POST | `/api/v1/pc/categories` | 200:`AppCategoryRuleApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
+| POST | `/api/v1/pc/categories` | 200:`CategoryTreeNodeApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
+| POST | `/api/v1/pc/app-category-rules` | 200:`AppCategoryRuleApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | GET | `/api/v1/pc/categories/dictionary` | 200:`CategoryDictionaryItemDtoListApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | PUT | `/api/v1/pc/categories/reorder` | 200:`StringApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | POST | `/api/v1/pc/categories/seed` | 200:`StringApiResponse`、401、500:`StringApiResponse` |
@@ -463,7 +464,7 @@
 | `GET /api/v1/files/items/{id}/content|thumbnail`、`GET /api/v1/files/items/{id}/download`、`GET /api/v1/calendar/events/{eventId}/attachments/{attachmentId}/download`、`GET /api/v1/quick-notes/attachments/{id}/download` | 302 重定向（直链）或代理文件下载（content-type 由文件/Graph 侧决定），标注 302 + 通用二进制 content-type。 |
 | `GET /api/v1/ops/db/query`、`GET /api/v1/ops/logs/tail|query` | **206 Partial Content** 是真实成功码（结果被截断时），与 200 同 schema，均标注。 |
 | `OpsDbQueryResult.rows` | 行数据为 `Dictionary<string, object?>`（数据库列值类型运行时决定），schema 为 free-form 对象数组，字段类型无法静态声明。 |
-| `GET /api/v1/pc/*`（readGroup 约 24 个端点） | **当前无鉴权**（`PcTrackerModule` 的 readGroup 未挂 RequireAuthorization，且无全局 FallbackPolicy）。响应注解照实未标 401；security 标注在批次 3 照实处理。**属现状描述，不是本次修复目标，建议单独评估是否为设计意图。** |
+| `GET /api/v1/pc/*`（readGroup） | ~~当前无鉴权~~ **已修复**：readGroup 已补 `RequireAuthorization`（PR #412），security 现为 `bearerAuth`。 |
 
 ## 错误码与代码的对应依据（抽样可复现）
 
@@ -499,5 +500,20 @@
 - **照实不标 security 的 40 个**（现状即匿名）：
   - `/api/v1/auth/login|register|refresh`（登录入口）、`/api/v1/mcp/verify`（用 mcp_clients token 自证）；
   - `/health`、`/api/version`、`/api/v1/tiles/*`、`/api/client/shell/latest`、`/api/v1/client/shell/latest`、`/api/{path}` 兜底；
-  - **`/api/v1/pc` 的 readGroup 全部 GET（tracker/health、browser-tt/*、summary、aw/timeline、keystats/range、detail、quality、categories、classification/*、activity-analysis、heatmap/grid、aggregation/*、productivity/goals、timeline/v2 等）当前无鉴权**（PcTrackerModule 的 readGroup 未挂 RequireAuthorization，且无全局 FallbackPolicy）——现状描述，建议单独评估是否为设计意图。
+  - ~~`/api/v1/pc` 的 readGroup 全部 GET 当前无鉴权~~ **已修复**（PR #412 补 `RequireAuthorization`，契约同步为 `bearerAuth`）。
 - 注意事项（写入 scheme 描述与现状说明）：持 `mcp_tool` 作用域 JWT 的调用方还会经 `McpScopedTokenMiddleware` 做工具级权限校验（403，`{code:40302,...}` 包络），这是 bearer 之上的附加层，不改变 security 要求。
+
+## 修复记录：/api/v1/pc/categories 路由歧义（2026-10）
+
+`GET`/`POST /api/v1/pc/categories` 自 2026-07 起因同方法同路径双注册（裸路径 vs 组根 "/"）在路由匹配阶段抛 `AmbiguousMatchException`，一律 500。处置（经裁决：树形留任）：
+
+| 操作 | 修复前 | 修复后 |
+|---|---|---|
+| `GET /api/v1/pc/categories` | 歧义 500 | **扁平规则列表**（`AppCategoryRule`，MCP `get_pc_categories` 与契约原义，不变） |
+| `GET /api/v1/pc/categories/` | 歧义 500 | 同上（尾斜杠同路由） |
+| 冗余的树形 GET（组根 "/"） | 歧义源之一 | **删除**（`/tree` 是唯一树读入口，web 与 MCP 都走它） |
+| `POST /api/v1/pc/categories` | 歧义 500 | **树形分类保存**（`CategorySaveRequest`→`CategoryTreeNode`，web 分类页语义） |
+| 扁平规则保存（原 POST /categories） | 歧义源之一 | **迁移**到 `POST /api/v1/pc/app-category-rules`（`SaveCategoryRequest`→`AppCategoryRule`）；MCP `create_category` 已同步重指向（工具名/参数/返回不变） |
+| `DELETE /api/v1/pc/categories/{id}` | 正常（{id:guid} 优先级胜出，树形删除生效） | 不变；注意扁平规则删除（writeGroup 版）历史上就不可达，见下方同类问题 |
+
+**同类问题（已报告，未在本次处理）**：`DELETE /api/v1/pc/categories/{id}` 存在双注册（writeGroup `{id}` vs catWrite `{id:guid}`），路由优先级使树形删除对 guid 静默胜出、扁平规则删除不可达（非 guid 输入落扁平版 → 400）。行为与 MCP `delete_category` 的实际语义（树形删除）一致，故维持现状；如需扁平规则删除能力，应随 `/app-category-rules` 资源一并补 `DELETE`。全仓扫描（方法+归一化路径）未发现其他同优先级重复注册。

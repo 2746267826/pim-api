@@ -3430,6 +3430,45 @@
         },
         "type": "object"
       },
+      "CategorySaveRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "color": {
+            "type": "string"
+          },
+          "icon": {
+            "nullable": true,
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parentId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "productivity": {
+            "type": "string"
+          },
+          "sortOrder": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "color",
+          "name",
+          "productivity",
+          "sortOrder"
+        ],
+        "type": "object"
+      },
       "CategorySummary": {
         "additionalProperties": false,
         "properties": {
@@ -3509,6 +3548,26 @@
           "productivity",
           "sortOrder"
         ],
+        "type": "object"
+      },
+      "CategoryTreeNodeApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/CategoryTreeNode"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
         "type": "object"
       },
       "CategoryTreeNodeListApiResponse": {
@@ -33233,6 +33292,63 @@
         ]
       }
     },
+    "/api/v1/pc/app-category-rules": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveCategoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppCategoryRuleApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
     "/api/v1/pc/app-knowledge/apps": {
       "get": {
         "parameters": [
@@ -34620,7 +34736,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SaveCategoryRequest"
+                "$ref": "#/components/schemas/CategorySaveRequest"
               }
             }
           },
@@ -34631,7 +34747,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AppCategoryRuleApiResponse"
+                  "$ref": "#/components/schemas/CategoryTreeNodeApiResponse"
                 }
               }
             },

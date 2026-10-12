@@ -75,7 +75,7 @@ public static class McpWriteEndpointMap
         Add(map, "restore_file", "POST", "/api/v1/files/items/{id}/restore");
 
         // PcTracker categories
-        Add(map, "create_category", "POST", "/api/v1/pc/categories");
+        Add(map, "create_category", "POST", "/api/v1/pc/app-category-rules");
         Add(map, "update_categories_order", "PUT", "/api/v1/pc/categories/reorder");
         Add(map, "delete_category", "DELETE", "/api/v1/pc/categories/{id}");
         Add(map, "seed_categories", "POST", "/api/v1/pc/categories/seed");

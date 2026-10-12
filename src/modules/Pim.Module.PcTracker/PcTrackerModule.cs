@@ -427,7 +427,10 @@ public class PcTrackerModule : IModule
         .Produces<ApiResponse<List<AppCategoryRule>>>(200)
         .Produces<ApiResponse<string>>(500);
 
-        writeGroup.MapPost("/categories", async (
+        // 扁平「应用模式→分类规则」保存原注册在 POST /categories,与 catWrite 的树形保存
+        // （POST /categories/，web 分类页在用）同方法同路径，运行时路由匹配歧义 500。
+        // 按裁决树形留任 /categories，扁平保存迁移到独立资源路径；MCP create_category 已同步重指向。
+        writeGroup.MapPost("/app-category-rules", async (
             [FromBody] SaveCategoryRequest req,
             [FromServices] PcTrackerService svc,
             [FromServices] IAggregateResultCache cache,
@@ -1402,18 +1405,9 @@ public class PcTrackerModule : IModule
         var catRead = endpoints.MapGroup("/api/v1/pc/categories").RequireAuthorization();
         var catWrite = endpoints.MapGroup("/api/v1/pc/categories").RequireAuthorization();
 
-        catRead.MapGet("/", async (
-            [FromServices] PcCategoryService svc,
-            CancellationToken ct) =>
-        {
-            var tree = await svc.GetTreeAsync(ct);
-            return Results.Ok(ApiResponse<List<CategoryTreeNode>>.Ok(tree));
-        })
-        .Produces<ApiResponse<List<CategoryTreeNode>>>(200)
-        .Produces(401)
-        .Produces<ApiResponse<string>>(400)
-        .Produces<ApiResponse<string>>(500);
-
+        // 原 catRead.MapGet("/")（树形列表）与 readGroup.MapGet("/categories")（扁平规则列表）
+        // 同方法同路径，路由匹配歧义 500；树形读取的唯一入口是 /tree（web 与 MCP
+        // get_pc_category_tree 都走它），重复的 "/" 注册已删除。
         catRead.MapGet("/tree", async (
             [FromServices] PcCategoryService svc,
             CancellationToken ct) =>
@@ -1444,6 +1438,14 @@ public class PcTrackerModule : IModule
             [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
+            // Name 必须非空白：缺失/null/空串/纯空白都在进入 SaveAsync 之前拒绝，
+            // 否则新建会落库空名、带 id 的更新会把已有合法节点整行覆盖（含 parentId 被清空）。
+            // 只判 IsNullOrWhiteSpace，带前后空格的合法名称保持原样通过。
+            if (string.IsNullOrWhiteSpace(req.Name))
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, "分类名称不能为空"));
+            }
+
             var result = await svc.SaveAsync(req, ct);
             cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<CategoryTreeNode>.Ok(result));

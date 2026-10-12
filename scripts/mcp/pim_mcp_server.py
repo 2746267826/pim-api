@@ -2,7 +2,14 @@
 PIM MCP v3 - Read + Write server for AI Agent
 
 DEPRECATED (2026-09-01): MCP Server 已集成进 Pim.Api（.NET 8）进程内（/mcp + --mcp-stdio），
-本脚本退役，仅保留为行为基准（工具契约/参数/返回形状以本文件为参考）。
+本 Python 脚本已废弃且未在线上部署，仅保留为历史行为基准与参考。
+注意：
+- 真实 C# MCP 实现（Pim.Module.Mcp）中，create_category 工具对应 POST /api/v1/pc/app-category-rules
+  （请求体模型 SaveCategoryRequest: appPattern, categoryName, color, priority），用于保存应用分类规则。
+- POST /api/v1/pc/categories 为唯一的树形分类保存入口（请求体模型 CategorySaveRequest: id, parentId,
+  name, color, icon, productivity, sortOrder），不可与应用分类规则（app-category-rules）混淆。
+- 本脚本中 create_category 同步修正为调用 POST /api/v1/pc/app-category-rules，彻底避免废弃脚本
+  误调时向树形分类入口写入脏数据。
 
 Exposes 148 tools: 99 read-only (Calendar / PcTracker / Mobile / QuickNotes / Files / Core/Infra)
 plus 49 write tools (Calendar 30 + QuickNotes 8 + Files 5 + PcTracker 4 + Mobile 2).
@@ -3179,14 +3186,21 @@ async def create_category(
     color: str,
     priority: Optional[int] = None,
 ) -> Any:
-    """Create a PC activity category (maps an app pattern to a category). Requires write permission create_category."""
+    """Create a PC activity category rule (maps an app pattern to a category).
+
+    DEPRECATED: Python MCP is deprecated and not deployed in production; use C# Pim.Api
+    in-process MCP (/mcp or --mcp-stdio) instead.
+    Calls POST /api/v1/pc/app-category-rules with body (SaveCategoryRequest: appPattern,
+    categoryName, color, priority). Must not be confused with category tree save (POST /api/v1/pc/categories).
+    Requires write permission create_category.
+    """
     for f in ("appPattern", "categoryName", "color"):
         if not locals().get(f):
             return {"error": f"{f} is required", "code": 400}
     if priority is None:
         return {"error": "priority is required", "code": 400}
     body = _clean_params(appPattern=appPattern, categoryName=categoryName, color=color, priority=priority)
-    return await _call_api("POST", "/api/v1/pc/categories", json_body=body)
+    return await _call_api("POST", "/api/v1/pc/app-category-rules", json_body=body)
 
 
 @mcp.tool()
@@ -3330,6 +3344,14 @@ def main() -> None:
     if "--check" in os.sys.argv[1:]:
         _run_check()
         return
+    import sys
+
+    print(
+        "WARNING: scripts/mcp/pim_mcp_server.py is deprecated and undeployed in production. "
+        "Production MCP is hosted in-process inside Pim.Api (/mcp and --mcp-stdio). "
+        "See docs/mcp.md.",
+        file=sys.stderr,
+    )
     if _http_mode():
         import uvicorn
 

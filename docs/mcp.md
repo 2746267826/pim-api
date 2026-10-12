@@ -3182,12 +3182,12 @@ async def get_version(-) -> Any: ...
 
 | 工具 | 方法 + 路径 | 主要参数 |
 |---|---|---|
-| `create_category` | `POST /api/v1/pc/categories` | appPattern, categoryName, color, priority |
+| `create_category` | `POST /api/v1/pc/app-category-rules` | appPattern, categoryName, color, priority |
 | `update_categories_order` | `PUT /api/v1/pc/categories/reorder` | items:[{id,parentId?,sortOrder}] |
 | `delete_category` | `DELETE /api/v1/pc/categories/{id}` | — |
 | `seed_categories` | `POST /api/v1/pc/categories/seed` | — |
 
-> 注：`/api/v1/pc/categories` 同时注册了 legacy 与新分类树两套模型，实际命中 legacy `SaveCategoryRequest`（appPattern/categoryName/color/priority），MCP `create_category` 按其语义暴露。
+> 注：#414 已裁决并消除 `/api/v1/pc/categories` 的双注册路由歧义：`POST /api/v1/pc/categories` 为唯一的树形分类保存入口（模型 `CategorySaveRequest`，包含 id/parentId/name/color/icon/productivity/sortOrder；树读取走 `/api/v1/pc/categories/tree`），不可与应用分类规则混淆。扁平「应用模式→分类规则」保存已迁移至独立路径 `POST /api/v1/pc/app-category-rules`（模型 `SaveCategoryRequest`，包含 appPattern/categoryName/color/priority）。真实生效的 C# MCP 工具 `create_category`（见 `src/modules/Pim.Module.Mcp`）正是调用 `POST /api/v1/pc/app-category-rules` 保存应用分类规则。Python MCP 脚本（`scripts/mcp/pim_mcp_server.py`）已废弃且未在线上部署。
 
 **Mobile 目标 2**
 
