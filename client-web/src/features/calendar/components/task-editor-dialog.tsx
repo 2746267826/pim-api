@@ -4,6 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Check, Plus, Trash2 } from 'lucide-react'
 import { ApiError } from '@/api/client'
+import type { components } from '@/api/generated'
 import { useChecklistMutations, useDeleteTask, useSaveTask } from '../queries'
 import type { TaskBook, TaskResponse } from '../types'
 import { fromLocalInputValue, toLocalInputValue } from '@/lib/datetime'
@@ -102,7 +103,8 @@ export function TaskEditorDialog({ open, onOpenChange, taskBooks, task, initialP
     const due = fromLocalInputValue(values.due)
     const dtStart = fromLocalInputValue(values.dtStart)
     const plannedEnd = fromLocalInputValue(values.plannedEnd)
-    const body: Record<string, unknown> = {
+    /* 契约类型（而非 Record<string, unknown>）：POST 与 PUT 的必填集由编译器校验 */
+    const body: components['schemas']['CreateTaskRequest'] | components['schemas']['UpdateTaskRequest'] = {
       title: values.title,
       description: values.description || null,
       priority: Number(values.priority),

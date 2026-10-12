@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { deferredIntervalMs, standardIntervalMs } from '@/lib/polling'
 import { calendarsApi, checklistApi, eventsApi, layersApi, segmentsApi, taskBooksApi, tasksApi } from './api'
+import type { components } from '@/api/generated'
 import type { TaskResponse, TasksPagedParams } from './types'
 import { taskToMutationData } from './types'
 
@@ -132,7 +133,8 @@ export function useCreateCalendar() {
 export function useRenameCalendar() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, body }: { id: string; body: { name?: string; color?: string } }) =>
+    /* 契约 CreateCalendarRequest.name 必填（minLength 1）；调用方（日历本重命名）已保证非空 */
+    mutationFn: ({ id, body }: { id: string; body: components['schemas']['CreateCalendarRequest'] }) =>
       calendarsApi.rename(id, body),
     onSuccess: () => invalidateCalendar(qc),
   })
@@ -149,9 +151,11 @@ export function useDeleteCalendar() {
 export function useSaveEvent() {
   const qc = useQueryClient()
   return useMutation({
+    /* 请求体用契约类型而非 Record<string, unknown>：编译器才能校验必填集
+     * （Create/Update 的 isAllDay 可空性不同，Create 可赋给 Update，故取 Create）。 */
     mutationFn: async (input: {
       id?: string
-      body: Record<string, unknown>
+      body: components['schemas']['CreateEventRequest']
       scope?: { scope?: 'this' | 'series'; recurrenceId?: string; originalEventId?: string }
     }) => (input.id ? eventsApi.update(input.id, input.body, input.scope) : eventsApi.create(input.body)),
     onSuccess: () => invalidateCalendar(qc),
@@ -172,8 +176,10 @@ export function useDeleteEvent() {
 export function useSaveTask() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (input: { id?: string; body: Record<string, unknown> }) =>
-      input.id ? tasksApi.update(input.id, input.body) : tasksApi.create(input.body),
+    mutationFn: async (input: {
+      id?: string
+      body: components['schemas']['CreateTaskRequest'] | components['schemas']['UpdateTaskRequest']
+    }) => (input.id ? tasksApi.update(input.id, input.body) : tasksApi.create(input.body)),
     onSuccess: () => invalidateCalendar(qc),
   })
 }
@@ -425,7 +431,7 @@ export function useGenerateReport() {
   })
 }
 
-export function useDataCenterQuery(params: Record<string, unknown>) {
+export function useDataCenterQuery(params: components['schemas']['DataCenterQueryRequest']) {
   return useQuery({
     queryKey: calendarExtraKeys.dataCenter(params),
     queryFn: () => import('./api').then((m) => m.dataCenterApi.query(params)),
