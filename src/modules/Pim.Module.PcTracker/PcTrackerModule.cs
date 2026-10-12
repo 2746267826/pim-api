@@ -1438,6 +1438,14 @@ public class PcTrackerModule : IModule
             [FromServices] IAggregateResultCache cache,
             CancellationToken ct) =>
         {
+            // Name 必须非空白：缺失/null/空串/纯空白都在进入 SaveAsync 之前拒绝，
+            // 否则新建会落库空名、带 id 的更新会把已有合法节点整行覆盖（含 parentId 被清空）。
+            // 只判 IsNullOrWhiteSpace，带前后空格的合法名称保持原样通过。
+            if (string.IsNullOrWhiteSpace(req.Name))
+            {
+                return Results.BadRequest(ApiResponse<string>.Error(400, "分类名称不能为空"));
+            }
+
             var result = await svc.SaveAsync(req, ct);
             cache.EvictByPrefix("/api/v1/pc/");
             return Results.Ok(ApiResponse<CategoryTreeNode>.Ok(result));

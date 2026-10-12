@@ -26,12 +26,21 @@ internal sealed class TempMigrationDatabase : IAsyncDisposable
     private readonly NpgsqlConnection _admin;
     private readonly PimDbContext _db;
 
-    private TempMigrationDatabase(string database, NpgsqlConnection admin, PimDbContext db)
+    private TempMigrationDatabase(string database, NpgsqlConnection admin, PimDbContext db, string connectionString)
     {
         _database = database;
         _admin = admin;
         _db = db;
+        ConnectionString = connectionString;
     }
+
+    /// <summary>
+    /// 指向这个一次性库的连接串。用于把 <c>WebApplicationFactory</c> 的
+    /// <c>ConnectionStrings:DefaultConnection</c> 指到隔离库上——
+    /// 只给 <see cref="Db"/> 不足以起真 HTTP 宿主，宿主要的是连接串而不是 context。
+    /// 该库是本次运行新建的一次性库，与生产/镜像库无关。
+    /// </summary>
+    public string ConnectionString { get; }
 
     /// <summary>
     /// 无 PostgreSQL（未设置 PIM_TEST_CONN 或连不上）时抛 SkipException 跳过。
@@ -66,7 +75,7 @@ internal sealed class TempMigrationDatabase : IAsyncDisposable
 
         var scoped = new NpgsqlConnectionStringBuilder(connStr) { Database = database }.ConnectionString;
         var options = new DbContextOptionsBuilder<PimDbContext>().UseNpgsql(scoped).Options;
-        return new TempMigrationDatabase(database, admin, new PimDbContext(options));
+        return new TempMigrationDatabase(database, admin, new PimDbContext(options), scoped);
     }
 
     /// <summary>
