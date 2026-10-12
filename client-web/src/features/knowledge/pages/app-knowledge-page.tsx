@@ -185,14 +185,13 @@ function AddAppForm({ onDone, editing }: { onDone: () => void; editing?: Knowled
     displayName: editing?.displayName ?? '',
     categoryPath: editing?.categoryPath ?? '',
     productivity: editing?.productivity ?? 'neutral',
-    icon: editing?.icon ?? '',
     description: '',
   })
 
   return (
     <Card className="mb-3 p-4">
       <CardTitle>{isEdit ? `编辑应用：${editing!.displayName}` : '添加应用'}</CardTitle>
-      <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+      <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
         <div><Label>进程名</Label><Input className="h-8" value={form.processName} onChange={(e) => setForm((f) => ({ ...f, processName: e.target.value }))} /></div>
         <div><Label>显示名</Label><Input className="h-8" value={form.displayName} onChange={(e) => setForm((f) => ({ ...f, displayName: e.target.value }))} /></div>
         <div><Label>分类路径</Label><Input className="h-8" value={form.categoryPath} onChange={(e) => setForm((f) => ({ ...f, categoryPath: e.target.value }))} /></div>
@@ -202,7 +201,6 @@ function AddAppForm({ onDone, editing }: { onDone: () => void; editing?: Knowled
             { value: 'productive', label: '高效率' }, { value: 'neutral', label: '中性' }, { value: 'distracting', label: '分散精力' },
           ]} />
         </div>
-        <div><Label>图标 emoji</Label><Input className="h-8" value={form.icon} onChange={(e) => setForm((f) => ({ ...f, icon: e.target.value }))} /></div>
         <div><Label>描述</Label><Input className="h-8" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} /></div>
       </div>
       <div className="mt-3 flex gap-2">
@@ -213,10 +211,15 @@ function AddAppForm({ onDone, editing }: { onDone: () => void; editing?: Knowled
           onClick={async () => {
             try {
               // 新增与更新同一端点（按进程名 upsert；编辑时以原进程名为键）
+              /*
+               * 不发送 icon：契约 SaveAppSignatureRequest 没有该字段，服务端
+               * SaveAsync 也从不写 Icon（响应里的 icon 来自在线查询）。
+               * 送上来的 emoji 永远无法持久化，所以表单不再提供该输入；
+               * 列表仍展示响应里的 icon。
+               */
               await apiPost('/api/v1/pc/app-signatures/', {
                 ...form,
                 categoryPath: form.categoryPath || null,
-                icon: form.icon || null,
                 description: form.description || null,
               })
               notifySuccess(isEdit ? '已保存修改' : '已添加')

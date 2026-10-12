@@ -35,6 +35,8 @@ PIM_API_TARGET=http://localhost:5858 npm run dev   # 临时指向本机后端
 也可在应用内「设置 → 服务器」直接填写 API 地址（不依赖代理；跨域需后端 CORS 白名单放行该来源）。
 
 > `scripts/mock-api.mjs` 是**已停用**的离线 mock（原用于无后端时的视觉走查），仅在没有可用后端时临时启用。
+> 它**不再默认占用 5858**（该端口通常是真实 PIM API）：默认绑内核分配的空闲端口并在启动行打印实际端口；
+> 需要固定端口时显式 `MOCK_PORT=xxxx node scripts/mock-api.mjs`。
 
 ### Android 壳（Capacitor）
 

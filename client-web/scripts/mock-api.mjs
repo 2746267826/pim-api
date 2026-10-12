@@ -108,7 +108,21 @@ const todaySection = (id, kind, status, data) => ({ id, kind, status, generatedA
 
 let seq = 100
 
-createServer((req, res) => {
+/*
+ * 监听地址：MOCK_PORT / MOCK_HOST（缺省 = 由内核分配空闲端口，只绑 127.0.0.1）。
+ *
+ * 不要把 5858 当默认值：本机 5858 上可能已经有真实的 PIM API 在跑，
+ * 静默把 mock 绑上去既会直接 EADDRINUSE，也会让「本地起了一个 API」的来源变得不可分辨。
+ * 需要固定端口时显式 `MOCK_PORT=xxxx node scripts/mock-api.mjs`。
+ */
+const MOCK_PORT = Number(process.env.MOCK_PORT ?? 0)
+const MOCK_HOST = process.env.MOCK_HOST ?? '127.0.0.1'
+if (!Number.isInteger(MOCK_PORT) || MOCK_PORT < 0 || MOCK_PORT > 65535) {
+  console.error(`MOCK_PORT 不是合法端口：${process.env.MOCK_PORT}`)
+  process.exit(2)
+}
+
+const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
   const path = url.pathname
 
@@ -862,10 +876,6 @@ if (path === '/api/v1/calendar/outlook/calendars/discover' || path === '/api/v1/
   return
 }
 if (path === '/api/v1/calendar/outlook/calendars/selection') { readBody(() => ok(res, [{ id: 'ob-1', pimCalendarId: 'cal-1', graphCalendarId: 'gcal-1', groupId: null, groupName: null, name: '日历', color: null, ownerName: null, ownerAddress: null, isDefault: true, canEdit: true, isSelected: true, remoteState: 'active', lastSyncedAt: null, lastError: null }])); return }
-if (path === '/api/v1/files/sync-batches') {
-  ok(res, { items: [{ id: 'fsb-1', status: 'completed', startedAt: at(9), finishedAt: at(9, 3), pagesProcessed: 12, itemsApplied: 86, itemsDeleted: 2, fullRecrawl: false, errorSummary: null }, { id: 'fsb-2', status: 'completed', startedAt: daysAgo(1), finishedAt: daysAgo(1), pagesProcessed: 8, itemsApplied: 42, itemsDeleted: 0, fullRecrawl: false, errorSummary: null }], total: 2, page: 1, pageSize: 20 })
-  return
-}
 if (/pc\/app-signatures$/.test(path) && req.method === 'POST') { readBody(() => ok(res, { id: 'sig-new' })); return }
 
 /* MOCK-PLAN-REAL */
@@ -1086,4 +1096,10 @@ if (path === '/api/v1/mobile/devices') {
 }
 
   json(res, 404, { code: 404, message: `接口不存在: ${path}`, data: null, timestamp: new Date().toISOString() })
-}).listen(5858, () => console.log('mock api on :5858'))
+})
+
+server.listen(MOCK_PORT, MOCK_HOST, () => {
+  const addr = server.address()
+  const port = addr && typeof addr === 'object' ? addr.port : MOCK_PORT
+  console.log(`mock api on http://${MOCK_HOST}:${port}`)
+})

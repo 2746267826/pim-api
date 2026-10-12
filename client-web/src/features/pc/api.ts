@@ -1,4 +1,5 @@
 import { apiGet, apiPost } from '@/api/client'
+import type { components } from '@/api/generated'
 import type {
   CategoryDictionaryItem,
   ContextSuggestion,
@@ -89,15 +90,8 @@ export const pcApi = {
     apiGet<ProductivityDashboard>(`/api/v1/pc/productivity/dashboard?date=${date}${force ? '&force=true' : ''}`),
   classificationQueue: (limit: number, mode = 'queue') =>
     apiGet<{ items: LabelingQueueItem[] }>(`/api/v1/pc/classification/queue?limit=${limit}&mode=${mode}`),
-  label: (body: {
-    targetType: string
-    target: string
-    categoryName?: string
-    categoryId?: string
-    scope: 'all' | 'keyword'
-    /** scope=keyword 时必填（规格 pc-tracker.md:700-711） */
-    keyword?: string
-  }) => apiPost<{ ok: boolean; categoryId: string | null; categoryName: string | null; created: string }>(
+  label: (body: components['schemas']['ActivityLabelingRequest']) =>
+    apiPost<{ ok: boolean; categoryId: string | null; categoryName: string | null; created: string }>(
     '/api/v1/pc/classification/label',
     body,
   ),
@@ -114,7 +108,7 @@ export const pcApi = {
   browserDaily: (params: { from: string; to: string }) =>
     apiGet<SiteDailyRow[]>(`/api/v1/pc/browser-tt/daily?from=${params.from}&to=${params.to}`),
   browserTimeline: (date: string) => apiGet<SiteTimelineRow[]>(`/api/v1/pc/browser-tt/timeline?date=${date}`),
-  browserImport: (body: { content: string; mode?: 'overwrite' | 'add' }) =>
+  browserImport: (body: components['schemas']['SiteImportRequest']) =>
     apiPost<{ rows: number; dates: number; hosts: number; skipped: number; format: string }>(
       '/api/v1/pc/browser-tt/import',
       body,
@@ -125,11 +119,11 @@ export const pcApi = {
     apiGet<ContextSuggestion[]>(`/api/v1/pc/classification/suggestions?date=${date}`),
   suggestReject: (id: string) =>
     apiPost<string>(`/api/v1/pc/classification/suggestions/${id}/reject`, {}),
-  suggestPreview: (id: string, body: { categoryName?: string; range: { mode: 'today' | 'range' } }) =>
+  suggestPreview: (id: string, body: components['schemas']['SuggestionClassificationPreviewRequest']) =>
     apiPost<AppKnowledgePreview>(
       `/api/v1/pc/app-knowledge/suggestions/${id}/preview`,
       body,
     ),
-  suggestApply: (id: string, body: { categoryName?: string; range: { mode: 'today' | 'range' } }) =>
+  suggestApply: (id: string, body: components['schemas']['SuggestionClassificationApplyRequest']) =>
     apiPost<{ message: string }>(`/api/v1/pc/app-knowledge/suggestions/${id}/apply`, body),
 }

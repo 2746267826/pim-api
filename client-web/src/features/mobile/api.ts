@@ -1,4 +1,5 @@
 import { apiDelete, apiGet, apiPost } from '@/api/client'
+import type { components } from '@/api/generated'
 import type {
   DeviceDeletePreview,
   DeviceMergePreview,
@@ -67,9 +68,9 @@ export const mobileApi = {
     apiGet<DeviceDeletePreview>(`/api/v1/mobile/devices/${encodeURIComponent(deviceId)}/delete-preview`),
   deleteDevice: (deviceId: string) =>
     apiDelete<string>(`/api/v1/mobile/devices/${encodeURIComponent(deviceId)}`),
-  mergePreview: (body: { sourceDeviceIds: string[]; targetDeviceId: string }) =>
+  mergePreview: (body: components['schemas']['DeviceMergeRequest']) =>
     apiPost<DeviceMergePreview>('/api/v1/mobile/devices/merge/preview', body),
-  merge: (body: { sourceDeviceIds: string[]; targetDeviceId: string }) =>
+  merge: (body: components['schemas']['DeviceMergeRequest']) =>
     apiPost<string>('/api/v1/mobile/devices/merge', body),
   /**
    * 设备导出：响应是 application/json 文件流（非 ApiResponse 封装），

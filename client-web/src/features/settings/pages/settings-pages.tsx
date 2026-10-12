@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, Bot, Download, FileDown, RefreshCw, ScrollText, Trash2 } from 'lucide-react'
-import { apiDelete, apiGet, apiPost, apiPut } from '@/api/client'
+import { apiDelete, apiGet, apiPost, apiPut, apiUpload, fetchBlob } from '@/api/client'
 import { downloadCsv, downloadJson } from '@/lib/download'
 import { formatTime } from '@/lib/datetime'
 
@@ -792,8 +792,17 @@ interface AdminEvent {
   calendarId: string
   dtStart: string
   dtEnd: string
-  rrule: string | null
+  /** 契约字段名（PW-05）；旧数据可能是小写 rrule */
+  rRule?: string | null
+  rrule?: string | null
   isCancelled: boolean
+  /*
+   * 列表是服务端**展开后的 occurrence**：`id` 是派生合成 id（不在 events 表里），
+   * `originalEventId` / `seriesMasterId` 才指向库中那一行存储事件。
+   * 导出端点按存储事件 id 过滤，因此导出前必须回落到 originalEventId。
+   */
+  originalEventId?: string | null
+  seriesMasterId?: string | null
 }
 
 export function CalendarDataManagerPage() {
@@ -817,15 +826,34 @@ export function CalendarDataManagerPage() {
 
   async function exportIcs(ids?: string[]) {
     const q = ids?.length ? `?ids=${ids.join(',')}` : ''
-    const res = await fetch(`/api/v1/calendar/export-ics${q}`, { headers: { Authorization: `Bearer ${localStorage.getItem('pim.accessToken') ?? ''}` } })
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'pim-events.ics'
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(url), 500)
-    notifySuccess('ICS 已导出')
+    try {
+      /*
+       * PW-08：导出必须走统一传输——
+       * 配置的 apiBase（apiUrl）、统一 Bearer、401 走共享单飞刷新并重放一次、
+       * 非 2xx 抛错。只有真正拿到 2xx 的 ICS 内容才提示成功。
+       */
+      const blob = await fetchBlob(`/api/v1/calendar/export-ics${q}`, undefined, {
+        refreshOn401: true,
+      })
+      if (blob.size === 0) throw new Error('导出内容为空')
+      /*
+       * 服务端对「命中 0 条」返回的是 HTTP 200 + 只有 VCALENDAR/VTIMEZONE 的空日历（约 195 B），
+       * 不是 0 字节；因此必须按内容判空，不能只判 blob.size，否则空日历会被当成导出成功。
+       */
+      const icsText = await blob.text()
+      if (!/BEGIN:VEVENT/.test(icsText)) {
+        throw new Error('导出内容为空：没有可导出的事件')
+      }
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'pim-events.ics'
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 500)
+      notifySuccess('ICS 已导出')
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : '导出失败')
+    }
   }
 
   return (
@@ -845,7 +873,19 @@ export function CalendarDataManagerPage() {
             <Button variant="secondary" size="sm" onClick={() => fileRef.open()}>
               <FileDown className="size-4" aria-hidden /> 导入 ICS
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => void exportIcs(selected.size ? [...selected] : undefined)}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                // 选中集里可能有多条 occurrence 指向同一库中事件：映射到存储 id 后去重
+                const items = events.data?.items ?? []
+                const toStoredId = (id: string) =>
+                  items.find((x) => x.id === id)?.originalEventId ?? id
+                void exportIcs(
+                  selected.size ? [...new Set([...selected].map(toStoredId))] : undefined,
+                )
+              }}
+            >
               <Download className="size-4" aria-hidden /> 导出{selected.size ? '选中' : '全部'}
             </Button>
             <Button variant="danger-soft" size="sm" disabled={selected.size === 0} onClick={() => setDeleteOpen(true)}>
@@ -863,13 +903,17 @@ export function CalendarDataManagerPage() {
                 form.append('file', file)
                 if (importTarget) form.append('calendarId', importTarget)
                 try {
-                  const res = await fetch('/api/v1/calendar/import-ics', {
-                    method: 'POST',
-                    headers: { Authorization: `Bearer ${localStorage.getItem('pim.accessToken') ?? ''}` },
-                    body: form,
-                  })
-                  const body = await res.json()
-                  notifySuccess(`导入完成：成功 ${body.data?.imported ?? 0}，跳过 ${body.data?.skipped ?? 0}`)
+                  /*
+                   * PW-08：导入同样走统一传输（apiUpload 会补 Bearer、401 刷新重放、
+                   * 非 2xx / 非 JSON 抛错）。失败绝不能弹「导入完成」。
+                   */
+                  const result = await apiUpload<{ imported?: number; skipped?: number }>(
+                    '/api/v1/calendar/import-ics',
+                    form,
+                  )
+                  notifySuccess(
+                    `导入完成：成功 ${result?.imported ?? 0}，跳过 ${result?.skipped ?? 0}`,
+                  )
                   invalidate()
                 } catch (err) {
                   notifyError(err instanceof Error ? err.message : '导入失败')
@@ -955,7 +999,7 @@ export function CalendarDataManagerPage() {
                     {' ~ '}
                     {new Date(e.dtEnd).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
                   </td>
-                  <td className="px-2 py-1.5 text-xs text-text-3">{e.rrule ? '↻ 重复' : '—'}</td>
+                  <td className="px-2 py-1.5 text-xs text-text-3">{e.rRule || e.rrule ? '↻ 重复' : '—'}</td>
                   <td className="px-2 py-1.5 text-right">
                     <Button variant="ghost" size="sm" onClick={() => setEditingEvent(e as unknown as EventResponse)}>
                       编辑

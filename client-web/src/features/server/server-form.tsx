@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApiError, clearTokens } from '@/api/client'
 import { Button, Chip, InlineAlert, Input, Label } from '@/components/ui'
+import { detectHostChannel } from '@/lib/host-channel'
 import { candidateUrl, getApiBase, getApiBaseHistory, setApiBase } from '@/lib/apiBase'
 import { notifySuccess } from '@/lib/notify'
 
@@ -83,6 +84,17 @@ export function ServerForm({ mode }: { mode: 'setup' | 'settings' }) {
   }
 
   async function save() {
+    /*
+     * host 通道（规格 §6.1）：嵌入页的服务器地址由桌面宿主决定，页面里既不能保存，
+     * 也不能因为「切换地址」去 clearTokens（页面根本不该碰令牌 storage）。
+     */
+    if (detectHostChannel() === 'host') {
+      setResult({
+        ok: false,
+        message: '当前是桌面宿主嵌入页：服务器地址由桌面客户端决定，页面里不能修改。',
+      })
+      return
+    }
     setSaving(true)
     try {
       setApiBase(value)

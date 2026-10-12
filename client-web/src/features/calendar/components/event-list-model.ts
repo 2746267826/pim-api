@@ -9,6 +9,7 @@
  * 时刻一律按 +08:00 墙钟解释（UTC 毫秒 + 固定偏移），不使用浏览器本地时区。
  */
 import type { EventResponse, LayerItem } from '../types'
+import { isRepeatedEvent } from '../rrule'
 
 /** 业务日墙钟时区偏移：+08:00（与时间线/日历页同一口径） */
 export const CST_OFFSET_MS = 8 * 3600_000
@@ -95,7 +96,7 @@ export function buildEventListSections(
       endMs: Date.parse(ev.dtEnd) || null,
       allDay: Boolean(ev.isAllDay),
       cancelled: Boolean(ev.isCancelled ?? ev.status === 'Cancelled'),
-      repeated: Boolean(ev.rrule) || Boolean(ev.isSeriesMaster),
+      repeated: isRepeatedEvent(ev),
       color: '#3B82F6',
       event: ev,
     })

@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { Plus, Trash2 } from 'lucide-react'
 import { ApiError, apiPost } from '@/api/client'
 import { isOutlookEvent, type CalendarBook, type EventResponse } from '../types'
+import { isRepeatedEvent, readEventRrule } from '../rrule'
 import { useDeleteEvent, useSaveEvent } from '../queries'
 import { fromLocalInputValue, toLocalInputValue } from '@/lib/datetime'
 import { InlineAlert, Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, Input, Label, Segmented, Select, Switch, Textarea } from '@/components/ui'
@@ -99,7 +100,7 @@ interface AttendeeRow {
 export function EventEditorDialog({ open, onOpenChange, calendars, initial, event }: EventEditorProps) {
   const isEdit = event != null
   const isOutlook = event != null && isOutlookEvent(event)
-  const hasRecurrence = event != null && (Boolean(event.rrule) || event.isSeriesMaster || Boolean(event.seriesMasterId))
+  const hasRecurrence = event != null && (isRepeatedEvent(event) || Boolean(event.seriesMasterId))
   const save = useSaveEvent()
   const remove = useDeleteEvent()
 
@@ -139,7 +140,7 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
         dtEnd: toLocalInputValue(event.dtEnd),
         location: event.location ?? '',
         description: event.description ?? '',
-        rrule: (event.rrule as z.infer<typeof schema>['rrule']) ?? '',
+        rrule: (readEventRrule(event) as z.infer<typeof schema>['rrule']) ?? '',
         isReminderOn: event.isReminderOn ?? false,
         reminderMinutesBeforeStart: event.reminderMinutesBeforeStart != null ? String(event.reminderMinutesBeforeStart) : '',
         showAs: (event.showAs as z.infer<typeof schema>['showAs']) ?? '',
@@ -195,7 +196,7 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
       dtStart,
       dtEnd,
       isAllDay: values.isAllDay,
-      rrule: values.rrule || null,
+      rRule: values.rrule || null,
       // 后端只接受 'html'（'text' 报 2009 DescriptionFormat 值无效）；纯文本描述可省略该字段
       descriptionFormat: values.description ? 'html' : null,
       isReminderOn: values.isReminderOn,

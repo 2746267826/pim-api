@@ -16,7 +16,7 @@
 - **收集**：快速记录（TipTap）、文件（OneDrive 三栏 + >4MB Graph 会话分片直传）
 - **治理**：数据中心、提醒、报告、习惯（创建/编辑/归档/删除）
 - **系统**：状态页、设置（服务器/Microsoft 绑定/AI/用户管理/MCP/数据可信度 13 尺子/回收站/PC 明细查询）、应用知识库、审计时间线、设备端点
-- **嵌入**：`/embed/android/today|tracks` 免认证内嵌页（供采集端 App 经 `window.pimAndroid` 桥注入令牌）
+- **嵌入**：`/embed/android/today|tracks` 内嵌页（三条业务 GET 由采集端 App 原生代发；令牌不进入页面）
 
 ## 技术栈
 
@@ -31,7 +31,7 @@ client-web/              前端主体（本文件大部分内容的所在地，�
   src/lib/               apiBase / polling / enums / businessDay / storage / notify
   src/components/        ui 原语 + viz 图表（GitHub 热力图/键鼠矩阵/甘特条）+ motion 原语
   src/features/<域>/     pages / components / queries（按域分包）
-  src/embed/android/     免认证内嵌页 + 桥适配（PimBridge / 真机原生注入）
+  src/embed/android/     内嵌页 + 非敏感状态桥适配（原生代发业务 GET）
   docs/                  DESIGN（视觉规范）/ CONVENTIONS（工程约定）/ qa（截图与清单）
   scripts/               自验与 QA 脚本（见下）
   shell-dist/            Windows 壳引导页（服务器地址记忆 + 跳转）
@@ -72,7 +72,7 @@ cd android && JAVA_HOME="<JDK21 路径>" ./gradlew assembleDebug
 ```
 
 - 需要 JDK 21（Android Studio 自带 JBR 即可）与 Android SDK；详见 [client-web/README.md](client-web/README.md) 的本机验证记录。
-- `PimBridgePlugin`（Java，参考实现）让壳能以 `window.pimAndroid` 契约自测内嵌页：`token.request/refresh`（构建期注入账号登录换取）、`native.state.request`、`page.report`。真实采集端 App 按规格 03 §6 自行注入同名桥。
+- `PimBridgePlugin`（Java）仍是待 PW-07b/c 整改的参考壳，保留旧 `token.request/refresh` 流程，不能作为产品安全实现的验收证据。真实采集端 App 按规格 03 §6 原生代发三条业务 GET，桥只交换 `native.state.request` / `page.report` 等非敏感状态。
 - 令牌来源默认值经构建期注入（`build.gradle` resValue，取自 `.env`），不写入源码。
 
 ### Windows（Tauri 2）
@@ -89,7 +89,8 @@ npx tauri build            # 需 Rust（stable-msvc）+ MSVC Build Tools
 ## 测试与验收
 
 ```bash
-npm run test             # vitest：146 例（网络层/桥/图表模型/业务日/轮询等）
+npm run test             # vitest 全量单测：client-web/src + audit-tests
+                         # （网络层/业务日/域接口 + 契约一致性、CI 门禁自检、宿主会话等审计用例）
 ```
 
 `client-web/scripts/` 下的可重复验收脚本（地址与账号读 `.env`）：

@@ -42,7 +42,10 @@ export interface EventResponse {
   location: string | null
   dtStart: string
   dtEnd: string
-  rrule: string | null
+  /** 契约字段名（Create/UpdateEventRequest 与线上响应均为 rRule，PW-05） */
+  rRule?: string | null
+  /** 旧数据形状：历史响应里出现过的小写 rrule；只用于兼容读取，写入用 rRule */
+  rrule?: string | null
   status: string
   source: string
   originalEventId: string | null
