@@ -58,11 +58,20 @@ describe('calendar 域真实请求形状', () => {
   })
 
   it('eventsApi.update：PUT 到带 id 的路径，scope 走查询串且正文是调用方对象', async () => {
-    await eventsApi.update('ev-1', { title: 'x' }, { scope: 'series' })
+    // 契约的 UpdateEventRequest 要求 title/calendarId/dtStart/dtEnd 必填，
+    // 这里给一个契约合法的完整草稿，断言仍检查「正文原样透传」。
+    const draft = {
+      title: 'x',
+      calendarId: '00000000-0000-0000-0000-0000000000aa',
+      dtStart: '2026-10-01T00:00:00Z',
+      dtEnd: '2026-10-01T01:00:00Z',
+      description: null,
+    }
+    await eventsApi.update('ev-1', draft, { scope: 'series' })
     expect(calls.at(-1)).toMatchObject({
       method: 'PUT',
       url: `${BASE}/api/v1/calendar/events/ev-1?scope=series`,
-      body: { title: 'x' },
+      body: draft,
     })
   })
 

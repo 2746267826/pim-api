@@ -4,6 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Plus, Trash2 } from 'lucide-react'
 import { ApiError, apiPost } from '@/api/client'
+import type { components } from '@/api/generated'
 import { isOutlookEvent, type CalendarBook, type EventResponse } from '../types'
 import { isRepeatedEvent, readEventRrule } from '../rrule'
 import { useDeleteEvent, useSaveEvent } from '../queries'
@@ -187,8 +188,23 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
       setError('结束时间必须晚于开始时间')
       return
     }
+    /* 参会人门禁：契约 EventAttendeeDto.email 必填且非 nullable。
+     * 「有效行」沿用既有语义（姓名或邮箱任一非空；全空占位行仍然忽略）。
+     * 任一有效行缺邮箱就整体阻止提交——既不放行违规报文体，也不静默过滤该行；
+     * 提示用户补邮箱后，所有有效行按原顺序 / 原 name / 原 type 原样发出。 */
+    const attendeeRows = attendees.filter((a) => a.name || a.email)
+    const missingEmail = attendeeRows.find((a) => !a.email)
+    if (missingEmail) {
+      setError(`参会人「${missingEmail.name || '未填姓名'}」缺少邮箱，请补充邮箱后再保存。`)
+      return
+    }
     const categories = values.categories.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
-    const body: Record<string, unknown> = {
+    /* 未填组织者时整个 organizer 键省略（后端 NormalizeOrganizer(null) → null，
+     * 缺键与显式 null 的服务端可观察状态相同；属工程等价，非产品决定）。 */
+    const organizer = values.organizerName || values.organizerEmail
+      ? { name: values.organizerName || undefined, email: values.organizerEmail || undefined }
+      : undefined
+    const body: components['schemas']['CreateEventRequest'] = {
       calendarId: values.calendarId,
       title: values.title,
       description: values.description || null,
@@ -209,10 +225,8 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
       onlineMeetingProvider: values.onlineMeetingProvider || null,
       onlineMeetingUrl: values.onlineMeetingUrl || null,
       externalLink: values.externalLink || null,
-      organizer: values.organizerName || values.organizerEmail
-        ? { name: values.organizerName || undefined, email: values.organizerEmail || undefined }
-        : null,
-      attendees: attendees.filter((a) => a.name || a.email).map((a) => ({ name: a.name || undefined, email: a.email || undefined, type: a.type })),
+      ...(organizer ? { organizer } : {}),
+      attendees: attendeeRows.map((a) => ({ name: a.name || undefined, email: a.email, type: a.type })),
     }
     // 目标日历是否为 Outlook 绑定（新建时也需判定：直接 POST 会被后端拒 02009）
     const targetCalendar = calendars.find((c) => c.id === values.calendarId)

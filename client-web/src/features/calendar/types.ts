@@ -1,4 +1,5 @@
 import type { PagedResult } from '@/api/types'
+import type { components } from '@/api/generated'
 import type { HabitCadence } from '@/lib/enums'
 
 /* ── 日历本 / 任务本 ─────────────────────────────────────── */
@@ -382,7 +383,7 @@ export type { PagedResult }
  * PUT /calendar/tasks/{id} 会把 title/description/priority/due/时长/dtStart 全部按请求写入，
  * 任何部分更新（如仅切换完成状态）都必须先补齐当前值，否则字段被清空。
  */
-export function taskToMutationData(task: TaskResponse): Record<string, unknown> {
+export function taskToMutationData(task: TaskResponse): components['schemas']['UpdateTaskRequest'] {
   return {
     title: task.title,
     description: task.description,
