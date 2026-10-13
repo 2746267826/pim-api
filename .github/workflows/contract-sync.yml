@@ -1,0 +1,98 @@
+name: Contract sync
+
+# 契约同步接收端（对应 pim-api#415 方案 A）。
+#
+# pim-api 在 master 上检测到 contract/openapi.json 变化、且契约通过了它的硬校验后，
+# 会向本仓发 repository_dispatch（event_type: contract-updated）。这里收到后：
+#   1) 按通知里带的不可变 ref 取契约字节（不是"取当时的 master"，避免刷出与通知不符的快照）；
+#   2) 一步到底地刷新：快照 + provenance + 由仓内锁定生成器产出的 TS 类型；
+#   3) 用 GitHub App 的 installation token 推分支、开一个**需要人工 review** 的 PR。
+#
+# 为什么用 App token 而不是默认 GITHUB_TOKEN：
+#   GitHub 的防递归机制规定「用 GITHUB_TOKEN 推的分支不会再触发后续工作流」，
+#   刷新 PR 上会没有任何检查结果，而本仓要求 CI 绿才能合。App token 是另一个身份，
+#   推送会正常触发 CI。
+#
+# 为什么不在本 workflow 里跑门禁：刷新 PR 上的常规 CI（含契约新鲜度与生成物一致性）
+# 就是门禁，跑两遍没有意义；这里只做"刷新 + 开 PR"。
+#
+# 幂等与安全：刷出来没有差异就不产生提交、不动 PR；通知里的 sha256 对不上则失败退出，
+# 绝不把一份来路不明的快照提交进去。
+
+on:
+  repository_dispatch:
+    types: [contract-updated]
+  # 手动补跑：pim-api 的通知没收到、或需要在测试分支上验证本链路时用。
+  workflow_dispatch:
+    inputs:
+      contract_ref:
+        description: 'pim-api ref（40 位 SHA / 分支 / tag）。留空 = master'
+        required: false
+        default: ''
+        type: string
+      contract_sha256:
+        description: '期望的快照 sha256（可选；不一致即失败，不提交、不开 PR）'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+# 同一个仓同一时刻只跑一个契约同步：两个 run 同时改同一条分支会互相踩。
+concurrency:
+  group: contract-sync
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh contract snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create contract-sync token (GitHub App installation token)
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PIM_CONTRACT_SYNC_APP_ID }}
+          private-key: ${{ secrets.PIM_CONTRACT_SYNC_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      # 用 App token checkout：推分支要用它，且不允许回落到默认 GITHUB_TOKEN。
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: client-web/package-lock.json
+
+      # fetch-contract.sh 用的是仓内锁定的 client-web/node_modules/.bin/openapi-typescript，
+      # 所以必须先按 lockfile 装依赖（不装 npx 上的浮动版本）。
+      - name: Install dependencies (repo-locked openapi-typescript)
+        working-directory: client-web
+        run: npm ci
+
+      - name: Refresh snapshot + provenance + generated types
+        env:
+          REF: ${{ github.event.client_payload.ref || inputs.contract_ref || 'master' }}
+        run: |
+          set -euo pipefail
+          echo "契约来源 ref：$REF"
+          PIM_CONTRACT_REF="$REF" bash scripts/ci/fetch-contract.sh
+
+      - name: Open / update the refresh PR
+        env:
+          # token 只经环境变量传给脚本：不进 argv、不落盘、不回显。
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SHA256: ${{ github.event.client_payload.sha256 || inputs.contract_sha256 || '' }}
+          SOURCE_REF: ${{ github.event.client_payload.ref || inputs.contract_ref || '' }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          if [ -n "$SHA256" ]; then ARGS+=(--payload-sha256 "$SHA256"); fi
+          if [ -n "$SOURCE_REF" ]; then ARGS+=(--source-ref "$SOURCE_REF"); fi
+          bash scripts/ci/contract-sync-pr.sh "${ARGS[@]}"
