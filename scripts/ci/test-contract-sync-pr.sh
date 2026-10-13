@@ -274,6 +274,34 @@ check "insteadOf 重写目标 → 退出码 2" "2" "$RC"
 check "  → 别仓仍然没有分支" "none" "$(git -C "$TMP/wrong.git" rev-parse --verify --quiet "refs/heads/$BRANCH" || echo none)"
 $G config --unset-all "url.$TMP/wrong.git.insteadOf"
 
+# 单标签主机名（`ssh://git@evil/...`）：不能因为"第一段没有点"就当成没有 host
+$G remote set-url origin "ssh://git@evil/${REPO_SLUG}.git"
+: > "$TMP/out.txt"; : > "$GH_LOG"
+run --refresh-cmd "true"
+check "单标签主机名（ssh://git@evil/...）→ 退出码 2" "2" "$RC"
+contains "  → 报出 host 不可信" "host" "$OUT"
+$G remote set-url origin "$ORIGIN_DIR"
+
+# scp 形式的单标签主机名（git@evil:owner/repo.git）同样要挡
+$G remote set-url origin "git@evil:${REPO_SLUG}.git"
+: > "$TMP/out.txt"; : > "$GH_LOG"
+run --refresh-cmd "true"
+check "scp 形式单标签主机名（git@evil:...）→ 退出码 2" "2" "$RC"
+$G remote set-url origin "$ORIGIN_DIR"
+
+# 带 token 的 URL + 重写：拒绝，但**日志里不许出现 token**
+FAKE_TOKEN="ghs_FAKE_REVIEW_SECRET_do_not_leak"
+git init -q --bare "$TMP/evil-token.git"
+$G remote set-url origin "https://x-access-token:${FAKE_TOKEN}@github.com/${REPO_SLUG}.git"
+$G config "url.$TMP/evil-token.git.insteadOf" "https://x-access-token:${FAKE_TOKEN}@github.com/${REPO_SLUG}.git"
+: > "$TMP/out.txt"; : > "$GH_LOG"
+run --refresh-cmd "true"
+check "带 token 的 URL + 重写 → 退出码 2" "2" "$RC"
+not_contains "  → 日志里没有 token" "$FAKE_TOKEN" "$OUT"
+contains "  → 但仍报出发生了重写" "重写" "$OUT"
+$G config --unset-all "url.$TMP/evil-token.git.insteadOf"
+$G remote set-url origin "$ORIGIN_DIR"
+
 # 正常路径：显式 origin 不受 remote.pushDefault / branch.*.pushRemote 影响（保持可用）
 $G config remote.pushDefault wrong
 : > "$TMP/out.txt"; : > "$GH_LOG"

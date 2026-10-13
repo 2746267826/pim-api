@@ -102,6 +102,9 @@ command -v gh >/dev/null 2>&1 || usage_err "缺少 gh CLI"
 #   3) 别的 host 上的同名 `owner/repo`。
 # （`remote.pushDefault` / `branch.*.pushRemote` 不影响本脚本：每次都显式指定 remote 名 origin。）
 # 注意：URL 里可能带 token（例如 checkout 注入的 userinfo），所有输出都先脱敏。
+# 边界如实说明：**本地路径**目标不受 host 白名单约束（`file://`、`/abs`、`../rel` 都没有 host）。
+# 这是刻意的：本地路径只能写到本机，不构成"把提交推到另一个远端仓"；而测试 fixture 正是
+# 用 `<tmp>/github.com/<owner>/<repo>.git` 这样的本地 bare 仓来跑真 git 的。
 redact_url() { printf '%s' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1<redacted>@#'; }
 slug_of() {
   printf '%s' "$1" \
@@ -110,10 +113,28 @@ slug_of() {
     | awk -F'[/:]' '{print $(NF-1)"/"$NF}'
 }
 host_of() {
-  # 只有"带 scheme 的 URL"或 scp 形式才算有 host；本地路径/相对路径没有 host。
-  printf '%s' "$1" \
-    | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#^[^@/]*@##' \
-    | awk -F'[/:]' '{ if ($1 != "" && $1 ~ /\./) print $1; else print "" }'
+  # 按 **URL scheme / scp 语法**解析 host，不能靠"第一段里有没有点"来判断 ——
+  # 单标签主机名（`ssh://git@evil/path`）会被那种写法当成"没有 host"从而绕过白名单。
+  # 本地路径（`/abs/path`、`../rel`、`file://`）本来就没有 host，返回空串。
+  local u="$1" head
+  case "$u" in
+    *://*)
+      u="${u#*://}"
+      head="${u%%/*}"
+      head="${head##*@}"     # 去 userinfo
+      head="${head%%:*}"     # 去端口
+      printf '%s' "$head" ;;
+    *)
+      head="${u%%/*}"
+      case "$head" in
+        *:*)                   # scp 形式 user@host:path
+          head="${u%%:*}"
+          head="${head##*@}"
+          # Windows 盘符（C:\...）不是 host
+          case "$head" in [A-Za-z]) printf '' ;; *) printf '%s' "$head" ;; esac ;;
+        *) printf '' ;;
+      esac ;;
+  esac
 }
 collect_lines() { # <cmd...>：把多行输出收集成去重后的数组
   local line
@@ -136,8 +157,10 @@ RAW_UNIQ="$(printf '%s\n' "${RAW_TARGETS[@]:-}" | sed '/^$/d' | sort -u)"
 EFF_UNIQ="$(printf '%s\n' "${EFF_TARGETS[@]:-}" | sed '/^$/d' | sort -u)"
 [ -n "$RAW_UNIQ" ] || usage_err "取不到 remote.origin.url；无法确认本仓就是 $REPO_SLUG"
 if [ "$RAW_UNIQ" != "$EFF_UNIQ" ]; then
-  echo "[contract-sync][错误] 原始远端配置：$(printf '%s' "$RAW_UNIQ" | tr '\n' ' ')" >&2
-  echo "[contract-sync][错误] git 实际会用的：$(printf '%s' "$EFF_UNIQ" | tr '\n' ' ')" >&2
+  # 逐条脱敏后再打印：URL 里的 userinfo 可能是 checkout 注入的 token，不能直接进日志
+  # （不依赖 GitHub 的自动 masking —— 那只是兜底，不是我们泄露的理由）。
+  echo "[contract-sync][错误] 原始远端配置：$(printf '%s\n' "$RAW_UNIQ" | while IFS= read -r u; do redact_url "$u"; printf ' '; done)" >&2
+  echo "[contract-sync][错误] git 实际会用的：$(printf '%s\n' "$EFF_UNIQ" | while IFS= read -r u; do redact_url "$u"; printf ' '; done)" >&2
   usage_err "检测到 URL 重写（url.*.insteadOf / url.*.pushInsteadOf）改变了 fetch/push 目标；无法确认目标就是 $REPO_SLUG，拒绝执行"
 fi
 
