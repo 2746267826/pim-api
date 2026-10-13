@@ -16,6 +16,7 @@ export FAKE_DOCKER_STATE="$TMP/state"
 export FAKE_DOCKER_CONTENT="$TMP/content"
 mkdir -p "$FAKE_DOCKER_STATE" "$FAKE_DOCKER_CONTENT"
 export PIM_DOCKER="$FAKE_DOCKER"
+export FAKE_DOCKER_LOG="$TMP/docker-calls.log"
 export FAKE_DOCKER_DIGEST="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 export PIM_WEB_DIST_IMAGE="$IMAGE"
 
@@ -55,6 +56,11 @@ check "带出前端版本号" "26.10.831" "$(field "$out" web_version)"
 check "带出前端短 sha" "abc1234" "$(field "$out" web_git_sha)"
 check "带出构建时间" "2026-10-13T10:00:00Z" "$(field "$out" web_built_at)"
 contains "打印解析前 tag → 冻结后引用" "解析前 tag: $IMAGE:latest → 冻结后引用: $IMAGE:sha-abc1234" "$(cat "$TMP/last.err")"
+
+# 1b) 读之前必须**显式拉一次**请求的 tag：本地缓存里的 latest 可能已经是旧的
+check "读取前显式 pull 了请求的 tag（防本地缓存过期）" "1" \
+  "$(grep -A1 '^pull$' "$FAKE_DOCKER_LOG" | grep -c "^${IMAGE}:latest$")"
+check "latest 路径共拉两次（latest + 冻结后的 sha tag）" "2" "$(grep -c '^pull$' "$FAKE_DOCKER_LOG")"
 
 # 2) 触发方给出确切引用且与镜像内容同源 → 用那一个
 out="$(run --ref sha-abc1234)" && rc=0 || rc=$?

@@ -41,6 +41,10 @@ trap 'rm -rf "$TMP"' EXIT
 pim_web_log "解析前 tag: ${IMAGE}:${REF}"
 
 REQUESTED="$REF"
+# 显式刷新远端引用后再读：滚动 tag（latest）在本地缓存里可能是旧的，
+# "本地已有就不拉"会让冻结值悄悄取自过期内容。
+"$(pim_docker)" pull "${IMAGE}:${REQUESTED}" >&2 \
+  || { pim_web_err "无法拉取 ${IMAGE}:${REQUESTED}"; exit 1; }
 pim_image_cat "${IMAGE}:${REQUESTED}" "$PIM_WEB_VERSION_PATH_IN_DIST_IMAGE" "$TMP/web-version.json" \
   || { pim_web_err "无法从 ${IMAGE}:${REQUESTED} 读取 ${PIM_WEB_VERSION_PATH_IN_DIST_IMAGE}"; exit 1; }
 
@@ -62,12 +66,12 @@ if pim_web_is_immutable_ref "$REQUESTED"; then
 else
   # 默认取最新：冻结成不可变引用，并证明该 tag 真实可用。
   pim_web_log "解析前 tag: ${IMAGE}:${REQUESTED} → 冻结后引用: ${IMAGE}:${FROZEN_REF}"
+  # 证明冻结出来的不可变引用真实可用（请求的是 latest 时这一次是必须的）。
   "$(pim_docker)" pull "${IMAGE}:${FROZEN_REF}" >&2 \
     || { pim_web_err "冻结后的不可变引用 ${IMAGE}:${FROZEN_REF} 不存在或不可匿名拉取"; exit 1; }
 fi
 
-# digest 用冻结后的引用再取一次：滚动 tag 会漂，冻结值不会。
-"$(pim_docker)" pull "${IMAGE}:${FROZEN_REF}" >&2
+# digest 取自冻结后的引用（上面已经拉过：请求的就是它，或刚拉过它）。
 DIGEST="$(pim_image_digest "${IMAGE}:${FROZEN_REF}")"
 
 pim_web_log "冻结结果：ref=${FROZEN_REF} digest=${DIGEST} version=${WEB_VERSION} builtAt=${WEB_BUILT_AT}"

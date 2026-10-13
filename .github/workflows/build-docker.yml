@@ -115,6 +115,19 @@ jobs:
           fi
           echo "✅ digest 一致：${ACTUAL}"
 
+      # 把本地那份 tag 钉到刚刚核对过的 digest 上：Dockerfile 的 FROM 用的是 tag，
+      # 这里保证 BuildKit 解析到的是同一份字节（本地已存在时 FROM 用本地镜像）。
+      # 再加上"pim-web 侧不可变 tag 只写一次（存在即复用）"，tag→字节 才是稳定的。
+      - name: Pin the local tag to the frozen digest
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.web.outputs.web_dist_image }}"
+          DIGEST="${{ steps.web.outputs.web_dist_digest }}"
+          docker pull "${IMAGE}@${DIGEST}"
+          docker tag "${IMAGE}@${DIGEST}" "${IMAGE}:${{ steps.web.outputs.web_dist_ref }}"
+          echo "已把 ${IMAGE}:${{ steps.web.outputs.web_dist_ref }} 钉到 ${DIGEST}"
+          docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${IMAGE}:${{ steps.web.outputs.web_dist_ref }}"
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Build and load image

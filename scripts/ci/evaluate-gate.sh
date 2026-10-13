@@ -4,7 +4,9 @@
 #
 # 抽成脚本的原因：原先这段逻辑嵌在 ci.yml 里无法测试，独立 review 指出
 # `publish != 'true'` 的写法会把**空值**当成"按设计不发版"从而放行一次本该红掉的漏跑。
-# 现在语义收紧为：只有**显式 publish=false** 才算按设计跳过；其余（含空值）一律判红。
+# 现在语义收紧为：只有**显式 publish=false** 才算按设计跳过。
+# 注意范围：这影响的是"镜像 job 被跳过（skipped）时怎么判"，空值/异常值会让跳过判红；
+# 若镜像 job 本身是 success，则照常放行（它的产物另有校验）。
 #
 # 输入（env）：
 #   R_RESOLVE R_CHANGES R_WEBDIST R_API R_DOCKER R_MCP   各 job 的 result

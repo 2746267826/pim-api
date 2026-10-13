@@ -32,15 +32,26 @@ pim_web_short_sha() {
 }
 
 # 从任意镜像里取出一个文件（不运行镜像：产物镜像是 scratch，没有 shell）。
-# 用法: pim_image_cat <image-ref> <path-in-image> <out-file>
+#
+# 用法: pim_image_cat <image-ref> <path-in-image> <out-file> [--local]
+#   --local  只读本地镜像（用于"刚刚构建出来、还没推上去"的镜像，例如本次烘的 api 镜像）；
+#            本地没有就硬失败，绝不回退去拉远端 —— 否则会把另一个镜像的内容当成本次构建结果。
+#   默认     远端引用：本地没有就拉取。调用方若要保证"不是本地缓存的旧内容"，
+#            必须自己先显式 pull（见 resolve-web-dist.sh），这里不做隐式刷新。
 pim_image_cat() {
-  local image="$1" path="$2" out="$3" docker cid tmp rc=0
+  local image="$1" path="$2" out="$3" mode="${4:-}" docker cid tmp rc=0
   docker="$(pim_docker)"
   tmp="$(mktemp "${TMPDIR:-/tmp}/pim-image-cat.XXXXXX")"
-  # 一律先 pull：滚动 tag（latest）在本地缓存里可能是旧的；不可变 tag 的 pull 是幂等的
-  # digest 校验，代价很小。"本地已有就不拉"会让冻结值悄悄取自过期内容。
-  pim_web_log "拉取 $image（匿名，产物包必须是 public）"
-  "$docker" pull "$image" >&2 || { pim_web_err "拉取失败：$image"; rm -f "$tmp"; return 1; }
+  if [ "$mode" = "--local" ]; then
+    if ! "$docker" image inspect "$image" >/dev/null 2>&1; then
+      pim_web_err "本地不存在该镜像（要求 --local 时不许改成拉远端）：$image"
+      rm -f "$tmp"
+      return 1
+    fi
+  elif ! "$docker" image inspect "$image" >/dev/null 2>&1; then
+    pim_web_log "本地无 $image，按匿名方式拉取（产物包必须是 public）"
+    "$docker" pull "$image" >&2 || { pim_web_err "拉取失败：$image"; rm -f "$tmp"; return 1; }
+  fi
   # scratch 镜像没有 CMD：给一个不会被执行的占位命令，才能 create/cp。
   cid="$("$docker" create "$image" /pim-web-dist-reader)" || { pim_web_err "create 失败：$image"; rm -f "$tmp"; return 1; }
   if ! "$docker" cp "${cid}:${path}" "$tmp" >&2; then

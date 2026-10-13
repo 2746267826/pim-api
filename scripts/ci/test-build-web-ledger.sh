@@ -58,6 +58,18 @@ else
   echo "  ✅ 镜像内缺 web-version.json → 硬失败"; pass=$((pass+1))
 fi
 
+# 关键回归：api 镜像是"刚刚构建、还没推"的，只能读本地。
+# 如果本地镜像库里没有它（例如同一 run 重跑、本地构建产物丢了），绝不能回退去拉远端同名镜像
+# —— 那会把上一版推上去的旧镜像当成本次烘焙结果写进台账。
+if FAKE_DOCKER_REMOTE_ONLY="$IMAGE" bash "$SCRIPT" --api-image "$IMAGE" \
+  --dist-ref "ghcr.io/2746267826/pim-web-dist:sha-abc1234" \
+  --dist-digest "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" \
+  --api-version "26.10.835" --out "$TMP/remote-only.json" >/dev/null 2>&1; then
+  echo "  ❌ 本地镜像不存在时应当硬失败，不许去拉远端"; fail=$((fail+1))
+else
+  echo "  ✅ 本地镜像不存在（远端有同名）→ 硬失败，绝不读远端"; pass=$((pass+1))
+fi
+
 # 参数缺失 → 用法错误（非 0）
 if bash "$SCRIPT" --api-image "$IMAGE" --out "$TMP/x.json" >/dev/null 2>&1; then
   echo "  ❌ 缺参数应当失败"; fail=$((fail+1))

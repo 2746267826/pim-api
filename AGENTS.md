@@ -30,6 +30,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - **台账 `pim-web-version.json`**（契约，与前端产物内的 `web-version.json` 是**两个不同文件**）：每次 api release 都要有。前端三字段由烘焙好的镜像内 `/app/wwwroot/web-version.json` **原样转录**，不得重算；另含产物镜像 tag/digest 与本次 API 版本。它也是防重复发版（REQ-6）的比对数据源。
 - **防重复发版**：前端版本与上一版台账一致且后端无变化 → 不发新 release、不推新镜像 tag；判定依据写进 job summary。上一版 release / 台账缺失或不可读 → 按"需要发版"处理并写明原因，不报错中断、也不静默跳过。
 - **脚本与自检**：`scripts/ci/resolve-web-dist.sh`（解析+冻结+读版本文件）、`scripts/ci/release-dedupe.sh`（发版判定）、`scripts/ci/build-web-ledger.sh`（台账）、`scripts/ci/web-dist-lib.sh`（公共原语）。改这些逻辑要同步改对应的 `scripts/ci/test-*.sh`（CI 会在 `web-dist` job 里跑它们）。
+- **冻结的可信链**：产物镜像的 `sha-<7>` tag 在 pim-web 侧**只写一次**（存在即复用、不覆盖），因此 `tag → 字节` 是稳定的；本仓在此基础上再做两道：`web_dist_digest`（ci.yml 的 `web-dist` job → `build-docker`）逐字核对两次解析结果，并把本地 tag 钉到该 digest 后再构建。台账读的是**本次本地烘焙出来的** api 镜像（`pim_image_cat --local`），绝不回退去拉远端同名镜像。
 - **镜像标签（契约）**：`org.pim.api-version`、`org.pim.web-version`、`org.pim.web-sha`。
 - **新旧镜像差异**：`pim-platform-server` 系列（生产在跑）内嵌前端；`pim-api-server` 在 2026-10-08 之后的一段时间里**不含**前端；本次改造后 `pim-api-server` 重新内嵌前端。升级时不要因为"镜像里有没有 wwwroot"误判版本。
 

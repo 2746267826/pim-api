@@ -40,7 +40,9 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/pim-web-ledger.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 # 从**烘焙好的 api 镜像**里读，而不是从产物镜像读：台账记录的是"这个镜像里实际是什么"。
-pim_image_cat "$API_IMAGE" "/app/wwwroot/${PIM_WEB_VERSION_FILE}" "$TMP/web-version.json" \
+# 这个镜像刚刚在同一个 job 里 build/load 出来、还没推上去，所以必须限定读本地镜像
+# （--local）：否则会去拉远端同名 tag（要么不存在而失败，要么把旧镜像当成本次构建结果）。
+pim_image_cat "$API_IMAGE" "/app/wwwroot/${PIM_WEB_VERSION_FILE}" "$TMP/web-version.json" --local \
   || { pim_web_err "无法从 ${API_IMAGE}:/app/wwwroot/${PIM_WEB_VERSION_FILE} 读取前端版本文件"; exit 1; }
 
 FIELDS="$(pim_web_validate_version_file "$TMP/web-version.json")" \
