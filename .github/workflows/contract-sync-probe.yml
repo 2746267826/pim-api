@@ -24,8 +24,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # pim-api 上 #416 之前的契约（941071 字节，与当前 941361 不同）
-  PROBE_REF: ae3ed39e2827d1665ce9801e65f71bdea6663d75
+  # 第二次探针：改成当前 master 的契约，验证「已有 PR → 更新它」这条路径
+  PROBE_REF: 4088bc446d4d98bbe20bee8b9241be2dfeabe78f
 
 jobs:
   probe:
