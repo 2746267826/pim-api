@@ -17,10 +17,28 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - 该 Check Run 只能由独立验收身份发布，**agent 没有权限**。交付后在 PR 里写明「等待独立验收」即可 ——
   **不要重试、不要绕过、不要为了让门禁变绿去改 ruleset 或 `.github/workflows/*`。**
 
-### 本仓特有的两条
+### 本仓特有的三条
 - `client-web/src/api/generated.ts` 由 `scripts/ci/fetch-contract.sh` 生成，**禁止手工编辑**；契约更新后重跑该脚本并提交结果。
 - 契约新鲜度由 `scripts/ci/check-contract-freshness.sh`（**只读**，不写仓）校验：快照与 pim-api 当前上游逐字节比较，`generated.ts` 与「由仓内快照重新生成」的结果逐字节比较，并核对 `contract/provenance.json`。谁写（refresh）与谁只读（check）是分开的两个入口。
-- 本仓产物不单独发 release（打进 `pim-api` 镜像）。
+- 本仓不单独发 release；产物以**产物镜像**（`ghcr.io/2746267826/pim-web-dist`，tag `sha-<7>` + `latest`）发布，并自动触发 pim-api 发版。细节见下一节。
+
+### 发布链路（产物镜像 + 自动触发，改 workflow/脚本前必读）
+
+`ci.yml` 的发布链路是「门禁形态丙」，不要随意改动依赖关系：
+
+```
+gate(CI Gate) → push-dist → trigger-api → release-gate
+```
+
+- `push-dist`：`needs: [resolve-version, build-web, gate]` + `if: master`。**只有 master、且 lint/单测/契约门禁全绿之后**才推包（gate 没过它根本不会跑）；它**不在** gate 的 needs 里，所以不存在循环依赖。
+- `trigger-api`：用 `actions/create-github-app-token` 现签临时 token 调 pim-api 的 `workflow_dispatch`，传 `web_dist_ref=sha-<7>` 与 `rebuild_image_only=true`。失败必须红并打印 HTTP 状态 + 响应体；**token 只经环境变量传入（`TRIGGER_TOKEN`），认证头由 curl 从 stdin 读（`--config /dev/stdin`）——不进命令行参数、不落盘、不回显**。
+- `release-gate`：`needs: [push-dist, trigger-api]` + `if: always()`。master 上两者必须都 success（被 skip 也判红，挡住"该跑却没跑"的静默旁路）；非 master 上两者必须都是 skipped（PR 不推包）。
+- **权限只多 `packages: write` 一项**，不要顺手扩大其它权限。
+- 产物包**必须 public**：GHCR 新建包默认 private，且包只继承仓库访问权限、不继承可见性。`push-dist` 会先探测匿名可拉，未公开就尝试自设，设不了就报红并给出人工设置指引（不接受"私有包 + 在 pim-api 侧新增 registry 凭证"的替代方案）。
+- **`sha-<7>` 只写一次**：`push-dist` 先在登录态下用 `docker manifest inspect` 判定 tag 是否存在——存在即复用既有产物（核对镜像内 `gitSha`）并把 `latest` 指到同一 digest；**只有明确"不存在"才创建**；探测本身失败（网络/鉴权/未公开）一律报红，绝不覆盖可能的既有 tag。这是"不可变 tag"和下游"按 tag 冻结字节"的前提。
+- **产物内的 `web-version.json` 是契约**（字段 `version` / `gitSha` / `builtAt`），由 `scripts/ci/write-web-version.sh` 写；版本号与 sha 必须与同一次构建注入的 `VITE_APP_VERSION` / `VITE_GIT_SHA` 同源，不另算一份。
+- **脚本与自检**：`scripts/ci/write-web-version.sh`、`scripts/ci/trigger-api-release.sh`、`scripts/ci/check-ghcr-public.sh`（对应 `scripts/ci/test-*.sh`，CI 在 `build-web` 里跑）；改逻辑要同步改测试。
+- **改了 `/api/version` 这类跨仓契约时**：先在 pim-api 仓合并契约变更，再在本仓跑 `scripts/ci/fetch-contract.sh` 刷新快照与生成类型并提交 —— 在刷新之前本仓 `CI Gate` 会红，这是预期行为，不要放宽门禁。
 
 ## Communication And Planning
 
