@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  # 推前端产物镜像到 GHCR 需要它（契约：本仓只多这一项权限，不顺手扩大别的）。
+  packages: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -57,6 +59,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # 发布链路新增的脚本先自检（纯逻辑、不依赖网络）：判定/格式错了要在这一步就红。
+      - name: Self-test release scripts
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/test-write-web-version.sh
+          bash scripts/ci/test-trigger-api-release.sh
+          bash scripts/ci/test-check-ghcr-public.sh
+
       - name: Lint
         run: npm run lint
 
@@ -85,7 +96,30 @@ jobs:
           VITE_APP_VERSION: ${{ needs.resolve-version.outputs.version }}
           VITE_GIT_SHA: ${{ needs.resolve-version.outputs.git_sha_short }}
 
-      # 产物交给 pim-api 打镜像时解包到 src/Pim.Api/wwwroot（部署形态：API 同源伺服 SPA）。
+      # 产物内的前端版本文件（REQ-2 契约）：版本号与 sha 用的是**同一次构建注入的**那两个值
+      # （与上面的 VITE_APP_VERSION / VITE_GIT_SHA 同源），不另算一份。
+      - name: Write web-version.json into dist
+        working-directory: ${{ github.workspace }}
+        env:
+          PIM_WEB_VERSION: ${{ needs.resolve-version.outputs.version }}
+          PIM_WEB_GIT_SHA: ${{ needs.resolve-version.outputs.git_sha_short }}
+        run: bash scripts/ci/write-web-version.sh --out client-web/dist/web-version.json
+
+      # 缺文件/字段不一致会让这一步红：产物不许"看起来有版本信息"但其实没有。
+      - name: Verify dist payload
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          test -s client-web/dist/index.html
+          test -d client-web/dist/assets
+          test -n "$(find client-web/dist/assets -type f -print -quit)"
+          test -s client-web/dist/web-version.json
+          echo "web-version.json: $(cat client-web/dist/web-version.json)"
+          test "$(jq -r .version client-web/dist/web-version.json)" = "${{ needs.resolve-version.outputs.version }}"
+          test "$(jq -r .gitSha client-web/dist/web-version.json)" = "${{ needs.resolve-version.outputs.git_sha_short }}"
+
+      # 产物交给 pim-api：pim-api 构建镜像时从本 run 推的产物镜像取用（REQ-1/REQ-3），
+      # 不再有"解包到 src/Pim.Api/wwwroot 再 build"的手工路径。
       - name: Package web build
         working-directory: ${{ github.workspace }}
         run: tar -czf pim-web-v${{ needs.resolve-version.outputs.artifact_slug }}.tar.gz -C client-web/dist .
@@ -131,3 +165,223 @@ jobs:
           fi
           echo ""
           echo "CI Gate 通过：所有必需 job 均成功。"
+
+  # ---------------------------------------------------------------------------
+  # 发布链路（REQ-1 / REQ-4 / REQ-12）——工单里的"形态丙"：
+  #
+  #   gate1(上面的 gate) → push-dist → trigger-api → release-gate
+  #
+  # * push-dist 不参与 gate 的 needs（gate 只依赖 resolve-version/build-web），
+  #   因此不存在循环依赖；
+  # * 「只有 master、且 lint/单测/契约门禁全绿之后才推」由 push-dist 的
+  #   `needs: [resolve-version, build-web, gate]` + `if: master` 保证：gate 没过，
+  #   push-dist 根本不会运行（needs 失败即 skip，且 gate 自身已经红）；
+  # * PR 上 push-dist/trigger-api 按设计跳过，而 gate 不依赖它们，所以 PR 的 CI Gate
+  #   不会因"按设计跳过"被误判为红；
+  # * 「该跑却没跑」由 release-gate 兜住：master 上 push-dist 或 trigger-api 只要不是
+  #   success（包括被 skip），release-gate 就变红 —— 没有静默旁路。
+  # ---------------------------------------------------------------------------
+
+  # 把 dist 打成一个只含静态文件的镜像推到 GHCR（契约：包名 pim-web-dist，tag sha-<7> + latest）。
+  push-dist:
+    name: Push web dist image
+    needs: [resolve-version, build-web, gate]
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/2746267826/pim-web-dist
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pim-web-v${{ needs.resolve-version.outputs.artifact_slug }}
+          path: artifact
+
+      - name: Unpack the CI artifact (the exact bytes that will be published)
+        run: |
+          set -euo pipefail
+          mkdir -p client-web/dist
+          tar -xzf "artifact/pim-web-v${{ needs.resolve-version.outputs.artifact_slug }}.tar.gz" -C client-web/dist
+          ls -la client-web/dist | head -20
+
+      - name: Verify the artifact matches this run
+        run: |
+          set -euo pipefail
+          test -s client-web/dist/index.html
+          test -d client-web/dist/assets
+          test -s client-web/dist/web-version.json
+          V="$(jq -r .version client-web/dist/web-version.json)"
+          S="$(jq -r .gitSha client-web/dist/web-version.json)"
+          test "$V" = "${{ needs.resolve-version.outputs.version }}" \
+            || { echo "::error::web-version.json 的 version(${V}) 与本次构建(${{ needs.resolve-version.outputs.version }}) 不一致"; exit 1; }
+          test "$S" = "${{ needs.resolve-version.outputs.git_sha_short }}" \
+            || { echo "::error::web-version.json 的 gitSha(${S}) 与本次提交(${{ needs.resolve-version.outputs.git_sha_short }}) 不一致"; exit 1; }
+          echo "web-version.json 与本次 run 同源：version=${V} gitSha=${S}"
+          sha256sum artifact/*.tar.gz || true
+          {
+            echo "### 产物镜像推送（REQ-1）"
+            echo ""
+            echo "- 镜像：\`${{ env.IMAGE }}:sha-${{ needs.resolve-version.outputs.git_sha_short }}\` 与 \`:latest\`"
+            echo "- 来源产物 tar.gz 的 sha256：\`$(sha256sum artifact/*.tar.gz | cut -d' ' -f1)\`（30 天留存期内可用于与镜像内文件对照）"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push dist image
+        id: build
+        run: |
+          set -euo pipefail
+          SHA="${{ needs.resolve-version.outputs.git_sha_short }}"
+          VERSION="$(jq -r .version client-web/dist/web-version.json)"
+          docker build \
+            -f client-web/Dockerfile.dist \
+            --build-arg "PIM_WEB_VERSION=${VERSION}" \
+            --build-arg "PIM_WEB_SHA=${SHA}" \
+            -t "${{ env.IMAGE }}:sha-${SHA}" \
+            -t "${{ env.IMAGE }}:latest" \
+            client-web
+          docker push "${{ env.IMAGE }}:sha-${SHA}"
+          docker push "${{ env.IMAGE }}:latest"
+          DIGEST="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${{ env.IMAGE }}:sha-${SHA}" | head -n1)"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "已推送 sha-${SHA} 与 latest；digest=${DIGEST}"
+
+      # 契约要求包必须 public：先探测，未公开就尝试自设，设不了就报红并给出人工指引
+      # （不静默失败、不降级为"私有 + 在 pim-api 配凭证"）。
+      - name: Ensure the package is public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if bash scripts/ci/check-ghcr-public.sh "${{ env.IMAGE }}" --expect-tag "sha-${{ needs.resolve-version.outputs.git_sha_short }}"; then
+            echo "包已可匿名拉取（public），无需改动"
+            exit 0
+          fi
+          echo "包当前不可匿名拉取，尝试用 GITHUB_TOKEN 设为 public ..."
+          if gh api --method PATCH "/user/packages/container/pim-web-dist" -f visibility=public; then
+            echo "PATCH 成功，重新探测 ..."
+          else
+            echo "::error::无法自动把 pim-web-dist 设为 public。请到 GitHub → 头像 → Your packages → pim-web-dist → Package settings → Change visibility 设为 Public 后重跑本 job（AC-10 要求匿名可拉）。"
+            exit 1
+          fi
+          bash scripts/ci/check-ghcr-public.sh "${{ env.IMAGE }}" \
+            --expect-tag "sha-${{ needs.resolve-version.outputs.git_sha_short }}" \
+            || { echo "::error::设为 public 后仍无法匿名拉取"; exit 1; }
+
+      # 未登录状态下真实拉取一次（这是 AC-10 的硬要求，不是"看起来设过了"）。
+      - name: Verify anonymous pull
+        run: |
+          set -euo pipefail
+          SHA="${{ needs.resolve-version.outputs.git_sha_short }}"
+          docker logout ghcr.io || true
+          docker rmi "${{ env.IMAGE }}:sha-${SHA}" "${{ env.IMAGE }}:latest" || true
+          docker pull "${{ env.IMAGE }}:sha-${SHA}"
+          docker pull "${{ env.IMAGE }}:latest"
+          # 只含静态文件的 scratch 镜像没有 shell：用 create + cp 读内容。
+          CID="$(docker create "${{ env.IMAGE }}:sha-${SHA}" /pim-web-dist-reader)"
+          docker cp "${CID}:/index.html" /tmp/index.html
+          docker cp "${CID}:/web-version.json" /tmp/web-version.json
+          docker rm -f "$CID" >/dev/null
+          test -s /tmp/index.html
+          echo "未登录拉取成功，镜像内 web-version.json: $(cat /tmp/web-version.json)"
+          {
+            echo ""
+            echo "- 匿名（未登录）docker pull 成功；digest=${{ steps.build.outputs.digest }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # 用 GitHub App 现签的临时 token 触发 pim-api 的 workflow_dispatch（REQ-4）。
+  # 失败必须让本 job 变红（脚本会打印 HTTP 状态 + 响应体）。
+  trigger-api:
+    name: Trigger pim-api release
+    needs: [resolve-version, push-dist]
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # 现签 1 小时有效的安装令牌：不落盘、不久留、不占个人账号。
+      # 权限仅 Actions: write + Metadata: read（App 自身权限），安装范围仅 pim-api。
+      - name: Create release trigger token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PIM_RELEASE_APP_ID }}
+          private-key: ${{ secrets.PIM_RELEASE_APP_PRIVATE_KEY }}
+          owner: 2746267826
+          repositories: pim-api
+
+      - name: Dispatch pim-api build with this frontend version
+        env:
+          # 只通过 env 传给脚本；脚本走 curl 的 600 配置文件，不回显、不进命令行参数。
+          TRIGGER_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/trigger-api-release.sh \
+            --token "$TRIGGER_TOKEN" \
+            --web-dist-ref "sha-${{ needs.resolve-version.outputs.git_sha_short }}" \
+            --rebuild-image-only true
+          {
+            echo "### 已触发 pim-api 发版（REQ-4）"
+            echo ""
+            echo "- 前端引用：\`sha-${{ needs.resolve-version.outputs.git_sha_short }}\`"
+            echo "- 意图：只重建镜像（后端无变化时搬运既有 API/MCP 资产）"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # 兜底门禁：master 上 push-dist / trigger-api 必须真的跑过且成功。
+  # 这挡住"该跑却没跑"（被 skip）的静默旁路 —— PR 上两者按设计跳过，判为正常。
+  release-gate:
+    name: Release Gate
+    needs: [push-dist, trigger-api]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate release jobs
+        env:
+          R_PUSH: ${{ needs.push-dist.result }}
+          R_TRIGGER: ${{ needs.trigger-api.result }}
+          IS_MASTER: ${{ github.ref == 'refs/heads/master' }}
+        run: |
+          set -uo pipefail
+          fail=0
+          echo "push-dist=${R_PUSH:-<missing>} trigger-api=${R_TRIGGER:-<missing>} on-master=${IS_MASTER}"
+          if [ "$IS_MASTER" = "true" ]; then
+            for pair in "push-dist:$R_PUSH" "trigger-api:$R_TRIGGER"; do
+              label="${pair%%:*}"; result="${pair#*:}"
+              if [ "$result" = "success" ]; then
+                echo "✅ $label — success"
+              else
+                echo "❌ $label — ${result:-<missing>}（master 上该跑却没跑，或被跳过；不允许静默旁路）"
+                fail=1
+              fi
+            done
+          else
+            for pair in "push-dist:$R_PUSH" "trigger-api:$R_TRIGGER"; do
+              label="${pair%%:*}"; result="${pair#*:}"
+              if [ "$result" = "skipped" ]; then
+                echo "⏭️  $label — skipped（非 master，按设计跳过）"
+              else
+                echo "❌ $label — ${result:-<missing>}（非 master 上本应跳过）"
+                fail=1
+              fi
+            done
+          fi
+          if [ "$fail" -ne 0 ]; then
+            echo ""
+            echo "::error::Release Gate 未通过：发布链路没有按设计完成（见上）。"
+            exit 1
+          fi
+          echo ""
+          echo "Release Gate 通过。"
