@@ -18030,7 +18030,7 @@
     "securitySchemes": {
       "bearerAuth": {
         "bearerFormat": "JWT",
-        "description": "JwtBearer 认证（Authorization: Bearer &lt;token&gt;）。/api/v1/auth/login 或 /register 获取。",
+        "description": "[contract-only-probe] JwtBearer 认证（Authorization: Bearer &lt;token&gt;）。/api/v1/auth/login 或 /register 获取。",
         "scheme": "bearer",
         "type": "http"
       },
