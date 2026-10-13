@@ -76,23 +76,18 @@ jobs:
         working-directory: client-web
         run: npm ci
 
-      - name: Refresh snapshot + provenance + generated types
-        env:
-          REF: ${{ github.event.client_payload.ref || inputs.contract_ref || 'master' }}
-        run: |
-          set -euo pipefail
-          echo "契约来源 ref：$REF"
-          PIM_CONTRACT_REF="$REF" bash scripts/ci/fetch-contract.sh
-
-      - name: Open / update the refresh PR
+      # 刷新（快照 + provenance + generated.ts）→ 提交 → 推分支 → 开 PR 都在脚本里
+      # **一步到底**，且只刷一次：脚本把 --contract-ref 交给刷新脚本，避免"刷完又被
+      # 默认 master 覆盖一次"（那样刷出来的就不是通知里那个 commit 了）。
+      - name: Refresh and open / update the refresh PR
         env:
           # token 只经环境变量传给脚本：不进 argv、不落盘、不回显。
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SHA256: ${{ github.event.client_payload.sha256 || inputs.contract_sha256 || '' }}
-          SOURCE_REF: ${{ github.event.client_payload.ref || inputs.contract_ref || '' }}
+          CONTRACT_REF: ${{ github.event.client_payload.ref || inputs.contract_ref || 'master' }}
         run: |
           set -euo pipefail
+          echo "契约来源 ref：$CONTRACT_REF"
           ARGS=()
           if [ -n "$SHA256" ]; then ARGS+=(--payload-sha256 "$SHA256"); fi
-          if [ -n "$SOURCE_REF" ]; then ARGS+=(--source-ref "$SOURCE_REF"); fi
-          bash scripts/ci/contract-sync-pr.sh "${ARGS[@]}"
+          bash scripts/ci/contract-sync-pr.sh --contract-ref "$CONTRACT_REF" "${ARGS[@]}"

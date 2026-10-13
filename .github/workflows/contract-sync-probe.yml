@@ -56,14 +56,10 @@ jobs:
         working-directory: client-web
         run: npm ci
 
-      - name: Refresh snapshot + provenance + generated types
+      - name: Refresh and open / update the refresh PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           echo "契约来源 ref：$PROBE_REF"
-          PIM_CONTRACT_REF="$PROBE_REF" bash scripts/ci/fetch-contract.sh
-
-      - name: Open / update the refresh PR
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          SOURCE_REF: ${{ env.PROBE_REF }}
-        run: bash scripts/ci/contract-sync-pr.sh --source-ref "$SOURCE_REF"
+          bash scripts/ci/contract-sync-pr.sh --contract-ref "$PROBE_REF"

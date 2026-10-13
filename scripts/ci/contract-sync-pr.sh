@@ -17,7 +17,13 @@
 # 用法（CI 由 .github/workflows/contract-sync.yml 调用）：
 #   GH_TOKEN=<installation token> scripts/ci/contract-sync-pr.sh \
 #     [--branch contract-sync-linux/refresh-contract] [--base master] \
-#     [--refresh-cmd "<刷新命令>"] [--payload-sha256 <64hex>] [--source-ref <ref>]
+#     [--contract-ref <40hex|branch|tag>] [--payload-sha256 <64hex>] \
+#     [--refresh-cmd "<刷新命令>"]
+#
+# --contract-ref 会被导出成 PIM_CONTRACT_REF 交给刷新命令（默认 master）。
+# **刷新只在这里做一次**：通知里带的是"哪个 commit 的契约"，如果刷新之后再跑一遍
+# 不带 ref 的默认刷新，快照会被刷回"当时的 master" —— 轻则与通知里的 sha256 对不上
+# （本脚本会直接失败），重则静默刷成另一个版本。
 #
 # 退出码：0 = 完成（开/更新了 PR，或本来就没有差异）；1 = 失败；2 = 参数/配置错误。
 # ---------------------------------------------------------------------------
@@ -37,7 +43,8 @@ BASE_BRANCH="master"
 # 由 fetch-contract.sh 一步写出（它自己就是"全成功才落盘"的语义）。
 REFRESH_CMD="bash scripts/ci/fetch-contract.sh"
 PAYLOAD_SHA256=""
-SOURCE_REF=""
+# 契约来源 ref（默认 master）；会被导出成 PIM_CONTRACT_REF 交给刷新命令。
+CONTRACT_REF="master"
 # 生成物在仓库里的相对路径（PR 正文里列出受影响文件时用）。
 ARTIFACT_PATHS=("contract/openapi.json" "contract/provenance.json" "client-web/src/api/generated.ts")
 
@@ -50,7 +57,7 @@ while [[ $# -gt 0 ]]; do
     --base) BASE_BRANCH="${2:-}"; shift 2 ;;
     --refresh-cmd) REFRESH_CMD="${2:-}"; shift 2 ;;
     --payload-sha256) PAYLOAD_SHA256="${2:-}"; shift 2 ;;
-    --source-ref) SOURCE_REF="${2:-}"; shift 2 ;;
+    --contract-ref) CONTRACT_REF="${2:-}"; shift 2 ;;
     -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) usage_err "未知参数：$1" ;;
   esac
@@ -59,6 +66,7 @@ done
 [ -n "$BRANCH" ] || usage_err "--branch 不能为空"
 [ -n "$BASE_BRANCH" ] || usage_err "--base 不能为空"
 [ -n "$REFRESH_CMD" ] || usage_err "--refresh-cmd 不能为空"
+[ -n "$CONTRACT_REF" ] || usage_err "--contract-ref 不能为空"
 [[ -z "$PAYLOAD_SHA256" || "$PAYLOAD_SHA256" =~ ^[0-9a-f]{64}$ ]] \
   || usage_err "--payload-sha256 必须是 64 位小写十六进制"
 # 分支名必须能过各客户端仓的 pr-metadata 门禁：{agent}-{os}/{topic}
@@ -85,8 +93,9 @@ else
 fi
 
 # --- 2) 刷新（快照 + 生成物 + provenance，一步到底） ------------------------
-log "执行刷新：$REFRESH_CMD"
-bash -c "$REFRESH_CMD"
+log "执行刷新：$REFRESH_CMD（PIM_CONTRACT_REF=$CONTRACT_REF）"
+# 只在这里刷一次；ref 通过环境变量交给刷新脚本（它自己的语义就是"取该 ref 的字节"）。
+PIM_CONTRACT_REF="$CONTRACT_REF" bash -c "$REFRESH_CMD"
 
 # --- 3) 通知里带了 sha256 就必须对得上（防"刷出来一份不是它通知的那份"）----
 if [ -n "$PAYLOAD_SHA256" ]; then
@@ -112,7 +121,7 @@ if [ -f contract/provenance.json ]; then
   SHA256="$(python3 -c "import json;print(json.load(open('contract/provenance.json'))['sha256'])" 2>/dev/null || true)"
 fi
 SHORT_REF="${RESOLVED_REF:0:7}"
-[ -n "$SHORT_REF" ] || SHORT_REF="${SOURCE_REF:0:7}"
+[ -n "$SHORT_REF" ] || SHORT_REF="${CONTRACT_REF:0:7}"
 
 # --- 5) 分支名/标题/正文都按 AGENTS.md 的 PR 约定生成（pr-metadata 门禁会查）-
 TITLE="chore(contract): 刷新契约快照至 pim-api@${SHORT_REF} / refresh contract snapshot"
@@ -132,7 +141,7 @@ cat > "$BODY_FILE" <<EOF
 
 ## 技术修改 / Technical changes
 
-- 契约快照同步到上游 \`2746267826/pim-api\` 的 \`${RESOLVED_REF:-<未知>}\`（${BYTES:-?} 字节，sha256 \`${SHA256:-?}\`）。
+- 契约快照同步到上游 \`2746267826/pim-api\` 的 \`${RESOLVED_REF:-<未知>}\`（${BYTES:-?} 字节，sha256 \`${SHA256:-?}\`；请求的 ref：\`${CONTRACT_REF}\`）。
 - 受影响文件：
 ${FILE_LIST}- 快照与生成物**同时**刷新：生成物里嵌有快照的 sha256，只换快照不重新生成会被本仓的一致性门禁判红。
 - 来源记录写在 \`contract/provenance.json\`（无时间戳，可复现）。

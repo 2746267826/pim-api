@@ -81,11 +81,17 @@ export GITHUB_REPOSITORY="2746267826/pim-web"
 export GH_TOKEN="ghs_secret_installation_token_do_not_leak"
 export PATH="$TMP/bin:$PATH"
 
+# 记录刷新命令看到的 PIM_CONTRACT_REF（证明"通知里那个 commit"被一路传到了刷新脚本，
+# 而不会被脚本内部的默认刷新覆盖成"当时的 master"—— 这是真机探针抓到的真 bug）。
+REF_SEEN="$TMP/ref_seen.txt"
+PROBE_REF="ae3ed39e2827d1665ce9801e65f71bdea6663d75"
+
 # 模拟一次真实的"刷新"：快照 + provenance + 生成物一起变（生成物依赖快照 sha256）
 REFRESH_NEW='printf "{\n  \"openapi\": \"3.0.1\",\n  \"paths\": {\"/a\": {}, \"/b\": {}}\n}\n" > contract/openapi.json; '
 REFRESH_NEW+='NEW_SHA=$(sha256sum contract/openapi.json | cut -d" " -f1); NEW_BYTES=$(wc -c < contract/openapi.json | tr -d " "); '
 REFRESH_NEW+='printf "{\n  \"schemaVersion\": 1,\n  \"repo\": \"2746267826/pim-api\",\n  \"ref\": \"master\",\n  \"resolvedRef\": \"4088bc446d4d98bbe20bee8b9241be2dfeabe78f\",\n  \"resolvedRefSource\": \"git-ls-remote\",\n  \"sourcePath\": \"contract/openapi.json\",\n  \"bytes\": %s,\n  \"sha256\": \"%s\"\n}\n" "$NEW_BYTES" "$NEW_SHA" > contract/provenance.json; '
-REFRESH_NEW+='printf "// generated %s" "$NEW_SHA" > client-web/src/api/generated.ts'
+REFRESH_NEW+='printf "// generated %s" "$NEW_SHA" > client-web/src/api/generated.ts; '
+REFRESH_NEW+="printf '%s' \"\$PIM_CONTRACT_REF\" > '$REF_SEEN'"
 REFRESH_NOOP='true'
 
 RC=0
@@ -100,8 +106,9 @@ echo "== contract-sync-pr.sh =="
 
 # --- 1) 首次刷新 → 推分支 + 开 PR -------------------------------------------
 : > "$TMP/out.txt"; : > "$GH_LOG"
-run --refresh-cmd "$REFRESH_NEW"
+run --refresh-cmd "$REFRESH_NEW" --contract-ref "$PROBE_REF"
 check "首次刷新 → 退出码 0" "0" "$RC"
+check "首次刷新 → 刷新命令收到的是通知里的 ref（不被默认 master 覆盖）" "$PROBE_REF" "$(cat "$REF_SEEN" 2>/dev/null)"
 check "首次刷新 → result=pr-opened" "pr-opened" "$(sed -n 's/^result=//p' "$TMP/out.txt")"
 check "首次刷新 → 分支名符合 {agent}-{os}/{topic}" "$BRANCH" "$(sed -n 's/^branch=//p' "$TMP/out.txt")"
 contains "脚本声明的工作仓就是 fixture（防止跑错仓）" "工作仓：$WORK" "$OUT"
@@ -135,7 +142,7 @@ check "幂等重跑 → 没有再调 pr create" "0" "$(grep -c 'pr create' "$GH_
 export GH_PR_COUNT=0
 BEFORE_SHA="$(git -C "$TMP/origin.git" rev-parse "refs/heads/$BRANCH")"
 : > "$TMP/out.txt"; : > "$GH_LOG"
-run --refresh-cmd "$REFRESH_NEW" --payload-sha256 "$(printf 'b%.0s' {1..64})"
+run --refresh-cmd "$REFRESH_NEW" --contract-ref "$PROBE_REF" --payload-sha256 "$(printf 'b%.0s' {1..64})"
 check "sha256 不一致 → 退出码 1" "1" "$RC"
 contains "sha256 不一致 → 明确报出原因" "不一致" "$OUT"
 check "sha256 不一致 → 分支没动" "$BEFORE_SHA" "$(git -C "$TMP/origin.git" rev-parse "refs/heads/$BRANCH")"
