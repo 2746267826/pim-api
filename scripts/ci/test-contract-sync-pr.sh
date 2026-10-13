@@ -2,15 +2,15 @@
 # ---------------------------------------------------------------------------
 # 自检：契约同步 PR 脚本（离线）。
 #
-# 用**真 git**（本地 bare 仓当 origin，用 url.insteadOf 让 origin 的 URL 仍是
-# https://github.com/<owner>/<repo>.git）+ **stub gh** 验证：
+# 用**真 git**（本地 bare 仓当 origin，路径刻意是 <tmp>/github.com/<owner>/<repo>.git，
+# 这样"目标仓身份"可被脚本校验）+ **stub gh** 验证：
 #   * 真的推了符合 {agent}-{os}/{topic} 的分支，提交里**只**有契约产物；
 #   * PR 标题双语、正文四段（AGENTS.md / pr-metadata 门禁的要求）；
 #   * 幂等：同一份内容重复触发不产生空提交、不重复开 PR；
 #   * **补开 PR**：上次推送成功但开 PR 失败时，重跑必须把 PR 补出来；
 #   * **吸收最新 base**：master 前进后，刷新基于最新 base（不是旧分支的 HEAD）重建；
 #   * 通知里的 sha256 对不上时不提交、不开 PR；
-#   * 脏工作区 / origin 与 GITHUB_REPOSITORY 不一致 / gh 查询失败 → 拒绝执行；
+#   * 脏工作区 / 远端身份不一致（别的仓、别的 host、pushurl、URL 重写）/ gh 查询失败 → 拒绝执行；
 #   * token 不出现在任何输出里。
 #
 # 用法：scripts/ci/test-contract-sync-pr.sh
@@ -28,7 +28,9 @@ contains() { if [[ "$3" == *"$2"* ]]; then echo "  ✅ $1"; pass=$((pass+1)); el
 not_contains() { if [[ "$3" != *"$2"* ]]; then echo "  ✅ $1"; pass=$((pass+1)); else echo "  ❌ $1 — 出现了不该出现的 [$2]"; fail=$((fail+1)); fi; }
 
 REPO_SLUG="2746267826/pim-web"
-ORIGIN_URL="https://github.com/${REPO_SLUG}.git"
+# origin 的路径刻意做成 <tmp>/github.com/<owner>/<repo>.git：
+# 既能用本地 bare 仓跑真 git，又让"目标仓身份"这件事可被脚本校验。
+ORIGIN_DIR="$TMP/github.com/${REPO_SLUG}.git"
 
 # --- stub gh ----------------------------------------------------------------
 mkdir -p "$TMP/bin"
@@ -55,14 +57,14 @@ STUB
 chmod +x "$TMP/bin/gh"
 
 # --- 真 git fixture：bare 仓当 origin，但 origin 的 URL 仍是 github 形式 -----
-git init -q --bare "$TMP/origin.git"
+mkdir -p "$(dirname "$ORIGIN_DIR")"
+git init -q --bare "$ORIGIN_DIR"
 git init -q "$TMP/work"
 WORK="$TMP/work"
 G="git -C $WORK"
 $G config user.email "dev@pim.local"
 $G config user.name "PIM Dev"
 $G config commit.gpgsign false
-$G config "url.$TMP/origin.git.insteadOf" "$ORIGIN_URL"
 mkdir -p "$WORK/contract" "$WORK/client-web/src/api"
 printf '{\n  "openapi": "3.0.1",\n  "paths": {"/a": {}}\n}\n' > "$WORK/contract/openapi.json"
 OLD_SHA="$(sha256sum "$WORK/contract/openapi.json" | cut -d' ' -f1)"
@@ -81,7 +83,7 @@ EOF
 echo "// generated" > "$WORK/client-web/src/api/generated.ts"
 $G add -A && $G commit -qm "init"
 $G branch -M master
-$G remote add origin "$ORIGIN_URL"
+$G remote add origin "$ORIGIN_DIR"
 $G push -q -u origin master
 
 BRANCH="contract-sync-linux/refresh-contract"
@@ -117,8 +119,8 @@ run_no_reset() {
   set -e
 }
 result() { sed -n 's/^result=//p' "$TMP/out.txt" 2>/dev/null; }
-branch_sha() { git -C "$TMP/origin.git" rev-parse --verify --quiet "refs/heads/$BRANCH" || echo none; }
-master_sha() { git -C "$TMP/origin.git" rev-parse refs/heads/master; }
+branch_sha() { git -C "$ORIGIN_DIR" rev-parse --verify --quiet "refs/heads/$BRANCH" || echo none; }
+master_sha() { git -C "$ORIGIN_DIR" rev-parse refs/heads/master; }
 
 echo "== contract-sync-pr.sh =="
 
@@ -132,7 +134,7 @@ contains "脚本声明的工作仓就是 fixture（防止跑错仓）" "工作�
 check "首次刷新 → 分支真的推到 origin 了" "ok" "$([ "$(branch_sha)" != "none" ] && echo ok || echo none)"
 ARTIFACT_RE='^(contract/openapi.json|contract/provenance.json|client-web/src/api/generated.ts)$'
 check "首次刷新 → 提交里只有契约产物，没有无关文件" "0" \
-  "$(git -C "$TMP/origin.git" show --name-only --format= "refs/heads/$BRANCH" | grep -vE "$ARTIFACT_RE" | grep -c . || true)"
+  "$(git -C "$ORIGIN_DIR" show --name-only --format= "refs/heads/$BRANCH" | grep -vE "$ARTIFACT_RE" | grep -c . || true)"
 contains "PR 标题双语（含中文）" "刷新契约快照" "$(grep 'pr create' "$GH_LOG")"
 contains "PR 标题双语（含英文）" "refresh contract snapshot" "$(grep 'pr create' "$GH_LOG")"
 contains "PR 基于 master、head 是刷新分支" "--base master --head $BRANCH" "$(grep 'pr create' "$GH_LOG")"
@@ -179,7 +181,7 @@ check "恢复后重跑 → 把上次没开出来的 PR 补开" "pr-opened" "$(re
 check "  → 没有重复推送（分支 SHA 不变）" "$PUSHED_SHA" "$(branch_sha)"
 
 # --- 5) master 前进后，刷新基于最新 base 重建（不是旧分支的 HEAD）-----------
-git -C "$TMP/origin.git" clone -q "$TMP/origin.git" "$TMP/upstream-work"
+git -C "$ORIGIN_DIR" clone -q "$ORIGIN_DIR" "$TMP/upstream-work"
 UP="$TMP/upstream-work"
 git -C "$UP" config user.email up@pim.local
 git -C "$UP" config user.name "Upstream"
@@ -193,9 +195,9 @@ run --refresh-cmd "$(refresh_cmd three)"
 check "master 前进后 → 退出码 0" "0" "$RC"
 check "master 前进后 → result=pr-opened（内容变了，重新开）" "pr-opened" "$(result)"
 check "master 前进后 → 刷新分支的父提交就是最新 master（吸收了最新 base）" "$NEW_MASTER" \
-  "$(git -C "$TMP/origin.git" rev-parse "refs/heads/$BRANCH^")"
+  "$(git -C "$ORIGIN_DIR" rev-parse "refs/heads/$BRANCH^")"
 check "master 前进后 → 提交里仍然只有契约产物（没把 master 的 README 混进来）" "0" \
-  "$(git -C "$TMP/origin.git" show --name-only --format= "refs/heads/$BRANCH" | grep -vE "$ARTIFACT_RE" | grep -c . || true)"
+  "$(git -C "$ORIGIN_DIR" show --name-only --format= "refs/heads/$BRANCH" | grep -vE "$ARTIFACT_RE" | grep -c . || true)"
 
 # --- 6) 已有 PR 时推送 → 同时更新标题与正文（不是只推代码）------------------
 export GH_PR_NUMBER=7
@@ -228,7 +230,7 @@ $G remote set-url origin "https://github.com/2746267826/some-other-repo.git"
 run --refresh-cmd "true"
 check "origin 与 GITHUB_REPOSITORY 不一致 → 退出码 2" "2" "$RC"
 contains "  → 报出不一致" "不一致" "$OUT"
-$G remote set-url origin "$ORIGIN_URL"
+$G remote set-url origin "$ORIGIN_DIR"
 
 # --- 10) gh 查询失败 → 不当成"没有 PR"，直接失败 ----------------------------
 export GH_LIST_FAIL=1
@@ -237,13 +239,48 @@ run --refresh-cmd "true"
 check "gh pr list 失败 → 退出码 1（不猜）" "1" "$RC"
 export GH_LIST_FAIL=0
 
-# --- 12) pushurl 指向别的仓 → 拒绝（身份校验不能只看 origin.url）----------
+# --- 12) 远端目标身份：pushurl / URL 重写 / 别的 host 都要被挡 ---------------
+$G config --add remote.origin.pushurl "https://github.com/2746267826/some-other-repo.git"
 $G config --add remote.origin.pushurl "https://github.com/2746267826/some-other-repo.git"
 : > "$TMP/out.txt"; : > "$GH_LOG"
 run --refresh-cmd "true"
 check "pushurl 指向别的仓 → 退出码 2" "2" "$RC"
-contains "  → 报出不一致（并指出是哪个配置项）" "remote.origin.pushurl" "$OUT"
+contains "  → 报出不一致" "不一致" "$OUT"
 $G config --unset-all remote.origin.pushurl
+
+# 别的 host 上的同名 owner/repo：slug 一样，但主机不同 → 拒绝
+$G remote set-url origin "https://gitlab.com/${REPO_SLUG}.git"
+: > "$TMP/out.txt"; : > "$GH_LOG"
+run --refresh-cmd "true"
+check "同名 owner/repo 但在别的 host → 退出码 2" "2" "$RC"
+contains "  → 报出 host 不可信" "host" "$OUT"
+$G remote set-url origin "$ORIGIN_DIR"
+
+# url.*.pushInsteadOf 重写：原始配置看着是本仓，git 实际会推到别处 → 拒绝
+git init -q --bare "$TMP/wrong.git"
+$G config "url.$TMP/wrong.git.pushInsteadOf" "$ORIGIN_DIR"
+: > "$TMP/out.txt"; : > "$GH_LOG"
+run --refresh-cmd "$(refresh_cmd redirect)"
+check "pushInsteadOf 重写目标 → 退出码 2" "2" "$RC"
+contains "  → 报出 URL 重写" "重写" "$OUT"
+check "  → 别仓没有收到任何分支" "none" "$(git -C "$TMP/wrong.git" rev-parse --verify --quiet "refs/heads/$BRANCH" || echo none)"
+$G config --unset-all "url.$TMP/wrong.git.pushInsteadOf"
+
+# url.*.insteadOf 重写：同理
+$G config "url.$TMP/wrong.git.insteadOf" "$ORIGIN_DIR"
+: > "$TMP/out.txt"; : > "$GH_LOG"
+run --refresh-cmd "$(refresh_cmd redirect)"
+check "insteadOf 重写目标 → 退出码 2" "2" "$RC"
+check "  → 别仓仍然没有分支" "none" "$(git -C "$TMP/wrong.git" rev-parse --verify --quiet "refs/heads/$BRANCH" || echo none)"
+$G config --unset-all "url.$TMP/wrong.git.insteadOf"
+
+# 正常路径：显式 origin 不受 remote.pushDefault / branch.*.pushRemote 影响（保持可用）
+$G config remote.pushDefault wrong
+: > "$TMP/out.txt"; : > "$GH_LOG"
+run --refresh-cmd "$(refresh_cmd pushdefault)"
+check "设置了 remote.pushDefault 也不影响正常推送（脚本显式指定 origin）" "ok" \
+  "$([ "$(branch_sha)" != "none" ] && echo ok || echo none)"
+$G config --unset-all remote.pushDefault
 
 # --- 13) 远端残留分支（内容≠本次刷新结果）+ 没有开着的 PR → 不开过时 PR ------
 export GH_PR_NUMBER=""

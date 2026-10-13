@@ -94,30 +94,64 @@ REPO_SLUG="${GITHUB_REPOSITORY:-}"
 [ -n "$REPO_SLUG" ] || usage_err "环境变量 GITHUB_REPOSITORY 必填（owner/repo）"
 command -v gh >/dev/null 2>&1 || usage_err "缺少 gh CLI"
 
-# --- 前置 1：origin 必须就是 GITHUB_REPOSITORY（防止在别的仓里提交/推送）----
-# 读**原始配置值**（`git config --get`）而不是 `git remote get-url`：后者会经过
-# url.<base>.insteadOf 重写，看到的可能不是这个远端真实指向的仓库。
-# 只看 remote.origin.url **不够**：`remote.origin.pushurl`（可以有多条）能把推送重定向到
-# 另一个仓库 —— 那样"身份校验通过"了，代码却推到别处。凡是 git 会用的 fetch/push 目标都要核对。
-# （`remote.pushDefault` / `branch.*.pushRemote` 不影响我们：这里每次都显式指定 remote 名 origin。）
+# --- 前置 1：远端目标必须就是本仓（防止"校验通过却推到别处"）--------------
+# 三种绕过向量都要挡：
+#   1) `remote.origin.pushurl` 指向别的仓（可以有多条）；
+#   2) `url.*.insteadOf` / `url.*.pushInsteadOf` 在传输层把目标重写到别的仓
+#      —— 只看原始配置是**看不出**来的，必须比对 git 实际会用的 URL；
+#   3) 别的 host 上的同名 `owner/repo`。
+# （`remote.pushDefault` / `branch.*.pushRemote` 不影响本脚本：每次都显式指定 remote 名 origin。）
+# 注意：URL 里可能带 token（例如 checkout 注入的 userinfo），所有输出都先脱敏。
+redact_url() { printf '%s' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1<redacted>@#'; }
 slug_of() {
   printf '%s' "$1" \
     | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#^[^@/]*@##' \
     | sed -E 's#[:/]+$##; s#\.git$##' \
     | awk -F'[/:]' '{print $(NF-1)"/"$NF}'
 }
-REMOTE_TARGETS_CHECKED=0
-for cfg_key in remote.origin.url remote.origin.pushurl; do
-  while IFS= read -r target; do
-    [ -n "$target" ] || continue
-    REMOTE_TARGETS_CHECKED=$((REMOTE_TARGETS_CHECKED + 1))
-    target_slug="$(slug_of "$target")"
-    if [ "${target_slug,,}" != "${REPO_SLUG,,}" ]; then
-      usage_err "远端配置 $cfg_key（$target → $target_slug）与 GITHUB_REPOSITORY（$REPO_SLUG）不一致；拒绝在不确定的仓库里提交/推送"
-    fi
-  done < <(git config --get-all "$cfg_key" 2>/dev/null || true)
-done
-[ "$REMOTE_TARGETS_CHECKED" -gt 0 ] || usage_err "取不到 remote.origin.url；无法确认本仓就是 $REPO_SLUG"
+host_of() {
+  # 只有"带 scheme 的 URL"或 scp 形式才算有 host；本地路径/相对路径没有 host。
+  printf '%s' "$1" \
+    | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#^[^@/]*@##' \
+    | awk -F'[/:]' '{ if ($1 != "" && $1 ~ /\./) print $1; else print "" }'
+}
+collect_lines() { # <cmd...>：把多行输出收集成去重后的数组
+  local line
+  COLLECTED=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && COLLECTED+=("$line")
+  done < <("$@" 2>/dev/null || true)
+}
+
+collect_lines git config --get-all remote.origin.url
+RAW_TARGETS=("${COLLECTED[@]:-}")
+collect_lines git config --get-all remote.origin.pushurl
+RAW_TARGETS+=("${COLLECTED[@]:-}")
+collect_lines git remote get-url --all origin
+EFF_TARGETS=("${COLLECTED[@]:-}")
+collect_lines git remote get-url --push --all origin
+EFF_TARGETS+=("${COLLECTED[@]:-}")
+
+RAW_UNIQ="$(printf '%s\n' "${RAW_TARGETS[@]:-}" | sed '/^$/d' | sort -u)"
+EFF_UNIQ="$(printf '%s\n' "${EFF_TARGETS[@]:-}" | sed '/^$/d' | sort -u)"
+[ -n "$RAW_UNIQ" ] || usage_err "取不到 remote.origin.url；无法确认本仓就是 $REPO_SLUG"
+if [ "$RAW_UNIQ" != "$EFF_UNIQ" ]; then
+  echo "[contract-sync][错误] 原始远端配置：$(printf '%s' "$RAW_UNIQ" | tr '\n' ' ')" >&2
+  echo "[contract-sync][错误] git 实际会用的：$(printf '%s' "$EFF_UNIQ" | tr '\n' ' ')" >&2
+  usage_err "检测到 URL 重写（url.*.insteadOf / url.*.pushInsteadOf）改变了 fetch/push 目标；无法确认目标就是 $REPO_SLUG，拒绝执行"
+fi
+
+while IFS= read -r target; do
+  [ -n "$target" ] || continue
+  target_slug="$(slug_of "$target")"
+  target_host="$(host_of "$target")"
+  if [ "${target_slug,,}" != "${REPO_SLUG,,}" ]; then
+    usage_err "远端目标（$(redact_url "$target") → $target_slug）与 GITHUB_REPOSITORY（$REPO_SLUG）不一致；拒绝在不确定的仓库里提交/推送"
+  fi
+  if [ -n "$target_host" ] && [ "${target_host,,}" != "github.com" ]; then
+    usage_err "远端目标（$(redact_url "$target")）的 host 是 $target_host，不是 github.com；拒绝把提交推到不受信任的主机"
+  fi
+done <<<"$RAW_UNIQ"
 
 # --- 前置 2：工作区必须干净（不许把无关的本地文件带进刷新 PR）--------------
 DIRTY="$(git status --porcelain)"
