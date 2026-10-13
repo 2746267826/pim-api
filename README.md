@@ -63,6 +63,33 @@ npm run dev               # http://127.0.0.1:3000（/api 代理到 PIM_API_TARGE
 npm run build            # tsc + vite build → client-web/dist/（由 PIM API 同源伺服）
 ```
 
+### 产物镜像与自动触发（`pim-web-dist`）
+
+master 上 lint + 单测 + 契约新鲜度门禁**全部通过之后**，CI 会把 `client-web/dist` 全量打成
+一个**只含静态文件**的镜像推到 GHCR（包必须 public）：
+
+```
+ghcr.io/2746267826/pim-web-dist:sha-<7 位短 SHA>   # 不可变，与本次 master 提交一一对应
+ghcr.io/2746267826/pim-web-dist:latest             # 滚动
+```
+
+- 产物里带一份 **`web-version.json`**（字段：`version` / `gitSha` / `builtAt`(UTC)），版本号与 sha
+  与本次构建注入构建过程的 `VITE_APP_VERSION` / `VITE_GIT_SHA` **同源**，不另算一份。
+- 推包成功后，CI 用 GitHub App（`pim-release-trigger`）现签的临时 token 触发 `pim-api` 的
+  `workflow_dispatch`，带上本次前端的确切引用（`sha-<7>`）与「只重建镜像」意图 ——
+  于是"前端合并"会自动产出一版内嵌该前端的新 API 镜像；触发失败会让本仓 CI 变红（打印 HTTP 状态与响应体）。
+- PR 上**不推包**；master 上"该跑却没跑"（例如推包被跳过）会被 `Release Gate` 判红，没有静默旁路。
+- 本仓仍然**不单独发 release**：产物通过产物镜像进入 `pim-api` 的镜像与 release 台账。
+
+```bash
+# 本地复核产物镜像（包是 public，未登录也能拉）
+docker pull ghcr.io/2746267826/pim-web-dist:latest
+CID=$(docker create ghcr.io/2746267826/pim-web-dist:latest /reader)   # scratch 镜像没有 shell
+docker cp "$CID:/web-version.json" -   # 版本号 / git sha / 构建时间(UTC)
+docker cp "$CID:/index.html" -
+docker rm "$CID"
+```
+
 ### Android（Capacitor 8）
 
 ```bash
