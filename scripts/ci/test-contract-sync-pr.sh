@@ -145,13 +145,14 @@ contains "正文写清了来源 ref" "4088bc446d4d98bbe20bee8b9241be2dfeabe78f" 
 contains "正文不提本仓不存在的门禁" "check-contract-freshness.sh" "$BODY"
 not_contains "正文不引用不存在的 check-contract-kotlin.sh" "check-contract-kotlin.sh" "$BODY"
 not_contains "token 不出现在任何输出里" "$GH_TOKEN" "$OUT"
+not_contains "正文生成过程没有 shell 报错（反引号没被当成命令展开）" "command not found" "$OUT"
 not_contains "token 不写进 PR 正文" "$GH_TOKEN" "$BODY"
 
 # --- 2) 幂等：同一份内容重复触发 → 不空提交、不重复开 PR ---------------------
 export GH_PR_NUMBER=1
 BEFORE="$(branch_sha)"
 : > "$TMP/out.txt"; : > "$GH_LOG"
-run --refresh-cmd "true"
+run --refresh-cmd "$(refresh_cmd one)"
 check "幂等重跑 → 退出码 0" "0" "$RC"
 check "幂等重跑 → result=pr-exists" "pr-exists" "$(result)"
 check "幂等重跑 → 分支没有被多推一个提交" "$BEFORE" "$(branch_sha)"
@@ -160,7 +161,7 @@ check "幂等重跑 → 没有再调 pr create" "0" "$(grep -c 'pr create' "$GH_
 # --- 3) 推送成功但开 PR 失败 → 重跑必须把 PR 补出来 -------------------------
 export GH_PR_NUMBER=""
 : > "$TMP/out.txt"; : > "$GH_LOG"
-run --refresh-cmd "true"
+run --refresh-cmd "$(refresh_cmd one)"
 check "分支有未合并内容且没有 PR → 补开 PR" "pr-opened" "$(result)"
 check "  → 补开时没有产生新提交" "$BEFORE" "$(branch_sha)"
 
@@ -173,7 +174,7 @@ PUSHED_SHA="$(branch_sha)"
 check "  → 但分支已经推上去了（内容不丢）" "ok" "$([ "$PUSHED_SHA" != "$BEFORE" ] && echo ok || echo none)"
 export GH_CREATE_FAIL=0
 : > "$TMP/out.txt"; : > "$GH_LOG"
-run --refresh-cmd "true"
+run --refresh-cmd "$(refresh_cmd two)"
 check "恢复后重跑 → 把上次没开出来的 PR 补开" "pr-opened" "$(result)"
 check "  → 没有重复推送（分支 SHA 不变）" "$PUSHED_SHA" "$(branch_sha)"
 
@@ -236,7 +237,33 @@ run --refresh-cmd "true"
 check "gh pr list 失败 → 退出码 1（不猜）" "1" "$RC"
 export GH_LIST_FAIL=0
 
-# --- 11) 参数/配置错误 → 退出码 2 -------------------------------------------
+# --- 12) pushurl 指向别的仓 → 拒绝（身份校验不能只看 origin.url）----------
+$G config --add remote.origin.pushurl "https://github.com/2746267826/some-other-repo.git"
+: > "$TMP/out.txt"; : > "$GH_LOG"
+run --refresh-cmd "true"
+check "pushurl 指向别的仓 → 退出码 2" "2" "$RC"
+contains "  → 报出不一致（并指出是哪个配置项）" "remote.origin.pushurl" "$OUT"
+$G config --unset-all remote.origin.pushurl
+
+# --- 13) 远端残留分支（内容≠本次刷新结果）+ 没有开着的 PR → 不开过时 PR ------
+export GH_PR_NUMBER=""
+: > "$TMP/out.txt"; : > "$GH_LOG"
+run --refresh-cmd "$(refresh_cmd staleA)"
+check "残留分支场景：先造出机器人分支上的内容 A" "pr-opened" "$(result)"
+# 让 master 自己前进到内容 B（模拟别人直接把契约刷成 B）
+git -C "$WORK" fetch -q origin master
+git -C "$WORK" checkout -q -f -B master origin/master
+git -C "$WORK" clean -qfdx
+( cd "$WORK" && PIM_CONTRACT_REF=manual eval "$(refresh_cmd staleB)" )
+git -C "$WORK" add -A && git -C "$WORK" commit -qm "master: contract becomes B" && git -C "$WORK" push -q origin master
+export GH_PR_NUMBER=""
+: > "$TMP/out.txt"; : > "$GH_LOG"
+run --refresh-cmd "$(refresh_cmd staleB)"
+check "残留分支场景 → result=no-change（不开内容过时的 PR）" "no-change" "$(result)"
+check "  → 一次 pr create 都没调" "0" "$(grep -c 'pr create' "$GH_LOG" || true)"
+contains "  → 明确警告远端分支是残留" "残留" "$OUT"
+
+# --- 14) 参数/配置错误 → 退出码 2 -------------------------------------------
 run --branch "auto/contract-refresh" --refresh-cmd "true"
 check "分支名不合规（会被 pr-metadata 拒）→ 退出码 2" "2" "$RC"
 contains "  → 提示 pr-metadata 门禁" "pr-metadata" "$OUT"

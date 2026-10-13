@@ -97,15 +97,27 @@ command -v gh >/dev/null 2>&1 || usage_err "缺少 gh CLI"
 # --- 前置 1：origin 必须就是 GITHUB_REPOSITORY（防止在别的仓里提交/推送）----
 # 读**原始配置值**（`git config --get`）而不是 `git remote get-url`：后者会经过
 # url.<base>.insteadOf 重写，看到的可能不是这个远端真实指向的仓库。
-ORIGIN_URL="$(git config --get remote.origin.url 2>/dev/null || true)"
-[ -n "$ORIGIN_URL" ] || usage_err "取不到 remote.origin.url；无法确认本仓就是 $REPO_SLUG"
-ORIGIN_SLUG="$(printf '%s' "$ORIGIN_URL" \
-  | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#^[^@/]*@##' \
-  | sed -E 's#[:/]+$##; s#\.git$##' \
-  | awk -F'[/:]' '{print $(NF-1)"/"$NF}')"
-if [ "${ORIGIN_SLUG,,}" != "${REPO_SLUG,,}" ]; then
-  usage_err "remote.origin.url（$ORIGIN_URL → $ORIGIN_SLUG）与 GITHUB_REPOSITORY（$REPO_SLUG）不一致；拒绝在不确定的仓库里提交/推送"
-fi
+# 只看 remote.origin.url **不够**：`remote.origin.pushurl`（可以有多条）能把推送重定向到
+# 另一个仓库 —— 那样"身份校验通过"了，代码却推到别处。凡是 git 会用的 fetch/push 目标都要核对。
+# （`remote.pushDefault` / `branch.*.pushRemote` 不影响我们：这里每次都显式指定 remote 名 origin。）
+slug_of() {
+  printf '%s' "$1" \
+    | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#^[^@/]*@##' \
+    | sed -E 's#[:/]+$##; s#\.git$##' \
+    | awk -F'[/:]' '{print $(NF-1)"/"$NF}'
+}
+REMOTE_TARGETS_CHECKED=0
+for cfg_key in remote.origin.url remote.origin.pushurl; do
+  while IFS= read -r target; do
+    [ -n "$target" ] || continue
+    REMOTE_TARGETS_CHECKED=$((REMOTE_TARGETS_CHECKED + 1))
+    target_slug="$(slug_of "$target")"
+    if [ "${target_slug,,}" != "${REPO_SLUG,,}" ]; then
+      usage_err "远端配置 $cfg_key（$target → $target_slug）与 GITHUB_REPOSITORY（$REPO_SLUG）不一致；拒绝在不确定的仓库里提交/推送"
+    fi
+  done < <(git config --get-all "$cfg_key" 2>/dev/null || true)
+done
+[ "$REMOTE_TARGETS_CHECKED" -gt 0 ] || usage_err "取不到 remote.origin.url；无法确认本仓就是 $REPO_SLUG"
 
 # --- 前置 2：工作区必须干净（不许把无关的本地文件带进刷新 PR）--------------
 DIRTY="$(git status --porcelain)"
@@ -280,9 +292,9 @@ if [ -n "$PR_NUMBER" ]; then
     RESULT="pr-exists"
     log "已存在刷新的 PR #$PR_NUMBER，且本次无需改动"
   fi
-elif [ "$PUSHED" = "true" ] || [ "$BRANCH_DIFF" = "true" ]; then
+elif [ "$PUSHED" = "true" ] || { [ "$BRANCH_DIFF" = "true" ] && [ "$BRANCH_SAME" = "true" ]; }; then
   if [ "$PUSHED" = "false" ]; then
-    log "本次没有新提交，但刷新分支相对 $BASE_BRANCH 仍有未合并内容且没有开着的 PR → 补开 PR"
+    log "本次没有新提交，但刷新分支上的内容**就是**本次刷新结果、且相对 $BASE_BRANCH 还没合并、也没有开着的 PR → 补开 PR"
   fi
   GH_TOKEN="$GH_TOKEN_VALUE" gh pr create \
     --repo "$REPO_SLUG" \
@@ -294,7 +306,13 @@ elif [ "$PUSHED" = "true" ] || [ "$BRANCH_DIFF" = "true" ]; then
   log "已创建刷新 PR：$TITLE"
 else
   RESULT="no-change"
-  log "无差异且没有已开的 PR → 什么都不做"
+  if [ "$BRANCH_DIFF" = "true" ] && [ "$BRANCH_SAME" = "false" ]; then
+    # 远端刷新分支是**残留**（内容与本次刷新结果不同、也没有开着的 PR）：
+    # 这时候开 PR 会得到"正文写着本次契约、内容却是旧的"的过时 PR，宁可什么都不做。
+    echo "::warning::远端分支 $BRANCH 的内容与本次刷新结果不一致，且没有开着的 PR → 不补开 PR（避免开出内容过时的 PR）。它应被视为残留分支。" >&2
+  else
+    log "无差异且没有已开的 PR → 什么都不做"
+  fi
 fi
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
