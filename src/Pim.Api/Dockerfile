@@ -5,14 +5,18 @@
 # 所以构建阶段默认没有登录态 —— 只能匿名拉取（REQ-1/REQ-3 的契约，不接受在 pim-api 侧
 # 新增 registry 凭证）。取不到前端来源时构建必须硬失败，不许产出「没前端 / 半前端」的镜像。
 #
-# 传入不可变引用：PIM_WEB_DIST_REF=sha-<7>（默认 latest 仅用于本地临时构建）。
+# 构建来源由 PIM_WEB_DIST_SOURCE 指定，CI 传的是"不可变 tag + digest"：
+#   ghcr.io/2746267826/pim-web-dist:sha-<7>@sha256:...
+# 用 digest 钉住来源是刻意的：tag 在核对之后、BuildKit 解析之前被改动，也不会烘进另一份字节
+# （builder 是 docker-container driver，看不到宿主机的本地 tag，所以"本地打 tag"约束不住它）。
+# 不传该 build-arg 时退回契约里的滚动 tag latest，供本地临时构建使用。
 # 契约文件：产物镜像根目录 /web-version.json（版本号 / git sha / 构建时间 UTC）。
 #
 # 已废弃的旧路径：手工把 pim-web 的 dist 解包到 src/Pim.Api/wwwroot 再 build ——
 # 不再保留，避免两种姿势并存导致漂移。
-ARG PIM_WEB_DIST_REF=latest
+ARG PIM_WEB_DIST_SOURCE=ghcr.io/2746267826/pim-web-dist:latest
 
-FROM ghcr.io/2746267826/pim-web-dist:${PIM_WEB_DIST_REF} AS web-dist
+FROM ${PIM_WEB_DIST_SOURCE} AS web-dist
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS server-build
 ARG PIM_VERSION=0.0.0-local

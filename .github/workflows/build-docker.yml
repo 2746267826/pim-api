@@ -115,18 +115,6 @@ jobs:
           fi
           echo "✅ digest 一致：${ACTUAL}"
 
-      # 把本地那份 tag 钉到刚刚核对过的 digest 上：Dockerfile 的 FROM 用的是 tag，
-      # 这里保证 BuildKit 解析到的是同一份字节（本地已存在时 FROM 用本地镜像）。
-      # 再加上"pim-web 侧不可变 tag 只写一次（存在即复用）"，tag→字节 才是稳定的。
-      - name: Pin the local tag to the frozen digest
-        run: |
-          set -euo pipefail
-          IMAGE="${{ steps.web.outputs.web_dist_image }}"
-          DIGEST="${{ steps.web.outputs.web_dist_digest }}"
-          docker pull "${IMAGE}@${DIGEST}"
-          docker tag "${IMAGE}@${DIGEST}" "${IMAGE}:${{ steps.web.outputs.web_dist_ref }}"
-          echo "已把 ${IMAGE}:${{ steps.web.outputs.web_dist_ref }} 钉到 ${DIGEST}"
-          docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${IMAGE}:${{ steps.web.outputs.web_dist_ref }}"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -145,7 +133,8 @@ jobs:
           build-args: |
             PIM_VERSION=${{ steps.ver.outputs.version }}
             ASSEMBLY_VERSION=${{ steps.ver.outputs.assembly_version }}
-            PIM_WEB_DIST_REF=${{ steps.web.outputs.web_dist_ref }}
+            # 来源按 digest 钉死：tag 只作为可读信息，实际字节由 digest 决定。
+            PIM_WEB_DIST_SOURCE=${{ steps.web.outputs.web_dist_image }}:${{ steps.web.outputs.web_dist_ref }}@${{ steps.web.outputs.web_dist_digest }}
             PIM_WEB_VERSION=${{ steps.web.outputs.web_version }}
             PIM_WEB_SHA=${{ steps.web.outputs.web_git_sha }}
 
@@ -212,8 +201,10 @@ jobs:
 
       # 台账（REQ-7）：从**烘焙好的镜像**里读 wwwroot/web-version.json 原样转录，
       # 再加产物镜像的 tag/digest 与本次 API 版本。不重新计算前端字段。
-      - name: Build release ledger (pim-web-version.json)
-        if: steps.ver.outputs.is_release == 'true'
+      # 每次都跑（PR 也跑）：台账的"从烘焙好的镜像原样转录 + 与镜像内文件逐字一致"
+      # 这条逻辑必须每次构建都被真实执行到，不能只在发版时才第一次跑。
+      # 只有"上传为 release 资产"是发版专属（见下面 Upload release ledger）。
+      - name: Build release ledger (pim-web-version.json) and verify it
         run: |
           set -euo pipefail
           bash "$GITHUB_WORKSPACE/scripts/ci/build-web-ledger.sh" \
