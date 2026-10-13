@@ -67,6 +67,7 @@ jobs:
           bash scripts/ci/test-write-web-version.sh
           bash scripts/ci/test-trigger-api-release.sh
           bash scripts/ci/test-check-ghcr-public.sh
+          bash scripts/ci/test-dist-tag-state.sh
 
       - name: Lint
         run: npm run lint
@@ -246,20 +247,20 @@ jobs:
       - name: Check whether the immutable tag already exists
         id: existing
         run: |
-          set -uo pipefail
+          set -euo pipefail
           SHA="${{ needs.resolve-version.outputs.git_sha_short }}"
-          set +e
-          OUT="$(docker manifest inspect "${{ env.IMAGE }}:sha-${SHA}" 2>&1)"
-          RC=$?
-          set -e
-          if [ "$RC" -eq 0 ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "sha-${SHA} 已存在（登录态下确认）→ 复用既有产物，不覆盖"
-          elif grep -qiE 'no such manifest|manifest unknown|not found|NAME_UNKNOWN' <<<"$OUT"; then
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "sha-${SHA} 明确不存在 → 本次构建并推送"
+          # 判定逻辑在 scripts/ci/dist-tag-state.sh 里（可测）：只有**明确不存在**才返回 missing；
+          # 探测失败（鉴权/网络/token 服务/凭证助手）一律非 0 退出 → 这里报红，绝不覆盖既有 tag。
+          if STATE="$(bash scripts/ci/dist-tag-state.sh "${{ env.IMAGE }}:sha-${SHA}")"; then
+            if [ "$STATE" = "exists" ]; then
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              echo "sha-${SHA} 已存在（登录态下确认）→ 复用既有产物，不覆盖"
+            else
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+              echo "sha-${SHA} 明确不存在 → 本次构建并推送"
+            fi
           else
-            echo "::error::无法确认 ${{ env.IMAGE }}:sha-${SHA} 是否存在，拒绝在不确定的情况下覆盖可能的既有 tag：${OUT}"
+            echo "::error::无法确认 ${{ env.IMAGE }}:sha-${SHA} 是否存在（探测失败），拒绝在不确定的情况下创建/覆盖 tag"
             exit 1
           fi
 
