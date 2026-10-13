@@ -24,6 +24,12 @@ on:
         required: false
         default: ''
         type: string
+      # 内部管线参数（不是 dispatch 输入）：ci.yml 的 web-dist job 解析出的 digest，
+      # 用来核对 build-docker 自己解析到的 digest 是否一致（防 tag 在两者之间被重推）。
+      web_dist_digest:
+        required: false
+        default: ''
+        type: string
   workflow_dispatch:
     inputs:
       version:
@@ -47,6 +53,10 @@ on:
         default: ''
         type: string
       web_dist_ref:
+        required: false
+        default: ''
+        type: string
+      web_dist_digest:
         required: false
         default: ''
         type: string
@@ -85,6 +95,25 @@ jobs:
       - name: Resolve and freeze frontend dist ref
         id: web
         run: bash "$GITHUB_WORKSPACE/scripts/ci/resolve-web-dist.sh" --ref "${{ inputs.web_dist_ref }}"
+
+      # 冻结后的引用必须是"同一个字节"：ci.yml 的 web-dist job 已经解析过一次 digest，
+      # 这里再解析一次并逐字核对。tag 在两次解析之间被重推（同一 commit 重新构建 → 新
+      # builtAt）会让两边不一致，必须硬失败而不是把不同的前端烘进镜像。
+      - name: Verify the frozen ref resolves to the same bytes
+        env:
+          EXPECTED_DIGEST: ${{ inputs.web_dist_digest }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXPECTED_DIGEST" ]; then
+            echo "未收到上游解析的 digest（直接触发本 workflow 的情形），跳过一致性核对"
+            exit 0
+          fi
+          ACTUAL="${{ steps.web.outputs.web_dist_digest }}"
+          if [ "$EXPECTED_DIGEST" != "$ACTUAL" ]; then
+            echo "::error::产物镜像引用 ${{ steps.web.outputs.web_dist_image }}:${{ steps.web.outputs.web_dist_ref }} 的 digest 与上游解析结果不一致：上游=${EXPECTED_DIGEST} 本次=${ACTUAL}。tag 可能被重推，拒绝烘焙。"
+            exit 1
+          fi
+          echo "✅ digest 一致：${ACTUAL}"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -153,28 +182,20 @@ jobs:
             fi
             sleep 2
           done
-          # 同源伺服 SPA：GET / 必须返回镜像里那份 index.html
+          # 同源伺服 SPA：GET / 返回的正文必须与镜像里那份 index.html **逐字节一致**
+          # （只查 200 + doctype 证明不了"伺服的是镜像里那一份"）。
+          docker exec "$CID" sh -c 'cat /app/wwwroot/index.html' > /tmp/image-index.html
           docker exec "$CID" bash -c \
             'exec 3<>/dev/tcp/localhost/5000; printf "GET / HTTP/1.0\r\n\r\n" >&3; cat <&3' > /tmp/spa-response.txt
-          head -c 200 /tmp/spa-response.txt; echo
+          head -c 120 /tmp/spa-response.txt; echo
           grep -q "200 OK" /tmp/spa-response.txt
-          grep -qi "<!doctype html" /tmp/spa-response.txt
-          docker exec "$CID" sh -c 'wc -c < /app/wwwroot/index.html'
-          echo "smoke: SPA / OK（返回镜像内 index.html）"
-
-      - name: Login to GHCR
-        if: steps.ver.outputs.is_release == 'true'
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push tags
-        if: steps.ver.outputs.is_release == 'true'
-        run: |
-          docker push "${{ env.IMAGE }}:v${{ steps.ver.outputs.artifact_slug }}"
-          docker push "${{ env.IMAGE }}:latest"
+          # 去掉响应头（HTTP 头与正文之间是一个空行）
+          awk 'BEGIN{body=0} body{print} /^\r?$/{body=1}' /tmp/spa-response.txt > /tmp/spa-body.html
+          if ! cmp -s /tmp/spa-body.html /tmp/image-index.html; then
+            echo "::error::GET / 返回的正文与镜像内 /app/wwwroot/index.html 不一致（大小：$(wc -c < /tmp/spa-body.html) vs $(wc -c < /tmp/image-index.html)）"
+            exit 1
+          fi
+          echo "smoke: SPA / OK（返回的正文与镜像内 index.html 逐字节一致，$(wc -c < /tmp/image-index.html) 字节）"
 
       # 台账（REQ-7）：从**烘焙好的镜像**里读 wwwroot/web-version.json 原样转录，
       # 再加产物镜像的 tag/digest 与本次 API 版本。不重新计算前端字段。
@@ -200,6 +221,20 @@ jobs:
             exit 1
           }
           echo "✅ 台账前端三字段与镜像内 web-version.json 逐字一致"
+
+      - name: Login to GHCR
+        if: steps.ver.outputs.is_release == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push tags
+        if: steps.ver.outputs.is_release == 'true'
+        run: |
+          docker push "${{ env.IMAGE }}:v${{ steps.ver.outputs.artifact_slug }}"
+          docker push "${{ env.IMAGE }}:latest"
 
       - name: Export image tarball
         if: steps.ver.outputs.is_release == 'true'

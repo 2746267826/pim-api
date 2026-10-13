@@ -47,8 +47,9 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 
 镜像 label（`docker inspect` 直接可读）：`org.pim.api-version`、`org.pim.web-version`、`org.pim.web-sha`。
 
-**`workflow_dispatch` 输入**（两个契约输入，`ci.yml` 的 `workflow_dispatch.inputs` 与
-`build-docker.yml` 的 `workflow_call.inputs` 同步声明）：
+**`workflow_dispatch` 输入**（两个契约输入都声明在 `ci.yml` 的 `workflow_dispatch.inputs`；
+其中 `web_dist_ref` 还必须同步声明在 `build-docker.yml` 的 `workflow_call.inputs`，否则传不到镜像构建。
+`rebuild_image_only` 只被 `ci.yml` 的组件判定消费，在 reusable workflow 里声明它只会变成一个没有行为的死参数）：
 
 | 输入 | 作用 |
 | --- | --- |

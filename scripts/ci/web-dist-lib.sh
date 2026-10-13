@@ -37,10 +37,10 @@ pim_image_cat() {
   local image="$1" path="$2" out="$3" docker cid tmp rc=0
   docker="$(pim_docker)"
   tmp="$(mktemp "${TMPDIR:-/tmp}/pim-image-cat.XXXXXX")"
-  if ! "$docker" image inspect "$image" >/dev/null 2>&1; then
-    pim_web_log "本地无 $image，按匿名方式拉取（产物包必须是 public）"
-    "$docker" pull "$image" >&2 || { pim_web_err "拉取失败：$image"; rm -f "$tmp"; return 1; }
-  fi
+  # 一律先 pull：滚动 tag（latest）在本地缓存里可能是旧的；不可变 tag 的 pull 是幂等的
+  # digest 校验，代价很小。"本地已有就不拉"会让冻结值悄悄取自过期内容。
+  pim_web_log "拉取 $image（匿名，产物包必须是 public）"
+  "$docker" pull "$image" >&2 || { pim_web_err "拉取失败：$image"; rm -f "$tmp"; return 1; }
   # scratch 镜像没有 CMD：给一个不会被执行的占位命令，才能 create/cp。
   cid="$("$docker" create "$image" /pim-web-dist-reader)" || { pim_web_err "create 失败：$image"; rm -f "$tmp"; return 1; }
   if ! "$docker" cp "${cid}:${path}" "$tmp" >&2; then

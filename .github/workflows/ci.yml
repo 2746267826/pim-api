@@ -86,6 +86,8 @@ jobs:
       mcp: ${{ steps.flags.outputs.mcp }}
       rebuild_image_only: ${{ steps.flags.outputs.rebuild_image_only }}
       backend_changed: ${{ steps.flags.outputs.backend_changed }}
+      baseline_ok: ${{ steps.baseline.outputs.ok }}
+      previous_tag: ${{ steps.rel.outputs.previous_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -154,66 +156,61 @@ jobs:
               - '.github/actions/**'
               - 'scripts/ci/**'
 
+      # 基线是否可用：上一版 tag 必须是本次 HEAD 的祖先。历史被改写时（例如拆仓）
+      # 那个 tag 上的 diff 没有意义、资产也不能搬运 —— 必须退回"全量构建"，
+      # 而不是等到 release job 搬运时才报错（REQ-5）。
+      - id: baseline
+        env:
+          PREV_TAG: ${{ steps.rel.outputs.previous_tag }}
+        run: |
+          set -uo pipefail
+          if [[ -z "$PREV_TAG" ]]; then
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "没有上一版 release → 基线不可用（按首次发布处理，全量构建）"
+            exit 0
+          fi
+          if git merge-base --is-ancestor "$PREV_TAG" HEAD; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "基线可用：$PREV_TAG 是 HEAD 的祖先"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::$PREV_TAG 不是 HEAD 的祖先（历史被改写）→ 放弃基线，按全量构建处理"
+          fi
+
+      # 上一版 release 有没有台账资产（REQ-7）。没有台账时必须重烘镜像，
+      # 否则这次 release 只能去搬一个不存在的资产并失败。
+      - id: prevledger
+        if: steps.rel.outputs.has_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREV_TAG: ${{ steps.rel.outputs.previous_tag }}
+        run: |
+          set -uo pipefail
+          if gh release view "$PREV_TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+               --jq '.assets[].name' 2>/dev/null | grep -qx 'pim-web-version.json'; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "上一版 release(${PREV_TAG}) 带 pim-web-version.json 台账"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "上一版 release(${PREV_TAG}) 没有台账资产（过渡态）→ 将强制重烘镜像以产出本次台账"
+          fi
+
       - id: flags
         shell: bash
-        # 这些开关必须在这里**真正被定义**才能生效。历史坑：force_all 输入只在
-        # ci.yml 里被"引用"过（$FORCE_ALL / $FIRST_PUSH / $NO_RELEASE 全仓没有任何定义），
-        # 手动触发时它们恒为空串 → 开关形同虚设（伪生效）。本次改造同时把
-        # force_all 接到真实定义上，并让新开关沿用同一条已接线的判定。
+        # 判定逻辑在 scripts/ci/decide-components.sh 里（可被组合测试覆盖，见 test-decide-components.sh）。
+        # 历史坑：force_all 输入曾只被"引用"而没有定义（$FORCE_ALL/$FIRST_PUSH/$NO_RELEASE 全仓无定义），
+        # 手动触发时恒为空串 → 开关形同虚设（伪生效）。现在这些变量都有真实定义。
         env:
           FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all || 'false' }}
-          # 没有上一版 release（首次发布）：没有任何可搬运的资产，只能全量构建。
-          FIRST_PUSH: ${{ steps.rel.outputs.has_release == 'false' && 'true' || 'false' }}
           REBUILD_IMAGE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild_image_only || 'false' }}
+          BASELINE_OK: ${{ steps.baseline.outputs.ok }}
+          PREVIOUS_TAG: ${{ steps.rel.outputs.previous_tag }}
+          PREVIOUS_LEDGER: ${{ steps.prevledger.outputs.present }}
           F_INFRA: ${{ steps.filter.outputs.infra }}
           F_API: ${{ steps.filter.outputs.api }}
           F_DOCKER: ${{ steps.filter.outputs.docker }}
           F_MCP: ${{ steps.filter.outputs.mcp }}
-        run: |
-          set -euo pipefail
-
-          # 「后端源码相对上一版 release 是否有变化」用**路径过滤的原始结果**判断：
-          # 不受 rebuild_image_only 强制打开 docker 的影响（否则防重复发版永远无法触发）。
-          if [ "$FORCE_ALL" = "true" ] || [ "$FIRST_PUSH" = "true" ] || [ "$F_INFRA" = "true" ] \
-            || [ "$F_API" = "true" ] || [ "$F_MCP" = "true" ] || [ "$F_DOCKER" = "true" ]; then
-            backend_changed=true
-          else
-            backend_changed=false
-          fi
-
-          if [ "$REBUILD_IMAGE_ONLY" = "true" ]; then
-            echo "本次仅重建镜像（rebuild_image_only=true）"
-            if [ "$F_API" = "true" ] || [ "$F_MCP" = "true" ]; then
-              echo "::warning::请求「只重建镜像」，但后端（API/MCP）相对上一版 release 确有变化 → 自动转全量构建；绝不把旧 API/MCP 资产搬进新版本的 release"
-              all=true
-            else
-              all=false
-            fi
-            api=$all
-            mcp=$all
-            docker=true
-          elif [ "$FORCE_ALL" = "true" ] || [ "$FIRST_PUSH" = "true" ] || [ "$F_INFRA" = "true" ]; then
-            all=true
-            api=true
-            docker=true
-            mcp=true
-          else
-            all=false
-            api="$F_API"
-            docker="$F_DOCKER"
-            mcp="$F_MCP"
-          fi
-
-          {
-            echo "all=$all"
-            echo "api=$api"
-            echo "docker=$docker"
-            echo "mcp=$mcp"
-            echo "rebuild_image_only=$REBUILD_IMAGE_ONLY"
-            echo "backend_changed=$backend_changed"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "本次组件判定：all=$all api=$api docker=$docker mcp=$mcp；仅重建镜像=$REBUILD_IMAGE_ONLY；后端有变化=$backend_changed"
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/decide-components.sh"
 
   # 前端产物镜像的解析/冻结（REQ-3）与「防重复发版」判定（REQ-6）。
   #
@@ -244,6 +241,8 @@ jobs:
       - name: Self-test release scripts
         run: |
           set -euo pipefail
+          bash scripts/ci/test-decide-components.sh
+          bash scripts/ci/test-evaluate-gate.sh
           bash scripts/ci/test-release-dedupe.sh
           bash scripts/ci/test-resolve-web-dist.sh
           bash scripts/ci/test-build-web-ledger.sh
@@ -257,15 +256,23 @@ jobs:
 
       # 上一版台账（REQ-6 的比对数据源）。取不到不算错：判定脚本会按「无上一版台账，
       # 按需发版处理」走，并且把这件事写进 summary（不报错中断、也不静默跳过发布）。
+      # 基线不可用（首次发布 / 历史被改写）时直接跳过：那个 tag 上的台账与本仓历史无关，
+      # 拿它比对会得出"前端没变 → 不发版"的错误结论。
       - name: Resolve previous release ledger
         id: prev
-        if: needs.resolve-version.outputs.is_release == 'true'
+        if: needs.resolve-version.outputs.is_release == 'true' && needs.changes.outputs.baseline_ok == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -uo pipefail
+          # 解析时排除本次自己的 tag（重跑时 tag 已存在，不能被当成"上一版"）。
           TAG="$(bash "$GITHUB_WORKSPACE/scripts/ci/latest-release-tag.sh" \
             --repo "$GITHUB_REPOSITORY" \
             --exclude "${{ needs.resolve-version.outputs.release_tag }}" || true)"
+          if [[ -n "$TAG" ]] && ! git merge-base --is-ancestor "$TAG" HEAD; then
+            echo "::warning::${TAG} 不是 HEAD 的祖先（历史被改写）→ 不作为台账比对基线"
+            TAG=""
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "上一版 release: ${TAG:-(none)}"
           mkdir -p previous-ledger
@@ -336,7 +343,7 @@ jobs:
     # 另外只有在前端/后端判定为需要发版时才烘（REQ-6：不发版就不得推出新镜像 tag）。
     if: |
       (needs.changes.outputs.all == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.docker == 'true') &&
-      (needs.resolve-version.outputs.is_release != 'true' || needs.web-dist.outputs.publish == 'true')
+      (needs.resolve-version.outputs.is_release != 'true' || needs.web-dist.outputs.publish != 'false')
     uses: ./.github/workflows/build-docker.yml
     with:
       version: ${{ needs.resolve-version.outputs.version }}
@@ -345,6 +352,7 @@ jobs:
       is_release: ${{ needs.resolve-version.outputs.is_release }}
       assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
       web_dist_ref: ${{ needs.web-dist.outputs.ref }}
+      web_dist_digest: ${{ needs.web-dist.outputs.digest }}
 
   build-mcp:
     needs: [resolve-version, changes]
@@ -404,7 +412,11 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Evaluate required jobs
+        # 判定逻辑在 scripts/ci/evaluate-gate.sh 里（可被组合测试覆盖，见 test-evaluate-gate.sh）：
+        # 只有**显式** publish=false 才把镜像构建的跳过视为"按设计"，空值/异常值一律判红。
         env:
           R_RESOLVE: ${{ needs.resolve-version.result }}
           R_CHANGES: ${{ needs.changes.result }}
@@ -418,60 +430,7 @@ jobs:
           W_MCP: ${{ needs.changes.outputs.mcp }}
           IS_RELEASE: ${{ needs.resolve-version.outputs.is_release }}
           W_PUBLISH: ${{ needs.web-dist.outputs.publish }}
-        run: |
-          set -uo pipefail
-          fail=0
-
-          # 该组件本次是否被判定为「应当重建」（任一 flag 为 true，或 all 为 true）
-          should () {
-            if [ "$W_ALL" = "true" ]; then echo true; return; fi
-            for flag in "$@"; do
-              if [ "$flag" = "true" ]; then echo true; return; fi
-            done
-            echo false
-          }
-
-          # 镜像构建额外受「防重复发版」判定约束：判定为不发版时，build-docker 是被
-          # **按设计**跳过的，不算漏跑；其余情形一律照旧（应跑却 skip 仍判红）。
-          should_docker () {
-            if [ "$(should "$W_API" "$W_DOCKER")" != "true" ]; then echo false; return; fi
-            if [ "$IS_RELEASE" = "true" ] && [ "$W_PUBLISH" != "true" ]; then echo false; return; fi
-            echo true
-          }
-
-          # result: 子任务结果；wanted: 是否应当运行（true/false）
-          check () {
-            local label="$1" result="$2" wanted="$3"
-            if [ "$result" = "success" ]; then
-              echo "✅ $label — success"
-            elif [ "$result" = "skipped" ] && [ "$wanted" != "true" ]; then
-              echo "⏭️  $label — skipped（该组件本次无变化，按设计跳过）"
-            elif [ "$result" = "skipped" ]; then
-              echo "❌ $label — 判定应当重建，却以 skipped 结束（疑似静默漏跑）"
-              fail=1
-            else
-              echo "❌ $label — ${result:-<missing>}"
-              fail=1
-            fi
-          }
-
-          # 基础 job 必须成功（它们决定后续过滤与版本解析）
-          check "resolve-version" "$R_RESOLVE" "true"
-          check "changes"         "$R_CHANGES" "true"
-          check "web-dist"        "$R_WEBDIST" "$(should "$W_API" "$W_DOCKER")"
-
-          check "build-api"                       "$R_API"           "$(should "$W_API")"
-          check "build-docker"                    "$R_DOCKER"        "$(should_docker)"
-          check "build-mcp"                       "$R_MCP"           "$(should "$W_MCP")"
-
-          if [ "$fail" -ne 0 ]; then
-            echo ""
-            echo "::error::CI Gate 未通过：存在失败或疑似静默跳过的必需 job。"
-            exit 1
-          fi
-
-          echo ""
-          echo "CI Gate 通过：所有必需 job 均成功，或因组件无变化而按设计跳过。"
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/evaluate-gate.sh"
 
   release:
     needs: [resolve-version, summarize, web-dist, build-api, build-docker, build-mcp]
@@ -600,6 +559,17 @@ jobs:
           # 台账（REQ-7）：每次 release 都必须有一份。镜像这次没重建时，本次发布里前端
           # 就是上一版镜像里的那份，所以按同一规则从上一版 release 搬运（内容依然真实）。
           fill_if_skipped "${{ needs.build-docker.result }}" 'pim-web-version.json'
+          if [ "${{ needs.build-docker.result }}" = "skipped" ]; then
+            # 搬来的台账里 apiVersion 是上一版发布的版本号，而它现在描述的是**本次**发布：
+            # 必须改写。前端三字段（镜像内事实）不许动——它们与镜像内容一一对应。
+            OLD="$(jq -r '.apiVersion' release-assets/pim-web-version.json)"
+            NEW="${{ needs.resolve-version.outputs.version }}"
+            jq -S --arg v "$NEW" '.apiVersion = $v' release-assets/pim-web-version.json \
+              > release-assets/pim-web-version.json.tmp
+            mv release-assets/pim-web-version.json.tmp release-assets/pim-web-version.json
+            echo "台账来自上一版搬运：apiVersion ${OLD} → ${NEW}（前端三字段与镜像内文件保持逐字一致）"
+            cat release-assets/pim-web-version.json
+          fi
           # Sanity check: every asset family must be present before uploading.
           for p in pim-api-*.tar.gz pim-api-server-*.tar.gz pim-mcp-server-*.tar.gz pim-web-version.json; do
             ls release-assets/${p} >/dev/null 2>&1 \

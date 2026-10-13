@@ -25,7 +25,7 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 ### 镜像内嵌前端与发布链路（`pim-api-server`）
 - **镜像必须内嵌前端**：`src/Pim.Api/Dockerfile` 多阶段从产物镜像 `ghcr.io/2746267826/pim-web-dist`（tag `sha-<7>`/`latest`）取 `dist` 全量，落到 `/app/wwwroot`。取不到来源、或缺 `index.html`/`assets/`/`web-version.json` → **构建硬失败**。不要恢复"手工把 dist 解包到 `src/Pim.Api/wwwroot` 再 build"的路径，也不要新增可产出"没前端镜像"的构建分支。
 - **产物包必须 public**：构建阶段没有 registry 登录态（登录发生在镜像构建之后、仅发版时执行），只能匿名拉取。不要改成为"私有包 + 在本仓新增 registry 凭证"。
-- **两个契约 dispatch 输入**：`web_dist_ref`（前端版本引用，空=取最新并冻结）+ `rebuild_image_only`（只重建镜像）。`web_dist_ref` 必须在 `ci.yml` 的 `workflow_dispatch.inputs` 与 `build-docker.yml` 的 `workflow_call.inputs` **两处**声明，否则传不到镜像构建。新增开关必须**真接线**（历史上 `force_all` 只被引用、变量全仓无定义，属伪生效）。
+- **两个契约 dispatch 输入**：`web_dist_ref`（前端版本引用，空=取最新并冻结）+ `rebuild_image_only`（只重建镜像）。`web_dist_ref` 必须在 `ci.yml` 的 `workflow_dispatch.inputs` 与 `build-docker.yml` 的 `workflow_call.inputs` **两处**声明才能一路传到镜像构建；`rebuild_image_only` 只在 `ci.yml` 的组件判定里消费（放进 `workflow_call.inputs` 会变成没有行为的死参数，即工单禁止的"伪生效"）。新增开关必须**真接线**（历史上 `force_all` 只被引用、变量全仓无定义，属伪生效）。
 - **后端变了就不许走"只重建镜像"**：`rebuild_image_only` 请求下若 API/MCP 相对上一版 release 有变化，`changes` 会自动转全量构建并打 warning；禁止把旧 API/MCP 资产搬进带新版本号的 release。
 - **台账 `pim-web-version.json`**（契约，与前端产物内的 `web-version.json` 是**两个不同文件**）：每次 api release 都要有。前端三字段由烘焙好的镜像内 `/app/wwwroot/web-version.json` **原样转录**，不得重算；另含产物镜像 tag/digest 与本次 API 版本。它也是防重复发版（REQ-6）的比对数据源。
 - **防重复发版**：前端版本与上一版台账一致且后端无变化 → 不发新 release、不推新镜像 tag；判定依据写进 job summary。上一版 release / 台账缺失或不可读 → 按"需要发版"处理并写明原因，不报错中断、也不静默跳过。
