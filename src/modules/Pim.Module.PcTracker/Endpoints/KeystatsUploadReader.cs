@@ -20,9 +20,9 @@ namespace Pim.Module.PcTracker.Endpoints;
 ///
 /// 因此这里按契约的必填清单（<see cref="KeystatsRequiredFields"/>）在 JSON 对象上做
 /// **键存在性**检查（大小写不敏感，与 <c>JsonSerializerDefaults.Web</c> 的
-/// <c>PropertyNameCaseInsensitive = true</c> 一致），再用应用自己配置的
-/// <see cref="JsonOptions.SerializerOptions"/> 反序列化 —— 与框架绑定同一套选项，
-/// 换解析器不会改变行为。
+/// <c>PropertyNameCaseInsensitive = true</c> 一致；重复键与反序列化一样取最后一个），
+/// 再用应用自己配置的 <see cref="JsonOptions.SerializerOptions"/> 反序列化 ——
+/// 与框架绑定同一套选项，换解析器不会改变行为。
 ///
 /// 注册在 <c>PcTrackerModule.RegisterServices</c>：路由用 <c>[FromServices]</c> 拿它，
 /// <c>PcTrackerModuleDiResolutionTests</c> 会守住这条注册。
@@ -88,17 +88,23 @@ public sealed class KeystatsUploadReader(IOptions<JsonOptions> jsonOptions)
 
     private static bool HasValue(JsonElement root, string field)
     {
+        var matched = false;
+        var lastIsNull = false;
         foreach (var property in root.EnumerateObject())
         {
             // 与 PropertyNameCaseInsensitive 一致：peakKps / peakKPS / PeakKps 都算同一个字段。
             if (!string.Equals(property.Name, field, StringComparison.OrdinalIgnoreCase))
                 continue;
 
-            // 显式 null 视为缺值：值类型字段本来也反序列化不了 null，
-            // 与其抛 JsonException，不如报「缺了哪个字段」。
-            return property.Value.ValueKind != JsonValueKind.Null;
+            // 重复键（含大小写变体）时取**最后一个**：System.Text.Json 反序列化同样是后写覆盖先写，
+            // 校验必须与绑定看同一个值，否则 {"date":"…","DATE":null} 会先通过校验、
+            // 再把 Date 绑成 null，最终在服务层炸成 500（独立 review 复现过）。
+            matched = true;
+            lastIsNull = property.Value.ValueKind == JsonValueKind.Null;
         }
 
-        return false;
+        // 显式 null 视为缺值：值类型字段本来也反序列化不了 null，
+        // 与其抛 JsonException，不如报「缺了哪个字段」。
+        return matched && !lastIsNull;
     }
 }

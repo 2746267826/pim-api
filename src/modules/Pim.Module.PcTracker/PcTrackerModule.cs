@@ -68,10 +68,12 @@ public class PcTrackerModule : IModule
         var writeGroup = endpoints.MapGroup("/api/v1/pc")
             .RequireAuthorization();
 
-        // issue #419：契约给这两个请求体标了 12 / 11 个必填字段，服务端原先一个都不查 ——
-        // 缺数字字段就静默存 0。这里按 KeystatsRequiredFields（与契约 required 逐字对齐，
-        // 由 OpenApiContractShapeTests 钉住）做键存在性校验，缺字段 → 400 + ApiResponse 包络。
-        // 请求体改由 KeystatsUploadBinding 读取，故用 Accepts 声明请求体形状，契约不变。
+        // issue #419：契约给这两个请求体标了必填字段（upload 12 / samples 13），服务端原先一个
+        // 都不查 —— 缺数字字段就静默存 0，缺 deviceId/date 直接 500。这里按
+        // KeystatsRequiredFields（与契约 required 逐字对齐，由 OpenApiContractShapeTests 钉住）
+        // 做键存在性校验，缺字段 → 400 + ApiResponse 包络。
+        // Accepts 与改动前的 [FromBody] 参数推导出的元数据等价（非 JSON 请求改动前后都是 404），
+        // 契约里这两条 operation 的 requestBody 因此逐字节不变。
         writeGroup.MapPost("/keystats/upload", async (
             HttpRequest httpRequest,
             [FromServices] KeystatsUploadReader reader,

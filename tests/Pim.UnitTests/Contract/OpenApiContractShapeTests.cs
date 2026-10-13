@@ -200,6 +200,23 @@ public sealed class OpenApiContractShapeTests
             Pim.Module.PcTracker.DTOs.KeystatsRequiredFields.Sample.OrderBy(x => x, StringComparer.Ordinal));
     }
 
+    // ===== A1：请求体文档与请求 DTO 仍然对得上（改用 Accepts 后不得丢 requestBody）=====
+
+    [Theory]
+    [InlineData("/api/v1/pc/keystats/upload", "KeystatsUploadRequest")]
+    [InlineData("/api/v1/pc/keystats/samples", "KeystatsSampleUploadRequest")]
+    public void KeystatsOperationsStillDeclareTheirJsonRequestBody(string path, string schemaName)
+    {
+        var operation = Document.Paths[path].Operations[OperationType.Post];
+
+        Assert.NotNull(operation.RequestBody);
+        Assert.True(operation.RequestBody!.Required);
+        Assert.True(operation.RequestBody.Content.ContainsKey("application/json"));
+        Assert.Equal(
+            $"#/components/schemas/{schemaName}",
+            operation.RequestBody.Content["application/json"].Schema.Reference?.ReferenceV3);
+    }
+
     // ===== C3：displayName 契约改成可空 =====
 
     [Fact]

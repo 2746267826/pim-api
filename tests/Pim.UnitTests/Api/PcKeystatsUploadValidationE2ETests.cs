@@ -109,7 +109,8 @@ public sealed class PcKeystatsUploadValidationE2ETests
         Assert.Equal(HttpStatusCode.OK, status);
         Assert.Equal(0, document.RootElement.GetProperty("code").GetInt32());
 
-        // 1) 真库断言：写进去的就是这些值
+        // 1) 库内往返断言（EF InMemory；真实 PostgreSQL 的事务/索引链路由
+        //    PcKeystatsRealDbE2ETests 覆盖）
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
@@ -270,7 +271,111 @@ public sealed class PcKeystatsUploadValidationE2ETests
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
+    // ===== 重复键（含大小写变体）：校验必须与绑定看同一个值 =====
+    // 独立 review 复现过：校验取第一个匹配键、反序列化取最后一个，
+    // {"date":"…","DATE":null} 于是先通过校验再把 Date 绑成 null → 服务层 500。
+
+    [Fact]
+    public async Task Upload_DuplicateKeyWithCaseVariantNullLast_Returns400NotServerError()
+    {
+        using var factory = CreateFactory();
+        var client = await CreateAuthedClientAsync(factory);
+
+        var json = RawUploadJson(
+            "\"deviceId\":\"dup-case\"",
+            "\"date\":\"2026-10-01\"",
+            "\"DATE\":null");
+
+        var (status, document) = await PostRawStringAsync(client, UploadPath, json);
+
+        Assert.Equal(HttpStatusCode.BadRequest, status);
+        Assert.Contains("date", document.RootElement.GetProperty("message").GetString()!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Upload_DuplicateSameKeyWithNullLast_Returns400()
+    {
+        using var factory = CreateFactory();
+        var client = await CreateAuthedClientAsync(factory);
+
+        var json = RawUploadJson(
+            "\"deviceId\":\"dup-same\"",
+            "\"deviceId\":null",
+            "\"date\":\"2026-10-01\"");
+
+        var (status, document) = await PostRawStringAsync(client, UploadPath, json);
+
+        Assert.Equal(HttpStatusCode.BadRequest, status);
+        Assert.Contains("deviceId", document.RootElement.GetProperty("message").GetString()!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Upload_DuplicateKeyLastWins_BindingAndValidationAgree()
+    {
+        using var factory = CreateFactory();
+        var client = await CreateAuthedClientAsync(factory);
+
+        // 最后一个键有效 → 校验通过，且落库的是**最后一个**值（与 System.Text.Json 的后写覆盖一致）。
+        var json = RawUploadJson(
+            "\"deviceId\":\"dup-last\"",
+            "\"date\":\"2026-09-01\"",
+            "\"DATE\":\"2026-10-05\"");
+
+        var (status, _) = await PostRawStringAsync(client, UploadPath, json);
+        Assert.Equal(HttpStatusCode.OK, status);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        var row = await db.Set<KeystatsDailyEntity>().SingleAsync(x => x.DeviceId == "dup-last");
+        Assert.Equal(new DateTime(2026, 10, 5), row.SnapshotDate.Date);
+    }
+
+    // ===== 非 JSON Content-Type 的行为与改动前一致 =====
+    // 改动前 [FromBody] 参数会推导出 application/json 的 Accepts 元数据，非 JSON 请求匹配不上
+    // 端点、落到全局兜底 404；现在显式 .Accepts<KeystatsUploadRequest>("application/json")
+    // 是同一份元数据（已在真栈上对比过改动前后的 404 行为）。
+
+    [Fact]
+    public async Task Upload_NonJsonContentType_BehavesAsBefore()
+    {
+        using var factory = CreateFactory();
+        var client = await CreateAuthedClientAsync(factory);
+
+        var response = await client.PostAsync(
+            UploadPath,
+            new StringContent(JsonSerializer.Serialize(UploadBody()), Encoding.UTF8, "text/plain"));
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
     // ===== helpers =====
+
+    private static string RawUploadJson(params string[] extraFields)
+    {
+        var fields = new List<string>
+        {
+            "\"keyPresses\":1",
+            "\"leftClicks\":1",
+            "\"rightClicks\":1",
+            "\"middleClicks\":1",
+            "\"sideBackClicks\":1",
+            "\"sideForwardClicks\":1",
+            "\"mouseDistance\":1",
+            "\"scrollDistance\":1",
+            "\"peakKps\":1",
+            "\"peakCps\":1"
+        };
+        fields.AddRange(extraFields);
+        return "{" + string.Join(",", fields) + "}";
+    }
+
+    private static async Task<(HttpStatusCode Status, JsonDocument Document)> PostRawStringAsync(
+        HttpClient client, string url, string json)
+    {
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        var response = await client.PostAsync(url, content);
+        return (response.StatusCode, JsonDocument.Parse(await response.Content.ReadAsStringAsync()));
+    }
 
     private static Dictionary<string, object?> UploadBody() => new()
     {

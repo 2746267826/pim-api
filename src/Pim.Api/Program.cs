@@ -100,6 +100,9 @@ builder.Services.AddSwaggerGen(c =>
     // 契约批次3：securitySchemes（bearer JWT + X-PIM-Ops-Key）与逐 operation 的 security，
     // 均按端点真实鉴权现状映射（见 SecurityMetadataOperationFilter 注释），不改变行为。
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.SecurityMetadataOperationFilter>();
+    // 契约批次3（issue #417）：import-ics 的 handler 自己读表单，这里只补 requestBody 文档，
+    // 不用 .Accepts（那会改变端点匹配、把 handler 的 400 分支变成死代码）。
+    c.OperationFilter<Pim.Api.Infrastructure.OpenApi.IcsImportRequestBodyOperationFilter>();
     c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.SecuritySchemesDocumentFilter>();
 });
 
