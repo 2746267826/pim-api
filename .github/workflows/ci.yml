@@ -238,24 +238,59 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 「不可变 tag」必须真的不可变：同一 commit 的重复运行（重跑、重发）不许改字节。
+      # 已存在就复用既有产物（正好也是 REQ-6 说的"复用即可"），只把 latest 指到同一个 digest。
+      - name: Check whether the immutable tag already exists
+        id: existing
+        run: |
+          set -uo pipefail
+          SHA="${{ needs.resolve-version.outputs.git_sha_short }}"
+          if bash scripts/ci/check-ghcr-public.sh "${{ env.IMAGE }}" --expect-tag "sha-${SHA}"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "sha-${SHA} 尚不存在（或包还不可匿名访问）→ 本次构建并推送"
+          fi
+
       - name: Build and push dist image
         id: build
         run: |
           set -euo pipefail
           SHA="${{ needs.resolve-version.outputs.git_sha_short }}"
           VERSION="$(jq -r .version client-web/dist/web-version.json)"
-          docker build \
-            -f client-web/Dockerfile.dist \
-            --build-arg "PIM_WEB_VERSION=${VERSION}" \
-            --build-arg "PIM_WEB_SHA=${SHA}" \
-            -t "${{ env.IMAGE }}:sha-${SHA}" \
-            -t "${{ env.IMAGE }}:latest" \
-            client-web
-          docker push "${{ env.IMAGE }}:sha-${SHA}"
-          docker push "${{ env.IMAGE }}:latest"
+
+          if [ "${{ steps.existing.outputs.exists }}" = "true" ]; then
+            echo "== ${{ env.IMAGE }}:sha-${SHA} 已存在：复用既有产物，不覆盖不可变 tag =="
+            docker pull "${{ env.IMAGE }}:sha-${SHA}"
+            CID="$(docker create "${{ env.IMAGE }}:sha-${SHA}" /pim-web-dist-reader)"
+            docker cp "${CID}:/web-version.json" /tmp/reused-web-version.json
+            docker rm -f "$CID" >/dev/null
+            REUSED_SHA="$(jq -r .gitSha /tmp/reused-web-version.json)"
+            REUSED_VER="$(jq -r .version /tmp/reused-web-version.json)"
+            if [ "$REUSED_SHA" != "$SHA" ]; then
+              echo "::error::${IMAGE}:sha-${SHA} 里记录的 gitSha 是 ${REUSED_SHA}，与本次提交不一致，拒绝复用"
+              exit 1
+            fi
+            if [ "$REUSED_VER" != "$VERSION" ]; then
+              echo "::notice::复用既有产物：镜像里的版本号 ${REUSED_VER} ≠ 本次 run 的 ${VERSION}（同一 commit 的重跑，前端内容相同）"
+            fi
+            docker tag "${{ env.IMAGE }}:sha-${SHA}" "${{ env.IMAGE }}:latest"
+            docker push "${{ env.IMAGE }}:latest"
+          else
+            docker build \
+              -f client-web/Dockerfile.dist \
+              --build-arg "PIM_WEB_VERSION=${VERSION}" \
+              --build-arg "PIM_WEB_SHA=${SHA}" \
+              -t "${{ env.IMAGE }}:sha-${SHA}" \
+              -t "${{ env.IMAGE }}:latest" \
+              client-web
+            docker push "${{ env.IMAGE }}:sha-${SHA}"
+            docker push "${{ env.IMAGE }}:latest"
+          fi
+
           DIGEST="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${{ env.IMAGE }}:sha-${SHA}" | head -n1)"
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
-          echo "已推送 sha-${SHA} 与 latest；digest=${DIGEST}"
+          echo "sha-${SHA} 与 latest 均指向 digest=${DIGEST}"
 
       # 契约要求包必须 public：先探测，未公开就尝试自设，设不了就报红并给出人工指引
       # （不静默失败、不降级为"私有 + 在 pim-api 配凭证"）。
@@ -325,14 +360,16 @@ jobs:
 
       - name: Dispatch pim-api build with this frontend version
         env:
-          # 只通过 env 传给脚本；脚本走 curl 的 600 配置文件，不回显、不进命令行参数。
+          # token 只经环境变量传入：不进命令行参数、不落盘（脚本内 curl 用 --config /dev/stdin）。
           TRIGGER_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
+          # --force-all false 必须显式传：pim-api 的 dispatch 输入 force_all 默认是 true，
+          # 不传就会走"强制全量"，防重复发版（REQ-6/AC-4）在自动触发路径上失效。
           bash scripts/ci/trigger-api-release.sh \
-            --token "$TRIGGER_TOKEN" \
             --web-dist-ref "sha-${{ needs.resolve-version.outputs.git_sha_short }}" \
-            --rebuild-image-only true
+            --rebuild-image-only true \
+            --force-all false
           {
             echo "### 已触发 pim-api 发版（REQ-4）"
             echo ""
