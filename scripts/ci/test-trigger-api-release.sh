@@ -37,12 +37,16 @@ not_contains "curl 参数不含 token（走 600 配置文件）" "$SECRET_TOKEN"
 check "token 走 --config 而非 -H" "1" "$(grep -c '^--config$' "$FAKE_CURL_LOG")"
 check "token 不落盘（凭据经 /dev/stdin）" "1" "$(grep -c '^/dev/stdin$' "$FAKE_CURL_LOG")"
 check "自动触发显式传 force_all=false" "1" "$(grep -c '"force_all": "false"' "$FAKE_CURL_LOG")"
-# 脚本自己的进程参数里也不能有 token
-not_contains "脚本 argv 不含 token" "$SECRET_TOKEN" "$(cat "$TMP/ok.out" "$TMP/ok.err")"
+# 脚本不再接受 --token（token 只能经环境变量进来），这条断言直接检查那个入口已被移除
+if TRIGGER_TOKEN="$SECRET_TOKEN" bash "$SCRIPT" --token "$SECRET_TOKEN" --web-dist-ref sha-abc1234 >/dev/null 2>&1; then
+  echo "  ❌ --token 入口应当已被移除"; fail=$((fail+1))
+else
+  echo "  ✅ --token 入口已移除（token 只能从环境变量进来）"; pass=$((pass+1))
+fi
 if grep -rl "$SECRET_TOKEN" "${TMPDIR:-/tmp}" --include='pim-*' 2>/dev/null | head -1 | grep -q .; then
   echo "  ❌ 临时目录里留有含 token 的文件"; fail=$((fail+1))
 else
-  echo "  ✅ 临时目录里没有含 token 的文件"; pass=$((pass+1))
+  echo "  ✅ 脚本退出后临时目录里没有含 token 的文件"; pass=$((pass+1))
 fi
 
 # 2) 失败：HTTP 422 → exit 非 0，且打印状态与响应体

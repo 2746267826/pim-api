@@ -31,10 +31,11 @@ gate(CI Gate) → push-dist → trigger-api → release-gate
 ```
 
 - `push-dist`：`needs: [resolve-version, build-web, gate]` + `if: master`。**只有 master、且 lint/单测/契约门禁全绿之后**才推包（gate 没过它根本不会跑）；它**不在** gate 的 needs 里，所以不存在循环依赖。
-- `trigger-api`：用 `actions/create-github-app-token` 现签临时 token 调 pim-api 的 `workflow_dispatch`，传 `web_dist_ref=sha-<7>` 与 `rebuild_image_only=true`。失败必须红并打印 HTTP 状态 + 响应体；**token 只走 env + curl 的 600 配置文件，禁止回显、禁止进命令行参数**。
+- `trigger-api`：用 `actions/create-github-app-token` 现签临时 token 调 pim-api 的 `workflow_dispatch`，传 `web_dist_ref=sha-<7>` 与 `rebuild_image_only=true`。失败必须红并打印 HTTP 状态 + 响应体；**token 只经环境变量传入（`TRIGGER_TOKEN`），认证头由 curl 从 stdin 读（`--config /dev/stdin`）——不进命令行参数、不落盘、不回显**。
 - `release-gate`：`needs: [push-dist, trigger-api]` + `if: always()`。master 上两者必须都 success（被 skip 也判红，挡住"该跑却没跑"的静默旁路）；非 master 上两者必须都是 skipped（PR 不推包）。
 - **权限只多 `packages: write` 一项**，不要顺手扩大其它权限。
 - 产物包**必须 public**：GHCR 新建包默认 private，且包只继承仓库访问权限、不继承可见性。`push-dist` 会先探测匿名可拉，未公开就尝试自设，设不了就报红并给出人工设置指引（不接受"私有包 + 在 pim-api 侧新增 registry 凭证"的替代方案）。
+- **`sha-<7>` 只写一次**：`push-dist` 先在登录态下用 `docker manifest inspect` 判定 tag 是否存在——存在即复用既有产物（核对镜像内 `gitSha`）并把 `latest` 指到同一 digest；**只有明确"不存在"才创建**；探测本身失败（网络/鉴权/未公开）一律报红，绝不覆盖可能的既有 tag。这是"不可变 tag"和下游"按 tag 冻结字节"的前提。
 - **产物内的 `web-version.json` 是契约**（字段 `version` / `gitSha` / `builtAt`），由 `scripts/ci/write-web-version.sh` 写；版本号与 sha 必须与同一次构建注入的 `VITE_APP_VERSION` / `VITE_GIT_SHA` 同源，不另算一份。
 - **脚本与自检**：`scripts/ci/write-web-version.sh`、`scripts/ci/trigger-api-release.sh`、`scripts/ci/check-ghcr-public.sh`（对应 `scripts/ci/test-*.sh`，CI 在 `build-web` 里跑）；改逻辑要同步改测试。
 - **改了 `/api/version` 这类跨仓契约时**：先在 pim-api 仓合并契约变更，再在本仓跑 `scripts/ci/fetch-contract.sh` 刷新快照与生成类型并提交 —— 在刷新之前本仓 `CI Gate` 会红，这是预期行为，不要放宽门禁。

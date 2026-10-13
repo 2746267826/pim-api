@@ -240,16 +240,27 @@ jobs:
 
       # 「不可变 tag」必须真的不可变：同一 commit 的重复运行（重跑、重发）不许改字节。
       # 已存在就复用既有产物（正好也是 REQ-6 说的"复用即可"），只把 latest 指到同一个 digest。
+      # 存在性判定必须是**权威**的：只有明确"不存在"才允许创建同名 tag，
+      # 探测本身失败（网络/鉴权/包不可匿名访问）必须报红 —— 否则会把已存在的
+      # 不可变 tag 当成不存在并覆盖掉。
       - name: Check whether the immutable tag already exists
         id: existing
         run: |
           set -uo pipefail
           SHA="${{ needs.resolve-version.outputs.git_sha_short }}"
-          if bash scripts/ci/check-ghcr-public.sh "${{ env.IMAGE }}" --expect-tag "sha-${SHA}"; then
+          set +e
+          OUT="$(docker manifest inspect "${{ env.IMAGE }}:sha-${SHA}" 2>&1)"
+          RC=$?
+          set -e
+          if [ "$RC" -eq 0 ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
+            echo "sha-${SHA} 已存在（登录态下确认）→ 复用既有产物，不覆盖"
+          elif grep -qiE 'no such manifest|manifest unknown|not found|NAME_UNKNOWN' <<<"$OUT"; then
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "sha-${SHA} 尚不存在（或包还不可匿名访问）→ 本次构建并推送"
+            echo "sha-${SHA} 明确不存在 → 本次构建并推送"
+          else
+            echo "::error::无法确认 ${{ env.IMAGE }}:sha-${SHA} 是否存在，拒绝在不确定的情况下覆盖可能的既有 tag：${OUT}"
+            exit 1
           fi
 
       - name: Build and push dist image
