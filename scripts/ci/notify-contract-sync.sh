@@ -40,6 +40,12 @@ DRY_RUN="false"
 # **master 上的文件**，所以非 master 一律降级成 dry-run —— 这条规则放在脚本里
 # 而不是 YAML 里，是为了它能有离线行为测试（YAML 里的分支逻辑测不到）。
 GITHUB_REF_ARG="${PIM_CONTRACT_SYNC_GITHUB_REF:-}"
+# 契约硬校验所在 job 的结果。只有 success 才允许通知客户端；判定放在脚本里（可测），
+# 而不是 YAML 的 if 里 —— 在 YAML 里写成 `needs.build-api.result == 'success'` 会让
+# job 被**静默跳过**：手动补发时若后端相对上一版无变化，build-api 就是 skipped，
+# 于是"补发"什么也没发生、还不报错（独立 review 抓到的死锁）。
+BUILD_API_RESULT="${PIM_CONTRACT_SYNC_BUILD_API_RESULT:-}"
+FORCE="${PIM_CONTRACT_SYNC_FORCE:-false}"
 CURL="${PIM_CURL:-curl}"
 
 usage_err() { echo "[contract-sync][错误] $*" >&2; exit 2; }
@@ -57,6 +63,8 @@ while [[ $# -gt 0 ]]; do
     --contract-commit) COMMIT="${2:-}"; shift 2 ;;
     --max-attempts) MAX_ATTEMPTS="${2:-}"; shift 2 ;;
     --github-ref) GITHUB_REF_ARG="${2:-}"; shift 2 ;;
+    --build-api-result) BUILD_API_RESULT="${2:-}"; shift 2 ;;
+    --force) FORCE="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN="true"; shift ;;
     -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) usage_err "未知参数：$1" ;;
@@ -70,6 +78,22 @@ done
 [[ "$EVENT_TYPE" =~ ^[A-Za-z0-9._-]{1,100}$ ]] || usage_err "--event-type 只允许 [A-Za-z0-9._-]（≤100，收到 '$EVENT_TYPE'）"
 [[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || usage_err "--max-attempts 必须是正整数"
 [[ "$API_BASE" =~ ^https?:// ]] || usage_err "--api-base 必须是 http(s) URL"
+case "$FORCE" in true|false) ;; *) usage_err "--force 必须是 true 或 false（收到 '$FORCE'）" ;; esac
+[ -n "$BUILD_API_RESULT" ] || usage_err "--build-api-result 必填（契约硬校验 job 的结果；写 \${{ needs.build-api.result }}）"
+
+# --- 契约必须先通过硬校验（工单 #415 的核心约束）---------------------------
+# 没被硬校验过的契约不许推给客户端。这里**不**用 YAML 的 job if 去挡，因为那会变成
+# "静默跳过"：手动补发时 build-api 常因后端无变化而 skipped，于是补发悄悄没发生。
+if [ "$BUILD_API_RESULT" != "success" ]; then
+  if [ "$FORCE" = "true" ]; then
+    echo "[contract-sync][错误] 你要求强制补发，但契约硬校验所在的 build-api 这次结果是 '$BUILD_API_RESULT'（多半是被跳过了：后端相对上一版没有变化）。未经硬校验的契约不推给客户端。" >&2
+    echo "[contract-sync][错误] 请带上 force_all=true 重跑（它会真的跑一遍契约硬校验）：" >&2
+    echo "[contract-sync][错误]   gh workflow run ci.yml --repo ${CONTRACT_REPO:-2746267826/pim-api} --ref master -f force_all=true -f force_contract_notify=true" >&2
+    exit 2
+  fi
+  echo "::warning::契约相对上一版有变化，但 build-api 的结果是 '$BUILD_API_RESULT'（不是 success）→ 本次不通知客户端（未经硬校验的契约不推给它）。" >&2
+  exit 0
+fi
 
 # 允许空格/逗号/换行分隔；去空项。
 read -r -a REPO_LIST <<<"$(printf '%s' "$REPOS" | tr ',\n' '  ')"
@@ -196,7 +220,8 @@ if [ "${#FAILED[@]}" -gt 0 ]; then
   # 如果本次 CI 仍然发布了 release，检测基线会前进到包含这份契约的提交，
   # 之后普通 push 会算出 changed=false，不会再自动补发。这时只能手动补发：
   echo "[contract-sync][错误] 手动补发（在 ${CONTRACT_REPO} 的 master 上触发一次；客户端按字节去重，不会开出重复 PR）：" >&2
-  echo "[contract-sync][错误]   gh workflow run ci.yml --repo ${CONTRACT_REPO} --ref master -f force_all=false -f force_contract_notify=true" >&2
+  echo "[contract-sync][错误]   gh workflow run ci.yml --repo ${CONTRACT_REPO} --ref master -f force_all=true -f force_contract_notify=true" >&2
+  echo "[contract-sync][错误] （必须带 force_all=true：不带它、且后端相对上一版无变化时，契约硬校验所在的 build-api 会被跳过，补发会被拒绝。）" >&2
   echo "[contract-sync][错误] 另外：客户端的契约新鲜度门禁会继续报红 —— 漂移不会被静默放过。" >&2
   exit 1
 fi

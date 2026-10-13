@@ -112,7 +112,7 @@ run() {
 run_base() {
   run --owner "$OWNER" --api-base "$API_BASE" \
     --contract-sha256 "$SHA256" --contract-bytes 941361 --contract-commit "$COMMIT" \
-    --github-ref refs/heads/master "$@"
+    --github-ref refs/heads/master --build-api-result success "$@"
 }
 
 echo "== notify-contract-sync.sh =="
@@ -206,7 +206,8 @@ check "非法 event_type → 退出码 2" "2" "$RC"
 set +e
 OUT="$(env -u GITHUB_STEP_SUMMARY -u CONTRACT_SYNC_TOKEN PIM_CONTRACT_SYNC_RETRY_DELAY=0 \
       bash "$SCRIPT" --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" \
-      --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-web" 2>&1)"
+      --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-web" \
+      --github-ref refs/heads/master --build-api-result success 2>&1)"
 RC=$?
 set -e
 check "缺 token → 退出码 2" "2" "$RC"
@@ -216,7 +217,7 @@ contains "缺 token → 提示走 secrets" "CONTRACT_SYNC_TOKEN" "$OUT"
 echo '{}' > "$TMP/cfg.json"; start_stub
 run --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 \
     --contract-commit "$COMMIT" --repos "pim-web pim-android pim-windows" \
-    --github-ref refs/heads/dsh-linux/some-feature
+    --github-ref refs/heads/dsh-linux/some-feature --build-api-result success
 check "非 master ref → 退出码 0（降级为 dry-run 而不是失败）" "0" "$RC"
 check "非 master ref → 一次请求都没发" "0" "$(req_count)"
 contains "非 master ref → 明确警告" "不是 refs/heads/master" "$OUT"
@@ -224,10 +225,30 @@ contains "非 master ref → 说明权威版本在 master" "master 上的文件"
 
 # --- 5c) 真发通知却不声明 ref → 拒绝（漏传会绕过上面那条限制）--------------
 run --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 \
-    --contract-commit "$COMMIT" --repos "pim-web"
+    --contract-commit "$COMMIT" --repos "pim-web" --build-api-result success
 check "真发但不传 --github-ref → 退出码 2" "2" "$RC"
 check "  → 没发请求" "0" "$(req_count)"
 contains "  → 提示必须声明 ref" "github-ref" "$OUT"
+
+# --- 5d) build-api 没成功：不通知，且**不静默** -----------------------------
+echo '{}' > "$TMP/cfg.json"; start_stub
+run_base --repos "pim-web pim-android pim-windows" --build-api-result skipped
+check "build-api 被跳过（非强制）→ 退出码 0 但明确不通知" "0" "$RC"
+check "  → 一次请求都没发" "0" "$(req_count)"
+contains "  → 日志说明未经硬校验的契约不推给客户端" "不通知客户端" "$OUT"
+
+# --- 5e) 强制补发但 build-api 被跳过 → 必须报错并给出可用的补发命令 ----------
+run_base --repos "pim-web pim-android pim-windows" --build-api-result skipped --force true
+check "强制补发但 build-api 未成功 → 退出码 2（不是静默跳过）" "2" "$RC"
+check "  → 没发请求" "0" "$(req_count)"
+contains "  → 给出带 force_all=true 的补发命令" "force_all=true" "$OUT"
+contains "  → 说明为什么必须带 force_all" "build-api" "$OUT"
+
+# --- 5f) 缺 --build-api-result → 拒绝执行（漏传会让门槛失效）----------------
+run --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 \
+    --contract-commit "$COMMIT" --repos "pim-web" --github-ref refs/heads/master
+check "漏传 --build-api-result → 退出码 2" "2" "$RC"
+check "  → 没发请求" "0" "$(req_count)"
 
 # --- 6) GITHUB_STEP_SUMMARY 存在时写出可读摘要（不泄漏 token） --------------
 echo '{}' > "$TMP/cfg.json"; start_stub
@@ -235,7 +256,7 @@ echo '{}' > "$TMP/cfg.json"; start_stub
 set +e
 OUT="$(CONTRACT_SYNC_TOKEN="$TOKEN" PIM_CONTRACT_SYNC_RETRY_DELAY=0 \
       GITHUB_STEP_SUMMARY="$TMP/summary.md" \
-      bash "$SCRIPT" --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-web" --github-ref refs/heads/master 2>&1)"
+      bash "$SCRIPT" --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-web" --github-ref refs/heads/master --build-api-result success 2>&1)"
 RC=$?
 set -e
 check "写 summary → 退出码 0" "0" "$RC"

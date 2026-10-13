@@ -453,11 +453,13 @@ jobs:
   contract-notify:
     name: Notify clients of contract change
     needs: [resolve-version, changes, build-api]
+    # 注意这里**不**写 `needs.build-api.result == 'success'`：那样会让 job 被静默跳过
+    # （手动补发时 build-api 常因后端无变化而 skipped → "补发"什么都没发生还不报错）。
+    # 硬校验门槛放在脚本里，跳过还是失败都会留下明确日志。
     if: |
       always() &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      needs.changes.outputs.contract_changed == 'true' &&
-      needs.build-api.result == 'success'
+      needs.changes.outputs.contract_changed == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -470,7 +472,8 @@ jobs:
         with:
           app-id: ${{ secrets.PIM_CONTRACT_SYNC_APP_ID }}
           private-key: ${{ secrets.PIM_CONTRACT_SYNC_PRIVATE_KEY }}
-          owner: 2746267826
+          # owner/repositories 决定为哪个安装签发 token；三个客户端仓与本源仓同属一个 owner。
+          owner: ${{ github.repository_owner }}
           repositories: pim-web,pim-android,pim-windows
 
       - name: Dispatch contract-updated to client repos
@@ -482,8 +485,11 @@ jobs:
           # --github-ref 必须传：契约的权威版本是 **master 上的文件**，脚本据此把非 master
           # 的运行降级成 dry-run（绝不把一份可能永远不进 master 的契约推给客户端仓）。
           # 这条规则在脚本里而不是 YAML 里，因为它需要能被离线行为测试覆盖。
+          FORCE="${{ github.event_name == 'workflow_dispatch' && inputs.force_contract_notify || 'false' }}"
           bash scripts/ci/notify-contract-sync.sh \
-            --owner 2746267826 \
+            --owner "${{ github.repository_owner }}" \
+            --build-api-result "${{ needs.build-api.result }}" \
+            --force "${FORCE:-false}" \
             --repos "pim-web pim-android pim-windows" \
             --contract-repo "${{ github.repository }}" \
             --source-path contract/openapi.json \
