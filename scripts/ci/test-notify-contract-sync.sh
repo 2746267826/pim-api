@@ -111,7 +111,8 @@ run() {
 # run_base <extra args...>：带上不变的契约事实参数
 run_base() {
   run --owner "$OWNER" --api-base "$API_BASE" \
-    --contract-sha256 "$SHA256" --contract-bytes 941361 --contract-commit "$COMMIT" "$@"
+    --contract-sha256 "$SHA256" --contract-bytes 941361 --contract-commit "$COMMIT" \
+    --github-ref refs/heads/master "$@"
 }
 
 echo "== notify-contract-sync.sh =="
@@ -172,6 +173,8 @@ check "有仓 403 → 退出码非 0" "1" "$RC"
 check "有仓 403 → 三个仓都尝试了（不早退）" "3" "$(req_count)"
 contains "有仓 403 → 明确报出是哪个仓失败" "pim-android" "$OUT"
 contains "有仓 403 → 报出 HTTP 状态" "403" "$OUT"
+contains "有仓 403 → 给出手动补发命令" "force_contract_notify=true" "$OUT"
+contains "有仓 403 → 说明自动补发不是万能的" "客户端" "$OUT"
 
 # --- 3) 5xx 重试后成功 → 退出码 0，且真的重试了 ----------------------------
 python3 - "$TMP/cfg.json" "$OWNER" <<'PY'
@@ -209,13 +212,30 @@ set -e
 check "缺 token → 退出码 2" "2" "$RC"
 contains "缺 token → 提示走 secrets" "CONTRACT_SYNC_TOKEN" "$OUT"
 
+# --- 5b) 非 master 的 ref → 强制 dry-run，一次请求都不发 --------------------
+echo '{}' > "$TMP/cfg.json"; start_stub
+run --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 \
+    --contract-commit "$COMMIT" --repos "pim-web pim-android pim-windows" \
+    --github-ref refs/heads/dsh-linux/some-feature
+check "非 master ref → 退出码 0（降级为 dry-run 而不是失败）" "0" "$RC"
+check "非 master ref → 一次请求都没发" "0" "$(req_count)"
+contains "非 master ref → 明确警告" "不是 refs/heads/master" "$OUT"
+contains "非 master ref → 说明权威版本在 master" "master 上的文件" "$OUT"
+
+# --- 5c) 真发通知却不声明 ref → 拒绝（漏传会绕过上面那条限制）--------------
+run --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 \
+    --contract-commit "$COMMIT" --repos "pim-web"
+check "真发但不传 --github-ref → 退出码 2" "2" "$RC"
+check "  → 没发请求" "0" "$(req_count)"
+contains "  → 提示必须声明 ref" "github-ref" "$OUT"
+
 # --- 6) GITHUB_STEP_SUMMARY 存在时写出可读摘要（不泄漏 token） --------------
 echo '{}' > "$TMP/cfg.json"; start_stub
 : > "$TMP/summary.md"
 set +e
 OUT="$(CONTRACT_SYNC_TOKEN="$TOKEN" PIM_CONTRACT_SYNC_RETRY_DELAY=0 \
       GITHUB_STEP_SUMMARY="$TMP/summary.md" \
-      bash "$SCRIPT" --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-web" 2>&1)"
+      bash "$SCRIPT" --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-web" --github-ref refs/heads/master 2>&1)"
 RC=$?
 set -e
 check "写 summary → 退出码 0" "0" "$RC"

@@ -25,11 +25,13 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 ### 契约变更会主动通知客户端仓（#415）
 - **`contract/**` 在 `changes` 的 `api` 过滤器里**：只改契约的 PR 也会跑 `build-api` —— 契约硬校验就在那个 job 里。曾经漏掉这一条，导致契约-only 的 PR「flag 全不亮 → `build-api` 整条跳过 → CI 全绿但契约从未被校验」（工单 §9 的假绿）。
 - **通知的判定不看路径过滤器**：`scripts/ci/detect-contract-change.sh` 比较基线与 head 上 `contract/openapi.json` 的 **blob 字节**（基线优先取上一版 release tag，其次 `push.before`；基线不可用则按"可能变了"处理）。所以契约变化即使夹在一个镜像/CI PR 里，也不会被漏掉。
-- **先校验、后通知**：`contract-notify` job 要求 `build-api` 成功才发 `repository_dispatch`（`event_type: contract-updated`）。没被硬校验过的契约不许推给客户端；本次没发出去，下一条成功的 master push 会重新检测到同样的差异并补发。
+- **先校验、后通知**：`contract-notify` job 要求 `build-api` 成功才发 `repository_dispatch`（`event_type: contract-updated`）。没被硬校验过的契约不许推给客户端。
+- **只有 master 上的契约允许真的推给客户端**：脚本按 `--github-ref`（workflow 传 `${{ github.ref }}`）判定，非 `refs/heads/master` 一律降级成 dry-run（只打印将发送的内容）；缺 `--github-ref` 时拒绝执行。特性分支上验证用 dry-run，不要真发。
+- **自动补发的边界（别过度承诺）**：检测基线是上一版 release tag，所以"本次通知失败 → 下次 push 自动补发"只在契约相对上一版 release **仍然不同**时成立。若失败那一次仍发布了 release（tag 已包含这份契约），后续 push 会算出 `changed=false`，不会再自动补发 —— 这时用 `gh workflow run ci.yml --repo 2746267826/pim-api --ref master -f force_all=false -f force_contract_notify=true` 手动补发（`contract-notify` 失败时会把这行命令打出来）。客户端的新鲜度门禁会继续报红，漂移不会被静默放过。
 - **凭据是 GitHub App `pim-contract-sync`**（安装范围仅三个客户端仓；`contents:write` / `pull_requests:write` / `metadata:read`），CI 用 `actions/create-github-app-token` 现签 installation token，对应 secrets `PIM_CONTRACT_SYNC_APP_ID` / `PIM_CONTRACT_SYNC_PRIVATE_KEY`。token 只走环境变量，不进 argv、不落盘、不回显。
 - **客户端侧用同一个 App 的 installation token 推分支/开 PR**，不要用默认的 `GITHUB_TOKEN`：用 `GITHUB_TOKEN` 推的分支不会再触发客户端的 CI 工作流（GitHub 防递归），刷新 PR 上会没有检查结果。
 - **`contract-notify` 不进 `CI Gate`、也不进 release 的 `needs`**：客户端投递失败不该阻塞本仓发版或把本仓必需检查变红；失败会以红色 job + step summary 呈现，客户端的新鲜度门禁是第二道网。手动补发：`workflow_dispatch` 勾 `force_contract_notify`。
-- 行为测试：`scripts/ci/test-detect-contract-change.sh`（真 git 仓库 fixture）、`scripts/ci/test-notify-contract-sync.sh`（本地 stub HTTP + 真 curl，含"一个仓失败不拖住另外两个""不泄漏 token""dry-run 不发请求"）。改了这两个脚本的判定，必须让对应测试跟着红。
+- 行为测试：`scripts/ci/test-detect-contract-change.sh`（真 git 仓库 fixture）、`scripts/ci/test-notify-contract-sync.sh`（本地 stub HTTP + 真 curl，含"一个仓失败不拖住另外两个""不泄漏 token""dry-run 不发请求""非 master 强制 dry-run"）、`scripts/ci/test-contract-filter.sh`（过滤器配置层回归：`contract/openapi.json` 必须命中 `api` 过滤器，且不许用"所有路径都命中"的方式蒙混）。改了判定/过滤器，必须让对应测试跟着红。
 
 ### 镜像内嵌前端与发布链路（`pim-api-server`）
 - **镜像必须内嵌前端**：`src/Pim.Api/Dockerfile` 多阶段从产物镜像 `ghcr.io/2746267826/pim-web-dist`（tag `sha-<7>`/`latest`）取 `dist` 全量，落到 `/app/wwwroot`。取不到来源、或缺 `index.html`/`assets/`/`web-version.json` → **构建硬失败**。不要恢复"手工把 dist 解包到 `src/Pim.Api/wwwroot` 再 build"的路径，也不要新增可产出"没前端镜像"的构建分支。

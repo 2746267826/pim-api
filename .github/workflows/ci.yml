@@ -311,6 +311,9 @@ jobs:
           # 只会静默地"永远不通知"，所以这两套行为测试是必需的，不是装饰。
           bash scripts/ci/test-detect-contract-change.sh
           bash scripts/ci/test-notify-contract-sync.sh
+          # 过滤器配置本身也要有回归测试：漏掉 contract/** 不会有任何报错，
+          # 只会静默回到"契约-only 的 PR 全绿但契约没被校验"（工单 §9 的假绿）。
+          bash scripts/ci/test-contract-filter.sh
 
       # 解析并冻结前端产物镜像引用；失败即红（拉不到 / 文件缺失 / 引用与内容不同源）。
       - name: Resolve and freeze frontend dist ref
@@ -476,6 +479,9 @@ jobs:
           CONTRACT_SYNC_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
+          # --github-ref 必须传：契约的权威版本是 **master 上的文件**，脚本据此把非 master
+          # 的运行降级成 dry-run（绝不把一份可能永远不进 master 的契约推给客户端仓）。
+          # 这条规则在脚本里而不是 YAML 里，因为它需要能被离线行为测试覆盖。
           bash scripts/ci/notify-contract-sync.sh \
             --owner 2746267826 \
             --repos "pim-web pim-android pim-windows" \
@@ -484,7 +490,8 @@ jobs:
             --event-type contract-updated \
             --contract-commit "${{ needs.changes.outputs.contract_commit }}" \
             --contract-sha256 "${{ needs.changes.outputs.contract_sha256 }}" \
-            --contract-bytes "${{ needs.changes.outputs.contract_bytes }}"
+            --contract-bytes "${{ needs.changes.outputs.contract_bytes }}" \
+            --github-ref "${{ github.ref }}"
 
   summarize:
     needs: [resolve-version, changes, web-dist, build-api, build-docker, build-mcp, contract-notify]

@@ -36,6 +36,10 @@ COMMIT=""
 MAX_ATTEMPTS="${PIM_CONTRACT_SYNC_MAX_ATTEMPTS:-3}"
 RETRY_DELAY="${PIM_CONTRACT_SYNC_RETRY_DELAY:-3}"
 DRY_RUN="false"
+# 运行所在的 GitHub ref（由 workflow 传 `${{ github.ref }}`）。契约的权威版本是
+# **master 上的文件**，所以非 master 一律降级成 dry-run —— 这条规则放在脚本里
+# 而不是 YAML 里，是为了它能有离线行为测试（YAML 里的分支逻辑测不到）。
+GITHUB_REF_ARG="${PIM_CONTRACT_SYNC_GITHUB_REF:-}"
 CURL="${PIM_CURL:-curl}"
 
 usage_err() { echo "[contract-sync][错误] $*" >&2; exit 2; }
@@ -52,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --contract-bytes) BYTES="${2:-}"; shift 2 ;;
     --contract-commit) COMMIT="${2:-}"; shift 2 ;;
     --max-attempts) MAX_ATTEMPTS="${2:-}"; shift 2 ;;
+    --github-ref) GITHUB_REF_ARG="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN="true"; shift ;;
     -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) usage_err "未知参数：$1" ;;
@@ -76,8 +81,17 @@ for r in "${CLEAN_REPOS[@]}"; do
 done
 
 TOKEN="${CONTRACT_SYNC_TOKEN:-}"
+
+# 非 master 的 ref 一律降级为 dry-run：绝不把一份可能永远不进 master 的契约推给客户端仓。
+if [ -n "$GITHUB_REF_ARG" ] && [ "$GITHUB_REF_ARG" != "refs/heads/master" ]; then
+  echo "::warning::当前 ref 是 ${GITHUB_REF_ARG}，不是 refs/heads/master → 只做 dry-run，不向客户端仓真发通知（契约的权威版本是 master 上的文件）。" >&2
+  DRY_RUN="true"
+fi
+
 if [ "$DRY_RUN" != "true" ]; then
   [ -n "$TOKEN" ] || usage_err "环境变量 CONTRACT_SYNC_TOKEN 必填（由 secrets 里的 App 私钥现签，勿硬编码）"
+  # 真发通知时必须显式声明运行在哪个 ref 上：漏传就会绕过上面那条 master 限制。
+  [ -n "$GITHUB_REF_ARG" ] || usage_err "真发通知时必须传 --github-ref（workflow 里是 \${{ github.ref }}）：契约只允许从 master 推送"
 fi
 
 PAYLOAD="$(jq -n \
@@ -178,7 +192,12 @@ fi
 
 if [ "${#FAILED[@]}" -gt 0 ]; then
   echo "[contract-sync][错误] 未投递成功的仓：${FAILED[*]}（已投递：${DELIVERED[*]:-无}）" >&2
-  echo "[contract-sync][错误] 修复后可用 workflow_dispatch 的 force_contract_notify=true 重发（不会重复开 PR：客户端按字节去重）。" >&2
+  # 补发通道必须写清楚，因为**自动补发只在契约相对上一版 release 仍不同时成立**：
+  # 如果本次 CI 仍然发布了 release，检测基线会前进到包含这份契约的提交，
+  # 之后普通 push 会算出 changed=false，不会再自动补发。这时只能手动补发：
+  echo "[contract-sync][错误] 手动补发（在 ${CONTRACT_REPO} 的 master 上触发一次；客户端按字节去重，不会开出重复 PR）：" >&2
+  echo "[contract-sync][错误]   gh workflow run ci.yml --repo ${CONTRACT_REPO} --ref master -f force_all=false -f force_contract_notify=true" >&2
+  echo "[contract-sync][错误] 另外：客户端的契约新鲜度门禁会继续报红 —— 漂移不会被静默放过。" >&2
   exit 1
 fi
 
