@@ -12,7 +12,13 @@ public sealed record ApiVersionResponse(
     string? WindowsVersion = null,
     string? AndroidVersion = null,
     string? ShellWindowsVersion = null,
-    string? ShellAndroidVersion = null);
+    string? ShellAndroidVersion = null,
+    // 尾部追加（可空、向后兼容）：本镜像内嵌的前端是哪一版。
+    // 数据来源是镜像内 wwwroot/web-version.json，原样透传；文件缺失或不可读时
+    // 返回哨兵值 "unknown"（见 WebVersionProvider.UnknownValue），既不假装有值也不 500。
+    string? WebVersion = null,
+    string? WebSha = null,
+    string? WebBuiltAt = null);
 
 public static class VersionEndpoints
 {
@@ -22,7 +28,7 @@ public static class VersionEndpoints
 
     public static IEndpointRouteBuilder MapVersionEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapGet("/api/version", (GitHubReleaseService gh) =>
+        endpoints.MapGet("/api/version", (GitHubReleaseService gh, WebVersionProvider web) =>
         {
             var version = typeof(Program).Assembly
                 .GetCustomAttributes(false)
@@ -39,7 +45,10 @@ public static class VersionEndpoints
                 snap.WindowsUrl != null ? (snap.WindowsVersion ?? snap.LatestVersion) : null,
                 snap.AndroidUrl != null ? (snap.AndroidVersion ?? snap.LatestVersion) : null,
                 snap.ShellWindowsUrl != null ? (snap.ShellWindowsVersion ?? snap.LatestVersion) : null,
-                snap.ShellAndroidUrl != null ? (snap.ShellAndroidVersion ?? snap.LatestVersion) : null));
+                snap.ShellAndroidUrl != null ? (snap.ShellAndroidVersion ?? snap.LatestVersion) : null,
+                web.Current.Version,
+                web.Current.GitSha,
+                web.Current.BuiltAt));
         }).AllowAnonymous()
         .Produces<ApiVersionResponse>(200)
         .Produces<ApiResponse<string>>(500);
