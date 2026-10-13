@@ -289,6 +289,24 @@ run --refresh-cmd "true"
 check "scp 形式单标签主机名（git@evil:...）→ 退出码 2" "2" "$RC"
 $G remote set-url origin "$ORIGIN_DIR"
 
+# 单字母 SSH 主机名（git@e:owner/repo.git）：不能被当成 Windows 盘符放过
+$G remote set-url origin "git@e:${REPO_SLUG}.git"
+: > "$TMP/out.txt"; : > "$GH_LOG"
+run --refresh-cmd "true"
+check "单字母主机名（git@e:...）→ 退出码 2" "2" "$RC"
+contains "  → 报出 host 不可信" "host" "$OUT"
+$G remote set-url origin "$ORIGIN_DIR"
+
+# scp 形式的 userinfo（可能带 token）也要脱敏
+SCP_SENTINEL="R6_SENTINEL_NOT_A_REAL_TOKEN"
+$G remote set-url origin "${SCP_SENTINEL}@evil:${REPO_SLUG}.git"
+: > "$TMP/out.txt"; : > "$GH_LOG"
+run --refresh-cmd "true"
+check "scp 形式 + 异 host → 退出码 2" "2" "$RC"
+not_contains "  → scp 的 userinfo 也被脱敏（日志里没有 sentinel）" "$SCP_SENTINEL" "$OUT"
+contains "  → 日志里出现了脱敏标记" "<redacted>" "$OUT"
+$G remote set-url origin "$ORIGIN_DIR"
+
 # 带 token 的 URL + 重写：拒绝，但**日志里不许出现 token**
 FAKE_TOKEN="ghs_FAKE_REVIEW_SECRET_do_not_leak"
 git init -q --bare "$TMP/evil-token.git"

@@ -105,7 +105,11 @@ command -v gh >/dev/null 2>&1 || usage_err "缺少 gh CLI"
 # 边界如实说明：**本地路径**目标不受 host 白名单约束（`file://`、`/abs`、`../rel` 都没有 host）。
 # 这是刻意的：本地路径只能写到本机，不构成"把提交推到另一个远端仓"；而测试 fixture 正是
 # 用 `<tmp>/github.com/<owner>/<repo>.git` 这样的本地 bare 仓来跑真 git 的。
-redact_url() { printf '%s' "$1" | sed -E 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1<redacted>@#'; }
+redact_url() {
+  printf '%s' "$1" | sed -E \
+    -e 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@#\1<redacted>@#' \
+    -e 's#^[^/@:]+@#<redacted>@#'
+}
 slug_of() {
   printf '%s' "$1" \
     | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#^[^@/]*@##' \
@@ -128,10 +132,13 @@ host_of() {
       head="${u%%/*}"
       case "$head" in
         *:*)                   # scp 形式 user@host:path
-          head="${u%%:*}"
-          head="${head##*@}"
-          # Windows 盘符（C:\...）不是 host
-          case "$head" in [A-Za-z]) printf '' ;; *) printf '%s' "$head" ;; esac ;;
+          # Windows 盘符（`C:\...` / `C:/...`）才是路径，必须在**去掉 userinfo 之前**
+          # 按"字母 + 冒号 + 斜杠"判定 —— 只看单个字母会把 `git@e:owner/repo.git` 这种
+          # 单字母主机名当成盘符从而放过（独立 review 实测确实能写到别处）。
+          case "$u" in
+            [A-Za-z]:[\\/]*) printf '' ;;
+            *) head="${u%%:*}"; head="${head##*@}"; printf '%s' "$head" ;;
+          esac ;;
         *) printf '' ;;
       esac ;;
   esac
