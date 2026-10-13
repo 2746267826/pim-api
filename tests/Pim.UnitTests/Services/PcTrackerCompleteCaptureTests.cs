@@ -351,7 +351,13 @@ public class PcTrackerCompleteCaptureTests
         Assert.Contains("\"pimDeviceId\"", saved.RawJson);
         Assert.Contains("\"sampledAt\"", saved.RawJson);
         Assert.Contains("\"keyPresses\"", saved.RawJson);
-        Assert.Contains("\"peakKPS\"", saved.RawJson);
+        // issue #419：samples 的 peak 字段名由 peakKPS/peakCPS 统一成 camelCase 的
+        // peakKps/peakCps（与 upload 端点一致）。这里锁住新名字，并显式排除旧拼写，
+        // 避免再出现「同一语义两个端点两种拼写」。
+        Assert.Contains("\"peakKps\"", saved.RawJson);
+        Assert.Contains("\"peakCps\"", saved.RawJson);
+        Assert.DoesNotContain("\"peakKPS\"", saved.RawJson);
+        Assert.DoesNotContain("\"peakCPS\"", saved.RawJson);
         Assert.Contains("\"formattedMouseDistance\"", saved.RawJson);
         Assert.Contains("\"appName\"", saved.RawJson);
         Assert.Contains("\"displayName\"", saved.RawJson);

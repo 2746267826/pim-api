@@ -677,3 +677,15 @@ public record ReportSuggestionDto(
     string Status,
     Guid? ConfirmationId
 );
+
+/// <summary>
+/// <c>POST /api/v1/calendar/import-ics</c> 的 multipart 请求体（issue #417 第二节第 1 条）。
+///
+/// 端点仍直接读 <see cref="Microsoft.AspNetCore.Http.HttpRequest"/> 的表单（行为不变），
+/// 这个 DTO 只用于 <c>.Accepts&lt;T&gt;</c> 声明请求体形状 —— 此前契约里该 operation
+/// <b>完全没有 requestBody</b>，客户端生成不出上传接口。
+/// </summary>
+public record IcsImportForm(
+    Microsoft.AspNetCore.Http.IFormFile File,
+    string? CalendarId
+);

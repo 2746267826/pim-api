@@ -19,6 +19,61 @@ public record KeystatsUploadRequest(
     Dictionary<string, AppStatEntry>? AppStats
 );
 
+/// <summary>
+/// 两个 keystats 上传端点「契约标注为必填」的字段名清单（线上 camelCase 拼写）。
+///
+/// issue #419：契约给 <c>KeystatsUploadRequest</c> 标了 12 个必填、给
+/// <c>KeystatsSampleUploadRequest</c> 标了 11 个，但服务端原先一个都不查 ——
+/// 缺数字字段就静默存 0。这里把清单显式化，由端点做真校验；
+/// <c>tests/Pim.UnitTests/Contract/OpenApiContractShapeTests</c> 把它与生成契约的
+/// <c>required[]</c> 逐字对齐，防止再出现「契约比实现严」。
+/// </summary>
+public static class KeystatsRequiredFields
+{
+    /// <summary><c>POST /api/v1/pc/keystats/upload</c>：契约 required 的 12 项。</summary>
+    public static readonly string[] Upload =
+    [
+        "deviceId",
+        "date",
+        "keyPresses",
+        "leftClicks",
+        "middleClicks",
+        "mouseDistance",
+        "peakCps",
+        "peakKps",
+        "rightClicks",
+        "scrollDistance",
+        "sideBackClicks",
+        "sideForwardClicks"
+    ];
+
+    /// <summary>
+    /// <c>POST /api/v1/pc/keystats/samples</c>：契约 required 的 13 项。
+    ///
+    /// 工单正文写的是「11 个必填」，那是**旧契约的漏标**：这两个属性原先被
+    /// <c>JsonPropertyName("peakKPS"/"peakCPS")</c> 固定成大写，而 required 推导按
+    /// C# 属性名的 camelCase（peakKps）去找 schema 键，对不上就被跳过。
+    /// A2 去掉注解后键名对上了，非可空 <c>int</c> 按既有口径进 required → 13 项；
+    /// 已与用户确认按重导出的契约走（两个端点口径一致，缺 peak 不再静默存 0）。
+    /// </summary>
+    public static readonly string[] Sample =
+    [
+        "pimDeviceId",
+        "sampledAt",
+        "date",
+        "keyPresses",
+        "leftClicks",
+        "middleClicks",
+        "mouseDistance",
+        "peakCps",
+        "peakKps",
+        "rightClicks",
+        "scrollDistance",
+        "sideBackClicks",
+        "sideForwardClicks"
+    ];
+}
+
 public record AppStatEntry(
     string AppName,
     string DisplayName,
@@ -325,9 +380,11 @@ public record KeystatsSampleUploadRequest(
     int SideForwardClicks,
     double MouseDistance,
     double ScrollDistance,
-    [property: JsonPropertyName("peakKPS")]
+    // 与 KeystatsUploadRequest 保持一致：走默认 camelCase → peakKps / peakCps。
+    // 原先这里用 JsonPropertyName 固定成 peakKPS/peakCPS，同一语义两个端点两种拼写（issue #419）。
+    // 切换不需要客户端同批上线：请求体字段名大小写不敏感（JsonSerializerDefaults.Web），
+    // 旧拼写照样收 —— 见 PcKeystatsUploadValidationE2ETests 的两条大小写用例。
     int PeakKps,
-    [property: JsonPropertyName("peakCPS")]
     int PeakCps,
     [property: JsonPropertyName("formattedMouseDistance")]
     string? FormattedMouseDistance,

@@ -15,6 +15,7 @@ using Pim.Core.Modules;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.PcTracker.DTOs;
+using Pim.Module.PcTracker.Endpoints;
 using Pim.Module.PcTracker.Entities;
 using Pim.Module.PcTracker.Services;
 
@@ -28,6 +29,7 @@ public class PcTrackerModule : IModule
     public void RegisterServices(IServiceCollection services, IConfiguration configuration)
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
+        services.AddScoped<KeystatsUploadReader>();
         services.AddScoped<PcTrackerService>();
         services.AddScoped<PcTrackerQualityService>();
         services.AddScoped<PcBrowserSiteService>();
@@ -66,27 +68,43 @@ public class PcTrackerModule : IModule
         var writeGroup = endpoints.MapGroup("/api/v1/pc")
             .RequireAuthorization();
 
+        // issue #419：契约给这两个请求体标了 12 / 11 个必填字段，服务端原先一个都不查 ——
+        // 缺数字字段就静默存 0。这里按 KeystatsRequiredFields（与契约 required 逐字对齐，
+        // 由 OpenApiContractShapeTests 钉住）做键存在性校验，缺字段 → 400 + ApiResponse 包络。
+        // 请求体改由 KeystatsUploadBinding 读取，故用 Accepts 声明请求体形状，契约不变。
         writeGroup.MapPost("/keystats/upload", async (
-            [FromBody] KeystatsUploadRequest req,
+            HttpRequest httpRequest,
+            [FromServices] KeystatsUploadReader reader,
             [FromServices] PcTrackerService svc,
             CancellationToken ct) =>
         {
-            await svc.UpsertKeystatsAsync(req, ct);
+            var (req, error) = await reader.ReadUploadAsync(httpRequest, ct);
+            if (error is not null)
+                return Results.BadRequest(ApiResponse<string>.Error(400, error));
+
+            await svc.UpsertKeystatsAsync(req!, ct);
             return Results.Ok(ApiResponse<string>.Ok("已接收"));
         })
+        .Accepts<KeystatsUploadRequest>("application/json")
         .Produces<ApiResponse<string>>(200)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
         writeGroup.MapPost("/keystats/samples", async (
-            [FromBody] KeystatsSampleUploadRequest req,
+            HttpRequest httpRequest,
+            [FromServices] KeystatsUploadReader reader,
             [FromServices] PcTrackerService svc,
             CancellationToken ct) =>
         {
-            await svc.UpsertKeystatsSampleAsync(req, ct);
+            var (req, error) = await reader.ReadSampleAsync(httpRequest, ct);
+            if (error is not null)
+                return Results.BadRequest(ApiResponse<string>.Error(400, error));
+
+            await svc.UpsertKeystatsSampleAsync(req!, ct);
             return Results.Ok(ApiResponse<string>.Ok("已接收"));
         })
+        .Accepts<KeystatsSampleUploadRequest>("application/json")
         .Produces<ApiResponse<string>>(200)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
@@ -167,7 +185,8 @@ public class PcTrackerModule : IModule
                 return Results.NotFound(ApiResponse<string>.Error(404, "not found"));
             return Results.Ok(ApiResponse<TrackerHealthEntity>.Ok(health));
         })
-        // readGroup 当前未挂 RequireAuthorization(现状),无 401。
+        // readGroup 与 writeGroup 都挂了 RequireAuthorization（见本方法开头），
+        // 与同组其它读端点一致：无 Bearer 时是 401，不是匿名可读。
         .Produces<ApiResponse<TrackerHealthEntity>>(200)
         .Produces<ApiResponse<string>>(404)
         .Produces<ApiResponse<string>>(500);
@@ -430,6 +449,10 @@ public class PcTrackerModule : IModule
         // 扁平「应用模式→分类规则」保存原注册在 POST /categories,与 catWrite 的树形保存
         // （POST /categories/，web 分类页在用）同方法同路径，运行时路由匹配歧义 500。
         // 按裁决树形留任 /categories，扁平保存迁移到独立资源路径；MCP create_category 已同步重指向。
+        // issue #418：这个资源原先只有 POST 没有 DELETE（只能建不能删），
+        // 且旧的扁平删除注册在 DELETE /categories/{id} 上、被带约束的
+        // catWrite.MapDelete("/{id:guid}") 抢走（约束段优先级更高），永远不可达。
+        // 现在扁平删除也迁到本资源路径，/categories/{id} 只剩树形删除一条。
         writeGroup.MapPost("/app-category-rules", async (
             [FromBody] SaveCategoryRequest req,
             [FromServices] PcTrackerService svc,
@@ -445,7 +468,7 @@ public class PcTrackerModule : IModule
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        writeGroup.MapDelete("/categories/{id}", async (
+        writeGroup.MapDelete("/app-category-rules/{id:guid}", async (
             Guid id,
             [FromServices] PcTrackerService svc,
             [FromServices] IAggregateResultCache cache,

@@ -974,6 +974,10 @@ public class CalendarModule : IModule
 
             return Results.Ok(ApiResponse<ImportReport>.Ok(report));
         })
+        // issue #417：这个 operation 此前契约里没有 requestBody（handler 直接读 HttpRequest，
+        // Swashbuckle 无从推断）。用 Accepts 声明 multipart 形状，只补文档、不改绑定行为
+        //（表单字段仍是 file + calendarId，缺 file 仍返回 400「缺少文件字段」）。
+        .Accepts<IcsImportForm>("multipart/form-data")
         .Produces<ApiResponse<ImportReport>>(200)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
