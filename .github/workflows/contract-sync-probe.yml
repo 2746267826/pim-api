@@ -1,0 +1,69 @@
+name: Contract sync probe (temporary)
+
+# ⚠️ 临时探针，**不会进最终 PR**。
+#
+# 为什么需要它：`repository_dispatch` / `workflow_dispatch` 只能触发**默认分支**上已注册的
+# workflow（实测：分支上新增的 workflow 在 Actions API 里根本不存在，dispatch 返回 404）。
+# 所以接收端 `.github/workflows/contract-sync.yml` 在被合并进 master 之前，无法被真正
+# dispatch 到。这个探针用 `push` 触发（push 事件使用被推送提交里的 workflow 文件），
+# 跑的是**与接收端逐步相同的命令**，用来在合并前把「App 换 token → 取指定 ref 的契约
+# → 刷新 → 用 App token 推分支 → 开 PR → PR 上真的跑起 CI」这一段真实验证一遍。
+#
+# 用旧 ref（#416 之前的契约）是为了人为造出"契约确实变了"的场景；正常的
+# repository_dispatch 会带上当时那个不可变 ref，路径完全一样。
+
+on:
+  push:
+    branches: [dsh-linux/contract-sync]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contract-sync-probe
+  cancel-in-progress: false
+
+env:
+  # pim-api 上 #416 之前的契约（941071 字节，与当前 941361 不同）
+  PROBE_REF: ae3ed39e2827d1665ce9801e65f71bdea6663d75
+
+jobs:
+  probe:
+    name: Probe contract sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create contract-sync token (GitHub App installation token)
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PIM_CONTRACT_SYNC_APP_ID }}
+          private-key: ${{ secrets.PIM_CONTRACT_SYNC_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: client-web/package-lock.json
+
+      - name: Install dependencies (repo-locked openapi-typescript)
+        working-directory: client-web
+        run: npm ci
+
+      - name: Refresh snapshot + provenance + generated types
+        run: |
+          set -euo pipefail
+          echo "契约来源 ref：$PROBE_REF"
+          PIM_CONTRACT_REF="$PROBE_REF" bash scripts/ci/fetch-contract.sh
+
+      - name: Open / update the refresh PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REF: ${{ env.PROBE_REF }}
+        run: bash scripts/ci/contract-sync-pr.sh --source-ref "$SOURCE_REF"
