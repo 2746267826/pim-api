@@ -56,7 +56,8 @@ jobs:
           app-id: ${{ secrets.PIM_CONTRACT_SYNC_APP_ID }}
           private-key: ${{ secrets.PIM_CONTRACT_SYNC_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
+          # 明确写本仓名：不依赖 event 上下文（dispatch 与手动触发下都确定）
+          repositories: pim-web
 
       # 用 App token checkout：推分支要用它，且不允许回落到默认 GITHUB_TOKEN。
       - uses: actions/checkout@v4
