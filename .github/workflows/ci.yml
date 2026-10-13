@@ -31,6 +31,15 @@ on:
         required: false
         default: false
         type: boolean
+      # 契约同步（#415）的补发开关：契约检测本身是自动的（master 上 contract/openapi.json
+      # 真的变了、且通过了 build-api 的硬校验，就通知三个客户端仓）。这个输入用于
+      # 「通知没发出去 / 客户端漏收 / 需要重新投递」时手动补发一次。
+      # 它是真接线的（被 contract-notify 消费并覆盖检测结果），不是死参数。
+      force_contract_notify:
+        description: 'Force a contract-updated dispatch to the client repos (manual re-notify; clients de-duplicate by bytes)'
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
   packages: write
@@ -88,6 +97,10 @@ jobs:
       backend_changed: ${{ steps.flags.outputs.backend_changed }}
       baseline_ok: ${{ steps.baseline.outputs.ok }}
       previous_tag: ${{ steps.rel.outputs.previous_tag }}
+      contract_changed: ${{ steps.contract.outputs.changed }}
+      contract_sha256: ${{ steps.contract.outputs.contract_sha256 }}
+      contract_bytes: ${{ steps.contract.outputs.contract_bytes }}
+      contract_commit: ${{ steps.contract.outputs.contract_commit }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -137,6 +150,11 @@ jobs:
               - 'tests/Pim.UnitTests/**'
               - 'Pim.sln'
               - 'src/Directory.Build.props'
+              # 契约是本仓对客户端的产出，且**只有 build-api 能证明它与代码同步**
+              # （契约硬校验 `Verify client contract is up to date` 就在该 job 里）。
+              # 漏掉这一条就是工单 §9 的"假绿"：只改 contract/openapi.json 的 PR
+              # 所有 flag 全不亮 → build-api 整条跳过 → CI 全绿但契约从未被校验。
+              - 'contract/**'
               - 'scripts/ci/**'
               - '.github/workflows/build-api.yml'
               - '.github/workflows/ci.yml'
@@ -195,6 +213,49 @@ jobs:
             echo "上一版 release(${PREV_TAG}) 没有台账资产（过渡态）→ 将强制重烘镜像以产出本次台账"
           fi
 
+      # ---------------------------------------------------------------------
+      # 契约变化检测（工单 #415 §9.2）。
+      #
+      # 为什么**不**复用上面 paths-filter 的结果：filter 回答的是「相对 base 有哪些
+      # 文件被改动」，而通知要问的是「contract/openapi.json 的**字节**是否变了」。
+      # §9 的假绿根因就是变更检测漏掉 contract/**；把判定做成独立脚本后，它不再
+      # 依赖那份可能被改窄的过滤器（scripts/ci/detect-contract-change.sh + 行为测试）。
+      #
+      # 基线口径与上面的组件判定保持一致：优先「上一版 release tag」——
+      # concurrency 那段注释说明过，一个突发 push 会把还在排队的 run 挤掉，
+      # 相对"上一个 push"做 diff 会漏掉被挤掉那次里的契约变化；相对"上一版已发布
+      # 的东西"做 diff 则由存活下来的 run 兜住。基线不可用/被改写时按"可能变了"
+      # 处理（fail-open：宁可多发一次通知，客户端按字节去重不会开出空 PR）。
+      #
+      # 注意这跟 build-api 的 if 是同源的：contract/** 已在 api 过滤器里，
+      # 所以"判定为变了"的正常情形下 build-api 必然运行，契约先被硬校验过再通知。
+      # ---------------------------------------------------------------------
+      - id: contract
+        env:
+          PREV_TAG: ${{ steps.rel.outputs.previous_tag }}
+          BASELINE_OK: ${{ steps.baseline.outputs.ok }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          FORCE_NOTIFY: ${{ github.event_name == 'workflow_dispatch' && inputs.force_contract_notify || 'false' }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          BASE=""
+          if [[ -n "$PREV_TAG" && "$BASELINE_OK" == "true" ]]; then
+            BASE="$PREV_TAG"
+            echo "契约检测基线：上一版 release $BASE"
+          elif [[ -n "$EVENT_BEFORE" ]]; then
+            BASE="$EVENT_BEFORE"
+            echo "契约检测基线：本次 push 的 before $BASE（没有可用的上一版 release）"
+          else
+            echo "::warning::没有可用的契约检测基线（无上一版 release、无 push.before）→ 按「契约可能已变化」处理"
+          fi
+          FORCE="${FORCE_NOTIFY:-false}"; FORCE="${FORCE:-false}"
+          if [ "$FORCE" = "true" ]; then
+            echo "::notice::force_contract_notify=true → 跳过字节比较，直接按「已变化」处理并通知客户端仓"
+          fi
+          bash "$GITHUB_WORKSPACE/scripts/ci/detect-contract-change.sh" \
+            --base "$BASE" --head "$HEAD_SHA" --force "$FORCE"
+
       - id: flags
         shell: bash
         # 判定逻辑在 scripts/ci/decide-components.sh 里（可被组合测试覆盖，见 test-decide-components.sh）。
@@ -246,6 +307,10 @@ jobs:
           bash scripts/ci/test-release-dedupe.sh
           bash scripts/ci/test-resolve-web-dist.sh
           bash scripts/ci/test-build-web-ledger.sh
+          # 契约变更检测与客户端通知（#415）：判定错了/请求发错了不会有别的信号，
+          # 只会静默地"永远不通知"，所以这两套行为测试是必需的，不是装饰。
+          bash scripts/ci/test-detect-contract-change.sh
+          bash scripts/ci/test-notify-contract-sync.sh
 
       # 解析并冻结前端产物镜像引用；失败即红（拉不到 / 文件缺失 / 引用与内容不同源）。
       - name: Resolve and freeze frontend dist ref
@@ -361,8 +426,68 @@ jobs:
     with:
       version: ${{ needs.resolve-version.outputs.version }}
 
+  # ---------------------------------------------------------------------------
+  # 契约变更通知（工单 #415 方案 A：api 侧 repository_dispatch 主动推送）。
+  #
+  # 三个「为什么」：
+  #   * 为什么 needs build-api 且要求 success：通知里带的是"哪个 commit 的契约"，
+  #     而"那份契约与代码一致"这件事只有 build-api 的硬校验能证明。没被校验过的
+  #     契约不许发给客户端 —— 宁可不发（客户端的新鲜度门禁会继续报红，可见），
+  #     也不把一份可能错的契约推给三个仓。build-api 失败时本次不通知；下一条成功
+  #     的 master push 仍会检测到同样的差异并补发（检测基线是上一版 release，自愈）。
+  #   * 为什么不在 pull_request 上跑：契约的权威版本是 master 上的文件。PR 还没合，
+  #     推给客户端就是让它们按一份"可能不会进 master"的契约开 PR。
+  #   * 为什么**不**进 CI Gate / 不进 release 的 needs：客户端投递失败不该阻塞
+  #     本仓的发版，也不该把本仓的必需检查变红（工单 §7「不阻塞任何一侧」）。
+  #     失败是这一条 job 的红色 + summary，另外客户端的新鲜度门禁是第二道网。
+  #
+  # 凭据：GitHub App（pim-contract-sync，安装范围仅三个客户端仓，
+  # 权限 contents:write / pull_requests:write / metadata:read）。用
+  # actions/create-github-app-token 现签 1 小时有效的 installation token：
+  # 由 action 负责 JWT / 换 token / 换行转义，比手搓 JWT 少一类"写法坑"；
+  # token 只经环境变量传给脚本（不进 argv、不落盘、不回显）。
+  # ---------------------------------------------------------------------------
+  contract-notify:
+    name: Notify clients of contract change
+    needs: [resolve-version, changes, build-api]
+    if: |
+      always() &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.changes.outputs.contract_changed == 'true' &&
+      needs.build-api.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create contract-sync app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PIM_CONTRACT_SYNC_APP_ID }}
+          private-key: ${{ secrets.PIM_CONTRACT_SYNC_PRIVATE_KEY }}
+          owner: 2746267826
+          repositories: pim-web,pim-android,pim-windows
+
+      - name: Dispatch contract-updated to client repos
+        env:
+          # token 只经环境变量传入：不进命令行参数、不落盘（脚本内 curl 用 --config /dev/stdin）。
+          CONTRACT_SYNC_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/notify-contract-sync.sh \
+            --owner 2746267826 \
+            --repos "pim-web pim-android pim-windows" \
+            --contract-repo "${{ github.repository }}" \
+            --source-path contract/openapi.json \
+            --event-type contract-updated \
+            --contract-commit "${{ needs.changes.outputs.contract_commit }}" \
+            --contract-sha256 "${{ needs.changes.outputs.contract_sha256 }}" \
+            --contract-bytes "${{ needs.changes.outputs.contract_bytes }}"
+
   summarize:
-    needs: [resolve-version, changes, web-dist, build-api, build-docker, build-mcp]
+    needs: [resolve-version, changes, web-dist, build-api, build-docker, build-mcp, contract-notify]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -381,6 +506,7 @@ jobs:
           echo "本次仅重建镜像：${{ needs.changes.outputs.rebuild_image_only }}（开关真接线，见 REQ-5/AC-8）"
           echo "内嵌前端（冻结值）：${{ needs.web-dist.outputs.version }} / ${{ needs.web-dist.outputs.git_sha }}（引用 ${{ needs.web-dist.outputs.ref }}）"
           echo "发版判定：${{ needs.web-dist.outputs.publish }} —— ${{ needs.web-dist.outputs.dedupe_reason }}"
+          echo "契约变化检测：changed=${{ needs.changes.outputs.contract_changed }}（sha256=${{ needs.changes.outputs.contract_sha256 }}，${{ needs.changes.outputs.contract_bytes }} 字节）；客户端通知 job：${{ needs.contract-notify.result }}"
           echo ""
           echo "> Artifacts: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           {
@@ -391,6 +517,7 @@ jobs:
             echo "| build-api | ${{ needs.build-api.result }} | api=${{ needs.changes.outputs.api }} |"
             echo "| build-docker | ${{ needs.build-docker.result }} | docker=${{ needs.changes.outputs.docker }} |"
             echo "| build-mcp | ${{ needs.build-mcp.result }} | mcp=${{ needs.changes.outputs.mcp }} |"
+            echo "| contract-notify | ${{ needs.contract-notify.result }} | contract_changed=${{ needs.changes.outputs.contract_changed }} |"
             echo ""
             echo "仅重建镜像开关：\`${{ needs.changes.outputs.rebuild_image_only }}\`；本次内嵌前端：\`${{ needs.web-dist.outputs.version }}\` / \`${{ needs.web-dist.outputs.git_sha }}\`；发版：\`${{ needs.web-dist.outputs.publish }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
