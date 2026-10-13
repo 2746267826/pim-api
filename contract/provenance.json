@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "repo": "2746267826/pim-api",
-  "ref": "dsh-linux/embed-web-dist",
-  "resolvedRef": "ef66adf6c19f66a6ca227ac11c519478f8bc8a40",
+  "ref": "master",
+  "resolvedRef": "4088bc446d4d98bbe20bee8b9241be2dfeabe78f",
   "resolvedRefSource": "git-ls-remote",
   "sourcePath": "contract/openapi.json",
-  "sourceUrl": "https://raw.githubusercontent.com/2746267826/pim-api/ef66adf6c19f66a6ca227ac11c519478f8bc8a40/contract/openapi.json",
+  "sourceUrl": "https://raw.githubusercontent.com/2746267826/pim-api/4088bc446d4d98bbe20bee8b9241be2dfeabe78f/contract/openapi.json",
   "bytes": 941361,
   "sha256": "88a9d30066860765d23f9f5d10cd7f829e2cf3c6a957d173b02620b812da993b"
 }
