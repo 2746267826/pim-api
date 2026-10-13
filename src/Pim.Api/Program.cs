@@ -228,6 +228,16 @@ builder.Services.AddSingleton<GitHubReleaseService>(sp => new GitHubReleaseServi
     sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<GitHubReleaseService>>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<GitHubReleaseService>());
 
+// 本镜像内嵌的前端版本（wwwroot/web-version.json，由 pim-web 的产物镜像在构建期带进来）。
+// 只读一次并缓存；文件缺失/不可读时返回 "unknown" 哨兵而非抛错，见 WebVersionProvider。
+builder.Services.AddSingleton(sp =>
+{
+    var env = sp.GetRequiredService<IWebHostEnvironment>();
+    return new WebVersionProvider(
+        env.WebRootPath ?? Path.Combine(env.ContentRootPath, "wwwroot"),
+        sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<WebVersionProvider>>());
+});
+
 var app = builder.Build();
 
 app.UseForwardedHeaders(new ForwardedHeadersOptions

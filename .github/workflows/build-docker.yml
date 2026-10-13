@@ -18,6 +18,18 @@ on:
       assembly_version:
         required: true
         type: string
+      # 契约输入（工单 §5）：要内嵌的前端产物镜像版本引用（sha-<7>；空 = 取最新并冻结）。
+      # 必须在 workflow_call.inputs 里声明，否则 ci.yml 传进来的值到不了镜像构建。
+      web_dist_ref:
+        required: false
+        default: ''
+        type: string
+      # 内部管线参数（不是 dispatch 输入）：ci.yml 的 web-dist job 解析出的 digest，
+      # 用来核对 build-docker 自己解析到的 digest 是否一致（防 tag 在两者之间被重推）。
+      web_dist_digest:
+        required: false
+        default: ''
+        type: string
   workflow_dispatch:
     inputs:
       version:
@@ -37,6 +49,14 @@ on:
         default: 'false'
         type: string
       assembly_version:
+        required: false
+        default: ''
+        type: string
+      web_dist_ref:
+        required: false
+        default: ''
+        type: string
+      web_dist_digest:
         required: false
         default: ''
         type: string
@@ -69,6 +89,33 @@ jobs:
             bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"
           fi
 
+      # 解析并冻结前端来源（REQ-3）。ci.yml 传进来的是已经冻结好的 sha-<7>，
+      # 这里再解析一次并**核对与镜像内容同源**：同一个不可变引用，重复解析不会漂；
+      # 若 tag 被改成别的内容，这里立刻红。
+      - name: Resolve and freeze frontend dist ref
+        id: web
+        run: bash "$GITHUB_WORKSPACE/scripts/ci/resolve-web-dist.sh" --ref "${{ inputs.web_dist_ref }}"
+
+      # 冻结后的引用必须是"同一个字节"：ci.yml 的 web-dist job 已经解析过一次 digest，
+      # 这里再解析一次并逐字核对。tag 在两次解析之间被重推（同一 commit 重新构建 → 新
+      # builtAt）会让两边不一致，必须硬失败而不是把不同的前端烘进镜像。
+      - name: Verify the frozen ref resolves to the same bytes
+        env:
+          EXPECTED_DIGEST: ${{ inputs.web_dist_digest }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXPECTED_DIGEST" ]; then
+            echo "未收到上游解析的 digest（直接触发本 workflow 的情形），跳过一致性核对"
+            exit 0
+          fi
+          ACTUAL="${{ steps.web.outputs.web_dist_digest }}"
+          if [ "$EXPECTED_DIGEST" != "$ACTUAL" ]; then
+            echo "::error::产物镜像引用 ${{ steps.web.outputs.web_dist_image }}:${{ steps.web.outputs.web_dist_ref }} 的 digest 与上游解析结果不一致：上游=${EXPECTED_DIGEST} 本次=${ACTUAL}。tag 可能被重推，拒绝烘焙。"
+            exit 1
+          fi
+          echo "✅ digest 一致：${ACTUAL}"
+
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Build and load image
@@ -86,26 +133,98 @@ jobs:
           build-args: |
             PIM_VERSION=${{ steps.ver.outputs.version }}
             ASSEMBLY_VERSION=${{ steps.ver.outputs.assembly_version }}
+            # 来源按 digest 钉死：tag 只作为可读信息，实际字节由 digest 决定。
+            PIM_WEB_DIST_SOURCE=${{ steps.web.outputs.web_dist_image }}:${{ steps.web.outputs.web_dist_ref }}@${{ steps.web.outputs.web_dist_digest }}
+            PIM_WEB_VERSION=${{ steps.web.outputs.web_version }}
+            PIM_WEB_SHA=${{ steps.web.outputs.web_git_sha }}
+
+      # 镜像内容校验：Dockerfile 里已硬失败，这里再把结果打出来做证据（含三个 label）。
+      - name: Verify embedded frontend and labels
+        run: |
+          set -euo pipefail
+          IMG="${{ env.IMAGE }}:v${{ steps.ver.outputs.artifact_slug }}"
+          docker run --rm --entrypoint sh "$IMG" -c '
+            set -e
+            test -s /app/wwwroot/index.html
+            test -s /app/wwwroot/web-version.json
+            test -d /app/wwwroot/assets
+            echo "wwwroot:"; ls /app/wwwroot
+            echo "assets 文件数: $(find /app/wwwroot/assets -type f | wc -l)"
+            echo "web-version.json: $(cat /app/wwwroot/web-version.json)"
+          '
+          echo "镜像 labels:"
+          docker inspect --format '{{json .Config.Labels}}' "$IMG" | python3 -m json.tool
+          API_LABEL="$(docker inspect --format '{{ index .Config.Labels "org.pim.api-version" }}' "$IMG")"
+          WEB_LABEL="$(docker inspect --format '{{ index .Config.Labels "org.pim.web-version" }}' "$IMG")"
+          SHA_LABEL="$(docker inspect --format '{{ index .Config.Labels "org.pim.web-sha" }}' "$IMG")"
+          test "$WEB_LABEL" = "${{ steps.web.outputs.web_version }}"
+          test "$SHA_LABEL" = "${{ steps.web.outputs.web_git_sha }}"
+          test "$API_LABEL" = "${{ steps.ver.outputs.version }}"
+          echo "labels 与冻结值一致：api=$API_LABEL web=$WEB_LABEL sha=$SHA_LABEL"
 
       - name: Smoke test
         run: |
-          # 冒烟测试只验证镜像能起进程并响应 /health，这条 job 里没有数据库。
-          # 生产默认是"迁移失败即非零退出"（避免以半套 schema 提供服务），
-          # 因此这里显式声明例外：Database__Migrations__FailFast=false。
-          CID="$(docker run -d --rm -e ASPNETCORE_URLS=http://+:5000 -e ASPNETCORE_ENVIRONMENT=Development -e Database__Migrations__FailFast=false "${{ env.IMAGE }}:latest")"
+          # 冒烟测试只验证镜像能起进程、响应 /health，并且真的在同源伺服 SPA。
+          # 这条 job 里没有数据库。生产默认是"迁移失败即非零退出"（避免以半套 schema
+          # 提供服务），因此这里显式声明例外：Database__Migrations__FailFast=false。
+          IMG="${{ env.IMAGE }}:latest"
+          CID="$(docker run -d --rm -e ASPNETCORE_URLS=http://+:5000 -e ASPNETCORE_ENVIRONMENT=Development -e Database__Migrations__FailFast=false "$IMG")"
           trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
           for i in $(seq 1 90); do
             if docker exec "$CID" bash -c \
               'exec 3<>/dev/tcp/localhost/5000; printf "GET /health HTTP/1.0\r\n\r\n" >&3; grep -q healthy <&3' 2>/dev/null; then
               echo "smoke: /health OK"
-              exit 0
+              break
+            fi
+            if [ "$i" = "90" ]; then
+              echo "smoke: /health FAILED — container logs:"
+              docker logs "$CID" 2>&1 | tail -n 100 || true
+              docker ps -a --filter "id=$CID" || true
+              exit 1
             fi
             sleep 2
           done
-          echo "smoke: /health FAILED — container logs:"
-          docker logs "$CID" 2>&1 | tail -n 100 || true
-          docker ps -a --filter "id=$CID" || true
-          exit 1
+          # 同源伺服 SPA：GET / 返回的正文必须与镜像里那份 index.html **逐字节一致**
+          # （只查 200 + doctype 证明不了"伺服的是镜像里那一份"）。
+          docker exec "$CID" sh -c 'cat /app/wwwroot/index.html' > /tmp/image-index.html
+          docker exec "$CID" bash -c \
+            'exec 3<>/dev/tcp/localhost/5000; printf "GET / HTTP/1.0\r\n\r\n" >&3; cat <&3' > /tmp/spa-response.txt
+          head -c 120 /tmp/spa-response.txt; echo
+          grep -q "200 OK" /tmp/spa-response.txt
+          # 去掉响应头（HTTP 头与正文之间是一个空行）
+          awk 'BEGIN{body=0} body{print} /^\r?$/{body=1}' /tmp/spa-response.txt > /tmp/spa-body.html
+          if ! cmp -s /tmp/spa-body.html /tmp/image-index.html; then
+            echo "::error::GET / 返回的正文与镜像内 /app/wwwroot/index.html 不一致（大小：$(wc -c < /tmp/spa-body.html) vs $(wc -c < /tmp/image-index.html)）"
+            exit 1
+          fi
+          echo "smoke: SPA / OK（返回的正文与镜像内 index.html 逐字节一致，$(wc -c < /tmp/image-index.html) 字节）"
+
+      # 台账（REQ-7）：从**烘焙好的镜像**里读 wwwroot/web-version.json 原样转录，
+      # 再加产物镜像的 tag/digest 与本次 API 版本。不重新计算前端字段。
+      # 每次都跑（PR 也跑）：台账的"从烘焙好的镜像原样转录 + 与镜像内文件逐字一致"
+      # 这条逻辑必须每次构建都被真实执行到，不能只在发版时才第一次跑。
+      # 只有"上传为 release 资产"是发版专属（见下面 Upload release ledger）。
+      - name: Build release ledger (pim-web-version.json) and verify it
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/scripts/ci/build-web-ledger.sh" \
+            --api-image "${{ env.IMAGE }}:v${{ steps.ver.outputs.artifact_slug }}" \
+            --dist-ref "${{ steps.web.outputs.web_dist_image }}:${{ steps.web.outputs.web_dist_ref }}" \
+            --dist-digest "${{ steps.web.outputs.web_dist_digest }}" \
+            --api-version "${{ steps.ver.outputs.version }}" \
+            --out pim-web-version.json
+          echo "台账内容："; cat pim-web-version.json
+          # 台账的前端三字段必须与镜像内文件逐字一致（同一来源，这里再做一次机器校验）
+          LEDGER_JSON="$(jq -S '{version,gitSha,builtAt}' pim-web-version.json)"
+          IMAGE_JSON="$(docker run --rm --entrypoint sh "${{ env.IMAGE }}:v${{ steps.ver.outputs.artifact_slug }}" \
+            -c 'cat /app/wwwroot/web-version.json' | jq -S '{version,gitSha,builtAt}')"
+          test "$LEDGER_JSON" = "$IMAGE_JSON" || {
+            echo "错误：台账与镜像内 web-version.json 的三字段不一致" >&2
+            echo "ledger=$LEDGER_JSON" >&2
+            echo "image =$IMAGE_JSON" >&2
+            exit 1
+          }
+          echo "✅ 台账前端三字段与镜像内 web-version.json 逐字一致"
 
       - name: Login to GHCR
         if: steps.ver.outputs.is_release == 'true'
@@ -138,3 +257,11 @@ jobs:
         with:
           name: pim-api-server-v${{ steps.ver.outputs.artifact_slug }}
           path: build/artifacts/pim-api-server-*.tar.gz
+
+      - name: Upload release ledger
+        if: steps.ver.outputs.is_release == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pim-web-version-v${{ steps.ver.outputs.artifact_slug }}
+          path: pim-web-version.json
+          if-no-files-found: error

@@ -20,6 +20,19 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 ### 本仓是契约生产方
 - 改任何 API 形状（路径、字段、枚举）时，必须在同一个 PR 里重新导出 `contract/openapi.json`；CI 会硬校验契约与代码同步，不同步即失败。
 - 下游三个客户端仓（web / android / windows）以本仓契约为准。契约变更请在 PR 描述里写清影响面。
+- 导出方法（与 CI 一致）：以 `ASPNETCORE_ENVIRONMENT=Test` 启动 `src/Pim.Api`，取 `curl /swagger/v1/swagger.json`，再 `jq -S .` 规范化后覆盖 `contract/openapi.json`。
+
+### 镜像内嵌前端与发布链路（`pim-api-server`）
+- **镜像必须内嵌前端**：`src/Pim.Api/Dockerfile` 多阶段从产物镜像 `ghcr.io/2746267826/pim-web-dist`（tag `sha-<7>`/`latest`）取 `dist` 全量，落到 `/app/wwwroot`。取不到来源、或缺 `index.html`/`assets/`/`web-version.json` → **构建硬失败**。不要恢复"手工把 dist 解包到 `src/Pim.Api/wwwroot` 再 build"的路径，也不要新增可产出"没前端镜像"的构建分支。
+- **产物包必须 public**：构建阶段没有 registry 登录态（登录发生在镜像构建之后、仅发版时执行），只能匿名拉取。不要改成为"私有包 + 在本仓新增 registry 凭证"。
+- **两个契约 dispatch 输入**：`web_dist_ref`（前端版本引用，空=取最新并冻结）+ `rebuild_image_only`（只重建镜像）。`web_dist_ref` 必须在 `ci.yml` 的 `workflow_dispatch.inputs` 与 `build-docker.yml` 的 `workflow_call.inputs` **两处**声明才能一路传到镜像构建；`rebuild_image_only` 只在 `ci.yml` 的组件判定里消费（放进 `workflow_call.inputs` 会变成没有行为的死参数，即工单禁止的"伪生效"）。新增开关必须**真接线**（历史上 `force_all` 只被引用、变量全仓无定义，属伪生效）。
+- **后端变了就不许走"只重建镜像"**：`rebuild_image_only` 请求下若 API/MCP 相对上一版 release 有变化，`changes` 会自动转全量构建并打 warning；禁止把旧 API/MCP 资产搬进带新版本号的 release。
+- **台账 `pim-web-version.json`**（契约，与前端产物内的 `web-version.json` 是**两个不同文件**）：每次 api release 都要有。前端三字段由烘焙好的镜像内 `/app/wwwroot/web-version.json` **原样转录**，不得重算；另含产物镜像 tag/digest 与本次 API 版本。它也是防重复发版（REQ-6）的比对数据源。
+- **防重复发版**：前端版本与上一版台账一致且后端无变化 → 不发新 release、不推新镜像 tag；判定依据写进 job summary。上一版 release / 台账缺失或不可读 → 按"需要发版"处理并写明原因，不报错中断、也不静默跳过。
+- **脚本与自检**：`scripts/ci/resolve-web-dist.sh`（解析+冻结+读版本文件）、`scripts/ci/release-dedupe.sh`（发版判定）、`scripts/ci/build-web-ledger.sh`（台账）、`scripts/ci/web-dist-lib.sh`（公共原语）。改这些逻辑要同步改对应的 `scripts/ci/test-*.sh`（CI 会在 `web-dist` job 里跑它们）。
+- **冻结的可信链**：产物镜像的 `sha-<7>` tag 在 pim-web 侧**只写一次**（存在即复用、不覆盖），因此 `tag → 字节` 是稳定的；本仓在此基础上再做两道：`web_dist_digest`（ci.yml 的 `web-dist` job → `build-docker`）逐字核对两次解析结果，并且 Dockerfile 的 `FROM` 用 **tag@digest** 钉住来源（`PIM_WEB_DIST_SOURCE`）——builder 是 docker-container driver，看不到宿主机的本地 tag，所以"本地打 tag"约束不住它，必须把 digest 写进 `FROM`。台账读的是**本次本地烘焙出来的** api 镜像（`pim_image_cat --local`），绝不回退去拉远端同名镜像。
+- **镜像标签（契约）**：`org.pim.api-version`、`org.pim.web-version`、`org.pim.web-sha`。
+- **新旧镜像差异**：`pim-platform-server` 系列（生产在跑）内嵌前端；`pim-api-server` 在 2026-10-08 之后的一段时间里**不含**前端；本次改造后 `pim-api-server` 重新内嵌前端。升级时不要因为"镜像里有没有 wwwroot"误判版本。
 
 ## Communication And Planning
 
