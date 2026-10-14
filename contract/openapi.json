@@ -134,6 +134,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ActivityClassificationPreviewRequest": {
@@ -197,6 +202,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ActivityClassificationRecomputeRequest": {
@@ -293,6 +303,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ActivityClassificationRuleDtoListApiResponse": {
@@ -317,6 +332,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ActivityClassificationSettingsDto": {
@@ -358,6 +378,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ActivityClassificationSuggestionApplyDto": {
@@ -403,6 +428,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ActivityClassificationSuggestionDto": {
@@ -506,6 +536,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ActivityClassificationSuggestionPreviewDto": {
@@ -542,6 +577,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ActivityClassificationSuggestionV2Dto": {
@@ -652,6 +692,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ActivityLabelingQueueItem": {
@@ -723,6 +768,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ActivityLabelingRequest": {
@@ -801,6 +851,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AddTaskChecklistItemRequest": {
@@ -878,6 +933,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AdminUserDtoIReadOnlyListApiResponse": {
@@ -902,6 +962,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AiPlanPlaceholderViewDto": {
@@ -966,6 +1031,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AiPlanPlaceholderViewDtoIReadOnlyListApiResponse": {
@@ -990,6 +1060,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AiPlanningPlaceholderDto": {
@@ -1046,6 +1121,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AiRequestLogDetailDto": {
@@ -1197,6 +1277,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AiRequestLogListItemDto": {
@@ -1286,6 +1371,13 @@
             "type": "integer"
           }
         },
+        "required": [
+          "items",
+          "page",
+          "pageSize",
+          "totalCount",
+          "totalPages"
+        ],
         "type": "object"
       },
       "AiRequestLogListItemDtoPagedResultApiResponse": {
@@ -1306,6 +1398,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AiRequestStatus": {
@@ -1376,6 +1473,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AiStatusDto": {
@@ -1434,6 +1536,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AiTokenUsage": {
@@ -1602,6 +1709,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AlarmFulfillment": {
@@ -1744,6 +1856,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AppCategoryRuleListApiResponse": {
@@ -1768,6 +1885,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AppKnowledgeAppDto": {
@@ -1863,6 +1985,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AppKnowledgeContextDto": {
@@ -1953,6 +2080,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AppKnowledgeContextDtoListApiResponse": {
@@ -1977,6 +2109,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AppKnowledgeSuggestionApplyDto": {
@@ -2031,6 +2168,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AppKnowledgeSuggestionPreviewDto": {
@@ -2079,6 +2221,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AppRankingItem": {
@@ -2191,6 +2338,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AppSignatureDtoListApiResponse": {
@@ -2215,6 +2367,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AppSignatureImportResultDto": {
@@ -2253,6 +2410,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AppStatEntry": {
@@ -2360,6 +2522,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AuditTimelineResponse": {
@@ -2395,6 +2562,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AuditVersionDto": {
@@ -2492,6 +2664,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AvailabilityWindowDto": {
@@ -2543,6 +2720,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AvailabilityWindowDtoIReadOnlyListApiResponse": {
@@ -2567,6 +2749,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "AwBucketDto": {
@@ -2752,6 +2939,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "BatchAcceptSuggestionsRequest": {
@@ -2833,6 +3025,12 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "data",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "CalendarDeletePreviewResponse": {
@@ -2898,6 +3096,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "CalendarLayerItem": {
@@ -2998,6 +3201,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "CalendarOperationResult": {
@@ -3059,6 +3267,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "CalendarOperationSample": {
@@ -3175,6 +3388,13 @@
             "type": "integer"
           }
         },
+        "required": [
+          "items",
+          "page",
+          "pageSize",
+          "totalCount",
+          "totalPages"
+        ],
         "type": "object"
       },
       "CalendarRecycleBinItemPagedResultApiResponse": {
@@ -3195,6 +3415,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "CalendarResponse": {
@@ -3260,6 +3485,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "CalendarResponseListApiResponse": {
@@ -3284,6 +3514,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "CalendarRestoreConflict": {
@@ -3382,6 +3617,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "CalendarRestoreRequest": {
@@ -3440,6 +3680,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "CategorySaveRequest": {
@@ -3580,6 +3825,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "CategoryTreeNodeListApiResponse": {
@@ -3604,6 +3854,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ClientShellLatestResponse": {
@@ -3699,6 +3954,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "CompleteAwEventEntry": {
@@ -4429,6 +4689,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DaemonHeartbeatDtoIReadOnlyListApiResponse": {
@@ -4453,6 +4718,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DaemonHeartbeatRequest": {
@@ -4582,6 +4852,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DataCenterBatchExecutionResponse": {
@@ -4624,6 +4899,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DataCenterBatchOperationRequest": {
@@ -4702,6 +4982,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DataCenterExecuteBatchRequest": {
@@ -4857,6 +5142,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DataCenterRestoreRequest": {
@@ -4989,6 +5279,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DataReliabilityRuleReport": {
@@ -5194,6 +5489,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DataReliabilityViolationItem": {
@@ -5262,6 +5562,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DerivedMetrics": {
@@ -5377,6 +5682,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DeviceDetailDto": {
@@ -5425,6 +5735,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DeviceDto": {
@@ -5461,6 +5776,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DeviceListDto": {
@@ -5578,6 +5898,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DeviceLivenessInspectionItem": {
@@ -5763,6 +6088,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DeviceMergeRequest": {
@@ -5865,6 +6195,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "DomainProjectDtoIReadOnlyListApiResponse": {
@@ -5889,6 +6224,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "EndpointCollectionQualityDto": {
@@ -5939,6 +6279,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "EndpointHeartbeatRequest": {
@@ -6032,6 +6377,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "EndpointStatusDto": {
@@ -6091,6 +6441,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "EndpointStatusDtoIReadOnlyListApiResponse": {
@@ -6115,6 +6470,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "EventAttachmentReferenceDto": {
@@ -6385,6 +6745,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "EventResponsePagedResult": {
@@ -6413,6 +6778,13 @@
             "type": "integer"
           }
         },
+        "required": [
+          "items",
+          "page",
+          "pageSize",
+          "totalCount",
+          "totalPages"
+        ],
         "type": "object"
       },
       "EventResponsePagedResultApiResponse": {
@@ -6433,6 +6805,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "FileAiResultDto": {
@@ -6649,6 +7026,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "FileItemDtoPagedResult": {
@@ -6677,6 +7059,13 @@
             "type": "integer"
           }
         },
+        "required": [
+          "items",
+          "page",
+          "pageSize",
+          "totalCount",
+          "totalPages"
+        ],
         "type": "object"
       },
       "FileListResponse": {
@@ -6709,6 +7098,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "FileOpenLinkDto": {
@@ -6745,6 +7139,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "FileProviderDto": {
@@ -6858,6 +7257,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "FileSearchResultDto": {
@@ -6908,6 +7312,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "FileShareDto": {
@@ -6971,6 +7380,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "FileShareDtoIReadOnlyListApiResponse": {
@@ -6995,6 +7409,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "FileSuggestionDto": {
@@ -7073,6 +7492,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "FileSuggestionDtoIReadOnlyListApiResponse": {
@@ -7097,6 +7521,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "FileTextSnapshotDto": {
@@ -7160,6 +7589,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "GenerateAiPlanRequest": {
@@ -7220,6 +7654,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "GenerateReportRequest": {
@@ -7252,7 +7691,13 @@
           3
         ],
         "format": "int32",
-        "type": "integer"
+        "type": "integer",
+        "x-enum-varnames": [
+          "Daily",
+          "Weekly",
+          "Monthly",
+          "Custom"
+        ]
       },
       "HabitOccurrenceDto": {
         "additionalProperties": false,
@@ -7304,6 +7749,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "HabitRoutineDto": {
@@ -7357,6 +7807,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "HabitRoutineDtoIReadOnlyListApiResponse": {
@@ -7381,6 +7836,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "HealthResponse": {
@@ -7535,6 +7995,28 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "IcsImportForm": {
+        "additionalProperties": false,
+        "properties": {
+          "calendarId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "file": {
+            "format": "binary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
         "type": "object"
       },
       "ImportReport": {
@@ -7588,6 +8070,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ImportSkippedItem": {
@@ -7634,6 +8121,12 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "data",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "KeyCountItem": {
@@ -7703,11 +8196,11 @@
             "format": "double",
             "type": "number"
           },
-          "peakCPS": {
+          "peakCps": {
             "format": "int32",
             "type": "integer"
           },
-          "peakKPS": {
+          "peakKps": {
             "format": "int32",
             "type": "integer"
           },
@@ -7740,6 +8233,8 @@
           "leftClicks",
           "middleClicks",
           "mouseDistance",
+          "peakCps",
+          "peakKps",
           "pimDeviceId",
           "rightClicks",
           "sampledAt",
@@ -7853,6 +8348,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "KeystatsUploadRequest": {
@@ -8010,6 +8510,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "LoginRequest": {
@@ -8104,6 +8609,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "McpCatalogDto": {
@@ -8146,6 +8656,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "McpClientCreateResult": {
@@ -8182,6 +8697,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "McpClientDto": {
@@ -8274,6 +8794,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "McpClientDtoListApiResponse": {
@@ -8298,6 +8823,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "McpClientUpdateRequest": {
@@ -8426,6 +8956,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MissingAppMetadataPackageDto": {
@@ -8536,6 +9071,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileAnalyticsChartPointDto": {
@@ -8680,6 +9220,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileAnalyticsQualitySummaryDto": {
@@ -8846,6 +9391,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileAppCatalogOverrideDtoIReadOnlyListApiResponse": {
@@ -8870,6 +9420,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileAppCatalogOverrideUpsertRequest": {
@@ -8969,6 +9524,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileAppCategoryRuleDtoIReadOnlyListApiResponse": {
@@ -8993,6 +9553,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileAppCategoryRuleUpsertRequest": {
@@ -9223,7 +9788,6 @@
         },
         "required": [
           "androidVersion",
-          "apiLevel",
           "appVersion",
           "brand",
           "deviceId",
@@ -9257,6 +9821,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileDeviceDtoIReadOnlyListApiResponse": {
@@ -9281,6 +9850,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileDeviceEntity": {
@@ -9508,6 +10082,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileDeviceRegisterRequest": {
@@ -9561,7 +10140,6 @@
         },
         "required": [
           "androidVersion",
-          "apiLevel",
           "appVersion",
           "brand",
           "deviceId",
@@ -9646,6 +10224,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileDroppedReasonSummaryItem": {
@@ -9766,6 +10349,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileForensicsUploadRequest": {
@@ -9871,6 +10459,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileGapRequest": {
@@ -9941,6 +10534,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileGapWindowDto": {
@@ -10119,6 +10717,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileIngestItemResult": {
@@ -10288,6 +10891,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileLivenessOverviewResponse": {
@@ -10352,6 +10960,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileLocationAnalyticsOverviewResponse": {
@@ -10441,6 +11054,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileLocationHistoryResponse": {
@@ -10495,6 +11113,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileLocationPathPointDto": {
@@ -10654,6 +11277,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileLocationPointRequest": {
@@ -10733,7 +11361,6 @@
           "deviceId",
           "horizontalAccuracyMeters",
           "isAutoSubmitted",
-          "isMock",
           "latitude",
           "longitude",
           "provider",
@@ -10806,6 +11433,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileLocationSegmentDto": {
@@ -10919,6 +11551,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileLocationSegmentPointPageDto": {
@@ -10962,6 +11599,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileLocationTrackDto": {
@@ -11049,6 +11691,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileMissingAppMetadataResponse": {
@@ -11103,6 +11750,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileMovementStatsDayDto": {
@@ -11195,6 +11847,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileOutingDto": {
@@ -11348,6 +12005,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileSessionEventDto": {
@@ -11413,6 +12075,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileSilenceWindowDto": {
@@ -11692,6 +12359,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileTimelineBlockSessionDto": {
@@ -11775,6 +12447,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileTimelineItemDto": {
@@ -11919,6 +12596,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileUsageEventDto": {
@@ -12023,9 +12705,7 @@
           "events",
           "fallbackSummaries",
           "sourceWindowEndUtc",
-          "sourceWindowStartUtc",
-          "windowEndUtc",
-          "windowStartUtc"
+          "sourceWindowStartUtc"
         ],
         "type": "object"
       },
@@ -12094,6 +12774,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileUsageGoalDtoIReadOnlyListApiResponse": {
@@ -12118,6 +12803,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileUsageGoalUpsertRequest": {
@@ -12210,6 +12900,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MobileUsageSummaryDto": {
@@ -12256,7 +12951,6 @@
           "rawJson",
           "sourceKind",
           "totalTimeForegroundMs",
-          "totalTimeVisibleMs",
           "windowEndUtc",
           "windowStartUtc"
         ],
@@ -12350,6 +13044,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "MoveFileRequest": {
@@ -12434,6 +13133,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OneDriveBindingStatusDto": {
@@ -12491,6 +13195,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OneDriveLinkDto": {
@@ -12523,6 +13232,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OneDriveSyncStartedDto": {
@@ -12559,6 +13273,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OneDriveSyncStatusDto": {
@@ -12609,6 +13328,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OneDriveTextDto": {
@@ -12654,6 +13378,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OneDriveWriteResultDto": {
@@ -12691,6 +13420,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OperationConfirmationDto": {
@@ -12839,6 +13573,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OperationConfirmationDtoIReadOnlyListApiResponse": {
@@ -12863,6 +13602,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OperationConfirmationStatus": {
@@ -12874,7 +13618,14 @@
           4
         ],
         "format": "int32",
-        "type": "integer"
+        "type": "integer",
+        "x-enum-varnames": [
+          "Pending",
+          "Confirmed",
+          "Rejected",
+          "Expired",
+          "Executed"
+        ]
       },
       "OperationRiskLevel": {
         "enum": [
@@ -12888,7 +13639,17 @@
           14
         ],
         "format": "int32",
-        "type": "integer"
+        "type": "integer",
+        "x-enum-varnames": [
+          "Low",
+          "Medium",
+          "High",
+          "L0AutomaticArtifact",
+          "L1LowRiskAction",
+          "L2PimFactChange",
+          "L3ExternalSourceOrWriteback",
+          "L4BatchOrDestructiveGovernance"
+        ]
       },
       "OpsDbQueryRequest": {
         "additionalProperties": false,
@@ -12952,6 +13713,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OpsHealthResponse": {
@@ -13017,6 +13783,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OutlookAdditionalInfoDto": {
@@ -13163,6 +13934,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OutlookCalendarBindingResponse": {
@@ -13258,6 +14034,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OutlookLocalDataPreview": {
@@ -13301,6 +14082,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OutlookSettingsResponse": {
@@ -13368,6 +14154,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OutlookSyncBatchResponse": {
@@ -13481,6 +14272,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OutlookSyncBatchesResponse": {
@@ -13531,6 +14327,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "OutlookSyncRequest": {
@@ -13688,6 +14489,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "PcActivityAnalysisAppDto": {
@@ -13830,6 +14636,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "PcAggregationAppMinutes": {
@@ -13913,6 +14724,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "PcCategoryDistributionItem": {
@@ -13974,6 +14790,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "PcDetailRecord": {
@@ -14239,6 +15060,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "PcKeystatsRangeResponse": {
@@ -14338,6 +15164,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "PcLateNightDayItem": {
@@ -14394,6 +15225,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "PcQualityComponentDto": {
@@ -14519,6 +15355,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "PcSummaryResponse": {
@@ -14588,6 +15429,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "PimHealthStatus": {
@@ -14598,7 +15444,13 @@
           3
         ],
         "format": "int32",
-        "type": "integer"
+        "type": "integer",
+        "x-enum-varnames": [
+          "Unknown",
+          "Healthy",
+          "Warning",
+          "Critical"
+        ]
       },
       "PlanTaskRequest": {
         "additionalProperties": false,
@@ -14709,6 +15561,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ProductivityGoalDto": {
@@ -14742,6 +15599,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "QuickNoteAttachmentDto": {
@@ -14835,6 +15697,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "QuickNoteDetailDto": {
@@ -14906,6 +15773,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "QuickNoteListItemDto": {
@@ -14986,6 +15858,13 @@
             "type": "integer"
           }
         },
+        "required": [
+          "items",
+          "page",
+          "pageSize",
+          "totalCount",
+          "totalPages"
+        ],
         "type": "object"
       },
       "QuickNoteListItemDtoPagedResultApiResponse": {
@@ -15006,6 +15885,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "RefreshRequest": {
@@ -15091,6 +15975,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ReminderDeliveryDto": {
@@ -15155,6 +16044,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ReminderResponse": {
@@ -15237,6 +16131,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ReminderResponseIReadOnlyListApiResponse": {
@@ -15261,6 +16160,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "RenameFileRequest": {
@@ -15374,6 +16278,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ReportArtifactDtoIReadOnlyListApiResponse": {
@@ -15398,6 +16307,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "RestorePreviewResponse": {
@@ -15458,6 +16372,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "RestoreQuickNoteRequest": {
@@ -15756,6 +16675,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "ScheduledSlot": {
@@ -15843,6 +16767,13 @@
             "type": "integer"
           }
         },
+        "required": [
+          "items",
+          "page",
+          "pageSize",
+          "totalCount",
+          "totalPages"
+        ],
         "type": "object"
       },
       "SearchResultPagedResultApiResponse": {
@@ -15863,6 +16794,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "SilenceWindow": {
@@ -15950,6 +16886,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "SiteEventUploadDto": {
@@ -16078,6 +17019,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "SiteSummaryDto": {
@@ -16146,6 +17092,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "SiteTimelineRowDto": {
@@ -16192,6 +17143,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "SiteTopHostDto": {
@@ -16284,7 +17240,17 @@
           7
         ],
         "format": "int32",
-        "type": "integer"
+        "type": "integer",
+        "x-enum-varnames": [
+          "Api",
+          "Database",
+          "Storage",
+          "TextExtraction",
+          "Daemon",
+          "ActivityWatch",
+          "KeyStats",
+          "BackgroundJobs"
+        ]
       },
       "StringApiResponse": {
         "additionalProperties": false,
@@ -16305,6 +17271,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "StringListApiResponse": {
@@ -16329,6 +17300,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "SuggestionClassificationApplyRequest": {
@@ -16415,6 +17391,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "SystemStatusSummaryDto": {
@@ -16460,6 +17441,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TableInfo": {
@@ -16500,6 +17486,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TaskBookDto": {
@@ -16554,6 +17545,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TaskBookDtoIReadOnlyListApiResponse": {
@@ -16578,6 +17574,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TaskChecklistItemDto": {
@@ -16629,6 +17630,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TaskExecutionSegmentResponse": {
@@ -16698,6 +17704,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TaskExecutionSegmentResponseIReadOnlyListApiResponse": {
@@ -16722,6 +17733,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TaskResponse": {
@@ -16829,6 +17845,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TaskResponsePagedResult": {
@@ -16857,6 +17878,13 @@
             "type": "integer"
           }
         },
+        "required": [
+          "items",
+          "page",
+          "pageSize",
+          "totalCount",
+          "totalPages"
+        ],
         "type": "object"
       },
       "TaskResponsePagedResultApiResponse": {
@@ -16877,6 +17905,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TileErrorDto": {
@@ -16967,6 +18000,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TimelineV2Item": {
@@ -17043,6 +18081,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TodayLinkDto": {
@@ -17116,6 +18159,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TodaySectionErrorDto": {
@@ -17180,6 +18228,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TodaySectionRegistryItemDto": {
@@ -17443,6 +18496,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "TrackerHealthRequest": {
@@ -17572,6 +18630,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "UpdateCalendarSelectionRequest": {
@@ -17949,12 +19012,18 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "UserInfo": {
         "additionalProperties": false,
         "properties": {
           "displayName": {
+            "nullable": true,
             "type": "string"
           },
           "id": {
@@ -17969,7 +19038,6 @@
           }
         },
         "required": [
-          "displayName",
           "id",
           "role",
           "username"
@@ -17994,6 +19062,11 @@
             "type": "string"
           }
         },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
         "type": "object"
       },
       "WorkSessionItem": {
@@ -21014,6 +22087,16 @@
     },
     "/api/v1/calendar/import-ics": {
       "post": {
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/IcsImportForm"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -33361,6 +34444,74 @@
         ]
       }
     },
+    "/api/v1/pc/app-category-rules/{id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
     "/api/v1/pc/app-knowledge/apps": {
       "get": {
         "parameters": [
@@ -35024,7 +36175,7 @@
           "401": {
             "description": "Unauthorized"
           },
-          "404": {
+          "409": {
             "content": {
               "application/json": {
                 "schema": {
@@ -35032,7 +36183,7 @@
                 }
               }
             },
-            "description": "Not Found"
+            "description": "Conflict"
           },
           "500": {
             "content": {
