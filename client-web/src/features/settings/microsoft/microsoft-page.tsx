@@ -772,6 +772,11 @@ function OneDriveTab({ onChanged }: { onChanged: () => void }) {
           }}
           poll={async (providerId) => {
             const s = await filesApi.bindingStatus(providerId)
+            // 同账号重绑时服务端会复用既有账号行并删掉本次的待授权行，
+            // 状态响应里的 providerId 才是规范 id；不跟着换，后续同步/断开都会指向已删除的行。
+            if (s.providerId && s.providerId !== providerId) {
+              setBindingSession((prev) => (prev ? { ...prev, providerId: s.providerId } : prev))
+            }
             return { status: s.status, errorMessage: null, accountName: s.accountName }
           }}
           onConnected={() => {

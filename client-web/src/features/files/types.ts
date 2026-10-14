@@ -87,6 +87,11 @@ export interface ProviderBindingStart {
 }
 
 export interface ProviderBindingStatus {
+  /**
+   * **规范账号行 id**。同一账号重新绑定时服务端会复用既有行并删掉本次的待授权行，
+   * 因此轮询回来的 id 可能与发起时不同 —— 后续的 sync / unbind / setDefault 都要用它。
+   */
+  providerId: string
   status: 'pending' | 'connected' | 'expired' | 'denied'
   driveId: string | null
   accountId: string | null
