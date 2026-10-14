@@ -9,9 +9,11 @@ import {
   useCreateCalendar,
   useDeleteCalendar,
   useRenameCalendar,
+  useSetCalendarMutePolicy,
 } from '../queries'
 import type { CalendarBook } from '../types'
-import { ConfirmDialog } from '@/components/ui'
+import { Button, ConfirmDialog, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader } from '@/components/ui'
+import { notifyError, notifySuccess } from '@/lib/notify'
 import { cn } from '@/lib/utils'
 
 function InlineInput({
@@ -46,10 +48,12 @@ function BookRow({
   book,
   onNavigate,
   onDelete,
+  onMutePolicy,
 }: {
   book: CalendarBook
   onNavigate: () => void
   onDelete: (book: CalendarBook) => void
+  onMutePolicy: (book: CalendarBook) => void
 }) {
   const navigate = useNavigate()
   const { calendarVisibility, toggleCalendar } = useCalendarVisibility()
@@ -142,6 +146,12 @@ function BookRow({
               重命名
             </DropdownMenu.Item>
             <DropdownMenu.Item
+              className="cursor-default rounded-ctl px-2.5 py-1.5 text-[13px] text-text-1 outline-none data-[highlighted]:bg-surface"
+              onSelect={() => onMutePolicy(book)}
+            >
+              静音设置…
+            </DropdownMenu.Item>
+            <DropdownMenu.Item
               className="cursor-default rounded-ctl px-2.5 py-1.5 text-[13px] text-crit outline-none data-[highlighted]:bg-crit-soft"
               onSelect={() => onDelete(book)}
             >
@@ -163,7 +173,9 @@ export function CalendarBooksManager({ onNavigate }: { onNavigate?: () => void }
   const calendarBooks = books.filter((b) => b.kind === 'calendar')
   const taskBooks = books.filter((b) => b.kind === 'task')
 
+  const setMutePolicy = useSetCalendarMutePolicy()
   const [adding, setAdding] = useState(false)
+  const [muting, setMuting] = useState<CalendarBook | null>(null)
   const [deleting, setDeleting] = useState<CalendarBook | null>(null)
   const [preview, setPreview] = useState<{ summary: string; samples: string[] } | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -182,6 +194,21 @@ export function CalendarBooksManager({ onNavigate }: { onNavigate?: () => void }
       setPreview({ summary: `删除「${book.name}」及其全部内容。`, samples: [] })
     } finally {
       setPreviewLoading(false)
+    }
+  }
+
+  /** 一次调用改该本默认 + 该本既有日程；返回的受影响条数用可见提示说清，不静默成功。 */
+  async function applyMutePolicy(isMuted: boolean) {
+    if (!muting) return
+    try {
+      const result = await setMutePolicy.mutateAsync({ id: muting.id, isMuted })
+      notifySuccess(
+        `「${muting.name}」已统一设为${result.defaultMuted ? '静音' : '不静音'}`,
+        `同时更新了该本下 ${result.affectedEventCount} 个日程的设定`,
+      )
+      setMuting(null)
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : '设置失败，请稍后重试')
     }
   }
 
@@ -214,7 +241,13 @@ export function CalendarBooksManager({ onNavigate }: { onNavigate?: () => void }
           </div>
         )}
         {calendarBooks.map((b) => (
-          <BookRow key={b.id} book={b} onNavigate={() => onNavigate?.()} onDelete={(bk) => void openDelete(bk)} />
+          <BookRow
+            key={b.id}
+            book={b}
+            onNavigate={() => onNavigate?.()}
+            onDelete={(bk) => void openDelete(bk)}
+            onMutePolicy={setMuting}
+          />
         ))}
         {calendarBooks.length === 0 && !adding && (
           <div className="px-1.5 py-1 text-xs text-text-4">暂无日历本</div>
@@ -229,11 +262,61 @@ export function CalendarBooksManager({ onNavigate }: { onNavigate?: () => void }
           </div>
           <div className="px-2">
             {taskBooks.map((b) => (
-              <BookRow key={b.id} book={b} onNavigate={() => onNavigate?.()} onDelete={(bk) => void openDelete(bk)} />
+              <BookRow
+                key={b.id}
+                book={b}
+                onNavigate={() => onNavigate?.()}
+                onDelete={(bk) => void openDelete(bk)}
+                onMutePolicy={setMuting}
+              />
             ))}
           </div>
         </>
       )}
+
+      {/* 工单 04 E1.3：日历本静音设置 —— 显示当前状态 + 一次把该本下的日程统一为开/关 */}
+      <Dialog open={muting != null} onOpenChange={(o) => !o && setMuting(null)}>
+        <DialogContent className="max-w-[460px]">
+          <DialogHeader
+            title={`「${muting?.name ?? ''}」的静音设置`}
+            description="设为静音后，该日历本下的日程在开始时间自动静音、结束时间恢复；之后从 Outlook 同步进来的日程也会套用这个设定。"
+          />
+          <DialogBody className="space-y-3">
+            <div className="rounded-ctl border border-border bg-surface p-3 text-[13px]" data-testid="calendar-mute-current">
+              当前默认：
+              <span className="font-medium text-text-1">
+                {muting?.defaultMuted ? '静音' : '不静音'}
+              </span>
+              <span className="ml-1 text-text-4">（该本下「未指定」的日程按它生效）</span>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant={muting?.defaultMuted ? 'primary' : 'secondary'}
+                data-testid="calendar-mute-on"
+                disabled={setMutePolicy.isPending}
+                onClick={() => void applyMutePolicy(true)}
+              >
+                统一设为静音
+              </Button>
+              <Button
+                type="button"
+                variant={muting?.defaultMuted ? 'secondary' : 'primary'}
+                data-testid="calendar-mute-off"
+                disabled={setMutePolicy.isPending}
+                onClick={() => void applyMutePolicy(false)}
+              >
+                统一设为不静音
+              </Button>
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => setMuting(null)}>
+              关闭
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={deleting != null}

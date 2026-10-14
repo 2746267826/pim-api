@@ -5,6 +5,7 @@ import type { PagedResult } from '@/api/types'
 import type {
   CalendarBook,
   CalendarDeletePreview,
+  CalendarMutePolicyResult,
   CalendarOperationResult,
   EventResponse,
   LayerItem,
@@ -28,6 +29,12 @@ export const calendarsApi = {
   deletePreview: (id: string) =>
     apiPost<CalendarDeletePreview>(`/api/v1/calendar/calendars/${id}/delete-preview`, {}),
   remove: (id: string) => apiDelete<CalendarOperationResult>(`/api/v1/calendar/calendars/${id}`),
+  /**
+   * 工单 04 E1.3：把该日历本下的日程统一设为静音开/关 —— 服务端同时写该本默认，
+   * 之后从 Outlook 同步进来的日程自动套用。只动 PIM 原生列，不写回 Outlook。
+   */
+  setMutePolicy: (id: string, isMuted: boolean) =>
+    apiPut<CalendarMutePolicyResult>(`/api/v1/calendar/calendars/${id}/mute-policy`, { isMuted }),
 }
 
 export const taskBooksApi = {

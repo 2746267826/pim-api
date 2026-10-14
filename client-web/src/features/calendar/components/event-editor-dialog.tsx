@@ -29,6 +29,12 @@ const schema = z.object({
   importance: z.enum(['', 'low', 'normal', 'high']),
   sensitivity: z.enum(['', 'normal', 'personal', 'private', 'confidential']),
   categories: z.string(),
+  /**
+   * 工单 04：日程期间是否静音（三态）。
+   * 'follow' = 未指定 → 生效值取所属日历本的默认静音；'mute' 静音；'unmute' 不静音。
+   * 用非空值表示「未指定」：分段控件的空串等于「没选中」，会把三态压成两态。
+   */
+  isMuted: z.enum(['follow', 'mute', 'unmute']),
   // 联机会议
   isOnlineMeeting: z.boolean(),
   onlineMeetingProvider: z.string(),
@@ -65,6 +71,13 @@ const REMINDER_OPTIONS = [
   { value: '30', label: '提前 30 分钟' },
   { value: '60', label: '提前 1 小时' },
   { value: '1440', label: '提前 1 天' },
+]
+
+/** 工单 04：三态静音选项（'' = 未指定，跟随日历本默认） */
+const MUTE_OPTIONS = [
+  { value: 'follow', label: '跟随默认', title: '未指定：生效值取所属日历本的默认静音设定' },
+  { value: 'mute', label: '静音', title: '该日程期间静音' },
+  { value: 'unmute', label: '不静音', title: '该日程期间不改变静音状态' },
 ]
 
 const SHOW_AS_OPTIONS = [
@@ -118,6 +131,7 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
       location: '', description: '', rrule: '',
       isReminderOn: false, reminderMinutesBeforeStart: '',
       showAs: '', importance: '', sensitivity: '', categories: '',
+      isMuted: 'follow',
       isOnlineMeeting: false, onlineMeetingProvider: '', onlineMeetingUrl: '',
       externalLink: '', organizerName: '', organizerEmail: '',
     },
@@ -148,6 +162,7 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
         importance: (event.importance as z.infer<typeof schema>['importance']) ?? '',
         sensitivity: (event.sensitivity as z.infer<typeof schema>['sensitivity']) ?? '',
         categories: (event.categories ?? []).join(', '),
+        isMuted: event.isMuted === true ? 'mute' : event.isMuted === false ? 'unmute' : 'follow',
         isOnlineMeeting: event.isOnlineMeeting ?? false,
         onlineMeetingProvider: event.onlineMeetingProvider ?? '',
         onlineMeetingUrl: event.onlineMeetingUrl ?? '',
@@ -156,7 +171,7 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
         organizerEmail: event.organizer?.email ?? '',
       })
       setAttendees((event.attendees ?? []).map((a) => ({ name: a.name ?? '', email: a.email ?? '', type: a.type === 'optional' ? 'optional' : 'required' })))
-      const hasMore = Boolean(event.isReminderOn || event.showAs || event.importance || event.sensitivity || (event.categories?.length ?? 0) > 0 || event.isOnlineMeeting || event.externalLink || (event.attendees?.length ?? 0) > 0)
+      const hasMore = Boolean(event.isMuted != null || event.isReminderOn || event.showAs || event.importance || event.sensitivity || (event.categories?.length ?? 0) > 0 || event.isOnlineMeeting || event.externalLink || (event.attendees?.length ?? 0) > 0)
       setShowMore(hasMore)
     } else if (initial) {
       const def = calendars.find((c) => c.isDefault && c.kind === 'calendar') ?? calendars.find((c) => c.kind === 'calendar')
@@ -168,6 +183,7 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
         location: '', description: '', rrule: '',
         isReminderOn: false, reminderMinutesBeforeStart: '',
         showAs: '', importance: '', sensitivity: '', categories: '',
+        isMuted: 'follow',
         isOnlineMeeting: false, onlineMeetingProvider: '', onlineMeetingUrl: '',
         externalLink: '', organizerName: '', organizerEmail: '',
       })
@@ -221,6 +237,8 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
       importance: values.importance || null,
       sensitivity: values.sensitivity || null,
       categories: categories.length > 0 ? categories : null,
+      /* 三态：follow 发 null（未指定 → 跟随日历本默认）；后端把 null 与 true/false 一视同仁地整体替换 */
+      isMuted: values.isMuted === 'follow' ? null : values.isMuted === 'mute',
       isOnlineMeeting: values.isOnlineMeeting,
       onlineMeetingProvider: values.onlineMeetingProvider || null,
       onlineMeetingUrl: values.onlineMeetingUrl || null,
@@ -347,6 +365,10 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
 
   const busy = save.isPending || remove.isPending
   const values = form.watch()
+  /* 工单 04：「未指定」的生效值取自所选日历本的默认静音，界面必须说清当前会按什么执行 */
+  const selectedCalendar = calendars.find((c) => c.id === values.calendarId)
+  const selectedCalendarName = selectedCalendar?.name ?? '当前日历本'
+  const selectedCalendarDefaultMuted = selectedCalendar?.defaultMuted ?? false
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -472,6 +494,22 @@ export function EventEditorDialog({ open, onOpenChange, calendars, initial, even
                     options={SHOW_AS_OPTIONS}
                   />
                 </div>
+              </div>
+
+              <div>
+                <Label>期间静音</Label>
+                <Segmented
+                  value={values.isMuted}
+                  onValueChange={(v) => form.setValue('isMuted', v as z.infer<typeof schema>['isMuted'])}
+                  options={MUTE_OPTIONS}
+                />
+                <p className="mt-1 text-[11px] text-text-4" data-testid="event-mute-hint">
+                  {values.isMuted === 'follow'
+                    ? `未指定：按日历本「${selectedCalendarName}」的默认（${selectedCalendarDefaultMuted ? '静音' : '不静音'}）执行`
+                    : values.isMuted === 'mute'
+                      ? '该日程期间将手机静音（有勿扰权限的手机生效）'
+                      : '该日程期间不改变手机静音状态'}
+                </p>
               </div>
 
               <div className="grid grid-cols-3 gap-3">

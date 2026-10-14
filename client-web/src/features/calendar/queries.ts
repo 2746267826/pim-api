@@ -163,6 +163,20 @@ export function useDeleteCalendar() {
   })
 }
 
+/**
+ * 工单 04 E1.3：日历本静音策略批量设定。
+ *
+ * 一次调用改两类数据（该本默认 + 该本既有日程的显式值），因此日程列表也要一起失效。
+ */
+export function useSetCalendarMutePolicy() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, isMuted }: { id: string; isMuted: boolean }) =>
+      calendarsApi.setMutePolicy(id, isMuted),
+    onSuccess: () => invalidateCalendar(qc),
+  })
+}
+
 export function useSaveEvent() {
   const qc = useQueryClient()
   return useMutation({

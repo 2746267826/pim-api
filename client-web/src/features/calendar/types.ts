@@ -14,6 +14,11 @@ export interface CalendarBook {
   source: string
   outlookCalendarBindingId: string | null
   canEdit: boolean
+  /**
+   * 工单 04：日历本默认静音设定。该本下 isMuted 为 null（未指定）的日程，生效值取它；
+   * 「批量设为静音/不静音」会写这里，并把该本下既有日程统一写成显式值。
+   */
+  defaultMuted: boolean
 }
 
 export interface TaskBook {
@@ -76,11 +81,24 @@ export interface EventResponse {
   outlookEventId: string | null
   outlookEtag: string | null
   outlookEventType: string | null
+  /**
+   * 工单 04：日程期间是否静音 —— true 静音 / false 不静音 / null 未指定
+   * （生效值 = isMuted ?? 所属日历本的 defaultMuted）。
+   */
+  isMuted: boolean | null
 }
 
 /** Outlook 镜像事件（source 以 outlook 开头）走写回通道而非直接 PUT/DELETE */
 export function isOutlookEvent(e: Pick<EventResponse, 'source'>): boolean {
   return e.source.startsWith('outlook')
+}
+
+/** 工单 04 E1.3：日历本静音策略批量设定的结果（PUT /calendar/calendars/{id}/mute-policy） */
+export interface CalendarMutePolicyResult {
+  calendarId: string
+  defaultMuted: boolean
+  /** 本次被写成显式值的既有日程数量 */
+  affectedEventCount: number
 }
 
 /* ── 任务（TaskResponse） ─────────────────────────────────── */
