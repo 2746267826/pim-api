@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Calendar.DTOs;
@@ -250,6 +251,34 @@ public sealed class EventMuteFieldTests
         Assert.Equal(fixedNow, (await db.Set<CalendarEntity>().AsNoTracking().SingleAsync()).UpdatedAt);
     }
 
+    [Fact]
+    public async Task SetCalendarMutePolicyAsync_AuditFailure_DoesNotFailTheRequest_ButDataIsApplied()
+    {
+        // 独立 review 二轮 Important：审计写在业务提交之后，若审计异常向上抛，
+        // 调用方会看到「操作失败」而库里其实已经改了。这里做故障注入：
+        // 审计服务恒抛异常 → 请求必须成功返回，且业务数据已生效。
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, UserId, "课程表");
+        await db.SaveChangesAsync();
+        var eventId = await AddEventAsync(db, calendar.Id, "日程", isMuted: false);
+
+        var service = new CalendarService(
+            db,
+            new FixedCurrentUserService(UserId),
+            new RecurrenceService(NullLogger<RecurrenceService>.Instance),
+            new EventAttachmentService(db),
+            new FixedTimeProvider(DateTimeOffset.UtcNow),
+            new CalendarAuditWriter(new ThrowingAuditLogService()),
+            NullLogger<CalendarService>.Instance);
+
+        var result = await service.SetCalendarMutePolicyAsync(calendar.Id, true, default);
+
+        Assert.True(result.DefaultMuted);
+        Assert.Equal(1, result.AffectedEventCount);
+        Assert.True((await db.Set<EventEntity>().AsNoTracking().SingleAsync(e => e.Id == eventId)).IsMuted);
+        Assert.True((await db.Set<CalendarEntity>().AsNoTracking().SingleAsync()).DefaultMuted);
+    }
+
     // ---------- helpers ----------
 
     private static async Task<Guid> AddEventAsync(PimDbContext db, Guid calendarId, string title, bool? isMuted)
@@ -285,6 +314,13 @@ public sealed class EventMuteFieldTests
         var calendar = new CalendarEntity { UserId = userId, Name = name, Kind = "calendar" };
         db.Set<CalendarEntity>().Add(calendar);
         return calendar;
+    }
+
+    /// <summary>恒抛异常的审计服务：用于验证「审计失败不得让已完成的操作对外报错」。</summary>
+    private sealed class ThrowingAuditLogService : IAuditLogService
+    {
+        public Task<AuditLogDto> RecordAsync(CreateAuditLogRequest request, CancellationToken ct = default)
+            => throw new InvalidOperationException("audit store unavailable");
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider

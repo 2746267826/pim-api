@@ -163,10 +163,12 @@ public record EventResponse(
 /// <c>IsMuted</c> 声明为可空并在服务端显式校验"必须出现"：System.Text.Json 会把缺失的字段
 /// 绑成 <c>false</c>，若直接声明成 <c>bool</c>，一个 <c>{}</c> 请求体就会被静默当成
 /// 「统一设为不静音」并改掉整个日历本的日程（独立 review I-1）。Swagger 的 required 只是文档元数据，
-/// 不参与运行时校验，所以必须在这里挡。
+/// 不参与运行时校验，所以必须在这里挡：<c>[Required]</c> 让契约把该字段标成必须出现，
+/// 服务层再把 <c>null</c> 也挡掉（比契约更严，属有意为之）。
 /// </para>
 /// </summary>
-public record SetCalendarMutePolicyRequest(bool? IsMuted);
+public record SetCalendarMutePolicyRequest(
+    [property:Required] bool? IsMuted);
 
 /// <summary>日历本静音策略的批量设定结果。</summary>
 public record CalendarMutePolicyResponse(Guid CalendarId, bool DefaultMuted, int AffectedEventCount);

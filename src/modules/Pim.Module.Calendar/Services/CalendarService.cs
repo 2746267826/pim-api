@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Pim.Core.Common;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
@@ -16,6 +17,7 @@ public class CalendarService
     private readonly EventAttachmentService _attachments;
     private readonly TimeProvider _timeProvider;
     private readonly CalendarAuditWriter? _audit;
+    private readonly ILogger<CalendarService>? _logger;
 
     public CalendarService(PimDbContext db, ICurrentUserService currentUser, RecurrenceService recurrence)
         : this(db, currentUser, recurrence, new EventAttachmentService(db), TimeProvider.System, null)
@@ -28,7 +30,8 @@ public class CalendarService
         RecurrenceService recurrence,
         EventAttachmentService attachments,
         TimeProvider? timeProvider = null,
-        CalendarAuditWriter? audit = null)
+        CalendarAuditWriter? audit = null,
+        ILogger<CalendarService>? logger = null)
     {
         _db = db;
         _currentUser = currentUser;
@@ -36,6 +39,7 @@ public class CalendarService
         _attachments = attachments;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _audit = audit;
+        _logger = logger;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "未登录");
@@ -148,17 +152,35 @@ public class CalendarService
 
         await _db.SaveChangesAsync(ct);
 
-        // 批量操作会覆盖单条显式值，留下审计记录（谁、改了什么、影响多少条）（review M-3）
+        // 批量操作会覆盖单条显式值，留下审计记录（谁、改了什么、影响多少条）（review M-3）。
+        //
+        // 审计是**尽力而为**：业务数据已经提交，此处再抛异常会让调用方看到「操作失败」，
+        // 但库里的数据其实已经改了（独立 review 二轮指出的 Important）。所以这里降级为
+        // 一条 warning 日志，绝不因为审计失败而向调用方报告失败。
         if (_audit is not null)
         {
-            await _audit.RecordSuccessAsync(
-                UserId, "calendar.mute-policy.set", "calendar", calendar.Id,
-                new Dictionary<string, string>
-                {
-                    ["defaultMuted"] = value ? "true" : "false",
-                    ["affectedEventCount"] = affected.Count.ToString(),
-                },
-                ct);
+            try
+            {
+                await _audit.RecordSuccessAsync(
+                    UserId, "calendar.mute-policy.set", "calendar", calendar.Id,
+                    new Dictionary<string, string>
+                    {
+                        ["defaultMuted"] = value ? "true" : "false",
+                        ["affectedEventCount"] = affected.Count.ToString(),
+                    },
+                    ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(
+                    ex,
+                    "批量静音策略的审计写入失败（业务已生效）：calendarId={CalendarId}, affected={Affected}",
+                    calendar.Id, affected.Count);
+            }
         }
 
         return new CalendarMutePolicyResponse(calendar.Id, value, affected.Count);
