@@ -4,6 +4,32 @@ using Pim.Core.Data;
 
 namespace Pim.Module.Calendar.Entities;
 
+/// <summary>
+/// 任务状态（<c>tasks.status</c>）的受控值域 —— 工单 03 D1。
+///
+/// 这是任务状态的**唯一真值来源**：服务端校验（<c>CalendarService</c>）、契约 enum
+/// （<c>StrictValueSetsSchemaFilter</c>）与 pim-web 的展示口径都由它派生。
+/// 值形态沿用前端既有文案 <c>IN-PROCESS</c>（大写 + 连字符），另三值保持历史写法。
+/// 历史背景：此前服务端只做 <c>MaxLength(20)</c>，任意字符串都能写库；
+/// 收紧后集合外的值会以 400（02057）明确拒绝 —— 见工单 03 D1.1 的授权与影响面说明。
+/// </summary>
+public static class TaskStatuses
+{
+    public const string NeedsAction = "NEEDS-ACTION";
+    public const string InProcess = "IN-PROCESS";
+    public const string Completed = "COMPLETED";
+    public const string Cancelled = "CANCELLED";
+
+    /// <summary>契约 enum 与校验白名单的同一份顺序（顺序即契约里 enum 的排列）。</summary>
+    public static readonly string[] All = [NeedsAction, InProcess, Completed, Cancelled];
+
+    public static bool IsValid(string? status)
+        => status is NeedsAction or InProcess or Completed or Cancelled;
+
+    /// <summary>终态：进入后不允许存在「正在计时」的执行段（工单 03 D3 / AC-8）。</summary>
+    public static bool IsTerminal(string? status) => status is Completed or Cancelled;
+}
+
 [Table("tasks")]
 public class TaskEntity : ISoftDeletable, IUserOwnedEntity
 {
@@ -25,7 +51,7 @@ public class TaskEntity : ISoftDeletable, IUserOwnedEntity
     [Column("deleted_by_operation_kind")][MaxLength(64)] public string? DeletedByOperationKind { get; set; }
     [Column("due")] public DateTimeOffset? Due { get; set; }
     [Column("completed_at")] public DateTimeOffset? CompletedAt { get; set; }
-    [Column("status")][MaxLength(20)] public string Status { get; set; } = "NEEDS-ACTION";
+    [Column("status")][MaxLength(20)] public string Status { get; set; } = TaskStatuses.NeedsAction;
     [Column("state_reason")] public string StateReason { get; set; } = string.Empty;
     [Column("review_outcome")] public string ReviewOutcome { get; set; } = string.Empty;
     [Column("percent_complete")] public int PercentComplete { get; set; }

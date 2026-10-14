@@ -217,6 +217,51 @@ public sealed class OpenApiContractShapeTests
             operation.RequestBody.Content["application/json"].Schema.Reference?.ReferenceV3);
     }
 
+    // ===== C4：任务状态 enum（工单 03 D1.2 / AC-2）=====
+
+    private static readonly string[] ExpectedTaskStatuses =
+        ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"];
+
+    /// <summary>
+    /// 请求侧：三个任务状态写入口（新建 / 更新 / 批量更新）都必须标出 enum，
+    /// 且与服务端真实白名单（<c>TaskStatuses.All</c>）逐字一致。
+    /// </summary>
+    [Theory]
+    [InlineData("CreateTaskRequest")]
+    [InlineData("UpdateTaskRequest")]
+    [InlineData("BatchTaskUpdateRequest")]
+    public void TaskStatusRequestSchemasDeclareTheEnum(string schemaName)
+    {
+        var status = Schema(schemaName).Properties["status"];
+
+        Assert.Null(status.Reference);
+        Assert.Equal("string", status.Type);
+        Assert.Equal(
+            ExpectedTaskStatuses,
+            status.Enum.OfType<OpenApiString>().Select(v => v.Value));
+    }
+
+    /// <summary>
+    /// 响应侧：<c>TaskResponse.status</c> 同样带 enum（工单 03 AC-2 要求分别贴出请求侧与响应侧片段）。
+    /// 响应侧进的是 <c>StrictValueSetsSchemaFilter</c> 里另开的「响应取值域」分区 —— 那里不存在
+    /// 「服务端校验」对应物，依据是写入侧已受控（CalendarService.ValidateTaskStatus 是唯一写入口）。
+    /// </summary>
+    [Fact]
+    public void TaskResponseStatusDeclaresTheEnum()
+    {
+        var status = Schema("TaskResponse").Properties["status"];
+
+        Assert.Equal("string", status.Type);
+        Assert.Equal(
+            ExpectedTaskStatuses,
+            status.Enum.OfType<OpenApiString>().Select(v => v.Value));
+    }
+
+    /// <summary>请求侧 enum 必须与运行时白名单同源，防止「契约写了、校验没写」或反过来。</summary>
+    [Fact]
+    public void TaskStatusEnumMatchesTheServerSideWhitelist()
+        => Assert.Equal(Pim.Module.Calendar.Entities.TaskStatuses.All, ExpectedTaskStatuses);
+
     // ===== C3：displayName 契约改成可空 =====
 
     [Fact]

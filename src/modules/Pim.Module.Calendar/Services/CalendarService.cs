@@ -11,6 +11,9 @@ namespace Pim.Module.Calendar.Services;
 
 public class CalendarService
 {
+    /// <summary>工单 03 D1.1：任务状态集合外的值一律明确拒绝（400 + ApiResponse 包络）。</summary>
+    internal const int InvalidTaskStatusErrorCode = 02057;
+
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly RecurrenceService _recurrence;
@@ -1111,6 +1114,12 @@ public class CalendarService
 
         ManualDescriptionValidator.EnsureSafe(request.Description);
 
+        // 工单 03 D1.1：CreateTaskRequest.status 此前被**静默忽略**（任何值都不会落库），
+        // 而契约里又声明了该字段。现在改为「校验 + 真正写入」：集合外 → 400，
+        // 不传 → 仍是历史默认 NEEDS-ACTION。
+        var status = request.Status ?? TaskStatuses.NeedsAction;
+        ValidateTaskStatus(status);
+
         var task = new TaskEntity
         {
             UserId = UserId,
@@ -1126,7 +1135,9 @@ public class CalendarService
             MinimumSegment = minimumSegment,
             IsInbox = request.CalendarId is null && !dtStart.HasValue,
             DtStart = dtStart,
-            PlannedEnd = plannedEnd
+            PlannedEnd = plannedEnd,
+            Status = status,
+            CompletedAt = status == TaskStatuses.Completed ? _timeProvider.GetUtcNow() : null
         };
 
         _db.Set<TaskEntity>().Add(task);
@@ -1139,6 +1150,10 @@ public class CalendarService
         var task = await _db.Set<TaskEntity>()
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
             ?? throw new DomainException(02004, "任务不存在");
+
+        // 先校验再改写：非法状态在**任何字段被写入之前**就 400（AC-1）。
+        if (request.Status is not null)
+            ValidateTaskStatus(request.Status);
 
         if (request.CalendarId.HasValue)
         {
@@ -1182,9 +1197,12 @@ public class CalendarService
             task.IsInbox = false;
         if (request.Status is not null)
         {
+            var statusChangedAt = _timeProvider.GetUtcNow();
             task.Status = request.Status;
-            if (request.Status == "COMPLETED")
-                task.CompletedAt = _timeProvider.GetUtcNow();
+            // 与批量更新（BatchUpdateTasksAsync）口径对齐：离开 COMPLETED 时不再留着旧的完成时刻。
+            task.CompletedAt = request.Status == TaskStatuses.Completed ? statusChangedAt : null;
+            if (TaskStatuses.IsTerminal(request.Status))
+                await CloseRunningSegmentsAsync(task, request.Status, statusChangedAt, ct);
         }
         task.UpdatedAt = _timeProvider.GetUtcNow();
 
@@ -1250,6 +1268,10 @@ public class CalendarService
                 "没有更新任务");
         }
 
+        // 工单 03 D1.1：批量入口与单条入口共用同一份白名单；非法值在任何写入前 400。
+        if (request.Status is not null)
+            ValidateTaskStatus(request.Status);
+
         CalendarEntity? targetCalendar = null;
         if (request.CalendarId.HasValue)
         {
@@ -1264,12 +1286,25 @@ public class CalendarService
             .ToListAsync(ct);
         var now = _timeProvider.GetUtcNow();
 
+        // 一次性把本批次里「正在计时」的段捞出来，避免逐任务查询（N+1）；
+        // 任务进入终态时统一闭合，保证「段在跑但状态已完成」不可能出现（D3 / AC-8）。
+        var runningSegments = TaskStatuses.IsTerminal(request.Status ?? string.Empty)
+            ? await _db.Set<TaskExecutionSegmentEntity>()
+                .Where(s => s.UserId == UserId && ids.Contains(s.TaskId) && s.EndsAt == null)
+                .ToListAsync(ct)
+            : new List<TaskExecutionSegmentEntity>();
+
         foreach (var task in tasks)
         {
             if (request.Status is not null)
             {
                 task.Status = request.Status;
-                task.CompletedAt = request.Status == "COMPLETED" ? now : null;
+                task.CompletedAt = request.Status == TaskStatuses.Completed ? now : null;
+                if (TaskStatuses.IsTerminal(request.Status))
+                {
+                    foreach (var segment in runningSegments.Where(s => s.TaskId == task.Id))
+                        CloseRunningSegment(segment, request.Status, now);
+                }
             }
 
             if (request.Priority.HasValue)
@@ -1468,6 +1503,52 @@ public class CalendarService
     {
         if (start.HasValue && end.HasValue && end.Value <= start.Value)
             throw new DomainException(02010, "结束时间必须晚于开始时间");
+    }
+
+    /// <summary>
+    /// 工单 03 D1.1：任务状态收敛为受控值域。集合外的值**明确拒绝**（02057 → HTTP 400，
+    /// 走既有 <c>ApiResponse</c> 包络），不再静默写入任意 ≤20 字符的字符串。
+    /// 错误信息带上允许值，便于 MCP / 脚本调用方自助修正。
+    /// </summary>
+    private static void ValidateTaskStatus(string status)
+    {
+        if (!TaskStatuses.IsValid(status))
+        {
+            throw new DomainException(
+                InvalidTaskStatusErrorCode,
+                $"任务状态 '{status}' 无效；允许值：{string.Join(", ", TaskStatuses.All)}");
+        }
+    }
+
+    /// <summary>
+    /// 工单 03 D3 / AC-8：任务进入终态时，把它「正在计时」的段闭合掉
+    /// （COMPLETED → 段 completed；CANCELLED → 段 cancelled），从而在服务端保证不变量：
+    /// **终态任务下不存在 ends_at IS NULL 的执行段**。
+    /// </summary>
+    private async Task CloseRunningSegmentsAsync(
+        TaskEntity task,
+        string taskStatus,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var running = await _db.Set<TaskExecutionSegmentEntity>()
+            .Where(s => s.TaskId == task.Id && s.UserId == task.UserId && s.EndsAt == null)
+            .ToListAsync(ct);
+        foreach (var segment in running)
+            CloseRunningSegment(segment, taskStatus, now);
+    }
+
+    private static void CloseRunningSegment(
+        TaskExecutionSegmentEntity segment,
+        string taskStatus,
+        DateTimeOffset now)
+    {
+        // 时钟回拨 / 固定时钟场景下 now 可能早于 startsAt —— 不允许写出 ends_at < starts_at 的段。
+        segment.EndsAt = now < segment.StartsAt ? segment.StartsAt : now;
+        segment.Status = taskStatus == TaskStatuses.Cancelled
+            ? TaskSegmentStatuses.Cancelled
+            : TaskSegmentStatuses.Completed;
+        segment.UpdatedAt = now;
     }
 
     private static TimeSpan? ParseEstimatedDuration(string? value)

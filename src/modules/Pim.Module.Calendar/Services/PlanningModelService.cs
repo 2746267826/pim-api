@@ -42,19 +42,22 @@ public class PlanningModelService
     private readonly IOperationConfirmationService? _confirmationService;
     private readonly RecurrenceService _recurrence;
     private readonly IAiGateway? _aiGateway;
+    private readonly TimeProvider _timeProvider;
 
     public PlanningModelService(
         PimDbContext db,
         ICurrentUserService currentUser,
         IOperationConfirmationService? confirmationService = null,
         RecurrenceService? recurrence = null,
-        IAiGateway? aiGateway = null)
+        IAiGateway? aiGateway = null,
+        TimeProvider? timeProvider = null)
     {
         _db = db;
         _currentUser = currentUser;
         _confirmationService = confirmationService;
         _recurrence = recurrence ?? new RecurrenceService(NullLogger<RecurrenceService>.Instance);
         _aiGateway = aiGateway;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "Login required");
@@ -104,12 +107,16 @@ public class PlanningModelService
 
         if (requestedLayers.Contains("task-segments"))
         {
+            // 工单 03 D2.1：ends_at 变为可空后，「正在计时」的段（ends_at IS NULL）必须仍然出现在
+            // 图层里。直接写 s.EndsAt > query.Start 在 SQL 里对 NULL 结果是 unknown，整行会被过滤掉，
+            // 于是计时一开始段就从日历上消失。开放段以查询时刻为右端参与判定与展示。
+            var layerNow = _timeProvider.GetUtcNow();
             var segments = await _db.Set<TaskExecutionSegmentEntity>()
                 .AsNoTracking()
                 .Include(s => s.Task)
                 .Where(s => s.UserId == userId
                     && s.StartsAt < query.End
-                    && s.EndsAt > query.Start)
+                    && (s.EndsAt ?? layerNow) > query.Start)
                 .ToListAsync(ct);
 
             items.AddRange(segments
@@ -121,7 +128,7 @@ public class PlanningModelService
                     s.Id,
                     s.Task.Title,
                     s.StartsAt,
-                    s.EndsAt,
+                    s.EndsAt ?? layerNow,
                     s.Source,
                     s.Status,
                     "#22C55E",
@@ -1020,10 +1027,163 @@ public class PlanningModelService
             .FirstOrDefaultAsync(s => s.Id == segmentId && s.TaskId == taskId && s.UserId == userId, ct)
             ?? throw new DomainException(02025, "Task execution segment does not exist");
 
+        // 工单 03 D2.1：正在计时的段不能直接删掉 —— 否则任务会停在 IN-PROCESS 却没有任何在跑的段，
+        // 且「累计时长」失去了闭合时刻。先暂停或结束再删。
+        if (segment.EndsAt is null)
+            throw new DomainException(02059, "正在计时的执行段不能删除，请先暂停或结束");
+
         var now = DateTimeOffset.UtcNow;
         segment.DeletedAt = now;
         segment.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
+    }
+
+    // ── 计时（工单 03 D2.1）───────────────────────────────────────────────────
+    //
+    // 语义：一次「开始 → … → 结束」= 一条段。段在跑时 ends_at IS NULL（Status=active）；
+    // 「暂停」闭合当前段（Status=paused）；「再开始」新建下一条 active 段；
+    // 「结束」闭合当前段（Status=completed）。因此**累计时长 = 各段区间之和**，
+    // 暂停期间不会被算进来（暂停期间没有开放段）。
+    // 同一任务同时只允许一条开放段，避免重复计时。
+
+    /// <summary>开始计时：新建开放段，并把任务自然推进到 IN-PROCESS。</summary>
+    public async Task<TaskExecutionSegmentResponse> StartTimerAsync(Guid taskId, CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var task = await GetTaskAsync(taskId, userId, ct);
+
+        if (TaskStatuses.IsTerminal(task.Status))
+            throw new DomainException(02060, $"任务状态为 {task.Status}，不能开始计时");
+
+        await EnsureNoRunningSegmentAsync(task.Id, userId, ct);
+
+        var now = _timeProvider.GetUtcNow();
+        var segment = new TaskExecutionSegmentEntity
+        {
+            TaskId = task.Id,
+            UserId = userId,
+            StartsAt = now,
+            EndsAt = null,
+            Status = TaskSegmentStatuses.Active,
+            Source = TimerSource,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        _db.Set<TaskExecutionSegmentEntity>().Add(segment);
+
+        // 「进入 IN-PROCESS 就自然进入计时」的反向：开始计时即进入 IN-PROCESS。
+        task.Status = TaskStatuses.InProcess;
+        task.CompletedAt = null;
+        task.UpdatedAt = now;
+
+        await _db.SaveChangesAsync(ct);
+        return MapSegment(segment, task.Title);
+    }
+
+    /// <summary>暂停计时：闭合当前开放段（paused）。</summary>
+    public async Task<TaskExecutionSegmentResponse> PauseTimerAsync(Guid taskId, CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var task = await GetTaskAsync(taskId, userId, ct);
+        var segment = await GetRunningSegmentAsync(task.Id, userId, ct)
+            ?? throw new DomainException(02059, "该任务没有正在进行的计时");
+
+        var now = _timeProvider.GetUtcNow();
+        CloseSegment(segment, TaskSegmentStatuses.Paused, now);
+        task.UpdatedAt = now;
+        await _db.SaveChangesAsync(ct);
+        return MapSegment(segment, task.Title);
+    }
+
+    /// <summary>结束计时：闭合当前开放段（completed）。</summary>
+    public async Task<TaskExecutionSegmentResponse> StopTimerAsync(Guid taskId, CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var task = await GetTaskAsync(taskId, userId, ct);
+        var segment = await GetRunningSegmentAsync(task.Id, userId, ct)
+            ?? throw new DomainException(02059, "该任务没有正在进行的计时");
+
+        var now = _timeProvider.GetUtcNow();
+        CloseSegment(segment, TaskSegmentStatuses.Completed, now);
+        task.UpdatedAt = now;
+        await _db.SaveChangesAsync(ct);
+        return MapSegment(segment, task.Title);
+    }
+
+    /// <summary>
+    /// 任务计时状态 + 累计实际时长（工单 03 D2.1「可累加、可查询」/ D3 报告数据源）。
+    /// 正在计时的段按「查询时刻 - startsAt」计入，因此报告侧读到的始终是当下的累计值。
+    /// </summary>
+    public async Task<TaskTimerStateResponse> GetTimerStateAsync(Guid taskId, CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var task = await GetTaskAsync(taskId, userId, ct);
+        var segments = await _db.Set<TaskExecutionSegmentEntity>()
+            .AsNoTracking()
+            .Where(s => s.TaskId == task.Id && s.UserId == userId)
+            .OrderBy(s => s.StartsAt)
+            .ToListAsync(ct);
+
+        var running = segments.FirstOrDefault(s => s.EndsAt is null);
+        return new TaskTimerStateResponse(
+            task.Id,
+            task.Status,
+            running?.Id,
+            running?.StartsAt,
+            AccumulatedSeconds(segments, _timeProvider.GetUtcNow()),
+            segments.Count);
+    }
+
+    /// <summary>
+    /// 累计实际执行时长（秒）：只统计 <c>active/paused/completed</c> 段；
+    /// <c>planned</c>（未执行）与 <c>cancelled</c>（随任务取消中止）不计入。
+    /// 开放段以 <paramref name="now"/> 为右端。
+    ///
+    /// 每段按**四舍五入**取秒：pim-web 的行内时长用同一口径，这样界面上「各行之和」
+    /// 与「累计值」不会因为一个向下取整、一个四舍五入而对不上（工单 03 D2.1 的显示一致性）。
+    /// </summary>
+    public static long AccumulatedSeconds(
+        IEnumerable<TaskExecutionSegmentEntity> segments,
+        DateTimeOffset now)
+    {
+        long total = 0;
+        foreach (var segment in segments)
+        {
+            if (!TaskSegmentStatuses.CountsAsExecuted(segment.Status))
+                continue;
+
+            var end = segment.EndsAt ?? now;
+            if (end > segment.StartsAt)
+                total += (long)Math.Round((end - segment.StartsAt).TotalSeconds, MidpointRounding.AwayFromZero);
+        }
+
+        return total;
+    }
+
+    private const string TimerSource = "timer";
+
+    private async Task<TaskExecutionSegmentEntity?> GetRunningSegmentAsync(
+        Guid taskId,
+        Guid userId,
+        CancellationToken ct)
+        => await _db.Set<TaskExecutionSegmentEntity>()
+            .FirstOrDefaultAsync(s => s.TaskId == taskId && s.UserId == userId && s.EndsAt == null, ct);
+
+    private async Task EnsureNoRunningSegmentAsync(Guid taskId, Guid userId, CancellationToken ct)
+    {
+        if (await GetRunningSegmentAsync(taskId, userId, ct) is not null)
+            throw new DomainException(02058, "该任务已有正在进行的计时，请先暂停或结束");
+    }
+
+    private static void CloseSegment(
+        TaskExecutionSegmentEntity segment,
+        string status,
+        DateTimeOffset now)
+    {
+        // 固定/回拨时钟下 now 可能早于 startsAt —— 不写出 ends_at < starts_at 的段。
+        segment.EndsAt = now < segment.StartsAt ? segment.StartsAt : now;
+        segment.Status = status;
+        segment.UpdatedAt = now;
     }
 
     private async Task<TaskEntity> GetTaskAsync(Guid taskId, Guid userId, CancellationToken ct)

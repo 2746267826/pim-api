@@ -1,5 +1,6 @@
 using Microsoft.OpenApi.Any;
 using Microsoft.OpenApi.Models;
+using Pim.Module.Calendar.Entities;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
 namespace Pim.Api.Infrastructure.OpenApi;
@@ -27,6 +28,33 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
 
         // DataCenterGovernanceService：batch Action 仅接受 "archive"（其余 → 02049，大小写不敏感）
         ["DataCenterBatchOperationRequest.Action"] = ["archive"],
+
+        // 工单 03 D1：任务状态受控值域。三个**请求**入口共用同一份白名单，
+        // 服务端校验都在 CalendarService：CreateTaskAsync / UpdateTaskAsync /
+        // BatchUpdateTasksAsync 都调用 ValidateTaskStatus → 集合外 02057（HTTP 400）。
+        // 取值来自唯一真值来源 TaskStatuses.All，与运行时校验同源。
+        ["CreateTaskRequest.Status"] = TaskStatuses.All,
+        ["UpdateTaskRequest.Status"] = TaskStatuses.All,
+        ["BatchTaskUpdateRequest.Status"] = TaskStatuses.All,
+    };
+
+    /// <summary>
+    /// **响应取值域**（与上面的请求表分开）：
+    ///
+    /// 上面的表要求「每一条都必须对应真实的服务端校验代码」。响应侧不存在这样的对应物 ——
+    /// <c>TaskResponse.status</c> 的值是服务端自己写出来的（<c>tasks.status</c>），
+    /// 没有「客户端传错 → 400」的校验可言。把它硬塞进同一张表会破坏该表自己声明的规则，
+    /// 所以这里另开一区：进这一区的字段，依据是**服务端写入侧的值域已受控**
+    /// （<c>CalendarService.ValidateTaskStatus</c> 是 tasks.status 的唯一写入口），
+    /// 因此响应里不可能出现集合外的值。工单 03 AC-2 要求请求侧与响应侧分别给出 enum 片段。
+    ///
+    /// ⚠️ 历史数据例外：收紧之前写入的集合外值不会被迁移（工单 D1.3「不得丢数据、不得批量改写语义」），
+    /// 所以**旧行**的 status 仍可能不在 enum 里；enum 描述的是「新写入与本次改动后的服务端行为」。
+    /// </summary>
+    private static readonly Dictionary<string, string[]> ResponseMap = new(StringComparer.Ordinal)
+    {
+        // 写入口唯一：CalendarService.CreateTaskAsync / UpdateTaskAsync / BatchUpdateTasksAsync
+        ["TaskResponse.Status"] = TaskStatuses.All,
     };
 
     public void Apply(OpenApiSchema schema, SchemaFilterContext context)
@@ -34,7 +62,16 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
         if (schema.Properties is null || schema.Properties.Count == 0)
             return;
 
-        foreach (var (key, values) in Map)
+        ApplyMap(schema, context, Map);
+        ApplyMap(schema, context, ResponseMap);
+    }
+
+    private static void ApplyMap(
+        OpenApiSchema schema,
+        SchemaFilterContext context,
+        Dictionary<string, string[]> map)
+    {
+        foreach (var (key, values) in map)
         {
             var dot = key.LastIndexOf('.');
             var typeName = key[..dot];

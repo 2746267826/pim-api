@@ -343,11 +343,26 @@ public record TaskExecutionSegmentResponse(
     Guid TaskId,
     string TaskTitle,
     DateTimeOffset StartsAt,
-    DateTimeOffset EndsAt,
+    // NULL = 该段正在计时（工单 03 D2.1）
+    DateTimeOffset? EndsAt,
     string Status,
     string Source,
     string? PlanningReason,
     Guid? ConfirmationId
+);
+
+/// <summary>
+/// 任务计时状态 + 累计实际时长（工单 03 D2.1「时长可累加、可查询」/ D3 报告侧数据源）。
+/// <paramref name="AccumulatedSeconds"/> = 该任务所有 <c>active/paused/completed</c> 段之和
+/// （正在计时的段按「查询时刻 - startsAt」计入；<c>planned</c> 与 <c>cancelled</c> 段不计）。
+/// </summary>
+public record TaskTimerStateResponse(
+    Guid TaskId,
+    string TaskStatus,
+    Guid? RunningSegmentId,
+    DateTimeOffset? RunningSince,
+    long AccumulatedSeconds,
+    int SegmentCount
 );
 
 public record CreateDomainProjectRequest(
