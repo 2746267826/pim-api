@@ -6,9 +6,9 @@ import { uploadEngine, type TransferItem } from './upload-engine'
 
 export const filesKeys = {
   providers: ['files', 'providers'] as const,
-  items: (path: string, q: string, sort: string, order: string) =>
-    ['files', 'items', path, q, sort, order] as const,
-  search: (q: string) => ['files', 'search', q] as const,
+  items: (providerId: string, path: string, q: string, sort: string, order: string) =>
+    ['files', 'items', providerId, path, q, sort, order] as const,
+  search: (q: string, providerId?: string) => ['files', 'search', providerId ?? 'all', q] as const,
   syncStatus: (providerId: string) => ['files', 'sync-status', providerId] as const,
   shares: (id: string) => ['files', 'shares', id] as const,
   allShares: ['files', 'all-shares'] as const,
@@ -19,23 +19,32 @@ export function useProviders() {
   return useQuery({ queryKey: filesKeys.providers, queryFn: filesApi.providers })
 }
 
-export function useFileItems(path: string, q: string, sort: string, order: string) {
+/**
+ * 目录列表。**必须带 providerId**：列表按账号（后端口径），
+ * 不传时后端在多账号下会明确报错而不是把两个盘合并成一棵树。
+ */
+export function useFileItems(providerId: string | undefined, path: string, q: string, sort: string, order: string) {
   return useQuery({
-    queryKey: filesKeys.items(path, q, sort, order),
-    queryFn: () => filesApi.listItems({ path, q: q || undefined, sort, order }),
+    queryKey: filesKeys.items(providerId ?? '', path, q, sort, order),
+    queryFn: () => filesApi.listItems({ path, providerId: providerId!, q: q || undefined, sort, order }),
+    enabled: providerId != null,
     placeholderData: (prev) => prev,
   })
 }
 
-export function useFileSearch(q: string, enabled: boolean) {
+/**
+ * 跨账号搜索（后端口径：搜索默认搜全部账号，命中项自带 providerId）。
+ * 传 providerId 即收窄到单个账号；不传就是「所有网盘」。
+ */
+export function useFileSearch(q: string, enabled: boolean, providerId?: string) {
   const [debounced, setDebounced] = useState(q)
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(q), 250)
     return () => clearTimeout(timer)
   }, [q])
   return useQuery({
-    queryKey: filesKeys.search(debounced),
-    queryFn: () => filesApi.search(debounced),
+    queryKey: filesKeys.search(debounced, providerId),
+    queryFn: () => filesApi.search(debounced, 1, providerId),
     enabled: enabled && debounced.trim().length > 0,
   })
 }
@@ -67,7 +76,11 @@ export function useFileMutations() {
     void qc.invalidateQueries({ queryKey: ['files'] })
   }
   return {
-    createFolder: useMutation({ mutationFn: (path: string) => filesApi.createFolder(path), onSuccess: invalidate }),
+    createFolder: useMutation({
+      mutationFn: ({ path, providerId }: { path: string; providerId: string }) =>
+        filesApi.createFolder(path, providerId),
+      onSuccess: invalidate,
+    }),
     move: useMutation({
       mutationFn: ({ id, destinationPath }: { id: string; destinationPath: string }) => filesApi.move(id, destinationPath),
       onSuccess: invalidate,

@@ -21,9 +21,12 @@ interface TreeState {
 }
 
 export function FolderTree({
+  providerId,
   currentPath,
   onNavigate,
 }: {
+  /** 目录树必须绑定到具体账号：不同网盘的 path 空间不能混用 */
+  providerId: string
   currentPath: string
   onNavigate: (path: string) => void
 }) {
@@ -31,9 +34,12 @@ export function FolderTree({
   const [byPath, setByPath] = useState<Record<string, TreeState>>({})
 
   useEffect(() => {
+    // 切换账号时目录树必须整棵重载，否则会把上一个网盘的目录当成这个网盘的
+    setByPath({})
+    setExpanded(new Set(['/']))
     void load('/')
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [providerId])
 
   /** 逐文件夹顺序拉取（硬上限 20 页/文件夹） */
   async function load(path: string) {
@@ -46,7 +52,7 @@ export function FolderTree({
       const all: FileItem[] = []
       let truncated = false
       for (;;) {
-        const res = await filesApi.listItems({ path, page, pageSize: 100, type: 'folder' })
+        const res = await filesApi.listItems({ path, providerId, page, pageSize: 100, type: 'folder' })
         all.push(...res.result.items)
         if (page >= res.result.totalPages) break
         if (page >= PAGE_LIMIT) {

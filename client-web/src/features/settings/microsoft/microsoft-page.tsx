@@ -553,8 +553,18 @@ function OutlookDangerZone({ onChanged }: { onChanged: () => void }) {
 /* ── OneDrive Tab：绑定 + 同步状态 ─────────────────────────── */
 
 function OneDriveTab({ onChanged }: { onChanged: () => void }) {
-  const provider = useProviders().data?.[0]
-  const syncStatus = useSyncStatus(provider?.id)
+  const providers = useProviders()
+  // 工单 05 / F2.3：不再写死 providers[0]。同一 provider 可以有多个账号，
+  // 这里列出全部并让用户选一个查看/操作（默认选中「默认落点」那个）。
+  const accounts = (providers.data ?? []).filter((p) => p.provider === 'onedrive')
+  const connectedAccounts = accounts.filter((a) => a.status === 'connected')
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null)
+  const provider =
+    connectedAccounts.find((a) => a.id === selectedAccountId) ??
+    connectedAccounts.find((a) => a.isDefault) ??
+    connectedAccounts[0] ??
+    accounts[0]
+  const syncStatus = useSyncStatus(provider?.status === 'connected' ? provider.id : undefined)
   const [bindingSession, setBindingSession] = useState<{ providerId: string; userCode: string; verificationUri: string; expiresAt: string | null } | null>(null)
   const [manualBinding, setManualBinding] = useState(false)
 
@@ -564,6 +574,60 @@ function OneDriveTab({ onChanged }: { onChanged: () => void }) {
 
   return (
     <div className="space-y-4">
+      {/* 账号列表：多账号并存时能看出各自的行与游标，并指定默认落点 */}
+      {accounts.length > 0 && (
+        <Card className="p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <CardTitle>OneDrive 账号</CardTitle>
+            <Chip className="ml-auto">{connectedAccounts.length} 个已连接</Chip>
+          </div>
+          <div className="mt-3 space-y-2">
+            {accounts.map((account) => (
+              <div
+                key={account.id}
+                className={cn(
+                  'flex flex-wrap items-center gap-2 rounded-ctl border px-3 py-2 text-[13px]',
+                  account.id === provider?.id ? 'border-primary bg-primary-soft/40' : 'border-border',
+                )}
+              >
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate text-left outline-none"
+                  onClick={() => setSelectedAccountId(account.id)}
+                >
+                  {account.accountName ?? account.accountId ?? account.id.slice(0, 8)}
+                </button>
+                {account.isDefault && <Chip>默认落点</Chip>}
+                <StatusBadge tone={account.status === 'connected' ? 'ok' : account.status === 'expired' ? 'warn' : 'neutral'}>
+                  {account.status === 'connected' ? '已连接' : account.status === 'expired' ? '授权已失效' : '待授权'}
+                </StatusBadge>
+                <span className="tnum text-[11px] text-text-4">本次同步 {account.syncedItemCount}</span>
+                {account.status === 'connected' && !account.isDefault && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        await filesApi.setDefault(account.id)
+                        notifySuccess('已设为默认落点账号（附件与闪念图片存入该账号）')
+                        onChanged()
+                      } catch (err) {
+                        notifyError(err instanceof Error ? err.message : '设置失败')
+                      }
+                    }}
+                  >
+                    设为默认
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] text-text-4">
+            附件与闪念图片存入「默认落点」账号；文件页可在账号之间切换浏览。
+          </p>
+        </Card>
+      )}
+
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         {/* 绑定状态 / 手动绑定 */}
         <Card className="p-4">
@@ -629,11 +693,19 @@ function OneDriveTab({ onChanged }: { onChanged: () => void }) {
                 onClick={async () => {
                   try {
                     const s = await filesApi.bindOneDrive(provider?.clientId ?? '')
+            if (!s.userCode || !s.verificationUri) {
+              notifyError('绑定响应缺少设备码，请重试')
+              return
+            }
+                    if (!s.userCode || !s.verificationUri) {
+                      notifyError('绑定响应缺少设备码，请重试')
+                      return
+                    }
                     setBindingSession({
                       providerId: s.providerId,
                       userCode: s.userCode,
                       verificationUri: s.verificationUri,
-                      expiresAt: new Date(Date.now() + s.expiresIn * 1000).toISOString(),
+                      expiresAt: new Date(Date.now() + (s.expiresIn ?? 900) * 1000).toISOString(),
                     })
                   } catch (err) {
                     notifyError(err instanceof Error ? err.message : '发起绑定失败')
@@ -685,11 +757,15 @@ function OneDriveTab({ onChanged }: { onChanged: () => void }) {
               }
             }
             const s = await filesApi.bindOneDrive(provider?.clientId ?? '')
+            if (!s.userCode || !s.verificationUri) {
+              // 抛出去让向导显示原因；静默 return 会让按钮「点了没反应」
+              throw new Error('绑定响应缺少设备码，请重试')
+            }
             const session = {
               providerId: s.providerId,
               userCode: s.userCode,
               verificationUri: s.verificationUri,
-              expiresAt: new Date(Date.now() + s.expiresIn * 1000).toISOString(),
+              expiresAt: new Date(Date.now() + (s.expiresIn ?? 900) * 1000).toISOString(),
             }
             setBindingSession(session)
             return { sessionId: session.providerId, userCode: session.userCode, verificationUri: session.verificationUri, expiresAt: session.expiresAt }

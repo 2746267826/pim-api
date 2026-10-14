@@ -6,27 +6,36 @@ import type {
   FileProvider,
   FileShare,
   FileTextSnapshot,
-  OneDriveBindingStart,
-  OneDriveBindingStatus,
+  ProviderBindingStart,
+  ProviderBindingStatus,
   SyncStatus,
   UploadSession,
 } from './types'
 
 export const filesApi = {
-  /* 提供程序绑定 */
+  /* 网盘账号绑定（同一 provider 可并存多个账号） */
   providers: () => apiGet<FileProvider[]>('/api/v1/files/providers'),
   bindOneDrive: (clientId: string) =>
-    apiPost<OneDriveBindingStart>('/api/v1/files/providers/onedrive', { clientId }),
+    apiPost<ProviderBindingStart>('/api/v1/files/providers/onedrive', { clientId }),
+  /**
+   * 发起 Google 浏览器跳转授权。返回 authorizationUrl，
+   * 调用方需 `window.location.assign(url)` 整页跳转 ——
+   * 浏览器跳转授权无法由脚本自动完成，必须由人在 Google 页面上点「同意」。
+   */
+  authorizeGoogle: () =>
+    apiPost<ProviderBindingStart>('/api/v1/files/providers/google/authorize', {}),
   bindingStatus: (id: string) =>
-    apiGet<OneDriveBindingStatus>(`/api/v1/files/providers/${id}/binding-status`),
+    apiGet<ProviderBindingStatus>(`/api/v1/files/providers/${id}/binding-status`),
+  /** 切换附件/闪念图片的默认落点账号 */
+  setDefault: (id: string) => apiPost<boolean>(`/api/v1/files/providers/${id}/default`, {}),
   unbind: (id: string) => apiDelete<boolean>(`/api/v1/files/providers/${id}`),
   startSync: (id: string) =>
     apiPost<{ started: boolean; message: string }>(`/api/v1/files/providers/${id}/sync`, {}),
   syncStatus: (id: string) => apiGet<SyncStatus>(`/api/v1/files/providers/${id}/sync-status`),
 
   /* 目录与条目 */
-  listItems: (params: { path: string; page?: number; pageSize?: number; q?: string; sort?: string; order?: string; type?: string }) => {
-    const q = new URLSearchParams({ path: params.path })
+  listItems: (params: { path: string; providerId: string; page?: number; pageSize?: number; q?: string; sort?: string; order?: string; type?: string }) => {
+    const q = new URLSearchParams({ path: params.path, providerId: params.providerId })
     if (params.page) q.set('page', String(params.page))
     q.set('pageSize', String(params.pageSize ?? 100))
     if (params.q) q.set('q', params.q)
@@ -35,11 +44,14 @@ export const filesApi = {
     if (params.type) q.set('type', params.type)
     return apiGet<{ result: PagedResult<FileItem> }>(`/api/v1/files/items?${q}`)
   },
-  search: (q: string, page = 1) =>
+  // 搜索默认跨账号（后端口径）：结果里的每条都带 providerId，可显式按账号过滤。
+  search: (q: string, page = 1, providerId?: string) =>
     apiGet<{ items: FileItem[]; totalCount: number; totalPages: number }>(
-      `/api/v1/files/search?q=${encodeURIComponent(q)}&mode=keyword&page=${page}&pageSize=100`,
+      `/api/v1/files/search?q=${encodeURIComponent(q)}&mode=keyword&page=${page}&pageSize=100`
+        + (providerId ? `&providerId=${encodeURIComponent(providerId)}` : ''),
     ),
-  folderTreeChildren: (path: string) => filesApi.listItems({ path, pageSize: 100, type: 'folder' }),
+  folderTreeChildren: (path: string, providerId: string) =>
+    filesApi.listItems({ path, providerId, pageSize: 100, type: 'folder' }),
 
   /* 上传（双通道） */
   uploadSimple: (providerId: string, path: string, file: File) => {
@@ -49,13 +61,14 @@ export const filesApi = {
     form.append('file', file)
     return apiUpload<FileItem>('/api/v1/files/items/upload', form)
   },
-  createUploadSession: (path: string, fileName: string) =>
-    apiPost<UploadSession>('/api/v1/files/items/upload-session', { path, fileName }),
-  completeUploadSession: (path: string, fileName: string, uploadedItemId?: string) =>
-    apiPost<FileItem>('/api/v1/files/items/upload-session/complete', { path, fileName, uploadedItemId }),
+  createUploadSession: (path: string, fileName: string, providerId: string) =>
+    apiPost<UploadSession>('/api/v1/files/items/upload-session', { path, fileName, providerId }),
+  completeUploadSession: (path: string, fileName: string, providerId: string, uploadedItemId?: string) =>
+    apiPost<FileItem>('/api/v1/files/items/upload-session/complete', { path, fileName, providerId, uploadedItemId }),
 
   /* 整理 */
-  createFolder: (path: string) => apiPost<FileItem>('/api/v1/files/folders', { path }),
+  createFolder: (path: string, providerId: string) =>
+    apiPost<FileItem>('/api/v1/files/folders', { path, providerId }),
   move: (id: string, destinationPath: string) =>
     apiPost<FileItem>(`/api/v1/files/items/${id}/move`, { destinationPath }),
   rename: (id: string, name: string) => apiPost<FileItem>(`/api/v1/files/items/${id}/rename`, { name }),

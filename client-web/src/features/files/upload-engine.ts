@@ -179,7 +179,7 @@ export class UploadEngine {
 
   /** Graph 会话分片直传（字节不经过 PIM 服务器；分片 PUT 不带认证头） */
   private async uploadBySession(item: TransferItem) {
-    const session = await filesApi.createUploadSession(item.targetPath, item.fileName)
+    const session = await filesApi.createUploadSession(item.targetPath, item.fileName, item.providerId)
     let offset = 0
     let uploadedItemId: string | undefined
 
@@ -222,7 +222,7 @@ export class UploadEngine {
       this.emit()
     }
 
-    await filesApi.completeUploadSession(item.targetPath, item.fileName, uploadedItemId)
+    await filesApi.completeUploadSession(item.targetPath, item.fileName, item.providerId, uploadedItemId)
     item.progress = 1
     this.emit()
   }

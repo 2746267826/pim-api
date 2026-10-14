@@ -46,6 +46,7 @@ const DeviceDetailPage = lazyPage(() => import('@/features/mobile/pages/device-d
 
 const FilesPage = lazyPage(() => import('@/features/files/pages/files-page'), 'FilesPage')
 const MicrosoftPage = lazyPage(() => import('@/features/settings/microsoft/microsoft-page'), 'MicrosoftPage')
+const GoogleDrivePage = lazyPage(() => import('@/features/settings/google/google-page'), 'GoogleDrivePage')
 const AppKnowledgeBasePage = lazyPage(() => import('@/features/knowledge/pages/app-knowledge-page'), 'AppKnowledgeBasePage')
 const CategoryTreePage = lazyPage(() => import('@/features/knowledge/pages/app-knowledge-page'), 'CategoryTreePage')
 const EndpointShellPage = lazyPage(() => import('@/features/endpoints/pages/endpoint-shell-page'), 'EndpointShellPage')
@@ -119,6 +120,7 @@ export const router = createBrowserRouter([
           { path: 'settings', element: <SettingsHubPage /> },
           { path: 'settings/server', element: <ServerSettingsPage /> },
           { path: 'settings/microsoft', element: <MicrosoftPage /> },
+          { path: 'settings/google', element: <GoogleDrivePage /> },
           { path: 'settings/data-reliability', element: <DataReliabilityPage /> },
           { path: 'settings/account', element: <AccountSecurityPage /> },
           { path: 'settings/sync', element: <Navigate to="/settings/microsoft?tab=outlook" replace /> },

@@ -36,7 +36,7 @@ import { STORAGE_KEYS, getJSON, setJSON } from '@/lib/storage'
 import { notifySuccess } from '@/lib/notify'
 import { Button, Card, Chip, EmptyState, Input, PageHeader, Segmented, Skeleton } from '@/components/ui'
 import { cn } from '@/lib/utils'
-import type { FileItem } from '../types'
+import { providerLabel, type FileItem } from '../types'
 
 interface BrowserMemory {
   path: string
@@ -50,7 +50,7 @@ interface BrowserMemory {
 
 const DEFAULT_MEMORY: BrowserMemory = { path: '/', sort: 'name', order: 'asc', view: 'list', searchScope: 'folder', expanded: true }
 
-/** 文件页（02 §files：OneDrive 三栏浏览器） */
+/** 文件页（02 §files：多网盘三栏浏览器，可在账号间切换） */
 export function FilesPage() {
   const [memory, setMemory] = useState<BrowserMemory>(() => ({ ...DEFAULT_MEMORY, ...getJSON<Partial<BrowserMemory>>(STORAGE_KEYS.fileBrowserMemory, {}) }))
   const [q, setQ] = useState('')
@@ -67,11 +67,36 @@ export function FilesPage() {
   const dragDepth = useRef(0)
 
   const providers = useProviders()
-  const provider = providers.data?.[0]
+  const accounts = providers.data ?? []
   const { items: transfers } = useTransferQueue()
 
+  /*
+   * 账号选择（多网盘）：仅显示**已连接**的账号；默认选中记住的那个，
+   * 其次是默认落点账号，最后退回第一个。绝不写死 providers[0] ——
+   * 那正是多账号第一次落地的坑（会把另一个账号的文件当成这个账号的）。
+   */
+  const connectedAccounts = useMemo(() => accounts.filter((a) => a.status === 'connected'), [accounts])
+  const [accountId, setAccountId] = useState<string | null>(() => getJSON<string | null>(STORAGE_KEYS.fileAccountId, null))
+  const provider = useMemo(
+    () =>
+      connectedAccounts.find((a) => a.id === accountId) ??
+      connectedAccounts.find((a) => a.isDefault) ??
+      connectedAccounts[0],
+    [connectedAccounts, accountId],
+  )
+
+  useEffect(() => {
+    if (provider && provider.id !== accountId) {
+      setAccountId(provider.id)
+      setJSON(STORAGE_KEYS.fileAccountId, provider.id)
+    }
+  }, [provider, accountId])
+
+  const providerId = provider?.id
+
   const isGlobalSearch = memory.searchScope === 'all' && q.trim().length > 0
-  const folderQuery = useFileItems(memory.path, isGlobalSearch ? '' : q, memory.sort, memory.order)
+  const folderQuery = useFileItems(providerId, memory.path, isGlobalSearch ? '' : q, memory.sort, memory.order)
+  // 搜索默认跨账号（与后端口径一致）；结果里的每条都带 providerId
   const globalQuery = useFileSearch(q, memory.searchScope === 'all')
 
   const listItems = isGlobalSearch ? (globalQuery.data?.items ?? []) : (folderQuery.data?.result.items ?? [])
@@ -122,7 +147,8 @@ export function FilesPage() {
     window.open(url, '_blank', 'noopener')
   }
 
-  async function openInOneDrive(item: FileItem) {
+  /** 在网盘网页端打开（OneDrive / Google Drive 各自的原生页面） */
+  async function openInProvider(item: FileItem) {
     const { url } = await filesApi.openLink(item.id)
     window.open(url, '_blank', 'noopener')
   }
@@ -131,15 +157,15 @@ export function FilesPage() {
   if (!providers.isLoading && provider == null) {
     return (
       <div>
-        <PageHeader title="文件" subtitle="OneDrive 文件浏览器" />
+        <PageHeader title="文件" subtitle="网盘文件浏览器" />
         <Card className="mx-auto max-w-[480px] p-6 text-center">
           <EmptyState
             icon={Link2}
-            title="尚未连接 OneDrive"
-            description="连接后即可在此浏览、上传、预览与分享文件（文件仍在你自己的 OneDrive 中）。"
+            title="尚未连接网盘"
+            description="连接 OneDrive 或 Google Drive 后即可在此浏览、上传、预览与分享文件（文件仍在你自己网盘里）。"
             action={
               <Button variant="primary" size="sm" onClick={() => (window.location.href = '/settings/microsoft?tab=onedrive')}>
-                <Link2 className="size-4" aria-hidden /> 去连接 OneDrive
+                <Link2 className="size-4" aria-hidden /> 去连接网盘
               </Button>
             }
           />
@@ -152,9 +178,37 @@ export function FilesPage() {
     <div className="flex h-full min-h-0 flex-col" onPaste={onPaste}>
       <PageHeader
         title="文件"
-        subtitle={provider?.accountName ? `OneDrive · ${provider.accountName}` : 'OneDrive 文件浏览器'}
+        subtitle={provider ? `${providerLabel(provider.provider)} · ${provider.accountName ?? '已连接'}` : '网盘文件浏览器'}
         actions={
           <>
+            {/* 账号选择：两个及以上账号时必须能切换（工单 F2.3 / AC-5） */}
+            {connectedAccounts.length > 1 && (
+              <label className="flex items-center gap-1.5 text-xs text-text-3">
+                <span className="sr-only">选择网盘账号</span>
+                <select
+                  aria-label="选择网盘账号"
+                  className="rounded-ctl border border-border bg-bg px-2 py-1 text-xs text-text-1 outline-none"
+                  value={provider?.id ?? ''}
+                  onChange={(e) => {
+                    setAccountId(e.target.value)
+                    setJSON(STORAGE_KEYS.fileAccountId, e.target.value)
+                    // 换账号 = 换一棵目录树，路径回到根并清空选择
+                    patchMemory({ path: '/' })
+                    setSelectedIds(new Set())
+                  }}
+                >
+                  {connectedAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {providerLabel(account.provider)} · {account.accountName ?? account.id.slice(0, 8)}
+                      {account.isDefault ? '（默认）' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {connectedAccounts.length === 1 && provider && (
+              <Chip>{providerLabel(provider.provider)}</Chip>
+            )}
             <Button variant="ghost" size="sm" className="lg:hidden" onClick={() => setTreeOpen(true)}>
               目录
             </Button>
@@ -178,7 +232,7 @@ export function FilesPage() {
       {syncStatus.data?.syncStatus === 'syncing' && (
         <div className="mb-2 flex items-center gap-2 rounded-ctl border border-info-border bg-info-soft px-3 py-1.5 text-xs text-info">
           <RefreshCw className="size-3.5 animate-spin" aria-hidden />
-          正在同步 OneDrive 目录…（每 2 秒刷新状态）
+          正在同步 {provider ? providerLabel(provider.provider) : '网盘'} 目录…（每 2 秒刷新状态）
         </div>
       )}
       {syncStatus.data?.syncStatus === 'error' && syncStatus.data.lastError && (
@@ -199,7 +253,13 @@ export function FilesPage() {
       <div className="flex min-h-0 flex-1 gap-4">
         {/* 左：文件夹树 */}
         <aside className="hidden w-[220px] shrink-0 overflow-y-auto rounded-card border border-border bg-bg p-2 shadow-card lg:block">
-          <FolderTree currentPath={memory.path} onNavigate={(p) => patchMemory({ path: p })} />
+          {providerId && (
+            <FolderTree
+              providerId={providerId}
+              currentPath={memory.path}
+              onNavigate={(p) => patchMemory({ path: p })}
+            />
+          )}
         </aside>
 
         {/* 中：工具行 + 列表（拖放热区） */}
@@ -324,7 +384,7 @@ export function FilesPage() {
                       onDelete={() => setDeleteDialog([item])}
                       onShare={() => setShareDialog(item)}
                       onDownload={() => void download(item)}
-                      onOpenOneDrive={() => void openInOneDrive(item)}
+                      onOpenOneDrive={() => void openInProvider(item)}
                     />
                   ))}
                 </tbody>
@@ -398,6 +458,7 @@ export function FilesPage() {
           <div className="absolute inset-0 bg-text-1/30" onClick={() => setTreeOpen(false)} />
           <div className="relative z-10 h-full w-[260px] animate-[pim-slide-in-left_240ms_cubic-bezier(.32,.72,.24,1)] overflow-y-auto bg-bg p-3">
             <FolderTree
+              providerId={provider?.id ?? ''}
               currentPath={memory.path}
               onNavigate={(p) => {
                 patchMemory({ path: p })
@@ -424,10 +485,11 @@ export function FilesPage() {
           mode={nameDialog.mode}
           target={nameDialog.target}
           currentPath={memory.path}
+          providerId={provider?.id ?? ''}
           onClose={() => setNameDialog(null)}
         />
       )}
-      {moveDialog && <MoveDialog items={moveDialog} onClose={() => setMoveDialog(null)} />}
+      {moveDialog && <MoveDialog items={moveDialog} providerId={provider?.id ?? ''} onClose={() => setMoveDialog(null)} />}
       {deleteDialog && <DeleteDialog items={deleteDialog} onClose={() => setDeleteDialog(null)} onDone={() => setSelectedIds(new Set())} />}
       {shareDialog && <ShareDialog item={shareDialog} onClose={() => setShareDialog(null)} />}
       {mySharesOpen && <MySharesDialog onClose={() => setMySharesOpen(false)} />}
@@ -537,7 +599,7 @@ function FileRow({
               <MenuItem onSelect={onShare}>
                 <ExternalLink className="size-3.5" aria-hidden /> 分享
               </MenuItem>
-              <MenuItem onSelect={onOpenOneDrive}>在 OneDrive 打开</MenuItem>
+              <MenuItem onSelect={onOpenOneDrive}>在网盘中打开</MenuItem>
               <DropdownMenu.Separator className="my-1 h-px bg-divider" />
               <MenuItem onSelect={onDelete} danger>
                 <Trash2 className="size-3.5" aria-hidden /> 删除
