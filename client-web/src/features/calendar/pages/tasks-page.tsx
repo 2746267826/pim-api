@@ -8,6 +8,7 @@ import { tasksApi } from '../api'
 import { TaskEditorDialog } from '../components/task-editor-dialog'
 import { TaskSegmentsDialog } from '../components/task-segments-dialog'
 import { TaskDetailDialog } from '../components/entity-detail-dialogs'
+import { TASK_STATUS } from '../types'
 import type { TaskResponse } from '../types'
 import { dayEndIso, dayStartIso, formatDurationC, formatTime } from '@/lib/datetime'
 import { celebrateOnce } from '@/lib/celebrate'
@@ -330,6 +331,12 @@ export function TasksPage() {
                       </button>
                       <div className="flex shrink-0 items-center gap-1.5">
                         {badge && <StatusBadge size="xs" tone={badge.tone} dot={false}>{badge.label}</StatusBadge>}
+                        {task.status === TASK_STATUS.inProcess && (
+                          <StatusBadge size="xs" tone="ok">进行中</StatusBadge>
+                        )}
+                        {task.status === TASK_STATUS.cancelled && (
+                          <StatusBadge size="xs" tone="neutral" dot={false}>已取消</StatusBadge>
+                        )}
                         {done && <StatusBadge size="xs" tone="ok" dot={false}>已完成</StatusBadge>}
                         <button
                           type="button"

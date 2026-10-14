@@ -4,6 +4,7 @@ import { Button, Dialog, DialogBody, DialogContent, DialogHeader, StatusBadge } 
 import { formatRange, formatTime, durationToMinutes, formatDuration } from '@/lib/datetime'
 import { htmlToPlainText } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { TASK_STATUS, TASK_STATUS_LABEL } from '../types'
 import type { EventResponse, TaskResponse } from '../types'
 import { readEventRrule } from '../rrule'
 
@@ -57,13 +58,6 @@ const SENSITIVITY_LABEL: Record<string, string> = {
 const STATUS_LABEL: Record<string, string> = {
   CONFIRMED: '已确认',
   TENTATIVE: '暂定',
-  CANCELLED: '已取消',
-}
-
-const TASK_STATUS_LABEL: Record<string, string> = {
-  'NEEDS-ACTION': '待办',
-  'IN-PROCESS': '进行中',
-  COMPLETED: '已完成',
   CANCELLED: '已取消',
 }
 
@@ -273,7 +267,18 @@ export function TaskDetailDialog({
             <h3 className={cn('text-[15px] font-semibold', task.status === 'COMPLETED' ? 'text-text-4 line-through' : 'text-text-1')}>
               {task.title}
             </h3>
-            <StatusBadge tone={task.status === 'COMPLETED' ? 'ok' : task.status === 'CANCELLED' ? 'neutral' : 'info'} dot={false}>
+            <StatusBadge
+              tone={
+                task.status === TASK_STATUS.completed
+                  ? 'ok'
+                  : task.status === TASK_STATUS.cancelled
+                    ? 'neutral'
+                    : task.status === TASK_STATUS.inProcess
+                      ? 'ok'
+                      : 'info'
+              }
+              dot
+            >
               {TASK_STATUS_LABEL[task.status] ?? task.status}
             </StatusBadge>
             {task.isInbox && <StatusBadge tone="warn" dot={false}>收集箱</StatusBadge>}

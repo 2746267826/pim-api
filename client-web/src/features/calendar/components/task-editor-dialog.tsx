@@ -6,6 +6,7 @@ import { Check, Plus, Trash2 } from 'lucide-react'
 import { ApiError } from '@/api/client'
 import type { components } from '@/api/generated'
 import { useChecklistMutations, useDeleteTask, useSaveTask } from '../queries'
+import { TASK_STATUS, TASK_STATUS_OPTIONS, TASK_STATUS_VALUES, isKnownTaskStatus, normalizeTaskStatus } from '../types'
 import type { TaskBook, TaskResponse } from '../types'
 import { fromLocalInputValue, toLocalInputValue } from '@/lib/datetime'
 import { InlineAlert, Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, Input, Label, Select, Textarea } from '@/components/ui'
@@ -21,7 +22,8 @@ const schema = z
     due: z.string(),
     dtStart: z.string(),
     plannedEnd: z.string(),
-    status: z.enum(['NEEDS-ACTION', 'COMPLETED', 'CANCELLED']),
+    // 取值来自 types.ts 的唯一真值来源（与契约 enum / 服务端白名单同源，工单 03 D1）
+    status: z.enum(TASK_STATUS_VALUES),
     percentComplete: z.string(),
     description: z.string(),
   })
@@ -34,12 +36,6 @@ const PRIORITY_OPTIONS = [
   { value: '1', label: '低（1）' },
   { value: '5', label: '中（5）' },
   { value: '9', label: '高（9）' },
-]
-
-const STATUS_OPTIONS = [
-  { value: 'NEEDS-ACTION', label: '待办' },
-  { value: 'COMPLETED', label: '已完成' },
-  { value: 'CANCELLED', label: '已取消' },
 ]
 
 /** 时长输入提示（hh:mm:ss；后端亦接受 ISO8601 PT1H30M） */
@@ -63,11 +59,14 @@ export function TaskEditorDialog({ open, onOpenChange, taskBooks, task, initialP
   const [error, setError] = useState<string | null>(null)
   const [newItem, setNewItem] = useState('')
 
+  // 值域外的历史状态（工单 03 D1.3 不迁移旧值）：显式提示，不静默改写
+  const legacyStatus = task && !isKnownTaskStatus(task.status) ? task.status : null
+
   const form = useForm<z.infer<typeof schema>>({
     resolver: zodResolver(schema),
     defaultValues: {
       title: '', taskBookId: '', priority: '5', estimatedDuration: '', minimumSegment: '',
-      due: '', dtStart: '', plannedEnd: '', status: 'NEEDS-ACTION', percentComplete: '0', description: '',
+      due: '', dtStart: '', plannedEnd: '', status: TASK_STATUS.needsAction, percentComplete: '0', description: '',
     },
   })
 
@@ -85,7 +84,10 @@ export function TaskEditorDialog({ open, onOpenChange, taskBooks, task, initialP
         due: toLocalInputValue(task.due),
         dtStart: toLocalInputValue(task.dtStart),
         plannedEnd: toLocalInputValue(task.plannedEnd),
-        status: (task.status === 'COMPLETED' || task.status === 'CANCELLED' ? task.status : 'NEEDS-ACTION') as z.infer<typeof schema>['status'],
+        // 四值全部原样回显（工单 03 之前这里会把 IN-PROCESS 吞成 NEEDS-ACTION）；
+        // 只有**值域外的历史值**（收紧前写进库的自由字符串）才归一到「待办」，
+        // 并在下方给出显式提示，不静默改写。
+        status: normalizeTaskStatus(task.status),
         percentComplete: String(task.percentComplete ?? 0),
         description: task.description ?? '',
       })
@@ -93,7 +95,7 @@ export function TaskEditorDialog({ open, onOpenChange, taskBooks, task, initialP
       form.reset({
         title: '', taskBookId: '', priority: '5', estimatedDuration: '', minimumSegment: '',
         due: '', dtStart: initialPlannedStart ? toLocalInputValue(initialPlannedStart.toISOString()) : '',
-        plannedEnd: '', status: 'NEEDS-ACTION', percentComplete: '0', description: '',
+        plannedEnd: '', status: TASK_STATUS.needsAction, percentComplete: '0', description: '',
       })
     }
   }, [open, task, initialPlannedStart, form])
@@ -168,8 +170,13 @@ export function TaskEditorDialog({ open, onOpenChange, taskBooks, task, initialP
                 id="task-status"
                 value={values.status}
                 onValueChange={(v) => form.setValue('status', v as z.infer<typeof schema>['status'])}
-                options={STATUS_OPTIONS}
+                options={[...TASK_STATUS_OPTIONS]}
               />
+              {legacyStatus && (
+                <p className="mt-1 text-[11px] text-warn">
+                  该任务是收紧状态值域之前写入的「{legacyStatus}」，不在当前可选状态内；保存后会变为「待办」。
+                </p>
+              )}
             </div>
           </div>
 

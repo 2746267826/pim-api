@@ -12,6 +12,7 @@ import type {
   TaskChecklistItem,
   TaskExecutionSegment,
   TaskResponse,
+  TaskTimerState,
   TasksPagedParams,
 } from './types'
 
@@ -133,6 +134,25 @@ export const segmentsApi = {
     apiGet<TaskExecutionSegment[]>(`/api/v1/calendar/tasks/${taskId}/segments`),
   add: (taskId: string, body: components['schemas']['CreateTaskExecutionSegmentRequest']) =>
     apiPost<TaskExecutionSegment>(`/api/v1/calendar/tasks/${taskId}/segments`, body),
+  /** 补上缺失的 DELETE（工单 03 D2.2）：只删段，不动任务 */
+  remove: (taskId: string, segmentId: string) =>
+    apiDelete<string>(`/api/v1/calendar/tasks/${taskId}/segments/${segmentId}`),
+}
+
+/**
+ * 任务计时（工单 03 D2.1）：开始 / 暂停 / 结束 + 查询累计时长。
+ * 服务端语义：开始新建一条「开放段」（endsAt = null），暂停/结束把它闭合；
+ * 因此暂停区间不会被计入累计时长（暂停时没有开放段）。
+ */
+export const taskTimerApi = {
+  state: (taskId: string) =>
+    apiGet<TaskTimerState>(`/api/v1/calendar/tasks/${taskId}/timer`),
+  start: (taskId: string) =>
+    apiPost<TaskExecutionSegment>(`/api/v1/calendar/tasks/${taskId}/timer/start`, {}),
+  pause: (taskId: string) =>
+    apiPost<TaskExecutionSegment>(`/api/v1/calendar/tasks/${taskId}/timer/pause`, {}),
+  stop: (taskId: string) =>
+    apiPost<TaskExecutionSegment>(`/api/v1/calendar/tasks/${taskId}/timer/stop`, {}),
 }
 
 /* ── 图层（工作台/日历统一查询） ──────────────────────────── */
