@@ -537,10 +537,14 @@ public sealed class FileWriteService
         Guid providerId,
         CancellationToken ct)
     {
+        // 不属于当前用户（或不存在）时按 5104「文件来源不存在」处理 → 404。
+        // 这里**不能**用 5320：它映射成 400，会把「这个 id 存在但不属于你」与
+        // 「你给的参数有问题」混为一谈（既有 E2E 用例 Upload_WithForeignProviderId_IsRejected
+        // 锁定的就是 404，避免泄漏他人资源是否存在）。
         var provider = await _db.Set<FileProviderEntity>()
             .Include(row => row.Items)
             .SingleOrDefaultAsync(row => row.Id == providerId && row.UserId == UserId, ct)
-            ?? throw new DomainException(5320, "文件来源绑定不存在");
+            ?? throw new DomainException(5104, "文件来源不存在");
         if (!_providers.IsSupported(provider.Provider))
         {
             throw new DomainException(5323, $"不支持的文件来源类型：{provider.Provider}");
