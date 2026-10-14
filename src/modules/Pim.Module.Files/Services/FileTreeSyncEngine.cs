@@ -503,7 +503,11 @@ public sealed class FileTreeSyncEngine
         }
 
         var remote = await session.Content.GetItemAsync(parentExternalId, ct);
-        if (remote?.Path is { Length: > 0 } remotePath)
+        // 必须核对返回的 id 与请求的一致：adapter 出错时可能返回另一个条目，
+        // 用它的路径会静默污染整棵子树（宁可不解析、下一轮再来）。
+        if (remote is not null
+            && string.Equals(remote.Id, parentExternalId, StringComparison.Ordinal)
+            && remote.Path is { Length: > 0 } remotePath)
         {
             cache[parentExternalId] = remotePath;
             return remotePath;

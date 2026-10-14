@@ -54,10 +54,10 @@ public sealed class FileListQueryRealDbTests
         VALUES ('abababab-2222-3333-4444-555555555581', 'wo-realdb', 'wo-realdb@local.test',
                 'x', 'user', true, now(), now());
 
-        INSERT INTO file_providers (id, user_id, provider, base_url, username, app_password_secret,
+        INSERT INTO file_providers (id, user_id, provider, account_id, is_default,
                                     status, sync_status, synced_item_count, created_at, updated_at)
         VALUES ('abababab-2222-3333-4444-555555555582', 'abababab-2222-3333-4444-555555555581',
-                'onedrive', 'https://graph.microsoft.com', 'wo-realdb', 'x',
+                'onedrive', 'wo-realdb-account', true,
                 'connected', 'idle', 0, now(), now());
 
         -- 根容器本身（path = '/'）不是自己的子项
@@ -229,7 +229,7 @@ public sealed class FileListQueryRealDbTests
         await using var temp = await CreateMigratedTempDatabaseAsync("wo_files_index");
         await temp.ExecuteAsync(SeedSql);
 
-        var query = FileOperationService.DirectChildren(temp.Db, UserId, "/main/deep");
+        var query = FileOperationService.DirectChildren(temp.Db, ProviderId, "/main/deep");
         var sql = query.OrderBy(item => item.Name).Take(100).ToQueryString();
 
         // StartsWith 必须翻成作用在裸列上的 LIKE，而不是 rtrim(path) LIKE ...
@@ -257,10 +257,10 @@ public sealed class FileListQueryRealDbTests
             VALUES ('abababab-2222-3333-4444-555555555583', 'wo-realdb-other', 'other@local.test',
                     'x', 'user', true, now(), now());
 
-            INSERT INTO file_providers (id, user_id, provider, base_url, username, app_password_secret,
+            INSERT INTO file_providers (id, user_id, provider, account_id, is_default,
                                         status, sync_status, synced_item_count, created_at, updated_at)
             VALUES ('abababab-2222-3333-4444-555555555584', 'abababab-2222-3333-4444-555555555583',
-                    'onedrive', 'https://graph.microsoft.com', 'other', 'x',
+                    'onedrive', 'wo-realdb-other-account', true,
                     'connected', 'idle', 0, now(), now());
 
             -- 别人的同级同名目录与文件：当前用户绝不能看到

@@ -92,10 +92,17 @@ internal sealed class FilesProviderHarness : IDisposable
             services.AddSingleton(extraProvider);
         }
 
-        services.AddSingleton<IFileProviderOAuthClient, OneDriveOAuthClient>();
         services.AddSingleton<IFileProviderOAuthClient, GoogleOAuthClient>();
-        services.AddSingleton<IFileProviderAuthorizer, OneDriveAuthorizer>();
         services.AddSingleton<IFileProviderAuthorizer, GoogleAuthorizer>();
+
+        // OneDrive 的 OAuth/授权实现依赖 IOneDriveGraphClient，因此只在提供了替身时注册 ——
+        // 否则枚举 IEnumerable<IFileProviderOAuthClient> 会因缺依赖抛
+        // 「Unable to resolve service ...」，把纯 Google 用例变成装配错误。
+        if (graph is not null)
+        {
+            services.AddSingleton<IFileProviderOAuthClient, OneDriveOAuthClient>();
+            services.AddSingleton<IFileProviderAuthorizer, OneDriveAuthorizer>();
+        }
         services.AddSingleton<IFileProviderFactory, FileProviderFactory>();
         services.AddSingleton<FileProviderTokenService>();
         services.AddSingleton<FileProviderSessionFactory>();
