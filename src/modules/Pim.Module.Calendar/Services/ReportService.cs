@@ -268,10 +268,13 @@ public sealed class ReportService
     {
         // 排期窗口与周期**相交**即纳入（半开区间）：起点在周期之前、排期伸进周期的任务也要算进来，
         // 否则跨业务日边界（04:00）的排期会被整条漏掉；时长已由 period.Overlap 裁剪到周期内。
+        // 没有 PlannedEnd 的任务按**点事件**处理（只属于 DtStart 所在的那一个周期）——
+        // 否则 `DtStart < 周期末` 会让它在之后所有周期里反复出现。
         var periodTasks = await PeriodTasks(userId, projectId)
             .Where(t => t.DtStart != null
                 && t.DtStart < period.EndUtc
-                && (t.PlannedEnd == null || t.PlannedEnd > period.StartUtc))
+                && ((t.PlannedEnd == null && t.DtStart >= period.StartUtc)
+                    || (t.PlannedEnd != null && t.PlannedEnd > period.StartUtc)))
             .Select(t => new { t.Id, t.Status, t.EstimatedDuration, t.DtStart, t.PlannedEnd })
             .ToListAsync(ct);
 

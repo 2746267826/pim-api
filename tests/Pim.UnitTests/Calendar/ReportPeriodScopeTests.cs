@@ -251,6 +251,33 @@ public class ReportPeriodScopeTests
         Assert.Equal(60, day4.GetProperty("plannedScheduledMinutes").GetInt32());
     }
 
+    [Fact]
+    public async Task TaskWithoutPlannedEnd_IsAPointEvent_AndDoesNotLeakIntoLaterPeriods()
+    {
+        await using var db = CreateDb();
+        var calendar = await SeedCalendarAsync(db);
+        // 只排了起点、没有计划结束：它只属于 2026-08-05 这一个业务日
+        var start = Sh(2026, 8, 5, 9);
+        db.Set<TaskEntity>().Add(new TaskEntity
+        {
+            UserId = UserId, CalendarId = calendar.Id, Uid = "point", Title = "point",
+            DtStart = start, PlannedEnd = null, EstimatedDuration = TimeSpan.FromMinutes(120),
+            CreatedAt = start
+        });
+        await db.SaveChangesAsync();
+
+        var sameDay = await MetricsAsync(db, "Daily", new DateOnly(2026, 8, 5));
+        var sameWeek = await MetricsAsync(db, "Weekly", new DateOnly(2026, 8, 5));
+        var muchLater = await MetricsAsync(db, "Daily", new DateOnly(2027, 1, 1));
+        var nextMonth = await MetricsAsync(db, "Monthly", new DateOnly(2026, 9, 1));
+
+        Assert.Equal(1, sameDay.GetProperty("tasks").GetInt32());
+        Assert.Equal(1, sameWeek.GetProperty("tasks").GetInt32());
+        // 没有计划结束的任务不该在之后任何周期里重复出现
+        Assert.Equal(NoData, muchLater.GetProperty("tasksCreated").GetString());
+        Assert.Equal(0, nextMonth.GetProperty("tasks").GetInt32());
+    }
+
     // ---- 逾期口径（复审 Important：到期后才完成也属于"未按期完成"） ----
 
     [Fact]
