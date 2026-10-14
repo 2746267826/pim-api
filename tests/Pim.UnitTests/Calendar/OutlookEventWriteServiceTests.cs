@@ -119,6 +119,67 @@ public sealed class OutlookEventWriteServiceTests
         Assert.Equal(1, batch.CreatedCount);
     }
 
+    // ---------- 工单 04：Outlook 写回链路也要能设置 PIM 原生「期间静音」 ----------
+
+    [Fact]
+    public async Task Create_AppliesPimNativeIsMuted_LocallyOnly()
+    {
+        await using var db = CreateDb();
+        var (connectionId, bindingId, calendarId) = await SetupStandardAsync(db, UserId);
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.Created, GraphEventJson);
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            Operation: "create",
+            CalendarBindingId: bindingId,
+            EventId: null,
+            Draft: MakeDraft(calendarId) with { IsMuted = true },
+            Scope: "instance",
+            ClientOperationId: OpId);
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("created", result.Status);
+        Assert.True(result.Event!.IsMuted);
+
+        var stored = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .FirstAsync(e => e.OutlookEventId == "graph-event-1");
+        Assert.True(stored.IsMuted);
+
+        // 静音是 PIM 原生字段：绝不能出现在发给 Graph 的报文里
+        var body = await Assert.Single(handler.Requests).Content!.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+        Assert.False(json.RootElement.TryGetProperty("isMuted", out _));
+        Assert.False(json.RootElement.TryGetProperty("is_muted", out _));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Update_ReplacesIsMutedFromDraft(bool draftIsMuted)
+    {
+        await using var db = CreateDb();
+        var (connectionId, bindingId, calendarId, eventId) = await SetupUpdateAsync(db, UserId);
+        var existing = await db.Set<EventEntity>().FirstAsync(e => e.Id == eventId);
+        existing.IsMuted = !draftIsMuted;
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, UpdatedEventJson());
+        var service = CreateService(db, handler);
+
+        var request = new OutlookWriteRequest(
+            "update", bindingId, eventId, MakeDraft(calendarId) with { IsMuted = draftIsMuted }, "instance", OpId,
+            ExpectedEtag: "W/\"expected-etag\"");
+
+        var result = await service.ExecuteAsync(UserId, request, default);
+
+        Assert.Equal("updated", result.Status);
+        Assert.Equal(draftIsMuted, result.Event!.IsMuted);
+        Assert.Equal(draftIsMuted, (await db.Set<EventEntity>().AsNoTracking().FirstAsync(e => e.Id == eventId)).IsMuted);
+    }
+
     [Fact]
     public async Task Create_GraphFailure_NoLocalEventAndFailedHistoryPersisted()
     {

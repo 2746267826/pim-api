@@ -1108,6 +1108,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<bool>("DefaultMuted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("default_muted");
+
                     b.Property<DateTimeOffset?>("DeletedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("deleted_at");
@@ -1336,6 +1340,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(false)
                         .HasColumnName("is_exception");
+
+                    b.Property<bool?>("IsMuted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_muted");
 
                     b.Property<bool>("IsOnlineMeeting")
                         .ValueGeneratedOnAdd()

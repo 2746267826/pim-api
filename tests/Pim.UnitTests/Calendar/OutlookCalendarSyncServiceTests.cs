@@ -5380,4 +5380,43 @@ public sealed class OutlookCalendarSyncServiceTests
         // Unconfirmed 404 must not park a healthy calendar.
         Assert.Equal("active", binding.RemoteState);
     }
+
+    // ---------- 工单 04 E1.4：日历本静音默认 + 同步不覆盖手工改动 ----------
+
+    [Fact]
+    public async Task SyncAsync_KeepsPimNativeIsMuted_AndNewEventsFollowCalendarDefault()
+    {
+        var db = CreateDb();
+        await SeedConnectionAsync(db, UserId);
+        var (calId, bindingId) = await SeedSingleBindingAsync(db, UserId, ConnectionId, "cal-1");
+
+        // 该日历本已批量设为「静音」（E1.3）：后续同步进来的日程自动套用
+        var calendar = await db.Set<CalendarEntity>().SingleAsync(c => c.Id == calId);
+        calendar.DefaultMuted = true;
+        await db.SaveChangesAsync();
+
+        // 既有日程被用户手工改成「不静音」：同步不得覆盖它
+        await SeedEventAsync(db, calId, bindingId, "event-1");
+        var userEdited = await db.Set<EventEntity>().SingleAsync(e => e.OutlookEventId == "event-1");
+        userEdited.IsMuted = false;
+        await db.SaveChangesAsync();
+
+        var handler = new ScriptedHttpMessageHandler();
+        handler.Enqueue(HttpStatusCode.OK, CalendarViewResponse(SyncEvent1, SyncEvent2));
+        var service = CreateService(db, CreateGraphClient(handler));
+
+        await service.SyncAsync(UserId, new OutlookSyncRequest("normal"), CancellationToken.None);
+
+        var events = await db.Set<EventEntity>().IgnoreQueryFilters()
+            .Where(e => e.OutlookCalendarBindingId == bindingId)
+            .ToListAsync();
+
+        Assert.False(events.Single(e => e.OutlookEventId == "event-1").IsMuted);
+
+        // 新同步进来的日程是「未指定」（is_muted = null），生效值取日历本默认 —— 不落库成显式值，
+        // 这样以后改日历本默认仍然传导（维护者确认的三态语义）。
+        var synced = events.Single(e => e.OutlookEventId == "event-2");
+        Assert.Null(synced.IsMuted);
+        Assert.True((await db.Set<CalendarEntity>().AsNoTracking().SingleAsync(c => c.Id == calId)).DefaultMuted);
+    }
 }

@@ -12,7 +12,8 @@ public record CalendarResponse(
     Guid Id, string Name, string Color, string Kind, bool IsDefault, int EventCount,
     string Source = "manual",
     Guid? OutlookCalendarBindingId = null,
-    bool CanEdit = true
+    bool CanEdit = true,
+    bool DefaultMuted = false
 )
 {
     public CalendarResponse(Guid Id, string Name, string Color, string Kind, bool IsDefault, int EventCount)
@@ -70,7 +71,9 @@ public record CreateEventRequest(
     bool? IsSeriesMaster = null,
     bool? IsException = null,
     Guid? SeriesMasterId = null,
-    string? RecurrenceId = null
+    string? RecurrenceId = null,
+    /// <summary>该日程期间是否静音：true 静音 / false 不静音 / null（省略）未指定，生效值取所属日历本的 defaultMuted。</summary>
+    bool? IsMuted = null
 );
 
 public enum UpdateEventScope
@@ -107,7 +110,9 @@ public record UpdateEventRequest(
     bool? IsSeriesMaster = null,
     bool? IsException = null,
     Guid? SeriesMasterId = null,
-    string? RecurrenceId = null
+    string? RecurrenceId = null,
+    /// <summary>该日程期间是否静音：true 静音 / false 不静音 / null 未指定（生效值取所属日历本的 defaultMuted）。PUT 为整体替换，null 即回到未指定。</summary>
+    bool? IsMuted = null
 );
 
 public record EventResponse(
@@ -145,8 +150,16 @@ public record EventResponse(
     bool IsSeriesMaster = false,
     bool IsException = false,
     Guid? SeriesMasterId = null,
-    bool IsCancelled = false
+    bool IsCancelled = false,
+    /// <summary>日程自身设定：true 静音 / false 不静音 / null 未指定（生效值取所属日历本的 defaultMuted）。</summary>
+    bool? IsMuted = null
 );
+
+/// <summary>日历本静音策略的批量设定请求（E1.3）：把该本下既有日程统一设为开或关，并作为该本后续同步日程的默认。</summary>
+public record SetCalendarMutePolicyRequest(bool IsMuted);
+
+/// <summary>日历本静音策略的批量设定结果。</summary>
+public record CalendarMutePolicyResponse(Guid CalendarId, bool DefaultMuted, int AffectedEventCount);
 
 public record CreateTaskRequest(
     Guid? CalendarId,
@@ -597,6 +610,16 @@ public record SyncConflictDetailDto(
     Guid? ResolvedConfirmationId
 );
 
+/// <summary>
+/// 提醒创建请求。
+///
+/// <para>
+/// 【已废弃 / Deprecated，工单 04】<paramref name="DoNotDisturbStart"/> / <paramref name="DoNotDisturbEnd"/>
+/// 是提醒上的 string(16) 时间串，无格式校验、全仓没有任何调度或下发逻辑消费它。
+/// 「日程期间静音」用 Events 的 <c>isMuted</c>（三态）与日历本的 <c>defaultMuted</c>，
+/// 不要在这两个字段上新增逻辑；保留仅为兼容既有调用方。
+/// </para>
+/// </summary>
 public record CreateReminderRequest(
     string RelatedObjectType,
     Guid RelatedObjectId,
@@ -610,6 +633,10 @@ public record CreateReminderRequest(
     DateTimeOffset? ScheduledAt
 );
 
+/// <summary>
+/// 提醒响应。【已废弃 / Deprecated，工单 04】<c>doNotDisturbStart</c> / <c>doNotDisturbEnd</c> 同上，
+/// 无消费方；日程静音见 Events 的 <c>isMuted</c>。
+/// </summary>
 public record ReminderResponse(
     Guid Id,
     string RelatedObjectType,

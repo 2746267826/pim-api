@@ -3208,6 +3208,53 @@
         ],
         "type": "object"
       },
+      "CalendarMutePolicyResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "affectedEventCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "calendarId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "defaultMuted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "affectedEventCount",
+          "calendarId",
+          "defaultMuted"
+        ],
+        "type": "object"
+      },
+      "CalendarMutePolicyResponseApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/CalendarMutePolicyResponse"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "CalendarOperationResult": {
         "additionalProperties": false,
         "properties": {
@@ -3430,6 +3477,9 @@
           },
           "color": {
             "type": "string"
+          },
+          "defaultMuted": {
+            "type": "boolean"
           },
           "eventCount": {
             "format": "int32",
@@ -4204,6 +4254,10 @@
             "type": "boolean"
           },
           "isException": {
+            "nullable": true,
+            "type": "boolean"
+          },
+          "isMuted": {
             "nullable": true,
             "type": "boolean"
           },
@@ -6608,6 +6662,10 @@
             "type": "boolean"
           },
           "isException": {
+            "type": "boolean"
+          },
+          "isMuted": {
+            "nullable": true,
             "type": "boolean"
           },
           "isOnlineMeeting": {
@@ -16801,6 +16859,18 @@
         ],
         "type": "object"
       },
+      "SetCalendarMutePolicyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "isMuted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "isMuted"
+        ],
+        "type": "object"
+      },
       "SilenceWindow": {
         "additionalProperties": false,
         "properties": {
@@ -18713,6 +18783,10 @@
             "nullable": true,
             "type": "boolean"
           },
+          "isMuted": {
+            "nullable": true,
+            "type": "boolean"
+          },
           "isOnlineMeeting": {
             "nullable": true,
             "type": "boolean"
@@ -20587,6 +20661,74 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CalendarDeletePreviewResponseApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/calendar/calendars/{id}/mute-policy": {
+      "put": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetCalendarMutePolicyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarMutePolicyResponseApiResponse"
                 }
               }
             },

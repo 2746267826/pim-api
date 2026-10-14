@@ -15,6 +15,8 @@ public class CalendarEntity : ISoftDeletable, IUserOwnedEntity
     [Column("is_default")] public bool IsDefault { get; set; }
     [Column("source"), MaxLength(32)] public string Source { get; set; } = "manual";
     [Column("is_visible")] public bool IsVisible { get; set; } = true;
+    /// <summary>日历本默认静音设定：该本下「未指定」的日程生效值取它。</summary>
+    [Column("default_muted")] public bool DefaultMuted { get; set; }
     [Column("created_at")] public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("updated_at")] public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     [Column("deleted_at")] public DateTimeOffset? DeletedAt { get; set; }

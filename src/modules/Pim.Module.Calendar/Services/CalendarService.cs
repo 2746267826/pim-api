@@ -58,7 +58,8 @@ public class CalendarService
                 calendar.Id, calendar.Name, calendar.Color, calendar.Kind,
                 calendar.IsDefault, calendar.Events.Count, calendar.Source,
                 binding == null ? null : binding.Id,
-                binding == null || binding.CanEdit);
+                binding == null || binding.CanEdit,
+                calendar.DefaultMuted);
 
         return await query.ToListAsync(ct);
     }
@@ -76,7 +77,9 @@ public class CalendarService
         };
         _db.Set<CalendarEntity>().Add(calendar);
         await _db.SaveChangesAsync(ct);
-        return new CalendarResponse(calendar.Id, calendar.Name, calendar.Color, calendar.Kind, calendar.IsDefault, 0);
+        return new CalendarResponse(
+            calendar.Id, calendar.Name, calendar.Color, calendar.Kind, calendar.IsDefault, 0,
+            calendar.Source, null, true, calendar.DefaultMuted);
     }
 
     public async Task<CalendarResponse> UpdateCalendarAsync(Guid id, CreateCalendarRequest request, CancellationToken ct)
@@ -88,7 +91,9 @@ public class CalendarService
         if (request.Color is not null) cal.Color = request.Color;
         cal.UpdatedAt = _timeProvider.GetUtcNow();
         await _db.SaveChangesAsync(ct);
-        return new CalendarResponse(cal.Id, cal.Name, cal.Color, cal.Kind, cal.IsDefault, cal.Events.Count);
+        return new CalendarResponse(
+            cal.Id, cal.Name, cal.Color, cal.Kind, cal.IsDefault, cal.Events.Count,
+            cal.Source, null, true, cal.DefaultMuted);
     }
 
     public async Task DeleteCalendarAsync(Guid id, CancellationToken ct)
@@ -98,6 +103,40 @@ public class CalendarService
             ?? throw new DomainException(02002, "日历不存在");
         cal.DeletedAt = _timeProvider.GetUtcNow();
         await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// E1.3：把一个日历本下的日程统一设为静音开/关，并把该值记为该本后续同步日程的默认。
+    ///
+    /// <para>
+    /// 两件事一起做：(1) 写 <c>calendars.default_muted</c> —— 该本下「未指定」（<c>is_muted = null</c>）
+    /// 的日程生效值取它，后续从 Outlook 同步进来的新日程也是「未指定」，因此自动套用；
+    /// (2) 把该本下既有（未删除）日程写成显式值 —— 这就是工单要求的「一次把某个日历本下的日程统一为开或关」。
+    /// </para>
+    ///
+    /// <para>
+    /// 只动 PIM 原生列，不触碰 Outlook 侧字段，因此对只读（<c>CanEdit = false</c>）的绑定日历本同样安全。
+    /// 回收站里的日程不动（全局软删除过滤器已经把它们排除在查询之外）。
+    /// </para>
+    /// </summary>
+    public async Task<CalendarMutePolicyResponse> SetCalendarMutePolicyAsync(
+        Guid calendarId, bool isMuted, CancellationToken ct)
+    {
+        var calendar = await _db.Set<CalendarEntity>()
+            .FirstOrDefaultAsync(c => c.Id == calendarId && c.UserId == UserId, ct)
+            ?? throw new DomainException(02002, "日历不存在");
+
+        calendar.DefaultMuted = isMuted;
+        calendar.UpdatedAt = _timeProvider.GetUtcNow();
+
+        var affected = await _db.Set<EventEntity>()
+            .Where(e => e.CalendarId == calendar.Id)
+            .ToListAsync(ct);
+        foreach (var entity in affected)
+            entity.IsMuted = isMuted;
+
+        await _db.SaveChangesAsync(ct);
+        return new CalendarMutePolicyResponse(calendar.Id, isMuted, affected.Count);
     }
 
     // --- Events ---
@@ -1319,6 +1358,8 @@ public class CalendarService
         entity.OnlineMeetingUrl = request.OnlineMeetingUrl;
         entity.ExternalLink = request.ExternalLink;
         entity.AttachmentReferencesJson = EventFieldCodec.SerializeAttachments(request.AttachmentReferences);
+        // 三态整体替换：true/false 是显式设定，null 是「未指定」（生效值取日历本默认）
+        entity.IsMuted = request.IsMuted;
     }
 
     private static void ApplyUnifiedFields(EventEntity entity, UpdateEventRequest request)
@@ -1353,6 +1394,8 @@ public class CalendarService
         entity.OnlineMeetingProvider = request.OnlineMeetingProvider;
         entity.OnlineMeetingUrl = request.OnlineMeetingUrl;
         entity.ExternalLink = request.ExternalLink;
+        // PUT 是整体替换（与 ShowAs/Importance 一致）：省略/null 即回到「未指定」
+        entity.IsMuted = request.IsMuted;
     }
 
     private static string? FormatDuration(TimeSpan? duration) =>
