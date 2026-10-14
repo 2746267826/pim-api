@@ -111,10 +111,12 @@ public sealed class MobileModule : IModule
         .Produces<ApiResponse<string>>(500);
         group.MapDelete("/devices/{deviceId}", async ([FromRoute] string deviceId, [FromServices] DeviceManagementService svc, CancellationToken ct) =>
         {
-            await svc.DeleteAsync(deviceId, ct);
-            return Results.Ok(ApiResponse<string>.Ok("deleted"));
+            // 回传逐表的实际删除计数（工单 02 C3 / AC-3）：这些数字来自真正执行删除的
+            // ExecuteDelete 受影响行数，调用方因此可以拿它与 delete-preview 逐字段比对。
+            var result = await svc.DeleteAsync(deviceId, ct);
+            return Results.Ok(ApiResponse<DeviceDeleteResultDto>.Ok(result));
         })
-        .Produces<ApiResponse<string>>(200)
+        .Produces<ApiResponse<DeviceDeleteResultDto>>(200)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
