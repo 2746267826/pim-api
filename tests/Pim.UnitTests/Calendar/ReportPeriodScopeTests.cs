@@ -203,7 +203,88 @@ public class ReportPeriodScopeTests
         Assert.Equal(NoData, metrics.GetProperty("actualExecutedMinutes").GetString());
         Assert.Equal(NoData, metrics.GetProperty("mobileUsageEvents").GetString());
         Assert.Equal(NoData, metrics.GetProperty("pcEvents").GetString());
+        // 日历占用与任务进展同样不能给一个看不出真假的 0（§A2.4）
+        Assert.Equal(NoData, metrics.GetProperty("calendarOccupiedMinutes").GetString());
+        Assert.Equal(NoData, metrics.GetProperty("calendarActiveDays").GetString());
+        Assert.Equal(NoData, metrics.GetProperty("tasksCreated").GetString());
+        Assert.Equal(NoData, metrics.GetProperty("tasksCompleted").GetString());
+        Assert.Equal(NoData, metrics.GetProperty("tasksOverdue").GetString());
+        Assert.Contains("本周期无数据：该周期内没有任何任务、日程、计时段落或采集数据。", report.ContentMarkdown);
         Assert.Contains("## 收集质量", report.ContentMarkdown);
+    }
+
+    [Fact]
+    public async Task ReportForPeriodWithFacts_KeepsGenuineZeroesAsNumbers()
+    {
+        await using var db = CreateDb();
+        var calendar = await SeedCalendarAsync(db);
+        // 周期内有事实（一条日程），但当天没新增/完成/逾期任务 → 这些 0 是真实统计值，不是无数据
+        SeedEvent(db, calendar, Sh(2026, 8, 5, 10), Sh(2026, 8, 5, 11));
+        await db.SaveChangesAsync();
+
+        var metrics = await MetricsAsync(db, "Daily", new DateOnly(2026, 8, 5));
+
+        Assert.Equal(60, metrics.GetProperty("calendarOccupiedMinutes").GetInt32());
+        Assert.Equal(1, metrics.GetProperty("calendarActiveDays").GetInt32());
+        Assert.Equal(0, metrics.GetProperty("tasksCreated").GetInt32());
+        Assert.Equal(0, metrics.GetProperty("tasksCompleted").GetInt32());
+        Assert.Equal(0, metrics.GetProperty("tasksOverdue").GetInt32());
+    }
+
+    // ---- 跨周期边界的排期窗口（复审 Important：起点在周期之前、排期伸进周期） ----
+
+    [Fact]
+    public async Task ScheduledWindow_CrossingThePeriodStart_IsClippedAndCountedInBothPeriods()
+    {
+        await using var db = CreateDb();
+        var calendar = await SeedCalendarAsync(db);
+        // 业务日 2026-08-05 起点 = 04:00+08：该任务 03:00 → 05:00，跨边界，两天各占 1 小时
+        SeedTask(db, calendar, "T-cross", Sh(2026, 8, 5, 3), Sh(2026, 8, 5, 5), TimeSpan.FromMinutes(120));
+        await db.SaveChangesAsync();
+
+        var day5 = await MetricsAsync(db, "Daily", new DateOnly(2026, 8, 5));
+        var day4 = await MetricsAsync(db, "Daily", new DateOnly(2026, 8, 4));
+
+        Assert.Equal(1, day5.GetProperty("tasks").GetInt32());
+        Assert.Equal(60, day5.GetProperty("plannedScheduledMinutes").GetInt32());
+        Assert.Equal(1, day4.GetProperty("tasks").GetInt32());
+        Assert.Equal(60, day4.GetProperty("plannedScheduledMinutes").GetInt32());
+    }
+
+    // ---- 逾期口径（复审 Important：到期后才完成也属于"未按期完成"） ----
+
+    [Fact]
+    public async Task Overdue_CountsTasksCompletedLate_ButNotThoseCompletedOnTime()
+    {
+        await using var db = CreateDb();
+        var calendar = await SeedCalendarAsync(db);
+        // 到期后一小时才完成 → 逾期
+        db.Set<TaskEntity>().Add(new TaskEntity
+        {
+            UserId = UserId, CalendarId = calendar.Id, Uid = "late-done", Title = "late-done",
+            Status = "COMPLETED", Due = Sh(2026, 8, 5, 18), CompletedAt = Sh(2026, 8, 5, 19),
+            CreatedAt = Sh(2026, 8, 1, 9)
+        });
+        // 到期前完成 → 不逾期
+        db.Set<TaskEntity>().Add(new TaskEntity
+        {
+            UserId = UserId, CalendarId = calendar.Id, Uid = "on-time", Title = "on-time",
+            Status = "COMPLETED", Due = Sh(2026, 8, 5, 18), CompletedAt = Sh(2026, 8, 5, 17),
+            CreatedAt = Sh(2026, 8, 1, 9)
+        });
+        // 已取消 → 不计逾期
+        db.Set<TaskEntity>().Add(new TaskEntity
+        {
+            UserId = UserId, CalendarId = calendar.Id, Uid = "cancelled", Title = "cancelled",
+            Status = "CANCELLED", Due = Sh(2026, 8, 5, 18), CreatedAt = Sh(2026, 8, 1, 9)
+        });
+        await db.SaveChangesAsync();
+
+        var metrics = await MetricsAsync(db, "Daily", new DateOnly(2026, 8, 5));
+
+        Assert.Equal(1, metrics.GetProperty("tasksOverdue").GetInt32());
+        // 周期内完成两次（一次按期、一次晚完成）——两个都是真实的完成次数
+        Assert.Equal(2, metrics.GetProperty("tasksCompleted").GetInt32());
     }
 
     // ---- AC-A5：metricsJson 必须与 reports-page.tsx 既有解析方式兼容 ----

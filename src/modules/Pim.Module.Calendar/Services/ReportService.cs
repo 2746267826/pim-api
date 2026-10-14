@@ -266,8 +266,12 @@ public sealed class ReportService
 
     private async Task<ReportFacts> CollectFactsAsync(Guid userId, Guid? projectId, ReportPeriod period, CancellationToken ct)
     {
+        // 排期窗口与周期**相交**即纳入（半开区间）：起点在周期之前、排期伸进周期的任务也要算进来，
+        // 否则跨业务日边界（04:00）的排期会被整条漏掉；时长已由 period.Overlap 裁剪到周期内。
         var periodTasks = await PeriodTasks(userId, projectId)
-            .Where(t => t.DtStart != null && t.DtStart >= period.StartUtc && t.DtStart < period.EndUtc)
+            .Where(t => t.DtStart != null
+                && t.DtStart < period.EndUtc
+                && (t.PlannedEnd == null || t.PlannedEnd > period.StartUtc))
             .Select(t => new { t.Id, t.Status, t.EstimatedDuration, t.DtStart, t.PlannedEnd })
             .ToListAsync(ct);
 
@@ -312,11 +316,14 @@ public sealed class ReportService
                 && t.CompletedAt != null
                 && t.CompletedAt >= period.StartUtc
                 && t.CompletedAt < period.EndUtc, ct);
+        var dueInPeriod = await PeriodTasks(userId, projectId)
+            .CountAsync(t => t.Due != null && t.Due >= period.StartUtc && t.Due < period.EndUtc, ct);
+        // 逾期 = 本周期内到期、且**没有按期完成**（含"到期后才完成"，那同样属于未按期完成）。
+        // 只排除取消的任务：此前多写的 `Status != "COMPLETED"` 会把"晚完成"整类漏掉。
         var overdueTasks = await PeriodTasks(userId, projectId)
             .CountAsync(t => t.Due != null
                 && t.Due >= period.StartUtc
                 && t.Due < period.EndUtc
-                && t.Status != "COMPLETED"
                 && t.Status != "CANCELLED"
                 && (t.CompletedAt == null || t.CompletedAt > t.Due), ct);
 
@@ -329,6 +336,19 @@ public sealed class ReportService
                 : await provider.GetForPeriodAsync(period.StartUtc, period.EndUtc, ct));
         }
 
+        // 「本周期压根没有事实」与「有事实但某项统计为 0」必须分开（§A2.4）：
+        // 没有任何任务 / 日程 / 计时段落 / 采集数据时，日历占用与任务进展也标「本周期无数据」，
+        // 而不是给出一个看不出真假的 0。
+        // 注意：任务进展看的是"周期内发生的创建/完成/到期"，这些任务不一定有排期（DtStart），
+        // 所以它们也要计入"本周期有事实"，否则只记完成、不排期的用户会拿到一份全是无数据的报告。
+        var hasPeriodFacts = periodTasks.Count > 0
+            || activeEvents.Count > 0
+            || segments.Count > 0
+            || createdTasks > 0
+            || completedTasks > 0
+            || dueInPeriod > 0
+            || collection.Any(snapshot => snapshot.HasAnyFigure);
+
         return new ReportFacts(
             TaskCount: periodTasks.Count,
             CompletedPeriodTasks: periodTasks.Count(t => t.Status == "COMPLETED"),
@@ -339,11 +359,14 @@ public sealed class ReportService
             ActualMinutes: executed.Count == 0
                 ? null
                 : ToMinutes(executed.Aggregate(TimeSpan.Zero, (sum, s) => sum + period.Overlap(s.StartsAt, s.EndsAt))),
-            CalendarMinutes: ToMinutes(activeEvents.Aggregate(TimeSpan.Zero, (sum, e) => sum + period.Overlap(e.Start, e.End))),
-            CalendarDays: CountDaysWithEvents(activeEvents, period),
-            CreatedTasks: createdTasks,
-            CompletedTasks: completedTasks,
-            OverdueTasks: overdueTasks,
+            CalendarMinutes: activeEvents.Count == 0
+                ? null
+                : ToMinutes(activeEvents.Aggregate(TimeSpan.Zero, (sum, e) => sum + period.Overlap(e.Start, e.End))),
+            CalendarDays: activeEvents.Count == 0 ? null : CountDaysWithEvents(activeEvents, period),
+            CreatedTasks: hasPeriodFacts ? createdTasks : null,
+            CompletedTasks: hasPeriodFacts ? completedTasks : null,
+            OverdueTasks: hasPeriodFacts ? overdueTasks : null,
+            HasPeriodFacts: hasPeriodFacts,
             Collection: collection);
     }
 
@@ -390,9 +413,9 @@ public sealed class ReportService
             ["actualExecutedMinutes"] = Metric(facts.ActualMinutes),
             ["calendarOccupiedMinutes"] = Metric(facts.CalendarMinutes),
             ["calendarActiveDays"] = Metric(facts.CalendarDays),
-            ["tasksCreated"] = facts.CreatedTasks,
-            ["tasksCompleted"] = facts.CompletedTasks,
-            ["tasksOverdue"] = facts.OverdueTasks
+            ["tasksCreated"] = Metric(facts.CreatedTasks),
+            ["tasksCompleted"] = Metric(facts.CompletedTasks),
+            ["tasksOverdue"] = Metric(facts.OverdueTasks)
         };
 
         foreach (var sourceKey in CollectionQualitySources.All)
@@ -430,22 +453,27 @@ public sealed class ReportService
             "## 结论",
             $"- 计划：任务预估 {Hours(facts.EstimatedMinutes)}，已排入日程 {Hours(facts.ScheduledMinutes)}",
             $"- 实际：执行 {Hours(facts.ActualMinutes)}",
-            $"- 日历占用：{Hours(facts.CalendarMinutes)}，涉及 {facts.CalendarDays} 天",
+            $"- 日历占用：{Hours(facts.CalendarMinutes)}，涉及 {Days(facts.CalendarDays)}",
             $"- 收集质量：{string.Join("；", facts.Collection.Select(CollectionLine))}",
-            $"- 任务进展：新增 {facts.CreatedTasks} / 完成 {facts.CompletedTasks} / 逾期 {facts.OverdueTasks}",
+            $"- 任务进展：新增 {Count(facts.CreatedTasks)} / 完成 {Count(facts.CompletedTasks)} / 逾期 {Count(facts.OverdueTasks)}",
             string.Empty,
             "## 计划 vs 实际",
-            $"- 本周期已排期任务：{facts.TaskCount} 项（其中已完成 {facts.CompletedPeriodTasks} 项）",
+            $"- 本周期已排期任务：{Count(facts.HasPeriodFacts ? facts.TaskCount : (long?)null)}（其中已完成 {Count(facts.HasPeriodFacts ? facts.CompletedPeriodTasks : (long?)null)}）",
             $"- 任务预估时长合计：{Hours(facts.EstimatedMinutes)}",
             $"- 已排入日程的时长：{Hours(facts.ScheduledMinutes)}",
             $"- 实际执行时间（task_execution_segments，仅计已开始的段落）：{Hours(facts.ActualMinutes)}",
             string.Empty,
             "## 日历占用",
             $"- 日程总时长：{Hours(facts.CalendarMinutes)}",
-            $"- 有日程的天数：{facts.CalendarDays} 天",
+            $"- 有日程的天数：{Days(facts.CalendarDays)}",
             string.Empty,
             "## 收集质量"
         };
+
+        if (!facts.HasPeriodFacts)
+        {
+            lines.Insert(5, "> 本周期无数据：该周期内没有任何任务、日程、计时段落或采集数据。");
+        }
 
         foreach (var snapshot in facts.Collection)
         {
@@ -456,11 +484,12 @@ public sealed class ReportService
         [
             string.Empty,
             "## 任务进展",
-            $"- 新增：{facts.CreatedTasks} 项",
-            $"- 完成：{facts.CompletedTasks} 项",
-            $"- 逾期（本周期内到期且未按期完成）：{facts.OverdueTasks} 项",
+            $"- 新增：{Count(facts.CreatedTasks)}",
+            $"- 完成：{Count(facts.CompletedTasks)}",
+            $"- 逾期（本周期内到期且未按期完成）：{Count(facts.OverdueTasks)}",
             string.Empty,
-            "> 无数据的模块标注为「本周期无数据」，不以 0 代替；报告建议单独保存，需确认后才会改动事实。"
+            "> 无数据的模块标注为「本周期无数据」，不以 0 代替；任务进展的「新增/完成」为周期内发生的次数，"
+                + "「逾期」为周期内到期且未按期完成（含到期后才完成）的任务数；报告建议单独保存，需确认后才会改动事实。"
         ]);
 
         return string.Join('\n', lines);
@@ -535,6 +564,14 @@ public sealed class ReportService
             ? NoDataMark
             : $"{(minutes.Value / 60.0).ToString("0.#", CultureInfo.InvariantCulture)} 小时";
 
+    /// <summary>计数结论：取不到数据时显式标注，而不是 0 项。</summary>
+    private static string Count(long? value)
+        => value is null ? NoDataMark : $"{value.Value.ToString(CultureInfo.InvariantCulture)} 项";
+
+    /// <summary>天数结论：取不到数据时显式标注，而不是 0 天。</summary>
+    private static string Days(long? value)
+        => value is null ? NoDataMark : $"{value.Value.ToString(CultureInfo.InvariantCulture)} 天";
+
     private static long ToMinutes(TimeSpan span)
         => (long)Math.Round(span.TotalMinutes, MidpointRounding.AwayFromZero);
 
@@ -573,7 +610,11 @@ public sealed class ReportService
             _ => throw new DomainException(02045, "Unsupported report kind.")
         };
 
-    /// <summary>某个周期的取数结果（模块结论的唯一来源，正文与 metricsJson 必须同源）。</summary>
+    /// <summary>
+    /// 某个周期的取数结果（模块结论的唯一来源，正文与 metricsJson 必须同源）。
+    /// 所有可空字段的 <c>null</c> 都只有一个含义：**本周期取不到该口径的数据**（§A2.4），
+    /// 与"有事实但统计值为 0"区分开。
+    /// </summary>
     private sealed record ReportFacts(
         long TaskCount,
         long CompletedPeriodTasks,
@@ -582,8 +623,9 @@ public sealed class ReportService
         long? ActualMinutes,
         long? CalendarMinutes,
         long? CalendarDays,
-        long CreatedTasks,
-        long CompletedTasks,
-        long OverdueTasks,
+        long? CreatedTasks,
+        long? CompletedTasks,
+        long? OverdueTasks,
+        bool HasPeriodFacts,
         IReadOnlyList<CollectionQualitySnapshot> Collection);
 }
