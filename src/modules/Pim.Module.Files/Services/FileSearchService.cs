@@ -14,6 +14,11 @@ namespace Pim.Module.Files.Services;
 /// v2 刻意**不做**内容索引与向量检索：内容级查找交给 Hermes 走 <c>read_file_text</c> 现取现抽。
 /// 因此这里没有嵌入、没有向量库、也不需要任何外部引擎——纯 PostgreSQL ILIKE。
 /// 敏感路径文件与其他内容出口保持一致，绝不进搜索结果（§13）。
+///
+/// F5 口径：**搜索默认跨账号**（该用户全部已连接账号），每条命中自带
+/// <c>providerId</c>，并可显式按账号过滤。理由：搜索的用途就是「我不记得它在哪个盘」，
+/// 默认只搜当前账号会让另一个盘的文件永远搜不到；而列表（目录树）不能合并，
+/// 因为账号相对路径合并后会串树。
 /// </summary>
 public sealed class FileSearchService(
     PimDbContext db,
@@ -37,7 +42,7 @@ public sealed class FileSearchService(
     /// 兼容旧签名：单页搜索结果（MCP 的 search_files 与 Web 搜索框都用这一档）。
     /// </summary>
     public Task<FileSearchResultDto> SearchAsync(FileSearchQuery query, CancellationToken ct = default)
-        => SearchAsync(query, page: 1, pageSize: ResultLimit, ct);
+        => SearchAsync(query, page: 1, pageSize: ResultLimit, providerId: null, ct);
 
     /// <summary>
     /// 元数据搜索（设计 §9）：支持真分页并返回总数（REQ-8 / P7）。
@@ -53,6 +58,7 @@ public sealed class FileSearchService(
         FileSearchQuery query,
         int page,
         int pageSize,
+        Guid? providerId = null,
         CancellationToken ct = default)
     {
         page = Math.Max(1, page);
@@ -80,6 +86,11 @@ public sealed class FileSearchService(
                 && (item.Name.ToLower().Contains(lowered)
                     || item.Path.ToLower().Contains(lowered)
                     || (item.MimeType != null && item.MimeType.ToLower().Contains(lowered))));
+
+        if (providerId is { } scopedProviderId)
+        {
+            matches = matches.Where(item => item.ProviderId == scopedProviderId);
+        }
 
         matches = ExcludeProtectedDirectories(matches);
 

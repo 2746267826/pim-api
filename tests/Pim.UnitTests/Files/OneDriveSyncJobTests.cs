@@ -12,9 +12,9 @@ using Pim.Module.Files.Services;
 namespace Pim.UnitTests.Files;
 
 /// <summary>
-/// OneDriveSyncJob 测试：遍历所有已连接 onedrive provider、单个失败不影响其余、失败写回 provider。
+/// FileSyncJob 测试：遍历所有已连接 onedrive provider、单个失败不影响其余、失败写回 provider。
 /// </summary>
-public class OneDriveSyncJobTests
+public class FileSyncJobTests
 {
     private static readonly Guid UserIdA = Guid.Parse("eeeeeeee-1111-2222-3333-444444444471");
     private static readonly Guid UserIdB = Guid.Parse("eeeeeeee-1111-2222-3333-444444444472");
@@ -56,11 +56,14 @@ public class OneDriveSyncJobTests
         return provider;
     }
 
-    private static OneDriveSyncJob CreateJob(PimDbContext db, FakeOneDriveGraphClient graph)
+    private static FileSyncJob CreateJob(PimDbContext db, FakeOneDriveGraphClient graph)
     {
         var protector = new TestSecretProtector();
         var scopeFactory = new StubScopeFactory(db, graph, protector);
-        return new OneDriveSyncJob(scopeFactory, NullLogger<OneDriveSyncJob>.Instance);
+        // 作业现在按注册表判断「哪些 provider 支持同步」，所以它也需要一个真实的注册表。
+        // 刻意不 Dispose：注册表要活到作业跑完（提前释放会让 provider 解析抛 ObjectDisposedException）。
+        var harness = new FilesProviderHarness(db, graph, protector, new FixedClock(Now));
+        return new FileSyncJob(scopeFactory, harness.Providers, NullLogger<FileSyncJob>.Instance);
     }
 
     private sealed class StubScopeFactory(PimDbContext db, FakeOneDriveGraphClient graph, ISecretProtector protector) : IServiceScopeFactory
@@ -69,14 +72,15 @@ public class OneDriveSyncJobTests
 
         private sealed class StubScope(PimDbContext db, FakeOneDriveGraphClient graph, ISecretProtector protector) : IServiceScope
         {
-            private readonly ServiceProvider _container = new ServiceCollection()
-                .AddSingleton(db)
-                .AddSingleton<IOneDriveGraphClient>(graph)
-                .AddSingleton(protector)
-                .AddSingleton<OneDriveTokenService>()
-                .AddSingleton<OneDriveSyncService>()
-                .AddLogging()
-                .BuildServiceProvider();
+            private readonly ServiceProvider _container = Build(db, graph, protector);
+
+            private static ServiceProvider Build(PimDbContext db, FakeOneDriveGraphClient graph, ISecretProtector protector)
+            {
+                var services = new ServiceCollection();
+                // 与 FilesModule.RegisterServices 同形状的装配（含 FileTreeSyncEngine）
+                FilesProviderHarness.Configure(services, db, graph, protector);
+                return services.BuildServiceProvider();
+            }
 
             public IServiceProvider ServiceProvider => _container;
 

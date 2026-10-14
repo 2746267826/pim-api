@@ -227,9 +227,10 @@ public sealed class StatsTodayQuickNotesTests
 
     private sealed class FakeStorage : IQuickNoteObjectStorage
     {
-        public Task<string> StoreAsync(Guid userId, string objectKey, Stream content, string contentType, long sizeBytes, CancellationToken ct = default) => Task.FromResult(objectKey);
-        public Task<Stream> OpenReadAsync(Guid userId, string objectKey, CancellationToken ct = default) => Task.FromResult<Stream>(new System.IO.MemoryStream());
-        public Task DeleteAsync(Guid userId, string objectKey, CancellationToken ct = default) => Task.CompletedTask;
+        public Task<StoredObjectRef> StoreAsync(Guid userId, string objectKey, Stream content, string contentType, long sizeBytes, CancellationToken ct = default)
+            => Task.FromResult(new StoredObjectRef(objectKey, "onedrive", null));
+        public Task<Stream> OpenReadAsync(Guid userId, StoredObjectRef reference, CancellationToken ct = default) => Task.FromResult<Stream>(new System.IO.MemoryStream());
+        public Task DeleteAsync(Guid userId, StoredObjectRef reference, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     private sealed class FakeProvider(string id, string kind, string status = TodaySectionStatuses.Available) : ITodaySectionProvider

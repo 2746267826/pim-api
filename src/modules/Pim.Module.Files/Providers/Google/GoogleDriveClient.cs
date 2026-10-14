@@ -1,0 +1,655 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
+
+namespace Pim.Module.Files.Providers.Google;
+
+/// <summary>
+/// Google Drive REST 调用失败。
+/// <paramref name="Reason"/> 是 Google 错误体里的 <c>reason</c>（如
+/// <c>invalid_page_token</c> / <c>rateLimitExceeded</c> / <c>insufficientPermissions</c>）——
+/// 单看 HTTP 状态码不足以分辨「游标失效」和「权限不足」，必须带上它。
+/// </summary>
+public sealed class GoogleDriveException(
+    int statusCode,
+    string? reason,
+    int? retryAfterSeconds,
+    string message,
+    string? rawBody = null)
+    : Exception(message)
+{
+    public int StatusCode { get; } = statusCode;
+
+    public string? Reason { get; } = reason;
+
+    public int? RetryAfterSeconds { get; } = retryAfterSeconds;
+
+    /// <summary>原始响应体（截断）。**只用于本地排查**，绝不写进响应用户的错误消息。</summary>
+    public string? RawBody { get; } = rawBody;
+}
+
+/// <summary>Google 返回的令牌。</summary>
+public sealed record GoogleTokenResult(string AccessToken, string? RefreshToken, int ExpiresIn, string? Scope);
+
+/// <summary>Google 用户身份。</summary>
+public sealed record GoogleUserInfo(string Subject, string? DisplayName);
+
+/// <summary>Drive 文件资源（只取 PIM 需要的字段）。</summary>
+public sealed record GoogleDriveFile(
+    string Id,
+    string Name,
+    string? MimeType,
+    long? Size,
+    DateTimeOffset? ModifiedAt,
+    string? Md5,
+    IReadOnlyList<string> Parents,
+    bool Trashed,
+    string? WebViewLink,
+    string? WebContentLink,
+    string? ThumbnailLink);
+
+/// <summary>一页 changes.list 结果。</summary>
+public sealed record GoogleChangePage(
+    IReadOnlyList<GoogleChangeEntry> Changes,
+    string? NextPageToken,
+    string? NewStartPageToken);
+
+/// <summary><c>removed=true</c> 的条目只带 fileId。</summary>
+public sealed record GoogleChangeEntry(bool Removed, string FileId, GoogleDriveFile? File);
+
+/// <summary>一页 files.list 结果。</summary>
+public sealed record GoogleFilePage(IReadOnlyList<GoogleDriveFile> Files, string? NextPageToken);
+
+/// <summary>Google 的分享权限。</summary>
+public sealed record GooglePermission(string Id, string Type, string Role, string? WebViewLink);
+
+/// <summary>
+/// Google Drive REST 客户端（工单 05 / F4）。
+///
+/// 只做「HTTP + JSON」这一层，不做任何业务决策；provider 语义（游标、增量、路径）
+/// 在 <see cref="GoogleFileProvider"/> 一族里。错误统一抛
+/// <see cref="GoogleDriveException"/>，由调用方翻译成通用抽象异常。
+/// </summary>
+public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
+{
+    public const string HttpClientName = "google-drive";
+
+    private const string ApiBase = "https://www.googleapis.com/drive/v3";
+    private const string UploadBase = "https://www.googleapis.com/upload/drive/v3";
+    private const string TokenEndpoint = "https://oauth2.googleapis.com/token";
+    private const string UserInfoEndpoint = "https://www.googleapis.com/oauth2/v3/userinfo";
+
+    /// <summary>
+    /// 文件资源的字段选择。**必须显式列出**：Drive v3 默认只返回 id/name/mimeType/kind，
+    /// 少写一个字段就会静默拿到 null（本仓在 Graph 上吃过同样的亏）。
+    /// </summary>
+    public const string FileFields =
+        "id,name,mimeType,size,modifiedTime,md5Checksum,parents,trashed,webViewLink,webContentLink,thumbnailLink";
+
+    /// <summary>Google 原生文档（Docs/Sheets/Slides…）：没有 size，也不能按 alt=media 下载。</summary>
+    public static bool IsGoogleNativeDocument(string? mimeType)
+        => mimeType is not null
+           && mimeType.StartsWith("application/vnd.google-apps.", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>目录的 MIME。</summary>
+    public const string FolderMimeType = "application/vnd.google-apps.folder";
+
+    // ---- OAuth ----
+
+    /// <summary>用授权码换令牌（浏览器跳转授权的第一步回调）。</summary>
+    public Task<GoogleTokenResult> ExchangeCodeAsync(
+        string clientId,
+        string clientSecret,
+        string code,
+        string redirectUri,
+        CancellationToken ct = default)
+        => PostTokenAsync(new Dictionary<string, string>
+        {
+            ["client_id"] = clientId,
+            ["client_secret"] = clientSecret,
+            ["code"] = code,
+            ["grant_type"] = "authorization_code",
+            ["redirect_uri"] = redirectUri,
+        }, ct);
+
+    /// <summary>用 refresh token 换 access token。</summary>
+    public Task<GoogleTokenResult> RefreshAsync(
+        string clientId,
+        string clientSecret,
+        string refreshToken,
+        CancellationToken ct = default)
+        => PostTokenAsync(new Dictionary<string, string>
+        {
+            ["client_id"] = clientId,
+            ["client_secret"] = clientSecret,
+            ["refresh_token"] = refreshToken,
+            ["grant_type"] = "refresh_token",
+        }, ct);
+
+    public async Task<GoogleUserInfo> GetUserInfoAsync(string accessToken, CancellationToken ct = default)
+    {
+        using var response = await SendAsync(
+            new HttpRequestMessage(HttpMethod.Get, UserInfoEndpoint), accessToken, ct);
+        var json = await ReadJsonAsync(response, ct);
+        return new GoogleUserInfo(
+            ReadString(json, "sub") ?? throw new GoogleDriveException(
+                (int)response.StatusCode, null, null, "Google userinfo 未返回 sub"),
+            ReadString(json, "name") ?? ReadString(json, "email"));
+    }
+
+    private async Task<GoogleTokenResult> PostTokenAsync(
+        Dictionary<string, string> form,
+        CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, TokenEndpoint)
+        {
+            Content = new FormUrlEncodedContent(form),
+        };
+
+        var client = httpClientFactory.CreateClient(HttpClientName);
+        using var response = await client.SendAsync(request, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw GoogleErrorMapper.FromTokenFailure(response.StatusCode, body);
+        }
+
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        var accessToken = ReadString(root, "access_token")
+            ?? throw new GoogleDriveException((int)response.StatusCode, null, null, "Google 未返回 access_token");
+        var expiresIn = root.TryGetProperty("expires_in", out var expires) && expires.TryGetInt32(out var seconds)
+            ? seconds
+            : 3600;
+        return new GoogleTokenResult(accessToken, ReadString(root, "refresh_token"), expiresIn, ReadString(root, "scope"));
+    }
+
+    // ---- Drive ----
+
+    public async Task<GoogleFilePage> ListFilesPageAsync(
+        string accessToken,
+        string? pageToken,
+        string query,
+        CancellationToken ct = default)
+    {
+        var url = new StringBuilder($"{ApiBase}/files?q={Uri.EscapeDataString(query)}")
+            .Append("&pageSize=1000&fields=")
+            .Append(Uri.EscapeDataString($"nextPageToken,files({FileFields})"));
+        if (!string.IsNullOrEmpty(pageToken))
+        {
+            url.Append("&pageToken=").Append(Uri.EscapeDataString(pageToken));
+        }
+
+        var json = await GetJsonAsync(url.ToString(), accessToken, ct);
+        var files = new List<GoogleDriveFile>();
+        if (json.TryGetProperty("files", out var array) && array.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var element in array.EnumerateArray())
+            {
+                files.Add(ReadFile(element));
+            }
+        }
+
+        return new GoogleFilePage(files, ReadString(json, "nextPageToken"));
+    }
+
+    public async Task<GoogleDriveFile?> GetFileAsync(
+        string accessToken,
+        string fileId,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            var json = await GetJsonAsync(
+                $"{ApiBase}/files/{Uri.EscapeDataString(fileId)}?fields={Uri.EscapeDataString(FileFields)}",
+                accessToken,
+                ct);
+            return ReadFile(json);
+        }
+        catch (GoogleDriveException exception) when (exception.StatusCode == (int)HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
+    public async Task<string> GetStartPageTokenAsync(string accessToken, CancellationToken ct = default)
+    {
+        var json = await GetJsonAsync($"{ApiBase}/changes/startPageToken", accessToken, ct);
+        return ReadString(json, "startPageToken")
+            ?? throw new GoogleDriveException(200, null, null, "Google 未返回 startPageToken");
+    }
+
+    public async Task<GoogleChangePage> ListChangesPageAsync(
+        string accessToken,
+        string pageToken,
+        CancellationToken ct = default)
+    {
+        var url = new StringBuilder($"{ApiBase}/changes")
+            .Append("?pageToken=").Append(Uri.EscapeDataString(pageToken))
+            .Append("&pageSize=1000&includeRemoved=true&fields=")
+            .Append(Uri.EscapeDataString(
+                $"nextPageToken,newStartPageToken,changes(removed,fileId,file({FileFields}))"));
+
+        var json = await GetJsonAsync(url.ToString(), accessToken, ct);
+        var changes = new List<GoogleChangeEntry>();
+        if (json.TryGetProperty("changes", out var array) && array.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var element in array.EnumerateArray())
+            {
+                var removed = element.TryGetProperty("removed", out var removedElement)
+                    && removedElement.ValueKind == JsonValueKind.True;
+                var fileId = ReadString(element, "fileId") ?? string.Empty;
+                GoogleDriveFile? file = null;
+                if (element.TryGetProperty("file", out var fileElement) && fileElement.ValueKind == JsonValueKind.Object)
+                {
+                    file = ReadFile(fileElement);
+                }
+
+                changes.Add(new GoogleChangeEntry(removed, fileId, file));
+            }
+        }
+
+        return new GoogleChangePage(
+            changes,
+            ReadString(json, "nextPageToken"),
+            ReadString(json, "newStartPageToken"));
+    }
+
+    /// <summary>小文件上传（multipart，≤4MB 场景）。</summary>
+    public async Task<GoogleDriveFile> UploadNewFileAsync(
+        string accessToken,
+        string? parentId,
+        string name,
+        byte[] bytes,
+        string contentType,
+        CancellationToken ct = default)
+    {
+        var metadata = new Dictionary<string, object?>
+        {
+            ["name"] = name,
+        };
+        if (!string.IsNullOrEmpty(parentId))
+        {
+            metadata["parents"] = new[] { parentId };
+        }
+
+        var json = await MultipartUploadAsync(
+            $"{UploadBase}/files?uploadType=multipart&fields={Uri.EscapeDataString(FileFields)}",
+            accessToken,
+            JsonSerializer.Serialize(metadata),
+            bytes,
+            contentType,
+            ct);
+        return ReadFile(json);
+    }
+
+    /// <summary>覆盖已有文件内容。</summary>
+    public async Task<GoogleDriveFile> UpdateFileContentAsync(
+        string accessToken,
+        string fileId,
+        byte[] bytes,
+        string contentType,
+        CancellationToken ct = default)
+    {
+        var json = await MultipartUploadAsync(
+            $"{UploadBase}/files/{Uri.EscapeDataString(fileId)}?uploadType=media&fields={Uri.EscapeDataString(FileFields)}",
+            accessToken,
+            metadataJson: null,
+            bytes,
+            contentType,
+            ct);
+        return ReadFile(json);
+    }
+
+    /// <summary>改名 / 换父目录。</summary>
+    public async Task<GoogleDriveFile> PatchFileAsync(
+        string accessToken,
+        string fileId,
+        string? newName,
+        string? addParentId,
+        string? removeParentId,
+        CancellationToken ct = default)
+    {
+        var url = new StringBuilder($"{ApiBase}/files/{Uri.EscapeDataString(fileId)}?fields=")
+            .Append(Uri.EscapeDataString(FileFields));
+        if (!string.IsNullOrEmpty(addParentId))
+        {
+            url.Append("&addParents=").Append(Uri.EscapeDataString(addParentId));
+        }
+
+        if (!string.IsNullOrEmpty(removeParentId))
+        {
+            url.Append("&removeParents=").Append(Uri.EscapeDataString(removeParentId));
+        }
+
+        var payload = new Dictionary<string, object?>();
+        if (newName is not null)
+        {
+            payload["name"] = newName;
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Patch, url.ToString())
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
+        };
+        var json = await SendJsonAsync(request, accessToken, ct);
+        return ReadFile(json);
+    }
+
+    public async Task CreateFolderAsync(
+        string accessToken,
+        string? parentId,
+        string name,
+        CancellationToken ct = default)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["name"] = name,
+            ["mimeType"] = FolderMimeType,
+        };
+        if (!string.IsNullOrEmpty(parentId))
+        {
+            payload["parents"] = new[] { parentId };
+        }
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{ApiBase}/files?fields={Uri.EscapeDataString(FileFields)}")
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
+        };
+        await SendJsonAsync(request, accessToken, ct);
+    }
+
+    /// <summary>删除（进 Drive 回收站）。</summary>
+    public async Task DeleteFileAsync(string accessToken, string fileId, CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Patch,
+            $"{ApiBase}/files/{Uri.EscapeDataString(fileId)}?fields=id")
+        {
+            Content = new StringContent("{\"trashed\":true}", Encoding.UTF8, "application/json"),
+        };
+
+        try
+        {
+            await SendJsonAsync(request, accessToken, ct);
+        }
+        catch (GoogleDriveException exception) when (exception.StatusCode == (int)HttpStatusCode.NotFound)
+        {
+            // 远端已不存在：与 OneDrive 实现同样的「视为已删除」语义
+        }
+    }
+
+    /// <summary>创建可恢复上传会话（浏览器直接向返回的 session URI 分片 PUT）。</summary>
+    public async Task<string> CreateResumableUploadSessionAsync(
+        string accessToken,
+        string? parentId,
+        string name,
+        string contentType,
+        CancellationToken ct = default)
+    {
+        var metadata = new Dictionary<string, object?>
+        {
+            ["name"] = name,
+        };
+        if (!string.IsNullOrEmpty(parentId))
+        {
+            metadata["parents"] = new[] { parentId };
+        }
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{UploadBase}/files?uploadType=resumable&fields=id")
+        {
+            Content = new StringContent(JsonSerializer.Serialize(metadata), Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("X-Upload-Content-Type", contentType);
+
+        using var response = await SendAsync(request, accessToken, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw await GoogleErrorMapper.FromResponseAsync(response, ct);
+        }
+
+        // session URI 在 Location 头里（Google 不返回 JSON 体）
+        return response.Headers.Location?.ToString()
+               ?? throw new GoogleDriveException(
+                   (int)response.StatusCode, null, null, "Google 未返回 resumable session URI");
+    }
+
+    /// <summary>下载内容（<c>alt=media</c>）。Google 原生文档必须走 export，这里显式分流。</summary>
+    public async Task<byte[]> DownloadAsync(
+        string accessToken,
+        string fileId,
+        string? mimeType,
+        long maxBytes,
+        CancellationToken ct = default)
+    {
+        var url = IsGoogleNativeDocument(mimeType)
+            ? $"{ApiBase}/files/{Uri.EscapeDataString(fileId)}/export?mimeType=text/plain"
+            : $"{ApiBase}/files/{Uri.EscapeDataString(fileId)}?alt=media&supportsAllDrives=true";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        using var response = await SendAsync(request, accessToken, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw await GoogleErrorMapper.FromResponseAsync(response, ct);
+        }
+
+        // 不信任 Content-Length：边读边计数，超限立即中断
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        int read;
+        while ((read = await stream.ReadAsync(chunk, ct)) > 0)
+        {
+            if (buffer.Length + read > maxBytes)
+            {
+                throw new Abstractions.ProviderContentTooLargeException(buffer.Length + read);
+            }
+
+            buffer.Write(chunk, 0, read);
+        }
+
+        return buffer.ToArray();
+    }
+
+    // ---- 分享 ----
+
+    public async Task<GooglePermission> CreateAnyonePermissionAsync(
+        string accessToken,
+        string fileId,
+        string role,
+        CancellationToken ct = default)
+    {
+        var payload = JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["type"] = "anyone",
+            ["role"] = role,
+        });
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{ApiBase}/files/{Uri.EscapeDataString(fileId)}/permissions?fields=id,type,role")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+        var json = await SendJsonAsync(request, accessToken, ct);
+        return new GooglePermission(
+            ReadString(json, "id") ?? string.Empty,
+            ReadString(json, "type") ?? "anyone",
+            ReadString(json, "role") ?? role,
+            null);
+    }
+
+    public async Task<IReadOnlyList<GooglePermission>> ListPermissionsAsync(
+        string accessToken,
+        string fileId,
+        CancellationToken ct = default)
+    {
+        var json = await GetJsonAsync(
+            $"{ApiBase}/files/{Uri.EscapeDataString(fileId)}/permissions?fields=permissions(id,type,role)",
+            accessToken,
+            ct);
+        var result = new List<GooglePermission>();
+        if (json.TryGetProperty("permissions", out var array) && array.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var element in array.EnumerateArray())
+            {
+                result.Add(new GooglePermission(
+                    ReadString(element, "id") ?? string.Empty,
+                    ReadString(element, "type") ?? string.Empty,
+                    ReadString(element, "role") ?? string.Empty,
+                    null));
+            }
+        }
+
+        return result;
+    }
+
+    public async Task RevokePermissionAsync(
+        string accessToken,
+        string fileId,
+        string permissionId,
+        CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Delete,
+            $"{ApiBase}/files/{Uri.EscapeDataString(fileId)}/permissions/{Uri.EscapeDataString(permissionId)}");
+        try
+        {
+            await SendJsonAsync(request, accessToken, ct);
+        }
+        catch (GoogleDriveException exception) when (exception.StatusCode == (int)HttpStatusCode.NotFound)
+        {
+            // 已撤销或不存在：视为成功
+        }
+    }
+
+    // ---- 传输原语 ----
+
+    private async Task<JsonElement> MultipartUploadAsync(
+        string url,
+        string accessToken,
+        string? metadataJson,
+        byte[] bytes,
+        string contentType,
+        CancellationToken ct)
+    {
+        const string boundary = "pim-drive-boundary-8f2a";
+        using var content = new MultipartContent("related", boundary);
+        if (metadataJson is not null)
+        {
+            content.Add(new StringContent(metadataJson, Encoding.UTF8, "application/json"));
+        }
+
+        var media = new ByteArrayContent(bytes);
+        media.Headers.TryAddWithoutValidation("Content-Type", contentType);
+        content.Add(media);
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
+        return await SendJsonAsync(request, accessToken, ct);
+    }
+
+    private async Task<JsonElement> GetJsonAsync(string url, string accessToken, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        return await SendJsonAsync(request, accessToken, ct);
+    }
+
+    private async Task<JsonElement> SendJsonAsync(
+        HttpRequestMessage request,
+        string accessToken,
+        CancellationToken ct)
+    {
+        using var response = await SendAsync(request, accessToken, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw await GoogleErrorMapper.FromResponseAsync(response, ct);
+        }
+
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return JsonDocument.Parse("{}").RootElement.Clone();
+        }
+
+        return JsonDocument.Parse(body).RootElement.Clone();
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        string accessToken,
+        CancellationToken ct)
+    {
+        // token 只进 Authorization 头，绝不进 URL / 日志 / 异常消息
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {accessToken}");
+        var client = httpClientFactory.CreateClient(HttpClientName);
+        return await client.SendAsync(request, ct);
+    }
+
+    private static async Task<JsonElement> ReadJsonAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw GoogleErrorMapper.FromBody((int)response.StatusCode, body);
+        }
+
+        return JsonDocument.Parse(body).RootElement.Clone();
+    }
+
+    private static GoogleDriveFile ReadFile(JsonElement element)
+    {
+        var parents = new List<string>();
+        if (element.TryGetProperty("parents", out var parentsElement) && parentsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var parent in parentsElement.EnumerateArray())
+            {
+                if (parent.ValueKind == JsonValueKind.String)
+                {
+                    parents.Add(parent.GetString()!);
+                }
+            }
+        }
+
+        return new GoogleDriveFile(
+            ReadString(element, "id") ?? string.Empty,
+            ReadString(element, "name") ?? string.Empty,
+            ReadString(element, "mimeType"),
+            ReadLong(element, "size"),
+            ReadDateTimeOffset(element, "modifiedTime"),
+            ReadString(element, "md5Checksum"),
+            parents,
+            element.TryGetProperty("trashed", out var trashed) && trashed.ValueKind == JsonValueKind.True,
+            ReadString(element, "webViewLink"),
+            ReadString(element, "webContentLink"),
+            ReadString(element, "thumbnailLink"));
+    }
+
+    internal static string? ReadString(JsonElement element, string name)
+        => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    internal static long? ReadLong(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out var value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number))
+        {
+            return number;
+        }
+
+        // Drive 把 size 作为字符串返回（大文件超 int64 精度的历史原因）
+        return value.ValueKind == JsonValueKind.String && long.TryParse(value.GetString(), out var parsed)
+            ? parsed
+            : null;
+    }
+
+    internal static DateTimeOffset? ReadDateTimeOffset(JsonElement element, string name)
+        => DateTimeOffset.TryParse(ReadString(element, name), out var parsed) ? parsed : null;
+}

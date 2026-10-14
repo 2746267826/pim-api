@@ -4,7 +4,7 @@ using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Files.Entities;
-using Pim.Module.Files.Providers;
+using Pim.Module.Files.Providers.Abstractions;
 
 namespace Pim.Module.Files.Services;
 
@@ -20,7 +20,7 @@ public sealed record FileShareDto(
     DateTimeOffset CreatedAt);
 
 /// <summary>
-/// OneDrive 分享链接（REQ-21）：生成 / 撤销 / 列出。
+/// 通用分享链接（REQ-21）：生成 / 撤销 / 列出（工单 05 / F1）。
 ///
 /// 安全约束（与直链、缩略图、预览、文本、搜索同样的出口口径）：
 /// <list type="bullet">
@@ -28,16 +28,18 @@ public sealed record FileShareDto(
 ///   <item><b>不把完整链接写进日志或审计</b>（AC-21.4）：审计只记条目 id 与权限档，
 ///   绝不记 webUrl。链接本身只在 HTTP 响应里返回给发起人。</item>
 /// </list>
+/// provider 不支持分享时（<see cref="IFileProviderSession.Shares"/> 为 null）返回**明确的**
+/// 领域错误，而不是假装成功或抛 NullReference。
 /// </summary>
-public sealed class OneDriveShareService(
+public sealed class FileShareService(
     PimDbContext db,
-    IOneDriveGraphClient client,
-    OneDriveTokenService tokens,
+    FileProviderSessionFactory sessions,
+    IFileProviderFactory providers,
     ICurrentUserService currentUser,
     IAuditLogService auditLog,
     SensitivePathPolicy? sensitivePolicy = null)
 {
-    /// <summary>个人版支持的权限档（V3 结论：view / edit 均可请求；embed 不作为 UI 档位）。</summary>
+    /// <summary>个人自用支持的权限档。</summary>
     public static readonly IReadOnlyList<string> SupportedPermissionTypes = ["view", "edit"];
 
     private readonly SensitivePathPolicy _sensitivePolicy = sensitivePolicy ?? new SensitivePathPolicy(null);
@@ -52,10 +54,9 @@ public sealed class OneDriveShareService(
     {
         var permission = ParsePermission(permissionType);
         var expiration = ResolveExpiration(expiresInDays);
-        var (item, provider) = await LoadShareableItemAsync(itemId, ct);
+        var (item, session) = await LoadShareableItemAsync(itemId, ct);
 
-        var token = await tokens.GetAccessTokenAsync(provider.Id, ct);
-        var link = await client.CreateShareLinkAsync(token, item.ExternalFileId, permission, expiration, ct);
+        var link = await SharesOf(session).CreateShareLinkAsync(item.ExternalFileId, permission, expiration, ct);
 
         // 审计只记「谁对哪个条目建了哪一档权限」，不记链接本身（AC-21.4）
         await auditLog.RecordAsync(new CreateAuditLogRequest(
@@ -87,9 +88,8 @@ public sealed class OneDriveShareService(
             throw new DomainException(5300, "需要权限 ID");
         }
 
-        var (item, provider) = await LoadShareableItemAsync(itemId, ct);
-        var token = await tokens.GetAccessTokenAsync(provider.Id, ct);
-        await client.RevokeSharePermissionAsync(token, item.ExternalFileId, permissionId, ct);
+        var (item, session) = await LoadShareableItemAsync(itemId, ct);
+        await SharesOf(session).RevokeSharePermissionAsync(item.ExternalFileId, permissionId, ct);
 
         await auditLog.RecordAsync(new CreateAuditLogRequest(
             UserId,
@@ -105,29 +105,25 @@ public sealed class OneDriveShareService(
     /// <summary>列出某条目当前的全部分享（AC-21.3：预览面板就地撤销 / 我的分享）。</summary>
     public async Task<IReadOnlyList<FileShareDto>> ListForItemAsync(Guid itemId, CancellationToken ct = default)
     {
-        var (item, provider) = await LoadShareableItemAsync(itemId, ct);
-        var token = await tokens.GetAccessTokenAsync(provider.Id, ct);
-        var links = await client.ListSharePermissionsAsync(token, item.ExternalFileId, ct);
+        var (item, session) = await LoadShareableItemAsync(itemId, ct);
+        var links = await SharesOf(session).ListSharePermissionsAsync(item.ExternalFileId, ct);
 
         return links
             .Select(link => new FileShareDto(
-                item.Id,
-                item.Name,
-                item.Path,
-                link.PermissionType,
-                link.PermissionId,
-                link.WebUrl,
-                link.ExpiresAt,
-                DateTimeOffset.UtcNow))
+                item.Id, item.Name, item.Path,
+                link.PermissionType, link.PermissionId, link.WebUrl, link.ExpiresAt, DateTimeOffset.UtcNow))
             .ToList();
     }
 
     /// <summary>
     /// 「我的分享」列表：对当前用户已同步的条目逐个查询分享权限。
     ///
-    /// 个人版没有「列出我的全部分享」的接口（V2/V3 探测结论），只能按条目查询；
+    /// 个人版没有「列出我的全部分享」的接口，只能按条目查询；
     /// 因此这里限定在一个**有界**的候选集内（最近同步的文件），并在响应里如实说明范围，
     /// 而不是假装能列全（AC-21.3 的口径）。
+    ///
+    /// F2 相关：候选集**跨该用户的全部账号**（原先硬过滤 <c>Provider == "onedrive"</c>，
+    /// 多账号下会漏掉另一个账号的分享）。
     /// </summary>
     public async Task<IReadOnlyList<FileShareDto>> ListAllAsync(int limit = 50, CancellationToken ct = default)
     {
@@ -137,7 +133,6 @@ public sealed class OneDriveShareService(
             .Include(row => row.Provider)
             .Where(row => row.Provider != null
                 && row.Provider.UserId == userId
-                && row.Provider.Provider == "onedrive"
                 && row.Provider.Status == "connected"
                 && !row.IsDeleted
                 && row.ItemType == "file")
@@ -153,35 +148,43 @@ public sealed class OneDriveShareService(
                 continue;
             }
 
+            var provider = item.Provider!;
+            if (!providers.IsSupported(provider.Provider))
+            {
+                continue;
+            }
+
+            var session = await sessions.OpenAsync(provider, ct);
+            if (session.Shares is null)
+            {
+                continue;
+            }
+
             try
             {
-                var provider = item.Provider!;
-                var token = await tokens.GetAccessTokenAsync(provider.Id, ct);
-                var links = await client.ListSharePermissionsAsync(token, item.ExternalFileId, ct);
+                var links = await session.Shares.ListSharePermissionsAsync(item.ExternalFileId, ct);
                 result.AddRange(links.Select(link => new FileShareDto(
-                    item.Id,
-                    item.Name,
-                    item.Path,
-                    link.PermissionType,
-                    link.PermissionId,
-                    link.WebUrl,
-                    link.ExpiresAt,
-                    DateTimeOffset.UtcNow)));
+                    item.Id, item.Name, item.Path,
+                    link.PermissionType, link.PermissionId, link.WebUrl, link.ExpiresAt, DateTimeOffset.UtcNow)));
             }
-            catch (OneDriveGraphException)
+            catch (ProviderItemNotFoundException)
             {
                 // 单个条目查询失败不影响整表（例如该条目刚被远端删除）
+            }
+            catch (ProviderTransientException)
+            {
+                // 同上：远端限流/抖动不应让整张表失败
             }
         }
 
         return result;
     }
 
-    private static OneDriveSharePermission ParsePermission(string? permissionType)
+    private static FileSharePermission ParsePermission(string? permissionType)
         => permissionType?.Trim().ToLowerInvariant() switch
         {
-            "edit" => OneDriveSharePermission.Edit,
-            "view" or null or "" => OneDriveSharePermission.View,
+            "edit" => FileSharePermission.Edit,
+            "view" or null or "" => FileSharePermission.View,
             _ => throw new DomainException(5300, "分享权限只支持 view（可看）或 edit（可编辑）"),
         };
 
@@ -195,8 +198,14 @@ public sealed class OneDriveShareService(
             _ => throw new DomainException(5300, "分享有效期只支持 7 天或 30 天（或不过期）"),
         };
 
+    private static IFileShareManager SharesOf(IFileProviderSession session)
+        => session.Shares
+           ?? throw new DomainException(5334, $"该文件来源（{session.Account.ProviderKey}）不支持分享");
+
     /// <summary>归属校验 + 敏感路径闸门（与直链/缩略图/预览/文本同样的口径）。</summary>
-    private async Task<(FileItemEntity Item, FileProviderEntity Provider)> LoadShareableItemAsync(Guid itemId, CancellationToken ct)
+    private async Task<(FileItemEntity Item, IFileProviderSession Session)> LoadShareableItemAsync(
+        Guid itemId,
+        CancellationToken ct)
     {
         var item = await db.Set<FileItemEntity>()
             .Include(row => row.Provider)
@@ -205,7 +214,7 @@ public sealed class OneDriveShareService(
 
         if (item.Provider is null
             || item.Provider.UserId != UserId
-            || item.Provider.Provider != "onedrive"
+            || !providers.IsSupported(item.Provider.Provider)
             || item.Provider.Status != "connected"
             || item.IsDeleted)
         {
@@ -217,6 +226,7 @@ public sealed class OneDriveShareService(
             throw new DomainException(40303, "敏感路径受保护，不允许分享");
         }
 
-        return (item, item.Provider);
+        var session = await sessions.OpenAsync(item.Provider, ct);
+        return (item, session);
     }
 }

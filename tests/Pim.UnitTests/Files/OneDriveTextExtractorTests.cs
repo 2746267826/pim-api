@@ -7,11 +7,11 @@ using Pim.Module.Files.Services;
 namespace Pim.UnitTests.Files;
 
 /// <summary>
-/// OneDriveTextExtractor 测试：文本直读、docx 解包、截断、不支持类型、Tika 兜底。
+/// FileTextExtractor 测试：文本直读、docx 解包、截断、不支持类型、Tika 兜底。
 /// </summary>
-public class OneDriveTextExtractorTests
+public class FileTextExtractorTests
 {
-    private readonly OneDriveTextExtractor _extractor = new();
+    private readonly FileTextExtractor _extractor = new();
 
     private static byte[] ZipWith(params (string Name, string Content)[] entries)
     {
@@ -86,7 +86,7 @@ public class OneDriveTextExtractorTests
             tikaCalls.Add("called");
             return text;
         });
-        var extractor = new OneDriveTextExtractor(tika);
+        var extractor = new FileTextExtractor(tika);
         var result = await extractor.ExtractAsync("%PDF-fake"u8.ToArray(), "a.pdf", "application/pdf", maxBytes: 1024);
 
         Assert.Equal("%PDF-fake", result.Content);
@@ -245,7 +245,7 @@ public class OneDriveTextExtractorTests
                 writer.Write("<a:t>唯一一页</a:t>");
             }
 
-            for (var i = 0; i < OneDriveTextExtractor.MaxZipEntries + 10; i++)
+            for (var i = 0; i < FileTextExtractor.MaxZipEntries + 10; i++)
             {
                 var filler = archive.CreateEntry($"ppt/media/blob{i}.bin", CompressionLevel.NoCompression);
                 using var stream = filler.Open();
@@ -272,7 +272,7 @@ public class OneDriveTextExtractorTests
                 writer.Write("<w:document><w:body><w:p><w:r><w:t>ok</w:t></w:r></w:p></w:body></w:document>");
             }
 
-            for (var i = 0; i < OneDriveTextExtractor.MaxZipEntries + 10; i++)
+            for (var i = 0; i < FileTextExtractor.MaxZipEntries + 10; i++)
             {
                 var filler = archive.CreateEntry($"word/media/blob{i}.bin", CompressionLevel.NoCompression);
                 using var stream = filler.Open();

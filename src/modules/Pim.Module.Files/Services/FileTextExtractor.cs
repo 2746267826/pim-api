@@ -6,7 +6,7 @@ using Pim.Module.Files.Providers;
 
 namespace Pim.Module.Files.Services;
 
-public sealed record OneDriveExtractedText(
+public sealed record ExtractedText(
     string Content,
     long SourceBytes,
     bool Truncated,
@@ -18,9 +18,9 @@ public sealed record OneDriveExtractedText(
 /// 交给 IFileTextExtractionService，未配置则返回明确的「不支持」领域错误。
 /// 内容瞬态经过，不落盘、不入库。抽取上限 maxBytes（默认 64KB，封顶 1MB）。
 /// </summary>
-public sealed partial class OneDriveTextExtractor(
+public sealed partial class FileTextExtractor(
     IFileTextExtractionService? tikaExtraction = null,
-    ILogger<OneDriveTextExtractor>? logger = null)
+    ILogger<FileTextExtractor>? logger = null)
 {
     public const long DefaultMaxBytes = 64 * 1024;
     public const long HardMaxBytes = 1024 * 1024;
@@ -47,7 +47,7 @@ public sealed partial class OneDriveTextExtractor(
         ".txt", ".md", ".markdown", ".json", ".csv", ".log", ".yml", ".yaml", ".xml", ".html", ".htm", ".tsv",
     };
 
-    public async Task<OneDriveExtractedText> ExtractAsync(
+    public async Task<ExtractedText> ExtractAsync(
         byte[] bytes,
         string fileName,
         string? mimeType,
@@ -93,7 +93,7 @@ public sealed partial class OneDriveTextExtractor(
         throw new DomainException(5336, $"暂不支持从 {extension} 文件抽取文本");
     }
 
-    private static OneDriveExtractedText Truncate(byte[] bytes, long maxBytes, string extractor)
+    private static ExtractedText Truncate(byte[] bytes, long maxBytes, string extractor)
     {
         var truncated = bytes.LongLength > maxBytes;
         var limit = truncated ? (int)maxBytes : bytes.Length;
@@ -108,7 +108,7 @@ public sealed partial class OneDriveTextExtractor(
         }
 
         var content = Encoding.UTF8.GetString(bytes, 0, limit);
-        return new OneDriveExtractedText(content, bytes.LongLength, truncated, extractor);
+        return new ExtractedText(content, bytes.LongLength, truncated, extractor);
     }
 
     /// <summary>docx：word/document.xml 的 w:t 节点串联。</summary>

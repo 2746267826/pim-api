@@ -122,8 +122,18 @@ public sealed record OneDriveSmallContent(byte[] Bytes, string? ContentType);
 /// <summary>Graph 返回的上传会话（<c>uploadUrl</c> 已预授权，分片 PUT 不得再带 Authorization）。</summary>
 public sealed record OneDriveUploadSession(string UploadUrl, DateTimeOffset? ExpirationDateTime);
 
-/// <summary>按路径回读到的条目（REQ-14 登记上传结果用；名称以服务端为准，重名时已被改名）。</summary>
-public sealed record OneDrivePathItem(string Id, string Name, long? Size, string? MimeType, string? ParentPath = null);
+/// <summary>
+/// 按路径/id 回读到的条目（REQ-14 登记上传结果用；名称以服务端为准，重名时已被改名）。
+/// <paramref name="IsFolder"/> 由 Graph 的 <c>folder</c> / <c>root</c> facet 判定 ——
+/// 不能靠「MimeType 为 null」推断，那是同步路径上的约定，回读路径上没有这个保证。
+/// </summary>
+public sealed record OneDrivePathItem(
+    string Id,
+    string Name,
+    long? Size,
+    string? MimeType,
+    string? ParentPath = null,
+    bool IsFolder = false);
 
 /// <summary>分享链接的权限档（REQ-21 / V3：个人版按平台能力只提供可用档位）。</summary>
 public enum OneDriveSharePermission

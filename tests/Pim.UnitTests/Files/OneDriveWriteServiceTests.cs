@@ -14,10 +14,10 @@ using Xunit;
 namespace Pim.UnitTests.Files;
 
 /// <summary>
-/// OneDriveWriteService 测试：移动/重命名走 Graph 并收敛本地元数据、删除软删、
+/// FileWriteService 测试：移动/重命名走 Graph 并收敛本地元数据、删除软删、
 /// 恢复远端校验、上传收敛新行、审计落库、非 OneDrive 拒绝。
 /// </summary>
-public class OneDriveWriteServiceTests
+public class FileWriteServiceTests
 {
     private static readonly Guid UserId = Guid.Parse("eeeeeeee-1111-2222-3333-444444444491");
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-09-19T12:00:00Z");
@@ -106,21 +106,25 @@ public class OneDriveWriteServiceTests
         return (provider, item, folder);
     }
 
-    private static OneDriveWriteService CreateService(
+    private static FileWriteService CreateService(
         PimDbContext db,
         FakeOneDriveGraphClient graph,
         StubAuditLog? audit = null,
         SensitivePathPolicy? sensitivePolicy = null,
         TimeProvider? clock = null)
-        => new(
+    {
+        var harness = new FilesProviderHarness(
+            db, graph, new TestSecretProtector(), clock ?? new FixedClock(Now));
+        return new FileWriteService(
             db,
-            graph,
-            new OneDriveTokenService(db, graph, new TestSecretProtector(), clock: new FixedClock(Now)),
+            harness.Sessions,
+            harness.Providers,
             new StubCurrentUser(UserId),
             audit ?? new StubAuditLog(),
             sensitivePolicy: sensitivePolicy,
-            logger: NullLogger<OneDriveWriteService>.Instance,
+            logger: NullLogger<FileWriteService>.Instance,
             clock: clock ?? new FixedClock(Now));
+    }
 
     [Fact]
     public async Task Move_PatchesGraphParent_AndConvergesLocalPath()
@@ -180,7 +184,7 @@ public class OneDriveWriteServiceTests
         Assert.Single(graph.DeleteCalls);
         var deleted = await db.Set<FileItemEntity>().SingleAsync(i => i.Id == item.Id);
         Assert.True(deleted.IsDeleted);
-        Assert.Contains("files.onedrive.delete_to_trash", audit.Actions);
+        Assert.Contains("files.delete_to_trash", audit.Actions);
     }
 
     [Fact]
@@ -271,7 +275,9 @@ public class OneDriveWriteServiceTests
         var audit = new StubAuditLog();
         var service = CreateService(db, graph, audit);
 
-        var result = await service.UploadAsync("/合同", "新文件.md", new MemoryStream("内容"u8.ToArray()), "text/markdown");
+        var provider = await db.Set<FileProviderEntity>().SingleAsync();
+        var result = await service.UploadAsync(
+            provider.Id, "/合同", "新文件.md", new MemoryStream("内容"u8.ToArray()), "text/markdown");
 
         Assert.Equal("/合同/新文件.md", result.Path);
         var put = Assert.Single(graph.PutNewFileCalls);
@@ -279,18 +285,19 @@ public class OneDriveWriteServiceTests
         Assert.Equal("text/markdown", put.ContentType);
         var item = await db.Set<FileItemEntity>().SingleAsync(i => i.ExternalFileId == "uploaded-ext");
         Assert.Equal("/合同/新文件.md", item.Path);
-        Assert.Contains("files.onedrive.upload", audit.Actions);
+        Assert.Contains("files.upload", audit.Actions);
     }
 
     [Fact]
     public async Task Upload_Oversized_Throws()
     {
         await using var db = CreateDb();
-        SeedTree(db);
+        var (provider, _, _) = SeedTree(db);
         var service = CreateService(db, new FakeOneDriveGraphClient());
 
         var error = await Assert.ThrowsAsync<DomainException>(
-            () => service.UploadAsync("/", "big.bin", new MemoryStream(new byte[5 * 1024 * 1024]), "application/octet-stream"));
+            () => service.UploadAsync(
+                provider.Id, "/", "big.bin", new MemoryStream(new byte[5 * 1024 * 1024]), "application/octet-stream"));
         Assert.Equal(5331, error.ErrorCode);
     }
 
@@ -302,8 +309,6 @@ public class OneDriveWriteServiceTests
         {
             UserId = UserId,
             Provider = "nextcloud",
-            BaseUrl = "https://cloud.example.com",
-            Username = "me",
             Status = "connected",
         };
         var item = new FileItemEntity
@@ -345,14 +350,16 @@ public class OneDriveWriteServiceTests
             "folder-renamed", "报告 1", null, null, "/合同");
 
         var service = CreateService(db, graph);
-        var result = await service.CreateFolderAsync("/合同/报告");
+        var result = await service.CreateFolderAsync(provider.Id, "/合同/报告");
 
         var row = await db.Set<FileItemEntity>().SingleAsync(i => i.ExternalFileId == "folder-renamed");
         Assert.Equal("报告 1", row.Name);
         Assert.Equal("/合同/报告 1", row.Path);
         Assert.Equal("/合同/报告 1", result.Path);
         Assert.Equal("folder", row.ItemType);
-        Assert.Equal("root-ext", row.ParentExternalFileId);
+        // 工单 05 修正：新建目录登记的父引用必须是**目标目录**（/合同），
+        // 而不是盘根 —— 旧实现一律写盘根，导致 ParentExternalFileId 与 Path 互相矛盾。
+        Assert.Equal("folder-ext", row.ParentExternalFileId);
         Assert.Equal(provider.Id, row.ProviderId);
     }
 
@@ -361,13 +368,13 @@ public class OneDriveWriteServiceTests
     public async Task CreateFolder_NoConflict_RegistersSubmittedName()
     {
         await using var db = CreateDb();
-        SeedTree(db);
+        var (provider, _, _) = SeedTree(db);
         var graph = new FakeOneDriveGraphClient();
         graph.CreatedFolderId = "folder-new";
         graph.ItemsById["folder-new"] = new OneDrivePathItem("folder-new", "报告", null, null, "/合同");
 
         var service = CreateService(db, graph);
-        var result = await service.CreateFolderAsync("/合同/报告");
+        var result = await service.CreateFolderAsync(provider.Id, "/合同/报告");
 
         var row = await db.Set<FileItemEntity>().SingleAsync(i => i.ExternalFileId == "folder-new");
         Assert.Equal("报告", row.Name);
@@ -383,13 +390,14 @@ public class OneDriveWriteServiceTests
     public async Task CreateFolder_WhenServerReadbackFails_DoesNotRegisterSubmittedName()
     {
         await using var db = CreateDb();
-        SeedTree(db);
+        var (provider, _, _) = SeedTree(db);
         var graph = new FakeOneDriveGraphClient();
         graph.CreatedFolderId = "folder-ghost";
         // 刻意不配置 ItemsById：回读不到
 
         var service = CreateService(db, graph);
-        var exception = await Assert.ThrowsAsync<DomainException>(() => service.CreateFolderAsync("/合同/报告"));
+        var exception = await Assert.ThrowsAsync<DomainException>(
+            () => service.CreateFolderAsync(provider.Id, "/合同/报告"));
 
         Assert.Equal(5300, exception.ErrorCode);
         Assert.Empty(db.Set<FileItemEntity>().Where(i => i.ExternalFileId == "folder-ghost"));
@@ -525,14 +533,14 @@ public class OneDriveWriteServiceTests
     public async Task Upload_OversizedStream_IsRejectedWithoutBufferingWholePayload()
     {
         await using var db = CreateDb();
-        SeedTree(db);
+        var (provider, _, _) = SeedTree(db);
         var service = CreateService(db, new FakeOneDriveGraphClient());
 
         // 8MB 流：若实现先全量 CopyToAsync 再检查，这里同样会失败，但内存已被占用；
         // 本用例锁定的是「超限必须报 5331」这一可观察行为。
         var oversized = new MemoryStream(new byte[8 * 1024 * 1024]);
         var error = await Assert.ThrowsAsync<DomainException>(
-            () => service.UploadAsync("/合同", "big.bin", oversized, "application/octet-stream"));
+            () => service.UploadAsync(provider.Id, "/合同", "big.bin", oversized, "application/octet-stream"));
         Assert.Equal(5331, error.ErrorCode);
     }
 

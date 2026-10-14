@@ -99,7 +99,24 @@ public class FileEndpointPathTests
                 $"Missing route: {route.Method} {route.Route}. Found: {string.Join(", ", normalized.OrderBy(r => r.Route))}");
         }
 
-        Assert.All(routes, endpoint => Assert.NotNull(endpoint.Metadata.GetMetadata<IAuthorizeData>()));
+        // 唯一**刻意**豁免鉴权的路由是 Google 授权回调：浏览器 302 回来时没有 PIM 凭据，
+        // 它靠一次性、短时效、服务端加密保存的 state 建立安全边界（工单 F4.1）。
+        // 除它之外一律要求鉴权 —— 这里逐个断言，而不是放宽成「大部分要求鉴权」。
+        var allowAnonymous = routes
+            .Where(endpoint => endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null)
+            .Select(endpoint => Normalize(endpoint))
+            .ToList();
+        var expectedAnonymous = new (string Method, string Route)[]
+        {
+            ("GET", "/api/v1/files/google/callback"),
+        };
+        Assert.Equal(
+            expectedAnonymous.OrderBy(r => r.Route).ToArray(),
+            allowAnonymous.OrderBy(r => r!.Value.Route).Select(r => r!.Value).ToArray());
+
+        Assert.All(
+            routes.Where(endpoint => endpoint.Metadata.GetMetadata<IAllowAnonymous>() is null),
+            endpoint => Assert.NotNull(endpoint.Metadata.GetMetadata<IAuthorizeData>()));
     }
 
     /// <summary>
@@ -151,8 +168,8 @@ public class FileEndpointPathTests
             ("POST", "/api/v1/files/items/{id:guid}/move", "MoveItemAsync"),
             ("POST", "/api/v1/files/items/{id:guid}/rename", "RenameItemAsync"),
             ("DELETE", "/api/v1/files/items/{id:guid}", "DeleteItemAsync"),
-            ("GET", "/api/v1/files/items/{id:guid}/extracted-text", "OneDriveReadTextAsync"),
-            ("POST", "/api/v1/files/items/{id:guid}/restore", "OneDriveRestoreItemAsync"),
+            ("GET", "/api/v1/files/items/{id:guid}/extracted-text", "ReadTextAsync"),
+            ("POST", "/api/v1/files/items/{id:guid}/restore", "RestoreItemAsync"),
             ("GET", "/api/v1/files/search", "SearchAsync"),
             ("GET", "/api/v1/files/items/{id:guid}/open-link", "BuildOpenLinkAsync"),
         };

@@ -1,13 +1,15 @@
 namespace Pim.Module.Files.Services;
 
 /// <summary>
-/// OneDrive 条目命名的合法性校验（REQ-15 / AC-15.2）。
+/// 条目命名的合法性校验（REQ-15 / AC-15.2），与具体 provider 无关。
 ///
-/// 规则来自 OneDrive 平台限制：不得为空、不得含 <c>\ / : * ? " &lt; &gt; |</c>、
-/// 不得以点或空格结尾、不得是保留名。这里集中一处，供新建文件夹、改名、上传三条路径复用——
+/// 规则取自各 provider 平台限制的**交集**（OneDrive 最严）：
+/// 不得为空、不得含 <c>\ / : * ? " &lt; &gt; |</c>、不得以点或空格结尾、不得是保留名。
+/// 取交集意味着这些名字在任何已支持的网盘上都合法 —— 严格但不会出现
+/// 「PIM 允许、网盘拒绝」的落差。这里集中一处，供新建文件夹、改名、上传三条路径复用——
 /// 分散校验必然出现「改名拦住了、上传没拦住」这类漏洞。
 /// </summary>
-public static class OneDriveNameValidator
+public static class FileNameValidator
 {
     /// <summary>非法字符（含 Windows 保留字符与路径分隔符）。</summary>
     private static readonly char[] InvalidCharacters = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];

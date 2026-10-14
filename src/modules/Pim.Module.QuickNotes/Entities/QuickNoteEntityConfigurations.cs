@@ -28,7 +28,6 @@ public sealed class QuickNoteAttachmentEntityConfiguration : IEntityTypeConfigur
     public void Configure(EntityTypeBuilder<QuickNoteAttachmentEntity> builder)
     {
         builder.HasQueryFilter(a => a.DeletedAt == null);
-        builder.Property(a => a.StorageProvider).HasDefaultValue("minio");
         builder.Property(a => a.ContentType).HasDefaultValue("application/octet-stream");
         builder.Property(a => a.MetadataJson).HasDefaultValue("{}");
         builder.Property(a => a.CreatedAt).HasDefaultValueSql("now()");

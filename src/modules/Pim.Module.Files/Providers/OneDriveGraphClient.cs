@@ -400,13 +400,19 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
                 ReadRequiredString(json, "id"),
                 ReadString(json, "name", normalized),
                 ReadNullableString(json, "size") is { } size && long.TryParse(size, out var parsed) ? parsed : ReadNullableLong(json, "size"),
-                ReadNullableString(json, "file") ?? ReadMimeType(json));
+                ReadNullableString(json, "file") ?? ReadMimeType(json),
+                ReadParentPath(json),
+                ReadIsFolder(json));
         }
         catch (OneDriveGraphException exception) when (exception.StatusCode == 404)
         {
             return null;
         }
     }
+
+    /// <summary>目录判定：Graph 用 <c>folder</c> facet，盘根用 <c>root</c> facet。</summary>
+    private static bool ReadIsFolder(JsonElement json)
+        => json.TryGetProperty("folder", out _) || json.TryGetProperty("root", out _);
 
     private static string? ReadMimeType(JsonElement json)
         => json.TryGetProperty("file", out var file) && file.ValueKind == JsonValueKind.Object
@@ -432,7 +438,8 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
                 ReadString(json, "name", itemId),
                 ReadNullableLong(json, "size"),
                 ReadMimeType(json),
-                ReadParentPath(json));
+                ReadParentPath(json),
+                ReadIsFolder(json));
         }
         catch (OneDriveGraphException exception) when (exception.StatusCode == 404)
         {

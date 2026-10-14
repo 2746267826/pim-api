@@ -184,7 +184,7 @@ public class OneDriveContentEndpointsE2ETests
     {
         var (factory, user, _, itemId, graph) = await CreateUserWithFileAsync($"p4a-restore-{Guid.NewGuid():N}");
 
-        // 先经 DELETE 软删（走 OneDriveWriteService，Graph 成功后才本地软删）
+        // 先经 DELETE 软删（走 FileWriteService，Graph 成功后才本地软删）
         var deleteResponse = await user.DeleteAsync($"/api/v1/files/items/{itemId}");
         Assert.Equal(HttpStatusCode.OK, deleteResponse.StatusCode);
 

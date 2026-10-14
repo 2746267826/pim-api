@@ -12,9 +12,9 @@ using Pim.Module.Files.Services;
 namespace Pim.UnitTests.Files;
 
 /// <summary>
-/// OneDriveTokenService 测试：内存缓存命中不刷、过期刷新并加密落库、缓存失效、授权失效错误。
+/// FileProviderTokenService 测试：内存缓存命中不刷、过期刷新并加密落库、缓存失效、授权失效错误。
 /// </summary>
-public class OneDriveTokenServiceTests
+public class FileProviderTokenServiceTests
 {
     private static readonly Guid UserId = Guid.Parse("eeeeeeee-1111-2222-3333-444444444455");
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-09-19T12:00:00Z");
@@ -55,11 +55,15 @@ public class OneDriveTokenServiceTests
         return provider;
     }
 
-    private static OneDriveTokenService CreateService(
+    private static FileProviderTokenService CreateService(
         PimDbContext db,
         FakeOneDriveGraphClient graph,
         TimeProvider? clock = null)
-        => new(db, graph, new TestSecretProtector(), NullLogger<OneDriveTokenService>.Instance, clock ?? new FixedClock(Now));
+    {
+        var harness = new FilesProviderHarness(
+            db, graph, new TestSecretProtector(), clock ?? new FixedClock(Now));
+        return harness.Tokens;
+    }
 
     [Fact]
     public async Task ValidCachedExpiry_DoesNotCallRefresh()

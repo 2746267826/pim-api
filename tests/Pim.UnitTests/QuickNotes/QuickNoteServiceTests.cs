@@ -132,19 +132,19 @@ public class QuickNoteServiceTests
 
     private sealed class FakeObjectStorage : IQuickNoteObjectStorage
     {
-        public Task<string> StoreAsync(
+        public Task<StoredObjectRef> StoreAsync(
             Guid userId,
             string objectKey,
             Stream content,
             string contentType,
             long sizeBytes,
             CancellationToken ct = default)
-            => Task.FromResult(objectKey);
+            => Task.FromResult(new StoredObjectRef(objectKey, "onedrive", null));
 
-        public Task<Stream> OpenReadAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        public Task<Stream> OpenReadAsync(Guid userId, StoredObjectRef reference, CancellationToken ct = default)
             => Task.FromResult<Stream>(new MemoryStream());
 
-        public Task DeleteAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        public Task DeleteAsync(Guid userId, StoredObjectRef reference, CancellationToken ct = default)
             => Task.CompletedTask;
     }
 }

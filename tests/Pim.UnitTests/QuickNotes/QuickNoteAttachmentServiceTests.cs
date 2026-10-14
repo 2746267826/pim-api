@@ -36,8 +36,10 @@ public class QuickNoteAttachmentServiceTests
         Assert.Equal(uploaded.Id, attachment.Id);
         Assert.Equal(UserId, attachment.UserId);
         Assert.Null(attachment.QuickNoteId);
-        // MinIO 随 P4 退役；测试替身不是 OneDrive 适配器，故记录实现类型名
-        Assert.Equal(nameof(FakeObjectStorage), attachment.StorageProvider);
+        // 落点 provider 由存储层返回的**句柄**决定（工单 05 / F1）：
+        // 服务不再按实现类型名猜后端，因此测试替身也要在句柄里说明自己落在哪。
+        Assert.Equal("onedrive", attachment.StorageProvider);
+        Assert.Null(attachment.StorageAccountId);
         Assert.StartsWith($"quick-notes/{UserId:N}/{uploaded.Id:N}/", attachment.ObjectKey);
         Assert.True(storage.StoredObjects.ContainsKey(attachment.ObjectKey));
 
@@ -295,7 +297,7 @@ public class QuickNoteAttachmentServiceTests
         /// <summary>最近一次 StoreAsync 收到的 userId，用于验证身份是显式传入的。</summary>
         public Guid? LastStoreUserId { get; private set; }
 
-        public async Task<string> StoreAsync(
+        public async Task<StoredObjectRef> StoreAsync(
             Guid userId,
             string objectKey,
             Stream content,
@@ -307,26 +309,28 @@ public class QuickNoteAttachmentServiceTests
             await using var copy = new MemoryStream();
             await content.CopyToAsync(copy, ct);
             StoredObjects[objectKey] = new StoredObject(copy.ToArray(), contentType, sizeBytes);
-            return objectKey;
+            return new StoredObjectRef(objectKey, ProviderKey, null);
         }
 
-        public Task<Stream> OpenReadAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        public Task<Stream> OpenReadAsync(Guid userId, StoredObjectRef reference, CancellationToken ct = default)
         {
-            Stream stream = new MemoryStream(StoredObjects[objectKey].Bytes);
+            Stream stream = new MemoryStream(StoredObjects[reference.ObjectKey].Bytes);
             return Task.FromResult(stream);
         }
 
-        public Task DeleteAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        public Task DeleteAsync(Guid userId, StoredObjectRef reference, CancellationToken ct = default)
         {
             if (DeleteException is not null)
             {
                 throw DeleteException;
             }
 
-            DeletedObjectKeys.Add(objectKey);
-            StoredObjects.Remove(objectKey);
+            DeletedObjectKeys.Add(reference.ObjectKey);
+            StoredObjects.Remove(reference.ObjectKey);
             return Task.CompletedTask;
         }
+
+        private const string ProviderKey = "onedrive";
 
         /// <summary>被删除的远端 objectKey 记录，用于验证删除确实清了存储层。</summary>
         public List<string> DeletedObjectKeys { get; } = [];

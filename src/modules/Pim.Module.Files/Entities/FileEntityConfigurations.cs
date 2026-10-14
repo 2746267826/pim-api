@@ -10,11 +10,8 @@ public sealed class FileProviderEntityConfiguration : IEntityTypeConfiguration<F
         builder.ToTable("file_providers");
         builder.Property(e => e.Id).HasColumnName("id");
         builder.Property(e => e.UserId).HasColumnName("user_id");
-        builder.Property(e => e.Provider).HasColumnName("provider").HasMaxLength(32).HasDefaultValue("nextcloud");
-        builder.Property(e => e.BaseUrl).HasColumnName("base_url").HasMaxLength(1024);
-        builder.Property(e => e.InternalBaseUrl).HasColumnName("internal_base_url").HasMaxLength(1024);
-        builder.Property(e => e.Username).HasColumnName("username").HasMaxLength(255);
-        builder.Property(e => e.AppPasswordSecret).HasColumnName("app_password_secret");
+        // F3：provider 列保留（承载 onedrive/google 区分），但去掉 nextcloud 默认值与旧语义。
+        builder.Property(e => e.Provider).HasColumnName("provider").HasMaxLength(32);
         builder.Property(e => e.Status).HasColumnName("status").HasMaxLength(32).HasDefaultValue("pending");
         builder.Property(e => e.LastSyncAt).HasColumnName("last_sync_at");
         builder.Property(e => e.LastError).HasColumnName("last_error");
@@ -28,14 +25,23 @@ public sealed class FileProviderEntityConfiguration : IEntityTypeConfiguration<F
         builder.Property(e => e.DeltaResetAt).HasColumnName("delta_reset_at");
         builder.Property(e => e.RefreshTokenEncrypted).HasColumnName("refresh_token_encrypted");
         builder.Property(e => e.TokenExpiresAt).HasColumnName("token_expires_at");
+        builder.Property(e => e.IsDefault).HasColumnName("is_default").HasDefaultValue(false);
         builder.Property(e => e.SyncStatus).HasColumnName("sync_status").HasMaxLength(32).HasDefaultValue("idle");
         builder.Property(e => e.SyncedItemCount).HasColumnName("synced_item_count").HasDefaultValue(0);
-        builder.Property(e => e.DeviceCodeEncrypted).HasColumnName("device_code_encrypted");
+        builder.Property(e => e.PendingAuthorizationSecretEncrypted).HasColumnName("device_code_encrypted");
         builder.Property(e => e.UserCode).HasColumnName("user_code").HasMaxLength(32);
         builder.Property(e => e.VerificationUri).HasColumnName("verification_uri").HasMaxLength(512);
-        builder.Property(e => e.DeviceCodeExpiresAt).HasColumnName("device_code_expires_at");
-        builder.HasIndex(e => new { e.UserId, e.Provider, e.BaseUrl, e.Username }).IsUnique();
+        builder.Property(e => e.PendingAuthorizationExpiresAt).HasColumnName("device_code_expires_at");
+        // F2：唯一键从 (user_id, provider, base_url, username) 改为账号维度。
+        // account_id 只有授权完成才有值，而 PostgreSQL 唯一索引里 NULL 互不相等，
+        // 因此必须用**部分**唯一索引表达「同一用户、同一 provider、同一账号只能一条」：
+        // 未完成的绑定（account_id IS NULL）允许多条并存。
+        builder.HasIndex(e => new { e.UserId, e.Provider, e.AccountId })
+            .IsUnique()
+            .HasFilter("account_id IS NOT NULL");
         builder.HasIndex(e => new { e.UserId, e.Status });
+        // 附件/闪念取默认账号时按 (user_id, is_default) 过滤
+        builder.HasIndex(e => new { e.UserId, e.IsDefault });
     }
 }
 

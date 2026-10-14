@@ -8,11 +8,11 @@ using Pim.Module.Files.Entities;
 namespace Pim.Module.Files.Services;
 
 /// <summary>
-/// 文件来源（provider）读取服务（文件模块 v2）。
+/// 网盘**账号**读取服务（工单 05 / F2）。
 ///
-/// v2 只有 OneDrive 一种来源：绑定走设备码（<see cref="OneDriveBindingService"/>）、
-/// 内容与写操作走 Graph（<see cref="OneDriveContentService"/> / <see cref="OneDriveWriteService"/>）。
-/// Nextcloud/WebDAV 绑定、连接测试与连接解析随 P4 一并退役，因此本服务不再依赖任何适配器。
+/// 绑定走 <see cref="FileProviderAuthorizationService"/>（设备码与浏览器跳转两种形态），
+/// 内容与写操作走 provider 抽象（<see cref="FileContentService"/> / <see cref="FileWriteService"/>）。
+/// 本服务只做列表与映射，不再假设「一个用户一个来源」。
 /// </summary>
 public sealed class FileProviderBindingService(
     PimDbContext db,
@@ -30,7 +30,7 @@ public sealed class FileProviderBindingService(
             .AsNoTracking()
             .Where(provider => provider.UserId == userId)
             .OrderBy(provider => provider.Provider)
-            .ThenBy(provider => provider.Username)
+            .ThenBy(provider => provider.CreatedAt)
             .ToListAsync(ct);
 
         // #353：一次查询取回各 provider 的已索引总量（未删除），避免逐个 provider 再查一次。
@@ -55,9 +55,6 @@ public sealed class FileProviderBindingService(
         => new(
             provider.Id,
             provider.Provider,
-            provider.BaseUrl,
-            provider.InternalBaseUrl,
-            provider.Username,
             provider.Status,
             provider.LastSyncAt,
             provider.LastError,
@@ -71,5 +68,6 @@ public sealed class FileProviderBindingService(
             provider.SyncedItemCount,
             provider.DeltaResetAt,
             provider.TokenExpiresAt,
-            totalIndexedCount);
+            totalIndexedCount,
+            provider.IsDefault);
 }
