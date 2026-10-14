@@ -215,7 +215,7 @@ public sealed class DeviceMergeRealDbTests
                 await db.Set<MobileAppCatalogEntity>().Select(c => c.PackageName).Distinct().CountAsync());
 
             // 工单 02 C1：心跳与端点通道在真实数据上也不能留下源设备的残留行，
-            // 且目标设备必须有且只有一行 android 心跳 / 一行端点状态（新设备不是空白的）。
+            // 且目标设备那一行确实存在（"<= 1" 同时代表"主键/唯一键没被撞坏"）。
             Assert.Empty(await db.Set<DaemonHeartbeatEntity>()
                 .Where(h => sourceDeviceIds.Contains(h.DeviceId)).ToListAsync());
             Assert.True(await db.Set<DaemonHeartbeatEntity>()

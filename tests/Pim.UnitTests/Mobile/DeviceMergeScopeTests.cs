@@ -20,10 +20,11 @@ namespace Pim.UnitTests.Mobile;
 ///
 /// <para>
 /// 补隔离过滤器不是为了"更像生产"这么笼统的理由，而是因为本文件最关键的断言
-/// （别的用户持有同名字符串 device_id 时不得被改动）在生产里恰好会被这条过滤器干扰：
-/// 没有它，一个漏写 <c>IgnoreQueryFilters()</c> 的实现也能在测试里查不到冲突而"变绿"。
+/// （别的用户持有同名字符串 device_id 时不得被改动）在生产里恰好会被这条过滤器掩盖：
+/// 过滤器生效时，实现里那句用来找"别的用户是否占用了这个字符串"的查询会把别的用户的行滤掉，
+/// 于是恒判"独占"、污染照常发生，而"旧 device_id 是否为 0 行"的断言反而变绿。
 /// 过滤器实现与 <c>PimDbContext.ApplyUserIsolationFilters</c> 同口径（后者是 private，
-/// 测试库只能照抄一份）。
+/// 测试库只能照抄一份），并由下面 <c>Fixture_...</c> 用例自检它确实生效。
 /// </para>
 /// </summary>
 internal sealed class DeviceScopeSqliteDbContext : PimDbContext
@@ -171,9 +172,9 @@ public sealed class DeviceMergeScopeTests
     }
 
     /// <summary>
-    /// 本文件最关键的跨用户断言依赖隔离过滤器真的生效，先把这个前提钉住。
-    /// 若过滤器没生效，"别的用户的同名 device_id"根本不会出现在查询结果里，
-    /// 漏写 <c>IgnoreQueryFilters()</c> 的实现照样会把别人的心跳搬走而测试全绿。
+    /// 本文件最关键的跨用户断言依赖隔离过滤器真的生效，先把这个前提钉住：
+    /// 过滤器生效时，当前用户查不到别的用户的同名设备行（漏写 <c>IgnoreQueryFilters()</c>
+    /// 的冲突查询因此恒返回空、恒判"独占"）；忽略过滤器才看得见它。
     /// </summary>
     [Fact]
     public async Task Fixture_AppliesTheProductionUserIsolationFilterSoCrossUserAssertionsCanFail()
@@ -235,6 +236,170 @@ public sealed class DeviceMergeScopeTests
         // 3) 合并本身照常生效（本用户的数据该搬的都搬了）。
         Assert.Equal(1, await db.Set<MobileUsageEventEntity>().CountAsync(e => e.DeviceId == TargetDeviceId && e.PackageName == "com.ours"));
         Assert.Equal(0, await db.Set<MobileDeviceEntity>().CountAsync(d => d.DeviceId == SourceDeviceA));
+    }
+
+    /// <summary>
+    /// 多台源设备里只有一台的字符串被别的用户占用：归属判断必须**逐台**做 ——
+    /// 独占的那台照常并入，共享的那台整行不动，预览数字也要如实反映这个差别，
+    /// 否则"预览 == 实际"在混合样本下就不成立。
+    /// </summary>
+    [Fact]
+    public async Task MergeAsync_ScopesHeartbeatsPerSourceDeviceWhenOnlyOneSourceIdIsShared()
+    {
+        await using var ctx = await DeviceScopeTestDb.CreateAsync(MobileTestHelpers.UserId);
+        var db = ctx.Db;
+        SeedDevice(db, MobileTestHelpers.UserId, TargetDeviceId, Now);
+        SeedDevice(db, MobileTestHelpers.UserId, SourceDeviceA, Now.AddDays(-60));
+        SeedDevice(db, MobileTestHelpers.UserId, SourceDeviceB, Now.AddDays(-50));
+        SeedHeartbeat(db, SourceDeviceA, Now.AddMinutes(-5), version: "a-exclusive");
+        SeedHeartbeat(db, SourceDeviceB, Now.AddMinutes(-3), version: "b-shared");
+        SeedDevice(db, OtherUserId, SourceDeviceB, Now.AddDays(-10));
+        await db.SaveChangesAsync();
+
+        var service = CreateService(db);
+        var preview = await service.PreviewMergeAsync([SourceDeviceA, SourceDeviceB], TargetDeviceId, CancellationToken.None);
+        // 预览只数"会动的那一台"的心跳：共享的那台不在范围内。
+        Assert.Equal(1, preview.Tables.Single(t => t.Table == DeviceScopedTables.DaemonHeartbeats).RowCount);
+
+        await service.MergeAsync([SourceDeviceA, SourceDeviceB], TargetDeviceId, CancellationToken.None);
+
+        var rows = await db.Set<DaemonHeartbeatEntity>().IgnoreQueryFilters().OrderBy(h => h.DeviceId).ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(SourceDeviceB, rows[0].DeviceId);
+        Assert.Equal("b-shared", rows[0].Version);
+        Assert.Equal(TargetDeviceId, rows[1].DeviceId);
+        Assert.Equal("a-exclusive", rows[1].Version);
+    }
+
+    /// <summary>
+    /// 目标 device_id 也被别的用户占用：那个 id 下的心跳行归属不明，因此**两头都不写** ——
+    /// 既不能删（可能是别人的活动心跳），也不能把我们的源行改挂上去（别的用户会因此看到
+    /// 我们的设备状态）。此时本用户源设备的心跳行是我们自己的数据、设备又即将删除，
+    /// 必须清掉，否则就是工单要消灭的"旧设备残留"。
+    /// </summary>
+    [Fact]
+    public async Task MergeAsync_DoesNotWriteToASharedTargetDeviceIdAndClearsTheOwnSourceHeartbeat()
+    {
+        await using var ctx = await DeviceScopeTestDb.CreateAsync(MobileTestHelpers.UserId);
+        var db = ctx.Db;
+        SeedDevice(db, MobileTestHelpers.UserId, TargetDeviceId, Now);
+        SeedDevice(db, MobileTestHelpers.UserId, SourceDeviceA, Now.AddDays(-60));
+        SeedHeartbeat(db, SourceDeviceA, Now.AddMinutes(-5), version: "ours-newer");
+        // 目标 device_id 也被另一个用户持有，且那个 id 下已有一行（归属不明）。
+        SeedDevice(db, OtherUserId, TargetDeviceId, Now.AddDays(-10));
+        SeedHeartbeat(db, TargetDeviceId, Now.AddHours(-4), version: "ambiguous-older");
+        await db.SaveChangesAsync();
+
+        var service = CreateService(db);
+        await service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+
+        // 归属不明的那一行原样保留（版本、时刻都没被我们的更新数据顶掉）。
+        var row = Assert.Single(await db.Set<DaemonHeartbeatEntity>().IgnoreQueryFilters().ToListAsync());
+        Assert.Equal(TargetDeviceId, row.DeviceId);
+        Assert.Equal("ambiguous-older", row.Version);
+        Assert.Equal(Now.AddHours(-4), row.ReceivedAt);
+        // 我们自己的源心跳被清掉（设备已删除，不留孤儿行）。
+        Assert.Equal(0, await db.Set<DaemonHeartbeatEntity>().IgnoreQueryFilters()
+            .CountAsync(h => h.DeviceId == SourceDeviceA));
+    }
+
+    /// <summary>
+    /// 目标 device_id 被别的用户占用、且该 id 下**还没有**心跳行：也不能把源行迁进去 ——
+    /// 那会让别的用户在自己的设备列表里看到我们的设备状态。源行必须清掉。
+    /// </summary>
+    [Fact]
+    public async Task MergeAsync_DoesNotCreateAHeartbeatUnderASharedTargetDeviceId()
+    {
+        await using var ctx = await DeviceScopeTestDb.CreateAsync(MobileTestHelpers.UserId);
+        var db = ctx.Db;
+        SeedDevice(db, MobileTestHelpers.UserId, TargetDeviceId, Now);
+        SeedDevice(db, MobileTestHelpers.UserId, SourceDeviceA, Now.AddDays(-60));
+        SeedHeartbeat(db, SourceDeviceA, Now.AddMinutes(-5), version: "ours");
+        SeedDevice(db, OtherUserId, TargetDeviceId, Now.AddDays(-10));
+        await db.SaveChangesAsync();
+
+        var service = CreateService(db);
+        await service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+
+        Assert.Empty(await db.Set<DaemonHeartbeatEntity>().IgnoreQueryFilters().ToListAsync());
+    }
+
+    /// <summary>
+    /// 端点行还没收到过心跳（<c>LastHeartbeatAt == null</c>，由
+    /// <c>EndpointStatusService.GetOrCreateStateAsync</c> 建出）时，源侧的有效心跳必须胜出。
+    /// C# 的可空比较在有 null 时一律返回 false，不显式处理就会把源状态整份丢掉。
+    /// </summary>
+    [Fact]
+    public async Task MergeAsync_LetsAValidSourceHeartbeatWinOverTheTargetsNullHeartbeat()
+    {
+        await using var ctx = await DeviceScopeTestDb.CreateAsync(MobileTestHelpers.UserId);
+        var db = ctx.Db;
+        SeedDevice(db, MobileTestHelpers.UserId, TargetDeviceId, Now);
+        SeedDevice(db, MobileTestHelpers.UserId, SourceDeviceA, Now.AddDays(-60));
+        SeedEndpointStatus(db, TargetDeviceId, Now.AddDays(-2), platform: "android", blocked: 1, uploadStatus: "Unknown");
+        var target = await db.Set<EndpointStatusEntity>().SingleAsync();
+        target.LastHeartbeatAt = null;
+        target.CollectionCacheCount = 0;
+        SeedEndpointStatus(db, SourceDeviceA, Now.AddMinutes(-2), platform: "android", blocked: 4, uploadStatus: "Healthy", cacheCount: 7);
+        await db.SaveChangesAsync();
+
+        var service = CreateService(db);
+        await service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+
+        var row = Assert.Single(await db.Set<EndpointStatusEntity>().ToListAsync());
+        Assert.Equal(TargetDeviceId, row.DeviceId);
+        Assert.Equal("Healthy", row.UploadStatus);
+        Assert.Equal(7, row.CollectionCacheCount);
+        Assert.Equal(Now.AddMinutes(-2), row.LastHeartbeatAt);
+        Assert.Equal(5, row.OnlineOnlyBlockedCount); // 累计量相加
+    }
+
+    /// <summary>
+    /// 反向：目标有有效心跳、源没有（<c>null</c>）。目标状态与时刻保持不变，源侧的累计量仍然并入。
+    /// </summary>
+    [Fact]
+    public async Task MergeAsync_KeepsTheTargetsValidHeartbeatWhenTheSourceHasNone()
+    {
+        await using var ctx = await DeviceScopeTestDb.CreateAsync(MobileTestHelpers.UserId);
+        var db = ctx.Db;
+        SeedDevice(db, MobileTestHelpers.UserId, TargetDeviceId, Now);
+        SeedDevice(db, MobileTestHelpers.UserId, SourceDeviceA, Now.AddDays(-60));
+        SeedEndpointStatus(db, TargetDeviceId, Now.AddMinutes(-2), platform: "android", blocked: 1, uploadStatus: "Healthy", cacheCount: 7);
+        SeedEndpointStatus(db, SourceDeviceA, Now.AddDays(-3), platform: "android", blocked: 4, uploadStatus: "Unknown");
+        var source = await db.Set<EndpointStatusEntity>().SingleAsync(s => s.DeviceId == SourceDeviceA);
+        source.LastHeartbeatAt = null;
+        await db.SaveChangesAsync();
+
+        var service = CreateService(db);
+        await service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+
+        var row = Assert.Single(await db.Set<EndpointStatusEntity>().ToListAsync());
+        Assert.Equal("Healthy", row.UploadStatus);
+        Assert.Equal(7, row.CollectionCacheCount);
+        Assert.Equal(Now.AddMinutes(-2), row.LastHeartbeatAt);
+        Assert.Equal(5, row.OnlineOnlyBlockedCount);
+    }
+
+    /// <summary>双方都没有心跳时刻（都是 null）时：不因 null 比较作出任何状态替换，计数仍相加。</summary>
+    [Fact]
+    public async Task MergeAsync_HandlesTwoEndpointRowsThatBothLackAHeartbeat()
+    {
+        await using var ctx = await DeviceScopeTestDb.CreateAsync(MobileTestHelpers.UserId);
+        var db = ctx.Db;
+        SeedDevice(db, MobileTestHelpers.UserId, TargetDeviceId, Now);
+        SeedDevice(db, MobileTestHelpers.UserId, SourceDeviceA, Now.AddDays(-60));
+        SeedEndpointStatus(db, TargetDeviceId, Now.AddDays(-2), platform: "android", blocked: 1, uploadStatus: "TargetOnly", cacheCount: 1);
+        SeedEndpointStatus(db, SourceDeviceA, Now.AddDays(-2), platform: "android", blocked: 4, uploadStatus: "SourceOnly", cacheCount: 2);
+        foreach (var state in await db.Set<EndpointStatusEntity>().ToListAsync()) state.LastHeartbeatAt = null;
+        await db.SaveChangesAsync();
+
+        var service = CreateService(db);
+        await service.MergeAsync([SourceDeviceA], TargetDeviceId, CancellationToken.None);
+
+        var row = Assert.Single(await db.Set<EndpointStatusEntity>().ToListAsync());
+        Assert.Null(row.LastHeartbeatAt);
+        Assert.Equal("TargetOnly", row.UploadStatus);
+        Assert.Equal(5, row.OnlineOnlyBlockedCount);
     }
 
     // ---------------------------------------------------------------- C1 合并：endpoint_statuses
@@ -335,16 +500,35 @@ public sealed class DeviceMergeScopeTests
         await using var ctx = await DeviceScopeTestDb.CreateAsync(MobileTestHelpers.UserId);
         var db = ctx.Db;
         SeedDevice(db, MobileTestHelpers.UserId, TargetDeviceId, Now);
+        // 15 张表全部种上数据，否则 ResidualTablesAsync 的空断言可能是"因为根本没数据"而恒真。
+        SeedEvent(db, MobileTestHelpers.UserId, TargetDeviceId, "com.a", Now.AddDays(-1));
+        SeedSession(db, MobileTestHelpers.UserId, TargetDeviceId, "com.a", Now.AddDays(-1));
+        SeedSummary(db, MobileTestHelpers.UserId, TargetDeviceId, "com.a", Now.AddDays(-1));
+        SeedLocation(db, TargetDeviceId, Now.AddDays(-1), 31.23m, 121.47m);
+        SeedBatch(db, MobileTestHelpers.UserId, TargetDeviceId, "batch-1", Now.AddDays(-1));
+        SeedForensic(db, MobileTestHelpers.UserId, TargetDeviceId, "key-1", Now.AddDays(-1));
+        SeedDroppedReason(db, MobileTestHelpers.UserId, TargetDeviceId, "2026-09-12", "low-accuracy");
+        SeedCatalog(db, MobileTestHelpers.UserId, TargetDeviceId, "com.a", "A", "tools", Now.AddDays(-1));
+        SeedTimelineBlock(db, MobileTestHelpers.UserId, TargetDeviceId, Now.AddDays(-1));
+        SeedAggregate(db, MobileTestHelpers.UserId, TargetDeviceId, Now.AddDays(-1));
+        SeedMaterialization(db, MobileTestHelpers.UserId, TargetDeviceId, Now.AddDays(-1));
         SeedHeartbeat(db, TargetDeviceId, Now.AddMinutes(-1), version: "bye");
         SeedEndpointStatus(db, TargetDeviceId, Now.AddMinutes(-1), platform: "android", blocked: 1);
         db.Set<EndpointNotificationActionEntity>().Add(NotificationAction(TargetDeviceId, "open-settings"));
         await db.SaveChangesAsync();
 
+        // 删除前这张清单必须是满的（15 张表里除了 mobile_devices 之外都应有数据）。
+        var before = await ResidualTablesAsync(db, MobileTestHelpers.UserId, TargetDeviceId);
+        Assert.Equal(15, before.Count);
+
         var service = CreateService(db);
-        await service.DeleteAsync(TargetDeviceId, CancellationToken.None);
+        var result = await service.DeleteAsync(TargetDeviceId, CancellationToken.None);
 
         // 删除后不得留下"只有心跳没有设备"这类悬空记录。
         Assert.Empty(await ResidualTablesAsync(db, MobileTestHelpers.UserId, TargetDeviceId));
+        var byTable = result.Tables.ToDictionary(t => t.Table, t => t.RowCount, StringComparer.Ordinal);
+        foreach (var table in before)
+            Assert.Equal(1, byTable[table]);
     }
 
     [Fact]

@@ -57,7 +57,7 @@ public sealed class DeviceScopeRealDbTests
 
     /// <summary>
     /// AC-2 的可判定形式：合并前用**用户级**（不传 deviceId）查询得到的汇总数字，
-    /// 与合并后用**新设备**查询同一窗口得到的数字必须完全一致 —— 这就是
+    /// 与合并后用**新设备**查询同一窗口得到的数字一致 —— 这就是
     /// "用户在新设备下能看到的手机使用数据与合并前一致"。
     ///
     /// <para>
@@ -66,6 +66,14 @@ public sealed class DeviceScopeRealDbTests
     /// （用户级查询因设备数 &gt; 1 不读物化表；合并把两侧物化数据都删了，新设备这条也拿不到覆盖记录）。
     /// 反过来，直接比对 <c>mobile_usage_aggregates</c> 的行必然对不上（合并就把它们删了），
     /// 所以断言不看派生表本身，只看用户能读到的数字。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>成立条件是有限的，不能写成"应该一致"</b>：本用例样本里跨设备没有重复的
+    /// fallback 汇总、也没有跨设备的 session↔summary 重叠。存在这类重复时数字会**收缩**
+    /// （合并把重装前后重复记账的同一段使用时间收敛成一份），见
+    /// <see cref="MergeAsync_ConvergesCrossDeviceDuplicateFallbackSummariesSoTheNumbersShrink"/>。
+    /// 键冲突（events/summaries/batches/forensic/location_points）同样会让行数按预期减少。
     /// </para>
     /// </summary>
     [SkippableFact]
@@ -80,6 +88,8 @@ public sealed class DeviceScopeRealDbTests
         // 故意给目标设备造一份"看起来新鲜"的物化数据：合并前读路径能命中它，
         // 合并后必须失效并回退在线计算 —— 否则数字会停在合并前的旧快照上。
         SeedMaterializedCoverageAndAggregates(db, TargetDeviceId, StaleSnapshotSeconds);
+        // 目标设备的派生块也种上，"合并后为空"的断言才不是"本来就没有"。
+        SeedTimelineBlock(db, TargetDeviceId);
         await db.SaveChangesAsync();
 
         var aggregation = CreateAggregationService(db);
@@ -87,6 +97,7 @@ public sealed class DeviceScopeRealDbTests
             new MobileAnalyticsQueryRequest(WindowStart, WindowEnd), CancellationToken.None);
         Assert.Equal(TargetSessionSeconds + SourceSessionSeconds, before.TotalForegroundSeconds);
         Assert.Equal(2, before.AppCount);
+        Assert.Equal(1, await db.Set<MobileTimelineBlockEntity>().CountAsync());
 
         var service = new DeviceManagementService(
             db, MobileTestHelpers.CurrentUser(MobileTestHelpers.UserId), MobileTestHelpers.Time(Now));
@@ -128,9 +139,17 @@ public sealed class DeviceScopeRealDbTests
 
         var aggregation = CreateAggregationService(db);
         var deviceScoped = new MobileAnalyticsQueryRequest(WindowStart, WindowEnd, DeviceId: TargetDeviceId);
+        var blocksService = new MobileTimelineBlockService(
+            db, MobileTestHelpers.CurrentUser(MobileTestHelpers.UserId), MobileTestHelpers.Time(Now));
 
         var heatmapBefore = await aggregation.GetHeatmapAsync(deviceScoped, CancellationToken.None);
         Assert.Contains(heatmapBefore, bucket => bucket.ForegroundSeconds == StaleSnapshotSeconds);
+        // 合并前的"全部设备"视图与合并后的"新设备"视图必须给出同一份块数据
+        // （都在线计算：用户级因设备数 > 1 命中不了物化，新设备侧合并后覆盖记录已被删）。
+        var blocksBefore = await blocksService.GetBlocksAsync(
+            new MobileAnalyticsQueryRequest(WindowStart, WindowEnd), CancellationToken.None);
+        var blocksBeforeSeconds = blocksBefore.Items.Sum(block => block.ForegroundSeconds);
+        Assert.True(blocksBeforeSeconds > 0, "用例前提：合并前就应有可读的时间轴块");
 
         var service = new DeviceManagementService(
             db, MobileTestHelpers.CurrentUser(MobileTestHelpers.UserId), MobileTestHelpers.Time(Now));
@@ -140,11 +159,56 @@ public sealed class DeviceScopeRealDbTests
         Assert.DoesNotContain(heatmapAfter, bucket => bucket.ForegroundSeconds == StaleSnapshotSeconds);
         Assert.Equal(TargetSessionSeconds + SourceSessionSeconds, heatmapAfter.Sum(bucket => bucket.ForegroundSeconds));
 
-        // 顺手确认块通道也一样能读（不再依赖被删掉的物化覆盖）。
-        var blocks = await new MobileTimelineBlockService(
-                db, MobileTestHelpers.CurrentUser(MobileTestHelpers.UserId), MobileTestHelpers.Time(Now))
-            .GetBlocksAsync(deviceScoped, CancellationToken.None);
-        Assert.True(blocks.Items.Count > 0, "合并后时间轴块应能由原始行在线重算出来");
+        // 块通道同样不空、而且数字一致（不再依赖被删掉的物化覆盖）。
+        Assert.Equal(0, await db.Set<MobileTimelineBlockEntity>().CountAsync());
+        var blocksAfter = await blocksService.GetBlocksAsync(deviceScoped, CancellationToken.None);
+        Assert.Equal(blocksBeforeSeconds, blocksAfter.Items.Sum(block => block.ForegroundSeconds));
+    }
+
+    /// <summary>
+    /// AC-2 的**边界**（Codex 独立 review 指出的反例，本次如实钉住而不是藏起来）：
+    /// 跨设备的重复 fallback 汇总在合并后会被去重，因此
+    /// "用户级合并前 == 新设备合并后"**并非无条件成立**。
+    ///
+    /// <para>
+    /// 依据（<c>MobileUsageAggregationService</c>）：
+    /// <c>DeduplicateFallbackSummariesAsync</c> 的分组键含 <c>DeviceId</c>
+    /// （<c>(DeviceId, Package, HourStart)</c>）→ 合并前两台设备同小时同包名的汇总各算一份，
+    /// 合并后收敛成一份（取 <c>TotalTimeVisibleMs</c> 最大者）；fallback 汇总的
+    /// "与 session 重叠则跳过"判定里同样带 <c>DeviceId</c> 相等条件。
+    /// </para>
+    ///
+    /// <para>
+    /// 方向是**收敛**（把重装 App 前后重复记账的同一段使用时间合成一份），不是数据丢失：
+    /// 合并前的用户级数字把同一份使用时间算了两遍。PR 里必须写清这条边界与触发条件。
+    /// </para>
+    /// </summary>
+    [SkippableFact]
+    public async Task MergeAsync_ConvergesCrossDeviceDuplicateFallbackSummariesSoTheNumbersShrink()
+    {
+        await using var scope = await RealDbScope.CreateAsync(MobileTestHelpers.UserId);
+        var db = scope.Db;
+        SeedDevice(db, MobileTestHelpers.UserId, TargetDeviceId, Now);
+        SeedDevice(db, MobileTestHelpers.UserId, SourceDeviceId, Now.AddDays(-60));
+        SeedFallbackSummary(db, TargetDeviceId, "com.dup.app", WindowStart.AddHours(1), visibleMs: 1_200_000);
+        SeedFallbackSummary(db, SourceDeviceId, "com.dup.app", WindowStart.AddHours(1), visibleMs: 600_000);
+        await db.SaveChangesAsync();
+
+        var aggregation = CreateAggregationService(db);
+        var before = await aggregation.GetOverviewAsync(
+            new MobileAnalyticsQueryRequest(WindowStart, WindowEnd), CancellationToken.None);
+        // 合并前：两台设备各算一份（1,200 + 600）。
+        Assert.Equal(1_800, before.TotalForegroundSeconds);
+        Assert.Equal(1, before.AppCount);
+
+        var service = new DeviceManagementService(
+            db, MobileTestHelpers.CurrentUser(MobileTestHelpers.UserId), MobileTestHelpers.Time(Now));
+        await service.MergeAsync([SourceDeviceId], TargetDeviceId, CancellationToken.None);
+
+        var after = await aggregation.GetOverviewAsync(
+            new MobileAnalyticsQueryRequest(WindowStart, WindowEnd, DeviceId: TargetDeviceId), CancellationToken.None);
+        // 合并后：同一 (device, package, hour) 只剩一份，取可见时长更大的那条。
+        Assert.Equal(1_200, after.TotalForegroundSeconds);
     }
 
     // ---------------------------------------------------------------- AC-3：预览 == 实际删除
@@ -248,6 +312,29 @@ public sealed class DeviceScopeRealDbTests
         var observedBefore = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var row in preview.Tables)
             observedBefore[row.Table] = await RawCountAsync(scope.Admin, row.Table, MobileTestHelpers.UserId, TargetDeviceId);
+
+        // 期望表集合是**写死**的独立清单，不来自返回值：否则某张表被预览与删除同时漏掉时，
+        // 下面的循环会自己绕过它（"遍历范围来自返回清单"的经典假绿）。
+        Assert.Equal(
+            new[]
+            {
+                DeviceScopedTables.UsageEvents,
+                DeviceScopedTables.UsageSessions,
+                DeviceScopedTables.UsageSummaries,
+                DeviceScopedTables.LocationPoints,
+                DeviceScopedTables.SyncBatches,
+                DeviceScopedTables.ForensicEvents,
+                DeviceScopedTables.DroppedReasonDaily,
+                DeviceScopedTables.AppCatalog,
+                DeviceScopedTables.TimelineBlocks,
+                DeviceScopedTables.UsageAggregates,
+                DeviceScopedTables.AnalyticsMaterializations,
+                DeviceScopedTables.EndpointStatuses,
+                DeviceScopedTables.EndpointNotificationActions,
+                DeviceScopedTables.DaemonHeartbeats,
+                DeviceScopedTables.Devices,
+            },
+            preview.Tables.Select(t => t.Table).ToArray());
 
         var result = await service.DeleteAsync(TargetDeviceId, CancellationToken.None);
 
@@ -437,6 +524,36 @@ public sealed class DeviceScopeRealDbTests
             EndUtc = start.AddSeconds(seconds),
             DurationMs = seconds * 1000,
             QualityFlagsJson = "[]",
+        });
+
+    private static void SeedFallbackSummary(
+        PimDbContext db, string deviceId, string packageName, DateTimeOffset windowStart, long visibleMs)
+        => db.Set<MobileUsageSummaryEntity>().Add(new MobileUsageSummaryEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = deviceId,
+            PackageName = packageName,
+            WindowStartUtc = windowStart,
+            WindowEndUtc = windowStart.AddHours(1),
+            TotalTimeVisibleMs = visibleMs,
+            LastTimeUsedUtc = windowStart.AddHours(1),
+            SourceKind = "usage-summary",
+            QualityFlagsJson = "[]",
+        });
+
+    private static void SeedTimelineBlock(PimDbContext db, string deviceId)
+        => db.Set<MobileTimelineBlockEntity>().Add(new MobileTimelineBlockEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = deviceId,
+            Timezone = MobileAnalyticsDefaults.DefaultTimezone,
+            StartUtc = WindowStart.AddHours(1),
+            EndUtc = WindowStart.AddHours(2),
+            LocalDate = "2026-09-10",
+            LifeCategory = MobileLifeCategories.Uncategorized,
+            ForegroundSeconds = 111,
+            SessionCount = 1,
+            AppCount = 1,
         });
 
     private static MobileUsageEventEntity UsageEvent(string deviceId, string packageName, DateTimeOffset timestamp)

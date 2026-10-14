@@ -117,7 +117,7 @@ public sealed class DeviceManagementService
         var sourceIds = sourceDeviceIds.Distinct().ToList();
         var attributable = await ResolveAttributableDeviceIdsAsync(userId, sourceIds, ct);
         var tables = new List<DeviceTableCountDto>();
-        foreach (var table in BuildDeviceScopedPlan(userId, sourceIds, attributable.Count == sourceIds.Count))
+        foreach (var table in BuildDeviceScopedPlan(userId, sourceIds, attributable))
         {
             tables.Add(new DeviceTableCountDto(table.Table, await table.Count(ct)));
         }
@@ -172,9 +172,11 @@ public sealed class DeviceManagementService
         await MergeAppCatalogAsync(userId, orderedSources, targetDeviceId, ct);
 
         // 心跳 / 端点通道（工单 02 C1）：这些表此前完全不在范围内，于是旧设备合并后
-        // 仍然从心跳与端点列表里冒出来。必须先判归属再动 daemon_heartbeats（它没有 user_id）。
+        // 仍然从心跳与端点列表里冒出来。daemon_heartbeats 没有 user_id，源与**目标**
+        // 两侧都要先判归属：目标 device_id 被别的用户占用时，这个 id 下的心跳行同样归属不明。
         var attributableSources = await ResolveAttributableDeviceIdsAsync(userId, orderedSources, ct);
-        await MergeDaemonHeartbeatsAsync(attributableSources, targetDeviceId, ct);
+        var targetAttributable = (await ResolveAttributableDeviceIdsAsync(userId, [targetDeviceId], ct)).Count == 1;
+        await MergeDaemonHeartbeatsAsync(attributableSources, targetDeviceId, targetAttributable, ct);
         await MergeEndpointStatusesAsync(userId, orderedSources, targetDeviceId, ct);
         await MoveEndpointNotificationActionsAsync(userId, orderedSources, targetDeviceId, ct);
 
@@ -278,7 +280,9 @@ public sealed class DeviceManagementService
         // MobileUsageIngestService 的上传链路触发），mobile_analytics_materializations 记录覆盖窗口，
         // 生产有数据且随上传增长。这里删得起，是因为它们都是**可重算**的派生数据：
         // 读路径（MobileUsageAggregationService/MobileTimelineBlockService）在覆盖记录缺失时
-        // 会回退到用 mobile_usage_events / mobile_usage_summaries 在线计算，数字不会变空。
+        // 会回退到在线计算 —— 用 mobile_usage_sessions + fallback 汇总
+        // （mobile_usage_events 则是 mobile_usage_sessions 的重建来源），因此数字不会变空。
+        // 注意"重算"发生在**读路径**上，不依赖下一次上传；详见 PR 里的 AC-2 口径说明。
         foreach (var device in new[] { sourceDeviceId, targetDeviceId })
         {
             await _db.Set<MobileTimelineBlockEntity>()
@@ -435,10 +439,18 @@ public sealed class DeviceManagementService
     /// 语义上心跳是"这台设备现在是什么状态"的快照，因此保留 <c>ReceivedAt</c> 更新的那一条
     /// （字段原样保留，不做字段级合并），另一条删除。同刻时保留目标设备已有的那条，保证操作幂等。
     /// </para>
+    ///
+    /// <para>
+    /// <paramref name="targetAttributable"/> = 目标 device_id 也没有被别的用户占用。
+    /// 目标归属不明时必须**两头都不写**：那个 id 下的心跳行既不能删（可能是别人的活动心跳），
+    /// 也不能把我们的源行改挂上去（别的用户会因此看到我们的设备状态）。此时本用户源设备的
+    /// 心跳行是我们自己的数据且设备即将被删除，直接清掉，避免留下指向已删除设备的孤儿行。
+    /// </para>
     /// </summary>
     private async Task MergeDaemonHeartbeatsAsync(
         IReadOnlyList<string> attributableSourceDeviceIds,
         string targetDeviceId,
+        bool targetAttributable,
         CancellationToken ct)
     {
         if (attributableSourceDeviceIds.Count == 0) return;
@@ -449,6 +461,13 @@ public sealed class DeviceManagementService
             .OrderBy(h => h.DeviceId)
             .ToListAsync(ct);
         if (sourceRows.Count == 0) return;
+
+        if (!targetAttributable)
+        {
+            _db.RemoveRange(sourceRows);
+            await _db.SaveChangesAsync(ct);
+            return;
+        }
 
         var targetRow = await _db.Set<DaemonHeartbeatEntity>()
             .SingleOrDefaultAsync(h => h.DaemonKind == MobileDaemonKind.Android && h.DeviceId == targetDeviceId, ct);
@@ -519,7 +538,14 @@ public sealed class DeviceManagementService
                 continue;
             }
 
-            if (source.LastHeartbeatAt > targetRow.LastHeartbeatAt)
+            // LastHeartbeatAt 可空（EndpointStatusService.GetOrCreateStateAsync 会建出
+            // "还没有收到过心跳"的端点行），而 C# 的可空比较在有 null 时一律返回 false。
+            // 不显式处理的话，"目标从未心跳、源有有效心跳"会被判成目标更新，
+            // 源行的 Platform/AppVersion/UploadStatus/CollectionCacheCount 与有效心跳时刻全被丢掉。
+            var sourceIsFresher = source.LastHeartbeatAt is not null
+                && (targetRow.LastHeartbeatAt is null || source.LastHeartbeatAt > targetRow.LastHeartbeatAt);
+
+            if (sourceIsFresher)
             {
                 targetRow.Platform = source.Platform;
                 targetRow.AppVersion = source.AppVersion;
@@ -539,7 +565,8 @@ public sealed class DeviceManagementService
 
     /// <summary>
     /// 端点通知动作是"这台端点上发生过什么"的审计轨迹，随设备一起并入目标
-    /// （<c>(user_id, device_id)</c> 上只有非唯一索引，整体改写不会冲突）。
+    /// （该表没有 <c>(user_id, device_id)</c> 唯一索引 —— PimDbContext 给的是
+    /// user_id / device_id / created_at / confirmation_id 四个单列索引，整体改写不会冲突）。
     /// </summary>
     private async Task MoveEndpointNotificationActionsAsync(
         Guid userId,
@@ -594,7 +621,7 @@ public sealed class DeviceManagementService
         // 与 DeleteAttemptAsync 共用同一份范围清单，只是把"删"换成"数"（工单 02 C3）：
         // 因此预览的每张表计数与实际删除数不是"两边各写一遍"，而是同一段代码的两种执行方式。
         var tables = new List<DeviceTableCountDto>();
-        var attributable = await IsDeviceIdExclusivelyOwnedByUserAsync(userId, deviceId, ct);
+        var attributable = await ResolveAttributableDeviceIdsAsync(userId, [deviceId], ct);
         foreach (var table in BuildDeviceScopedPlan(userId, [deviceId], attributable))
         {
             tables.Add(new DeviceTableCountDto(table.Table, await table.Count(ct)));
@@ -640,7 +667,7 @@ public sealed class DeviceManagementService
 
         // daemon_heartbeats 没有 user_id，"按 device_id 删"会把别的用户同名字符串设备的心跳一起删掉；
         // 只有该字符串确实独占时才把它纳入本次删除范围（见 ResolveAttributableDeviceIdsAsync）。
-        var attributable = await IsDeviceIdExclusivelyOwnedByUserAsync(userId, deviceId, ct);
+        var attributable = await ResolveAttributableDeviceIdsAsync(userId, [deviceId], ct);
         var deleted = new List<DeviceTableCountDto>();
         foreach (var table in BuildDeviceScopedPlan(userId, [deviceId], attributable))
         {
@@ -656,11 +683,17 @@ public sealed class DeviceManagementService
     /// 「表集合」与「每张表的过滤条件」天然一致（工单 02 C3）。数组顺序即删除顺序
     /// （先子表、最后 <c>mobile_devices</c>），预览只是把 <c>Delete</c> 换成 <c>Count</c>。
     /// </summary>
+    /// <param name="attributableDeviceIds">
+    /// 可以安全归属到该用户的 device_id（见 <see cref="ResolveAttributableDeviceIdsAsync"/>）。
+    /// 只有它决定 <c>daemon_heartbeats</c> 是否纳入范围，且是**逐台**判断 ——
+    /// 多台源设备里只要有一台的字符串被别的用户占用，那一台的心跳就不动，其余照常处理。
+    /// </param>
     private IReadOnlyList<DeviceScopedTablePlan> BuildDeviceScopedPlan(
         Guid userId,
         IReadOnlyList<string> deviceIds,
-        bool daemonHeartbeatsAttributable)
+        IReadOnlyCollection<string> attributableDeviceIds)
     {
+        var attributableHeartbeatDeviceIds = deviceIds.Where(attributableDeviceIds.Contains).ToList();
         var events = _db.Set<MobileUsageEventEntity>();
         var sessions = _db.Set<MobileUsageSessionEntity>();
         var summaries = _db.Set<MobileUsageSummaryEntity>();
@@ -712,6 +745,9 @@ public sealed class DeviceManagementService
                 ct => materializations.CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
                 ct => materializations.Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
             // 端点状态与通知动作按 (user_id, device_id) 归属，用户维度已经把它们隔离住，无需额外判断。
+            // 注意这里**不**按 platform 再过滤：同一用户在 endpoint_statuses 与 mobile_devices 里
+            // 用的是同一个 device_id 字符串，那就是同一个"端点身份"；按 platform 过滤反而会把
+            // 平台被记成非 android 的同名端点行留成孤儿（正是工单要消灭的"旧设备冒出来"）。
             new(DeviceScopedTables.EndpointStatuses,
                 ct => endpointStatuses.CountAsync(e => e.UserId == userId && deviceIds.Contains(e.DeviceId), ct),
                 ct => endpointStatuses.Where(e => e.UserId == userId && deviceIds.Contains(e.DeviceId)).ExecuteDeleteAsync(ct)),
@@ -722,12 +758,11 @@ public sealed class DeviceManagementService
             // 未被别的用户占用时才动它，否则会跨用户误删/误搬。计数返回 0 表示"本次不会动它"，
             // 与预览和实际删除都一致。
             new(DeviceScopedTables.DaemonHeartbeats,
-                ct => daemonHeartbeatsAttributable
-                    ? heartbeats.CountAsync(h => h.DaemonKind == MobileDaemonKind.Android && deviceIds.Contains(h.DeviceId), ct)
-                    : Task.FromResult(0),
-                ct => daemonHeartbeatsAttributable
-                    ? heartbeats.Where(h => h.DaemonKind == MobileDaemonKind.Android && deviceIds.Contains(h.DeviceId)).ExecuteDeleteAsync(ct)
-                    : Task.FromResult(0)),
+                ct => heartbeats.CountAsync(
+                    h => h.DaemonKind == MobileDaemonKind.Android && attributableHeartbeatDeviceIds.Contains(h.DeviceId), ct),
+                ct => heartbeats.Where(
+                        h => h.DaemonKind == MobileDaemonKind.Android && attributableHeartbeatDeviceIds.Contains(h.DeviceId))
+                    .ExecuteDeleteAsync(ct)),
             new(DeviceScopedTables.Devices,
                 ct => _db.Set<MobileDeviceEntity>().CountAsync(d => d.UserId == userId && deviceIds.Contains(d.DeviceId), ct),
                 ct => _db.Set<MobileDeviceEntity>().Where(d => d.UserId == userId && deviceIds.Contains(d.DeviceId)).ExecuteDeleteAsync(ct)),
@@ -766,9 +801,6 @@ public sealed class DeviceManagementService
 
         return distinct.Where(id => !sharedWithOtherUsers.Contains(id)).ToList();
     }
-
-    private async Task<bool> IsDeviceIdExclusivelyOwnedByUserAsync(Guid userId, string deviceId, CancellationToken ct)
-        => (await ResolveAttributableDeviceIdsAsync(userId, [deviceId], ct)).Count == 1;
 
     private sealed record DeviceScopedTablePlan(
         string Table,

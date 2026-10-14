@@ -5652,6 +5652,12 @@
           "summaryCount": {
             "format": "int32",
             "type": "integer"
+          },
+          "tables": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceTableCountDto"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -5660,7 +5666,8 @@
           "eventCount",
           "locationCount",
           "sessionCount",
-          "summaryCount"
+          "summaryCount",
+          "tables"
         ],
         "type": "object"
       },
@@ -5673,6 +5680,55 @@
           },
           "data": {
             "$ref": "#/components/schemas/DeviceDeletePreviewDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "DeviceDeleteResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "deviceId": {
+            "type": "string"
+          },
+          "tables": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceTableCountDto"
+            },
+            "type": "array"
+          },
+          "totalRows": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deviceId",
+          "tables",
+          "totalRows"
+        ],
+        "type": "object"
+      },
+      "DeviceDeleteResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/DeviceDeleteResultDto"
           },
           "message": {
             "type": "string"
@@ -6059,6 +6115,12 @@
             },
             "type": "array"
           },
+          "tables": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceTableCountDto"
+            },
+            "type": "array"
+          },
           "total": {
             "format": "int64",
             "type": "integer"
@@ -6066,6 +6128,7 @@
         },
         "required": [
           "items",
+          "tables",
           "total"
         ],
         "type": "object"
@@ -6149,6 +6212,23 @@
           "batchId",
           "createdAt",
           "status"
+        ],
+        "type": "object"
+      },
+      "DeviceTableCountDto": {
+        "additionalProperties": false,
+        "properties": {
+          "rowCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "table": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rowCount",
+          "table"
         ],
         "type": "object"
       },
@@ -30913,7 +30993,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StringApiResponse"
+                  "$ref": "#/components/schemas/DeviceDeleteResultDtoApiResponse"
                 }
               }
             },
