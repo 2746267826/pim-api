@@ -67,6 +67,14 @@ public sealed class CalendarDeleteService
                 MarkDeleted(task, deletedAt, operationId, operationKind);
                 affectedIds.Add(task.Id);
             }
+
+            // 复审 I6：整本删除同样要收口正在跑的计时（见 DeleteTaskAsync 的说明）。
+            await RunningSegments.CloseAllAsync(
+                _db,
+                tasks.Select(t => t.Id).ToList(),
+                TaskSegmentStatuses.Cancelled,
+                deletedAt,
+                ct);
         }
         else
         {
@@ -182,6 +190,14 @@ public sealed class CalendarDeleteService
         var operationKind = "single-task";
 
         MarkDeleted(task, deletedAt, operationId, operationKind);
+        // 复审 I6：任务被软删时把「正在计时」的段就地闭合。否则开放段会一直挂着：
+        // pause/stop 因任务被软删过滤而不可达，恢复任务后还会把删除期间的墙钟时间算进实际时长。
+        await RunningSegments.CloseAllAsync(
+            _db,
+            new[] { task.Id },
+            TaskSegmentStatuses.Cancelled,
+            deletedAt,
+            ct);
         await _db.SaveChangesAsync(ct);
         await _audit.RecordSuccessAsync(
             UserId,
@@ -215,6 +231,14 @@ public sealed class CalendarDeleteService
 
         foreach (var task in tasks)
             MarkDeleted(task, deletedAt, operationId, operationKind);
+
+        // 复审 I6：批量删除同样要收口正在跑的计时。
+        await RunningSegments.CloseAllAsync(
+            _db,
+            tasks.Select(t => t.Id).ToList(),
+            TaskSegmentStatuses.Cancelled,
+            deletedAt,
+            ct);
 
         if (tasks.Count > 0)
             await _db.SaveChangesAsync(ct);

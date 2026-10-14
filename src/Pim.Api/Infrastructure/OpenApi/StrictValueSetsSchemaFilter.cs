@@ -50,12 +50,21 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
     ///
     /// ⚠️ 历史数据例外：收紧之前写入的集合外值不会被迁移（工单 D1.3「不得丢数据、不得批量改写语义」），
     /// 所以**旧行**的 status 仍可能不在 enum 里；enum 描述的是「新写入与本次改动后的服务端行为」。
+    /// 这一例外**写进契约本身**（响应字段的 description，见 <see cref="HistoricalTaskStatusNote"/>），
+    /// 而不是只写在源码注释里 —— 契约的读者是客户端生成器与调用方，注释对他们不可见（复审 I4）。
     /// </summary>
     private static readonly Dictionary<string, string[]> ResponseMap = new(StringComparer.Ordinal)
     {
-        // 写入口唯一：CalendarService.CreateTaskAsync / UpdateTaskAsync / BatchUpdateTasksAsync
+        // 任务状态的写入点全部使用 TaskStatuses 常量，且所有**外部输入**都经 CalendarService.ValidateTaskStatus：
+        // CreateTaskAsync / UpdateTaskAsync / BatchUpdateTasksAsync（PlanningModelService.StartTimerAsync
+        // 写的是常量 IN-PROCESS，自身也要走任务级锁与终态检查）。
         ["TaskResponse.Status"] = TaskStatuses.All,
     };
+
+    /// <summary>响应侧 enum 的历史数据提醒，会作为字段 description 写进契约（对客户端可见）。</summary>
+    private const string HistoricalTaskStatusNote =
+        "任务状态。取值域自工单 03 起受服务端校验（集合外写入返回 400 / 02057）；" +
+        "2026-10 收紧之前写入的历史值不会被迁移，因此**旧数据**的 status 仍可能是集合外的字符串。";
 
     public void Apply(OpenApiSchema schema, SchemaFilterContext context)
     {
@@ -88,6 +97,8 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
                 if (ps.Reference is null && ps.Type == "string")
                 {
                     ps.Enum = values.Select(v => (IOpenApiAny)new OpenApiString(v)).ToList();
+                    if (ReferenceEquals(map, ResponseMap))
+                        ps.Description = HistoricalTaskStatusNote;
                 }
             }
         }

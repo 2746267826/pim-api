@@ -241,6 +241,13 @@ public sealed class DataCenterGovernanceService
             task.DeletedByOperationId = confirmationId;
             task.DeletedByOperationKind = operationKind;
             task.UpdatedAt = archivedAt;
+            // 复审 I6：归档（软删）任务时收口正在跑的计时，避免恢复后把归档期间的墙钟时间算进实际时长。
+            await RunningSegments.CloseAllAsync(
+                _db,
+                new[] { task.Id },
+                TaskSegmentStatuses.Cancelled,
+                archivedAt,
+                ct);
             await _auditVersions.RecordAsync(
                 "task",
                 task.Id,

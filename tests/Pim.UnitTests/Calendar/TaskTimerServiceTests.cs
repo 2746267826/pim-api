@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Operations;
 using Pim.Module.Calendar.DTOs;
 using Pim.Module.Calendar.Entities;
 using Pim.Module.Calendar.Services;
@@ -189,7 +190,7 @@ public class TaskTimerServiceTests
     }
 
     [Fact]
-    public async Task GetTimerStateAsync_IgnoresPlannedAndCancelledSegments()
+    public async Task GetTimerStateAsync_IgnoresOnlyPlannedSegments()
     {
         await using var db = CreateDb();
         var task = SeedTask(db, TaskStatuses.NeedsAction);
@@ -202,9 +203,83 @@ public class TaskTimerServiceTests
 
         var state = await planner.GetTimerStateAsync(task.Id);
 
-        // 只有 completed 的 30 分钟算「实际执行时长」；planned（还没做）与 cancelled（随任务取消中止）不算
-        Assert.Equal(30 * 60, state.AccumulatedSeconds);
+        // 复审 I7：只有 planned（还没做）不计入；cancelled 段是**真实发生过的执行**，
+        // 必须计入 —— 否则「跑一段再取消」会把已发生的时长抹掉。
+        Assert.Equal(35 * 60, state.AccumulatedSeconds);
         Assert.Equal(3, state.SegmentCount);
+    }
+
+    [Fact]
+    public async Task CancellingWhileRunning_KeepsTheElapsedTimeAndClosesTheSegment()
+    {
+        // 复审 I7 的核心反例：跑 10 分钟后取消任务，已发生的 10 分钟不能凭空消失；
+        // 而且「直接取消」与「先暂停再取消」必须给出同样的累计值（此前两者不一致）。
+        await using var db = CreateDb();
+        var direct = SeedTask(db, TaskStatuses.NeedsAction);
+        var viaPause = SeedTask(db, TaskStatuses.NeedsAction);
+        await db.SaveChangesAsync();
+        var clock = new TestClock(Start);
+        var planner = CreatePlanner(db, clock);
+        var calendar = TaskStatusValueSetTests.CreateCalendarService(db, clock);
+
+        await planner.StartTimerAsync(direct.Id);
+        await planner.StartTimerAsync(viaPause.Id);
+        clock.Advance(TimeSpan.FromMinutes(10));
+        await planner.PauseTimerAsync(viaPause.Id);
+
+        await calendar.UpdateTaskAsync(
+            direct.Id,
+            TaskStatusValueSetTests.UpdateRequest(TaskStatuses.Cancelled),
+            CancellationToken.None);
+        await calendar.UpdateTaskAsync(
+            viaPause.Id,
+            TaskStatusValueSetTests.UpdateRequest(TaskStatuses.Cancelled),
+            CancellationToken.None);
+
+        var directState = await planner.GetTimerStateAsync(direct.Id);
+        var viaPauseState = await planner.GetTimerStateAsync(viaPause.Id);
+        Assert.Equal(10 * 60, directState.AccumulatedSeconds);
+        Assert.Equal(10 * 60, viaPauseState.AccumulatedSeconds);
+        Assert.Null(directState.RunningSegmentId);
+        db.ChangeTracker.Clear();
+        Assert.Empty(await db.Set<TaskExecutionSegmentEntity>().Where(s => s.EndsAt == null).ToListAsync());
+    }
+
+    [Fact]
+    public async Task DeleteTaskAsync_ClosesTheRunningSegmentAndKeepsTheElapsedTime()
+    {
+        // 复审 I6：任务被软删（回收站）时不能把开放段留在库里 —— 否则恢复任务后，
+        // 删除期间（可能几天）的墙钟时间会被算进「实际执行时长」。
+        await using var db = CreateDb();
+        var task = SeedTask(db, TaskStatuses.NeedsAction);
+        await db.SaveChangesAsync();
+        var clock = new TestClock(Start);
+        var planner = CreatePlanner(db, clock);
+        var deletes = new CalendarDeleteService(
+            db,
+            new TaskStatusValueSetTests.FixedCurrentUserService(UserId),
+            new CalendarAuditWriter(new AuditLogService(db)),
+            clock);
+
+        await planner.StartTimerAsync(task.Id);
+        clock.Advance(TimeSpan.FromMinutes(7));
+        await deletes.DeleteTaskAsync(task.Id);
+
+        db.ChangeTracker.Clear();
+        var segment = await db.Set<TaskExecutionSegmentEntity>().IgnoreQueryFilters().SingleAsync();
+        Assert.Equal(Start.AddMinutes(7), segment.EndsAt);
+        Assert.Equal(TaskSegmentStatuses.Cancelled, segment.Status);
+
+        // 再等一小时（模拟任务在回收站里待着），恢复后累计值不得增长
+        clock.Advance(TimeSpan.FromHours(1));
+        var restored = await db.Set<TaskEntity>().IgnoreQueryFilters().SingleAsync(t => t.Id == task.Id);
+        restored.DeletedAt = null;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var state = await planner.GetTimerStateAsync(task.Id);
+        Assert.Equal(7 * 60, state.AccumulatedSeconds);
+        Assert.Null(state.RunningSegmentId);
     }
 
     [Fact]

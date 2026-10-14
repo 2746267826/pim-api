@@ -1050,6 +1050,11 @@ public class PlanningModelService
     public async Task<TaskExecutionSegmentResponse> StartTimerAsync(Guid taskId, CancellationToken ct = default)
     {
         var userId = UserId;
+
+        // 复审 I1/I2：与终态更新共用同一把任务级锁，并且**在锁内**重读任务状态、重查开放段。
+        // 否则两个并发 start 会同时通过「没有开放段」检查插出两条开放段；
+        // 与「任务置为已完成」并发时还会留下「COMPLETED + ends_at IS NULL」。
+        await using var taskLock = await TaskRowLock.AcquireAsync(_db, taskId, ct);
         var task = await GetTaskAsync(taskId, userId, ct);
 
         if (TaskStatuses.IsTerminal(task.Status))
@@ -1076,7 +1081,18 @@ public class PlanningModelService
         task.CompletedAt = null;
         task.UpdatedAt = now;
 
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (IsOpenSegmentUniqueViolation(ex))
+        {
+            // 复审 I1：即便有任务级咨询锁，数据库那一层的部分唯一索引仍是最后一道网
+            // （例如绕过服务端的写入、锁降级的环境）。冲突按业务语义转成 02058，
+            // 而不是把 23505 漏成 500。
+            throw new DomainException(02058, "该任务已有正在进行的计时，请先暂停或结束");
+        }
+
         return MapSegment(segment, task.Title);
     }
 
@@ -1084,12 +1100,13 @@ public class PlanningModelService
     public async Task<TaskExecutionSegmentResponse> PauseTimerAsync(Guid taskId, CancellationToken ct = default)
     {
         var userId = UserId;
+        await using var taskLock = await TaskRowLock.AcquireAsync(_db, taskId, ct);
         var task = await GetTaskAsync(taskId, userId, ct);
         var segment = await GetRunningSegmentAsync(task.Id, userId, ct)
             ?? throw new DomainException(02059, "该任务没有正在进行的计时");
 
         var now = _timeProvider.GetUtcNow();
-        CloseSegment(segment, TaskSegmentStatuses.Paused, now);
+        RunningSegments.Close(segment, TaskSegmentStatuses.Paused, now);
         task.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
         return MapSegment(segment, task.Title);
@@ -1099,12 +1116,13 @@ public class PlanningModelService
     public async Task<TaskExecutionSegmentResponse> StopTimerAsync(Guid taskId, CancellationToken ct = default)
     {
         var userId = UserId;
+        await using var taskLock = await TaskRowLock.AcquireAsync(_db, taskId, ct);
         var task = await GetTaskAsync(taskId, userId, ct);
         var segment = await GetRunningSegmentAsync(task.Id, userId, ct)
             ?? throw new DomainException(02059, "该任务没有正在进行的计时");
 
         var now = _timeProvider.GetUtcNow();
-        CloseSegment(segment, TaskSegmentStatuses.Completed, now);
+        RunningSegments.Close(segment, TaskSegmentStatuses.Completed, now);
         task.UpdatedAt = now;
         await _db.SaveChangesAsync(ct);
         return MapSegment(segment, task.Title);
@@ -1135,8 +1153,12 @@ public class PlanningModelService
     }
 
     /// <summary>
-    /// 累计实际执行时长（秒）：只统计 <c>active/paused/completed</c> 段；
-    /// <c>planned</c>（未执行）与 <c>cancelled</c>（随任务取消中止）不计入。
+    /// 累计实际执行时长（秒）：只统计 <c>active/paused/completed/cancelled</c> 段；
+    /// 只有 <c>planned</c>（尚未执行）不计入。
+    ///
+    /// 复审 I7：<c>cancelled</c> 段代表「这段工作确实发生过，只是任务被取消/删除而中止」，
+    /// 必须计入 —— 否则「跑 10 分钟 → 取消」会把 10 分钟抹掉，而「先暂停再取消」却保留，
+    /// 同一段真实工作时间的结果取决于操作顺序。
     /// 开放段以 <paramref name="now"/> 为右端。
     ///
     /// 每段按**四舍五入**取秒：pim-web 的行内时长用同一口径，这样界面上「各行之和」
@@ -1162,6 +1184,24 @@ public class PlanningModelService
 
     private const string TimerSource = "timer";
 
+    /// <summary>
+    /// 判断异常链上是否有 PostgreSQL 唯一约束冲突（23505）。
+    /// 用反射读 <c>SqlState</c>，避免在模块层直接依赖 Npgsql 类型（与 <c>MobileForensicIngestService</c> 同一做法）。
+    /// </summary>
+    private static bool IsOpenSegmentUniqueViolation(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current.GetType().Name != "PostgresException")
+                continue;
+
+            if (current.GetType().GetProperty("SqlState")?.GetValue(current) as string == "23505")
+                return true;
+        }
+
+        return false;
+    }
+
     private async Task<TaskExecutionSegmentEntity?> GetRunningSegmentAsync(
         Guid taskId,
         Guid userId,
@@ -1173,17 +1213,6 @@ public class PlanningModelService
     {
         if (await GetRunningSegmentAsync(taskId, userId, ct) is not null)
             throw new DomainException(02058, "该任务已有正在进行的计时，请先暂停或结束");
-    }
-
-    private static void CloseSegment(
-        TaskExecutionSegmentEntity segment,
-        string status,
-        DateTimeOffset now)
-    {
-        // 固定/回拨时钟下 now 可能早于 startsAt —— 不写出 ends_at < starts_at 的段。
-        segment.EndsAt = now < segment.StartsAt ? segment.StartsAt : now;
-        segment.Status = status;
-        segment.UpdatedAt = now;
     }
 
     private async Task<TaskEntity> GetTaskAsync(Guid taskId, Guid userId, CancellationToken ct)

@@ -26,8 +26,12 @@ public static class TaskSegmentStatuses
 
     public static readonly string[] All = [Planned, Active, Paused, Completed, Cancelled];
 
-    /// <summary>计入「实际执行时长」的取值（计划段与取消段不计）。</summary>
-    public static bool CountsAsExecuted(string? status) => status is Active or Paused or Completed;
+    /// <summary>
+    /// 计入「实际执行时长」的取值：只有 <see cref="Planned"/>（尚未执行）不计。
+    /// <see cref="Cancelled"/> 段虽然被中止，但那段墙钟时间确实花在了任务上，
+    /// 必须计入 —— 否则「跑一会儿再取消」会把已发生的时长抹掉，与「先暂停再取消」不一致（复审 I7）。
+    /// </summary>
+    public static bool CountsAsExecuted(string? status) => status is Active or Paused or Completed or Cancelled;
 
     public static bool IsValid(string? status) => status is Planned or Active or Paused or Completed or Cancelled;
 }

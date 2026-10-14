@@ -104,11 +104,37 @@ public class TaskStatusValueSetTests
             service.UpdateTaskAsync(task.Id, request, CancellationToken.None));
 
         Assert.Equal(CalendarService.InvalidTaskStatusErrorCode, error.ErrorCode);
+
+        // 复审 M1：不能只看「没落库」—— 还要确认**跟踪中的实体本身没有被改写**，
+        // 否则「先改字段、后抛异常」这种实现也能骗过数据库读回断言。
+        var tracked = db.ChangeTracker.Entries<TaskEntity>().Single(e => e.Entity.Id == task.Id);
+        Assert.Equal("原始标题", tracked.Entity.Title);
+        Assert.Equal(TaskStatuses.NeedsAction, tracked.Entity.Status);
+        Assert.Equal(EntityState.Unchanged, tracked.State);
+
         db.ChangeTracker.Clear();
         var stored = await db.Set<TaskEntity>().SingleAsync(t => t.Id == task.Id);
         // 非法状态是「整条请求拒绝」，不是「只忽略 status 字段」
         Assert.Equal("原始标题", stored.Title);
         Assert.Equal(TaskStatuses.NeedsAction, stored.Status);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("00000000-0000-0000-0000-000000000000")]
+    public async Task BatchUpdateTasksAsync_RejectsInvalidStatusEvenWhenNothingWouldBeUpdated(string rawIds)
+    {
+        // 复审 I3：白名单校验必须在**早期成功返回之前** ——
+        // 否则 {"ids":[],"status":"DOING"} 会返回 200「没有更新任务」而不是 02057，
+        // 「三个入口非法值一律 400」就不成立。
+        await using var db = CreateDb();
+        var service = CreateCalendarService(db);
+        var ids = rawIds.Length == 0 ? new List<Guid>() : new List<Guid> { Guid.Parse(rawIds) };
+
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            service.BatchUpdateTasksAsync(new BatchTaskUpdateRequest(ids, "DOING", null, null)));
+
+        Assert.Equal(CalendarService.InvalidTaskStatusErrorCode, error.ErrorCode);
     }
 
     [Fact]

@@ -1147,13 +1147,21 @@ public class CalendarService
 
     public async Task<TaskResponse> UpdateTaskAsync(Guid id, UpdateTaskRequest request, CancellationToken ct)
     {
-        var task = await _db.Set<TaskEntity>()
-            .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
-            ?? throw new DomainException(02004, "任务不存在");
-
         // 先校验再改写：非法状态在**任何字段被写入之前**就 400（AC-1）。
         if (request.Status is not null)
             ValidateTaskStatus(request.Status);
+
+        // 复审 I2：状态改写与计时动作（timer/start|pause|stop）必须共用同一把任务级锁，
+        // 否则「查开放段 → 写终态」与「查开放段 → 插入开放段」会互相穿插，
+        // 出现「COMPLETED 但 ends_at IS NULL」。锁必须在读任务**之前**拿到，
+        // 这样锁内读到的才是最新已提交状态。
+        await using var statusLock = request.Status is not null
+            ? await TaskRowLock.AcquireAsync(_db, id, ct)
+            : null;
+
+        var task = await _db.Set<TaskEntity>()
+            .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
+            ?? throw new DomainException(02004, "任务不存在");
 
         if (request.CalendarId.HasValue)
         {
@@ -1202,7 +1210,14 @@ public class CalendarService
             // 与批量更新（BatchUpdateTasksAsync）口径对齐：离开 COMPLETED 时不再留着旧的完成时刻。
             task.CompletedAt = request.Status == TaskStatuses.Completed ? statusChangedAt : null;
             if (TaskStatuses.IsTerminal(request.Status))
-                await CloseRunningSegmentsAsync(task, request.Status, statusChangedAt, ct);
+            {
+                await RunningSegments.CloseAllAsync(
+                    _db,
+                    new[] { task.Id },
+                    SegmentTerminalStatus(request.Status),
+                    statusChangedAt,
+                    ct);
+            }
         }
         task.UpdatedAt = _timeProvider.GetUtcNow();
 
@@ -1246,6 +1261,12 @@ public class CalendarService
             .ToList() ?? new List<Guid>();
         var operationId = Guid.NewGuid();
 
+        // 复审 I3：白名单校验必须发生在**所有早期成功返回之前** ——
+        // 否则 {"ids":[],"status":"DOING"} 会返回 200「没有更新任务」而不是 02057，
+        // 「三个入口非法值一律 400」就不成立。
+        if (request.Status is not null)
+            ValidateTaskStatus(request.Status);
+
         if (ids.Count == 0)
         {
             return new CalendarOperationResult(
@@ -1268,10 +1289,6 @@ public class CalendarService
                 "没有更新任务");
         }
 
-        // 工单 03 D1.1：批量入口与单条入口共用同一份白名单；非法值在任何写入前 400。
-        if (request.Status is not null)
-            ValidateTaskStatus(request.Status);
-
         CalendarEntity? targetCalendar = null;
         if (request.CalendarId.HasValue)
         {
@@ -1280,19 +1297,27 @@ public class CalendarService
                 ?? throw new DomainException(02003, "日历不存在");
         }
 
+        // 复审 I2：批量终态化同样要在任务级锁内完成「查开放段 → 写终态 → 闭合」。
+        await using var batchLock = request.Status is not null && TaskStatuses.IsTerminal(request.Status)
+            ? await TaskRowLock.AcquireManyAsync(_db, ids, ct)
+            : null;
+
         var tasks = await _db.Set<TaskEntity>()
             .Include(t => t.Calendar)
             .Where(t => t.UserId == UserId && ids.Contains(t.Id))
             .ToListAsync(ct);
         var now = _timeProvider.GetUtcNow();
 
-        // 一次性把本批次里「正在计时」的段捞出来，避免逐任务查询（N+1）；
-        // 任务进入终态时统一闭合，保证「段在跑但状态已完成」不可能出现（D3 / AC-8）。
-        var runningSegments = TaskStatuses.IsTerminal(request.Status ?? string.Empty)
-            ? await _db.Set<TaskExecutionSegmentEntity>()
-                .Where(s => s.UserId == UserId && ids.Contains(s.TaskId) && s.EndsAt == null)
-                .ToListAsync(ct)
-            : new List<TaskExecutionSegmentEntity>();
+        if (request.Status is not null && TaskStatuses.IsTerminal(request.Status))
+        {
+            // 一次闭合本批次所有开放段，保证「段在跑但状态已完成」不可能出现（D3 / AC-8）。
+            await RunningSegments.CloseAllAsync(
+                _db,
+                tasks.Select(t => t.Id).ToList(),
+                SegmentTerminalStatus(request.Status),
+                now,
+                ct);
+        }
 
         foreach (var task in tasks)
         {
@@ -1300,11 +1325,6 @@ public class CalendarService
             {
                 task.Status = request.Status;
                 task.CompletedAt = request.Status == TaskStatuses.Completed ? now : null;
-                if (TaskStatuses.IsTerminal(request.Status))
-                {
-                    foreach (var segment in runningSegments.Where(s => s.TaskId == task.Id))
-                        CloseRunningSegment(segment, request.Status, now);
-                }
             }
 
             if (request.Priority.HasValue)
@@ -1521,35 +1541,13 @@ public class CalendarService
     }
 
     /// <summary>
-    /// 工单 03 D3 / AC-8：任务进入终态时，把它「正在计时」的段闭合掉
-    /// （COMPLETED → 段 completed；CANCELLED → 段 cancelled），从而在服务端保证不变量：
-    /// **终态任务下不存在 ends_at IS NULL 的执行段**。
+    /// 任务终态 → 被中止的执行段状态：任务取消 → 段 cancelled；任务完成 → 段 completed。
+    /// 闭合动作本身在 <see cref="RunningSegments.Close"/>（与计时路径共用一份实现）。
     /// </summary>
-    private async Task CloseRunningSegmentsAsync(
-        TaskEntity task,
-        string taskStatus,
-        DateTimeOffset now,
-        CancellationToken ct)
-    {
-        var running = await _db.Set<TaskExecutionSegmentEntity>()
-            .Where(s => s.TaskId == task.Id && s.UserId == task.UserId && s.EndsAt == null)
-            .ToListAsync(ct);
-        foreach (var segment in running)
-            CloseRunningSegment(segment, taskStatus, now);
-    }
-
-    private static void CloseRunningSegment(
-        TaskExecutionSegmentEntity segment,
-        string taskStatus,
-        DateTimeOffset now)
-    {
-        // 时钟回拨 / 固定时钟场景下 now 可能早于 startsAt —— 不允许写出 ends_at < starts_at 的段。
-        segment.EndsAt = now < segment.StartsAt ? segment.StartsAt : now;
-        segment.Status = taskStatus == TaskStatuses.Cancelled
+    internal static string SegmentTerminalStatus(string taskStatus)
+        => taskStatus == TaskStatuses.Cancelled
             ? TaskSegmentStatuses.Cancelled
             : TaskSegmentStatuses.Completed;
-        segment.UpdatedAt = now;
-    }
 
     private static TimeSpan? ParseEstimatedDuration(string? value)
     {

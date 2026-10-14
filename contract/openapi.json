@@ -18036,6 +18036,7 @@
             "type": "integer"
           },
           "status": {
+            "description": "任务状态。取值域自工单 03 起受服务端校验（集合外写入返回 400 / 02057）；2026-10 收紧之前写入的历史值不会被迁移，因此**旧数据**的 status 仍可能是集合外的字符串。",
             "enum": [
               "NEEDS-ACTION",
               "IN-PROCESS",
