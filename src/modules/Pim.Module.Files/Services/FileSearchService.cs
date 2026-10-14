@@ -82,6 +82,8 @@ public sealed class FileSearchService(
             .Where(item =>
                 item.Provider != null
                 && item.Provider.UserId == userId
+                // 与内容出口一致：只搜已连接账号；否则会列出打开就报错的死条目
+                && item.Provider.Status == "connected"
                 && !item.IsDeleted
                 && (item.Name.ToLower().Contains(lowered)
                     || item.Path.ToLower().Contains(lowered)

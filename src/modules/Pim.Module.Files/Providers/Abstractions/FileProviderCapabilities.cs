@@ -22,7 +22,12 @@ public sealed record RemoteItem(
     string? MimeType,
     bool IsFolder,
     string? Path = null,
-    string? ETag = null);
+    string? ETag = null,
+    /// <summary>
+    /// 父条目 id（provider 能给出时）。用于核对「这条目确实落在声明的父目录下」，
+    /// 防止调用方拿任意条目 id 冒充某目录下的上传结果（复审 Important）。
+    /// </summary>
+    string? ParentExternalId = null);
 
 /// <summary>
 /// 目标父目录的两种坐标：**外部 id** 与 **PIM 绝对路径**。

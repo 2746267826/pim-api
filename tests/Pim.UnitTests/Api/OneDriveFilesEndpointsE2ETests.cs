@@ -246,7 +246,8 @@ public class OneDriveFilesEndpointsE2ETests
             var data = doc.RootElement.GetProperty("data");
             Assert.Equal(1, data.GetProperty("pagesProcessed").GetInt32());
             Assert.Equal(2, data.GetProperty("itemsApplied").GetInt32());
-            Assert.False(data.GetProperty("fullRecrawl").GetBoolean());
+            // 首次同步没有游标 → 是一次全量扫描
+            Assert.True(data.GetProperty("fullRecrawl").GetBoolean());
         }
 
         // 4. 元数据落库（只存元数据：路径派生 + 父子链 + ctag）

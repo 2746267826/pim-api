@@ -133,7 +133,8 @@ public sealed record OneDrivePathItem(
     long? Size,
     string? MimeType,
     string? ParentPath = null,
-    bool IsFolder = false);
+    bool IsFolder = false,
+    string? ParentId = null);
 
 /// <summary>分享链接的权限档（REQ-21 / V3：个人版按平台能力只提供可用档位）。</summary>
 public enum OneDriveSharePermission

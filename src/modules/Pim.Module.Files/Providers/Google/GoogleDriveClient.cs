@@ -31,7 +31,14 @@ public sealed class GoogleDriveException(
 /// <summary>Google 返回的令牌。</summary>
 public sealed record GoogleTokenResult(string AccessToken, string? RefreshToken, int ExpiresIn, string? Scope);
 
-/// <summary>Google 用户身份。</summary>
+/// <summary>
+/// Google 账号身份。
+///
+/// 取自 Drive 的 <c>about.get</c> 而**不是** OAuth 的 <c>userinfo</c>：
+/// userinfo 需要 <c>openid</c> 之类的身份 scope，而我们只申请 <c>.../auth/drive</c> ——
+/// 拿全盘文件权限去换身份接口在干净账号上会直接 401（复审 Important）。
+/// <c>about.user.permissionId</c> 是该用户在 Drive 上的稳定身份，scope 也够用。
+/// </summary>
 public sealed record GoogleUserInfo(string Subject, string? DisplayName);
 
 /// <summary>Drive 文件资源（只取 PIM 需要的字段）。</summary>
@@ -77,7 +84,6 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
     private const string ApiBase = "https://www.googleapis.com/drive/v3";
     private const string UploadBase = "https://www.googleapis.com/upload/drive/v3";
     private const string TokenEndpoint = "https://oauth2.googleapis.com/token";
-    private const string UserInfoEndpoint = "https://www.googleapis.com/oauth2/v3/userinfo";
 
     /// <summary>
     /// 文件资源的字段选择。**必须显式列出**：Drive v3 默认只返回 id/name/mimeType/kind，
@@ -126,15 +132,24 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
             ["grant_type"] = "refresh_token",
         }, ct);
 
-    public async Task<GoogleUserInfo> GetUserInfoAsync(string accessToken, CancellationToken ct = default)
+    /// <summary>
+    /// 取账号身份。用 Drive 的 <c>about.get</c>（只需要 drive scope）。
+    /// </summary>
+    public async Task<GoogleUserInfo> GetAboutUserAsync(string accessToken, CancellationToken ct = default)
     {
-        using var response = await SendAsync(
-            new HttpRequestMessage(HttpMethod.Get, UserInfoEndpoint), accessToken, ct);
-        var json = await ReadJsonAsync(response, ct);
+        var json = await GetJsonAsync(
+            $"{ApiBase}/about?fields=user(permissionId,emailAddress,displayName)",
+            accessToken,
+            ct);
+        if (!json.TryGetProperty("user", out var user) || user.ValueKind != JsonValueKind.Object)
+        {
+            throw new GoogleDriveException(200, null, null, "Google about.get 未返回 user 信息");
+        }
+
         return new GoogleUserInfo(
-            ReadString(json, "sub") ?? throw new GoogleDriveException(
-                (int)response.StatusCode, null, null, "Google userinfo 未返回 sub"),
-            ReadString(json, "name") ?? ReadString(json, "email"));
+            ReadString(user, "permissionId")
+                ?? throw new GoogleDriveException(200, null, null, "Google about.get 未返回 user.permissionId"),
+            ReadString(user, "displayName") ?? ReadString(user, "emailAddress"));
     }
 
     private async Task<GoogleTokenResult> PostTokenAsync(
@@ -283,22 +298,28 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
         return ReadFile(json);
     }
 
-    /// <summary>覆盖已有文件内容。</summary>
-    public async Task<GoogleDriveFile> UpdateFileContentAsync(
+    /// <summary>
+    /// 覆盖已有文件内容。
+    ///
+    /// 必须是 <c>PATCH .../files/{id}?uploadType=media</c> + **原始字节体**：
+    /// 新建文件用的 multipart/related 上传原语在这里不成立（复审 Important），
+    /// 复用它会得到一个 400，表现为「Google 上存不了文本」。
+    /// </summary>
+    public async Task UpdateFileContentAsync(
         string accessToken,
         string fileId,
         byte[] bytes,
         string contentType,
         CancellationToken ct = default)
     {
-        var json = await MultipartUploadAsync(
-            $"{UploadBase}/files/{Uri.EscapeDataString(fileId)}?uploadType=media&fields={Uri.EscapeDataString(FileFields)}",
-            accessToken,
-            metadataJson: null,
-            bytes,
-            contentType,
-            ct);
-        return ReadFile(json);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Patch,
+            $"{UploadBase}/files/{Uri.EscapeDataString(fileId)}?uploadType=media&fields={Uri.EscapeDataString(FileFields)}")
+        {
+            Content = new ByteArrayContent(bytes),
+        };
+        request.Content.Headers.TryAddWithoutValidation("Content-Type", contentType);
+        await SendJsonAsync(request, accessToken, ct);
     }
 
     /// <summary>改名 / 换父目录。</summary>
@@ -431,7 +452,9 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
             : $"{ApiBase}/files/{Uri.EscapeDataString(fileId)}?alt=media&supportsAllDrives=true";
 
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        using var response = await SendAsync(request, accessToken, ct);
+        // ResponseHeadersRead：先在响应头就返回，再按上限流式读取。
+        // 默认的 ResponseContentRead 会把整个响应体先缓冲完，字节上限再严也没用（复审 Important）。
+        using var response = await SendAsync(request, accessToken, ct, HttpCompletionOption.ResponseHeadersRead);
         if (!response.IsSuccessStatusCode)
         {
             throw await GoogleErrorMapper.FromResponseAsync(response, ct);
@@ -580,12 +603,13 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
     private async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         string accessToken,
-        CancellationToken ct)
+        CancellationToken ct,
+        HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead)
     {
         // token 只进 Authorization 头，绝不进 URL / 日志 / 异常消息
         request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {accessToken}");
         var client = httpClientFactory.CreateClient(HttpClientName);
-        return await client.SendAsync(request, ct);
+        return await client.SendAsync(request, completionOption, ct);
     }
 
     private static async Task<JsonElement> ReadJsonAsync(HttpResponseMessage response, CancellationToken ct)

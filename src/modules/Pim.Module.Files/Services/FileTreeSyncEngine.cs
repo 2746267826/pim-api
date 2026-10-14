@@ -106,7 +106,11 @@ public sealed class FileTreeSyncEngine
         await _db.SaveChangesAsync(ct);
 
         var cursor = string.IsNullOrEmpty(provider.DeltaLink) ? null : provider.DeltaLink;
-        var fullRecrawl = false;
+        // 起点没有游标就是一次全量：包括首扫，也包括**重绑后清空游标**的情况。
+        // 只在「游标失效异常」时才置 fullRecrawl 会漏掉后者，导致授权离线期间远端已删的文件
+        // 变成永久幽灵索引（复审 Important）。
+        var fullRecrawl = cursor is null;
+        var removedInThisRun = new HashSet<string>(StringComparer.Ordinal);
         var authRefreshes = 0;
         var pagesProcessed = 0;
         long itemsApplied = 0;
@@ -165,7 +169,7 @@ public sealed class FileTreeSyncEngine
 
                 pagesProcessed++;
                 var applied = await ApplyPageAsync(
-                    provider, session, parentPathCache, page.Changes, now, ct);
+                    provider, session, parentPathCache, page.Changes, now, removedInThisRun, ct);
                 deferredChanges.AddRange(applied.Deferred);
                 itemsDeleted += applied.Deleted;
                 itemsApplied += applied.Applied;
@@ -192,10 +196,27 @@ public sealed class FileTreeSyncEngine
             // 全部页面落库后再补解析一轮：此时本地索引已含整棵树，
             // 「父在后面的页里」这种情况才解得开。
             var drained = await DrainDeferredAsync(
-                provider, session, parentPathCache, deferredChanges, now, ct);
+                provider, session, parentPathCache, deferredChanges, now, removedInThisRun, ct);
             itemsApplied += drained.Applied;
             itemsDeleted += drained.Deleted;
             itemsDeferred = drained.Deferred.Count;
+
+            if (itemsDeferred > 0)
+            {
+                // 还有条目没落地：**不能推进游标**，否则这些变化再也不会被投递（永久漏项）。
+                // 保留旧游标，下一轮从原处重放；同时不做缺失项清理 —— 这些条目对应的既有行
+                // 本轮没有更新 LastSeenAt，清理会把它们误删（复审 Important）。
+                provider.SyncStatus = "error";
+                provider.LastError = $"有 {itemsDeferred} 项因父目录尚未索引而未落地，将在下次同步重试";
+                provider.LastSyncAt = now;
+                provider.SyncedItemCount = itemsApplied;
+                provider.UpdatedAt = now;
+                await _db.SaveChangesAsync(ct);
+                _logger?.LogWarning(
+                    "Files sync for provider {ProviderId} kept its cursor because {Deferred} item(s) could not be resolved",
+                    provider.Id, itemsDeferred);
+                return new FileSyncResult(pagesProcessed, (int)itemsApplied, (int)itemsDeleted, fullRecrawl, itemsDeferred);
+            }
 
             if (fullRecrawl)
             {
@@ -259,6 +280,7 @@ public sealed class FileTreeSyncEngine
         Dictionary<string, string> parentPathCache,
         IReadOnlyList<FileChange> changes,
         DateTimeOffset now,
+        HashSet<string> removedInThisRun,
         CancellationToken ct)
     {
         var upserts = new List<FileChange>();
@@ -285,7 +307,6 @@ public sealed class FileTreeSyncEngine
 
         long applied = 0;
         var deferred = new List<FileChange>();
-        var upsertRows = new Dictionary<string, FileItemEntity>(StringComparer.Ordinal);
         foreach (var change in upserts)
         {
             var path = await ResolvePathAsync(provider, session, parentPathCache, change, ct);
@@ -298,7 +319,8 @@ public sealed class FileTreeSyncEngine
                 continue;
             }
 
-            if (!existing.TryGetValue(change.ExternalId, out var item))
+            var isNew = !existing.TryGetValue(change.ExternalId, out var item);
+            if (isNew)
             {
                 item = new FileItemEntity
                 {
@@ -308,20 +330,28 @@ public sealed class FileTreeSyncEngine
                 };
                 _db.Set<FileItemEntity>().Add(item);
                 existing[change.ExternalId] = item;
-                upsertRows[change.ExternalId] = item;
             }
 
-            ApplyUpsert(item, change, path, now);
+            // 只有**已存在的行**才有「旧路径」可言：新行实体的 Path 默认是 "/"，
+            // 把它当旧路径会触发一次假的整树改写（曾把 /a/b 改写成 /x/a/b）。
+            var previousPath = isNew ? null : item!.Path;
+            ApplyUpsert(item!, change, path, now);
             applied++;
-        }
 
-        // 本页新增（或更新）的行要先落库：补解析下一批条目时要靠它们查父路径。
-        // 既有实现每页只 SaveChanges 一次，这里保持一致（一页一次写）。
-        _ = upsertRows;
+            // 目录改名/移动后，远端**不会**为每个后代各发一条 change（Drive 尤其如此），
+            // 只改目录自身会让子孙留着旧 Path：列表/搜索会显示错误位置，更要命的是
+            // 敏感路径判定会按旧路径放行（复审 Important）。
+            if (change.IsFolder && previousPath is { Length: > 0 } && previousPath != path)
+            {
+                await RewriteDescendantPathsAsync(provider.Id, previousPath, path, now, ct);
+                InvalidateCacheUnder(parentPathCache, previousPath, path);
+            }
+        }
 
         long deleted = 0;
         foreach (var id in removalIds)
         {
+            removedInThisRun.Add(id);
             if (existing.TryGetValue(id, out var item) && !item.IsDeleted)
             {
                 item.IsDeleted = true;
@@ -332,6 +362,54 @@ public sealed class FileTreeSyncEngine
         }
 
         return new ApplyOutcome(applied, deleted, deferred);
+    }
+
+    /// <summary>
+    /// 把 <paramref name="oldPath"/> 前缀下的子孙 Path 改写为 <paramref name="newPath"/> 前缀。
+    /// 与写服务的同名逻辑保持一致：目录一旦换位置，整棵子树都要跟着走。
+    /// </summary>
+    private async Task RewriteDescendantPathsAsync(
+        Guid providerId,
+        string oldPath,
+        string newPath,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var prefix = oldPath.TrimEnd('/') + "/";
+        var descendants = await _db.Set<FileItemEntity>()
+            .Where(row => row.ProviderId == providerId
+                && row.Path.StartsWith(prefix)
+                && !row.IsDeleted)
+            .ToListAsync(ct);
+        if (descendants.Count == 0)
+        {
+            return;
+        }
+
+        var trimmedOld = oldPath.TrimEnd('/');
+        foreach (var descendant in descendants)
+        {
+            descendant.Path = newPath.TrimEnd('/') + descendant.Path[trimmedOld.Length..];
+            descendant.SyncedAt = now;
+        }
+    }
+
+    /// <summary>目录换位置后，缓存里那些旧前缀的父路径必须跟着改，否则本轮后续条目会解析到旧位置。</summary>
+    private static void InvalidateCacheUnder(
+        Dictionary<string, string> cache,
+        string oldPath,
+        string newPath)
+    {
+        var prefix = oldPath.TrimEnd('/') + "/";
+        var trimmedOld = oldPath.TrimEnd('/');
+        foreach (var key in cache.Keys.ToList())
+        {
+            var cached = cache[key];
+            if (cached == oldPath || cached.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                cache[key] = newPath.TrimEnd('/') + cached[trimmedOld.Length..];
+            }
+        }
     }
 
     private static void ApplyUpsert(FileItemEntity item, FileChange change, string path, DateTimeOffset now)
@@ -360,6 +438,7 @@ public sealed class FileTreeSyncEngine
         Dictionary<string, string> parentPathCache,
         IReadOnlyList<FileChange> deferred,
         DateTimeOffset now,
+        HashSet<string> removedInThisRun,
         CancellationToken ct)
     {
         if (deferred.Count == 0)
@@ -367,7 +446,12 @@ public sealed class FileTreeSyncEngine
             return new ApplyOutcome(0, 0, []);
         }
 
-        var pending = deferred.ToList();
+        // 同一轮里已经被删除标记覆盖的条目不得复活：删除是后发生的语义，优先。
+        var pending = deferred.Where(change => !removedInThisRun.Contains(change.ExternalId)).ToList();
+        if (pending.Count == 0)
+        {
+            return new ApplyOutcome(0, 0, []);
+        }
         long applied = 0;
         for (var round = 0; round < DeferredDrainRounds && pending.Count > 0; round++)
         {
@@ -383,6 +467,12 @@ public sealed class FileTreeSyncEngine
 
             foreach (var change in pending)
             {
+                if (removedInThisRun.Contains(change.ExternalId))
+                {
+                    // 本轮后到的删除优先，不能把条目复活
+                    continue;
+                }
+
                 var path = await ResolvePathAsync(provider, session, parentPathCache, change, ct);
                 if (path is null)
                 {
@@ -390,7 +480,8 @@ public sealed class FileTreeSyncEngine
                     continue;
                 }
 
-                if (!existing.TryGetValue(change.ExternalId, out var item))
+                var isNewItem = !existing.TryGetValue(change.ExternalId, out var item);
+                if (isNewItem)
                 {
                     item = new FileItemEntity
                     {
@@ -399,12 +490,22 @@ public sealed class FileTreeSyncEngine
                         CreatedAt = now,
                     };
                     _db.Set<FileItemEntity>().Add(item);
+                    // 立刻进字典：同一 id 在待处理列表里出现多次时，
+                    // 不进字典会重复 Add，撞 (provider_id, external_file_id) 唯一键。
+                    existing[change.ExternalId] = item;
                 }
 
-                ApplyUpsert(item, change, path, now);
+                var previousPath = isNewItem ? null : item!.Path;
+                ApplyUpsert(item!, change, path, now);
                 rows[change.ExternalId] = item;
                 progressed.Add(change);
                 applied++;
+
+                if (change.IsFolder && previousPath is { Length: > 0 } && previousPath != path)
+                {
+                    await RewriteDescendantPathsAsync(provider.Id, previousPath, path, now, ct);
+                    InvalidateCacheUnder(parentPathCache, previousPath, path);
+                }
             }
 
             if (progressed.Count > 0)

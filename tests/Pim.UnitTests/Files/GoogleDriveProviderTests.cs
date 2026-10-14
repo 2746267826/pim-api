@@ -74,10 +74,19 @@ public class GoogleDriveProviderTests
             var url = request.RequestUri!.ToString();
             Requests.Add($"{request.Method.Method} {url}");
 
-            if (url.Contains("/o2c/v3".Replace("o2c", "oauth2"), StringComparison.Ordinal)
-                || url.Contains("oauth2/v3/userinfo", StringComparison.Ordinal))
+            // 身份取自 Drive 的 about.get（不是 OAuth userinfo：那需要额外的身份 scope）
+            if (url.Contains("/drive/v3/about", StringComparison.Ordinal))
             {
-                return Json(200, new { sub = "google-sub-1", name = "Google User", email = "g@example.test" });
+                return Json(200, new
+                {
+                    user = new { permissionId = "google-sub-1", displayName = "Google User", emailAddress = "g@example.test" },
+                });
+            }
+
+            if (url.Contains("oauth2/v3/userinfo", StringComparison.Ordinal))
+            {
+                // 只申请了 drive scope 时这个端点会 401；桩如实复现，避免掩盖 scope 缺失
+                return Json(401, Error("insufficientPermissions", "Request had insufficient authentication scopes"));
             }
 
             if (url.Contains("oauth2.googleapis.com/token", StringComparison.Ordinal))
@@ -362,7 +371,8 @@ public class GoogleDriveProviderTests
         var result = await engine.SyncAsync(provider.Id);
 
         Assert.Equal(2, result.ItemsApplied);
-        Assert.False(result.FullRecrawl);
+        // 首次同步没有游标 → 全量扫描
+        Assert.True(result.FullRecrawl);
         var rows = await db.Set<FileItemEntity>().Where(i => i.ProviderId == provider.Id).ToListAsync();
         Assert.Equal("/合同", rows.Single(r => r.ExternalFileId == "folder-1").Path);
         // Drive 只给父 id 不给父路径：这一条必须靠「补解析」拿到正确路径

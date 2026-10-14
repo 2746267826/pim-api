@@ -402,7 +402,8 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
                 ReadNullableString(json, "size") is { } size && long.TryParse(size, out var parsed) ? parsed : ReadNullableLong(json, "size"),
                 ReadNullableString(json, "file") ?? ReadMimeType(json),
                 ReadParentPath(json),
-                ReadIsFolder(json));
+                ReadIsFolder(json),
+                ReadParentId(json));
         }
         catch (OneDriveGraphException exception) when (exception.StatusCode == 404)
         {
@@ -439,13 +440,20 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
                 ReadNullableLong(json, "size"),
                 ReadMimeType(json),
                 ReadParentPath(json),
-                ReadIsFolder(json));
+                ReadIsFolder(json),
+                ReadParentId(json));
         }
         catch (OneDriveGraphException exception) when (exception.StatusCode == 404)
         {
             return null;
         }
     }
+
+    /// <summary>读取 parentReference.id（用于核对条目确实落在声明的父目录下）。</summary>
+    private static string? ReadParentId(JsonElement json)
+        => json.TryGetProperty("parentReference", out var parent) && parent.ValueKind == JsonValueKind.Object
+            ? ReadNullableString(parent, "id")
+            : null;
 
     /// <summary>读取 parentReference.path（用于把条目定位回目录树）。</summary>
     private static string? ReadParentPath(JsonElement json)

@@ -19,8 +19,14 @@ public sealed record FileProviderBindingStartResult(
     int? ExpiresIn,
     string? AuthorizationUrl);
 
-/// <summary>Status: pending | connected | expired | denied | error。</summary>
+/// <summary>
+/// Status: pending | connected | expired | denied | error。
+/// <paramref name="ProviderId"/> 是**规范账号行**的 id：同一账号重绑时服务端会复用既有行
+/// 并删掉本次的待授权行，因此轮询必须把这个 id 回给客户端，
+/// 否则客户端会继续拿已经删掉的那个 id 去轮询/同步，全部报「来源不存在」。
+/// </summary>
 public sealed record FileProviderBindingStatusResult(
+    Guid ProviderId,
     string Status,
     string? DriveId,
     string? AccountId,
@@ -47,6 +53,7 @@ public sealed class FileProviderAuthorizationService
     private readonly IFileProviderFactory _providers;
     private readonly IEnumerable<IFileProviderAuthorizer> _authorizers;
     private readonly FileProviderCredentialSource _credentials;
+    private readonly FileProviderTokenCache _tokenCache;
     private readonly ISecretProtector _protector;
     private readonly ILogger<FileProviderAuthorizationService>? _logger;
     private readonly TimeProvider _clock;
@@ -58,7 +65,8 @@ public sealed class FileProviderAuthorizationService
         ISecretProtector protector,
         ILogger<FileProviderAuthorizationService>? logger = null,
         TimeProvider? clock = null,
-        FileProviderCredentialSource? credentials = null)
+        FileProviderCredentialSource? credentials = null,
+        FileProviderTokenCache? tokenCache = null)
     {
         _db = db;
         _providers = providers;
@@ -67,6 +75,7 @@ public sealed class FileProviderAuthorizationService
         _logger = logger;
         _clock = clock ?? TimeProvider.System;
         _credentials = credentials ?? new FileProviderCredentialSource(new ConfigurationBuilder().Build());
+        _tokenCache = tokenCache ?? new FileProviderTokenCache();
     }
 
     /// <summary>发起一轮新的绑定。</summary>
@@ -174,7 +183,8 @@ public sealed class FileProviderAuthorizationService
         {
             // 浏览器跳转形态：状态由回调决定，轮询只回报当前状态
             return new FileProviderBindingStatusResult(
-                provider.Status, provider.DriveId, provider.AccountId, provider.AccountName, null, null, null);
+                provider.Id, provider.Status, provider.DriveId, provider.AccountId, provider.AccountName,
+                null, null, null);
         }
 
         if (provider.PendingAuthorizationSecretEncrypted is null
@@ -185,7 +195,7 @@ public sealed class FileProviderAuthorizationService
             provider.UpdatedAt = _clock.GetUtcNow();
             await _db.SaveChangesAsync(ct);
             return new FileProviderBindingStatusResult(
-                "expired", null, null, null, provider.UserCode, provider.VerificationUri,
+                provider.Id, "expired", null, null, null, provider.UserCode, provider.VerificationUri,
                 provider.PendingAuthorizationExpiresAt);
         }
 
@@ -209,7 +219,8 @@ public sealed class FileProviderAuthorizationService
             if (fresh.Status != "pending" || fresh.PendingAuthorizationSecretEncrypted is null
                 || !fresh.PendingAuthorizationSecretEncrypted.AsSpan().SequenceEqual(secretBytes))
             {
-                return new FileProviderBindingStatusResult("pending", null, null, null, null, null, null);
+                return new FileProviderBindingStatusResult(
+                    provider.Id, "pending", null, null, null, null, null, null);
             }
 
             var connected = await MarkConnectedAsync(provider, result, ct);
@@ -218,18 +229,18 @@ public sealed class FileProviderAuthorizationService
         catch (FileProviderAuthorizationPendingException pending)
         {
             return new FileProviderBindingStatusResult(
-                "pending", null, null, null, provider.UserCode, provider.VerificationUri,
+                provider.Id, "pending", null, null, null, provider.UserCode, provider.VerificationUri,
                 provider.PendingAuthorizationExpiresAt, pending.PollIntervalSeconds);
         }
         catch (FileProviderAuthorizationDeniedException)
         {
             await MarkFailedAsync(provider, "denied", ct);
-            return new FileProviderBindingStatusResult("denied", null, null, null, null, null, null);
+            return new FileProviderBindingStatusResult(provider.Id, "denied", null, null, null, null, null, null);
         }
         catch (FileProviderAuthorizationFailedException)
         {
             await MarkFailedAsync(provider, "expired", ct);
-            return new FileProviderBindingStatusResult("expired", null, null, null, null, null, null);
+            return new FileProviderBindingStatusResult(provider.Id, "expired", null, null, null, null, null, null);
         }
     }
 
@@ -358,9 +369,16 @@ public sealed class FileProviderAuthorizationService
 
         if (existingSameAccount is not null)
         {
+            // 与在途刷新串行：否则旧的刷新结果可能在重绑之后覆盖新凭据（复审 Important）。
+            using var refreshScope = await _tokenCache.EnterRefreshAsync(existingSameAccount.Id, ct);
+            await _db.Entry(existingSameAccount).ReloadAsync(ct);
             ApplyConnection(existingSameAccount, result, now, resetSyncState: true);
+            // 换 clientId 重绑时必须一并更新客户端身份：新 refresh token 属于新的客户端，
+            // 继续用旧 clientId 刷新会直接 invalid_client（复审 Important）。
+            existingSameAccount.ClientId = provider.ClientId ?? existingSameAccount.ClientId;
             _db.Set<FileProviderEntity>().Remove(provider);
             await _db.SaveChangesAsync(ct);
+            _tokenCache.Invalidate(existingSameAccount.Id);
             _logger?.LogInformation(
                 "Files provider reconnected for user {UserId} ({ProviderKey}, account {AccountId}); existing row reused",
                 existingSameAccount.UserId, existingSameAccount.Provider, existingSameAccount.AccountId);
@@ -466,13 +484,22 @@ public sealed class FileProviderAuthorizationService
             Encoding.UTF8.GetBytes(left),
             Encoding.UTF8.GetBytes(right));
 
-    /// <summary>清理同一用户、同一 provider 下已过期/已作废的待绑定行，避免脏行堆积。</summary>
+    /// <summary>
+    /// 清理同一用户、同一 provider 下**没成功连接过**的过期授权尝试，避免脏行堆积。
+    ///
+    /// 判据必须是 <c>AccountId == null</c>（从未拿到账号身份），**不能**只按 status 筛：
+    /// 正式账号在令牌失效后会变成 <c>expired</c>，且连接成功时 <c>PendingAuthorizationExpiresAt</c>
+    /// 已被清空；若按「非 connected 且待授权已过期」清理，用户一点「重新授权」就会先删掉
+    /// 这个账号行，外键级联删掉它全部的 file_items，已发出的闪念附件也会因为
+    /// storage_account_id 指向被删行而读不回来（复审 Critical）。
+    /// </summary>
     private async Task PurgeStalePendingAsync(Guid userId, string providerKey, CancellationToken ct)
     {
         var now = _clock.GetUtcNow();
         var stale = await _db.Set<FileProviderEntity>()
             .Where(row => row.UserId == userId
                 && row.Provider == providerKey
+                && row.AccountId == null
                 && row.Status != "connected"
                 && (row.PendingAuthorizationExpiresAt == null || row.PendingAuthorizationExpiresAt < now))
             .ToListAsync(ct);
@@ -503,6 +530,7 @@ public sealed class FileProviderAuthorizationService
 
     private static FileProviderBindingStatusResult Connected(FileProviderEntity provider)
         => new(
+            provider.Id,
             provider.Status,
             provider.DriveId,
             provider.AccountId,

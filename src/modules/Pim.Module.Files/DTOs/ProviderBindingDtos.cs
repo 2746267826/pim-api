@@ -30,6 +30,7 @@ public sealed record ProviderBindingStartDto(
 }
 
 public sealed record ProviderBindingStatusDto(
+    Guid ProviderId,
     string Status,
     string? DriveId,
     string? AccountId,
@@ -41,6 +42,7 @@ public sealed record ProviderBindingStatusDto(
 {
     public static ProviderBindingStatusDto From(FileProviderBindingStatusResult result)
         => new(
+            result.ProviderId,
             result.Status,
             result.DriveId,
             result.AccountId,

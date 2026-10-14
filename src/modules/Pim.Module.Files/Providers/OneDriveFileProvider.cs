@@ -48,12 +48,13 @@ public static class OneDriveGraphSemantics
     public static FileChange ToFileChange(OneDriveDeltaItem item)
     {
         var parentPath = NormalizeParentPath(item.ParentPath);
-        // parentPath 为 null 只发生在根条目自身；此时 ParentExternalId 也必须为 null，
-        // 否则同步引擎会去本地找「id 为 null 的父目录」。Graph 的根条目本来就没有 parentReference。
-        var parentId = parentPath is null ? null : item.ParentId;
+        // 父 id **原样透传**，不因为「路径缺失」就抹掉它：
+        // 引擎判定「这条就是根目录自身」的规则是**父 id 与父路径都缺失**，
+        // 在这里提前抹掉父 id 会把「有父 id、只是没给路径」的条目录成根目录。
+        // Graph 的根条目本来就没有 parentReference（父 id 与父路径同时缺），语义不变。
         return new FileChange(
             item.Id,
-            parentId,
+            item.ParentId,
             parentPath,
             item.Name,
             item.IsFolder,
@@ -279,7 +280,9 @@ public sealed class OneDriveContentReader(IServiceProvider services, FileProvide
             item.Size,
             item.MimeType,
             item.IsFolder,
-            path);
+            path,
+            ETag: null,
+            ParentExternalId: item.ParentId);
     }
 }
 

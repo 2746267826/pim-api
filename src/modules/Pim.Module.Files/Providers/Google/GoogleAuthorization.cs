@@ -326,7 +326,7 @@ public sealed class GoogleAuthorizer(GoogleDriveClient client) : IBrowserRedirec
                 "Google 未返回 refresh token（请确认授权时使用了 prompt=consent 并重新授权）");
         }
 
-        var user = await client.GetUserInfoAsync(token.AccessToken, ct);
+        var user = await client.GetAboutUserAsync(token.AccessToken, ct);
         return new FileProviderAuthorizationResult(
             new FileProviderAccount(GoogleFileProvider.Key, user.Subject, user.DisplayName, null, GoogleFileProvider.RootId),
             token.RefreshToken,

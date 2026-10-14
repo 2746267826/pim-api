@@ -114,7 +114,9 @@ public class FileTreeSyncEngineTests
 
         Assert.Equal(2, result.PagesProcessed);
         Assert.Equal(3, result.ItemsApplied);
-        Assert.False(result.FullRecrawl);
+        // 起点没有游标 = 一次全量：首扫与「重绑后清空游标」都归到这里，
+        // 也只有这样后者才会执行缺失项清理（否则离线期间远端删掉的文件会永远留在索引里）。
+        Assert.True(result.FullRecrawl);
         var items = await db.Set<FileItemEntity>()
             .Where(item => item.ProviderId == provider.Id)
             .ToListAsync();

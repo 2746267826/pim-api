@@ -96,12 +96,19 @@ public sealed class GoogleFileProvider(IServiceProvider services) : IFileProvide
 /// <summary>
 /// Google 的增量变更流（对标 OneDrive 的 delta，工单 F4.3）。
 ///
-/// 游标是不透明字符串，两种形态：
+/// 游标是不透明字符串，三种形态：
 /// <list type="bullet">
-/// <item><c>full:&lt;pageToken&gt;</c> —— 首次/重置后的**全量**扫描中（Drive 的 changes 流没有「从头开始」，
-/// 首次必须用 files.list 把整棵树走一遍，走完再取 startPageToken 转入增量）；</item>
+/// <item><c>full:&lt;startToken&gt;:&lt;pageToken&gt;</c> —— 首次/重置后的**全量**扫描中
+/// （Drive 的 changes 流没有「从头开始」，首次必须用 files.list 把整棵树走一遍）；</item>
+/// <item><c>full:&lt;startToken&gt;:</c> —— 整棵树已列完，转入增量；</item>
 /// <item><c>delta:&lt;pageToken&gt;</c> —— 增量中，走 changes.list。</item>
 /// </list>
+///
+/// <b>startToken 必须在开始遍历文件树之前取</b>：如果等遍历完再取，扫描期间发生的
+/// 改名/删除/更新落在 token 之前，本地留下的是旧状态，而后续增量也不会再推送它们
+/// —— 这是**永久**漏变更（复审 Important）。先冻结 token，则扫描期间的变化会在
+/// 下一轮增量里重新送达（重复投递是幂等的）。
+///
 /// pageToken 失效（过期 / invalid_page_token）抛 <see cref="ProviderCursorExpiredException"/>，
 /// 由同步引擎重置为全量重扫 —— 这与「refresh token 失效」是两回事（F4.5 明确要求分开）。
 /// </summary>
@@ -113,6 +120,25 @@ public sealed class GoogleChangeSource(
     private const string FullPrefix = "full:";
     private const string DeltaPrefix = "delta:";
 
+    /// <summary>全量游标：<c>full:&lt;开始遍历前冻结的 startToken&gt;:&lt;当前 files.list 分页 token&gt;</c>。</summary>
+    private static string FullCursor(string startToken, string? pageToken)
+        => $"{FullPrefix}{startToken}:{pageToken ?? string.Empty}";
+
+    private static (string StartToken, string? PageToken) ParseFullCursor(string cursor)
+    {
+        var body = cursor[FullPrefix.Length..];
+        var separator = body.IndexOf(':');
+        if (separator < 0)
+        {
+            // 老格式（没有冻结 token）：按「无 startToken」处理，走一次冻结
+            return (string.Empty, body.Length == 0 ? null : body);
+        }
+
+        var startToken = body[..separator];
+        var page = body[(separator + 1)..];
+        return (startToken, page.Length == 0 ? null : page);
+    }
+
     private readonly GoogleDriveClient _client = services.GetRequiredService<GoogleDriveClient>();
     private readonly Func<CancellationToken, Task<string>> _accessToken = context.AccessToken;
 
@@ -120,8 +146,10 @@ public sealed class GoogleChangeSource(
     {
         if (string.IsNullOrEmpty(cursor) || cursor.StartsWith(FullPrefix, StringComparison.Ordinal))
         {
-            var pageToken = string.IsNullOrEmpty(cursor) ? null : cursor[FullPrefix.Length..];
-            return await FullCrawlPageAsync(pageToken, ct);
+            var (startToken, pageToken) = string.IsNullOrEmpty(cursor)
+                ? (string.Empty, (string?)null)
+                : ParseFullCursor(cursor);
+            return await FullCrawlPageAsync(startToken, pageToken, ct);
         }
 
         if (cursor.StartsWith(DeltaPrefix, StringComparison.Ordinal))
@@ -133,20 +161,31 @@ public sealed class GoogleChangeSource(
         throw new ProviderCursorExpiredException($"无法识别的同步游标: {cursor}");
     }
 
-    /// <summary>全量扫描的一页：列出全部未删除条目；走完最后一页时取 startPageToken 转入增量。</summary>
-    private async Task<FileChangePage> FullCrawlPageAsync(string? pageToken, CancellationToken ct)
+    /// <summary>
+    /// 全量扫描的一页：列出全部未删除条目。
+    /// 第一页会**先**冻结 startToken（见类型注释），最后一页转入 <c>delta:&lt;startToken&gt;</c>。
+    /// </summary>
+    private async Task<FileChangePage> FullCrawlPageAsync(
+        string startToken,
+        string? pageToken,
+        CancellationToken ct)
     {
         var token = await _accessToken(ct);
+        if (startToken.Length == 0)
+        {
+            startToken = await _client.GetStartPageTokenAsync(token, ct);
+        }
+
         var page = await _client.ListFilesPageAsync(token, pageToken, "trashed=false", ct);
         var changes = page.Files.Select(ToFileChange).ToList();
 
         if (page.NextPageToken is not null)
         {
-            return new FileChangePage(changes, FullPrefix + page.NextPageToken, HasMore: true);
+            return new FileChangePage(changes, FullCursor(startToken, page.NextPageToken), HasMore: true);
         }
 
-        // 整棵树已列完：拿到「此刻」的游标，下一轮起走 changes.list
-        var startToken = await _client.GetStartPageTokenAsync(token, ct);
+        // 整棵树已列完：交付**遍历前**冻结的那个 token。
+        // 下一轮增量会重放遍历期间的变化（幂等），因此不会永久漏项。
         return new FileChangePage(changes, DeltaPrefix + startToken, HasMore: false);
     }
 
@@ -298,7 +337,8 @@ public sealed class GoogleContentReader(
             file.MimeType,
             string.Equals(file.MimeType, GoogleDriveClient.FolderMimeType, StringComparison.Ordinal),
             path,
-            file.Md5);
+            file.Md5,
+            file.Parents.Count > 0 ? file.Parents[0] : null);
     }
 
     /// <summary>

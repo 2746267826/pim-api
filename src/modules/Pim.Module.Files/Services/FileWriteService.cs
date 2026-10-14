@@ -425,6 +425,24 @@ public sealed class FileWriteService
             throw new DomainException(5300, "上传已完成，但未能从网盘读回该文件，请稍后重新同步");
         }
 
+        // 客户端给的 id 必须与服务端回读到的**同一条**：否则可以拿一个已有条目的 id
+        // 冒充本次上传结果，把它登记到任意目录（复审 Important）。
+        if (!string.IsNullOrWhiteSpace(uploadedItemId)
+            && !string.Equals(item.Id, uploadedItemId, StringComparison.Ordinal))
+        {
+            throw new DomainException(5300, "上传结果与服务端回读不一致，请重新同步后再试");
+        }
+
+        // 回读到的父目录必须就是声明的目标目录：两边都知道时才核对（provider 未必都给得出来）。
+        // 不核对的话，提交「已有敏感文件的 id + 公开目录路径」就能把敏感文件登记成公开路径，
+        // 之后的敏感路径闸门会按伪造路径放行。
+        if (folder.ExternalId is { Length: > 0 }
+            && item.ParentExternalId is { Length: > 0 }
+            && !string.Equals(item.ParentExternalId, folder.ExternalId, StringComparison.Ordinal))
+        {
+            throw new DomainException(5300, "上传结果不在目标目录内，已拒绝登记");
+        }
+
         // 用服务端返回的真实路径/名称（重名时已自动改名），不沿用客户端提交的名字
         var resolvedPath = item.Path is { Length: > 0 } ? item.Path : JoinPath(folder.Path, item.Name);
 
@@ -466,6 +484,13 @@ public sealed class FileWriteService
         var createdId = await session.Writer.CreateFolderAsync(folder, name, ct);
         var created = await session.Content.GetItemAsync(createdId, ct)
             ?? throw new DomainException(5300, "文件夹已创建，但未能从网盘读回该文件夹，请稍后重新同步");
+
+        if (folder.ExternalId is { Length: > 0 }
+            && created.ParentExternalId is { Length: > 0 }
+            && !string.Equals(created.ParentExternalId, folder.ExternalId, StringComparison.Ordinal))
+        {
+            throw new DomainException(5300, "新建目录不在目标目录内，已拒绝登记");
+        }
 
         var resolvedPath = created.Path is { Length: > 0 } ? created.Path : JoinPath(folder.Path, created.Name);
 
