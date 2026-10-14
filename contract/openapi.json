@@ -16863,12 +16863,10 @@
         "additionalProperties": false,
         "properties": {
           "isMuted": {
+            "nullable": true,
             "type": "boolean"
           }
         },
-        "required": [
-          "isMuted"
-        ],
         "type": "object"
       },
       "SilenceWindow": {

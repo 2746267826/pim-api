@@ -120,23 +120,48 @@ public class CalendarService
     /// </para>
     /// </summary>
     public async Task<CalendarMutePolicyResponse> SetCalendarMutePolicyAsync(
-        Guid calendarId, bool isMuted, CancellationToken ct)
+        Guid calendarId, bool? isMuted, CancellationToken ct)
     {
+        // 必填校验放在服务层（端点只做绑定）：缺失字段会被 JSON 绑定成 false，
+        // 而这一操作会改掉整个日历本下所有日程，静默当成「不静音」是不可接受的（review I-1）。
+        if (isMuted is null)
+            throw new DomainException(02009, "isMuted 必填：true 统一静音 / false 统一不静音。");
+
+        var value = isMuted.Value;
         var calendar = await _db.Set<CalendarEntity>()
             .FirstOrDefaultAsync(c => c.Id == calendarId && c.UserId == UserId, ct)
             ?? throw new DomainException(02002, "日历不存在");
 
-        calendar.DefaultMuted = isMuted;
-        calendar.UpdatedAt = _timeProvider.GetUtcNow();
+        var now = _timeProvider.GetUtcNow();
+        calendar.DefaultMuted = value;
+        calendar.UpdatedAt = now;
 
         var affected = await _db.Set<EventEntity>()
             .Where(e => e.CalendarId == calendar.Id)
             .ToListAsync(ct);
         foreach (var entity in affected)
-            entity.IsMuted = isMuted;
+        {
+            entity.IsMuted = value;
+            // 与单条更新保持一致：批量改了日程就要更新 updated_at（review M-1）
+            entity.UpdatedAt = now;
+        }
 
         await _db.SaveChangesAsync(ct);
-        return new CalendarMutePolicyResponse(calendar.Id, isMuted, affected.Count);
+
+        // 批量操作会覆盖单条显式值，留下审计记录（谁、改了什么、影响多少条）（review M-3）
+        if (_audit is not null)
+        {
+            await _audit.RecordSuccessAsync(
+                UserId, "calendar.mute-policy.set", "calendar", calendar.Id,
+                new Dictionary<string, string>
+                {
+                    ["defaultMuted"] = value ? "true" : "false",
+                    ["affectedEventCount"] = affected.Count.ToString(),
+                },
+                ct);
+        }
+
+        return new CalendarMutePolicyResponse(calendar.Id, value, affected.Count);
     }
 
     // --- Events ---

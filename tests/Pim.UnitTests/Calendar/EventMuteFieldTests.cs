@@ -206,6 +206,50 @@ public sealed class EventMuteFieldTests
             CreateService(db, OtherUserId).SetCalendarMutePolicyAsync(target.Id, true, default));
     }
 
+    [Fact]
+    public async Task SetCalendarMutePolicyAsync_RejectsMissingIsMuted_WithoutChangingAnything()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, UserId, "课程表");
+        calendar.DefaultMuted = true;
+        await db.SaveChangesAsync();
+        var existing = await AddEventAsync(db, calendar.Id, "既有日程", isMuted: true);
+        var service = CreateService(db);
+
+        // 端点绑定后 IsMuted 为 null；一个 {} 请求体绝不能等于「统一设为不静音」
+        var ex = await Assert.ThrowsAsync<Pim.Core.Exceptions.DomainException>(() =>
+            service.SetCalendarMutePolicyAsync(calendar.Id, null, default));
+        Assert.Equal(02009, ex.ErrorCode);
+
+        Assert.True((await db.Set<CalendarEntity>().AsNoTracking().SingleAsync()).DefaultMuted);
+        Assert.True((await db.Set<EventEntity>().AsNoTracking().SingleAsync(e => e.Id == existing)).IsMuted);
+    }
+
+    [Fact]
+    public async Task SetCalendarMutePolicyAsync_RefreshesUpdatedAtOfAffectedEvents()
+    {
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, UserId, "课程表");
+        await db.SaveChangesAsync();
+        var eventId = await AddEventAsync(db, calendar.Id, "日程", isMuted: false);
+        var stale = new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var entity = await db.Set<EventEntity>().SingleAsync(e => e.Id == eventId);
+        entity.UpdatedAt = stale;
+        await db.SaveChangesAsync();
+
+        var fixedNow = new DateTimeOffset(2026, 10, 14, 12, 0, 0, TimeSpan.Zero);
+        var service = new CalendarService(
+            db, new FixedCurrentUserService(UserId), new RecurrenceService(NullLogger<RecurrenceService>.Instance),
+            new EventAttachmentService(db), new FixedTimeProvider(fixedNow), null);
+
+        await service.SetCalendarMutePolicyAsync(calendar.Id, true, default);
+
+        var updated = await db.Set<EventEntity>().AsNoTracking().SingleAsync(e => e.Id == eventId);
+        Assert.True(updated.IsMuted);
+        Assert.Equal(fixedNow, updated.UpdatedAt);
+        Assert.Equal(fixedNow, (await db.Set<CalendarEntity>().AsNoTracking().SingleAsync()).UpdatedAt);
+    }
+
     // ---------- helpers ----------
 
     private static async Task<Guid> AddEventAsync(PimDbContext db, Guid calendarId, string title, bool? isMuted)
@@ -241,6 +285,11 @@ public sealed class EventMuteFieldTests
         var calendar = new CalendarEntity { UserId = userId, Name = name, Kind = "calendar" };
         db.Set<CalendarEntity>().Add(calendar);
         return calendar;
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 
     private sealed class FixedCurrentUserService(Guid userId) : ICurrentUserService
