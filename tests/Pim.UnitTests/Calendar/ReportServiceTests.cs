@@ -17,7 +17,6 @@ public class ReportServiceTests
     [InlineData("Daily")]
     [InlineData("Weekly")]
     [InlineData("Monthly")]
-    [InlineData("Project")]
     public async Task GeneratesReportArtifactWithoutMutatingFacts(string kind)
     {
         await using var db = CreateDb();
@@ -33,6 +32,44 @@ public class ReportServiceTests
             CancellationToken.None);
 
         Assert.Equal(kind, report.Kind);
+        Assert.Equal("L0AutomaticArtifact", report.RiskLevel);
+        Assert.NotEmpty(report.ContentMarkdown);
+        Assert.Equal(beforeTasks, await db.Set<TaskEntity>().CountAsync());
+        Assert.Empty(await db.OperationConfirmations.ToListAsync());
+    }
+
+    /// <summary>
+    /// 项目报告（工单 01 §A2.1 / AC-A6）：项目周期由项目下任务的时间跨度推导，因此必须带 projectId
+    /// 且项目下要有任务。原有「生成报告不修改事实」的意图在这里同样保留。
+    /// </summary>
+    [Fact]
+    public async Task GeneratesProjectReportArtifactWithoutMutatingFacts()
+    {
+        await using var db = CreateDb();
+        var calendar = new CalendarEntity { UserId = UserId, Name = "Default", IsDefault = true };
+        db.Set<CalendarEntity>().Add(calendar);
+        var project = new DomainProjectEntity { UserId = UserId, Name = "P" };
+        db.Set<DomainProjectEntity>().Add(project);
+        db.Set<TaskEntity>().Add(new TaskEntity
+        {
+            UserId = UserId,
+            DomainProjectId = project.Id,
+            Uid = "task@pim",
+            Title = "Task",
+            DtStart = new DateTimeOffset(2026, 7, 8, 1, 0, 0, TimeSpan.Zero),
+            PlannedEnd = new DateTimeOffset(2026, 7, 8, 2, 0, 0, TimeSpan.Zero),
+            CreatedAt = new DateTimeOffset(2026, 7, 6, 1, 0, 0, TimeSpan.Zero)
+        });
+        await db.SaveChangesAsync();
+        var beforeTasks = await db.Set<TaskEntity>().CountAsync();
+        var service = CreateService(db);
+
+        var report = await service.GenerateAsync(
+            new GenerateReportRequest("Project", DateOnly.Parse("2026-07-08"), project.Id),
+            CancellationToken.None);
+
+        Assert.Equal("Project", report.Kind);
+        Assert.Equal(project.Id, report.ProjectId);
         Assert.Equal("L0AutomaticArtifact", report.RiskLevel);
         Assert.NotEmpty(report.ContentMarkdown);
         Assert.Equal(beforeTasks, await db.Set<TaskEntity>().CountAsync());

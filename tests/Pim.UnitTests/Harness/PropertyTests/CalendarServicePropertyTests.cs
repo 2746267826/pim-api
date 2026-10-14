@@ -310,7 +310,17 @@ public sealed class CalendarServicePropertyTests
     {
         await using var db = ServiceTestBase.CreateDb();
         var calendar = SeedCalendar(db);
-        db.Set<TaskEntity>().Add(new TaskEntity { UserId = ServiceTestBase.DefaultUserId, Uid = Guid.NewGuid() + "@pim", Title = "Sample Task" });
+        var dtStart = new DateTimeOffset(2026, 7, 8, 1, 0, 0, TimeSpan.Zero);
+        db.Set<TaskEntity>().Add(new TaskEntity
+        {
+            UserId = ServiceTestBase.DefaultUserId,
+            CalendarId = calendar.Id,
+            Uid = Guid.NewGuid() + "@pim",
+            Title = "Sample Task",
+            DtStart = dtStart,
+            PlannedEnd = dtStart.AddHours(1),
+            EstimatedDuration = TimeSpan.FromHours(1)
+        });
         await db.SaveChangesAsync();
 
         var svc = new ReportService(db, ServiceTestBase.CurrentUser(), new OperationConfirmationService(db));
@@ -319,7 +329,12 @@ public sealed class CalendarServicePropertyTests
         Assert.Equal("Daily", report.Kind);
         Assert.Equal("L0AutomaticArtifact", report.RiskLevel);
         Assert.NotEmpty(report.ContentMarkdown);
-        Assert.Contains("Tasks:", report.ContentMarkdown);
+        // 工单 01 §A2.2：报告正文按模块给结论（旧的硬编码 "Tasks:" 账本行已被分模块结论取代）
+        Assert.Contains("## 计划 vs 实际", report.ContentMarkdown);
+        Assert.Contains("任务预估时长合计：1 小时", report.ContentMarkdown);
+        Assert.Contains("## 日历占用", report.ContentMarkdown);
+        Assert.Contains("## 收集质量", report.ContentMarkdown);
+        Assert.Contains("## 任务进展", report.ContentMarkdown);
         Assert.Equal("Active", report.Status);
         var list = await svc.ListAsync(CancellationToken.None);
         Assert.Contains(list, r => r.Id == report.Id);

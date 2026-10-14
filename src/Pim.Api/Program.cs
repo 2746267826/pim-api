@@ -21,12 +21,12 @@ using Pim.Infrastructure.Operations;
 using Pim.Module.Mcp.Services;
 using Prometheus;
 using Serilog;
-using Serilog.Formatting.Compact;
-using Serilog.Sinks.Grafana.Loki;
 
 // --mcp-stdio: dedicated local-process MCP stdio server. Stdout carries ONLY the MCP
 // protocol, so console logs must go to stderr (serilog text writer sink) in that mode.
 var isMcpStdio = args.Contains("--mcp-stdio", StringComparer.Ordinal);
+
+var builder = WebApplication.CreateBuilder(args);
 
 // 可选 Loki 日志聚合：设置 LOKI_URL（如 http://loki:3100）即启用，未设置时仅文件 + 控制台
 var lokiUrl = Environment.GetEnvironmentVariable("LOKI_URL")
@@ -39,43 +39,35 @@ var fileSizeLimitBytes = LoggingConfig.ResolveFileSizeLimitBytes(
 var rollOnFileSizeLimit = LoggingConfig.ResolveRollOnFileSizeLimit(
     Environment.GetEnvironmentVariable("PIM_LOG_ROLL_ON_FILE_SIZE_LIMIT"), fileSizeLimitBytes);
 
-static Serilog.LoggerConfiguration WithLoki(Serilog.LoggerConfiguration cfg, string? url)
-    => string.IsNullOrWhiteSpace(url)
-        ? cfg
-        : cfg.WriteTo.GrafanaLoki(url, [new LokiLabel { Key = "app", Value = "pim-api" }]);
+// 日志级别不再硬编码：PIM_LOG_LEVEL > Logging:LogLevel:Default > Information（默认生产可用档），
+// EF 内务类别（ChangeTracking / Database.Command）默认抬到 Warning 且可配置覆盖。
+// --mcp-stdio 分支与主分支共用这一套级别与接收器，只是把控制台输出换到 stderr。
+var loggingLevels = LoggingConfig.ResolveLevels(builder.Configuration);
 
-Log.Logger = WithLoki(new LoggerConfiguration()
-    .MinimumLevel.Debug()
-    .Enrich.FromLogContext()
-    .Enrich.WithProperty("Service", "pim-api")
-    .WriteTo.Console(new CompactJsonFormatter())
-    .WriteTo.File(new CompactJsonFormatter(), "/data/pim/logs/pim-api-.jsonl",
-        rollingInterval: RollingInterval.Day,
-        fileSizeLimitBytes: fileSizeLimitBytes,
-        rollOnFileSizeLimit: rollOnFileSizeLimit,
-        retainedFileCountLimit: retainedFiles), lokiUrl)
+Log.Logger = LoggingConfig.CreateLoggerConfiguration(
+        loggingLevels,
+        new LoggingConfig.LoggingSinkOptions(
+            LoggingConfig.DefaultLogFilePath,
+            retainedFiles,
+            fileSizeLimitBytes,
+            rollOnFileSizeLimit,
+            lokiUrl,
+            ConsoleToStandardError: isMcpStdio))
     .CreateLogger();
 
-if (isMcpStdio)
-{
-    // stdio mode: stdout carries ONLY the MCP protocol. Swap the console sink to stderr
-    // (the file sink above remains for ops forensics).
-    Log.CloseAndFlush();
-    Log.Logger = WithLoki(new LoggerConfiguration()
-        .MinimumLevel.Debug()
-        .Enrich.FromLogContext()
-        .Enrich.WithProperty("Service", "pim-api")
-        .WriteTo.TextWriter(new CompactJsonFormatter(), Console.Error)
-        .WriteTo.File(new CompactJsonFormatter(), "/data/pim/logs/pim-api-.jsonl",
-            rollingInterval: RollingInterval.Day,
-            fileSizeLimitBytes: fileSizeLimitBytes,
-            rollOnFileSizeLimit: rollOnFileSizeLimit,
-            retainedFileCountLimit: retainedFiles), lokiUrl)
-        .CreateLogger();
-}
-
-var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseSerilog();
+
+Log.Information(
+    "日志级别生效：MinimumLevel={MinimumLevel}（来源：{MinimumLevelSource}）；类别覆盖：{CategoryLevels}",
+    loggingLevels.MinimumLevel,
+    loggingLevels.MinimumLevelSource,
+    string.Join(", ", loggingLevels.CategoryLevels.Select(pair => $"{pair.Key}={pair.Value}")));
+
+foreach (var invalidEntry in loggingLevels.InvalidEntries)
+{
+    // 级别写错不能被静默吞掉：明确报出来，并按默认级别继续（不因为一条配置把服务卡死）
+    Log.Warning("日志级别配置项无法解析，已按默认级别处理：{InvalidEntry}", invalidEntry);
+}
 
 // 客户端契约（OpenAPI）：文档由端点元数据生成，CI 启动 Test 环境实例导出到
 // contract/openapi.json 供客户端仓生成类型。生产环境不映射该端点（见下方 UseSwagger）。

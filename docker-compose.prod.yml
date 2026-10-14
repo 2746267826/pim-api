@@ -30,6 +30,9 @@ services:
       - Files__MaxInlineTextBytes=1048576
       - PIM_OPS_KEY=${PIM_OPS_KEY}
       - PIM_OPS_RO_CONNECTION=${PIM_OPS_RO_CONNECTION}
+      # 日志最低级别（Trace/Debug/Information/Warning/Error/Fatal）；不设置时用配置里的
+      # Logging:LogLevel:Default，再退回 Information。改这一项即可降噪，无需改代码。
+      - PIM_LOG_LEVEL=${PIM_LOG_LEVEL:-Information}
       - PIM_LOG_RETAINED_FILES=${PIM_LOG_RETAINED_FILES:-2}
       - PIM_LOG_FILE_SIZE_LIMIT_BYTES=${PIM_LOG_FILE_SIZE_LIMIT_BYTES:-}
       - PIM_LOG_ROLL_ON_FILE_SIZE_LIMIT=${PIM_LOG_ROLL_ON_FILE_SIZE_LIMIT:-}

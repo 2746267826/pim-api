@@ -32,6 +32,9 @@ public class PcTrackerModule : IModule
         services.AddScoped<KeystatsUploadReader>();
         services.AddScoped<PcTrackerService>();
         services.AddScoped<PcTrackerQualityService>();
+        // 报告（工单 01）的「收集质量 · PC」数据源：复用上面同一个质量服务的口径，
+        // 报告侧经 Pim.Core.Quality 抽象可选消费，模块之间不直接引用。
+        services.AddScoped<Pim.Core.Quality.ICollectionQualityProvider, PcCollectionQualityProvider>();
         services.AddScoped<PcBrowserSiteService>();
         services.AddScoped<ActivitySuggestionService>();
         services.AddScoped<ActivityClassificationSnapshotService>();
