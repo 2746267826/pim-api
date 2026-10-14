@@ -98,7 +98,7 @@ public static class AuthEndpoints
                     accessToken,
                     refreshToken,
                     DateTimeOffset.UtcNow.AddMinutes(15),
-                    new UserInfo(user.Id, user.Username, user.DisplayName!, user.Role))));
+                    new UserInfo(user.Id, user.Username, user.DisplayName, user.Role))));
         })
         .Produces<ApiResponse<AuthResponse>>(201)
         .Produces<ApiResponse<string>>(400)
@@ -190,7 +190,7 @@ public static class AuthEndpoints
                 accessToken,
                 refreshToken,
                 DateTimeOffset.UtcNow.AddMinutes(15),
-                new UserInfo(user.Id, user.Username, user.DisplayName!, user.Role))));
+                new UserInfo(user.Id, user.Username, user.DisplayName, user.Role))));
         })
         .Produces<ApiResponse<AuthResponse>>(200)
         .Produces(401)
@@ -239,7 +239,7 @@ public static class AuthEndpoints
                 accessToken,
                 newRefreshToken,
                 DateTimeOffset.UtcNow.AddMinutes(15),
-                new UserInfo(user.Id, user.Username, user.DisplayName!, user.Role))));
+                new UserInfo(user.Id, user.Username, user.DisplayName, user.Role))));
         })
         .Produces<ApiResponse<AuthResponse>>(200)
         .Produces(401)
@@ -259,7 +259,7 @@ public static class AuthEndpoints
             if (user is null || !user.IsActive) return Results.Unauthorized();
 
             return Results.Ok(ApiResponse<UserInfo>.Ok(
-                new UserInfo(user.Id, user.Username, user.DisplayName!, user.Role)));
+                new UserInfo(user.Id, user.Username, user.DisplayName, user.Role)));
         }).RequireAuthorization()
         .Produces<ApiResponse<UserInfo>>(200)
         .Produces(401)

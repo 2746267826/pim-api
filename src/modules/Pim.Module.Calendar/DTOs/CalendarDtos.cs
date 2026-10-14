@@ -677,3 +677,16 @@ public record ReportSuggestionDto(
     string Status,
     Guid? ConfirmationId
 );
+
+/// <summary>
+/// <c>POST /api/v1/calendar/import-ics</c> 的 multipart 请求体（issue #417 第二节第 1 条）。
+///
+/// 端点仍直接读 <see cref="Microsoft.AspNetCore.Http.HttpRequest"/> 的表单（匹配、绑定、错误文案
+/// 都不变），这个 DTO 由 <c>IcsImportRequestBodyOperationFilter</c> 用来生成 requestBody ——
+/// 此前契约里该 operation <b>完全没有 requestBody</b>，客户端生成不出上传接口。
+/// 不用 <c>.Accepts&lt;T&gt;</c>：那个元数据会参与端点匹配，非 multipart 请求会变成 404。
+/// </summary>
+public record IcsImportForm(
+    Microsoft.AspNetCore.Http.IFormFile File,
+    string? CalendarId
+);
