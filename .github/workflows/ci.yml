@@ -68,6 +68,10 @@ jobs:
           bash scripts/ci/test-trigger-api-release.sh
           bash scripts/ci/test-check-ghcr-public.sh
           bash scripts/ci/test-dist-tag-state.sh
+          # 契约同步（pim-api#415）：自动刷新 → 提交 → 推分支 → 开 PR 的那一步。
+          # 它错了不会报错，只会"PR 开不出来"或"开出来被 pr-metadata 拦下"，
+          # 所以这里必须跑（真 git fixture + stub gh，离线）。
+          bash scripts/ci/test-contract-sync-pr.sh
 
       - name: Lint
         run: npm run lint

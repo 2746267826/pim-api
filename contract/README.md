@@ -17,10 +17,17 @@
 
 ## 怎么刷新
 
-后端契约更新后（用户告知，或 CI 报 `契约快照已陈旧`）：
+**正常情况下不需要人工执行**：`pim-api` 的 CI 在 `contract/openapi.json` 变化（且通过了它的
+契约硬校验）后会向本仓发 `repository_dispatch`，本仓的 `Contract sync` workflow 收到后
+自动刷新并开一个 PR（`.github/workflows/contract-sync.yml` + `scripts/ci/contract-sync-pr.sh`，
+一步到底：快照 + `provenance.json` + `generated.ts`）。**PR 需要人工 review 后才合并**，
+机器人不会自动合并。同一份契约重复触发不会产生空提交（按字节去重）。
+
+需要人工刷新时（例如通知没收到、或要指定某个上游 commit）：
 
 ```bash
-scripts/ci/fetch-contract.sh
+scripts/ci/fetch-contract.sh                      # 默认 pim-api@master
+PIM_CONTRACT_REF=<40 位 SHA> scripts/ci/fetch-contract.sh   # 精确取某个 commit 的字节
 ```
 
 脚本会解析上游 ref → 不可变 40 位 commit SHA，按该 SHA 取字节，校验它确实是一份 OpenAPI 3.x 文档，
