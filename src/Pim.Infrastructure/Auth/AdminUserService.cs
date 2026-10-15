@@ -184,7 +184,14 @@ public sealed class AdminUserService(PimDbContext db, IAuditLogService auditLog)
         return AdminUserActionResult.Success(ToDto(user));
     }
 
-    public async Task<AdminUserActionResult> ResetPasswordAsync(
+    public Task<AdminUserActionResult> ResetPasswordAsync(
+        Guid actorUserId, Guid targetUserId, string newPassword, CancellationToken ct)
+        // 重置要让目标用户全部会话失效，必须与 refresh 的「轮换」、login 的「发会话」互斥：
+        // 否则并发请求可能在撤销提交之后插入一条从未被撤销的新令牌（REQ-6 落空）。
+        => UserSessionLock.RunAsync(
+            db, targetUserId, () => ResetPasswordCoreAsync(actorUserId, targetUserId, newPassword, ct), ct);
+
+    private async Task<AdminUserActionResult> ResetPasswordCoreAsync(
         Guid actorUserId, Guid targetUserId, string newPassword, CancellationToken ct)
     {
         var target = await db.Users.FirstOrDefaultAsync(u => u.Id == targetUserId, ct);

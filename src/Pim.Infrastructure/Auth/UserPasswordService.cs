@@ -67,7 +67,13 @@ public sealed class UserPasswordService(PimDbContext db, IAuditLogService auditL
     private const string AuditSource = "user";
     private const string AuditAction = "auth.password.change";
 
-    public async Task<ChangeOwnPasswordStatus> ChangeOwnPasswordAsync(
+    public Task<ChangeOwnPasswordStatus> ChangeOwnPasswordAsync(
+        Guid userId, string? currentPassword, string? newPassword, string? refreshToken, CancellationToken ct)
+        // 「只踢其它设备」的撤销必须与 refresh 的轮换互斥：否则被踢设备可能并发插入一条新令牌逃过撤销。
+        => UserSessionLock.RunAsync(
+            db, userId, () => ChangeOwnPasswordCoreAsync(userId, currentPassword, newPassword, refreshToken, ct), ct);
+
+    private async Task<ChangeOwnPasswordStatus> ChangeOwnPasswordCoreAsync(
         Guid userId, string? currentPassword, string? newPassword, string? refreshToken, CancellationToken ct)
     {
         var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct);
