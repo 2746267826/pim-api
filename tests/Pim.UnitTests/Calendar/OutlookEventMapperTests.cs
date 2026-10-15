@@ -1124,6 +1124,8 @@ public sealed class OutlookEventMapperTests
         var keys = Assert.IsType<HashSet<string>>(field!.GetValue(null));
         Assert.DoesNotContain("isMuted", keys);
         Assert.DoesNotContain("is_muted", keys);
-        Assert.DoesNotContain("mute", keys);
+        // 说明：不再放 `DoesNotContain("mute", …)` 这种子串断言（近乎恒真，不构成防线，
+        // 独立 review 指出）。真正防住「同步推导静音」的是上面的行为用例
+        // ApplyGraphEvent_DoesNotTouchPimNativeIsMuted，这条只负责钉住白名单别被加进去。
     }
 }

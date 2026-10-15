@@ -179,6 +179,10 @@ public sealed class EventMuteFieldTests
         var target = SeedCalendar(db, UserId, "目标本");
         var sibling = SeedCalendar(db, UserId, "别的本");
         var foreign = SeedCalendar(db, OtherUserId, "别人的本");
+        // 兄弟本/他本先设为 true：这样"批量没动它们"才是真断言
+        //（若两个默认值都是 false，断言恒真、不构成防线 —— 独立 review 指出）
+        sibling.DefaultMuted = true;
+        foreign.DefaultMuted = true;
         await db.SaveChangesAsync();
 
         var inTarget = await AddEventAsync(db, target.Id, "目标日程", isMuted: false);
@@ -199,8 +203,8 @@ public sealed class EventMuteFieldTests
         Assert.False(events[inSibling].IsMuted);
         Assert.False(events[inForeign].IsMuted);
         Assert.False(events[deleted].IsMuted);
-        Assert.False((await db.Set<CalendarEntity>().AsNoTracking().SingleAsync(c => c.Id == sibling.Id)).DefaultMuted);
-        Assert.False((await db.Set<CalendarEntity>().AsNoTracking().SingleAsync(c => c.Id == foreign.Id)).DefaultMuted);
+        Assert.True((await db.Set<CalendarEntity>().AsNoTracking().SingleAsync(c => c.Id == sibling.Id)).DefaultMuted);
+        Assert.True((await db.Set<CalendarEntity>().AsNoTracking().SingleAsync(c => c.Id == foreign.Id)).DefaultMuted);
 
         // 别人的日历本不可被当前用户设置（与 /calendars 其它写操作一致：不存在即 02002）
         await Assert.ThrowsAsync<Pim.Core.Exceptions.DomainException>(() =>
@@ -277,6 +281,29 @@ public sealed class EventMuteFieldTests
         Assert.Equal(1, result.AffectedEventCount);
         Assert.True((await db.Set<EventEntity>().AsNoTracking().SingleAsync(e => e.Id == eventId)).IsMuted);
         Assert.True((await db.Set<CalendarEntity>().AsNoTracking().SingleAsync()).DefaultMuted);
+    }
+
+    [Fact]
+    public async Task EventQueries_CalendarView_RecurringOccurrencesCarryIsMuted()
+    {
+        // 独立 review 指出：日历视图走的是 MapExpanded（重复日程展开）而不是 Map，
+        // 之前只有单条路径被覆盖。这条钉住展开路径也带 isMuted。
+        await using var db = CreateDb();
+        var calendar = SeedCalendar(db, UserId, "课程表");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        await service.CreateEventAsync(
+            new CreateEventRequest(
+                calendar.Id, "每周静音", null, null, Start, End, "FREQ=DAILY;COUNT=3",
+                IsMuted: true),
+            default);
+
+        var expanded = await service.GetEventsAsync(Start.AddHours(-1), Start.AddDays(4), default);
+
+        Assert.Equal(3, expanded.Count);
+        Assert.All(expanded, e => Assert.True(e.IsMuted));
+        Assert.All(expanded, e => Assert.Equal("每周静音", e.Title));
     }
 
     // ---------- helpers ----------
