@@ -467,6 +467,25 @@ public class GoogleDriveProviderTests
             """{"error":{"code":403,"message":"Rate Limit Exceeded","errors":[{"reason":"rateLimitExceeded"}]}}""");
         Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderTransientException>(throttled);
 
+        // 任意 403（含共享盘继承权限这类长尾 reason）都不得落回「上游故障」：
+        // 403 的语义是「调用方没被允许」，永远不是「网盘挂了」
+        foreach (var reason in new[]
+                 {
+                     "cannotModifyInheritedTeamDrivePermission",
+                     "appNotAuthorizedToFile",
+                     "domainPolicy",
+                     "forbidden",
+                     "someFutureReasonWeHaveNotSeen",
+                 })
+        {
+            var mapped = GoogleErrorMapper.FromBody(
+                403,
+                "{\"error\":{\"code\":403,\"message\":\"Forbidden\",\"errors\":[{\"reason\":\""
+                + reason
+                + "\"}]}}");
+            Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderAuthorizationExpiredException>(mapped);
+        }
+
         // 空间/配额不足既不是限流（等一会儿不会好）也不是授权失效（重新连接没用），单列一类
         var quota = GoogleErrorMapper.FromBody(
             403,

@@ -62,16 +62,21 @@ public static class GoogleErrorMapper
             401 => new ProviderUnauthorizedException(message),
             403 when IsRateLimit(reason) =>
                 new ProviderTransientException(429, retryAfterSeconds, message),
-            // 权限类 403 是**用户可自愈**的（重新授权 / 检查该文件的共享权限），
-            // 不能报成 502「网盘服务暂时不可用」——那会把「你该去重新连接」误导成「等一会儿再试」。
             // 空间/配额不足：用户可自愈（清理网盘），但重新授权解决不了，必须单独说清
             403 when IsStorageQuota(reason) =>
                 new ProviderStorageQuotaExceededException(
                     $"{message}（Google 网盘空间或配额不足：{reason}）"),
-            403 when IsPermissionDenied(reason) =>
-                new ProviderAuthorizationExpiredException(
-                    $"{message}（Google 拒绝了该操作：{reason}；请到设置页重新连接该账号或检查文件权限）"),
-            403 => new GoogleDriveException(statusCode, reason, retryAfterSeconds, message, Truncate(body)),
+            // 其余 403 一律按「权限/授权」处理，**不再落回上游故障**：
+            // 403 的语义就是「调用方没有被允许」，它永远不是「网盘挂了」；报成 502 会把
+            // 「你该去重新连接 / 检查该文件权限」误导成「等一会儿再试」。
+            // 逐个 reason 打补丁会没完没了（已知的就有 insufficientPermissions、
+            // insufficientFilePermissions、cannotModifyInheritedTeamDrivePermission、
+            // appNotAuthorizedToFile、domainPolicy、fileNotDownloadable、cannotDownloadAbusiveFile、
+            // abuse……），因此这里用「默认归入权限类」收口，
+            // 上面两个 when 分支只负责把限流与空间配额这两类更具体的语义挑出去。
+            403 => new ProviderAuthorizationExpiredException(
+                $"{message}（Google 拒绝了该操作：{reason ?? "forbidden"}；"
+                + "请到设置页重新连接该账号或检查该文件的权限）"),
             404 => new ProviderItemNotFoundException(message),
             410 => new ProviderCursorExpiredException(message),
             429 => new ProviderTransientException(429, retryAfterSeconds, message),
@@ -79,17 +84,6 @@ public static class GoogleErrorMapper
             _ => new GoogleDriveException(statusCode, reason, retryAfterSeconds, message, Truncate(body)),
         };
     }
-
-    /// <summary>
-    /// 权限被拒的 403：这类是「授权/共享权限」问题，用户能自己修（重新连接或调整权限）。
-    ///
-    /// <c>insufficientFilePermissions</c> 是 Drive 对**单个文件**权限不足时最常用的 reason，
-    /// 漏掉它会让这类错误重新落回「上游故障」的语义（复审 Important）。
-    /// </summary>
-    private static bool IsPermissionDenied(string? reason)
-        => reason is "insufficientPermissions" or "insufficientFilePermissions"
-            or "appNotAuthorizedToFile" or "domainPolicy"
-            or "forbidden" or "fileNotDownloadable" or "cannotDownloadAbusiveFile" or "abuse";
 
     /// <summary>
     /// 空间/配额不足（与 <see cref="IsRateLimit"/> 的区别：限流等一会儿能好，配额要用户自己清理）。
