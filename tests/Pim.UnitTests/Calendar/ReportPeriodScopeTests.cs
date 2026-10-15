@@ -560,6 +560,42 @@ public class ReportPeriodScopeTests
 
     // ---- helpers ----
 
+    /// <summary>
+    /// A4（工单 03 复审）：正在计时的**开放段**（ends_at 为 null）必须按**注入时钟**计入「实际执行」，
+    /// 而不是墙钟「现在」。否则同一条在跑的段会因为今天是不是报告日而算出完全不同的数字
+    /// （例如 09:00 开始、现在已是数周之后 → 会被算成 19 小时，而不是真的 30 分钟）。
+    /// </summary>
+    [Fact]
+    public async Task OpenSegment_IsCountedUpToTheInjectedClock()
+    {
+        await using var db = CreateDb();
+        var calendar = await SeedCalendarAsync(db);
+        var task = SeedTask(db, calendar, "T-open", Sh(2026, 8, 5, 9), Sh(2026, 8, 5, 11), TimeSpan.FromMinutes(120));
+        db.Set<TaskExecutionSegmentEntity>().Add(new TaskExecutionSegmentEntity
+        {
+            TaskId = task.Id,
+            UserId = UserId,
+            StartsAt = Sh(2026, 8, 5, 9),
+            EndsAt = null,                      // 正在计时（工单 03 的开放段）
+            Status = "active"
+        });
+        await db.SaveChangesAsync();
+
+        var clock = new FixedTimeProvider(Sh(2026, 8, 5, 9, 30));
+        var report = await CreateService(db, clock).GenerateAsync(
+            new GenerateReportRequest("Daily", new DateOnly(2026, 8, 5), null),
+            CancellationToken.None);
+        var metrics = JsonDocument.Parse(report.MetricsJson).RootElement;
+
+        // 固定时钟 09:30 − 段起点 09:00 = 30 分钟
+        Assert.Equal(30, metrics.GetProperty("actualExecutedMinutes").GetInt32());
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+    }
+
     private static async Task<JsonElement> MetricsAsync(PimDbContext db, string kind, DateOnly date, Guid? projectId = null)
     {
         var report = await GenerateAsync(db, kind, date, projectId);
@@ -587,7 +623,10 @@ public class ReportPeriodScopeTests
     }
 
     private static ReportService CreateService(PimDbContext db)
-        => new(db, new FixedCurrentUserService(UserId), new OperationConfirmationService(db));
+        => CreateService(db, TimeProvider.System);
+
+    private static ReportService CreateService(PimDbContext db, TimeProvider timeProvider)
+        => new(db, new FixedCurrentUserService(UserId), new OperationConfirmationService(db), null, timeProvider);
 
     private static async Task<CalendarEntity> SeedCalendarAsync(PimDbContext db)
     {

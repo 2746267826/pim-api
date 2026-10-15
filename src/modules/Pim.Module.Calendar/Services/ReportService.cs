@@ -56,16 +56,21 @@ public sealed class ReportService
     private readonly ICurrentUserService _currentUser;
     private readonly IOperationConfirmationService _confirmations;
     private readonly IReadOnlyList<ICollectionQualityProvider> _collectionQualityProviders;
+    private readonly TimeProvider _timeProvider;
 
     public ReportService(
         PimDbContext db,
         ICurrentUserService currentUser,
         IOperationConfirmationService confirmations,
-        IEnumerable<ICollectionQualityProvider>? collectionQualityProviders = null)
+        IEnumerable<ICollectionQualityProvider>? collectionQualityProviders = null,
+        TimeProvider? timeProvider = null)
     {
         _db = db;
         _currentUser = currentUser;
         _confirmations = confirmations;
+        // 注入时钟（与 PlanningModelService / CalendarService 一致）：本服务里**新加**的时间取值
+        // 一律走它，测试用固定时钟即可钉住边界。既有的 DateTimeOffset.UtcNow 属于工单 01 的既有代码，未在本次改动。
+        _timeProvider = timeProvider ?? TimeProvider.System;
         // 同一数据源只认第一个实现，避免重复注册时同一字段被写两次
         _collectionQualityProviders = collectionQualityProviders?
             .GroupBy(provider => provider.Key, StringComparer.Ordinal)
@@ -288,7 +293,7 @@ public sealed class ReportService
         //   · SQL 里 `s.EndsAt > x` 对 NULL 是 unknown，会把正在跑的段整行排除；
         //   · 直接给 Overlap 传可空值也编译不过。
         // 口径与 PlanningModelService.AccumulatedSeconds 一致（开放段算到查询时刻）。
-        var segmentsAsOf = DateTimeOffset.UtcNow;
+        var segmentsAsOf = _timeProvider.GetUtcNow();
         var segments = await _db.Set<TaskExecutionSegmentEntity>()
             .AsNoTracking()
             .Where(s => s.UserId == userId
