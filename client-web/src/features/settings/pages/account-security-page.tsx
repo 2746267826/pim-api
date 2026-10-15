@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { apiPost, getRefreshToken } from '@/api/client'
+import { ApiError, apiPost, getRefreshToken } from '@/api/client'
+import type { components } from '@/api/generated'
 import { useAuth } from '@/features/auth/auth-context'
 import { notifyError, notifySuccess } from '@/lib/notify'
 import { Button, Card, EmptyState, InlineAlert, Input, Label, PageHeader } from '@/components/ui'
@@ -68,20 +69,23 @@ export function AccountSecurityPage() {
     setLocalError(null)
     setSubmitting(true)
     try {
-      await apiPost<string>('/api/v1/auth/password', {
+      // 请求体形状取自契约类型（AC-15.2）：字段名写错会被 tsc 拦下
+      const body: components['schemas']['ChangePasswordRequest'] = {
         currentPassword,
         newPassword,
         // §4.1：现取，不用挂载时的缓存值
         refreshToken: getRefreshToken() ?? '',
-      })
+      }
+      await apiPost<string>('/api/v1/auth/password', body)
       notifySuccess('密码已修改')
       // 成功：清空表单，当前设备保持登录（不跳登录页、不清令牌）
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
     } catch (err) {
-      // 失败：显示服务端 message 原文，停留原页，已填内容不清空
-      const message = err instanceof Error ? err.message : '修改密码失败，请稍后重试'
+      // 失败：显示服务端 message 原文，停留原页，已填内容不清空。
+      // 只认 ApiError：`TypeError: Failed to fetch` 之类也是 Error，会把英文原文贴给用户（R-3）
+      const message = err instanceof ApiError ? err.message || '修改密码失败，请稍后重试' : '修改密码失败，请稍后重试'
       setServerError(message)
       notifyError(message)
     } finally {

@@ -85,6 +85,7 @@
 | `/devices/:deviceId` | 设备详情 | 单设备详情 |
 | `/status` | 状态 | 系统/组件状态页 |
 | `/settings` | 设置枢纽 | 链接卡片列表 |
+| `/settings/account` | 账号安全 | 修改自己的登录密码（对全员可见） |
 | `/settings/data-reliability` | 数据可信度 | 13 规则数据体检 |
 | `/settings/sync` | 同步设置 | Microsoft Outlook 同步 |
 | `/settings/ai` | AI 设置 | LiteLLM 状态/用量/请求日志 |

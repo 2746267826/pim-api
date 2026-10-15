@@ -27,7 +27,6 @@ type AuthStub = {
   user: { id: string; username: string; displayName: string | null; role: string } | null
   hostChannel: 'browser' | 'host'
   login: typeof loginMock
-  register: (payload: unknown) => Promise<void>
   retryBoot: () => void
 }
 
@@ -35,7 +34,6 @@ const authState: AuthStub = {
   user: null,
   hostChannel: 'browser',
   login: loginMock,
-  register: vi.fn(async () => {}),
   retryBoot: vi.fn(),
 }
 

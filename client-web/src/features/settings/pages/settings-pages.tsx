@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, Bot, Download, FileDown, RefreshCw, ScrollText, Trash2 } from 'lucide-react'
-import { apiDelete, apiGet, apiPost, apiPut, apiUpload, fetchBlob } from '@/api/client'
+import { ApiError, apiDelete, apiGet, apiPost, apiPut, apiUpload, fetchBlob } from '@/api/client'
 import type { components } from '@/api/generated'
 import { downloadCsv, downloadJson } from '@/lib/download'
 import { formatTime } from '@/lib/datetime'
@@ -1536,9 +1536,14 @@ function CreateUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
       resetForm()
       onOpenChange(false)
     } catch (err) {
-      // 失败反馈 = 弹窗内错误文本 + 顶部提示，不得静默失败（界面文案与交互要点 §1）；
-      // 服务端 message 原文（如「用户名已存在」/「邮箱已存在」），弹窗保持打开、内容保留
-      const message = err instanceof Error ? err.message : '创建失败，请稍后重试'
+      /*
+       * 失败反馈 = 弹窗内错误文本 + 顶部提示，不得静默失败（界面文案与交互要点 §1）；
+       * 服务端 message 原文（如「用户名已存在」/「邮箱已存在」），弹窗保持打开、内容保留。
+       *
+       * 只认 ApiError：`TypeError: Failed to fetch` 之类也是 Error，
+       * 会把英文原文直接贴给用户（验收意见 R-3）。非 ApiError 一律中文兜底。
+       */
+      const message = err instanceof ApiError ? err.message || '创建失败，请稍后重试' : '创建失败，请稍后重试'
       setError(message)
       notifyError(message)
     } finally {
@@ -1643,13 +1648,15 @@ function ResetPasswordDialog({
     inFlight.current = true
     setSubmitting(true)
     try {
-      await apiPost<AdminUser>(`/api/v1/admin/users/${target.id}/password`, { newPassword: password })
+      // 请求体形状取自契约类型（AC-15.2）：字段名写错会被 tsc 拦下
+      const body: components['schemas']['ResetPasswordRequest'] = { newPassword: password }
+      await apiPost<AdminUser>(`/api/v1/admin/users/${target.id}/password`, body)
       notifySuccess('密码已重置')
       void qc.invalidateQueries({ queryKey: ['admin', 'users'] })
       onOpenChange(false)
     } catch (err) {
-      // 同建号：弹窗内文本 + 顶部提示（§1 失败反馈）
-      const message = err instanceof Error ? err.message : '重置失败，请稍后重试'
+      // 同建号：弹窗内文本 + 顶部提示（§1 失败反馈）；非 ApiError 走中文兜底（R-3）
+      const message = err instanceof ApiError ? err.message || '重置失败，请稍后重试' : '重置失败，请稍后重试'
       setError(message)
       notifyError(message)
     } finally {

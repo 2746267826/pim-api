@@ -15,9 +15,10 @@ import userEvent from '@testing-library/user-event'
 
 import { ApiError } from '@/api/client'
 
-const { postMock, notifySuccessMock, getRefreshTokenMock, clearTokensMock } = vi.hoisted(() => ({
+const { postMock, notifySuccessMock, notifyErrorMock, getRefreshTokenMock, clearTokensMock } = vi.hoisted(() => ({
   postMock: vi.fn(),
   notifySuccessMock: vi.fn(),
+  notifyErrorMock: vi.fn(),
   getRefreshTokenMock: vi.fn(),
   clearTokensMock: vi.fn(),
 }))
@@ -47,7 +48,7 @@ vi.mock('@/api/client', async (importOriginal) => {
 
 vi.mock('@/lib/notify', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/notify')>()
-  return { ...actual, notifySuccess: notifySuccessMock, notifyError: vi.fn() }
+  return { ...actual, notifySuccess: notifySuccessMock, notifyError: notifyErrorMock }
 })
 
 import { AccountSecurityPage } from './account-security-page'
@@ -67,6 +68,7 @@ describe('REQ-14 账号安全：修改密码', () => {
   beforeEach(() => {
     postMock.mockReset()
     notifySuccessMock.mockReset()
+    notifyErrorMock.mockReset()
     getRefreshTokenMock.mockReset()
     clearTokensMock.mockReset()
     currentRefreshToken = 'STALE-token'
@@ -119,7 +121,12 @@ describe('REQ-14 账号安全：修改密码', () => {
     })
     /*
      * 当前设备保持登录：不能只凭"表单还在"——清除令牌并跳转的实现也可能让表单短暂存在。
-     * 这里直接断言**令牌没有被清掉**（clearTokens 未被调用），这是"仍然登录"的可观察前提。
+     * 这里断言**令牌没有被清掉**（clearTokens 未被调用）+ 表单仍在。
+     *
+     * 诚实标注证据边界（验收意见 §六）：组件测试里没有路由，观察不到"有没有跳登录页"，
+     * 所以这条只是"仍然登录"的**前提**而非全称证明。真正的端到端断言在浏览器实测：
+     * `_evidence/ui-flow-stage2.mjs` 的步骤 6/7 —— 改密后 `!member.url().includes('/login')`
+     * 且当前设备 `GET /api/v1/auth/me` 仍为 200，而另一台设备的 refresh 为 401。
      */
     expect(clearTokensMock).not.toHaveBeenCalled()
     expect(getRefreshTokenMock).toHaveBeenCalled()
@@ -169,12 +176,27 @@ describe('REQ-14 账号安全：修改密码', () => {
     expect(postMock).not.toHaveBeenCalled()
   })
 
-  it('AC-14.4 三项均非空是前提：留空也拦下且不发请求', async () => {
+  it('AC-14.4 三项均非空是前提：留空也拦下、给出提示且不发请求', async () => {
     render(<AccountSecurityPage />)
     await userEvent.click(screen.getByRole('button', { name: '修改密码' }))
 
     await waitFor(() => expect(screen.getByLabelText('当前密码')).toBeTruthy())
     expect(postMock).not.toHaveBeenCalled()
+    // 验收意见 R-2 同类：不能只断言"没发请求"，要断言用户看得见提示
+    expect(await screen.findByText('请填写当前密码、新密码与确认新密码')).toBeTruthy()
+  })
+
+  /* 验收意见 R-3：非 ApiError 的网络类失败必须给中文兜底，不能把英文原文贴给用户 */
+  it('R-3 非 ApiError（网络类）失败 → 中文兜底文案，不出现英文原文', async () => {
+    postMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    render(<AccountSecurityPage />)
+    await fillForm('old-password', 'new-password-1')
+
+    await userEvent.click(screen.getByRole('button', { name: '修改密码' }))
+
+    expect(await screen.findByText('修改密码失败，请稍后重试')).toBeTruthy()
+    expect(screen.queryByText(/Failed to fetch/)).toBeNull()
+    expect(notifyErrorMock).toHaveBeenCalledWith('修改密码失败，请稍后重试')
   })
 
   it('AC-14.6 host 通道下不渲染可提交表单、明确提示走桌面客户端，且不发请求', async () => {

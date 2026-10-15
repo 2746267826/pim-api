@@ -426,12 +426,49 @@ describe('REQ-13 用户管理页「重置密码」', () => {
 
     await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy())
     expect(postMock).not.toHaveBeenCalled()
+    /*
+     * 验收意见 R-2：只断言「弹窗还开着 + 没发请求」不够 —— 把实现里那行
+     * `setError(RESET_HINT.password)` 整段摘掉，本用例仍会全绿。
+     * 必须同时断言用户**看得见**这条本地校验提示。
+     */
+    expect(await screen.findByText('新密码至少 8 位')).toBeTruthy()
 
     // 修正后发得出去（证明是校验拦下的）
     await userEvent.clear(field('新密码'))
     await userEvent.type(field('新密码'), 'long-enough-pass')
     await userEvent.click(screen.getByRole('button', { name: '重置' }))
     await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1))
+  })
+
+  /*
+   * 验收意见 R-3：`TypeError: Failed to fetch` 也是 `Error`，旧的 `err instanceof Error ? err.message : ...`
+   * 会把英文原文直接贴进弹窗与 toast。非 `ApiError`（网络中断、DNS、CORS…）一律走中文兜底。
+   */
+  it('R-3 建号：非 ApiError（网络类）失败 → 中文兜底文案，不出现英文原文', async () => {
+    postMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    await renderPage()
+    await openCreateDialog()
+    await fillCreateForm()
+
+    await userEvent.click(screen.getByRole('button', { name: '创建' }))
+
+    expect(await screen.findByText('创建失败，请稍后重试')).toBeTruthy()
+    expect(screen.queryByText(/Failed to fetch/)).toBeNull()
+    expect(notifyErrorMock).toHaveBeenCalledWith('创建失败，请稍后重试')
+  })
+
+  it('R-3 重置：非 ApiError（网络类）失败 → 中文兜底文案，不出现英文原文', async () => {
+    postMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    await renderPage()
+    await userEvent.click(screen.getAllByRole('button', { name: '重置密码' })[1])
+    await screen.findByRole('dialog')
+
+    await userEvent.type(field('新密码'), 'brand-new-pass')
+    await userEvent.click(screen.getByRole('button', { name: '重置' }))
+
+    expect(await screen.findByText('重置失败，请稍后重试')).toBeTruthy()
+    expect(screen.queryByText(/Failed to fetch/)).toBeNull()
+    expect(notifyErrorMock).toHaveBeenCalledWith('重置失败，请稍后重试')
   })
 
   it('AC-13.4 服务端返回错误时在弹窗内显示服务端文案，弹窗不关闭', async () => {
