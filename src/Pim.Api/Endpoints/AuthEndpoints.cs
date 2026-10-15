@@ -157,37 +157,60 @@ public static class AuthEndpoints
                 return Results.Unauthorized();
             }
 
-            db.LoginAttempts.Add(new LoginAttemptEntity
-            {
-                UserId = user.Id,
-                IpAddress = ipAddress,
-                Success = true
-            });
-
+            /*
+             * 发会话前在该用户的会话锁内**复核**：口令校验通过之后、插入会话之前若发生
+             * 改密 / 管理员重置，这条新会话会逃过撤销（攻击者持旧口令也能留住一个会话）。
+             * 锁内重读用户并比对「我们实际校验过的那个哈希」即可挡住这种交错。
+             * bcrypt 校验本身留在锁外：它耗时约百毫秒，不该占着用户锁。
+             */
+            var verifiedHash = user.PasswordHash;
             stepSw.Restart();
-            var accessToken = jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
+            var issued = await UserSessionLock.RunAsync(db, user.Id, async () =>
+            {
+                var fresh = await db.Users.FirstOrDefaultAsync(u => u.Id == user.Id, ct);
+                if (fresh is null || !fresh.IsActive || fresh.PasswordHash != verifiedHash)
+                    return (AuthResponse?)null;
+
+                db.LoginAttempts.Add(new LoginAttemptEntity
+                {
+                    UserId = fresh.Id,
+                    IpAddress = ipAddress,
+                    Success = true
+                });
+
+                var accessToken = jwt.GenerateAccessToken(fresh.Id, fresh.Username, fresh.Role);
+                var refreshToken = jwt.GenerateRefreshToken();
+
+                db.RefreshTokens.Add(new RefreshTokenEntity
+                {
+                    UserId = fresh.Id,
+                    TokenHash = RefreshTokenSessions.HashSecret(refreshToken),
+                    ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
+                });
+                await db.SaveChangesAsync(ct);
+
+                return new AuthResponse(
+                    accessToken,
+                    refreshToken,
+                    DateTimeOffset.UtcNow.AddMinutes(15),
+                    new UserInfo(fresh.Id, fresh.Username, fresh.DisplayName, fresh.Role));
+            }, ct);
             var jwtMs = stepSw.ElapsedMilliseconds;
 
-            var refreshToken = jwt.GenerateRefreshToken();
-
-            db.RefreshTokens.Add(new RefreshTokenEntity
+            if (issued is null)
             {
-                UserId = user.Id,
-                TokenHash = RefreshTokenSessions.HashSecret(refreshToken),
-                ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
-            });
+                // 校验通过后账号被改（口令已变）或停用：这条会话不得发出
+                logger.LogInformation("Login rejected for '{User}': account changed during login", request.Username);
+                return Results.Unauthorized();
+            }
+
             stepSw.Restart();
-            await db.SaveChangesAsync(ct);
             var dbSaveMs = stepSw.ElapsedMilliseconds;
 
             logger.LogInformation("Login succeeded for '{User}': bcrypt={BcryptMs}ms, userLookup={UserLookupMs}ms, rateLimit={RateLimitMs}ms, jwt={JwtMs}ms, dbSave={DbSaveMs}ms, total={TotalMs}ms",
                 request.Username, bcryptMs, userLookupMs, rateLimitMs, jwtMs, dbSaveMs, totalSw.ElapsedMilliseconds);
 
-            return Results.Ok(ApiResponse<AuthResponse>.Ok(new AuthResponse(
-                accessToken,
-                refreshToken,
-                DateTimeOffset.UtcNow.AddMinutes(15),
-                new UserInfo(user.Id, user.Username, user.DisplayName, user.Role))));
+            return Results.Ok(ApiResponse<AuthResponse>.Ok(issued));
         })
         .Produces<ApiResponse<AuthResponse>>(200)
         .Produces(401)
@@ -204,34 +227,55 @@ public static class AuthEndpoints
         {
             var tokenHash = RefreshTokenSessions.HashSecret(request.RefreshToken);
 
-            var stored = await db.RefreshTokens.FirstOrDefaultAsync(
-                rt => rt.TokenHash == tokenHash && rt.RevokedAt == null, ct);
-
-            if (stored is null || stored.ExpiresAt < DateTimeOffset.UtcNow)
+            // 锁必须按用户取，所以先只读定位令牌归属（认领人是谁与并发无关）
+            var ownerId = await db.RefreshTokens.IgnoreQueryFilters().AsNoTracking()
+                .Where(rt => rt.TokenHash == tokenHash)
+                .Select(rt => (Guid?)rt.UserId)
+                .FirstOrDefaultAsync(ct);
+            if (ownerId is not Guid ownerUserId)
                 return Results.Unauthorized();
 
-            // Revoke old token
-            stored.RevokedAt = DateTimeOffset.UtcNow;
-
-            var user = await db.Users.FindAsync(new object[] { stored.UserId }, ct);
-            if (user is null || !user.IsActive) return Results.Unauthorized();
-
-            var accessToken = jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
-            var newRefreshToken = jwt.GenerateRefreshToken();
-
-            db.RefreshTokens.Add(new RefreshTokenEntity
+            /*
+             * 轮换必须与「撤销该用户其它会话」互斥：否则在"读到有效令牌"与"插入新令牌"之间，
+             * 改密 / 管理员重置把全部会话撤销并提交，这次轮换仍会插入一条**从未被撤销**的新令牌，
+             * 被踢的设备保留登录态（REQ-6 落空）。锁内重读后这种交错不可能发生：
+             * 撤销一旦提交，这里就读不到未撤销的令牌 → 401。
+             */
+            var issued = await UserSessionLock.RunAsync(db, ownerUserId, async () =>
             {
-                UserId = user.Id,
-                TokenHash = RefreshTokenSessions.HashSecret(newRefreshToken),
-                ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
-            });
-            await db.SaveChangesAsync(ct);
+                var stored = await db.RefreshTokens.IgnoreQueryFilters().FirstOrDefaultAsync(
+                    rt => rt.TokenHash == tokenHash && rt.UserId == ownerUserId && rt.RevokedAt == null, ct);
 
-            return Results.Ok(ApiResponse<AuthResponse>.Ok(new AuthResponse(
-                accessToken,
-                newRefreshToken,
-                DateTimeOffset.UtcNow.AddMinutes(15),
-                new UserInfo(user.Id, user.Username, user.DisplayName, user.Role))));
+                if (stored is null || stored.ExpiresAt < DateTimeOffset.UtcNow)
+                    return (AuthResponse?)null;
+
+                // Revoke old token
+                stored.RevokedAt = DateTimeOffset.UtcNow;
+
+                var user = await db.Users.FindAsync(new object[] { stored.UserId }, ct);
+                if (user is null || !user.IsActive) return (AuthResponse?)null;
+
+                var accessToken = jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
+                var newRefreshToken = jwt.GenerateRefreshToken();
+
+                db.RefreshTokens.Add(new RefreshTokenEntity
+                {
+                    UserId = user.Id,
+                    TokenHash = RefreshTokenSessions.HashSecret(newRefreshToken),
+                    ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
+                });
+                await db.SaveChangesAsync(ct);
+
+                return new AuthResponse(
+                    accessToken,
+                    newRefreshToken,
+                    DateTimeOffset.UtcNow.AddMinutes(15),
+                    new UserInfo(user.Id, user.Username, user.DisplayName, user.Role));
+            }, ct);
+
+            return issued is null
+                ? Results.Unauthorized()
+                : Results.Ok(ApiResponse<AuthResponse>.Ok(issued));
         })
         .Produces<ApiResponse<AuthResponse>>(200)
         .Produces(401)
