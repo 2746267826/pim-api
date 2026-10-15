@@ -1407,7 +1407,9 @@ export function AdminUsersPage() {
       notifySuccess(okMessage)
       invalidate()
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '操作失败'
+      // 与建号/重置/改密统一口径（验收意见 R-3 的同类第 4 处，由本轮独立 review 指出）：
+      // `TypeError: Failed to fetch` 也是 Error，只认 ApiError，其余走中文兜底。
+      const msg = err instanceof ApiError ? err.message || '操作失败' : '操作失败'
       setError(msg)
       notifyError(msg)
     }

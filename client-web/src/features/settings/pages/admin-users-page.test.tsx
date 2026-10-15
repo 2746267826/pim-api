@@ -471,6 +471,22 @@ describe('REQ-13 用户管理页「重置密码」', () => {
     expect(notifyErrorMock).toHaveBeenCalledWith('重置失败，请稍后重试')
   })
 
+  /*
+   * R-3 同类第 4 处：行操作（设为/移除管理员、停用/启用）走的是页面级 `run()`，
+   * 原先同样是 `err instanceof Error`，断网时会把 `Failed to fetch` 贴到顶部提示与横幅。
+   */
+  it('R-3 行操作：非 ApiError（网络类）失败 → 中文兜底，不出现英文原文', async () => {
+    postMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await renderPage()
+
+    await userEvent.click(screen.getAllByRole('button', { name: '设为管理员' })[0])
+
+    await waitFor(() => expect(notifyErrorMock).toHaveBeenCalledWith('操作失败'))
+    expect(screen.queryByText(/Failed to fetch/)).toBeNull()
+    expect(await screen.findByText('操作失败')).toBeTruthy()
+  })
+
   it('AC-13.4 服务端返回错误时在弹窗内显示服务端文案，弹窗不关闭', async () => {
     postMock.mockRejectedValueOnce(new ApiError('用户不存在', 40040, 404))
     await renderPage()
