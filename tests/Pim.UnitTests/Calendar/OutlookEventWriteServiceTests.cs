@@ -3585,6 +3585,12 @@ public sealed class OutlookEventWriteServiceTests
 
     private sealed class FakeAuditLogService : IAuditLogService
     {
+        /// <summary>
+        /// 本桩不参与「业务 + 审计单次提交」流程；为保持与 <see cref="RecordAsync"/> 一致的
+        /// 记录/抛异常语义，直接委托给它（这些桩的 RecordAsync 都是同步完成的）。
+        /// </summary>
+        public AuditLogDto Enqueue(CreateAuditLogRequest request)
+            => RecordAsync(request).GetAwaiter().GetResult();
         public int RecordCallCount { get; private set; }
         public Exception? NextException { get; set; }
         public List<CreateAuditLogRequest> Requests { get; } = [];

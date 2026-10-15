@@ -345,6 +345,12 @@ public sealed class OutlookRemoteMissingRealDbTests
 
     private sealed class NullAuditLogService : Pim.Core.Operations.IAuditLogService
     {
+        /// <summary>
+        /// 本桩不参与「业务 + 审计单次提交」流程；为保持与 <see cref="RecordAsync"/> 一致的
+        /// 记录/抛异常语义，直接委托给它（这些桩的 RecordAsync 都是同步完成的）。
+        /// </summary>
+        public Pim.Core.Operations.AuditLogDto Enqueue(Pim.Core.Operations.CreateAuditLogRequest request)
+            => RecordAsync(request).GetAwaiter().GetResult();
         public Task<Pim.Core.Operations.AuditLogDto> RecordAsync(
             Pim.Core.Operations.CreateAuditLogRequest request,
             CancellationToken ct = default)

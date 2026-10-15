@@ -13,9 +13,18 @@ public static class AdminBootstrap
     public const string AdminRole = "admin";
     public const string UserRole = "user";
 
-    /// <summary>注册时的角色判定：users 表为空则首个用户为管理员，否则为普通用户。</summary>
+    /// <summary>
+    /// 注册时的角色判定：users 表为空则首个用户为管理员，否则为普通用户。
+    ///
+    /// <para>
+    /// 「表为空」与 <see cref="PublicRegistrationPolicy.IsAllowedAsync"/> 采用**同一口径**：
+    /// 数物理行（<c>IgnoreQueryFilters</c>）。否则「只剩软删除用户 + 开关为 true」时会出现
+    /// 门禁认为库非空、角色判定却认为库为空，把新用户错发成 <c>admin</c>
+    /// （决策记录 §2：库非空时新用户一律 <c>user</c>）。
+    /// </para>
+    /// </summary>
     public static async Task<string> DetermineRegistrationRoleAsync(PimDbContext db, CancellationToken ct)
-        => await db.Users.AnyAsync(ct) ? UserRole : AdminRole;
+        => await db.Users.IgnoreQueryFilters().AnyAsync(ct) ? UserRole : AdminRole;
 
     /// <summary>
     /// 并发首注册保护：当前请求把首个用户置为管理员后调用。

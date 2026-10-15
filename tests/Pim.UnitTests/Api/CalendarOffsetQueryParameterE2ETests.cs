@@ -50,6 +50,9 @@ public sealed class CalendarOffsetQueryParameterE2ETests
             builder.UseSetting("DisableHangfire", "true");
             builder.UseSetting("Database:Migrations:FailFast", "false");
             builder.UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz");
+            // WO-AUTH-REGISTER-20261014：公开注册默认关闭；本文件靠注册造号，
+            // 按决策记录 §2 在测试工厂里显式开启开关（不是删用例/跳用例换绿灯）。
+            builder.UseSetting("Auth:AllowPublicRegistration", "true");
             // 走生产装配路径：AddPimInfrastructure 读这个键并装上拦截器。
             builder.UseSetting("ConnectionStrings:DefaultConnection", connectionString);
             // 生产装配会创建 DataProtection 密钥目录（默认 /data/keys/data-protection，

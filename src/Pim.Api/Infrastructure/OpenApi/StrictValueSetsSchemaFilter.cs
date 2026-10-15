@@ -16,6 +16,10 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
         // AdminUserService.ChangeRoleAsync：newRole != "admin" && != "user" → 40041（无效的角色）
         ["UpdateUserRoleRequest.Role"] = ["admin", "user"],
 
+        // AdminUserService.CreateUserAsync：role 只接受 "admin" / "user"，其余 → 40041；
+        // 缺省或为空时按 "user" 处理（决策记录 §3.2）
+        ["CreateUserRequest.Role"] = ["admin", "user"],
+
         // QuickNoteService.ValidateStatus → QuickNoteStatuses.IsValid（无效 → 4003），
         // 调用点覆盖 update/archive/process/restore 三类入口
         ["RestoreQuickNoteRequest.Status"] = ["inbox", "processed", "archived"],

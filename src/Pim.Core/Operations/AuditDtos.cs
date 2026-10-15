@@ -30,4 +30,11 @@ public sealed record AuditLogDto(
 public interface IAuditLogService
 {
     Task<AuditLogDto> RecordAsync(CreateAuditLogRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// 只把审计行加入当前 DbContext 的变更跟踪，**不落库**；由调用方用自己的
+    /// <c>SaveChangesAsync</c> 与业务改动一并提交，从而保证「业务 + 审计」原子。
+    /// 语义与使用约束见 <c>AuditLogService.Enqueue</c> 的注释。
+    /// </summary>
+    AuditLogDto Enqueue(CreateAuditLogRequest request);
 }
