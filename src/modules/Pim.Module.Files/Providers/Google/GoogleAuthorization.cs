@@ -64,6 +64,10 @@ public static class GoogleErrorMapper
                 new ProviderTransientException(429, retryAfterSeconds, message),
             // 权限类 403 是**用户可自愈**的（重新授权 / 检查该文件的共享权限），
             // 不能报成 502「网盘服务暂时不可用」——那会把「你该去重新连接」误导成「等一会儿再试」。
+            // 空间/配额不足：用户可自愈（清理网盘），但重新授权解决不了，必须单独说清
+            403 when IsStorageQuota(reason) =>
+                new ProviderStorageQuotaExceededException(
+                    $"{message}（Google 网盘空间或配额不足：{reason}）"),
             403 when IsPermissionDenied(reason) =>
                 new ProviderAuthorizationExpiredException(
                     $"{message}（Google 拒绝了该操作：{reason}；请到设置页重新连接该账号或检查文件权限）"),
@@ -85,7 +89,13 @@ public static class GoogleErrorMapper
     private static bool IsPermissionDenied(string? reason)
         => reason is "insufficientPermissions" or "insufficientFilePermissions"
             or "appNotAuthorizedToFile" or "domainPolicy"
-            or "forbidden" or "fileNotDownloadable" or "cannotDownloadAbusiveFile";
+            or "forbidden" or "fileNotDownloadable" or "cannotDownloadAbusiveFile" or "abuse";
+
+    /// <summary>
+    /// 空间/配额不足（与 <see cref="IsRateLimit"/> 的区别：限流等一会儿能好，配额要用户自己清理）。
+    /// </summary>
+    private static bool IsStorageQuota(string? reason)
+        => reason is "storageQuotaExceeded" or "teamDriveFileLimitExceeded";
 
     private static bool IsRateLimit(string? reason)
         => reason is "rateLimitExceeded" or "userRateLimitExceeded" or "quotaExceeded"

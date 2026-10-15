@@ -75,6 +75,12 @@ public class ExceptionMiddleware
                 context, StatusCodes.Status400BadRequest, 5331, "文件超过处理上限，请在网盘中操作");
             _logger.LogInformation(ex, "Provider content exceeded the configured limit");
         }
+        catch (ProviderStorageQuotaExceededException ex)
+        {
+            await WriteDomainLikeErrorAsync(
+                context, StatusCodes.Status400BadRequest, 5345, "网盘空间或配额不足，请清理后重试");
+            _logger.LogWarning(ex, "Provider storage quota exceeded");
+        }
         catch (ProviderItemNotFoundException ex)
         {
             await WriteDomainLikeErrorAsync(context, StatusCodes.Status404NotFound, 5104, "文件不存在");

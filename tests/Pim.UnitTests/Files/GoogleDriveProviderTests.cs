@@ -466,6 +466,12 @@ public class GoogleDriveProviderTests
             403,
             """{"error":{"code":403,"message":"Rate Limit Exceeded","errors":[{"reason":"rateLimitExceeded"}]}}""");
         Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderTransientException>(throttled);
+
+        // 空间/配额不足既不是限流（等一会儿不会好）也不是授权失效（重新连接没用），单列一类
+        var quota = GoogleErrorMapper.FromBody(
+            403,
+            """{"error":{"code":403,"message":"The user's Drive storage quota has been exceeded.","errors":[{"reason":"storageQuotaExceeded"}]}}""");
+        Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderStorageQuotaExceededException>(quota);
     }
 
     /// <summary>

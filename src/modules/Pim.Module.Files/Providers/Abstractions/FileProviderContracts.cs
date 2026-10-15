@@ -103,6 +103,12 @@ public sealed class ProviderContentTooLargeException(long actualBytes)
     public long ActualBytes { get; } = actualBytes;
 }
 
+/// <summary>
+/// 远端空间/配额不足。这是**用户可自愈**的（清理网盘后再试），
+/// 既不是「上游故障」（502）也不是「授权失效」（重新连接也没用），因此单列一类。
+/// </summary>
+public sealed class ProviderStorageQuotaExceededException(string message) : Exception(message);
+
 /// <summary>该 provider 不支持本次请求的能力（例如未注册分享能力）。</summary>
 public sealed class ProviderCapabilityNotSupportedException(string capability, string providerKey)
     : Exception($"Provider '{providerKey}' does not support {capability}")
