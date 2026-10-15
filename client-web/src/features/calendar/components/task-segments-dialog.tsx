@@ -181,23 +181,34 @@ export function TaskSegmentsDialog({ taskId, taskTitle, onClose }: TaskSegmentsD
             </ul>
           )}
 
-          {/* 手工计划时间段 */}
-          <div className="rounded-ctl border border-border bg-surface p-3">
-            <Label>添加计划时间段</Label>
+          {/* 手工计划时间段（用 form 包裹：回车即可提交，不必非得点按钮） */}
+          <form
+            className="rounded-ctl border border-border bg-surface p-3"
+            onSubmit={(e) => {
+              e.preventDefault()
+              void submit()
+            }}
+          >
+            <Label htmlFor="segment-starts-at">添加计划时间段</Label>
             <div className="grid grid-cols-2 gap-2">
-              <Input type="datetime-local" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} aria-label="开始时间" />
-              <Input type="datetime-local" value={endsAt} onChange={(e) => setEndsAt(e.target.value)} aria-label="结束时间" />
+              <Input
+                id="segment-starts-at"
+                type="datetime-local"
+                value={startsAt}
+                onChange={(e) => setStartsAt(e.target.value)}
+                aria-label="开始时间"
+              />
+              <Input
+                type="datetime-local"
+                value={endsAt}
+                onChange={(e) => setEndsAt(e.target.value)}
+                aria-label="结束时间"
+              />
             </div>
-            <Button
-              variant="secondary"
-              size="sm"
-              className="mt-2"
-              loading={add.isPending}
-              onClick={() => void submit()}
-            >
+            <Button type="submit" variant="secondary" size="sm" className="mt-2" loading={add.isPending}>
               添加时间段
             </Button>
-          </div>
+          </form>
         </DialogBody>
         <DialogFooter>
           <Button variant="secondary" onClick={onClose}>关闭</Button>
