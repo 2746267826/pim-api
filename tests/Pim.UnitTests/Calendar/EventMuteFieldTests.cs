@@ -362,6 +362,11 @@ public sealed class EventMuteFieldTests
     {
         public Task<AuditLogDto> RecordAsync(CreateAuditLogRequest request, CancellationToken ct = default)
             => throw new InvalidOperationException("audit store unavailable");
+
+        // 接口在「业务 + 审计同事务」改造里加了 Enqueue（只入跟踪、不落库）；
+        // event-mute PR 的恒抛替身漏了这个成员，master 上测试项目编译不过。
+        public AuditLogDto Enqueue(CreateAuditLogRequest request)
+            => throw new InvalidOperationException("audit store unavailable");
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
