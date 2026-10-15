@@ -172,43 +172,57 @@ public sealed class EventMuteFieldTests
         Assert.False((await db.Set<EventEntity>().AsNoTracking().SingleAsync(e => e.Id == muted.Id)).IsMuted);
     }
 
-    [Fact]
-    public async Task SetCalendarMutePolicyAsync_OnlyTouchesOwnLiveEventsOfThatCalendar()
+    /// <summary>
+    /// 批量设定只影响**目标日历本**下的未删除日程。
+    ///
+    /// <para>
+    /// 参数化的关键：非目标对象（兄弟本/他本/其日程/软删除日程）的初值一律取**与本次批量目标相反**的值。
+    /// 若初值与目标相同（或都是 false），「没被改」的断言就形同虚设 —— 两轮独立 review 分别指出过
+    /// 「恒真」与「改完反而抓不住越界写入」。取反之后两个方向都有防线：批量若越界写别的本，
+    /// 无论目标是 true 还是 false，断言都会红。
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SetCalendarMutePolicyAsync_OnlyTouchesOwnLiveEventsOfThatCalendar(bool policy)
     {
         await using var db = CreateDb();
+        var untouchedMute = !policy; // 非目标对象一律与之相反
         var target = SeedCalendar(db, UserId, "目标本");
         var sibling = SeedCalendar(db, UserId, "别的本");
         var foreign = SeedCalendar(db, OtherUserId, "别人的本");
-        // 兄弟本/他本先设为 true：这样"批量没动它们"才是真断言
-        //（若两个默认值都是 false，断言恒真、不构成防线 —— 独立 review 指出）
-        sibling.DefaultMuted = true;
-        foreign.DefaultMuted = true;
+        sibling.DefaultMuted = untouchedMute;
+        foreign.DefaultMuted = untouchedMute;
         await db.SaveChangesAsync();
 
-        var inTarget = await AddEventAsync(db, target.Id, "目标日程", isMuted: false);
-        var inSibling = await AddEventAsync(db, sibling.Id, "同用户别的本", isMuted: false);
-        var inForeign = await AddEventAsync(db, foreign.Id, "别人的日程", isMuted: false);
-        var deleted = await AddEventAsync(db, target.Id, "已删除", isMuted: false);
+        var inTarget = await AddEventAsync(db, target.Id, "目标日程", isMuted: untouchedMute);
+        var inSibling = await AddEventAsync(db, sibling.Id, "同用户别的本", isMuted: untouchedMute);
+        var inForeign = await AddEventAsync(db, foreign.Id, "别人的日程", isMuted: untouchedMute);
+        var deleted = await AddEventAsync(db, target.Id, "已删除", isMuted: untouchedMute);
         var deletedEntity = await db.Set<EventEntity>().SingleAsync(e => e.Id == deleted);
         deletedEntity.DeletedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();
 
         var service = CreateService(db);
-        var result = await service.SetCalendarMutePolicyAsync(target.Id, true, default);
+        var result = await service.SetCalendarMutePolicyAsync(target.Id, policy, default);
 
         Assert.Equal(1, result.AffectedEventCount);
+        Assert.Equal(policy, (await db.Set<CalendarEntity>().AsNoTracking().SingleAsync(c => c.Id == target.Id)).DefaultMuted);
+
         // 用 IgnoreQueryFilters 才能看到软删除的那条（生产查询默认过滤掉它）
         var events = await db.Set<EventEntity>().IgnoreQueryFilters().AsNoTracking().ToDictionaryAsync(e => e.Id);
-        Assert.True(events[inTarget].IsMuted);
-        Assert.False(events[inSibling].IsMuted);
-        Assert.False(events[inForeign].IsMuted);
-        Assert.False(events[deleted].IsMuted);
-        Assert.True((await db.Set<CalendarEntity>().AsNoTracking().SingleAsync(c => c.Id == sibling.Id)).DefaultMuted);
-        Assert.True((await db.Set<CalendarEntity>().AsNoTracking().SingleAsync(c => c.Id == foreign.Id)).DefaultMuted);
+        Assert.Equal(policy, events[inTarget].IsMuted);
+        Assert.Equal(untouchedMute, events[inSibling].IsMuted);
+        Assert.Equal(untouchedMute, events[inForeign].IsMuted);
+        Assert.Equal(untouchedMute, events[deleted].IsMuted);
+        Assert.Equal(untouchedMute, (await db.Set<CalendarEntity>().AsNoTracking().SingleAsync(c => c.Id == sibling.Id)).DefaultMuted);
+        Assert.Equal(untouchedMute, (await db.Set<CalendarEntity>().AsNoTracking().SingleAsync(c => c.Id == foreign.Id)).DefaultMuted);
 
         // 别人的日历本不可被当前用户设置（与 /calendars 其它写操作一致：不存在即 02002）
-        await Assert.ThrowsAsync<Pim.Core.Exceptions.DomainException>(() =>
-            CreateService(db, OtherUserId).SetCalendarMutePolicyAsync(target.Id, true, default));
+        var ex = await Assert.ThrowsAsync<Pim.Core.Exceptions.DomainException>(() =>
+            CreateService(db, OtherUserId).SetCalendarMutePolicyAsync(target.Id, policy, default));
+        Assert.Equal(02002, ex.ErrorCode);
     }
 
     [Fact]
