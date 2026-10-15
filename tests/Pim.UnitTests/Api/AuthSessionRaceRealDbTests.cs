@@ -88,15 +88,37 @@ public sealed class AuthSessionRaceRealDbTests
     /// 这里改用 <c>pg_locks</c> 里「未授予的 advisory 锁」作为**可观察**信号；
     /// 等不到就说明端点没有阻塞 → 由调用方断言失败。
     /// </summary>
-    private static async Task<bool> WaitForBlockedOnAdvisoryLockAsync(string connectionString, TimeSpan timeout)
+    private static async Task<bool> WaitForBlockedOnAdvisoryLockAsync(
+        string connectionString, Guid userId, TimeSpan timeout)
     {
+        /*
+         * 必须**精确**匹配这把锁，不能只数"实例上有任意 advisory 等待者"：
+         * pg_locks 是整个实例级的，而本机同时有其它会话在同一实例上跑测试，
+         * 别人的等待者会把我们提前放行（review 指出）。
+         * bigint advisory lock 在 pg_locks 里是 classid=高 32 位、objid=低 32 位、objsubid=1，
+         * 再加上 database = 当前库，即可唯一锁定"本库、本用户、正在等待"这一个事实。
+         */
+        var key = UserSessionLock.KeyFor(userId);
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
         {
             await using var connection = new NpgsqlConnection(connectionString);
             await connection.OpenAsync();
             await using var command = new NpgsqlCommand(
-                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted = false", connection);
+                """
+                SELECT count(*) FROM pg_locks
+                WHERE locktype = 'advisory'
+                  AND granted = false
+                  AND objsubid = 1
+                  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                  AND classid::bigint = @high
+                  AND objid::bigint = @low
+                """, connection);
+            // pg_locks 的 classid/objid 是 oid（**无符号** 32 位）：必须按无符号拆，
+            // 否则 key 为负时 classid 会算成负数而永远匹配不上（已实测 pg_locks 的取值）。
+            var unsigned = (ulong)key;
+            command.Parameters.AddWithValue("high", (long)(unsigned >> 32));
+            command.Parameters.AddWithValue("low", (long)(unsigned & 0xFFFFFFFFUL));
             if (Convert.ToInt32(await command.ExecuteScalarAsync()) > 0) return true;
             await Task.Delay(50);
         }
@@ -133,7 +155,7 @@ public sealed class AuthSessionRaceRealDbTests
         var refreshTask = anon.PostAsJsonAsync("/api/v1/auth/refresh", new { refreshToken = deviceB });
         // 必须等到它**真的**阻塞在锁上，否则这条用例证明不了串行化（见辅助方法注释）
         Assert.True(
-            await WaitForBlockedOnAdvisoryLockAsync(temp.ConnectionString, TimeSpan.FromSeconds(15)),
+            await WaitForBlockedOnAdvisoryLockAsync(temp.ConnectionString, user.UserId, TimeSpan.FromSeconds(15)),
             "refresh 没有阻塞在该用户的 advisory lock 上：端点未参与会话串行化");
 
         await using (var revoke = new NpgsqlCommand(
@@ -166,7 +188,7 @@ public sealed class AuthSessionRaceRealDbTests
 
         var loginTask = anon.PostAsJsonAsync("/api/v1/auth/login", new { username = "race-login", password = Password });
         Assert.True(
-            await WaitForBlockedOnAdvisoryLockAsync(temp.ConnectionString, TimeSpan.FromSeconds(15)),
+            await WaitForBlockedOnAdvisoryLockAsync(temp.ConnectionString, user.UserId, TimeSpan.FromSeconds(15)),
             "login 没有阻塞在该用户的 advisory lock 上：端点未参与会话串行化");
 
         // 模拟"改密/重置"：把口令哈希换掉，然后提交（释放锁）
