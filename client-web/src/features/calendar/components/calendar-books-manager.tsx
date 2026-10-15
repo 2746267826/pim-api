@@ -279,7 +279,7 @@ export function CalendarBooksManager({ onNavigate }: { onNavigate?: () => void }
         <DialogContent className="max-w-[460px]">
           <DialogHeader
             title={`「${muting?.name ?? ''}」的静音设置`}
-            description="设为静音后，该日历本下的日程在开始时间自动静音、结束时间恢复；之后从 Outlook 同步进来的日程也会套用这个设定。"
+            description="设为静音后，该日历本下的日程在开始时间自动静音、结束时间恢复；之后从 Outlook 同步进来的日程也会套用这个设定。注意：这会把该本下已有日程的静音设定统一改写（含之前单独设过的那些）。"
           />
           <DialogBody className="space-y-3">
             <div className="rounded-ctl border border-border bg-surface p-3 text-[13px]" data-testid="calendar-mute-current">
