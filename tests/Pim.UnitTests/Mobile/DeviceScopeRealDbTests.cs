@@ -182,8 +182,10 @@ public sealed class DeviceScopeRealDbTests
     /// 观测口径的差别很重要：<c>TotalForegroundSeconds</c> 是**时间并集**，
     /// 这两条汇总覆盖同一段墙上时钟，所以并集在合并前后都一样（3,600s）；
     /// 而小时桶是**逐行求和**，才看得到 1,800 → 1,200 的收缩。
-    /// 原始行一行都没丢（合并只改归属），收缩来自去重口径 —— 若两台设备的使用时间其实
-    /// 真的并行，合并就会少算；这一点必须写进 PR，由维护者判断是否符合预期。
+    /// 收缩来自两条既有规则：合并的冲突消解（唯一键 (package, window_start, window_end,
+    /// source_kind) 相同 → 保留目标那份）与读路径的 (device, package, 本地小时) 去重。
+    /// 若两台设备的使用时间其实真的并行，合并后就会少算 —— 这一点必须写进 PR，
+    /// 由维护者判断是否符合预期，不能被"应该一致"掩盖。
     /// </para>
     /// </summary>
     [SkippableFact]
@@ -218,8 +220,11 @@ public sealed class DeviceScopeRealDbTests
         var bucketsAfter = await aggregation.GetHeatmapAsync(deviceScoped, CancellationToken.None);
         Assert.Equal(1_200, bucketsAfter.Sum(bucket => bucket.ForegroundSeconds));
 
-        // 原始行一行未少（收缩来自去重口径，不是数据丢失）。
-        Assert.Equal(2, await db.Set<MobileUsageSummaryEntity>().CountAsync());
+        // 收缩发生在**写入侧**：两条汇总的 (package, window_start, window_end, source_kind)
+        // 完全相同，改挂同一 device_id 会撞唯一索引，合并的冲突消解直接删掉一条（保留目标设备那份）。
+        // 读路径的 (device, package, hour) 去重是第二层，负责"窗口不完全相同但同小时"的重复。
+        var remaining = Assert.Single(await db.Set<MobileUsageSummaryEntity>().ToListAsync());
+        Assert.Equal(1_200_000, remaining.TotalTimeVisibleMs);
     }
 
     // ---------------------------------------------------------------- AC-3：预览 == 实际删除
