@@ -1,16 +1,16 @@
 # 认证、用户管理与 AI 域接口规格（/api/v1/auth、/api/v1/admin、/api/v1/ai）
 > 基地址 `/api/v1`；响应封装 `ApiResponse<T>` = `{ code, message, data, timestamp }`（`code=0` 成功）；下文"响应 data"均指 `data` 字段内容；列表分页封装 `PagedResult<T>` = `{ items[], totalCount, page, pageSize, totalPages }`（注意 totalCount）。
 > 认证图例：JWT = `Authorization: Bearer <accessToken>`；匿名 = 无需认证；Admin = JWT 且 role=admin；OpsKey = 请求头 `X-PIM-Ops-Key`。
-> 本域说明：auth 组中 `/register`、`/login`、`/refresh` 为匿名，`/me` 要求 JWT；admin 组整体要求 Admin（AdminEndpoints.cs:15-16）；ai 组整体要求 Admin（AiEndpoints.cs:12-13）。序列化约定：ASP.NET Core 默认 camelCase；`AiRequestStatus` 枚举标注 `[JsonConverter(typeof(JsonStringEnumConverter))]`（AiEnums.cs:12），序列化为 PascalCase 字符串（`Succeeded`/`Failed`/`Blocked`/`TimedOut`/`FailedValidation`）。
+> 本域说明：auth 组中 `/login`、`/refresh` 为匿名；`/register` 默认关闭（仅 `users` 表为空时可用，否则 403 code=40304）；`/me`、`/password` 要求 JWT；admin 组整体要求 Admin（AdminEndpoints.cs:15-16）；ai 组整体要求 Admin（AiEndpoints.cs:12-13）。序列化约定：ASP.NET Core 默认 camelCase；`AiRequestStatus` 枚举标注 `[JsonConverter(typeof(JsonStringEnumConverter))]`（AiEnums.cs:12），序列化为 PascalCase 字符串（`Succeeded`/`Failed`/`Blocked`/`TimedOut`/`FailedValidation`）。
 
 ---
 
 ## 认证（Auth）
 
 ### POST /api/v1/auth/register
-- 用途：注册新用户并直接返回令牌（注册即登录）。
+- 用途：注册新用户并直接返回令牌（注册即登录）。**默认关闭**：仅当 `users` 表为空（全新部署引导，首个用户为 `admin`）或后端开启 `Auth:AllowPublicRegistration` 时可用；库非空且未开开关时返回 403 code=40304（`公开注册已关闭，请联系管理员创建账号`），且不写任何行。
 - 认证：匿名
-- Web 前端使用：是（登录页注册表单，经 AuthContext.register）
+- Web 前端使用：**否**（前端已移除全部注册入口，账号由管理员创建；见 REQ-11）
 - Path 参数：无
 - Query 参数：无
 - Body（`RegisterRequest`，AuthDtos.cs:5-10）：
@@ -27,8 +27,8 @@
   | user.id | string (UUID) | 用户 ID |
   | user.username | string | 用户名 |
   | user.displayName | string | 显示名 |
-  | user.role | string | `admin` \| `user`；users 表为空时首个注册用户自动成为 admin（AuthEndpoints.cs:52、AdminBootstrap.DetermineRegistrationRoleAsync），并发首注册竞争中已有更早管理员则降级为 user（AuthEndpoints.cs:74-80） |
-- 错误：400（40001~40008 参数校验）；409 code=01003 `用户名已存在`；409 code=01004 `邮箱已存在`；并发唯一索引冲突 409 code=01003 `用户名已存在或邮箱已存在`（AuthEndpoints.cs:45-49、68-71）
+  | user.role | string | `admin` \| `user`；`users` 表为空时首个注册用户为 `admin`（AuthEndpoints.cs、AdminBootstrap.DetermineRegistrationRoleAsync）；表非空时需管理员创建（或后端开启注册开关）；并发首注册竞争中已有更早管理员则降级为 `user` |
+- 错误：403 code=40304 `公开注册已关闭，请联系管理员创建账号`（关闭判定**先于**参数校验：库非空且未开开关时，非法载荷同样返回 403 而不是 400）；400（40001~40008 参数校验）；409 code=01003 `用户名已存在`；409 code=01004 `邮箱已存在`；并发唯一索引冲突 409 code=01003 `用户名已存在或邮箱已存在`
 - 来源：后端 `src/Pim.Api/Endpoints/AuthEndpoints.cs:19`；DTO `src/Pim.Api/DTOs/AuthDtos.cs:5`；前端 `src/client-web/src/auth/AuthContext.tsx:61`（请求 `src/client-web/src/api/client.ts:141`）
 - 备注：前端类型 `AuthResponse`（types/index.ts:8-14）与后端一致。
 
@@ -78,6 +78,22 @@
 - 来源：后端 `src/Pim.Api/Endpoints/AuthEndpoints.cs:236`；前端 `src/client-web/src/auth/AuthContext.tsx:37`
 - 备注：前端显示名优先取 displayName，为空回退 username（AuthContext.tsx:40）。
 
+### POST /api/v1/auth/password
+- 用途：登录用户修改**自己**的密码。改密码后**只踢其它设备**，当前设备保持登录（请求体携带的 `refreshToken` 即「当前设备」）。
+- 认证：JWT（`.RequireAuthorization()`）
+- Web 前端使用：是（设置中心 → 账号安全，AccountSecurityPage）
+- Path 参数：无
+- Query 参数：无
+- Body（`ChangePasswordRequest`）：
+  | 字段 | 类型 | 必填 | 说明 |
+  | currentPassword | string | 是 | 当前密码，错误返回 400 code=40063 `当前密码不正确` |
+  | newPassword | string | 是 | 8~100 字符，否则 400 code=40004 / 40007 |
+  | refreshToken | string | 是 | **当前设备**的 refresh token 明文（前端在**提交时**从令牌存储现取，不得缓存）。缺失/为空/不属于本人/已撤销/已过期 → 400 code=40065 `会话标识无效，请重新登录后再试`，且**不撤销任何会话** |
+- 响应 data：HTTP 200，string（提示文案）
+- 错误：401（无登录态，空 body）；400 code=40063 `当前密码不正确`；400 code=40064 `新密码不能与当前密码相同`；400 code=40065 `会话标识无效，请重新登录后再试`；400 code=40004 / 40007（新密码长度）
+- 会话语义：该用户未撤销的 refresh token 中，除请求携带的那条外全部置为已撤销
+- 备注：判定顺序为「新密码长度 → refreshToken → 当前密码 → 新旧是否相同」；access token 不做即时吊销（最长 15 分钟自然过期），这是已知边界。
+
 ## 用户管理（Admin）
 
 ### GET /api/v1/admin/users
@@ -98,6 +114,23 @@
   | createdAt | string (ISO-8601) | 创建时间 |
 - 来源：后端 `src/Pim.Api/Endpoints/AdminEndpoints.cs:18`、`src/Pim.Infrastructure/Auth/AdminUserService.cs:47-52`；前端 `src/client-web/src/api/admin.ts:19`（类型 admin.ts:4-12）
 - 备注：排序 `CreatedAt, Id`（AdminUserService.cs:49-50）；前端 `AdminUser` 接口与后端一一对应。
+
+### POST /api/v1/admin/users
+- 用途：管理员创建用户（公开注册收敛后的唯一建号入口）。
+- 认证：Admin
+- Web 前端使用：是（用户管理页右上「新建用户」居中弹窗）
+- Path 参数：无
+- Query 参数：无
+- Body（`CreateUserRequest`）：
+  | 字段 | 类型 | 必填 | 说明 |
+  | username | string | 是 | ≤50 字符（40001/40005） |
+  | email | string | 是 | ≤255 且格式合法（40002/40003/40006）；入库前转小写 |
+  | displayName | string\|null | 否 | ≤100 字符（40008）；留空回落为 username |
+  | password | string | 是 | 8~100 字符（40004/40007） |
+  | role | string\|null | 否 | 只接受 `admin` / `user`，其他值 400 code=40041；**缺省或为空按 `user`**（不默认创建管理员） |
+- 响应 data：HTTP 201，`AdminUserDto`（字段同 GET /admin/users 列表项）
+- 错误：401（无登录态）；403（非 admin）；400（40001~40008 参数校验、40041 无效角色）；409 code=01003 `用户名已存在`；409 code=01004 `邮箱已存在`；500
+- 备注：新用户 `is_active = true`、`deleted_at` 为空；建号与审计同一次提交。
 
 ### POST /api/v1/admin/users/{id}/role
 - 用途：修改目标用户角色（admin ↔ user）。
@@ -130,6 +163,19 @@
 - 错误：404 code=40040 `用户不存在`；400 code=40042 `至少需要保留一名有效管理员`（停用最后一名有效管理员，AdminUserService.cs:100-106）；400 code=40043 `操作失败`（兜底）
 - 来源：后端 `src/Pim.Api/Endpoints/AdminEndpoints.cs:43`、`src/Pim.Infrastructure/Auth/AdminUserService.cs:88-116`；前端 `src/client-web/src/api/admin.ts:33`
 - 备注：状态未变化直接成功返回（AdminUserService.cs:94-95）；停用后该用户登录被拒（403 40030）、/auth/me 返回 401；启停写审计 `admin.user.enable`/`admin.user.disable`（AdminUserService.cs:112-113）。
+
+### POST /api/v1/admin/users/{id}/password
+- 用途：管理员重置任意用户密码。重置**没有「当前设备」概念**：该用户全部未撤销会话失效（所有设备需重新登录）。
+- 认证：Admin
+- Web 前端使用：是（用户管理页每行「重置密码」居中弹窗）
+- Path 参数：id（UUID，目标用户；不存在 → 404 code=40040 `用户不存在`）
+- Query 参数：无
+- Body（`ResetPasswordRequest`）：
+  | 字段 | 类型 | 必填 | 说明 |
+  | newPassword | string | 是 | 8~100 字符，否则 400 code=40004 / 40007（校验失败不落库） |
+- 响应 data：HTTP 200，`AdminUserDto`（被重置用户的当前信息）
+- 错误：401；403（非 admin）；404 code=40040；400 code=40004/40007；500
+- 备注：对自己执行重置同样会让自己的全部会话失效（与其他用户行为一致，无特殊分支）。
 
 ## AI（Admin）
 

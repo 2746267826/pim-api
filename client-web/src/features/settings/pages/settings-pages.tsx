@@ -3,11 +3,12 @@ import { Link } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, Bot, Download, FileDown, RefreshCw, ScrollText, Trash2 } from 'lucide-react'
 import { apiDelete, apiGet, apiPost, apiPut, apiUpload, fetchBlob } from '@/api/client'
+import type { components } from '@/api/generated'
 import { downloadCsv, downloadJson } from '@/lib/download'
 import { formatTime } from '@/lib/datetime'
 
 import { notifyError, notifySuccess } from '@/lib/notify'
-import { Button, Card, CardTitle, Chip, ConfirmDialog, Dialog, DialogBody, DialogContent, DialogHeader, EmptyState, Input, Label, PageHeader, Segmented, Select, Skeleton, StatusBadge, Switch } from '@/components/ui'
+import { Button, Card, CardTitle, Chip, ConfirmDialog, Dialog, DialogBody, DialogClose, DialogContent, DialogFooter, DialogHeader, EmptyState, InlineAlert, Input, Label, PageHeader, Segmented, Select, Skeleton, StatusBadge, Switch } from '@/components/ui'
 import { EventEditorDialog } from '@/features/calendar/components/event-editor-dialog'
 import { useCalendars } from '@/features/calendar/queries'
 import type { EventResponse } from '@/features/calendar/types'
@@ -1374,21 +1375,28 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 /* ── /settings/users 用户管理 ─────────────────────────────── */
 
-interface AdminUser {
-  id: string
-  username: string
-  email: string
-  displayName: string | null
-  role: 'admin' | 'user'
-  isActive: boolean
-  createdAt: string
-}
+/** 响应/请求形状全部取自刷新的契约类型，不再手写 interface（AC-15.2） */
+type AdminUser = components['schemas']['AdminUserDto']
+type CreateUserBody = components['schemas']['CreateUserRequest']
+
+/** 客户端预校验提示（就地提示，不发请求） */
+const CREATE_HINT = {
+  username: '请输入用户名',
+  email: '请输入正确的邮箱',
+  password: '初始密码至少 8 位',
+} as const
+
+const RESET_HINT = {
+  password: '新密码至少 8 位',
+} as const
 
 export function AdminUsersPage() {
   const qc = useQueryClient()
   const me = useQuery({ queryKey: ['auth', 'me'], queryFn: () => apiGet<{ id: string }>('/api/v1/auth/me') })
   const users = useQuery({ queryKey: ['admin', 'users'], queryFn: () => apiGet<AdminUser[]>('/api/v1/admin/users') })
   const [error, setError] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [resetTarget, setResetTarget] = useState<AdminUser | null>(null)
 
   const invalidate = () => void qc.invalidateQueries({ queryKey: ['admin', 'users'] })
 
@@ -1407,7 +1415,15 @@ export function AdminUsersPage() {
 
   return (
     <div>
-      <PageHeader title="用户管理" subtitle={`共 ${users.data?.length ?? 0} 个用户（仅管理员可见）`} />
+      <PageHeader
+        title="用户管理"
+        subtitle={`共 ${users.data?.length ?? 0} 个用户（仅管理员可见）`}
+        actions={
+          <Button variant="primary" onClick={() => setCreateOpen(true)}>
+            新建用户
+          </Button>
+        }
+      />
       {error && (
         <div className="mb-3 rounded-ctl border border-crit-border bg-crit-soft px-3 py-2 text-[13px] text-crit">{error}</div>
       )}
@@ -1428,6 +1444,9 @@ export function AdminUsersPage() {
                   </div>
                 </div>
                 <div className="flex gap-1.5">
+                  <Button variant="secondary" size="sm" onClick={() => setResetTarget(u)}>
+                    重置密码
+                  </Button>
                   <Button
                     variant="secondary"
                     size="sm"
@@ -1452,7 +1471,207 @@ export function AdminUsersPage() {
               </Card>
             ))}
       </div>
+
+      <CreateUserDialog open={createOpen} onOpenChange={setCreateOpen} />
+      {resetTarget && (
+        <ResetPasswordDialog
+          target={resetTarget}
+          onOpenChange={(open) => {
+            if (!open) setResetTarget(null)
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * 新建用户（REQ-12）。居中弹窗；客户端先做预校验（不发请求），
+ * 服务端报错时保持打开并显示服务端 message 原文；提交进行中不可关闭、防重复提交。
+ */
+function CreateUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const qc = useQueryClient()
+  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
+  const [displayName, setDisplayName] = useState('')
+  const [password, setPassword] = useState('')
+  const [role, setRole] = useState<'user' | 'admin'>('user')
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  function resetForm() {
+    setUsername('')
+    setEmail('')
+    setDisplayName('')
+    setPassword('')
+    setRole('user')
+    setError(null)
+  }
+
+  async function submit() {
+    if (!username.trim()) return setError(CREATE_HINT.username)
+    if (!email.trim() || !email.includes('@')) return setError(CREATE_HINT.email)
+    if (password.length < 8) return setError(CREATE_HINT.password)
+
+    setError(null)
+    setSubmitting(true)
+    try {
+      const body: CreateUserBody = {
+        username: username.trim(),
+        email: email.trim(),
+        password,
+        role,
+      }
+      if (displayName.trim()) body.displayName = displayName.trim()
+      await apiPost<AdminUser>('/api/v1/admin/users', body)
+      notifySuccess('用户已创建')
+      void qc.invalidateQueries({ queryKey: ['admin', 'users'] })
+      resetForm()
+      onOpenChange(false)
+    } catch (err) {
+      // 服务端 message 原文（如「用户名已存在」/「邮箱已存在」），弹窗保持打开、内容保留
+      setError(err instanceof Error ? err.message : '创建失败，请稍后重试')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        // 提交进行中不可关（Esc / 遮罩 / 取消按钮都会被这一道挡住）
+        if (submitting) return
+        onOpenChange(next)
+      }}
+    >
+      <DialogContent>
+        <DialogHeader title="新建用户" />
+        <DialogBody className="space-y-4">
+          {error && <InlineAlert tone="crit">{error}</InlineAlert>}
+          <div>
+            <Label htmlFor="create-username">用户名</Label>
+            <Input id="create-username" value={username} onChange={(e) => setUsername(e.target.value)} />
+          </div>
+          <div>
+            <Label htmlFor="create-email">邮箱</Label>
+            <Input id="create-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </div>
+          <div>
+            <Label htmlFor="create-display">显示名</Label>
+            <Input
+              id="create-display"
+              placeholder="可留空，默认与用户名相同"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+            />
+          </div>
+          <div>
+            <Label htmlFor="create-password">初始密码</Label>
+            <Input
+              id="create-password"
+              type="password"
+              autoComplete="new-password"
+              placeholder="至少 8 位"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+          <div>
+            <Label id="create-role-label">角色</Label>
+            <div role="group" aria-labelledby="create-role-label">
+              <Segmented<'user' | 'admin'>
+                className="w-full [&>button]:flex-1"
+                value={role}
+                onValueChange={setRole}
+                options={[
+                  { value: 'user', label: '普通用户' },
+                  { value: 'admin', label: '管理员' },
+                ]}
+              />
+            </div>
+          </div>
+        </DialogBody>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="secondary">取消</Button>
+          </DialogClose>
+          <Button variant="primary" loading={submitting} onClick={submit}>
+            创建
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
+ * 重置密码（REQ-13）。重置没有「当前设备」概念：服务端会让该用户所有设备重新登录，
+ * 因此后果说明必须逐字给出；对自己重置时文案与其他用户完全一致（不带特殊措辞）。
+ */
+function ResetPasswordDialog({
+  target,
+  onOpenChange,
+}: {
+  target: AdminUser
+  onOpenChange: (open: boolean) => void
+}) {
+  const qc = useQueryClient()
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  async function submit() {
+    if (password.length < 8) return setError(RESET_HINT.password)
+
+    setError(null)
+    setSubmitting(true)
+    try {
+      await apiPost<AdminUser>(`/api/v1/admin/users/${target.id}/password`, { newPassword: password })
+      notifySuccess('密码已重置')
+      void qc.invalidateQueries({ queryKey: ['admin', 'users'] })
+      onOpenChange(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '重置失败，请稍后重试')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (submitting) return
+        onOpenChange(next)
+      }}
+    >
+      <DialogContent>
+        <DialogHeader title="重置密码" description="重置后该用户在所有设备都需要重新登录。" />
+        <DialogBody className="space-y-4">
+          {error && <InlineAlert tone="crit">{error}</InlineAlert>}
+          <div>
+            <Label htmlFor="reset-password">新密码</Label>
+            <Input
+              id="reset-password"
+              type="password"
+              autoComplete="new-password"
+              placeholder="至少 8 位"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+        </DialogBody>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="secondary">取消</Button>
+          </DialogClose>
+          <Button variant="primary" loading={submitting} onClick={submit}>
+            重置
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

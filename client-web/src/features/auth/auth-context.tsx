@@ -1,7 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { authApi } from '@/api/auth'
-import type { RegisterPayload } from '@/api/auth'
 import { ApiError, clearTokens, getAccessToken, setTokens } from '@/api/client'
 import type { UserInfo } from '@/api/types'
 import { detectHostChannel, type HostChannel } from '@/lib/host-channel'
@@ -35,7 +34,6 @@ interface AuthContextValue {
   bootError: boolean
   retryBoot: () => void
   login: (username: string, password: string) => Promise<void>
-  register: (payload: RegisterPayload) => Promise<void>
   /** 纯客户端清令牌（规格：登出无服务端调用）；host 通道改为 `page.logout` */
   logout: () => void
 }
@@ -202,18 +200,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [hostChannel],
   )
 
-  const register = useCallback(
-    async (payload: RegisterPayload) => {
-      if (hostChannel === 'host') {
-        throw new ApiError('宿主通道不提供网页注册：请在桌面客户端完成注册', -1, 0)
-      }
-      const res = await authApi.register(payload)
-      setTokens(res.accessToken, res.refreshToken)
-      setUser(res.user)
-    },
-    [hostChannel],
-  )
-
   const logout = useCallback(() => {
     if (hostChannel === 'host') {
       /*
@@ -252,7 +238,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       bootError,
       retryBoot,
       login,
-      register,
       logout,
     }),
     [
@@ -265,7 +250,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       bootError,
       retryBoot,
       login,
-      register,
       logout,
     ],
   )

@@ -25,9 +25,9 @@
 | 项 | 约定 |
 |---|---|
 | 方案 | JWT Bearer（RS256），Header `Authorization: Bearer <accessToken>` |
-| 令牌获取 | POST /api/v1/auth/login、/register（返回 accessToken + refreshToken + user）；POST /auth/refresh 轮换（旧 refresh 吊销，7 天有效期） |
+| 令牌获取 | POST /api/v1/auth/login（返回 accessToken + refreshToken + user）；POST /auth/refresh 轮换（旧 refresh 吊销，7 天有效期）。公开注册默认关闭：库非空时 POST /auth/register 返回 403 code=40304 |
 | 访问令牌寿命 | 约 15 分钟；客户端在任意请求首个 401 时自动刷新（共享单次刷新，防并发风暴） |
-| 角色 | `admin` / `user`；首个注册用户自动成为 admin；无 admin 时启动期提升最早有效用户 |
+| 角色 | `admin` / `user`；`users` 表为空时首个注册用户为 `admin`；表非空时需管理员创建（或后端开启注册开关 `Auth:AllowPublicRegistration`）；无 admin 时启动期提升最早有效用户 |
 | 默认策略 | **无全局 fallback**：端点默认匿名，除非显式要求认证 |
 | 已知例外（现状） | `GET /api/v1/pc/*` 读组当前未挂认证（匿名可读）；`GET /api/v1/tiles/{z}/{x}/{y}.png` 匿名；`/api/version`、`/api/client/shell/latest` 匿名；`/api/v1/mcp/verify` 用 MCP 客户端 token（非 JWT） |
 | 运维密钥 | `/api/v1/ops/*` 全部要求 `X-PIM-Ops-Key` 请求头；未配置 → 503 OpsDisabled；无效 → 401 OpsKeyMissingOrInvalid；另有每 IP 限流 → 429 |
