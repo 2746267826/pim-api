@@ -47,9 +47,9 @@ describe('任务状态值域（工单 03 D1）', () => {
 describe('计时累加口径（与服务端 PlanningModelService.AccumulatedSeconds 对齐）', () => {
   const now = Date.parse('2026-06-01T10:00:00.000Z')
 
-  it('只统计 active / paused / completed', () => {
+  it('只有 planned 不计（cancelled 也是真实发生过的执行）', () => {
     expect(isCountedSegment(segment({ status: TASK_SEGMENT_STATUS.planned }))).toBe(false)
-    expect(isCountedSegment(segment({ status: TASK_SEGMENT_STATUS.cancelled }))).toBe(false)
+    expect(isCountedSegment(segment({ status: TASK_SEGMENT_STATUS.cancelled }))).toBe(true)
     expect(isCountedSegment(segment({ status: TASK_SEGMENT_STATUS.paused }))).toBe(true)
     expect(isCountedSegment(segment({ status: TASK_SEGMENT_STATUS.completed }))).toBe(true)
   })
@@ -75,14 +75,19 @@ describe('计时累加口径（与服务端 PlanningModelService.AccumulatedSeco
     expect(accumulatedSeconds(segments, now)).toBe(10 * 60 + 30 * 60)
   })
 
-  it('计划段与取消段不计入', () => {
+  it('计划段不计入；取消段计入（跑一段再取消不抹掉已发生的时长）', () => {
     const segments = [
       segment({ id: 'p', status: TASK_SEGMENT_STATUS.planned }),
-      segment({ id: 'x', status: TASK_SEGMENT_STATUS.cancelled }),
+      segment({
+        id: 'x',
+        status: TASK_SEGMENT_STATUS.cancelled,
+        startsAt: '2026-06-01T09:00:00.000Z',
+        endsAt: '2026-06-01T09:02:00.000Z',
+      }),
       segment({ id: 'c', status: TASK_SEGMENT_STATUS.completed, startsAt: '2026-06-01T09:00:00.000Z', endsAt: '2026-06-01T09:05:00.000Z' }),
     ]
 
-    expect(accumulatedSeconds(segments, now)).toBe(5 * 60)
+    expect(accumulatedSeconds(segments, now)).toBe(7 * 60)
   })
 
   it('单段不产生负时长；runningSegment 只认 endsAt 为空的段', () => {

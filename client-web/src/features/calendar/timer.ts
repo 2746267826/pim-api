@@ -6,8 +6,9 @@ import type { TaskExecutionSegment } from './types'
  *
  * 与服务端口径**逐条对齐**（pim-api `PlanningModelService.AccumulatedSeconds` /
  * `TaskSegmentStatuses.CountsAsExecuted`）：
- * - `active`（endsAt = null）/ `paused` / `completed` 计入实际执行时长；
- * - `planned`（还没做）与 `cancelled`（随任务取消中止）不计；
+ * - `active`（endsAt = null）/ `paused` / `completed` / `cancelled` 计入实际执行时长；
+ * - 只有 `planned`（还没做）不计 —— `cancelled` 段虽然被中止，但那段墙钟时间确实花在了任务上，
+ *   不算进去会出现「跑一会儿再取消 → 时长凭空消失」而「先暂停再取消 → 时长保留」的顺序不一致；
  * - 开放段以「现在」为右端 —— 这也是暂停期间不会被计入的原因（暂停时没有开放段）。
  */
 
@@ -15,6 +16,7 @@ const COUNTED = new Set<string>([
   TASK_SEGMENT_STATUS.active,
   TASK_SEGMENT_STATUS.paused,
   TASK_SEGMENT_STATUS.completed,
+  TASK_SEGMENT_STATUS.cancelled,
 ])
 
 /** 正在计时的段（服务端不变量：同一任务同时最多一条） */
