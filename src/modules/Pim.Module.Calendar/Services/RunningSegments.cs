@@ -52,7 +52,8 @@ internal static class RunningSegments
 /// 「查有没有开放段 → 写终态 + 闭合」。两条链都没有共同锁时，交替执行会同时通过检查，
 /// 结果是同一任务出现两条开放段，或者「已完成但仍有在跑的段」。
 ///
-/// 实现：显式事务 + PostgreSQL 事务级咨询锁（<c>pg_advisory_xact_lock(hashtext(task_id))</c>）。
+/// 实现：显式事务 + PostgreSQL 事务级咨询锁（<c>pg_advisory_xact_lock(命名空间, id)</c>，
+/// 全局取锁顺序 = **先簿锁、后任务锁**，同命名空间内按 id 升序）。
 /// 锁在事务提交/回滚时自动释放，无需额外清理；键碰撞只会多串行一点，不影响正确性。
 /// 非 Npgsql 提供程序（单测用的 InMemory / Sqlite）安全降级为空操作 —— 那里没有并发语义。
 /// </summary>
@@ -64,8 +65,11 @@ internal static class TaskRowLock
     // 一旦两个不同 key 的哈希值相同（或哈希序与字符串序不一致），就会退化成按字符串序取锁、
     // 实际却在等同一把锁，构成真实的环（复审指出）。这里让排序键**就是**锁身份：
     // 32 位截断即使碰撞，也只是两个不同对象共用一把锁（多串行化一点），顺序仍然自洽。
-    private const int TaskNamespace = 1;
-    private const int CalendarNamespace = 2;
+    // ⚠️ 命名空间的数值**就是全局取锁顺序**：必须让簿锁排在任务锁之前。
+    // 因为「整本删除」是先取簿锁、再（在事务内）升级取候选成员的任务锁；
+    // 若任务排在前面，就会出现「删除持有簿锁等任务锁、更新持有任务锁等簿锁」的真实死锁（复审指出）。
+    private const int CalendarNamespace = 1;
+    private const int TaskNamespace = 2;
 
     private static (int Namespace, int Id) TaskKey(Guid id)
         => (TaskNamespace, BitConverter.ToInt32(id.ToByteArray(), 0));

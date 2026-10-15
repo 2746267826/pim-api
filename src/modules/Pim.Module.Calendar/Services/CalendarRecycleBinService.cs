@@ -328,8 +328,10 @@ public sealed class CalendarRecycleBinService
                 .Select(t => t.CalendarId)
                 .FirstOrDefaultAsync(ct);
 
-            var stale = false;
-            var result = await TaskRowLock.WithTaskAndCalendarLocksAsync(
+            // ⚠️ stale 必须**和执行结果一起**从委托里返回，不能写成外层可变标志：
+            // 执行策略可能在瞬时故障后重放整个委托，外层标志会把上一轮尝试的结论带进下一轮，
+            // 造成「这一轮其实恢复成功、却因陈旧标志丢弃成功结果，最后报一个不相干的错」。
+            var outcome = await TaskRowLock.WithTaskAndCalendarLocksAsync(
                 _db,
                 new[] { id },
                 bookId,
@@ -337,10 +339,7 @@ public sealed class CalendarRecycleBinService
                 {
                     var task = await LoadDeletedTaskAsync(id, ct);
                     if (task.CalendarId != bookId)
-                    {
-                        stale = true;
-                        return null;
-                    }
+                        return new RestoreOutcome(null, Stale: true);
 
                     if (task.Calendar is not null)
                         EnsureParentBookActive(task.Calendar);
@@ -352,18 +351,20 @@ public sealed class CalendarRecycleBinService
                     // 在锁内提交：锁保护的是「校验父簿 → 写库」这一整段，不能只在锁内改内存。
                     await _db.SaveChangesAsync(ct);
 
-                    return new CalendarOperationResult(
-                        operation,
-                        operationId,
-                        1,
-                        new[] { task.Id },
-                        new[] { Sample(task) },
-                        "Restored task.");
+                    return new RestoreOutcome(
+                        new CalendarOperationResult(
+                            operation,
+                            operationId,
+                            1,
+                            new[] { task.Id },
+                            new[] { Sample(task) },
+                            "Restored task."),
+                        Stale: false);
                 },
                 ct);
 
-            if (!stale)
-                return result!;
+            if (!outcome.Stale)
+                return outcome.Result!;
         }
 
         // 连续 N 次都撞上「锁集合过时」：说明该任务正在被其它并发写反复搬动，按既有语义报冲突（02020）。
@@ -372,6 +373,12 @@ public sealed class CalendarRecycleBinService
 
     /// <summary>恢复任务时「锁定所属簿 → 复核」的重试上限。</summary>
     private const int RestoreLockAttempts = 3;
+
+    /// <summary>
+    /// 单次恢复尝试的结果：<c>Stale</c> 表示「锁内发现任务实际所属簿与已锁住的簿不一致」（锁集合已过时），
+    /// 需要释放事务后按新值重算锁集合；它与结果一起返回，避免用外层可变标志跨执行策略重放。
+    /// </summary>
+    private sealed record RestoreOutcome(CalendarOperationResult? Result, bool Stale);
 
     private async Task<CalendarOperationResult> RestoreCalendarAsync(
         string type,
