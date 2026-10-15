@@ -14,7 +14,7 @@ public static class FileNameValidator
     /// <summary>非法字符（含 Windows 保留字符与路径分隔符）。</summary>
     private static readonly char[] InvalidCharacters = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
 
-    /// <summary>OneDrive/SharePoint 保留名（大小写不敏感）。</summary>
+    /// <summary>各网盘共有的保留名（大小写不敏感）。</summary>
     private static readonly string[] ReservedNames =
     [
         ".lock", "CON", "PRN", "AUX", "NUL",
@@ -56,7 +56,7 @@ public static class FileNameValidator
         if (ReservedNames.Contains(trimmed, StringComparer.OrdinalIgnoreCase)
             || ReservedNames.Contains(withoutExtension, StringComparer.OrdinalIgnoreCase))
         {
-            throw new Pim.Core.Exceptions.DomainException(5308, $"「{trimmed}」是 OneDrive 保留名称，请换一个");
+            throw new Pim.Core.Exceptions.DomainException(5308, $"「{trimmed}」是网盘保留名称，请换一个");
         }
     }
 

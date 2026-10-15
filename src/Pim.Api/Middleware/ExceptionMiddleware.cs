@@ -3,6 +3,8 @@ using Pim.Api.Infrastructure;
 using Pim.Core.Common;
 using Pim.Core.Exceptions;
 using Pim.Module.Files.Providers;
+using Pim.Module.Files.Providers.Abstractions;
+using Pim.Module.Files.Providers.Google;
 
 namespace Pim.Api.Middleware;
 
@@ -40,23 +42,73 @@ public class ExceptionMiddleware
         }
         catch (OneDriveGraphException ex)
         {
-            // Graph 侧失败映射为上游语义，而不是 500：404/429 透传、其余按上游错误 502。
-            // 细节（含上游错误体）只进日志；给客户端的是通用文案（复审 M-3）
-            _logger.LogWarning(ex, "OneDrive Graph call failed with status {StatusCode}", ex.StatusCode);
-            var status = ex.StatusCode switch
-            {
-                404 => StatusCodes.Status404NotFound,
-                429 => StatusCodes.Status429TooManyRequests,
-                _ => StatusCodes.Status502BadGateway,
-            };
-            if (status == StatusCodes.Status429TooManyRequests && ex.RetryAfterSeconds is { } retry)
-            {
-                context.Response.Headers.RetryAfter = retry.ToString();
-            }
-            context.Response.StatusCode = status;
-            context.Response.ContentType = "application/json";
-            var response = ApiResponse<string>.Error(5390, "OneDrive 服务暂时不可用，请稍后重试");
-            await context.Response.WriteAsync(JsonSerializer.Serialize(response, JsonOptions));
+            await WriteUpstreamFailureAsync(context, ex.StatusCode, ex.RetryAfterSeconds, ex);
+        }
+        catch (GoogleDriveException ex)
+        {
+            // Google 的原始 HTTP 失败（未被 adapter 归一化的部分）同样按上游语义映射，
+            // 而不是落到 500：否则 Drive 的 429/403/5xx 会被报成「内部服务器错误」。
+            await WriteUpstreamFailureAsync(context, ex.StatusCode, ex.RetryAfterSeconds, ex);
+        }
+        // ---- 归一化 provider 异常族（工单 05 / F1）----
+        // 抽象层把这些异常定义成普通 Exception（不是 DomainException），因此**必须**在这里映射：
+        // 少一段，上游的 404/429/502 就会退化成 500 —— 那正是「OneDrive 既有功能回退」的一种
+        // （基线由 OneDriveGraphException 支路提供这些语义）。
+        catch (ProviderTransientException ex)
+        {
+            await WriteUpstreamFailureAsync(context, ex.StatusCode, ex.RetryAfterSeconds, ex);
+        }
+        catch (ProviderUnauthorizedException ex)
+        {
+            // 上游拒绝了我们的 access token。引擎已按预算刷新重试过，走到这里说明重试也没用：
+            // 对客户端而言这是上游故障（不是 PIM 的登录态问题），按基线口径给 502。
+            await WriteUpstreamFailureAsync(context, StatusCodes.Status502BadGateway, null, ex);
+        }
+        catch (ProviderCursorExpiredException ex)
+        {
+            // 同步游标失效由引擎内部重置重扫；能逃到这里说明重扫也没成功。
+            await WriteUpstreamFailureAsync(context, StatusCodes.Status502BadGateway, null, ex);
+        }
+        catch (ProviderContentTooLargeException ex)
+        {
+            await WriteDomainLikeErrorAsync(
+                context, StatusCodes.Status400BadRequest, 5331, "文件超过处理上限，请在网盘中操作");
+            _logger.LogInformation(ex, "Provider content exceeded the configured limit");
+        }
+        catch (ProviderItemNotFoundException ex)
+        {
+            await WriteDomainLikeErrorAsync(context, StatusCodes.Status404NotFound, 5104, "文件不存在");
+            _logger.LogInformation(ex, "Provider item not found");
+        }
+        catch (ProviderAuthorizationExpiredException ex)
+        {
+            await WriteDomainLikeErrorAsync(
+                context, StatusCodes.Status400BadRequest, 5322, "网盘授权已失效，请到设置页重新连接该账号");
+            _logger.LogWarning(ex, "Provider authorization expired");
+        }
+        catch (ProviderCapabilityNotSupportedException ex)
+        {
+            await WriteDomainLikeErrorAsync(
+                context,
+                StatusCodes.Status400BadRequest,
+                5334,
+                $"该文件来源（{ex.ProviderKey}）不支持 {ex.Capability}");
+        }
+        catch (FileProviderAuthorizationFailedException ex)
+        {
+            // 含「未配置 client id/secret」这类可执行提示：**原文回给用户**（里面只有变量名，没有密钥）
+            await WriteDomainLikeErrorAsync(context, StatusCodes.Status400BadRequest, 5324, ex.Message);
+            _logger.LogWarning(ex, "Provider authorization failed");
+        }
+        catch (FileProviderAuthorizationDeniedException ex)
+        {
+            await WriteDomainLikeErrorAsync(context, StatusCodes.Status400BadRequest, 5325, ex.Message);
+            _logger.LogInformation(ex, "Provider authorization denied by the user");
+        }
+        catch (FileProviderAuthorizationPendingException ex)
+        {
+            // 轮询未完成是正常中间态；能落到出口说明调用方用错了接口，给明确提示而不是 500
+            await WriteDomainLikeErrorAsync(context, StatusCodes.Status400BadRequest, 5324, ex.Message);
         }
         catch (BadHttpRequestException ex)
         {
@@ -115,6 +167,49 @@ public class ExceptionMiddleware
         {
             // 请求方已断开，写响应失败属预期，忽略。
         }
+    }
+
+    /// <summary>
+    /// 上游（网盘）失败的统一出口：404/429 透传、其余按上游错误 502；
+    /// 429 带上 <c>Retry-After</c>。**细节（含上游错误体）只进日志**，给客户端的是通用文案。
+    /// </summary>
+    private async Task WriteUpstreamFailureAsync(
+        HttpContext context,
+        int upstreamStatusCode,
+        int? retryAfterSeconds,
+        Exception ex)
+    {
+        _logger.LogWarning(ex, "Provider call failed with upstream status {StatusCode}", upstreamStatusCode);
+        var status = upstreamStatusCode switch
+        {
+            StatusCodes.Status404NotFound => StatusCodes.Status404NotFound,
+            StatusCodes.Status429TooManyRequests => StatusCodes.Status429TooManyRequests,
+            _ => StatusCodes.Status502BadGateway,
+        };
+
+        if (status == StatusCodes.Status429TooManyRequests && retryAfterSeconds is { } retry)
+        {
+            context.Response.Headers.RetryAfter = retry.ToString();
+        }
+
+        var code = status == StatusCodes.Status404NotFound ? 5104 : 5390;
+        var message = status == StatusCodes.Status404NotFound
+            ? "文件不存在"
+            : "网盘服务暂时不可用，请稍后重试";
+        await WriteDomainLikeErrorAsync(context, status, code, message);
+    }
+
+    /// <summary>把错误写成与 DomainException 支路完全一致的响应体（同一个 ApiResponse 形状）。</summary>
+    private static async Task WriteDomainLikeErrorAsync(
+        HttpContext context,
+        int statusCode,
+        int errorCode,
+        string message)
+    {
+        context.Response.StatusCode = statusCode;
+        context.Response.ContentType = "application/json";
+        var response = ApiResponse<string>.Error(errorCode, message);
+        await context.Response.WriteAsync(JsonSerializer.Serialize(response, JsonOptions));
     }
 
     private static int ResolveDomainStatusCode(int errorCode) => errorCode switch

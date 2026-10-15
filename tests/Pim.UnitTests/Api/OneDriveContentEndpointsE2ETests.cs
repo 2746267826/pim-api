@@ -17,6 +17,7 @@ namespace Pim.UnitTests.Api;
 /// <summary>
 /// OneDrive 内容出口端到端测试（P2）：稳定直链 302、缩略图、预览地址、文本读写与快照、敏感路径 403。
 /// </summary>
+[Collection("files-e2e")]
 public class OneDriveContentEndpointsE2ETests
 {
     private static async Task<(WebApplicationFactory<Program> Factory, HttpClient User, Guid ProviderId, Guid ItemId, OneDriveFilesEndpointsE2ETests.E2EGraphClient Graph)>
