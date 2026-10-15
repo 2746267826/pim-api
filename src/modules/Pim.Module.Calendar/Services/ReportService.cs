@@ -284,12 +284,17 @@ public sealed class ReportService
             .Select(t => period.Overlap(t.DtStart!.Value, t.PlannedEnd!.Value))
             .ToList();
 
+        // 工单 03：ends_at 变为可空（正在计时的开放段）。这里必须显式按「开放段以现在为右端」处理：
+        //   · SQL 里 `s.EndsAt > x` 对 NULL 是 unknown，会把正在跑的段整行排除；
+        //   · 直接给 Overlap 传可空值也编译不过。
+        // 口径与 PlanningModelService.AccumulatedSeconds 一致（开放段算到查询时刻）。
+        var segmentsAsOf = DateTimeOffset.UtcNow;
         var segments = await _db.Set<TaskExecutionSegmentEntity>()
             .AsNoTracking()
             .Where(s => s.UserId == userId
                 && s.DeletedAt == null
                 && s.StartsAt < period.EndUtc
-                && s.EndsAt > period.StartUtc
+                && (s.EndsAt ?? segmentsAsOf) > period.StartUtc
                 && (projectId == null || _db.Set<TaskEntity>().Any(t => t.Id == s.TaskId && t.DomainProjectId == projectId)))
             .Select(s => new { s.StartsAt, s.EndsAt, s.Status })
             .ToListAsync(ct);
@@ -361,7 +366,9 @@ public sealed class ReportService
             ScheduledMinutes: scheduledWindows.Count == 0 ? null : ToMinutes(scheduledWindows.Aggregate(TimeSpan.Zero, (sum, span) => sum + span)),
             ActualMinutes: executed.Count == 0
                 ? null
-                : ToMinutes(executed.Aggregate(TimeSpan.Zero, (sum, s) => sum + period.Overlap(s.StartsAt, s.EndsAt))),
+                : ToMinutes(executed.Aggregate(
+                    TimeSpan.Zero,
+                    (sum, s) => sum + period.Overlap(s.StartsAt, s.EndsAt ?? segmentsAsOf))),
             CalendarMinutes: activeEvents.Count == 0
                 ? null
                 : ToMinutes(activeEvents.Aggregate(TimeSpan.Zero, (sum, e) => sum + period.Overlap(e.Start, e.End))),
