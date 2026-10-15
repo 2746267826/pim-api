@@ -62,7 +62,21 @@ public static class AuthEndpoints
                 Role = role
             };
 
+            /*
+             * 会话令牌与用户行**同一次提交**。分两次写会留下一个窗口：用户行已可见、令牌行还没写，
+             * 此时管理员重置该用户（撤销"当时全部会话"，实际为空）之后，注册流程再插入一条
+             * 从未被撤销的令牌 —— 与 refresh 逃逸是同一类缺口。
+             * user.Id 是客户端生成的 GUID，令牌行不需要用户行先落库，因此两条 INSERT 可以
+             * 走同一个 SaveChanges（EF 会把多条改动包进一个事务），窗口直接消失，无需额外加锁。
+             */
+            var refreshToken = jwt.GenerateRefreshToken();
             db.Users.Add(user);
+            db.RefreshTokens.Add(new RefreshTokenEntity
+            {
+                UserId = user.Id,
+                TokenHash = RefreshTokenSessions.HashSecret(refreshToken),
+                ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
+            });
             try
             {
                 await db.SaveChangesAsync(ct);
@@ -82,15 +96,6 @@ public static class AuthEndpoints
             }
 
             var accessToken = jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
-            var refreshToken = jwt.GenerateRefreshToken();
-
-            db.RefreshTokens.Add(new RefreshTokenEntity
-            {
-                UserId = user.Id,
-                TokenHash = RefreshTokenSessions.HashSecret(refreshToken),
-                ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
-            });
-            await db.SaveChangesAsync(ct);
 
             return Results.Created($"/api/v1/users/{user.Id}",
                 ApiResponse<AuthResponse>.Ok(new AuthResponse(
@@ -164,7 +169,9 @@ public static class AuthEndpoints
              * bcrypt 校验本身留在锁外：它耗时约百毫秒，不该占着用户锁。
              */
             var verifiedHash = user.PasswordHash;
-            stepSw.Restart();
+            // 计时按原语义分别测「签发」与「落库」（都发生在锁内）；锁等待只体现在 total
+            var jwtMs = 0L;
+            var dbSaveMs = 0L;
             var issued = await UserSessionLock.RunAsync(db, user.Id, async () =>
             {
                 var fresh = await db.Users.FirstOrDefaultAsync(u => u.Id == user.Id, ct);
@@ -178,8 +185,10 @@ public static class AuthEndpoints
                     Success = true
                 });
 
+                stepSw.Restart();
                 var accessToken = jwt.GenerateAccessToken(fresh.Id, fresh.Username, fresh.Role);
                 var refreshToken = jwt.GenerateRefreshToken();
+                jwtMs = stepSw.ElapsedMilliseconds;
 
                 db.RefreshTokens.Add(new RefreshTokenEntity
                 {
@@ -187,7 +196,9 @@ public static class AuthEndpoints
                     TokenHash = RefreshTokenSessions.HashSecret(refreshToken),
                     ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
                 });
+                stepSw.Restart();
                 await db.SaveChangesAsync(ct);
+                dbSaveMs = stepSw.ElapsedMilliseconds;
 
                 return new AuthResponse(
                     accessToken,
@@ -195,7 +206,6 @@ public static class AuthEndpoints
                     DateTimeOffset.UtcNow.AddMinutes(15),
                     new UserInfo(fresh.Id, fresh.Username, fresh.DisplayName, fresh.Role));
             }, ct);
-            var jwtMs = stepSw.ElapsedMilliseconds;
 
             if (issued is null)
             {
@@ -203,9 +213,6 @@ public static class AuthEndpoints
                 logger.LogInformation("Login rejected for '{User}': account changed during login", request.Username);
                 return Results.Unauthorized();
             }
-
-            stepSw.Restart();
-            var dbSaveMs = stepSw.ElapsedMilliseconds;
 
             logger.LogInformation("Login succeeded for '{User}': bcrypt={BcryptMs}ms, userLookup={UserLookupMs}ms, rateLimit={RateLimitMs}ms, jwt={JwtMs}ms, dbSave={DbSaveMs}ms, total={TotalMs}ms",
                 request.Username, bcryptMs, userLookupMs, rateLimitMs, jwtMs, dbSaveMs, totalSw.ElapsedMilliseconds);
@@ -228,8 +235,11 @@ public static class AuthEndpoints
             var tokenHash = RefreshTokenSessions.HashSecret(request.RefreshToken);
 
             // 锁必须按用户取，所以先只读定位令牌归属（认领人是谁与并发无关）
+            // 只认「未撤销且未过期」的令牌：早已失效的令牌在锁外直接 401，
+            // 否则重放死令牌的请求会去抢合法用户的排他锁（无谓争用）。
+            var now = DateTimeOffset.UtcNow;
             var ownerId = await db.RefreshTokens.IgnoreQueryFilters().AsNoTracking()
-                .Where(rt => rt.TokenHash == tokenHash)
+                .Where(rt => rt.TokenHash == tokenHash && rt.RevokedAt == null && rt.ExpiresAt > now)
                 .Select(rt => (Guid?)rt.UserId)
                 .FirstOrDefaultAsync(ct);
             if (ownerId is not Guid ownerUserId)

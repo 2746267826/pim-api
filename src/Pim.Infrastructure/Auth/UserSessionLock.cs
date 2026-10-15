@@ -29,8 +29,15 @@ namespace Pim.Infrastructure.Auth;
 /// </summary>
 public static class UserSessionLock
 {
-    /// <summary>由用户 id 稳定派生的锁键（同一 GUID 在任何实例上都映射到同一个 bigint）。</summary>
-    public static long KeyFor(Guid userId) => BitConverter.ToInt64(userId.ToByteArray(), 0);
+    /// <summary>
+    /// 由用户 id 稳定派生的锁键（同一 GUID 在任何实例上都映射到同一个 bigint）。
+    /// 取高低两个 64 位异或，用满 128 位熵——即便碰撞也只会多一次串行化，不会串号。
+    /// </summary>
+    public static long KeyFor(Guid userId)
+    {
+        var bytes = userId.ToByteArray();
+        return BitConverter.ToInt64(bytes, 0) ^ BitConverter.ToInt64(bytes, 8);
+    }
 
     /// <summary>
     /// 在「该用户独占」的前提下执行 <paramref name="operation"/>。
@@ -39,7 +46,10 @@ public static class UserSessionLock
     public static async Task<T> RunAsync<T>(
         PimDbContext db, Guid userId, Func<Task<T>> operation, CancellationToken ct)
     {
-        if (!db.Database.IsRelational())
+        // 只有 PostgreSQL 有 advisory lock；其它关系型提供程序（例如 SQLite）直接执行，
+        // 避免把 pg_advisory_xact_lock 发过去（同 MobileAnalyticsMaterializationService 的判定）。
+        if (!db.Database.IsRelational() ||
+            db.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) != true)
             return await operation();
 
         var strategy = db.Database.CreateExecutionStrategy();

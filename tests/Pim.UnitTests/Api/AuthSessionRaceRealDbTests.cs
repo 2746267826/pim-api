@@ -80,6 +80,29 @@ public sealed class AuthSessionRaceRealDbTests
         return tx;
     }
 
+    /// <summary>
+    /// 等到「确实有请求阻塞在 advisory lock 上」再继续。
+    ///
+    /// 固定 <c>Task.Delay</c> 是假绿来源：请求可能还没进临界区，此时即使锁协议被移除、
+    /// 端点根本没参与串行化，用例也会因为"撤销提交得晚"而偶然通过。
+    /// 这里改用 <c>pg_locks</c> 里「未授予的 advisory 锁」作为**可观察**信号；
+    /// 等不到就说明端点没有阻塞 → 由调用方断言失败。
+    /// </summary>
+    private static async Task<bool> WaitForBlockedOnAdvisoryLockAsync(string connectionString, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted = false", connection);
+            if (Convert.ToInt32(await command.ExecuteScalarAsync()) > 0) return true;
+            await Task.Delay(50);
+        }
+        return false;
+    }
+
     private static async Task<int> CountLiveSessionsAsync(string connectionString, Guid userId)
     {
         await using var connection = new NpgsqlConnection(connectionString);
@@ -107,9 +130,11 @@ public sealed class AuthSessionRaceRealDbTests
         await blocker.OpenAsync();
         await using var tx = await LockUserAsync(blocker, user.UserId);
 
-        // 修复前：refresh 不等待，立刻读到"仍然有效"的旧令牌
         var refreshTask = anon.PostAsJsonAsync("/api/v1/auth/refresh", new { refreshToken = deviceB });
-        await Task.Delay(TimeSpan.FromSeconds(1));
+        // 必须等到它**真的**阻塞在锁上，否则这条用例证明不了串行化（见辅助方法注释）
+        Assert.True(
+            await WaitForBlockedOnAdvisoryLockAsync(temp.ConnectionString, TimeSpan.FromSeconds(15)),
+            "refresh 没有阻塞在该用户的 advisory lock 上：端点未参与会话串行化");
 
         await using (var revoke = new NpgsqlCommand(
             "UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = @u AND revoked_at IS NULL", blocker, tx))
@@ -139,9 +164,10 @@ public sealed class AuthSessionRaceRealDbTests
         await blocker.OpenAsync();
         await using var tx = await LockUserAsync(blocker, user.UserId);
 
-        // 修复前：登录用旧口令校验通过后立刻插入会话
         var loginTask = anon.PostAsJsonAsync("/api/v1/auth/login", new { username = "race-login", password = Password });
-        await Task.Delay(TimeSpan.FromSeconds(1));
+        Assert.True(
+            await WaitForBlockedOnAdvisoryLockAsync(temp.ConnectionString, TimeSpan.FromSeconds(15)),
+            "login 没有阻塞在该用户的 advisory lock 上：端点未参与会话串行化");
 
         // 模拟"改密/重置"：把口令哈希换掉，然后提交（释放锁）
         await using (var change = new NpgsqlCommand(
