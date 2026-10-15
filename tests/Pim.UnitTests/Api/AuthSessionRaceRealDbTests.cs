@@ -33,11 +33,13 @@ public sealed class AuthSessionRaceRealDbTests
 {
     private const string Password = "password123";
 
-    private static WebApplicationFactory<Program> CreateFactory(string connectionString)
+    private static WebApplicationFactory<Program> CreateFactory(
+        string connectionString, bool allowPublicRegistration = false)
         => new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseSetting("DisableHangfire", "true").UseSetting("Database:Migrations:FailFast", "false");
             b.UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz");
+            b.UseSetting("Auth:AllowPublicRegistration", allowPublicRegistration ? "true" : "false");
             b.ConfigureServices(services =>
             {
                 var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(DbContextOptions<PimDbContext>));
@@ -70,12 +72,12 @@ public sealed class AuthSessionRaceRealDbTests
         return doc.RootElement.GetProperty("data").GetProperty("refreshToken").GetString()!;
     }
 
-    /// <summary>在给定事务上取该用户的会话锁（与产品代码同一个键派生）。</summary>
-    private static async Task<NpgsqlTransaction> LockUserAsync(NpgsqlConnection connection, Guid userId)
+    /// <summary>在给定连接上开事务并取指定 advisory lock（与产品代码同一个键）。</summary>
+    private static async Task<NpgsqlTransaction> LockKeyAsync(NpgsqlConnection connection, long key)
     {
         var tx = connection.BeginTransaction();
         await using var command = new NpgsqlCommand("SELECT pg_advisory_xact_lock(@key)", connection, tx);
-        command.Parameters.AddWithValue("key", UserSessionLock.KeyFor(userId));
+        command.Parameters.AddWithValue("key", key);
         await command.ExecuteNonQueryAsync();
         return tx;
     }
@@ -88,8 +90,8 @@ public sealed class AuthSessionRaceRealDbTests
     /// 这里改用 <c>pg_locks</c> 里「未授予的 advisory 锁」作为**可观察**信号；
     /// 等不到就说明端点没有阻塞 → 由调用方断言失败。
     /// </summary>
-    private static async Task<bool> WaitForBlockedOnAdvisoryLockAsync(
-        string connectionString, Guid userId, TimeSpan timeout)
+    private static async Task<bool> WaitForBlockedOnKeyAsync(
+        string connectionString, long key, TimeSpan timeout)
     {
         /*
          * 必须**精确**匹配这把锁，不能只数"实例上有任意 advisory 等待者"：
@@ -98,7 +100,6 @@ public sealed class AuthSessionRaceRealDbTests
          * bigint advisory lock 在 pg_locks 里是 classid=高 32 位、objid=低 32 位、objsubid=1，
          * 再加上 database = 当前库，即可唯一锁定"本库、本用户、正在等待"这一个事实。
          */
-        var key = UserSessionLock.KeyFor(userId);
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)
         {
@@ -135,6 +136,108 @@ public sealed class AuthSessionRaceRealDbTests
         return Convert.ToInt32(await command.ExecuteScalarAsync());
     }
 
+    private static async Task<int> CountUsersAsync(string connectionString)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("SELECT count(*) FROM users", connection);
+        return Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
+
+    /// <summary>用原始 SQL 模拟「另一个请求刚刚完成了引导并提交」。</summary>
+    private static async Task InsertUserAsync(
+        NpgsqlConnection connection, NpgsqlTransaction tx, string username, string role)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            INSERT INTO users (id, username, email, password_hash, display_name, role, is_active, created_at, updated_at)
+            VALUES (@id, @u, @e, @h, @u, @r, true, now(), now())
+            """, connection, tx);
+        command.Parameters.AddWithValue("id", Guid.NewGuid());
+        command.Parameters.AddWithValue("u", username);
+        command.Parameters.AddWithValue("e", $"{username}@example.com");
+        command.Parameters.AddWithValue("h", PasswordHasher.Hash("first-admin-pass-1"));
+        command.Parameters.AddWithValue("r", role);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// 空库引导的并发首注册：两个匿名请求同时看到空库时，**只允许一个**建号。
+    /// 关闭判定是「库非空 → 403」，若第二个请求在第一个提交之后仍建号，
+    /// 核心验收口径（库非空时未登录第三方无法通过公开端点创建账号）就被绕过了。
+    /// 用引导锁做确定性交错：另一条连接先持锁并提交"第一个注册者"，再释放。
+    /// </summary>
+    [SkippableFact]
+    public async Task Bootstrap_SecondConcurrentRegistration_MustBeRefusedWhenRegistrationIsClosed()
+    {
+        RealDbTestConnection.SkipIfUnavailable();
+        await using var temp = await TempMigrationDatabase.CreateAsync("auth-race-boot-closed");
+        using var factory = CreateFactory(temp.ConnectionString); // 开关缺省＝关闭
+        var anon = factory.CreateClient();
+
+        await using var blocker = new NpgsqlConnection(temp.ConnectionString);
+        await blocker.OpenAsync();
+        await using var tx = await LockKeyAsync(blocker, AdvisoryLock.BootstrapRegistrationKey);
+
+        var registerTask = anon.PostAsJsonAsync("/api/v1/auth/register", new
+        {
+            username = "latecomer",
+            email = "latecomer@example.com",
+            password = Password
+        });
+
+        Assert.True(
+            await WaitForBlockedOnKeyAsync(temp.ConnectionString, AdvisoryLock.BootstrapRegistrationKey, TimeSpan.FromSeconds(15)),
+            "并发首注册没有阻塞在引导锁上：库非空时的注册可以绕过关闭判定");
+
+        // 另一个请求刚刚完成引导并提交
+        await InsertUserAsync(blocker, tx, "first-admin", "admin");
+        await tx.CommitAsync();
+
+        var response = await registerTask;
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(40304, doc.RootElement.GetProperty("code").GetInt32());
+        Assert.Equal(1, await CountUsersAsync(temp.ConnectionString));
+    }
+
+    /// <summary>
+    /// 同一个交错，但开关为 true：后到的请求应当按「库已非空」处理 ——
+    /// 建号成功但角色是普通 <c>user</c>，**不能**因为"它看到的是空库"而拿到 admin。
+    /// </summary>
+    [SkippableFact]
+    public async Task Bootstrap_SecondConcurrentRegistration_WithSwitchOn_BecomesPlainUser()
+    {
+        RealDbTestConnection.SkipIfUnavailable();
+        await using var temp = await TempMigrationDatabase.CreateAsync("auth-race-boot-open");
+        using var factory = CreateFactory(temp.ConnectionString, allowPublicRegistration: true);
+        var anon = factory.CreateClient();
+
+        await using var blocker = new NpgsqlConnection(temp.ConnectionString);
+        await blocker.OpenAsync();
+        await using var tx = await LockKeyAsync(blocker, AdvisoryLock.BootstrapRegistrationKey);
+
+        var registerTask = anon.PostAsJsonAsync("/api/v1/auth/register", new
+        {
+            username = "latecomer",
+            email = "latecomer@example.com",
+            password = Password
+        });
+
+        Assert.True(
+            await WaitForBlockedOnKeyAsync(temp.ConnectionString, AdvisoryLock.BootstrapRegistrationKey, TimeSpan.FromSeconds(15)),
+            "并发首注册没有阻塞在引导锁上");
+
+        await InsertUserAsync(blocker, tx, "first-admin", "admin");
+        await tx.CommitAsync();
+
+        var response = await registerTask;
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("user", doc.RootElement.GetProperty("data").GetProperty("user").GetProperty("role").GetString());
+        Assert.Equal(2, await CountUsersAsync(temp.ConnectionString));
+    }
+
     [SkippableFact]
     public async Task Refresh_RacingWithSessionRevocation_MustNotEscape()
     {
@@ -150,12 +253,12 @@ public sealed class AuthSessionRaceRealDbTests
         // 另一条连接先取该用户的会话锁，并在**未提交**的状态下撤销全部会话
         await using var blocker = new NpgsqlConnection(temp.ConnectionString);
         await blocker.OpenAsync();
-        await using var tx = await LockUserAsync(blocker, user.UserId);
+        await using var tx = await LockKeyAsync(blocker, UserSessionLock.KeyFor(user.UserId));
 
         var refreshTask = anon.PostAsJsonAsync("/api/v1/auth/refresh", new { refreshToken = deviceB });
         // 必须等到它**真的**阻塞在锁上，否则这条用例证明不了串行化（见辅助方法注释）
         Assert.True(
-            await WaitForBlockedOnAdvisoryLockAsync(temp.ConnectionString, user.UserId, TimeSpan.FromSeconds(15)),
+            await WaitForBlockedOnKeyAsync(temp.ConnectionString, UserSessionLock.KeyFor(user.UserId), TimeSpan.FromSeconds(15)),
             "refresh 没有阻塞在该用户的 advisory lock 上：端点未参与会话串行化");
 
         await using (var revoke = new NpgsqlCommand(
@@ -184,11 +287,11 @@ public sealed class AuthSessionRaceRealDbTests
 
         await using var blocker = new NpgsqlConnection(temp.ConnectionString);
         await blocker.OpenAsync();
-        await using var tx = await LockUserAsync(blocker, user.UserId);
+        await using var tx = await LockKeyAsync(blocker, UserSessionLock.KeyFor(user.UserId));
 
         var loginTask = anon.PostAsJsonAsync("/api/v1/auth/login", new { username = "race-login", password = Password });
         Assert.True(
-            await WaitForBlockedOnAdvisoryLockAsync(temp.ConnectionString, user.UserId, TimeSpan.FromSeconds(15)),
+            await WaitForBlockedOnKeyAsync(temp.ConnectionString, UserSessionLock.KeyFor(user.UserId), TimeSpan.FromSeconds(15)),
             "login 没有阻塞在该用户的 advisory lock 上：端点未参与会话串行化");
 
         // 模拟"改密/重置"：把口令哈希换掉，然后提交（释放锁）

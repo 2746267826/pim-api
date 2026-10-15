@@ -24,7 +24,8 @@ public static class AuthEndpoints
         {
             // REQ-1 / REQ-2：关闭判定必须**先于**参数校验。
             // 库非空且未开开关时，非法载荷同样返回 403/40304（不得落到 400），也不写库。
-            if (!await PublicRegistrationPolicy.IsAllowedAsync(db, configuration, ct))
+            var hasAnyUser = await db.Users.IgnoreQueryFilters().AnyAsync(ct);
+            if (hasAnyUser && !PublicRegistrationPolicy.IsEnabled(configuration))
             {
                 return Results.Json(
                     ApiResponse<string>.Error(
@@ -32,6 +33,16 @@ public static class AuthEndpoints
                         PublicRegistrationPolicy.ClosedMessage),
                     statusCode: 403);
             }
+
+            /*
+             * 物理空库 = 全新部署引导。这条路径必须**全局串行化**：
+             * 两个并发匿名首注册会同时看到空库，各自都通过上面的判定，于是双双建号 ——
+             * 第二个账号是在库已经非空之后创建的，正好绕过核心验收口径
+             * 「库非空时未登录第三方无法通过公开端点创建账号」。
+             * （`AdminBootstrap.ConfirmFirstAdminAsync` 的降级只解决"谁是管理员"，
+             *  不阻止第二个账号被创建，因此不能替代这里的串行化。）
+             */
+            var isBootstrap = !hasAnyUser;
 
             var username = request.Username?.Trim() ?? string.Empty;
             var email = request.Email?.Trim() ?? string.Empty;
@@ -44,65 +55,84 @@ public static class AuthEndpoints
             if (UserCredentialsValidator.Validate(username, email, request.Password, displayName) is { } error)
                 return Results.BadRequest(ApiResponse<string>.Error(error.Code, error.Message));
 
-            if (await db.Users.AnyAsync(u => u.Username == username, ct))
-                return Results.Conflict(ApiResponse<string>.Error(01003, "用户名已存在"));
-
-            if (await db.Users.AnyAsync(u => u.Email == normalizedEmail, ct))
-                return Results.Conflict(ApiResponse<string>.Error(01004, "邮箱已存在"));
-
-            // 首个注册用户自动成为管理员（users 表为空时）
-            var role = await AdminBootstrap.DetermineRegistrationRoleAsync(db, ct);
-
-            var user = new UserEntity
+            async Task<IResult> CreateUserAsync()
             {
-                Username = username,
-                Email = normalizedEmail,
-                PasswordHash = PasswordHasher.Hash(request.Password),
-                DisplayName = displayName,
-                Role = role
-            };
+                // 引导路径：等锁期间可能已被别的请求抢先完成引导 —— 库一旦非空就按关闭判定处理，
+                // 否则就要按"库非空"的角色口径发号（下面 DetermineRegistrationRoleAsync 会给出 user）。
+                if (isBootstrap && !await PublicRegistrationPolicy.IsAllowedAsync(db, configuration, ct))
+                {
+                    return Results.Json(
+                        ApiResponse<string>.Error(
+                            PublicRegistrationPolicy.ClosedErrorCode,
+                            PublicRegistrationPolicy.ClosedMessage),
+                        statusCode: 403);
+                }
 
-            /*
-             * 会话令牌与用户行**同一次提交**。分两次写会留下一个窗口：用户行已可见、令牌行还没写，
-             * 此时管理员重置该用户（撤销"当时全部会话"，实际为空）之后，注册流程再插入一条
-             * 从未被撤销的令牌 —— 与 refresh 逃逸是同一类缺口。
-             * user.Id 是客户端生成的 GUID，令牌行不需要用户行先落库，因此两条 INSERT 可以
-             * 走同一个 SaveChanges（EF 会把多条改动包进一个事务），窗口直接消失，无需额外加锁。
-             */
-            var refreshToken = jwt.GenerateRefreshToken();
-            db.Users.Add(user);
-            db.RefreshTokens.Add(new RefreshTokenEntity
-            {
-                UserId = user.Id,
-                TokenHash = RefreshTokenSessions.HashSecret(refreshToken),
-                ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
-            });
-            try
-            {
-                await db.SaveChangesAsync(ct);
+                if (await db.Users.AnyAsync(u => u.Username == username, ct))
+                    return Results.Conflict(ApiResponse<string>.Error(01003, "用户名已存在"));
+
+                if (await db.Users.AnyAsync(u => u.Email == normalizedEmail, ct))
+                    return Results.Conflict(ApiResponse<string>.Error(01004, "邮箱已存在"));
+
+                // 首个注册用户自动成为管理员（users 表**物理为空**时）
+                var role = await AdminBootstrap.DetermineRegistrationRoleAsync(db, ct);
+
+                var user = new UserEntity
+                {
+                    Username = username,
+                    Email = normalizedEmail,
+                    PasswordHash = PasswordHasher.Hash(request.Password),
+                    DisplayName = displayName,
+                    Role = role
+                };
+
+                /*
+                 * 会话令牌与用户行**同一次提交**。分两次写会留下一个窗口：用户行已可见、令牌行还没写，
+                 * 此时管理员重置该用户（撤销"当时全部会话"，实际为空）之后，注册流程再插入一条
+                 * 从未被撤销的令牌 —— 与 refresh 逃逸是同一类缺口。
+                 * user.Id 是客户端生成的 GUID，令牌行不需要用户行先落库，因此两条 INSERT 可以
+                 * 走同一个 SaveChanges（EF 会把多条改动包进一个事务），窗口直接消失，无需额外加锁。
+                 */
+                var refreshToken = jwt.GenerateRefreshToken();
+                db.Users.Add(user);
+                db.RefreshTokens.Add(new RefreshTokenEntity
+                {
+                    UserId = user.Id,
+                    TokenHash = RefreshTokenSessions.HashSecret(refreshToken),
+                    ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
+                });
+                try
+                {
+                    await db.SaveChangesAsync(ct);
+                }
+                catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pg && pg.SqlState == "23505")
+                {
+                    return Results.Conflict(ApiResponse<string>.Error(01003, "用户名已存在或邮箱已存在"));
+                }
+
+                // 并发首注册保护（保留）：若竞争中已有更早的管理员，当前用户降级为普通用户
+                if (role == AdminBootstrap.AdminRole &&
+                    !await AdminBootstrap.ConfirmFirstAdminAsync(db, user.Id, user.CreatedAt, ct))
+                {
+                    user.Role = AdminBootstrap.UserRole;
+                    user.UpdatedAt = DateTimeOffset.UtcNow;
+                    await db.SaveChangesAsync(ct);
+                }
+
+                var accessToken = jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
+
+                return Results.Created($"/api/v1/users/{user.Id}",
+                    ApiResponse<AuthResponse>.Ok(new AuthResponse(
+                        accessToken,
+                        refreshToken,
+                        DateTimeOffset.UtcNow.AddMinutes(15),
+                        new UserInfo(user.Id, user.Username, user.DisplayName, user.Role))));
             }
-            catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pg && pg.SqlState == "23505")
-            {
-                return Results.Conflict(ApiResponse<string>.Error(01003, "用户名已存在或邮箱已存在"));
-            }
 
-            // 并发首注册保护：若竞争中已有更早的管理员，当前用户降级为普通用户
-            if (role == AdminBootstrap.AdminRole &&
-                !await AdminBootstrap.ConfirmFirstAdminAsync(db, user.Id, user.CreatedAt, ct))
-            {
-                user.Role = AdminBootstrap.UserRole;
-                user.UpdatedAt = DateTimeOffset.UtcNow;
-                await db.SaveChangesAsync(ct);
-            }
-
-            var accessToken = jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
-
-            return Results.Created($"/api/v1/users/{user.Id}",
-                ApiResponse<AuthResponse>.Ok(new AuthResponse(
-                    accessToken,
-                    refreshToken,
-                    DateTimeOffset.UtcNow.AddMinutes(15),
-                    new UserInfo(user.Id, user.Username, user.DisplayName, user.Role))));
+            // 只有引导路径需要全局串行化；库非空时的普通注册不受影响（避免无谓争用）
+            return isBootstrap
+                ? await AdvisoryLock.RunAsync(db, AdvisoryLock.BootstrapRegistrationKey, CreateUserAsync, ct)
+                : await CreateUserAsync();
         })
         .Produces<ApiResponse<AuthResponse>>(201)
         .Produces<ApiResponse<string>>(400)
