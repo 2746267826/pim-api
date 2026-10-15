@@ -104,6 +104,9 @@ public sealed class PcCategorySaveValidationE2ETests
             builder.UseSetting("DisableHangfire", "true");
             builder.UseSetting("Database:Migrations:FailFast", "false");
             builder.UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz");
+            // WO-AUTH-REGISTER-20261014：公开注册默认关闭；本文件靠注册造号，
+            // 按决策记录 §2 在测试工厂里显式开启开关（不是删用例/跳用例换绿灯）。
+            builder.UseSetting("Auth:AllowPublicRegistration", "true");
             builder.UseSetting("ConnectionStrings:DefaultConnection", temp.ConnectionString);
             // appsettings.json 默认指向 /data/keys/data-protection，本机不可写
             builder.UseSetting(

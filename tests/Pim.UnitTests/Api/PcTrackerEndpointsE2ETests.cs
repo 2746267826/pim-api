@@ -486,6 +486,9 @@ public sealed class PcTrackerEndpointsE2ETests
         {
             b.UseSetting("DisableHangfire", "true").UseSetting("Database:Migrations:FailFast", "false");
             b.UseSetting("GitHub:Repo", "invalid/invalid-test-repo-xyz");
+            // WO-AUTH-REGISTER-20261014：公开注册默认关闭；本文件靠注册造号，
+            // 按决策记录 §2 在测试工厂里显式开启开关（不是删用例/跳用例换绿灯）。
+            b.UseSetting("Auth:AllowPublicRegistration", "true");
             b.ConfigureServices(services =>
             {
                 var descriptor = services.SingleOrDefault(d => d.ServiceType == typeof(DbContextOptions<PimDbContext>));

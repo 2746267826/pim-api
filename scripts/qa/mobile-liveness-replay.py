@@ -2,17 +2,24 @@
 """阶段一取证回放脚本（WO-ANDROID-KEEPALIVE-20260923 REQ-5 ~ REQ-13）。
 
 对着**隔离库**起一个 API 实例，用回放数据走一遍真实 HTTP 链路：
-注册设备 → 上报心搏/退出/强停/丢弃原因 → 查询存活概览与摘要 → 体检数据项。
+管理员建号 → 登录取令牌 → 注册设备 → 上报心搏/退出/强停/丢弃原因 → 查询存活概览与摘要 → 体检数据项。
 
 前置条件（缺一不可，脚本不做任何生产库操作）：
   1. 目标库是隔离库（例如 pim_test），绝不是 pim_prod；
   2. API 已用 `ASPNETCORE_URLS` 起在 <base>；连接串指向该隔离库；
   3. JWT 私钥与 DataProtection 目录已配置（见 PR「测试 / Tests」章节的命令）；
-  4. 环境变量 <c>KA_TEST_PASSWORD</c> 提供本次回放要注册的临时账号口令
-     （源码里**不内置任何口令**，见 AC-27.2）。
+  4. 环境变量提供回放所需的凭据（源码里**不内置任何口令**，见 AC-27.2）：
+     - <c>KA_ADMIN_USERNAME</c> / <c>KA_ADMIN_PASSWORD</c>：隔离库中一个**管理员**账号；
+     - <c>KA_TEST_PASSWORD</c>：为本次回放新建账号设置的一次性口令。
+
+为什么需要管理员凭据：自 WO-AUTH-REGISTER-20261014 起公开注册默认关闭，本脚本不再调用
+`POST /auth/register`（该工单 AC-10.1）；改为 `POST /api/v1/admin/users` 建一个**本次专用的
+随机账号**。这样每次回放仍在干净账号上跑，设备/事件去重与丢弃统计类断言可重复执行
+（复用同一账号会让固定 clientItemKey 被幂等去重，第二次回放必然失败）。
 
 用法：
-  KA_TEST_PASSWORD=... python3 scripts/qa/mobile-liveness-replay.py \
+  KA_ADMIN_USERNAME=... KA_ADMIN_PASSWORD=... KA_TEST_PASSWORD=... \\
+      python3 scripts/qa/mobile-liveness-replay.py \\
       [--base http://127.0.0.1:5999/api/v1] [--user-prefix ka_e2e]
 
 退出码 0 表示全部断言通过；任一断言失败时报错退出。
@@ -27,7 +34,9 @@ import sys
 import urllib.error
 import urllib.request
 
-# 源码不内置口令（AC-27.2）：本次回放注册的一次性账号口令只从环境变量取。
+# 源码不内置口令（AC-27.2）：回放凭据只从环境变量取。
+TEST_ADMIN_USERNAME_ENV = "KA_ADMIN_USERNAME"
+TEST_ADMIN_PASSWORD_ENV = "KA_ADMIN_PASSWORD"
 TEST_PASSWORD_ENV = "KA_TEST_PASSWORD"
 
 DEFAULT_BASE = "http://127.0.0.1:5999/api/v1"
@@ -61,28 +70,59 @@ def main():
     base = args.base
 
     password = os.environ.get(TEST_PASSWORD_ENV)
-    if not password:
+    admin_username = os.environ.get(TEST_ADMIN_USERNAME_ENV)
+    admin_password = os.environ.get(TEST_ADMIN_PASSWORD_ENV)
+    if not password or not admin_username or not admin_password:
         print(
-            f"{TEST_PASSWORD_ENV} 未设置：本脚本使用的一次性测试口令只从环境变量读取，"
-            "不会写进源码。",
+            f"{TEST_ADMIN_USERNAME_ENV} / {TEST_ADMIN_PASSWORD_ENV} / {TEST_PASSWORD_ENV} 未设置："
+            "本脚本使用的口令与管理员凭据只从环境变量读取，不会写进源码。",
             file=sys.stderr,
         )
         return 2
 
+    # WO-AUTH-REGISTER-20261014 AC-10.1：公开注册已关闭，令牌只由登录取得。
+    # 为保持「每次回放一个干净账号」的隔离性，先由管理员建一个本次专用账号。
+    status, response = call(
+        "POST",
+        "/auth/login",
+        {
+            "username": admin_username,
+            "password": admin_password,
+        },
+        base=base,
+    )
+    assert status == 200, (status, response)
+    admin_token = response["data"]["accessToken"]
+    print(f"logged in admin {admin_username}")
+
     username = f"{args.user_prefix}_{random.randint(100000, 999999)}"
     status, response = call(
         "POST",
-        "/auth/register",
+        "/admin/users",
         {
             "username": username,
             "email": f"{username}@example.com",
             "password": password,
+            "role": "user",
+        },
+        admin_token,
+        base=base,
+    )
+    assert status == 201, (status, response)
+    print(f"admin created {username}")
+
+    status, response = call(
+        "POST",
+        "/auth/login",
+        {
+            "username": username,
+            "password": password,
         },
         base=base,
     )
-    assert status in (200, 201), (status, response)
+    assert status == 200, (status, response)
     token = response["data"]["accessToken"]
-    print(f"registered {username}")
+    print(f"logged in {username}")
 
     now = datetime.datetime.now(datetime.timezone.utc)
     top = now - datetime.timedelta(hours=7)

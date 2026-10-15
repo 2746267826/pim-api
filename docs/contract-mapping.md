@@ -15,6 +15,8 @@
 | 方法 | 路径 | 响应（状态码:schema） |
 |---|---|---|
 | GET | `/api/v1/admin/users` | 200:`AdminUserDtoIReadOnlyListApiResponse`、401、403、500:`StringApiResponse` |
+| POST | `/api/v1/admin/users` | 201:`AdminUserDtoApiResponse`、400:`StringApiResponse`、401、403、409:`StringApiResponse`、500:`StringApiResponse` |
+| POST | `/api/v1/admin/users/{id}/password` | 200:`AdminUserDtoApiResponse`、400:`StringApiResponse`、401、403、404:`StringApiResponse`、500:`StringApiResponse` |
 | POST | `/api/v1/admin/users/{id}/role` | 200:`AdminUserDtoApiResponse`、400:`StringApiResponse`、401、403、404:`StringApiResponse`、500:`StringApiResponse` |
 | POST | `/api/v1/admin/users/{id}/status` | 200:`AdminUserDtoApiResponse`、400:`StringApiResponse`、401、403、404:`StringApiResponse`、500:`StringApiResponse` |
 
@@ -35,8 +37,9 @@
 |---|---|---|
 | POST | `/api/v1/auth/login` | 200:`AuthResponseApiResponse`、400:`StringApiResponse`、401、403:`StringApiResponse`、429、500:`StringApiResponse` |
 | GET | `/api/v1/auth/me` | 200:`UserInfoApiResponse`、401、500:`StringApiResponse` |
+| POST | `/api/v1/auth/password` | 200:`StringApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | POST | `/api/v1/auth/refresh` | 200:`AuthResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
-| POST | `/api/v1/auth/register` | 201:`AuthResponseApiResponse`、400:`StringApiResponse`、409:`StringApiResponse`、500:`StringApiResponse` |
+| POST | `/api/v1/auth/register` | 201:`AuthResponseApiResponse`、400:`StringApiResponse`、403:`StringApiResponse`、409:`StringApiResponse`、500:`StringApiResponse` |
 
 ### src/Pim.Api/Endpoints/DaemonEndpoints.cs
 

@@ -18,6 +18,18 @@ public record RefreshRequest(
     [property:Required] string RefreshToken
 );
 
+/// <summary>
+/// 用户修改自己密码（REQ-5）。
+/// <c>RefreshToken</c> 是**当前设备**持有的明文 refresh token：
+/// 服务端据此识别「哪条会话保留」，其余设备一律撤销（决策记录 §3.3）。
+/// 前端必须在提交时从令牌存储现取，不得缓存于组件状态（界面文案与交互要点 §4.1）。
+/// </summary>
+public record ChangePasswordRequest(
+    [property:Required] string CurrentPassword,
+    [property:Required][property:MinLength(8)][property:MaxLength(100)] string NewPassword,
+    [property:Required] string RefreshToken
+);
+
 public record AuthResponse(
     string AccessToken,
     string RefreshToken,

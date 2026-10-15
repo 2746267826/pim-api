@@ -1,7 +1,6 @@
 using System.Diagnostics;
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Pim.Core.Common;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
@@ -20,8 +19,20 @@ public static class AuthEndpoints
             RegisterRequest request,
             PimDbContext db,
             JwtService jwt,
+            IConfiguration configuration,
             CancellationToken ct) =>
         {
+            // REQ-1 / REQ-2：关闭判定必须**先于**参数校验。
+            // 库非空且未开开关时，非法载荷同样返回 403/40304（不得落到 400），也不写库。
+            if (!await PublicRegistrationPolicy.IsAllowedAsync(db, configuration, ct))
+            {
+                return Results.Json(
+                    ApiResponse<string>.Error(
+                        PublicRegistrationPolicy.ClosedErrorCode,
+                        PublicRegistrationPolicy.ClosedMessage),
+                    statusCode: 403);
+            }
+
             var username = request.Username?.Trim() ?? string.Empty;
             var email = request.Email?.Trim() ?? string.Empty;
             var normalizedEmail = email.ToLowerInvariant();
@@ -29,18 +40,9 @@ public static class AuthEndpoints
             if (string.IsNullOrEmpty(displayName))
                 displayName = username;
 
-            if (string.IsNullOrWhiteSpace(username))
-                return Results.BadRequest(ApiResponse<string>.Error(40001, "Username is required"));
-            if (string.IsNullOrWhiteSpace(email))
-                return Results.BadRequest(ApiResponse<string>.Error(40002, "Email is required"));
-            if (!new System.ComponentModel.DataAnnotations.EmailAddressAttribute().IsValid(email))
-                return Results.BadRequest(ApiResponse<string>.Error(40003, "Invalid email format"));
-            if (string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < 8)
-                return Results.BadRequest(ApiResponse<string>.Error(40004, "Password must be at least 8 characters"));
-            if (username.Length > 50) return Results.BadRequest(ApiResponse<string>.Error(40005, "Username must not exceed 50 characters"));
-            if (email.Length > 255) return Results.BadRequest(ApiResponse<string>.Error(40006, "Email must not exceed 255 characters"));
-            if (request.Password.Length > 100) return Results.BadRequest(ApiResponse<string>.Error(40007, "Password must not exceed 100 characters"));
-            if (!string.IsNullOrEmpty(displayName) && displayName.Length > 100) return Results.BadRequest(ApiResponse<string>.Error(40008, "DisplayName must not exceed 100 characters"));
+            // 校验口径与管理员建号共用同一份实现（40001–40008）
+            if (UserCredentialsValidator.Validate(username, email, request.Password, displayName) is { } error)
+                return Results.BadRequest(ApiResponse<string>.Error(error.Code, error.Message));
 
             if (await db.Users.AnyAsync(u => u.Username == username, ct))
                 return Results.Conflict(ApiResponse<string>.Error(01003, "用户名已存在"));
@@ -81,14 +83,11 @@ public static class AuthEndpoints
 
             var accessToken = jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
             var refreshToken = jwt.GenerateRefreshToken();
-            var refreshTokenHash = Convert.ToBase64String(
-                SHA256.HashData(
-                    Encoding.UTF8.GetBytes(refreshToken)));
 
             db.RefreshTokens.Add(new RefreshTokenEntity
             {
                 UserId = user.Id,
-                TokenHash = refreshTokenHash,
+                TokenHash = RefreshTokenSessions.HashSecret(refreshToken),
                 ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
             });
             await db.SaveChangesAsync(ct);
@@ -102,6 +101,7 @@ public static class AuthEndpoints
         })
         .Produces<ApiResponse<AuthResponse>>(201)
         .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(403)
         .Produces<ApiResponse<string>>(409)
         .Produces<ApiResponse<string>>(500);
 
@@ -169,14 +169,11 @@ public static class AuthEndpoints
             var jwtMs = stepSw.ElapsedMilliseconds;
 
             var refreshToken = jwt.GenerateRefreshToken();
-            var refreshTokenHash = Convert.ToBase64String(
-                SHA256.HashData(
-                    Encoding.UTF8.GetBytes(refreshToken)));
 
             db.RefreshTokens.Add(new RefreshTokenEntity
             {
                 UserId = user.Id,
-                TokenHash = refreshTokenHash,
+                TokenHash = RefreshTokenSessions.HashSecret(refreshToken),
                 ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
             });
             stepSw.Restart();
@@ -205,9 +202,7 @@ public static class AuthEndpoints
             JwtService jwt,
             CancellationToken ct) =>
         {
-            var tokenHash = Convert.ToBase64String(
-                SHA256.HashData(
-                    Encoding.UTF8.GetBytes(request.RefreshToken)));
+            var tokenHash = RefreshTokenSessions.HashSecret(request.RefreshToken);
 
             var stored = await db.RefreshTokens.FirstOrDefaultAsync(
                 rt => rt.TokenHash == tokenHash && rt.RevokedAt == null, ct);
@@ -223,14 +218,11 @@ public static class AuthEndpoints
 
             var accessToken = jwt.GenerateAccessToken(user.Id, user.Username, user.Role);
             var newRefreshToken = jwt.GenerateRefreshToken();
-            var newTokenHash = Convert.ToBase64String(
-                SHA256.HashData(
-                    Encoding.UTF8.GetBytes(newRefreshToken)));
 
             db.RefreshTokens.Add(new RefreshTokenEntity
             {
                 UserId = user.Id,
-                TokenHash = newTokenHash,
+                TokenHash = RefreshTokenSessions.HashSecret(newRefreshToken),
                 ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
             });
             await db.SaveChangesAsync(ct);
@@ -242,6 +234,54 @@ public static class AuthEndpoints
                 new UserInfo(user.Id, user.Username, user.DisplayName, user.Role))));
         })
         .Produces<ApiResponse<AuthResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
+        // REQ-5 / REQ-6：用户修改自己密码。
+        // 只踢其它设备——请求携带的 refreshToken 即「当前设备」，那条会话保留（决策记录 §3.3）。
+        group.MapPost("/password", async (
+            ChangePasswordRequest request,
+            ICurrentUserService currentUser,
+            IUserPasswordService passwordService,
+            CancellationToken ct) =>
+        {
+            if (currentUser.UserId is not Guid userId)
+                return Results.Unauthorized();
+
+            // 纯入参校验先行：新密码 8–100，沿用注册的既有码
+            if (UserCredentialsValidator.ValidatePassword(request.NewPassword) is { } error)
+                return Results.BadRequest(ApiResponse<string>.Error(error.Code, error.Message));
+
+            var status = await passwordService.ChangeOwnPasswordAsync(
+                userId, request.CurrentPassword, request.NewPassword, request.RefreshToken, ct);
+
+            IResult response = status switch
+            {
+                ChangeOwnPasswordStatus.Ok =>
+                    Results.Ok(ApiResponse<string>.Ok("密码已修改")),
+                // 端点已先行拦下长度不合规的新密码，这里是纵深防御（同一批错误码）
+                ChangeOwnPasswordStatus.InvalidNewPassword =>
+                    Results.BadRequest(ApiResponse<string>.Error(
+                        UserCredentialsValidator.PasswordTooShortCode,
+                        UserCredentialsValidator.PasswordTooShortMessage)),
+                ChangeOwnPasswordStatus.UserNotFound => Results.Unauthorized(),
+                ChangeOwnPasswordStatus.InvalidSessionToken =>
+                    Results.BadRequest(ApiResponse<string>.Error(
+                        PasswordChangeErrors.InvalidSessionCode, PasswordChangeErrors.InvalidSessionMessage)),
+                ChangeOwnPasswordStatus.WrongCurrentPassword =>
+                    Results.BadRequest(ApiResponse<string>.Error(
+                        PasswordChangeErrors.WrongCurrentPasswordCode, PasswordChangeErrors.WrongCurrentPasswordMessage)),
+                ChangeOwnPasswordStatus.SameAsCurrentPassword =>
+                    Results.BadRequest(ApiResponse<string>.Error(
+                        PasswordChangeErrors.SameAsCurrentCode, PasswordChangeErrors.SameAsCurrentMessage)),
+                _ => Results.BadRequest(ApiResponse<string>.Error(
+                    PasswordChangeErrors.InvalidSessionCode, PasswordChangeErrors.InvalidSessionMessage))
+            };
+            return response;
+        })
+        .RequireAuthorization()
+        .Produces<ApiResponse<string>>(200)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);

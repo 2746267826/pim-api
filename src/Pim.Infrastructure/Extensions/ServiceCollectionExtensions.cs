@@ -106,6 +106,7 @@ public static class ServiceCollectionExtensions
         services.AddHttpContextAccessor();
         services.AddScoped<ICurrentUserService, CurrentUserService>();
         services.AddScoped<IAdminUserService, AdminUserService>();
+        services.AddScoped<IUserPasswordService, UserPasswordService>();
 
         // Storage：MinIO 随 P4 退役（文件与附件线均改走 OneDrive），不再注册
         services.AddSingleton(sp => new KopiaService(
