@@ -1047,14 +1047,15 @@ public class PlanningModelService
     // 同一任务同时只允许一条开放段，避免重复计时。
 
     /// <summary>开始计时：新建开放段，并把任务自然推进到 IN-PROCESS。</summary>
-    public async Task<TaskExecutionSegmentResponse> StartTimerAsync(Guid taskId, CancellationToken ct = default)
-    {
-        var userId = UserId;
-
+    public Task<TaskExecutionSegmentResponse> StartTimerAsync(Guid taskId, CancellationToken ct = default)
         // 复审 I1/I2：与终态更新共用同一把任务级锁，并且**在锁内**重读任务状态、重查开放段。
         // 否则两个并发 start 会同时通过「没有开放段」检查插出两条开放段；
         // 与「任务置为已完成」并发时还会留下「COMPLETED + ends_at IS NULL」。
-        await using var taskLock = await TaskRowLock.AcquireAsync(_db, taskId, ct);
+        => TaskRowLock.WithTaskLocksAsync(_db, new[] { taskId }, () => StartTimerCoreAsync(taskId, ct), ct);
+
+    private async Task<TaskExecutionSegmentResponse> StartTimerCoreAsync(Guid taskId, CancellationToken ct)
+    {
+        var userId = UserId;
         var task = await GetTaskAsync(taskId, userId, ct);
 
         if (TaskStatuses.IsTerminal(task.Status))
@@ -1097,10 +1098,12 @@ public class PlanningModelService
     }
 
     /// <summary>暂停计时：闭合当前开放段（paused）。</summary>
-    public async Task<TaskExecutionSegmentResponse> PauseTimerAsync(Guid taskId, CancellationToken ct = default)
+    public Task<TaskExecutionSegmentResponse> PauseTimerAsync(Guid taskId, CancellationToken ct = default)
+        => TaskRowLock.WithTaskLocksAsync(_db, new[] { taskId }, () => PauseTimerCoreAsync(taskId, ct), ct);
+
+    private async Task<TaskExecutionSegmentResponse> PauseTimerCoreAsync(Guid taskId, CancellationToken ct)
     {
         var userId = UserId;
-        await using var taskLock = await TaskRowLock.AcquireAsync(_db, taskId, ct);
         var task = await GetTaskAsync(taskId, userId, ct);
         var segment = await GetRunningSegmentAsync(task.Id, userId, ct)
             ?? throw new DomainException(02059, "该任务没有正在进行的计时");
@@ -1113,10 +1116,12 @@ public class PlanningModelService
     }
 
     /// <summary>结束计时：闭合当前开放段（completed）。</summary>
-    public async Task<TaskExecutionSegmentResponse> StopTimerAsync(Guid taskId, CancellationToken ct = default)
+    public Task<TaskExecutionSegmentResponse> StopTimerAsync(Guid taskId, CancellationToken ct = default)
+        => TaskRowLock.WithTaskLocksAsync(_db, new[] { taskId }, () => StopTimerCoreAsync(taskId, ct), ct);
+
+    private async Task<TaskExecutionSegmentResponse> StopTimerCoreAsync(Guid taskId, CancellationToken ct)
     {
         var userId = UserId;
-        await using var taskLock = await TaskRowLock.AcquireAsync(_db, taskId, ct);
         var task = await GetTaskAsync(taskId, userId, ct);
         var segment = await GetRunningSegmentAsync(task.Id, userId, ct)
             ?? throw new DomainException(02059, "该任务没有正在进行的计时");

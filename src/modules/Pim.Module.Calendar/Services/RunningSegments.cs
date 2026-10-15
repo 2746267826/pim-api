@@ -56,42 +56,43 @@ internal static class RunningSegments
 /// 锁在事务提交/回滚时自动释放，无需额外清理；键碰撞只会多串行一点，不影响正确性。
 /// 非 Npgsql 提供程序（单测用的 InMemory / Sqlite）安全降级为空操作 —— 那里没有并发语义。
 /// </summary>
-internal sealed class TaskRowLock : IAsyncDisposable
+internal static class TaskRowLock
 {
-    private readonly IDbContextTransaction? _transaction;
-
-    private TaskRowLock(IDbContextTransaction? transaction) => _transaction = transaction;
-
-    /// <summary>取单任务锁。返回的对象释放时提交事务（即释放锁）。</summary>
-    internal static Task<TaskRowLock> AcquireAsync(PimDbContext db, Guid taskId, CancellationToken ct)
-        => AcquireManyAsync(db, new[] { taskId }, ct);
-
-    /// <summary>取多任务锁（批量终态更新用）；按 id 排序依次加锁，避免与其它批量请求死等。</summary>
-    internal static async Task<TaskRowLock> AcquireManyAsync(
+    /// <summary>
+    /// 在「任务级咨询锁 + 单事务」内执行 <paramref name="action"/>。
+    ///
+    /// ⚠️ 为什么必须把**整个工作单元**包在 <c>CreateExecutionStrategy()</c> 里：
+    /// 本库的 DbContext 配置了 <c>EnableRetryOnFailure</c>（NpgsqlRetryingExecutionStrategy），
+    /// 该策略**禁止用户自行发起的事务**——只要在它管理之外开事务，后续任何命令都会抛
+    /// 「does not support user-initiated transactions」。所以「开事务 → 加锁 → 业务写入 → 提交」
+    /// 必须整体作为可重试单元交给执行策略。
+    ///
+    /// 非 Npgsql 提供程序（单测用的 InMemory / Sqlite）没有并发语义，直接执行 action。
+    /// </summary>
+    internal static async Task<T> WithTaskLocksAsync<T>(
         PimDbContext db,
         IReadOnlyCollection<Guid> taskIds,
+        Func<Task<T>> action,
         CancellationToken ct)
     {
         if (!db.Database.IsNpgsql() || taskIds.Count == 0)
-            return new TaskRowLock(null);
+            return await action();
 
-        var transaction = await db.Database.BeginTransactionAsync(ct);
-        foreach (var taskId in taskIds.OrderBy(id => id))
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
         {
-            await db.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT pg_advisory_xact_lock(hashtext({taskId.ToString()}))",
-                ct);
-        }
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            // 按 id 排序依次加锁，避免两个批量请求以不同顺序取锁而互相等待。
+            foreach (var taskId in taskIds.Distinct().OrderBy(id => id))
+            {
+                await db.Database.ExecuteSqlInterpolatedAsync(
+                    $"SELECT pg_advisory_xact_lock(hashtext({taskId.ToString()}))",
+                    ct);
+            }
 
-        return new TaskRowLock(transaction);
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_transaction is null)
-            return;
-
-        await _transaction.CommitAsync();
-        await _transaction.DisposeAsync();
+            var result = await action();
+            await transaction.CommitAsync(ct);
+            return result;
+        });
     }
 }

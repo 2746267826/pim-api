@@ -1151,14 +1151,17 @@ public class CalendarService
         if (request.Status is not null)
             ValidateTaskStatus(request.Status);
 
-        // 复审 I2：状态改写与计时动作（timer/start|pause|stop）必须共用同一把任务级锁，
-        // 否则「查开放段 → 写终态」与「查开放段 → 插入开放段」会互相穿插，
-        // 出现「COMPLETED 但 ends_at IS NULL」。锁必须在读任务**之前**拿到，
-        // 这样锁内读到的才是最新已提交状态。
-        await using var statusLock = request.Status is not null
-            ? await TaskRowLock.AcquireAsync(_db, id, ct)
-            : null;
+        // 复审 I2：写状态时与计时动作（timer/start|pause|stop）共用同一把任务级锁，
+        // 整个工作单元（读任务 → 改写 → 闭合在跑的段 → 保存）都在锁与同一事务内，
+        // 否则会出现「COMPLETED 但 ends_at IS NULL」。不写状态时不加锁（避免无谓事务）。
+        return request.Status is null
+            ? await UpdateTaskCoreAsync(id, request, ct)
+            : await TaskRowLock.WithTaskLocksAsync(
+                _db, new[] { id }, () => UpdateTaskCoreAsync(id, request, ct), ct);
+    }
 
+    private async Task<TaskResponse> UpdateTaskCoreAsync(Guid id, UpdateTaskRequest request, CancellationToken ct)
+    {
         var task = await _db.Set<TaskEntity>()
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
             ?? throw new DomainException(02004, "任务不存在");
@@ -1267,6 +1270,20 @@ public class CalendarService
         if (request.Status is not null)
             ValidateTaskStatus(request.Status);
 
+        // 复审 I2：写状态时在任务级锁内完成「查开放段 → 写状态 → 闭合」（整个工作单元同一事务）。
+        return request.Status is null
+            ? await BatchUpdateTasksCoreAsync(request, ids, operationId, ct)
+            : await TaskRowLock.WithTaskLocksAsync(
+                _db, ids, () => BatchUpdateTasksCoreAsync(request, ids, operationId, ct), ct);
+    }
+
+    private async Task<CalendarOperationResult> BatchUpdateTasksCoreAsync(
+        BatchTaskUpdateRequest request,
+        IReadOnlyList<Guid> ids,
+        Guid operationId,
+        CancellationToken ct)
+    {
+
         if (ids.Count == 0)
         {
             return new CalendarOperationResult(
@@ -1296,11 +1313,6 @@ public class CalendarService
                 .FirstOrDefaultAsync(c => c.Id == request.CalendarId.Value && c.UserId == UserId, ct)
                 ?? throw new DomainException(02003, "日历不存在");
         }
-
-        // 复审 I2：批量终态化同样要在任务级锁内完成「查开放段 → 写终态 → 闭合」。
-        await using var batchLock = request.Status is not null && TaskStatuses.IsTerminal(request.Status)
-            ? await TaskRowLock.AcquireManyAsync(_db, ids, ct)
-            : null;
 
         var tasks = await _db.Set<TaskEntity>()
             .Include(t => t.Calendar)
