@@ -12,7 +12,7 @@ using Pim.Infrastructure.Data;
 namespace Pim.Infrastructure.Data.Migrations
 {
     [DbContext(typeof(PimDbContext))]
-    [Migration("20261014150718_MultiProviderAccountsAndDropNextcloudFields")]
+    [Migration("20261015051754_MultiProviderAccountsAndDropNextcloudFields")]
     partial class MultiProviderAccountsAndDropNextcloudFields
     {
         /// <inheritdoc />
@@ -3407,6 +3407,12 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("now()");
+
+                    b.Property<int>("DeferredBlockCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("deferred_block_count");
 
                     b.Property<string>("DeltaLink")
                         .HasColumnType("text")

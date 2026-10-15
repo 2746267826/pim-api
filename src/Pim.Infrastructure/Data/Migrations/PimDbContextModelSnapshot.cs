@@ -3413,6 +3413,12 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("now()");
 
+                    b.Property<int>("DeferredBlockCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("deferred_block_count");
+
                     b.Property<string>("DeltaLink")
                         .HasColumnType("text")
                         .HasColumnName("delta_link");

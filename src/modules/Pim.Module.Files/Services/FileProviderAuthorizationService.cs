@@ -17,7 +17,14 @@ public sealed record FileProviderBindingStartResult(
     string? UserCode,
     string? VerificationUri,
     int? ExpiresIn,
-    string? AuthorizationUrl);
+    string? AuthorizationUrl)
+{
+    /// <summary>
+    /// 浏览器跳转形态的一次性 state。**只用于让端点把它写进 HttpOnly Cookie 做浏览器绑定**，
+    /// 不作为独立字段进响应体（它已经在 authorizationUrl 里）。
+    /// </summary>
+    public string? State { get; init; }
+}
 
 /// <summary>
 /// Status: pending | connected | expired | denied | error。
@@ -162,7 +169,10 @@ public sealed class FileProviderAuthorizationService
             challenge.UserCode,
             challenge.VerificationUri,
             challenge.ExpiresIn,
-            challenge.AuthorizationUrl);
+            challenge.AuthorizationUrl)
+        {
+            State = challenge.State,
+        };
     }
 
     /// <summary>查询绑定状态；设备码形态会顺带轮询一次远端。</summary>
@@ -376,6 +386,18 @@ public sealed class FileProviderAuthorizationService
             // 换 clientId 重绑时必须一并更新客户端身份：新 refresh token 属于新的客户端，
             // 继续用旧 clientId 刷新会直接 invalid_client（复审 Important）。
             existingSameAccount.ClientId = provider.ClientId ?? existingSameAccount.ClientId;
+
+            // 复用的行可能不是默认落点（例如它在迁移回填时处于 expired、本来是 false）。
+            // 若整个用户没有任何默认账号，这里必须补上，否则附件/闪念会「没有落点」。
+            var userHasDefault = await _db.Set<FileProviderEntity>()
+                .AnyAsync(row => row.UserId == existingSameAccount.UserId
+                    && row.IsDefault
+                    && row.Id != existingSameAccount.Id, ct);
+            if (!userHasDefault)
+            {
+                existingSameAccount.IsDefault = true;
+            }
+
             _db.Set<FileProviderEntity>().Remove(provider);
             await _db.SaveChangesAsync(ct);
             _tokenCache.Invalidate(existingSameAccount.Id);

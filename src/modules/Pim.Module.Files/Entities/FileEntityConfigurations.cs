@@ -28,6 +28,7 @@ public sealed class FileProviderEntityConfiguration : IEntityTypeConfiguration<F
         builder.Property(e => e.IsDefault).HasColumnName("is_default").HasDefaultValue(false);
         builder.Property(e => e.SyncStatus).HasColumnName("sync_status").HasMaxLength(32).HasDefaultValue("idle");
         builder.Property(e => e.SyncedItemCount).HasColumnName("synced_item_count").HasDefaultValue(0);
+        builder.Property(e => e.DeferredBlockCount).HasColumnName("deferred_block_count").HasDefaultValue(0);
         builder.Property(e => e.PendingAuthorizationSecretEncrypted).HasColumnName("device_code_encrypted");
         builder.Property(e => e.UserCode).HasColumnName("user_code").HasMaxLength(32);
         builder.Property(e => e.VerificationUri).HasColumnName("verification_uri").HasMaxLength(512);

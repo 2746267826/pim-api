@@ -49,6 +49,18 @@ public sealed class FileProviderCredentialSource(IConfiguration configuration)
             : null;
     }
 
+    /// <summary>
+    /// 该 provider 的**对外来源**（scheme://host[:port]），从配置的回调地址推导。
+    /// Google 的断点续传初始化必须带 <c>Origin</c>，否则浏览器分片直传会被 CORS 拦下。
+    /// </summary>
+    public string? PublicOriginFor(string providerKey)
+    {
+        var redirect = RedirectUriFor(providerKey);
+        return Uri.TryCreate(redirect, UriKind.Absolute, out var uri)
+            ? uri.GetLeftPart(UriPartial.Authority)
+            : null;
+    }
+
     private string? Read(string providerKey, string setting)
     {
         var fromConfiguration = _configuration[$"Pim:Files:{providerKey}:{setting}"];

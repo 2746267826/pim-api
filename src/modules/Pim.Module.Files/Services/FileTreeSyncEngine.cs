@@ -110,7 +110,12 @@ public sealed class FileTreeSyncEngine
         // 只在「游标失效异常」时才置 fullRecrawl 会漏掉后者，导致授权离线期间远端已删的文件
         // 变成永久幽灵索引（复审 Important）。
         var fullRecrawl = cursor is null;
-        var removedInThisRun = new HashSet<string>(StringComparer.Ordinal);
+        // 本轮**按 ExternalId 的最终事件**：同一 id 在后面的页里再次出现时，
+        // 以最后一条为准（否则「先 deferred 的旧状态」会在补解析阶段覆盖后到的新状态）。
+        var lastEventById = new Dictionary<string, FileChange>(StringComparer.Ordinal);
+        var deferredById = new Dictionary<string, FileChange>(StringComparer.Ordinal);
+        // 本轮已落地的路径：同页/后续页解析父路径时优先用它，而不是过期的缓存或库里的旧值。
+        var appliedPathsThisRun = new Dictionary<string, string>(StringComparer.Ordinal);
         var authRefreshes = 0;
         var pagesProcessed = 0;
         long itemsApplied = 0;
@@ -119,6 +124,7 @@ public sealed class FileTreeSyncEngine
         var itemsDeferred = 0;
         var deferredChanges = new List<FileChange>();
         var throttleRetries = 0;
+        string? droppedMessage = null;
         var parentPathCache = new Dictionary<string, string>(StringComparer.Ordinal);
 
         try
@@ -169,8 +175,21 @@ public sealed class FileTreeSyncEngine
 
                 pagesProcessed++;
                 var applied = await ApplyPageAsync(
-                    provider, session, parentPathCache, page.Changes, now, removedInThisRun, ct);
-                deferredChanges.AddRange(applied.Deferred);
+                    provider, session, parentPathCache, page.Changes, appliedPathsThisRun, now, ct);
+                foreach (var change in page.Changes)
+                {
+                    lastEventById[change.ExternalId] = change;
+                    if (change.IsRemoved)
+                    {
+                        // 后到的删除取消先前对同一 id 的延迟 upsert
+                        deferredById.Remove(change.ExternalId);
+                    }
+                }
+
+                foreach (var change in applied.Deferred)
+                {
+                    deferredById[change.ExternalId] = change;
+                }
                 itemsDeleted += applied.Deleted;
                 itemsApplied += applied.Applied;
 
@@ -195,28 +214,48 @@ public sealed class FileTreeSyncEngine
 
             // 全部页面落库后再补解析一轮：此时本地索引已含整棵树，
             // 「父在后面的页里」这种情况才解得开。
+            // 补解析用的是「按 id 去重后的最新状态」：同 id 只处理一次，且以最后事件为准。
+            var drainInput = deferredById.Values
+                .Where(change => lastEventById.TryGetValue(change.ExternalId, out var last)
+                                 && !last.IsRemoved)
+                .ToList();
             var drained = await DrainDeferredAsync(
-                provider, session, parentPathCache, deferredChanges, now, removedInThisRun, ct);
+                provider, session, parentPathCache, appliedPathsThisRun, drainInput, now, ct);
             itemsApplied += drained.Applied;
             itemsDeleted += drained.Deleted;
             itemsDeferred = drained.Deferred.Count;
 
             if (itemsDeferred > 0)
             {
-                // 还有条目没落地：**不能推进游标**，否则这些变化再也不会被投递（永久漏项）。
-                // 保留旧游标，下一轮从原处重放；同时不做缺失项清理 —— 这些条目对应的既有行
-                // 本轮没有更新 LastSeenAt，清理会把它们误删（复审 Important）。
-                provider.SyncStatus = "error";
-                provider.LastError = $"有 {itemsDeferred} 项因父目录尚未索引而未落地，将在下次同步重试";
-                provider.LastSyncAt = now;
-                provider.SyncedItemCount = itemsApplied;
-                provider.UpdatedAt = now;
-                await _db.SaveChangesAsync(ct);
+                provider.DeferredBlockCount++;
+                if (provider.DeferredBlockCount <= MaxDeferredBlockedSyncs)
+                {
+                    // 还有条目没落地：**不能推进游标**，否则这些变化再也不会被投递（永久漏项）。
+                    // 保留旧游标，下一轮从原处重放；同时不做缺失项清理 —— 这些条目对应的既有行
+                    // 本轮没有更新 LastSeenAt，清理会把它们误删（复审 Important）。
+                    provider.SyncStatus = "error";
+                    provider.LastError =
+                        $"有 {itemsDeferred} 项因父目录尚未索引而未落地（第 {provider.DeferredBlockCount} 次），将在下次同步重试";
+                    provider.LastSyncAt = now;
+                    provider.SyncedItemCount = itemsApplied;
+                    provider.UpdatedAt = now;
+                    await _db.SaveChangesAsync(ct);
+                    _logger?.LogWarning(
+                        "Files sync for provider {ProviderId} kept its cursor because {Deferred} item(s) could not be resolved (attempt {Attempt})",
+                        provider.Id, itemsDeferred, provider.DeferredBlockCount);
+                    return new FileSyncResult(pagesProcessed, (int)itemsApplied, (int)itemsDeleted, fullRecrawl, itemsDeferred);
+                }
+
+                // 连续多轮都解析不出来（例如父目录在别人盘里、本就不可见）：
+                // 明确放弃并**正常推进**，否则这个条目会把同步永久钉死在这里。
+                // 放弃不是静默的：计数进日志，原因写进 LastError 供同步状态接口展示。
                 _logger?.LogWarning(
-                    "Files sync for provider {ProviderId} kept its cursor because {Deferred} item(s) could not be resolved",
-                    provider.Id, itemsDeferred);
-                return new FileSyncResult(pagesProcessed, (int)itemsApplied, (int)itemsDeleted, fullRecrawl, itemsDeferred);
+                    "Files sync for provider {ProviderId} gave up on {Deferred} item(s) after {Attempt} blocked attempts",
+                    provider.Id, itemsDeferred, provider.DeferredBlockCount);
+                droppedMessage = $"有 {itemsDeferred} 项因父目录不可见已跳过（连续 {provider.DeferredBlockCount} 次无法定位）";
             }
+
+            provider.DeferredBlockCount = 0;
 
             if (fullRecrawl)
             {
@@ -232,7 +271,8 @@ public sealed class FileTreeSyncEngine
             provider.LastSyncAt = now;
             provider.SyncedItemCount = itemsApplied;
             provider.SyncStatus = "idle";
-            provider.LastError = null;
+            // 放弃过条目时保留原因，让同步状态接口能如实显示，而不是静默吞掉
+            provider.LastError = droppedMessage;
             provider.UpdatedAt = now;
             await _db.SaveChangesAsync(ct);
 
@@ -271,7 +311,13 @@ public sealed class FileTreeSyncEngine
     /// 全量首扫时 files.list / delta 的返回顺序不保证「父先于子」，
     /// 因此必须在全部页面落库后补一轮（否则一次首扫会漏掉大量深层条目）。
     /// </summary>
-    private const int DeferredDrainRounds = 5;
+    private const int DeferredDrainRounds = 30;
+
+    /// <summary>
+    /// 「解析不出父路径」连续阻塞多少次同步后放弃这些条目。
+    /// 有界：否则一个永远不可见的父目录会让同步永久停在原地。
+    /// </summary>
+    private const int MaxDeferredBlockedSyncs = 3;
 
     /// <summary>按页批量应用变更：一次查询页内全部既有行，内存合并后单次保存（首扫数万项的性能关键）。</summary>
     private async Task<ApplyOutcome> ApplyPageAsync(
@@ -279,8 +325,8 @@ public sealed class FileTreeSyncEngine
         IFileProviderSession session,
         Dictionary<string, string> parentPathCache,
         IReadOnlyList<FileChange> changes,
+        Dictionary<string, string> appliedPathsThisRun,
         DateTimeOffset now,
-        HashSet<string> removedInThisRun,
         CancellationToken ct)
     {
         var upserts = new List<FileChange>();
@@ -309,7 +355,7 @@ public sealed class FileTreeSyncEngine
         var deferred = new List<FileChange>();
         foreach (var change in upserts)
         {
-            var path = await ResolvePathAsync(provider, session, parentPathCache, change, ct);
+            var path = await ResolvePathAsync(provider, session, parentPathCache, appliedPathsThisRun, change, ct);
             if (path is null)
             {
                 // 父目录还没在本地索引里出现，且远端回读也没拿到路径。
@@ -336,6 +382,7 @@ public sealed class FileTreeSyncEngine
             // 把它当旧路径会触发一次假的整树改写（曾把 /a/b 改写成 /x/a/b）。
             var previousPath = isNew ? null : item!.Path;
             ApplyUpsert(item!, change, path, now);
+            appliedPathsThisRun[change.ExternalId] = path;
             applied++;
 
             // 目录改名/移动后，远端**不会**为每个后代各发一条 change（Drive 尤其如此），
@@ -351,7 +398,7 @@ public sealed class FileTreeSyncEngine
         long deleted = 0;
         foreach (var id in removalIds)
         {
-            removedInThisRun.Add(id);
+            appliedPathsThisRun.Remove(id);
             if (existing.TryGetValue(id, out var item) && !item.IsDeleted)
             {
                 item.IsDeleted = true;
@@ -436,9 +483,9 @@ public sealed class FileTreeSyncEngine
         FileProviderEntity provider,
         IFileProviderSession session,
         Dictionary<string, string> parentPathCache,
+        Dictionary<string, string> appliedPathsThisRun,
         IReadOnlyList<FileChange> deferred,
         DateTimeOffset now,
-        HashSet<string> removedInThisRun,
         CancellationToken ct)
     {
         if (deferred.Count == 0)
@@ -446,12 +493,7 @@ public sealed class FileTreeSyncEngine
             return new ApplyOutcome(0, 0, []);
         }
 
-        // 同一轮里已经被删除标记覆盖的条目不得复活：删除是后发生的语义，优先。
-        var pending = deferred.Where(change => !removedInThisRun.Contains(change.ExternalId)).ToList();
-        if (pending.Count == 0)
-        {
-            return new ApplyOutcome(0, 0, []);
-        }
+        var pending = deferred.ToList();
         long applied = 0;
         for (var round = 0; round < DeferredDrainRounds && pending.Count > 0; round++)
         {
@@ -467,13 +509,7 @@ public sealed class FileTreeSyncEngine
 
             foreach (var change in pending)
             {
-                if (removedInThisRun.Contains(change.ExternalId))
-                {
-                    // 本轮后到的删除优先，不能把条目复活
-                    continue;
-                }
-
-                var path = await ResolvePathAsync(provider, session, parentPathCache, change, ct);
+                var path = await ResolvePathAsync(provider, session, parentPathCache, appliedPathsThisRun, change, ct);
                 if (path is null)
                 {
                     stillPending.Add(change);
@@ -497,6 +533,7 @@ public sealed class FileTreeSyncEngine
 
                 var previousPath = isNewItem ? null : item!.Path;
                 ApplyUpsert(item!, change, path, now);
+                appliedPathsThisRun[change.ExternalId] = path;
                 rows[change.ExternalId] = item;
                 progressed.Add(change);
                 applied++;
@@ -542,6 +579,7 @@ public sealed class FileTreeSyncEngine
         FileProviderEntity provider,
         IFileProviderSession session,
         Dictionary<string, string> parentPathCache,
+        Dictionary<string, string> appliedPathsThisRun,
         FileChange change,
         CancellationToken ct)
     {
@@ -554,7 +592,11 @@ public sealed class FileTreeSyncEngine
             return "/";
         }
 
-        var parentPath = change.ParentPath;
+        // 本轮已经落地过的父目录路径优先：同页里「父改名在前、子在后」时，
+        // 缓存与数据库都还是旧值，只有本轮的结果是新的。
+        var parentPath = change.ParentExternalId is { } pe && appliedPathsThisRun.TryGetValue(pe, out var currentParentPath)
+            ? currentParentPath
+            : change.ParentPath;
         if (parentPath is null && change.ParentExternalId is null)
         {
             // 两者都没有：无法定位，交给补解析/下一轮

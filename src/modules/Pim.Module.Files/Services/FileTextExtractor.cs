@@ -47,6 +47,41 @@ public sealed partial class FileTextExtractor(
         ".txt", ".md", ".markdown", ".json", ".csv", ".log", ".yml", ".yaml", ".xml", ".html", ".htm", ".tsv",
     };
 
+    /// <summary>
+    /// 按**内容类型优先、文件名后缀兜底**判定是不是纯文本。
+    /// Google Docs 这类原生文档没有扩展名，但导出回来的内容类型就是 text/plain ——
+    /// 只看后缀会把它们误判成「不支持的类型」。
+    /// </summary>
+    private static bool IsPlainText(string fileName, string? mimeType)
+    {
+        // 精确匹配，**不能**用 Contains("xml") 这类模糊判据：
+        // docx 的 MIME 是 application/vnd.openxmlformats-...-document，里面含 "xml"，
+        // 模糊匹配会把 docx 当成纯文本直接当 UTF-8 返回（已踩过一次）。
+        var normalized = mimeType?.Split(';')[0].Trim().ToLowerInvariant();
+        if (!string.IsNullOrEmpty(normalized))
+        {
+            if (normalized.StartsWith("text/", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (normalized is "application/json" or "application/xml" or "application/yaml"
+                or "application/x-yaml" or "application/csv" or "application/x-ndjson"
+                or "application/toml")
+            {
+                return true;
+            }
+
+            if (normalized.EndsWith("+json", StringComparison.Ordinal)
+                || normalized.EndsWith("+xml", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return PlainTextExtensions.Contains(Path.GetExtension(fileName));
+    }
+
     public async Task<ExtractedText> ExtractAsync(
         byte[] bytes,
         string fileName,
@@ -60,8 +95,7 @@ public sealed partial class FileTextExtractor(
         }
 
         var extension = Path.GetExtension(fileName);
-        if (PlainTextExtensions.Contains(extension)
-            || (mimeType?.StartsWith("text/", StringComparison.OrdinalIgnoreCase) ?? false))
+        if (IsPlainText(fileName, mimeType))
         {
             return Truncate(bytes, maxBytes, "utf8");
         }

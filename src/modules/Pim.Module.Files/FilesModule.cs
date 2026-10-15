@@ -432,6 +432,24 @@ public sealed class FilesModule : IModule
         var state = query["state"].FirstOrDefault();
         var error = query["error"].FirstOrDefault();
 
+        // 浏览器绑定校验：state 必须是**本浏览器发起授权时**下发的那一个。
+        // 少了这一步，攻击者可以把自己发起的 state 让受害者完成，把受害者的网盘绑到自己账号上。
+        var cookieState = httpContext.Request.Cookies[GoogleStateCookie];
+        if (!string.IsNullOrEmpty(error))
+        {
+            // 用户点了拒绝：交给下面统一处理，不因为缺 cookie 而给出误导性的错误
+        }
+        else if (!StateMatches(cookieState, state))
+        {
+            logger?.LogWarning("Google Drive authorization callback rejected: state cookie mismatch");
+            return Results.Content(
+                CallbackPage("连接 Google Drive 失败", "授权校验未通过（state 与发起授权的浏览器不一致），请重新发起授权。"),
+                "text/html; charset=utf-8",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        httpContext.Response.Cookies.Delete(GoogleStateCookie, new CookieOptions { Path = FileEndpointPaths.Root });
+
         try
         {
             await service.CompleteRedirectAsync(GoogleFileProvider.Key, code, state, error, ct);
@@ -449,6 +467,17 @@ public sealed class FilesModule : IModule
                 statusCode: StatusCodes.Status400BadRequest);
         }
     }
+
+    /// <summary>Google 授权 state 的浏览器绑定 Cookie 名。</summary>
+    private const string GoogleStateCookie = "pim_google_oauth_state";
+
+    /// <summary>固定时间比较 state，避免时序侧信道；任一侧为空一律判不匹配。</summary>
+    private static bool StateMatches(string? cookieState, string? queryState)
+        => !string.IsNullOrEmpty(cookieState)
+           && !string.IsNullOrEmpty(queryState)
+           && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+               Encoding.UTF8.GetBytes(cookieState),
+               Encoding.UTF8.GetBytes(queryState));
 
     /// <summary>回调结果页。不含任何令牌/授权码，也不含脚本。</summary>
     private static string CallbackPage(string title, string message)
@@ -587,11 +616,35 @@ public sealed class FilesModule : IModule
     /// **agent 无法端到端自动跑完这一步**：必须有真人在浏览器点同意。
     /// </summary>
     private static async Task<IResult> StartGoogleAuthorizationAsync(
+        HttpContext httpContext,
         [FromServices] FileProviderAuthorizationService service,
         [FromServices] ICurrentUserService currentUser,
         CancellationToken ct)
-        => Results.Ok(ApiResponse<ProviderBindingStartDto>.Ok(ProviderBindingStartDto.From(
-            await service.StartAsync(RequireUserId(currentUser), GoogleFileProvider.Key, clientId: null, ct))));
+    {
+        var result = await service.StartAsync(RequireUserId(currentUser), GoogleFileProvider.Key, clientId: null, ct);
+
+        // 把一次性 state 同时写进 HttpOnly Cookie，把「这个 state」绑定到**发起授权的浏览器**。
+        // 没有这一步的话，攻击者可以自己发起授权拿到合法 state，再诱导受害者完成授权，
+        // 从而把受害者的网盘绑到攻击者的账号上（login CSRF）。
+        // SameSite=Lax：Google 的顶层跳转会带上它，跨站子请求不会。
+        if (!string.IsNullOrEmpty(result.State))
+        {
+            httpContext.Response.Cookies.Append(
+                GoogleStateCookie,
+                result.State,
+                new CookieOptions
+                {
+                    HttpOnly = true,
+                    IsEssential = true,
+                    SameSite = SameSiteMode.Lax,
+                    Secure = httpContext.Request.IsHttps,
+                    MaxAge = TimeSpan.FromMinutes(10),
+                    Path = FileEndpointPaths.Root,
+                });
+        }
+
+        return Results.Ok(ApiResponse<ProviderBindingStartDto>.Ok(ProviderBindingStartDto.From(result)));
+    }
 
     private static async Task<IResult> GetBindingStatusAsync(
         Guid id,

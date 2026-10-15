@@ -13,15 +13,17 @@ namespace Pim.Infrastructure.Data.Migrations
     /// <c>nextcloud</c> 默认值（列本身保留：它承载 onedrive / google 的区分）。</item>
     /// <item><b>F2</b>：唯一键从 <c>(user_id, provider, base_url, username)</c> 换成
     /// <c>(user_id, provider, account_id) WHERE account_id IS NOT NULL</c>；
-    /// 新增 <c>is_default</c>（附件/闪念的落点账号）。</item>
+    /// 新增 <c>is_default</c>（附件/闪念的落点账号）与 <c>deferred_block_count</c>
+    /// （同步「解析不出父路径」的连续阻塞计数，用于有界重试）。</item>
     /// <item>闪念附件新增 <c>storage_account_id</c>（多账号后必须能定位附件在哪个账号）。</item>
     /// </list>
     ///
     /// <para><b>可逆性（如实说明）</b>：结构可逆、**数据不可逆**。Down 会把四个列以空串重建，
-    /// 但被删掉的原值（本例中本来就是空串）无法还原；更关键的是**降级回不去多账号** ——
-    /// 旧唯一键 <c>(user_id, provider, base_url, username)</c> 会让同一 provider 的第二个账号
-    /// 直接冲突。Down 里因此加了一道显式守卫：存在同 user+provider 的多账号时明确报错，
-    /// 而不是抛一个看不懂的唯一约束冲突。</para>
+    /// 但被删掉的原值无法还原；更关键的是**降级回不去多账号** —— 旧唯一键
+    /// <c>(user_id, provider, base_url, username)</c> 在 base_url/username 都是空串时，
+    /// 同一 (user_id, provider) 下**只允许一行**（包括未完成的待绑定行）。
+    /// Down 里因此加了一道显式守卫：存在同 user+provider 的多行时明确报错，
+    /// 而不是抛一个看不懂的唯一约束冲突、把库停在半途。</para>
     ///
     /// <para><b>对现有生产数据的影响</b>：迁移前 <c>file_providers</c> 只有 1 行
     /// （<c>provider='onedrive'</c>），而 OneDrive 绑定路径从不写这四个字段
@@ -83,6 +85,13 @@ namespace Pim.Infrastructure.Data.Migrations
                 oldMaxLength: 32,
                 oldDefaultValue: "nextcloud");
 
+            migrationBuilder.AddColumn<int>(
+                name: "deferred_block_count",
+                table: "file_providers",
+                type: "integer",
+                nullable: false,
+                defaultValue: 0);
+
             migrationBuilder.AddColumn<bool>(
                 name: "is_default",
                 table: "file_providers",
@@ -140,19 +149,22 @@ namespace Pim.Infrastructure.Data.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            // 守卫：旧唯一键 (user_id, provider, base_url, username) 无法承载多账号。
-            // 与其让 CREATE UNIQUE INDEX 抛一个看不懂的冲突，不如明确说明原因。
+            // 守卫：重建后的旧唯一键 (user_id, provider, base_url, username) 在
+            // base_url / username 都恢复成空串时，**同一 (user_id, provider) 只允许一行** ——
+            // 既包括两个正式账号，也包括任何未完成的待绑定行。
+            // 所以这里按 (user_id, provider) 的**总行数**判断，不能只数 account_id 非空的行：
+            // 否则「1 个正式账号 + 1 个 pending 绑定尝试」会通过守卫、
+            // 然后在 CREATE UNIQUE INDEX 处硬失败，把库停在半途（复审 Important）。
             migrationBuilder.Sql("""
                 DO $$
                 BEGIN
                     IF EXISTS (
                         SELECT 1 FROM file_providers
-                        WHERE account_id IS NOT NULL
                         GROUP BY user_id, provider
-                        HAVING count(DISTINCT account_id) > 1
+                        HAVING count(*) > 1
                     ) THEN
                         RAISE EXCEPTION
-                            '无法降级：同一用户在同一 provider 下存在多个账号，旧唯一键 (user_id, provider, base_url, username) 无法承载。请先删除多余账号后再降级。';
+                            '无法降级：同一用户在同一 provider 下存在多行（多个账号或未完成的绑定），旧唯一键 (user_id, provider, base_url, username) 无法承载。请先删除多余账号/待绑定记录后再降级。';
                     END IF;
                 END $$;
                 """);
@@ -168,6 +180,10 @@ namespace Pim.Infrastructure.Data.Migrations
             migrationBuilder.DropColumn(
                 name: "storage_account_id",
                 table: "quick_note_attachments");
+
+            migrationBuilder.DropColumn(
+                name: "deferred_block_count",
+                table: "file_providers");
 
             migrationBuilder.DropColumn(
                 name: "is_default",

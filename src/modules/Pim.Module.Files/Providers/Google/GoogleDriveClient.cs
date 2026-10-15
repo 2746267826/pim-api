@@ -97,6 +97,27 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
         => mimeType is not null
            && mimeType.StartsWith("application/vnd.google-apps.", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// 原生文档导出成什么类型。返回 null 表示**该类型不支持文本导出**，调用方应给出明确错误，
+    /// 而不是拿一个必然 400 的请求去打 Drive。
+    ///
+    /// 依据 Drive 的官方支持矩阵：
+    /// <list type="bullet">
+    /// <item>Docs → <c>text/plain</c></item>
+    /// <item>Sheets → <c>text/csv</c></item>
+    /// <item>Slides → <c>application/pdf</c>（文本抽取需要 Tika；未配置时给明确错误）</item>
+    /// <item>Forms / Drawings / Shortcuts / Sites / 目录等 → 不支持导出</item>
+    /// </list>
+    /// </summary>
+    public static string? ExportMimeTypeFor(string? mimeType)
+        => mimeType switch
+        {
+            "application/vnd.google-apps.document" => "text/plain",
+            "application/vnd.google-apps.spreadsheet" => "text/csv",
+            "application/vnd.google-apps.presentation" => "application/pdf",
+            _ => null,
+        };
+
     /// <summary>目录的 MIME。</summary>
     public const string FolderMimeType = "application/vnd.google-apps.folder";
 
@@ -357,7 +378,14 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
         return ReadFile(json);
     }
 
-    public async Task CreateFolderAsync(
+    /// <summary>
+    /// 新建目录，返回 Drive 在响应体里给出的条目（**必须**用它拿 id）。
+    ///
+    /// 不要「POST 之后立刻 files.list 按名字回查」：Drive 的搜索索引是最终一致的
+    /// （新条目通常要几百毫秒到数秒才可见），回查会随机查不到 → 误报「未能读回」，
+    /// 而网盘上目录其实已经建好了，用户重试就会堆出一串同名孤儿目录。
+    /// </summary>
+    public async Task<GoogleDriveFile> CreateFolderAsync(
         string accessToken,
         string? parentId,
         string name,
@@ -379,7 +407,7 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
         {
             Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
         };
-        await SendJsonAsync(request, accessToken, ct);
+        return ReadFile(await SendJsonAsync(request, accessToken, ct));
     }
 
     /// <summary>删除（进 Drive 回收站）。</summary>
@@ -403,11 +431,17 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
     }
 
     /// <summary>创建可恢复上传会话（浏览器直接向返回的 session URI 分片 PUT）。</summary>
+    /// <param name="origin">
+    /// 发起上传的页面来源（如 <c>https://home.hsww.party:15858</c>）。**必须带上**：
+    /// Drive 只有在初始化会话时看到 <c>Origin</c>，才会给后续浏览器分片 PUT 返回
+    /// CORS 响应头；不带的话浏览器直传会被跨域拦截（复审 Important）。
+    /// </param>
     public async Task<string> CreateResumableUploadSessionAsync(
         string accessToken,
         string? parentId,
         string name,
         string contentType,
+        string? origin,
         CancellationToken ct = default)
     {
         var metadata = new Dictionary<string, object?>
@@ -426,6 +460,10 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
             Content = new StringContent(JsonSerializer.Serialize(metadata), Encoding.UTF8, "application/json"),
         };
         request.Headers.TryAddWithoutValidation("X-Upload-Content-Type", contentType);
+        if (!string.IsNullOrWhiteSpace(origin))
+        {
+            request.Headers.TryAddWithoutValidation("Origin", origin);
+        }
 
         using var response = await SendAsync(request, accessToken, ct);
         if (!response.IsSuccessStatusCode)
@@ -439,16 +477,25 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
                    (int)response.StatusCode, null, null, "Google 未返回 resumable session URI");
     }
 
-    /// <summary>下载内容（<c>alt=media</c>）。Google 原生文档必须走 export，这里显式分流。</summary>
+    /// <summary>
+    /// 下载内容。Google 原生文档走 export（导出的目标 MIME 由调用方决定，见
+    /// <see cref="ExportMimeTypeFor"/>），其余走 <c>alt=media</c>。
+    /// </summary>
+    /// <param name="exportMimeType">
+    /// 原生文档的导出目标类型；非原生文档传 null。
+    /// **不能一律用 text/plain**：Sheets 只支持 csv/pdf/xlsx 等，Slides 只支持 pdf/pptx，
+    /// 对它们请求 text/plain 会被 Drive 以 400 拒绝（复审 Critical）。
+    /// </param>
     public async Task<byte[]> DownloadAsync(
         string accessToken,
         string fileId,
         string? mimeType,
+        string? exportMimeType,
         long maxBytes,
         CancellationToken ct = default)
     {
-        var url = IsGoogleNativeDocument(mimeType)
-            ? $"{ApiBase}/files/{Uri.EscapeDataString(fileId)}/export?mimeType=text/plain"
+        var url = IsGoogleNativeDocument(mimeType) && exportMimeType is not null
+            ? $"{ApiBase}/files/{Uri.EscapeDataString(fileId)}/export?mimeType={Uri.EscapeDataString(exportMimeType)}"
             : $"{ApiBase}/files/{Uri.EscapeDataString(fileId)}?alt=media&supportsAllDrives=true";
 
         using var request = new HttpRequestMessage(HttpMethod.Get, url);

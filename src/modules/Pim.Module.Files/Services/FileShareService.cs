@@ -215,10 +215,16 @@ public sealed class FileShareService(
         if (item.Provider is null
             || item.Provider.UserId != UserId
             || !providers.IsSupported(item.Provider.Provider)
-            || item.Provider.Status != "connected"
             || item.IsDeleted)
         {
             throw new DomainException(5104, "文件不存在");
+        }
+
+        if (item.Provider.Status != "connected")
+        {
+            throw item.Provider.Status == "expired"
+                ? new DomainException(5322, "网盘授权已失效，请到设置页重新连接该账号")
+                : new DomainException(5321, "文件来源尚未完成绑定");
         }
 
         if (_sensitivePolicy.IsProtected(item.Path))

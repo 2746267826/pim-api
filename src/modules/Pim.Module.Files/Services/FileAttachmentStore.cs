@@ -97,12 +97,19 @@ public sealed class FileAttachmentStore(
         throw new DomainException(4006, "附件不存在");
     }
 
+    /// <summary>
+    /// 预授权直链。只对**真正免密**的直链返回 URL：
+    /// Google 的 <c>webContentLink</c> 依赖浏览器持有对应 Google 账号的 Cookie，
+    /// 在 <c>&lt;img&gt;</c> 这类内联场景会拿到登录页/403 —— 附件宁可走服务端代理
+    /// （≤4MB，可靠），也不给一个时灵时不灵的链接。
+    /// </summary>
     public async Task<string?> GetDirectLinkAsync(
         Guid userId,
         FileAttachmentRef reference,
         CancellationToken ct = default)
     {
-        foreach (var provider in await CandidateProvidersAsync(userId, reference, ct))
+        foreach (var provider in (await CandidateProvidersAsync(userId, reference, ct))
+                     .Where(row => !string.Equals(row.Provider, "google", StringComparison.OrdinalIgnoreCase)))
         {
             var session = await sessions.OpenAsync(provider, ct);
             var link = await session.Content.GetDownloadUrlAsync(reference.ObjectKey, ct);
@@ -162,15 +169,25 @@ public sealed class FileAttachmentStore(
             .ThenBy(row => row.CreatedAt)
             .ToListAsync(ct);
 
-        if (reference.ProviderId is { } providerId)
-        {
-            var exact = connected.FirstOrDefault(row => row.Id == providerId);
-            return exact is null ? [] : [exact];
-        }
-
-        return connected
+        var sameProvider = connected
             .Where(row => string.IsNullOrWhiteSpace(reference.ProviderKey)
                 || string.Equals(row.Provider, reference.ProviderKey, StringComparison.OrdinalIgnoreCase))
             .ToList();
+
+        if (reference.ProviderId is { } providerId)
+        {
+            var exact = connected.FirstOrDefault(row => row.Id == providerId);
+            if (exact is not null)
+            {
+                return [exact];
+            }
+
+            // 句柄记的账号已经不存在（断开后重绑会产生新的账号行）：回退到该用户同 provider 的
+            // 其余已连接账号继续找，而不是直接判定「附件不存在」——
+            // 远端文件还在，用户不该因为重绑过就永远读不回自己的附件（复审 Important）。
+            return sameProvider;
+        }
+
+        return sameProvider;
     }
 }

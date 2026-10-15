@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Pim.Core.Exceptions;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Module.Files.Providers.Abstractions;
+using Pim.Module.Files.Services;
 
 namespace Pim.Module.Files.Providers.Google;
 
@@ -310,12 +311,21 @@ public sealed class GoogleContentReader(
             return null;
         }
 
-        // 原生文档走 export（text/plain），其余走 alt=media —— 分流在客户端里
-        var bytes = await _client.DownloadAsync(token, file.Id, file.MimeType, maxBytes, ct);
-        var contentType = GoogleDriveClient.IsGoogleNativeDocument(file.MimeType)
-            ? "text/plain"
-            : file.MimeType;
-        return new RemoteContent(bytes, contentType);
+        // 原生文档走 export，导出目标按类型选（不能一律 text/plain：Sheets/Slides 会 400）
+        string? exportMime = null;
+        if (GoogleDriveClient.IsGoogleNativeDocument(file.MimeType))
+        {
+            exportMime = GoogleDriveClient.ExportMimeTypeFor(file.MimeType);
+            if (exportMime is null)
+            {
+                // 明确报错，而不是拿一个必然 400 的请求去打 Drive
+                throw new Pim.Core.Exceptions.DomainException(
+                    5336, $"暂不支持读取该 Google 类型（{file.MimeType}）的内容");
+            }
+        }
+
+        var bytes = await _client.DownloadAsync(token, file.Id, file.MimeType, exportMime, maxBytes, ct);
+        return new RemoteContent(bytes, exportMime ?? file.MimeType);
     }
 
     public async Task<RemoteItem?> GetItemAsync(string itemId, CancellationToken ct = default)
@@ -417,21 +427,10 @@ public sealed class GoogleItemWriter(
     {
         var token = await _accessToken(ct);
         var parentId = await ResolveParentIdAsync(token, parent, ct);
-        await _client.CreateFolderAsync(token, parentId, name, ct);
-
-        // Drive 的 files.create 不回条目体（我们只请求了 fields=id 之外的东西也未必可靠）：
-        // 直接按「父 + 名字」回查刚建的那个目录。重名时 Drive 允许同名，
-        // 因此取最新修改的那个（同一毫秒内建两个同名目录是理论极端，这里退化为任意一个，
-        // 下一轮同步会以服务端事实为准纠正）。
-        var page = await _client.ListFilesPageAsync(
-            token,
-            null,
-            $"'{EscapeQueryValue(parentId ?? rootId)}' in parents and name = '{EscapeQueryValue(name)}' and mimeType = '{GoogleDriveClient.FolderMimeType}' and trashed = false",
-            ct);
-        var match = page.Files.OrderByDescending(file => file.ModifiedAt ?? DateTimeOffset.MinValue).FirstOrDefault()
-            ?? throw new Pim.Core.Exceptions.DomainException(
-                5300, "文件夹已创建，但未能从网盘读回该文件夹，请稍后重新同步");
-        return match.Id;
+        // 直接用创建响应里的条目：**不要**创建后立刻 files.list 回查
+        // （Drive 搜索索引最终一致，回查会随机查不到 → 误报失败 + 网盘里留下孤儿目录）
+        var created = await _client.CreateFolderAsync(token, parentId, name, ct);
+        return created.Id;
     }
 
     public async Task<RemoteUploadSession> CreateUploadSessionAsync(
@@ -442,7 +441,13 @@ public sealed class GoogleItemWriter(
         var token = await _accessToken(ct);
         var parentId = await ResolveParentIdAsync(token, parent, ct);
         var sessionUri = await _client.CreateResumableUploadSessionAsync(
-            token, parentId, fileName, "application/octet-stream", ct);
+            token,
+            parentId,
+            fileName,
+            "application/octet-stream",
+            // 浏览器要拿着这个 session URI 跨域直传，必须让 Drive 知道来源
+            services.GetRequiredService<FileProviderCredentialSource>().PublicOriginFor(GoogleFileProvider.Key),
+            ct);
 
         // Drive 的 resumable session 有效期约一周且不随响应返回，因此这里如实给 null，
         // 不编一个假时间。
@@ -502,21 +507,9 @@ public sealed class GoogleItemWriter(
             return existing.Id;
         }
 
-        await _client.CreateFolderAsync(token, parentId, name, ct);
-        var created = await _client.ListFilesPageAsync(
-            token,
-            null,
-            $"'{EscapeQueryValue(parentId)}' in parents and name = '{EscapeQueryValue(name)}' "
-            + $"and mimeType = '{GoogleDriveClient.FolderMimeType}' and trashed = false",
-            ct);
-        var match = created.Files
-            .OrderByDescending(file => file.ModifiedAt ?? DateTimeOffset.MinValue)
-            .FirstOrDefault()
-            ?? throw new Pim.Core.Exceptions.DomainException(
-                5300, $"网盘上无法建立目录 {name}，请稍后重试");
-
-        _folderIdCache[cacheKey] = match.Id;
-        return match.Id;
+        var created = await _client.CreateFolderAsync(token, parentId, name, ct);
+        _folderIdCache[cacheKey] = created.Id;
+        return created.Id;
     }
 
     private readonly Dictionary<string, string> _folderIdCache = new(StringComparer.Ordinal);
@@ -579,7 +572,13 @@ public sealed class GoogleShareManager(
     {
         var token = await _accessToken(ct);
         var permissions = await _client.ListPermissionsAsync(token, itemId, ct);
-        var file = await _client.GetFileAsync(token, itemId, ct);
+
+        // 只有真的存在「任何人可访问」权限时才需要拿 webViewLink：
+        // 否则每个文件都要多打一次 files.get，50~200 个文件的列表会变成 400 次串行请求，
+        // 直接撞 Drive 的用户级配额（复审 Important）。
+        var hasAnyonePermission = permissions.Any(permission =>
+            string.Equals(permission.Type, "anyone", StringComparison.OrdinalIgnoreCase));
+        var file = hasAnyonePermission ? await _client.GetFileAsync(token, itemId, ct) : null;
 
         return permissions
             .Select(permission => new RemoteShareLink(

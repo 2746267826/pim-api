@@ -364,6 +364,146 @@ public class FilesReviewRegressionTests
         Assert.False(await db.Set<FileItemEntity>().AnyAsync(i => i.ExternalFileId == "secret-item"));
     }
 
+    // ===================== 第二轮 review 的发现 =====================
+
+    /// <summary>
+    /// 解析不出父路径的条目不能把同步**永久**钉住：连续阻塞超过上限后必须放弃这些条目
+    /// 并正常推进游标（否则一个父目录本来就不可见的条目会让同步永远停在原地）。
+    /// </summary>
+    [Fact]
+    public async Task Sync_PersistentlyUnresolvableItems_EventuallyAdvancesCursor()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, deltaLink: "https://graph.microsoft.com/v1.0/me/drive/root/delta?$deltatoken=v1");
+        var graph = new FakeOneDriveGraphClient();
+        for (var i = 0; i < 10; i++)
+        {
+            graph.DeltaScript.Enqueue(OneDriveDeltaPageFactory.Page(
+                new OneDriveDeltaItem(
+                    "orphan", "missing-parent", null, "orphan.txt",
+                    IsFolder: false, IsRemoved: false, Size: 1, MimeType: "text/plain",
+                    Ctag: "ctag", ModifiedAt: Now)));
+        }
+
+        var engine = CreateEngine(db, graph);
+
+        // 前几次：保留游标、状态置 error（可自愈的重试窗口）
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            var blocked = await engine.SyncAsync(provider.Id);
+            Assert.Equal(1, blocked.ItemsDeferred);
+            var row = await db.Set<FileProviderEntity>().AsNoTracking().SingleAsync(p => p.Id == provider.Id);
+            Assert.Equal("https://graph.microsoft.com/v1.0/me/drive/root/delta?$deltatoken=v1", row.DeltaLink);
+            Assert.Equal("error", row.SyncStatus);
+        }
+
+        // 第 4 次：超过上限 → 放弃这些条目、推进游标，并把原因留在 LastError（不静默）
+        var final = await engine.SyncAsync(provider.Id);
+        Assert.Equal(1, final.ItemsDeferred);
+        var advanced = await db.Set<FileProviderEntity>().AsNoTracking().SingleAsync(p => p.Id == provider.Id);
+        Assert.Contains("$deltatoken=done-", advanced.DeltaLink);
+        Assert.Equal("idle", advanced.SyncStatus);
+        Assert.Contains("已跳过", advanced.LastError!);
+        Assert.Equal(0, advanced.DeferredBlockCount);
+    }
+
+    /// <summary>
+    /// 超过 5 层的深树（父项排在后面）也必须整棵落地：
+    /// 补解析的轮数上限按「还有进展就继续」判断，而不是写死几轮。
+    /// </summary>
+    [Fact]
+    public async Task Sync_DeepTreeWithReversedOrder_ResolvesEveryLevel()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, deltaLink: "https://graph.microsoft.com/v1.0/me/drive/root/delta?$deltatoken=old");
+        var graph = new FakeOneDriveGraphClient();
+
+        // 7 层：先给最深的文件，再自底向上给各级目录（每级父路径都不给，逼它按父 id 解析）
+        var pages = new List<OneDriveDeltaItem>
+        {
+            new("file-deep", "l7", null, "deep.txt", false, false, 1, "text/plain", "ctag", Now),
+        };
+        for (var level = 7; level >= 1; level--)
+        {
+            var parentId = level == 1 ? "root-1" : $"l{level - 1}";
+            pages.Add(new OneDriveDeltaItem(
+                $"l{level}", parentId, null, $"L{level}", true, false, null, null, "ctag", Now));
+        }
+
+        pages.Add(new OneDriveDeltaItem("root-1", null, "/drive", "root", true, false, null, null, "ctag", Now));
+        graph.DeltaScript.Enqueue(OneDriveDeltaPageFactory.Page(pages.ToArray()));
+        var engine = CreateEngine(db, graph);
+
+        var result = await engine.SyncAsync(provider.Id);
+
+        Assert.Equal(0, result.ItemsDeferred);
+        var deep = await db.Set<FileItemEntity>().AsNoTracking().SingleAsync(i => i.ExternalFileId == "file-deep");
+        Assert.Equal("/L1/L2/L3/L4/L5/L6/L7/deep.txt", deep.Path);
+    }
+
+    /// <summary>
+    /// 盘根的父 id 是别名（回读给的是真实盘根 id），因此**根目录**不做父 id 比较：
+    /// 否则完全正常的根目录上传会被拒。
+    /// </summary>
+    [Fact]
+    public async Task RegisterUploadedFile_AtRoot_IsNotRejectedByParentAliasMismatch()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db);
+        db.Set<FileItemEntity>().Add(new FileItemEntity
+        {
+            ProviderId = provider.Id,
+            ExternalFileId = "root-alias",
+            Path = "/",
+            Name = "root",
+            ItemType = "folder",
+        });
+        await db.SaveChangesAsync();
+
+        var graph = new FakeOneDriveGraphClient();
+        // 回读到的父 id 是“真实盘根 id”，与索引里的别名 "root-alias" 不同
+        graph.ItemsById["uploaded-1"] = new OneDrivePathItem(
+            "uploaded-1", "a.txt", 3, "text/plain", "/drive/root:", IsFolder: false, ParentId: "real-root-id");
+        using var harness = new FilesProviderHarness(db, graph, new TestSecretProtector(), new HarnessClock(Now));
+        var service = new FileWriteService(
+            db, harness.Sessions, harness.Providers, new StubCurrentUser(UserId), new StubAuditLog(),
+            logger: null, clock: new HarnessClock(Now));
+
+        var written = await service.RegisterUploadedFileAsync(provider.Id, "/", "a.txt", "uploaded-1");
+
+        var row = await db.Set<FileItemEntity>().AsNoTracking().SingleAsync(i => i.ExternalFileId == "uploaded-1");
+        Assert.Equal("/a.txt", row.Path);
+        Assert.Equal(written.ItemId, row.Id);
+    }
+
+    /// <summary>账号在但授权失效：必须给出「请重新连接」而不是「文件不存在」。</summary>
+    [Fact]
+    public async Task ExpiredAccount_SurfacesReauthorizationError_NotFileNotFound()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, status: "expired");
+        db.Set<FileItemEntity>().Add(new FileItemEntity
+        {
+            ProviderId = provider.Id, ExternalFileId = "f-1", Path = "/a.txt", Name = "a.txt", ItemType = "file",
+        });
+        await db.SaveChangesAsync();
+
+        var graph = new FakeOneDriveGraphClient();
+        using var harness = new FilesProviderHarness(db, graph, new TestSecretProtector(), new HarnessClock(Now));
+        var service = new FileContentService(
+            db, harness.Sessions, harness.Providers, new StubCurrentUser(UserId),
+            new SensitivePathPolicy(null), logger: null, clock: new HarnessClock(Now));
+
+        var item = await db.Set<FileItemEntity>().AsNoTracking().SingleAsync();
+        var error = await Assert.ThrowsAsync<DomainException>(() => service.GetContentLinkAsync(item.Id));
+        Assert.Equal(5322, error.ErrorCode);
+
+        // 列表作用域同样是 5322（用户能据此找到重新授权的入口）
+        var listError = await Assert.ThrowsAsync<DomainException>(
+            () => FileProviderLookup.ResolveListScopeAsync(db, UserId, provider.Id));
+        Assert.Equal(5322, listError.ErrorCode);
+    }
+
     private sealed class StubCurrentUser(Guid userId) : Pim.Infrastructure.Auth.ICurrentUserService
     {
         public Guid? UserId { get; } = userId;

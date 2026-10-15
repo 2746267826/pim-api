@@ -157,11 +157,22 @@ public static class FileProviderLookup
     {
         if (providerId is { } explicitId)
         {
-            var owned = await db.Set<FileProviderEntity>()
-                .AnyAsync(row => row.Id == explicitId && row.UserId == userId && row.Status == "connected", ct);
-            if (!owned)
+            var row = await db.Set<FileProviderEntity>()
+                .AsNoTracking()
+                .Where(item => item.Id == explicitId && item.UserId == userId)
+                .Select(item => new { item.Status })
+                .FirstOrDefaultAsync(ct);
+            if (row is null)
             {
                 throw new Pim.Core.Exceptions.DomainException(5320, "文件来源绑定不存在");
+            }
+
+            if (row.Status != "connected")
+            {
+                // 账号在但用不了：说清是「授权失效」，别让用户以为是文件没了
+                throw row.Status == "expired"
+                    ? new Pim.Core.Exceptions.DomainException(5322, "网盘授权已失效，请到设置页重新连接该账号")
+                    : new Pim.Core.Exceptions.DomainException(5321, "文件来源尚未完成绑定");
             }
 
             return explicitId;

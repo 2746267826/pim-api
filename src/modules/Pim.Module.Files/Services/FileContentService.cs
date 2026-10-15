@@ -128,9 +128,13 @@ public sealed class FileContentService
         _rateLimiter.AssertAllowed(UserId);
 
         var session = await _sessions.OpenAsync(provider, ct);
-        var bytes = await DownloadSmallBytesOrThrowAsync(
+        var downloaded = await DownloadSmallOrThrowAsync(
             session, item.ExternalFileId, FileTextExtractor.HardMaxBytes, ct);
-        var extracted = await _textExtractor.ExtractAsync(bytes, item.Name, item.MimeType, maxBytes, ct);
+        // 用**下载回来的实际内容类型**做抽取判定：Google 的 Docs 名字没有后缀，
+        // 元数据里的 MIME 是 application/vnd.google-apps.document，
+        // 只看名字/MIME 会让导出的纯文本被判成「不支持的类型」而报 5336。
+        var extracted = await _textExtractor.ExtractAsync(
+            downloaded.Bytes, item.Name, downloaded.ContentType ?? item.MimeType, maxBytes, ct);
         await RecordAuditAsync("files.read_text", item.Id, extracted.SourceBytes, ct);
         _logger?.LogInformation(
             "Files read_text: item {ItemId}, {Bytes} bytes, extractor={Extractor}",
@@ -159,23 +163,6 @@ public sealed class FileContentService
             new Dictionary<string, string> { ["bytes"] = bytes.ToString() },
             null,
             null), ct);
-    }
-
-    private static async Task<byte[]> DownloadSmallBytesOrThrowAsync(
-        IFileProviderSession session,
-        string externalFileId,
-        long maxBytes,
-        CancellationToken ct)
-    {
-        try
-        {
-            return (await session.Content.DownloadSmallAsync(externalFileId, maxBytes, ct)
-                ?? throw new DomainException(5104, "文件不存在或已被删除")).Bytes;
-        }
-        catch (ProviderContentTooLargeException)
-        {
-            throw new DomainException(5331, "文件超过文本处理上限，请在网盘中操作");
-        }
     }
 
     public async Task<FileTextContent> GetTextAsync(Guid itemId, CancellationToken ct = default)
@@ -272,10 +259,17 @@ public sealed class FileContentService
         if (item.Provider is null
             || item.Provider.UserId != UserId
             || !_providers.IsSupported(item.Provider.Provider)
-            || item.Provider.Status != "connected"
             || item.IsDeleted)
         {
             throw new DomainException(5104, "文件不存在");
+        }
+
+        if (item.Provider.Status != "connected")
+        {
+            // 文件确实属于该用户，只是账号用不了：说清原因，用户才知道去重新连接
+            throw item.Provider.Status == "expired"
+                ? new DomainException(5322, "网盘授权已失效，请到设置页重新连接该账号")
+                : new DomainException(5321, "文件来源尚未完成绑定");
         }
 
         return (item, item.Provider);

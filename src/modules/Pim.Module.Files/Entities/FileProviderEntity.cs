@@ -69,6 +69,13 @@ public sealed class FileProviderEntity : IUserOwnedEntity
     public long SyncedItemCount { get; set; }
 
     /// <summary>
+    /// 连续多少次同步因为「有条目解析不出父路径」而没有推进游标。
+    /// 有界重试：连续超过上限后放弃这些条目并正常推进，
+    /// 否则一个永远无法定位父目录的条目会让同步**永久**停在原地（复审 Important）。
+    /// </summary>
+    public int DeferredBlockCount { get; set; }
+
+    /// <summary>
     /// 授权等待期临时持有的加密机密：设备码形态存 device code，浏览器跳转形态存一次性 state。
     /// 两种情况都只需「服务端保存、一次性校验、过期作废」，因此共用一列。
     /// 列名仍是历史名 <c>device_code_encrypted</c>（改名会牵动无谓的迁移噪音）。

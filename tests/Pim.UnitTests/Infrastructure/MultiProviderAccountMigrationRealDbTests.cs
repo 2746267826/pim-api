@@ -186,6 +186,32 @@ public class MultiProviderAccountMigrationRealDbTests
     /// 迁移建的索引名是大小写混排（EF 带引号建），<c>::regclass</c> 会被 Postgres
     /// 折成小写而找不到；<c>pg_indexes</c> 直接按名字查，且定义里能看到 WHERE 子句。
     /// </summary>
+    /// <summary>
+    /// 降级守卫必须按 (user_id, provider) 的**总行数**判断，不能只看 account_id 非空的行：
+    /// 「1 个正式账号 + 1 个未完成的待绑定行」在重建后的旧唯一键下同样会冲突
+    /// （base_url / username 都恢复成空串），守卫漏掉它就会在 CREATE UNIQUE INDEX 处硬失败、
+    /// 把库停在半途（复审 Important）。
+    /// </summary>
+    [Fact]
+    public async Task Down_RefusesWhenAPendingRowCoexistsWithTheConnectedAccount()
+    {
+        await using var db = await CreateSeededAtPreviousMigrationAsync();
+        await db.MigrateAsync();
+
+        // 只有一个正式账号 + 一个 pending 待绑定行（account_id 为 NULL）
+        await db.ExecuteAsync($"""
+            INSERT INTO file_providers (id, user_id, provider, status, created_at, updated_at)
+            VALUES (gen_random_uuid(), '{UserId}', 'onedrive', 'pending', now(), now());
+            """);
+
+        var failure = await Assert.ThrowsAnyAsync<Exception>(() => db.MigrateToAsync(PreviousMigration));
+        Assert.Contains("无法降级", failure.Message);
+
+        // 拒绝执行而不是半途改坏
+        Assert.True(await db.ColumnExistsAsync("file_providers", "is_default"));
+        Assert.False(await db.ColumnExistsAsync("file_providers", "base_url"));
+    }
+
     private static async Task<string> FilterOfIndexAsync(TempMigrationDatabase db, string indexName)
         => await db.Db.Database
             .SqlQuery<string>($"SELECT indexdef AS \"Value\" FROM pg_indexes WHERE schemaname = 'public' AND indexname = {indexName}")

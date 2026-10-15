@@ -436,7 +436,10 @@ public sealed class FileWriteService
         // 回读到的父目录必须就是声明的目标目录：两边都知道时才核对（provider 未必都给得出来）。
         // 不核对的话，提交「已有敏感文件的 id + 公开目录路径」就能把敏感文件登记成公开路径，
         // 之后的敏感路径闸门会按伪造路径放行。
-        if (folder.ExternalId is { Length: > 0 }
+        // 根目录**不做**父 id 比较：盘根的 id 是别名（Graph 认 "root"，回读给的却是真实盘根 id），
+        // 严格比较会把完全正常的上传拒掉。非根目录才比较。
+        if (folder.Path != "/"
+            && folder.ExternalId is { Length: > 0 }
             && item.ParentExternalId is { Length: > 0 }
             && !string.Equals(item.ParentExternalId, folder.ExternalId, StringComparison.Ordinal))
         {
@@ -485,7 +488,8 @@ public sealed class FileWriteService
         var created = await session.Content.GetItemAsync(createdId, ct)
             ?? throw new DomainException(5300, "文件夹已创建，但未能从网盘读回该文件夹，请稍后重新同步");
 
-        if (folder.ExternalId is { Length: > 0 }
+        if (folder.Path != "/"
+            && folder.ExternalId is { Length: > 0 }
             && created.ParentExternalId is { Length: > 0 }
             && !string.Equals(created.ParentExternalId, folder.ExternalId, StringComparison.Ordinal))
         {
@@ -550,13 +554,26 @@ public sealed class FileWriteService
             throw new DomainException(5323, $"不支持的文件来源类型：{provider.Provider}");
         }
 
-        if (provider.Status != "connected")
-        {
-            throw new DomainException(5321, "文件来源尚未完成绑定");
-        }
+        EnsureUsable(provider);
 
         var session = await _sessions.OpenAsync(provider, ct);
         return (provider, session);
+    }
+
+    /// <summary>
+    /// 账号存在但不可用时给出**能自愈**的错误：授权失效要说「请重新绑定」，
+    /// 而不是笼统的「文件不存在」——后者会让用户完全找不到恢复路径（复审 Minor）。
+    /// </summary>
+    private static void EnsureUsable(FileProviderEntity provider)
+    {
+        if (provider.Status == "connected")
+        {
+            return;
+        }
+
+        throw provider.Status == "expired"
+            ? new DomainException(5322, "网盘授权已失效，请到设置页重新连接该账号")
+            : new DomainException(5321, "文件来源尚未完成绑定");
     }
 
     private static string JoinPath(string folderPath, string name)
@@ -608,10 +625,16 @@ public sealed class FileWriteService
             ?? throw new DomainException(5104, "文件不存在");
         if (item.Provider is null
             || item.Provider.UserId != UserId
-            || !_providers.IsSupported(item.Provider.Provider)
-            || item.Provider.Status != "connected")
+            || !_providers.IsSupported(item.Provider.Provider))
         {
             throw new DomainException(5104, "文件不存在");
+        }
+
+        if (item.Provider.Status != "connected")
+        {
+            throw item.Provider.Status == "expired"
+                ? new DomainException(5322, "网盘授权已失效，请到设置页重新连接该账号")
+                : new DomainException(5321, "文件来源尚未完成绑定");
         }
 
         return (item, item.Provider);

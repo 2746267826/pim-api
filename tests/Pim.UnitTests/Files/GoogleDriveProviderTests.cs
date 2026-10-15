@@ -66,6 +66,12 @@ public class GoogleDriveProviderTests
 
         public List<string> Requests { get; } = [];
 
+        /// <summary>收到的 Origin 头（断点续传会话初始化必须带）。</summary>
+        public List<string?> Origins { get; } = [];
+
+        /// <summary>POST /files 新建目录时返回的 id。</summary>
+        public string CreatedFolderId { get; set; } = "created-folder-id";
+
         /// <summary>files.get 的按 id 索引；根目录默认存在（盘根真实 id 靠它解析）。</summary>
         public Dictionary<string, object> FilesById { get; } = new(StringComparer.Ordinal);
 
@@ -73,6 +79,7 @@ public class GoogleDriveProviderTests
         {
             var url = request.RequestUri!.ToString();
             Requests.Add($"{request.Method.Method} {url}");
+            Origins.Add(request.Headers.TryGetValues("Origin", out var origins) ? origins.FirstOrDefault() : null);
 
             // 身份取自 Drive 的 about.get（不是 OAuth userinfo：那需要额外的身份 scope）
             if (url.Contains("/drive/v3/about", StringComparison.Ordinal))
@@ -123,6 +130,20 @@ public class GoogleDriveProviderTests
                 return FilesById.TryGetValue(id, out var file)
                     ? Json(200, file)
                     : Json(404, Error("notFound", $"file {id} not found"));
+            }
+
+            if (url.Contains("/upload/drive/v3/files?uploadType=resumable", StringComparison.Ordinal))
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
+                response.Headers.Location = new Uri("https://upload.example.com/session");
+                return response;
+            }
+
+            if (url.Contains("/drive/v3/files?", StringComparison.Ordinal)
+                && request.Method == HttpMethod.Post)
+            {
+                // files.create：必须在响应体里给出新条目的 id（调用方不得再 search 回查）
+                return Json(200, Folder(CreatedFolderId, "新目录", null));
             }
 
             if (url.Contains("/drive/v3/files?", StringComparison.Ordinal))
@@ -343,6 +364,71 @@ public class GoogleDriveProviderTests
         // 游标与「游标失效」语义严格分开：授权失效不动游标、不置 delta_reset_at
         Assert.Equal("delta:token-1000", reloaded.DeltaLink);
         Assert.Null(reloaded.DeltaResetAt);
+    }
+
+    // ---- 第二轮 review 的发现 ----
+
+    /// <summary>
+    /// 原生文档的导出目标必须按类型选：Drive 只支持 Docs→text/plain、
+    /// Sheets→csv、Slides→pdf，对 Sheets/Slides 请求 text/plain 会直接 400。
+    /// </summary>
+    [Theory]
+    [InlineData("application/vnd.google-apps.document", "text/plain")]
+    [InlineData("application/vnd.google-apps.spreadsheet", "text/csv")]
+    [InlineData("application/vnd.google-apps.presentation", "application/pdf")]
+    [InlineData("application/vnd.google-apps.form", null)]
+    [InlineData("application/vnd.google-apps.drawing", null)]
+    [InlineData("application/vnd.google-apps.folder", null)]
+    [InlineData("application/pdf", null)]
+    public void ExportMimeType_MatchesDriveSupportMatrix(string mimeType, string? expected)
+        => Assert.Equal(expected, GoogleDriveClient.ExportMimeTypeFor(mimeType));
+
+    /// <summary>
+    /// 新建目录必须直接用 POST /files 响应里的 id。
+    /// Drive 的搜索索引是最终一致的，创建后立刻 files.list 回查会随机查不到 →
+    /// 误报「未能读回」，而网盘上目录已经建好，重试会堆出同名孤儿目录。
+    /// </summary>
+    [Fact]
+    public async Task CreateFolder_UsesIdFromCreateResponse_WithoutSearchRequery()
+    {
+        var api = new StubGoogleApi();
+        await using var db = CreateDb();
+        var provider = SeedGoogleProvider(db);
+        api.FilesById[api.RootId] = StubGoogleApi.Folder(api.RootId, "My Drive", null);
+        api.CreatedFolderId = "created-folder-id";
+        using var harness = CreateHarness(db, api);
+        var session = await harness.Sessions.OpenAsync(provider);
+        var folder = await session.Content.GetItemAsync(api.RootId) ?? throw new InvalidOperationException();
+
+        var createdId = await session.Writer.CreateFolderAsync(
+            new RemoteFolderRef(api.RootId, folder.Path ?? "/"), "新目录");
+
+        Assert.Equal(api.CreatedFolderId, createdId);
+        // 创建之后不得再按名字去 search 回查
+        Assert.DoesNotContain(
+            api.Requests,
+            r => r.Contains("name%20%3D", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// 断点续传会话必须带 Origin：Drive 只有在初始化时看到它，才会给浏览器的分片 PUT
+    /// 返回 CORS 响应头，否则浏览器直传被跨域拦下。
+    /// </summary>
+    [Fact]
+    public async Task ResumableUploadSession_SendsOriginHeader()
+    {
+        var api = new StubGoogleApi();
+        await using var db = CreateDb();
+        var provider = SeedGoogleProvider(db);
+        api.FilesById[api.RootId] = StubGoogleApi.Folder(api.RootId, "My Drive", null);
+        using var harness = CreateHarness(db, api);
+        var session = await harness.Sessions.OpenAsync(provider);
+
+        var upload = await session.Writer.CreateUploadSessionAsync(
+            new RemoteFolderRef(api.RootId, "/"), "big.bin");
+
+        Assert.Equal("https://upload.example.com/session", upload.UploadUrl);
+        Assert.Contains(api.Origins, origin => origin == "https://home.hsww.party:15858");
     }
 
     // ---- 同步：首次全量 → 此后增量 ----
