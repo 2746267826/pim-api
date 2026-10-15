@@ -316,39 +316,62 @@ public sealed class CalendarRecycleBinService
         DateTimeOffset now,
         CancellationToken ct)
     {
-        var bookId = await _db.Set<TaskEntity>()
-            .IgnoreQueryFilters()
-            .Where(t => t.Id == id && t.UserId == UserId)
-            .Select(t => t.CalendarId)
-            .FirstOrDefaultAsync(ct);
+        // 锁集合必须覆盖「任务实际所属的那本簿」，而这个 id 只能在锁内确定，因此这里做**有界重试**：
+        // 先无锁读出候选簿 → 按锁序取「任务 ∪ 该簿」→ 锁内复核任务此刻的所属簿是否正是锁住的那本；
+        // 不一致（例如这段间隙里任务被恢复→迁到别的簿→又被删）说明锁集合已过时，释放事务后按新值重来。
+        // 不能在持有任务锁之后再补取簿锁：那会打破「先簿后任务」的全局锁序，可能与整本删除形成等待环。
+        for (var attempt = 0; attempt < RestoreLockAttempts; attempt++)
+        {
+            var bookId = await _db.Set<TaskEntity>()
+                .IgnoreQueryFilters()
+                .Where(t => t.Id == id && t.UserId == UserId)
+                .Select(t => t.CalendarId)
+                .FirstOrDefaultAsync(ct);
 
-        return await TaskRowLock.WithTaskAndCalendarLocksAsync(
-            _db,
-            new[] { id },
-            bookId,
-            async () =>
-            {
-                var task = await LoadDeletedTaskAsync(id, ct);
-                if (task.Calendar is not null)
-                    EnsureParentBookActive(task.Calendar);
+            var stale = false;
+            var result = await TaskRowLock.WithTaskAndCalendarLocksAsync(
+                _db,
+                new[] { id },
+                bookId,
+                async () =>
+                {
+                    var task = await LoadDeletedTaskAsync(id, ct);
+                    if (task.CalendarId != bookId)
+                    {
+                        stale = true;
+                        return null;
+                    }
 
-                if (restoreAsCopy)
-                    task.Uid = $"{Guid.NewGuid()}@pim";
+                    if (task.Calendar is not null)
+                        EnsureParentBookActive(task.Calendar);
 
-                ClearDelete(task, now);
-                // 在锁内提交：锁保护的是「校验父簿 → 写库」这一整段，不能只在锁内改内存。
-                await _db.SaveChangesAsync(ct);
+                    if (restoreAsCopy)
+                        task.Uid = $"{Guid.NewGuid()}@pim";
 
-                return new CalendarOperationResult(
-                    operation,
-                    operationId,
-                    1,
-                    new[] { task.Id },
-                    new[] { Sample(task) },
-                    "Restored task.");
-            },
-            ct);
+                    ClearDelete(task, now);
+                    // 在锁内提交：锁保护的是「校验父簿 → 写库」这一整段，不能只在锁内改内存。
+                    await _db.SaveChangesAsync(ct);
+
+                    return new CalendarOperationResult(
+                        operation,
+                        operationId,
+                        1,
+                        new[] { task.Id },
+                        new[] { Sample(task) },
+                        "Restored task.");
+                },
+                ct);
+
+            if (!stale)
+                return result!;
+        }
+
+        // 连续 N 次都撞上「锁集合过时」：说明该任务正在被其它并发写反复搬动，按既有语义报冲突（02020）。
+        throw new DomainException(02020, "恢复存在冲突");
     }
+
+    /// <summary>恢复任务时「锁定所属簿 → 复核」的重试上限。</summary>
+    private const int RestoreLockAttempts = 3;
 
     private async Task<CalendarOperationResult> RestoreCalendarAsync(
         string type,

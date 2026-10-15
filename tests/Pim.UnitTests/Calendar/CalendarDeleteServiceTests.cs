@@ -328,7 +328,10 @@ public class CalendarDeleteServiceTests
 
         var result = await service.DeleteCalendarAsync(book.Id);
 
-        Assert.Equal(new[] { first.Id, second.Id }, result.AffectedIds.Where(id => id != book.Id).OrderBy(id => id).ToArray());
+        // 两侧都排序：Guid 是随机生成的，按「创建顺序」比较期望值会有约 50% 的概率假失败
+        Assert.Equal(
+            new[] { first.Id, second.Id }.OrderBy(id => id).ToArray(),
+            result.AffectedIds.Where(id => id != book.Id).OrderBy(id => id).ToArray());
         db.ChangeTracker.Clear();
         Assert.All(
             await db.Set<TaskEntity>().IgnoreQueryFilters().Where(t => t.Id == first.Id || t.Id == second.Id).ToListAsync(),
