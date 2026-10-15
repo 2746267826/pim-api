@@ -16,11 +16,14 @@ import userEvent from '@testing-library/user-event'
 
 import { ApiError } from '@/api/client'
 
-const { getMock, postMock, invalidateMock, notifySuccessMock } = vi.hoisted(() => ({
+const { getMock, postMock, invalidateMock, notifySuccessMock, notifyErrorMock, state } = vi.hoisted(() => ({
   getMock: vi.fn(),
   postMock: vi.fn(),
   invalidateMock: vi.fn(),
   notifySuccessMock: vi.fn(),
+  notifyErrorMock: vi.fn(),
+  /* 列表内容放在可变状态里：创建成功后真的多一个用户，避免"只断言 invalidate"的弱证据 */
+  state: { users: [] as Array<Record<string, unknown>> },
 }))
 
 /* 既有用户列表：一名管理员（我）+ 一名普通用户，覆盖「自定义行」与「对自己重置」 */
@@ -47,7 +50,7 @@ const USERS = [
 
 vi.mock('@tanstack/react-query', () => ({
   useQuery: ({ queryKey }: { queryKey: string[] }) =>
-    queryKey.includes('me') ? { data: { id: 'me-admin' } } : { data: USERS, isLoading: false },
+    queryKey.includes('me') ? { data: { id: 'me-admin' } } : { data: state.users, isLoading: false },
   useQueryClient: () => ({ invalidateQueries: invalidateMock }),
 }))
 
@@ -58,7 +61,7 @@ vi.mock('@/api/client', async (importOriginal) => {
 
 vi.mock('@/lib/notify', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/notify')>()
-  return { ...actual, notifySuccess: notifySuccessMock, notifyError: vi.fn() }
+  return { ...actual, notifySuccess: notifySuccessMock, notifyError: notifyErrorMock }
 })
 
 /* 该文件从 settings-pages 聚合模块导出，顺带把日历依赖挡掉，保持用例隔离 */
@@ -96,10 +99,12 @@ async function fillCreateForm(opts: { username?: string; email?: string; passwor
 
 describe('REQ-12 用户管理页「新建用户」', () => {
   beforeEach(() => {
-    getMock.mockReset().mockResolvedValue(USERS)
+    state.users = [...USERS]
+    getMock.mockReset().mockResolvedValue(state.users)
     postMock.mockReset()
     invalidateMock.mockReset()
     notifySuccessMock.mockReset()
+    notifyErrorMock.mockReset()
   })
 
   afterEach(() => cleanup())
@@ -147,7 +152,11 @@ describe('REQ-12 用户管理页「新建用户」', () => {
   })
 
   it('AC-12.3 提交成功：关闭弹窗、刷新列表、显示成功提示', async () => {
-    postMock.mockResolvedValueOnce({ id: 'u-new', username: 'newbie', role: 'user' })
+    postMock.mockImplementationOnce(async (_path: string, body: Record<string, unknown>) => {
+      // 服务端真的建出了用户：列表数据随之变化，随后的重渲染才会显示它
+      state.users = [...state.users, { ...body, id: 'u-new', isActive: true, createdAt: '2026-10-03T00:00:00+00:00' }]
+      return { id: 'u-new', username: body.username, role: body.role }
+    })
     render(<AdminUsersPage />)
     await openCreateDialog()
     await fillCreateForm()
@@ -165,7 +174,9 @@ describe('REQ-12 用户管理页「新建用户」', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(notifySuccessMock).toHaveBeenCalledWith('用户已创建')
-    expect(invalidateMock).toHaveBeenCalled()
+    expect(invalidateMock).toHaveBeenCalledWith({ queryKey: ['admin', 'users'] })
+    // 关键：列表里**真的**出现了新用户（无需手动刷新），而不是只看"刷新被调用过"
+    expect(await screen.findByText('newbie')).toBeTruthy()
   })
 
   it('AC-12.4 / AC-12.5 服务端报错时弹窗保持打开、内容保留、显示服务端文案', async () => {
@@ -177,6 +188,8 @@ describe('REQ-12 用户管理页「新建用户」', () => {
     await userEvent.click(screen.getByRole('button', { name: '创建' }))
 
     expect(await screen.findByText('用户名已存在')).toBeTruthy()
+    // 失败必须同时有顶部提示（§1：不得静默失败）
+    expect(notifyErrorMock).toHaveBeenCalledWith('用户名已存在')
     // 弹窗仍开着
     expect(screen.getByRole('dialog')).toBeTruthy()
     // 已填内容不丢
@@ -199,6 +212,33 @@ describe('REQ-12 用户管理页「新建用户」', () => {
     await userEvent.click(submit)
     expect(postMock).toHaveBeenCalledTimes(1)
 
+    resolvePost({ id: 'u-new' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(postMock).toHaveBeenCalledTimes(1)
+  })
+
+  /*
+   * AC-12.6 反面：连续三次点击只发一次请求。
+   *
+   * 故障对照结论（已实测）：把 submit 里的 ref 防重入守卫去掉后，本条用例**依然通过**——
+   * 因为 `fireEvent` 会经 act() 冲刷 state，第一次点击后按钮已 disabled，后两次点击被 DOM 拦下。
+   * 也就是说本用例证明的是「连点不会重复提交」，**不**能证明 ref 守卫的必要性；
+   * ref 属额外保险（若将来按钮不再 disabled 仍能挡住），不作为本 AC 的独立证据。
+   */
+  it('AC-12.6 连续三次点击「创建」也只发一次请求', async () => {
+    let resolvePost: (v: unknown) => void = () => {}
+    postMock.mockImplementationOnce(() => new Promise((resolve) => (resolvePost = resolve)))
+    render(<AdminUsersPage />)
+    await openCreateDialog()
+    await fillCreateForm()
+
+    const submit = screen.getByRole('button', { name: /创建/ })
+    // 不 await、不等待 disabled：模拟 React 尚未提交 state 时的连续两次点击
+    fireEvent.click(submit)
+    fireEvent.click(submit)
+    fireEvent.click(submit)
+
+    await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1))
     resolvePost({ id: 'u-new' })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(postMock).toHaveBeenCalledTimes(1)
@@ -263,6 +303,21 @@ describe('REQ-12 用户管理页「新建用户」', () => {
     expect(postMock).not.toHaveBeenCalled()
   })
 
+  it('关闭弹窗后重新打开是空表单，不残留上一次的初始密码', async () => {
+    render(<AdminUsersPage />)
+    await openCreateDialog()
+    await fillCreateForm({ username: 'draft-user', email: 'draft@example.com', password: 'draft-pass-1' })
+
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+    const reopened = await openCreateDialog()
+    expect((within(reopened).getByLabelText('用户名') as HTMLInputElement).value).toBe('')
+    expect((within(reopened).getByLabelText('邮箱') as HTMLInputElement).value).toBe('')
+    expect((within(reopened).getByLabelText('初始密码') as HTMLInputElement).value).toBe('')
+    expect(postMock).not.toHaveBeenCalled()
+  })
+
   it('AC-12.2 对照：同样的表单填对后会发出请求（证明拦截来自校验，不是按钮坏了）', async () => {
     postMock.mockResolvedValueOnce({ id: 'u-new' })
     render(<AdminUsersPage />)
@@ -291,10 +346,12 @@ describe('REQ-12 用户管理页「新建用户」', () => {
 
 describe('REQ-13 用户管理页「重置密码」', () => {
   beforeEach(() => {
-    getMock.mockReset().mockResolvedValue(USERS)
+    state.users = [...USERS]
+    getMock.mockReset().mockResolvedValue(state.users)
     postMock.mockReset()
     invalidateMock.mockReset()
     notifySuccessMock.mockReset()
+    notifyErrorMock.mockReset()
   })
 
   afterEach(() => cleanup())
@@ -358,6 +415,7 @@ describe('REQ-13 用户管理页「重置密码」', () => {
     await userEvent.click(screen.getByRole('button', { name: '重置' }))
 
     expect(await screen.findByText('用户不存在')).toBeTruthy()
+    expect(notifyErrorMock).toHaveBeenCalledWith('用户不存在')
     expect(screen.getByRole('dialog')).toBeTruthy()
   })
 

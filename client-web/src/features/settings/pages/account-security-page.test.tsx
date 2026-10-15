@@ -15,10 +15,11 @@ import userEvent from '@testing-library/user-event'
 
 import { ApiError } from '@/api/client'
 
-const { postMock, notifySuccessMock, getRefreshTokenMock } = vi.hoisted(() => ({
+const { postMock, notifySuccessMock, getRefreshTokenMock, clearTokensMock } = vi.hoisted(() => ({
   postMock: vi.fn(),
   notifySuccessMock: vi.fn(),
   getRefreshTokenMock: vi.fn(),
+  clearTokensMock: vi.fn(),
 }))
 
 /** 存储里的「当前设备」refresh token：可在测试中途被"轮换" */
@@ -40,6 +41,7 @@ vi.mock('@/api/client', async (importOriginal) => {
       getRefreshTokenMock()
       return currentRefreshToken
     },
+    clearTokens: clearTokensMock,
   }
 })
 
@@ -66,6 +68,7 @@ describe('REQ-14 账号安全：修改密码', () => {
     postMock.mockReset()
     notifySuccessMock.mockReset()
     getRefreshTokenMock.mockReset()
+    clearTokensMock.mockReset()
     currentRefreshToken = 'STALE-token'
     authState.hostChannel = 'browser'
   })
@@ -114,7 +117,12 @@ describe('REQ-14 账号安全：修改密码', () => {
       expect((field('新密码') as HTMLInputElement).value).toBe('')
       expect((field('确认新密码') as HTMLInputElement).value).toBe('')
     })
-    // 页面仍在（不跳转登录页）
+    /*
+     * 当前设备保持登录：不能只凭"表单还在"——清除令牌并跳转的实现也可能让表单短暂存在。
+     * 这里直接断言**令牌没有被清掉**（clearTokens 未被调用），这是"仍然登录"的可观察前提。
+     */
+    expect(clearTokensMock).not.toHaveBeenCalled()
+    expect(getRefreshTokenMock).toHaveBeenCalled()
     expect(screen.getByLabelText('当前密码')).toBeTruthy()
   })
 
@@ -169,15 +177,19 @@ describe('REQ-14 账号安全：修改密码', () => {
     expect(postMock).not.toHaveBeenCalled()
   })
 
-  it('AC-14.6 host 通道下不提交空 refreshToken：不渲染表单或明确提示走桌面客户端', async () => {
+  it('AC-14.6 host 通道下不渲染可提交表单、明确提示走桌面客户端，且不发请求', async () => {
     authState.hostChannel = 'host'
     render(<AccountSecurityPage />)
 
-    // 二选一即可：要么不出现表单，要么出现明确提示
-    const hasForm = screen.queryByLabelText('当前密码') !== null
+    /*
+     * AC-14.6 允许「隐藏入口」或「明确提示走桌面客户端」两种做法，本实现选择后者。
+     * 因此断言收紧为：**不渲染可提交表单**（避免用户提交空 refreshToken）+ 出现明确提示。
+     * 只断言"有提示"是不够的——提示与可提交表单同时在也会通过（review 指出）。
+     */
+    expect(screen.queryByLabelText('当前密码')).toBeNull()
+    expect(screen.queryByRole('button', { name: '修改密码' })).toBeNull()
     // 用 queryAllByText：提示可能出现在标题与说明两处，单个 queryByText 会因多匹配抛错
-    const hasHostNotice = screen.queryAllByText(/桌面客户端/).length > 0
-    expect(hasForm === false || hasHostNotice).toBe(true)
+    expect(screen.queryAllByText(/桌面客户端/).length).toBeGreaterThan(0)
 
     // 无论哪种，都不得因为提交空 refreshToken 而发出请求
     expect(postMock).not.toHaveBeenCalled()

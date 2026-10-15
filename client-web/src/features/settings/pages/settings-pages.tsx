@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Activity, Bot, Download, FileDown, RefreshCw, ScrollText, Trash2 } from 'lucide-react'
@@ -1498,6 +1498,11 @@ function CreateUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   const [role, setRole] = useState<'user' | 'admin'>('user')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  /*
+   * 逻辑层防重入：`loading` 只把按钮置 disabled，同一 tick 内的第二次点击
+   * 仍可能进入 submit（React state 还没提交）。用 ref 立即置位，配合 state 控制 UI。
+   */
+  const inFlight = useRef(false)
 
   function resetForm() {
     setUsername('')
@@ -1509,11 +1514,13 @@ function CreateUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   }
 
   async function submit() {
+    if (inFlight.current) return
     if (!username.trim()) return setError(CREATE_HINT.username)
     if (!email.trim() || !email.includes('@')) return setError(CREATE_HINT.email)
     if (password.length < 8) return setError(CREATE_HINT.password)
 
     setError(null)
+    inFlight.current = true
     setSubmitting(true)
     try {
       const body: CreateUserBody = {
@@ -1529,9 +1536,13 @@ function CreateUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
       resetForm()
       onOpenChange(false)
     } catch (err) {
+      // 失败反馈 = 弹窗内错误文本 + 顶部提示，不得静默失败（界面文案与交互要点 §1）；
       // 服务端 message 原文（如「用户名已存在」/「邮箱已存在」），弹窗保持打开、内容保留
-      setError(err instanceof Error ? err.message : '创建失败，请稍后重试')
+      const message = err instanceof Error ? err.message : '创建失败，请稍后重试'
+      setError(message)
+      notifyError(message)
     } finally {
+      inFlight.current = false
       setSubmitting(false)
     }
   }
@@ -1542,6 +1553,8 @@ function CreateUserDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
       onOpenChange={(next) => {
         // 提交进行中不可关（Esc / 遮罩 / 取消按钮都会被这一道挡住）
         if (submitting) return
+        // 关闭即清空：不留上一次填过的用户名/邮箱，尤其不能把**初始密码**留在表单里
+        if (!next) resetForm()
         onOpenChange(next)
       }}
     >
@@ -1620,11 +1633,14 @@ function ResetPasswordDialog({
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const inFlight = useRef(false)
 
   async function submit() {
+    if (inFlight.current) return
     if (password.length < 8) return setError(RESET_HINT.password)
 
     setError(null)
+    inFlight.current = true
     setSubmitting(true)
     try {
       await apiPost<AdminUser>(`/api/v1/admin/users/${target.id}/password`, { newPassword: password })
@@ -1632,8 +1648,12 @@ function ResetPasswordDialog({
       void qc.invalidateQueries({ queryKey: ['admin', 'users'] })
       onOpenChange(false)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '重置失败，请稍后重试')
+      // 同建号：弹窗内文本 + 顶部提示（§1 失败反馈）
+      const message = err instanceof Error ? err.message : '重置失败，请稍后重试'
+      setError(message)
+      notifyError(message)
     } finally {
+      inFlight.current = false
       setSubmitting(false)
     }
   }
