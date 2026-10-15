@@ -9,6 +9,12 @@
     <ProjectReference Include="..\..\Pim.Infrastructure\Pim.Infrastructure.csproj" />
   </ItemGroup>
 
+  <!-- 与 Calendar / Files / PcTracker 等模块一致：测试要直接引用模块内部类型
+       （例如设备作用域表名清单），才能对"预览表集合 == 删除表集合"做结构性断言。 -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pim.UnitTests" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

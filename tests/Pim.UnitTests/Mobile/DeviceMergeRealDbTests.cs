@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
+using Pim.Infrastructure.Endpoints;
 using Pim.Module.Mobile.DTOs;
 using Pim.Module.Mobile.Entities;
 using Pim.Module.Mobile.Services;
@@ -40,7 +42,16 @@ public sealed class DeviceMergeRealDbTests
         // 临时 schema 必须一起克隆，否则用例会在缺表处失败（而不是验证合并语义）。
         "mobile_forensic_events",
         "mobile_dropped_reason_daily",
+        // 工单 02 C1：心跳 / 端点三张表也纳入合并与删除范围。
+        // daemon_heartbeats 没有 user_id（克隆时按 device_id 借道 mobile_devices 过滤），
+        // 这正是它在范围里需要"归属判断"的原因。
+        "daemon_heartbeats",
+        "endpoint_statuses",
+        "endpoint_notification_actions",
     ];
+
+    /// <summary>没有 <c>user_id</c> 列、只能按 device_id 归属判断的表。</summary>
+    private static readonly string[] DeviceIdOnlyTables = ["daemon_heartbeats"];
 
     private const string TargetDeviceId = "android-e2e-target";
     private const string SourceDeviceA = "android-e2e-source-a";
@@ -190,6 +201,16 @@ public sealed class DeviceMergeRealDbTests
             var service = new DeviceManagementService(
                 db, MobileTestHelpers.CurrentUser(target.UserId), MobileTestHelpers.Time(Now));
 
+            // 工单 02 C1：心跳与端点通道在真实数据上也不能留下源设备的残留行。
+            // 期望值按合并前的真实数据推导（`>0 ? 1 : 0`），而不是写死 `<= 1` ——
+            // 后者在"镜像里本来就没有心跳数据"时对 0 行恒真，属于没有鉴别力的假绿。
+            var heartbeatsBefore = await db.Set<DaemonHeartbeatEntity>()
+                .Where(h => h.DeviceId == target.DeviceId || sourceDeviceIds.Contains(h.DeviceId))
+                .CountAsync();
+            var endpointStatusesBefore = await db.Set<EndpointStatusEntity>()
+                .Where(s => s.DeviceId == target.DeviceId || sourceDeviceIds.Contains(s.DeviceId))
+                .CountAsync();
+
             await service.MergeAsync(sourceDeviceIds, target.DeviceId, CancellationToken.None);
 
             Assert.Equal(distinctEventKeysBefore, await db.Set<MobileUsageEventEntity>().CountAsync());
@@ -202,6 +223,21 @@ public sealed class DeviceMergeRealDbTests
             Assert.Equal(
                 await db.Set<MobileAppCatalogEntity>().CountAsync(),
                 await db.Set<MobileAppCatalogEntity>().Select(c => c.PackageName).Distinct().CountAsync());
+
+            // 源设备侧 0 行；目标设备恰好剩一行（android 心跳/端点在库里最多只有一行；
+            // 没有任何相关数据时是 0 行 —— 两种期望都由合并前的真实计数推导出来）。
+            Assert.Empty(await db.Set<DaemonHeartbeatEntity>()
+                .Where(h => sourceDeviceIds.Contains(h.DeviceId)).ToListAsync());
+            Assert.Equal(
+                heartbeatsBefore > 0 ? 1 : 0,
+                await db.Set<DaemonHeartbeatEntity>().CountAsync(h => h.DeviceId == target.DeviceId));
+            Assert.Empty(await db.Set<EndpointStatusEntity>()
+                .Where(s => sourceDeviceIds.Contains(s.DeviceId)).ToListAsync());
+            Assert.Equal(
+                endpointStatusesBefore > 0 ? 1 : 0,
+                await db.Set<EndpointStatusEntity>().CountAsync(s => s.DeviceId == target.DeviceId));
+            Assert.Empty(await db.Set<EndpointNotificationActionEntity>()
+                .Where(a => sourceDeviceIds.Contains(a.DeviceId)).ToListAsync());
 
             // #231 的真实数据验收：合并前任何设备能解析出的 App 名称，合并后目标设备都要能解析。
             // （注：真实数据里本来就有约 180 个「出现在 summaries、从不在任何 catalog」的包名，
@@ -262,8 +298,13 @@ public sealed class DeviceMergeRealDbTests
         // 复制过程中的异常不吞：拷不动就让用例失败，否则它会静默绿灯。
         foreach (var table in DeviceScopedTables)
         {
-            await using var copy = new NpgsqlCommand(
-                $"INSERT INTO \"{schema}\".\"{table}\" SELECT * FROM public.\"{table}\" WHERE user_id = @userId", conn);
+            // daemon_heartbeats 没有 user_id：只能借该用户名下的 device_id 集合筛选。
+            var sql = DeviceIdOnlyTables.Contains(table)
+                ? $"INSERT INTO \"{schema}\".\"{table}\" SELECT * FROM public.\"{table}\" " +
+                  "WHERE device_id IN (SELECT device_id FROM public.mobile_devices WHERE user_id = @userId)"
+                : $"INSERT INTO \"{schema}\".\"{table}\" SELECT * FROM public.\"{table}\" WHERE user_id = @userId";
+
+            await using var copy = new NpgsqlCommand(sql, conn);
             copy.CommandTimeout = 300;
             copy.Parameters.AddWithValue("userId", userId);
             await copy.ExecuteNonQueryAsync();
