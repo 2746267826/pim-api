@@ -191,6 +191,12 @@ public sealed class DataCenterGovernanceService
             return await strategy.ExecuteAsync(async token =>
             {
                 await using var tx = await _db.Database.BeginTransactionAsync(token);
+                // 复审 N2：归档同样要在任务级锁内执行（复用调用方已有的事务，不嵌套 BeginTransaction），
+                // 否则「归档查开放段 → start 插入 → 归档软删」仍会留下「已归档任务 + 在跑的段」。
+                await TaskRowLock.AcquireLocksAsync(
+                    _db,
+                    request.Objects?.Select(o => o.ObjectId).ToList() ?? new List<Guid>(),
+                    token);
                 var affectedCount = 0;
                 var deletedAt = _timeProvider.GetUtcNow();
                 var operationKind = $"data-center.batch.{action.ToLowerInvariant()}";

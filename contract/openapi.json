@@ -18036,13 +18036,7 @@
             "type": "integer"
           },
           "status": {
-            "description": "任务状态。取值域自工单 03 起受服务端校验（集合外写入返回 400 / 02057）；2026-10 收紧之前写入的历史值不会被迁移，因此**旧数据**的 status 仍可能是集合外的字符串。",
-            "enum": [
-              "NEEDS-ACTION",
-              "IN-PROCESS",
-              "COMPLETED",
-              "CANCELLED"
-            ],
+            "description": "任务状态。服务端当前只写入 NEEDS-ACTION / IN-PROCESS / COMPLETED / CANCELLED，写入其它值会被 400（02057）拒绝；但本字段**故意不声明闭合 enum** —— 值域收紧（工单 03）之前写入的历史行仍可能是其它字符串，且不做数据迁移，契约必须与响应现实一致。客户端请按「未知值原样展示、不要把未知值回写」处理。",
             "type": "string"
           },
           "subTasks": {
@@ -18164,6 +18158,7 @@
         "additionalProperties": false,
         "properties": {
           "accumulatedSeconds": {
+            "description": "累计实际执行时长（秒）= 该任务所有 active / paused / completed / cancelled 段之和，正在计时的段按查询时刻计入，planned（尚未执行）不计；逐段四舍五入取秒。注意它是「实际花在任务上的时间」，包含任务被取消/删除前已经发生的那段，**不代表任务成功完成**（是否完成看 TaskStatus）。",
             "format": "int64",
             "type": "integer"
           },

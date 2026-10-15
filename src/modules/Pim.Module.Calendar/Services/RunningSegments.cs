@@ -81,18 +81,41 @@ internal static class TaskRowLock
         var strategy = db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
+            // 复审 N1：执行策略可能在瞬时故障后**重放**整个 lambda。重放必须从干净的跟踪状态开始 ——
+            // 否则上一轮已被接受、却随事务一起回滚的实体改动仍留在变更跟踪器里，
+            // 而跟踪查询不会用库里的值覆盖已跟踪实体，于是重放时那些字段不会被重新写库，
+            // 新建实体也会被重复 Add。清空跟踪器后整个工作单元从头读库，重放语义确定。
+            // （提交结果不确定时重放会读到一个已经存在的开放段 → 由唯一索引/前置检查给出干净的 02058，
+            //   而不是插出第二条段。）
+            db.ChangeTracker.Clear();
+
             await using var transaction = await db.Database.BeginTransactionAsync(ct);
-            // 按 id 排序依次加锁，避免两个批量请求以不同顺序取锁而互相等待。
-            foreach (var taskId in taskIds.Distinct().OrderBy(id => id))
-            {
-                await db.Database.ExecuteSqlInterpolatedAsync(
-                    $"SELECT pg_advisory_xact_lock(hashtext({taskId.ToString()}))",
-                    ct);
-            }
+            await AcquireLocksAsync(db, taskIds, ct);
 
             var result = await action();
             await transaction.CommitAsync(ct);
             return result;
         });
+    }
+
+    /// <summary>
+    /// 在**已存在的事务**内取任务级咨询锁（调用方负责事务边界）。
+    /// 供已经有自己事务/执行策略的路径复用（例如数据中心批量归档），避免嵌套 <c>BeginTransaction</c>。
+    /// </summary>
+    internal static async Task AcquireLocksAsync(
+        PimDbContext db,
+        IReadOnlyCollection<Guid> taskIds,
+        CancellationToken ct)
+    {
+        if (!db.Database.IsNpgsql() || taskIds.Count == 0)
+            return;
+
+        // 按 id 排序依次加锁，避免两个批量请求以不同顺序取锁而互相等待。
+        foreach (var taskId in taskIds.Distinct().OrderBy(id => id))
+        {
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock(hashtext({taskId.ToString()}))",
+                ct);
+        }
     }
 }

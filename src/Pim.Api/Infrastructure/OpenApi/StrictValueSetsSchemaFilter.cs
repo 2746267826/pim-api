@@ -39,32 +39,30 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
     };
 
     /// <summary>
-    /// **响应取值域**（与上面的请求表分开）：
+    /// **响应侧不声明闭合 enum，只写口径说明**（与维护者确认的口径）。
     ///
-    /// 上面的表要求「每一条都必须对应真实的服务端校验代码」。响应侧不存在这样的对应物 ——
-    /// <c>TaskResponse.status</c> 的值是服务端自己写出来的（<c>tasks.status</c>），
-    /// 没有「客户端传错 → 400」的校验可言。把它硬塞进同一张表会破坏该表自己声明的规则，
-    /// 所以这里另开一区：进这一区的字段，依据是**服务端写入侧的值域已受控**
-    /// （<c>CalendarService.ValidateTaskStatus</c> 是 tasks.status 的唯一写入口），
-    /// 因此响应里不可能出现集合外的值。工单 03 AC-2 要求请求侧与响应侧分别给出 enum 片段。
-    ///
-    /// ⚠️ 历史数据例外：收紧之前写入的集合外值不会被迁移（工单 D1.3「不得丢数据、不得批量改写语义」），
-    /// 所以**旧行**的 status 仍可能不在 enum 里；enum 描述的是「新写入与本次改动后的服务端行为」。
-    /// 这一例外**写进契约本身**（响应字段的 description，见 <see cref="HistoricalTaskStatusNote"/>），
-    /// 而不是只写在源码注释里 —— 契约的读者是客户端生成器与调用方，注释对他们不可见（复审 I4）。
+    /// 为什么：请求侧的四值是真校验（集合外 → 400 / 02057），所以那里标 enum 是实话；
+    /// 但响应侧的值来自库里既有数据，而工单 D1.3 明确**不迁移**收紧前写入的历史值
+    /// （例如 `DOING`、`in-progress`）。给响应字段标闭合 enum，就等于替历史行做了一个
+    /// 契约上不成立的承诺 —— 严格生成的客户端（Kotlin/Java 枚举）会真的反序列化失败，
+    /// 而「文字 description 说明例外」并不能改变 enum 的机器约束。
+    /// 所以这里改成：把**当前写入侧只产生哪四个值**与**历史行可能是别的字符串**都写进
+    /// description，让契约与响应现实一致（本仓原则：契约说的必须成真）。
     /// </summary>
-    private static readonly Dictionary<string, string[]> ResponseMap = new(StringComparer.Ordinal)
+    private static readonly Dictionary<string, string> ResponseNotes = new(StringComparer.Ordinal)
     {
-        // 任务状态的写入点全部使用 TaskStatuses 常量，且所有**外部输入**都经 CalendarService.ValidateTaskStatus：
-        // CreateTaskAsync / UpdateTaskAsync / BatchUpdateTasksAsync（PlanningModelService.StartTimerAsync
-        // 写的是常量 IN-PROCESS，自身也要走任务级锁与终态检查）。
-        ["TaskResponse.Status"] = TaskStatuses.All,
-    };
+        ["TaskResponse.Status"] =
+            "任务状态。服务端当前只写入 NEEDS-ACTION / IN-PROCESS / COMPLETED / CANCELLED，" +
+            "写入其它值会被 400（02057）拒绝；但本字段**故意不声明闭合 enum** —— " +
+            "值域收紧（工单 03）之前写入的历史行仍可能是其它字符串，且不做数据迁移，" +
+            "契约必须与响应现实一致。客户端请按「未知值原样展示、不要把未知值回写」处理。",
 
-    /// <summary>响应侧 enum 的历史数据提醒，会作为字段 description 写进契约（对客户端可见）。</summary>
-    private const string HistoricalTaskStatusNote =
-        "任务状态。取值域自工单 03 起受服务端校验（集合外写入返回 400 / 02057）；" +
-        "2026-10 收紧之前写入的历史值不会被迁移，因此**旧数据**的 status 仍可能是集合外的字符串。";
+        ["TaskTimerStateResponse.AccumulatedSeconds"] =
+            "累计实际执行时长（秒）= 该任务所有 active / paused / completed / cancelled 段之和，"
+            + "正在计时的段按查询时刻计入，planned（尚未执行）不计；逐段四舍五入取秒。"
+            + "注意它是「实际花在任务上的时间」，包含任务被取消/删除前已经发生的那段，"
+            + "**不代表任务成功完成**（是否完成看 TaskStatus）。",
+    };
 
     public void Apply(OpenApiSchema schema, SchemaFilterContext context)
     {
@@ -72,7 +70,29 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
             return;
 
         ApplyMap(schema, context, Map);
-        ApplyMap(schema, context, ResponseMap);
+        ApplyNotes(schema, context);
+    }
+
+    /// <summary>把响应侧口径说明写进字段 description（不改变字段类型，也不声明 enum）。</summary>
+    private static void ApplyNotes(OpenApiSchema schema, SchemaFilterContext context)
+    {
+        foreach (var (key, note) in ResponseNotes)
+        {
+            var dot = key.LastIndexOf('.');
+            if (!string.Equals(context.Type.Name, key[..dot], StringComparison.Ordinal))
+                continue;
+
+            var propName = key[(dot + 1)..];
+            var camel = char.ToLowerInvariant(propName[0]) + propName[1..];
+            foreach (var (pk, ps) in schema.Properties)
+            {
+                if (!string.Equals(pk, camel, StringComparison.Ordinal))
+                    continue;
+                // 说明可以落在任何内联字段上（例如整数型的累计秒数），不限于字符串
+                if (ps.Reference is null)
+                    ps.Description = note;
+            }
+        }
     }
 
     private static void ApplyMap(
@@ -97,8 +117,6 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
                 if (ps.Reference is null && ps.Type == "string")
                 {
                     ps.Enum = values.Select(v => (IOpenApiAny)new OpenApiString(v)).ToList();
-                    if (ReferenceEquals(map, ResponseMap))
-                        ps.Description = HistoricalTaskStatusNote;
                 }
             }
         }

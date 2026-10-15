@@ -242,19 +242,35 @@ public sealed class OpenApiContractShapeTests
     }
 
     /// <summary>
-    /// 响应侧：<c>TaskResponse.status</c> 同样带 enum（工单 03 AC-2 要求分别贴出请求侧与响应侧片段）。
-    /// 响应侧进的是 <c>StrictValueSetsSchemaFilter</c> 里另开的「响应取值域」分区 —— 那里不存在
-    /// 「服务端校验」对应物，依据是写入侧已受控（CalendarService.ValidateTaskStatus 是唯一写入口）。
+    /// 响应侧：<c>TaskResponse.status</c> **故意不声明闭合 enum**（与维护者确认的口径）。
+    /// 请求侧的四值是真校验；响应侧的值来自库里既有数据，而工单 D1.3 不迁移收紧前的历史值，
+    /// 标闭合 enum 就等于替历史行做契约上不成立的承诺（严格生成的客户端会反序列化失败）。
+    /// 取而代之：把「当前写入侧只产生哪四个值」与「历史行可能是别的字符串」写进 description。
     /// </summary>
     [Fact]
-    public void TaskResponseStatusDeclaresTheEnum()
+    public void TaskResponseStatusIsDocumentedInsteadOfClosedEnum()
     {
         var status = Schema("TaskResponse").Properties["status"];
 
         Assert.Equal("string", status.Type);
-        Assert.Equal(
-            ExpectedTaskStatuses,
-            status.Enum.OfType<OpenApiString>().Select(v => v.Value));
+        // Swashbuckle 把未标注的 enum 初始化成空列表，而不是 null
+        Assert.True(status.Enum is null || status.Enum.Count == 0, $"响应侧不应声明闭合 enum，实际：{string.Join(",", status.Enum ?? [])}");
+        Assert.False(string.IsNullOrWhiteSpace(status.Description));
+        foreach (var value in ExpectedTaskStatuses)
+            Assert.Contains(value, status.Description);
+        Assert.Contains("历史", status.Description);
+    }
+
+    /// <summary>累计时长口径（含「不代表任务成功完成」）必须出现在契约里，供客户端与报告侧阅读。</summary>
+    [Fact]
+    public void TaskTimerStateDocumentsTheAccumulatedDurationRule()
+    {
+        var schema = Schema("TaskTimerStateResponse");
+        Assert.Contains("accumulatedSeconds", RequiredOf(schema));
+        var description = schema.Properties["accumulatedSeconds"].Description;
+        Assert.False(string.IsNullOrWhiteSpace(description));
+        Assert.Contains("planned", description);
+        Assert.Contains("不代表任务成功完成", description);
     }
 
     /// <summary>请求侧 enum 必须与运行时白名单同源，防止「契约写了、校验没写」或反过来。</summary>
