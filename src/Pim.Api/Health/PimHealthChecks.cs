@@ -89,8 +89,7 @@ public sealed class LiteLlmHealthCheck(IHttpClientFactory f, IConfiguration cfg)
     protected override string Name => "litellm";
     protected override string? ResolveUrl(IConfiguration cfg)
     {
-        var enabled = bool.TryParse(cfg["AI_ENABLED"] ?? cfg["Ai:Enabled"], out var en) && en;
-        if (!enabled) return null;
+        if (!PimHealthChecks.IsAiEnabled(cfg)) return null;
         var baseUrl = cfg["AI_BASE_URL"] ?? cfg["Ai:BaseUrl"];
         return baseUrl is { Length: > 0 } ? $"{baseUrl.TrimEnd('/')}/health/liveliness" : null;
     }
@@ -98,16 +97,33 @@ public sealed class LiteLlmHealthCheck(IHttpClientFactory f, IConfiguration cfg)
 
 public static class PimHealthChecks
 {
+    /// <summary>
+    /// Ai 是否启用。注册判定与 <see cref="LiteLlmHealthCheck"/> 的取值判定共用这一处，
+    /// 避免"注册了但恒为未配置"这类两侧口径漂移。
+    /// </summary>
+    public static bool IsAiEnabled(IConfiguration cfg)
+        => bool.TryParse(cfg["AI_ENABLED"] ?? cfg["Ai:Enabled"], out var enabled) && enabled;
+
     /// <summary>注册 PIM 健康检查：database 为核心依赖，其余可选依赖失败仅 Degraded；同时导出为 Prometheus 指标。</summary>
     public static IHealthChecksBuilder AddPimHealthChecks(this IServiceCollection services, IConfiguration cfg)
     {
-        return services.AddHealthChecks()
+        var builder = services.AddHealthChecks()
             .ForwardToPrometheus()
             .AddCheck<PimDatabaseHealthCheck>("database", failureStatus: HealthStatus.Unhealthy, tags: ["ready"])
             .AddCheck<HangfireStorageHealthCheck>("hangfire", failureStatus: HealthStatus.Degraded, tags: ["ready"])
             // minio / qdrant 随 P4 退役，其健康检查一并移除
-            .AddCheck<TikaHealthCheck>("tika", failureStatus: HealthStatus.Degraded, tags: ["ready"])
-            .AddCheck<LiteLlmHealthCheck>("litellm", failureStatus: HealthStatus.Degraded, tags: ["ready"]);
+            .AddCheck<TikaHealthCheck>("tika", failureStatus: HealthStatus.Degraded, tags: ["ready"]);
+
+        // Ai 未启用时不注册 litellm 检查：否则它会**恒为 Degraded("not configured")**，
+        // 而健康检查发布者（ForwardToPrometheus 注册的 IHealthCheckPublisher，默认每 30 秒一轮）
+        // 每轮都把 Degraded 结果写成一条 Warning —— 纯噪声，且会把真错误淹掉。
+        // 启用后照常注册，依赖不可达时仍如实报 Degraded。
+        if (IsAiEnabled(cfg))
+        {
+            builder = builder.AddCheck<LiteLlmHealthCheck>("litellm", failureStatus: HealthStatus.Degraded, tags: ["ready"]);
+        }
+
+        return builder;
     }
 
     /// <summary>/health/ready 的 JSON 响应：整体状态 + 各检查明细。</summary>

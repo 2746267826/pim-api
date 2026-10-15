@@ -68,6 +68,24 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 `scripts/ci/fetch-contract.sh` 刷新 `contract/openapi.json`、`provenance.json` 与
 `client-web/src/api/generated.ts`；在其刷新之前，pim-web 的契约新鲜度门禁会变红，这是预期行为。
 
+## 日志级别与降噪
+
+日志最低级别**可配置**，不再硬编码。优先级：
+
+1. 环境变量 `PIM_LOG_LEVEL`（`Trace`/`Debug`/`Information`/`Warning`/`Error`/`Fatal`）
+2. 配置 `Logging:LogLevel:Default`（`appsettings*.json`，或环境变量 `Logging__LogLevel__Default`）
+3. 默认 `Information`
+
+类别级覆盖同样来自配置 `Logging:LogLevel:<类别>`（例如
+`Logging:LogLevel:Microsoft.EntityFrameworkCore.Database.Command`）。默认已把两个 EF 内务类别
+（`Microsoft.EntityFrameworkCore.ChangeTracking`、`Microsoft.EntityFrameworkCore.Database.Command`）
+抬到 `Warning`，压掉实体跟踪与逐条 SQL 流水；请求日志、启动/迁移日志以及**所有 Warning 及以上**
+照旧输出 —— 降噪只压内务，不吞真错误。写错的级别名不会静默忽略：启动时会记一条 Warning 说明它被跳过。
+
+`--mcp-stdio` 模式与 HTTP 模式共用同一套级别配置，只是控制台输出改到 stderr（stdout 只走 MCP 协议）。
+
+启动日志里会有一条 `日志级别生效：MinimumLevel=… （来源：…）；类别覆盖：…`，用来核对实际生效值。
+
 ## 开发
 
 ```bash

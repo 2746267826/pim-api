@@ -44,6 +44,9 @@ public sealed class MobileModule : IModule
         services.AddScoped<MobileMovementStatsService>();
         services.AddScoped<MobileUsageQueryService>();
         services.AddScoped<MobileQualityService>();
+        // 报告（工单 01）的「收集质量 · 手机」数据源：复用上面同一个质量服务的口径，
+        // 报告侧经 Pim.Core.Quality 抽象可选消费，模块之间不直接引用。
+        services.AddScoped<Pim.Core.Quality.ICollectionQualityProvider, MobileCollectionQualityProvider>();
         services.AddScoped<MobileAnalyticsQueryService>();
         services.AddScoped<MobileAppClassificationService>();
         services.AddScoped<MobileAppCatalogOverrideService>();
