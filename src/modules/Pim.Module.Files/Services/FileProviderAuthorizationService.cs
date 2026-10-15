@@ -448,11 +448,13 @@ public sealed class FileProviderAuthorizationService
 
         if (resetSyncState)
         {
-            // 重绑 = 旧游标作废，下一次同步走全量（与旧实现一致）
+            // 重绑 = 旧游标作废，下一次同步走全量（与旧实现一致）；
+            // 「解析不出父路径」的连续阻塞计数也一并清零，否则会缩短重绑后的重试窗口。
             target.DeltaLink = null;
             target.DeltaResetAt = null;
             target.SyncStatus = "idle";
             target.SyncedItemCount = 0;
+            target.DeferredBlockCount = 0;
         }
     }
 

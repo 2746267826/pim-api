@@ -76,7 +76,9 @@ public sealed class FileTreeSyncEngine
 
         if (provider.Status != "connected")
         {
-            throw new DomainException(5321, "文件来源尚未完成绑定");
+            throw provider.Status == "expired"
+                ? new DomainException(5322, "网盘授权已失效，请到设置页重新连接该账号")
+                : new DomainException(5321, "文件来源尚未完成绑定");
         }
 
         if (!_gate.TryEnter(providerId))
@@ -214,10 +216,14 @@ public sealed class FileTreeSyncEngine
 
             // 全部页面落库后再补解析一轮：此时本地索引已含整棵树，
             // 「父在后面的页里」这种情况才解得开。
-            // 补解析用的是「按 id 去重后的最新状态」：同 id 只处理一次，且以最后事件为准。
-            var drainInput = deferredById.Values
-                .Where(change => lastEventById.TryGetValue(change.ExternalId, out var last)
-                                 && !last.IsRemoved)
+            // 补解析用的是「按 id 去重后的**最后事件**」，而不是当初被延迟的那一条：
+            // 同一 id 可能在后面某一页带着新名字/新父目录再次出现（甚至已成功应用），
+            // 拿旧事件去补解析会把已经落好的新状态覆盖回旧状态（复审 Important）。
+            // 用最后事件即使重复应用也是幂等的（同样的值写同样的结果）。
+            var drainInput = deferredById.Keys
+                .Select(id => lastEventById.TryGetValue(id, out var last) ? last : null)
+                .Where(change => change is not null && !change.IsRemoved)
+                .Select(change => change!)
                 .ToList();
             var drained = await DrainDeferredAsync(
                 provider, session, parentPathCache, appliedPathsThisRun, drainInput, now, ct);
@@ -392,6 +398,13 @@ public sealed class FileTreeSyncEngine
             {
                 await RewriteDescendantPathsAsync(provider.Id, previousPath, path, now, ct);
                 InvalidateCacheUnder(parentPathCache, previousPath, path);
+                InvalidateCacheUnder(appliedPathsThisRun, previousPath, path);
+            }
+
+            if (change.IsFolder)
+            {
+                await ReconcileChildPathsAsync(
+                    provider.Id, change.ExternalId, path, now, parentPathCache, appliedPathsThisRun, ct);
             }
         }
 
@@ -441,7 +454,59 @@ public sealed class FileTreeSyncEngine
         }
     }
 
-    /// <summary>目录换位置后，缓存里那些旧前缀的父路径必须跟着改，否则本轮后续条目会解析到旧位置。</summary>
+
+    /// <summary>
+    /// 按**父 id** 校正该目录下已经在本地出现的直接子项路径，并级联整棵子树。
+    ///
+    /// 为什么改名以外也要做：delta 不保证顺序，子项可能先于父目录到达，此时子项的路径是按
+    /// 远端给的「父路径提示」算出来的；父目录随后带着**不同的**最终路径出现时，
+    /// 先前落地的子项就成了陈旧路径（列表/搜索显示错位置，按路径判断的敏感保护也会放行）。
+    /// 逐父 id 校正比「按旧路径前缀改写」更可靠：新目录在本地根本没有旧路径可言。
+    /// </summary>
+    private async Task ReconcileChildPathsAsync(
+        Guid providerId,
+        string folderExternalId,
+        string folderPath,
+        DateTimeOffset now,
+        Dictionary<string, string> parentPathCache,
+        Dictionary<string, string> appliedPathsThisRun,
+        CancellationToken ct)
+    {
+        var children = await _db.Set<FileItemEntity>()
+            .Where(row => row.ProviderId == providerId
+                && row.ParentExternalFileId == folderExternalId
+                && !row.IsDeleted)
+            .ToListAsync(ct);
+        if (children.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var child in children)
+        {
+            var expected = folderPath == "/"
+                ? "/" + child.Name
+                : folderPath.TrimEnd('/') + "/" + child.Name;
+            if (string.Equals(child.Path, expected, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var stalePath = child.Path;
+            child.Path = expected;
+            child.SyncedAt = now;
+            appliedPathsThisRun[child.ExternalFileId] = expected;
+            await RewriteDescendantPathsAsync(providerId, stalePath, expected, now, ct);
+            InvalidateCacheUnder(parentPathCache, stalePath, expected);
+            InvalidateCacheUnder(appliedPathsThisRun, stalePath, expected);
+        }
+    }
+
+    /// <summary>
+    /// 目录换位置后，**所有**按父 id 缓存的路径都要跟着改：cache（跨页）与本轮已落地路径
+    /// （解析时优先级最高）。漏掉后者会让「子目录先出现 → 祖先改名 → 孙项出现」这条链
+    /// 解析到旧位置，进而绕过按路径判断的敏感保护（复审 Important）。
+    /// </summary>
     private static void InvalidateCacheUnder(
         Dictionary<string, string> cache,
         string oldPath,
@@ -542,6 +607,13 @@ public sealed class FileTreeSyncEngine
                 {
                     await RewriteDescendantPathsAsync(provider.Id, previousPath, path, now, ct);
                     InvalidateCacheUnder(parentPathCache, previousPath, path);
+                    InvalidateCacheUnder(appliedPathsThisRun, previousPath, path);
+                }
+
+                if (change.IsFolder)
+                {
+                    await ReconcileChildPathsAsync(
+                        provider.Id, change.ExternalId, path, now, parentPathCache, appliedPathsThisRun, ct);
                 }
             }
 

@@ -436,12 +436,7 @@ public sealed class FileWriteService
         // 回读到的父目录必须就是声明的目标目录：两边都知道时才核对（provider 未必都给得出来）。
         // 不核对的话，提交「已有敏感文件的 id + 公开目录路径」就能把敏感文件登记成公开路径，
         // 之后的敏感路径闸门会按伪造路径放行。
-        // 根目录**不做**父 id 比较：盘根的 id 是别名（Graph 认 "root"，回读给的却是真实盘根 id），
-        // 严格比较会把完全正常的上传拒掉。非根目录才比较。
-        if (folder.Path != "/"
-            && folder.ExternalId is { Length: > 0 }
-            && item.ParentExternalId is { Length: > 0 }
-            && !string.Equals(item.ParentExternalId, folder.ExternalId, StringComparison.Ordinal))
+        if (!IsInsideFolder(folder, item, session.Account.RootExternalId))
         {
             throw new DomainException(5300, "上传结果不在目标目录内，已拒绝登记");
         }
@@ -488,10 +483,7 @@ public sealed class FileWriteService
         var created = await session.Content.GetItemAsync(createdId, ct)
             ?? throw new DomainException(5300, "文件夹已创建，但未能从网盘读回该文件夹，请稍后重新同步");
 
-        if (folder.Path != "/"
-            && folder.ExternalId is { Length: > 0 }
-            && created.ParentExternalId is { Length: > 0 }
-            && !string.Equals(created.ParentExternalId, folder.ExternalId, StringComparison.Ordinal))
+        if (!IsInsideFolder(folder, created, session.Account.RootExternalId))
         {
             throw new DomainException(5300, "新建目录不在目标目录内，已拒绝登记");
         }
@@ -578,6 +570,38 @@ public sealed class FileWriteService
 
     private static string JoinPath(string folderPath, string name)
         => folderPath == "/" ? "/" + name : folderPath.TrimEnd('/') + "/" + name;
+
+    /// <summary>
+    /// 回读到的条目是否真的在 <paramref name="folder"/> 之下。
+    ///
+    /// 非根目录：父 id 两边都知道时要求相等。
+    /// **根目录不能直接跳过检查**（那会重新打开伪造入口）：盘根的 id 是别名
+    /// （Graph 认 <c>"root"</c>、回读给的却是真实盘根 id），严格比较会误伤正常上传，
+    /// 所以改用两条可验证的等价判据 ——
+    /// (a) 回读到的父 id 就是该账号的盘根 id；或
+    /// (b) 回读到的**自身路径**恰好是 <c>/&lt;它自己的名字&gt;</c>（说明它确实在根下）。
+    /// 两条都不成立就拒绝：否则可以拿任意已有（可能是敏感）文件的 id 谎称「刚上传到根目录」，
+    /// 把它登记成公开路径，之后所有按路径判断的敏感保护都会放行（复审 Important）。
+    /// </summary>
+    private static bool IsInsideFolder(RemoteFolderRef folder, RemoteItem item, string rootExternalId)
+    {
+        var itemParent = item.ParentExternalId;
+        if (folder.Path != "/")
+        {
+            return folder.ExternalId is not { Length: > 0 }
+                || itemParent is not { Length: > 0 }
+                || string.Equals(itemParent, folder.ExternalId, StringComparison.Ordinal);
+        }
+
+        if (itemParent is { Length: > 0 }
+            && string.Equals(itemParent, rootExternalId, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return item.Path is { Length: > 0 } path
+            && string.Equals(path, "/" + item.Name, StringComparison.Ordinal);
+    }
 
     private async Task<FileItemEntity> UpsertItemRowAsync(
         Guid providerId,

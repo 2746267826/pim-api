@@ -476,6 +476,97 @@ public class FilesReviewRegressionTests
         Assert.Equal(written.ItemId, row.Id);
     }
 
+    // ===================== 第三轮 review 的发现 =====================
+
+    /// <summary>
+    /// 被延迟的**旧**事件不得覆盖同一 id 后面已经成功应用的新状态：
+    /// 补解析只能处理「该 id 的最后事件」。
+    /// </summary>
+    [Fact]
+    public async Task Sync_LaterAppliedUpsert_IsNotOverwrittenByEarlierDeferredEvent()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, deltaLink: "https://graph.microsoft.com/v1.0/me/drive/root/delta?$deltatoken=old");
+        var graph = new FakeOneDriveGraphClient();
+        // 第一页：f 改名成 old.txt，父目录还不存在 → deferred
+        graph.DeltaScript.Enqueue(OneDriveDeltaPageFactory.NextPage(
+            new OneDriveDeltaItem(
+                "f", "missing-parent", null, "old.txt",
+                IsFolder: false, IsRemoved: false, Size: 1, MimeType: "text/plain", Ctag: "c1", ModifiedAt: Now)));
+        // 第二页：父目录出现，且 f 的最新状态是根下的 new.txt → 正常应用
+        graph.DeltaScript.Enqueue(OneDriveDeltaPageFactory.Page(
+            OneDriveDeltaPageFactory.Folder("missing-parent", "Parent", parentId: "root-1", parentPath: "/drive/root:"),
+            new OneDriveDeltaItem(
+                "f", "root-1", "/drive/root:", "new.txt",
+                IsFolder: false, IsRemoved: false, Size: 2, MimeType: "text/plain", Ctag: "c2", ModifiedAt: Now)));
+        var engine = CreateEngine(db, graph);
+
+        await engine.SyncAsync(provider.Id);
+
+        var row = await db.Set<FileItemEntity>().AsNoTracking().SingleAsync(i => i.ExternalFileId == "f");
+        Assert.Equal("new.txt", row.Name);
+        Assert.Equal("/new.txt", row.Path);
+    }
+
+    /// <summary>
+    /// 祖先目录改名后，本轮已落地的**子孙**路径也要跟着改写（解析优先用本轮字典）：
+    /// 否则「子先出现 → 祖先改名 → 孙项出现」会解析到旧位置，绕过按路径判断的敏感保护。
+    /// </summary>
+    [Fact]
+    public async Task Sync_AncestorRename_RewritesDescendantsInThisRunPaths()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db, deltaLink: "https://graph.microsoft.com/v1.0/me/drive/root/delta?$deltatoken=old");
+        var graph = new FakeOneDriveGraphClient();
+        // 第一页：先落地子目录 b（此时 a 还没出现，b 是 /Public/B）
+        graph.DeltaScript.Enqueue(OneDriveDeltaPageFactory.NextPage(
+            OneDriveDeltaPageFactory.Folder("b", "B", parentId: "a", parentPath: "/Public")));
+        // 第二页：祖先 a 从 /Public 改名为 /Secrets
+        graph.DeltaScript.Enqueue(OneDriveDeltaPageFactory.NextPage(
+            OneDriveDeltaPageFactory.Folder("a", "Secrets", parentId: "root-1", parentPath: "/drive/root:")));
+        // 第三页：b 下的文件
+        graph.DeltaScript.Enqueue(OneDriveDeltaPageFactory.Page(
+            OneDriveDeltaPageFactory.File("keys", "keys.txt", parentId: "b", parentPath: "/Public/B")));
+        var engine = CreateEngine(db, graph);
+
+        await engine.SyncAsync(provider.Id);
+
+        var file = await db.Set<FileItemEntity>().AsNoTracking().SingleAsync(i => i.ExternalFileId == "keys");
+        // 必须落在改名后的位置；若解析到 /Public/B/keys.txt，按 /Secrets/* 的保护就会被绕过
+        Assert.Equal("/Secrets/B/keys.txt", file.Path);
+    }
+
+    /// <summary>
+    /// 根目录上传**不能**因为「盘根 id 是别名」就跳过父目录校验：
+    /// 否则可以拿任意已有（可能是敏感）文件的 id 谎称「刚上传到根目录」，把它登记成公开路径。
+    /// </summary>
+    [Fact]
+    public async Task RegisterUploadedFile_ForeignFileClaimedAsRootUpload_IsRejected()
+    {
+        await using var db = CreateDb();
+        var provider = SeedProvider(db);
+        db.Set<FileItemEntity>().Add(new FileItemEntity
+        {
+            ProviderId = provider.Id, ExternalFileId = "root-ext", Path = "/", Name = "root", ItemType = "folder",
+        });
+        await db.SaveChangesAsync();
+
+        var graph = new FakeOneDriveGraphClient();
+        // 敏感文件的真实位置：/Secrets/keys.txt（父是 secrets-folder）
+        graph.ItemsById["secret-id"] = new OneDrivePathItem(
+            "secret-id", "keys.txt", 10, "text/plain", "/drive/root:/Secrets", IsFolder: false, ParentId: "secrets-folder");
+        using var harness = new FilesProviderHarness(db, graph, new TestSecretProtector(), new HarnessClock(Now));
+        var service = new FileWriteService(
+            db, harness.Sessions, harness.Providers, new StubCurrentUser(UserId), new StubAuditLog(),
+            logger: null, clock: new HarnessClock(Now));
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => service.RegisterUploadedFileAsync(provider.Id, "/", "keys.txt", "secret-id"));
+
+        Assert.Equal(5300, error.ErrorCode);
+        Assert.False(await db.Set<FileItemEntity>().AnyAsync(i => i.ExternalFileId == "secret-id"));
+    }
+
     /// <summary>账号在但授权失效：必须给出「请重新连接」而不是「文件不存在」。</summary>
     [Fact]
     public async Task ExpiredAccount_SurfacesReauthorizationError_NotFileNotFound()
@@ -502,6 +593,11 @@ public class FilesReviewRegressionTests
         var listError = await Assert.ThrowsAsync<DomainException>(
             () => FileProviderLookup.ResolveListScopeAsync(db, UserId, provider.Id));
         Assert.Equal(5322, listError.ErrorCode);
+
+        // 同步入口也要给可自愈的错误，而不是笼统的「尚未完成绑定」
+        var engine = CreateEngine(db, new FakeOneDriveGraphClient());
+        var syncError = await Assert.ThrowsAsync<DomainException>(() => engine.SyncAsync(provider.Id));
+        Assert.Equal(5322, syncError.ErrorCode);
     }
 
     private sealed class StubCurrentUser(Guid userId) : Pim.Infrastructure.Auth.ICurrentUserService

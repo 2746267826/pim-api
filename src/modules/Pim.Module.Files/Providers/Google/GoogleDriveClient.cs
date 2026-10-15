@@ -106,7 +106,8 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
     /// <item>Docs → <c>text/plain</c></item>
     /// <item>Sheets → <c>text/csv</c></item>
     /// <item>Slides → <c>application/pdf</c>（文本抽取需要 Tika；未配置时给明确错误）</item>
-    /// <item>Forms / Drawings / Shortcuts / Sites / 目录等 → 不支持导出</item>
+    /// <item>Forms / Shortcuts / Sites / 目录等 → 不支持导出；Drawings 只支持 png/pdf/svg 等
+    /// 非文本目标，本文本抽取路径同样按「不支持」处理（要支持图片得另做视觉链路）</item>
     /// </list>
     /// </summary>
     public static string? ExportMimeTypeFor(string? mimeType)
