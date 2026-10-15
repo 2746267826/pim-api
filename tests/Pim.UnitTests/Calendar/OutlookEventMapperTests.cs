@@ -1081,4 +1081,52 @@ public sealed class OutlookEventMapperTests
         Assert.Null(target.OnlineMeetingProvider);
         Assert.Null(target.ExternalLink);
     }
+
+    // ---------- 工单 04：日程静音是 PIM 原生字段，Graph 同步不得染指 ----------
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    [InlineData(null)]
+    public void ApplyGraphEvent_DoesNotTouchPimNativeIsMuted(bool? existingIsMuted)
+    {
+        const string json = """
+        {
+            "@odata.etag": "etag-mute",
+            "id": "event-mute",
+            "iCalUId": "ical-mute",
+            "subject": "静音日程",
+            "start": { "dateTime": "2026-07-12T09:00:00.0000000", "timeZone": "UTC" },
+            "end": { "dateTime": "2026-07-12T10:00:00.0000000", "timeZone": "UTC" },
+            "changeKey": "ck-mute",
+            "type": "singleInstance"
+        }
+        """;
+
+        var target = new EventEntity { IsMuted = existingIsMuted };
+        using var doc = JsonDocument.Parse(json);
+
+        OutlookEventMapper.ApplyGraphEvent(
+            target, doc.RootElement, BindingId, PimCalendarId, ConnectionId, Generation);
+
+        // 同步永不写这一列：显式设定保留，未指定继续跟随日历本默认（E1.4）
+        Assert.Equal(existingIsMuted, target.IsMuted);
+    }
+
+    [Fact]
+    public void ApplyGraphEvent_IsMutedIsNotInTheMappedGraphWhitelist()
+    {
+        // 白名单是「Graph 属性 → PIM 列」的映射清单；is_muted 没有对应 Graph 属性，
+        // 因此它只能来自 PIM 侧（用户设定或日历本默认），不可能被同步推导出来。
+        var field = typeof(OutlookEventMapper).GetField(
+            "MappedGraphPropertyKeys",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var keys = Assert.IsType<HashSet<string>>(field!.GetValue(null));
+        Assert.DoesNotContain("isMuted", keys);
+        Assert.DoesNotContain("is_muted", keys);
+        // 说明：原来还有一条 `DoesNotContain("mute", keys)` —— 它对 HashSet 是**元素精确匹配**，
+        // 而这个键本来就不存在，所以它并不构成防线（独立 review 指出）。删掉它不影响保护范围：
+        // 真正防住「同步推导静音」的是行为用例 ApplyGraphEvent_DoesNotTouchPimNativeIsMuted，
+        // 上面两条则负责钉住「别把 isMuted / is_muted 加进白名单」。
+    }
 }

@@ -26,7 +26,8 @@ public static class EventResponseMapper
             e.IsOnlineMeeting, e.OnlineMeetingProvider,
             e.OnlineMeetingUrl, e.ExternalLink,
             EventFieldCodec.DeserializeAttachments(e.AttachmentReferencesJson),
-            e.IsSeriesMaster, e.IsException, e.SeriesMasterId, isCancelled);
+            e.IsSeriesMaster, e.IsException, e.SeriesMasterId, isCancelled,
+            IsMuted: e.IsMuted);
     }
 
     public static EventResponse MapExpanded(ExpandedEvent ex)
@@ -51,6 +52,7 @@ public static class EventResponseMapper
             e.IsOnlineMeeting, e.OnlineMeetingProvider,
             e.OnlineMeetingUrl, e.ExternalLink,
             EventFieldCodec.DeserializeAttachments(e.AttachmentReferencesJson),
-            ex.IsSeriesMaster, ex.IsException, ex.SeriesMasterId, ex.IsCancelled);
+            ex.IsSeriesMaster, ex.IsException, ex.SeriesMasterId, ex.IsCancelled,
+            IsMuted: e.IsMuted);
     }
 }

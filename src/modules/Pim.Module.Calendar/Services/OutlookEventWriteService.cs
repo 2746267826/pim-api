@@ -171,6 +171,10 @@ public sealed class OutlookEventWriteService
         localEvent.AttachmentReferencesJson =
             MergeAttachmentReferences(draftPimFileReferences, localEvent.AttachmentReferencesJson);
 
+        // 工单 04：is_muted 是 PIM 原生字段（Graph 事件没有对应属性，BuildWritePayload 也不会下发），
+        // 因此只能由草稿显式落到本地实体 —— 否则 Outlook 日历下的日程没法设置「期间静音」。
+        localEvent.IsMuted = request.Draft.IsMuted;
+
         var steps = new List<BatchStepEntry>
         {
             new("graph-create", "success", now),
@@ -322,6 +326,9 @@ public sealed class OutlookEventWriteService
             // client-supplied outlook refs as authoritative data.
             targetEntity.AttachmentReferencesJson =
                 MergeAttachmentReferences(draftPimFileReferences, targetEntity.AttachmentReferencesJson);
+
+            // 工单 04：同上，静音是 PIM 原生字段，随写回草稿整体替换（null = 未指定 → 跟随日历本默认）。
+            targetEntity.IsMuted = request.Draft!.IsMuted;
 
             var steps = new List<BatchStepEntry>
             {

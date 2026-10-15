@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Pim.Core.Common;
 using Pim.Core.Exceptions;
 using Pim.Infrastructure.Auth;
@@ -16,6 +17,7 @@ public class CalendarService
     private readonly EventAttachmentService _attachments;
     private readonly TimeProvider _timeProvider;
     private readonly CalendarAuditWriter? _audit;
+    private readonly ILogger<CalendarService>? _logger;
 
     public CalendarService(PimDbContext db, ICurrentUserService currentUser, RecurrenceService recurrence)
         : this(db, currentUser, recurrence, new EventAttachmentService(db), TimeProvider.System, null)
@@ -28,7 +30,8 @@ public class CalendarService
         RecurrenceService recurrence,
         EventAttachmentService attachments,
         TimeProvider? timeProvider = null,
-        CalendarAuditWriter? audit = null)
+        CalendarAuditWriter? audit = null,
+        ILogger<CalendarService>? logger = null)
     {
         _db = db;
         _currentUser = currentUser;
@@ -36,6 +39,7 @@ public class CalendarService
         _attachments = attachments;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _audit = audit;
+        _logger = logger;
     }
 
     private Guid UserId => _currentUser.UserId ?? throw new DomainException(01002, "未登录");
@@ -58,7 +62,8 @@ public class CalendarService
                 calendar.Id, calendar.Name, calendar.Color, calendar.Kind,
                 calendar.IsDefault, calendar.Events.Count, calendar.Source,
                 binding == null ? null : binding.Id,
-                binding == null || binding.CanEdit);
+                binding == null || binding.CanEdit,
+                calendar.DefaultMuted);
 
         return await query.ToListAsync(ct);
     }
@@ -76,7 +81,9 @@ public class CalendarService
         };
         _db.Set<CalendarEntity>().Add(calendar);
         await _db.SaveChangesAsync(ct);
-        return new CalendarResponse(calendar.Id, calendar.Name, calendar.Color, calendar.Kind, calendar.IsDefault, 0);
+        return new CalendarResponse(
+            calendar.Id, calendar.Name, calendar.Color, calendar.Kind, calendar.IsDefault, 0,
+            calendar.Source, null, true, calendar.DefaultMuted);
     }
 
     public async Task<CalendarResponse> UpdateCalendarAsync(Guid id, CreateCalendarRequest request, CancellationToken ct)
@@ -88,7 +95,9 @@ public class CalendarService
         if (request.Color is not null) cal.Color = request.Color;
         cal.UpdatedAt = _timeProvider.GetUtcNow();
         await _db.SaveChangesAsync(ct);
-        return new CalendarResponse(cal.Id, cal.Name, cal.Color, cal.Kind, cal.IsDefault, cal.Events.Count);
+        return new CalendarResponse(
+            cal.Id, cal.Name, cal.Color, cal.Kind, cal.IsDefault, cal.Events.Count,
+            cal.Source, null, true, cal.DefaultMuted);
     }
 
     public async Task DeleteCalendarAsync(Guid id, CancellationToken ct)
@@ -98,6 +107,83 @@ public class CalendarService
             ?? throw new DomainException(02002, "日历不存在");
         cal.DeletedAt = _timeProvider.GetUtcNow();
         await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// E1.3：把一个日历本下的日程统一设为静音开/关，并把该值记为该本后续同步日程的默认。
+    ///
+    /// <para>
+    /// 两件事一起做：(1) 写 <c>calendars.default_muted</c> —— 该本下「未指定」（<c>is_muted = null</c>）
+    /// 的日程生效值取它，后续从 Outlook 同步进来的新日程也是「未指定」，因此自动套用；
+    /// (2) 把该本下既有（未删除）日程写成显式值 —— 这就是工单要求的「一次把某个日历本下的日程统一为开或关」。
+    /// </para>
+    ///
+    /// <para>
+    /// 只动 PIM 原生列，不触碰 Outlook 侧字段，因此对只读（<c>CanEdit = false</c>）的绑定日历本同样安全。
+    /// 回收站里的日程不动（全局软删除过滤器已经把它们排除在查询之外）。
+    /// </para>
+    /// </summary>
+    public async Task<CalendarMutePolicyResponse> SetCalendarMutePolicyAsync(
+        Guid calendarId, bool? isMuted, CancellationToken ct)
+    {
+        // 必填校验放在服务层（端点只做绑定）：缺失字段会被 JSON 绑定成 false，
+        // 而这一操作会改掉整个日历本下所有日程，静默当成「不静音」是不可接受的（review I-1）。
+        if (isMuted is null)
+            throw new DomainException(02009, "isMuted 必填：true 统一静音 / false 统一不静音。");
+
+        var value = isMuted.Value;
+        var calendar = await _db.Set<CalendarEntity>()
+            .FirstOrDefaultAsync(c => c.Id == calendarId && c.UserId == UserId, ct)
+            ?? throw new DomainException(02002, "日历不存在");
+
+        var now = _timeProvider.GetUtcNow();
+        calendar.DefaultMuted = value;
+        calendar.UpdatedAt = now;
+
+        var affected = await _db.Set<EventEntity>()
+            .Where(e => e.CalendarId == calendar.Id)
+            .ToListAsync(ct);
+        foreach (var entity in affected)
+        {
+            entity.IsMuted = value;
+            // 与单条更新保持一致：批量改了日程就要更新 updated_at（review M-1）
+            entity.UpdatedAt = now;
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        // 批量操作会覆盖单条显式值，留下审计记录（谁、改了什么、影响多少条）（review M-3）。
+        //
+        // 审计是**尽力而为**：业务数据已经提交，此处再抛异常会让调用方看到「操作失败」，
+        // 但库里的数据其实已经改了（独立 review 二轮指出的 Important）。所以这里降级为
+        // 一条 warning 日志，绝不因为审计失败而向调用方报告失败。
+        if (_audit is not null)
+        {
+            try
+            {
+                await _audit.RecordSuccessAsync(
+                    UserId, "calendar.mute-policy.set", "calendar", calendar.Id,
+                    new Dictionary<string, string>
+                    {
+                        ["defaultMuted"] = value ? "true" : "false",
+                        ["affectedEventCount"] = affected.Count.ToString(),
+                    },
+                    ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(
+                    ex,
+                    "批量静音策略的审计写入失败（业务已生效）：calendarId={CalendarId}, affected={Affected}",
+                    calendar.Id, affected.Count);
+            }
+        }
+
+        return new CalendarMutePolicyResponse(calendar.Id, value, affected.Count);
     }
 
     // --- Events ---
@@ -1319,6 +1405,8 @@ public class CalendarService
         entity.OnlineMeetingUrl = request.OnlineMeetingUrl;
         entity.ExternalLink = request.ExternalLink;
         entity.AttachmentReferencesJson = EventFieldCodec.SerializeAttachments(request.AttachmentReferences);
+        // 三态整体替换：true/false 是显式设定，null 是「未指定」（生效值取日历本默认）
+        entity.IsMuted = request.IsMuted;
     }
 
     private static void ApplyUnifiedFields(EventEntity entity, UpdateEventRequest request)
@@ -1353,6 +1441,8 @@ public class CalendarService
         entity.OnlineMeetingProvider = request.OnlineMeetingProvider;
         entity.OnlineMeetingUrl = request.OnlineMeetingUrl;
         entity.ExternalLink = request.ExternalLink;
+        // PUT 是整体替换（与 ShowAs/Importance 一致）：省略/null 即回到「未指定」
+        entity.IsMuted = request.IsMuted;
     }
 
     private static string? FormatDuration(TimeSpan? duration) =>

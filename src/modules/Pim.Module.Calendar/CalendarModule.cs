@@ -557,6 +557,18 @@ public class CalendarModule : IModule
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
+        // 工单 04 E1.3：把一个日历本下的日程统一设为静音开/关 —— 写该本默认（后续同步日程自动套用）
+        // 并把既有（未删除）日程统一写成显式值。只动 PIM 原生列，不写回 Outlook。
+        group.MapPut("/calendars/{id:guid}/mute-policy", async (
+            Guid id, [FromBody] SetCalendarMutePolicyRequest req,
+            [FromServices] CalendarService svc, CancellationToken ct) =>
+            Results.Ok(ApiResponse<CalendarMutePolicyResponse>.Ok(
+                await svc.SetCalendarMutePolicyAsync(id, req.IsMuted, ct))))
+        .Produces<ApiResponse<CalendarMutePolicyResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
         group.MapPost("/calendars/{id:guid}/delete-preview", async (
             Guid id, [FromServices] CalendarDeleteService svc, CancellationToken ct) =>
             Results.Ok(ApiResponse<CalendarDeletePreviewResponse>.Ok(await svc.PreviewCalendarDeleteAsync(id, ct))))

@@ -48,6 +48,8 @@ public class EventEntity : ISoftDeletable
     [Column("outlook_sync_state"), MaxLength(32)] public string? OutlookSyncState { get; set; }
     [Column("schedule_plan_id")] public Guid? SchedulePlanId { get; set; }
     [Column("is_all_day")] public bool IsAllDay { get; set; }
+    /// <summary>该日程期间是否静音：true 静音 / false 不静音 / null 未指定（生效值取所属日历本的 default_muted）。</summary>
+    [Column("is_muted")] public bool? IsMuted { get; set; }
     [Column("time_zone_id")][MaxLength(100)] public string? TimeZoneId { get; set; }
     [Column("source_time_zone_id")][MaxLength(100)] public string? SourceTimeZoneId { get; set; }
     [Column("source_uid")][MaxLength(255)] public string? SourceUid { get; set; }

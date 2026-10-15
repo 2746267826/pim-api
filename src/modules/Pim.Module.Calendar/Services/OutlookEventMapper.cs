@@ -11,6 +11,18 @@ public static class OutlookEventMapper
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    /// <summary>
+    /// Graph 事件里**直接映射为 PIM 列**的属性白名单；不在清单里的 Graph 属性只进
+    /// <c>external_metadata_json.unmapped</c>（见 <see cref="WriteExternalMetadata"/>），不会写进业务列。
+    ///
+    /// <para>
+    /// 工单 04（日程期间静音）说明：<c>events.is_muted</c> 是 **PIM 原生字段**，Graph 事件里没有对应属性，
+    /// 因此它**不在**本清单里，<see cref="ApplyGraphEvent"/> 也不写它 —— 这正是「同步不覆盖用户手工改动」
+    /// 的实现方式：显式设定（true/false）在同步过程中原样保留，「未指定」（null）继续跟随所属日历本的
+    /// <c>default_muted</c>（因此该本后续同步进来的新日程自动套用设定）。改动本类时不要顺手把
+    /// <c>is_muted</c> 加进来或改成从 Graph 推导。
+    /// </para>
+    /// </summary>
     private static readonly HashSet<string> MappedGraphPropertyKeys = new(StringComparer.Ordinal)
     {
         "@odata.etag", "id", "iCalUId", "subject", "body", "location",
