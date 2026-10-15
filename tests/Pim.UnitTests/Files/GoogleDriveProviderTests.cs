@@ -515,6 +515,32 @@ public class GoogleDriveProviderTests
             """);
         Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderConfigurationFailureException>(errorInfo);
 
+        // **新旧结构并存**是最常见的情况：旧 errors[] 给泛化的 forbidden，
+        // 真正的根因在 details[] 的 ErrorInfo 里。只取第一个 reason 会让根因被遮蔽。
+        var dualStructure = GoogleErrorMapper.FromBody(
+            403,
+            """
+            {"error":{"code":403,"message":"Google Drive API has not been used in project 123 before or it is disabled.",
+            "errors":[{"domain":"global","reason":"forbidden","message":"Forbidden"}],
+            "details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SERVICE_DISABLED","domain":"googleapis.com"}]}}
+            """);
+        Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderConfigurationFailureException>(dualStructure);
+
+        var dualSuspended = GoogleErrorMapper.FromBody(
+            403,
+            """
+            {"error":{"code":403,"message":"Consumer suspended.",
+            "errors":[{"reason":"forbidden"}],
+            "details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"CONSUMER_SUSPENDED"}]}}
+            """);
+        Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderConfigurationFailureException>(dualSuspended);
+
+        // 反向：只有普通权限 reason 时不能被误判成运维故障
+        var plainPermission = GoogleErrorMapper.FromBody(
+            403,
+            """{"error":{"code":403,"errors":[{"reason":"insufficientFilePermissions"}]}}""");
+        Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderAuthorizationExpiredException>(plainPermission);
+
         // 解析必须对「合法 JSON 但形状异常」健壮：不能让解析本身抛异常（那会变成 500）
         foreach (var weird in new[] { "null", "[]", "{\"error\":null}", "{\"error\":{\"errors\":[null]}}", "{}", "<html>502</html>" })
         {

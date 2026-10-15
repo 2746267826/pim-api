@@ -46,10 +46,18 @@ public static class GoogleErrorMapper
         return FromBody((int)response.StatusCode, body, retryAfter);
     }
 
-    /// <summary>按状态码 + reason 分类。</summary>
+    /// <summary>
+    /// 按状态码 + reason 分类。
+    ///
+    /// 分类用的是**全部 reason**而不是第一个：Google 的响应常常**新旧结构并存**
+    /// （`error.errors[].reason` 给一个泛化的 `forbidden`，真正的根因在
+    /// `error.details[].reason` 里，例如 `SERVICE_DISABLED`）。
+    /// 只取第一个 reason 会让运维类根因被泛化 reason 遮蔽，退化回「用户权限」的语义（复审 Important）。
+    /// </summary>
     public static Exception FromBody(int statusCode, string body, int? retryAfterSeconds = null)
     {
-        var reason = ReadErrorReason(body);
+        var reasons = ReadErrorReasons(body);
+        var reason = reasons.Count > 0 ? reasons[0] : null;
         var message = ReadErrorMessage(body) ?? $"Google Drive request failed with status {statusCode}";
 
         if (IsCursorFailure(statusCode, reason, message))
@@ -60,25 +68,24 @@ public static class GoogleErrorMapper
         return statusCode switch
         {
             401 => new ProviderUnauthorizedException(message),
-            403 when IsRateLimit(reason) =>
-                new ProviderTransientException(429, retryAfterSeconds, message),
-            // 空间/配额不足：用户可自愈（清理网盘），但重新授权解决不了，必须单独说清
-            // 配置/运维类 403（API 未启用、项目被停用/受限）**不是**用户能修的问题：
-            // 报成 400/5322 会让用户反复重连也无解，且绕过 5xx 监控。
-            403 when IsProjectConfigurationFailure(reason) =>
+            // 顺序即优先级，且判定用**全部 reason**（新旧结构常并存，只看第一个会遮蔽根因）：
+            // ① 运维/配置（只有运维能修，必须进监控）
+            // ② 限流（可退避重试） ③ 空间配额（用户可清理） ④ 其余一律权限兜底
+            403 when reasons.Any(IsProjectConfigurationFailure) =>
                 new ProviderConfigurationFailureException(
-                    $"{message}（Google 侧配置/运维问题：{reason ?? "unknown"}）"),
-            403 when IsStorageQuota(reason) =>
+                    $"{message}（Google 侧配置/运维问题：{FirstMatching(reasons, IsProjectConfigurationFailure)}）"),
+            403 when reasons.Any(IsRateLimit) =>
+                new ProviderTransientException(429, retryAfterSeconds, message),
+            403 when reasons.Any(IsStorageQuota) =>
                 new ProviderStorageQuotaExceededException(
-                    $"{message}（Google 网盘空间或配额不足：{reason}）"),
+                    $"{message}（Google 网盘空间或配额不足：{FirstMatching(reasons, IsStorageQuota)}）"),
             // 其余 403 一律按「权限/授权」处理，**不再落回上游故障**：
             // 403 的语义就是「调用方没有被允许」，它永远不是「网盘挂了」；报成 502 会把
             // 「你该去重新连接 / 检查该文件权限」误导成「等一会儿再试」。
             // 逐个 reason 打补丁会没完没了（已知的就有 insufficientPermissions、
             // insufficientFilePermissions、cannotModifyInheritedTeamDrivePermission、
             // appNotAuthorizedToFile、domainPolicy、fileNotDownloadable、cannotDownloadAbusiveFile、
-            // abuse……），因此这里用「默认归入权限类」收口，
-            // 上面两个 when 分支只负责把限流与空间配额这两类更具体的语义挑出去。
+            // abuse……），因此这里用「默认归入权限类」收口。
             403 => new ProviderAuthorizationExpiredException(
                 $"{message}（Google 拒绝了该操作：{reason ?? "forbidden"}；"
                 + "请到设置页重新连接该账号或检查该文件的权限）"),
@@ -89,6 +96,10 @@ public static class GoogleErrorMapper
             _ => new GoogleDriveException(statusCode, reason, retryAfterSeconds, message, Truncate(body)),
         };
     }
+
+    /// <summary>取第一个命中的 reason（用于给用户/日志一个具体名字）。</summary>
+    private static string? FirstMatching(IReadOnlyList<string> reasons, Func<string?, bool> predicate)
+        => reasons.FirstOrDefault(predicate) ?? reasons.FirstOrDefault();
 
     /// <summary>
     /// 项目级/运维级 403：Google 项目未启用 Drive API（<c>accessNotConfigured</c> /
@@ -134,39 +145,43 @@ public static class GoogleErrorMapper
                || message.Contains("page token", StringComparison.OrdinalIgnoreCase);
     }
 
-    internal static string? ReadErrorReason(string body)
+    /// <summary>
+    /// 收集错误体里**全部**可读的 reason（先旧式 <c>error.errors[]</c>，再新式
+    /// <c>error.details[]</c> 的 ErrorInfo），去重保序。分类时按整组判定，避免漏掉根因。
+    /// </summary>
+    internal static IReadOnlyList<string> ReadErrorReasons(string body)
     {
+        var reasons = new List<string>();
         foreach (var element in EnumerateErrorEntries(body))
         {
             var reason = GoogleDriveClient.ReadString(element, "reason");
-            if (!string.IsNullOrWhiteSpace(reason))
+            if (!string.IsNullOrWhiteSpace(reason) && !reasons.Contains(reason, StringComparer.Ordinal))
             {
-                return reason;
+                reasons.Add(reason);
             }
         }
 
-        // 新版 Google API 把机器可读的错误放在 error.details[] 的 google.rpc.ErrorInfo 里
-        // （例如 API 未启用时的 SERVICE_DISABLED）。**不读这里就会漏掉运维类错误**，
-        // 让它退回「权限类」或「上游故障」的语义（复审 Important）。
         foreach (var detail in EnumerateErrorDetails(body))
         {
-            var type = GoogleDriveClient.ReadString(detail, "@type");
-            if (type is not null && !type.EndsWith("google.rpc.ErrorInfo", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
             var reason = GoogleDriveClient.ReadString(detail, "reason");
-            if (!string.IsNullOrWhiteSpace(reason))
+            if (!string.IsNullOrWhiteSpace(reason) && !reasons.Contains(reason, StringComparer.Ordinal))
             {
-                return reason;
+                reasons.Add(reason);
             }
         }
 
-        // 有些端点（令牌端点）用扁平的 "error": "invalid_grant"
         var flat = ReadFlatError(body);
-        return flat;
+        if (!string.IsNullOrWhiteSpace(flat) && !reasons.Contains(flat, StringComparer.Ordinal))
+        {
+            reasons.Add(flat);
+        }
+
+        return reasons;
     }
+
+    /// <summary>保留「第一个 reason」的便捷读法（消息与既有调用点用）。</summary>
+    internal static string? ReadErrorReason(string body)
+        => ReadErrorReasons(body).FirstOrDefault();
 
     /// <summary>读取 <c>error.details[]</c>（只返回对象元素，防御异常形状）。</summary>
     private static IEnumerable<JsonElement> EnumerateErrorDetails(string body)
@@ -193,10 +208,23 @@ public static class GoogleErrorMapper
             foreach (var element in details.EnumerateArray())
             {
                 // 数组元素可能是 null/字符串/数字：只认对象，别让解析本身抛异常
-                if (element.ValueKind == JsonValueKind.Object)
+                if (element.ValueKind != JsonValueKind.Object)
                 {
-                    yield return element.Clone();
+                    continue;
                 }
+
+                // `@type` 缺失/为空时**仍然采纳**：这里刻意「宁可多认，不可漏认」——
+                // 漏掉一个运维类 reason 会让它静默退化成「用户权限」文案，
+                // 而多认一个未知 reason 只是走权限兜底（同样可自愈）。
+                // 但若给了 `@type`，就必须是 ErrorInfo 才认，避免把别的详情类型当错误码。
+                var type = GoogleDriveClient.ReadString(element, "@type");
+                if (type is { Length: > 0 }
+                    && !type.EndsWith("google.rpc.ErrorInfo", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                yield return element.Clone();
             }
         }
     }

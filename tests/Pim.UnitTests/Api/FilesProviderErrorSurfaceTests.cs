@@ -174,6 +174,25 @@ public class FilesProviderErrorSurfaceTests
         Assert.False(await db.Set<FileProviderEntity>().AnyAsync(p => p.Provider == "google"));
     }
 
+    /// <summary>
+    /// 运维/配置类失败必须是**服务端故障**（502 + Error 日志），不能伪装成用户可自愈的 4xx ——
+    /// 否则用户按「重新连接」的提示陷入死循环，而 4xx 也绕过 5xx 监控。
+    /// </summary>
+    [Fact]
+    public async Task ProviderConfigurationFailure_SurfacesAs502WithAdminFacingMessage()
+    {
+        var (status, body, _) = await RenameAsync(
+            new ProviderConfigurationFailureException("SERVICE_DISABLED"));
+
+        Assert.Equal(HttpStatusCode.BadGateway, status);
+        using var doc = JsonDocument.Parse(body);
+        Assert.Equal(5390, doc.RootElement.GetProperty("code").GetInt32());
+        // 注意：序列化把非 ASCII 转义成 \uXXXX，断言中文必须解析后看 message 字段
+        Assert.Contains("配置异常", doc.RootElement.GetProperty("message").GetString()!, StringComparison.Ordinal);
+        // 上游细节（reason / 项目号等）只进日志，不回显给客户端
+        Assert.DoesNotContain("SERVICE_DISABLED", body, StringComparison.Ordinal);
+    }
+
     /// <summary>OneDrive 设备码路径缺 client id 的行为（对照组，基线即 400）。</summary>
     [Fact]
     public async Task OneDriveBind_WithoutClientId_Returns400()
