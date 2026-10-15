@@ -13,17 +13,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { ApiError } from '@/api/client'
 
-const { getMock, postMock, invalidateMock, notifySuccessMock, notifyErrorMock, state } = vi.hoisted(() => ({
+const { getMock, postMock, notifySuccessMock, notifyErrorMock, state } = vi.hoisted(() => ({
   getMock: vi.fn(),
   postMock: vi.fn(),
-  invalidateMock: vi.fn(),
   notifySuccessMock: vi.fn(),
   notifyErrorMock: vi.fn(),
-  /* 列表内容放在可变状态里：创建成功后真的多一个用户，避免"只断言 invalidate"的弱证据 */
-  state: { users: [] as Array<Record<string, unknown>> },
+  /*
+   * 假服务端状态：列表内容 + 列表被 GET 的次数。
+   * 用真实 react-query（只 mock API 层）而不是整体 mock useQuery：
+   * 整体 mock 时 invalidateQueries 不会真的触发重新取数，于是"查询键与失效键不匹配"
+   * 这类错误（生产上表现为列表不刷新）在测试里检不出来 —— review 第 1 轮指出。
+   */
+  state: { users: [] as Array<Record<string, unknown>>, listGets: 0 },
 }))
 
 /* 既有用户列表：一名管理员（我）+ 一名普通用户，覆盖「自定义行」与「对自己重置」 */
@@ -48,12 +53,6 @@ const USERS = [
   },
 ]
 
-vi.mock('@tanstack/react-query', () => ({
-  useQuery: ({ queryKey }: { queryKey: string[] }) =>
-    queryKey.includes('me') ? { data: { id: 'me-admin' } } : { data: state.users, isLoading: false },
-  useQueryClient: () => ({ invalidateQueries: invalidateMock }),
-}))
-
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
   return { ...actual, apiGet: getMock, apiPost: postMock }
@@ -72,6 +71,24 @@ vi.mock('react-router', () => ({
 }))
 
 import { AdminUsersPage } from './settings-pages'
+
+/**
+ * 挂载页面：使用**真实 QueryClient**，只把 API 层换成假服务端。
+ * 这样 invalidateQueries 会真的按查询键重新取数 —— 键不匹配就取不到数、列表不更新，
+ * 用例自然转红。渲染后等列表真正加载完成（真实 react-query 是异步的）。
+ */
+async function renderPage() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0, staleTime: 0 } },
+  })
+  render(
+    <QueryClientProvider client={client}>
+      <AdminUsersPage />
+    </QueryClientProvider>,
+  )
+  await screen.findAllByRole('button', { name: '重置密码' })
+  return client
+}
 
 /** 打开「新建用户」弹窗 */
 async function openCreateDialog() {
@@ -100,9 +117,13 @@ async function fillCreateForm(opts: { username?: string; email?: string; passwor
 describe('REQ-12 用户管理页「新建用户」', () => {
   beforeEach(() => {
     state.users = [...USERS]
-    getMock.mockReset().mockResolvedValue(state.users)
+    state.listGets = 0
+    getMock.mockReset().mockImplementation(async (path: string) => {
+      if (path === '/api/v1/auth/me') return { id: 'me-admin' }
+      state.listGets++
+      return [...state.users]
+    })
     postMock.mockReset()
-    invalidateMock.mockReset()
     notifySuccessMock.mockReset()
     notifyErrorMock.mockReset()
   })
@@ -110,7 +131,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
   afterEach(() => cleanup())
 
   it('AC-12.1 页面存在「新建用户」按钮，点击后出现居中弹窗（不是右侧抽屉）', async () => {
-    render(<AdminUsersPage />)
+    await renderPage()
 
     const trigger = screen.getByRole('button', { name: '新建用户' })
     expect(trigger).toBeTruthy()
@@ -128,7 +149,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
   })
 
   it('AC-12.2 弹窗字段与默认值：用户名/邮箱/显示名/初始密码/角色，默认「普通用户」', async () => {
-    render(<AdminUsersPage />)
+    await renderPage()
     const dialog = await openCreateDialog()
 
     expect(field('用户名')).toBeTruthy()
@@ -157,7 +178,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
       state.users = [...state.users, { ...body, id: 'u-new', isActive: true, createdAt: '2026-10-03T00:00:00+00:00' }]
       return { id: 'u-new', username: body.username, role: body.role }
     })
-    render(<AdminUsersPage />)
+    await renderPage()
     await openCreateDialog()
     await fillCreateForm()
 
@@ -174,14 +195,18 @@ describe('REQ-12 用户管理页「新建用户」', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(notifySuccessMock).toHaveBeenCalledWith('用户已创建')
-    expect(invalidateMock).toHaveBeenCalledWith({ queryKey: ['admin', 'users'] })
-    // 关键：列表里**真的**出现了新用户（无需手动刷新），而不是只看"刷新被调用过"
+    /*
+     * 关键：列表里**真的**出现了新用户（无需手动刷新）。
+     * 因为这里是真实 react-query，只有失效键与列表查询键**匹配**才会重新 GET；
+     * 键写错 → 不会重新取数 → 列表里不会出现新用户 → 本用例转红。
+     */
     expect(await screen.findByText('newbie')).toBeTruthy()
+    expect(state.listGets).toBeGreaterThan(1)
   })
 
   it('AC-12.4 / AC-12.5 服务端报错时弹窗保持打开、内容保留、显示服务端文案', async () => {
     postMock.mockRejectedValueOnce(new ApiError('用户名已存在', 1003, 409))
-    render(<AdminUsersPage />)
+    await renderPage()
     await openCreateDialog()
     await fillCreateForm({ username: 'taken', email: 'taken@example.com' })
 
@@ -201,7 +226,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
   it('AC-12.6 提交进行中按钮禁用；连点两次只发一次请求', async () => {
     let resolvePost: (v: unknown) => void = () => {}
     postMock.mockImplementationOnce(() => new Promise((resolve) => (resolvePost = resolve)))
-    render(<AdminUsersPage />)
+    await renderPage()
     await openCreateDialog()
     await fillCreateForm()
 
@@ -228,7 +253,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
   it('AC-12.6 连续三次点击「创建」也只发一次请求', async () => {
     let resolvePost: (v: unknown) => void = () => {}
     postMock.mockImplementationOnce(() => new Promise((resolve) => (resolvePost = resolve)))
-    render(<AdminUsersPage />)
+    await renderPage()
     await openCreateDialog()
     await fillCreateForm()
 
@@ -245,7 +270,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
   })
 
   it('AC-12.7 初始密码输入框是密码类型，不明文回显', async () => {
-    render(<AdminUsersPage />)
+    await renderPage()
     await openCreateDialog()
     await userEvent.type(field('初始密码'), 'password123')
 
@@ -255,7 +280,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
   })
 
   it('AC-12.8 用 Esc 关闭弹窗后不产生任何用户（不发请求）', async () => {
-    render(<AdminUsersPage />)
+    await renderPage()
     await openCreateDialog()
     await fillCreateForm()
 
@@ -271,7 +296,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
    * 那是测试自身的脆弱，不是产品行为，拆开后每条都远低于超时且失败定位更准。
    */
   it('AC-12.2 预校验：用户名为空 → 就地拦截，不发请求', async () => {
-    render(<AdminUsersPage />)
+    await renderPage()
     await openCreateDialog()
     await fillCreateForm({ username: '' })
 
@@ -282,7 +307,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
   })
 
   it('AC-12.2 预校验：邮箱缺 @ → 就地拦截，不发请求', async () => {
-    render(<AdminUsersPage />)
+    await renderPage()
     await openCreateDialog()
     await fillCreateForm({ email: 'not-an-email' })
 
@@ -293,7 +318,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
   })
 
   it('AC-12.2 预校验：初始密码不足 8 位 → 就地拦截，不发请求', async () => {
-    render(<AdminUsersPage />)
+    await renderPage()
     await openCreateDialog()
     await fillCreateForm({ password: 'short' })
 
@@ -304,7 +329,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
   })
 
   it('关闭弹窗后重新打开是空表单，不残留上一次的初始密码', async () => {
-    render(<AdminUsersPage />)
+    await renderPage()
     await openCreateDialog()
     await fillCreateForm({ username: 'draft-user', email: 'draft@example.com', password: 'draft-pass-1' })
 
@@ -320,7 +345,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
 
   it('AC-12.2 对照：同样的表单填对后会发出请求（证明拦截来自校验，不是按钮坏了）', async () => {
     postMock.mockResolvedValueOnce({ id: 'u-new' })
-    render(<AdminUsersPage />)
+    await renderPage()
     await openCreateDialog()
     await fillCreateForm()
 
@@ -331,7 +356,7 @@ describe('REQ-12 用户管理页「新建用户」', () => {
 
   it('AC-12.2 角色切换到「管理员」时，请求体 role=admin', async () => {
     postMock.mockResolvedValueOnce({ id: 'u-new' })
-    render(<AdminUsersPage />)
+    await renderPage()
     await openCreateDialog()
     await fillCreateForm()
 
@@ -347,9 +372,13 @@ describe('REQ-12 用户管理页「新建用户」', () => {
 describe('REQ-13 用户管理页「重置密码」', () => {
   beforeEach(() => {
     state.users = [...USERS]
-    getMock.mockReset().mockResolvedValue(state.users)
+    state.listGets = 0
+    getMock.mockReset().mockImplementation(async (path: string) => {
+      if (path === '/api/v1/auth/me') return { id: 'me-admin' }
+      state.listGets++
+      return [...state.users]
+    })
     postMock.mockReset()
-    invalidateMock.mockReset()
     notifySuccessMock.mockReset()
     notifyErrorMock.mockReset()
   })
@@ -357,7 +386,7 @@ describe('REQ-13 用户管理页「重置密码」', () => {
   afterEach(() => cleanup())
 
   it('AC-13.1 / AC-13.2 每行都有「重置密码」入口，弹窗含逐字后果说明', async () => {
-    render(<AdminUsersPage />)
+    await renderPage()
 
     const resetButtons = screen.getAllByRole('button', { name: '重置密码' })
     expect(resetButtons.length).toBe(USERS.length)
@@ -371,7 +400,7 @@ describe('REQ-13 用户管理页「重置密码」', () => {
 
   it('AC-13.1 提交成功后显示提示并刷新列表', async () => {
     postMock.mockResolvedValueOnce({ id: 'u-member' })
-    render(<AdminUsersPage />)
+    await renderPage()
     await userEvent.click(screen.getAllByRole('button', { name: '重置密码' })[1])
     await screen.findByRole('dialog')
 
@@ -388,7 +417,7 @@ describe('REQ-13 用户管理页「重置密码」', () => {
   })
 
   it('AC-13.3 新密码不足 8 位时前端阻止提交且不发请求', async () => {
-    render(<AdminUsersPage />)
+    await renderPage()
     await userEvent.click(screen.getAllByRole('button', { name: '重置密码' })[1])
     await screen.findByRole('dialog')
 
@@ -407,7 +436,7 @@ describe('REQ-13 用户管理页「重置密码」', () => {
 
   it('AC-13.4 服务端返回错误时在弹窗内显示服务端文案，弹窗不关闭', async () => {
     postMock.mockRejectedValueOnce(new ApiError('用户不存在', 40040, 404))
-    render(<AdminUsersPage />)
+    await renderPage()
     await userEvent.click(screen.getAllByRole('button', { name: '重置密码' })[1])
     await screen.findByRole('dialog')
 
@@ -420,7 +449,7 @@ describe('REQ-13 用户管理页「重置密码」', () => {
   })
 
   it('AC-13.5 对自己重置时的确认与后果说明与其他用户完全一致（无特殊文案）', async () => {
-    render(<AdminUsersPage />)
+    await renderPage()
 
     // 第 0 行是「我」；第 1 行是普通用户
     const selfDialog = await (async () => {
