@@ -62,6 +62,11 @@ public static class GoogleErrorMapper
             401 => new ProviderUnauthorizedException(message),
             403 when IsRateLimit(reason) =>
                 new ProviderTransientException(429, retryAfterSeconds, message),
+            // 权限类 403 是**用户可自愈**的（重新授权 / 检查该文件的共享权限），
+            // 不能报成 502「网盘服务暂时不可用」——那会把「你该去重新连接」误导成「等一会儿再试」。
+            403 when IsPermissionDenied(reason) =>
+                new ProviderAuthorizationExpiredException(
+                    $"{message}（Google 拒绝了该操作：{reason}；请到设置页重新连接该账号或检查文件权限）"),
             403 => new GoogleDriveException(statusCode, reason, retryAfterSeconds, message, Truncate(body)),
             404 => new ProviderItemNotFoundException(message),
             410 => new ProviderCursorExpiredException(message),
@@ -70,6 +75,13 @@ public static class GoogleErrorMapper
             _ => new GoogleDriveException(statusCode, reason, retryAfterSeconds, message, Truncate(body)),
         };
     }
+
+    /// <summary>
+    /// 权限被拒的 403：这类是「授权/共享权限」问题，用户能自己修（重新连接或调整权限）。
+    /// </summary>
+    private static bool IsPermissionDenied(string? reason)
+        => reason is "insufficientPermissions" or "appNotAuthorizedToFile" or "domainPolicy"
+            or "forbidden" or "fileNotDownloadable" or "cannotDownloadAbusiveFile";
 
     private static bool IsRateLimit(string? reason)
         => reason is "rateLimitExceeded" or "userRateLimitExceeded" or "quotaExceeded"

@@ -52,6 +52,7 @@ public class OneDriveContentEndpointsE2ETests
     public async Task ContentEndpoint_Redirects302_ToFreshLink_WithoutLeakingToken()
     {
         var (factory, user, _, itemId, _) = await CreateUserWithFileAsync($"p2-content-{Guid.NewGuid():N}");
+        using var factoryLifetime = factory;
         var noRedirect = ((TestServer)factory.Server).CreateClient();
         noRedirect.BaseAddress = user.BaseAddress;
         noRedirect.DefaultRequestHeaders.Authorization = user.DefaultRequestHeaders.Authorization;
@@ -70,6 +71,7 @@ public class OneDriveContentEndpointsE2ETests
     public async Task TextFlow_GetEdit_ListSnapshots_Restore()
     {
         var (factory, user, _, itemId, graph) = await CreateUserWithFileAsync($"p2-text-{Guid.NewGuid():N}");
+        using var factoryLifetime = factory;
 
         // 1. 读文本（fake 返回 "e2e 文本内容"）
         var getResp = await user.GetAsync($"/api/v1/files/items/{itemId}/text");
@@ -110,6 +112,7 @@ public class OneDriveContentEndpointsE2ETests
     public async Task SensitivePath_ContentAndText_Returns403()
     {
         var (factory, user, _, itemId, graph) = await CreateUserWithFileAsync($"p2-secret-{Guid.NewGuid():N}", path: "/Secrets/密钥.txt");
+        using var factoryLifetime = factory;
 
         Assert.Equal(HttpStatusCode.Forbidden,
             (await user.GetAsync($"/api/v1/files/items/{itemId}/content")).StatusCode);
@@ -132,6 +135,7 @@ public class OneDriveContentEndpointsE2ETests
     public async Task ThumbnailEndpoint_Redirects302()
     {
         var (factory, user, _, itemId, _) = await CreateUserWithFileAsync($"p2-thumb-{Guid.NewGuid():N}", mimeType: "image/png");
+        using var factoryLifetime = factory;
         var noRedirect = ((TestServer)factory.Server).CreateClient();
         noRedirect.BaseAddress = user.BaseAddress;
         noRedirect.DefaultRequestHeaders.Authorization = user.DefaultRequestHeaders.Authorization;
@@ -146,6 +150,7 @@ public class OneDriveContentEndpointsE2ETests
     public async Task PreviewUrl_ReturnsEmbedLink()
     {
         var (factory, user, _, itemId, graph) = await CreateUserWithFileAsync($"p2-preview-{Guid.NewGuid():N}", mimeType: "application/pdf");
+        using var factoryLifetime = factory;
 
         var response = await user.GetAsync($"/api/v1/files/items/{itemId}/preview-url");
 
@@ -165,6 +170,7 @@ public class OneDriveContentEndpointsE2ETests
     public async Task ExtractedText_EndpointServesText_ForReadFileTextTool()
     {
         var (factory, user, _, itemId, graph) = await CreateUserWithFileAsync($"p4a-extext-{Guid.NewGuid():N}");
+        using var factoryLifetime = factory;
         graph.SmallContent = new("e2e 抽取文本"u8.ToArray(), "text/plain");
 
         var response = await user.GetAsync($"/api/v1/files/items/{itemId}/extracted-text?maxBytes=1024");
@@ -184,6 +190,7 @@ public class OneDriveContentEndpointsE2ETests
     public async Task RestoreItem_EndpointUndeletesSoftDeletedItem_ForRestoreFileTool()
     {
         var (factory, user, _, itemId, graph) = await CreateUserWithFileAsync($"p4a-restore-{Guid.NewGuid():N}");
+        using var factoryLifetime = factory;
 
         // 先经 DELETE 软删（走 FileWriteService，Graph 成功后才本地软删）
         var deleteResponse = await user.DeleteAsync($"/api/v1/files/items/{itemId}");
@@ -216,6 +223,7 @@ public class OneDriveContentEndpointsE2ETests
     {
         var (factory, user, _, itemId, _) = await CreateUserWithFileAsync(
             $"p4a-extext-sens-{Guid.NewGuid():N}", path: "/Secrets/密码.txt");
+        using var factoryLifetime = factory;
 
         var response = await user.GetAsync($"/api/v1/files/items/{itemId}/extracted-text");
 
@@ -232,6 +240,7 @@ public class OneDriveContentEndpointsE2ETests
     {
         var (factory, user, _, itemId, _) = await CreateUserWithFileAsync(
             $"p4-egress-{Guid.NewGuid():N}", path: "/Passwords/凭据.txt");
+        using var factoryLifetime = factory;
 
         var egresses = new (string Method, string Url)[]
         {
@@ -268,6 +277,7 @@ public class OneDriveContentEndpointsE2ETests
     public async Task Upload_WithForeignProviderId_IsRejected()
     {
         var (factory, alice, providerId, _, _) = await CreateUserWithFileAsync($"p4-upload-iso-{Guid.NewGuid():N}");
+        using var factoryLifetime = factory;
         var anon = factory.CreateClient();
         var bobToken = await OneDriveFilesEndpointsE2ETests.RegisterAndGetTokenAsync(
             anon, ("p4-bob-" + Guid.NewGuid().ToString("N"))[..18]);
@@ -288,6 +298,7 @@ public class OneDriveContentEndpointsE2ETests
     public async Task Upload_ReturnsConvergedMetadata()
     {
         var (factory, user, providerId, _, _) = await CreateUserWithFileAsync($"p4-upload-dto-{Guid.NewGuid():N}");
+        using var factoryLifetime = factory;
 
         // 目标文件夹必须已在本地元数据里（未同步的目录会被明确拒绝），fixture 里有 /合同
         using var form = new MultipartFormDataContent();

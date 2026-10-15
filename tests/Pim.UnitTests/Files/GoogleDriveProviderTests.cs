@@ -72,6 +72,9 @@ public class GoogleDriveProviderTests
         /// <summary>POST /files 新建目录时返回的 id。</summary>
         public string CreatedFolderId { get; set; } = "created-folder-id";
 
+        /// <summary>让所有 Drive 调用回 404，用来验证远端不存在的幂等语义。</summary>
+        public bool NotFoundForEverything { get; set; }
+
         /// <summary>files.get 的按 id 索引；根目录默认存在（盘根真实 id 靠它解析）。</summary>
         public Dictionary<string, object> FilesById { get; } = new(StringComparer.Ordinal);
 
@@ -82,6 +85,11 @@ public class GoogleDriveProviderTests
             Origins.Add(request.Headers.TryGetValues("Origin", out var origins) ? origins.FirstOrDefault() : null);
 
             // 身份取自 Drive 的 about.get（不是 OAuth userinfo：那需要额外的身份 scope）
+            if (NotFoundForEverything && !url.Contains("/oauth2", StringComparison.Ordinal))
+            {
+                return Json(404, Error("notFound", "File not found: no-such-file"));
+            }
+
             if (url.Contains("/drive/v3/about", StringComparison.Ordinal))
             {
                 return Json(200, new
@@ -429,6 +437,50 @@ public class GoogleDriveProviderTests
 
         Assert.Equal("https://upload.example.com/session", upload.UploadUrl);
         Assert.Contains(api.Origins, origin => origin == "https://home.hsww.party:15858");
+    }
+
+    /// <summary>
+    /// 403 的语义分流：权限类是**用户可自愈**的（重新授权/检查权限），
+    /// 不能和限流一样被报成「网盘服务暂时不可用」；限流仍走可重试的瞬态异常。
+    /// </summary>
+    [Fact]
+    public void Forbidden_PermissionDenied_IsUserActionable_NotTransient()
+    {
+        var permissionDenied = GoogleErrorMapper.FromBody(
+            403,
+            """{"error":{"code":403,"message":"The user does not have sufficient permissions for this file.","errors":[{"reason":"insufficientPermissions"}]}}""");
+
+        var expired = Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderAuthorizationExpiredException>(
+            permissionDenied);
+        Assert.Contains("insufficientPermissions", expired.Message, StringComparison.Ordinal);
+
+        var throttled = GoogleErrorMapper.FromBody(
+            403,
+            """{"error":{"code":403,"message":"Rate Limit Exceeded","errors":[{"reason":"rateLimitExceeded"}]}}""");
+        Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderTransientException>(throttled);
+    }
+
+    /// <summary>
+    /// 远端 404 的**幂等**语义必须仍然成立：读不到东西要返回 null、删不到东西要当成功。
+    /// 归一化之后若还捕错异常类型，这些幂等路径会变成错误响应（复审 Important）。
+    /// </summary>
+    [Fact]
+    public async Task RemoteNotFound_KeepsIdempotentNullAndNoOpSemantics()
+    {
+        var api = new StubGoogleApi { NotFoundForEverything = true };
+        await using var db = CreateDb();
+        var provider = SeedGoogleProvider(db);
+        using var harness = CreateHarness(db, api);
+        var session = await harness.Sessions.OpenAsync(provider);
+
+        // 按 id 回读：不存在 → null（调用方据此给出「文件不存在」，而不是抛异常穿透）
+        Assert.Null(await session.Content.GetItemAsync("no-such-file"));
+
+        // 删除一个远端已不存在的条目：与 OneDrive 实现一致，视为成功
+        await session.Writer.DeleteItemAsync("no-such-file");
+
+        // 撤销一个已不存在的权限：同上
+        await session.Shares!.RevokeSharePermissionAsync("no-such-file", "perm-x");
     }
 
     // ---- 同步：首次全量 → 此后增量 ----

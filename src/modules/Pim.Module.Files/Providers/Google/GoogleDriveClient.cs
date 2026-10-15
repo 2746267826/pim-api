@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Pim.Module.Files.Providers.Abstractions;
 
 namespace Pim.Module.Files.Providers.Google;
 
@@ -243,8 +244,11 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
                 ct);
             return ReadFile(json);
         }
-        catch (GoogleDriveException exception) when (exception.StatusCode == (int)HttpStatusCode.NotFound)
+        catch (ProviderItemNotFoundException)
         {
+            // 注意：这里**必须**捕归一化后的类型。GoogleErrorMapper 已经把 404 转成
+            // ProviderItemNotFoundException，继续 catch GoogleDriveException 会让
+            // 「远端不存在返回 null」的幂等语义永远不执行（复审 Important）。
             return null;
         }
     }
@@ -425,7 +429,7 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
         {
             await SendJsonAsync(request, accessToken, ct);
         }
-        catch (GoogleDriveException exception) when (exception.StatusCode == (int)HttpStatusCode.NotFound)
+        catch (ProviderItemNotFoundException)
         {
             // 远端已不存在：与 OneDrive 实现同样的「视为已删除」语义
         }
@@ -591,7 +595,7 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
         {
             await SendJsonAsync(request, accessToken, ct);
         }
-        catch (GoogleDriveException exception) when (exception.StatusCode == (int)HttpStatusCode.NotFound)
+        catch (ProviderItemNotFoundException)
         {
             // 已撤销或不存在：视为成功
         }
