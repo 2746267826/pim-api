@@ -467,8 +467,8 @@ public class GoogleDriveProviderTests
             """{"error":{"code":403,"message":"Rate Limit Exceeded","errors":[{"reason":"rateLimitExceeded"}]}}""");
         Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderTransientException>(throttled);
 
-        // 任意 403（含共享盘继承权限这类长尾 reason）都不得落回「上游故障」：
-        // 403 的语义是「调用方没被允许」，永远不是「网盘挂了」
+        // 普通权限类 403（含共享盘继承权限这类长尾 reason，以及还没见过的 reason）
+        // → 可自愈的 400/5322；**逐个 reason 打补丁是治标**，所以默认归入权限类。
         foreach (var reason in new[]
                  {
                      "cannotModifyInheritedTeamDrivePermission",
@@ -484,6 +484,42 @@ public class GoogleDriveProviderTests
                 + reason
                 + "\"}]}}");
             Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderAuthorizationExpiredException>(mapped);
+        }
+
+        // 但**运维/配置类** 403 不是用户能修的：API 未启用 / 项目被停用
+        // 必须单列，按服务端故障出口（502 + Error 日志），不能伪装成「请重新连接」
+        foreach (var reason in new[]
+                 {
+                     "accessNotConfigured",
+                     "projectNotAuthorized",
+                     "clientProjectBlocked",
+                     "SERVICE_DISABLED",
+                     "CONSUMER_SUSPENDED",
+                 })
+        {
+            var mapped = GoogleErrorMapper.FromBody(
+                403,
+                "{\"error\":{\"code\":403,\"message\":\"Forbidden\",\"errors\":[{\"reason\":\""
+                + reason
+                + "\"}]}}");
+            Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderConfigurationFailureException>(mapped);
+        }
+
+        // 新版 Google API 把机器可读的错误放在 error.details[] 的 google.rpc.ErrorInfo 里，
+        // 只读 error.errors[] 会漏掉运维类错误
+        var errorInfo = GoogleErrorMapper.FromBody(
+            403,
+            """
+            {"error":{"code":403,"message":"Google Drive API has not been used in project 123 before or it is disabled.",
+            "details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SERVICE_DISABLED","domain":"googleapis.com"}]}}
+            """);
+        Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderConfigurationFailureException>(errorInfo);
+
+        // 解析必须对「合法 JSON 但形状异常」健壮：不能让解析本身抛异常（那会变成 500）
+        foreach (var weird in new[] { "null", "[]", "{\"error\":null}", "{\"error\":{\"errors\":[null]}}", "{}", "<html>502</html>" })
+        {
+            var exception = GoogleErrorMapper.FromBody(403, weird);
+            Assert.NotNull(exception);
         }
 
         // 空间/配额不足既不是限流（等一会儿不会好）也不是授权失效（重新连接没用），单列一类
@@ -514,6 +550,30 @@ public class GoogleDriveProviderTests
 
         // 撤销一个已不存在的权限：同上
         await session.Shares!.RevokeSharePermissionAsync("no-such-file", "perm-x");
+    }
+
+    /// <summary>
+    /// 游标失效判定必须限定状态码：带 "pageToken" 字样的 403/429/503 不能被当成游标失效，
+    /// 否则会绕过退避重试与权限分类（复审 Minor）。
+    /// </summary>
+    [Fact]
+    public void CursorFailure_IsLimitedToGoneAndBadRequest()
+    {
+        var badRequest = GoogleErrorMapper.FromBody(
+            400, """{"error":{"errors":[{"reason":"invalidPageToken"}]}}""");
+        Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderCursorExpiredException>(badRequest);
+
+        var gone = GoogleErrorMapper.FromBody(
+            410, """{"error":{"message":"The requested page token has expired."}}""");
+        Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderCursorExpiredException>(gone);
+
+        // 同样的 reason 出现在 403/429/503 上，必须各归各类，不得被游标分支抢占
+        Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderAuthorizationExpiredException>(
+            GoogleErrorMapper.FromBody(403, """{"error":{"errors":[{"reason":"invalidPageToken"}]}}"""));
+        Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderTransientException>(
+            GoogleErrorMapper.FromBody(429, """{"error":{"errors":[{"reason":"invalidPageToken"}]}}"""));
+        Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderTransientException>(
+            GoogleErrorMapper.FromBody(503, """{"error":{"errors":[{"reason":"invalidPageToken"}]}}"""));
     }
 
     // ---- 同步：首次全量 → 此后增量 ----

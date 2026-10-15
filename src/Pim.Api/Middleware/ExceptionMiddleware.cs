@@ -75,6 +75,18 @@ public class ExceptionMiddleware
                 context, StatusCodes.Status400BadRequest, 5331, "文件超过处理上限，请在网盘中操作");
             _logger.LogInformation(ex, "Provider content exceeded the configured limit");
         }
+        catch (ProviderConfigurationFailureException ex)
+        {
+            // 服务端配置/运维问题（例如第三方项目未启用 API）：按 5xx 处理并记 Error，
+            // 让它进监控告警；报成 400 会让用户按「重新连接」的提示陷入死循环，
+            // 同时掩盖了真正需要运维介入的故障。
+            _logger.LogError(ex, "Provider configuration failure");
+            await WriteDomainLikeErrorAsync(
+                context,
+                StatusCodes.Status502BadGateway,
+                5390,
+                "网盘服务配置异常，请联系管理员");
+        }
         catch (ProviderStorageQuotaExceededException ex)
         {
             await WriteDomainLikeErrorAsync(

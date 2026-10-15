@@ -104,6 +104,15 @@ public sealed class ProviderContentTooLargeException(long actualBytes)
 }
 
 /// <summary>
+/// provider 侧的**配置/运维**失败（例如第三方项目未启用对应 API、项目被停用/受限）。
+///
+/// 与「授权失效」严格区分：用户重新授权、检查文件权限都**修不好**，只有运维能修。
+/// 因此出口按服务端故障（5xx）处理并记 Error 级日志，让它进监控告警，
+/// 而不是伪装成用户侧 4xx（那会让用户陷入「按提示重连 → 还是失败」的死循环，监控也看不到）。
+/// </summary>
+public sealed class ProviderConfigurationFailureException(string message) : Exception(message);
+
+/// <summary>
 /// 远端空间/配额不足。这是**用户可自愈**的（清理网盘后再试），
 /// 既不是「上游故障」（502）也不是「授权失效」（重新连接也没用），因此单列一类。
 /// </summary>

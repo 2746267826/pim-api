@@ -63,6 +63,11 @@ public static class GoogleErrorMapper
             403 when IsRateLimit(reason) =>
                 new ProviderTransientException(429, retryAfterSeconds, message),
             // 空间/配额不足：用户可自愈（清理网盘），但重新授权解决不了，必须单独说清
+            // 配置/运维类 403（API 未启用、项目被停用/受限）**不是**用户能修的问题：
+            // 报成 400/5322 会让用户反复重连也无解，且绕过 5xx 监控。
+            403 when IsProjectConfigurationFailure(reason) =>
+                new ProviderConfigurationFailureException(
+                    $"{message}（Google 侧配置/运维问题：{reason ?? "unknown"}）"),
             403 when IsStorageQuota(reason) =>
                 new ProviderStorageQuotaExceededException(
                     $"{message}（Google 网盘空间或配额不足：{reason}）"),
@@ -86,6 +91,19 @@ public static class GoogleErrorMapper
     }
 
     /// <summary>
+    /// 项目级/运维级 403：Google 项目未启用 Drive API（<c>accessNotConfigured</c> /
+    /// 新式 <c>ErrorInfo.reason=SERVICE_DISABLED</c>）、项目被停用或受限
+    /// （<c>projectNotAuthorized</c> / <c>clientProjectBlocked</c> / <c>CONSUMER_SUSPENDED</c>）。
+    ///
+    /// 这类问题**用户侧无法自愈**（重新授权、检查文件权限都没用），必须让运维看到，
+    /// 因此不能归入「权限类 400」。
+    /// </summary>
+    private static bool IsProjectConfigurationFailure(string? reason)
+        => reason is "accessNotConfigured" or "projectNotAuthorized" or "clientProjectBlocked"
+            or "billingNotEnabled" or "SERVICE_DISABLED" or "CONSUMER_SUSPENDED"
+            or "serviceDisabled" or "consumerSuspended";
+
+    /// <summary>
     /// 空间/配额不足（与 <see cref="IsRateLimit"/> 的区别：限流等一会儿能好，配额要用户自己清理）。
     /// </summary>
     private static bool IsStorageQuota(string? reason)
@@ -95,6 +113,11 @@ public static class GoogleErrorMapper
         => reason is "rateLimitExceeded" or "userRateLimitExceeded" or "quotaExceeded"
             or "dailyLimitExceeded" or "sharingRateLimitExceeded";
 
+    /// <summary>
+    /// 游标失效判定**必须限定状态码**：只有 410（Drive 明确表示 token 过期）与
+    /// 400 + 游标类 reason 才算。否则一个带 "pageToken" 字样的 403/429/503
+    /// 会被误判成游标失效，从而绕过退避重试与权限分类（复审 Minor）。
+    /// </summary>
     private static bool IsCursorFailure(int statusCode, string? reason, string message)
     {
         if (statusCode == 410)
@@ -102,14 +125,13 @@ public static class GoogleErrorMapper
             return true;
         }
 
-        if (reason is not null
-            && reason.Contains("pageToken", StringComparison.OrdinalIgnoreCase))
+        if (statusCode != 400)
         {
-            return true;
+            return false;
         }
 
-        return statusCode == 400
-               && message.Contains("page token", StringComparison.OrdinalIgnoreCase);
+        return (reason is not null && reason.Contains("pageToken", StringComparison.OrdinalIgnoreCase))
+               || message.Contains("page token", StringComparison.OrdinalIgnoreCase);
     }
 
     internal static string? ReadErrorReason(string body)
@@ -123,9 +145,79 @@ public static class GoogleErrorMapper
             }
         }
 
+        // 新版 Google API 把机器可读的错误放在 error.details[] 的 google.rpc.ErrorInfo 里
+        // （例如 API 未启用时的 SERVICE_DISABLED）。**不读这里就会漏掉运维类错误**，
+        // 让它退回「权限类」或「上游故障」的语义（复审 Important）。
+        foreach (var detail in EnumerateErrorDetails(body))
+        {
+            var type = GoogleDriveClient.ReadString(detail, "@type");
+            if (type is not null && !type.EndsWith("google.rpc.ErrorInfo", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var reason = GoogleDriveClient.ReadString(detail, "reason");
+            if (!string.IsNullOrWhiteSpace(reason))
+            {
+                return reason;
+            }
+        }
+
         // 有些端点（令牌端点）用扁平的 "error": "invalid_grant"
         var flat = ReadFlatError(body);
         return flat;
+    }
+
+    /// <summary>读取 <c>error.details[]</c>（只返回对象元素，防御异常形状）。</summary>
+    private static IEnumerable<JsonElement> EnumerateErrorDetails(string body)
+    {
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(body);
+        }
+        catch (JsonException)
+        {
+            yield break;
+        }
+
+        using (document)
+        {
+            if (!TryGetErrorObject(document.RootElement, out var error)
+                || !error.TryGetProperty("details", out var details)
+                || details.ValueKind != JsonValueKind.Array)
+            {
+                yield break;
+            }
+
+            foreach (var element in details.EnumerateArray())
+            {
+                // 数组元素可能是 null/字符串/数字：只认对象，别让解析本身抛异常
+                if (element.ValueKind == JsonValueKind.Object)
+                {
+                    yield return element.Clone();
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 取 <c>error</c> 对象。合法 JSON 里 <c>error</c> 也可能是 null / 字符串 / 数组，
+    /// 不检查 ValueKind 会直接抛 <see cref="InvalidOperationException"/>，
+    /// 最终变成 500（复审 Minor）。
+    /// </summary>
+    private static bool TryGetErrorObject(JsonElement root, out JsonElement error)
+    {
+        error = default;
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("error", out var candidate)
+            || candidate.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        error = candidate;
+        return true;
     }
 
     internal static string? ReadErrorMessage(string body)
@@ -134,7 +226,8 @@ public static class GoogleErrorMapper
         {
             using var document = JsonDocument.Parse(body);
             var root = document.RootElement;
-            if (!root.TryGetProperty("error", out var error))
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("error", out var error))
             {
                 return null;
             }
@@ -164,7 +257,9 @@ public static class GoogleErrorMapper
         {
             using var document = JsonDocument.Parse(body);
             var root = document.RootElement;
-            if (root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+            if (root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("error", out var error)
+                && error.ValueKind == JsonValueKind.String)
             {
                 return error.GetString();
             }
@@ -190,8 +285,7 @@ public static class GoogleErrorMapper
 
         using (document)
         {
-            if (!document.RootElement.TryGetProperty("error", out var error)
-                || error.ValueKind != JsonValueKind.Object
+            if (!TryGetErrorObject(document.RootElement, out var error)
                 || !error.TryGetProperty("errors", out var errors)
                 || errors.ValueKind != JsonValueKind.Array)
             {
@@ -200,7 +294,10 @@ public static class GoogleErrorMapper
 
             foreach (var element in errors.EnumerateArray())
             {
-                yield return element.Clone();
+                if (element.ValueKind == JsonValueKind.Object)
+                {
+                    yield return element.Clone();
+                }
             }
         }
     }

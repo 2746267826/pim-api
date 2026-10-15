@@ -664,17 +664,6 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
         return await client.SendAsync(request, completionOption, ct);
     }
 
-    private static async Task<JsonElement> ReadJsonAsync(HttpResponseMessage response, CancellationToken ct)
-    {
-        var body = await response.Content.ReadAsStringAsync(ct);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw GoogleErrorMapper.FromBody((int)response.StatusCode, body);
-        }
-
-        return JsonDocument.Parse(body).RootElement.Clone();
-    }
-
     private static GoogleDriveFile ReadFile(JsonElement element)
     {
         var parents = new List<string>();
@@ -703,14 +692,22 @@ public sealed class GoogleDriveClient(IHttpClientFactory httpClientFactory)
             ReadString(element, "thumbnailLink"));
     }
 
+    /// <summary>
+    /// 读取字符串字段。**必须先判 ValueKind**：<c>TryGetProperty</c> 在非 Object 元素上会抛
+    /// <see cref="InvalidOperationException"/>，而上游的错误体形状并不可控
+    /// （<c>{"error":null}</c>、<c>{"error":{"errors":[null]}}</c> 都是合法 JSON），
+    /// 让解析本身抛异常会把「上游报错」变成「500 内部错误」（复审 Minor）。
+    /// </summary>
     internal static string? ReadString(JsonElement element, string name)
-        => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+        => element.ValueKind == JsonValueKind.Object
+           && element.TryGetProperty(name, out var value)
+           && value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
 
     internal static long? ReadLong(JsonElement element, string name)
     {
-        if (!element.TryGetProperty(name, out var value))
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(name, out var value))
         {
             return null;
         }
