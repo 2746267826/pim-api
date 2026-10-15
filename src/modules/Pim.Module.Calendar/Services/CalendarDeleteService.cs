@@ -43,14 +43,16 @@ public sealed class CalendarDeleteService
     }
 
     public Task<CalendarOperationResult> DeleteCalendarAsync(Guid calendarId, CancellationToken ct = default)
-        // 复审 R1：整本删除**不**用锁外的投影 id 加锁 —— 投影与锁内重读之间新加入该簿的任务
-        // 会落在锁集合之外，仍然能被并发的 timer/start 抢到，留下「已删除任务 + 在跑的段」。
-        // 改成：先无条件开事务（交给执行策略），在事务内加载**真实**要删的任务集合，
-        // 拿到集合之后再逐把补取任务级咨询锁，然后才改状态。
-        => TaskRowLock.WithTransactionAsync(_db, () => DeleteCalendarCoreAsync(calendarId, ct), ct);
+        // 复审 R1（第 3 轮）：整本删除**不**用锁外的投影 id 加锁 —— 投影与锁内重读之间新加入该簿的
+        // 任务会落在锁集合之外。改成在事务内加载**真实**要删的任务集合，拿到集合后再逐把补任务锁。
+        // 复审 I1（第 4 轮）：只补任务锁仍挡不住「并发把新任务建/迁进这本簿」——
+        // 所以这里同时取**簿级咨询锁**（与 CreateTaskAsync / UpdateTaskAsync 指定 calendarId 时同一把），
+        // 让「改簿成员」与「删整本」互斥。
+        => TaskRowLock.WithCalendarLockAsync(_db, calendarId, () => DeleteCalendarCoreAsync(calendarId, ct), ct);
 
     private async Task<CalendarOperationResult> DeleteCalendarCoreAsync(Guid calendarId, CancellationToken ct)
     {
+        // 锁内重读（软删过滤器在模型上，已删除的簿会直接抛 02003）。
         var calendar = await LoadCalendarAsync(calendarId, ct);
         var operationId = Guid.NewGuid();
         var operationKind = CalendarOperationKind(calendar);

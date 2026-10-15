@@ -1088,7 +1088,15 @@ public class CalendarService
             totalPages);
     }
 
-    public async Task<TaskResponse> CreateTaskAsync(CreateTaskRequest request, CancellationToken ct)
+    public Task<TaskResponse> CreateTaskAsync(CreateTaskRequest request, CancellationToken ct)
+        // 复审第 4 轮 I1：建任务时若指定了任务簿，必须与「整本删除」互斥 ——
+        // 否则删除方物化任务集合之后新建的任务会逃过整本删除，留下「已删簿 + 活任务 + 在跑的计时」。
+        // 锁内重查父簿仍然走软删过滤器，删除已提交时这里会 404（日历不存在）。
+        => request.CalendarId is { } calendarId
+            ? TaskRowLock.WithCalendarLockAsync(_db, calendarId, () => CreateTaskCoreAsync(request, ct), ct)
+            : CreateTaskCoreAsync(request, ct);
+
+    private async Task<TaskResponse> CreateTaskCoreAsync(CreateTaskRequest request, CancellationToken ct)
     {
         if (request.CalendarId.HasValue)
         {
@@ -1154,10 +1162,19 @@ public class CalendarService
         // 复审 I2：写状态时与计时动作（timer/start|pause|stop）共用同一把任务级锁，
         // 整个工作单元（读任务 → 改写 → 闭合在跑的段 → 保存）都在锁与同一事务内，
         // 否则会出现「COMPLETED 但 ends_at IS NULL」。不写状态时不加锁（避免无谓事务）。
-        return request.Status is null
-            ? await UpdateTaskCoreAsync(id, request, ct)
-            : await TaskRowLock.WithTaskLocksAsync(
-                _db, new[] { id }, () => UpdateTaskCoreAsync(id, request, ct), ct);
+        if (request.Status is null && request.CalendarId is null)
+            return await UpdateTaskCoreAsync(id, request, ct);
+
+        // 需要哪把锁取哪把：写状态 → 任务锁（与计时动作互斥）；
+        // 指定任务簿（迁入）→ 簿锁（与整本删除互斥，见 CreateTaskAsync 的说明）。
+        if (request.CalendarId is { } targetCalendarId)
+        {
+            return await TaskRowLock.WithCalendarLockAsync(
+                _db, targetCalendarId, () => UpdateTaskCoreAsync(id, request, ct), ct);
+        }
+
+        return await TaskRowLock.WithTaskLocksAsync(
+            _db, new[] { id }, () => UpdateTaskCoreAsync(id, request, ct), ct);
     }
 
     private async Task<TaskResponse> UpdateTaskCoreAsync(Guid id, UpdateTaskRequest request, CancellationToken ct)
@@ -1270,11 +1287,19 @@ public class CalendarService
         if (request.Status is not null)
             ValidateTaskStatus(request.Status);
 
+        if (request.Status is null && request.CalendarId is null)
+            return await BatchUpdateTasksCoreAsync(request, ids, operationId, ct);
+
         // 复审 I2：写状态时在任务级锁内完成「查开放段 → 写状态 → 闭合」（整个工作单元同一事务）。
-        return request.Status is null
-            ? await BatchUpdateTasksCoreAsync(request, ids, operationId, ct)
-            : await TaskRowLock.WithTaskLocksAsync(
-                _db, ids, () => BatchUpdateTasksCoreAsync(request, ids, operationId, ct), ct);
+        // 批量迁入某簿时同样要簿锁（与整本删除互斥）。
+        if (request.CalendarId is { } batchCalendarId)
+        {
+            return await TaskRowLock.WithCalendarLockAsync(
+                _db, batchCalendarId, () => BatchUpdateTasksCoreAsync(request, ids, operationId, ct), ct);
+        }
+
+        return await TaskRowLock.WithTaskLocksAsync(
+            _db, ids, () => BatchUpdateTasksCoreAsync(request, ids, operationId, ct), ct);
     }
 
     private async Task<CalendarOperationResult> BatchUpdateTasksCoreAsync(
