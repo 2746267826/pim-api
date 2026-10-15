@@ -78,9 +78,13 @@ public static class GoogleErrorMapper
 
     /// <summary>
     /// 权限被拒的 403：这类是「授权/共享权限」问题，用户能自己修（重新连接或调整权限）。
+    ///
+    /// <c>insufficientFilePermissions</c> 是 Drive 对**单个文件**权限不足时最常用的 reason，
+    /// 漏掉它会让这类错误重新落回「上游故障」的语义（复审 Important）。
     /// </summary>
     private static bool IsPermissionDenied(string? reason)
-        => reason is "insufficientPermissions" or "appNotAuthorizedToFile" or "domainPolicy"
+        => reason is "insufficientPermissions" or "insufficientFilePermissions"
+            or "appNotAuthorizedToFile" or "domainPolicy"
             or "forbidden" or "fileNotDownloadable" or "cannotDownloadAbusiveFile";
 
     private static bool IsRateLimit(string? reason)

@@ -82,9 +82,14 @@ public class ExceptionMiddleware
         }
         catch (ProviderAuthorizationExpiredException ex)
         {
+            // 同一个归一化异常同时承载两种可自愈原因：账号授权失效、或该文件/该操作权限不足。
+            // 文案两种都点到，避免把「该文件没权限」说成「授权过期」而把用户引到错误的修法上。
             await WriteDomainLikeErrorAsync(
-                context, StatusCodes.Status400BadRequest, 5322, "网盘授权已失效，请到设置页重新连接该账号");
-            _logger.LogWarning(ex, "Provider authorization expired");
+                context,
+                StatusCodes.Status400BadRequest,
+                5322,
+                "网盘授权已失效或该文件权限不足，请到设置页重新连接该账号或检查文件权限");
+            _logger.LogWarning(ex, "Provider authorization/permission rejected");
         }
         catch (ProviderCapabilityNotSupportedException ex)
         {

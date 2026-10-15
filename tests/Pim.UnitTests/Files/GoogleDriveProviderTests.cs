@@ -454,6 +454,14 @@ public class GoogleDriveProviderTests
             permissionDenied);
         Assert.Contains("insufficientPermissions", expired.Message, StringComparison.Ordinal);
 
+        // Drive 对**单个文件**权限不足时实际给的 reason 是 insufficientFilePermissions，
+        // 漏掉它会让这类错误重新落回「上游故障」（复审 Important）
+        var fileLevelDenied = GoogleErrorMapper.FromBody(
+            403,
+            """{"error":{"code":403,"message":"The user does not have sufficient permissions for this file.","errors":[{"reason":"insufficientFilePermissions"}]}}""");
+        Assert.IsType<Pim.Module.Files.Providers.Abstractions.ProviderAuthorizationExpiredException>(
+            fileLevelDenied);
+
         var throttled = GoogleErrorMapper.FromBody(
             403,
             """{"error":{"code":403,"message":"Rate Limit Exceeded","errors":[{"reason":"rateLimitExceeded"}]}}""");
