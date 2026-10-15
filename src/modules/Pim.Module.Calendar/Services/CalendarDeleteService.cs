@@ -42,18 +42,12 @@ public sealed class CalendarDeleteService
             true);
     }
 
-    public async Task<CalendarOperationResult> DeleteCalendarAsync(Guid calendarId, CancellationToken ct = default)
-    {
-        // 复审 N2：任务簿删除也要与计时动作共用任务级锁。先只做**投影查询**拿到任务 id
-        // （不加载实体、不改状态），再在锁内重读并执行删除，避免「查询→加锁」之间出现竞态。
-        var taskBookIds = await _db.Set<TaskEntity>()
-            .Where(t => t.CalendarId == calendarId && t.UserId == UserId)
-            .Select(t => t.Id)
-            .ToListAsync(ct);
-
-        return await TaskRowLock.WithTaskLocksAsync(
-            _db, taskBookIds, () => DeleteCalendarCoreAsync(calendarId, ct), ct);
-    }
+    public Task<CalendarOperationResult> DeleteCalendarAsync(Guid calendarId, CancellationToken ct = default)
+        // 复审 R1：整本删除**不**用锁外的投影 id 加锁 —— 投影与锁内重读之间新加入该簿的任务
+        // 会落在锁集合之外，仍然能被并发的 timer/start 抢到，留下「已删除任务 + 在跑的段」。
+        // 改成：先无条件开事务（交给执行策略），在事务内加载**真实**要删的任务集合，
+        // 拿到集合之后再逐把补取任务级咨询锁，然后才改状态。
+        => TaskRowLock.WithTransactionAsync(_db, () => DeleteCalendarCoreAsync(calendarId, ct), ct);
 
     private async Task<CalendarOperationResult> DeleteCalendarCoreAsync(Guid calendarId, CancellationToken ct)
     {
@@ -74,6 +68,9 @@ public sealed class CalendarDeleteService
             var tasks = await _db.Set<TaskEntity>()
                 .Where(t => t.UserId == UserId && t.CalendarId == calendar.Id)
                 .ToListAsync(ct);
+
+            // 复审 R1：锁集合 = 即将被改状态的真实集合（在事务内、改状态之前取锁）。
+            await TaskRowLock.AcquireLocksAsync(_db, tasks.Select(t => t.Id).ToList(), ct);
 
             foreach (var task in tasks)
             {

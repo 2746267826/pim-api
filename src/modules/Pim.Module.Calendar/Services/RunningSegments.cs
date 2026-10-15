@@ -99,6 +99,30 @@ internal static class TaskRowLock
     }
 
     /// <summary>
+    /// 总是开一个事务（即使没有任何 id）并交给执行策略，供「加锁集合要在事务内才能确定」的场景：
+    /// 调用方在事务内加载真实目标集合后，用 <see cref="AcquireLocksAsync"/> 逐把补锁。
+    /// 整本任务簿删除走这条路 —— 用锁外的投影 id 加锁是错的（复审 R1）。
+    /// </summary>
+    internal static async Task<T> WithTransactionAsync<T>(
+        PimDbContext db,
+        Func<Task<T>> action,
+        CancellationToken ct)
+    {
+        if (!db.Database.IsNpgsql())
+            return await action();
+
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            db.ChangeTracker.Clear();
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            var result = await action();
+            await transaction.CommitAsync(ct);
+            return result;
+        });
+    }
+
+    /// <summary>
     /// 在**已存在的事务**内取任务级咨询锁（调用方负责事务边界）。
     /// 供已经有自己事务/执行策略的路径复用（例如数据中心批量归档），避免嵌套 <c>BeginTransaction</c>。
     /// </summary>
