@@ -60,6 +60,7 @@ const DataReliabilityPage = lazyPage(settingsPages, 'DataReliabilityPage')
 const McpSettingsPage = lazyPage(settingsPages, 'McpSettingsPage')
 const PcDetailQueryPage = lazyPage(settingsPages, 'PcDetailQueryPage')
 const RecycleBinPage = lazyPage(settingsPages, 'RecycleBinPage')
+const AccountSecurityPage = lazyPage(() => import('@/features/settings/pages/account-security-page'), 'AccountSecurityPage')
 
 /** 路由表（对应规格 01 §4 全量路由；P0 先通骨架与设置域，其余为占位页） */
 export const router = createBrowserRouter([
@@ -119,6 +120,7 @@ export const router = createBrowserRouter([
           { path: 'settings/server', element: <ServerSettingsPage /> },
           { path: 'settings/microsoft', element: <MicrosoftPage /> },
           { path: 'settings/data-reliability', element: <DataReliabilityPage /> },
+          { path: 'settings/account', element: <AccountSecurityPage /> },
           { path: 'settings/sync', element: <Navigate to="/settings/microsoft?tab=outlook" replace /> },
           {
             // AI 网关与用户管理为 Admin 专属（ai/admin 组 Roles="admin"），提前拦截避免 403 噪音

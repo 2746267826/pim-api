@@ -9,6 +9,7 @@ import {
   Database,
   HardDrive,
   Images,
+  KeyRound,
   Plug,
   Server,
   ShieldCheck,
@@ -41,6 +42,22 @@ interface SettingSection {
 }
 
 const SECTIONS: SettingSection[] = [
+  {
+    /*
+     * 「账户」是对**全员可见**的分组（不设 adminOnly）。
+     * 账号安全卡必须落在这里，不能放进管理员专属的「组织」组——
+     * 否则普通用户看不到入口，Q2「用户可自行更换密码」直接失效（AC-14.1）。
+     */
+    label: '账户',
+    cards: [
+      {
+        to: '/settings/account',
+        title: '账号安全',
+        description: '修改登录密码',
+        icon: KeyRound,
+      },
+    ],
+  },
   {
     label: '连接',
     cards: [
