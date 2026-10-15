@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -155,6 +155,85 @@ public sealed class MigrationSnapshotSyncTests
         Assert.True(HasColumn(snapshotModel, "pc_tracker_health", "device_id"));
         Assert.True(HasTable(snapshotModel, "pc_activity_classifications"));
         Assert.True(HasColumn(snapshotModel, "pc_activity_classifications", "category_name"));
+    }
+
+    /// <summary>
+    /// 迁移 Designer 的同步护栏（工单 05 review 的 Important 项）：**最后一条迁移**的
+    /// <c>BuildTargetModel</c>（即 <see cref="Migration.TargetModel"/>）必须与当前模型零差异。
+    ///
+    /// <para><b>为什么要单独盯 Designer，而不是只看快照</b>：<c>dotnet ef migrations remove</c>
+    /// 用的是「上一条迁移的 Designer」而不是快照来重建快照。若最后一条迁移的 Designer 落后于实体
+    /// （工单 05 实测：Designer 缺 <c>calendars.default_muted</c> / <c>events.is_muted</c>，快照里却有），
+    /// remove 会**静默把这两列从快照里抹掉**，紧接着 <c>migrations add</c> 又会把它们当作新列
+    /// 写进下一条迁移 → 存量库启动迁移撞 42701（列已存在）。与 #320 同款事故，只是入口换成了 Designer。</para>
+    /// </summary>
+    [Fact]
+    public void LatestMigrationDesigner_TargetModelIsInSyncWithCurrentModel()
+    {
+        using var db = CreateDbContext();
+
+        var designerModel = GetLatestMigrationTargetModel(db);
+        var targetModel = db.GetService<IDesignTimeModel>().Model;
+
+        var operations = db.GetService<IMigrationsModelDiffer>()
+            .GetDifferences(designerModel.GetRelationalModel(), targetModel.GetRelationalModel())
+            .Where(op => InProductionScope(op, ProductionTableNames(designerModel), ProductionTableNames(targetModel)))
+            .ToList();
+
+        Assert.True(
+            operations.Count == 0,
+            "最后一条迁移的 Designer（BuildTargetModel）与当前 EF 模型存在差异 —— "
+            + "dotnet ef migrations remove 会据此重写快照并静默丢掉这些差异，"
+            + "随后 migrations add 又把它们当新变更写进下一条迁移："
+            + Environment.NewLine + string.Join(Environment.NewLine, operations.Select(Describe)));
+    }
+
+    /// <summary>
+    /// 上一条护栏的定点回归（工单 05 review Important 的原样复现）+ 反向自检：
+    /// 迁移「之后」的 Designer 必须既含多账号/静音列，又已不含 F3 删掉的 Nextcloud 死字段。
+    /// </summary>
+    [Fact]
+    public void LatestMigrationDesigner_ReflectsMultiProviderMuteAndDroppedColumns()
+    {
+        using var db = CreateDbContext();
+
+        var model = GetLatestMigrationTargetModel(db);
+
+        // 曾在 Designer 里缺失、只在快照里存在的两列（review 的原样复现点）
+        Assert.True(HasColumn(model, "calendars", "default_muted"), "Designer 缺 calendars.default_muted");
+        Assert.True(HasColumn(model, "events", "is_muted"), "Designer 缺 events.is_muted");
+
+        // 本次迁移自身新增的列
+        Assert.True(HasColumn(model, "file_providers", "is_default"), "Designer 缺 file_providers.is_default");
+        Assert.True(HasColumn(model, "file_providers", "deferred_block_count"), "Designer 缺 file_providers.deferred_block_count");
+        Assert.True(HasColumn(model, "quick_note_attachments", "storage_account_id"), "Designer 缺 quick_note_attachments.storage_account_id");
+
+        // 反向：F3 删掉的四个 Nextcloud 死字段在迁移之后的 Designer 里必须已经不在了
+        Assert.False(HasColumn(model, "file_providers", "base_url"), "Designer 仍有 base_url");
+        Assert.False(HasColumn(model, "file_providers", "internal_base_url"), "Designer 仍有 internal_base_url");
+        Assert.False(HasColumn(model, "file_providers", "username"), "Designer 仍有 username");
+        Assert.False(HasColumn(model, "file_providers", "app_password_secret"), "Designer 仍有 app_password_secret");
+
+        // 读法自检：上面的 HasColumn 必须真的能读到东西，否则整组 False 断言会静默变绿
+        Assert.True(HasTable(model, "file_providers"));
+        Assert.True(HasColumn(model, "file_providers", "provider"));
+    }
+
+    /// <summary>
+    /// 取**最后一条**迁移的 design-time 目标模型（就是它 Designer 里 <c>BuildTargetModel</c>
+    /// 建出来的那份），与 <c>dotnet ef migrations remove</c> 用的是同一份模型。
+    /// </summary>
+    private static IModel GetLatestMigrationTargetModel(PimDbContext db)
+    {
+        var migrations = db.GetService<IMigrationsAssembly>().Migrations;
+        Assert.NotEmpty(migrations);
+
+        // 迁移 id 前缀是时间戳，字典顺序即生成顺序；显式排序，不依赖字典插入顺序
+        var latestId = migrations.Keys.OrderBy(id => id, StringComparer.Ordinal).Last();
+        var migration = (Migration)Activator.CreateInstance(migrations[latestId])!;
+
+        return db.GetService<IModelRuntimeInitializer>()
+            .Initialize(migration.TargetModel, designTime: true);
     }
 
     /// <summary>
