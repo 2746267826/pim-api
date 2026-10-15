@@ -1165,16 +1165,15 @@ public class CalendarService
         if (request.Status is null && request.CalendarId is null)
             return await UpdateTaskCoreAsync(id, request, ct);
 
-        // 需要哪把锁取哪把：写状态 → 任务锁（与计时动作互斥）；
+        // 需要哪几把锁就取哪几把：写状态 → 任务锁（与计时动作互斥）；
         // 指定任务簿（迁入）→ 簿锁（与整本删除互斥，见 CreateTaskAsync 的说明）。
-        if (request.CalendarId is { } targetCalendarId)
-        {
-            return await TaskRowLock.WithCalendarLockAsync(
-                _db, targetCalendarId, () => UpdateTaskCoreAsync(id, request, ct), ct);
-        }
-
-        return await TaskRowLock.WithTaskLocksAsync(
-            _db, new[] { id }, () => UpdateTaskCoreAsync(id, request, ct), ct);
+        // 两者同时出现时必须**都取**，否则「置为已完成 + 同时迁入」会绕过与 timer/start 的互斥。
+        return await TaskRowLock.WithTaskAndCalendarLocksAsync(
+            _db,
+            request.Status is not null ? new[] { id } : Array.Empty<Guid>(),
+            request.CalendarId,
+            () => UpdateTaskCoreAsync(id, request, ct),
+            ct);
     }
 
     private async Task<TaskResponse> UpdateTaskCoreAsync(Guid id, UpdateTaskRequest request, CancellationToken ct)
@@ -1291,15 +1290,13 @@ public class CalendarService
             return await BatchUpdateTasksCoreAsync(request, ids, operationId, ct);
 
         // 复审 I2：写状态时在任务级锁内完成「查开放段 → 写状态 → 闭合」（整个工作单元同一事务）。
-        // 批量迁入某簿时同样要簿锁（与整本删除互斥）。
-        if (request.CalendarId is { } batchCalendarId)
-        {
-            return await TaskRowLock.WithCalendarLockAsync(
-                _db, batchCalendarId, () => BatchUpdateTasksCoreAsync(request, ids, operationId, ct), ct);
-        }
-
-        return await TaskRowLock.WithTaskLocksAsync(
-            _db, ids, () => BatchUpdateTasksCoreAsync(request, ids, operationId, ct), ct);
+        // 批量迁入某簿时同样要簿锁（与整本删除互斥）；两者同时出现时必须都取（见 UpdateTaskAsync）。
+        return await TaskRowLock.WithTaskAndCalendarLocksAsync(
+            _db,
+            request.Status is not null ? ids : Array.Empty<Guid>(),
+            request.CalendarId,
+            () => BatchUpdateTasksCoreAsync(request, ids, operationId, ct),
+            ct);
     }
 
     private async Task<CalendarOperationResult> BatchUpdateTasksCoreAsync(

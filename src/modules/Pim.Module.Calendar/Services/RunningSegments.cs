@@ -88,6 +88,25 @@ internal static class TaskRowLock
         => WithLocksAsync(db, new[] { CalendarKey(calendarId) }, action, ct);
 
     /// <summary>
+    /// 一次性取「任务锁 ∪ 簿锁」。当同一个请求既要改任务状态、又要指定任务簿时（例如
+    /// 「置为已完成并同时迁入某簿」），**两把锁都要拿** —— 只拿其中一把会让另一条竞态重新出现
+    /// （复审第 5 轮抓到：单条/批量更新在指定 calendarId 时只拿了簿锁，于是与 timer/start 不再互斥，
+    /// 又能构造出「COMPLETED + ends_at IS NULL」）。
+    /// </summary>
+    internal static Task<T> WithTaskAndCalendarLocksAsync<T>(
+        PimDbContext db,
+        IReadOnlyCollection<Guid> taskIds,
+        Guid? calendarId,
+        Func<Task<T>> action,
+        CancellationToken ct)
+    {
+        var keys = taskIds.Select(TaskKey).ToList();
+        if (calendarId is { } id)
+            keys.Add(CalendarKey(id));
+        return WithLocksAsync(db, keys, action, ct);
+    }
+
+    /// <summary>
     /// 在**已存在的事务**内取任务级咨询锁（调用方负责事务边界）。供已经有自己事务/执行策略的
     /// 路径复用（例如数据中心批量归档），避免嵌套 <c>BeginTransaction</c>。
     /// </summary>
