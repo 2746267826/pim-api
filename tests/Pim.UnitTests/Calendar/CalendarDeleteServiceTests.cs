@@ -286,6 +286,70 @@ public class CalendarDeleteServiceTests
         return new PimDbContext(options);
     }
 
+    // ── 工单 #17 / F3：整本删除只删「当前真的还在本簿里」的任务 ──────────────
+
+    [Fact]
+    public async Task DeleteCalendarAsync_DoesNotDeleteTasksThatWereMovedOutBeforeTheDelete()
+    {
+        // 语义回归：先迁出、后删整本 —— 已迁出的任务必须留在原处。
+        // （并发交错下的同一性质由真实 Postgres 脚本验证：删除方在取到任务锁后会**重读成员集合**。）
+        await using var db = CreateDb();
+        var source = SeedCalendar(db, "Source book", "task");
+        var target = SeedCalendar(db, "Target book", "task");
+        var stays = SeedTask(db, source, "留在本簿");
+        var moved = SeedTask(db, source, "已迁出");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        moved.CalendarId = target.Id;
+        await db.SaveChangesAsync();
+
+        var result = await service.DeleteCalendarAsync(source.Id);
+
+        // affectedIds 里含被删的任务簿自身，所以按「除本簿以外的 id」断言
+        Assert.Equal(new[] { stays.Id }, result.AffectedIds.Where(id => id != source.Id).ToArray());
+        db.ChangeTracker.Clear();
+        var movedAfter = await db.Set<TaskEntity>().IgnoreQueryFilters().SingleAsync(t => t.Id == moved.Id);
+        Assert.Null(movedAfter.DeletedAt);
+        Assert.Equal(target.Id, movedAfter.CalendarId);
+    }
+
+    [Fact]
+    public async Task DeleteCalendarAsync_DeletesEveryCurrentMember()
+    {
+        // 反面对照：没有迁出的成员必须被删干净（防止「重读成员」把集合读没了）。
+        await using var db = CreateDb();
+        var book = SeedCalendar(db, "Book", "task");
+        var first = SeedTask(db, book, "A");
+        var second = SeedTask(db, book, "B");
+        var other = SeedTask(db, SeedCalendar(db, "Other", "task"), "C");
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var result = await service.DeleteCalendarAsync(book.Id);
+
+        Assert.Equal(new[] { first.Id, second.Id }, result.AffectedIds.Where(id => id != book.Id).OrderBy(id => id).ToArray());
+        db.ChangeTracker.Clear();
+        Assert.All(
+            await db.Set<TaskEntity>().IgnoreQueryFilters().Where(t => t.Id == first.Id || t.Id == second.Id).ToListAsync(),
+            t => Assert.NotNull(t.DeletedAt));
+        Assert.Null((await db.Set<TaskEntity>().IgnoreQueryFilters().SingleAsync(t => t.Id == other.Id)).DeletedAt);
+    }
+
+    private static TaskEntity SeedTask(PimDbContext db, CalendarEntity book, string title)
+    {
+        var task = new TaskEntity
+        {
+            UserId = UserId,
+            Uid = $"{Guid.NewGuid()}@pim",
+            Title = title,
+            CalendarId = book.Id,
+            IsInbox = false
+        };
+        db.Set<TaskEntity>().Add(task);
+        return task;
+    }
+
     private static CalendarDeleteService CreateService(PimDbContext db)
         => new(
             db,

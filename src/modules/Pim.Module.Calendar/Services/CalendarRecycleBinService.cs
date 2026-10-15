@@ -232,7 +232,7 @@ public sealed class CalendarRecycleBinService
             true);
     }
 
-    private async Task<CalendarOperationResult> RestoreEventAsync(
+    private Task<CalendarOperationResult> RestoreEventAsync(
         Guid id,
         bool restoreAsCopy,
         string operation,
@@ -240,26 +240,12 @@ public sealed class CalendarRecycleBinService
         DateTimeOffset now,
         CancellationToken ct)
     {
-        var evt = await LoadDeletedEventAsync(id, ct);
-        EnsureParentBookActive(evt.Calendar);
-
-        if (restoreAsCopy)
-        {
-            evt.Uid = $"{Guid.NewGuid()}@pim";
-            evt.SourceUid = null;
-        }
-
-        ClearDelete(evt, now);
-        return new CalendarOperationResult(
-            operation,
-            operationId,
-            1,
-            new[] { evt.Id },
-            new[] { Sample(evt) },
-            "Restored event.");
+        // 与任务恢复同一个道理（工单 #17 / F1）：恢复日程会把它重新加进所属**日历**的活跃成员集合，
+        // 必须与「整本删除该日历」互斥（删除方会先取该日历的簿锁）。日程所属日历不会变，故锁集合可先无锁读出。
+        return RestoreEventLockedAsync(id, restoreAsCopy, operation, operationId, now, ct);
     }
 
-    private async Task<CalendarOperationResult> RestoreTaskAsync(
+    private async Task<CalendarOperationResult> RestoreEventLockedAsync(
         Guid id,
         bool restoreAsCopy,
         string operation,
@@ -267,21 +253,101 @@ public sealed class CalendarRecycleBinService
         DateTimeOffset now,
         CancellationToken ct)
     {
-        var task = await LoadDeletedTaskAsync(id, ct);
-        if (task.Calendar is not null)
-            EnsureParentBookActive(task.Calendar);
+        var calendarId = await _db.Set<EventEntity>()
+            .IgnoreQueryFilters()
+            .Where(e => e.Id == id && e.Calendar.UserId == UserId)
+            .Select(e => (Guid?)e.CalendarId)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new DomainException(02004, "日程不存在");
 
-        if (restoreAsCopy)
-            task.Uid = $"{Guid.NewGuid()}@pim";
+        return await TaskRowLock.WithCalendarLockAsync(
+            _db,
+            calendarId,
+            async () =>
+            {
+                var evt = await LoadDeletedEventAsync(id, ct);
+                EnsureParentBookActive(evt.Calendar);
 
-        ClearDelete(task, now);
-        return new CalendarOperationResult(
-            operation,
-            operationId,
-            1,
-            new[] { task.Id },
-            new[] { Sample(task) },
-            "Restored task.");
+                if (restoreAsCopy)
+                {
+                    evt.Uid = $"{Guid.NewGuid()}@pim";
+                    evt.SourceUid = null;
+                }
+
+                ClearDelete(evt, now);
+                // 同任务恢复：锁内提交，保护「校验父本 → 写库」整段。
+                await _db.SaveChangesAsync(ct);
+
+                return new CalendarOperationResult(
+                    operation,
+                    operationId,
+                    1,
+                    new[] { evt.Id },
+                    new[] { Sample(evt) },
+                    "Restored event.");
+            },
+            ct);
+    }
+
+    private Task<CalendarOperationResult> RestoreTaskAsync(
+        Guid id,
+        bool restoreAsCopy,
+        string operation,
+        Guid operationId,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        // 工单 #17 / F1：恢复任务会把它重新加进所属任务簿的**活跃成员集合**，
+        // 必须与「整本删除该簿」互斥，否则「先校验父簿有效 → 删除方提交 → 再清删除标记」
+        // 会把任务恢复进一本已被删除的簿。
+        //
+        // 实现：先无锁读出所属簿 id（只用于决定锁集合；任务已软删、不可能被迁走，所以这个 id 是稳定的），
+        // 再按全局锁序取「任务锁 ∪ 簿锁」，**在锁内**重新加载任务、重新校验父簿，并在锁内落库。
+        // 锁内校验失败时抛的仍是既有的 02023「请先恢复所属本」（与用户晚一步操作时的表现一致，
+        // 不新增产品语义）。
+        return RestoreTaskLockedAsync(id, restoreAsCopy, operation, operationId, now, ct);
+    }
+
+    private async Task<CalendarOperationResult> RestoreTaskLockedAsync(
+        Guid id,
+        bool restoreAsCopy,
+        string operation,
+        Guid operationId,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var bookId = await _db.Set<TaskEntity>()
+            .IgnoreQueryFilters()
+            .Where(t => t.Id == id && t.UserId == UserId)
+            .Select(t => t.CalendarId)
+            .FirstOrDefaultAsync(ct);
+
+        return await TaskRowLock.WithTaskAndCalendarLocksAsync(
+            _db,
+            new[] { id },
+            bookId,
+            async () =>
+            {
+                var task = await LoadDeletedTaskAsync(id, ct);
+                if (task.Calendar is not null)
+                    EnsureParentBookActive(task.Calendar);
+
+                if (restoreAsCopy)
+                    task.Uid = $"{Guid.NewGuid()}@pim";
+
+                ClearDelete(task, now);
+                // 在锁内提交：锁保护的是「校验父簿 → 写库」这一整段，不能只在锁内改内存。
+                await _db.SaveChangesAsync(ct);
+
+                return new CalendarOperationResult(
+                    operation,
+                    operationId,
+                    1,
+                    new[] { task.Id },
+                    new[] { Sample(task) },
+                    "Restored task.");
+            },
+            ct);
     }
 
     private async Task<CalendarOperationResult> RestoreCalendarAsync(
