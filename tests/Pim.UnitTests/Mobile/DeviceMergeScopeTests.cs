@@ -1,7 +1,5 @@
-using System.Linq.Expressions;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using Pim.Core.Data;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
@@ -23,8 +21,8 @@ namespace Pim.UnitTests.Mobile;
 /// （别的用户持有同名字符串 device_id 时不得被改动）在生产里恰好会被这条过滤器掩盖：
 /// 过滤器生效时，实现里那句用来找"别的用户是否占用了这个字符串"的查询会把别的用户的行滤掉，
 /// 于是恒判"独占"、污染照常发生，而"旧 device_id 是否为 0 行"的断言反而变绿。
-/// 过滤器实现与 <c>PimDbContext.ApplyUserIsolationFilters</c> 同口径（后者是 private，
-/// 测试库只能照抄一份），并由下面 <c>Fixture_...</c> 用例自检它确实生效。
+/// 过滤器直接复用 <c>PimDbContext.ApplyUserIsolationFilters</c>（protected internal），
+/// 不照抄一份以免口径漂移；并由下面 <c>Fixture_...</c> 用例自检它确实生效。
 /// </para>
 /// </summary>
 internal sealed class DeviceScopeSqliteDbContext : PimDbContext
@@ -49,23 +47,7 @@ internal sealed class DeviceScopeSqliteDbContext : PimDbContext
             e.HasIndex(s => new { s.UserId, s.DeviceId }).IsUnique();
         });
 
-        ApplyUserIsolationFilterLikeProduction(modelBuilder);
-    }
-
-    private void ApplyUserIsolationFilterLikeProduction(ModelBuilder modelBuilder)
-    {
-        foreach (var entityType in modelBuilder.Model.GetEntityTypes())
-        {
-            if (!typeof(IUserOwnedEntity).IsAssignableFrom(entityType.ClrType)) continue;
-
-            var parameter = Expression.Parameter(entityType.ClrType, "e");
-            var userId = Expression.Property(parameter, nameof(IUserOwnedEntity.UserId));
-            var currentUserId = Expression.Property(Expression.Constant(this), nameof(CurrentUserId));
-            var noUser = Expression.Equal(currentUserId, Expression.Constant(null, typeof(Guid?)));
-            var match = Expression.Equal(Expression.Convert(userId, typeof(Guid?)), currentUserId);
-            var filter = Expression.Lambda(Expression.OrElse(noUser, match), parameter);
-            entityType.SetQueryFilter(filter);
-        }
+        ApplyUserIsolationFilters(modelBuilder);
     }
 }
 
@@ -337,6 +319,7 @@ public sealed class DeviceMergeScopeTests
         SeedDevice(db, MobileTestHelpers.UserId, TargetDeviceId, Now);
         SeedDevice(db, MobileTestHelpers.UserId, SourceDeviceA, Now.AddDays(-60));
         SeedEndpointStatus(db, TargetDeviceId, Now.AddDays(-2), platform: "android", blocked: 1, uploadStatus: "Unknown");
+        await db.SaveChangesAsync();
         var target = await db.Set<EndpointStatusEntity>().SingleAsync();
         target.LastHeartbeatAt = null;
         target.CollectionCacheCount = 0;
@@ -366,6 +349,7 @@ public sealed class DeviceMergeScopeTests
         SeedDevice(db, MobileTestHelpers.UserId, SourceDeviceA, Now.AddDays(-60));
         SeedEndpointStatus(db, TargetDeviceId, Now.AddMinutes(-2), platform: "android", blocked: 1, uploadStatus: "Healthy", cacheCount: 7);
         SeedEndpointStatus(db, SourceDeviceA, Now.AddDays(-3), platform: "android", blocked: 4, uploadStatus: "Unknown");
+        await db.SaveChangesAsync();
         var source = await db.Set<EndpointStatusEntity>().SingleAsync(s => s.DeviceId == SourceDeviceA);
         source.LastHeartbeatAt = null;
         await db.SaveChangesAsync();
@@ -390,6 +374,7 @@ public sealed class DeviceMergeScopeTests
         SeedDevice(db, MobileTestHelpers.UserId, SourceDeviceA, Now.AddDays(-60));
         SeedEndpointStatus(db, TargetDeviceId, Now.AddDays(-2), platform: "android", blocked: 1, uploadStatus: "TargetOnly", cacheCount: 1);
         SeedEndpointStatus(db, SourceDeviceA, Now.AddDays(-2), platform: "android", blocked: 4, uploadStatus: "SourceOnly", cacheCount: 2);
+        await db.SaveChangesAsync();
         foreach (var state in await db.Set<EndpointStatusEntity>().ToListAsync()) state.LastHeartbeatAt = null;
         await db.SaveChangesAsync();
 

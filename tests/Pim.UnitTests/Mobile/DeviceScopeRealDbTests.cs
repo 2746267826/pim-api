@@ -72,7 +72,7 @@ public sealed class DeviceScopeRealDbTests
     /// <b>成立条件是有限的，不能写成"应该一致"</b>：本用例样本里跨设备没有重复的
     /// fallback 汇总、也没有跨设备的 session↔summary 重叠。存在这类重复时数字会**收缩**
     /// （合并把重装前后重复记账的同一段使用时间收敛成一份），见
-    /// <see cref="MergeAsync_ConvergesCrossDeviceDuplicateFallbackSummariesSoTheNumbersShrink"/>。
+    /// <see cref="MergeAsync_ConvergesCrossDeviceDuplicateFallbackSummariesSoBucketNumbersShrink"/>。
     /// 键冲突（events/summaries/batches/forensic/location_points）同样会让行数按预期减少。
     /// </para>
     /// </summary>
@@ -167,7 +167,7 @@ public sealed class DeviceScopeRealDbTests
 
     /// <summary>
     /// AC-2 的**边界**（Codex 独立 review 指出的反例，本次如实钉住而不是藏起来）：
-    /// 跨设备的重复 fallback 汇总在合并后会被去重，因此
+    /// 跨设备的重复 fallback 汇总在合并后会被去重，因此按小时桶/热力图统计的数字**会变小**，
     /// "用户级合并前 == 新设备合并后"**并非无条件成立**。
     ///
     /// <para>
@@ -179,12 +179,15 @@ public sealed class DeviceScopeRealDbTests
     /// </para>
     ///
     /// <para>
-    /// 方向是**收敛**（把重装 App 前后重复记账的同一段使用时间合成一份），不是数据丢失：
-    /// 合并前的用户级数字把同一份使用时间算了两遍。PR 里必须写清这条边界与触发条件。
+    /// 观测口径的差别很重要：<c>TotalForegroundSeconds</c> 是**时间并集**，
+    /// 这两条汇总覆盖同一段墙上时钟，所以并集在合并前后都一样（3,600s）；
+    /// 而小时桶是**逐行求和**，才看得到 1,800 → 1,200 的收缩。
+    /// 原始行一行都没丢（合并只改归属），收缩来自去重口径 —— 若两台设备的使用时间其实
+    /// 真的并行，合并就会少算；这一点必须写进 PR，由维护者判断是否符合预期。
     /// </para>
     /// </summary>
     [SkippableFact]
-    public async Task MergeAsync_ConvergesCrossDeviceDuplicateFallbackSummariesSoTheNumbersShrink()
+    public async Task MergeAsync_ConvergesCrossDeviceDuplicateFallbackSummariesSoBucketNumbersShrink()
     {
         await using var scope = await RealDbScope.CreateAsync(MobileTestHelpers.UserId);
         var db = scope.Db;
@@ -195,20 +198,28 @@ public sealed class DeviceScopeRealDbTests
         await db.SaveChangesAsync();
 
         var aggregation = CreateAggregationService(db);
-        var before = await aggregation.GetOverviewAsync(
+
+        // 时间并集口径：两条汇总覆盖同一段墙上时钟，合并前后都读到 3,600s。
+        var unionBefore = await aggregation.GetOverviewAsync(
             new MobileAnalyticsQueryRequest(WindowStart, WindowEnd), CancellationToken.None);
-        // 合并前：两台设备各算一份（1,200 + 600）。
-        Assert.Equal(1_800, before.TotalForegroundSeconds);
-        Assert.Equal(1, before.AppCount);
+        Assert.Equal(3_600, unionBefore.TotalForegroundSeconds);
+
+        // 小时桶口径：合并前两台设备各算一份（1,200 + 600）。
+        var bucketsBefore = await aggregation.GetHeatmapAsync(
+            new MobileAnalyticsQueryRequest(WindowStart, WindowEnd), CancellationToken.None);
+        Assert.Equal(1_800, bucketsBefore.Sum(bucket => bucket.ForegroundSeconds));
 
         var service = new DeviceManagementService(
             db, MobileTestHelpers.CurrentUser(MobileTestHelpers.UserId), MobileTestHelpers.Time(Now));
         await service.MergeAsync([SourceDeviceId], TargetDeviceId, CancellationToken.None);
 
-        var after = await aggregation.GetOverviewAsync(
-            new MobileAnalyticsQueryRequest(WindowStart, WindowEnd, DeviceId: TargetDeviceId), CancellationToken.None);
         // 合并后：同一 (device, package, hour) 只剩一份，取可见时长更大的那条。
-        Assert.Equal(1_200, after.TotalForegroundSeconds);
+        var deviceScoped = new MobileAnalyticsQueryRequest(WindowStart, WindowEnd, DeviceId: TargetDeviceId);
+        var bucketsAfter = await aggregation.GetHeatmapAsync(deviceScoped, CancellationToken.None);
+        Assert.Equal(1_200, bucketsAfter.Sum(bucket => bucket.ForegroundSeconds));
+
+        // 原始行一行未少（收缩来自去重口径，不是数据丢失）。
+        Assert.Equal(2, await db.Set<MobileUsageSummaryEntity>().CountAsync());
     }
 
     // ---------------------------------------------------------------- AC-3：预览 == 实际删除

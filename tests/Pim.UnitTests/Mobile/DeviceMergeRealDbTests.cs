@@ -201,6 +201,16 @@ public sealed class DeviceMergeRealDbTests
             var service = new DeviceManagementService(
                 db, MobileTestHelpers.CurrentUser(target.UserId), MobileTestHelpers.Time(Now));
 
+            // 工单 02 C1：心跳与端点通道在真实数据上也不能留下源设备的残留行。
+            // 期望值按合并前的真实数据推导（`>0 ? 1 : 0`），而不是写死 `<= 1` ——
+            // 后者在"镜像里本来就没有心跳数据"时对 0 行恒真，属于没有鉴别力的假绿。
+            var heartbeatsBefore = await db.Set<DaemonHeartbeatEntity>()
+                .Where(h => h.DeviceId == target.DeviceId || sourceDeviceIds.Contains(h.DeviceId))
+                .CountAsync();
+            var endpointStatusesBefore = await db.Set<EndpointStatusEntity>()
+                .Where(s => s.DeviceId == target.DeviceId || sourceDeviceIds.Contains(s.DeviceId))
+                .CountAsync();
+
             await service.MergeAsync(sourceDeviceIds, target.DeviceId, CancellationToken.None);
 
             Assert.Equal(distinctEventKeysBefore, await db.Set<MobileUsageEventEntity>().CountAsync());
@@ -214,16 +224,18 @@ public sealed class DeviceMergeRealDbTests
                 await db.Set<MobileAppCatalogEntity>().CountAsync(),
                 await db.Set<MobileAppCatalogEntity>().Select(c => c.PackageName).Distinct().CountAsync());
 
-            // 工单 02 C1：心跳与端点通道在真实数据上也不能留下源设备的残留行，
-            // 且目标设备那一行确实存在（"<= 1" 同时代表"主键/唯一键没被撞坏"）。
+            // 源设备侧 0 行；目标设备恰好剩一行（android 心跳/端点在库里最多只有一行；
+            // 没有任何相关数据时是 0 行 —— 两种期望都由合并前的真实计数推导出来）。
             Assert.Empty(await db.Set<DaemonHeartbeatEntity>()
                 .Where(h => sourceDeviceIds.Contains(h.DeviceId)).ToListAsync());
-            Assert.True(await db.Set<DaemonHeartbeatEntity>()
-                .CountAsync(h => h.DeviceId == target.DeviceId) <= 1);
+            Assert.Equal(
+                heartbeatsBefore > 0 ? 1 : 0,
+                await db.Set<DaemonHeartbeatEntity>().CountAsync(h => h.DeviceId == target.DeviceId));
             Assert.Empty(await db.Set<EndpointStatusEntity>()
                 .Where(s => sourceDeviceIds.Contains(s.DeviceId)).ToListAsync());
-            Assert.True(await db.Set<EndpointStatusEntity>()
-                .CountAsync(s => s.DeviceId == target.DeviceId) <= 1);
+            Assert.Equal(
+                endpointStatusesBefore > 0 ? 1 : 0,
+                await db.Set<EndpointStatusEntity>().CountAsync(s => s.DeviceId == target.DeviceId));
             Assert.Empty(await db.Set<EndpointNotificationActionEntity>()
                 .Where(a => sourceDeviceIds.Contains(a.DeviceId)).ToListAsync());
 

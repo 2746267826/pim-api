@@ -223,8 +223,13 @@ public class PimDbContext : DbContext
     /// 为所有实现 <see cref="IUserOwnedEntity"/> 的实体追加按用户隔离的全局查询过滤器：
     /// <c>e =&gt; CurrentUserId == null || e.UserId == CurrentUserId</c>。
     /// 与实体已有的软删等过滤器以 AND 组合，而非覆盖。
+    ///
+    /// <para>
+    /// <c>protected internal</c>：测试用的派生上下文要复用**同一份**实现，而不是照抄一份
+    /// （照抄会漂移 —— 隔离口径一旦变化，跨用户回归断言会静默失去鉴别力）。
+    /// </para>
     /// </summary>
-    private void ApplyUserIsolationFilters(ModelBuilder modelBuilder)
+    protected internal void ApplyUserIsolationFilters(ModelBuilder modelBuilder)
     {
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())
         {

@@ -924,6 +924,23 @@ public sealed record DeviceExportDto(string FileName, string Json);
 
 /// <summary>
 /// 设备作用域表的数据库表名（合并 / 删除 / 两个预览共用同一份命名，避免口径漂移）。
+///
+/// <para>
+/// 这里收录的是**手机设备命名空间**（<c>mobile_devices.device_id</c>）下的全部表，
+/// 外加两张按 <c>(user_id, device_id)</c> 归属的端点表，以及 <c>daemon_heartbeats</c>
+/// （无 <c>user_id</c>，处理前必须逐台判归属）。
+/// </para>
+///
+/// <para>
+/// 明确**不在**本清单的两类表（原因见 PR 说明，均已核实）：
+/// 1) PC 域 <c>pc_*</c>（<c>pc_tracker_health</c> / <c>pc_tracker_events</c> / <c>pc_aw_events</c> /
+/// <c>pc_aw_buckets</c> / <c>pc_keystats_daily</c> / <c>pc_keystats_samples</c> /
+/// <c>pc_browser_site_daily</c> / <c>pc_browser_site_tick</c> / <c>pc_activity_classifications</c>）：
+/// 这些表**没有任何用户归属列**，PC 的 device_id 由 PC 守护进程上报、与手机设备不同源；
+/// 按 device_id 处理等于跨用户改写。
+/// 2) <c>app_usage</c>（<c>Pim.Module.Stats</c> 遗留原型）：同样没有 <c>user_id</c>，
+/// 且只有 30 天滚动清理、没有任何读路由。
+/// </para>
 /// </summary>
 internal static class DeviceScopedTables{
     public const string Devices = "mobile_devices";
