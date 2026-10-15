@@ -28,7 +28,7 @@ const ROUTES = [
   '/data-center', '/reminders', '/reports', '/habits',
   '/status', '/settings', '/settings/server', '/settings/microsoft',
   '/settings/data-reliability', '/settings/mcp', '/settings/calendar-data', '/settings/recycle-bin', '/settings/pc-data',
-  '/settings/ai', '/settings/users',
+  '/settings/ai', '/settings/users', '/settings/account',
   '/app-knowledge-base', '/app-knowledge-base/categories', '/endpoint-shell', '/exhibition', '/devices',
 ]
 
