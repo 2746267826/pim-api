@@ -4097,6 +4097,10 @@
           "path": {
             "type": "string"
           },
+          "providerId": {
+            "format": "uuid",
+            "type": "string"
+          },
           "uploadedItemId": {
             "nullable": true,
             "type": "string"
@@ -4104,7 +4108,8 @@
         },
         "required": [
           "fileName",
-          "path"
+          "path",
+          "providerId"
         ],
         "type": "object"
       },
@@ -4366,10 +4371,15 @@
         "properties": {
           "path": {
             "type": "string"
+          },
+          "providerId": {
+            "format": "uuid",
+            "type": "string"
           }
         },
         "required": [
-          "path"
+          "path",
+          "providerId"
         ],
         "type": "object"
       },
@@ -4668,11 +4678,16 @@
           },
           "path": {
             "type": "string"
+          },
+          "providerId": {
+            "format": "uuid",
+            "type": "string"
           }
         },
         "required": [
           "fileName",
-          "path"
+          "path",
+          "providerId"
         ],
         "type": "object"
       },
@@ -7271,6 +7286,43 @@
         ],
         "type": "object"
       },
+      "FileLinkDto": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "FileLinkDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/FileLinkDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "FileListResponse": {
         "additionalProperties": false,
         "properties": {
@@ -7360,9 +7412,6 @@
             "nullable": true,
             "type": "string"
           },
-          "baseUrl": {
-            "type": "string"
-          },
           "clientId": {
             "nullable": true,
             "type": "string"
@@ -7384,9 +7433,8 @@
             "format": "uuid",
             "type": "string"
           },
-          "internalBaseUrl": {
-            "nullable": true,
-            "type": "string"
+          "isDefault": {
+            "type": "boolean"
           },
           "lastError": {
             "nullable": true,
@@ -7422,19 +7470,14 @@
           "updatedAt": {
             "format": "date-time",
             "type": "string"
-          },
-          "username": {
-            "type": "string"
           }
         },
         "required": [
-          "baseUrl",
           "createdAt",
           "id",
           "provider",
           "status",
-          "updatedAt",
-          "username"
+          "updatedAt"
         ],
         "type": "object"
       },
@@ -7731,6 +7774,56 @@
         ],
         "type": "object"
       },
+      "FileTextDto": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "mimeType": {
+            "nullable": true,
+            "type": "string"
+          },
+          "size": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "content",
+          "size",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "FileTextDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/FileTextDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "FileTextSnapshotDto": {
         "additionalProperties": false,
         "properties": {
@@ -7783,6 +7876,48 @@
             },
             "nullable": true,
             "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "FileWriteResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "itemId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "itemId",
+          "path"
+        ],
+        "type": "object"
+      },
+      "FileWriteResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/FileWriteResultDto"
           },
           "message": {
             "type": "string"
@@ -13292,344 +13427,6 @@
         },
         "type": "object"
       },
-      "OneDriveBindingStartDto": {
-        "additionalProperties": false,
-        "properties": {
-          "expiresIn": {
-            "format": "int32",
-            "type": "integer"
-          },
-          "providerId": {
-            "format": "uuid",
-            "type": "string"
-          },
-          "userCode": {
-            "type": "string"
-          },
-          "verificationUri": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "expiresIn",
-          "providerId",
-          "userCode",
-          "verificationUri"
-        ],
-        "type": "object"
-      },
-      "OneDriveBindingStartDtoApiResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "format": "int32",
-            "type": "integer"
-          },
-          "data": {
-            "$ref": "#/components/schemas/OneDriveBindingStartDto"
-          },
-          "message": {
-            "type": "string"
-          },
-          "timestamp": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "timestamp"
-        ],
-        "type": "object"
-      },
-      "OneDriveBindingStatusDto": {
-        "additionalProperties": false,
-        "properties": {
-          "accountId": {
-            "nullable": true,
-            "type": "string"
-          },
-          "accountName": {
-            "nullable": true,
-            "type": "string"
-          },
-          "deviceCodeExpiresAt": {
-            "format": "date-time",
-            "nullable": true,
-            "type": "string"
-          },
-          "driveId": {
-            "nullable": true,
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          },
-          "userCode": {
-            "nullable": true,
-            "type": "string"
-          },
-          "verificationUri": {
-            "nullable": true,
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "OneDriveBindingStatusDtoApiResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "format": "int32",
-            "type": "integer"
-          },
-          "data": {
-            "$ref": "#/components/schemas/OneDriveBindingStatusDto"
-          },
-          "message": {
-            "type": "string"
-          },
-          "timestamp": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "timestamp"
-        ],
-        "type": "object"
-      },
-      "OneDriveLinkDto": {
-        "additionalProperties": false,
-        "properties": {
-          "url": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "url"
-        ],
-        "type": "object"
-      },
-      "OneDriveLinkDtoApiResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "format": "int32",
-            "type": "integer"
-          },
-          "data": {
-            "$ref": "#/components/schemas/OneDriveLinkDto"
-          },
-          "message": {
-            "type": "string"
-          },
-          "timestamp": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "timestamp"
-        ],
-        "type": "object"
-      },
-      "OneDriveSyncStartedDto": {
-        "additionalProperties": false,
-        "properties": {
-          "message": {
-            "type": "string"
-          },
-          "started": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "message",
-          "started"
-        ],
-        "type": "object"
-      },
-      "OneDriveSyncStartedDtoApiResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "format": "int32",
-            "type": "integer"
-          },
-          "data": {
-            "$ref": "#/components/schemas/OneDriveSyncStartedDto"
-          },
-          "message": {
-            "type": "string"
-          },
-          "timestamp": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "timestamp"
-        ],
-        "type": "object"
-      },
-      "OneDriveSyncStatusDto": {
-        "additionalProperties": false,
-        "properties": {
-          "lastError": {
-            "nullable": true,
-            "type": "string"
-          },
-          "lastSyncAt": {
-            "format": "date-time",
-            "nullable": true,
-            "type": "string"
-          },
-          "syncStatus": {
-            "type": "string"
-          },
-          "syncedItemCount": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "totalIndexedCount": {
-            "format": "int64",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "syncedItemCount",
-          "syncStatus"
-        ],
-        "type": "object"
-      },
-      "OneDriveSyncStatusDtoApiResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "format": "int32",
-            "type": "integer"
-          },
-          "data": {
-            "$ref": "#/components/schemas/OneDriveSyncStatusDto"
-          },
-          "message": {
-            "type": "string"
-          },
-          "timestamp": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "timestamp"
-        ],
-        "type": "object"
-      },
-      "OneDriveTextDto": {
-        "additionalProperties": false,
-        "properties": {
-          "content": {
-            "type": "string"
-          },
-          "mimeType": {
-            "nullable": true,
-            "type": "string"
-          },
-          "size": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "truncated": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "content",
-          "size",
-          "truncated"
-        ],
-        "type": "object"
-      },
-      "OneDriveTextDtoApiResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "format": "int32",
-            "type": "integer"
-          },
-          "data": {
-            "$ref": "#/components/schemas/OneDriveTextDto"
-          },
-          "message": {
-            "type": "string"
-          },
-          "timestamp": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "timestamp"
-        ],
-        "type": "object"
-      },
-      "OneDriveWriteResultDto": {
-        "additionalProperties": false,
-        "properties": {
-          "itemId": {
-            "format": "uuid",
-            "type": "string"
-          },
-          "path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "itemId",
-          "path"
-        ],
-        "type": "object"
-      },
-      "OneDriveWriteResultDtoApiResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "code": {
-            "format": "int32",
-            "type": "integer"
-          },
-          "data": {
-            "$ref": "#/components/schemas/OneDriveWriteResultDto"
-          },
-          "message": {
-            "type": "string"
-          },
-          "timestamp": {
-            "format": "date-time",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "timestamp"
-        ],
-        "type": "object"
-      },
       "OperationConfirmationDto": {
         "additionalProperties": false,
         "properties": {
@@ -15809,6 +15606,237 @@
         ],
         "type": "object"
       },
+      "ProviderBindingStartDto": {
+        "additionalProperties": false,
+        "properties": {
+          "authorizationUrl": {
+            "nullable": true,
+            "type": "string"
+          },
+          "expiresIn": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "providerId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "providerKey": {
+            "type": "string"
+          },
+          "userCode": {
+            "nullable": true,
+            "type": "string"
+          },
+          "verificationUri": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "providerId",
+          "providerKey"
+        ],
+        "type": "object"
+      },
+      "ProviderBindingStartDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ProviderBindingStartDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "ProviderBindingStatusDto": {
+        "additionalProperties": false,
+        "properties": {
+          "accountId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "accountName": {
+            "nullable": true,
+            "type": "string"
+          },
+          "deviceCodeExpiresAt": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "driveId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "pollIntervalSeconds": {
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "providerId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "userCode": {
+            "nullable": true,
+            "type": "string"
+          },
+          "verificationUri": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "providerId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ProviderBindingStatusDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ProviderBindingStatusDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "ProviderSyncStartedDto": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "started": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "message",
+          "started"
+        ],
+        "type": "object"
+      },
+      "ProviderSyncStartedDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ProviderSyncStartedDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "ProviderSyncStatusDto": {
+        "additionalProperties": false,
+        "properties": {
+          "lastError": {
+            "nullable": true,
+            "type": "string"
+          },
+          "lastSyncAt": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "syncStatus": {
+            "type": "string"
+          },
+          "syncedItemCount": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "totalIndexedCount": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "syncedItemCount",
+          "syncStatus"
+        ],
+        "type": "object"
+      },
+      "ProviderSyncStatusDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ProviderSyncStatusDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "QuickNoteAttachmentDto": {
         "additionalProperties": false,
         "properties": {
@@ -16815,7 +16843,7 @@
         ],
         "type": "object"
       },
-      "SaveOneDriveTextRequest": {
+      "SaveFileTextRequest": {
         "additionalProperties": false,
         "properties": {
           "content": {
@@ -17405,16 +17433,14 @@
         ],
         "type": "object"
       },
-      "StartOneDriveBindingRequest": {
+      "StartProviderBindingRequest": {
         "additionalProperties": false,
         "properties": {
           "clientId": {
+            "nullable": true,
             "type": "string"
           }
         },
-        "required": [
-          "clientId"
-        ],
         "type": "object"
       },
       "StatusComponentDto": {
@@ -26396,6 +26422,21 @@
         ]
       }
     },
+    "/api/v1/files/google/callback": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          }
+        },
+        "tags": [
+          "FilesModule"
+        ]
+      }
+    },
     "/api/v1/files/items": {
       "get": {
         "parameters": [
@@ -26403,6 +26444,14 @@
             "in": "query",
             "name": "path",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "providerId",
+            "schema": {
+              "format": "uuid",
               "type": "string"
             }
           },
@@ -27054,7 +27103,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OneDriveLinkDtoApiResponse"
+                  "$ref": "#/components/schemas/FileLinkDtoApiResponse"
                 }
               }
             },
@@ -27150,7 +27199,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OneDriveTextDtoApiResponse"
+                  "$ref": "#/components/schemas/FileTextDtoApiResponse"
                 }
               }
             },
@@ -27430,7 +27479,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OneDriveLinkDtoApiResponse"
+                  "$ref": "#/components/schemas/FileLinkDtoApiResponse"
                 }
               }
             },
@@ -27619,7 +27668,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OneDriveWriteResultDtoApiResponse"
+                  "$ref": "#/components/schemas/FileWriteResultDtoApiResponse"
                 }
               }
             },
@@ -28163,7 +28212,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OneDriveTextDtoApiResponse"
+                  "$ref": "#/components/schemas/FileTextDtoApiResponse"
                 }
               }
             },
@@ -28251,7 +28300,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SaveOneDriveTextRequest"
+                "$ref": "#/components/schemas/SaveFileTextRequest"
               }
             }
           },
@@ -28463,13 +28512,60 @@
         ]
       }
     },
+    "/api/v1/files/providers/google/authorize": {
+      "post": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderBindingStartDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "FilesModule"
+        ]
+      }
+    },
     "/api/v1/files/providers/onedrive": {
       "post": {
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StartOneDriveBindingRequest"
+                "$ref": "#/components/schemas/StartProviderBindingRequest"
               }
             }
           },
@@ -28480,7 +28576,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OneDriveBindingStartDtoApiResponse"
+                  "$ref": "#/components/schemas/ProviderBindingStartDtoApiResponse"
                 }
               }
             },
@@ -28656,7 +28752,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OneDriveBindingStatusDtoApiResponse"
+                  "$ref": "#/components/schemas/ProviderBindingStatusDtoApiResponse"
                 }
               }
             },
@@ -28726,6 +28822,64 @@
         ]
       }
     },
+    "/api/v1/files/providers/{id}/default": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BooleanApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "FilesModule"
+        ]
+      }
+    },
     "/api/v1/files/providers/{id}/sync": {
       "post": {
         "parameters": [
@@ -28744,7 +28898,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OneDriveSyncStartedDtoApiResponse"
+                  "$ref": "#/components/schemas/ProviderSyncStartedDtoApiResponse"
                 }
               }
             },
@@ -28842,7 +28996,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OneDriveSyncStatusDtoApiResponse"
+                  "$ref": "#/components/schemas/ProviderSyncStatusDtoApiResponse"
                 }
               }
             },
@@ -28896,6 +29050,14 @@
             "in": "query",
             "name": "mode",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "providerId",
+            "schema": {
+              "format": "uuid",
               "type": "string"
             }
           },

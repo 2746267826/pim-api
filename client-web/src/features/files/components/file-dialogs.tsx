@@ -13,11 +13,14 @@ export function FileNameDialog({
   mode,
   target,
   currentPath,
+  providerId,
   onClose,
 }: {
   mode: 'folder' | 'rename'
   target?: FileItem
   currentPath: string
+  /** 新建文件夹落在哪个账号（多账号必须指明） */
+  providerId: string
   onClose: () => void
 }) {
   const mutations = useFileMutations()
@@ -54,7 +57,7 @@ export function FileNameDialog({
     if (!value) return
     try {
       if (mode === 'folder') {
-        await mutations.createFolder.mutateAsync(fullPath)
+        await mutations.createFolder.mutateAsync({ path: fullPath, providerId })
         notifySuccess('文件夹已创建')
       } else if (target) {
         await mutations.rename.mutateAsync({ id: target.id, name: value })
@@ -69,7 +72,16 @@ export function FileNameDialog({
 
 /* ── 移动到目标文件夹 ─────────────────────────────────────── */
 
-export function MoveDialog({ items, onClose }: { items: FileItem[]; onClose: () => void }) {
+export function MoveDialog({
+  items,
+  providerId,
+  onClose,
+}: {
+  items: FileItem[]
+  /** 移动只能在同一个账号内进行：跨账号移动需要先下载再上传，本页不做那种隐式搬运 */
+  providerId: string
+  onClose: () => void
+}) {
   const mutations = useFileMutations()
   const [folders, setFolders] = useState<FileItem[]>([])
   const [target, setTarget] = useState('/')
@@ -77,11 +89,11 @@ export function MoveDialog({ items, onClose }: { items: FileItem[]; onClose: () 
 
   useEffect(() => {
     void filesApi
-      .listItems({ path: '/', pageSize: 100, type: 'folder' })
+      .listItems({ path: '/', providerId, pageSize: 100, type: 'folder' })
       .then((res) => setFolders(res.result.items))
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
+  }, [providerId])
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>

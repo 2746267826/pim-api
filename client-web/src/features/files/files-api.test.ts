@@ -54,12 +54,12 @@ describe('files 域真实请求形状', () => {
     expect(calls.at(-1)!.url).not.toContain('mode=')
   })
 
-  it('createFolder：POST 正文是契约字段 path', async () => {
-    await filesApi.createFolder('/a/b')
+  it('createFolder：POST 正文是契约字段 path + providerId（多账号必须指明落点）', async () => {
+    await filesApi.createFolder('/a/b', 'acc-1')
     expect(calls.at(-1)).toMatchObject({
       method: 'POST',
       url: `${BASE}/api/v1/files/folders`,
-      body: { path: '/a/b' },
+      body: { path: '/a/b', providerId: 'acc-1' },
     })
   })
 

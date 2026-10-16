@@ -1,8 +1,20 @@
-/* 文件域（05/files.md，OneDrive 三栏浏览器） */
+/* 文件域（05/files.md，多网盘三栏浏览器） */
+
+/** 已支持的网盘类型。与后端 file_providers.provider 同域。 */
+export type ProviderKey = 'onedrive' | 'google'
+
+export const PROVIDER_LABELS: Record<ProviderKey, string> = {
+  onedrive: 'OneDrive',
+  google: 'Google Drive',
+}
+
+export function providerLabel(key: string): string {
+  return PROVIDER_LABELS[key as ProviderKey] ?? key
+}
 
 export interface FileProvider {
   id: string
-  provider: 'onedrive'
+  provider: ProviderKey
   status: 'pending' | 'connected' | 'expired' | 'denied'
   clientId: string | null
   driveId: string | null
@@ -16,6 +28,8 @@ export interface FileProvider {
   lastSyncAt: string | null
   lastError: string | null
   tokenExpiresAt: string | null
+  /** 是否是附件与闪念图片的默认落点账号（同一用户至多一个） */
+  isDefault: boolean
 }
 
 export interface FileItem {
@@ -57,14 +71,27 @@ export interface SyncStatus {
   totalIndexedCount?: number | null
 }
 
-export interface OneDriveBindingStart {
+/**
+ * 绑定发起结果。两种形态共存：
+ * - `device-code`（OneDrive）：给 userCode + verificationUri，用户在浏览器输入码；
+ * - `browser-redirect`（Google）：给 authorizationUrl，前端整页跳转，由人工点「同意」。
+ */
+export interface ProviderBindingStart {
   providerId: string
-  userCode: string
-  verificationUri: string
-  expiresIn: number
+  providerKey: ProviderKey
+  mode: 'device-code' | 'browser-redirect'
+  userCode: string | null
+  verificationUri: string | null
+  expiresIn: number | null
+  authorizationUrl: string | null
 }
 
-export interface OneDriveBindingStatus {
+export interface ProviderBindingStatus {
+  /**
+   * **规范账号行 id**。同一账号重新绑定时服务端会复用既有行并删掉本次的待授权行，
+   * 因此轮询回来的 id 可能与发起时不同 —— 后续的 sync / unbind / setDefault 都要用它。
+   */
+  providerId: string
   status: 'pending' | 'connected' | 'expired' | 'denied'
   driveId: string | null
   accountId: string | null
@@ -72,6 +99,8 @@ export interface OneDriveBindingStatus {
   userCode: string | null
   verificationUri: string | null
   deviceCodeExpiresAt: string | null
+  /** 服务端要求的轮询间隔（RFC 8628 的 slow_down）；无要求时为 null */
+  pollIntervalSeconds?: number | null
 }
 
 export interface UploadSession {

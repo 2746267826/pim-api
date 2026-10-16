@@ -73,6 +73,12 @@ const SECTIONS: SettingSection[] = [
         description: 'Outlook 日历同步与 OneDrive 文件绑定',
         icon: Cloud,
       },
+      {
+        to: '/settings/google',
+        title: 'Google Drive',
+        description: '连接 Google 网盘账号（浏览器跳转授权）',
+        icon: HardDrive,
+      },
     ],
   },
   {
