@@ -182,6 +182,14 @@ public class TaskExecutionSegmentEntityConfiguration : IEntityTypeConfiguration<
         builder.HasIndex(s => s.TaskId);
         builder.HasIndex(s => new { s.UserId, s.TaskId, s.StartsAt });
         builder.HasIndex(s => s.ConfirmationId);
+        // 复审 I1：「同一任务同时只允许一条开放段（ends_at IS NULL）」由**部分唯一索引**
+        // ux_task_execution_segments_open_per_task 在数据库层兜住，冲突会转成 02058
+        // （见 PlanningModelService.IsOpenSegmentUniqueViolation）。
+        //
+        // 该索引**不在这里声明**：EF Core 的索引标识就是属性集合，同一列上无法同时建模
+        // 「普通索引」与「带过滤的唯一索引」—— 在这里声明会让 EF 把上面那条
+        // IX_task_execution_segments_task_id 合并掉（普通 task_id 查询会失去索引）。
+        // 因此它在迁移里用原生 SQL 建/删（见 20261014174431_EnforceSingleOpenTaskExecutionSegment）。
         builder.HasOne(s => s.Task)
             .WithMany()
             .HasForeignKey(s => s.TaskId);

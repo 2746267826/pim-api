@@ -855,6 +855,52 @@ public class CalendarModule : IModule
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
+        // 任务计时（工单 03 D2.1）：开始 / 暂停 / 结束 + 查询累计时长。
+        // 段本身仍走上面的 /segments 端点（手工计划段），这里只覆盖「真在跑」的计时语义。
+        group.MapPost("/tasks/{id:guid}/timer/start", async (
+            Guid id,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<TaskExecutionSegmentResponse>.Ok(
+                await svc.StartTimerAsync(id, ct))))
+        .Produces<ApiResponse<TaskExecutionSegmentResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapPost("/tasks/{id:guid}/timer/pause", async (
+            Guid id,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<TaskExecutionSegmentResponse>.Ok(
+                await svc.PauseTimerAsync(id, ct))))
+        .Produces<ApiResponse<TaskExecutionSegmentResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapPost("/tasks/{id:guid}/timer/stop", async (
+            Guid id,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<TaskExecutionSegmentResponse>.Ok(
+                await svc.StopTimerAsync(id, ct))))
+        .Produces<ApiResponse<TaskExecutionSegmentResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
+        group.MapGet("/tasks/{id:guid}/timer", async (
+            Guid id,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<TaskTimerStateResponse>.Ok(
+                await svc.GetTimerStateAsync(id, ct))))
+        .Produces<ApiResponse<TaskTimerStateResponse>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
         group.MapPut("/tasks/{id:guid}", async (
             Guid id, [FromBody] UpdateTaskRequest req,
             [FromServices] CalendarService svc, CancellationToken ct) =>

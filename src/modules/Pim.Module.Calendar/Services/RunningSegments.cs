@@ -1,0 +1,198 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using Pim.Infrastructure.Data;
+using Pim.Module.Calendar.Entities;
+
+namespace Pim.Module.Calendar.Services;
+
+/// <summary>
+/// 执行段的「闭合」原语（工单 03 D3）：闭合 = 写 <c>ends_at</c> + 落终止状态。
+/// 与 <see cref="TaskRowLock"/> 放在同一文件，因为它们共同服务同一条不变量：
+/// **终态或被删除的任务下不允许存在「正在跑」（<c>ends_at IS NULL</c>）的执行段**。
+/// </summary>
+internal static class RunningSegments
+{
+    /// <summary>
+    /// 闭合一条开放段：右端取 <paramref name="now"/>，但不得早于 <c>starts_at</c>
+    /// （时钟回拨 / 固定时钟下不写出负时长的段）。
+    /// </summary>
+    internal static void Close(TaskExecutionSegmentEntity segment, string status, DateTimeOffset now)
+    {
+        segment.EndsAt = now < segment.StartsAt ? segment.StartsAt : now;
+        segment.Status = status;
+        segment.UpdatedAt = now;
+    }
+
+    /// <summary>闭合给定任务集合里所有开放段（软删除 / 归档 / 终态化时调用），返回闭合条数。</summary>
+    internal static async Task<int> CloseAllAsync(
+        PimDbContext db,
+        IReadOnlyCollection<Guid> taskIds,
+        string status,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        if (taskIds.Count == 0)
+            return 0;
+
+        var open = await db.Set<TaskExecutionSegmentEntity>()
+            .Where(s => taskIds.Contains(s.TaskId) && s.EndsAt == null)
+            .ToListAsync(ct);
+
+        foreach (var segment in open)
+            Close(segment, status, now);
+
+        return open.Count;
+    }
+}
+
+/// <summary>
+/// 任务级串行化锁（复审 I1/I2）。
+///
+/// 为什么需要：<c>timer/start</c> 是「查有没有开放段 → 插入开放段」，终态更新是
+/// 「查有没有开放段 → 写终态 + 闭合」。两条链都没有共同锁时，交替执行会同时通过检查，
+/// 结果是同一任务出现两条开放段，或者「已完成但仍有在跑的段」。
+///
+/// 实现：显式事务 + PostgreSQL 事务级咨询锁（<c>pg_advisory_xact_lock(hashtext(task_id))</c>）。
+/// 锁在事务提交/回滚时自动释放，无需额外清理；键碰撞只会多串行一点，不影响正确性。
+/// 非 Npgsql 提供程序（单测用的 InMemory / Sqlite）安全降级为空操作 —— 那里没有并发语义。
+/// </summary>
+internal static class TaskRowLock
+{
+    // 咨询锁键空间是共享的，用前缀把「任务」与「任务簿（日历）」两类互斥对象分开。
+    private static string TaskKey(Guid id) => $"task:{id}";
+    private static string CalendarKey(Guid id) => $"calendar:{id}";
+
+    /// <summary>
+    /// 在「任务级咨询锁 + 单事务」内执行 <paramref name="action"/>（见 <see cref="WithLocksAsync"/>）。
+    /// </summary>
+    internal static Task<T> WithTaskLocksAsync<T>(
+        PimDbContext db,
+        IReadOnlyCollection<Guid> taskIds,
+        Func<Task<T>> action,
+        CancellationToken ct)
+        => WithLocksAsync(db, taskIds.Select(TaskKey).ToList(), action, ct);
+
+    /// <summary>
+    /// 在「任务簿（日历）级咨询锁 + 单事务」内执行 <paramref name="action"/>。
+    ///
+    /// 用于「建任务 / 把任务迁入某本 → 与整本删除互斥」：整本删除只锁它当时看到的任务集合，
+    /// 挡不住**并发新加入**该簿的任务（复审第 4 轮 I1）。让「改簿成员」与「删整本」共用簿级锁之后，
+    /// 两种顺序都安全：建/迁先提交 → 删除方的锁内重读会包含它并一并删掉；删除先提交 →
+    /// 建/迁在锁内重查父簿时会因软删过滤器拿不到簿而 404。
+    /// </summary>
+    internal static Task<T> WithCalendarLockAsync<T>(
+        PimDbContext db,
+        Guid calendarId,
+        Func<Task<T>> action,
+        CancellationToken ct)
+        => WithLocksAsync(db, new[] { CalendarKey(calendarId) }, action, ct);
+
+    /// <summary>
+    /// 一次性取「任务锁 ∪ 簿锁」。当同一个请求既要改任务状态、又要指定任务簿时（例如
+    /// 「置为已完成并同时迁入某簿」），**两把锁都要拿** —— 只拿其中一把会让另一条竞态重新出现
+    /// （复审第 5 轮抓到：单条/批量更新在指定 calendarId 时只拿了簿锁，于是与 timer/start 不再互斥，
+    /// 又能构造出「COMPLETED + ends_at IS NULL」）。
+    /// </summary>
+    internal static Task<T> WithTaskAndCalendarLocksAsync<T>(
+        PimDbContext db,
+        IReadOnlyCollection<Guid> taskIds,
+        Guid? calendarId,
+        Func<Task<T>> action,
+        CancellationToken ct)
+    {
+        var keys = taskIds.Select(TaskKey).ToList();
+        if (calendarId is { } id)
+            keys.Add(CalendarKey(id));
+        return WithLocksAsync(db, keys, action, ct);
+    }
+
+    /// <summary>
+    /// 在**已存在的事务**内取任务级咨询锁（调用方负责事务边界）。供已经有自己事务/执行策略的
+    /// 路径复用（例如数据中心批量归档），避免嵌套 <c>BeginTransaction</c>。
+    /// </summary>
+    internal static Task AcquireLocksAsync(
+        PimDbContext db,
+        IReadOnlyCollection<Guid> taskIds,
+        CancellationToken ct)
+        => AcquireKeysAsync(db, taskIds.Select(TaskKey).ToList(), ct);
+
+    /// <summary>在**已存在的事务**内取任务簿级咨询锁（命名与用途见 <see cref="WithCalendarLockAsync"/>）。</summary>
+    internal static Task AcquireCalendarLockAsync(PimDbContext db, Guid calendarId, CancellationToken ct)
+        => AcquireKeysAsync(db, new[] { CalendarKey(calendarId) }, ct);
+
+    /// <summary>
+    /// 在「咨询锁 + 单事务」内执行 <paramref name="action"/>；<paramref name="keys"/> 为空时直接执行。
+    ///
+    /// ⚠️ 为什么必须把**整个工作单元**包在 <c>CreateExecutionStrategy()</c> 里：
+    /// 本库的 DbContext 配置了 <c>EnableRetryOnFailure</c>（NpgsqlRetryingExecutionStrategy），
+    /// 该策略**禁止用户自行发起的事务** —— 只要在它管理之外开事务，后续任何命令都会抛
+    /// 「does not support user-initiated transactions」。所以「开事务 → 加锁 → 业务写入 → 提交」
+    /// 必须整体作为可重试单元交给执行策略。
+    /// </summary>
+    private static async Task<T> WithLocksAsync<T>(
+        PimDbContext db,
+        IReadOnlyCollection<string> keys,
+        Func<Task<T>> action,
+        CancellationToken ct)
+    {
+        if (!db.Database.IsNpgsql() || keys.Count == 0)
+            return await action();
+
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            // 复审 N1：执行策略可能在瞬时故障后**重放**整个 lambda。重放必须从干净的跟踪状态开始 ——
+            // 否则上一轮已被接受、却随事务一起回滚的实体改动仍留在变更跟踪器里，
+            // 而跟踪查询不会用库里的值覆盖已跟踪实体，于是重放时那些字段不会被重新写库，
+            // 新建实体也会被重复 Add。清空跟踪器后整个工作单元从头读库，重放语义确定。
+            db.ChangeTracker.Clear();
+
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            await AcquireKeysAsync(db, keys, ct);
+
+            var result = await action();
+            await transaction.CommitAsync(ct);
+            return result;
+        });
+    }
+
+    /// <summary>
+    /// 总是开一个事务（即使不取任何锁）并交给执行策略，供「加锁集合要在事务内才能确定」的场景：
+    /// 调用方在事务内加载真实目标集合后，用 <c>Acquire*Async</c> 逐把补锁。
+    /// </summary>
+    internal static async Task<T> WithTransactionAsync<T>(
+        PimDbContext db,
+        Func<Task<T>> action,
+        CancellationToken ct)
+    {
+        if (!db.Database.IsNpgsql())
+            return await action();
+
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            db.ChangeTracker.Clear();
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            var result = await action();
+            await transaction.CommitAsync(ct);
+            return result;
+        });
+    }
+
+    private static async Task AcquireKeysAsync(
+        PimDbContext db,
+        IReadOnlyCollection<string> keys,
+        CancellationToken ct)
+    {
+        if (!db.Database.IsNpgsql() || keys.Count == 0)
+            return;
+
+        // 按 key 排序依次加锁，避免两个批量请求以不同顺序取锁而互相等待。
+        foreach (var key in keys.Distinct().OrderBy(k => k, StringComparer.Ordinal))
+        {
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock(hashtext({key}))",
+                ct);
+        }
+    }
+}

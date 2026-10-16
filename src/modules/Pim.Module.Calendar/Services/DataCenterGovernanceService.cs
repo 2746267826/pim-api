@@ -190,7 +190,17 @@ public sealed class DataCenterGovernanceService
             var strategy = _db.Database.CreateExecutionStrategy();
             return await strategy.ExecuteAsync(async token =>
             {
+                // 复审 R2：与 TaskRowLock.WithTaskLocksAsync 同样的理由 —— 执行策略可能在瞬时故障后
+                // 重放整个 lambda，重放必须从干净的跟踪状态开始，否则上一轮已接受但随事务回滚的
+                // 「已归档字段 + 段状态」仍留在跟踪器里，第二次赋值不构成修改，可能只写审计不写归档。
+                _db.ChangeTracker.Clear();
                 await using var tx = await _db.Database.BeginTransactionAsync(token);
+                // 复审 N2：归档同样要在任务级锁内执行（复用调用方已有的事务，不嵌套 BeginTransaction），
+                // 否则「归档查开放段 → start 插入 → 归档软删」仍会留下「已归档任务 + 在跑的段」。
+                await TaskRowLock.AcquireLocksAsync(
+                    _db,
+                    request.Objects?.Select(o => o.ObjectId).ToList() ?? new List<Guid>(),
+                    token);
                 var affectedCount = 0;
                 var deletedAt = _timeProvider.GetUtcNow();
                 var operationKind = $"data-center.batch.{action.ToLowerInvariant()}";
@@ -241,6 +251,13 @@ public sealed class DataCenterGovernanceService
             task.DeletedByOperationId = confirmationId;
             task.DeletedByOperationKind = operationKind;
             task.UpdatedAt = archivedAt;
+            // 复审 I6：归档（软删）任务时收口正在跑的计时，避免恢复后把归档期间的墙钟时间算进实际时长。
+            await RunningSegments.CloseAllAsync(
+                _db,
+                new[] { task.Id },
+                TaskSegmentStatuses.Cancelled,
+                archivedAt,
+                ct);
             await _auditVersions.RecordAsync(
                 "task",
                 task.Id,

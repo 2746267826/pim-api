@@ -2998,6 +2998,12 @@
             "type": "integer"
           },
           "status": {
+            "enum": [
+              "NEEDS-ACTION",
+              "IN-PROCESS",
+              "COMPLETED",
+              "CANCELLED"
+            ],
             "nullable": true,
             "type": "string"
           }
@@ -4650,6 +4656,12 @@
             "type": "integer"
           },
           "status": {
+            "enum": [
+              "NEEDS-ACTION",
+              "IN-PROCESS",
+              "COMPLETED",
+              "CANCELLED"
+            ],
             "nullable": true,
             "type": "string"
           },
@@ -17902,6 +17914,7 @@
           },
           "endsAt": {
             "format": "date-time",
+            "nullable": true,
             "type": "string"
           },
           "id": {
@@ -17931,7 +17944,6 @@
           }
         },
         "required": [
-          "endsAt",
           "id",
           "source",
           "startsAt",
@@ -18050,6 +18062,7 @@
             "type": "integer"
           },
           "status": {
+            "description": "任务状态。服务端当前只写入 NEEDS-ACTION / IN-PROCESS / COMPLETED / CANCELLED，写入其它值会被 400（02057）拒绝；但本字段**故意不声明闭合 enum** —— 值域收紧（工单 03）之前写入的历史行仍可能是其它字符串，且不做数据迁移，契约必须与响应现实一致。客户端请按「未知值原样展示、不要把未知值回写」处理。",
             "type": "string"
           },
           "subTasks": {
@@ -18151,6 +18164,69 @@
           },
           "data": {
             "$ref": "#/components/schemas/TaskResponsePagedResult"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "TaskTimerStateResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "accumulatedSeconds": {
+            "description": "累计实际执行时长（秒）= 该任务所有 active / paused / completed / cancelled 段之和，正在计时的段按查询时刻计入，planned（尚未执行）不计；逐段四舍五入取秒。注意它是「实际花在任务上的时间」，包含任务被取消/删除前已经发生的那段，**不代表任务成功完成**（是否完成看 TaskStatus）。",
+            "format": "int64",
+            "type": "integer"
+          },
+          "runningSegmentId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "runningSince": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "segmentCount": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "taskId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "taskStatus": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "accumulatedSeconds",
+          "segmentCount",
+          "taskId",
+          "taskStatus"
+        ],
+        "type": "object"
+      },
+      "TaskTimerStateResponseApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/TaskTimerStateResponse"
           },
           "message": {
             "type": "string"
@@ -19178,6 +19254,12 @@
             "type": "integer"
           },
           "status": {
+            "enum": [
+              "NEEDS-ACTION",
+              "IN-PROCESS",
+              "COMPLETED",
+              "CANCELLED"
+            ],
             "nullable": true,
             "type": "string"
           },
@@ -25686,6 +25768,238 @@
               }
             },
             "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/calendar/tasks/{id}/timer": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskTimerStateResponseApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/calendar/tasks/{id}/timer/pause": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionSegmentResponseApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/calendar/tasks/{id}/timer/start": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionSegmentResponseApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/calendar/tasks/{id}/timer/stop": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskExecutionSegmentResponseApiResponse"
+                }
+              }
+            },
+            "description": "OK"
           },
           "400": {
             "content": {

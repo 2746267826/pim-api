@@ -11,6 +11,9 @@ namespace Pim.Module.Calendar.Services;
 
 public class CalendarService
 {
+    /// <summary>工单 03 D1.1：任务状态集合外的值一律明确拒绝（400 + ApiResponse 包络）。</summary>
+    internal const int InvalidTaskStatusErrorCode = 02057;
+
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
     private readonly RecurrenceService _recurrence;
@@ -1085,7 +1088,15 @@ public class CalendarService
             totalPages);
     }
 
-    public async Task<TaskResponse> CreateTaskAsync(CreateTaskRequest request, CancellationToken ct)
+    public Task<TaskResponse> CreateTaskAsync(CreateTaskRequest request, CancellationToken ct)
+        // 复审第 4 轮 I1：建任务时若指定了任务簿，必须与「整本删除」互斥 ——
+        // 否则删除方物化任务集合之后新建的任务会逃过整本删除，留下「已删簿 + 活任务 + 在跑的计时」。
+        // 锁内重查父簿仍然走软删过滤器，删除已提交时这里会 404（日历不存在）。
+        => request.CalendarId is { } calendarId
+            ? TaskRowLock.WithCalendarLockAsync(_db, calendarId, () => CreateTaskCoreAsync(request, ct), ct)
+            : CreateTaskCoreAsync(request, ct);
+
+    private async Task<TaskResponse> CreateTaskCoreAsync(CreateTaskRequest request, CancellationToken ct)
     {
         if (request.CalendarId.HasValue)
         {
@@ -1111,6 +1122,12 @@ public class CalendarService
 
         ManualDescriptionValidator.EnsureSafe(request.Description);
 
+        // 工单 03 D1.1：CreateTaskRequest.status 此前被**静默忽略**（任何值都不会落库），
+        // 而契约里又声明了该字段。现在改为「校验 + 真正写入」：集合外 → 400，
+        // 不传 → 仍是历史默认 NEEDS-ACTION。
+        var status = request.Status ?? TaskStatuses.NeedsAction;
+        ValidateTaskStatus(status);
+
         var task = new TaskEntity
         {
             UserId = UserId,
@@ -1126,7 +1143,9 @@ public class CalendarService
             MinimumSegment = minimumSegment,
             IsInbox = request.CalendarId is null && !dtStart.HasValue,
             DtStart = dtStart,
-            PlannedEnd = plannedEnd
+            PlannedEnd = plannedEnd,
+            Status = status,
+            CompletedAt = status == TaskStatuses.Completed ? _timeProvider.GetUtcNow() : null
         };
 
         _db.Set<TaskEntity>().Add(task);
@@ -1135,6 +1154,29 @@ public class CalendarService
     }
 
     public async Task<TaskResponse> UpdateTaskAsync(Guid id, UpdateTaskRequest request, CancellationToken ct)
+    {
+        // 先校验再改写：非法状态在**任何字段被写入之前**就 400（AC-1）。
+        if (request.Status is not null)
+            ValidateTaskStatus(request.Status);
+
+        // 复审 I2：写状态时与计时动作（timer/start|pause|stop）共用同一把任务级锁，
+        // 整个工作单元（读任务 → 改写 → 闭合在跑的段 → 保存）都在锁与同一事务内，
+        // 否则会出现「COMPLETED 但 ends_at IS NULL」。不写状态时不加锁（避免无谓事务）。
+        if (request.Status is null && request.CalendarId is null)
+            return await UpdateTaskCoreAsync(id, request, ct);
+
+        // 需要哪几把锁就取哪几把：写状态 → 任务锁（与计时动作互斥）；
+        // 指定任务簿（迁入）→ 簿锁（与整本删除互斥，见 CreateTaskAsync 的说明）。
+        // 两者同时出现时必须**都取**，否则「置为已完成 + 同时迁入」会绕过与 timer/start 的互斥。
+        return await TaskRowLock.WithTaskAndCalendarLocksAsync(
+            _db,
+            request.Status is not null ? new[] { id } : Array.Empty<Guid>(),
+            request.CalendarId,
+            () => UpdateTaskCoreAsync(id, request, ct),
+            ct);
+    }
+
+    private async Task<TaskResponse> UpdateTaskCoreAsync(Guid id, UpdateTaskRequest request, CancellationToken ct)
     {
         var task = await _db.Set<TaskEntity>()
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
@@ -1182,9 +1224,19 @@ public class CalendarService
             task.IsInbox = false;
         if (request.Status is not null)
         {
+            var statusChangedAt = _timeProvider.GetUtcNow();
             task.Status = request.Status;
-            if (request.Status == "COMPLETED")
-                task.CompletedAt = _timeProvider.GetUtcNow();
+            // 与批量更新（BatchUpdateTasksAsync）口径对齐：离开 COMPLETED 时不再留着旧的完成时刻。
+            task.CompletedAt = request.Status == TaskStatuses.Completed ? statusChangedAt : null;
+            if (TaskStatuses.IsTerminal(request.Status))
+            {
+                await RunningSegments.CloseAllAsync(
+                    _db,
+                    new[] { task.Id },
+                    SegmentTerminalStatus(request.Status),
+                    statusChangedAt,
+                    ct);
+            }
         }
         task.UpdatedAt = _timeProvider.GetUtcNow();
 
@@ -1228,6 +1280,32 @@ public class CalendarService
             .ToList() ?? new List<Guid>();
         var operationId = Guid.NewGuid();
 
+        // 复审 I3：白名单校验必须发生在**所有早期成功返回之前** ——
+        // 否则 {"ids":[],"status":"DOING"} 会返回 200「没有更新任务」而不是 02057，
+        // 「三个入口非法值一律 400」就不成立。
+        if (request.Status is not null)
+            ValidateTaskStatus(request.Status);
+
+        if (request.Status is null && request.CalendarId is null)
+            return await BatchUpdateTasksCoreAsync(request, ids, operationId, ct);
+
+        // 复审 I2：写状态时在任务级锁内完成「查开放段 → 写状态 → 闭合」（整个工作单元同一事务）。
+        // 批量迁入某簿时同样要簿锁（与整本删除互斥）；两者同时出现时必须都取（见 UpdateTaskAsync）。
+        return await TaskRowLock.WithTaskAndCalendarLocksAsync(
+            _db,
+            request.Status is not null ? ids : Array.Empty<Guid>(),
+            request.CalendarId,
+            () => BatchUpdateTasksCoreAsync(request, ids, operationId, ct),
+            ct);
+    }
+
+    private async Task<CalendarOperationResult> BatchUpdateTasksCoreAsync(
+        BatchTaskUpdateRequest request,
+        IReadOnlyList<Guid> ids,
+        Guid operationId,
+        CancellationToken ct)
+    {
+
         if (ids.Count == 0)
         {
             return new CalendarOperationResult(
@@ -1264,12 +1342,23 @@ public class CalendarService
             .ToListAsync(ct);
         var now = _timeProvider.GetUtcNow();
 
+        if (request.Status is not null && TaskStatuses.IsTerminal(request.Status))
+        {
+            // 一次闭合本批次所有开放段，保证「段在跑但状态已完成」不可能出现（D3 / AC-8）。
+            await RunningSegments.CloseAllAsync(
+                _db,
+                tasks.Select(t => t.Id).ToList(),
+                SegmentTerminalStatus(request.Status),
+                now,
+                ct);
+        }
+
         foreach (var task in tasks)
         {
             if (request.Status is not null)
             {
                 task.Status = request.Status;
-                task.CompletedAt = request.Status == "COMPLETED" ? now : null;
+                task.CompletedAt = request.Status == TaskStatuses.Completed ? now : null;
             }
 
             if (request.Priority.HasValue)
@@ -1469,6 +1558,30 @@ public class CalendarService
         if (start.HasValue && end.HasValue && end.Value <= start.Value)
             throw new DomainException(02010, "结束时间必须晚于开始时间");
     }
+
+    /// <summary>
+    /// 工单 03 D1.1：任务状态收敛为受控值域。集合外的值**明确拒绝**（02057 → HTTP 400，
+    /// 走既有 <c>ApiResponse</c> 包络），不再静默写入任意 ≤20 字符的字符串。
+    /// 错误信息带上允许值，便于 MCP / 脚本调用方自助修正。
+    /// </summary>
+    private static void ValidateTaskStatus(string status)
+    {
+        if (!TaskStatuses.IsValid(status))
+        {
+            throw new DomainException(
+                InvalidTaskStatusErrorCode,
+                $"任务状态 '{status}' 无效；允许值：{string.Join(", ", TaskStatuses.All)}");
+        }
+    }
+
+    /// <summary>
+    /// 任务终态 → 被中止的执行段状态：任务取消 → 段 cancelled；任务完成 → 段 completed。
+    /// 闭合动作本身在 <see cref="RunningSegments.Close"/>（与计时路径共用一份实现）。
+    /// </summary>
+    internal static string SegmentTerminalStatus(string taskStatus)
+        => taskStatus == TaskStatuses.Cancelled
+            ? TaskSegmentStatuses.Cancelled
+            : TaskSegmentStatuses.Completed;
 
     private static TimeSpan? ParseEstimatedDuration(string? value)
     {

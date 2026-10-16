@@ -217,6 +217,67 @@ public sealed class OpenApiContractShapeTests
             operation.RequestBody.Content["application/json"].Schema.Reference?.ReferenceV3);
     }
 
+    // ===== C4：任务状态 enum（工单 03 D1.2 / AC-2）=====
+
+    private static readonly string[] ExpectedTaskStatuses =
+        ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"];
+
+    /// <summary>
+    /// 请求侧：三个任务状态写入口（新建 / 更新 / 批量更新）都必须标出 enum，
+    /// 且与服务端真实白名单（<c>TaskStatuses.All</c>）逐字一致。
+    /// </summary>
+    [Theory]
+    [InlineData("CreateTaskRequest")]
+    [InlineData("UpdateTaskRequest")]
+    [InlineData("BatchTaskUpdateRequest")]
+    public void TaskStatusRequestSchemasDeclareTheEnum(string schemaName)
+    {
+        var status = Schema(schemaName).Properties["status"];
+
+        Assert.Null(status.Reference);
+        Assert.Equal("string", status.Type);
+        Assert.Equal(
+            ExpectedTaskStatuses,
+            status.Enum.OfType<OpenApiString>().Select(v => v.Value));
+    }
+
+    /// <summary>
+    /// 响应侧：<c>TaskResponse.status</c> **故意不声明闭合 enum**（与维护者确认的口径）。
+    /// 请求侧的四值是真校验；响应侧的值来自库里既有数据，而工单 D1.3 不迁移收紧前的历史值，
+    /// 标闭合 enum 就等于替历史行做契约上不成立的承诺（严格生成的客户端会反序列化失败）。
+    /// 取而代之：把「当前写入侧只产生哪四个值」与「历史行可能是别的字符串」写进 description。
+    /// </summary>
+    [Fact]
+    public void TaskResponseStatusIsDocumentedInsteadOfClosedEnum()
+    {
+        var status = Schema("TaskResponse").Properties["status"];
+
+        Assert.Equal("string", status.Type);
+        // Swashbuckle 把未标注的 enum 初始化成空列表，而不是 null
+        Assert.True(status.Enum is null || status.Enum.Count == 0, $"响应侧不应声明闭合 enum，实际：{string.Join(",", status.Enum ?? [])}");
+        Assert.False(string.IsNullOrWhiteSpace(status.Description));
+        foreach (var value in ExpectedTaskStatuses)
+            Assert.Contains(value, status.Description);
+        Assert.Contains("历史", status.Description);
+    }
+
+    /// <summary>累计时长口径（含「不代表任务成功完成」）必须出现在契约里，供客户端与报告侧阅读。</summary>
+    [Fact]
+    public void TaskTimerStateDocumentsTheAccumulatedDurationRule()
+    {
+        var schema = Schema("TaskTimerStateResponse");
+        Assert.Contains("accumulatedSeconds", RequiredOf(schema));
+        var description = schema.Properties["accumulatedSeconds"].Description;
+        Assert.False(string.IsNullOrWhiteSpace(description));
+        Assert.Contains("planned", description);
+        Assert.Contains("不代表任务成功完成", description);
+    }
+
+    /// <summary>请求侧 enum 必须与运行时白名单同源，防止「契约写了、校验没写」或反过来。</summary>
+    [Fact]
+    public void TaskStatusEnumMatchesTheServerSideWhitelist()
+        => Assert.Equal(Pim.Module.Calendar.Entities.TaskStatuses.All, ExpectedTaskStatuses);
+
     // ===== C3：displayName 契约改成可空 =====
 
     [Fact]

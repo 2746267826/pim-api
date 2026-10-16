@@ -343,11 +343,32 @@ public record TaskExecutionSegmentResponse(
     Guid TaskId,
     string TaskTitle,
     DateTimeOffset StartsAt,
-    DateTimeOffset EndsAt,
+    // NULL = 该段正在计时（工单 03 D2.1）
+    DateTimeOffset? EndsAt,
     string Status,
     string Source,
     string? PlanningReason,
     Guid? ConfirmationId
+);
+
+/// <summary>
+/// 任务计时状态 + 累计实际时长（工单 03 D2.1「时长可累加、可查询」/ D3 报告侧数据源）。
+///
+/// <c>AccumulatedSeconds</c> = 该任务所有 <c>active</c> / <c>paused</c> / <c>completed</c> /
+/// <c>cancelled</c> 段之和（正在计时的段按「查询时刻 - startsAt」计入；只有 <c>planned</c> 不计）。
+///
+/// ⚠️ 语义边界：它是**实际花在任务上的时间**，包含「任务被取消/删除前已经发生的那段」，
+/// **不代表任务成功完成**（是否完成看 <c>TaskStatus</c>，报告统计完成数请用
+/// <c>status == COMPLETED</c>，不要把这个时长当作完成时长的替代）。
+/// 逐段四舍五入取秒；与 pim-web 行内时长同口径。
+/// </summary>
+public record TaskTimerStateResponse(
+    Guid TaskId,
+    string TaskStatus,
+    Guid? RunningSegmentId,
+    DateTimeOffset? RunningSince,
+    long AccumulatedSeconds,
+    int SegmentCount
 );
 
 public record CreateDomainProjectRequest(

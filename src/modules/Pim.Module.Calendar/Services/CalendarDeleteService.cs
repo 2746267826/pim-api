@@ -42,8 +42,17 @@ public sealed class CalendarDeleteService
             true);
     }
 
-    public async Task<CalendarOperationResult> DeleteCalendarAsync(Guid calendarId, CancellationToken ct = default)
+    public Task<CalendarOperationResult> DeleteCalendarAsync(Guid calendarId, CancellationToken ct = default)
+        // 复审 R1（第 3 轮）：整本删除**不**用锁外的投影 id 加锁 —— 投影与锁内重读之间新加入该簿的
+        // 任务会落在锁集合之外。改成在事务内加载**真实**要删的任务集合，拿到集合后再逐把补任务锁。
+        // 复审 I1（第 4 轮）：只补任务锁仍挡不住「并发把新任务建/迁进这本簿」——
+        // 所以这里同时取**簿级咨询锁**（与 CreateTaskAsync / UpdateTaskAsync 指定 calendarId 时同一把），
+        // 让「改簿成员」与「删整本」互斥。
+        => TaskRowLock.WithCalendarLockAsync(_db, calendarId, () => DeleteCalendarCoreAsync(calendarId, ct), ct);
+
+    private async Task<CalendarOperationResult> DeleteCalendarCoreAsync(Guid calendarId, CancellationToken ct)
     {
+        // 锁内重读（软删过滤器在模型上，已删除的簿会直接抛 02003）。
         var calendar = await LoadCalendarAsync(calendarId, ct);
         var operationId = Guid.NewGuid();
         var operationKind = CalendarOperationKind(calendar);
@@ -62,11 +71,22 @@ public sealed class CalendarDeleteService
                 .Where(t => t.UserId == UserId && t.CalendarId == calendar.Id)
                 .ToListAsync(ct);
 
+            // 复审 R1：锁集合 = 即将被改状态的真实集合（在事务内、改状态之前取锁）。
+            await TaskRowLock.AcquireLocksAsync(_db, tasks.Select(t => t.Id).ToList(), ct);
+
             foreach (var task in tasks)
             {
                 MarkDeleted(task, deletedAt, operationId, operationKind);
                 affectedIds.Add(task.Id);
             }
+
+            // 复审 I6：整本删除同样要收口正在跑的计时（见 DeleteTaskAsync 的说明）。
+            await RunningSegments.CloseAllAsync(
+                _db,
+                tasks.Select(t => t.Id).ToList(),
+                TaskSegmentStatuses.Cancelled,
+                deletedAt,
+                ct);
         }
         else
         {
@@ -174,7 +194,13 @@ public sealed class CalendarDeleteService
         return Result(operation, operationId, events, "已删除日程。");
     }
 
-    public async Task<CalendarOperationResult> DeleteTaskAsync(Guid taskId, CancellationToken ct = default)
+    public Task<CalendarOperationResult> DeleteTaskAsync(Guid taskId, CancellationToken ct = default)
+        // 复审 N2：删除与计时动作（timer/start）必须共用同一把任务级锁，否则
+        // 「删除方查到没有开放段 → start 插入开放段 → 删除方写软删」会留下
+        // 「已删除任务 + 在跑的段」，恢复后继续累计删除期间的时间。
+        => TaskRowLock.WithTaskLocksAsync(_db, new[] { taskId }, () => DeleteTaskCoreAsync(taskId, ct), ct);
+
+    private async Task<CalendarOperationResult> DeleteTaskCoreAsync(Guid taskId, CancellationToken ct)
     {
         var task = await LoadTaskAsync(taskId, ct);
         var operationId = Guid.NewGuid();
@@ -182,6 +208,14 @@ public sealed class CalendarDeleteService
         var operationKind = "single-task";
 
         MarkDeleted(task, deletedAt, operationId, operationKind);
+        // 复审 I6：任务被软删时把「正在计时」的段就地闭合。否则开放段会一直挂着：
+        // pause/stop 因任务被软删过滤而不可达，恢复任务后还会把删除期间的墙钟时间算进实际时长。
+        await RunningSegments.CloseAllAsync(
+            _db,
+            new[] { task.Id },
+            TaskSegmentStatuses.Cancelled,
+            deletedAt,
+            ct);
         await _db.SaveChangesAsync(ct);
         await _audit.RecordSuccessAsync(
             UserId,
@@ -197,10 +231,18 @@ public sealed class CalendarDeleteService
     public async Task<CalendarOperationResult> BatchDeleteTasksAsync(IEnumerable<Guid>? ids, CancellationToken ct = default)
     {
         var idSet = NormalizeIds(ids);
+        if (idSet.Count == 0)
+            return EmptyResult("calendar.tasks.batch_delete", Guid.NewGuid(), "没有删除任务。");
+
+        // 复审 N2：与计时动作共用任务级锁（见 DeleteTaskAsync 的说明）。
+        return await TaskRowLock.WithTaskLocksAsync(
+            _db, idSet, () => BatchDeleteTasksCoreAsync(idSet, ct), ct);
+    }
+
+    private async Task<CalendarOperationResult> BatchDeleteTasksCoreAsync(IReadOnlyList<Guid> idSet, CancellationToken ct)
+    {
         var operationId = Guid.NewGuid();
         var operation = "calendar.tasks.batch_delete";
-        if (idSet.Count == 0)
-            return EmptyResult(operation, operationId, "没有删除任务。");
 
         var tasks = await _db.Set<TaskEntity>()
             .Include(t => t.Calendar)
@@ -215,6 +257,14 @@ public sealed class CalendarDeleteService
 
         foreach (var task in tasks)
             MarkDeleted(task, deletedAt, operationId, operationKind);
+
+        // 复审 I6：批量删除同样要收口正在跑的计时。
+        await RunningSegments.CloseAllAsync(
+            _db,
+            tasks.Select(t => t.Id).ToList(),
+            TaskSegmentStatuses.Cancelled,
+            deletedAt,
+            ct);
 
         if (tasks.Count > 0)
             await _db.SaveChangesAsync(ct);
