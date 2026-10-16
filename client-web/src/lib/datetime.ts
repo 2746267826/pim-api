@@ -32,6 +32,15 @@ export function formatRange(startIso: string, endIso: string): string {
     : `${format(s, 'MM-dd HH:mm')} ~ ${format(e, 'MM-dd HH:mm')}`
 }
 
+/**
+ * 只有一个起点的时间段显示（例如「正在计时」的开放段）：
+ * 左端与 {@link formatRange} 完全同格式（MM-dd HH:mm），右端用调用方给的文案（如「进行中」）。
+ * 这样开放段与已闭合段在列表里看起来是同一套格式，不会出现 ISO 原样串。
+ */
+export function formatOpenRange(startIso: string, endLabel: string): string {
+  return `${format(parseISO(startIso), 'MM-dd HH:mm')} ~ ${endLabel}`
+}
+
 function sameDay(a: Date, b: Date): boolean {
   return (
     a.getFullYear() === b.getFullYear() &&

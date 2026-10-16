@@ -107,10 +107,73 @@ export interface TaskResponse {
   checklistItems?: TaskChecklistItem[]
 }
 
+/**
+ * 任务状态取值（工单 03 D1）：与 pim-api `TaskStatuses` 及契约 enum 同源。
+ * 集合外的值服务端会以 400（02057）明确拒绝 —— 前端不要凭自由字符串写入。
+ */
 export const TASK_STATUS = {
   needsAction: 'NEEDS-ACTION',
+  inProcess: 'IN-PROCESS',
   completed: 'COMPLETED',
+  cancelled: 'CANCELLED',
 } as const
+
+export type TaskStatus = (typeof TASK_STATUS)[keyof typeof TASK_STATUS]
+
+/** 取值顺序即契约 enum 的顺序（NEEDS-ACTION / IN-PROCESS / COMPLETED / CANCELLED） */
+export const TASK_STATUS_VALUES = [
+  TASK_STATUS.needsAction,
+  TASK_STATUS.inProcess,
+  TASK_STATUS.completed,
+  TASK_STATUS.cancelled,
+] as const
+
+/** 状态选择项 */
+export const TASK_STATUS_OPTIONS: ReadonlyArray<{ value: TaskStatus; label: string }> = [
+  { value: TASK_STATUS.needsAction, label: '待办' },
+  { value: TASK_STATUS.inProcess, label: '进行中' },
+  { value: TASK_STATUS.completed, label: '已完成' },
+  { value: TASK_STATUS.cancelled, label: '已取消' },
+]
+
+export const TASK_STATUS_LABEL: Record<string, string> = Object.fromEntries(
+  TASK_STATUS_OPTIONS.map((o) => [o.value, o.label]),
+)
+
+export function isKnownTaskStatus(status: string): boolean {
+  return (TASK_STATUS_VALUES as readonly string[]).includes(status)
+}
+
+/**
+ * 把任务状态归一到受控值域内。
+ *
+ * 四个合法值（含 `IN-PROCESS`）原样返回；只有**值域外的历史值** —— 即服务端收紧之前
+ * 由 MCP/脚本写进库的自由字符串（工单 03 D1.3 明确不做数据迁移）—— 才回落到「待办」。
+ * 调用方必须用 {@link isKnownTaskStatus} 先判断并显式提示用户，不要静默改写。
+ */
+export function normalizeTaskStatus(status: string): TaskStatus {
+  return isKnownTaskStatus(status) ? (status as TaskStatus) : TASK_STATUS.needsAction
+}
+
+/**
+ * 执行段取值（工单 03 D1.4/D2.1）：与 pim-api `TaskSegmentStatuses` 同源（全小写）。
+ * `active` 表示该段正在计时（服务端 `ends_at IS NULL`，同一任务同时只允许一条）。
+ */
+export const TASK_SEGMENT_STATUS = {
+  planned: 'planned',
+  active: 'active',
+  paused: 'paused',
+  completed: 'completed',
+  cancelled: 'cancelled',
+} as const
+
+export const TASK_SEGMENT_STATUS_LABEL: Record<string, string> = {
+  planned: '计划',
+  active: '计时中',
+  paused: '已暂停',
+  completed: '已结束',
+  cancelled: '已取消',
+}
 
 /* ── 图层（五层合一） ─────────────────────────────────────── */
 
@@ -145,11 +208,28 @@ export interface TaskExecutionSegment {
   taskId: string
   taskTitle: string
   startsAt: string
-  endsAt: string
+  /** `null` = 该段正在计时（工单 03 D2.1：服务端开放段） */
+  endsAt: string | null
   status: string
   source: string
   planningReason: string | null
   confirmationId: string | null
+}
+
+/** 任务计时状态 + 累计实际时长（`GET /calendar/tasks/{id}/timer`，工单 03 D2.1） */
+export interface TaskTimerState {
+  taskId: string
+  taskStatus: string
+  /** 正在计时的段 id；没有在计时时为 null */
+  runningSegmentId: string | null
+  runningSince: string | null
+  /**
+   * 累计实际执行秒数（正在计时的段按查询时刻计入）。
+   * 口径：只有 `planned`（尚未执行）不计；`cancelled` 是**真实发生过的执行**，计入
+   * —— 否则「跑一段再取消」会把时长抹掉，与「先暂停再取消」不一致（与服务端 `CountsAsExecuted` 一致）。
+   */
+  accumulatedSeconds: number
+  segmentCount: number
 }
 
 /* ── 操作结果 / 删除预览 ─────────────────────────────────── */
@@ -393,7 +473,9 @@ export function taskToMutationData(task: TaskResponse): components['schemas']['U
     plannedEnd: task.plannedEnd,
     estimatedDuration: task.estimatedDuration,
     minimumSegment: task.minimumSegment,
-    status: task.status,
+    // 契约把 status 收紧成四值 union：值域外的历史值不能原样回写（服务端会 400），
+    // 归一成「待办」——调用方需在 UI 上显式提示（见 task-editor-dialog 的 legacyStatus）。
+    status: normalizeTaskStatus(task.status),
     percentComplete: task.percentComplete,
     taskBookId: task.taskBookId,
     calendarId: task.calendarId,

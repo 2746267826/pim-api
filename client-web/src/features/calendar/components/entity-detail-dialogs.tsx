@@ -4,6 +4,7 @@ import { Button, Dialog, DialogBody, DialogContent, DialogHeader, StatusBadge } 
 import { formatRange, formatTime, durationToMinutes, formatDuration } from '@/lib/datetime'
 import { htmlToPlainText } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { TASK_STATUS, TASK_STATUS_LABEL } from '../types'
 import type { EventResponse, TaskResponse } from '../types'
 import { readEventRrule } from '../rrule'
 
@@ -57,13 +58,6 @@ const SENSITIVITY_LABEL: Record<string, string> = {
 const STATUS_LABEL: Record<string, string> = {
   CONFIRMED: '已确认',
   TENTATIVE: '暂定',
-  CANCELLED: '已取消',
-}
-
-const TASK_STATUS_LABEL: Record<string, string> = {
-  'NEEDS-ACTION': '待办',
-  'IN-PROCESS': '进行中',
-  COMPLETED: '已完成',
   CANCELLED: '已取消',
 }
 
@@ -270,10 +264,21 @@ export function TaskDetailDialog({
         <DialogHeader title="任务详情" description={taskBookName} />
         <DialogBody className="max-h-[62dvh] overflow-y-auto">
           <div className="mb-1 flex flex-wrap items-center gap-2">
-            <h3 className={cn('text-[15px] font-semibold', task.status === 'COMPLETED' ? 'text-text-4 line-through' : 'text-text-1')}>
+            <h3 className={cn('text-[15px] font-semibold', task.status === TASK_STATUS.completed ? 'text-text-4 line-through' : 'text-text-1')}>
               {task.title}
             </h3>
-            <StatusBadge tone={task.status === 'COMPLETED' ? 'ok' : task.status === 'CANCELLED' ? 'neutral' : 'info'} dot={false}>
+            <StatusBadge
+              tone={
+                // 回退到既有口径（工单未要求圆点，且「进行中」不能与「已完成」同色）：
+                // 完成=绿、取消=灰、其余（含进行中）=蓝
+                task.status === TASK_STATUS.completed
+                  ? 'ok'
+                  : task.status === TASK_STATUS.cancelled
+                    ? 'neutral'
+                    : 'info'
+              }
+              dot={false}
+            >
               {TASK_STATUS_LABEL[task.status] ?? task.status}
             </StatusBadge>
             {task.isInbox && <StatusBadge tone="warn" dot={false}>收集箱</StatusBadge>}

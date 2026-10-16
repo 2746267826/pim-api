@@ -11,6 +11,7 @@ import {
   useToggleTaskComplete,
 } from '@/features/calendar/queries'
 import { usePendingConfirmations } from '@/features/operations/queries'
+import { TASK_STATUS } from '@/features/calendar/types'
 import type { AiPlanPlaceholder } from '@/features/calendar/types'
 import { apiGet } from '@/api/client'
 import { todayBusinessDay } from '@/lib/businessDay'
@@ -134,7 +135,7 @@ export function WorkbenchPage() {
   }, [layers])
 
   const todos = useMemo(
-    () => (inbox ?? []).filter((t) => t.status !== 'COMPLETED').slice(0, 8),
+    () => (inbox ?? []).filter((t) => t.status !== TASK_STATUS.completed).slice(0, 8),
     [inbox],
   )
 

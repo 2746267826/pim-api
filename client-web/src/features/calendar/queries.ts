@@ -1,9 +1,9 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { deferredIntervalMs, standardIntervalMs } from '@/lib/polling'
-import { calendarsApi, checklistApi, eventsApi, layersApi, segmentsApi, taskBooksApi, tasksApi } from './api'
+import { calendarsApi, checklistApi, eventsApi, layersApi, segmentsApi, taskBooksApi, taskTimerApi, tasksApi } from './api'
 import type { components } from '@/api/generated'
 import type { TaskResponse, TasksPagedParams } from './types'
-import { taskToMutationData } from './types'
+import { TASK_STATUS, taskToMutationData } from './types'
 
 /* ── queryKey 工厂（CONVENTIONS §4：禁止散写字符串数组） ───── */
 
@@ -16,6 +16,7 @@ export const calendarKeys = {
   layers: (start: string, end: string, layers: string, outlookOnly: boolean) =>
     ['calendar', 'layers', start, end, layers, outlookOnly] as const,
   segments: (taskId: string) => ['calendar', 'task-segments', taskId] as const,
+  timer: (taskId: string) => ['calendar', 'task-timer', taskId] as const,
 }
 
 /** 今日页依赖日历数据：变更后一并失效 */
@@ -30,6 +31,7 @@ function invalidateCalendar(qc: ReturnType<typeof useQueryClient>, extra: readon
     ['calendar', 'tasks', 'paged'],
     ['calendar', 'layers'],
     ['calendar', 'task-segments'],
+    ['calendar', 'task-timer'],
     ...DEPENDENT_PREFIXES,
     ...extra,
   ]) {
@@ -110,6 +112,19 @@ export function useTaskSegments(taskId: string | null) {
     queryKey: calendarKeys.segments(taskId ?? ''),
     queryFn: () => segmentsApi.list(taskId!),
     enabled: taskId != null,
+  })
+}
+
+/**
+ * 任务计时状态（工单 03 D2.1）。正在计时时按秒轮询，让「当前累计时长」自己走；
+ * 没有在跑的段时停掉轮询（数据只在动作后变化）。
+ */
+export function useTaskTimer(taskId: string | null, running: boolean) {
+  return useQuery({
+    queryKey: calendarKeys.timer(taskId ?? ''),
+    queryFn: () => taskTimerApi.state(taskId!),
+    enabled: taskId != null,
+    refetchInterval: running ? 1_000 : false,
   })
 }
 
@@ -226,7 +241,7 @@ export function useToggleTaskComplete() {
     mutationFn: ({ task, completed }: { task: TaskResponse; completed: boolean }) =>
       tasksApi.update(task.id, {
         ...taskToMutationData(task),
-        status: completed ? 'COMPLETED' : 'NEEDS-ACTION',
+        status: completed ? TASK_STATUS.completed : TASK_STATUS.needsAction,
         percentComplete: completed ? 100 : 0,
       }),
     onSuccess: () => invalidateCalendar(qc),
@@ -267,6 +282,31 @@ export function useAddSegment() {
     }) => segmentsApi.add(taskId, body),
     onSuccess: () => invalidateCalendar(qc),
   })
+}
+
+/** 删除手工计划的时间段（工单 03 D2.2 补齐的 DELETE）。正在计时的段服务端会拒绝删除。 */
+export function useDeleteSegment() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ taskId, segmentId }: { taskId: string; segmentId: string }) =>
+      segmentsApi.remove(taskId, segmentId),
+    onSuccess: () => invalidateCalendar(qc),
+  })
+}
+
+/**
+ * 计时动作（开始 / 暂停 / 结束）。
+ * 计时段落落库后任务状态会跟着变成 IN-PROCESS，所以三个动作都做整片日历失效，
+ * 让任务行上的状态徽标与列表同步刷新。
+ */
+export function useTaskTimerActions() {
+  const qc = useQueryClient()
+  const invalidate = () => invalidateCalendar(qc)
+  return {
+    start: useMutation({ mutationFn: (taskId: string) => taskTimerApi.start(taskId), onSuccess: invalidate }),
+    pause: useMutation({ mutationFn: (taskId: string) => taskTimerApi.pause(taskId), onSuccess: invalidate }),
+    stop: useMutation({ mutationFn: (taskId: string) => taskTimerApi.stop(taskId), onSuccess: invalidate }),
+  }
 }
 
 /* ── P2：提醒 / 报告 / 习惯 / AI 建议 / Outlook / 数据中心 ── */
