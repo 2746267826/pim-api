@@ -1162,15 +1162,14 @@ public class CalendarService
         // 复审 I2：写状态时与计时动作（timer/start|pause|stop）共用同一把任务级锁，
         // 整个工作单元（读任务 → 改写 → 闭合在跑的段 → 保存）都在锁与同一事务内，
         // 否则会出现「COMPLETED 但 ends_at IS NULL」。不写状态时不加锁（避免无谓事务）。
-        if (request.Status is null && request.CalendarId is null)
-            return await UpdateTaskCoreAsync(id, request, ct);
-
-        // 需要哪几把锁就取哪几把：写状态 → 任务锁（与计时动作互斥）；
-        // 指定任务簿（迁入）→ 簿锁（与整本删除互斥，见 CreateTaskAsync 的说明）。
-        // 两者同时出现时必须**都取**，否则「置为已完成 + 同时迁入」会绕过与 timer/start 的互斥。
+        // 任务锁**总是**要取（工单 #17 / F3）：
+        // 「把任务迁出某本簿」也是对簿成员集合的修改，必须与「整本删除」互斥 ——
+        // 删除方会「先锁簿、再锁候选成员、然后重读成员集合」，只有迁出方也持有该任务的锁，
+        // 删除方重读时才不会拿到已经迁走的陈旧成员（否则会把已迁出的任务一起软删）。
+        // 指定了目标簿时再叠一把簿锁（迁入 = 改簿的成员集合，与整本删除互斥，见 CreateTaskAsync）。
         return await TaskRowLock.WithTaskAndCalendarLocksAsync(
             _db,
-            request.Status is not null ? new[] { id } : Array.Empty<Guid>(),
+            new[] { id },
             request.CalendarId,
             () => UpdateTaskCoreAsync(id, request, ct),
             ct);
@@ -1286,14 +1285,12 @@ public class CalendarService
         if (request.Status is not null)
             ValidateTaskStatus(request.Status);
 
-        if (request.Status is null && request.CalendarId is null)
-            return await BatchUpdateTasksCoreAsync(request, ids, operationId, ct);
-
         // 复审 I2：写状态时在任务级锁内完成「查开放段 → 写状态 → 闭合」（整个工作单元同一事务）。
-        // 批量迁入某簿时同样要簿锁（与整本删除互斥）；两者同时出现时必须都取（见 UpdateTaskAsync）。
+        // 批量迁入/迁出同样改簿成员集合 → 总是取这些任务的锁；指定目标簿时再叠簿锁
+        // （理由见 UpdateTaskAsync 的说明，工单 #17 / F3）。
         return await TaskRowLock.WithTaskAndCalendarLocksAsync(
             _db,
-            request.Status is not null ? ids : Array.Empty<Guid>(),
+            ids,
             request.CalendarId,
             () => BatchUpdateTasksCoreAsync(request, ids, operationId, ct),
             ct);

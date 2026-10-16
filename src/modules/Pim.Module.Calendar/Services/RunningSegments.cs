@@ -52,15 +52,30 @@ internal static class RunningSegments
 /// 「查有没有开放段 → 写终态 + 闭合」。两条链都没有共同锁时，交替执行会同时通过检查，
 /// 结果是同一任务出现两条开放段，或者「已完成但仍有在跑的段」。
 ///
-/// 实现：显式事务 + PostgreSQL 事务级咨询锁（<c>pg_advisory_xact_lock(hashtext(task_id))</c>）。
+/// 实现：显式事务 + PostgreSQL 事务级咨询锁（<c>pg_advisory_xact_lock(命名空间, id)</c>，
+/// 全局取锁顺序 = **先簿锁、后任务锁**，同命名空间内按 id 升序）。
 /// 锁在事务提交/回滚时自动释放，无需额外清理；键碰撞只会多串行一点，不影响正确性。
 /// 非 Npgsql 提供程序（单测用的 InMemory / Sqlite）安全降级为空操作 —— 那里没有并发语义。
 /// </summary>
 internal static class TaskRowLock
 {
-    // 咨询锁键空间是共享的，用前缀把「任务」与「任务簿（日历）」两类互斥对象分开。
-    private static string TaskKey(Guid id) => $"task:{id}";
-    private static string CalendarKey(Guid id) => $"calendar:{id}";
+    // 咨询锁键：用 (命名空间, id 派生的 32 位) 的二元形式，而不是 hashtext("task:<uuid>")。
+    //
+    // 为什么：取锁顺序必须与「锁身份」一致，否则仍可能形成等待环 —— 若按字符串排序却锁 hashtext(字符串)，
+    // 一旦两个不同 key 的哈希值相同（或哈希序与字符串序不一致），就会退化成按字符串序取锁、
+    // 实际却在等同一把锁，构成真实的环（复审指出）。这里让排序键**就是**锁身份：
+    // 32 位截断即使碰撞，也只是两个不同对象共用一把锁（多串行化一点），顺序仍然自洽。
+    // ⚠️ 命名空间的数值**就是全局取锁顺序**：必须让簿锁排在任务锁之前。
+    // 因为「整本删除」是先取簿锁、再（在事务内）升级取候选成员的任务锁；
+    // 若任务排在前面，就会出现「删除持有簿锁等任务锁、更新持有任务锁等簿锁」的真实死锁（复审指出）。
+    private const int CalendarNamespace = 1;
+    private const int TaskNamespace = 2;
+
+    private static (int Namespace, int Id) TaskKey(Guid id)
+        => (TaskNamespace, BitConverter.ToInt32(id.ToByteArray(), 0));
+
+    private static (int Namespace, int Id) CalendarKey(Guid id)
+        => (CalendarNamespace, BitConverter.ToInt32(id.ToByteArray(), 0));
 
     /// <summary>
     /// 在「任务级咨询锁 + 单事务」内执行 <paramref name="action"/>（见 <see cref="WithLocksAsync"/>）。
@@ -131,7 +146,7 @@ internal static class TaskRowLock
     /// </summary>
     private static async Task<T> WithLocksAsync<T>(
         PimDbContext db,
-        IReadOnlyCollection<string> keys,
+        IReadOnlyCollection<(int Namespace, int Id)> keys,
         Func<Task<T>> action,
         CancellationToken ct)
     {
@@ -181,17 +196,17 @@ internal static class TaskRowLock
 
     private static async Task AcquireKeysAsync(
         PimDbContext db,
-        IReadOnlyCollection<string> keys,
+        IReadOnlyCollection<(int Namespace, int Id)> keys,
         CancellationToken ct)
     {
         if (!db.Database.IsNpgsql() || keys.Count == 0)
             return;
 
-        // 按 key 排序依次加锁，避免两个批量请求以不同顺序取锁而互相等待。
-        foreach (var key in keys.Distinct().OrderBy(k => k, StringComparer.Ordinal))
+        // 排序键 == 锁身份（见上面的键定义说明）：任意两个操作取锁顺序一致，不会互相等成环。
+        foreach (var (ns, id) in keys.Distinct().OrderBy(k => k.Namespace).ThenBy(k => k.Id))
         {
             await db.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT pg_advisory_xact_lock(hashtext({key}))",
+                $"SELECT pg_advisory_xact_lock({ns}, {id})",
                 ct);
         }
     }

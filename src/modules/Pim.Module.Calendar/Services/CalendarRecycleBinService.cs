@@ -232,7 +232,7 @@ public sealed class CalendarRecycleBinService
             true);
     }
 
-    private async Task<CalendarOperationResult> RestoreEventAsync(
+    private Task<CalendarOperationResult> RestoreEventAsync(
         Guid id,
         bool restoreAsCopy,
         string operation,
@@ -240,49 +240,147 @@ public sealed class CalendarRecycleBinService
         DateTimeOffset now,
         CancellationToken ct)
     {
-        var evt = await LoadDeletedEventAsync(id, ct);
-        EnsureParentBookActive(evt.Calendar);
+        // 与任务恢复同一个道理（工单 #17 / F1）：恢复日程会把它重新加进所属**日历**的活跃成员集合，
+        // 必须与「整本删除该日历」互斥（删除方会先取该日历的簿锁）。日程所属日历不会变，故锁集合可先无锁读出。
+        return RestoreEventLockedAsync(id, restoreAsCopy, operation, operationId, now, ct);
+    }
 
-        if (restoreAsCopy)
+    private async Task<CalendarOperationResult> RestoreEventLockedAsync(
+        Guid id,
+        bool restoreAsCopy,
+        string operation,
+        Guid operationId,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        var calendarId = await _db.Set<EventEntity>()
+            .IgnoreQueryFilters()
+            .Where(e => e.Id == id && e.Calendar.UserId == UserId)
+            .Select(e => (Guid?)e.CalendarId)
+            .FirstOrDefaultAsync(ct)
+            ?? throw new DomainException(02004, "日程不存在");
+
+        return await TaskRowLock.WithCalendarLockAsync(
+            _db,
+            calendarId,
+            async () =>
+            {
+                var evt = await LoadDeletedEventAsync(id, ct);
+                EnsureParentBookActive(evt.Calendar);
+
+                if (restoreAsCopy)
+                {
+                    evt.Uid = $"{Guid.NewGuid()}@pim";
+                    evt.SourceUid = null;
+                }
+
+                ClearDelete(evt, now);
+                // 同任务恢复：锁内提交，保护「校验父本 → 写库」整段。
+                await _db.SaveChangesAsync(ct);
+
+                return new CalendarOperationResult(
+                    operation,
+                    operationId,
+                    1,
+                    new[] { evt.Id },
+                    new[] { Sample(evt) },
+                    "Restored event.");
+            },
+            ct);
+    }
+
+    private Task<CalendarOperationResult> RestoreTaskAsync(
+        Guid id,
+        bool restoreAsCopy,
+        string operation,
+        Guid operationId,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        // 工单 #17 / F1：恢复任务会把它重新加进所属任务簿的**活跃成员集合**，
+        // 必须与「整本删除该簿」互斥，否则「先校验父簿有效 → 删除方提交 → 再清删除标记」
+        // 会把任务恢复进一本已被删除的簿。
+        //
+        // 实现：先无锁读出候选所属簿 id（**只用于决定第一轮锁集合**），再按全局锁序取「簿锁 ∪ 任务锁」，
+        // **在锁内**重新加载任务并复核「任务此刻的所属簿 == 已锁住的簿」；不一致说明这段间隙里任务被
+        // 恢复→迁走→再删除（软删任务在「先被恢复」之后是可以被迁走的），此时释放事务、按新值重算锁集合后重试。
+        // 锁内再校验父簿有效性，并在锁内落库。
+        // 锁内校验失败时抛的仍是既有的 02023「请先恢复所属本」（与用户晚一步操作时的表现一致，
+        // 不新增产品语义）。
+        return RestoreTaskLockedAsync(id, restoreAsCopy, operation, operationId, now, ct);
+    }
+
+    private async Task<CalendarOperationResult> RestoreTaskLockedAsync(
+        Guid id,
+        bool restoreAsCopy,
+        string operation,
+        Guid operationId,
+        DateTimeOffset now,
+        CancellationToken ct)
+    {
+        // 锁集合必须覆盖「任务实际所属的那本簿」，而这个 id 只能在锁内确定，因此这里做**有界重试**：
+        // 先无锁读出候选簿 → 按锁序取「任务 ∪ 该簿」→ 锁内复核任务此刻的所属簿是否正是锁住的那本；
+        // 不一致（例如这段间隙里任务被恢复→迁到别的簿→又被删）说明锁集合已过时，释放事务后按新值重来。
+        // 不能在持有任务锁之后再补取簿锁：那会打破「先簿后任务」的全局锁序，可能与整本删除形成等待环。
+        for (var attempt = 0; attempt < RestoreLockAttempts; attempt++)
         {
-            evt.Uid = $"{Guid.NewGuid()}@pim";
-            evt.SourceUid = null;
+            var bookId = await _db.Set<TaskEntity>()
+                .IgnoreQueryFilters()
+                .Where(t => t.Id == id && t.UserId == UserId)
+                .Select(t => t.CalendarId)
+                .FirstOrDefaultAsync(ct);
+
+            // ⚠️ stale 必须**和执行结果一起**从委托里返回，不能写成外层可变标志：
+            // 执行策略可能在瞬时故障后重放整个委托，外层标志会把上一轮尝试的结论带进下一轮，
+            // 造成「这一轮其实恢复成功、却因陈旧标志丢弃成功结果，最后报一个不相干的错」。
+            var outcome = await TaskRowLock.WithTaskAndCalendarLocksAsync(
+                _db,
+                new[] { id },
+                bookId,
+                async () =>
+                {
+                    var task = await LoadDeletedTaskAsync(id, ct);
+                    if (task.CalendarId != bookId)
+                        return new RestoreOutcome(null, Stale: true);
+
+                    if (task.Calendar is not null)
+                        EnsureParentBookActive(task.Calendar);
+
+                    if (restoreAsCopy)
+                        task.Uid = $"{Guid.NewGuid()}@pim";
+
+                    ClearDelete(task, now);
+                    // 在锁内提交：锁保护的是「校验父簿 → 写库」这一整段，不能只在锁内改内存。
+                    await _db.SaveChangesAsync(ct);
+
+                    return new RestoreOutcome(
+                        new CalendarOperationResult(
+                            operation,
+                            operationId,
+                            1,
+                            new[] { task.Id },
+                            new[] { Sample(task) },
+                            "Restored task."),
+                        Stale: false);
+                },
+                ct);
+
+            if (!outcome.Stale)
+                return outcome.Result!;
         }
 
-        ClearDelete(evt, now);
-        return new CalendarOperationResult(
-            operation,
-            operationId,
-            1,
-            new[] { evt.Id },
-            new[] { Sample(evt) },
-            "Restored event.");
+        // 连续 N 次都撞上「锁集合过时」：说明该任务正在被其它并发写反复搬动，按既有语义报冲突（02020）。
+        throw new DomainException(02020, "恢复存在冲突");
     }
 
-    private async Task<CalendarOperationResult> RestoreTaskAsync(
-        Guid id,
-        bool restoreAsCopy,
-        string operation,
-        Guid operationId,
-        DateTimeOffset now,
-        CancellationToken ct)
-    {
-        var task = await LoadDeletedTaskAsync(id, ct);
-        if (task.Calendar is not null)
-            EnsureParentBookActive(task.Calendar);
+    /// <summary>恢复任务时「锁定所属簿 → 复核」的重试上限。</summary>
+    private const int RestoreLockAttempts = 3;
 
-        if (restoreAsCopy)
-            task.Uid = $"{Guid.NewGuid()}@pim";
-
-        ClearDelete(task, now);
-        return new CalendarOperationResult(
-            operation,
-            operationId,
-            1,
-            new[] { task.Id },
-            new[] { Sample(task) },
-            "Restored task.");
-    }
+    /// <summary>
+    /// 单次恢复尝试的结果：<c>Stale</c> 表示「锁内发现任务实际所属簿与已锁住的簿不一致」（锁集合已过时），
+    /// 需要释放事务后按新值重算锁集合；它与结果一起返回，避免用外层可变标志跨执行策略重放。
+    /// </summary>
+    private sealed record RestoreOutcome(CalendarOperationResult? Result, bool Stale);
 
     private async Task<CalendarOperationResult> RestoreCalendarAsync(
         string type,

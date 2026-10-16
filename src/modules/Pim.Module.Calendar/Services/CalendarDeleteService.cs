@@ -67,12 +67,22 @@ public sealed class CalendarDeleteService
 
         if (calendar.Kind == "task")
         {
+            // 两段式（工单 #17 / F3）：
+            //   1) 先读「候选成员」——只用来决定要取哪些任务锁（此刻可能已经过时，无所谓）；
+            //   2) 取齐任务锁之后**重新读一次**成员集合，并以重读结果为准执行删除。
+            // 为什么必须重读：拿到某任务的锁之前，并发的「迁出」可能已经把它移到别的簿并提交；
+            // 若继续用旧集合就会把已经迁走的任务一并软删。
+            // 为什么重读之后集合是稳定的：迁入/新建/恢复到本簿都要先取**本簿**的锁（已由外层持有），
+            // 迁出/改状态要取**该任务**的锁（已由本段持有）。
+            var candidates = await _db.Set<TaskEntity>()
+                .Where(t => t.UserId == UserId && t.CalendarId == calendar.Id)
+                .Select(t => t.Id)
+                .ToListAsync(ct);
+            await TaskRowLock.AcquireLocksAsync(_db, candidates, ct);
+
             var tasks = await _db.Set<TaskEntity>()
                 .Where(t => t.UserId == UserId && t.CalendarId == calendar.Id)
                 .ToListAsync(ct);
-
-            // 复审 R1：锁集合 = 即将被改状态的真实集合（在事务内、改状态之前取锁）。
-            await TaskRowLock.AcquireLocksAsync(_db, tasks.Select(t => t.Id).ToList(), ct);
 
             foreach (var task in tasks)
             {
