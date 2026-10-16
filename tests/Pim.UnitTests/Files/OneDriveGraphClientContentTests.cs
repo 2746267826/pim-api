@@ -300,7 +300,7 @@ public class OneDriveGraphClientContentTests
     /// <summary>
     /// 目录没有 `/content`：注解缺失时**不得**去请求 `/content`，直接返回 null。
     ///
-    /// 这条守住一个真实影响：`OneDriveWriteService.RemoteItemExistsAsync` 用本方法做
+    /// 这条守住一个真实影响：`FileWriteService.RemoteItemExistsAsync` 用本方法做
     /// 「远端是否仍存在」的存在性探测，删除/恢复流程会传**目录** id。对目录打 `/content`
     /// 会拿到 404，从而被误判成「文件已从 OneDrive 删除」，让删除/恢复行为整体错乱。
     /// </summary>

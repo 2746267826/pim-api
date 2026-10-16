@@ -176,7 +176,7 @@ public sealed class McpInProcessClient
                 ? location
                 : new Uri(baseAddress, location);
 
-            // 跨域 302 不跟随：附件直链会跳到 OneDrive 内容域（带 tempauth 的预授权 URL）。
+            // 跨域 302 不跟随：附件直链会跳到网盘内容域（带 tempauth 的预授权 URL）。
             // 跟随它有两个问题：一是把预授权链接当成跳转目标去请求（凭据离开本服务），
             // 二是「dump 全部响应头」的工具（get_quick_note_attachment_meta）会把目标站点的
             // 头信息当成 PIM 的响应返回，可能把该链接暴露给 agent。

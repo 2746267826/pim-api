@@ -17,8 +17,8 @@ namespace Pim.UnitTests.Files;
 /// 背景（P4a 复审）：minimal API 的处理器编译成闭包，反射拿不到 lambda 形参，
 /// 因此 <c>[FromServices] T</c> 漏注册不会被编译期拦住，只会在请求进入
 /// EndpointMiddleware 依赖解析阶段时抛 <c>InvalidOperationException</c> → 500。
-/// #328 就漏注册了 <c>OneDriveWriteService</c>（move/rename/delete/open-link 四个端点全 500）
-/// 与 <c>OneDriveTransientRateLimiter</c>（限流退化成每次请求新建计数器，永不触发）。
+/// #328 就漏注册了 <c>FileWriteService</c>（move/rename/delete/open-link 四个端点全 500）
+/// 与 <c>FileTransientRateLimiter</c>（限流退化成每次请求新建计数器，永不触发）。
 ///
 /// 依赖清单直接从模块源码扫（和 PcTracker 的做法一致），这样以后新增路由却忘了注册服务，
 /// 本用例同样会失败。
@@ -38,8 +38,8 @@ public sealed class FilesModuleDiResolutionTests
 
         Assert.NotEmpty(declaredTypes);
         // 抽查：确认扫描命中了本轮涉及的已知路由依赖（否则本用例会退化成恒真式）。
-        Assert.Contains(typeof(OneDriveWriteService), declaredTypes);
-        Assert.Contains(typeof(OneDriveContentService), declaredTypes);
+        Assert.Contains(typeof(FileWriteService), declaredTypes);
+        Assert.Contains(typeof(FileContentService), declaredTypes);
 
         using var factory = CreateRealHostFactory();
         using var scope = factory.Services.CreateScope();
@@ -83,7 +83,7 @@ public sealed class FilesModuleDiResolutionTests
         });
 
     /// <summary>
-    /// <c>OneDriveContentService</c> 是 Scoped，而「每用户每分钟 30 次」的限流窗口必须跨请求共享，
+    /// <c>FileContentService</c> 是 Scoped，而「每用户每分钟 30 次」的限流窗口必须跨请求共享，
     /// 因此限流器必须是单例：若被 Scoped 化（或退化成服务内部 <c>new</c>），计数器每次请求归零，
     /// 限流形同不存在。这里断言真实宿主里跨作用域拿到的是同一实例。
     /// </summary>
@@ -94,8 +94,8 @@ public sealed class FilesModuleDiResolutionTests
         using var scope1 = factory.Services.CreateScope();
         using var scope2 = factory.Services.CreateScope();
 
-        var first = scope1.ServiceProvider.GetService<OneDriveTransientRateLimiter>();
-        var second = scope2.ServiceProvider.GetService<OneDriveTransientRateLimiter>();
+        var first = scope1.ServiceProvider.GetService<FileTransientRateLimiter>();
+        var second = scope2.ServiceProvider.GetService<FileTransientRateLimiter>();
 
         Assert.NotNull(first);
         Assert.NotNull(second);
@@ -103,19 +103,19 @@ public sealed class FilesModuleDiResolutionTests
     }
 
     /// <summary>
-    /// <c>OneDriveContentService</c> 注入的限流器必须就是容器里那个单例，
+    /// <c>FileContentService</c> 注入的限流器必须就是容器里那个单例，
     /// 而不是构造函数里 <c>?? new</c> 出来的私有实例——否则配额计数随服务实例丢弃，
     /// 30 次/分钟的限流永远不会触发。
     /// </summary>
     [Fact]
-    public void OneDriveContentService_UsesTheContainerRateLimiter_NotAPerInstanceOne()
+    public void FileContentService_UsesTheContainerRateLimiter_NotAPerInstanceOne()
     {
         using var factory = CreateRealHostFactory();
         using var scope = factory.Services.CreateScope();
 
-        var limiter = scope.ServiceProvider.GetRequiredService<OneDriveTransientRateLimiter>();
-        var service = scope.ServiceProvider.GetRequiredService<OneDriveContentService>();
-        var injected = ReadPrivateField<OneDriveTransientRateLimiter>(service, "_rateLimiter");
+        var limiter = scope.ServiceProvider.GetRequiredService<FileTransientRateLimiter>();
+        var service = scope.ServiceProvider.GetRequiredService<FileContentService>();
+        var injected = ReadPrivateField<FileTransientRateLimiter>(service, "_rateLimiter");
 
         Assert.Same(limiter, injected);
     }

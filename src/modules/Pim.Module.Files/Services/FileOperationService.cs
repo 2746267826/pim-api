@@ -12,9 +12,12 @@ namespace Pim.Module.Files.Services;
 /// <summary>
 /// 文件模块的**元数据**读取服务（文件模块 v2）。
 ///
-/// v2 事实源是 OneDrive，内容与写操作走 Graph（见 <see cref="OneDriveWriteService"/>、
-/// <see cref="OneDriveContentService"/>）。本服务因此只保留与 provider 无关的元数据能力：
-/// 列表 / 单条 / 整理建议；一切 WebDAV（Nextcloud）适配器能力随 P4 退役。
+/// 事实源是**用户自己的网盘账号**（可能不止一个），内容与写操作走 provider 抽象
+/// （见 <see cref="FileWriteService"/>、<see cref="FileContentService"/>）。
+/// 本服务只保留与 provider 无关的元数据能力：列表 / 单条 / 整理建议。
+///
+/// F5 口径：**列表按账号**。列表必须带账号作用域（显式 <c>providerId</c>，或该用户只有一个
+/// 已连接账号时沿用），不跨账号合并 —— 理由见 <see cref="FileProviderLookup.ResolveListScopeAsync"/>。
 /// </summary>
 public sealed class FileOperationService(
     PimDbContext db,
@@ -44,14 +47,16 @@ public sealed class FileOperationService(
         FileListQuery query,
         int page = 1,
         int pageSize = DefaultPageSize,
+        Guid? providerId = null,
         CancellationToken ct = default)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, MaxPageSize);
         var userId = UserId;
         var parentPath = NormalizePath(query.Path);
+        var scopeProviderId = await FileProviderLookup.ResolveListScopeAsync(db, userId, providerId, ct);
 
-        var items = DirectChildren(db, userId, parentPath);
+        var items = DirectChildren(db, scopeProviderId, parentPath);
 
         // REQ-4：树只要目录；REQ-9/AC-9.2：类型过滤与排序都要在分页之前生效
         var itemType = NormalizeItemType(query.Type);
@@ -113,9 +118,14 @@ public sealed class FileOperationService(
     /// 注：大前缀（如 <c>/main/</c>，命中子树全部行）规划器可能选择 Seq Scan——这是
     /// 「结果集本就很大」的正常选择，不是索引失效；选择性前缀仍走索引。
     /// </summary>
+    /// <param name="providerId">
+    /// **账号行 id**（不是 user id）：F2 之后同一用户可挂多个账号，
+    /// 只按 user 过滤会把两个盘的同名路径混在一起。归属由调用方
+    /// （<see cref="FileProviderLookup.ResolveListScopeAsync"/>）先行校验。
+    /// </param>
     internal static IQueryable<FileItemEntity> DirectChildren(
         PimDbContext db,
-        Guid userId,
+        Guid providerId,
         string parentPath)
     {
         var prefix = parentPath == "/" ? "/" : $"{parentPath}/";
@@ -123,8 +133,7 @@ public sealed class FileOperationService(
         return db.Set<FileItemEntity>()
             .AsNoTracking()
             .Where(item =>
-                item.Provider != null
-                && item.Provider.UserId == userId
+                item.ProviderId == providerId
                 && !item.IsDeleted
                 // 前缀判据必须作用在**裸列**上（可用 text_pattern_ops 索引）
                 && item.Path.StartsWith(prefix)

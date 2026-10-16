@@ -7,7 +7,7 @@ namespace Pim.Module.Files.Services;
 /// 瞬态内容读取的每用户固定窗口限流（单例）。覆盖 read_file_text / extracted-text
 /// 等会触发服务器瞬态下载的出口（设计文档 §13）。
 /// </summary>
-public sealed class OneDriveTransientRateLimiter
+public sealed class FileTransientRateLimiter
 {
     public const int DefaultLimitPerMinute = 30;
     private static readonly TimeSpan Window = TimeSpan.FromMinutes(1);
@@ -16,7 +16,7 @@ public sealed class OneDriveTransientRateLimiter
     private readonly TimeProvider _clock;
     private readonly int _limit;
 
-    public OneDriveTransientRateLimiter(TimeProvider? clock = null, int? limit = null)
+    public FileTransientRateLimiter(TimeProvider? clock = null, int? limit = null)
     {
         _clock = clock ?? TimeProvider.System;
         _limit = limit ?? DefaultLimitPerMinute;

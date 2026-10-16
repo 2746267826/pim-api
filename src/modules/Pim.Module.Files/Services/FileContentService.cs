@@ -1,17 +1,16 @@
 using System.Text;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Pim.Core.Exceptions;
 using Pim.Core.Operations;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Files.Entities;
-using Pim.Module.Files.Providers;
+using Pim.Module.Files.Providers.Abstractions;
 
 namespace Pim.Module.Files.Services;
 
-public sealed record OneDriveTextContent(string Content, string? MimeType, long Size, bool Truncated);
+public sealed record FileTextContent(string Content, string? MimeType, long Size, bool Truncated);
 
 public sealed record FileTextSnapshotDto(
     Guid Id,
@@ -23,51 +22,53 @@ public sealed record FileTextSnapshotDto(
     DateTimeOffset CreatedAt);
 
 /// <summary>
-/// OneDrive 内容出口（设计文档 §7/§8）：稳定直链解析（302 目标）、缩略图、预览地址、
+/// 通用内容出口（工单 05 / F1）：稳定直链解析（302 目标）、缩略图、预览地址、
 /// 小文本瞬态读写与编辑前快照。所有出口统一过：登录 → 归属 → 敏感路径 三道闸。
 /// 直链与文件内容不落盘、不落日志。
+///
+/// 与 provider 无关：实际取内容由账号作用域会话的 <see cref="IFileContentReader"/> 完成。
 /// </summary>
-public sealed class OneDriveContentService
+public sealed class FileContentService
 {
-    /// <summary>文本瞬态代理上限（设计文档 §8）。</summary>
+    /// <summary>文本瞬态代理上限。</summary>
     public const long MaxTextBytes = 2 * 1024 * 1024;
 
-    /// <summary>简单上传上限（Graph 单请求 PUT 限制 4MB）。</summary>
+    /// <summary>简单上传上限（provider 单请求 PUT 的公共安全档）。</summary>
     public const long MaxSaveBytes = 4 * 1024 * 1024;
 
     /// <summary>每个文件保留的快照上限。</summary>
     public const int KeepSnapshotsPerItem = 10;
 
     private readonly PimDbContext _db;
-    private readonly IOneDriveGraphClient _client;
-    private readonly OneDriveTokenService _tokens;
+    private readonly FileProviderSessionFactory _sessions;
+    private readonly IFileProviderFactory _providers;
     private readonly ICurrentUserService _currentUser;
     private readonly SensitivePathPolicy _sensitivePolicy;
-    private readonly OneDriveTextExtractor _textExtractor;
-    private readonly OneDriveTransientRateLimiter _rateLimiter;
+    private readonly FileTextExtractor _textExtractor;
+    private readonly FileTransientRateLimiter _rateLimiter;
     private readonly IAuditLogService? _auditLog;
-    private readonly ILogger<OneDriveContentService>? _logger;
+    private readonly ILogger<FileContentService>? _logger;
     private readonly TimeProvider _clock;
 
-    public OneDriveContentService(
+    public FileContentService(
         PimDbContext db,
-        IOneDriveGraphClient client,
-        OneDriveTokenService tokens,
+        FileProviderSessionFactory sessions,
+        IFileProviderFactory providers,
         ICurrentUserService currentUser,
         SensitivePathPolicy sensitivePolicy,
-        ILogger<OneDriveContentService>? logger = null,
+        ILogger<FileContentService>? logger = null,
         TimeProvider? clock = null,
-        OneDriveTextExtractor? textExtractor = null,
-        OneDriveTransientRateLimiter? rateLimiter = null,
+        FileTextExtractor? textExtractor = null,
+        FileTransientRateLimiter? rateLimiter = null,
         IAuditLogService? auditLog = null)
     {
         _db = db;
-        _client = client;
-        _tokens = tokens;
+        _sessions = sessions;
+        _providers = providers;
         _currentUser = currentUser;
         _sensitivePolicy = sensitivePolicy;
-        _textExtractor = textExtractor ?? new OneDriveTextExtractor();
-        _rateLimiter = rateLimiter ?? new OneDriveTransientRateLimiter(clock);
+        _textExtractor = textExtractor ?? new FileTextExtractor();
+        _rateLimiter = rateLimiter ?? new FileTransientRateLimiter(clock);
         _auditLog = auditLog;
         _logger = logger;
         _clock = clock ?? TimeProvider.System;
@@ -80,17 +81,17 @@ public sealed class OneDriveContentService
         var (item, provider) = await LoadOwnedItemAsync(itemId, ct);
         EnsureDownloadable(item);
         EnsureNotSensitive(item);
-        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
-        var link = await _client.GetDownloadUrlAsync(token, item.ExternalFileId, ct);
-        return link ?? throw new DomainException(5333, "OneDrive 暂未返回下载直链，请稍后重试");
+        var session = await _sessions.OpenAsync(provider, ct);
+        var link = await session.Content.GetDownloadUrlAsync(item.ExternalFileId, ct);
+        return link ?? throw new DomainException(5333, "网盘暂未返回下载直链，请稍后重试");
     }
 
     public async Task<string> GetThumbnailLinkAsync(Guid itemId, string size, CancellationToken ct = default)
     {
         var (item, provider) = await LoadOwnedItemAsync(itemId, ct);
         EnsureNotSensitive(item);
-        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
-        var link = await _client.GetThumbnailUrlAsync(token, item.ExternalFileId, size, ct);
+        var session = await _sessions.OpenAsync(provider, ct);
+        var link = await session.Content.GetThumbnailUrlAsync(item.ExternalFileId, size, ct);
         return link ?? throw new DomainException(5332, "该文件不支持缩略图");
     }
 
@@ -99,37 +100,46 @@ public sealed class OneDriveContentService
         var (item, provider) = await LoadOwnedItemAsync(itemId, ct);
         EnsureDownloadable(item);
         EnsureNotSensitive(item);
-        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
-        var link = await _client.GetPreviewUrlAsync(token, item.ExternalFileId, ct);
-        return link ?? throw new DomainException(5333, "OneDrive 暂未返回预览地址，请稍后重试");
+        var session = await _sessions.OpenAsync(provider, ct);
+        var link = await session.Content.GetPreviewUrlAsync(item.ExternalFileId, ct);
+        return link ?? throw new DomainException(5333, "网盘暂未返回预览地址，请稍后重试");
     }
 
     /// <summary>
-    /// read_file_text：瞬态下载 + 抽取 + 限流 + 审计（设计文档 §12）。
-    /// 与 GetTextAsync 的区别：接受任意可抽取类型（docx/pptx/Tika）、支持 maxBytes、
+    /// read_file_text：瞬态下载 + 抽取 + 限流 + 审计。
+    /// 与 <see cref="GetTextAsync"/> 的区别：接受任意可抽取类型（docx/pptx/Tika）、支持 maxBytes、
     /// 面向 agent 的高频读取因此有限流。
     /// </summary>
-    public async Task<OneDriveTextContent> ReadTextAsync(Guid itemId, long? maxBytesParam, CancellationToken ct = default)
+    public async Task<FileTextContent> ReadTextAsync(
+        Guid itemId,
+        long? maxBytesParam,
+        CancellationToken ct = default)
     {
         var maxBytes = maxBytesParam is null or <= 0
-            ? OneDriveTextExtractor.DefaultMaxBytes
-            : Math.Min(maxBytesParam.Value, OneDriveTextExtractor.HardMaxBytes);
+            ? FileTextExtractor.DefaultMaxBytes
+            : Math.Min(maxBytesParam.Value, FileTextExtractor.HardMaxBytes);
         var (item, provider) = await LoadOwnedItemAsync(itemId, ct);
         if (item.ItemType == "folder")
         {
             throw new DomainException(5332, "文件夹没有可抽取的文本");
         }
+
         EnsureNotSensitive(item);
         _rateLimiter.AssertAllowed(UserId);
 
-        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
-        var bytes = await DownloadSmallBytesOrThrowAsync(token, item, OneDriveTextExtractor.HardMaxBytes, ct);
-        var extracted = await _textExtractor.ExtractAsync(bytes, item.Name, item.MimeType, maxBytes, ct);
+        var session = await _sessions.OpenAsync(provider, ct);
+        var downloaded = await DownloadSmallOrThrowAsync(
+            session, item.ExternalFileId, FileTextExtractor.HardMaxBytes, ct);
+        // 用**下载回来的实际内容类型**做抽取判定：Google 的 Docs 名字没有后缀，
+        // 元数据里的 MIME 是 application/vnd.google-apps.document，
+        // 只看名字/MIME 会让导出的纯文本被判成「不支持的类型」而报 5336。
+        var extracted = await _textExtractor.ExtractAsync(
+            downloaded.Bytes, item.Name, downloaded.ContentType ?? item.MimeType, maxBytes, ct);
         await RecordAuditAsync("files.read_text", item.Id, extracted.SourceBytes, ct);
         _logger?.LogInformation(
-            "OneDrive read_text: item {ItemId}, {Bytes} bytes, extractor={Extractor}",
+            "Files read_text: item {ItemId}, {Bytes} bytes, extractor={Extractor}",
             itemId, extracted.SourceBytes, extracted.Extractor);
-        return new OneDriveTextContent(extracted.Content, item.MimeType, extracted.SourceBytes, extracted.Truncated);
+        return new FileTextContent(extracted.Content, item.MimeType, extracted.SourceBytes, extracted.Truncated);
     }
 
     private async Task RecordAuditAsync(string action, Guid itemId, long bytes, CancellationToken ct)
@@ -155,30 +165,16 @@ public sealed class OneDriveContentService
             null), ct);
     }
 
-    private async Task<byte[]> DownloadSmallBytesOrThrowAsync(
-        string token, FileItemEntity item, long maxBytes, CancellationToken ct)
-    {
-        try
-        {
-            return (await _client.DownloadSmallAsync(token, item.ExternalFileId, maxBytes, ct)
-                ?? throw new DomainException(5104, "文件不存在或已被删除")).Bytes;
-        }
-        catch (OneDriveContentTooLargeException)
-        {
-            throw new DomainException(5331, "文件超过文本处理上限，请在 OneDrive 中操作");
-        }
-    }
-
-    public async Task<OneDriveTextContent> GetTextAsync(Guid itemId, CancellationToken ct = default)
+    public async Task<FileTextContent> GetTextAsync(Guid itemId, CancellationToken ct = default)
     {
         var (item, provider) = await LoadOwnedItemAsync(itemId, ct);
         EnsureDownloadable(item);
         EnsureNotSensitive(item);
         EnsureTextEditable(item);
-        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
-        // 上限与保存一致（4MB）：否则 2–4MB 文件「能保存不能读」（复审 I-2）
-        var content = await DownloadSmallOrThrowAsync(token, item, MaxSaveBytes, ct);
-        return new OneDriveTextContent(
+        var session = await _sessions.OpenAsync(provider, ct);
+        // 上限与保存一致（4MB）：否则 2–4MB 文件「能保存不能读」
+        var content = await DownloadSmallOrThrowAsync(session, item.ExternalFileId, MaxSaveBytes, ct);
+        return new FileTextContent(
             Encoding.UTF8.GetString(content.Bytes),
             NormalizeContentType(content.ContentType) ?? item.MimeType,
             content.Bytes.LongLength,
@@ -196,27 +192,29 @@ public sealed class OneDriveContentService
         var newBytes = Encoding.UTF8.GetBytes(content);
         if (newBytes.Length > MaxSaveBytes)
         {
-            throw new DomainException(5331, $"内容超过 {MaxSaveBytes / 1024 / 1024}MB，请在 OneDrive 中编辑");
+            throw new DomainException(5331, $"内容超过 {MaxSaveBytes / 1024 / 1024}MB，请在网盘中编辑");
         }
 
-        // 编辑前快照当前内容（个人版版本 API 不确定的兜底，见设计文档 §8）。
+        var session = await _sessions.OpenAsync(provider, ct);
+        // 编辑前快照当前内容（版本 API 不确定时的兜底）。
         // 上限与保存一致（4MB）：只按 2MB 截断会让 2–4MB 的文件永远无法保存
-        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
-        var current = await DownloadSmallOrThrowAsync(token, item, MaxSaveBytes, ct);
+        var current = await DownloadSmallOrThrowAsync(session, item.ExternalFileId, MaxSaveBytes, ct);
         await CreateSnapshotAsync(item, current.Bytes, current.ContentType, "pre-edit", ct);
 
         var mimeType = NormalizeContentType(current.ContentType) ?? item.MimeType ?? "text/plain";
-        await _client.PutSmallContentAsync(token, item.ExternalFileId, newBytes, mimeType, ct);
+        await session.Writer.PutContentAsync(item.ExternalFileId, newBytes, mimeType, ct);
         await PruneSnapshotsAsync(itemId, ct);
         _logger?.LogInformation(
-            "OneDrive text saved: item {ItemId}, {OldBytes} -> {NewBytes} bytes",
+            "Files text saved: item {ItemId}, {OldBytes} -> {NewBytes} bytes",
             itemId, current.Bytes.LongLength, newBytes.LongLength);
     }
 
-    public async Task<IReadOnlyList<FileTextSnapshotDto>> ListSnapshotsAsync(Guid itemId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<FileTextSnapshotDto>> ListSnapshotsAsync(
+        Guid itemId,
+        CancellationToken ct = default)
     {
         var (item, _) = await LoadOwnedItemAsync(itemId, ct);
-        // 快照含全文，敏感路径必须与其他出口同样拦截（复审 C2）
+        // 快照含全文，敏感路径必须与其他出口同样拦截
         EnsureNotSensitive(item);
         return await _db.Set<FileTextSnapshotEntity>()
             .Where(snapshot => snapshot.ItemId == itemId)
@@ -236,18 +234,23 @@ public sealed class OneDriveContentService
             .SingleOrDefaultAsync(row => row.Id == snapshotId && row.ItemId == itemId, ct)
             ?? throw new DomainException(5104, "快照不存在");
 
-        var token = await _tokens.GetAccessTokenAsync(provider.Id, ct);
-        var current = await DownloadSmallOrThrowAsync(token, item, MaxSaveBytes, ct);
+        var session = await _sessions.OpenAsync(provider, ct);
+        var current = await DownloadSmallOrThrowAsync(session, item.ExternalFileId, MaxSaveBytes, ct);
         await CreateSnapshotAsync(item, current.Bytes, current.ContentType, "pre-restore", ct);
 
-        await _client.PutSmallContentAsync(token, item.ExternalFileId, Encoding.UTF8.GetBytes(snapshot.Content), snapshot.MimeType ?? "text/plain", ct);
+        await session.Writer.PutContentAsync(
+            item.ExternalFileId,
+            Encoding.UTF8.GetBytes(snapshot.Content),
+            snapshot.MimeType ?? "text/plain",
+            ct);
         await PruneSnapshotsAsync(itemId, ct);
         _logger?.LogInformation(
-            "OneDrive text restored from snapshot {SnapshotId} for item {ItemId}",
-            snapshotId, itemId);
+            "Files text restored from snapshot {SnapshotId} for item {ItemId}", snapshotId, itemId);
     }
 
-    private async Task<(FileItemEntity Item, FileProviderEntity Provider)> LoadOwnedItemAsync(Guid itemId, CancellationToken ct)
+    private async Task<(FileItemEntity Item, FileProviderEntity Provider)> LoadOwnedItemAsync(
+        Guid itemId,
+        CancellationToken ct)
     {
         var item = await _db.Set<FileItemEntity>()
             .Include(row => row.Provider)
@@ -255,17 +258,24 @@ public sealed class OneDriveContentService
             ?? throw new DomainException(5104, "文件不存在");
         if (item.Provider is null
             || item.Provider.UserId != UserId
-            || item.Provider.Provider != "onedrive"
-            || item.Provider.Status != "connected"
+            || !_providers.IsSupported(item.Provider.Provider)
             || item.IsDeleted)
         {
             throw new DomainException(5104, "文件不存在");
         }
 
+        if (item.Provider.Status != "connected")
+        {
+            // 文件确实属于该用户，只是账号用不了：说清原因，用户才知道去重新连接
+            throw item.Provider.Status == "expired"
+                ? new DomainException(5322, "网盘授权已失效，请到设置页重新连接该账号")
+                : new DomainException(5321, "文件来源尚未完成绑定");
+        }
+
         return (item, item.Provider);
     }
 
-    private void EnsureDownloadable(FileItemEntity item)
+    private static void EnsureDownloadable(FileItemEntity item)
     {
         if (item.ItemType == "folder")
         {
@@ -273,7 +283,7 @@ public sealed class OneDriveContentService
         }
     }
 
-    private void EnsureTextEditable(FileItemEntity item)
+    private static void EnsureTextEditable(FileItemEntity item)
     {
         var mime = item.MimeType ?? string.Empty;
         var name = item.Name.ToLowerInvariant();
@@ -301,21 +311,24 @@ public sealed class OneDriveContentService
         }
     }
 
-    private async Task<OneDriveSmallContent> DownloadSmallOrThrowAsync(
-        string token, FileItemEntity item, long maxBytes, CancellationToken ct)
+    private static async Task<RemoteContent> DownloadSmallOrThrowAsync(
+        IFileProviderSession session,
+        string externalFileId,
+        long maxBytes,
+        CancellationToken ct)
     {
         try
         {
-            return await _client.DownloadSmallAsync(token, item.ExternalFileId, maxBytes, ct)
+            return await session.Content.DownloadSmallAsync(externalFileId, maxBytes, ct)
                 ?? throw new DomainException(5104, "文件不存在或已被删除");
         }
-        catch (OneDriveContentTooLargeException)
+        catch (ProviderContentTooLargeException)
         {
-            throw new DomainException(5331, "文件超过文本处理上限，请在 OneDrive 中操作");
+            throw new DomainException(5331, "文件超过文本处理上限，请在网盘中操作");
         }
     }
 
-    /// <summary>每文件只保留最近 KeepSnapshotsPerItem 份快照（设计文档 §8）。</summary>
+    /// <summary>每文件只保留最近 KeepSnapshotsPerItem 份快照。</summary>
     private async Task PruneSnapshotsAsync(Guid itemId, CancellationToken ct)
     {
         var stale = await _db.Set<FileTextSnapshotEntity>()

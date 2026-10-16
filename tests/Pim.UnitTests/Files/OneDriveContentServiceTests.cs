@@ -14,9 +14,9 @@ using Pim.Module.Files.Services;
 namespace Pim.UnitTests.Files;
 
 /// <summary>
-/// OneDriveContentService 测试：稳定直链解析、敏感路径拦截、文本读写与编辑前快照、快照恢复。
+/// FileContentService 测试：稳定直链解析、敏感路径拦截、文本读写与编辑前快照、快照恢复。
 /// </summary>
-public class OneDriveContentServiceTests
+public class FileContentServiceTests
 {
     private static readonly Guid UserId = Guid.Parse("eeeeeeee-1111-2222-3333-444444444481");
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse("2026-09-19T12:00:00Z");
@@ -76,11 +76,11 @@ public class OneDriveContentServiceTests
         return (provider, item);
     }
 
-    private static OneDriveContentService CreateService(
+    private static FileContentService CreateService(
         PimDbContext db,
         FakeOneDriveGraphClient graph,
         string[]? sensitivePatterns = null,
-        OneDriveTransientRateLimiter? rateLimiter = null,
+        FileTransientRateLimiter? rateLimiter = null,
         StubAuditLog? auditLog = null)
     {
         Microsoft.Extensions.Configuration.IConfiguration? config = null;
@@ -90,15 +90,17 @@ public class OneDriveContentServiceTests
                 .AddInMemoryCollection(sensitivePatterns.Select((p, i) => new KeyValuePair<string, string?>($"Files:SensitivePathPatterns:{i}", p)))
                 .Build();
         }
-        return new OneDriveContentService(
+        var harness = new FilesProviderHarness(
+            db, graph, new TestSecretProtector(), new FixedClock(Now), configuration: config);
+        return new FileContentService(
             db,
-            graph,
-            new OneDriveTokenService(db, graph, new TestSecretProtector(), clock: new FixedClock(Now)),
+            harness.Sessions,
+            harness.Providers,
             new StubCurrentUser(UserId),
             new SensitivePathPolicy(config),
-            NullLogger<OneDriveContentService>.Instance,
+            NullLogger<FileContentService>.Instance,
             new FixedClock(Now),
-            rateLimiter: rateLimiter ?? new OneDriveTransientRateLimiter(new FixedClock(Now)),
+            rateLimiter: rateLimiter ?? new FileTransientRateLimiter(new FixedClock(Now)),
             auditLog: auditLog);
     }
 
@@ -390,7 +392,7 @@ public class OneDriveContentServiceTests
         await using var db = CreateDb();
         var (_, item) = SeedFile(db);
         var graph = new FakeOneDriveGraphClient { SmallContent = new OneDriveSmallContent("文档内容"u8.ToArray(), "text/plain") };
-        var limiter = new OneDriveTransientRateLimiter(new FixedClock(Now), limit: 2);
+        var limiter = new FileTransientRateLimiter(new FixedClock(Now), limit: 2);
         var audit = new StubAuditLog();
         var service = CreateService(db, graph, rateLimiter: limiter, auditLog: audit);
 
@@ -423,13 +425,16 @@ public class OneDriveContentServiceTests
         var (_, item) = SeedFile(db);
         var service = CreateService(db, new FakeOneDriveGraphClient());
         // 以另一个用户身份访问
-        var other = new OneDriveContentService(
+        var otherGraph = new FakeOneDriveGraphClient();
+        var otherHarness = new FilesProviderHarness(
+            db, otherGraph, new TestSecretProtector(), new FixedClock(Now));
+        var other = new FileContentService(
             db,
-            new FakeOneDriveGraphClient(),
-            new OneDriveTokenService(db, new FakeOneDriveGraphClient(), new TestSecretProtector(), clock: new FixedClock(Now)),
+            otherHarness.Sessions,
+            otherHarness.Providers,
             new StubCurrentUser(Guid.Parse("eeeeeeee-1111-2222-3333-444444444499")),
             new SensitivePathPolicy(null),
-            NullLogger<OneDriveContentService>.Instance,
+            NullLogger<FileContentService>.Instance,
             new FixedClock(Now));
 
         await Assert.ThrowsAsync<DomainException>(() => other.GetContentLinkAsync(item.Id));

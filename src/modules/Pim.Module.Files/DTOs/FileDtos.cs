@@ -2,12 +2,16 @@ using Pim.Core.Common;
 
 namespace Pim.Module.Files.DTOs;
 
+/// <summary>
+/// 一个网盘**账号**的对外视图（工单 05 / F2）。
+///
+/// F3 的一次破坏性契约变更：Nextcloud 时代的 <c>baseUrl</c> / <c>internalBaseUrl</c> /
+/// <c>username</c> 三个字段随「删列」一并从响应里去掉 —— 留着就是死字段的残留引用。
+/// 下游（pim-web）需同批适配，合并顺序 api → web。
+/// </summary>
 public sealed record FileProviderDto(
     Guid Id,
     string Provider,
-    string BaseUrl,
-    string? InternalBaseUrl,
-    string Username,
     string Status,
     DateTimeOffset? LastSyncAt,
     string? LastError,
@@ -25,15 +29,9 @@ public sealed record FileProviderDto(
     /// #353：当前已索引的条目总量（未删除）。与 <see cref="SyncedItemCount"/>
     /// （最近一次运行的应用数）语义不同，用于横幅的组合口径展示。
     /// </summary>
-    long TotalIndexedCount = 0);
-
-public sealed record BindNextcloudProviderRequest(
-    string BaseUrl,
-    string? InternalBaseUrl,
-    string Username,
-    string AppPassword);
-
-public sealed record FileProviderTestDto(bool Success, string Status, string? ErrorMessage);
+    long TotalIndexedCount = 0,
+    /// <summary>是否是附件/闪念图片的默认落点账号（F2 补充设计）。</summary>
+    bool IsDefault = false);
 
 public sealed record FileItemDto(
     Guid Id,
@@ -121,11 +119,12 @@ public sealed record FileSearchResultDto(
     int TotalPages = 0);
 public sealed record FileChunkSearchHitDto(Guid ChunkId, Guid FileItemId, Guid VersionId, string Text, decimal Score);
 public sealed record MoveFileRequest(string DestinationPath);
-public sealed record CreateFolderRequest(string Path);
+/// <summary>REQ-15：在当前目录新建文件夹。F2：必须指明落在哪个账号。</summary>
+public sealed record CreateFolderRequest(string Path, Guid ProviderId);
 public sealed record CreateShareRequest(string PermissionType, int? ExpiresInDays);
 
-/// <summary>REQ-14：创建上传会话（只创建会话，不搬字节）。</summary>
-public sealed record CreateUploadSessionRequest(string Path, string FileName);
+/// <summary>REQ-14：创建上传会话（只创建会话，不搬字节）。F2：必须指明落在哪个账号。</summary>
+public sealed record CreateUploadSessionRequest(string Path, string FileName, Guid ProviderId);
 
 /// <summary>REQ-14：上传会话信息。uploadUrl 已预授权，分片 PUT 不得带 Authorization。</summary>
 public sealed record UploadSessionDto(
@@ -134,11 +133,15 @@ public sealed record UploadSessionDto(
     string Path,
     string FileName);
 
-/// <summary>REQ-14：上传完成登记（内容已在微软侧）。</summary>
-public sealed record CompleteUploadRequest(string Path, string FileName, string? UploadedItemId = null);
+/// <summary>REQ-14：上传完成登记（内容已在网盘侧）。F2：必须指明落在哪个账号。</summary>
+public sealed record CompleteUploadRequest(
+    string Path,
+    string FileName,
+    Guid ProviderId,
+    string? UploadedItemId = null);
 
 /// <summary>REQ-25：手动同步已入队的即时反馈（不再等待同步跑完）。</summary>
-public sealed record OneDriveSyncStartedDto(bool Started, string Message);
+public sealed record ProviderSyncStartedDto(bool Started, string Message);
 
 /// <summary>REQ-25：同步状态（顶部横幅的数据源）。</summary>
 /// <param name="SyncStatus">同步状态：syncing / idle / error。</param>
@@ -152,7 +155,7 @@ public sealed record OneDriveSyncStartedDto(bool Started, string Message);
 /// #353：当前已索引的条目总量（未删除）。用于与「本次变更数」区分展示 ——
 /// 组合口径「上次同步时间 + 本次变更数 + 已索引总量」，避免「已同步 0 项」被误读为同步失败。
 /// </param>
-public sealed record OneDriveSyncStatusDto(
+public sealed record ProviderSyncStatusDto(
     string SyncStatus,
     string? LastError,
     DateTimeOffset? LastSyncAt,
@@ -160,7 +163,6 @@ public sealed record OneDriveSyncStatusDto(
     long TotalIndexedCount = 0);
 public sealed record RenameFileRequest(string Name);
 public sealed record FileOpenLinkDto(string Url, string Mode);
-public sealed record VersionRestorePreviewDto(Guid FileItemId, Guid VersionId, string CurrentVersionLabel, string RestoreVersionLabel, bool RequiresConfirmation, string Summary);
 public sealed record FileIndexJobDto(Guid Id, Guid FileItemId, Guid? VersionId, string Status, string Stage, int AttemptCount, string? LastError);
 public sealed record FileSuggestionStatusRequest(string Status);
 public sealed record FileListResponse(PagedResult<FileItemDto> Result);

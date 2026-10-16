@@ -6,7 +6,7 @@ using Pim.Module.Files.Providers;
 
 namespace Pim.Module.Files.Services;
 
-public sealed record OneDriveExtractedText(
+public sealed record ExtractedText(
     string Content,
     long SourceBytes,
     bool Truncated,
@@ -18,9 +18,9 @@ public sealed record OneDriveExtractedText(
 /// 交给 IFileTextExtractionService，未配置则返回明确的「不支持」领域错误。
 /// 内容瞬态经过，不落盘、不入库。抽取上限 maxBytes（默认 64KB，封顶 1MB）。
 /// </summary>
-public sealed partial class OneDriveTextExtractor(
+public sealed partial class FileTextExtractor(
     IFileTextExtractionService? tikaExtraction = null,
-    ILogger<OneDriveTextExtractor>? logger = null)
+    ILogger<FileTextExtractor>? logger = null)
 {
     public const long DefaultMaxBytes = 64 * 1024;
     public const long HardMaxBytes = 1024 * 1024;
@@ -47,7 +47,42 @@ public sealed partial class OneDriveTextExtractor(
         ".txt", ".md", ".markdown", ".json", ".csv", ".log", ".yml", ".yaml", ".xml", ".html", ".htm", ".tsv",
     };
 
-    public async Task<OneDriveExtractedText> ExtractAsync(
+    /// <summary>
+    /// 按**内容类型优先、文件名后缀兜底**判定是不是纯文本。
+    /// Google Docs 这类原生文档没有扩展名，但导出回来的内容类型就是 text/plain ——
+    /// 只看后缀会把它们误判成「不支持的类型」。
+    /// </summary>
+    private static bool IsPlainText(string fileName, string? mimeType)
+    {
+        // 精确匹配，**不能**用 Contains("xml") 这类模糊判据：
+        // docx 的 MIME 是 application/vnd.openxmlformats-...-document，里面含 "xml"，
+        // 模糊匹配会把 docx 当成纯文本直接当 UTF-8 返回（已踩过一次）。
+        var normalized = mimeType?.Split(';')[0].Trim().ToLowerInvariant();
+        if (!string.IsNullOrEmpty(normalized))
+        {
+            if (normalized.StartsWith("text/", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (normalized is "application/json" or "application/xml" or "application/yaml"
+                or "application/x-yaml" or "application/csv" or "application/x-ndjson"
+                or "application/toml")
+            {
+                return true;
+            }
+
+            if (normalized.EndsWith("+json", StringComparison.Ordinal)
+                || normalized.EndsWith("+xml", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return PlainTextExtensions.Contains(Path.GetExtension(fileName));
+    }
+
+    public async Task<ExtractedText> ExtractAsync(
         byte[] bytes,
         string fileName,
         string? mimeType,
@@ -60,8 +95,7 @@ public sealed partial class OneDriveTextExtractor(
         }
 
         var extension = Path.GetExtension(fileName);
-        if (PlainTextExtensions.Contains(extension)
-            || (mimeType?.StartsWith("text/", StringComparison.OrdinalIgnoreCase) ?? false))
+        if (IsPlainText(fileName, mimeType))
         {
             return Truncate(bytes, maxBytes, "utf8");
         }
@@ -93,7 +127,7 @@ public sealed partial class OneDriveTextExtractor(
         throw new DomainException(5336, $"暂不支持从 {extension} 文件抽取文本");
     }
 
-    private static OneDriveExtractedText Truncate(byte[] bytes, long maxBytes, string extractor)
+    private static ExtractedText Truncate(byte[] bytes, long maxBytes, string extractor)
     {
         var truncated = bytes.LongLength > maxBytes;
         var limit = truncated ? (int)maxBytes : bytes.Length;
@@ -108,7 +142,7 @@ public sealed partial class OneDriveTextExtractor(
         }
 
         var content = Encoding.UTF8.GetString(bytes, 0, limit);
-        return new OneDriveExtractedText(content, bytes.LongLength, truncated, extractor);
+        return new ExtractedText(content, bytes.LongLength, truncated, extractor);
     }
 
     /// <summary>docx：word/document.xml 的 w:t 节点串联。</summary>

@@ -217,8 +217,8 @@ public static class McpToolCatalog
         AddW(tools, "files", "upload_file", "Upload a file to a provider path.");
         AddW(tools, "files", "move_file", "Move a file to another path.");
         AddW(tools, "files", "rename_file", "Rename a file.");
-        AddW(tools, "files", "delete_file", "Delete a file (moves it to the OneDrive recycle bin and soft-deletes it in PIM).");
-        AddW(tools, "files", "restore_file", "Restore a PIM-soft-deleted file; only possible while the file still exists in OneDrive.");
+        AddW(tools, "files", "delete_file", "Delete a file (moves it to the cloud drive recycle bin and soft-deletes it in PIM).");
+        AddW(tools, "files", "restore_file", "Restore a PIM-soft-deleted file; only possible while the file still exists in the cloud drive.");
 
         // PcTracker 分类 4
         AddW(tools, "pctracker.categories", "create_category", "Create a PC activity category.");

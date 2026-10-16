@@ -364,7 +364,10 @@ public sealed class EventMuteFieldTests
             => throw new InvalidOperationException("audit store unavailable");
 
         // WO-AUTH-REGISTER-20261014 阶段一给 IAuditLogService 增加了 Enqueue（只入队、不落库）。
-        // 本桩同样恒抛，保持「审计不可用」的语义一致。
+        // 本桩同样恒抛，与 RecordAsync 一致的「必抛」语义：审计调用在这里立刻暴露，不被静默吞掉。
+        // 语义澄清（review M-1）：生产 Enqueue 只写 DbContext 变更跟踪、不接触存储，因此它本身
+        // 不会因「审计存储不可用」而失败；恒抛是这个替身刻意选的严格语义，不代表 Enqueue 的
+        // 真实失败模式。本文件里的日历路径（CalendarAuditWriter）只走 RecordAsync，该成员当前不会被调用。
         public AuditLogDto Enqueue(CreateAuditLogRequest request)
             => throw new InvalidOperationException("audit store unavailable");
     }

@@ -18,9 +18,11 @@ namespace Pim.UnitTests.Api;
 /// OneDrive 文件端点端到端测试：绑定 → 状态确认 → 手动同步 → 数据落库 → 越权隔离。
 /// WebApplicationFactory + InMemory 数据库 + fake IOneDriveGraphClient，全程不访问真实 OneDrive。
 /// </summary>
+[Collection("files-e2e")]
 public class OneDriveFilesEndpointsE2ETests
 {
-    public sealed class E2EGraphClient : IOneDriveGraphClient
+    /// <summary>非 sealed：错误出口用例需要继承它注入上游故障。</summary>
+    public class E2EGraphClient : IOneDriveGraphClient
     {
         public OneDriveTokenResult Token { get; set; } = new("e2e-access", "e2e-refresh", 3600, "Files.ReadWrite.All");
         public OneDriveDriveInfo Drive { get; set; } = new("drive-e2e", "personal", 1000, 2000);
@@ -97,7 +99,8 @@ public class OneDriveFilesEndpointsE2ETests
         public List<(string AccessToken, string ItemId, string? NewName, string? NewParentId)> PatchCalls { get; } = [];
         public List<(string AccessToken, string ItemId)> DeleteCalls { get; } = [];
 
-        public Task<string> PatchItemAsync(string accessToken, string itemId, string? newName, string? newParentId, CancellationToken ct = default)
+        /// <summary>virtual：错误出口用例需要让上游按需抛错（限流/5xx/404）。</summary>
+        public virtual Task<string> PatchItemAsync(string accessToken, string itemId, string? newName, string? newParentId, CancellationToken ct = default)
         {
             PatchCalls.Add((accessToken, itemId, newName, newParentId));
             return Task.FromResult(itemId);
@@ -246,7 +249,8 @@ public class OneDriveFilesEndpointsE2ETests
             var data = doc.RootElement.GetProperty("data");
             Assert.Equal(1, data.GetProperty("pagesProcessed").GetInt32());
             Assert.Equal(2, data.GetProperty("itemsApplied").GetInt32());
-            Assert.False(data.GetProperty("fullRecrawl").GetBoolean());
+            // 首次同步没有游标 → 是一次全量扫描
+            Assert.True(data.GetProperty("fullRecrawl").GetBoolean());
         }
 
         // 4. 元数据落库（只存元数据：路径派生 + 父子链 + ctag）

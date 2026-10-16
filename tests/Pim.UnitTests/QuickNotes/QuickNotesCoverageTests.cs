@@ -332,30 +332,30 @@ public class QuickNotesCoverageTests
 
         // 未绑定 OneDrive 时附件不可用：由 OneDrive 适配器抛出明确的领域错误
         // （MinIO/Null 降级路径随 P4 退役）
-        var unbound = new OneDriveQuickNoteObjectStorage(new ThrowingAttachmentStore());
+        var unbound = new FileAttachmentObjectStorage(new ThrowingAttachmentStore());
         var noBinding = await Assert.ThrowsAsync<DomainException>(
             () => unbound.StoreAsync(UserId, "k", new MemoryStream(), "text/plain", 1));
         Assert.Equal(5320, noBinding.ErrorCode);
         var noBindingRead = await Assert.ThrowsAsync<DomainException>(
-            () => unbound.OpenReadAsync(UserId, "k"));
+            () => unbound.OpenReadAsync(UserId, new StoredObjectRef("k", "onedrive", null)));
         Assert.Equal(5320, noBindingRead.ErrorCode);
     }
 
-    /// <summary>模拟「用户尚未绑定 OneDrive」：任何操作都抛 5320。</summary>
-    private sealed class ThrowingAttachmentStore : IOneDriveAttachmentStore
+    /// <summary>模拟「用户尚未绑定任何网盘账号」：任何操作都抛 5320。</summary>
+    private sealed class ThrowingAttachmentStore : IFileAttachmentStore
     {
-        private static DomainException NotBound() => new(5320, "尚未绑定 OneDrive，附件功能不可用");
+        private static DomainException NotBound() => new(5320, "尚未绑定网盘账号，附件功能不可用");
 
-        public Task<string> StoreAsync(Guid userId, string objectKey, Stream content, string contentType, long sizeBytes, CancellationToken ct = default)
+        public Task<FileAttachmentRef> StoreAsync(Guid userId, string objectKey, Stream content, string contentType, long sizeBytes, CancellationToken ct = default)
             => throw NotBound();
 
-        public Task<Stream> OpenReadAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        public Task<Stream> OpenReadAsync(Guid userId, FileAttachmentRef reference, CancellationToken ct = default)
             => throw NotBound();
 
-        public Task<string?> GetDirectLinkAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        public Task<string?> GetDirectLinkAsync(Guid userId, FileAttachmentRef reference, CancellationToken ct = default)
             => throw NotBound();
 
-        public Task DeleteAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        public Task DeleteAsync(Guid userId, FileAttachmentRef reference, CancellationToken ct = default)
             => throw NotBound();
     }
 
@@ -364,33 +364,33 @@ public class QuickNotesCoverageTests
     /// objectKey 是裸 driveItem id（不含 '/'），任何「从 objectKey 反解 userId」的实现
     /// 都会拿到空值；身份必须由调用方显式传入并原样到达存储层。
     /// </summary>
-    private sealed class RecordingAttachmentStore : IOneDriveAttachmentStore
+    private sealed class RecordingAttachmentStore : IFileAttachmentStore
     {
         public const string BareDriveItemId = "01ABCDEF2345678";
 
         public List<(Guid UserId, string ObjectKey)> Calls { get; } = [];
 
-        public Task<string> StoreAsync(Guid userId, string objectKey, Stream content, string contentType, long sizeBytes, CancellationToken ct = default)
+        public Task<FileAttachmentRef> StoreAsync(Guid userId, string objectKey, Stream content, string contentType, long sizeBytes, CancellationToken ct = default)
         {
             Calls.Add((userId, objectKey));
-            return Task.FromResult(BareDriveItemId);
+            return Task.FromResult(new FileAttachmentRef(BareDriveItemId, "onedrive", null));
         }
 
-        public Task<Stream> OpenReadAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        public Task<Stream> OpenReadAsync(Guid userId, FileAttachmentRef reference, CancellationToken ct = default)
         {
-            Calls.Add((userId, objectKey));
+            Calls.Add((userId, reference.ObjectKey));
             return Task.FromResult<Stream>(new MemoryStream("body"u8.ToArray()));
         }
 
-        public Task<string?> GetDirectLinkAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        public Task<string?> GetDirectLinkAsync(Guid userId, FileAttachmentRef reference, CancellationToken ct = default)
         {
-            Calls.Add((userId, objectKey));
+            Calls.Add((userId, reference.ObjectKey));
             return Task.FromResult<string?>("https://my.microsoftpersonalcontent.com/dl?tempauth=x");
         }
 
-        public Task DeleteAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        public Task DeleteAsync(Guid userId, FileAttachmentRef reference, CancellationToken ct = default)
         {
-            Calls.Add((userId, objectKey));
+            Calls.Add((userId, reference.ObjectKey));
             return Task.CompletedTask;
         }
     }
@@ -404,7 +404,7 @@ public class QuickNotesCoverageTests
     {
         await using var db = ServiceTestBase.CreateDb();
         var inner = new RecordingAttachmentStore();
-        var storage = new OneDriveQuickNoteObjectStorage(inner);
+        var storage = new FileAttachmentObjectStorage(inner);
         var service = CreateAttachmentService(db, UserId, storage);
         await using var content = new MemoryStream("image-bytes"u8.ToArray());
 
@@ -452,21 +452,21 @@ public class QuickNotesCoverageTests
     private sealed class FakeStorage : IQuickNoteObjectStorage
     {
         private readonly Dictionary<string, byte[]> _store = new();
-        public Task<string> StoreAsync(Guid userId, string objectKey, Stream content, string contentType, long sizeBytes, CancellationToken ct = default)
+        public Task<StoredObjectRef> StoreAsync(Guid userId, string objectKey, Stream content, string contentType, long sizeBytes, CancellationToken ct = default)
         {
             using var ms = new MemoryStream();
             content.CopyTo(ms);
             _store[objectKey] = ms.ToArray();
-            return Task.FromResult(objectKey);
+            return Task.FromResult(new StoredObjectRef(objectKey, "onedrive", null));
         }
-        public Task<Stream> OpenReadAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        public Task<Stream> OpenReadAsync(Guid userId, StoredObjectRef reference, CancellationToken ct = default)
         {
-            _store.TryGetValue(objectKey, out var b);
+            _store.TryGetValue(reference.ObjectKey, out var b);
             return Task.FromResult<Stream>(new MemoryStream(b ?? Array.Empty<byte>()));
         }
-        public Task DeleteAsync(Guid userId, string objectKey, CancellationToken ct = default)
+        public Task DeleteAsync(Guid userId, StoredObjectRef reference, CancellationToken ct = default)
         {
-            _store.Remove(objectKey);
+            _store.Remove(reference.ObjectKey);
             return Task.CompletedTask;
         }
     }

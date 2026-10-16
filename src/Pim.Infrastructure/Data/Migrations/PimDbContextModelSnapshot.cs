@@ -3402,17 +3402,6 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("character varying(255)")
                         .HasColumnName("account_name");
 
-                    b.Property<string>("AppPasswordSecret")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("app_password_secret");
-
-                    b.Property<string>("BaseUrl")
-                        .IsRequired()
-                        .HasMaxLength(1024)
-                        .HasColumnType("character varying(1024)")
-                        .HasColumnName("base_url");
-
                     b.Property<string>("ClientId")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)")
@@ -3424,6 +3413,12 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnName("created_at")
                         .HasDefaultValueSql("now()");
 
+                    b.Property<int>("DeferredBlockCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("deferred_block_count");
+
                     b.Property<string>("DeltaLink")
                         .HasColumnType("text")
                         .HasColumnName("delta_link");
@@ -3432,23 +3427,16 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("delta_reset_at");
 
-                    b.Property<byte[]>("DeviceCodeEncrypted")
-                        .HasColumnType("bytea")
-                        .HasColumnName("device_code_encrypted");
-
-                    b.Property<DateTimeOffset?>("DeviceCodeExpiresAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("device_code_expires_at");
-
                     b.Property<string>("DriveId")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)")
                         .HasColumnName("drive_id");
 
-                    b.Property<string>("InternalBaseUrl")
-                        .HasMaxLength(1024)
-                        .HasColumnType("character varying(1024)")
-                        .HasColumnName("internal_base_url");
+                    b.Property<bool>("IsDefault")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_default");
 
                     b.Property<string>("LastError")
                         .HasColumnType("text")
@@ -3458,12 +3446,18 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_sync_at");
 
+                    b.Property<DateTimeOffset?>("PendingAuthorizationExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("device_code_expires_at");
+
+                    b.Property<byte[]>("PendingAuthorizationSecretEncrypted")
+                        .HasColumnType("bytea")
+                        .HasColumnName("device_code_encrypted");
+
                     b.Property<string>("Provider")
                         .IsRequired()
-                        .ValueGeneratedOnAdd()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
-                        .HasDefaultValue("nextcloud")
                         .HasColumnName("provider");
 
                     b.Property<byte[]>("RefreshTokenEncrypted")
@@ -3511,12 +3505,6 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
 
-                    b.Property<string>("Username")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)")
-                        .HasColumnName("username");
-
                     b.Property<string>("VerificationUri")
                         .HasMaxLength(512)
                         .HasColumnType("character varying(512)")
@@ -3524,10 +3512,13 @@ namespace Pim.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("UserId", "IsDefault");
+
                     b.HasIndex("UserId", "Status");
 
-                    b.HasIndex("UserId", "Provider", "BaseUrl", "Username")
-                        .IsUnique();
+                    b.HasIndex("UserId", "Provider", "AccountId")
+                        .IsUnique()
+                        .HasFilter("account_id IS NOT NULL");
 
                     b.ToTable("file_providers", (string)null);
                 });
@@ -6883,12 +6874,14 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("size_bytes");
 
+                    b.Property<Guid?>("StorageAccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("storage_account_id");
+
                     b.Property<string>("StorageProvider")
                         .IsRequired()
-                        .ValueGeneratedOnAdd()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
-                        .HasDefaultValue("minio")
                         .HasColumnName("storage_provider");
 
                     b.Property<Guid>("UserId")

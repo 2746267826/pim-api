@@ -37,15 +37,16 @@ public sealed class QuickNoteAttachmentService(
             ? "application/octet-stream"
             : contentType.Trim();
         var objectKey = $"quick-notes/{userId:N}/{id:N}/{safeName}";
-        var storedObjectKey = await storage.StoreAsync(userId, objectKey, content, normalizedContentType, sizeBytes, ct);
+        var stored = await storage.StoreAsync(userId, objectKey, content, normalizedContentType, sizeBytes, ct);
 
         var attachment = new QuickNoteAttachmentEntity
         {
             Id = id,
             QuickNoteId = null,
             UserId = userId,
-            StorageProvider = ResolveProviderName(),
-            ObjectKey = storedObjectKey,
+            StorageProvider = stored.StorageProvider,
+            StorageAccountId = stored.StorageAccountId,
+            ObjectKey = stored.ObjectKey,
             FileName = safeName,
             ContentType = normalizedContentType,
             SizeBytes = sizeBytes,
@@ -70,7 +71,7 @@ public sealed class QuickNoteAttachmentService(
         if (attachment.UserId != userId)
             throw new DomainException(40301, "无权访问该附件");
 
-        var content = await storage.OpenReadAsync(userId, attachment.ObjectKey, ct);
+        var content = await storage.OpenReadAsync(userId, ReferenceOf(attachment), ct);
         return (content, attachment.ContentType, attachment.FileName);
     }
 
@@ -93,7 +94,7 @@ public sealed class QuickNoteAttachmentService(
             return null;
         }
 
-        return await directLink.GetDirectLinkAsync(userId, attachment.ObjectKey, ct);
+        return await directLink.GetDirectLinkAsync(userId, ReferenceOf(attachment), ct);
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken ct = default)
@@ -105,10 +106,10 @@ public sealed class QuickNoteAttachmentService(
         if (attachment.UserId != userId)
             throw new DomainException(40301, "无权访问该附件");
 
-        // 先删远端再改本地：附件实体是**用户自己的** OneDrive 对象，
-        // 只软删元数据会把文件永久留在对方网盘里（用户删了附件却在 OneDrive 里还能看到）。
+        // 先删远端再改本地：附件实体是**用户自己的**网盘对象，
+        // 只软删元数据会把文件永久留在对方网盘里（用户删了附件却在网盘里还能看到）。
         // 与文件模块一致：远端成功（或远端已不存在）后才收敛本地状态。
-        await storage.DeleteAsync(userId, attachment.ObjectKey, ct);
+        await storage.DeleteAsync(userId, ReferenceOf(attachment), ct);
 
         attachment.DeletedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct);
@@ -164,12 +165,7 @@ public sealed class QuickNoteAttachmentService(
     private static string BuildDownloadUrl(Guid id)
         => $"/api/v1/quick-notes/attachments/{id}/download";
 
-    /// <summary>
-    /// 记录附件落在哪个后端。v2 起附件只有 OneDrive 一条线（MinIO 随 P4 退役），
-    /// 因此实现方是 OneDrive 适配器时记 "onedrive"，其余（测试替身等）记类型名。
-    /// </summary>
-    private string ResolveProviderName()
-        => storage is OneDriveQuickNoteObjectStorage
-            ? OneDriveQuickNoteObjectStorage.ProviderName
-            : storage.GetType().Name;
+    /// <summary>由附件行还原存储定位句柄（含落点账号，老数据为 null）。</summary>
+    private static StoredObjectRef ReferenceOf(QuickNoteAttachmentEntity attachment)
+        => new(attachment.ObjectKey, attachment.StorageProvider, attachment.StorageAccountId);
 }

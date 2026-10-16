@@ -400,13 +400,20 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
                 ReadRequiredString(json, "id"),
                 ReadString(json, "name", normalized),
                 ReadNullableString(json, "size") is { } size && long.TryParse(size, out var parsed) ? parsed : ReadNullableLong(json, "size"),
-                ReadNullableString(json, "file") ?? ReadMimeType(json));
+                ReadNullableString(json, "file") ?? ReadMimeType(json),
+                ReadParentPath(json),
+                ReadIsFolder(json),
+                ReadParentId(json));
         }
         catch (OneDriveGraphException exception) when (exception.StatusCode == 404)
         {
             return null;
         }
     }
+
+    /// <summary>目录判定：Graph 用 <c>folder</c> facet，盘根用 <c>root</c> facet。</summary>
+    private static bool ReadIsFolder(JsonElement json)
+        => json.TryGetProperty("folder", out _) || json.TryGetProperty("root", out _);
 
     private static string? ReadMimeType(JsonElement json)
         => json.TryGetProperty("file", out var file) && file.ValueKind == JsonValueKind.Object
@@ -432,13 +439,21 @@ public sealed class OneDriveGraphClient : IOneDriveGraphClient
                 ReadString(json, "name", itemId),
                 ReadNullableLong(json, "size"),
                 ReadMimeType(json),
-                ReadParentPath(json));
+                ReadParentPath(json),
+                ReadIsFolder(json),
+                ReadParentId(json));
         }
         catch (OneDriveGraphException exception) when (exception.StatusCode == 404)
         {
             return null;
         }
     }
+
+    /// <summary>读取 parentReference.id（用于核对条目确实落在声明的父目录下）。</summary>
+    private static string? ReadParentId(JsonElement json)
+        => json.TryGetProperty("parentReference", out var parent) && parent.ValueKind == JsonValueKind.Object
+            ? ReadNullableString(parent, "id")
+            : null;
 
     /// <summary>读取 parentReference.path（用于把条目定位回目录树）。</summary>
     private static string? ReadParentPath(JsonElement json)

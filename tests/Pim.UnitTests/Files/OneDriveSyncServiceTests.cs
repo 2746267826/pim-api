@@ -7,14 +7,15 @@ using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Secrets;
 using Pim.Module.Files.Entities;
 using Pim.Module.Files.Providers;
+using Pim.Module.Files.Providers.Abstractions;
 using Pim.Module.Files.Services;
 
 namespace Pim.UnitTests.Files;
 
 /// <summary>
-/// OneDriveSyncService delta 爬取语义测试：分页、幂等、软删、410 重扫、429 退避、进度落库。
+/// FileTreeSyncEngine delta 爬取语义测试：分页、幂等、软删、410 重扫、429 退避、进度落库。
 /// </summary>
-public class OneDriveSyncServiceTests
+public class FileTreeSyncEngineTests
 {
     private static readonly Guid UserId = Guid.Parse("eeeeeeee-1111-2222-3333-444444444444");
 
@@ -77,17 +78,20 @@ public class OneDriveSyncServiceTests
         return item;
     }
 
-    private static OneDriveSyncService CreateService(
+    private static FileTreeSyncEngine CreateService(
         PimDbContext db,
         FakeOneDriveGraphClient graph,
         ISecretProtector? protector = null,
-        OneDriveSyncGate? gate = null)
+        FileProviderSyncGate? gate = null)
     {
-        return new OneDriveSyncService(
+        var harness = new FilesProviderHarness(
+            db, graph, protector ?? new TestSecretProtector(), new FixedClock(Now), gate);
+        return new FileTreeSyncEngine(
             db,
-            graph,
-            new OneDriveTokenService(db, graph, protector ?? new TestSecretProtector(), clock: new FixedClock(Now)),
-            NullLogger<OneDriveSyncService>.Instance,
+            harness.Sessions,
+            harness.Tokens,
+            harness.Providers,
+            NullLogger<FileTreeSyncEngine>.Instance,
             new FixedClock(Now),
             gate);
     }
@@ -110,7 +114,9 @@ public class OneDriveSyncServiceTests
 
         Assert.Equal(2, result.PagesProcessed);
         Assert.Equal(3, result.ItemsApplied);
-        Assert.False(result.FullRecrawl);
+        // 起点没有游标 = 一次全量：首扫与「重绑后清空游标」都归到这里，
+        // 也只有这样后者才会执行缺失项清理（否则离线期间远端删掉的文件会永远留在索引里）。
+        Assert.True(result.FullRecrawl);
         var items = await db.Set<FileItemEntity>()
             .Where(item => item.ProviderId == provider.Id)
             .ToListAsync();
@@ -256,7 +262,7 @@ public class OneDriveSyncServiceTests
         graph.DeltaScript.Enqueue(new OneDriveGraphException(429, 0, "activityLimitReached"));
         var service = CreateService(db, graph);
 
-        await Assert.ThrowsAsync<OneDriveGraphException>(() => service.SyncAsync(provider.Id));
+        await Assert.ThrowsAsync<ProviderTransientException>(() => service.SyncAsync(provider.Id));
 
         var updatedProvider = await db.Set<FileProviderEntity>().SingleAsync(p => p.Id == provider.Id);
         Assert.Equal("error", updatedProvider.SyncStatus);
@@ -271,8 +277,6 @@ public class OneDriveSyncServiceTests
         {
             UserId = UserId,
             Provider = "nextcloud",
-            BaseUrl = "https://cloud.example.com",
-            Username = "me",
             Status = "connected",
         };
         db.Set<FileProviderEntity>().Add(provider);
@@ -326,7 +330,7 @@ public class OneDriveSyncServiceTests
         var graph = new FakeOneDriveGraphClient();
         graph.DeltaScript.Enqueue(OneDriveDeltaPageFactory.Page(
             OneDriveDeltaPageFactory.File("file-1", "a.txt")));
-        var gate = new OneDriveSyncGate();
+        var gate = new FileProviderSyncGate();
         var service = CreateService(db, graph, gate: gate);
 
         // 占住互斥量（模拟另一个同步在跑）
@@ -368,7 +372,8 @@ public class OneDriveSyncServiceTests
         graph.DeltaScript.Enqueue(new OneDriveGraphException(410, null, "resyncRequired"));
         var service = CreateService(db, graph);
 
-        await Assert.ThrowsAsync<OneDriveGraphException>(() => service.SyncAsync(
+        // 游标失效已归一化为 ProviderCursorExpiredException（Graph 410 / Drive invalid pageToken 同义）
+        await Assert.ThrowsAsync<ProviderCursorExpiredException>(() => service.SyncAsync(
             db.Set<FileProviderEntity>().Single().Id));
         // 只请求了一次，没有循环
         Assert.Single(graph.DeltaRequests);

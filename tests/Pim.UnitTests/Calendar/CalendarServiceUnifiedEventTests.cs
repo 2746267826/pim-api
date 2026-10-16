@@ -439,9 +439,9 @@ public sealed class CalendarServiceUnifiedEventTests
         {
             Id = Guid.NewGuid(),
             UserId = ownerUserId,
-            Provider = "nextcloud",
-            BaseUrl = "https://nc.example",
-            Username = "test-user"
+            Provider = "onedrive",
+            AccountId = "test-account",
+            Status = "connected"
         };
         var item = new FileItemEntity
         {

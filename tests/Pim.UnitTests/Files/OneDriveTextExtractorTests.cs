@@ -7,11 +7,11 @@ using Pim.Module.Files.Services;
 namespace Pim.UnitTests.Files;
 
 /// <summary>
-/// OneDriveTextExtractor 测试：文本直读、docx 解包、截断、不支持类型、Tika 兜底。
+/// FileTextExtractor 测试：文本直读、docx 解包、截断、不支持类型、Tika 兜底。
 /// </summary>
-public class OneDriveTextExtractorTests
+public class FileTextExtractorTests
 {
-    private readonly OneDriveTextExtractor _extractor = new();
+    private readonly FileTextExtractor _extractor = new();
 
     private static byte[] ZipWith(params (string Name, string Content)[] entries)
     {
@@ -35,6 +35,33 @@ public class OneDriveTextExtractorTests
             paragraphs.Select((text, index) =>
                 $"<w:p><w:r><w:t{(index == 0 ? " xml:space=\"preserve\"" : "")}>{text}</w:t></w:r></w:p>"));
         return ZipWith(("word/document.xml", $"<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>{body}</w:body></w:document>"));
+    }
+
+    /// <summary>
+    /// 纯文本判定必须**内容类型优先**：Google Docs 这类原生文档没有扩展名，
+    /// 但导出回来的内容类型就是 text/plain —— 只看后缀会把它误判成「不支持的类型」。
+    /// </summary>
+    [Fact]
+    public async Task Extract_PlainTextContentType_WithoutExtension_IsExtracted()
+    {
+        var bytes = Encoding.UTF8.GetBytes("会议纪要正文");
+
+        var result = await _extractor.ExtractAsync(bytes, "会议纪要", "text/plain", 64 * 1024);
+
+        Assert.Equal("会议纪要正文", result.Content);
+        Assert.Equal("utf8", result.Extractor);
+    }
+
+    /// <summary>反过来：内容类型明确是二进制时，不能靠后缀蒙混成纯文本。</summary>
+    [Fact]
+    public async Task Extract_BinaryContentType_WithoutTika_FailsExplicitly()
+    {
+        var bytes = new byte[] { 0x25, 0x50, 0x44, 0x46 }; // %PDF
+
+        var error = await Assert.ThrowsAsync<DomainException>(
+            () => _extractor.ExtractAsync(bytes, "报告.pdf", "application/pdf", 64 * 1024));
+
+        Assert.Equal(5336, error.ErrorCode);
     }
 
     [Fact]
@@ -86,7 +113,7 @@ public class OneDriveTextExtractorTests
             tikaCalls.Add("called");
             return text;
         });
-        var extractor = new OneDriveTextExtractor(tika);
+        var extractor = new FileTextExtractor(tika);
         var result = await extractor.ExtractAsync("%PDF-fake"u8.ToArray(), "a.pdf", "application/pdf", maxBytes: 1024);
 
         Assert.Equal("%PDF-fake", result.Content);
@@ -245,7 +272,7 @@ public class OneDriveTextExtractorTests
                 writer.Write("<a:t>唯一一页</a:t>");
             }
 
-            for (var i = 0; i < OneDriveTextExtractor.MaxZipEntries + 10; i++)
+            for (var i = 0; i < FileTextExtractor.MaxZipEntries + 10; i++)
             {
                 var filler = archive.CreateEntry($"ppt/media/blob{i}.bin", CompressionLevel.NoCompression);
                 using var stream = filler.Open();
@@ -272,7 +299,7 @@ public class OneDriveTextExtractorTests
                 writer.Write("<w:document><w:body><w:p><w:r><w:t>ok</w:t></w:r></w:p></w:body></w:document>");
             }
 
-            for (var i = 0; i < OneDriveTextExtractor.MaxZipEntries + 10; i++)
+            for (var i = 0; i < FileTextExtractor.MaxZipEntries + 10; i++)
             {
                 var filler = archive.CreateEntry($"word/media/blob{i}.bin", CompressionLevel.NoCompression);
                 using var stream = filler.Open();

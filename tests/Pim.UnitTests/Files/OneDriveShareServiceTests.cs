@@ -16,7 +16,7 @@ namespace Pim.UnitTests.Files;
 /// 敏感路径不得分享（AC-21.4）、他人条目不可见、链接不得进审计（AC-21.4）、
 /// 有效期只接受已确认的档位（P6）。
 /// </summary>
-public class OneDriveShareServiceTests
+public class FileShareServiceTests
 {
     private static readonly Guid UserId = Guid.Parse("dddddddd-1111-2222-3333-444444444471");
     private static readonly Guid OtherUserId = Guid.Parse("dddddddd-9999-8888-7777-666666666671");
@@ -87,7 +87,7 @@ public class OneDriveShareServiceTests
 
     private static readonly DateTimeOffset Now = new(2026, 9, 24, 12, 0, 0, TimeSpan.Zero);
 
-    /// <summary>与 OneDriveWriteServiceTests 同款：假保护器 + 未过期 token，避免真实刷新。</summary>
+    /// <summary>与 FileWriteServiceTests 同款：假保护器 + 未过期 token，避免真实刷新。</summary>
     private sealed class TestSecretProtector : ISecretProtector
     {
         public string Protect(string plaintext) => $"protected::{plaintext}";
@@ -130,15 +130,19 @@ public class OneDriveShareServiceTests
         return (provider, item);
     }
 
-    private static OneDriveShareService CreateService(
+    private static FileShareService CreateService(
         PimDbContext db, Guid? userId, IOneDriveGraphClient client, StubAuditLog? audit = null)
-        => new(
+    {
+        var harness = new FilesProviderHarness(
+            db, client, new TestSecretProtector(), new FixedClock(Now));
+        return new FileShareService(
             db,
-            client,
-            new OneDriveTokenService(db, client, new TestSecretProtector(), clock: new FixedClock(Now)),
+            harness.Sessions,
+            harness.Providers,
             new StubCurrentUser(userId),
             audit ?? new StubAuditLog(),
             new SensitivePathPolicy(null));
+    }
 
     [Fact]
     public async Task CreateAsync_WithViewPermission_ReturnsMicrosoftLink()

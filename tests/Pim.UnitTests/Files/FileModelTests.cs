@@ -12,40 +12,68 @@ public class FileModelTests
     private static readonly Guid UserId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
 
     [Fact]
-    public async Task FileProvider_DefaultsToNextcloudPendingAndStoresSecret()
+    public async Task FileProvider_NoImplicitNextcloudDefault_StatusStartsPending()
     {
         await using var db = CreateDb();
         var provider = new FileProviderEntity
         {
             UserId = UserId,
-            BaseUrl = "https://cloud.example.test",
-            InternalBaseUrl = "http://nextcloud",
-            Username = "alice",
-            AppPasswordSecret = "protected-secret"
+            Provider = "onedrive",
         };
 
         db.Set<FileProviderEntity>().Add(provider);
         await db.SaveChangesAsync();
 
         var saved = await db.Set<FileProviderEntity>().SingleAsync();
-        Assert.Equal("nextcloud", saved.Provider);
+        // 工单 05 / F3：Nextcloud 时代的 "nextcloud" 默认值已删除 —— 未显式赋值时
+        // 落库的就是空串，而不是被误读成「存在一条 Nextcloud 来源」。
+        Assert.Equal("onedrive", saved.Provider);
         Assert.Equal("pending", saved.Status);
-        Assert.Equal("protected-secret", saved.AppPasswordSecret);
     }
 
     [Fact]
-    public void FileProvider_UniqueIndexProtectsPerUserProviderUrlAndUsername()
+    public void FileProvider_ModelHasNoDefaultForProviderColumn()
     {
         using var db = CreateDb();
 
+        // F3：列保留、默认值去掉。模型层必须也能看出来，否则迁移与模型会漂移。
+        var provider = db.Model.FindEntityType(typeof(FileProviderEntity))!;
+        var property = provider.FindProperty(nameof(FileProviderEntity.Provider))!;
+        Assert.Null(property.GetDefaultValue());
+    }
+
+    [Fact]
+    public void FileProvider_UniqueIndexIsScopedToAccount_NotToNextcloudCoordinates()
+    {
+        using var db = CreateDb();
+
+        // F2：旧的 (user_id, provider, base_url, username) 唯一索引已随删列一起消失，
+        // 取而代之的是账号维度；且必须是**部分**唯一索引
+        // （account_id 为 NULL 的待绑定行要允许多条并存）。
         var index = Index<FileProviderEntity>(
             db,
             nameof(FileProviderEntity.UserId),
             nameof(FileProviderEntity.Provider),
-            nameof(FileProviderEntity.BaseUrl),
-            nameof(FileProviderEntity.Username));
+            nameof(FileProviderEntity.AccountId));
 
         Assert.True(index.IsUnique);
+        Assert.Equal("account_id IS NOT NULL", index.GetFilter());
+    }
+
+    [Fact]
+    public void FileProvider_RemovedNextcloudColumnsAreNotMapped()
+    {
+        using var db = CreateDb();
+
+        // F3 的模型侧证据：四个死字段不再是实体属性/列。
+        // 真正的「零残留」由源码 grep + 迁移后的真库断言（AC-3）共同举证。
+        var provider = db.Model.FindEntityType(typeof(FileProviderEntity))!;
+        var columnNames = provider.GetProperties().Select(p => p.GetColumnName()).ToHashSet(StringComparer.Ordinal);
+
+        Assert.DoesNotContain("base_url", columnNames);
+        Assert.DoesNotContain("internal_base_url", columnNames);
+        Assert.DoesNotContain("username", columnNames);
+        Assert.DoesNotContain("app_password_secret", columnNames);
     }
 
     [Fact]
@@ -137,7 +165,8 @@ public class FileModelTests
 
         Assert.Equal("id", ColumnName<FileProviderEntity>(db, nameof(FileProviderEntity.Id)));
         Assert.Equal("user_id", ColumnName<FileProviderEntity>(db, nameof(FileProviderEntity.UserId)));
-        Assert.Equal("app_password_secret", ColumnName<FileProviderEntity>(db, nameof(FileProviderEntity.AppPasswordSecret)));
+        Assert.Equal("device_code_encrypted", ColumnName<FileProviderEntity>(db, nameof(FileProviderEntity.PendingAuthorizationSecretEncrypted)));
+        Assert.Equal("is_default", ColumnName<FileProviderEntity>(db, nameof(FileProviderEntity.IsDefault)));
         Assert.Equal("external_file_id", ColumnName<FileItemEntity>(db, nameof(FileItemEntity.ExternalFileId)));
         Assert.Equal("file_item_id", ColumnName<FileVersionEntity>(db, nameof(FileVersionEntity.FileItemId)));
         Assert.Equal("qdrant_point_id", ColumnName<FileChunkEntity>(db, nameof(FileChunkEntity.QdrantPointId)));
@@ -292,10 +321,9 @@ public class FileModelTests
     private static FileProviderEntity CreateProvider() => new()
     {
         UserId = UserId,
-        BaseUrl = "https://cloud.example.test",
-        InternalBaseUrl = "http://nextcloud",
-        Username = "alice",
-        AppPasswordSecret = "protected-secret"
+        Provider = "onedrive",
+        AccountId = "account-1",
+        Status = "connected"
     };
 
     private static FileItemEntity CreateItem(FileProviderEntity provider) => new()

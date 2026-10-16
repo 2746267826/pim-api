@@ -21,10 +21,11 @@ public class QuickNotesModule : IModule
     public void RegisterServices(IServiceCollection services, IConfiguration configuration)
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
-        // 文件模块 v2（设计文档 §10）：附件统一存用户自己的 OneDrive，
+        // 工单 05 / F1.2：附件统一存**用户自己的网盘**，具体是 OneDrive 还是 Google Drive
+        // 由文件模块的 provider 抽象决定，本模块不再出现任何 provider 名。
         // MinIO 与「未配置即降级为不可用」的 Null 实现随 P4 退役。
-        // 未绑定 OneDrive 时由 IOneDriveAttachmentStore 抛出明确的领域错误，UI 据此提示绑定状态。
-        services.AddScoped<IQuickNoteObjectStorage, OneDriveQuickNoteObjectStorage>();
+        // 未绑定任何网盘账号时由 IFileAttachmentStore 抛出明确的领域错误，UI 据此提示绑定状态。
+        services.AddScoped<IQuickNoteObjectStorage, FileAttachmentObjectStorage>();
         services.AddScoped<QuickNoteAttachmentService>();
         services.AddScoped<QuickNoteService>();
     }
