@@ -47,6 +47,14 @@ describe('calendar 域真实请求形状', () => {
     expect(calls.at(-1)!.url).toBe(`${BASE}/api/v1/calendar/calendars`)
   })
 
+  it('calendarsApi.setMutePolicy：PUT 到 /calendars/{id}/mute-policy，body 只有 isMuted', async () => {
+    await calendarsApi.setMutePolicy('cal-9', false)
+    const call = calls.at(-1)!
+    expect(call.url).toBe(`${BASE}/api/v1/calendar/calendars/cal-9/mute-policy`)
+    expect(call.method).toBe('PUT')
+    expect(call.body).toEqual({ isMuted: false })
+  })
+
   it('eventsApi.listPaged：必须带 start/end 与 page/pageSize（双态端点的分页分支）', async () => {
     await eventsApi.listPaged({ start: '2026-10-01T00:00:00Z', end: '2026-10-02T00:00:00Z' })
     const q = new URL(calls.at(-1)!.url).searchParams

@@ -61,6 +61,8 @@ const CALENDARS: CalendarBook[] = [
     source: 'local',
     outlookCalendarBindingId: null,
     canEdit: true,
+    /* 工单 04 新增字段：日历本默认静音（本文件不验证静音行为，取默认值即可） */
+    defaultMuted: false,
   },
 ]
 
@@ -107,6 +109,8 @@ function baseServerEvent(overrides: Partial<EventResponse> = {}): EventResponse 
     outlookEventId: null,
     outlookEtag: null,
     outlookEventType: null,
+    /* 工单 04 新增字段：本文件不验证静音行为，取「未指定」即可 */
+    isMuted: null,
     ...overrides,
   }
 }
