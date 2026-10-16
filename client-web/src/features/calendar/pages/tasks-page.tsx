@@ -33,7 +33,7 @@ function quickToParams(filter: QuickFilter): { inbox?: boolean; status?: string;
     case 'inbox':
       return { inbox: true }
     case 'completed':
-      return { status: 'COMPLETED' }
+      return { status: TASK_STATUS.completed }
     case 'high':
       return { priority: 9 }
     case 'due-today':
@@ -102,7 +102,7 @@ export function TasksPage() {
   const now = new Date()
   const duePulse = useTasksPaged({ dueFrom: dayStartIso(now), dueTo: dayEndIso(now), page: 1, pageSize: 100 })
   const pendingDue = duePulse.data
-    ? duePulse.data.items.filter((t) => t.status !== 'COMPLETED').length
+    ? duePulse.data.items.filter((t) => t.status !== TASK_STATUS.completed).length
     : null
   const justCompletedRef = useRef(false)
   const prevPendingRef = useRef<number | null>(null)
@@ -270,7 +270,7 @@ export function TasksPage() {
             <Card className="divide-y divide-divider overflow-hidden">
               <AnimatePresence initial={false}>
                 {tasks.map((task) => {
-                  const done = task.status === 'COMPLETED'
+                  const done = task.status === TASK_STATUS.completed
                   const badge = PRIORITY_BADGE[task.priority]
                   const book = taskBooks.find((b) => b.id === task.taskBookId)
                   return (

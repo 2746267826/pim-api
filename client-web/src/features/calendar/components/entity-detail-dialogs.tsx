@@ -264,20 +264,20 @@ export function TaskDetailDialog({
         <DialogHeader title="任务详情" description={taskBookName} />
         <DialogBody className="max-h-[62dvh] overflow-y-auto">
           <div className="mb-1 flex flex-wrap items-center gap-2">
-            <h3 className={cn('text-[15px] font-semibold', task.status === 'COMPLETED' ? 'text-text-4 line-through' : 'text-text-1')}>
+            <h3 className={cn('text-[15px] font-semibold', task.status === TASK_STATUS.completed ? 'text-text-4 line-through' : 'text-text-1')}>
               {task.title}
             </h3>
             <StatusBadge
               tone={
+                // 回退到既有口径（工单未要求圆点，且「进行中」不能与「已完成」同色）：
+                // 完成=绿、取消=灰、其余（含进行中）=蓝
                 task.status === TASK_STATUS.completed
                   ? 'ok'
                   : task.status === TASK_STATUS.cancelled
                     ? 'neutral'
-                    : task.status === TASK_STATUS.inProcess
-                      ? 'ok'
-                      : 'info'
+                    : 'info'
               }
-              dot
+              dot={false}
             >
               {TASK_STATUS_LABEL[task.status] ?? task.status}
             </StatusBadge>

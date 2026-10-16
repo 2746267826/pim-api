@@ -3,7 +3,7 @@ import { deferredIntervalMs, standardIntervalMs } from '@/lib/polling'
 import { calendarsApi, checklistApi, eventsApi, layersApi, segmentsApi, taskBooksApi, taskTimerApi, tasksApi } from './api'
 import type { components } from '@/api/generated'
 import type { TaskResponse, TasksPagedParams } from './types'
-import { taskToMutationData } from './types'
+import { TASK_STATUS, taskToMutationData } from './types'
 
 /* ── queryKey 工厂（CONVENTIONS §4：禁止散写字符串数组） ───── */
 
@@ -241,7 +241,7 @@ export function useToggleTaskComplete() {
     mutationFn: ({ task, completed }: { task: TaskResponse; completed: boolean }) =>
       tasksApi.update(task.id, {
         ...taskToMutationData(task),
-        status: completed ? 'COMPLETED' : 'NEEDS-ACTION',
+        status: completed ? TASK_STATUS.completed : TASK_STATUS.needsAction,
         percentComplete: completed ? 100 : 0,
       }),
     onSuccess: () => invalidateCalendar(qc),

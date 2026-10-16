@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { CalendarPlus, SquareCheckBig, Wand2 } from 'lucide-react'
 import { scheduleApi, tasksApi } from '../api'
 import { useInboxTasks, usePlanTask } from '../queries'
+import { TASK_STATUS } from '../types'
 import type { TaskResponse } from '../types'
 import { formatDurationC, formatTime } from '@/lib/datetime'
 import { notifyError, notifySuccess } from '@/lib/notify'
@@ -10,7 +11,7 @@ import { cn } from '@/lib/utils'
 
 /** 收件箱/未排期判定（规格：客户端过滤） */
 export function isInboxOrUnplanned(t: TaskResponse): boolean {
-  return t.status !== 'COMPLETED' && (t.isInbox || !t.dtStart)
+  return t.status !== TASK_STATUS.completed && (t.isInbox || !t.dtStart)
 }
 
 const PRIORITY_COLOR: Record<number, string> = {

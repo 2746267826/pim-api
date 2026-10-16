@@ -223,7 +223,11 @@ export interface TaskTimerState {
   /** 正在计时的段 id；没有在计时时为 null */
   runningSegmentId: string | null
   runningSince: string | null
-  /** 累计实际执行秒数（正在计时的段按查询时刻计入；planned / cancelled 段不计） */
+  /**
+   * 累计实际执行秒数（正在计时的段按查询时刻计入）。
+   * 口径：只有 `planned`（尚未执行）不计；`cancelled` 是**真实发生过的执行**，计入
+   * —— 否则「跑一段再取消」会把时长抹掉，与「先暂停再取消」不一致（与服务端 `CountsAsExecuted` 一致）。
+   */
   accumulatedSeconds: number
   segmentCount: number
 }

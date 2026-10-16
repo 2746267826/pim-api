@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Pause, Play, Square, Trash2 } from 'lucide-react'
 import { useAddSegment, useDeleteSegment, useTaskSegments, useTaskTimer, useTaskTimerActions } from '../queries'
 import { TASK_SEGMENT_STATUS, TASK_SEGMENT_STATUS_LABEL, TASK_STATUS_LABEL } from '../types'
-import { formatRange, fromLocalInputValue, toLocalInputValue } from '@/lib/datetime'
+import { formatOpenRange, formatRange, fromLocalInputValue } from '@/lib/datetime'
 import { closedSegmentSeconds, currentRunSeconds, formatClock, runningSegment } from '../timer'
 import { Button, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, EmptyState, InlineAlert, Input, Label, StatusBadge } from '@/components/ui'
 
@@ -157,7 +157,7 @@ export function TaskSegmentsDialog({ taskId, taskTitle, onClose }: TaskSegmentsD
                   </StatusBadge>
                   <span className="tnum flex-1 text-text-1">
                     {seg.endsAt == null
-                      ? `${toLocalInputValue(seg.startsAt)} ~ 进行中`
+                      ? formatOpenRange(seg.startsAt, '进行中')
                       : formatRange(seg.startsAt, seg.endsAt)}
                   </span>
                   <span className="tnum text-text-3">
