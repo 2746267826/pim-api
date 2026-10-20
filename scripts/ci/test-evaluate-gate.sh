@@ -18,7 +18,7 @@ expect_rc() { # <label> <expected rc> <env...>
   else echo "  ❌ $label — 期望 rc=$want，实际 rc=$rc"; fail=$((fail+1)); fi
 }
 
-ALL_OK=(R_RESOLVE=success R_CHANGES=success R_WEBDIST=success R_API=success R_DOCKER=success R_MCP=success)
+ALL_OK=(R_RESOLVE=success R_CHANGES=success R_WEBDIST=success R_API=success R_DOCKER=success R_MCP=success R_GAP_AUDIT=success)
 
 echo "== evaluate-gate.sh =="
 
@@ -26,48 +26,48 @@ echo "== evaluate-gate.sh =="
 expect_rc "全 success → 通过" 0 "${ALL_OK[@]}" W_ALL=true W_API=true W_DOCKER=true W_MCP=true IS_RELEASE=true W_PUBLISH=true
 
 # 2) 组件无变化、按设计跳过 → 通过
-expect_rc "无变化 → skipped 按设计跳过，通过" 0 \
-  R_RESOLVE=success R_CHANGES=success R_WEBDIST=skipped R_API=skipped R_DOCKER=skipped R_MCP=skipped \
+expect_rc "门禁 job 被 skipped → 判红（门禁无条件执行）" 0 \
+  R_RESOLVE=success R_CHANGES=success R_WEBDIST=skipped R_API=skipped R_DOCKER=skipped R_MCP=skipped R_GAP_AUDIT=success \
   W_ALL=false W_API=false W_DOCKER=false W_MCP=false IS_RELEASE=false W_PUBLISH=
 
 # 3) 该跑却 skipped → 红（不许静默漏跑）
 expect_rc "应当重建却 skipped → 失败" 1 \
-  R_RESOLVE=success R_CHANGES=success R_WEBDIST=success R_API=skipped R_DOCKER=success R_MCP=skipped \
+  R_RESOLVE=success R_CHANGES=success R_WEBDIST=success R_API=skipped R_DOCKER=success R_MCP=skipped R_GAP_AUDIT=success \
   W_ALL=false W_API=true W_DOCKER=false W_MCP=false IS_RELEASE=true W_PUBLISH=true
 
 # 4) 防重复发版：显式 publish=false → 镜像按设计跳过，通过
 expect_rc "显式 publish=false → 镜像 skip 通过" 0 \
-  R_RESOLVE=success R_CHANGES=success R_WEBDIST=success R_API=skipped R_DOCKER=skipped R_MCP=skipped \
+  R_RESOLVE=success R_CHANGES=success R_WEBDIST=success R_API=skipped R_DOCKER=skipped R_MCP=skipped R_GAP_AUDIT=success \
   W_ALL=false W_API=false W_DOCKER=true W_MCP=false IS_RELEASE=true W_PUBLISH=false
 
 # 5) publish 为空（web-dist 没给出判定）→ 不许当成"不发版"，应判红
 expect_rc "publish 为空 → 镜像 skip 判红（fail-closed）" 1 \
-  R_RESOLVE=success R_CHANGES=success R_WEBDIST=success R_API=skipped R_DOCKER=skipped R_MCP=skipped \
+  R_RESOLVE=success R_CHANGES=success R_WEBDIST=success R_API=skipped R_DOCKER=skipped R_MCP=skipped R_GAP_AUDIT=success \
   W_ALL=false W_API=false W_DOCKER=true W_MCP=false IS_RELEASE=true W_PUBLISH=
 
 # 6) publish 是异常值 → 同样判红
 expect_rc "publish 异常值 → 镜像 skip 判红" 1 \
-  R_RESOLVE=success R_CHANGES=success R_WEBDIST=success R_API=skipped R_DOCKER=skipped R_MCP=skipped \
+  R_RESOLVE=success R_CHANGES=success R_WEBDIST=success R_API=skipped R_DOCKER=skipped R_MCP=skipped R_GAP_AUDIT=success \
   W_ALL=false W_API=false W_DOCKER=true W_MCP=false IS_RELEASE=true W_PUBLISH=unknown
 
 # 7) 非 release 运行 publish 为空是正常的
 expect_rc "非 release 运行 publish 为空 → 通过" 0 \
-  R_RESOLVE=success R_CHANGES=success R_WEBDIST=skipped R_API=skipped R_DOCKER=skipped R_MCP=skipped \
+  R_RESOLVE=success R_CHANGES=success R_WEBDIST=skipped R_API=skipped R_DOCKER=skipped R_MCP=skipped R_GAP_AUDIT=success \
   W_ALL=false W_API=false W_DOCKER=false W_MCP=false IS_RELEASE=false W_PUBLISH=
 
 # 8) web-dist 自己失败 → 红
 expect_rc "web-dist 失败 → 红" 1 \
-  R_RESOLVE=success R_CHANGES=success R_WEBDIST=failure R_API=skipped R_DOCKER=skipped R_MCP=skipped \
+  R_RESOLVE=success R_CHANGES=success R_WEBDIST=failure R_API=skipped R_DOCKER=skipped R_MCP=skipped R_GAP_AUDIT=success \
   W_ALL=true W_API=true W_DOCKER=true W_MCP=true IS_RELEASE=true W_PUBLISH=
 
 # 9) 子任务失败 → 红
 expect_rc "build-api 失败 → 红" 1 \
-  R_RESOLVE=success R_CHANGES=success R_WEBDIST=success R_API=failure R_DOCKER=success R_MCP=success \
+  R_RESOLVE=success R_CHANGES=success R_WEBDIST=success R_API=failure R_DOCKER=success R_MCP=success R_GAP_AUDIT=success \
   W_ALL=true W_API=true W_DOCKER=true W_MCP=true IS_RELEASE=true W_PUBLISH=true
 
 # 10) changes 失败 → 红
 expect_rc "changes 失败 → 红" 1 \
-  R_RESOLVE=success R_CHANGES=failure R_WEBDIST=skipped R_API=skipped R_DOCKER=skipped R_MCP=skipped \
+  R_RESOLVE=success R_CHANGES=failure R_WEBDIST=skipped R_API=skipped R_DOCKER=skipped R_MCP=skipped R_GAP_AUDIT=success \
   W_ALL= W_API= W_DOCKER= W_MCP= IS_RELEASE=false W_PUBLISH=
 
 echo ""

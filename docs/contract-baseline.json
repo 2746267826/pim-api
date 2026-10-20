@@ -1,0 +1,29 @@
+{
+  "publicPaths": [
+    "/api/client/shell/latest",
+    "/api/v1/client/shell/latest",
+    "/api/v1/files/google/callback",
+    "/api/{}",
+    "/health",
+    "/health/live",
+    "/health/ready"
+  ],
+  "excludePaths": [
+    "/api/{path}"
+  ],
+  "approvedGaps": {
+    "op-meta": "328 个 operation 全缺 operationId/summary：已有工程项在补（endpoint .WithName/.WithSummary），补完移除本条",
+    "schema-desc": "578 个 schema 无 description：同上，随 xmldoc 导出逐步补齐",
+    "prop-desc": "3190 个属性无 description：同上",
+    "query-param": "336 个 query 参数缺 default/enum/description：随 AsParameters 模型拆解逐步补齐",
+    "pascal-query": "120 个 PascalCase query 参数（mobile analytics）：需后端改为 camelCase 显式参数或 [FromQuery(Name=...)]",
+    "error-semantics": "285 个 operation 的 401/403 等错误响应没有 schema：需统一错误响应类型",
+    "enum-typed": "136 个枚举型字段无 enum：需逐模块导出枚举（priority 值域见评审报告 P0-2）",
+    "is-api-response": "5 个裸对象响应（/api/version、/health、client/shell/latest 等）：属协议面，短期保留",
+    "request-body": "42 个写操作无 requestBody：逐个确认「真的没有」或补 schema",
+    "no-5xx": "/api/v1/files/google/callback（Google OAuth 回跳，失败时浏览器直接展示上游页面）：待后端补 5xx 声明后移除本条",
+    "response-header": "文件下载的 ETag/Content-Disposition、tiles 的 304 目前未进契约：对客户端可用性影响小，待补",
+    "security": "GET /api/v1/tiles/{z}/{x}/{y}.png 与 GET /api/version 在源码里既没有 RequireAuthorization 也没有 AllowAnonymous：公开与否不可发现，待后端显式标注后移除本条"
+  },
+  "$comment": "由 scripts/ci/extract-business-error-codes.py --audit-config 维护 publicPaths；excludePaths 与 approvedGaps 由人工维护。审计器：scripts/ci/audit-contract-gaps.py"
+}

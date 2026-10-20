@@ -9,7 +9,7 @@
 # 若镜像 job 本身是 success，则照常放行（它的产物另有校验）。
 #
 # 输入（env）：
-#   R_RESOLVE R_CHANGES R_WEBDIST R_API R_DOCKER R_MCP   各 job 的 result
+#   R_RESOLVE R_CHANGES R_WEBDIST R_API R_GAP_AUDIT R_DOCKER R_MCP   各 job 的 result
 #   W_ALL W_API W_DOCKER W_MCP                          changes 的判定
 #   IS_RELEASE                                          resolve-version 的输出
 #   W_PUBLISH                                           web-dist 的判定（true/false/''）
@@ -18,7 +18,7 @@
 set -uo pipefail
 
 : "${R_RESOLVE:=}"; : "${R_CHANGES:=}"; : "${R_WEBDIST:=}"
-: "${R_API:=}"; : "${R_DOCKER:=}"; : "${R_MCP:=}"
+: "${R_API:=}"; : "${R_GAP_AUDIT:=}"; : "${R_DOCKER:=}"; : "${R_MCP:=}"
 : "${W_ALL:=false}"; : "${W_API:=false}"; : "${W_DOCKER:=false}"; : "${W_MCP:=false}"
 : "${IS_RELEASE:=}"; : "${W_PUBLISH:=}"
 
@@ -60,6 +60,8 @@ check "resolve-version" "$R_RESOLVE" "true"
 check "changes"         "$R_CHANGES" "true"
 check "web-dist"        "$R_WEBDIST" "$(should "$W_API" "$W_DOCKER")"
 check "build-api"       "$R_API"     "$(should "$W_API")"
+# 契约缺口审计是**无条件**执行的（不像 build-* 受路径过滤）：skipped 即视为漏跑。
+check "contract-gap-audit" "$R_GAP_AUDIT" "true"
 check "build-docker"    "$R_DOCKER"  "$(should_docker)"
 check "build-mcp"       "$R_MCP"     "$(should "$W_MCP")"
 

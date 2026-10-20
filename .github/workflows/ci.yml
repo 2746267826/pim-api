@@ -394,6 +394,45 @@ jobs:
             echo "是否发版：**${PUBLISH:-<未判定>}** —— ${REASON:-<无>}"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # ---------------------------------------------------------------------------
+  # 契约缺口审计（contract-gap-audit）
+  #
+  # 回答的是「只看契约，客户端开发者够不够用」，与下列既有门禁**互补**：
+  #   * contract-notify / 客户端三仓的 contract-freshness：契约与代码是否同步；
+  #   * 本 job：契约本身对客户端是否可读、可解、可生成（描述/枚举/默认值/错误语义/请求体/响应头…）。
+  #
+  # 为什么进 CI Gate：契约是对外承诺。会让客户端「猜错或写不出来」的缺口（P1）
+  # 和「端点被悄悄删除」（P0）不应在合入时才被发现。历史缺口按类别登记在
+  # docs/contract-baseline.json 的 approvedGaps 里（不阻塞），**新出现的**类别默认失败。
+  #
+  # 触发面与其它门禁一致：push / pull_request / workflow_dispatch 全部真实执行，没有 if 跳过。
+  # 离线：只用 python 3 标准库；行为测试见 scripts/ci/test-contract-gap-audit.sh、
+  # test-extract-business-error-codes.sh、test-contract-gap-gate.sh。
+  # ---------------------------------------------------------------------------
+  contract-gap-audit:
+    name: Contract gap audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Behavior tests (offline)
+        run: |
+          bash scripts/ci/test-contract-gap-audit.sh
+          bash scripts/ci/test-extract-business-error-codes.sh
+          bash scripts/ci/test-contract-gap-gate.sh
+
+      - name: Business error codes table is up to date
+        # 码表落后于源码 → 红：否则客户端按码分支时会对不上服务端实际返回值。
+        run: python scripts/ci/extract-business-error-codes.py --check --audit-config docs/contract-baseline.json
+
+      - name: Audit contract gaps
+        run: bash scripts/ci/audit-contract-gaps.sh
+
   build-api:
     needs: [resolve-version, changes]
     if: needs.changes.outputs.all == 'true' || needs.changes.outputs.api == 'true'
@@ -548,7 +587,7 @@ jobs:
   # 修改那些 if 条件（例如新增组件、调整路径过滤）时，请同步更新这里，否则会漏报或误报。
   gate:
     name: CI Gate
-    needs: [resolve-version, changes, web-dist, build-api, build-docker, build-mcp]
+    needs: [resolve-version, changes, web-dist, build-api, contract-gap-audit, build-docker, build-mcp]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -564,6 +603,7 @@ jobs:
           R_API: ${{ needs.build-api.result }}
           R_DOCKER: ${{ needs.build-docker.result }}
           R_MCP: ${{ needs.build-mcp.result }}
+          R_GAP_AUDIT: ${{ needs.contract-gap-audit.result }}
           W_ALL: ${{ needs.changes.outputs.all }}
           W_API: ${{ needs.changes.outputs.api }}
           W_DOCKER: ${{ needs.changes.outputs.docker }}
@@ -573,7 +613,7 @@ jobs:
         run: bash "$GITHUB_WORKSPACE/scripts/ci/evaluate-gate.sh"
 
   release:
-    needs: [resolve-version, summarize, web-dist, build-api, build-docker, build-mcp]
+    needs: [resolve-version, summarize, web-dist, build-api, contract-gap-audit, build-docker, build-mcp]
     # Release on every master push where no build failed. Skipped (unchanged)
     # components are fine: their assets are copied from the previous release.
     if: |

@@ -22,6 +22,21 @@ This repository is shared by multiple agent conversations. Keep `master` useful 
 - 下游三个客户端仓（web / android / windows）以本仓契约为准。契约变更请在 PR 描述里写清影响面。
 - 导出方法（与 CI 一致）：以 `ASPNETCORE_ENVIRONMENT=Test` 启动 `src/Pim.Api`，取 `curl /swagger/v1/swagger.json`，再 `jq -S .` 规范化后覆盖 `contract/openapi.json`。
 
+### 契约对客户端「够不够用」也受门禁约束（contract-gap-audit）
+- 「契约与代码同步」有既有门禁；**「契约本身能不能让第三方写出客户端」由 `contract-gap-audit` job 把关**
+  （`scripts/ci/audit-contract-gaps.sh`，已接进 `CI Gate`）。它逐条审计：operation 缺 `operationId`/`summary`、
+  枚举型字段无 enum、query 参数无默认值/说明、写操作无 requestBody、multipart 未声明、4xx/5xx 无错误体、
+  源码设置了但契约没声明的响应头，以及**基线里有、当前契约没有的端点**（P0）。
+- 历史缺口按**类别**登记在 `docs/contract-baseline.json` 的 `approvedGaps`（登记后不阻塞，但报告里仍逐条列出）；
+  **新出现的类别默认让 CI Gate 变红**。补完一类就删掉对应批准项 —— 不要为了让门禁变绿去新增批准项，除非写明理由与期限。
+- `docs/contract-baseline.json` 的 `publicPaths` 由
+  `python3 scripts/ci/extract-business-error-codes.py --audit-config docs/contract-baseline.json` 从源码
+  显式 `.AllowAnonymous()` 生成，**不要手改**；`excludePaths` / `approvedGaps` 人工维护。
+- **业务错误码表** `docs/business-error-codes.md` 从源码 `DomainException(码, …)` / `ApiResponse…Error(码, …)` 采集，
+  CI 用 `--check` 校验它没有落后于源码；新增/修改业务码后在同一 PR 里重新生成并提交。
+  客户端按码分支，**不要**按 message 字符串判断错误类型。
+- 生成一份人读报告（随时可跑，只读）：`python3 scripts/ci/audit-contract-gaps.py --source-root src`。
+
 ### 契约变更会主动通知客户端仓（#415）
 - **`contract/**` 在 `changes` 的 `api` 过滤器里**：只改契约的 PR 也会跑 `build-api` —— 契约硬校验就在那个 job 里。曾经漏掉这一条，导致契约-only 的 PR「flag 全不亮 → `build-api` 整条跳过 → CI 全绿但契约从未被校验」（工单 §9 的假绿）。
 - **通知的判定不看路径过滤器**：`scripts/ci/detect-contract-change.sh` 比较基线与 head 上 `contract/openapi.json` 的 **blob 字节**（基线优先取上一版 release tag，其次 `push.before`；基线不可用则按"可能变了"处理）。所以契约变化即使夹在一个镜像/CI PR 里，也不会被漏掉。
