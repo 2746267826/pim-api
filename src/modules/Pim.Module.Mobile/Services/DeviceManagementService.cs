@@ -938,8 +938,8 @@ public sealed record DeviceExportDto(string FileName, string Json);
 /// <c>pc_browser_site_daily</c> / <c>pc_browser_site_tick</c> / <c>pc_activity_classifications</c>）：
 /// 这些表**没有任何用户归属列**，PC 的 device_id 由 PC 守护进程上报、与手机设备不同源；
 /// 按 device_id 处理等于跨用户改写。
-/// 2) <c>app_usage</c>（<c>Pim.Module.Stats</c> 遗留原型）：同样没有 <c>user_id</c>，
-/// 且只有 30 天滚动清理、没有任何读路由。
+/// 2) <c>app_usage</c>：已随 <c>Pim.Module.Stats</c> 一并删除（该模块未被任何产品仓使用，
+/// 路由只在测试里被实例化）；若某个存量部署的库里还留着这张表，它没有任何代码再读写它。
 /// </para>
 /// </summary>
 internal static class DeviceScopedTables{
