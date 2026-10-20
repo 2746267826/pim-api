@@ -99,6 +99,7 @@ def parse_status_map(text):
     return mapping
 
 
+
 DEFERRED_ANON_RE = re.compile(r"app\.Map(?:Get|Post|Put|Patch|Delete)\(\s*\"([^\"]*)\"[\s\S]{0,600}?\.AllowAnonymous\(\)")
 GROUP_DEF_RE = re.compile(r"(\w+)\s*=\s*\w+\.MapGroup\(\s*\"([^\"]*)\"")
 
@@ -155,29 +156,45 @@ def public_paths_from_source(source_root):
             continue
         consts = {m.group(1): m.group(2) for m in CONST_RE.finditer(text)}
         groups = dict(GROUP_DEF_RE.findall(text))
+        # 公开端点 = 显式 .AllowAnonymous() 的端点。
+        #
+        # 判定方式（review I-1 后重写）：按**源码顺序**把每个「注册调用」与它之后的链式调用
+        # `.AllowAnonymous()` 配对 —— 一个注册调用的「作用范围」到下一个注册调用开始为止。
+        # 不按「往回 N 字符」也不按「往上找语句」，因此：
+        #   * 上一条语句的 MapGet 不会被下一条 .AllowAnonymous() 借用；
+        #   * lambda 体里的 `.AllowAnonymous()`（极少见）也会归到它自己的注册调用；
+        #   * 同文件后面的`MapGroup` 不会影响前面端点的前缀。
+        registrations = []
+        for reg in _re.finditer(
+                r"(\w+)\s*\.\s*Map(Get|Post|Put|Patch|Delete|HealthChecks|Methods|FallbackToFile|Fallback)\(\s*([^,)]*)",
+                text):
+            registrations.append((reg.start(), reg.group(1), reg.group(2), reg.group(3)))
+        if not registrations:
+            continue
         for m in _re.finditer(r"\.AllowAnonymous\(\)", text):
-            # 往回找最近的 Map* 调用（中间只允许链式调用的换行/空白，遇到其它语句就放弃）
-            window = text[max(0, m.start() - 700):m.start()]
-            calls = list(_re.finditer(r"(\w+)\s*\.\s*Map(?:Get|Post|Put|Patch|Delete)\(\s*([^,]*)", window))
-            others = list(OTHER_ENDPOINT_RE.finditer(window))
-            if not calls and not others:
+            owner = None
+            for reg in registrations:
+                if reg[0] < m.start():
+                    owner = reg
+                else:
+                    break
+            if owner is None:
                 continue
-            # 取位置最靠后、且到 .AllowAnonymous() 为止括号尚未闭合的那个注册
-            if calls and (not others or calls[-1].start() > others[-1].start()):
-                call = calls[-1]
-                prefix_key, expr = call.group(1), call.group(2)
-            else:
-                call = others[-1]
-                prefix_key, expr = "", call.group(1)
+            _, receiver, _, expr = owner
+            prefix = groups.get(receiver, "")
             target = _eval_path_expr(expr, consts)
             if target is None:
                 continue
-            prefix = groups.get(prefix_key, "")
             combined = prefix.rstrip("/") + "/" + target.lstrip("/") if target else prefix
-            # 与契约路径同形；SPA fallback（index.html）不是 API 端点，不进白名单。
             if combined.endswith(".html"):
+                continue  # SPA fallback 不是 API 端点
+            normalized = _re.sub(r"\{(\*{1,2})?[^}]*\}", "{}", combined)
+            # 形态化之后的兜底路由（例如 `/api/{path}` → `/api/{}`）与没有前缀的散段不是真实端点，
+            # 不进白名单（review M-3）。
+            if normalized.startswith("/api/{}") or not normalized.startswith("/"):
                 continue
-            found.add(_re.sub(r"\{(\*{1,2})?[^}]*\}", "{}", combined))
+            found.add(normalized)
+
     return sorted(found)
 
 

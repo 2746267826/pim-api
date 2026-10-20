@@ -96,6 +96,25 @@ expect_rc "④ 同样输入不加 --strict 时放行（默认只卡 P0/P1）" 0 
 "$PY" "$AUDIT" --contract "$CONTRACT" --source-root "$ROOT/src" --config "$CONFIG" --fail-on --strict >/dev/null 2>&1
 expect_rc "④ 全部登记后 --strict 放行" 0 $?
 
+# ④b 端点删除检测（review I-2）：基线里记录了已发布的操作集；契约里少一条 → P0 必须变红。
+#     这里删掉当前契约的第一个 operation，用**与 CI 相同**的参数（--config 基线，不传 --baseline）。
+"$PY" - "$CONTRACT" "$TMP/removed.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+first = sorted(doc["paths"])[0]
+item = doc["paths"][first]
+for method in list(item):
+    if method in ("get", "post", "put", "patch", "delete"):
+        del item[method]
+        print(first, method)
+        break
+json.dump(doc, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False)
+PY
+"$PY" "$AUDIT" --contract "$TMP/removed.json" --config "$CONFIG" --fail-on >"$TMP/removed.txt" 2>&1
+expect_rc "④b 基线里有、契约里没有的端点 → 门禁失败" 1 $?
+grep -q "基线（已发布的客户端契约）里有、当前契约没有" "$TMP/removed.txt" \
+  && pass "④b 失败原因写明「端点被删除」" || fail "④b 失败原因没有写明删除"
+
 # ⑤ 非法输入 fail-closed
 echo '{ not json' >"$TMP/broken.json"
 "$PY" "$AUDIT" --contract "$TMP/broken.json" --config "$CONFIG" >/dev/null 2>&1

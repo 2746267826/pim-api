@@ -89,6 +89,41 @@ RC=$?
 [ $RC -eq 4 ] && pass "⑦ 源码目录不存在退出 4" || fail "⑦ 源码目录不存在应退出 4（实际 $RC）"
 [ ! -f "$TMP/doc3.md" ] && pass "⑦ 失败时不产出半张表" || fail "⑦ 失败时不应写文档"
 
+# ⑧ 公开端点识别（review I-1）：.AllowAnonymous() 必须归属到它**自己**的注册调用，
+#    不能被上一条语句的 MapGet 借用，也不能受同文件后面的 MapGroup 影响。
+mkdir -p "$TMP/pub"
+cat >"$TMP/pub/Pub.cs" <<'CS'
+public static class Pub
+{
+    public static void Map(IEndpointRouteBuilder endpoints)
+    {
+        app.MapGet("/api/client/shell/latest", Handle).AllowAnonymous()
+            .Produces(200);
+        var g = endpoints.MapGroup("/api/v1/x");
+        g.MapGet("/y", H).AllowAnonymous();
+        var h = endpoints.MapGroup("/api/v1/z");
+        endpoints.MapGet("/api/v1/tiles/{z}/{x}/{y}.png", async (
+            string z, string x, string y) =>
+        {
+            if (z == ";") { return Results.StatusCode(502); }
+            return Results.File(Array.Empty<byte>(), "image/png");
+        }).AllowAnonymous();
+    }
+}
+CS
+"$PY" - "$TMP/pub" <<'PY' >"$TMP/pub.txt"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('e', 'scripts/ci/extract-business-error-codes.py')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("\n".join(m.public_paths_from_source(sys.argv[1])))
+PY
+has() { grep -qxF -- "$2" "$3" && pass "$1" || { fail "$1（找不到：$2）"; sed 's/^/       | /' "$3"; }; }
+has "⑧ 链式 .AllowAnonymous() 归属自身端点" "/api/client/shell/latest" "$TMP/pub.txt"
+has "⑧ group 端点拼上前缀" "/api/v1/x/y" "$TMP/pub.txt"
+has "⑧ lambda 体内含分号不影响路径" "/api/v1/tiles/{}/{}/{}.png" "$TMP/pub.txt"
+hasnt "⑧ 不被同文件后面的 MapGroup 影响" "/api/v1/z/y" "$TMP/pub.txt"
+[ "$(wc -l <"$TMP/pub.txt")" -eq 3 ] && pass "⑧ 恰好 3 个公开端点" || fail "⑧ 公开端点数量不对"
+
 echo ""
 if [ "$FAIL" -ne 0 ]; then echo "FAILED：$FAIL 项失败，$PASS 项通过"; exit 1; fi
 echo "PASSED：$PASS 项通过"

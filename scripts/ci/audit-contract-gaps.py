@@ -114,7 +114,7 @@ DEFAULT_BASELINE = os.path.join(REPO_ROOT, "docs", "contract-baseline.json")
 
 def load_baseline_config(path):
     if not path or not os.path.isfile(path):
-        return {"publicPaths": [], "excludePaths": [], "approvedGaps": {}}
+        return {"publicPaths": [], "excludePaths": [], "approvedGaps": {}, "operations": []}
     cfg = load_json(path, "审计基线")
     if not isinstance(cfg, dict):
         die_input("审计基线必须是 JSON 对象：%s" % path)
@@ -122,6 +122,7 @@ def load_baseline_config(path):
         "publicPaths": [str(p) for p in cfg.get("publicPaths") or []],
         "excludePaths": [str(p) for p in cfg.get("excludePaths") or []],
         "approvedGaps": {str(k): str(v) for k, v in (cfg.get("approvedGaps") or {}).items()},
+        "operations": [str(o) for o in cfg.get("operations") or []],
     }
 
 # 源码里「显式读到请求体」的符号。审计**只**用它们去解释/核对契约，绝不用它们去「豁免」缺口：
@@ -333,6 +334,11 @@ def describe_param_gap(doc, param, name):
     return gaps
 
 
+def _shape(path):
+    """路径形态：模板参数统一成 `{}`（`/tiles/{z}/{x}/{y}.png` 与 `/tiles/{}/{}/{}.png` 视为同一路径）。"""
+    return re.sub(r"\{[^}]*\}", "{}", path)
+
+
 def audit_operations(doc, findings, audit_cfg=None):
     audit_cfg = audit_cfg or {}
     public_paths = set(BUILTIN_PUBLIC_PATHS) | set(audit_cfg.get("publicPaths") or [])
@@ -352,7 +358,7 @@ def audit_operations(doc, findings, audit_cfg=None):
                          "补 operationId（稳定、驼峰、全局唯一）与 summary（一句话说清客户端什么时候调用它）")
 
         # security（公开端点要么写进白名单，要么在 operation 上声明）
-        if path not in public_paths and not op.get("security"):
+        if _shape(path) not in {_shape(p) for p in public_paths} and not op.get("security"):
             findings.add("security", "%s %s" % (method, path),
                          "operation 未声明 security，也未列入公开白名单",
                          path, method,
@@ -499,6 +505,22 @@ def audit_biz_codes(doc, findings, biz_table_path):
                          suggestion="运行 extract-business-error-codes.py 刷新码表；若该码只出现在文字说明里、"
                                     "服务端并不会真返回，请在契约里改写说明")
     return len(codes)
+
+
+def audit_removed_vs_baseline_set(doc, recorded_operations, findings):
+    """review I-2：门禁必须能发现「端点被悄悄删除」。
+
+    基线 JSON 里的 `operations`（`"METHOD /path"` 列表）是**已发布给客户端**的操作集；
+    当前契约里少了任何一条 → P0。与 `--baseline` 的区别：这里不需要另一份契约快照，
+    所以 CI 可以直接、始终执行它。
+    """
+    if not recorded_operations:
+        return
+    current = {"%s %s" % (m, p) for m, p, _ in iter_operations(doc)}
+    for op in sorted(set(recorded_operations) - current):
+        method, _, path = op.partition(" ")
+        findings.add("drift-removed", op, "基线（已发布的客户端契约）里有、当前契约没有：存量客户端会 404",
+                     path, method, "恢复端点；若确要下线，先从基线移除并在 PR 里声明替代端点", "P0")
 
 
 def audit_drift(doc, baseline, findings):
@@ -890,8 +912,11 @@ def main(argv):
     ap.add_argument("--baseline", help="基线契约；给出时做 operation/schema 差异")
     ap.add_argument("--source-root", help="后端源码根目录；给出时核对 FromForm/BindAsync/响应头")
     ap.add_argument("--biz-errors", default=DEFAULT_BIZ_ERRORS, help="业务错误码表（Markdown）")
-    ap.add_argument("--config", default=DEFAULT_BASELINE, help="审计基线（publicPaths / excludePaths / approvedGaps）")
+    ap.add_argument("--config", default=None,
+                    help="审计基线（publicPaths / excludePaths / approvedGaps / operations）；缺省用仓内 docs/contract-baseline.json")
     ap.add_argument("--json", action="store_true", help="输出 JSON 而不是人读报告")
+    ap.add_argument("--record-operations", action="store_true",
+                    help="把当前契约的操作集写进基线的 operations（人工确认后用于发布新的契约基线）")
     ap.add_argument("--fail-on", action="store_true", help="门禁模式：存在发现则退出 1")
     ap.add_argument("--max-per-category", type=int, default=0,
                     help="每个类别人读报告最多列几条（0=全部；JSON 输出不受影响）")
@@ -899,7 +924,23 @@ def main(argv):
     args = ap.parse_args(argv)
 
     doc = load_contract(args.contract)
-    cfg = load_baseline_config(args.config)
+    if args.record_operations:
+        ops = sorted("%s %s" % (m, p) for m, p, _ in iter_operations(doc))
+        record_path = args.config or DEFAULT_BASELINE
+        raw = load_json(record_path, "审计基线") if os.path.isfile(record_path) else {}
+        raw["operations"] = ops
+        with open(args.config, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(raw, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        print("已记录 %d 个 operation 到 %s" % (len(ops), record_path))
+        return EXIT_OK
+    # 没显式指定 --config 时：用仓库内基线（如果存在）。这样「基线里的操作集」在任何用法下都会参与
+    # 删除检测，而不是只有门禁脚本传了参数才生效（review I-2）。
+    config_path = args.config
+    if config_path is None and os.path.isfile(DEFAULT_BASELINE):
+        config_path = DEFAULT_BASELINE
+    cfg = load_baseline_config(config_path) if config_path else {"publicPaths": [], "excludePaths": [],
+                                                                 "approvedGaps": {}, "operations": []}
     excluded = set(cfg["excludePaths"])
     findings = Findings()
 
@@ -907,6 +948,7 @@ def main(argv):
     audit_schemas(doc, findings)
     audit_biz_codes(doc, findings, args.biz_errors)
     audit_is_api_response(doc, findings)
+    audit_removed_vs_baseline_set(doc, cfg["operations"], findings)
     if args.baseline:
         audit_drift(doc, load_contract(args.baseline), findings)
     if args.source_root:
