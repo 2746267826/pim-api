@@ -934,10 +934,11 @@ def main(argv):
             fh.write("\n")
         print("已记录 %d 个 operation 到 %s" % (len(ops), record_path))
         return EXIT_OK
-    # 没显式指定 --config 时：用仓库内基线（如果存在）。这样「基线里的操作集」在任何用法下都会参与
-    # 删除检测，而不是只有门禁脚本传了参数才生效（review I-2）。
+    # 基线只在**显式**给出（或给了 --source-root 时用仓库默认基线）时生效：
+    #   * 门禁脚本与 CI 始终显式传 --config，所以已发布操作集一定会参与删除检测（review I-2）；
+    #   * 对任意第三方契约做一次性审计（例如 fixture）时不会被仓库基线误伤。
     config_path = args.config
-    if config_path is None and os.path.isfile(DEFAULT_BASELINE):
+    if config_path is None and args.source_root and os.path.isfile(DEFAULT_BASELINE):
         config_path = DEFAULT_BASELINE
     cfg = load_baseline_config(config_path) if config_path else {"publicPaths": [], "excludePaths": [],
                                                                  "approvedGaps": {}, "operations": []}
