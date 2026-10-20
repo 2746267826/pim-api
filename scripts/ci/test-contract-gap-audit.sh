@@ -27,6 +27,7 @@ export PYTHONDONTWRITEBYTECODE=1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 AUDIT="$ROOT/scripts/ci/audit-contract-gaps.py"
+CONTRACT="$ROOT/contract/openapi.json"
 
 # 选一个「真能跑」的 python3：Windows 上常有应用商店占位程序（任何调用都退出 49），
 # 不能只凭 `command -v python3` 判定可用，否则测试会全部误红。
@@ -337,6 +338,55 @@ run --contract "$TMP/bad.json" >/dev/null 2>&1; RC=$?
 expect_exit "⑭ 非法 JSON 退出 4" 4 $RC
 run --contract "$TMP/gappy.json" --baseline "$TMP/does-not-exist.json" >/dev/null 2>&1; RC=$?
 expect_exit "⑭ 基线不存在退出 4" 4 $RC
+
+# ⑮ 源码侧检查必须真的能报（review N-1）：此前源码路由键与契约键格式不一致，
+#    multipart / 手工解析请求体 / 字段数三类检查永不触发，而测试因建议文案里含关键字而误绿。
+mkdir -p "$TMP/src2"
+cat >"$TMP/src2/M.cs" <<'CS'
+public static class M
+{
+    public static void Map(IEndpointRouteBuilder endpoints)
+    {
+        var g = endpoints.MapGroup("/api/v1/up");
+        g.MapPost("/a", DoUpload).Produces(200);
+        g.MapPost("/b", async (HttpRequest request) =>
+        {
+            var form = await request.ReadFormAsync();
+            return Results.Ok();
+        }).Produces(200);
+    }
+
+    private static async Task<IResult> DoUpload(HttpRequest request)
+    {
+        var form = await request.ReadFormAsync();
+        return Results.Ok();
+    }
+}
+CS
+cat >"$TMP/withform.json" <<'JSON'
+{
+  "openapi": "3.0.1",
+  "info": { "title": "F", "version": "1" },
+  "paths": {
+    "/api/v1/up/a": { "post": { "operationId": "a", "summary": "a", "security": [{ "bearerAuth": [] }],
+      "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object",
+        "properties": { "file": { "type": "string", "format": "binary" } } } } } },
+      "responses": { "200": { "description": "OK" }, "500": { "description": "err" } } } },
+    "/api/v1/up/b": { "post": { "operationId": "b", "summary": "b", "security": [{ "bearerAuth": [] }],
+      "responses": { "200": { "description": "OK" }, "500": { "description": "err" } } } }
+  },
+  "components": { "securitySchemes": { "bearerAuth": { "type": "http", "scheme": "bearer" } }, "schemas": {} }
+}
+JSON
+OUT="$(run --contract "$TMP/withform.json" --source-root "$TMP/src2" 2>&1)"
+expect_not_contains "⑮ 契约已声明 multipart、方法组处理函数读表单 → 不报 multipart" "[multipart] POST /api/v1/up/a" "$OUT"
+expect_contains "⑮ 契约未声明 multipart、lambda 读表单 → 报 multipart" "POST /api/v1/up/b — 用 [FromForm]/IFormFile/ReadFormAsync 读表单" "$OUT"
+
+# ⑯ 真实仓契约上源码侧检查非空（证明不再是空转）：当前至少有 1 条 multipart 发现
+if [ -d "$ROOT/src" ]; then
+  OUT="$(run --contract "$CONTRACT" --source-root "$ROOT/src" 2>&1)"
+  expect_contains "⑯ 真实仓：源码侧检出 multipart 缺口" "POST /api/v1/files/items/upload — 用 [FromForm]/IFormFile/ReadFormAsync 读表单" "$OUT"
+fi
 
 echo ""
 if [ "$FAIL" -ne 0 ]; then

@@ -595,6 +595,59 @@ def eval_path_expr(expr, consts):
     return None
 
 
+def _method_body(text, name):
+    """取方法 `name` 的实现体（跨行签名 + 配平的花括号），取不到返回空串。"""
+    decl = re.search(r"(\b(?:private|public|internal|protected|static|async|sealed)\b[\w\s<>,\[\]\.\?]*\b"
+                     + re.escape(name) + r"\s*\()", text)
+    if not decl:
+        return ""
+    open_paren = decl.end() - 1
+    depth, i = 0, open_paren
+    while i < len(text):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    if i >= len(text):
+        return ""
+    start = decl.start()
+    rest = i + 1
+    brace = text.find("{", rest)
+    arrow = text.find("=>", rest)
+    if arrow != -1 and (brace == -1 or arrow < brace):
+        end = text.find(";", arrow)
+        return text[start:end + 1] if end != -1 else ""
+    if brace == -1:
+        return ""
+    depth = 0
+    for j in range(brace, min(len(text), brace + 8000)):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:j + 1]
+    return ""
+
+
+def _handler_route(text, handler_name, consts, groups):
+    """方法组注册的路径：在同文件里找同名方法定义，返回它内部唯一的 `MapXxx("...", ...)` 路径。
+
+    方法组（`group.MapPost("/items/upload", UploadItemAsync)`）的路径就在注册行里，这里已经拿到了；
+    这个函数只处理**另一类写法**：注册行没有字面量、却在方法体里再挂一次路由的罕见情况。
+    找不到就返回 None（由调用方跳过，不猜）。
+    """
+    m = re.search(r"%s\s*\([^)]*\)\s*(?:=>|\{)" % re.escape(handler_name), text)
+    if not m:
+        return None
+    tail = text[m.start(): m.start() + 4000]
+    inner = re.findall(r'\.Map(?:Get|Post|Put|Patch|Delete)\(\s*"([^"]+)"', tail)
+    return inner[0] if len(set(inner)) == 1 else None
+
+
 def first_call_argument(text, open_paren_index):
     """取以 text[open_paren_index] == '(' 开始的那次调用的第一个实参（考虑嵌套括号与字符串）。"""
     depth = 0
@@ -671,17 +724,48 @@ def parse_source(files):
             if not arg:
                 continue
             value = eval_path_expr(arg, consts)
+            handler_code = None
+            if not value:
+                # 方法组注册：MapPost("/items/upload", UploadItemAsync)。`first_call_argument` 在遇到
+                # 方法组时会把路径与处理函数名一起取出（逗号被括号深度吞掉），这里取首个形如 "..." 的字面量。
+                literal = re.search(r'"([^"]*)"', arg)
+                if literal and re.fullmatch(r'"[^"]*"\s*,\s*\w+', arg.strip()):
+                    value = eval_path_expr(literal.group(1), consts)
             if not value:
                 continue  # 动态路径：不在这里猜
             prefix = groups.get(receiver, "")
-            if value.startswith("/"):
+            # group 上的相对路径在 C# 里也写成 "/users"（以 / 开头但仍是相对该 group 的）。
+            # 判定依据是「接收者是不是 group」，而不是字符串是否以 / 开头。
+            if prefix and not value.startswith(prefix.rstrip("/") + "/"):
+                path = prefix.rstrip("/") + "/" + value.lstrip("/")
+            elif value.startswith("/"):
                 path = value
             else:
-                path = prefix.rstrip("/") + "/" + value.lstrip("/") if prefix else "/" + value
+                path = "/" + value
             path = normalize_route(path)
             for pattern, what, important in HEADER_PATTERNS:
                 if re.search(pattern, block):
                     header_settings.add((method, path, what, rel, important))
+            # 路由登记（review N-1 附带修复）：此前用另一套行级正则收集路由且**不拼 MapGroup 前缀**，
+            # 308 个源码路由里只有几个能与契约路径对上，源码侧检查基本空转。这里统一用已求值的路径。
+            # 方法组注册（MapPost("/x", Handler)）：把处理函数的实现体并进块，才能看到它怎么读请求体。
+            handler_name = re.search(r'"[^"]*"\s*,\s*(\w+)\s*\)', text[reg.end(): reg.end() + 200])
+            if handler_name:
+                body = _method_body(text, handler_name.group(1))
+                if body:
+                    block = block + "\n" + body
+            entry = routes.setdefault((path, method), {"forms": False, "readers": [], "hand_bound": [],
+                                                        "approved": [], "source": rel})
+            if "[FromForm]" in block or "IFormFile" in block or "BinaryFile" in block or "ReadFormAsync" in block:
+                entry["forms"] = True
+            for reader in SOURCE_BODY_READERS:
+                if reader in block:
+                    entry["readers"].append(reader)
+            for reader in HAND_BOUND_READERS:
+                if reader in block:
+                    entry["hand_bound"].append(reader)
+            if APPROVED_HAND_WRITTEN in block:
+                entry["approved"].append(APPROVED_HAND_WRITTEN)
 
     for fpath, text in file_texts.items():
         rel = os.path.relpath(fpath, REPO_ROOT).replace("\\", "/")
@@ -694,52 +778,17 @@ def parse_source(files):
                 continue
             record_fields[name] = count_params(params)
 
-        # Map* 注册（同名路径可能在多个 group 里出现，按 (path, method) 合并）
-        for idx, line in enumerate(lines):
-            m = re.search(r"\.Map(Get|Post|Put|Patch|Delete)\(\s*\"([^\"]*)\"", line)
-            if not m:
-                continue
-            http = m.group(1).upper()
-            path = normalize_route(m.group(2))
-            entry = routes.setdefault((path, http), {"forms": False, "readers": [], "hand_bound": [],
-                                                     "approved": [], "source": rel})
-            body = "\n".join(lines[idx: idx + 120])
-            # 方法组：group.MapPost("/x", HandlerAsync) —— 去方法定义处取实现
-            handler = re.search(r"\.Map(?:Get|Post|Put|Patch|Delete)\(\s*\"[^\"]*\"\s*,\s*(\w+)", line)
-            if handler and handler.group(1) not in ("async", "("):
-                hdef = re.search(r"\b%s\s*\(" % re.escape(handler.group(1)), text)
-                if hdef:
-                    def_start = text.rfind("\n", 0, hdef.start()) + 1
-                    depth = 0
-                    for dline in text[def_start:].splitlines():
-                        body += "\n" + dline
-                        depth += dline.count("{") - dline.count("}")
-                        if depth <= 0 and "{" in body[body.find(handler.group(1)):]:
-                            break
-            if "[FromForm]" in body or "IFormFile" in body or "BinaryFile" in body or "ReadFormAsync" in body:
-                entry["forms"] = True
-            for reader in SOURCE_BODY_READERS:
-                if reader in body:
-                    entry["readers"].append(reader)
-            for reader in HAND_BOUND_READERS:
-                if reader in body:
-                    entry["hand_bound"].append(reader)
-            for line_no in range(idx, min(idx + 120, len(lines))):
-                if APPROVED_HAND_WRITTEN in lines[line_no]:
-                    entry["approved"].append(lines[line_no].strip())
-
     return routes, global_readers, record_fields, header_settings
 
 
 def audit_sources(doc, findings, source_root):
     files = read_sources(source_root)
     routes, global_readers, record_fields, header_settings = parse_source(files)
-    # 路由键统一是 (path, method)，与 parse_source 产出的键一致（顺序写反会让所有端点都匹配不上）。
-    contract_ops = {(p, m) for m, p, _ in iter_operations(doc)}
+    # 路由键统一是 (path, METHOD 大写)，与 parse_source 产出的键一致。
+    # review N-1：曾经把契约侧的小写 method 与源码侧的大写混用，导致 308 个源码路由只匹配上 4 个，
+    # 下面三类源码侧检查（multipart / 手工解析请求体 / 字段数）实际上永远不会触发。
+    contract_ops = {(_shape(p), m.upper()) for m, p, _ in iter_operations(doc)}
     del global_readers  # 目前只做记录；有逐端点证据时不用它
-
-    def _shape(p):
-        return re.sub(r"\{[^}]*\}", "{}", p)
 
     for method, path, what, rel, important in sorted(header_settings):
         op = (doc["paths"].get(path) or {}).get(method.lower())
@@ -758,7 +807,7 @@ def audit_sources(doc, findings, source_root):
         entry = routes[(path, http)]
         # 只审「契约里存在」的端点：源码有、契约没有的，已在 audit_operations 侧统一报 drift-removed，
         # 这里再报一遍只会让同一个根因出现两次。
-        if (path, http) not in contract_ops:
+        if (_shape(path), http) not in contract_ops:
             continue
 
         op = (doc["paths"].get(path) or {}).get(http.lower()) if path in doc["paths"] else None
