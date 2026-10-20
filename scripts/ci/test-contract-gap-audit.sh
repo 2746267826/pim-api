@@ -339,6 +339,16 @@ expect_exit "⑭ 非法 JSON 退出 4" 4 $RC
 run --contract "$TMP/gappy.json" --baseline "$TMP/does-not-exist.json" >/dev/null 2>&1; RC=$?
 expect_exit "⑭ 基线不存在退出 4" 4 $RC
 
+# ⑭b 过期批准（review r3）：approvedGaps 里登记了一个不存在的类别 → 必须报 stale-approval
+"$PY" - "$TMP/clean.json" "$TMP/cfg_stale.json" <<'PY'
+import json, sys
+sys.path.insert(0, '')
+cfg = {"publicPaths": [], "excludePaths": [], "approvedGaps": {"no-such-category": "stale"}, "operations": []}
+json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"))
+PY
+OUT="$(run --contract "$TMP/clean.json" --config "$TMP/cfg_stale.json" 2>&1)"
+expect_contains "⑭b 已批准但零发现的类别 → stale-approval" "no-such-category — approvedGaps 里登记了" "$OUT"
+
 # ⑮ 源码侧检查必须真的能报（review N-1）：此前源码路由键与契约键格式不一致，
 #    multipart / 手工解析请求体 / 字段数三类检查永不触发，而测试因建议文案里含关键字而误绿。
 mkdir -p "$TMP/src2"

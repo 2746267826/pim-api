@@ -185,7 +185,14 @@ def public_paths_from_source(source_root):
             target = _eval_path_expr(expr, consts)
             if target is None:
                 continue
-            combined = prefix.rstrip("/") + "/" + target.lstrip("/") if target else prefix
+            # 与 audit-contract-gaps 同一规则（review r3 1.2）：只有接收者确实是 group、且路径还没有
+            # 带上该前缀时才拼接。中间夹了别的语句也不会把下一条注册算到旧 group 头上。
+            if prefix and target.startswith(prefix.rstrip("/") + "/"):
+                combined = target
+            elif prefix:
+                combined = prefix.rstrip("/") + "/" + target.lstrip("/")
+            else:
+                combined = target
             if combined.endswith(".html"):
                 continue  # SPA fallback 不是 API 端点
             normalized = _re.sub(r"\{(\*{1,2})?[^}]*\}", "{}", combined)

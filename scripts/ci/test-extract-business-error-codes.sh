@@ -102,6 +102,8 @@ public static class Pub
         var g = endpoints.MapGroup("/api/v1/x");
         g.MapGet("/y", H).AllowAnonymous();
         var h = endpoints.MapGroup("/api/v1/z");
+        Configure();
+        g.MapGet("/v1/k", H).AllowAnonymous();
         endpoints.MapGet("/api/v1/tiles/{z}/{x}/{y}.png", async (
             string z, string x, string y) =>
         {
@@ -122,7 +124,8 @@ has "⑧ 链式 .AllowAnonymous() 归属自身端点" "/api/client/shell/latest"
 has "⑧ group 端点拼上前缀" "/api/v1/x/y" "$TMP/pub.txt"
 has "⑧ lambda 体内含分号不影响路径" "/api/v1/tiles/{}/{}/{}.png" "$TMP/pub.txt"
 hasnt "⑧ 不被同文件后面的 MapGroup 影响" "/api/v1/z/y" "$TMP/pub.txt"
-[ "$(wc -l <"$TMP/pub.txt")" -eq 3 ] && pass "⑧ 恰好 3 个公开端点" || fail "⑧ 公开端点数量不对"
+has "⑧ 中间夹了其它语句时仍归属自己的 group" "/api/v1/x/v1/k" "$TMP/pub.txt"
+[ "$(wc -l <"$TMP/pub.txt")" -eq 4 ] && pass "⑧ 恰好 4 个公开端点" || fail "⑧ 公开端点数量不对"
 
 echo ""
 if [ "$FAIL" -ne 0 ]; then echo "FAILED：$FAIL 项失败，$PASS 项通过"; exit 1; fi

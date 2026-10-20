@@ -23,7 +23,7 @@
     "is-api-response": "5 个裸对象响应（/api/version、/health、client/shell/latest 等）：属协议面，短期保留",
     "request-body": "42 个写操作无 requestBody：逐个确认「真的没有」或补 schema",
     "no-5xx": "/api/v1/files/google/callback（Google OAuth 回跳，失败时浏览器直接展示上游页面）：待后端补 5xx 声明后移除本条",
-    "response-header": "文件下载的 ETag/Content-Disposition、tiles 的 304 目前未进契约：对客户端可用性影响小，待补",
+    "response-header": "源码设置了但契约未声明的响应头（login 的 Retry-After、ops 的 X-Truncated/206、export-ics 的 ETag/Content-Disposition）：新发现，待后端补 headers 后删除本条",
     "multipart": "POST /api/v1/files/items/upload 与 quick-notes/attachments 用 ReadFormAsync 读表单但契约未声明 multipart：待后端补 requestBody 后**必须**删除本条（这是新发现的缺口，不是历史遗留）"
   },
   "$comment": "由 scripts/ci/extract-business-error-codes.py --audit-config 维护 publicPaths；excludePaths 与 approvedGaps 由人工维护。审计器：scripts/ci/audit-contract-gaps.py",

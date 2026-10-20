@@ -883,6 +883,7 @@ CATEGORY_TITLES = [
     ("P2", "P2 · 会让客户端开发者反复问人",
      ("query-param", "pascal-query", "enum-typed", "required-nullable", "path-required",
       "response-header", "biz-errors")),
+    ("P2b", "P2 · 过期批准（应删除的 approvedGaps）", ("stale-approval",)),
     ("P3", "P3 · 文档质量", ("schema-desc", "prop-desc")),
 ]
 
@@ -906,6 +907,7 @@ SUGGESTIONS = {
     "drift-removed": "恢复端点，或在变更说明里宣告下线与替代端点",
     "drift-added": "在变更说明里宣告新端点",
     "drift-schema": "在变更说明里宣告字段增删",
+    "stale-approval": "删除对应的 approvedGaps 条目",
 }
 
 
@@ -976,6 +978,8 @@ def main(argv):
     if args.record_operations:
         ops = sorted("%s %s" % (m, p) for m, p, _ in iter_operations(doc))
         record_path = args.config or DEFAULT_BASELINE
+        if not record_path:
+            die_input("--record-operations 需要 --config（或仓内 docs/contract-baseline.json）")
         raw = load_json(record_path, "审计基线") if os.path.isfile(record_path) else {}
         raw["operations"] = ops
         with open(args.config, "w", encoding="utf-8", newline="\n") as fh:
@@ -1011,6 +1015,26 @@ def main(argv):
     approved = set(cfg["approvedGaps"])
     for f in findings.items:
         f["approved"] = f["category"] in approved
+    # 过期批准（review r3）：已登记为「已批准」但已经没有任何发现的类别，必须从 approvedGaps 删掉。
+    # 否则以后这类问题再次出现时会继续被静默放行。作为 P2 发现输出（不阻断，但可见）。
+    present = {f["category"] for f in findings.items}
+    # 只有**真正跑过**的检查才能判定「批准过期」：源码侧类别在没给 --source-root 时不会产生发现，
+    # 不能据此说批准过期（否则单独审计契约时会误报）。
+    source_side = {"multipart", "response-header", "drift-removed"}
+    if not args.source_root:
+        present |= source_side
+    stale = sorted(approved - present)
+    for category in stale:
+        findings.items.append({
+            "category": "stale-approval",
+            "label": category,
+            "method": "",
+            "path": "",
+            "detail": "approvedGaps 里登记了 %s，但当前没有任何该类发现：请删除这条批准（否则该类问题以后会被静默放行）" % category,
+            "suggestion": "从 docs/contract-baseline.json 的 approvedGaps 删除该条目",
+            "severity": "P2",
+            "approved": False,
+        })
 
     # 排序键必须覆盖渲染用到的全部字段，否则同键项的先后随 set/dict 迭代顺序浮动（会出现「同输入不同输出」）
     findings.items.sort(key=lambda f: (f["category"], MODE_ORDER.get(f["severity"], 9), f["path"],
