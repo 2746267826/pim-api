@@ -593,9 +593,8 @@ public class CalendarModule : IModule
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
-        // Events — PagedResult is canonical (PIM-024), but keep List branch for backward compat
-        // with old APKs (e.g. 2026.08.343) that call GET /events?start=&end= without page params.
-        // New clients (web + updated Android) always send page/pageSize and get PagedResult.
+        // Events — PagedResult 是唯一形状（PIM-024；契约语义 §3 · docs/client-contract-semantics.md）。
+        // 旧版「不带参数返回裸数组」的兼容分支已移除：同一路径+方法只允许一种 data 形状。
         group.MapGet("/events", async (
             [FromQuery] DateTimeOffset? start,
             [FromQuery] DateTimeOffset? end,
@@ -606,19 +605,10 @@ public class CalendarModule : IModule
             [FromServices] CalendarService svc,
             CancellationToken ct) =>
         {
-            if (string.IsNullOrWhiteSpace(search) && calendarId is null && page is null && pageSize is null)
-            {
-                // Old path — return List for legacy clients to avoid SerializationException
-                // Keep until sunset (e.g. after all APKs >2026.08.349 have migrated); web already sends page.
-                var events = await svc.GetEventsAsync(start ?? DateTimeOffset.MinValue, end ?? DateTimeOffset.MaxValue, ct);
-                return Results.Ok(ApiResponse<List<EventResponse>>.Ok(events));
-            }
-
             var result = await svc.GetEventsPagedAsync(search, calendarId, start, end, page ?? 1, pageSize ?? 50, ct);
             return Results.Ok(ApiResponse<PagedResult<EventResponse>>.Ok(result));
         })
-        // 双形态 200：无分页参数时兼容旧客户端返回 List<EventResponse>（映射清单已记录）；
-        // 这里标注 PagedResult<EventResponse>（PIM-024 规范形态）。
+        // 单一形状：200 恒为 PagedResult<EventResponse>。
         .Produces<ApiResponse<PagedResult<EventResponse>>>(200)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
@@ -754,13 +744,6 @@ public class CalendarModule : IModule
             [FromServices] CalendarService svc,
             CancellationToken ct) =>
         {
-            if (string.IsNullOrWhiteSpace(search) && calendarId is null && status is null && priority is null
-                && plannedFrom is null && plannedTo is null && dueFrom is null && dueTo is null
-                && page is null && pageSize is null)
-            {
-                return Results.Ok(ApiResponse<List<TaskResponse>>.Ok(await svc.GetTasksAsync(inbox, ct)));
-            }
-
             var result = await svc.GetTasksPagedAsync(
                 inbox,
                 search,
@@ -776,7 +759,7 @@ public class CalendarModule : IModule
                 ct);
             return Results.Ok(ApiResponse<PagedResult<TaskResponse>>.Ok(result));
         })
-        // 双形态 200：同 /events，标注 PagedResult<TaskResponse>（规范形态）。
+        // 单一形状：200 恒为 PagedResult<TaskResponse>（同 /events）。
         .Produces<ApiResponse<PagedResult<TaskResponse>>>(200)
         .Produces(401)
         .Produces<ApiResponse<string>>(400)

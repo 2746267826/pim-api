@@ -95,6 +95,11 @@ builder.Services.AddSwaggerGen(c =>
     // 契约批次3（issue #417）：import-ics 的 handler 自己读表单，这里只补 requestBody 文档，
     // 不用 .Accepts（那会改变端点匹配、把 handler 的 400 分支变成死代码）。
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.IcsImportRequestBodyOperationFilter>();
+    // 契约语义 §1（docs/client-contract-semantics.md）：按日端点在响应 schema 里声明业务日口径
+    // （businessDate / businessTimeZone / businessDayStartHour + x-business-day）。只影响文档。
+    c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.BusinessDayFieldsDocumentFilter>();
+    // 契约语义 §2：写操作的 Idempotency-Key 请求头（运行时见 IdempotencyMiddleware）。
+    c.OperationFilter<Pim.Api.Infrastructure.OpenApi.IdempotencyKeyParameterOperationFilter>();
     c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.SecuritySchemesDocumentFilter>();
 });
 
@@ -263,6 +268,9 @@ app.UseMiddleware<OpsRateLimitMiddleware>();
 app.UseMiddleware<OpsKeyMiddleware>();
 app.UseMiddleware<McpScopedTokenMiddleware>();
 app.UseAuthorization();
+// 写操作幂等（docs/client-contract-semantics.md §2）：必须在 UseAuthorization 之后（需要当前用户），
+// 且在端点执行之前（它要替换 Response.Body 截获成功响应）。
+app.UseMiddleware<IdempotencyMiddleware>();
 try
 {
     app.UseHangfireDashboard("/hangfire", new DashboardOptions

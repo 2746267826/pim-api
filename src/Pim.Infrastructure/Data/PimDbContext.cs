@@ -60,6 +60,7 @@ public class PimDbContext : DbContext
     public DbSet<LoginAttemptEntity> LoginAttempts => Set<LoginAttemptEntity>();
     public DbSet<AuditLogEntity> AuditLogs => Set<AuditLogEntity>();
     public DbSet<AuditVersionEntity> AuditVersions => Set<AuditVersionEntity>();
+    public DbSet<IdempotencyRecordEntity> IdempotencyRecords => Set<IdempotencyRecordEntity>();
     public DbSet<OperationConfirmationEntity> OperationConfirmations => Set<OperationConfirmationEntity>();
     public DbSet<DaemonHeartbeatEntity> DaemonHeartbeats => Set<DaemonHeartbeatEntity>();
     public DbSet<EndpointStatusEntity> EndpointStatuses => Set<EndpointStatusEntity>();
@@ -122,6 +123,13 @@ public class PimDbContext : DbContext
             e.HasIndex(a => a.ResourceType);
             e.HasIndex(a => a.CorrelationId);
             e.HasIndex(a => a.CreatedAt);
+        });
+
+        // 幂等记录：作用域唯一键（用户 + 方法 + 路径模板 + key）。索引同时服务「过期清理」。
+        modelBuilder.Entity<IdempotencyRecordEntity>(e =>
+        {
+            e.HasIndex(r => new { r.UserId, r.Method, r.Route, r.Key }).IsUnique();
+            e.HasIndex(r => r.ExpiresAt);
         });
 
         modelBuilder.Entity<AuditVersionEntity>(e =>

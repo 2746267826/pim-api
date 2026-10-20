@@ -13323,6 +13323,22 @@
             "format": "int32",
             "type": "integer"
           },
+          "businessDate": {
+            "description": "该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：手机当日使用汇总。客户端不得自行推算。",
+            "format": "date",
+            "type": "string"
+          },
+          "businessDayStartHour": {
+            "description": "业务日起算小时（本地时间）：4。业务日 D = [D 该时刻, D+1 该时刻)。",
+            "example": 4,
+            "format": "int32",
+            "type": "integer"
+          },
+          "businessTimeZone": {
+            "description": "业务日时区（IANA）：Asia/Shanghai",
+            "example": "Asia/Shanghai",
+            "type": "string"
+          },
           "completeness": {
             "format": "double",
             "type": "number"
@@ -13374,7 +13390,8 @@
           "syncBatches",
           "totalForegroundSeconds"
         ],
-        "type": "object"
+        "type": "object",
+        "x-business-day": true
       },
       "MobileUsageSummaryResponseApiResponse": {
         "additionalProperties": false,
@@ -15383,6 +15400,22 @@
             },
             "type": "array"
           },
+          "businessDate": {
+            "description": "该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：PC 当日汇总。客户端不得自行推算。",
+            "format": "date",
+            "type": "string"
+          },
+          "businessDayStartHour": {
+            "description": "业务日起算小时（本地时间）：4。业务日 D = [D 该时刻, D+1 该时刻)。",
+            "example": 4,
+            "format": "int32",
+            "type": "integer"
+          },
+          "businessTimeZone": {
+            "description": "业务日时区（IANA）：Asia/Shanghai",
+            "example": "Asia/Shanghai",
+            "type": "string"
+          },
           "categories": {
             "items": {
               "$ref": "#/components/schemas/CategorySummary"
@@ -15421,7 +15454,8 @@
           "sessions",
           "timeline"
         ],
-        "type": "object"
+        "type": "object",
+        "x-business-day": true
       },
       "PcSummaryResponseApiResponse": {
         "additionalProperties": false,
@@ -18438,6 +18472,22 @@
       "TodaySectionDto": {
         "additionalProperties": false,
         "properties": {
+          "businessDate": {
+            "description": "该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：单个今日分区。客户端不得自行推算。",
+            "format": "date",
+            "type": "string"
+          },
+          "businessDayStartHour": {
+            "description": "业务日起算小时（本地时间）：4。业务日 D = [D 该时刻, D+1 该时刻)。",
+            "example": 4,
+            "format": "int32",
+            "type": "integer"
+          },
+          "businessTimeZone": {
+            "description": "业务日时区（IANA）：Asia/Shanghai",
+            "example": "Asia/Shanghai",
+            "type": "string"
+          },
           "data": {},
           "error": {
             "$ref": "#/components/schemas/TodaySectionErrorDto"
@@ -18470,7 +18520,8 @@
           "links",
           "status"
         ],
-        "type": "object"
+        "type": "object",
+        "x-business-day": true
       },
       "TodaySectionDtoApiResponse": {
         "additionalProperties": false,
@@ -18516,6 +18567,22 @@
       "TodaySectionRegistryDto": {
         "additionalProperties": false,
         "properties": {
+          "businessDate": {
+            "description": "该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：今日分区注册表。客户端不得自行推算。",
+            "format": "date",
+            "type": "string"
+          },
+          "businessDayStartHour": {
+            "description": "业务日起算小时（本地时间）：4。业务日 D = [D 该时刻, D+1 该时刻)。",
+            "example": 4,
+            "format": "int32",
+            "type": "integer"
+          },
+          "businessTimeZone": {
+            "description": "业务日时区（IANA）：Asia/Shanghai",
+            "example": "Asia/Shanghai",
+            "type": "string"
+          },
           "date": {
             "type": "string"
           },
@@ -18539,7 +18606,8 @@
           "pcBusinessDate",
           "sections"
         ],
-        "type": "object"
+        "type": "object",
+        "x-business-day": true
       },
       "TodaySectionRegistryDtoApiResponse": {
         "additionalProperties": false,
@@ -19531,6 +19599,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -19608,6 +19687,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -19691,6 +19779,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -19772,6 +19869,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -19844,6 +19950,17 @@
     },
     "/api/v1/ai/health-check": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -20119,6 +20236,17 @@
     },
     "/api/v1/ai/test": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -20227,6 +20355,17 @@
     },
     "/api/v1/auth/login": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -20329,6 +20468,17 @@
     },
     "/api/v1/auth/password": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -20386,6 +20536,17 @@
     },
     "/api/v1/auth/refresh": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -20438,6 +20599,17 @@
     },
     "/api/v1/auth/register": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -20561,6 +20733,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -20618,6 +20801,17 @@
     },
     "/api/v1/calendar/ai-placeholders/generate": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -20683,6 +20877,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -20739,6 +20942,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -20835,6 +21047,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -20946,6 +21169,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -21012,6 +21246,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -21066,6 +21309,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -21136,6 +21388,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -21192,6 +21453,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -21260,6 +21530,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -21376,6 +21655,17 @@
     },
     "/api/v1/calendar/data-center/batch/execute": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -21433,6 +21723,17 @@
     },
     "/api/v1/calendar/data-center/batch/preview": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -21490,6 +21791,17 @@
     },
     "/api/v1/calendar/data-center/batch/request-confirmation": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -21547,6 +21859,17 @@
     },
     "/api/v1/calendar/data-center/query": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -21604,6 +21927,17 @@
     },
     "/api/v1/calendar/data-center/restore/preview": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -21661,6 +21995,17 @@
     },
     "/api/v1/calendar/data-center/restore/request-confirmation": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -21812,6 +22157,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -21869,6 +22225,17 @@
     },
     "/api/v1/calendar/events/batch-delete": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -22037,6 +22404,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -22115,6 +22491,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -22181,6 +22566,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -22349,6 +22743,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -22413,6 +22818,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -22527,6 +22941,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -22595,6 +23018,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -22651,6 +23083,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -22712,6 +23153,17 @@
     },
     "/api/v1/calendar/import-ics": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "multipart/form-data": {
@@ -22904,6 +23356,17 @@
     },
     "/api/v1/calendar/outlook/calendars/discover": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -22951,6 +23414,17 @@
     },
     "/api/v1/calendar/outlook/calendars/selection": {
       "put": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -23008,6 +23482,17 @@
     },
     "/api/v1/calendar/outlook/check": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -23055,6 +23540,17 @@
     },
     "/api/v1/calendar/outlook/device-code": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -23102,6 +23598,17 @@
     },
     "/api/v1/calendar/outlook/device-code/poll": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -23178,6 +23685,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -23227,6 +23743,17 @@
     },
     "/api/v1/calendar/outlook/disconnect": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -23274,6 +23801,17 @@
     },
     "/api/v1/calendar/outlook/events/writeback": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -23341,6 +23879,17 @@
     },
     "/api/v1/calendar/outlook/local-data": {
       "delete": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -23480,6 +24029,17 @@
         ]
       },
       "put": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -23537,6 +24097,17 @@
     },
     "/api/v1/calendar/outlook/sync": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -23668,6 +24239,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -23772,6 +24352,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -23941,6 +24532,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -24014,6 +24614,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -24110,6 +24719,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -24231,6 +24851,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -24287,6 +24916,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -24353,6 +24991,15 @@
             "name": "scheduledAt",
             "schema": {
               "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -24451,6 +25098,17 @@
     },
     "/api/v1/calendar/reports/generate": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -24515,6 +25173,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -24633,6 +25300,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -24682,6 +25358,17 @@
     },
     "/api/v1/calendar/schedule": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -24784,6 +25471,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -24973,6 +25671,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -25030,6 +25739,17 @@
     },
     "/api/v1/calendar/tasks/batch-delete": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -25087,6 +25807,17 @@
     },
     "/api/v1/calendar/tasks/batch-update": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -25153,6 +25884,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -25207,6 +25947,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -25275,6 +26024,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -25354,6 +26112,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -25417,6 +26184,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -25487,6 +26263,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -25555,6 +26340,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -25621,6 +26415,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -25744,6 +26547,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -25872,6 +26684,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -25930,6 +26751,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -25986,6 +26816,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -26053,6 +26892,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -26133,6 +26981,17 @@
     },
     "/api/v1/daemon/heartbeat": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -26237,6 +27096,17 @@
     },
     "/api/v1/daemon/planned-offline": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -26331,6 +27201,17 @@
     },
     "/api/v1/data-reliability/inspection/refresh": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -26525,6 +27406,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -26592,6 +27482,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -26651,6 +27550,17 @@
     },
     "/api/v1/files/folders": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -26861,6 +27771,17 @@
     },
     "/api/v1/files/items/upload": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -26938,6 +27859,17 @@
     },
     "/api/v1/files/items/upload-session": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -27025,6 +27957,17 @@
     },
     "/api/v1/files/items/upload-session/complete": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -27099,6 +28042,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -27597,6 +28549,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -27877,6 +28838,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -27975,6 +28945,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -28061,6 +29040,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -28260,6 +29248,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -28426,6 +29423,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -28606,6 +29612,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -28828,6 +29843,17 @@
     },
     "/api/v1/files/providers/google/authorize": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -28875,6 +29901,17 @@
     },
     "/api/v1/files/providers/onedrive": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -28969,6 +30006,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -29147,6 +30193,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -29203,6 +30258,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -29542,6 +30606,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -29608,6 +30681,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -29778,6 +30860,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -29844,6 +30937,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -29894,6 +30996,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -29977,6 +31088,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -30029,6 +31149,17 @@
     },
     "/api/v1/mcp/verify": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -30306,6 +31437,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -30369,6 +31511,15 @@
             "name": "goalId",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -31134,6 +32285,17 @@
         ]
       },
       "put": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -31199,6 +32361,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -31252,6 +32423,15 @@
             "name": "packageName",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -31358,6 +32538,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -31423,6 +32614,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -31476,6 +32676,15 @@
             "name": "ruleId",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -31720,6 +32929,17 @@
     },
     "/api/v1/mobile/devices/merge": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -31777,6 +32997,17 @@
     },
     "/api/v1/mobile/devices/merge/preview": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -31834,6 +33065,17 @@
     },
     "/api/v1/mobile/devices/register": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -31897,6 +33139,15 @@
             "name": "deviceId",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -32373,6 +33624,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -32432,6 +33692,17 @@
     },
     "/api/v1/mobile/forensics/events": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -33370,6 +34641,17 @@
     },
     "/api/v1/mobile/location/points": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -33427,6 +34709,17 @@
     },
     "/api/v1/mobile/location/points/batch": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -33637,11 +34930,23 @@
         ],
         "tags": [
           "Pim.Api"
-        ]
+        ],
+        "x-business-day": true
       }
     },
     "/api/v1/mobile/sync/gaps": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -33794,6 +35099,17 @@
     },
     "/api/v1/mobile/usage/events": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -33923,6 +35239,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -34154,6 +35479,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -34210,6 +35544,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -34270,6 +35613,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -34326,6 +35678,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -34453,6 +35814,17 @@
     },
     "/api/v1/ops/db/query": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -35382,6 +36754,17 @@
     },
     "/api/v1/pc/app-category-rules": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -35446,6 +36829,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -35621,6 +37013,17 @@
     },
     "/api/v1/pc/app-knowledge/contexts": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -35685,6 +37088,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -35753,6 +37165,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -35841,6 +37262,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -35976,6 +37406,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -36127,6 +37568,17 @@
     },
     "/api/v1/pc/app-signatures/import": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -36187,6 +37639,17 @@
     },
     "/api/v1/pc/app-signatures/lookup": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -36330,6 +37793,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -36440,6 +37912,17 @@
     },
     "/api/v1/pc/aw/upload": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -36497,6 +37980,17 @@
     },
     "/api/v1/pc/aw/upload-complete": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -36621,6 +38115,17 @@
     },
     "/api/v1/pc/browser-tt/import": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -36799,6 +38304,17 @@
     },
     "/api/v1/pc/browser-tt/upload": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -36888,6 +38404,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -36992,6 +38519,17 @@
     },
     "/api/v1/pc/categories/reorder": {
       "put": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -37049,6 +38587,17 @@
     },
     "/api/v1/pc/categories/seed": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -37142,6 +38691,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -37201,6 +38759,17 @@
     },
     "/api/v1/pc/classification/label": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -37354,6 +38923,17 @@
     },
     "/api/v1/pc/classification/recompute": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -37443,6 +39023,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -37510,6 +39101,17 @@
     },
     "/api/v1/pc/classification/rules/apply": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -37577,6 +39179,17 @@
     },
     "/api/v1/pc/classification/rules/preview": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -37666,6 +39279,17 @@
         ]
       },
       "put": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -37776,6 +39400,17 @@
     },
     "/api/v1/pc/classification/suggestions/batch-accept": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -37876,6 +39511,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -37962,6 +39606,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -38052,6 +39705,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -38138,6 +39800,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -38515,6 +40186,17 @@
     },
     "/api/v1/pc/keystats/samples": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -38572,6 +40254,17 @@
     },
     "/api/v1/pc/keystats/upload": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -38725,6 +40418,17 @@
         ]
       },
       "put": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -38984,7 +40688,8 @@
         ],
         "tags": [
           "Pim.Api"
-        ]
+        ],
+        "x-business-day": true
       }
     },
     "/api/v1/pc/timeline/v2": {
@@ -39112,6 +40817,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -39213,6 +40929,17 @@
     },
     "/api/v1/pc/tracker/upload": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -39347,6 +41074,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -39404,6 +41142,17 @@
     },
     "/api/v1/quick-notes/attachments": {
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -39458,6 +41207,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -39610,6 +41368,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -39722,6 +41489,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -39800,6 +41576,15 @@
               "format": "uuid",
               "type": "string"
             }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -39856,6 +41641,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -39924,6 +41718,15 @@
             "required": true,
             "schema": {
               "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
               "type": "string"
             }
           }
@@ -40261,7 +42064,8 @@
         ],
         "tags": [
           "Pim.Api"
-        ]
+        ],
+        "x-business-day": true
       }
     },
     "/api/v1/today/sections/{sectionId}": {
@@ -40343,7 +42147,8 @@
         ],
         "tags": [
           "Pim.Api"
-        ]
+        ],
+        "x-business-day": true
       }
     },
     "/api/version": {
@@ -40377,6 +42182,17 @@
     },
     "/api/{path}": {
       "delete": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "404": {
             "content": {
@@ -40485,6 +42301,17 @@
         ]
       },
       "patch": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "404": {
             "content": {
@@ -40512,6 +42339,17 @@
         ]
       },
       "post": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "404": {
             "content": {
@@ -40539,6 +42377,17 @@
         ]
       },
       "put": {
+        "parameters": [
+          {
+            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "404": {
             "content": {
