@@ -325,6 +325,26 @@ public class PlanningModelService
         return new TaskBookDto(entity.Id, entity.DomainProjectId, entity.Name, entity.Kind, entity.Status);
     }
 
+    /// <summary>
+    /// 读取任务的清单项（api#443：此前只有增/改/删，清单写进去读不回来）。
+    /// 先校验任务归属（不存在或不属于当前用户 → 02004，与其它任务子资源一致），
+    /// 再返回未软删除的条目，按 <c>SortOrder</c> 升序、同序按创建时间升序，保证稳定顺序。
+    /// </summary>
+    public async Task<IReadOnlyList<TaskChecklistItemDto>> ListChecklistItemsAsync(
+        Guid taskId,
+        CancellationToken ct = default)
+    {
+        var userId = UserId;
+        var task = await GetTaskAsync(taskId, userId, ct);
+        return await _db.Set<TaskChecklistItemEntity>()
+            .AsNoTracking()
+            .Where(i => i.TaskId == task.Id && i.UserId == userId && i.DeletedAt == null)
+            .OrderBy(i => i.SortOrder)
+            .ThenBy(i => i.CreatedAt)
+            .Select(i => new TaskChecklistItemDto(i.Id, i.TaskId, i.Title, i.IsDone, i.SortOrder))
+            .ToListAsync(ct);
+    }
+
     public async Task<TaskChecklistItemDto> AddChecklistItemAsync(
         Guid taskId,
         AddTaskChecklistItemRequest request,

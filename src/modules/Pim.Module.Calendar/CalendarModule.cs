@@ -224,6 +224,18 @@ public class CalendarModule : IModule
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
 
+        // api#443：读取清单（此前只有增/改/删）。客户端与 MCP 的 get_task_checklist 都依赖它。
+        group.MapGet("/tasks/{id:guid}/checklist", async (
+            Guid id,
+            [FromServices] PlanningModelService svc,
+            CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<TaskChecklistItemDto>>.Ok(
+                await svc.ListChecklistItemsAsync(id, ct))))
+        .Produces<ApiResponse<IReadOnlyList<TaskChecklistItemDto>>>(200)
+        .Produces(401)
+        .Produces<ApiResponse<string>>(400)
+        .Produces<ApiResponse<string>>(500);
+
         group.MapPost("/tasks/{id:guid}/checklist", async (
             Guid id,
             [FromBody] AddTaskChecklistItemRequest req,
