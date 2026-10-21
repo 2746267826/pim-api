@@ -33,6 +33,16 @@
   drift-removed    基线有、当前没有的 operation（客户端会 404 —— 最危险的一种）
   drift-schema     同名 schema 的属性集合变了
 
+严重度与批准：
+  每条发现都带 severity（P0/P1/P2/P3），报告**按 severity 分组**（类别只是组内小节），
+  `--fail-on` 默认只拦未批准的 P0/P1，`--strict` 才拦全部。
+  `approvedGaps` 的每条批准必须写全 `reason` / `owner` / `count` / `expires`：
+    * `count` 是该类别**当前**的发现数；新增同类实例会让 count 对不上（approval-exceeded）而失败，
+      不会被「这个类别早已批准」静默放行；
+    * `expires`（YYYY-MM-DD）到期后批准失效（approval-expired）；
+    * 旧的纯字符串批准视为元数据不全（approval-metadata），不再生效。
+  `excludePaths` 只用于刻意不审的路径，**不能**吞掉 P0（端点被删除）。
+
 退出码：
   0  审计完成（非门禁模式总是 0，除非读取失败）
   1  --fail-on 命中且存在非基线类发现（门禁模式）
@@ -92,7 +102,7 @@ PROTOCOL_PATHS = {"/mcp", "/metrics", "/hangfire"}
 # 不做格式规约检查的路径（框架兜底路由：路径与形状都不是契约的一部分）。
 INFRA_PATHS = {"/api/{path}"}
 
-CJK = re.compile("\u4e00-\u9fff")
+CJK = re.compile("[\u4e00-\u9fff]")
 
 # 「关键」头（第三项 True）：不声明客户端就没法正确实现（认证/限流/截断）。
 # 「提示」头（False）：文件下载天然带 ETag / Content-Disposition / Range，契约不声明也能工作，只记 P2。
@@ -121,7 +131,9 @@ def load_baseline_config(path):
     return {
         "publicPaths": [str(p) for p in cfg.get("publicPaths") or []],
         "excludePaths": [str(p) for p in cfg.get("excludePaths") or []],
-        "approvedGaps": {str(k): str(v) for k, v in (cfg.get("approvedGaps") or {}).items()},
+        # 值可以是旧的字符串（仅剩理由）或 {reason, owner, count, expires} 对象；后者才能约束
+        # 「新增实例」不被整类批准静默放行（见 evaluate_approvals）。
+        "approvedGaps": dict(cfg.get("approvedGaps") or {}),
         "operations": [str(o) for o in cfg.get("operations") or []],
     }
 
@@ -363,7 +375,7 @@ def audit_operations(doc, findings, audit_cfg=None):
                          "operation 未声明 security，也未列入公开白名单",
                          path, method,
                          "显式写 security: [{bearerAuth: []}] / [{opsKey: []}]，让客户端知道必须带哪种凭证；"
-                         "确实公开的写进 docs/contract-baseline.json 的 publicPaths")
+                         "确实公开的写进 docs/contract-baseline.json 的 publicPaths", "P1")
 
         # query 参数
         for param in operation_parameters(op, path_item):
@@ -423,11 +435,12 @@ def audit_operations(doc, findings, audit_cfg=None):
             if content and schema is None:
                 findings.add("error-semantics", "%s %s" % (method, path),
                              "%s 响应声明了 content 但没有 schema" % status, path, method,
-                             "补错误响应 schema（统一 ErrorResponse 或 ApiResponse<T>）")
+                             "补错误响应 schema（统一 ErrorResponse 或 ApiResponse<T>）", severity="P1")
             if status in ("400", "401", "403", "409", "422", "429") and not content:
                 findings.add("error-semantics", "%s %s" % (method, path),
                              "%s 响应是空的：客户端拿不到业务错误码/可读原因" % status, path, method,
-                             "声明错误体 schema，并在 schema 的 description 里列出该状态可能出现的关键业务码（或引用业务错误码表）")
+                             "声明错误体 schema，并在 schema 的 description 里列出该状态可能出现的关键业务码（或引用业务错误码表）",
+                             severity="P1")
                 break  # 每个 operation 只报一次错误语义，避免噪音
 
         # requestBody 中的 form 形态
@@ -442,7 +455,7 @@ def audit_operations(doc, findings, audit_cfg=None):
                 findings.add("binary-form", "%s %s" % (method, path),
                              "%s 声明了 multipart，但没有一个字段是 format: binary（文件字段无法识别）" % (name or "<inline>"),
                              path, method,
-                             "文件字段写 type: string, format: binary；其它字段写正常类型与 description")
+                             "文件字段写 type: string, format: binary；其它字段写正常类型与 description", "P1")
 
 
 def audit_schemas(doc, findings):
@@ -451,7 +464,8 @@ def audit_schemas(doc, findings):
         schema = schemas[name] or {}
         if not schema.get("description"):
             findings.add("schema-desc", name, "schema 无 description", "",
-                         suggestion="用 <summary> 注释导出：这个结构代表什么、用在哪个端点")
+                         suggestion="用 <summary> 注释导出：这个结构代表什么、用在哪个端点",
+                         severity="P3")
 
     seen = set()
     for name in sorted(schemas):
@@ -463,7 +477,8 @@ def audit_schemas(doc, findings):
             seen.add(key)
             resolved = deref(doc, prop)
             if not (prop.get("description") or resolved.get("description")):
-                findings.add("prop-desc", "%s.%s" % (owner, prop_name), "属性无 description")
+                findings.add("prop-desc", "%s.%s" % (owner, prop_name), "属性无 description",
+                             severity="P3")
             if required and prop.get("nullable") is True:
                 findings.add("required-nullable", "%s.%s" % (owner, prop_name),
                              "required 且 nullable：客户端无法判断能不能发 null",
@@ -787,19 +802,26 @@ def audit_sources(doc, findings, source_root):
     # 路由键统一是 (path, METHOD 大写)，与 parse_source 产出的键一致。
     # review N-1：曾经把契约侧的小写 method 与源码侧的大写混用，导致 308 个源码路由只匹配上 4 个，
     # 下面三类源码侧检查（multipart / 手工解析请求体 / 字段数）实际上永远不会触发。
-    contract_ops = {(_shape(p), m.upper()) for m, p, _ in iter_operations(doc)}
+    # 源码路径是形态化的（`{id}` → `{}`），契约路径保留参数名；必须按形态回查契约里的**实际**路径，
+    # 否则所有带路径参数的端点都会被 `doc["paths"].get(path)` 静默跳过（review P2-3）。
+    contract_map = {}
+    for m, p, _ in iter_operations(doc):
+        contract_map.setdefault((_shape(p), m.upper()), p)
     del global_readers  # 目前只做记录；有逐端点证据时不用它
 
     for method, path, what, rel, important in sorted(header_settings):
-        op = (doc["paths"].get(path) or {}).get(method.lower())
-        if op is None:
+        contract_path = contract_map.get((_shape(path), method))
+        if contract_path is None:
             continue  # 契约里没有这个端点：由 drift 类发现负责，不在响应头里重复报
+        op = (doc["paths"].get(contract_path) or {}).get(method.lower())
+        if op is None:
+            continue
         declared = any((resp or {}).get("headers") for resp in (op.get("responses") or {}).values())
         if declared:
             continue
-        findings.add("response-header", "%s %s" % (method, path),
+        findings.add("response-header", "%s %s" % (method, contract_path),
                      "源码设置/依赖了 %s（%s），契约没有在该端点的响应上声明 headers" % (what, rel),
-                     path, method,
+                     contract_path, method,
                      "在对应响应的 headers 里声明（例：X-Truncated: boolean、Retry-After: integer、ETag: string）",
                      "P1" if important else "P2")
 
@@ -807,27 +829,28 @@ def audit_sources(doc, findings, source_root):
         entry = routes[(path, http)]
         # 只审「契约里存在」的端点：源码有、契约没有的，已在 audit_operations 侧统一报 drift-removed，
         # 这里再报一遍只会让同一个根因出现两次。
-        if (_shape(path), http) not in contract_ops:
+        contract_path = contract_map.get((_shape(path), http))
+        if contract_path is None:
             continue
 
-        op = (doc["paths"].get(path) or {}).get(http.lower()) if path in doc["paths"] else None
+        op = (doc["paths"].get(contract_path) or {}).get(http.lower())
         if op is None:
             continue
         form_content = ((op.get("requestBody") or {}).get("content") or {})
         has_contract_form = any("form" in media for media in form_content)
 
         if entry["forms"] and not has_contract_form:
-            findings.add("multipart", "%s %s" % (http, path),
+            findings.add("multipart", "%s %s" % (http, contract_path),
                          "用 [FromForm]/IFormFile/ReadFormAsync 读表单，契约里没有 multipart/form-data（来源：%s）" % os.path.basename(entry["source"]),
-                         path, http,
+                         contract_path, http,
                          "补 requestBody: multipart/form-data + form schema（文件字段 format: binary）", "P1")
 
         if http in ("POST", "PUT", "PATCH") and not form_content and entry["hand_bound"] and not entry["approved"]:
             raw = [r for r in entry["readers"] if r != "ReadFormAsync"]
-            findings.add("request-body", "%s %s" % (http, path),
+            findings.add("request-body", "%s %s" % (http, contract_path),
                          "源码用 %s 自己把请求体解析成 DTO（读法：%s），OpenAPI 导出器看不见；客户端只能猜请求体"
                          % (", ".join(sorted(set(entry["hand_bound"]))), ", ".join(sorted(set(raw))) or "外部 Reader 类"),
-                         path, http,
+                         contract_path, http,
                          "改成 [FromBody] 参数（自动导出），或在契约里手写 requestBody；确属无法导出的，在注册处写 "
                          + APPROVED_HAND_WRITTEN + " 并附理由", "P1")
 
@@ -837,10 +860,10 @@ def audit_sources(doc, findings, source_root):
             if ref_name and ref_name in record_fields:
                 props = len(((doc["components"]["schemas"].get(ref_name) or {}).get("properties") or {}))
                 if props != record_fields[ref_name]:
-                    findings.add("request-body", "%s %s" % (http, path),
+                    findings.add("request-body", "%s %s" % (http, contract_path),
                                  "契约 schema %s 有 %d 个属性，源码 record 有 %d 个字段（可能漏导出字段）"
                                  % (ref_name, props, record_fields[ref_name]),
-                                 path, http, "核对源 DTO 与契约 schema 的字段集合", "P1")
+                                 contract_path, http, "核对源 DTO 与契约 schema 的字段集合", "P1")
 
 
 # ---------------------------------------------------------------------------
@@ -874,18 +897,24 @@ def audit_is_api_response(doc, findings):
 # ---------------------------------------------------------------------------
 # 输出
 # ---------------------------------------------------------------------------
-CATEGORY_TITLES = [
-    # 每个 category 只归属一个分组（集合顺序不参与渲染顺序，避免「同输入不同输出」）。
-    ("P0", "P0 · 会让存量客户端直接坏掉", ("drift-removed",)),
-    ("P1", "P1 · 客户端会猜错或写不出来",
-     ("op-meta", "security", "request-body", "multipart", "binary-form", "is-api-response",
-      "error-semantics", "no-5xx")),
-    ("P2", "P2 · 会让客户端开发者反复问人",
-     ("query-param", "pascal-query", "enum-typed", "required-nullable", "path-required",
-      "response-header", "biz-errors")),
-    ("P2b", "P2 · 过期批准（应删除的 approvedGaps）", ("stale-approval",)),
-    ("P3", "P3 · 文档质量", ("schema-desc", "prop-desc")),
+# 报告按**发现自身的 severity** 分组（review P1-3）：此前按类别分组，导致默认 severity=P2 的类别
+# （op-meta / security / error-semantics / is-api-response）被渲染在「P1」标题下，读报告的人以为它们是
+# 阻断项，而门禁实际只拦 P0/P1。现在 severity 是唯一的分组依据，类别只作为组内小节。
+SEVERITY_TITLES = [
+    ("P0", "P0 · 会让存量客户端直接坏掉"),
+    ("P1", "P1 · 客户端会猜错或写不出来"),
+    ("P2", "P2 · 会让客户端开发者反复问人"),
+    ("P3", "P3 · 文档质量"),
 ]
+# 类别的固定渲染顺序（同 severity 内），与输入顺序无关，保证同输入同输出。
+CATEGORY_ORDER = (
+    "drift-removed", "approval-metadata", "approval-expired", "approval-exceeded",
+    "security", "request-body", "multipart", "binary-form", "error-semantics", "no-5xx",
+    "op-meta", "is-api-response", "query-param", "pascal-query", "enum-typed",
+    "required-nullable", "path-required", "response-header", "biz-errors", "stale-approval",
+    "schema-desc", "prop-desc",
+)
+CATEGORY_INDEX = {c: i for i, c in enumerate(CATEGORY_ORDER)}
 
 SUGGESTIONS = {
     "op-meta": "在 endpoint 上写 .WithName(...) 与 .WithSummary(...)（或 XML 注释），导出时带进 operationId/summary",
@@ -920,41 +949,110 @@ def render_text(result, max_per_category=0):
     out.append("operation: %d    schema: %d" % (result["totals"]["operations"], result["totals"]["schemas"]))
     out.append("findings: %d" % len(result["findings"]))
     out.append("")
-    by_cat = {}
+    by_sev = {}
     for f in result["findings"]:
-        by_cat.setdefault(f["category"], []).append(f)
+        by_sev.setdefault(f["severity"], {}).setdefault(f["category"], []).append(f)
     rendered = set()
-    for _, title, cats in CATEGORY_TITLES:
-        present = [c for c in cats if by_cat.get(c)]
-        if not present:
+    for severity, title in SEVERITY_TITLES:
+        cats = by_sev.get(severity)
+        if not cats:
             continue
         out.append("## " + title)
-        for cat in present:
-            items = by_cat[cat]
+        for cat in sorted(cats, key=lambda c: CATEGORY_INDEX.get(c, len(CATEGORY_ORDER))):
+            items = cats[cat]
             out.append("")
             approved_n = sum(1 for f in items if f.get("approved"))
             suffix = "，已批准 %d" % approved_n if approved_n else ""
             out.append("### [%s] %s（%d 条%s）" % (cat, SUGGESTIONS.get(cat, ""), len(items), suffix))
             shown = items[:max_per_category] if max_per_category else items
             for f in shown:
-                rendered.add(cat)
+                rendered.add((severity, cat))
                 mark = " [已批准]" if f.get("approved") else ""
                 out.append("  - %s — %s%s" % (f["label"], f["detail"], mark))
             if max_per_category and len(items) > max_per_category:
                 out.append("  - …… 其余 %d 条见 JSON（--json）或 --max-per-category 0" % (len(items) - max_per_category))
         out.append("")
-    leftover = [c for c in sorted(by_cat) if c not in rendered]
+    leftover = [sev for sev in sorted(by_sev)
+                if not any(s == sev for s, _ in SEVERITY_TITLES)]
     if leftover:
-        out.append("## 其它")
-        for cat in leftover:
-            for f in by_cat[cat]:
-                out.append("  - [%s] %s — %s" % (cat, f["label"], f["detail"]))
+        out.append("## 其它（未归类的 severity）")
+        for sev in leftover:
+            for cat in sorted(by_sev[sev]):
+                for f in by_sev[sev][cat]:
+                    out.append("  - [%s/%s] %s — %s" % (sev, cat, f["label"], f["detail"]))
         out.append("")
     out.append("## 计数")
-    for cat in sorted(by_cat):
-        out.append("  %-16s %5d" % (cat, len(by_cat[cat])))
+    for cat in sorted({f["category"] for f in result["findings"]}, key=lambda c: CATEGORY_INDEX.get(c, len(CATEGORY_ORDER))):
+        out.append("  %-16s %5d" % (cat, sum(1 for f in result["findings"] if f["category"] == cat)))
     out.append("")
     return "\n".join(out)
+
+
+def source_side_categories(args):
+    """没给 --source-root 时这些类别根本不会产生发现，不能据此判定「批准过期/数量变化」。"""
+    return set() if args.source_root else {"multipart", "response-header"}
+
+
+APPROVAL_FIELDS = ("reason", "owner", "count", "expires")
+
+
+def evaluate_approvals(approved_raw, items, today, skip_categories=None):
+    """判定每条「已批准缺口」是否仍然成立，返回 (active_categories, problems)。
+
+    批准必须是**数量有界、有人负责、会过期**的（review P1-3 / P2-4）：
+      { "reason": ..., "owner": ..., "count": 321, "expires": "2026-12-31" }
+    这样新增一个同类实例（count 变大）就会失败，而不是因为「这个类别早已批准」被静默放行。
+    旧的纯字符串批准视为元数据不全，直接不生效（避免历史写法继续开后门）。
+    """
+    skip_categories = skip_categories or set()
+    counts = {}
+    for f in items:
+        counts[f["category"]] = counts.get(f["category"], 0) + 1
+    active, problems = set(), []
+    for category in sorted(approved_raw):
+        spec = approved_raw[category]
+        actual = counts.get(category, 0)
+        if category in skip_categories and not actual:
+            continue
+        if not isinstance(spec, dict):
+            problems.append((category, "approval-metadata", "P1",
+                             "批准是旧的字符串写法，无法约束新增实例：请改为 {%s} 对象"
+                             % ", ".join(APPROVAL_FIELDS)))
+            continue
+        missing = [k for k in APPROVAL_FIELDS if spec.get(k) in (None, "")]
+        if missing:
+            problems.append((category, "approval-metadata", "P1",
+                             "批准缺少字段 %s：没有 owner/count/expires 的批准无法防止新实例被静默放行"
+                             % ", ".join(missing)))
+            continue
+        expires = str(spec.get("expires"))
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", expires):
+            problems.append((category, "approval-metadata", "P1",
+                             "expires 必须是 YYYY-MM-DD（当前 %r）" % spec.get("expires")))
+            continue
+        if expires < today:
+            problems.append((category, "approval-expired", "P1",
+                             "批准已于 %s 过期：请复核这些缺口是否仍然存在，更新 reason/count/expires 或修掉"
+                             % expires))
+            continue
+        try:
+            count = int(spec.get("count"))
+        except (TypeError, ValueError):
+            problems.append((category, "approval-metadata", "P1", "count 必须是整数"))
+            continue
+        if actual > count:
+            problems.append((category, "approval-exceeded", "P1",
+                             "批准上限 %d 条，但当前有 %d 条：新增的 %d 条必须单独处理"
+                             "（修掉，或显式提高上限并说明为什么可以接受）"
+                             % (count, actual, actual - count)))
+            continue
+        if actual < count:
+            problems.append((category, "stale-approval", "P2",
+                             "批准上限 %d 条，但当前只有 %d 条：缺口在减少，请下调 count（或删除该条批准）"
+                             % (count, actual)))
+            continue
+        active.add(category)
+    return active, problems
 
 
 def main(argv):
@@ -972,9 +1070,17 @@ def main(argv):
     ap.add_argument("--max-per-category", type=int, default=0,
                     help="每个类别人读报告最多列几条（0=全部；JSON 输出不受影响）")
     ap.add_argument("--strict", action="store_true", help="配合 --fail-on：P0/P1/P2/P3 全部算失败（默认只算 P0/P1）")
+    ap.add_argument("--today", default=None, help="判定批准是否过期的基准日期（YYYY-MM-DD，默认今天；测试用）")
     args = ap.parse_args(argv)
+    if args.today is None:
+        import datetime
+        args.today = datetime.date.today().isoformat()
 
     doc = load_contract(args.contract)
+    if args.config and not os.path.isfile(args.config):
+        # 显式给出的基线不存在时必须 fail-closed：否则 publicPaths/approvedGaps 全部为空，
+        # 门禁会以「没有发现」通过（review P2-2）。
+        die_input("审计基线不存在：%s" % args.config)
     if args.record_operations:
         ops = sorted("%s %s" % (m, p) for m, p, _ in iter_operations(doc))
         record_path = args.config or DEFAULT_BASELINE
@@ -982,7 +1088,7 @@ def main(argv):
             die_input("--record-operations 需要 --config（或仓内 docs/contract-baseline.json）")
         raw = load_json(record_path, "审计基线") if os.path.isfile(record_path) else {}
         raw["operations"] = ops
-        with open(args.config, "w", encoding="utf-8", newline="\n") as fh:
+        with open(record_path, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(raw, fh, ensure_ascii=False, indent=2)
             fh.write("\n")
         print("已记录 %d 个 operation 到 %s" % (len(ops), record_path))
@@ -1011,30 +1117,27 @@ def main(argv):
         audit_sources(doc, findings, args.source_root)
 
     if excluded:
-        findings.items = [f for f in findings.items if f["path"] not in excluded]
-    approved = set(cfg["approvedGaps"])
-    for f in findings.items:
-        f["approved"] = f["category"] in approved
-    # 过期批准（review r3）：已登记为「已批准」但已经没有任何发现的类别，必须从 approvedGaps 删掉。
-    # 否则以后这类问题再次出现时会继续被静默放行。作为 P2 发现输出（不阻断，但可见）。
-    present = {f["category"] for f in findings.items}
-    # 只有**真正跑过**的检查才能判定「批准过期」：源码侧类别在没给 --source-root 时不会产生发现，
-    # 不能据此说批准过期（否则单独审计契约时会误报）。
-    source_side = {"multipart", "response-header", "drift-removed"}
-    if not args.source_root:
-        present |= source_side
-    stale = sorted(approved - present)
-    for category in stale:
+        # excludePaths 只用于「框架兜底/协议面」这类刻意不审的路径；它**不能**吞掉 P0：
+        # 基线里被删除的端点无论是否命中排除规则都必须阻断（review P2-1）。
+        findings.items = [f for f in findings.items
+                          if f["path"] not in excluded or f["severity"] == "P0"]
+    approved, approval_problems = evaluate_approvals(
+        cfg["approvedGaps"], findings.items, args.today, skip_categories=source_side_categories(args))
+    for category, problem_category, severity, detail in approval_problems:
         findings.items.append({
-            "category": "stale-approval",
+            "category": problem_category,
             "label": category,
             "method": "",
             "path": "",
-            "detail": "approvedGaps 里登记了 %s，但当前没有任何该类发现：请删除这条批准（否则该类问题以后会被静默放行）" % category,
-            "suggestion": "从 docs/contract-baseline.json 的 approvedGaps 删除该条目",
-            "severity": "P2",
+            "detail": detail,
+            "suggestion": "更新 docs/contract-baseline.json 的 approvedGaps（reason/owner/count/expires），"
+                          "或修掉这些缺口后删除该条批准",
+            "severity": severity,
             "approved": False,
         })
+    for f in findings.items:
+        # 批准问题（approval-metadata/expired/exceeded/stale）自身永远不是「已批准」。
+        f["approved"] = f.get("approved") is not False and f["category"] in approved
 
     # 排序键必须覆盖渲染用到的全部字段，否则同键项的先后随 set/dict 迭代顺序浮动（会出现「同输入不同输出」）
     findings.items.sort(key=lambda f: (f["category"], MODE_ORDER.get(f["severity"], 9), f["path"],

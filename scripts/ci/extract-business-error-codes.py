@@ -2,8 +2,10 @@
 # -*- coding: utf-8 -*-
 """从 pim-api 源码提取业务错误码，生成/刷新 docs/business-error-codes.md 的「自动采集」段。
 
-业务错误码是 `ApiResponse.code` 的取值（`0` 表示成功），HTTP 状态由
-`ExceptionMiddleware.ResolveDomainStatusCode` 统一决定。客户端要按码分支，就必须有一张
+业务错误码是 `ApiResponse.code` 的取值（`0` 表示成功）。HTTP 状态优先由**调用点显式状态**决定
+（`Results.Conflict/NotFound`、`Results.Json(..., statusCode:)`、`Response.StatusCode`、
+`WriteDomainLikeErrorAsync` 的状态实参），否则回落到 `ExceptionMiddleware.ResolveDomainStatusCode`
+的映射（默认 400）。客户端要按码分支，就必须有一张
 「码 → HTTP 状态 → 含义 → 客户端该做什么」的表 —— OpenAPI 本身表达不了这层语义，
 所以它作为契约的补充文档随仓维护，并由 `audit-contract-gaps.py --biz-errors` 交叉校验。
 
@@ -51,13 +53,26 @@ ADVICE_BY_STATUS = {
 
 # `const int Foo = 码;` + `throw new DomainException(Foo, "...")`：码走常量时也要能采集。
 CONST_CODE_RE = re.compile(r"const\s+int\s+(\w+)\s*=\s*(\d{4,5})\s*;")
-# 消息允许普通字符串或插值字符串（$"..."），模板占位符在表里显示成 {…}
-CONST_THROW_RE = re.compile(r'(?:DomainException|ApiResponse<[^>]*>\.Error)\(\s*(\w+)\s*,\s*\$?"((?:[^"\\]|\\.)*)"')
-
-CODE_RE = re.compile(
-    r'(?:DomainException|ApiResponse<[^>]*>\.Error|ApiResponse\.Error|ThrowDomain)'
-    r'\(\s*(\d{4,5})\s*,\s*"((?:[^"\\]|\\.)*)"'
+# 类名（用于把 `PublicRegistrationPolicy.ClosedErrorCode` 解析成码）。
+CLASS_RE = re.compile(r"\b(?:class|record|struct)\s+(\w+)")
+# 所有把码交给客户端的调用点。消息形态不参与匹配 —— 消息可能是字面量、插值、变量，
+# 甚至第一个参数就是常量（review P1：只匹配 `(<数字>, "<字面量>")` 会漏掉 20 个码）。
+CALL_RE = re.compile(
+    r"(?P<call>DomainException|ApiResponse(?:<[^>]*>)?\.Error|WriteDomainLikeErrorAsync)\s*\("
 )
+STRING_CONST_RE = re.compile(r'const\s+string\s+(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"\s*;')
+# 调用点的 HTTP 状态：显式 `Results.NotFound(...)` / `Results.Conflict(...)`、
+# `Results.Json(..., statusCode: 503)`、以及 `Response.StatusCode = 500`。
+RESULTS_STATUS = (
+    (re.compile(r"Results\s*\.\s*Conflict\s*\("), 409),
+    (re.compile(r"Results\s*\.\s*NotFound\s*\("), 404),
+    (re.compile(r"Results\s*\.\s*Unauthorized\s*\("), 401),
+    (re.compile(r"Results\s*\.\s*Forbid\s*\("), 403),
+)
+RESPONSE_STATUS_RE = re.compile(r"Response\s*\.\s*StatusCode\s*=\s*(?:StatusCodes\s*\.\s*)?Status(\d{3})\w*")
+JSON_STATUS_RE = re.compile(r"statusCode\s*:\s*(?:StatusCodes\s*\.\s*)?Status(\d{3})\w*")
+JSON_STATUS_NUM_RE = re.compile(r"statusCode\s*:\s*(\d{3})\b")
+FIRST_ARG_LIMIT = 200
 MAP_RE = re.compile(r"ResolveDomainStatusCode[\s\S]{0,400}?=>\s*errorCode\s*switch\s*\{([\s\S]*?)\};")
 STATUS_NAMES = {
     "Status404NotFound": 404, "Status401Unauthorized": 401, "Status403Forbidden": 403,
@@ -205,33 +220,308 @@ def public_paths_from_source(source_root):
     return sorted(found)
 
 
+def read_source(path):
+    """读取源码。极少数 `.Designer.cs` 不是 UTF-8；静默跳过会让这些文件里的码永久漏采，
+    所以退回 latin-1（ASCII 部分不变，足够做码/调用点扫描）。"""
+    try:
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            return fh.read()
+    except UnicodeDecodeError:
+        with open(path, "r", encoding="latin-1") as fh:
+            return fh.read()
+
+
+def scan_const_codes(text):
+    """收集 `const int Name = 码;`，同时给出「类名.Name」与无歧义的裸名两种解析表。"""
+    classes = [(m.start(), m.group(1)) for m in CLASS_RE.finditer(text)]
+    qualified, bare = {}, {}
+    for m in CONST_CODE_RE.finditer(text):
+        name, value = m.group(1), int(m.group(2))
+        owner = None
+        for pos, class_name in classes:
+            if pos < m.start():
+                owner = class_name
+            else:
+                break
+        if owner:
+            qualified["%s.%s" % (owner, name)] = value
+        bare.setdefault(name, set()).add(value)
+    return qualified, bare
+
+
+def scan_string_consts(text):
+    classes = [(m.start(), m.group(1)) for m in CLASS_RE.finditer(text)]
+    qualified, bare = {}, {}
+    for m in STRING_CONST_RE.finditer(text):
+        name, value = m.group(1), m.group(2)
+        owner = None
+        for pos, class_name in classes:
+            if pos < m.start():
+                owner = class_name
+            else:
+                break
+        if owner:
+            qualified["%s.%s" % (owner, name)] = value
+        bare.setdefault(name, set()).add(value)
+    return qualified, bare
+
+
+def skip_cs_string(text, i, limit):
+    """`i` 指向 `$`/`@`/`"` 时返回字符串字面量之后的索引。
+
+    插值字符串里的 `{...}` 是表达式，表达式内部的字符串（`{string.Join(", ", xs)}`）
+    会被整体跳过，因此内部引号/逗号不会提前结束外层字面量。
+    """
+    j = i
+    if j < limit and text[j] == "$":
+        j += 1
+    verbatim = j < limit and text[j] == "@"
+    if verbatim:
+        j += 1
+    if j >= limit or text[j] != '"':
+        return i + 1
+    j += 1
+    depth = 0
+    while j < limit:
+        ch = text[j]
+        if not verbatim and ch == "\\":
+            j += 2
+            continue
+        if ch == '"':
+            if depth == 0:
+                return j + 1
+            j = skip_cs_string(text, j, limit)  # 表达式里的嵌套字符串
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+        j += 1
+    return limit
+
+
+def literal_message(expr):
+    m = re.match(r'\$?@?"', expr)
+    if not m:
+        return None
+    quote = m.end() - 1
+    end = skip_cs_string(expr, quote, len(expr))
+    if end <= quote + 1 or expr[end - 1] != '"':
+        return expr[quote + 1:]
+    return expr[quote + 1:end - 1]
+
+
+def resolve_code(first_arg, qualified, bare):
+    token = first_arg.strip().strip("()").strip()
+    if re.fullmatch(r"\d{4,5}", token):
+        return int(token)
+    if re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", token):
+        if token in qualified:
+            return qualified[token]
+        short = token.rsplit(".", 1)[-1]
+        if short in bare:
+            value = bare[short]
+            if isinstance(value, set):
+                return next(iter(value)) if len(value) == 1 else None
+            return value
+    return None
+
+
+def first_argument(text, start):
+    """从 `(` 之后取出**第一个实参**（按括号/字符串深度切分），最多看 200 字符。"""
+    depth, i, limit = 0, start, min(len(text), start + FIRST_ARG_LIMIT)
+    while i < limit:
+        ch = text[i]
+        if ch == '"' or (ch in "$@" and text[i + 1:i + 2] == '"'):
+            i = skip_cs_string(text, i, limit)
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                return text[start:i]
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return text[start:i]
+        i += 1
+    return text[start:limit]
+
+
+def nth_argument(text, start, index):
+    pos = start
+    for _ in range(index):
+        arg = first_argument(text, pos)
+        pos += len(arg)
+        while pos < len(text) and text[pos] in " \t\r\n":
+            pos += 1
+        if pos < len(text) and text[pos] == ",":
+            pos += 1
+        else:
+            return ""
+    return first_argument(text, pos)
+
+
+def code_argument_index(call_shape):
+    """`WriteDomainLikeErrorAsync(context, status, code, message)` 的码在第三个实参；
+    其余构造器/helper 的码都是第一个实参。"""
+    return 2 if call_shape == "WriteDomainLikeErrorAsync" else 0
+
+
+def message_after(text, call_end, code_index, string_consts):
+    """码后面的实参若是字符串字面量/插值字符串/字符串常量就取其内容，否则如实说明是变量。"""
+    second = nth_argument(text, call_end, code_index + 1).strip()
+    literal = literal_message(second)
+    if literal is not None:
+        return literal
+    qualified, bare = string_consts
+    token = second.strip("()")
+    if re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", token):
+        if token in qualified:
+            return qualified[token]
+        short = token.rsplit(".", 1)[-1]
+        if short in bare and len(bare[short]) == 1:
+            return next(iter(bare[short]))
+    if second:
+        return "（消息为变量或表达式，见源码）"
+    return ""
+
+
+def helper_status(text, call_end):
+    """`WriteDomainLikeErrorAsync(context, status, code, message)` 的第二个实参就是状态。"""
+    arg = nth_argument(text, call_end, 1)
+    m = re.search(r"Status(?:Codes\s*\.\s*)?Status(\d{3})", arg) or re.search(r"^\s*(\d{3})\s*$", arg)
+    return int(m.group(1)) if m else None
+
+
+def status_for_call(text, call_start, mapping, code):
+    """调用点上下文决定 HTTP 状态：显式 `Response.StatusCode = 500` 优先，
+    其次是 `Results.Conflict/NotFound/Unauthorized/Forbid` 与 `Results.Json(..., statusCode:)`，
+    都没有才回落到 `ResolveDomainStatusCode` 的映射（默认 400）。"""
+    before = text[max(0, call_start - 400):call_start]
+    explicit = None
+    for m in RESPONSE_STATUS_RE.finditer(before):
+        explicit = int(m.group(1))  # 取最近一次赋值
+    if explicit is not None:
+        return explicit
+
+    statement = before.rsplit(";", 1)[-1]
+    for pattern, status in RESULTS_STATUS:
+        if pattern.search(statement):
+            return status
+    if re.search(r"Results\s*\.\s*Json\s*\(", statement):
+        after = text[call_start:call_start + 400].split(";", 1)[0]
+        m = JSON_STATUS_RE.search(after) or JSON_STATUS_NUM_RE.search(after)
+        if m:
+            return int(m.group(1))
+    return mapping.get(code, 400)
+
+
 def collect(source_root):
     mapping = {}
     entries = {}
+    sources = []
+    qualified, bare_sets = {}, {}
+    string_qualified, string_bare_sets = {}, {}
+
     for path in iter_cs(source_root):
         try:
-            with open(path, "r", encoding="utf-8-sig") as fh:
-                text = fh.read()
-        except (OSError, UnicodeDecodeError):
+            text = read_source(path)
+        except OSError:
             continue
+        sources.append((path, text))
         if mapping == {} and "ResolveDomainStatusCode" in text:
             found = parse_status_map(text)
             if found:
                 mapping = found
+        file_qualified, file_bare = scan_const_codes(text)
+        qualified.update(file_qualified)
+        for name, values in file_bare.items():
+            bare_sets.setdefault(name, set()).update(values)
+        file_str_qualified, file_str_bare = scan_string_consts(text)
+        string_qualified.update(file_str_qualified)
+        for name, values in file_str_bare.items():
+            string_bare_sets.setdefault(name, set()).update(values)
+    # 只在全仓唯一时才按裸名解析：同名常量指向不同码时宁可漏采，也不猜。
+    bare = {name: next(iter(values)) for name, values in bare_sets.items() if len(values) == 1}
+    string_bare = {name: next(iter(values)) for name, values in string_bare_sets.items() if len(values) == 1}
+    string_consts = (string_qualified, string_bare)
+
+    for path, text in sources:
         rel = os.path.relpath(path, REPO_ROOT).replace("\\", "/")
         # 保留源码里的原始写法（含前导零）：契约说明文字里常用 `02057` 这种给人读的写法。
         written = {int(value): value for _name, value in CONST_CODE_RE.findall(text)}
-        const_codes = {name: int(value) for name, value in CONST_CODE_RE.findall(text)}
-        pairs = [(int(c), msg) for c, msg in CODE_RE.findall(text)]
-        pairs += [(const_codes[name], msg) for name, msg in CONST_THROW_RE.findall(text) if name in const_codes]
-        for code, message in pairs:
-            code = int(code)
-            entry = entries.setdefault(code, {"messages": [], "files": set(), "written": set()})
-            entry.setdefault("written", set()).add(written.get(code, "%d" % code))
+        for match in CALL_RE.finditer(text):
+            index = code_argument_index(match.group("call"))
+            code_arg = nth_argument(text, match.end(), index)
+            code = resolve_code(code_arg, qualified, bare)
+            if code is None:
+                continue
+            entry = entries.setdefault(
+                code, {"messages": [], "files": set(), "written": set(), "statuses": set()})
+            # 数字字面量按源码原样保留（`02057` 与 `2057` 是同一个码，但文档里保持可搜索的写法）；
+            # 常量形式的码用它声明处的写法。
+            literal_token = code_arg.strip()
+            entry["written"].add(
+                literal_token if re.fullmatch(r"\d{4,5}", literal_token) else written.get(code, "%d" % code))
             entry["files"].add(rel)
-            if message not in entry["messages"]:
+            if match.group("call") == "WriteDomainLikeErrorAsync":
+                helper = helper_status(text, match.end())
+                if helper is not None:
+                    entry["statuses"].add(helper)
+                # 解析不出状态（变量/三元表达式）就留空：由其它调用点或下面的默认值补，
+                # 不要把「不知道」写成 400。
+            else:
+                entry["statuses"].add(status_for_call(text, match.start(), mapping, code))
+            message = message_after(text, match.end(), index, string_consts)
+            if message and message not in entry["messages"]:
                 entry["messages"].append(message)
-    return mapping, entries
+
+        # 只经由常量/DTO 返回、没有被直接传给 Error(...) 的码（例如
+        # `const int PasswordTooLongCode = 40007` → `new CredentialValidationError(...)`，
+        # 端点再用 `error.Code` 返回）。常量名带 `Code` 才收录，避免把普通数字常量当成业务码。
+        for const_match in CONST_CODE_RE.finditer(text):
+            name = const_match.group(1)
+            if "Code" not in name:
+                continue
+            code = int(const_match.group(2))
+            entry = entries.setdefault(
+                code, {"messages": [], "files": set(), "written": set(), "statuses": set()})
+            entry["written"].add(const_match.group(2))
+            entry["files"].add(rel)
+            if not entry["statuses"]:
+                entry["statuses"].add(mapping.get(code, 400))
+            message = entry["messages"][:]  # 已由调用点采集时不再补占位消息
+            if not message:
+                paired = name.replace("ErrorCode", "Message").replace("Code", "Message")
+                text_const = string_qualified.get(paired) or (
+                    string_bare.get(paired) if len(string_bare_sets.get(paired, ())) == 1 else None)
+                placeholder = text_const or "（经常量/DTO 返回，见源码）"
+                if placeholder not in entry["messages"]:
+                    entry["messages"].append(placeholder)
+    return mapping, entries, (qualified, bare)
+
+
+def find_unattributed(source_root, entries, const_maps):
+    """独立的安全网（review P1）：用同样的「第一个实参里的第一个数字」粗扫，
+    找出抽取器没有归因到 entries 的码。`--check` 会因此失败，避免抽取器规则
+    再次悄悄漏采（文档与生成器互相印证是循环论证）。"""
+    qualified, bare = const_maps
+    missing = {}
+    for path in iter_cs(source_root):
+        try:
+            text = read_source(path)
+        except OSError:
+            continue
+        rel = os.path.relpath(path, REPO_ROOT).replace("\\", "/")
+        for match in CALL_RE.finditer(text):
+            index = code_argument_index(match.group("call"))
+            arg = nth_argument(text, match.end(), index)
+            code = resolve_code(arg, qualified, bare)
+            if code is None:
+                m = re.search(r"(?<![\w.])(\d{4,5})(?![\w.])", arg)
+                code = int(m.group(1)) if m else None
+            if code is not None and code not in entries:
+                missing.setdefault(code, set()).add(rel)
+    return missing
 
 
 def module_of(files):
@@ -248,12 +538,19 @@ def render(mapping, entries):
     # 客户端只看得到「哪个码会到达它」，看不到「谁抛的」。
     for code in sorted(set(entries) | set(mapping)):
         entries.setdefault(code, {"messages": [], "files": set(), "written": set()})
-        status = mapping.get(code, 400)
+        statuses = sorted(entries[code].get("statuses") or {mapping.get(code, 400)})
         msgs = "；".join(entries[code]["messages"][:3])
         msgs = msgs.replace("|", "\\|")
-        advice = ADVICE_BY_STATUS.get(status, "见 HTTP 状态通用处理")
+        if len(statuses) == 1:
+            status_cell = "%d" % statuses[0]
+            advice = ADVICE_BY_STATUS.get(statuses[0], "见 HTTP 状态通用处理")
+        else:
+            # 同一个码在不同路径上返回不同状态（例如 02009：校验失败 400、Outlook 需重连 409）。
+            status_cell = " / ".join("%d" % s for s in statuses)
+            advice = "按具体状态处理：" + "；".join(
+                "%d %s" % (s, ADVICE_BY_STATUS.get(s, "见 HTTP 状态通用处理")) for s in statuses)
         shown = " / ".join(sorted(entries[code].get("written") or {"%d" % code}))
-        lines.append("| %s | %d | %s | %s | %s |" % (shown, status, module_of(entries[code]["files"]), msgs, advice))
+        lines.append("| %s | %s | %s | %s | %s |" % (shown, status_cell, module_of(entries[code]["files"]), msgs, advice))
     lines += ["", END]
     return "\n".join(lines)
 
@@ -264,14 +561,21 @@ DOC_TEMPLATE = """# 业务错误码表（Business error codes）
 > `ApiResponse.code` 的业务语义。客户端（Web / Android / Windows / 外部开发者）按这里的码做分支，
 > 前端展示 `message`、按「客户端建议动作」处理。
 >
-> - 生成方式：`python3 scripts/ci/extract-business-error-codes.py`（从 `pim-api` 源码的
->   `DomainException(<码>, "<消息>")` / `ApiResponse<...>.Error(<码>, "<消息>")` 自动采集）。
+> - 生成方式：`python3 scripts/ci/extract-business-error-codes.py`。采集范围覆盖
+>   `DomainException(...)`、`ApiResponse<...>.Error(...)`、`WriteDomainLikeErrorAsync(context, status, code, ...)`
+>   与名字带 `Code` 的 `const int`（含 `$"..."` 插值、变量消息、`类名.常量` 写法）；消息来自第二个实参或配对的
+>   `const string ...Message`，取不到时如实写「消息为变量或表达式，见源码」。
 > - 校验方式：`python3 scripts/ci/audit-contract-gaps.py` 会要求「契约文本里出现的码」都在本表内；
->   `python3 scripts/ci/extract-business-error-codes.py --check` 判断本表是否落后于源码。
+>   `python3 scripts/ci/extract-business-error-codes.py --check` 判断本表是否落后于源码（并做反向完整性核对：
+>   源码里出现、抽取器没归因的码会让它失败，而不是被静默漏掉）。
 > - 约定：
->   1. `code = 0` 表示成功，其余均为业务失败；HTTP 状态由 `ExceptionMiddleware.ResolveDomainStatusCode` 决定；
->   2. 客户端**不要**按 message 字符串判断错误类型，只按 code；
->   3. 新增业务码必须同时出现在契约相关端点的错误响应说明里，并在 PR 正文声明影响面。
+>   1. `code = 0` 表示成功，其余均为业务失败；HTTP 状态**优先取调用点显式状态**（`Results.Conflict/NotFound`、
+>      `Results.Json(..., statusCode:)`、`Response.StatusCode`、helper 的状态实参），否则用
+>      `ExceptionMiddleware.ResolveDomainStatusCode` 的映射（默认 400）。同一个码在不同路径上状态不同时，
+>      HTTP 列会写成 `400 / 409` 并给出按状态处理的建议；
+>   2. 客户端**不要**按 message 字符串判断错误类型，只按 code；**HTTP 状态也不要用来推断业务码**；
+>   3. 表中「码」列保留源码写法（如 `02057`），客户端收到的是整数 `2057`，前导零只是源码可读性；
+>   4. 新增业务码必须同时出现在契约相关端点的错误响应说明里，并在 PR 正文声明影响面。
 >
 {generated}
 """
@@ -289,10 +593,16 @@ def main(argv):
     if not os.path.isdir(args.source_root):
         print("源码根目录不存在：%s" % args.source_root, file=sys.stderr)
         return 4
-    mapping, entries = collect(args.source_root)
+    mapping, entries, const_maps = collect(args.source_root)
     if not entries:
         print("没有从源码采集到任何业务错误码：%s" % args.source_root, file=sys.stderr)
         return 4
+    unattributed = find_unattributed(args.source_root, entries, const_maps)
+    if unattributed:
+        detail = ", ".join("%d（%s）" % (code, ", ".join(sorted(files)[:2]))
+                           for code, files in sorted(unattributed.items()))
+        print("抽取器漏采了源码里的业务码，拒绝生成/通过：%s" % detail, file=sys.stderr)
+        return 1 if args.check else 4
     generated = render(mapping, entries)
 
     if args.audit_config:

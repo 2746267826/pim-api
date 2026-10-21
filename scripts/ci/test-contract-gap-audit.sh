@@ -291,8 +291,10 @@ expect_contains "② 同一 operation 的多项缺失合并成一条" "missing: 
 expect_contains "③ 缺 schema 描述 → Thing 也要报" "Thing — schema 无 description" "$OUT"
 expect_contains "③ 属性缺描述 → priority" "priority" "$OUT"
 expect_contains "④ query 参数缺 default/enum/description → pageSize" "GET /api/v1/things pageSize — 无 description、无 default" "$OUT"
-expect_contains "⑤ status 是枚举型字段但无 enum" "Thing.status — 枚举型字段 'status' 是裸 string" "$OUT"
-expect_not_contains "⑤ priority 是整型、不在枚举型名单里，不报 enum-typed" "[enum-typed] Thing.priority" "$OUT"
+# review P3-1：CJK 正则此前少了字符类方括号（`一-鿿` 只能匹配字面串），
+# 「description 里用中文列出取值」这条豁免从未生效，所有字段都被报。现在两条都要成立。
+expect_contains "⑤ priority 是枚举型整数且无说明 → 报 enum-typed" "Thing.priority — 枚举型字段 'priority' 是裸 integer" "$OUT"
+expect_not_contains "⑤ status 的中文 description 已列出取值 → 不报" "Thing.status —" "$OUT"
 expect_contains "⑥ PUT 缺 requestBody" "PUT /api/v1/things — 写操作没有声明 requestBody" "$OUT"
 expect_contains "⑦ multipart 符号出现但契约未声明 multipart → 报出具体端点" "POST /api/v1/things/import — 用 [FromForm]/IFormFile/ReadFormAsync 读表单" "$OUT"
 expect_contains "⑧ GET /api/v1/things 的 200 已声明但缺 5xx" "GET /api/v1/things — 客户端会解析成功响应，但没有声明 5xx" "$OUT"
@@ -339,15 +341,29 @@ expect_exit "⑭ 非法 JSON 退出 4" 4 $RC
 run --contract "$TMP/gappy.json" --baseline "$TMP/does-not-exist.json" >/dev/null 2>&1; RC=$?
 expect_exit "⑭ 基线不存在退出 4" 4 $RC
 
-# ⑭b 过期批准（review r3）：approvedGaps 里登记了一个不存在的类别 → 必须报 stale-approval
-"$PY" - "$TMP/clean.json" "$TMP/cfg_stale.json" <<'PY'
+# ⑭b 批准数量下降（review P1-3）：批准是「数量有界」的，实际少于上限时提示下调，
+#     而不是因为「这个类别早已批准」继续静默放行。
+"$PY" - "$TMP/cfg_stale.json" <<'PY'
 import json, sys
-sys.path.insert(0, '')
-cfg = {"publicPaths": [], "excludePaths": [], "approvedGaps": {"no-such-category": "stale"}, "operations": []}
-json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"))
+cfg = {"publicPaths": [], "excludePaths": [], "operations": [],
+       "approvedGaps": {"no-such-category":
+                        {"reason": "stale", "owner": "test", "count": 3, "expires": "2999-12-31"}}}
+json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"))
 PY
 OUT="$(run --contract "$TMP/clean.json" --config "$TMP/cfg_stale.json" 2>&1)"
-expect_contains "⑭b 已批准但零发现的类别 → stale-approval" "no-such-category — approvedGaps 里登记了" "$OUT"
+expect_contains "⑭b 批准上限高于实际 → stale-approval" "no-such-category — 批准上限 3 条，但当前只有 0 条" "$OUT"
+
+# ⑭c 旧式「整类批准」字符串不再生效（review P1-3）：必须报 approval-metadata 并阻断，
+#     否则新增实例会被历史批准静默放行。
+"$PY" - "$TMP/cfg_legacy.json" <<'PY'
+import json, sys
+cfg = {"publicPaths": [], "excludePaths": [], "operations": [],
+       "approvedGaps": {"no-such-category": "历史遗留的整类批准"}}
+json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+OUT="$(run --contract "$TMP/clean.json" --config "$TMP/cfg_legacy.json" --fail-on 2>&1)"; RC=$?
+expect_exit "⑭c 旧式字符串批准 → 门禁失败" 1 $RC
+expect_contains "⑭c 指出批准元数据不全" "no-such-category — 批准是旧的字符串写法" "$OUT"
 
 # ⑮ 源码侧检查必须真的能报（review N-1）：此前源码路由键与契约键格式不一致，
 #    multipart / 手工解析请求体 / 字段数三类检查永不触发，而测试因建议文案里含关键字而误绿。

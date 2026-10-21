@@ -71,15 +71,43 @@ expect_rc "② 新类别 P1 缺口让门禁失败" 1 $?
 grep -q "POST /api/v1/calendar/events — 写操作没有声明 requestBody" "$TMP/bad.txt" \
   && pass "② 失败信息指出具体端点" || fail "② 失败信息没有指出端点"
 
-# ③ 同一条缺口登记为已批准 → 放行
-"$PY" - "$CONFIG" "$TMP/cfg2.json" <<'PY'
+# ③ 同一条缺口登记为已批准 → 放行。批准必须写清 owner/count/expires（review P1-3）：
+#    数量按当前实际缺口数登记，新增实例会让 count 对不上。
+"$PY" "$AUDIT" --contract "$TMP/bad.json" --config "$TMP/cfg.json" --json >"$TMP/bad-audit.json" 2>/dev/null
+"$PY" - "$CONFIG" "$TMP/cfg2.json" "$TMP/bad-audit.json" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1], encoding="utf-8"))
-cfg["approvedGaps"]["request-body"] = "测试用：本用例在临时基线里登记该类别"
+report = json.load(open(sys.argv[3], encoding="utf-8"))
+# 上限按「审计器实际产出的条数」登记，而不是自己另算一遍（否则会漏掉 is_api 等过滤条件）。
+n = sum(1 for f in report["findings"] if f["category"] == "request-body")
+cfg["approvedGaps"]["request-body"] = {"reason": "测试用：本用例在临时基线里登记该类别",
+                                       "owner": "test", "count": n, "expires": "2999-12-31"}
 json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False)
 PY
 "$PY" "$AUDIT" --contract "$TMP/bad.json" --config "$TMP/cfg2.json" --fail-on >/dev/null 2>&1
 expect_rc "③ 已批准后放行（批准机制生效）" 0 $?
+
+# ③b 新增一个同类实例 → 超出批准上限，门禁必须失败（不是「这个类别早已批准」就永远放行）。
+"$PY" - "$TMP/cfg2.json" "$TMP/cfg_exceeded.json" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+cfg["approvedGaps"]["request-body"]["count"] -= 1
+json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False)
+PY
+"$PY" "$AUDIT" --contract "$TMP/bad.json" --config "$TMP/cfg_exceeded.json" --fail-on >"$TMP/exceeded.txt" 2>&1
+expect_rc "③b 新增实例超出批准上限 → 门禁失败" 1 $?
+grep -q "批准上限" "$TMP/exceeded.txt" && pass "③b 指出超出上限的类别" || fail "③b 没有说明超出上限"
+
+# ③c 过期的批准不再生效（review P2-4：批准会过期，避免永久豁免）。
+"$PY" - "$TMP/cfg2.json" "$TMP/cfg_expired.json" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+cfg["approvedGaps"]["request-body"]["expires"] = "2000-01-01"
+json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False)
+PY
+"$PY" "$AUDIT" --contract "$TMP/bad.json" --config "$TMP/cfg_expired.json" --fail-on >"$TMP/expired.txt" 2>&1
+expect_rc "③c 过期批准 → 门禁失败" 1 $?
+grep -q "已于 2000-01-01 过期" "$TMP/expired.txt" && pass "③c 指出过期日期" || fail "③c 没有说明过期"
 
 # ④ --strict：把某个 P3 类别（prop-desc）的批准项拿掉后，--strict 必须失败；
 #    恢复批准后，--strict 也应放行（证明 strict 确实看 P2/P3，而不是永远红）。
@@ -115,12 +143,30 @@ expect_rc "④b 基线里有、契约里没有的端点 → 门禁失败" 1 $?
 grep -q "基线（已发布的客户端契约）里有、当前契约没有" "$TMP/removed.txt" \
   && pass "④b 失败原因写明「端点被删除」" || fail "④b 失败原因没有写明删除"
 
+# ④c excludePaths 只用于「刻意不审」的路径，不能吞掉 P0（review P2-1）：
+#     把被删端点加进 excludePaths，门禁仍必须失败。
+FIRST_PATH="$("$PY" -c "import json,sys;print(sorted(json.load(open(sys.argv[1],encoding='utf-8'))['paths'])[0])" "$CONTRACT")"
+"$PY" - "$CONFIG" "$TMP/cfg_excl.json" "$FIRST_PATH" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+cfg["excludePaths"] = sorted(set(cfg.get("excludePaths") or []) | {sys.argv[3]})
+json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False)
+PY
+"$PY" "$AUDIT" --contract "$TMP/removed.json" --config "$TMP/cfg_excl.json" --fail-on >"$TMP/excl.txt" 2>&1
+expect_rc "④c excludePaths 不能吞掉端点删除（P0）" 1 $?
+grep -q "基线（已发布的客户端契约）里有" "$TMP/excl.txt" \
+  && pass "④c 被排除的路径仍然报出删除" || fail "④c 删除被 excludePaths 吞掉了"
+
 # ⑤ 非法输入 fail-closed
 echo '{ not json' >"$TMP/broken.json"
 "$PY" "$AUDIT" --contract "$TMP/broken.json" --config "$CONFIG" >/dev/null 2>&1
 expect_rc "⑤ 非法契约退出 4" 4 $?
 "$PY" "$AUDIT" --contract "$TMP/missing.json" --config "$CONFIG" >/dev/null 2>&1
 expect_rc "⑤ 契约缺失退出 4" 4 $?
+# review P2-2：显式给了不存在的 --config 时不能退化成「空基线」（否则 publicPaths/批准全空，
+# 门禁会以「没有发现」通过），必须 fail-closed。
+"$PY" "$AUDIT" --contract "$CONTRACT" --config "$TMP/no-such-config.json" >/dev/null 2>&1
+expect_rc "⑤b 显式 --config 不存在 → 退出 4" 4 $?
 
 # ⑥ 包装脚本透传退出码（用临时副本仓，避免改动真实仓）
 mkdir -p "$TMP/repo/scripts/ci" "$TMP/repo/contract" "$TMP/repo/docs"

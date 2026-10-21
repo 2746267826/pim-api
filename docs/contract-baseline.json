@@ -13,18 +13,78 @@
     "/api/{path}"
   ],
   "approvedGaps": {
-    "op-meta": "328 个 operation 全缺 operationId/summary：已有工程项在补（endpoint .WithName/.WithSummary），补完移除本条",
-    "schema-desc": "578 个 schema 无 description：同上，随 xmldoc 导出逐步补齐",
-    "prop-desc": "3190 个属性无 description：同上",
-    "query-param": "336 个 query 参数缺 default/enum/description：随 AsParameters 模型拆解逐步补齐",
-    "pascal-query": "120 个 PascalCase query 参数（mobile analytics）：需后端改为 camelCase 显式参数或 [FromQuery(Name=...)]",
-    "error-semantics": "285 个 operation 的 401/403 等错误响应没有 schema：需统一错误响应类型",
-    "enum-typed": "136 个枚举型字段无 enum：需逐模块导出枚举（priority 值域见评审报告 P0-2）",
-    "is-api-response": "5 个裸对象响应（/api/version、/health、client/shell/latest 等）：属协议面，短期保留",
-    "request-body": "42 个写操作无 requestBody：逐个确认「真的没有」或补 schema",
-    "no-5xx": "/api/v1/files/google/callback（Google OAuth 回跳，失败时浏览器直接展示上游页面）：待后端补 5xx 声明后移除本条",
-    "response-header": "源码设置了但契约未声明的响应头（login 的 Retry-After、ops 的 X-Truncated/206、export-ics 的 ETag/Content-Disposition）：新发现，待后端补 headers 后删除本条",
-    "multipart": "POST /api/v1/files/items/upload 与 quick-notes/attachments 用 ReadFormAsync 读表单但契约未声明 multipart：待后端补 requestBody 后**必须**删除本条（这是新发现的缺口，不是历史遗留）"
+    "op-meta": {
+      "reason": "328 个 operation 全缺 operationId/summary：已有工程项在补（endpoint .WithName/.WithSummary），补完移除本条",
+      "owner": "pim-api backend",
+      "count": 321,
+      "expires": "2026-12-31"
+    },
+    "schema-desc": {
+      "reason": "578 个 schema 无 description：同上，随 xmldoc 导出逐步补齐",
+      "owner": "pim-api backend",
+      "count": 578,
+      "expires": "2026-12-31"
+    },
+    "prop-desc": {
+      "reason": "3190 个属性无 description：同上",
+      "owner": "pim-api backend",
+      "count": 3190,
+      "expires": "2026-12-31"
+    },
+    "query-param": {
+      "reason": "336 个 query 参数缺 default/enum/description：随 AsParameters 模型拆解逐步补齐",
+      "owner": "pim-api backend",
+      "count": 336,
+      "expires": "2026-12-31"
+    },
+    "pascal-query": {
+      "reason": "120 个 PascalCase query 参数（mobile analytics）：需后端改为 camelCase 显式参数或 [FromQuery(Name=...)]",
+      "owner": "pim-api backend",
+      "count": 120,
+      "expires": "2026-12-31"
+    },
+    "error-semantics": {
+      "reason": "285 个 operation 的 401/403 等错误响应没有 schema：需统一错误响应类型",
+      "owner": "pim-api backend",
+      "count": 285,
+      "expires": "2026-12-31"
+    },
+    "enum-typed": {
+      "reason": "136 个枚举型字段无 enum：需逐模块导出枚举（priority 值域见评审报告 P0-2）",
+      "owner": "pim-api backend",
+      "count": 135,
+      "expires": "2026-12-31"
+    },
+    "is-api-response": {
+      "reason": "5 个裸对象响应（/api/version、/health、client/shell/latest 等）：属协议面，短期保留",
+      "owner": "pim-api backend",
+      "count": 5,
+      "expires": "2026-12-31"
+    },
+    "request-body": {
+      "reason": "42 个写操作无 requestBody：逐个确认「真的没有」或补 schema",
+      "owner": "pim-api backend",
+      "count": 42,
+      "expires": "2026-12-31"
+    },
+    "no-5xx": {
+      "reason": "/api/v1/files/google/callback（Google OAuth 回跳，失败时浏览器直接展示上游页面）：待后端补 5xx 声明后移除本条",
+      "owner": "pim-api backend",
+      "count": 1,
+      "expires": "2026-12-31"
+    },
+    "response-header": {
+      "reason": "源码设置了但契约未声明的响应头（login 的 Retry-After、ops 的 X-Truncated/206、export-ics 的 ETag/Content-Disposition）：新发现，待后端补 headers 后删除本条",
+      "owner": "pim-api backend",
+      "count": 6,
+      "expires": "2026-12-31"
+    },
+    "multipart": {
+      "reason": "POST /api/v1/files/items/upload 与 quick-notes/attachments 用 ReadFormAsync 读表单但契约未声明 multipart：待后端补 requestBody 后**必须**删除本条（这是新发现的缺口，不是历史遗留）",
+      "owner": "pim-api backend",
+      "count": 2,
+      "expires": "2026-12-31"
+    }
   },
   "$comment": "由 scripts/ci/extract-business-error-codes.py --audit-config 维护 publicPaths；excludePaths 与 approvedGaps 由人工维护。审计器：scripts/ci/audit-contract-gaps.py",
   "operations": [
