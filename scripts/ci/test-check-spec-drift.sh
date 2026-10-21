@@ -23,7 +23,17 @@
 #   ⑲ 空规格 / 只有标题 → 退出 4；
 #   ⑳ 契约里的 404 兜底 `/api/{*path}` 不算真实端点；
 #   ㉑ 契约里无约束的参数段能匹配文档的字面段（`{type}` 可取 `event`）；
-#   ㉒ 文档写参数段、契约是字面段 → 不是同一端点（照抄会 404）。
+#   ㉒ 文档写参数段、契约是字面段 → 不是同一端点（照抄会 404）；
+#   ㉓ 路径级 ignore 不掩护契约里已存在路径上的方法删除（并报 stale-ignore）；
+#   ㉔ 方法级 ignore 只豁免被点名的方法；
+#   ㉕ 全部引用都被 ignore 的规格 → 退出 4（不能静默放行）；
+#   ㉖ 具体裸路径不被更长的路径前缀掩护；
+#   ㉗ 方法枚举 `GET, POST /path` 逐个方法检查；
+#   ㉘ 真实兜底形状 `/api/{path}`（仅 404/500）同样不算端点；
+#   ㉙ 转述「详见 `GET /x`」只在同一端点已正式声明时跳过；
+#   ㉚/㉛ 行内代码里的 drift-ignore / drift-base 只是示例，不生效。
+#
+# 末尾断言用例总数（60），删测试会让门禁失败。
 #
 # 用法：bash scripts/ci/test-check-spec-drift.sh
 # ---------------------------------------------------------------------------
@@ -82,6 +92,7 @@ MD
 
 cat >"$TMP/spec-ignore.md" <<'MD'
 # 规格
+- 正常端点：`GET /api/v1/pc/summary`
 - `POST /api/v1/stats/upload` <!-- drift-ignore: /api/v1/stats/upload -->
 MD
 
@@ -240,6 +251,94 @@ printf '<!-- drift-base: /api/v1 -->\n# 规格\n- 伪参数：`GET /pc/summary/{
 expect_rc "㉒ 文档参数段不能匹配契约字面段" 1 $?
 has "㉒ 报 missing-path" "[missing-path] GET /api/v1/pc/summary/{}" "$TMP/revparam.txt"
 
+# ㉓ 路径级 ignore 不能掩护契约里已存在路径上的方法删除（review P1-1）
+cat >"$TMP/contract-ignore-method.json" <<'JSON'
+{ "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
+  "paths": { "/api/v1/pc/summary": {
+    "get": { "responses": { "200": { "description": "OK" } } },
+    "post": { "responses": { "200": { "description": "OK" } } } } } }
+JSON
+printf '# 规格\n- 删除：`DELETE /api/v1/pc/summary` <!-- drift-ignore: /api/v1/pc/summary -->\n' \
+  >"$TMP/spec-ignore-method.md"
+"$PY" "$CHECK" --spec "$TMP/spec-ignore-method.md" --contract "$TMP/contract-ignore-method.json" \
+  >"$TMP/ignore-method.txt" 2>&1
+expect_rc "㉓ 路径级 ignore 不掩护已存在路径的方法删除" 1 $?
+has "㉓ 仍报 missing-method" "[missing-method] DELETE /api/v1/pc/summary" "$TMP/ignore-method.txt"
+has "㉓ 并提示该 ignore 已过期" "[stale-ignore] /api/v1/pc/summary" "$TMP/ignore-method.txt"
+
+# ㉔ 方法级 ignore 只豁免被点名的方法
+cat >"$TMP/contract-ignore-one.json" <<'JSON'
+{ "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
+  "paths": { "/api/v1/pc/summary": { "get": { "responses": { "200": { "description": "OK" } } } } } }
+JSON
+printf '# 规格\n- 正常：`GET /api/v1/pc/summary`\n- 不适用：`POST /api/v1/pc/summary` <!-- drift-ignore: POST /api/v1/pc/summary -->\n' \
+  >"$TMP/spec-ignore-one.md"
+"$PY" "$CHECK" --spec "$TMP/spec-ignore-one.md" --contract "$TMP/contract-ignore-one.json" \
+  >"$TMP/ignore-one.txt" 2>&1
+expect_rc "㉔ 方法级 ignore 只豁免该方法" 0 $?
+hasnt "㉔ 不再报被豁免的方法" "POST /api/v1/pc/summary" "$TMP/ignore-one.txt"
+
+# ㉕ 全部引用都被 ignore → fail-closed（旧实现会 0 findings 放行，review P1-2）
+printf '# 规格\n- 本机协议：`GET /browser/ping` <!-- drift-ignore: /browser/ping -->\n' \
+  >"$TMP/spec-all-ignored.md"
+"$PY" "$CHECK" --spec "$TMP/spec-all-ignored.md" --contract "$TMP/contract.json" >/dev/null 2>&1
+expect_rc "㉕ 全部被豁免的规格退出 4" 4 $?
+
+# ㉖ 具体裸路径不能被更长的路径前缀掩护（review P2-1）
+cat >"$TMP/contract-prefix-cover.json" <<'JSON'
+{ "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
+  "paths": { "/api/v1/pc/summary/detail": { "get": { "responses": { "200": { "description": "OK" } } } } } }
+JSON
+printf '# 规格\n- 集合端点：`/api/v1/pc/summary`\n' >"$TMP/spec-prefix-cover.md"
+"$PY" "$CHECK" --spec "$TMP/spec-prefix-cover.md" --contract "$TMP/contract-prefix-cover.json" \
+  >"$TMP/prefix-cover.txt" 2>&1
+expect_rc "㉖ 具体裸路径删除后报红" 1 $?
+has "㉖ 报 missing-prefix" "[missing-prefix] /api/v1/pc/summary" "$TMP/prefix-cover.txt"
+
+# ㉗ 方法枚举逐个检查：契约只有 GET 时 `GET, POST` 必须报 POST（review P2-2）
+printf '# 规格\n- 枚举：`GET, POST /api/v1/pc/summary`\n' >"$TMP/spec-enum2.md"
+"$PY" "$CHECK" --spec "$TMP/spec-enum2.md" --contract "$TMP/contract.json" >"$TMP/enum2.txt" 2>&1
+expect_rc "㉗ 枚举里缺失的方法报红" 1 $?
+has "㉗ 报出 POST 缺失" "[missing-method] POST /api/v1/pc/summary" "$TMP/enum2.txt"
+hasnt "㉗ 已有的 GET 不误报" "[missing-method] GET /api/v1/pc/summary" "$TMP/enum2.txt"
+
+# ㉘ 真实契约的兜底形状 `/api/{path}`（无 *、仅 404/500）同样不算端点（review P2-4）
+cat >"$TMP/contract-catchall-real.json" <<'JSON'
+{ "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
+  "paths": { "/api/{path}": {
+    "get": { "responses": { "404": { "description": "Not Found" }, "500": { "description": "Error" } } },
+    "post": { "responses": { "404": { "description": "Not Found" }, "500": { "description": "Error" } } } } } }
+JSON
+printf '# 规格\n- 伪端点：`GET /api/does-not-exist`\n' >"$TMP/spec-catchall-real.md"
+"$PY" "$CHECK" --spec "$TMP/spec-catchall-real.md" --contract "$TMP/contract-catchall-real.json" \
+  >"$TMP/catchall-real.txt" 2>&1
+expect_rc "㉘ 真实兜底形状不匹配任意路径" 1 $?
+has "㉘ 报出伪端点" "GET /api/does-not-exist" "$TMP/catchall-real.txt"
+
+# ㉙ 转述（「详见 `GET /x`」）只在同一端点已正式声明时跳过（review P3-4）
+printf '# 规格\n- 详见 `GET /api/v1/pc/nowhere`\n' >"$TMP/spec-quoted-only.md"
+"$PY" "$CHECK" --spec "$TMP/spec-quoted-only.md" --contract "$TMP/contract.json" >"$TMP/quoted-only.txt" 2>&1
+expect_rc "㉙ 只有转述的端点仍被检查" 1 $?
+has "㉙ 报出转述中的缺失端点" "GET /api/v1/pc/nowhere" "$TMP/quoted-only.txt"
+
+printf '# 规格\n- 正式：`GET /api/v1/pc/summary`\n- 详见 `GET /api/v1/pc/summary`\n' \
+  >"$TMP/spec-quoted-dup.md"
+"$PY" "$CHECK" --spec "$TMP/spec-quoted-dup.md" --contract "$TMP/contract.json" >/dev/null 2>&1
+expect_rc "㉙ 已正式声明的端点允许转述" 0 $?
+
+# ㉚ 行内代码里的指令只是示例：反引号内的 drift-ignore 不能豁免真实引用（review P2-3）
+printf '# 规格\n- 写法示例：`<!-- drift-ignore: /api/v1/pc/missing -->`\n- 真实引用：`GET /api/v1/pc/missing`\n' \
+  >"$TMP/spec-quoted-ignore.md"
+"$PY" "$CHECK" --spec "$TMP/spec-quoted-ignore.md" --contract "$TMP/contract.json" >"$TMP/quoted-ignore.txt" 2>&1
+expect_rc "㉚ 反引号里的 drift-ignore 不生效" 1 $?
+has "㉚ 真实引用照常报红" "GET /api/v1/pc/missing" "$TMP/quoted-ignore.txt"
+
+# ㉛ 反引号里的 drift-base 只是示例，不能给全文套基地址（否则一句示例制造大量假引用）
+printf '# 规格\n- 示例：`<!-- drift-base: /api/v1 -->`\n- 相对引用：`GET /pc/summary/{id}`\n' \
+  >"$TMP/spec-quoted-base.md"
+"$PY" "$CHECK" --spec "$TMP/spec-quoted-base.md" --contract "$TMP/contract-tpl.json" >/dev/null 2>&1
+expect_rc "㉛ 反引号里的 drift-base 不生效" 1 $?
+
 # ⑧ fail-closed
 echo '{ not json' >"$TMP/broken.json"
 "$PY" "$CHECK" --spec "$TMP/spec-ok.md" --contract "$TMP/broken.json" >/dev/null 2>&1
@@ -251,4 +350,11 @@ expect_rc "⑧ 契约缺失退出 4" 4 $?
 
 echo ""
 if [ "$FAIL" -ne 0 ]; then echo "FAILED：$FAIL 项失败，$PASS 项通过"; exit 1; fi
+# 断言用例数量：删掉任意一条测试（例如 fail-closed 或 missing-method）时，
+# PASS 会变小但退出码仍是 0，门禁覆盖会静默缩小（review P2-5）。
+EXPECTED_PASS=60
+if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
+  echo "FAILED：用例数量不符（期望 $EXPECTED_PASS，实际 $PASS）" >&2
+  exit 1
+fi
 echo "PASSED：$PASS 项通过"
