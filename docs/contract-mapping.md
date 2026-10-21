@@ -234,6 +234,7 @@
 | POST | `/api/v1/calendar/tasks/batch-update` | 200:`CalendarOperationResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | DELETE | `/api/v1/calendar/tasks/{id}` | 200:`CalendarOperationResultApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | PUT | `/api/v1/calendar/tasks/{id}` | 200:`TaskResponseApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
+| GET | `/api/v1/calendar/tasks/{id}/checklist` | 200:`TaskChecklistItemDtoIReadOnlyListApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | POST | `/api/v1/calendar/tasks/{id}/checklist` | 201:`TaskChecklistItemDtoApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | DELETE | `/api/v1/calendar/tasks/{id}/checklist/{itemId}` | 200:`StringApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |
 | PUT | `/api/v1/calendar/tasks/{id}/checklist/{itemId}` | 200:`TaskChecklistItemDtoApiResponse`、400:`StringApiResponse`、401、500:`StringApiResponse` |

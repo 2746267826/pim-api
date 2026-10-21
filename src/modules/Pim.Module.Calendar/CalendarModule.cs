@@ -225,6 +225,8 @@ public class CalendarModule : IModule
         .Produces<ApiResponse<string>>(500);
 
         // api#443：读取清单（此前只有增/改/删）。客户端与 MCP 的 get_task_checklist 都依赖它。
+        // 错误约定与其它任务子资源一致：任务不存在或不属于当前用户 → 400 + body code=02004
+        // （不区分两种情况，避免泄露存在性）；没有 404，客户端应按 body 里的 code 分支。
         group.MapGet("/tasks/{id:guid}/checklist", async (
             Guid id,
             [FromServices] PlanningModelService svc,

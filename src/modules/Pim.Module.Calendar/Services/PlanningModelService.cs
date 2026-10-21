@@ -328,7 +328,8 @@ public class PlanningModelService
     /// <summary>
     /// 读取任务的清单项（api#443：此前只有增/改/删，清单写进去读不回来）。
     /// 先校验任务归属（不存在或不属于当前用户 → 02004，与其它任务子资源一致），
-    /// 再返回未软删除的条目，按 <c>SortOrder</c> 升序、同序按创建时间升序，保证稳定顺序。
+    /// 再返回未软删除的条目，按 <c>SortOrder</c> 升序、同序按创建时间升序、再同则按 Id，
+    /// 保证任何时候顺序都确定（批量导入常出现同序同刻）。
     /// </summary>
     public async Task<IReadOnlyList<TaskChecklistItemDto>> ListChecklistItemsAsync(
         Guid taskId,
@@ -341,6 +342,7 @@ public class PlanningModelService
             .Where(i => i.TaskId == task.Id && i.UserId == userId && i.DeletedAt == null)
             .OrderBy(i => i.SortOrder)
             .ThenBy(i => i.CreatedAt)
+            .ThenBy(i => i.Id)
             .Select(i => new TaskChecklistItemDto(i.Id, i.TaskId, i.Title, i.IsDone, i.SortOrder))
             .ToListAsync(ct);
     }

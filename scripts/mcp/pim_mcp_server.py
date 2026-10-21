@@ -1547,8 +1547,12 @@ async def get_calendar_by_id(calendar_id: str) -> Any:
 
 @mcp.tool()
 async def get_task_checklist(task_id: str) -> Any:
-    """Get checklist items for a task. Returns ChecklistItem[]. Best-effort (no dedicated GET)."""
-    # No dedicated GET /tasks/{id}/checklist exists (only POST for creation). Try GET for forward-compat, then fallback to task detail.
+    """Get checklist items for a task. Returns ChecklistItem[].
+
+    pim-api#443 added the dedicated GET /tasks/{id}/checklist; older servers only had POST,
+    so the embedded-checklist fallback below is kept for them.
+    """
+    # Dedicated GET exists since pim-api#443. Keep the fallback for servers older than that.
     try:
         res = await _call_api("GET", f"/api/v1/calendar/tasks/{task_id}/checklist")
         if isinstance(res, dict) and res.get("code") not in (404, 405) and "error" not in res:

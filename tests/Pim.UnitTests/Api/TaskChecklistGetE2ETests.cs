@@ -124,6 +124,34 @@ public sealed class TaskChecklistGetE2ETests
     }
 
     [Fact]
+    public async Task GetChecklist_SameSortOrder_ReturnsStableOrder()
+    {
+        // 批量导入常见「同 SortOrder + 同 CreatedAt（同一事务里写入）」：顺序必须确定，
+        // 否则客户端每次刷新看到的清单顺序可能变。这里不假设具体次序（Id 是 GUID），
+        // 只断言两次读取完全一致。
+        var (factory, client, taskId) = await ArrangeAsync(("甲", 1), ("乙", 1), ("丙", 1));
+        using var factoryScope = factory;
+
+        var first = await TitlesAsync(client, taskId);
+        var second = await TitlesAsync(client, taskId);
+
+        Assert.Equal(3, first.Length);
+        Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public async Task GetChecklist_WithoutToken_Returns401()
+    {
+        var factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("checklist-get-401"));
+        using var factoryScope = factory;
+        var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"{Root}/tasks/{Guid.NewGuid()}/checklist");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task GetChecklist_UnknownTask_Returns02004()
     {
         var factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("checklist-get-404"));
