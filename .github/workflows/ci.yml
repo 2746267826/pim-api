@@ -539,7 +539,7 @@ jobs:
             --github-ref "${{ github.ref }}"
 
   summarize:
-    needs: [resolve-version, changes, web-dist, build-api, build-docker, build-mcp, contract-notify]
+    needs: [resolve-version, changes, web-dist, build-api, build-docker, build-mcp, contract-gap-audit, contract-notify]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -569,6 +569,7 @@ jobs:
             echo "| build-api | ${{ needs.build-api.result }} | api=${{ needs.changes.outputs.api }} |"
             echo "| build-docker | ${{ needs.build-docker.result }} | docker=${{ needs.changes.outputs.docker }} |"
             echo "| build-mcp | ${{ needs.build-mcp.result }} | mcp=${{ needs.changes.outputs.mcp }} |"
+            echo "| contract-gap-audit | ${{ needs.contract-gap-audit.result }} | 契约缺口门禁（离线） |"
             echo "| contract-notify | ${{ needs.contract-notify.result }} | contract_changed=${{ needs.changes.outputs.contract_changed }} |"
             echo ""
             echo "仅重建镜像开关：\`${{ needs.changes.outputs.rebuild_image_only }}\`；本次内嵌前端：\`${{ needs.web-dist.outputs.version }}\` / \`${{ needs.web-dist.outputs.git_sha }}\`；发版：\`${{ needs.web-dist.outputs.publish }}\`"
