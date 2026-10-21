@@ -881,7 +881,7 @@
   },
   {
     "name": "get_task_checklist",
-    "description": "Get checklist items for a task. Returns ChecklistItem[]. Best-effort (no dedicated GET).",
+    "description": "Get checklist items for a task. Returns ChecklistItem[] via GET /calendar/tasks/{id}/checklist (pim-api#443). Answers 400 + code 02004 when the task does not exist or belongs to another user.",
     "inputSchema": {
       "properties": {
         "task_id": {

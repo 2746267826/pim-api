@@ -1549,41 +1549,16 @@ async def get_calendar_by_id(calendar_id: str) -> Any:
 async def get_task_checklist(task_id: str) -> Any:
     """Get checklist items for a task. Returns ChecklistItem[].
 
-    pim-api#443 added the dedicated GET /tasks/{id}/checklist; older servers only had POST,
-    so the embedded-checklist fallback below is kept for them.
+    Requires pim-api#443 (dedicated GET /tasks/{id}/checklist). The API answers
+    400 + code=02004 when the task does not exist or belongs to another user
+    (deliberately no 404, to avoid leaking existence); errors are returned as-is.
+
+    Older servers that predate #443 only return 404/405 here. The previous
+    "extract checklist embedded in the task" fallback was removed because
+    TaskResponse never had such a field — it could never match, and it turned
+    real 400/401/5xx errors into a misleading 404.
     """
-    # Dedicated GET exists since pim-api#443. Keep the fallback for servers older than that.
-    try:
-        res = await _call_api("GET", f"/api/v1/calendar/tasks/{task_id}/checklist")
-        if isinstance(res, dict) and res.get("code") not in (404, 405) and "error" not in res:
-            return res
-        # if 404/405, fall through to fallback
-    except Exception:
-        pass
-    # fallback: get task and extract checklist if embedded
-    task_res = await _call_api("GET", f"/api/v1/calendar/tasks/{task_id}")
-    # Also try via list fallback inside get_task_by_id logic
-    if isinstance(task_res, dict) and "data" in task_res:
-        data = task_res["data"]
-        # PagedResult or single dict
-        if isinstance(data, dict):
-            if "checklist" in data or "checklistItems" in data:
-                return {"code": 0, "data": data.get("checklist") or data.get("checklistItems")}
-            # handle case where data is PagedResult containing items
-            if "items" in data and isinstance(data["items"], list):
-                for it in data["items"]:
-                    if isinstance(it, dict) and str(it.get("id")) == task_id:
-                        if "checklist" in it or "checklistItems" in it:
-                            return {"code": 0, "data": it.get("checklist") or it.get("checklistItems")}
-                        return {"error": "checklist not available for task", "code": 404, "details": {"task": it}}
-        elif isinstance(data, list):
-            for it in data:
-                if isinstance(it, dict) and str(it.get("id")) == task_id:
-                    if "checklist" in it or "checklistItems" in it:
-                        return {"code": 0, "data": it.get("checklist") or it.get("checklistItems")}
-                    return {"error": "checklist not available for task", "code": 404, "details": {"task": it}}
-    # final fallback: try direct task fetch via list
-    return {"error": "checklist endpoint not available and not embedded in task", "code": 404, "details": task_res}
+    return await _call_api("GET", f"/api/v1/calendar/tasks/{task_id}/checklist")
 
 
 @mcp.tool()

@@ -3,6 +3,10 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Net.Http.Headers;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Pim.Infrastructure.Data;
+using Pim.Module.Calendar.Entities;
 using Xunit;
 
 namespace Pim.UnitTests.Api;
@@ -36,13 +40,9 @@ public sealed class TaskChecklistGetE2ETests
         return root.GetProperty("code").GetInt32();
     }
 
-    private static async Task<(WebApplicationFactory<Program> Factory, HttpClient Client, Guid TaskId)> ArrangeAsync(
-        params (string Title, int? SortOrder)[] items)
+    /// <summary>建一个任务本 + 一个任务，返回任务 id（不建清单项）。</summary>
+    private static async Task<Guid> CreateTaskAsync(HttpClient client)
     {
-        var factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("checklist-get"));
-        var session = await AuthRegistrationTestHost.SeedAndLoginAsync(factory, "checklist-user");
-        var client = Authed(factory, session.AccessToken);
-
         var bookResp = await client.PostAsJsonAsync($"{Root}/task-books", new { name = "清单本" });
         bookResp.EnsureSuccessStatusCode();
         var book = (await AuthRegistrationTestHost.ReadJsonAsync(bookResp)).GetProperty("data");
@@ -53,8 +53,17 @@ public sealed class TaskChecklistGetE2ETests
             taskBookId = book.GetProperty("id").GetString()
         });
         createTask.EnsureSuccessStatusCode();
-        var taskId = (await AuthRegistrationTestHost.ReadJsonAsync(createTask))
+        return (await AuthRegistrationTestHost.ReadJsonAsync(createTask))
             .GetProperty("data").GetProperty("id").GetGuid();
+    }
+
+    private static async Task<(WebApplicationFactory<Program> Factory, HttpClient Client, Guid TaskId)> ArrangeAsync(
+        params (string Title, int? SortOrder)[] items)
+    {
+        var factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("checklist-get"));
+        var session = await AuthRegistrationTestHost.SeedAndLoginAsync(factory, "checklist-user");
+        var client = Authed(factory, session.AccessToken);
+        var taskId = await CreateTaskAsync(client);
 
         foreach (var (title, sortOrder) in items)
         {
@@ -124,19 +133,65 @@ public sealed class TaskChecklistGetE2ETests
     }
 
     [Fact]
-    public async Task GetChecklist_SameSortOrder_ReturnsStableOrder()
+    public async Task GetChecklist_SameSortOrderAndCreatedAt_BreaksTieById()
     {
-        // 批量导入常见「同 SortOrder + 同 CreatedAt（同一事务里写入）」：顺序必须确定，
-        // 否则客户端每次刷新看到的清单顺序可能变。这里不假设具体次序（Id 是 GUID），
-        // 只断言两次读取完全一致。
-        var (factory, client, taskId) = await ArrangeAsync(("甲", 1), ("乙", 1), ("丙", 1));
+        // 批量导入常见「同 SortOrder + 同 CreatedAt（同一事务里写入）」：三者都相同时只剩 Id 兜底。
+        // 这里直接落库同时构造出这三个条件，并**按 Id 逆序插入**——
+        // 若把 .ThenBy(i => i.Id) 去掉、顺序退化为按插入顺序（InMemory 稳定排序即如此），本用例必失败。
+        // Id 取低值且首段为小整数，使 .NET Guid 比较、字符串比较、PostgreSQL uuid 字节序三者一致。
+        var factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("checklist-get-tie"));
         using var factoryScope = factory;
+        var session = await AuthRegistrationTestHost.SeedAndLoginAsync(factory, "checklist-tie");
+        var client = Authed(factory, session.AccessToken);
+        var taskId = await CreateTaskAsync(client);
 
-        var first = await TitlesAsync(client, taskId);
-        var second = await TitlesAsync(client, taskId);
+        var ids = new[]
+        {
+            Guid.Parse("00000001-0000-0000-0000-000000000001"),
+            Guid.Parse("00000002-0000-0000-0000-000000000002"),
+            Guid.Parse("00000003-0000-0000-0000-000000000003")
+        };
+        var createdAt = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            for (var i = ids.Length - 1; i >= 0; i--)
+            {
+                db.Set<TaskChecklistItemEntity>().Add(new TaskChecklistItemEntity
+                {
+                    Id = ids[i],
+                    TaskId = taskId,
+                    UserId = session.UserId,
+                    Title = $"第{i + 1}项",
+                    SortOrder = 7,
+                    CreatedAt = createdAt,
+                    UpdatedAt = createdAt
+                });
+            }
+            await db.SaveChangesAsync();
+        }
 
-        Assert.Equal(3, first.Length);
-        Assert.Equal(first, second);
+        var response = await client.GetAsync($"{Root}/tasks/{taskId}/checklist");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var returned = (await AuthRegistrationTestHost.ReadJsonAsync(response))
+            .GetProperty("data").EnumerateArray()
+            .Select(i => i.GetProperty("id").GetGuid()).ToArray();
+
+        Assert.Equal(ids, returned);
+    }
+
+    [Fact]
+    public async Task GetChecklist_OnlyReturnsItemsOfTheRequestedTask()
+    {
+        // 同一用户的另一个任务：`i.TaskId == task.Id` 过滤必须生效（同 UserId 不足以区分）。
+        var (factory, client, taskA) = await ArrangeAsync(("A-1", 0), ("A-2", 1));
+        using var factoryScope = factory;
+        var taskB = await CreateTaskAsync(client);
+        (await client.PostAsJsonAsync($"{Root}/tasks/{taskB}/checklist", new { title = "B-1" }))
+            .EnsureSuccessStatusCode();
+
+        Assert.Equal(new string?[] { "A-1", "A-2" }, await TitlesAsync(client, taskA));
+        Assert.Equal(new string?[] { "B-1" }, await TitlesAsync(client, taskB));
     }
 
     [Fact]
