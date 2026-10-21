@@ -303,6 +303,55 @@ public sealed class McpToolExecutorTests : IDisposable
 
     // ---------- dispatch shape ----------
 
+    /// <summary>
+    /// api#443 回归：get_task_checklist 必须走**专门端点**（旧实现回退到内嵌字段，永远 404），
+    /// 成功时原样返回 REST 信封（review P3）。
+    /// </summary>
+    [Fact]
+    public async Task TaskChecklist_UsesDedicatedRoute_AndReturnsEnvelope()
+    {
+        CreateExecutor();
+        var taskId = "11111111-1111-1111-1111-111111111111";
+        _routes[$"GET /api/v1/calendar/tasks/{taskId}/checklist"] =
+            new(200, "{\"code\":0,\"message\":\"ok\",\"data\":[{\"id\":\"c1\",\"title\":\"buy milk\",\"isDone\":true}]}");
+
+        var result = await CallTool("get_task_checklist", new Dictionary<string, JsonElement>
+        {
+            ["task_id"] = Json($"\"{taskId}\"")
+        });
+
+        var request = Assert.Single(_requests);
+        Assert.Equal("GET", request.Method);
+        Assert.Equal($"/api/v1/calendar/tasks/{taskId}/checklist", request.Path);
+        Assert.Equal(0, result!["code"]!.GetValue<int>());
+        var items = result!["data"]!.AsArray();
+        Assert.Single(items);
+        Assert.Equal("buy milk", items[0]!["title"]!.GetValue<string>());
+        Assert.True(items[0]!["isDone"]!.GetValue<bool>());
+    }
+
+    /// <summary>
+    /// 400 的业务码 02004 落在 <c>details.code</c>，顶层 <c>code</c> 是 HTTP 状态（与 Python 实现一致）。
+    /// 回归护栏：避免把「任务不存在」误判成 404 / 顶层 2004。
+    /// </summary>
+    [Fact]
+    public async Task TaskChecklist_Business400_ExposesCodeInDetails()
+    {
+        CreateExecutor();
+        var taskId = "22222222-2222-2222-2222-222222222222";
+        _routes[$"GET /api/v1/calendar/tasks/{taskId}/checklist"] =
+            new(400, "{\"code\":2004,\"message\":\"Task does not exist\"}");
+
+        var result = await CallTool("get_task_checklist", new Dictionary<string, JsonElement>
+        {
+            ["task_id"] = Json($"\"{taskId}\"")
+        });
+
+        Assert.Equal(400, result!["code"]!.GetValue<int>());
+        Assert.Equal(2004, result!["details"]!["code"]!.GetValue<int>());
+        Assert.Contains("400", result!["error"]!.GetValue<string>());
+    }
+
     [Fact]
     public async Task GetEvents_BuildsQueryWithRenamesAndBearer()
     {

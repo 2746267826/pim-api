@@ -1547,11 +1547,14 @@ async def get_calendar_by_id(calendar_id: str) -> Any:
 
 @mcp.tool()
 async def get_task_checklist(task_id: str) -> Any:
-    """Get checklist items for a task. Returns ChecklistItem[].
+    """Get checklist items for a task via GET /api/v1/calendar/tasks/{id}/checklist.
 
-    Requires pim-api#443 (dedicated GET /tasks/{id}/checklist). The API answers
-    400 + code=02004 when the task does not exist or belongs to another user
-    (deliberately no 404, to avoid leaking existence); errors are returned as-is.
+    Requires pim-api#443. Success returns the REST ApiResponse envelope
+    (`data` is ChecklistItem[]). The API answers 400 with business code 02004
+    when the task does not exist or belongs to another user (deliberately no
+    404, to avoid leaking existence). HTTP errors are wrapped as
+    {"error": ..., "details": {...}, "code": <HTTP status>}, so the business
+    code 02004 is at details.code, not at the top-level code.
 
     Older servers that predate #443 only return 404/405 here. The previous
     "extract checklist embedded in the task" fallback was removed because

@@ -88,7 +88,9 @@ public sealed class TaskChecklistGetE2ETests
     [Fact]
     public async Task GetChecklist_ReturnsItemsOrderedBySortOrder()
     {
-        var (factory, client, taskId) = await ArrangeAsync(("第二项", 2), ("第一项", 0), ("第三项", 1));
+        // 标题与 SortOrder **刻意无语义关联**（不叫「第一项/第二项」），
+        // 这样「按标题排序」之类的错误实现不会碰巧通过（review P3）。
+        var (factory, client, taskId) = await ArrangeAsync(("买牛奶", 2), ("写周报", 0), ("倒垃圾", 1));
         using var factoryScope = factory;
 
         var response = await client.GetAsync($"{Root}/tasks/{taskId}/checklist");
@@ -97,7 +99,7 @@ public sealed class TaskChecklistGetE2ETests
         var root = await AuthRegistrationTestHost.ReadJsonAsync(response);
         Assert.Equal(0, root.GetProperty("code").GetInt32());
         var items = root.GetProperty("data").EnumerateArray().ToList();
-        Assert.Equal(new[] { "第一项", "第三项", "第二项" },
+        Assert.Equal(new[] { "写周报", "倒垃圾", "买牛奶" },
             items.Select(i => i.GetProperty("title").GetString()).ToArray());
         Assert.All(items, i => Assert.False(i.GetProperty("isDone").GetBoolean()));
         Assert.All(items, i => Assert.Equal(taskId, i.GetProperty("taskId").GetGuid()));
@@ -178,6 +180,77 @@ public sealed class TaskChecklistGetE2ETests
             .Select(i => i.GetProperty("id").GetGuid()).ToArray();
 
         Assert.Equal(ids, returned);
+    }
+
+    [Fact]
+    public async Task GetChecklist_SameSortOrder_DifferentCreatedAt_OrdersByCreatedAt()
+    {
+        // 同 SortOrder 时按 CreatedAt 升序（review P3）：把 CreatedAt 与 Id 顺序刻意打反，
+        // 去掉 .ThenBy(i => i.CreatedAt) 后会退化成按 Id（InMemory 稳定排序即插入序），本用例必失败。
+        var factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("checklist-get-created"));
+        using var factoryScope = factory;
+        var session = await AuthRegistrationTestHost.SeedAndLoginAsync(factory, "checklist-created");
+        var client = Authed(factory, session.AccessToken);
+        var taskId = await CreateTaskAsync(client);
+
+        var idFirst = Guid.Parse("00000001-0000-0000-0000-000000000001");  // CreatedAt 最晚
+        var idSecond = Guid.Parse("00000002-0000-0000-0000-000000000002"); // CreatedAt 最早
+        var idThird = Guid.Parse("00000003-0000-0000-0000-000000000003");  // CreatedAt 居中
+        var baseTime = new DateTimeOffset(2026, 2, 3, 4, 5, 6, TimeSpan.Zero);
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            foreach (var (id, title, minutes) in new[]
+                     {
+                         (idFirst, "gamma", 3),
+                         (idSecond, "alpha", 1),
+                         (idThird, "beta", 2)
+                     })
+            {
+                db.Set<TaskChecklistItemEntity>().Add(new TaskChecklistItemEntity
+                {
+                    Id = id,
+                    TaskId = taskId,
+                    UserId = session.UserId,
+                    Title = title,
+                    SortOrder = 9,
+                    CreatedAt = baseTime.AddMinutes(minutes),
+                    UpdatedAt = baseTime.AddMinutes(minutes)
+                });
+            }
+            await db.SaveChangesAsync();
+        }
+
+        var response = await client.GetAsync($"{Root}/tasks/{taskId}/checklist");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var titles = (await AuthRegistrationTestHost.ReadJsonAsync(response))
+            .GetProperty("data").EnumerateArray()
+            .Select(i => i.GetProperty("title").GetString()).ToArray();
+
+        Assert.Equal(new[] { "alpha", "beta", "gamma" }, titles);
+    }
+
+    [Fact]
+    public async Task UpdateChecklistItem_IsDoneTrue_IsReadBackByGet()
+    {
+        // issue #478 的核心症状是 isDone 读不回来：GET 的投影若写死 false，本用例必须失败。
+        var (factory, client, taskId) = await ArrangeAsync(("待勾选", 0));
+        using var factoryScope = factory;
+
+        var list = await AuthRegistrationTestHost.ReadJsonAsync(
+            await client.GetAsync($"{Root}/tasks/{taskId}/checklist"));
+        var itemId = list.GetProperty("data").EnumerateArray().Single().GetProperty("id").GetGuid();
+
+        var put = await client.PutAsJsonAsync(
+            $"{Root}/tasks/{taskId}/checklist/{itemId}", new { isDone = true });
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+        var updated = (await AuthRegistrationTestHost.ReadJsonAsync(put)).GetProperty("data");
+        Assert.True(updated.GetProperty("isDone").GetBoolean());
+
+        var reread = await AuthRegistrationTestHost.ReadJsonAsync(
+            await client.GetAsync($"{Root}/tasks/{taskId}/checklist"));
+        Assert.True(reread.GetProperty("data").EnumerateArray().Single()
+            .GetProperty("isDone").GetBoolean());
     }
 
     [Fact]
