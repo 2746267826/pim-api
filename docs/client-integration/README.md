@@ -14,12 +14,12 @@
 
 ```bash
 python scripts/ci/check-spec-drift.py            # 规格引用的端点必须都还在契约里
-bash   scripts/ci/test-check-spec-drift.sh       # 校验器自身的行为测试（离线，60 项）
+bash   scripts/ci/test-check-spec-drift.sh       # 校验器自身的行为测试（离线，81 项）
 ```
 
 **检查范围**：只检查本规格（默认 `docs/client-integration-spec.md`，可用 `--spec` 指向别的文件）。
 它**不**检查客户端源码、pim-web 的规格目录或 OpenAPI 的语义完整性——那些属于 PR #480 的缺口审计。
-测试脚本末尾断言通过数（`EXPECTED_PASS=60`），删掉任何一条用例同样会让门禁失败。
+测试脚本末尾断言通过数（`EXPECTED_PASS=81`），删掉任何一条用例同样会让门禁失败。
 
 规则：
 - 规格里写 `METHOD /path` 或反引号路径即视为对端点的引用；契约里找不到 → 红。分**三类**报错：
@@ -27,6 +27,7 @@ bash   scripts/ci/test-check-spec-drift.sh       # 校验器自身的行为测�
   `missing-prefix`（以 `/` 开头的具体前缀下没有任何端点）。
   **没有 `drift-base` 时**，反引号路径只有以 `/api`、`/health`、`/mcp`、`/metrics`、`/version`
   开头才算引用（避免把 SPA 路由 `/calendar` 当 API）；相对简写要显式声明基地址才会被检查。
+  顶层端点（`/health`、`/mcp`）同样校验，删掉它们会报红。方法大小写不敏感（`get /x` 也检查）。
 - 域文档若用相对路径（如 `GET /calendar/tasks`），用 `drift-base` 注释声明基地址（写法：
   `<!-- drift-base: /api/v1 -->` + `/calendar/tasks`，或 `<!-- drift-base: /api/v1/calendar -->` + `/tasks`；
   注意基地址会**直接拼接**，`/api/v1/calendar` + `/calendar/tasks` 会得到 `/api/v1/calendar/calendar/tasks`）。
@@ -36,6 +37,8 @@ bash   scripts/ci/test-check-spec-drift.sh       # 校验器自身的行为测�
   在引用该路径的那一行写 `<!-- drift-ignore: /browser/ping -->`，并在正文说明原因 —— 让每一次豁免都可审阅。
   豁免按**精确路径**（模板 `{}` 归一化后相等）在整份文档内生效，**不支持前缀**，也**只豁免被点名的路径**：
   同一行的其它端点仍会检查。建议写在引用它的那一行，方便读者对上号。
+  指令只认**行内代码之外**的写法：反引号（任意长度）、围栏代码块（``` / ~~~，含未闭合）以及转义写法
+  `\<!-- … -->` 里的 `drift-ignore` / `drift-base` 都只是示例，不会生效（避免「写法示例」误伤全文）。
   - **方法级豁免**：`<!-- drift-ignore: POST /path -->` 只豁免该方法；用于「同一路径我们只用 GET，文档里的
     POST 属于别处」这类情况。路径级写法相当于豁免该路径上**契约里不存在**的全部方法。
   - 路径级豁免**不能掩护真实方法被删**：如果该路径在契约里已存在，豁免不生效，删除的方法照样报
@@ -49,7 +52,8 @@ bash   scripts/ci/test-check-spec-drift.sh       # 校验器自身的行为测�
 - 契约里的 404 兜底不算真实端点（`/api/{*path}`，以及只有 404/500 响应的 `/api/{path}`），
   单段的伪路径不会被它匹配放行。
 - 具体裸路径（`/api/v1/pc/summary`）按**精确/模板**匹配，不会被更长的前缀（`/api/v1/pc/summary/detail`）掩护；
-  只有写成 `/api/v1/pc/` 或 `/api/v1/pc/*` 的**前缀**才按前缀判定。
+  **只有星号写法** `/api/v1/pc/*` 按前缀判定。尾斜杠不算前缀：`/api/v1/pc/app-signatures/` 归一化后是具体端点，
+  这样删除它时不会被兄弟路径 `/api/v1/pc/app-signatures/count` 掩护。
 - 路径按**段**比较：`{id:guid}` / `{deviceId}` / `{}` 这类写法差异不算漂移（带后缀的 `{y}.png` 同理）；
   契约里**有取值约束**的参数（`format: uuid`、`pattern`、`enum`）不能匹配文档的字面段 ——
   `/files/items/upload` 不会被 `/files/items/{id}` 放行（运行时是 404/405）；无约束的字符串参数可以，

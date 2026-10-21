@@ -155,20 +155,25 @@
   在它落地前，漏刷问题靠「全量按时间窗拉取 + 首屏刷新」解决。
 - **上报（采集端）**：允许积压、逐条上传、不丢点（见 `pim-android/README.md`：只做精度过滤，不抽稀、不静默裁剪）。
 - **重试**：429 按 `Retry-After`；5xx 指数退避（上限 5 分钟）；4xx（除 401/429）不重试。
-- **幂等**：采集/上报类端点**服务端已按业务键去重**，重复提交不会报错，也不会重复入库。
-  客户端仍应生成稳定的 `clientItemKey` / `uid` 并在重试时复用（缺省时服务端按下面的自然键回退）：
+- **幂等**：上报端点的去重行为**逐端点不同**，见下表 —— **不是**「所有上报端点都去重」。
+  客户端应生成稳定的 `clientItemKey` / `uid` 并在重试时复用；服务端行为以下表为准：
 
-  | 端点 | 去重键（同一用户内） | 重复时的表现 |
+  | 端点 | 去重键（同一用户/设备内） | 重复时的表现 |
   |---|---|---|
   | `POST /api/v1/mobile/usage/events`（事件） | `(deviceId, packageName, eventType, eventTimestampUtc, className)` | HTTP 200，该条 `outcome="skipped"`、`code="duplicate"`，`accepted/skipped/rejected/failed` 计数相应变化 |
-  | `.../usage/events`（汇总） | `(deviceId, packageName, windowStartUtc, windowEndUtc, sourceKind)` | 同上 |
-  | `POST /api/v1/mobile/location/points`、`.../points/batch` | `(deviceId, recordedAtUtc, latitude, longitude)` | 同上（条目 `skipped` / `duplicate`） |
+  | `POST /api/v1/mobile/usage/events`（汇总） | `(deviceId, packageName, windowStartUtc, windowEndUtc, sourceKind)` | 同上 |
+  | `POST /api/v1/mobile/location/points`、`POST /api/v1/mobile/location/points/batch` | `(deviceId, recordedAtUtc, latitude, longitude)` | 条目级三种结果：已存在的**可用**点 → `outcome="skipped"`、`code="duplicate"`；坏精度的重复点 → `outcome="rejected"`、`code="unusable-accuracy"`；**先落库的坏精度点被后来的好精度点升级** → `outcome="accepted"`（不是 duplicate） |
   | `POST /api/v1/mobile/forensics/events` | `(deviceId, clientItemKey)`，**`clientItemKey` 必填** | 重复计入 `skipped`；缺失/空 → 该条 `rejected` |
-  | `POST /api/v1/pc/keystats/upload`、`.../keystats/samples` | `(deviceId, sampledAtUtc)`，时间**截断到分钟** | upsert（同键覆盖，不报错） |
-  | `POST /api/v1/pc/aw/upload`、`.../aw/upload-complete` | `(deviceId, bucketId, sourceEventId)` | 命中唯一约束跳过；并发重复会重试一次后保持跳过 |
+  | `POST /api/v1/pc/keystats/samples` | `(pimDeviceId, sampledAtUtc)`，时间**截断到分钟** | upsert：同一分钟覆盖，不报错、不累加 |
+  | `POST /api/v1/pc/keystats/upload` | `(deviceId, date)` —— **整天快照**，键是请求里的 `date`（不是 `sampledAtUtc`） | **整天删除后重插（整体覆盖，不是合并）**：同一天再传一次会替换当天的键鼠快照。客户端同一天只应上传一次最终快照；要按分钟增量上报请用 `/pc/keystats/samples` |
+  | `POST /api/v1/pc/tracker/upload` | `(deviceId, timestamp, duration, eventType, appName, browser, instanceId)` | 命中去重集合的行被丢弃；响应 `data` 是**新增**条数 |
+  | `POST /api/v1/pc/aw/upload`（旧通道） | 自然键 `(timestamp, duration, eventType, appName, windowTitle, afkStatus)`，只在**本次批次的时间窗**内比对 | 重复行丢弃；响应 `data` 是新增条数。**并发重复没有唯一约束兜底**（旧通道不带 `bucketId`/`sourceEventId`，`ux_pc_aw_events_source` 对空值不生效），客户端不要并发重发同一批 |
+  | `POST /api/v1/pc/aw/upload-complete` | `(pimDeviceId, bucketId, sourceEventId)` | 重复 **覆盖更新**已有行（不是跳过）；响应 `data` 是**新增**条数 —— 重复批次返回 0 不代表失败 |
+  | `POST /api/v1/pc/browser-tt/upload` | **无去重** | `focusMs`/`visitCount`/`runMs`/`mediaMs` 直接**累加**：同一批重复提交会把指标翻倍，`tick` 也会重复入库。客户端必须自己保证每批只发一次（重试前先确认上一批的结果） |
 
   **「重复」是成功语义**：响应仍是 2xx + 完整 `ApiResponse`，客户端把 `skipped/duplicate` 当作已送达，
   **不要**重试或计入失败。批量请求里单条失败不影响其它条目，按 `items[]` 逐条处理。
+  `/pc/browser-tt/upload` 是唯一没有去重的上报端点 —— 对它必须「先确认、再重试」，不能无条件重试。
 - **按请求幂等（pim-api#484，未合入）**：写操作可选带 `Idempotency-Key` 请求头，同 key 重放返回首次响应
   （24 小时内）；合入后才可用。它与上面的**业务键去重是两套机制**：业务键不依赖请求头，现在就能用。
 
@@ -182,11 +187,11 @@
 | 手机 | `POST /api/v1/mobile/sync/gaps` | 询问服务端缺哪些时间段（补传） |
 | 手机 | `POST /api/v1/mobile/usage/events` | 应用使用事件（批量） |
 | 手机 | `POST /api/v1/mobile/forensics/events` | 取证事件 |
-| 手机 | `POST /api/v1/mobile/location/points`、`.../points/batch` | 位置点（单条 / 批量） |
-| PC | `POST /api/v1/daemon/heartbeat`、`/daemon/planned-offline` | 守护心跳 / 计划离线 |
-| PC | `POST /api/v1/endpoints/{deviceId}/heartbeat`、`/notification-actions` | 端点心跳 / 通知动作 |
-| PC | `POST /api/v1/pc/tracker/upload`、`/pc/keystats/upload`、`/pc/keystats/samples`、`/pc/browser-tt/upload`、`/pc/aw/upload` | 窗口事件、键鼠统计、浏览器标签页、活跃窗口 |
-| PC | `POST /api/v1/pc/aw/upload-complete` | **完整版**活跃窗口上报（`pimDeviceId` + `bucket` + `events[]`，可带 `awInfo`）：与 `/pc/aw/upload` 是两条独立通道，按端上数据源二选一，**不要同时上报同一批事件**；单次最多 **500** 条，客户端必须自行分片（超出上限不是业务错误，会被当成 5xx，不应靠它做控制流）。响应 `data` 为接收条数 |
+| 手机 | `POST /api/v1/mobile/location/points`、`POST /api/v1/mobile/location/points/batch` | 位置点（单条 / 批量） |
+| PC | `POST /api/v1/daemon/heartbeat`、`POST /api/v1/daemon/planned-offline` | 守护心跳 / 计划离线 |
+| PC | `POST /api/v1/endpoints/{deviceId}/heartbeat`、`POST /api/v1/endpoints/{deviceId}/notification-actions` | 端点心跳 / 通知动作 |
+| PC | `POST /api/v1/pc/tracker/upload`、`POST /api/v1/pc/keystats/upload`、`POST /api/v1/pc/keystats/samples`、`POST /api/v1/pc/browser-tt/upload`、`POST /api/v1/pc/aw/upload` | 窗口事件、键鼠统计、浏览器标签页、活跃窗口 |
+| PC | `POST /api/v1/pc/aw/upload-complete` | **完整版**活跃窗口上报（`pimDeviceId` + `bucket` + `events[]`，可带 `awInfo`）：与 `/pc/aw/upload` 是两条独立通道，按端上数据源二选一，**不要同时上报同一批事件**；单次最多 **500** 条，客户端必须自行分片（超出上限不是业务错误，会被当成 5xx，不应靠它做控制流）。响应 `data` 是**新增**条数：重复命中的行会覆盖更新但不计数，**不能用它判断整批是否落库** |
 | PC | `GET /api/v1/endpoints`、`GET /api/v1/endpoints/{deviceId}/collection-quality` | 端点列表与采集质量 |
 
 > 上报端点的字段形状以契约生成的 DTO 为准；服务端是否接受乱序/重复批次见 §7「幂等」。
@@ -229,8 +234,9 @@
 
 ## 9. 界面能力清单（类型级）
 
-> 只描述「有什么模块、调用哪些端点」，不规定布局与视觉。**所有端点一律写全 `/api/v1/...` 路径**
-> （不再用相对简写），这样漂移检查器能逐条校验。
+> 只描述「有什么模块、调用哪些端点」，不规定布局与视觉。**每个具体端点都写全 `/api/v1/...` 路径**
+> （不用 `.../x` 或相对简写），这样漂移检查器能逐条校验；`/api/v1/pc/*` 这类 `*` 前缀只出现在
+> 「整组端点都属于该页面」的摘要里，检查器对前缀只校验「其下至少有一个端点」，不代表逐条覆盖。
 >
 > 本表是**类型级摘要**：它覆盖「每个页面对应哪些 API 能力」。具体布局、弹窗层级与视觉细节属于产品设计，
 > 不是 API 契约的一部分。API 行为（认证、分页、错误、上传、幂等等）以 §2–§8、§10 与
@@ -296,7 +302,7 @@
        `POST /api/v1/files/items/{id}/versions/{versionId}/restore` <!-- drift-ignore: /api/v1/files/items/{}/versions/{}/restore -->、
        `POST /api/v1/files/items/{id}/versions/{versionId}/restore-preview` <!-- drift-ignore: /api/v1/files/items/{}/versions/{}/restore-preview -->
        —— 契约里的对应概念叫 **snapshots**：`GET /api/v1/files/items/{id}/snapshots`、
-       `POST .../snapshots/{snapshotId}/restore`（没有 download / restore-preview）；
+       `POST /api/v1/files/items/{id}/snapshots/{snapshotId}/restore`（没有 download / restore-preview）；
      - 回收站两条：`GET /api/v1/files/trash` <!-- drift-ignore: /api/v1/files/trash -->、
        `POST /api/v1/files/trash/{id}/restore` <!-- drift-ignore: /api/v1/files/trash/{}/restore --> ——
        **契约里没有文件回收站**：只有 `POST /api/v1/files/items/{id}/restore` 恢复单条，
@@ -304,8 +310,8 @@
      - `POST /api/v1/files/items/{id}/index` <!-- drift-ignore: /api/v1/files/items/{}/index --> —— 契约里没有；
      - `POST /api/v1/files/providers/{id}/test` <!-- drift-ignore: /api/v1/files/providers/{}/test --> ——
        契约里只有 `GET /api/v1/files/providers/{id}/binding-status`；
-     - `POST /api/v1/files/providers/nextcloud` <!-- drift-ignore: /api/v1/files/providers/nextcloud --> ——
-       契约里**没有**这个字面路径，也没有 nextcloud 专用新增端点；只有通用模板
+     - `POST /api/v1/files/providers/nextcloud` <!-- drift-ignore: POST /api/v1/files/providers/nextcloud --> ——
+       契约里**没有**这个字面路径（`{id}` 是 uuid，`nextcloud` 不是合法 id），也没有 nextcloud 专用新增端点；只有通用模板
        `DELETE /api/v1/files/providers/{id}`（删除绑定）。支持的提供方是 onedrive / google；
      - `GET /api/v1/providers/{id}/sync-status` <!-- drift-ignore: /api/v1/providers/{}/sync-status -->（漏写 `files/`）
        —— 真实路径 `GET /api/v1/files/providers/{id}/sync-status`。

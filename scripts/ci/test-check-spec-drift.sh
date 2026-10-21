@@ -7,12 +7,12 @@
 #   ② 规格里写了契约中不存在的 METHOD+路径 → 退出 1，并指出该端点；
 #   ③ 契约删掉某个端点（模拟后端下线）→ 规格里对应的引用立刻报红；
 #   ④ 路径模板写法不同（{id:guid} / {deviceId} / {}）视为同一端点，不误报；
-#   ⑤ 以 / 开头的具体前缀按前缀匹配（/api/v1/pc/ 能对上 /api/v1/pc/summary）；
+#   ⑤ 星号前缀按前缀匹配（/api/v1/pc/* 能对上 /api/v1/pc/summary）；
 #   ⑥ 契约里没有任何端点落在前缀下 → 报 missing-prefix；
 #   ⑦ `<!-- drift-ignore: /path -->` 只豁免它点名的那条路径（同一行的其它端点仍检查）；
 #   ⑧ 非法契约 → 退出 4（fail-closed）；规格或契约缺失 → 退出 4；规格里识别不到引用 → 退出 4；
 #   ⑩ 路径存在但方法不存在 → missing-method（不是笼统的 missing-path）；
-#   ⑪ 星号前缀 `/api/v1/pc/*` 按前缀判定；
+#   ⑪ 星号前缀 `/api/v1/pc/*` 按前缀判定；带尾斜杠的具体路径不被前缀掩护（㉜）；
 #   ⑫ 句子里出现「服务端」等主语不再整行跳过（只认外部 URL 与明确指代）；
 #   ⑬ 一份文档多个 drift-base，各自生效；
 #   ⑭ 字面段不能用 {} 通配（`/items/upload` 不是 `/items/{id}`）；
@@ -33,7 +33,7 @@
 #   ㉙ 转述「详见 `GET /x`」只在同一端点已正式声明时跳过；
 #   ㉚/㉛ 行内代码里的 drift-ignore / drift-base 只是示例，不生效。
 #
-# 末尾断言用例总数（60），删测试会让门禁失败。
+# 末尾断言用例总数（81），删测试会让门禁失败。
 #
 # 用法：bash scripts/ci/test-check-spec-drift.sh
 # ---------------------------------------------------------------------------
@@ -80,14 +80,14 @@ cat >"$TMP/spec-ok.md" <<'MD'
 # 规格
 - PC 汇总：`GET /api/v1/pc/summary`
 - 设备导出：`GET /api/v1/mobile/devices/{deviceId:guid}/export`
-- 前缀：`/api/v1/pc/`
+- 前缀：`/api/v1/pc/*`
 - 本机协议：`GET /browser/ping` <!-- drift-ignore: /browser/ping -->
 MD
 
 cat >"$TMP/spec-bad.md" <<'MD'
 # 规格
 - 不存在的端点：`POST /api/v1/stats/upload`
-- 不存在的前缀：`/api/v1/nothing-here/`
+- 不存在的前缀：`/api/v1/nothing-here/*`
 MD
 
 cat >"$TMP/spec-ignore.md" <<'MD'
@@ -339,6 +339,93 @@ printf '# 规格\n- 示例：`<!-- drift-base: /api/v1 -->`\n- 相对引用：`G
 "$PY" "$CHECK" --spec "$TMP/spec-quoted-base.md" --contract "$TMP/contract-tpl.json" >/dev/null 2>&1
 expect_rc "㉛ 反引号里的 drift-base 不生效" 1 $?
 
+# ㉜ 尾斜杠不是前缀：`/api/v1/pc/summary/` 归一化后是具体端点，不能被 `/summary/detail` 掩护（review P3-3）
+printf '# 规格\n- 集合端点：`/api/v1/pc/summary/`\n' >"$TMP/spec-trailing.md"
+"$PY" "$CHECK" --spec "$TMP/spec-trailing.md" --contract "$TMP/contract-prefix-cover.json" \
+  >"$TMP/trailing.txt" 2>&1
+expect_rc "㉜ 尾斜杠的具体路径删除后报红" 1 $?
+has "㉜ 报 missing-prefix（不是被 detail 掩护）" "[missing-prefix] /api/v1/pc/summary" "$TMP/trailing.txt"
+
+# ㉝ 顶层端点 `/health` 同样校验（旧实现按「路径段太少」整条跳过，删除后全绿；review P1-2）
+cat >"$TMP/contract-health.json" <<'JSON'
+{ "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
+  "paths": { "/health": { "get": { "responses": { "200": { "description": "OK" } } } } } }
+JSON
+printf '# 规格\n- 探针：`GET /health`\n' >"$TMP/spec-health.md"
+"$PY" "$CHECK" --spec "$TMP/spec-health.md" --contract "$TMP/contract-health.json" >/dev/null 2>&1
+expect_rc "㉝ 存在的顶层端点放行" 0 $?
+"$PY" "$CHECK" --spec "$TMP/spec-health.md" --contract "$TMP/contract.json" >"$TMP/health.txt" 2>&1
+expect_rc "㉝ 契约没有 /health 时报红" 1 $?
+has "㉝ 报出缺失的顶层端点" "GET /health" "$TMP/health.txt"
+
+# ㉞ 指令屏蔽：围栏代码块 / 多反引号 / 转义写法里的 drift-ignore 都只是示例（review P2-1）
+cat >"$TMP/spec-fenced-ignore.md" <<'MD'
+# 规格
+```md
+<!-- drift-ignore: /api/v1/pc/missing -->
+```
+- 真实引用：`GET /api/v1/pc/missing`
+MD
+"$PY" "$CHECK" --spec "$TMP/spec-fenced-ignore.md" --contract "$TMP/contract.json" \
+  >"$TMP/fenced-ignore.txt" 2>&1
+expect_rc "㉞ 围栏代码块里的 drift-ignore 不生效" 1 $?
+has "㉞ 围栏外的真实引用照常报红" "GET /api/v1/pc/missing" "$TMP/fenced-ignore.txt"
+
+printf '# 规格\n- 示例：``<!-- drift-ignore: /api/v1/pc/missing -->``\n- 真实引用：`GET /api/v1/pc/missing`\n' \
+  >"$TMP/spec-double-tick.md"
+"$PY" "$CHECK" --spec "$TMP/spec-double-tick.md" --contract "$TMP/contract.json" \
+  >"$TMP/double-tick.txt" 2>&1
+expect_rc "㉞ 双反引号里的 drift-ignore 不生效" 1 $?
+has "㉞ 双反引号外的真实引用照常报红" "GET /api/v1/pc/missing" "$TMP/double-tick.txt"
+
+printf '# 规格\n- 转义示例：\\<!-- drift-ignore: /api/v1/pc/missing -->\n- 真实引用：`GET /api/v1/pc/missing`\n' \
+  >"$TMP/spec-escaped-ignore.md"
+"$PY" "$CHECK" --spec "$TMP/spec-escaped-ignore.md" --contract "$TMP/contract.json" \
+  >"$TMP/escaped-ignore.txt" 2>&1
+expect_rc "㉞ 转义写法 \\<!-- 不生效" 1 $?
+has "㉞ 转义写法旁边仍报真实引用" "GET /api/v1/pc/missing" "$TMP/escaped-ignore.txt"
+
+# ㉟ 宽松 stale-ignore：规格写具体 UUID、契约是 `{id:guid}` 时，路径级豁免仍算指向真实路径（review P2-2）
+cat >"$TMP/contract-uuid.json" <<'JSON'
+{ "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
+  "paths": { "/api/v1/calendar/recycle-bin/{id}/restore": {
+    "post": {
+      "parameters": [
+        { "name": "id", "in": "path", "schema": { "type": "string", "format": "uuid" } }
+      ],
+      "responses": { "200": { "description": "OK" } } } } } }
+JSON
+UUID="11111111-1111-1111-1111-111111111111"
+printf '# 规格\n- 恢复：`POST /api/v1/calendar/recycle-bin/%s/restore` <!-- drift-ignore: /api/v1/calendar/recycle-bin/%s/restore -->\n' \
+  "$UUID" "$UUID" >"$TMP/spec-loose-ignore.md"
+"$PY" "$CHECK" --spec "$TMP/spec-loose-ignore.md" --contract "$TMP/contract-uuid.json" \
+  >"$TMP/loose-ignore.txt" 2>&1
+expect_rc "㉟ 具体 UUID 的路径级豁免被判为过期" 1 $?
+has "㉟ 报 stale-ignore" "[stale-ignore] /api/v1/calendar/recycle-bin/$UUID/restore" "$TMP/loose-ignore.txt"
+has "㉟ 并报 missing-path（豁免不再掩护）" "[missing-path] POST /api/v1/calendar/recycle-bin/$UUID/restore" "$TMP/loose-ignore.txt"
+
+# ㊱ 只写基地址 `/api` 的规格不能算「有内容」而放行（fail-closed 绕过；review P2-3）
+printf '# 规格\n- 基地址：`/api`\n' >"$TMP/spec-base-only.md"
+"$PY" "$CHECK" --spec "$TMP/spec-base-only.md" --contract "$TMP/contract.json" >/dev/null 2>&1
+expect_rc "㊱ 只有基地址的规格退出 4" 4 $?
+
+# ㊲ 方法大小写不敏感：`get /x` 也必须检查
+printf '# 规格\n- 小写方法：`get /api/v1/pc/does-not-exist`\n' >"$TMP/spec-lower.md"
+"$PY" "$CHECK" --spec "$TMP/spec-lower.md" --contract "$TMP/contract.json" >"$TMP/lower.txt" 2>&1
+expect_rc "㊲ 小写方法仍被检查" 1 $?
+has "㊲ 归一化成大写方法报出" "GET /api/v1/pc/does-not-exist" "$TMP/lower.txt"
+
+# ㊳ 元测试：空契约下，规格里的每条引用都必须报告（防止某类引用被静默跳过）
+cat >"$TMP/contract-empty.json" <<'JSON'
+{ "openapi": "3.0.1", "info": { "title": "T", "version": "1" }, "paths": {} }
+JSON
+printf '# 规格\n- 显式：`GET /api/v1/pc/alpha`\n- 裸路径：`/api/v1/pc/beta`\n' >"$TMP/spec-meta.md"
+"$PY" "$CHECK" --spec "$TMP/spec-meta.md" --contract "$TMP/contract-empty.json" >"$TMP/meta.txt" 2>&1
+expect_rc "㊳ 空契约下全部报红" 1 $?
+has "㊳ 两条引用都计入 findings" "findings: 2" "$TMP/meta.txt"
+has "㊳ 显式引用报 missing-path" "[missing-path] GET /api/v1/pc/alpha" "$TMP/meta.txt"
+has "㊳ 裸路径报 missing-prefix" "[missing-prefix] /api/v1/pc/beta" "$TMP/meta.txt"
+
 # ⑧ fail-closed
 echo '{ not json' >"$TMP/broken.json"
 "$PY" "$CHECK" --spec "$TMP/spec-ok.md" --contract "$TMP/broken.json" >/dev/null 2>&1
@@ -352,7 +439,7 @@ echo ""
 if [ "$FAIL" -ne 0 ]; then echo "FAILED：$FAIL 项失败，$PASS 项通过"; exit 1; fi
 # 断言用例数量：删掉任意一条测试（例如 fail-closed 或 missing-method）时，
 # PASS 会变小但退出码仍是 0，门禁覆盖会静默缩小（review P2-5）。
-EXPECTED_PASS=60
+EXPECTED_PASS=81
 if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
   echo "FAILED：用例数量不符（期望 $EXPECTED_PASS，实际 $PASS）" >&2
   exit 1

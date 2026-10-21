@@ -9,15 +9,21 @@
 做法（刻意「宁少报、不臆测」）：
   * 只检查反引号内与表格里出现的**显式 METHOD + 路径**（如 `POST /api/v1/calendar/tasks/{id}/plan`）；
     方法枚举（`GET, POST /path`）会**逐个方法**检查（旧实现只看最后一个）；
-  * 以及以 `/` 开头的**具体前缀**（`/api/v1/pc/*`、`/api/v1/pc/` 这种星号/斜杠写法按前缀匹配）；
-    不以 `/` 或 `*` 结尾的裸路径按**具体端点**精确匹配，不再被更长的路径前缀掩护；
+  * 以及以 `/` 开头的**具体前缀**（只有星号写法 `/api/v1/pc/*` 按前缀匹配）；
+    没有星号的裸路径（包括带尾斜杠的 `/api/v1/pc/summary/`）一律按**具体端点**精确匹配，
+    不被更长的路径前缀掩护 —— 尾斜杠曾被当成前缀，结果 `/api/v1/pc/app-signatures` 被
+    `/api/v1/pc/app-signatures/count` 掩护（review P3-3）；
     声明了 `drift-base` 的章节里，反引号内任何以 `/` 开头的相对路径都按该基地址拼接后检查；
-  * 指令（`drift-ignore` / `drift-base`）只认**行内代码之外**的写法；反引号里的是引用/示例，
-    不生效（文档常把写法当示例抄一遍，不该因此给全文套基地址）；
+  * 指令（`drift-ignore` / `drift-base`）只认**行内代码之外**的写法：单/双/多反引号、
+    围栏代码块（``` / ~~~，含未闭合）以及转义写法 `\\<!-- … -->` 里的都不生效
+    （文档常把写法当示例抄一遍，不该因此给全文套基地址或豁免真实端点）；
+  * 方法大小写不敏感（`get /x` 也检查）；顶层路径（`/health`、`/mcp`）同样校验，
+    只有纯基地址写法（`/api`、`/api/v1`）不作为有效引用；
   * 规格可用 `<!-- drift-ignore: /path -->` 或 `<!-- drift-ignore: METHOD /path -->` 声明
     「这条路径/这个方法不属于本 API」（例如本机守护进程协议）。豁免是**全文按精确路径**生效，
-    不依赖所在行；**路径级豁免只对契约里不存在的路径生效** —— 路径若已在契约里，仍会检查，
-    避免同一路径上的真实方法被静默放过。方法级写法只豁免那一个方法；
+    不依赖所在行；**路径级豁免只对契约里不存在的路径生效** —— 路径若已在契约里（含「具体
+    字面量 vs `{id:guid}` 这类宽松匹配」），仍会检查并报 `stale-ignore`，避免同一路径上的
+    真实方法被静默放过。方法级写法只豁免那一个方法；
   * 契约路径模板与文档写法都可能省略参数约束（`{id:guid}` / `{id}` / `{}`），比较前统一归一化；
     逐段比较时，契约里**有约束**的参数（`format`/`pattern`/`enum`）不能匹配文档的字面段
     （`{id:guid}` ≠ `upload`），无约束的字符串参数可以（`{type}` = `event`）；
@@ -44,29 +50,53 @@ import sys
 
 METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
 _METHOD = "(?:" + "|".join(METHODS) + ")"
-# 方法枚举：`GET, POST /path` —— 整个列表都要检查。
-EXPLICIT_RE = re.compile(r"\b((?:" + _METHOD + r"\s*,\s*)*" + _METHOD + r")\s+(/[A-Za-z0-9_\-{}/.:*]*)")
+# 方法枚举：`GET, POST /path` —— 整个列表都要检查。方法大小写不敏感（`get /x` 也要查，
+# 否则小写写法会整条漏检）。注意 `\b` 对中文不成立，但路径前的空格/反引号足够定位。
+EXPLICIT_RE = re.compile(r"\b((?:" + _METHOD + r"\s*,\s*)*" + _METHOD + r")\s+(/[A-Za-z0-9_\-{}/.:*]*)",
+                         re.IGNORECASE)
 BARE_PATH_RE = re.compile(r"`(/(?:api|health|mcp|metrics|version)[A-Za-z0-9_\-{}/.:*]*)`")
 # 声明了 drift-base 的章节里，相对路径也可以写成任意 `/xxx`（如 `/calendar/tasks`、`/files/items/upload`）。
 RELATIVE_BARE_RE = re.compile(r"`(/[A-Za-z0-9_\-{}/.:*]+)`")
 # `<!-- drift-ignore: /path -->` 或 `<!-- drift-ignore: POST /path -->`，全文按精确路径生效。
-IGNORE_RE = re.compile(r"<!--\s*drift-ignore:\s*(?:(?P<method>" + _METHOD + r")\s+)?(?P<path>/\S+)\s*-->")
+# `(?<!\\)` 让转义写法 `\<!-- … -->`（文档里展示注释语法时常见）不生效。
+IGNORE_RE = re.compile(r"(?<!\\)<!--\s*drift-ignore:\s*(?:(?P<method>" + _METHOD + r")\s+)?(?P<path>/\S+)\s*-->",
+                       re.IGNORECASE)
 # 路径**直接接在** URL 后面（中间没有空格/引号/反引号/中文标点）才算「外部地址的一部分」。
 # 不能用 `\S*$`：中文句子没有空格，会把同一行后面真正的端点声明一起吞掉。
 URL_UP_TO_MATCH_RE = re.compile(r"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*$")
 # 本章基地址：`<!-- drift-base: /api/v1/calendar -->`。之后的相对路径（如 `GET /calendar/tasks`）
 # 若不以 `/api` 开头，则按该基地址拼接 —— 域文档常用「本域路由组整体前缀是 X」的写法，不必每行写全路径。
 # 语义：从该行起生效；位于第一个 drift-base 之前的行使用**第一个**基地址（文档顺序不该影响判定）。
-BASE_RE = re.compile(r"<!--\s*drift-base:\s*(\S+?)\s*-->")
-# 行内代码（反引号）里的内容不算指令：文档常把写法当示例引用，
-# 例如「每份文档顶部加一行 `<!-- drift-base: /api/v1 -->`」——
-# 若把它当成真指令，一句示例会给全文套上基地址，制造大量假引用。
-_CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
+BASE_RE = re.compile(r"(?<!\\)<!--\s*drift-base:\s*(\S+?)\s*-->")
+# 行内代码不算指令：文档常把写法当示例引用，例如「每份文档顶部加一行 `<!-- drift-base: /api/v1 -->`」。
+# 必须覆盖**任意长度**的反引号定界（`` ``x`` ``），否则用双反引号展示示例时指令会真的生效。
+_INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)([^\n]*?)(?<!`)\1(?!`)")
+# 围栏代码块（``` / ~~~）里的是示例，整块屏蔽；未闭合时也当作示例屏蔽到文末（fail-safe）。
+_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 
 
-def mask_code_spans(line):
-    """把行内代码替换成等长空格，供只扫描指令使用（引用仍照常解析）。"""
-    return _CODE_SPAN_RE.sub(lambda match: " " * len(match.group(0)), line)
+def mask_directive_text(text):
+    """把「不是指令」的区域替换成等长空白，只留真正的指令可被扫描。
+
+    长度保持不变，所以按行取出的掩码行与原文行下标一一对应（`spec_references` 依赖这一点）。
+    覆盖三种常见写法（review P2-1）：
+      * 单/双/多反引号行内代码；* 围栏代码块（含未闭合）；* 转义注释 `\\<!-- … -->`（由 IGNORE_RE 的 lookbehind 处理）。
+    """
+    masked_lines = []
+    fence = None
+    for line in text.splitlines():
+        fence_match = _FENCE_RE.match(line)
+        if fence is None and fence_match:
+            fence = fence_match.group(1)[0] * 3
+            masked_lines.append(" " * len(line))
+            continue
+        if fence is not None:
+            if fence_match and fence_match.group(1).startswith(fence):
+                fence = None
+            masked_lines.append(" " * len(line))
+            continue
+        masked_lines.append(_INLINE_CODE_RE.sub(lambda m: " " * len(m.group(0)), line))
+    return masked_lines
 
 
 def normalize(path):
@@ -77,46 +107,20 @@ def normalize(path):
     return path.rstrip("/") or "/"
 
 
-def same_template(a, b):
-    """两个路径模板「同形」= 归一化后完全相等（用于裸路径/前缀判定）。
-
-    `normalize` 已把 `{id:guid}` / `{taskId}` / `{id}` 统一成 `{}`，所以具名参数的写法差异
-    自动消失；而**字面段必须逐字相等** —— 不能拿 `{}` 去通配字面段，否则
-    `DELETE /api/v1/files/items/upload` 会被 `DELETE /api/v1/files/items/{id}` 放行
-    （运行时 `{id:guid}` 匹配不了 `upload`，实际是 404/405）。
-    逐段判定、能区分「有约束参数」与「自由文本参数」的版本见 `template_matches`。
-    """
-    return a == b
-
-
-def _response_statuses(item):
-    statuses = set()
-    for method, op in item.items():
-        if method.upper() not in METHODS or not isinstance(op, dict):
-            continue
-        for status in (op.get("responses") or {}):
-            statuses.add(str(status))
-    return statuses
-
-
 def is_catch_all(path, item):
     """契约里的 404 兜底不算真实端点。
 
     两种真实形态：
       * `/api/{*path}`（ASP.NET 的 catch-all 写法）；
-      * `/api/{path}`（OpenAPI 生成器把 catch-all 参数渲染成普通参数名）——
-        只在它**只有兜底语义**时认定：最后一段是 `{path}`/`{*path}`，
-        且所有响应状态都在 `{404, 500}` 内。否则可能误伤真实的 `/api/{path}` 端点。
+      * `/api/{path}`（OpenAPI 生成器把 catch-all 参数渲染成普通参数名）。
+    第二种**不再看响应状态**：兜底路由一旦被生成器补上 200 + 自由字符串 schema，
+    「任意 `/api/xxx` 都能匹配」就会让所有缺失端点静默通过 —— 那正是这个检查要防的事。
+    真实的单段 `/api/{xxx}` 端点会用有意义的名字（`{id}`、`{sectionId}`），不会被误判。
     """
     segments = [s for s in path.split("/") if s]
     if any(segment.startswith("{*") for segment in segments):
         return True
-    return (
-        len(segments) == 2
-        and segments[0] == "api"
-        and segments[1] in ("{path}", "{*path}")
-        and _response_statuses(item) <= {"404", "500"}
-    )
+    return len(segments) == 2 and segments[0] == "api" and segments[1] == "{path}"
 
 
 def _path_param_schemas(path_item, op):
@@ -192,7 +196,28 @@ def template_matches(contract_path, doc_path, schemas):
     return True
 
 
+def template_matches_loose(contract_path, doc_path):
+    """宽松匹配：把契约里的**所有**参数段都当成可匹配任意字面段。
+
+    只用于判定「drift-ignore 指向的路径是否其实是真实端点」。用例：规格写具体 UUID
+    （`/recycle-bin/event/1111…/restore`）而契约是 `{id:guid}` 时，严格匹配不成立 →
+    路径级豁免被当成合法；但运行时那条路径正是真实端点，豁免就掩护了真实方法删除（review P2-2）。
+    宽松匹配命中即视为真实路径，报 stale-ignore 要求改方法级/删除豁免。
+    """
+    c, d = _segment_parts(contract_path), _segment_parts(doc_path)
+    if len(c) != len(d):
+        return False
+    return all(_shape(cs) == _shape(ds) or (_is_param(cs) and "{}" not in _shape(ds))
+               for cs, ds in zip(c, d))
+
+
 TOP_LEVEL_PREFIXES = ("/api", "/health", "/mcp", "/metrics", "/version")
+# 只表示「基地址」的写法，本身不是端点（不能被当成一条有效引用，否则空规格也能通过 fail-closed）。
+BASE_ONLY_PATHS = frozenset(("/api", "/api/v1"))
+
+
+def is_checkable_bare(path):
+    return path not in BASE_ONLY_PATHS
 
 
 def resolve(path, base):
@@ -229,8 +254,9 @@ def spec_references(text):
       bare:     {归一化路径: 是否前缀写法}
       ignores:  {(METHOD 或 None, 归一化路径)}，None 表示路径级
     """
-    # 指令只认代码之外的写法；行内代码里的是「引用/示例」，不是声明。
-    directive_text = "\n".join(mask_code_spans(line) for line in text.splitlines())
+    # 指令只认代码之外的写法；行内代码 / 围栏代码块里的是「引用/示例」，不是声明。
+    masked_lines = mask_directive_text(text)
+    directive_text = "\n".join(masked_lines)
 
     ignores = set()
     for match in IGNORE_RE.finditer(directive_text):
@@ -245,8 +271,8 @@ def spec_references(text):
     bare_raw = []      # (path, is_prefix, quoted)
     explicit_paths = set()
 
-    for line in text.splitlines():
-        line_base = BASE_RE.search(mask_code_spans(line))
+    for line, masked_line in zip(text.splitlines(), masked_lines):
+        line_base = BASE_RE.search(masked_line)
         if line_base:
             base = line_base.group(1)
         # `drift-ignore` 只豁免它点名的那条路径/方法，不豁免同一行的其它引用 ——
@@ -269,7 +295,9 @@ def spec_references(text):
             target = normalize(resolve(raw, base))
             if target in explicit_paths:
                 continue  # 同一路径已作为「METHOD+路径」声明过，不重复判定
-            is_prefix = raw.endswith("*") or raw.endswith("/")
+            # 只有 `*` 才是前缀写法。尾斜杠不构成前缀：`/api/v1/pc/app-signatures/` 归一化后
+            # 就是具体端点，按前缀处理会被 `/.../count` 掩护（review P3-3）。
+            is_prefix = raw.endswith("*")
             bare_raw.append((target, is_prefix, quoted))
 
     # 第二遍：转述只在同一 (method, path) 已正式声明时跳过。
@@ -316,29 +344,38 @@ def main(argv):
     def contract_has_path(path):
         return any(template_matches(p, path, schemas) for (_, p), schemas in ops.items())
 
+    def contract_has_path_loose(path):
+        return any(template_matches_loose(p, path) for (_, p) in ops)
+
+    def is_real_path(path):
+        """契约里「有这条路径」——严格或宽松匹配都算（宽松用于具体字面量 vs 约束参数）。"""
+        return contract_has_path(path) or contract_has_path_loose(path)
+
     def ignored(method, path):
         if (method, path) in ignores:
             return True
         # 路径级豁免只对契约里不存在的路径生效：契约里已有该路径时，同一路径上的
-        # 真实方法被删除也必须报红，不能被「整路径 ignore」掩护（review P1-1）。
-        return (None, path) in ignores and not contract_has_path(path)
+        # 真实方法被删除也必须报红，不能被「整路径 ignore」掩护（review P1-1 / P2-2）。
+        return (None, path) in ignores and not is_real_path(path)
 
     findings = []
 
     # 路径级 ignore 指向契约里真实存在的路径：提示改成方法级/删除，避免以后静默漏报。
     for method, path in sorted(ignores, key=lambda x: (x[1], x[0] or "")):
-        if method is None and contract_has_path(path):
+        if method is None and is_real_path(path):
             findings.append({"category": "stale-ignore", "label": path,
                              "detail": "路径级 drift-ignore 指向契约里存在的路径；请改成 METHOD /path 或删除豁免",
                              "severity": "P2"})
 
     effective_explicit = sorted(x for x in explicit if not ignored(*x))
     effective_bare = {p: prefix for p, prefix in bare.items()
-                      if not ((None, p) in ignores and not contract_has_path(p))}
+                      if not ((None, p) in ignores and not is_real_path(p))}
 
     # 空文件 / 只剩标题 / 全部被 ignore 的规格会「0 findings」——门禁形同虚设。
-    # 这里按**应用豁免之后**的有效引用判定（review P1-2）。
-    if not effective_explicit and not effective_bare:
+    # 这里按**应用豁免之后、且真正会被校验**的引用判定（review P1-2 / P2-3）：
+    # 一个 `/api` 这种纯基地址引用不算「有内容」，否则其余引用全被豁免时门禁仍会静默通过。
+    checkable_bare = {p for p in effective_bare if is_checkable_bare(p)}
+    if not effective_explicit and not checkable_bare:
         print("规格里没有识别到任何未被豁免的端点引用（文件可能被截断，或全部加了 drift-ignore）：%s"
               % args.spec, file=sys.stderr)
         return 4
@@ -356,11 +393,15 @@ def main(argv):
                              "detail": "规格里写了该端点，契约里没有这个 METHOD+路径", "severity": "P1"})
 
     for path in sorted(effective_bare):
-        if path.count("/") < 2:
-            continue  # `/api`、`/mcp` 这类太短，容易是误报
+        if path in BASE_ONLY_PATHS:
+            continue  # `/api`、`/api/v1` 是基地址写法，不是端点
         if effective_bare[path]:
             prefix = path.rstrip("/")
             ok = any(p == prefix or p.startswith(prefix + "/") for p in paths)
+        elif path.count("/") < 2:
+            # 顶层端点（`/health`、`/mcp`）：旧实现一律跳过，删掉 `/health` 也全绿（review P1-2）。
+            # 按「自身或子路径存在」校验 —— 与它的前缀语义一致。
+            ok = any(p == path or p.startswith(path + "/") for p in paths)
         else:
             # 具体端点：只做精确/模板匹配。旧实现会用「更长路径前缀」掩护，
             # 删掉集合端点（`/api/v1/pc/summary`）时被 `/api/v1/pc/summary/detail` 放行（review P2-1）。
