@@ -1,5 +1,6 @@
 ﻿using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.EntityFrameworkCore;
@@ -40,6 +41,13 @@ public sealed class IdempotencyMiddleware
     public const string HeaderName = "Idempotency-Key";
     public const string ReplayedHeader = "Idempotent-Replayed";
     public const int KeyInProgressErrorCode = 40902;
+
+    /// <summary>
+    /// `Idempotency-Key` 超过 <see cref="MaxKeyLength"/> 时的业务码。
+    /// 刻意独立：40002 已被认证 / MCP / Ops 多处复用为「参数非法」，
+    /// 复用会让客户端把「key 太长」显示成「邮箱必填」之类的错误（review P3-4）。
+    /// </summary>
+    public const int KeyTooLongErrorCode = 40010;
     public static readonly TimeSpan Retention = TimeSpan.FromHours(24);
 
     /// <summary>
@@ -78,6 +86,9 @@ public sealed class IdempotencyMiddleware
         "/api/v1/files/providers/onedrive",
         // Google 授权地址：带一次性 state。
         "/api/v1/files/providers/google/authorize",
+        // 分享链接：webUrl 是可直接访问文件的 bearer 能力链接；服务层明确不写日志/审计，
+        // 缓存响应体等于把它明文落库 24 小时（review P2-3）。需要时可用 GET /items/{id}/shares 重新取。
+        "/api/v1/files/items/{id}/share",
         // Outlook 设备码：user code 是本次授权会话的凭据。
         "/api/v1/calendar/outlook/device-code",
         // 设备码轮询：返回同一个 user code，且是**有状态**轮询（waiting-for-user → authorized）。
@@ -120,10 +131,21 @@ public sealed class IdempotencyMiddleware
             return;
         }
 
-        var route = IdempotencyKey.RouteOf(ctx.GetEndpoint(), ctx.Request.Path);
+        // 匿名端点 / OpsKey 端点不参与幂等。**不能**只看 userId：UseAuthentication 在匿名端点上
+        // 同样会解析 Authorization，客户端带着仍未过期的 access token 调 login/refresh 时 userId
+        // 非空，会把返回的新 token 明文缓存 24 小时（review P2-2）。
+        var endpoint = ctx.GetEndpoint();
+        if (endpoint?.Metadata.GetMetadata<IAllowAnonymous>() is not null
+            || endpoint?.Metadata.GetMetadata<IAuthorizeData>() is null)
+        {
+            await _next(ctx);
+            return;
+        }
+
+        var route = IdempotencyKey.RouteOf(endpoint, ctx.Request.Path);
         // 兜底路由的模板是 `/api/{*path}`（Swashbuckle 在文档里把它重建为 `/api/{path}`），
         // 直接比较字符串容易写错一边；按路由段判断 catch-all 才是可靠的。
-        if (NonReplayableRoutes.Contains(route) || IdempotencyKey.IsCatchAll(ctx.GetEndpoint()))
+        if (NonReplayableRoutes.Contains(route) || IdempotencyKey.IsCatchAll(endpoint))
         {
             await _next(ctx);
             return;
@@ -134,7 +156,7 @@ public sealed class IdempotencyMiddleware
         if (rawKey.Length > MaxKeyLength)
         {
             ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
-            await ctx.Response.WriteAsJsonAsync(ApiResponse<string>.Error(40002, $"Idempotency-Key 不能超过 {MaxKeyLength} 个字符"));
+            await ctx.Response.WriteAsJsonAsync(ApiResponse<string>.Error(KeyTooLongErrorCode, $"Idempotency-Key 不能超过 {MaxKeyLength} 个字符"));
             return;
         }
 
@@ -302,9 +324,22 @@ public sealed class IdempotencyMiddleware
     {
         try
         {
-            // 先按「Id + 仍是 in_progress + 租约仍是本次的」读回：租约已被接管时直接放弃写入。
-            // 不用 ExecuteUpdate：InMemory provider（E2E 测试）不支持，而 EF 的条件读取在两个
-            // provider 上语义一致（review P2-2）。
+            if (db.Database.IsRelational())
+            {
+                // 单语句条件更新：租约（ExpiresAt）就是 fencing token。条件读取再 SaveChanges
+                // 不是原子的 —— 旧属主在「读回」与「写回」之间被接管时，UPDATE 仍会按 id 覆盖
+                // 新属主的占位（review P2-1）。这里把围栏放进 WHERE，影响行数为 0 即放弃。
+                var updated = await TryCompleteAsync(
+                    db, recordId, leaseExpiresAt,
+                    ctx.Response.StatusCode, ctx.Response.ContentType,
+                    body.CapturedText(), SerializeHeaders(ctx.Response),
+                    DateTimeOffset.UtcNow.Add(Retention));
+                if (updated == 0)
+                    _logger.LogWarning("幂等租约已被接管，丢弃本次结果：{RecordId}", recordId);
+                return;
+            }
+
+            // InMemory（仅测试宿主）不支持 ExecuteUpdate：退化为条件读 + 写。
             var stored = await db.IdempotencyRecords
                 .FirstOrDefaultAsync(r => r.Id == recordId && r.State == "in_progress"
                                           && r.ExpiresAt == leaseExpiresAt, CancellationToken.None);
@@ -330,13 +365,36 @@ public sealed class IdempotencyMiddleware
         }
     }
 
+    /// <summary>成功的条件写回（单语句）；返回影响行数，0 表示租约已被接管。</summary>
+    internal static Task<int> TryCompleteAsync(
+        PimDbContext db, Guid recordId, DateTimeOffset leaseExpiresAt,
+        int statusCode, string? contentType, string? responseBody, string? responseHeaders,
+        DateTimeOffset expiresAt)
+        => db.IdempotencyRecords
+            .Where(r => r.Id == recordId && r.State == "in_progress" && r.ExpiresAt == leaseExpiresAt)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(r => r.State, "completed")
+                .SetProperty(r => r.StatusCode, (int?)statusCode)
+                .SetProperty(r => r.ContentType, contentType)
+                .SetProperty(r => r.ResponseBody, responseBody)
+                .SetProperty(r => r.ResponseHeaders, responseHeaders)
+                .SetProperty(r => r.ExpiresAt, expiresAt), CancellationToken.None);
+
     private async Task ReleaseAsync(PimDbContext db, Guid recordId, DateTimeOffset leaseExpiresAt)
     {
         try
         {
             db.ChangeTracker.Clear();
-            // 只删除「仍属于本次执行」的占位：租约到期后可能已被新请求接管（Id 不变、租约变了），
-            // 无条件按 Id 删除会把新属主正在执行的占位删掉，导致同一 key 出现第三次并发执行。
+            if (db.Database.IsRelational())
+            {
+                // 条件删除同样是单语句：租约已被接管时影响 0 行，不会删掉新属主的占位（review P2-1）。
+                var deleted = await TryReleaseAsync(db, recordId, leaseExpiresAt);
+                if (deleted == 0)
+                    _logger.LogDebug("幂等占位已不属于本次执行（已被接管或已完成），跳过释放：{RecordId}", recordId);
+                return;
+            }
+
+            // InMemory（仅测试宿主）：条件读 + 删除。
             var stored = await db.IdempotencyRecords
                 .FirstOrDefaultAsync(r => r.Id == recordId && r.State == "in_progress"
                                           && r.ExpiresAt == leaseExpiresAt, CancellationToken.None);
@@ -353,6 +411,12 @@ public sealed class IdempotencyMiddleware
             _logger.LogWarning(ex, "幂等占位释放失败（记录会在过期后被清理）：{RecordId}", recordId);
         }
     }
+
+    /// <summary>占位的条件删除（单语句）；返回影响行数，0 表示租约已被接管。</summary>
+    internal static Task<int> TryReleaseAsync(PimDbContext db, Guid recordId, DateTimeOffset leaseExpiresAt)
+        => db.IdempotencyRecords
+            .Where(r => r.Id == recordId && r.State == "in_progress" && r.ExpiresAt == leaseExpiresAt)
+            .ExecuteDeleteAsync(CancellationToken.None);
 
     /// <summary>
     /// 唯一键冲突时接管一条**已过期**的记录（过期 = 已完成的 24h 缓存，或已超租约的 in_progress 占位）。

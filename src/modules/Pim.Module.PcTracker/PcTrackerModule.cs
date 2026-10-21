@@ -429,10 +429,13 @@ public class PcTrackerModule : IModule
             var parsedDate = TryParseDate(date);
             var parsedDateFrom = TryParseDate(dateFrom);
             var parsedDateTo = TryParseDate(dateTo);
+            // 服务层缺省日期是「业务日今天」（dateFrom ?? date ?? 今天）。缓存键必须包含这个算出来的
+            // 日期，否则跨 04:00 边界仍会命中上一业务日的缓存（review P2-4）。
+            var effectiveDate = parsedDateFrom ?? parsedDate ?? BusinessToday();
             var result = await cache.GetOrCreateAsync(
                 AggregateResultCacheKeys.Build(httpContext.Request, overrides:
                 [
-                    new("date", parsedDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty),
+                    new("date", effectiveDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
                     new("dateFrom", parsedDateFrom?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty),
                     new("dateTo", parsedDateTo?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty),
                 ]),

@@ -212,7 +212,7 @@ public sealed class PcTrackerQualityService
 
     private static (DateTimeOffset Start, DateTimeOffset End) GetRange(DateTime? date, DateTime? dateFrom, DateTime? dateTo)
     {
-        var from = dateFrom ?? date ?? DateTime.Today;
+        var from = dateFrom ?? date ?? PcTrackerService.BusinessToday();
         var to = dateTo ?? date ?? from;
 
         if (to < from)

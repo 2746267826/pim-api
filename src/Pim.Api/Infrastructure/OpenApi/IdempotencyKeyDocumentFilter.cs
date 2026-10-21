@@ -28,6 +28,10 @@ public sealed class IdempotencyKeyDocumentFilter : IDocumentFilter
     private const string ConflictNote =
         "若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。";
 
+    /// <summary>Idempotency-Key 超长（&gt; 128 字符）时的 400 说明。</summary>
+    private const string KeyTooLongNote =
+        "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。";
+
     public void Apply(OpenApiDocument document, DocumentFilterContext context)
     {
         foreach (var (path, item) in document.Paths)
@@ -47,6 +51,7 @@ public sealed class IdempotencyKeyDocumentFilter : IDocumentFilter
                 }
 
                 AddConflictResponse(operation);
+                AddKeyTooLongResponse(operation);
                 AddReplayHeader(operation);
             }
         }
@@ -72,11 +77,9 @@ public sealed class IdempotencyKeyDocumentFilter : IDocumentFilter
         if (operation.Responses.TryGetValue("409", out var existing))
         {
             // 端点本来就有业务 409（例如 Outlook writeback）：中间件的「执行中」复用同一个状态码，
-            // 但 body 是 {code:40902,...} 的 StringApiResponse。生成的客户端必须能区分这两者，
-            // 所以至少要在描述里写清楚，不能因为「已经有 409」就当作已经声明过。
-            existing.Description = string.IsNullOrEmpty(existing.Description)
-                ? ConflictNote
-                : $"{existing.Description} {ConflictNote}";
+            // 但 body 是 {code:40902,...} 的 StringApiResponse。生成的客户端按单一 schema 反序列化
+            // 第二种形态会失败，所以 schema 也要声明成联合（review P3-3），描述再写明按 code 区分。
+            UnionWithStringApiResponse(existing, ConflictNote);
             return;
         }
         operation.Responses["409"] = new OpenApiResponse
@@ -94,6 +97,73 @@ public sealed class IdempotencyKeyDocumentFilter : IDocumentFilter
             },
         };
     }
+
+    /// <summary>
+    /// 幂等中间件在 key 超长时返回 400/40010 —— 对所有参与幂等的 operation 都成立。
+    /// 端点原本没有 400 时补一个；已有业务 400 时把 schema 声明成联合，避免客户端按单一 schema
+    /// 解析 40010 形态时失败（review P3-2）。
+    /// </summary>
+    private static void AddKeyTooLongResponse(OpenApiOperation operation)
+    {
+        operation.Responses ??= new OpenApiResponses();
+        if (operation.Responses.TryGetValue("400", out var existing))
+        {
+            // 已有 400 且本来就是 StringApiResponse：不需要改 schema，也不必重复描述
+            // （40010 属于同类「参数非法」，全局说明见 docs/client-contract-semantics.md §2）。
+            if (HasStringApiResponseSchema(existing))
+                return;
+            UnionWithStringApiResponse(existing, KeyTooLongNote);
+            return;
+        }
+        operation.Responses["400"] = new OpenApiResponse
+        {
+            Description = KeyTooLongNote,
+            Content = new Dictionary<string, OpenApiMediaType>
+            {
+                ["application/json"] = new OpenApiMediaType { Schema = StringApiResponseSchema() },
+            },
+        };
+    }
+
+    /// <summary>把响应的 JSON schema 变成「原 schema 或 StringApiResponse」的联合，并追加说明。</summary>
+    private static void UnionWithStringApiResponse(OpenApiResponse response, string note)
+    {
+        response.Description = string.IsNullOrEmpty(response.Description) ? note : $"{response.Description} {note}";
+        response.Content ??= new Dictionary<string, OpenApiMediaType>();
+        if (!response.Content.TryGetValue("application/json", out var media))
+        {
+            media = new OpenApiMediaType();
+            response.Content["application/json"] = media;
+        }
+        if (media.Schema is null)
+        {
+            media.Schema = StringApiResponseSchema();
+            return;
+        }
+        // 响应体本来就是 StringApiResponse：不需要联合（否则会写出 oneOf: [S, S]）。
+        if (IsStringApiResponseReference(media.Schema) || IsStringApiResponseUnion(media.Schema))
+            return;
+        media.Schema = new OpenApiSchema { OneOf = [media.Schema, StringApiResponseSchema()] };
+    }
+
+    private static bool HasStringApiResponseSchema(OpenApiResponse response)
+        => response.Content is { Count: > 0 } content
+           && content.TryGetValue("application/json", out var media)
+           && media.Schema is not null
+           && (IsStringApiResponseReference(media.Schema) || IsStringApiResponseUnion(media.Schema));
+
+    private static bool IsStringApiResponseUnion(OpenApiSchema schema)
+        => schema.OneOf is { Count: > 0 } alternatives
+           && alternatives.Any(IsStringApiResponseReference);
+
+    private static bool IsStringApiResponseReference(OpenApiSchema schema)
+        => string.Equals(schema.Reference?.Id, "StringApiResponse", StringComparison.Ordinal);
+
+    private static OpenApiSchema StringApiResponseSchema()
+        => new()
+        {
+            Reference = new OpenApiReference { Type = ReferenceType.Schema, Id = "StringApiResponse" },
+        };
 
     private static void AddReplayHeader(OpenApiOperation operation)
     {

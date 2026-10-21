@@ -186,7 +186,16 @@ public sealed class PcBrowserSiteService
 
     public async Task<SiteSummaryDto> GetSummaryAsync(string? from, string? to, CancellationToken ct)
     {
-        (from, to) = ResolveRange(new SiteDailyQuery { From = from, To = to, Date = from is null && to is null ? DateTimeOffset.Now.ToString("yyyy-MM-dd") : null });
+        (from, to) = ResolveRange(new SiteDailyQuery
+        {
+            From = from,
+            To = to,
+            // 用业务日（Asia/Shanghai，04:00 切日）而不是服务器本地日期：
+            // TZ=UTC 时 04:00–08:00 会取到上一个业务日（review P2-4）。
+            Date = from is null && to is null
+                ? PcTrackerService.BusinessToday().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                : null,
+        });
         var rows = await _db.Set<PcBrowserSiteDailyEntity>()
             .Where(r => r.Date.CompareTo(from) >= 0 && r.Date.CompareTo(to) <= 0)
             .ToListAsync(ct);

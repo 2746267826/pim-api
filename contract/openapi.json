@@ -13329,7 +13329,7 @@
             "type": "string"
           },
           "businessDayStartHour": {
-            "description": "业务日起算小时（本地时间）：4。业务日 D = [D 该时刻, D+1 该时刻)。",
+            "description": "业务日起算小时（本地时间）：4。业务日 D = [D 04:00, D+1 04:00)。",
             "example": 4,
             "format": "int32",
             "type": "integer"
@@ -15409,7 +15409,7 @@
             "type": "string"
           },
           "businessDayStartHour": {
-            "description": "业务日起算小时（本地时间）：4。业务日 D = [D 该时刻, D+1 该时刻)。",
+            "description": "业务日起算小时（本地时间）：4。业务日 D = [D 04:00, D+1 04:00)。",
             "example": 4,
             "format": "int32",
             "type": "integer"
@@ -18479,13 +18479,12 @@
         "additionalProperties": false,
         "properties": {
           "businessDate": {
-            "description": "该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：单个今日分区。客户端不得自行推算。",
+            "description": "该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：单个今日分区（pc.activity / pc.quality 为 4，其余为 0）。客户端不得自行推算。",
             "format": "date",
             "type": "string"
           },
           "businessDayStartHour": {
-            "description": "业务日起算小时（本地时间）：4。业务日 D = [D 该时刻, D+1 该时刻)。",
-            "example": 4,
+            "description": "业务日起算小时（本地时间）：0 或 4，按分区而定（pc.activity / pc.quality 为 4，其余为 0）。业务日 D = [D 该时刻, D+1 该时刻)。",
             "format": "int32",
             "type": "integer"
           },
@@ -18577,13 +18576,13 @@
         "additionalProperties": false,
         "properties": {
           "businessDate": {
-            "description": "该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：今日分区注册表。客户端不得自行推算。",
+            "description": "该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：今日分区注册表（日历日）。客户端不得自行推算。",
             "format": "date",
             "type": "string"
           },
           "businessDayStartHour": {
-            "description": "业务日起算小时（本地时间）：4。业务日 D = [D 该时刻, D+1 该时刻)。",
-            "example": 4,
+            "description": "业务日起算小时（本地时间）：0。业务日 D = [D 00:00, D+1 00:00)。",
+            "example": 0,
             "format": "int32",
             "type": "integer"
           },
@@ -20069,6 +20068,16 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。"
+          },
           "401": {
             "description": "Unauthorized"
           },
@@ -20375,6 +20384,16 @@
                 }
               }
             }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。"
           },
           "401": {
             "description": "Unauthorized"
@@ -24463,6 +24482,16 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。"
+          },
           "401": {
             "description": "Unauthorized"
           },
@@ -24648,7 +24677,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OutlookWriteResultApiResponse"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/OutlookWriteResultApiResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/StringApiResponse"
+                    }
+                  ]
                 }
               }
             },
@@ -28746,6 +28782,16 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。"
+          },
           "401": {
             "description": "Unauthorized"
           },
@@ -30753,15 +30799,6 @@
               "format": "uuid",
               "type": "string"
             }
-          },
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
           }
         ],
         "requestBody": {
@@ -30783,18 +30820,7 @@
                 }
               }
             },
-            "description": "OK",
-            "headers": {
-              "Idempotent-Replayed": {
-                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
-                "schema": {
-                  "enum": [
-                    "true"
-                  ],
-                  "type": "string"
-                }
-              }
-            }
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -30821,16 +30847,6 @@
               }
             },
             "description": "Not Found"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StringApiResponse"
-                }
-              }
-            },
-            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -31012,6 +31028,16 @@
                 }
               }
             }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。"
           },
           "401": {
             "description": "Unauthorized"
@@ -32020,6 +32046,16 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。"
+          },
           "401": {
             "description": "Unauthorized"
           },
@@ -32830,6 +32866,16 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。"
+          },
           "401": {
             "description": "Unauthorized"
           },
@@ -33029,6 +33075,16 @@
                 }
               }
             }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。"
           },
           "401": {
             "description": "Unauthorized"
@@ -41327,6 +41383,16 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。"
+          },
           "401": {
             "description": "Unauthorized"
           },
@@ -44299,6 +44365,16 @@
               }
             }
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。"
+          },
           "401": {
             "description": "Unauthorized"
           },
@@ -44478,6 +44554,16 @@
                 }
               }
             }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。"
           },
           "401": {
             "description": "Unauthorized"
@@ -44728,6 +44814,16 @@
                 }
               }
             }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "请求头 Idempotency-Key 超过 128 个字符时，服务端返回 400，响应体是 StringApiResponse 形状的 {code:40010}。"
           },
           "401": {
             "description": "Unauthorized"

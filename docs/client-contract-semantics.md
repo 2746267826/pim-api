@@ -54,7 +54,10 @@
 3. 24 小时内同 key 重放：返回缓存的响应，不重复执行副作用；响应头 `Idempotent-Replayed: true` 标明这是重放。
 4. 首次请求仍在执行中时重放：返回 `409` + `code=40902`（契约里已为该端点声明 409），客户端应退避后重试。
    **同一个 409 可能有两种 body**：端点自身的业务 409（例如 Outlook writeback）与这里的 `{code:40902}`。
-   契约里两者共用一个状态码，客户端必须按 body 的 `code` 区分。
+   契约里两者共用一个状态码，**schema 声明为 `oneOf: [业务响应, StringApiResponse]`**，客户端必须按 body 的
+   `code` 区分。
+   `Idempotency-Key` 超过 128 个字符时返回 `400` + `code=40010`（独立码，不复用 40002）；
+   该 400 已对每个参与幂等的 operation 声明，已有业务 400 的端点同样使用 `oneOf`。
 5. 首次请求失败（非 2xx）：不缓存，客户端可以用同一个 key 重试，服务端会重新执行。
 6. 读操作忽略该请求头。
 7. **只有唯一键冲突（PostgreSQL 23505）才会被解释为「另一个请求正在执行」**；其它存储错误（含接管过期行
@@ -62,17 +65,24 @@
 8. 「执行中」占位是**短租约**（`InProgressLease` = 10 分钟），成功写回时才延到 24 小时。所以进程在
    占位之后、写回之前被杀掉时，同一个 key 最多被锁 10 分钟，之后会被新的请求**接管**并重新执行；
    另有每小时一次的后台清理任务（`idempotency-cleanup`）删除过期行。
+9. **租约围栏是原子的**：写回（`TryCompleteAsync`）与释放（`TryReleaseAsync`）都是**单语句条件更新/删除**，
+   条件为 `id = ? AND state = 'in_progress' AND expires_at = <本次租约>`；被接管后旧执行者影响 0 行，
+   不会覆盖或删除新属主的占位（`expires_at` 即 fencing token，无需额外列）。
 
 **不参与幂等的端点**（契约里也不会声明该请求头，见 `IdempotencyKeyDocumentFilter`）：
 
 - 匿名端点（`/api/v1/auth/login|register|refresh`、`/api/v1/mcp/verify` 等）与 OpsKey 端点（`/api/v1/ops/*`）：
-  没有 JWT 用户，也就没有幂等作用域；
+  没有幂等作用域。判定依据是**端点元数据**（`IAllowAnonymous`，或没有任何 `IAuthorizeData`），
+  **不是**当前请求有没有 JWT 用户 —— `UseAuthentication` 在匿名端点上也解析 `Authorization`，
+  否则带着仍有效 access token 调 login/refresh 会把返回的新 token 缓存 24 小时；
 - 响应里含**一次性凭据**的端点：缓存响应体等于把凭据落库 24 小时，且凭据过期后的重放会伪装成成功。
   当前清单（`IdempotencyMiddleware.NonReplayableRoutes`，新增同类端点必须同步加进去）：
   - `POST /api/v1/mcp/clients`（明文 token）；
   - `POST /api/v1/files/items/upload-session`（预授权上传 URL，分片 PUT 不带 Authorization）；
   - `POST /api/v1/files/providers/onedrive`（设备码 user code + verification URI）；
   - `POST /api/v1/files/providers/google/authorize`（带一次性 state 的授权地址）；
+  - `POST /api/v1/files/items/{id}/share`（分享链接 `webUrl` 是可直接访问文件的 bearer 能力链接；
+    服务层明确不写日志/审计，缓存等于明文落库；需要时用 `GET /api/v1/files/items/{id}/shares` 重新取）；
   - `POST /api/v1/calendar/outlook/device-code`（设备码 user code）；
   - `POST /api/v1/calendar/outlook/device-code/poll`（**有状态**轮询：`waiting-for-user` → `authorized`，
     每次都返回同一个 user code；缓存 24 小时会让客户端永远看到首次的等待状态，同样按一次性凭据处理）；

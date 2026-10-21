@@ -122,6 +122,22 @@ public sealed class TodaySectionService
     private static DateTime NowInBusinessTimeZone()
         => TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, BusinessDay.TimeZone).DateTime;
 
+    /// <summary>
+    /// 不带 <c>date</c> 时服务端算出的业务日。缓存键必须包含它：否则 03:59 缓存的响应
+    /// 会在 04:00 之后继续当作「今天」返回，信封上的业务日还是前一天（review P2-5）。
+    /// </summary>
+    public static string ImplicitDateCacheKey()
+        => ImplicitDateCacheKey(DateTimeOffset.UtcNow);
+
+    /// <summary>可注入时钟的重载（测试跨 04:00 边界）。</summary>
+    internal static string ImplicitDateCacheKey(DateTimeOffset nowUtc)
+    {
+        var query = BuildQuery(
+            TimeZoneInfo.ConvertTime(nowUtc, BusinessDay.TimeZone).DateTime,
+            hasExplicitTime: true);
+        return $"{FormatDate(query.Date)}|{FormatDate(query.PcBusinessDate)}";
+    }
+
     private static TodayQuery BuildQuery(string? date)
     {
         if (string.IsNullOrWhiteSpace(date))

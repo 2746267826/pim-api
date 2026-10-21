@@ -1605,6 +1605,17 @@ public partial class PcTrackerService
 
     private static DateTimeOffset BusinessDayStart(DateTime date) => GetBusinessDayStartForQuery(date);
 
+    /// <summary>
+    /// 「业务日今天」（Asia/Shanghai，04:00 切日）。**不能**用 <c>DateTime.Today</c>：
+    /// 宿主时区是 UTC 时，上海 04:00–08:00 期间 UTC 日期还停在昨天，兜底会取到上一个业务日（review P2-4）。
+    /// </summary>
+    internal static DateTime BusinessToday()
+        => BusinessToday(DateTimeOffset.UtcNow);
+
+    /// <summary>可注入时钟的重载（测试跨 04:00 边界）。</summary>
+    internal static DateTime BusinessToday(DateTimeOffset nowUtc)
+        => Pim.Core.Common.BusinessDay.GetBusinessDate(nowUtc).ToDateTime(TimeOnly.MinValue);
+
     private static IQueryable<KeystatsDailyEntity> ApplyDetailSort(
         IQueryable<KeystatsDailyEntity> query,
         DetailQueryParams q)
@@ -1625,7 +1636,7 @@ public partial class PcTrackerService
     {
         var startDate = DateTime.TryParse(q.DateFrom, out var from)
             ? from.Date
-            : DateTime.Today;
+            : BusinessToday();
         var endDate = DateTime.TryParse(q.DateTo, out var to)
             ? to.Date
             : startDate;

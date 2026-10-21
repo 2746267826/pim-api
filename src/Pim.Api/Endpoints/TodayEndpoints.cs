@@ -33,7 +33,7 @@ public static class TodayEndpoints
             return await RunWithDateValidationAsync(async () =>
             {
                 var result = await cache.GetOrCreateAsync(
-                    AggregateResultCacheKeys.Build(httpContext.Request),
+                    AggregateResultCacheKeys.Build(httpContext.Request, overrides: ImplicitDateOverrides(date)),
                     force,
                     () => today.GetRegistryAsync(date, ct),
                     ct);
@@ -57,7 +57,7 @@ public static class TodayEndpoints
             return await RunWithDateValidationAsync(async () =>
             {
                 var result = await cache.GetOrCreateAsync(
-                    AggregateResultCacheKeys.Build(httpContext.Request),
+                    AggregateResultCacheKeys.Build(httpContext.Request, overrides: ImplicitDateOverrides(date)),
                     force,
                     () => today.GetSectionAsync(sectionId, date, ct),
                     ct);
@@ -72,6 +72,15 @@ public static class TodayEndpoints
         .Produces<ApiResponse<string>>(404)
         .Produces<ApiResponse<string>>(500);
     }
+
+    /// <summary>
+    /// 不带 date 时把服务端算出的业务日放进缓存键（带 date 时键里本来就有 date）。
+    /// 否则 03:59 的快照会在 04:00 之后继续被当作「今天」返回（review P2-5）。
+    /// </summary>
+    private static IReadOnlyList<KeyValuePair<string, string>>? ImplicitDateOverrides(string? date)
+        => string.IsNullOrWhiteSpace(date)
+            ? [new("implicitDate", TodaySectionService.ImplicitDateCacheKey())]
+            : null;
 
     public static IResult ToInvalidDateResult()
         => Results.BadRequest(ApiResponse<string>.Error(

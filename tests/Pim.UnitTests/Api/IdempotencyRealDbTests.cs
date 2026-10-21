@@ -7,7 +7,9 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
+using Pim.Api.Middleware;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 using Pim.UnitTests.Harness.RealDb;
 using Xunit;
 
@@ -176,5 +178,64 @@ public sealed class IdempotencyRealDbTests
             a.RootElement.GetProperty("data").GetProperty("id").GetString(),
             b.RootElement.GetProperty("data").GetProperty("id").GetString());
         Assert.Equal(1, await CountTasksAsync(client));
+    }
+
+    /// <summary>
+    /// review P2-1：租约围栏必须是**单语句条件写**。旧属主在被接管之后晚到的写回/释放
+    /// 必须影响 0 行，不能覆盖或删除新属主的占位（条件读 + SaveChanges 做不到这一点）。
+    /// </summary>
+    [SkippableFact]
+    public async Task LateWriteBack_FromTakenOverOwner_DoesNotTouchNewPlaceholder()
+    {
+        RealDbTestConnection.SkipIfUnavailable();
+        await using var temp = await TempMigrationDatabase.CreateAsync("idem-fence");
+        await temp.MigrateAsync();
+        var db = temp.Db;
+        var key = Guid.NewGuid().ToString();
+
+        var initialLease = DateTimeOffset.UtcNow.AddMinutes(10);
+        var record = new IdempotencyRecordEntity
+        {
+            UserId = Guid.NewGuid(),
+            Method = "POST",
+            Route = Tasks,
+            Key = key,
+            State = "in_progress",
+            ExpiresAt = initialLease,
+        };
+        db.IdempotencyRecords.Add(record);
+        await db.SaveChangesAsync();
+
+        // 数据库里的实际精度（微秒）才是旧属主手里的 fencing token。
+        var oldLease = await db.IdempotencyRecords.AsNoTracking()
+            .Where(r => r.Id == record.Id).Select(r => r.ExpiresAt).SingleAsync();
+        var newLease = oldLease.AddMinutes(10);
+
+        // 新属主接管（与 TryTakeOverExpiredAsync 同形）。
+        Assert.Equal(1, await db.IdempotencyRecords
+            .Where(r => r.Id == record.Id)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.State, "in_progress")
+                .SetProperty(r => r.ResponseBody, (string?)null)
+                .SetProperty(r => r.ExpiresAt, newLease)));
+
+        // 旧属主晚到：写回与释放都必须被围栏挡住。
+        Assert.Equal(0, await IdempotencyMiddleware.TryCompleteAsync(
+            db, record.Id, oldLease, 200, "application/json",
+            "{\"stale\":true}", null, DateTimeOffset.UtcNow.AddHours(24)));
+        Assert.Equal(0, await IdempotencyMiddleware.TryReleaseAsync(db, record.Id, oldLease));
+
+        var afterStale = await db.IdempotencyRecords.AsNoTracking().SingleAsync(r => r.Id == record.Id);
+        Assert.Equal("in_progress", afterStale.State);
+        Assert.Null(afterStale.ResponseBody);
+        Assert.Equal(newLease, afterStale.ExpiresAt);
+
+        // 新属主自己的写回仍然有效。
+        Assert.Equal(1, await IdempotencyMiddleware.TryCompleteAsync(
+            db, record.Id, newLease, 201, "application/json",
+            "{\"fresh\":true}", null, DateTimeOffset.UtcNow.AddHours(24)));
+        var afterNew = await db.IdempotencyRecords.AsNoTracking().SingleAsync(r => r.Id == record.Id);
+        Assert.Equal("completed", afterNew.State);
+        Assert.Equal("{\"fresh\":true}", afterNew.ResponseBody);
     }
 }

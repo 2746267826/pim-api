@@ -276,10 +276,10 @@ public sealed class IdempotencyMiddlewareE2ETests
         using var factoryScope = factory;
         var overlong = new string('k', 200);
 
-        // 非豁免端点：仍然正常校验（400 / 40002）。
+        // 非豁免端点：仍然正常校验（400 / 40010 —— 独立码，不复用 40002）。
         var tasks = await client.SendAsync(Post(Tasks, new { title = "长 key", priority = 0 }, overlong));
         Assert.Equal(HttpStatusCode.BadRequest, tasks.StatusCode);
-        Assert.Contains("40002", await tasks.Content.ReadAsStringAsync());
+        Assert.Contains("\"code\":40010", await tasks.Content.ReadAsStringAsync());
 
         // 豁免端点：忽略该头，按业务结果返回（不存在的会话 → 404），而不是 40002。
         var poll = await client.SendAsync(Post("/api/v1/calendar/outlook/device-code/poll",
@@ -299,5 +299,61 @@ public sealed class IdempotencyMiddlewareE2ETests
         var response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    /// <summary>
+    /// review P2-2：匿名端点不参与幂等 —— 判定依据必须是端点元数据，而不是「这次请求有没有 JWT 用户」。
+    /// 客户端用全局拦截器给所有 POST 都加 Authorization 时，login 仍带着一个未过期的 access token；
+    /// 若按 userId 判定，返回的新 token 会被明文写进 idempotency_records 并保留 24 小时。
+    /// </summary>
+    [Fact]
+    public async Task AnonymousEndpoint_WithValidJwt_IsNotCached()
+    {
+        var factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("idem-anon"));
+        using var factoryScope = factory;
+        var session = await AuthRegistrationTestHost.SeedAndLoginAsync(factory, "idem-anon");
+        var client = Authed(factory, session.AccessToken);
+
+        var key = Guid.NewGuid().ToString();
+        var response = await client.SendAsync(Post("/api/v1/auth/login", new
+        {
+            username = "idem-anon",
+            password = AuthRegistrationTestHost.DefaultPassword,
+        }, key));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.False(response.Headers.Contains(IdempotencyMiddleware.ReplayedHeader));
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        Assert.Empty(await db.IdempotencyRecords.Where(r => r.Key == key).ToListAsync());
+    }
+
+    /// <summary>
+    /// 历史上 P2-1 的测试缺口：正文回写必须覆盖「下游已 flush / StartAsync」的情形。
+    /// 只测捕获流层的话，删掉 CopyToClientAsync 也不会有用例失败。
+    /// </summary>
+    [Fact]
+    public async Task DownstreamFlushesBody_StillGetsWrittenBack_AndCached()
+    {
+        var (factory, client, _) = await ArrangeAsync("idem-flush");
+        using var factoryScope = factory;
+        var key = Guid.NewGuid().ToString();
+
+        var first = await client.SendAsync(Post(Tasks, new { title = "flush", priority = 0 }, key));
+        var second = await client.SendAsync(Post(Tasks, new { title = "flush", priority = 0 }, key));
+
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, second.StatusCode);
+        // 第一次就必须拿到完整正文（不是空 body）；第二次必须是重放。
+        var a = await AuthRegistrationTestHost.ReadJsonAsync(first);
+        var b = await AuthRegistrationTestHost.ReadJsonAsync(second);
+        Assert.NotEqual(JsonValueKind.Null, a.GetProperty("data").ValueKind);
+        Assert.Equal(
+            a.GetProperty("data").GetProperty("id").GetString(),
+            b.GetProperty("data").GetProperty("id").GetString());
+        Assert.True(second.Headers.TryGetValues(IdempotencyMiddleware.ReplayedHeader, out var replayed));
+        Assert.Equal("true", Assert.Single(replayed!));
+        Assert.Equal(1, await CountTasksAsync(factory));
     }
 }

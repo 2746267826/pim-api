@@ -21,18 +21,23 @@ namespace Pim.Api.Infrastructure.OpenApi;
 /// </summary>
 public sealed class BusinessDayFieldsDocumentFilter : IDocumentFilter
 {
-    /// <summary>按日端点清单（与 docs/client-contract-semantics.md §1 保持一致）。</summary>
-    public static readonly IReadOnlyDictionary<string, string> Endpoints = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-    {
-        ["/api/v1/today/sections"] = "今日分区注册表",
-        ["/api/v1/today/sections/{sectionId}"] = "单个今日分区",
-        ["/api/v1/pc/summary"] = "PC 当日汇总",
-        ["/api/v1/mobile/summary"] = "手机当日使用汇总",
-    };
+    /// <summary>
+    /// 按日端点清单（与 docs/client-contract-semantics.md §1 保持一致）。
+    /// StartHour 为 null 表示「按分区而定」，description 不写死 4（review P3-1）。
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, (string Note, int? StartHour)> Endpoints =
+        new Dictionary<string, (string Note, int? StartHour)>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["/api/v1/today/sections"] = ("今日分区注册表（日历日）", 0),
+            ["/api/v1/today/sections/{sectionId}"] =
+                ("单个今日分区（pc.activity / pc.quality 为 4，其余为 0）", null),
+            ["/api/v1/pc/summary"] = ("PC 当日汇总", Pim.Core.Common.BusinessDateEnvelope.StartHour),
+            ["/api/v1/mobile/summary"] = ("手机当日使用汇总", Pim.Core.Common.BusinessDateEnvelope.StartHour),
+        };
 
     public void Apply(OpenApiDocument document, DocumentFilterContext context)
     {
-        foreach (var (path, note) in Endpoints)
+        foreach (var (path, (note, startHour)) in Endpoints)
         {
             if (!document.Paths.TryGetValue(path, out var item) || item.Operations is null)
                 throw new InvalidOperationException($"业务日契约：契约里找不到路径 {path}（是否改名/删除？）");
@@ -50,10 +55,13 @@ public sealed class BusinessDayFieldsDocumentFilter : IDocumentFilter
                 Upsert(payload, "businessTimeZone", "string", null,
                     $"业务日时区（IANA）：{Pim.Core.Common.BusinessDateEnvelope.TimeZoneId}",
                     example: new OpenApiString(Pim.Core.Common.BusinessDateEnvelope.TimeZoneId));
+                var startHourDescription = startHour is int fixedHour
+                    ? $"业务日起算小时（本地时间）：{fixedHour}。业务日 D = [D {fixedHour:00}:00, D+1 {fixedHour:00}:00)。"
+                    : "业务日起算小时（本地时间）：0 或 4，按分区而定（pc.activity / pc.quality 为 4，其余为 0）。"
+                      + "业务日 D = [D 该时刻, D+1 该时刻)。";
                 Upsert(payload, "businessDayStartHour", "integer", "int32",
-                    $"业务日起算小时（本地时间）：{Pim.Core.Common.BusinessDateEnvelope.StartHour}。"
-                    + "业务日 D = [D 该时刻, D+1 该时刻)。",
-                    example: new OpenApiInteger(Pim.Core.Common.BusinessDateEnvelope.StartHour));
+                    startHourDescription,
+                    example: startHour is int hour ? new OpenApiInteger(hour) : null);
                 payload.Extensions["x-business-day"] = new OpenApiBoolean(true);
                 op.Extensions["x-business-day"] = new OpenApiBoolean(true);
             }
