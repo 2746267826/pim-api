@@ -19,7 +19,7 @@ namespace Pim.UnitTests.Harness;
 /// Base class for Service-layer tests.
 /// Provides InMemory <see cref="PimDbContext"/> with all module assemblies registered,
 /// plus stubs for <see cref="ICurrentUserService"/> and <see cref="TimeProvider"/>.
-/// Also exposes factory helpers for the main domain services (Mobile, PcTracker, Calendar, Stats, Today).
+/// Also exposes factory helpers for the main domain services (Mobile, PcTracker, Calendar, Today).
 /// </summary>
 public abstract class ServiceTestBase
 {
