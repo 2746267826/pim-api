@@ -433,6 +433,36 @@ jobs:
       - name: Audit contract gaps
         run: bash scripts/ci/audit-contract-gaps.sh
 
+  # ---------------------------------------------------------------------------
+  # 客户端集成规格漂移（client-spec-drift）
+  #
+  # `docs/client-integration-spec.md` 是手写的：它引用的端点一旦在契约里被改名/删除，
+  # 规格就会「悄悄过期」——比没有规格更危险。这个 job 把规格里提到的每个
+  # `METHOD /path` 与 `contract/openapi.json` 对照，指到不存在的端点即红。
+  #
+  # 与上方 contract-gap-audit 的分工：那个 job 审的是「契约本身够不够用」，
+  # 本 job 审的是「我们自己的文档有没有乱说」。两者互补，各自的脚本互不依赖。
+  #
+  # 触发面与其它门禁一致：push / pull_request / workflow_dispatch 全部真实执行，没有 if 跳过。
+  # 离线：只用 python 3 标准库；行为测试见 scripts/ci/test-check-spec-drift.sh。
+  # ---------------------------------------------------------------------------
+  client-spec-drift:
+    name: Client spec drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Behavior tests (offline)
+        run: bash scripts/ci/test-check-spec-drift.sh
+
+      - name: Client integration spec has no drift
+        run: python scripts/ci/check-spec-drift.py
+
   build-api:
     needs: [resolve-version, changes]
     if: needs.changes.outputs.all == 'true' || needs.changes.outputs.api == 'true'
@@ -539,7 +569,7 @@ jobs:
             --github-ref "${{ github.ref }}"
 
   summarize:
-    needs: [resolve-version, changes, web-dist, build-api, build-docker, build-mcp, contract-gap-audit, contract-notify]
+    needs: [resolve-version, changes, web-dist, build-api, build-docker, build-mcp, contract-gap-audit, client-spec-drift, contract-notify]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -570,6 +600,7 @@ jobs:
             echo "| build-docker | ${{ needs.build-docker.result }} | docker=${{ needs.changes.outputs.docker }} |"
             echo "| build-mcp | ${{ needs.build-mcp.result }} | mcp=${{ needs.changes.outputs.mcp }} |"
             echo "| contract-gap-audit | ${{ needs.contract-gap-audit.result }} | 契约缺口门禁（离线） |"
+            echo "| client-spec-drift | ${{ needs.client-spec-drift.result }} | 规格漂移门禁（离线） |"
             echo "| contract-notify | ${{ needs.contract-notify.result }} | contract_changed=${{ needs.changes.outputs.contract_changed }} |"
             echo ""
             echo "仅重建镜像开关：\`${{ needs.changes.outputs.rebuild_image_only }}\`；本次内嵌前端：\`${{ needs.web-dist.outputs.version }}\` / \`${{ needs.web-dist.outputs.git_sha }}\`；发版：\`${{ needs.web-dist.outputs.publish }}\`"
@@ -588,7 +619,7 @@ jobs:
   # 修改那些 if 条件（例如新增组件、调整路径过滤）时，请同步更新这里，否则会漏报或误报。
   gate:
     name: CI Gate
-    needs: [resolve-version, changes, web-dist, build-api, contract-gap-audit, build-docker, build-mcp]
+    needs: [resolve-version, changes, web-dist, build-api, contract-gap-audit, client-spec-drift, build-docker, build-mcp]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -605,6 +636,7 @@ jobs:
           R_DOCKER: ${{ needs.build-docker.result }}
           R_MCP: ${{ needs.build-mcp.result }}
           R_GAP_AUDIT: ${{ needs.contract-gap-audit.result }}
+          R_SPEC_DRIFT: ${{ needs.client-spec-drift.result }}
           W_ALL: ${{ needs.changes.outputs.all }}
           W_API: ${{ needs.changes.outputs.api }}
           W_DOCKER: ${{ needs.changes.outputs.docker }}
@@ -614,7 +646,7 @@ jobs:
         run: bash "$GITHUB_WORKSPACE/scripts/ci/evaluate-gate.sh"
 
   release:
-    needs: [resolve-version, summarize, web-dist, build-api, contract-gap-audit, build-docker, build-mcp]
+    needs: [resolve-version, summarize, web-dist, build-api, contract-gap-audit, client-spec-drift, build-docker, build-mcp]
     # Release on every master push where no build failed. Skipped (unchanged)
     # components are fine: their assets are copied from the previous release.
     if: |
