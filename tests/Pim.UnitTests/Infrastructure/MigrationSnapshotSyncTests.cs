@@ -110,6 +110,27 @@ public sealed class MigrationSnapshotSyncTests
     }
 
     /// <summary>
+    /// <see cref="InProductionScope"/> 的定点回归：**不依赖**同进程里是否恰好有其他测试注册了
+    /// 非生产实体（那取决于 xUnit collection 的执行顺序）。用合成的迁移操作直接断言：
+    /// 生产表保留、金丝雀表过滤、识别不了的操作类型按范围内（fail-loud）。
+    /// 这条用例保证「过滤」这一环本身不会静默失效（例如被改成恒 true）。
+    /// </summary>
+    [Fact]
+    public void InProductionScope_FiltersKnownCanaryAndKeepsProductionTables()
+    {
+        var snapshotTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "calendar_tasks" };
+        var targetTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "calendar_tasks" };
+
+        Assert.True(InProductionScope(new CreateTableOperation { Name = "calendar_tasks" }, snapshotTables, targetTables));
+        Assert.False(InProductionScope(new CreateTableOperation { Name = "model_cache_canaries" }, snapshotTables, targetTables));
+        Assert.False(InProductionScope(new DropTableOperation { Name = "model_cache_canaries" }, snapshotTables, targetTables));
+        Assert.False(InProductionScope(
+            new AddColumnOperation { Table = "model_cache_canaries", Name = "value" }, snapshotTables, targetTables));
+        // 未知操作类型：宁可误报也不漏报
+        Assert.True(InProductionScope(new SqlOperation { Sql = "select 1" }, snapshotTables, targetTables));
+    }
+
+    /// <summary>
     /// #320 的定点回归：12 个「实体有、快照无」的漂移对象必须已进快照。
     /// 独立于整体 diff 断言，让失败信息直接指向 issue 里的对象清单。
     /// </summary>
@@ -252,11 +273,11 @@ public sealed class MigrationSnapshotSyncTests
 
     private static PimDbContext CreateDbContext()
     {
-        // 与生产一致：Pim.Api 通过 ModuleRegistry 从其输出目录加载 Pim.Module.*.dll，
-        // 而发布产物里只有 Pim.Api.csproj 引用到的 ProductionModules 这几个 DLL（测试项目
-        // 额外引用的模块不在生产输出目录里）。这里按同一来源动态加载，与 dotnet ef 的
-        // design-time 模型集合严格同源 —— 新模块接入 Pim.Api 后若忘同步快照，这里 fail-loud
-        // 而非静默绿。
+        // 与生产一致：只加载 Pim.Api.csproj 实际引用的模块（ProductionModules 从
+        // Pim.Api 程序集的引用动态推导，不手工维护）。测试项目与生产引用同一组模块；
+        // 模型里出现的**非生产实体**只可能来自测试程序集自造的实体（例如模型缓存金丝雀
+        // model_cache_canaries），由 InProductionScope 按表名过滤。这样新模块接入 Pim.Api 后
+        // 若忘同步快照，这里 fail-loud 而非静默绿。
         foreach (var moduleName in ProductionModules)
         {
             PimDbContext.RegisterModuleAssembly(Assembly.Load($"Pim.Module.{moduleName}"));
