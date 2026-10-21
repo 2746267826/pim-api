@@ -24354,17 +24354,6 @@
     },
     "/api/v1/calendar/outlook/device-code/poll": {
       "post": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -24384,18 +24373,7 @@
                 }
               }
             },
-            "description": "OK",
-            "headers": {
-              "Idempotent-Replayed": {
-                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
-                "schema": {
-                  "enum": [
-                    "true"
-                  ],
-                  "type": "string"
-                }
-              }
-            }
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -24419,16 +24397,6 @@
               }
             },
             "description": "Not Found"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StringApiResponse"
-                }
-              }
-            },
-            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {

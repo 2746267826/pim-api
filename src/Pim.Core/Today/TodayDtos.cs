@@ -1,4 +1,4 @@
-using Pim.Core.Common;
+﻿using Pim.Core.Common;
 
 namespace Pim.Core.Today;
 
@@ -43,7 +43,15 @@ public sealed record TodaySectionRegistryDto(
     /// <summary>业务日时区（IANA，恒为 Asia/Shanghai）。</summary>
     public string BusinessTimeZone { get; init; } = BusinessDateEnvelope.TimeZoneId;
 
-    /// <summary>业务日起算小时（恒为 4）：业务日 D = [D 04:00, D+1 04:00)。</summary>
+    /// <summary>
+    /// 该响应所用业务日的起算小时：业务日 D 的窗口 = <c>[D startHour, D+1 startHour)</c>，
+    /// 时区见 <see cref="BusinessTimeZone"/>。
+    /// <para>
+    /// 按分区而定：0 = 日历日 <c>[00:00, 24:00)</c>（calendar/reminders 等分区），
+    /// 4 = PC 业务日 <c>[04:00, 次日 04:00)</c>（<c>pc.activity</c> / <c>pc.quality</c> 与 PC 汇总端点）。
+    /// 客户端必须用响应里的这个值推算窗口，**不能**假定恒为 4。
+    /// </para>
+    /// </summary>
     public int BusinessDayStartHour { get; init; } = BusinessDateEnvelope.StartHour;
 }
 
@@ -62,7 +70,15 @@ public sealed record TodaySectionDto(
     /// <summary>业务日时区（IANA，恒为 Asia/Shanghai）。</summary>
     public string BusinessTimeZone { get; init; } = BusinessDateEnvelope.TimeZoneId;
 
-    /// <summary>业务日起算小时（恒为 4）：业务日 D = [D 04:00, D+1 04:00)。</summary>
+    /// <summary>
+    /// 该响应所用业务日的起算小时：业务日 D 的窗口 = <c>[D startHour, D+1 startHour)</c>，
+    /// 时区见 <see cref="BusinessTimeZone"/>。
+    /// <para>
+    /// 按分区而定：0 = 日历日 <c>[00:00, 24:00)</c>（calendar/reminders 等分区），
+    /// 4 = PC 业务日 <c>[04:00, 次日 04:00)</c>（<c>pc.activity</c> / <c>pc.quality</c> 与 PC 汇总端点）。
+    /// 客户端必须用响应里的这个值推算窗口，**不能**假定恒为 4。
+    /// </para>
+    /// </summary>
     public int BusinessDayStartHour { get; init; } = BusinessDateEnvelope.StartHour;
 }
 

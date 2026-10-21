@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Routing.Patterns;
@@ -80,6 +80,9 @@ public sealed class IdempotencyMiddleware
         "/api/v1/files/providers/google/authorize",
         // Outlook 设备码：user code 是本次授权会话的凭据。
         "/api/v1/calendar/outlook/device-code",
+        // 设备码轮询：返回同一个 user code，且是**有状态**轮询（waiting-for-user → authorized）。
+        // 缓存 24h 会让客户端永远看到第一次的 waiting 状态，凭据过期后重放还会伪装成成功。
+        "/api/v1/calendar/outlook/device-code/poll",
     };
 
     private static readonly string[] ReplayedHeaders = ["Location", "ETag", "Last-Modified"];
@@ -109,13 +112,6 @@ public sealed class IdempotencyMiddleware
             await _next(ctx);
             return;
         }
-        if (rawKey.Length > MaxKeyLength)
-        {
-            ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
-            await ctx.Response.WriteAsJsonAsync(ApiResponse<string>.Error(40002, $"Idempotency-Key 不能超过 {MaxKeyLength} 个字符"));
-            return;
-        }
-
         var userId = ctx.RequestServices.GetService<ICurrentUserService>()?.UserId;
         if (userId is null)
         {
@@ -133,6 +129,15 @@ public sealed class IdempotencyMiddleware
             return;
         }
 
+        // 长度校验放在豁免判断**之后**：豁免端点的契约承诺是「忽略该请求头」，
+        // 不能因为客户端多发了一个超长 key 就直接 400（review P3-1）。
+        if (rawKey.Length > MaxKeyLength)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await ctx.Response.WriteAsJsonAsync(ApiResponse<string>.Error(40002, $"Idempotency-Key 不能超过 {MaxKeyLength} 个字符"));
+            return;
+        }
+
         // 簿记用**独立 scope** 的 DbContext：不能把 handler 尚未保存的变更顺带提交，
         // 也不能让幂等写库与业务事务互相牵连（见 docs/client-contract-semantics.md §2.3）。
         using var scope = ctx.RequestServices.GetRequiredService<IServiceScopeFactory>().CreateScope();
@@ -140,6 +145,10 @@ public sealed class IdempotencyMiddleware
 
         var method = ctx.Request.Method.ToUpperInvariant();
         var now = DateTimeOffset.UtcNow;
+        // 本次执行的租约到期时刻 = 这条记录的 fencing token。
+        // Complete/Release 只对「仍是 in_progress 且 ExpiresAt 等于本次租约」的行生效，
+        // 因此旧属主在被接管后无法删除或覆盖新属主的占位（review P2-2，无需新增列）。
+        var leaseExpiresAt = now.Add(InProgressLease);
 
         IdempotencyRecordEntity? record;
         try
@@ -180,7 +189,7 @@ public sealed class IdempotencyMiddleware
                 State = "in_progress",
                 CreatedAt = now,
                 // 占位只租一小段时间；成功写回时再延到 Retention（见 CompleteAsync）。
-                ExpiresAt = now.Add(InProgressLease)
+                ExpiresAt = leaseExpiresAt
             };
             db.IdempotencyRecords.Add(placeholder);
             await db.SaveChangesAsync(CancellationToken.None);
@@ -191,10 +200,12 @@ public sealed class IdempotencyMiddleware
             db.ChangeTracker.Clear();
             // 唯一键冲突有两种来源：另一请求正在执行（→409），或一条**已过期**但还没被清理的记录。
             // 后者如果不接管，这个 key 会一直 409 —— 过期行必须能被新请求替换。
+            bool taken;
             Guid? takenOver;
             try
             {
-                takenOver = await TryTakeOverExpiredAsync(db, userId.Value, method, route, rawKey, now);
+                (taken, takenOver) = await TryTakeOverExpiredAsync(
+                    db, userId.Value, method, route, rawKey, now, leaseExpiresAt);
             }
             catch (Exception takeoverEx)
             {
@@ -205,9 +216,16 @@ public sealed class IdempotencyMiddleware
                 await _next(ctx);
                 return;
             }
-            if (takenOver is null)
+            if (!taken)
             {
                 await WriteInProgressAsync(ctx);
+                return;
+            }
+            if (takenOver is null)
+            {
+                // 接管更新成功，但记录随即被清理任务删掉：没有可写回的簿记行。
+                // 直接执行下游，比回一个错误的 409 更接近正确行为。
+                await _next(ctx);
                 return;
             }
             recordId = takenOver.Value;
@@ -243,7 +261,7 @@ public sealed class IdempotencyMiddleware
             {
                 // 下游已经写了半截响应又抛异常：**不能**把半截内容写回真实 Body
                 // （那会启动响应，让外层 ExceptionMiddleware 无法再改写状态码）。
-                await ReleaseAsync(db, recordId);
+                await ReleaseAsync(db, recordId, leaseExpiresAt);
             }
             else if (succeeded && capture.Overflowed)
             {
@@ -251,16 +269,19 @@ public sealed class IdempotencyMiddleware
                 // **不缓存**这次结果 —— 只缓存状态码会让重放返回「2xx + 空正文」，客户端无法反序列化，
                 // 该 key 也会在 24 小时内既拿不到数据也重新执行不了。释放占位让重试真正重新执行。
                 _logger.LogDebug("响应体超过幂等缓存上限，本次不缓存：{RecordId}", recordId);
-                await ReleaseAsync(db, recordId);
+                await ReleaseAsync(db, recordId, leaseExpiresAt);
             }
             else
             {
                 if (succeeded)
-                    await CompleteAsync(db, recordId, ctx, capture);
+                    await CompleteAsync(db, recordId, leaseExpiresAt, ctx, capture);
                 else
-                    await ReleaseAsync(db, recordId);
+                    await ReleaseAsync(db, recordId, leaseExpiresAt);
 
-                if (!capture.Overflowed && !ctx.Response.HasStarted)
+                // 未溢出时正文只在 _buffer 里（从未写给客户端）：必须回写。
+                // 即使下游已经 flush/StartAsync 让响应开始，也要写 —— 否则客户端收到 2xx + 空正文，
+                // 而缓存里却有正文（review P2-1）。
+                if (!capture.Overflowed)
                 {
                     try
                     {
@@ -276,12 +297,22 @@ public sealed class IdempotencyMiddleware
         }
     }
 
-    private async Task CompleteAsync(PimDbContext db, Guid recordId, HttpContext ctx, CappedCaptureStream body)
+    private async Task CompleteAsync(PimDbContext db, Guid recordId, DateTimeOffset leaseExpiresAt,
+        HttpContext ctx, CappedCaptureStream body)
     {
         try
         {
-            var stored = await db.IdempotencyRecords.FirstOrDefaultAsync(r => r.Id == recordId, CancellationToken.None);
-            if (stored is null) return;
+            // 先按「Id + 仍是 in_progress + 租约仍是本次的」读回：租约已被接管时直接放弃写入。
+            // 不用 ExecuteUpdate：InMemory provider（E2E 测试）不支持，而 EF 的条件读取在两个
+            // provider 上语义一致（review P2-2）。
+            var stored = await db.IdempotencyRecords
+                .FirstOrDefaultAsync(r => r.Id == recordId && r.State == "in_progress"
+                                          && r.ExpiresAt == leaseExpiresAt, CancellationToken.None);
+            if (stored is null)
+            {
+                _logger.LogWarning("幂等租约已被接管，丢弃本次结果：{RecordId}", recordId);
+                return;
+            }
             stored.State = "completed";
             stored.StatusCode = ctx.Response.StatusCode;
             stored.ContentType = ctx.Response.ContentType;
@@ -295,33 +326,42 @@ public sealed class IdempotencyMiddleware
         {
             // 写缓存失败：删掉占位，让客户端下次重试时重新执行（宁可重复执行，也不留一个永远 409 的键）。
             _logger.LogWarning(ex, "幂等响应写入失败，已释放占位键 {RecordId}", recordId);
-            await ReleaseAsync(db, recordId);
+            await ReleaseAsync(db, recordId, leaseExpiresAt);
         }
     }
 
-    private async Task ReleaseAsync(PimDbContext db, Guid recordId)
+    private async Task ReleaseAsync(PimDbContext db, Guid recordId, DateTimeOffset leaseExpiresAt)
     {
         try
         {
             db.ChangeTracker.Clear();
-            var stored = await db.IdempotencyRecords.FirstOrDefaultAsync(r => r.Id == recordId, CancellationToken.None);
-            if (stored is null) return;
+            // 只删除「仍属于本次执行」的占位：租约到期后可能已被新请求接管（Id 不变、租约变了），
+            // 无条件按 Id 删除会把新属主正在执行的占位删掉，导致同一 key 出现第三次并发执行。
+            var stored = await db.IdempotencyRecords
+                .FirstOrDefaultAsync(r => r.Id == recordId && r.State == "in_progress"
+                                          && r.ExpiresAt == leaseExpiresAt, CancellationToken.None);
+            if (stored is null)
+            {
+                _logger.LogDebug("幂等占位已不属于本次执行（已被接管或已完成），跳过释放：{RecordId}", recordId);
+                return;
+            }
             db.IdempotencyRecords.Remove(stored);
             await db.SaveChangesAsync(CancellationToken.None);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "幂等占位释放失败（记录将在 24 小时后过期并被清理）：{RecordId}", recordId);
+            _logger.LogWarning(ex, "幂等占位释放失败（记录会在过期后被清理）：{RecordId}", recordId);
         }
     }
 
     /// <summary>
     /// 唯一键冲突时接管一条**已过期**的记录（过期 = 已完成的 24h 缓存，或已超租约的 in_progress 占位）。
-    /// 返回接管到的记录 id；未接管（另一请求仍在执行）返回 null。
+    /// 返回 (是否接管成功, 记录 id)。第二个值可能为 null：条件更新成功了，但记录随即被清理任务删除。
     /// 用条件更新保证只有一个请求能接管成功；存储失败时**抛出异常**，由调用方降级为「无幂等」。
     /// </summary>
-    private static async Task<Guid?> TryTakeOverExpiredAsync(
-        PimDbContext db, Guid userId, string method, string route, string key, DateTimeOffset now)
+    private static async Task<(bool Taken, Guid? RecordId)> TryTakeOverExpiredAsync(
+        PimDbContext db, Guid userId, string method, string route, string key,
+        DateTimeOffset now, DateTimeOffset leaseExpiresAt)
     {
         var updated = await db.IdempotencyRecords
             .Where(r => r.UserId == userId && r.Method == method && r.Route == route && r.Key == key
@@ -334,13 +374,14 @@ public sealed class IdempotencyMiddleware
                 .SetProperty(r => r.ResponseHeaders, (string?)null)
                 .SetProperty(r => r.CreatedAt, now)
                 // 与新建占位一致：接管后同样只租 InProgressLease，成功写回时再延到 Retention。
-                .SetProperty(r => r.ExpiresAt, now.Add(InProgressLease)), CancellationToken.None);
-        if (updated != 1) return null;
+                // 这个值同时是接管者的租约 fencing token。
+                .SetProperty(r => r.ExpiresAt, leaseExpiresAt), CancellationToken.None);
+        if (updated != 1) return (false, null);
 
         var row = await db.IdempotencyRecords.AsNoTracking()
             .FirstOrDefaultAsync(r => r.UserId == userId && r.Method == method && r.Route == route && r.Key == key,
                 CancellationToken.None);
-        return row?.Id;
+        return (true, row?.Id);
     }
 
     private static string? SerializeHeaders(HttpResponse response)
@@ -483,8 +524,15 @@ public sealed class IdempotencyMiddleware
             _inner.Write(buffered);
         }
 
-        public override void Flush() => _inner.Flush();
-        public override Task FlushAsync(CancellationToken ct) => _inner.FlushAsync(ct);
+        // 未溢出时正文只在 _buffer 里：此时 flush 内层只会把 headers 发出去、响应进入 started 状态，
+        // 而正文还没有任何字节写给客户端。真正的回写由 IdempotencyMiddleware 在请求结束时统一做。
+        public override void Flush()
+        {
+            if (_passThrough) _inner.Flush();
+        }
+
+        public override Task FlushAsync(CancellationToken ct)
+            => _passThrough ? _inner.FlushAsync(ct) : Task.CompletedTask;
 
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();

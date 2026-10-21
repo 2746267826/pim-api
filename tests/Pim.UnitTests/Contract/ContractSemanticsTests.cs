@@ -1,4 +1,4 @@
-using System.Net.Http.Headers;
+﻿using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -68,12 +68,16 @@ public sealed class ContractSemanticsTests : IClassFixture<ContractSemanticsTest
     /// §1：契约声明了还不够 —— 运行时必须真的下发（否则客户端删掉本地推算后会拿不到值）。
     /// 四个端点都测：只测其中一两个时，其余端点的 `string.Empty` 默认值也能让「字段存在」通过。
     /// </summary>
+    /// <remarks>
+    /// 起算小时按端点而定（review P2-3）：registry 与 calendar 类分区是日历日（0），
+    /// PC 业务日口径的端点/分区是 4。客户端不能假定恒为 4，所以这里也逐个钉住。
+    /// </remarks>
     [Theory]
-    [InlineData("/api/v1/today/sections")]
-    [InlineData("/api/v1/today/sections/calendar.tasks")]
-    [InlineData("/api/v1/pc/summary?date=2026-10-21")]
-    [InlineData("/api/v1/mobile/summary?date=2026-10-21")]
-    public async Task BusinessDayFields_ArePresentAtRuntime(string path)
+    [InlineData("/api/v1/today/sections", 0)]
+    [InlineData("/api/v1/today/sections/calendar.tasks", 0)]
+    [InlineData("/api/v1/pc/summary?date=2026-10-21", 4)]
+    [InlineData("/api/v1/mobile/summary?date=2026-10-21", 4)]
+    public async Task BusinessDayFields_ArePresentAtRuntime(string path, int expectedStartHour)
     {
         // 同一个 fixture 共用一个库：theory 每个用例都要新用户，否则第二次登录会命中第一次创建的用户。
         var session = await AuthRegistrationTestHost.SeedAndLoginAsync(
@@ -86,7 +90,7 @@ public sealed class ContractSemanticsTests : IClassFixture<ContractSemanticsTest
         var businessDate = data.GetProperty("businessDate").GetString();
         Assert.Matches(new Regex(@"^\d{4}-\d{2}-\d{2}$"), businessDate);
         Assert.Equal("Asia/Shanghai", data.GetProperty("businessTimeZone").GetString());
-        Assert.Equal(4, data.GetProperty("businessDayStartHour").GetInt32());
+        Assert.Equal(expectedStartHour, data.GetProperty("businessDayStartHour").GetInt32());
     }
 
     /// <summary>§1：registry 的 businessDate 与既有 date 同源，否则客户端会看到两个「今天」。</summary>
@@ -100,6 +104,8 @@ public sealed class ContractSemanticsTests : IClassFixture<ContractSemanticsTest
         var data = (await AuthRegistrationTestHost.ReadJsonAsync(
             await client.GetAsync("/api/v1/today/sections"))).GetProperty("data");
         Assert.Equal(data.GetProperty("date").GetString(), data.GetProperty("businessDate").GetString());
+        // registry 的 businessDate 是日历日 → 起算小时必须是 0，不能报 4（review P2-3）。
+        Assert.Equal(0, data.GetProperty("businessDayStartHour").GetInt32());
     }
 
     /// <summary>
@@ -120,12 +126,15 @@ public sealed class ContractSemanticsTests : IClassFixture<ContractSemanticsTest
         Assert.Equal("2026-10-20", data.GetProperty("businessDate").GetString());
         Assert.Equal("2026-10-20",
             data.GetProperty("data").GetProperty("summary").GetProperty("businessDate").GetString());
+        // PC 分区是 04:00 业务日：businessDate + startHour 必须正好是数据窗口。
+        Assert.Equal(4, data.GetProperty("businessDayStartHour").GetInt32());
 
-        // 同一次请求里，不按 PC 业务日取数的分区仍然是日历日 21 号。
+        // 同一次请求里，不按 PC 业务日取数的分区仍然是日历日 21 号，起算小时 0。
         var other = (await AuthRegistrationTestHost.ReadJsonAsync(
             await client.GetAsync("/api/v1/today/sections/calendar.tasks?date=2026-10-21T02:00")))
             .GetProperty("data");
         Assert.Equal("2026-10-21", other.GetProperty("businessDate").GetString());
+        Assert.Equal(0, other.GetProperty("businessDayStartHour").GetInt32());
     }
 
     /// <summary>
@@ -169,7 +178,10 @@ public sealed class ContractSemanticsTests : IClassFixture<ContractSemanticsTest
                      "/api/v1/files/items/upload-session",   // 预授权上传 URL
                      "/api/v1/files/providers/onedrive",     // 设备码 user code
                      "/api/v1/files/providers/google/authorize", // 带一次性 state 的授权地址
-                     "/api/v1/calendar/outlook/device-code"  // 设备码 user code
+                     "/api/v1/calendar/outlook/device-code", // 设备码 user code
+                     // 设备码轮询：返回同一个 user code 且有状态（waiting → authorized）。
+                     // 缓存 24h 会让客户端永远看到首次的 waiting 状态（review P1-1）。
+                     "/api/v1/calendar/outlook/device-code/poll"
                  })
             Assert.False(HasKey(paths.GetProperty(path).GetProperty("post")),
                 $"{path} 的响应含一次性凭据，不能参与幂等缓存");

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Pim.Api.Endpoints;
 using Pim.Core.Common;
@@ -47,6 +47,9 @@ public sealed class TodaySectionService
             sections)
         {
             BusinessDate = formattedDate,
+            // registry 的 businessDate 是日历日（与 date 字段一致）；pcBusinessDate 才是 04:00 切日。
+            // 明确写 0，避免客户端按「恒为 4」推出一个不存在的窗口（review P2-3）。
+            BusinessDayStartHour = 0,
         });
     }
 
@@ -63,12 +66,19 @@ public sealed class TodaySectionService
 
         var query = BuildQuery(date);
         // pc.* 分区取的是 PcBusinessDate（04:00 切日）的数据，信封上的业务日必须与载荷一致；
-        // 其余分区用 query.Date。否则在 00:00–04:00 会出现信封 businessDate 与 data.businessDate 打架。
-        var businessDate = FormatDate(UsesPcBusinessDate(provider.SectionId) ? query.PcBusinessDate : query.Date);
+        // 其余分区用 query.Date（日历日）。否则在 00:00–04:00 会出现信封 businessDate 与 data.businessDate 打架。
+        // startHour 必须跟着业务日一起给：日历日配 4 会让客户端推出一个与数据窗口错开 4 小时的区间。
+        var usesPcBusinessDate = UsesPcBusinessDate(provider.SectionId);
+        var businessDate = FormatDate(usesPcBusinessDate ? query.PcBusinessDate : query.Date);
+        var startHour = usesPcBusinessDate ? BusinessDay.StartHour : 0;
         try
         {
             // 业务日由服务端权威给出：provider 只负责载荷，口径由这里统一贴上去。
-            return (await provider.BuildAsync(query, ct)) with { BusinessDate = businessDate };
+            return (await provider.BuildAsync(query, ct)) with
+            {
+                BusinessDate = businessDate,
+                BusinessDayStartHour = startHour,
+            };
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -92,6 +102,7 @@ public sealed class TodaySectionService
                     $"此今日模块暂时不可用。（异常类型：{ex.GetType().Name}）"))
             {
                 BusinessDate = businessDate,
+                BusinessDayStartHour = startHour,
             };
         }
     }

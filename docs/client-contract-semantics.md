@@ -12,9 +12,16 @@
 |---|---|---|
 | `businessDate` | `string`（`yyyy-MM-dd`） | 该响应覆盖的业务日 |
 | `businessTimeZone` | `string` | IANA ID，当前恒为 `Asia/Shanghai` |
-| `businessDayStartHour` | `integer` | 业务日起算小时，当前恒为 `4` |
+| `businessDayStartHour` | `integer` | 业务日起算小时；**按分区/端点而定**（见下），不能假定恒为 `4` |
 
-- 权威实现：`Pim.Core/Common/BusinessDay.cs`（业务日 D = `[D 04:00, D+1 04:00)`，Asia/Shanghai，左闭右开）；
+- **窗口语义**：业务日 D 覆盖 `[D businessDayStartHour, D+1 businessDayStartHour)`，
+  时区为 `businessTimeZone`（左闭右开）。客户端必须用响应里的 `businessDate + businessDayStartHour`
+  推算窗口，**不要**假定起算小时固定。
+- **取值**：`0` = 日历日 `[00:00, 24:00)`（`/today/sections` registry、`calendar` / `reminders` 等分区）；
+  `4` = PC 业务日 `[04:00, 次日 04:00)`（`pc.activity` / `pc.quality` 分区、`/api/v1/pc/summary`）。
+  两者按分区各取各的：同一个 `/today/sections` 响应里 registry 的 `businessDayStartHour` 是 `0`，
+  而 `pc.*` 分区自己的信封是 `4`。
+- 权威实现：`Pim.Core/Common/BusinessDay.cs`（PC 业务日 D = `[D 04:00, D+1 04:00)`，Asia/Shanghai，左闭右开）；
   对外口径常量在 `Pim.Core/Common/BusinessDateEnvelope.cs`。
 - **这三个字段是运行时字段，不是「只写进文档的占位」**：由 `TodaySectionRegistryDto`、`TodaySectionDto`、
   `PcSummaryResponse`、`MobileUsageSummaryResponse` 上的同名属性序列化而来，因此在契约里是 `required`。

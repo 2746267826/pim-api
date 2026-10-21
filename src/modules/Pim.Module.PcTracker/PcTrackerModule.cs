@@ -1,4 +1,4 @@
-using Pim.Infrastructure.Operations;
+﻿using Pim.Infrastructure.Operations;
 using System.Reflection;
 using System.Globalization;
 using Hangfire;
@@ -25,6 +25,14 @@ public class PcTrackerModule : IModule
 {
     public string Name => "pctracker";
     public string Version => "1.0.0";
+
+    /// <summary>
+    /// PC 端点的默认日期：按**业务日**口径（Asia/Shanghai，04:00 切日），不是宿主本地日期。
+    /// 容器里 TZ 通常是 UTC：用 DateTime.Today 会让每天 00:00–08:00（北京）返回错误的日期或空数据
+    /// （review P2-4）。
+    /// </summary>
+    private static DateTime BusinessToday()
+        => BusinessDay.GetBusinessDate(DateTimeOffset.UtcNow).ToDateTime(TimeOnly.MinValue);
 
     public void RegisterServices(IServiceCollection services, IConfiguration configuration)
     {
@@ -324,7 +332,7 @@ public class PcTrackerModule : IModule
             [FromQuery] bool force = false,
             CancellationToken ct = default) =>
         {
-            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
+            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : BusinessToday();
             var result = await cache.GetOrCreateAsync(
                 AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("date", d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
                 force,
@@ -344,7 +352,7 @@ public class PcTrackerModule : IModule
             [FromQuery] bool force = false,
             CancellationToken ct = default) =>
         {
-            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
+            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : BusinessToday();
             var result = await cache.GetOrCreateAsync(
                 AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("date", d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
                 force,
@@ -365,8 +373,8 @@ public class PcTrackerModule : IModule
             [FromQuery] bool force = false,
             CancellationToken ct = default) =>
         {
-            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-7);
-            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
+            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : BusinessToday().AddDays(-7);
+            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : BusinessToday();
             var result = await cache.GetOrCreateAsync(
                 AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
                 force,
@@ -520,7 +528,7 @@ public class PcTrackerModule : IModule
         {
             try
             {
-                var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
+                var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : BusinessToday();
                 var q = new DetailQueryParams(
                     d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                     d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -629,7 +637,7 @@ public class PcTrackerModule : IModule
         {
             try
             {
-                var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
+                var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : BusinessToday();
                 var result = await cache.GetOrCreateAsync(
                     AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("date", d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
                     force,
@@ -912,8 +920,8 @@ public class PcTrackerModule : IModule
             [FromQuery] bool force = false,
             CancellationToken ct = default) =>
         {
-            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-30);
-            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
+            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : BusinessToday().AddDays(-30);
+            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : BusinessToday();
             try
             {
                 var result = await cache.GetOrCreateAsync(
@@ -1547,7 +1555,7 @@ public class PcTrackerModule : IModule
             [FromQuery] bool force = false,
             CancellationToken ct = default) =>
         {
-            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : DateTime.Today;
+            var d = date is not null ? DateTime.Parse(date, CultureInfo.InvariantCulture) : BusinessToday();
             var result = await cache.GetOrCreateAsync(
                 AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("date", d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
                 force,
@@ -1569,8 +1577,8 @@ public class PcTrackerModule : IModule
             [FromQuery] bool force = false,
             CancellationToken ct = default) =>
         {
-            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : DateTime.Today.AddDays(-7);
-            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : DateTime.Today;
+            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : BusinessToday().AddDays(-7);
+            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : BusinessToday();
             var result = await cache.GetOrCreateAsync(
                 AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
                 force,

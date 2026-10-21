@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Pim.Api.Middleware;
 using Xunit;
 
@@ -61,6 +61,39 @@ public sealed class IdempotencyCaptureStreamTests
 
         Assert.True(capture.Overflowed);
         Assert.Equal("12345", Encoding.UTF8.GetString(inner.ToArray()));
+    }
+
+    /// <summary>
+    /// review P2-1：未溢出时正文只在 _buffer 里。此时把 Flush 转发给内层会提前启动响应，
+    /// 之后的正文就只能靠中间件回写；更糟的是旧实现会因 HasStarted 跳过回写（2xx + 空正文）。
+    /// </summary>
+    [Fact]
+    public async Task Flush_DoesNotForwardWhileBuffering()
+    {
+        var inner = new FlushCountingStream();
+        using var capture = new IdempotencyMiddleware.CappedCaptureStream(inner, limit: 16);
+
+        await capture.WriteAsync(Encoding.UTF8.GetBytes("hello"));
+        capture.Flush();
+        await capture.FlushAsync(CancellationToken.None);
+
+        Assert.Equal(0, inner.Flushes);                       // 没有提前启动响应
+
+        await capture.WriteAsync(Encoding.UTF8.GetBytes("0123456789ab"));  // 溢出 → 直通
+        capture.Flush();
+        Assert.True(capture.Overflowed);
+        Assert.Equal(1, inner.Flushes);                       // 溢出后恢复直通语义
+    }
+
+    private sealed class FlushCountingStream : MemoryStream
+    {
+        public int Flushes { get; private set; }
+        public override void Flush() => Flushes++;
+        public override Task FlushAsync(CancellationToken cancellationToken)
+        {
+            Flushes++;
+            return Task.CompletedTask;
+        }
     }
 
     [Fact]

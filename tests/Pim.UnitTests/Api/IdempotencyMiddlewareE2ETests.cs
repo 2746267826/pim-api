@@ -1,10 +1,11 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Pim.Api.Middleware;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 using Xunit;
@@ -207,6 +208,83 @@ public sealed class IdempotencyMiddlewareE2ETests
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         Assert.Equal(1, await CountTasksAsync(factory));
+    }
+
+    /// <summary>
+    /// review P1-1：设备码轮询返回同一个 user code，且是**有状态**轮询。
+    /// 一旦参与幂等缓存，同 key 的第二次轮询会永远拿到首次的 waiting 状态，
+    /// 凭据还会明文落库 24h。这里验证：成功轮询两次都不重放，也没有任何缓存行。
+    /// </summary>
+    [Fact]
+    public async Task DeviceCodePoll_IsNeverReplayedOrCached()
+    {
+        var factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("idem-poll"));
+        using var factoryScope = factory;
+        var session = await AuthRegistrationTestHost.SeedAndLoginAsync(factory, "idem-poll");
+        var client = Authed(factory, session.AccessToken);
+        using var clientScope = client;
+
+        var connection = new Pim.Module.Calendar.Entities.OutlookConnectionEntity
+        {
+            UserId = session.UserId,
+            Status = "not-connected",
+        };
+        var authSession = new Pim.Module.Calendar.Entities.OutlookAuthorizationSessionEntity
+        {
+            UserId = session.UserId,
+            ConnectionId = connection.Id,
+            Status = "waiting-for-user",
+            UserCode = "SECRET-USER-CODE",
+            VerificationUri = "https://example.test/device",
+            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(15),
+        };
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            db.Set<Pim.Module.Calendar.Entities.OutlookConnectionEntity>().Add(connection);
+            db.Set<Pim.Module.Calendar.Entities.OutlookAuthorizationSessionEntity>().Add(authSession);
+            await db.SaveChangesAsync();
+        }
+
+        var key = Guid.NewGuid().ToString();
+        var body = new { sessionId = authSession.Id };
+        var first = await client.SendAsync(Post("/api/v1/calendar/outlook/device-code/poll", body, key));
+        var second = await client.SendAsync(Post("/api/v1/calendar/outlook/device-code/poll", body, key));
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.False(second.Headers.Contains(IdempotencyMiddleware.ReplayedHeader),
+            "设备码轮询被重放了：客户端会永远看到首次的 waiting 状态");
+        Assert.Contains("SECRET-USER-CODE", await second.Content.ReadAsStringAsync());
+
+        using var verify = factory.Services.CreateScope();
+        var verifyDb = verify.ServiceProvider.GetRequiredService<PimDbContext>();
+        var rows = await verifyDb.IdempotencyRecords
+            .Where(r => r.UserId == session.UserId && r.Route == "/api/v1/calendar/outlook/device-code/poll")
+            .ToListAsync();
+        Assert.Empty(rows);
+    }
+
+    /// <summary>
+    /// review P3-1：豁免端点的契约承诺是「忽略该请求头」。超长 key 的 400 不能出现在豁免判断之前，
+    /// 否则客户端多发一个长 key 就会打断设备码/登录这类端点。
+    /// </summary>
+    [Fact]
+    public async Task OverlongKey_IsRejectedOnlyWhereIdempotencyApplies()
+    {
+        var (factory, client, _) = await ArrangeAsync("idem-longkey");
+        using var factoryScope = factory;
+        var overlong = new string('k', 200);
+
+        // 非豁免端点：仍然正常校验（400 / 40002）。
+        var tasks = await client.SendAsync(Post(Tasks, new { title = "长 key", priority = 0 }, overlong));
+        Assert.Equal(HttpStatusCode.BadRequest, tasks.StatusCode);
+        Assert.Contains("40002", await tasks.Content.ReadAsStringAsync());
+
+        // 豁免端点：忽略该头，按业务结果返回（不存在的会话 → 404），而不是 40002。
+        var poll = await client.SendAsync(Post("/api/v1/calendar/outlook/device-code/poll",
+            new { sessionId = Guid.NewGuid() }, overlong));
+        Assert.Equal(HttpStatusCode.NotFound, poll.StatusCode);
     }
 
     [Fact]
