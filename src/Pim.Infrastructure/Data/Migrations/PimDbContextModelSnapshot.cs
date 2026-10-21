@@ -614,6 +614,10 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("text")
                         .HasColumnName("response_body");
 
+                    b.Property<string>("ResponseHeaders")
+                        .HasColumnType("text")
+                        .HasColumnName("response_headers");
+
                     b.Property<string>("Route")
                         .IsRequired()
                         .HasMaxLength(512)

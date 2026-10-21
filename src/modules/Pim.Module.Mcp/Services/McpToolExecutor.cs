@@ -419,6 +419,7 @@ public sealed class McpToolExecutor
     private static (string Query, JsonNode? Body) BuildQueryAndBody(McpToolSpec spec, JsonObject args)
     {
         var queryParts = new List<string>();
+        var providedQueryNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var entry in spec.QueryParams)
         {
             var (srcName, queryName) = SplitRename(entry);
@@ -427,6 +428,7 @@ public sealed class McpToolExecutor
             var value = ToQueryString(node);
             if (value is null)
                 continue;
+            providedQueryNames.Add(queryName);
             if (spec.DateSpanConversion && (srcName is "start" or "end"))
             {
                 // Python parity: heatmap/keystats/productivity-range endpoints expect YYYY-MM-DD
@@ -435,6 +437,15 @@ public sealed class McpToolExecutor
                     value = parsed.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
             }
             queryParts.Add($"{Uri.EscapeDataString(queryName)}={Uri.EscapeDataString(value)}");
+        }
+
+        // 分页契约（docs/client-contract-semantics.md §3）：集合端点**恒**返回 PagedResult，
+        // 默认 page=1 / pageSize=50。MCP 调用方经常不传分页参数，如果原样转发，
+        // 服务端只回第一页，调用方却会把它当成全量。这里显式补齐默认值（与 Python server 行为一致）。
+        foreach (var (name, fallback) in new[] { ("page", "1"), ("pageSize", "50") })
+        {
+            if (spec.QueryParams.Any(q => SplitRename(q).QueryName == name) && !providedQueryNames.Contains(name))
+                queryParts.Add($"{name}={fallback}");
         }
 
         JsonNode? body = null;

@@ -462,7 +462,7 @@
 | 端点 | 现象与原因 |
 |---|---|
 | `GET/DELETE/PATCH /mcp` | MCP Streamable HTTP 协议端点（`McpServerBootstrap`）：GET=SSE 事件流、POST=JSON-RPC；session-less 兜底 400 `{code:40001}` 的注解会被 `ResolveConflictingActions` 丢弃（首个 ApiDescription 属于 SDK 的 MapMcp）。响应由 MCP 协议决定，不在应用层契约表达。 |
-| `GET /api/v1/calendar/events`、`GET /api/v1/calendar/tasks` | **双形态 200**：无分页/过滤参数时返回 `List<…>`（兼容旧 APK），带参数时返回 `PagedResult<…>`。单响应码只能承载一个 schema，契约标注规范形态 PagedResult（代码注释 PIM-024），List 形态在此记录。 |
+| `GET /api/v1/calendar/events`、`GET /api/v1/calendar/tasks` | **单一形态**：恒返回 `PagedResult<…>`（默认 `page=1`、`pageSize=50`）。旧的「无分页/过滤参数 → 裸数组」兼容分支已移除（契约语义 §3），因此不再存在双形态。注意旧分支**不看** `start`/`end`：只带日期范围的事件查询以前也是数组。 |
 | `POST /api/v1/files/providers/{id}/sync` | **双形态 200**：Hangfire 可用 → `OneDriveSyncStartedDto`（常态）；后台设施不可用 → 退回同步执行返回 `OneDriveSyncResultDto`。契约标注常态形态。 |
 | `GET /api/v1/files/items/{id}/content|thumbnail`、`GET /api/v1/files/items/{id}/download`、`GET /api/v1/calendar/events/{eventId}/attachments/{attachmentId}/download`、`GET /api/v1/quick-notes/attachments/{id}/download` | 302 重定向（直链）或代理文件下载（content-type 由文件/Graph 侧决定），标注 302 + 通用二进制 content-type。 |
 | `GET /api/v1/ops/db/query`、`GET /api/v1/ops/logs/tail|query` | **206 Partial Content** 是真实成功码（结果被截断时），与 200 同 schema，均标注。 |

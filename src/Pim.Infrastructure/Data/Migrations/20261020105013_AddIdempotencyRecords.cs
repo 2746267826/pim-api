@@ -24,6 +24,7 @@ namespace Pim.Infrastructure.Data.Migrations
                     status_code = table.Column<int>(type: "integer", nullable: true),
                     content_type = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true),
                     response_body = table.Column<string>(type: "text", nullable: true),
+                    response_headers = table.Column<string>(type: "text", nullable: true),
                     created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     expires_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
                 },

@@ -180,7 +180,7 @@ Content-Type: application/json
 | `date` | `YYYY-MM-DD`，等价 `start=dateT00:00:00Z` | `2026-08-31` |
 | `page`/`pageSize` | `page>=1`，`1<=pageSize<=100` 默认 20 | `page=1&pageSize=20` |
 | `redactUrls` | `true` 默认脱敏 12 位 `sha256(url)[0:12]` → `urlHash`，`false` 返回原文 | 见 §7 |
-| 成功 | `{"code":0,"data":... ,"page":1,"pageSize":20,"total":123}` 透传 `ApiResponse` |  |
+| 成功 | 信封恒为 `{"code":0,"message":"success","data":...,"timestamp":...}`（透传 `ApiResponse`）；**分页字段在 `data` 里**，不在信封上：`data = {"items":[...],"page":1,"pageSize":20,"totalCount":123,"totalPages":7}`（`PagedResult<T>`，见契约语义 §3） |  |
 | 失败 | `{"error":"HTTP 400: ...", "details":..., "code":400}` |  |
 | 超大 | `{"truncated":true,"nextPage":2,"_note":"response >50KB"}` |  |
 
@@ -636,7 +636,7 @@ async def get_calendars(-) -> Any: ...
 #### `get_events` — Core event query.
 - **API**: `GET /calendar/events?start&end&calendarId`
 - **参数**: `start,end,calendarId?,page/pageSize,redactUrls`
-- **返回**: `Event[]`
+- **返回**: `PagedResult<Event>`（`data` 为对象：`items/totalCount/page/pageSize/totalPages`；不传分页参数时服务端按 `page=1&pageSize=50` 处理）
 
 **签名 / Signature**
 ```python
@@ -659,7 +659,7 @@ async def get_events(start: str, end: str, redactUrls: bool = True, page: int = 
     ],
     "page": 1,
     "pageSize": 20,
-    "total": 1,
+    "totalCount": 1,
     "totalPages": 1
   }
 }
@@ -680,7 +680,7 @@ async def get_events(start: str, end: str, redactUrls: bool = True, page: int = 
 #### `get_tasks` — List tasks.
 - **API**: `GET /calendar/tasks?status&calendarId`
 - **参数**: `status?,calendarId?,page/pageSize`
-- **返回**: `Task[]`
+- **返回**: `PagedResult<Task>`（`data` 为对象：`items/totalCount/page/pageSize/totalPages`；不传分页参数时服务端按 `page=1&pageSize=50` 处理）
 
 **签名 / Signature**
 ```python
@@ -700,7 +700,7 @@ async def get_tasks(page: int = 1, pageSize: int = 20, status?: str) -> Any: ...
     ],
     "page": 1,
     "pageSize": 20,
-    "total": 1,
+    "totalCount": 1,
     "totalPages": 1
   }
 }
@@ -1095,7 +1095,7 @@ async def get_task_checklist(id) -> Any: ...
 #### `search_calendar_events` — Search events.
 - **API**: `GET /calendar/events?search`
 - **参数**: `q,start/end,page/pageSize`
-- **返回**: `Event[]`
+- **返回**: `PagedResult<Event>`（`data` 为对象：`items/totalCount/page/pageSize/totalPages`）
 
 **签名 / Signature**
 ```python
@@ -1115,7 +1115,7 @@ async def search_calendar_events(q: str, start: Optional[str] = None, end: Optio
     ],
     "page": 1,
     "pageSize": 20,
-    "total": 1,
+    "totalCount": 1,
     "totalPages": 1
   }
 }
@@ -1136,7 +1136,7 @@ async def search_calendar_events(q: str, start: Optional[str] = None, end: Optio
 #### `search_calendar_tasks` — Search tasks.
 - **API**: `GET /calendar/tasks?search`
 - **参数**: `q,start/end,page/pageSize`
-- **返回**: `Task[]`
+- **返回**: `PagedResult<Task>`（`data` 为对象：`items/totalCount/page/pageSize/totalPages`）
 
 **签名 / Signature**
 ```python
@@ -1156,7 +1156,7 @@ async def search_calendar_tasks(q: str, start: Optional[str] = None, end: Option
     ],
     "page": 1,
     "pageSize": 20,
-    "total": 1,
+    "totalCount": 1,
     "totalPages": 1
   }
 }

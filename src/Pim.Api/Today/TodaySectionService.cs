@@ -43,7 +43,10 @@ public sealed class TodaySectionService
             formattedDate,
             FormatDate(query.PcBusinessDate),
             DateTimeOffset.UtcNow,
-            sections));
+            sections)
+        {
+            BusinessDate = formattedDate,
+        });
     }
 
     public async Task<TodaySectionDto?> GetSectionAsync(string sectionId, string? date, CancellationToken ct)
@@ -58,9 +61,11 @@ public sealed class TodaySectionService
         }
 
         var query = BuildQuery(date);
+        var businessDate = FormatDate(query.Date);
         try
         {
-            return await provider.BuildAsync(query, ct);
+            // 业务日由服务端权威给出：provider 只负责载荷，口径由这里统一贴上去。
+            return (await provider.BuildAsync(query, ct)) with { BusinessDate = businessDate };
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -81,7 +86,10 @@ public sealed class TodaySectionService
                 [],
                 new TodaySectionErrorDto(
                     "section_unavailable",
-                    $"此今日模块暂时不可用。（异常类型：{ex.GetType().Name}）"));
+                    $"此今日模块暂时不可用。（异常类型：{ex.GetType().Name}）"))
+            {
+                BusinessDate = businessDate,
+            };
         }
     }
 

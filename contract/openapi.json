@@ -13382,6 +13382,9 @@
           "appRanking",
           "appsUsed",
           "appSwitchCount",
+          "businessDate",
+          "businessDayStartHour",
+          "businessTimeZone",
           "completeness",
           "date",
           "fallbackForegroundSeconds",
@@ -15449,6 +15452,9 @@
         },
         "required": [
           "appRanking",
+          "businessDate",
+          "businessDayStartHour",
+          "businessTimeZone",
           "categories",
           "heatmap",
           "sessions",
@@ -18513,6 +18519,9 @@
           }
         },
         "required": [
+          "businessDate",
+          "businessDayStartHour",
+          "businessTimeZone",
           "data",
           "generatedAt",
           "id",
@@ -18601,6 +18610,9 @@
           }
         },
         "required": [
+          "businessDate",
+          "businessDayStartHour",
+          "businessTimeZone",
           "date",
           "generatedAt",
           "pcBusinessDate",
@@ -19629,7 +19641,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -19719,7 +19742,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -19746,6 +19780,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -19809,7 +19853,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -19836,6 +19891,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -19899,7 +19964,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -19926,6 +20002,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -19970,13 +20056,34 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
           },
           "403": {
             "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -20256,13 +20363,34 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
           },
           "403": {
             "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -20355,17 +20483,6 @@
     },
     "/api/v1/auth/login": {
       "post": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -20498,7 +20615,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -20512,6 +20640,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -20536,17 +20674,6 @@
     },
     "/api/v1/auth/refresh": {
       "post": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -20599,17 +20726,6 @@
     },
     "/api/v1/auth/register": {
       "post": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -20763,7 +20879,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -20777,6 +20904,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -20830,7 +20967,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -20844,6 +20992,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -20897,7 +21055,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -20911,6 +21080,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -20964,7 +21143,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -20978,6 +21168,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -21077,7 +21277,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -21091,6 +21302,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -21199,7 +21420,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -21213,6 +21445,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -21266,7 +21508,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -21280,6 +21533,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -21341,7 +21604,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -21355,6 +21629,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -21408,7 +21692,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -21422,6 +21717,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -21485,7 +21790,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -21499,6 +21815,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -21552,7 +21878,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -21566,6 +21903,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -21685,7 +22032,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -21699,6 +22057,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -21753,7 +22121,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -21767,6 +22146,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -21821,7 +22210,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -21835,6 +22235,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -21889,7 +22299,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -21903,6 +22324,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -21957,7 +22388,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -21971,6 +22413,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -22025,7 +22477,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -22039,6 +22502,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -22187,7 +22660,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -22201,6 +22685,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -22255,7 +22749,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -22269,6 +22774,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -22424,7 +22939,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -22438,6 +22964,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -22521,7 +23057,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -22535,6 +23082,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -22597,7 +23154,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -22611,6 +23179,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -22773,7 +23351,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -22787,6 +23376,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -22840,7 +23439,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -22854,6 +23464,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -22971,7 +23591,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -22985,6 +23616,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -23038,7 +23679,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -23052,6 +23704,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -23115,7 +23777,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -23129,6 +23802,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -23183,7 +23866,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -23197,6 +23891,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -23376,7 +24080,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -23390,6 +24105,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -23444,7 +24169,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -23458,6 +24194,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -23502,7 +24248,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -23516,6 +24273,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -23560,7 +24327,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -23574,6 +24352,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -23628,7 +24416,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -23652,6 +24451,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -23705,7 +24514,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -23719,6 +24539,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -23763,7 +24593,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -23777,6 +24618,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -23831,7 +24682,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -23899,7 +24761,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -23913,6 +24786,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -24059,7 +24942,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -24073,6 +24967,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -24127,7 +25031,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -24141,6 +25056,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -24259,7 +25184,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -24283,6 +25219,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -24382,7 +25328,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -24396,6 +25353,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -24561,7 +25528,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -24575,6 +25553,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -24636,7 +25624,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -24650,6 +25649,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -24749,7 +25758,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -24763,6 +25783,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -24871,7 +25901,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -24885,6 +25926,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -24938,7 +25989,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -24952,6 +26014,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -25013,7 +26085,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -25027,6 +26110,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -25128,7 +26221,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -25142,6 +26246,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -25195,7 +26309,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -25209,6 +26334,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -25320,7 +26455,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -25334,6 +26480,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -25388,7 +26544,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -25402,6 +26569,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -25501,7 +26678,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -25515,6 +26703,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -25701,7 +26899,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -25715,6 +26924,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -25769,7 +26988,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -25783,6 +27013,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -25837,7 +27077,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -25851,6 +27102,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -25904,7 +27165,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -25918,6 +27190,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -25979,7 +27261,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -25993,6 +27286,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -26056,7 +27359,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -26070,6 +27384,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -26132,7 +27456,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -26146,6 +27481,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -26216,7 +27561,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -26230,6 +27586,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -26293,7 +27659,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -26307,6 +27684,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -26370,7 +27757,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -26384,6 +27782,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -26446,7 +27854,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -26460,6 +27879,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -26579,7 +28008,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -26593,6 +28033,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -26704,7 +28154,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -26718,6 +28179,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -26771,7 +28242,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -26785,6 +28267,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -26838,7 +28330,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -26852,6 +28355,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -26914,7 +28427,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -26928,6 +28452,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -27011,7 +28545,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -27025,6 +28570,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -27126,7 +28681,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -27140,6 +28706,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -27221,10 +28797,31 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -27436,7 +29033,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -27450,6 +29058,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -27512,7 +29130,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -27526,6 +29155,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -27580,7 +29219,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -27604,6 +29254,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -27791,7 +29451,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -27815,6 +29486,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -27889,7 +29570,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -27913,6 +29605,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -27987,7 +29689,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -28011,6 +29724,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -28064,7 +29787,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -28088,6 +29822,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -28579,7 +30323,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -28603,6 +30358,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -28868,7 +30633,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -28892,6 +30668,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -28965,7 +30751,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -28989,6 +30786,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -29072,7 +30879,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -29099,6 +30917,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -29268,7 +31096,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -29282,6 +31121,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -29445,7 +31294,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -29472,6 +31332,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -29644,7 +31514,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -29671,6 +31552,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -29863,7 +31754,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -29877,6 +31779,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -29931,7 +31843,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -29955,6 +31878,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -30028,7 +31961,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -30052,6 +31996,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -30213,7 +32167,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -30227,6 +32192,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -30280,7 +32255,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -30304,6 +32290,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -30626,7 +32622,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -30650,6 +32657,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -30703,7 +32720,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -30727,6 +32755,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -30860,17 +32898,6 @@
         ]
       },
       "post": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -30950,7 +32977,18 @@
         ],
         "responses": {
           "204": {
-            "description": "No Content"
+            "description": "No Content",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -30967,6 +33005,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -31028,7 +33076,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -31055,6 +33114,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -31108,7 +33177,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -31125,6 +33205,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -31149,17 +33239,6 @@
     },
     "/api/v1/mcp/verify": {
       "post": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -31467,7 +33546,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -31481,6 +33571,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -31533,7 +33633,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -31547,6 +33658,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -32315,7 +34436,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -32329,6 +34461,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -32381,7 +34523,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -32395,6 +34548,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -32455,7 +34618,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -32469,6 +34643,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -32568,7 +34752,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -32582,6 +34777,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -32634,7 +34839,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -32648,6 +34864,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -32708,7 +34934,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -32722,6 +34959,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -32959,7 +35206,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -32973,6 +35231,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -33027,7 +35295,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -33041,6 +35320,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -33095,7 +35384,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -33109,6 +35409,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -33161,7 +35471,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -33175,6 +35496,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -33654,7 +35985,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -33668,6 +36010,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -33722,7 +36074,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -33736,6 +36099,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -34671,7 +37044,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -34685,6 +37069,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -34739,7 +37133,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -34753,6 +37158,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -34966,7 +37381,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -34980,6 +37406,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -35129,7 +37565,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -35143,6 +37590,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -35261,7 +37718,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -35275,6 +37743,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -35499,7 +37977,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -35513,6 +38002,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -35566,7 +38065,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -35580,6 +38090,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -35633,7 +38153,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -35647,6 +38178,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -35700,7 +38241,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -35714,6 +38266,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -35814,17 +38376,6 @@
     },
     "/api/v1/ops/db/query": {
       "post": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -36784,7 +39335,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -36798,6 +39360,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -36851,7 +39423,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -36875,6 +39458,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -37043,7 +39636,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37057,6 +39661,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -37110,7 +39724,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37134,6 +39759,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -37197,7 +39832,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37294,7 +39940,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37436,7 +40093,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37450,6 +40118,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -37601,7 +40279,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37615,6 +40304,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -37669,7 +40368,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37693,6 +40403,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -37813,7 +40533,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37827,6 +40558,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -37942,7 +40683,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37956,6 +40708,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -38010,7 +40772,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -38024,6 +40797,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -38145,7 +40928,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -38159,6 +40953,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -38334,7 +41138,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -38348,6 +41163,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -38434,7 +41259,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -38448,6 +41284,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -38549,7 +41395,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -38563,6 +41420,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -38607,10 +41474,31 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -38711,7 +41599,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -38789,7 +41688,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -38803,6 +41713,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -38953,7 +41873,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -38967,6 +41898,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -39053,7 +41994,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -39131,7 +42083,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -39209,7 +42172,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -39223,6 +42197,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -39309,7 +42293,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -39323,6 +42318,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -39430,7 +42435,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -39444,6 +42460,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -39541,7 +42567,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -39638,7 +42675,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -39735,7 +42783,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -39822,7 +42881,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -40216,7 +43286,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -40230,6 +43311,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -40284,7 +43375,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -40298,6 +43400,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -40448,7 +43560,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -40462,6 +43585,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -40847,7 +43980,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -40861,6 +44005,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -40959,7 +44113,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -40973,6 +44138,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -41104,7 +44279,18 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "Created",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -41118,6 +44304,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -41162,7 +44358,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -41176,6 +44383,16 @@
           },
           "401": {
             "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -41229,7 +44446,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -41253,6 +44481,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -41388,7 +44626,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -41402,6 +44651,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -41519,7 +44778,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -41543,6 +44813,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -41596,7 +44876,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "401": {
             "description": "Unauthorized"
@@ -41610,6 +44901,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -41663,7 +44964,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -41687,6 +44999,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -41750,7 +45072,18 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "OK",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -41774,6 +45107,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StringApiResponse"
+                }
+              }
+            },
+            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -42182,17 +45525,6 @@
     },
     "/api/{path}": {
       "delete": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "404": {
             "content": {
@@ -42301,17 +45633,6 @@
         ]
       },
       "patch": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "404": {
             "content": {
@@ -42339,17 +45660,6 @@
         ]
       },
       "post": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "404": {
             "content": {
@@ -42377,17 +45687,6 @@
         ]
       },
       "put": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "404": {
             "content": {

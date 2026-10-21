@@ -423,7 +423,10 @@ public partial class PcTrackerService
             timeline,
             sessions,
             ComputeDerivedMetrics(keystats, keystatsSample, metricWindowEvents, sessions.Count, idleMinutes),
-            await GetCategorySummariesAsync(date, ct));
+            await GetCategorySummariesAsync(date, ct))
+        {
+            BusinessDate = Pim.Core.Common.BusinessDay.FormatDate(DateOnly.FromDateTime(date)),
+        };
     }
 
     public async Task<List<TimelineItem>> GetTimelineAsync(DateTime date, CancellationToken ct)

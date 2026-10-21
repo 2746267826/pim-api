@@ -1,3 +1,5 @@
+using Pim.Core.Common;
+
 namespace Pim.Core.Today;
 
 public static class TodaySectionStatuses
@@ -33,7 +35,17 @@ public sealed record TodaySectionRegistryDto(
     string Date,
     string PcBusinessDate,
     DateTimeOffset GeneratedAt,
-    IReadOnlyList<TodaySectionRegistryItemDto> Sections);
+    IReadOnlyList<TodaySectionRegistryItemDto> Sections)
+{
+    /// <summary>该响应覆盖的业务日（yyyy-MM-dd）。客户端不得自行推算（契约语义 §1）。</summary>
+    public string BusinessDate { get; init; } = string.Empty;
+
+    /// <summary>业务日时区（IANA，恒为 Asia/Shanghai）。</summary>
+    public string BusinessTimeZone { get; init; } = BusinessDateEnvelope.TimeZoneId;
+
+    /// <summary>业务日起算小时（恒为 4）：业务日 D = [D 04:00, D+1 04:00)。</summary>
+    public int BusinessDayStartHour { get; init; } = BusinessDateEnvelope.StartHour;
+}
 
 public sealed record TodaySectionDto(
     string Id,
@@ -42,7 +54,17 @@ public sealed record TodaySectionDto(
     DateTimeOffset GeneratedAt,
     object Data,
     IReadOnlyList<TodayLinkDto> Links,
-    TodaySectionErrorDto? Error);
+    TodaySectionErrorDto? Error)
+{
+    /// <summary>该响应覆盖的业务日（yyyy-MM-dd）。客户端不得自行推算（契约语义 §1）。</summary>
+    public string BusinessDate { get; init; } = string.Empty;
+
+    /// <summary>业务日时区（IANA，恒为 Asia/Shanghai）。</summary>
+    public string BusinessTimeZone { get; init; } = BusinessDateEnvelope.TimeZoneId;
+
+    /// <summary>业务日起算小时（恒为 4）：业务日 D = [D 04:00, D+1 04:00)。</summary>
+    public int BusinessDayStartHour { get; init; } = BusinessDateEnvelope.StartHour;
+}
 
 public interface ITodaySectionProvider
 {

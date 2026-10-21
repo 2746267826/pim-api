@@ -96,10 +96,13 @@ builder.Services.AddSwaggerGen(c =>
     // 不用 .Accepts（那会改变端点匹配、把 handler 的 400 分支变成死代码）。
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.IcsImportRequestBodyOperationFilter>();
     // 契约语义 §1（docs/client-contract-semantics.md）：按日端点在响应 schema 里声明业务日口径
-    // （businessDate / businessTimeZone / businessDayStartHour + x-business-day）。只影响文档。
+    // （businessDate / businessTimeZone / businessDayStartHour + x-business-day）。
+    // 运行时由各 DTO 的同名属性下发；过滤器负责「契约里一定有」，端点/schema 对不上就抛异常。
     c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.BusinessDayFieldsDocumentFilter>();
     // 契约语义 §2：写操作的 Idempotency-Key 请求头（运行时见 IdempotencyMiddleware）。
+    // 文档过滤器把参数收敛到「运行时真的生效」的端点，并补 409 与幂等重放标记。
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.IdempotencyKeyParameterOperationFilter>();
+    c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.IdempotencyKeyDocumentFilter>();
     c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.SecuritySchemesDocumentFilter>();
 });
 
@@ -451,6 +454,12 @@ else
             "heartbeat-stale-inspection",
             job => job.RunAsync(CancellationToken.None),
             "*/5 * * * *");
+
+        // 契约语义 §2：幂等记录 24 小时后不再有意义，且表里存着完整响应体，必须定期清理。
+        RecurringJob.AddOrUpdate<IdempotencyCleanupJob>(
+            "idempotency-cleanup",
+            job => job.RunAsync(CancellationToken.None),
+            Cron.Hourly);
     }
     catch (Exception ex)
     {

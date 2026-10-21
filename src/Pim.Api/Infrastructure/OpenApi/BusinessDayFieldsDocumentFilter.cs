@@ -13,13 +13,15 @@ namespace Pim.Api.Infrastructure.OpenApi;
 /// （OperationFilter 阶段组件 schema 可能尚未登记，写进去的字段会落到一个并不存在的定义上。）
 /// </para>
 /// <para>
-/// 字段是**可选**的：客户端可能暂时拿不到运行时值，但必须按这里的口径理解业务日，不得自行推算。
-/// 运行时下发的后续在 DTO 上补同名字段时，契约无需再改。
+/// 字段由运行时真实下发（<c>TodaySectionRegistryDto</c> / <c>TodaySectionDto</c> /
+/// <c>PcSummaryResponse</c> / <c>MobileUsageSummaryResponse</c> 上同名属性）；这里的过滤器只负责
+/// 「契约里一定有」这件事 —— 因此端点/schema 对不上时**直接抛异常**让 swagger 生成失败，
+/// 而不是静默跳过（静默跳过等于给客户端一个悄悄消失的字段）。
 /// </para>
 /// </summary>
 public sealed class BusinessDayFieldsDocumentFilter : IDocumentFilter
 {
-    /// <summary>按日端点清单（与 docs/client-contract-semantics.md §1 保持一致，测试会校验两边一致）。</summary>
+    /// <summary>按日端点清单（与 docs/client-contract-semantics.md §1 保持一致）。</summary>
     public static readonly IReadOnlyDictionary<string, string> Endpoints = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["/api/v1/today/sections"] = "今日分区注册表",
@@ -33,37 +35,25 @@ public sealed class BusinessDayFieldsDocumentFilter : IDocumentFilter
         foreach (var (path, note) in Endpoints)
         {
             if (!document.Paths.TryGetValue(path, out var item) || item.Operations is null)
-                continue;
+                throw new InvalidOperationException($"业务日契约：契约里找不到路径 {path}（是否改名/删除？）");
             if (!item.Operations.TryGetValue(OperationType.Get, out var op))
-                continue;
+                throw new InvalidOperationException($"业务日契约：{path} 不再有 GET 操作");
             if (op.Responses is null || !op.Responses.TryGetValue("200", out var ok) || ok?.Content is null)
-                continue;
+                throw new InvalidOperationException($"业务日契约：{path} 的 200 响应没有 content");
             foreach (var media in ok.Content.Values)
             {
-                var payload = ResolvePayloadSchema(document, media.Schema);
-                if (payload is null)
-                    continue;
+                var payload = ResolvePayloadSchema(document, media.Schema)
+                    ?? throw new InvalidOperationException($"业务日契约：{path} 的 200 响应 schema 无法解析");
                 payload.Properties ??= new Dictionary<string, OpenApiSchema>();
-                AddIfMissing(payload, "businessDate", new OpenApiSchema
-                {
-                    Type = "string",
-                    Format = "date",
-                    Description = $"该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：{note}。客户端不得自行推算。",
-                });
-                AddIfMissing(payload, "businessTimeZone", new OpenApiSchema
-                {
-                    Type = "string",
-                    Description = $"业务日时区（IANA）：{Pim.Core.Common.BusinessDateEnvelope.TimeZoneId}",
-                    Example = new OpenApiString(Pim.Core.Common.BusinessDateEnvelope.TimeZoneId),
-                });
-                AddIfMissing(payload, "businessDayStartHour", new OpenApiSchema
-                {
-                    Type = "integer",
-                    Format = "int32",
-                    Description = $"业务日起算小时（本地时间）：{Pim.Core.Common.BusinessDateEnvelope.StartHour}。"
-                                  + "业务日 D = [D 该时刻, D+1 该时刻)。",
-                    Example = new OpenApiInteger(Pim.Core.Common.BusinessDateEnvelope.StartHour),
-                });
+                Upsert(payload, "businessDate", "string", "date",
+                    $"该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：{note}。客户端不得自行推算。", example: null);
+                Upsert(payload, "businessTimeZone", "string", null,
+                    $"业务日时区（IANA）：{Pim.Core.Common.BusinessDateEnvelope.TimeZoneId}",
+                    example: new OpenApiString(Pim.Core.Common.BusinessDateEnvelope.TimeZoneId));
+                Upsert(payload, "businessDayStartHour", "integer", "int32",
+                    $"业务日起算小时（本地时间）：{Pim.Core.Common.BusinessDateEnvelope.StartHour}。"
+                    + "业务日 D = [D 该时刻, D+1 该时刻)。",
+                    example: new OpenApiInteger(Pim.Core.Common.BusinessDateEnvelope.StartHour));
                 payload.Extensions["x-business-day"] = new OpenApiBoolean(true);
                 op.Extensions["x-business-day"] = new OpenApiBoolean(true);
             }
@@ -100,9 +90,22 @@ public sealed class BusinessDayFieldsDocumentFilter : IDocumentFilter
         return schema;
     }
 
-    private static void AddIfMissing(OpenApiSchema schema, string name, OpenApiSchema field)
+    /// <summary>
+    /// 属性来自运行时 DTO（类型已由 Swashbuckle 生成），这里只**补齐语义**：描述、格式、示例。
+    /// 属性不存在时才新建 —— 否则会把 serializer 推导出的类型信息覆盖掉。
+    /// </summary>
+    private static void Upsert(
+        OpenApiSchema schema, string name, string type, string? format, string description, IOpenApiAny? example)
     {
-        if (!schema.Properties!.ContainsKey(name))
+        if (!schema.Properties!.TryGetValue(name, out var field))
+        {
+            field = new OpenApiSchema { Type = type };
             schema.Properties[name] = field;
+        }
+        field.Type ??= type;
+        field.Format ??= format;
+        field.Description ??= description;
+        if (field.Example is null && example is not null)
+            field.Example = example;
     }
 }

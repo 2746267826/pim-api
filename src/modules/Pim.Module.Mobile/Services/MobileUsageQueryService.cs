@@ -115,7 +115,10 @@ public sealed class MobileUsageQueryService
             batches.Count == 0 ? null : batches.Max(b => b.CompletedAtUtc ?? b.CreatedAt),
             ranking,
             syncBatches,
-            failedBatchCount);
+            failedBatchCount)
+        {
+            BusinessDate = DateLabel(query.RangeStartUtc),
+        };
     }
 
     public async Task<MobileTimelineResponse> GetTimelineAsync(MobileTimelineQuery query, CancellationToken ct = default)
