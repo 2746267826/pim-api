@@ -25,8 +25,8 @@ echo "== evaluate-gate.sh =="
 # 1) 全绿
 expect_rc "全 success → 通过" 0 "${ALL_OK[@]}" W_ALL=true W_API=true W_DOCKER=true W_MCP=true IS_RELEASE=true W_PUBLISH=true
 
-# 2) 组件无变化、按设计跳过 → 通过
-expect_rc "门禁 job 被 skipped → 判红（门禁无条件执行）" 0 \
+# 2) 组件无变化、按设计跳过 → 通过（门禁 job 本身仍是 success）
+expect_rc "组件无变化、全部按设计 skipped → 通过" 0 \
   R_RESOLVE=success R_CHANGES=success R_WEBDIST=skipped R_API=skipped R_DOCKER=skipped R_MCP=skipped R_GAP_AUDIT=success \
   W_ALL=false W_API=false W_DOCKER=false W_MCP=false IS_RELEASE=false W_PUBLISH=
 
@@ -69,6 +69,16 @@ expect_rc "build-api 失败 → 红" 1 \
 expect_rc "changes 失败 → 红" 1 \
   R_RESOLVE=success R_CHANGES=failure R_WEBDIST=skipped R_API=skipped R_DOCKER=skipped R_MCP=skipped R_GAP_AUDIT=success \
   W_ALL= W_API= W_DOCKER= W_MCP= IS_RELEASE=false W_PUBLISH=
+
+# 11) 契约缺口审计是无条件 job：skipped 即视为漏跑
+expect_rc "contract-gap-audit 被 skipped → 红" 1 \
+  R_RESOLVE=success R_CHANGES=success R_WEBDIST=skipped R_API=skipped R_DOCKER=skipped R_MCP=skipped R_GAP_AUDIT=skipped \
+  W_ALL=false W_API=false W_DOCKER=false W_MCP=false IS_RELEASE=false W_PUBLISH=
+
+# 12) 契约缺口审计失败 → 红
+expect_rc "contract-gap-audit 失败 → 红" 1 \
+  R_RESOLVE=success R_CHANGES=success R_WEBDIST=skipped R_API=skipped R_DOCKER=skipped R_MCP=skipped R_GAP_AUDIT=failure \
+  W_ALL=false W_API=false W_DOCKER=false W_MCP=false IS_RELEASE=false W_PUBLISH=
 
 echo ""
 echo "evaluate-gate: passed=$pass failed=$fail"
