@@ -439,10 +439,11 @@ public sealed class McpToolExecutor
             queryParts.Add($"{Uri.EscapeDataString(queryName)}={Uri.EscapeDataString(value)}");
         }
 
-        // 分页契约（docs/client-contract-semantics.md §3）：集合端点**恒**返回 PagedResult，
-        // 默认 page=1 / pageSize=50。MCP 调用方经常不传分页参数，如果原样转发，
-        // 服务端只回第一页，调用方却会把它当成全量。这里显式补齐默认值（与 Python server 行为一致）。
-        foreach (var (name, fallback) in new[] { ("page", "1"), ("pageSize", "50") })
+        // 分页契约（docs/client-contract-semantics.md §3）：集合端点**恒**返回 PagedResult。
+        // MCP 调用方经常不传分页参数，如果原样转发，服务端只回第一页，调用方却会把它当成全量。
+        // 这里显式补齐默认值，取值与 Python MCP server 一致（docs/mcp.md §4：page>=1，pageSize 默认 20），
+        // 让两个 MCP 实现对「省略分页参数」给出同样的结果。
+        foreach (var (name, fallback) in new[] { ("page", "1"), ("pageSize", "20") })
         {
             if (spec.QueryParams.Any(q => SplitRename(q).QueryName == name) && !providedQueryNames.Contains(name))
                 queryParts.Add($"{name}={fallback}");

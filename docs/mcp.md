@@ -636,7 +636,7 @@ async def get_calendars(-) -> Any: ...
 #### `get_events` — Core event query.
 - **API**: `GET /calendar/events?start&end&calendarId`
 - **参数**: `start,end,calendarId?,page/pageSize,redactUrls`
-- **返回**: `PagedResult<Event>`（`data` 为对象：`items/totalCount/page/pageSize/totalPages`；不传分页参数时服务端按 `page=1&pageSize=50` 处理）
+- **返回**: `PagedResult<Event>`（`data` 为对象：`items/totalCount/page/pageSize/totalPages`；不传分页参数时 MCP 层补齐 `page=1&pageSize=20`，直接调 HTTP 时服务端默认 `pageSize=50`）
 
 **签名 / Signature**
 ```python
@@ -680,7 +680,7 @@ async def get_events(start: str, end: str, redactUrls: bool = True, page: int = 
 #### `get_tasks` — List tasks.
 - **API**: `GET /calendar/tasks?status&calendarId`
 - **参数**: `status?,calendarId?,page/pageSize`
-- **返回**: `PagedResult<Task>`（`data` 为对象：`items/totalCount/page/pageSize/totalPages`；不传分页参数时服务端按 `page=1&pageSize=50` 处理）
+- **返回**: `PagedResult<Task>`（`data` 为对象：`items/totalCount/page/pageSize/totalPages`；不传分页参数时 MCP 层补齐 `page=1&pageSize=20`，直接调 HTTP 时服务端默认 `pageSize=50`）
 
 **签名 / Signature**
 ```python
