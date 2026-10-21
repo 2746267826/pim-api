@@ -253,9 +253,10 @@ public sealed class MigrationSnapshotSyncTests
     private static PimDbContext CreateDbContext()
     {
         // 与生产一致：Pim.Api 通过 ModuleRegistry 从其输出目录加载 Pim.Module.*.dll，
-        // 而 Pim.Api.csproj 只引用 ProductionModules 这几个模块（Stats 未被引用、不在生产
-        // /design-time 模型里）。这里按同一来源动态加载，与 dotnet ef 的 design-time 模型
-        // 集合严格同源 —— 新模块接入 Pim.Api 后若忘同步快照，这里 fail-loud 而非静默绿。
+        // 而发布产物里只有 Pim.Api.csproj 引用到的 ProductionModules 这几个 DLL（测试项目
+        // 额外引用的模块不在生产输出目录里）。这里按同一来源动态加载，与 dotnet ef 的
+        // design-time 模型集合严格同源 —— 新模块接入 Pim.Api 后若忘同步快照，这里 fail-loud
+        // 而非静默绿。
         foreach (var moduleName in ProductionModules)
         {
             PimDbContext.RegisterModuleAssembly(Assembly.Load($"Pim.Module.{moduleName}"));
@@ -279,8 +280,8 @@ public sealed class MigrationSnapshotSyncTests
     ///
     /// <para>
     /// 为什么需要过滤：<see cref="PimDbContext.RegisterModuleAssembly"/> 是进程级静态状态，
-    /// 同一测试进程里的其他测试会注册生产之外的「模块」—— 例如 Stats（未被 Pim.Api 引用，
-    /// 生产/design-time 模型里根本没有）与模型缓存测试的金丝雀实体（model_cache_canaries）。
+    /// 同一测试进程里的其他测试会注册生产之外的实体 —— 例如模型缓存测试的金丝雀实体
+    /// （model_cache_canaries）。
     /// 这些实体出现在本测试构建的当前模型里，但 <b>dotnet ef 永远看不见它们</b>，
     /// 也就不可能被吸收进迁移 —— 按生产范围过滤才与 dotnet ef 的真实行为等价。
     /// 识别不了的操作类型按范围内处理（宁可误报也不漏报）。

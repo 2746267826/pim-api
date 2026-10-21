@@ -938,8 +938,9 @@ public sealed record DeviceExportDto(string FileName, string Json);
 /// <c>pc_browser_site_daily</c> / <c>pc_browser_site_tick</c> / <c>pc_activity_classifications</c>）：
 /// 这些表**没有任何用户归属列**，PC 的 device_id 由 PC 守护进程上报、与手机设备不同源；
 /// 按 device_id 处理等于跨用户改写。
-/// 2) <c>app_usage</c>：实体与代码已随 <c>Pim.Module.Stats</c> 一并删除（该模块未被任何产品仓使用，
-/// 路由只在测试里被实例化）；**代码不再读写**这张表。存量部署的库里可能仍保留该表（没有删除迁移），
+/// 2) <c>app_usage</c>：实体与代码已随 <c>Pim.Module.Stats</c> 一并删除（三个客户端仓的**源码**零调用；
+/// 发布产物只 publish <c>Pim.Api.csproj</c>，不含该 DLL，因此路由只在引用它的测试宿主里被实例化过）；
+/// **代码不再读写**这张表。存量部署的库里可能仍保留该表（刻意不写删除迁移，避免误删运维数据），
 /// 这不影响运行，如需清理由运维自行处理。
 /// </para>
 /// </summary>
