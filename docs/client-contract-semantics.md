@@ -74,6 +74,8 @@
   - `POST /api/v1/files/providers/onedrive`（设备码 user code + verification URI）；
   - `POST /api/v1/files/providers/google/authorize`（带一次性 state 的授权地址）；
   - `POST /api/v1/calendar/outlook/device-code`（设备码 user code）；
+  - `POST /api/v1/calendar/outlook/device-code/poll`（**有状态**轮询：`waiting-for-user` → `authorized`，
+    每次都返回同一个 user code；缓存 24 小时会让客户端永远看到首次的等待状态，同样按一次性凭据处理）；
 - JSON 404 兜底 `/api/{*path}`（文档里写作 `/api/{path}`）：不是业务端点，不写幂等记录，
   避免把 404 缓存 24 小时。
 
