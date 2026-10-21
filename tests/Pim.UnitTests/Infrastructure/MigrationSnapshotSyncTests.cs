@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -54,35 +56,40 @@ public sealed class MigrationSnapshotSyncTests
     ];
 
     /// <summary>
-    /// 生产模块清单 = <c>Pim.Api</c> 的程序集引用 ∪ 输出目录里的 <c>Pim.Module.*.dll</c>，
-    /// 避免手工镜像清单在新模块接入后失真（失真 = 新模块的漂移被静默过滤）。
+    /// 生产模块清单 = <c>Pim.Api.deps.json</c> 里随 API 一起发布的 <c>Pim.Module.*</c>。
     ///
     /// <para>
-    /// 只按 <c>Pim.Api</c> 的 AssemblyRef 推导是不够的：<c>Mobile</c> / <c>QuickNotes</c>
+    /// 用依赖清单而不是「AssemblyRef ∪ 输出目录扫描」：后者会把 <c>bin</c> 里的历史构建残留
+    /// （例如本分支刚删掉的 <c>Pim.Module.Stats.dll</c>）当成生产模块，导致干净构建通过、
+    /// 开发者本地增量构建却假失败（review P3-1）。deps.json 由当前 csproj 的 ProjectReference
+    /// 生成，必定与本次编译图一致。
+    /// </para>
+    ///
+    /// <para>
+    /// 只按 <c>Pim.Api</c> 的 AssemblyRef 推导同样不够：<c>Mobile</c> / <c>QuickNotes</c>
     /// 在 <c>Pim.Api.csproj</c> 里有 ProjectReference，但 Pim.Api 源码没有直接引用它们的类型，
     /// 编译产物里就没有对应的 AssemblyRef。实测只按引用推导只有 4 个模块，15 张 <c>mobile_*</c>
     /// 表与 2 张 <c>quick_note*</c> 表会被 <see cref="InProductionScope"/> 静默排除。
-    /// 扫描输出目录与生产 <c>ModuleRegistry</c> 的口径一致。
     /// </para>
     /// </summary>
     private static readonly string[] ProductionModules = DiscoverProductionModules();
 
     private static string[] DiscoverProductionModules()
     {
-        var names = typeof(Pim.Api.ModuleRegistry).Assembly
-            .GetReferencedAssemblies()
-            .Select(a => a.Name!)
+        var depsPath = Path.Combine(AppContext.BaseDirectory, "Pim.Api.deps.json");
+        if (!File.Exists(depsPath))
+        {
+            // 没有依赖清单时宁可大声失败：静默退化成「少几个模块」正是这张护栏要防的事。
+            throw new InvalidOperationException(
+                $"找不到 {depsPath}；无法确定随 API 发布的模块清单。");
+        }
+
+        using var document = JsonDocument.Parse(File.ReadAllText(depsPath));
+        return document.RootElement.GetProperty("libraries")
+            .EnumerateObject()
+            .Select(p => p.Name)
             .Where(name => name.StartsWith("Pim.Module.", StringComparison.Ordinal))
-            .ToList();
-
-        names.AddRange(Directory
-            .GetFiles(AppContext.BaseDirectory, "Pim.Module.*.dll")
-            .Select(Path.GetFileNameWithoutExtension)
-            .OfType<string>()
-            .Where(name => name.StartsWith("Pim.Module.", StringComparison.Ordinal)));
-
-        return names
-            .Select(name => name["Pim.Module.".Length..])
+            .Select(name => name["Pim.Module.".Length..].Split('/')[0])
             .Distinct(StringComparer.Ordinal)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
@@ -96,17 +103,15 @@ public sealed class MigrationSnapshotSyncTests
     [Fact]
     public void ProductionModules_CoversEveryModuleShippedWithTheApi()
     {
-        var onDisk = Directory
-            .GetFiles(AppContext.BaseDirectory, "Pim.Module.*.dll")
-            .Select(Path.GetFileNameWithoutExtension)
-            .OfType<string>()
-            .Select(name => name["Pim.Module.".Length..])
-            .ToArray();
+        // 与 Pim.Api.csproj 的 ProjectReference 一一对应。少一个模块（例如 Mcp / Files 因构建
+        // 或复制问题缺失）就意味着它的表不再参与快照比对，护栏会静默失效（review P3-2）。
+        Assert.Equal(
+            new[] { "Calendar", "Files", "Mcp", "Mobile", "PcTracker", "QuickNotes" },
+            ProductionModules);
 
-        Assert.NotEmpty(onDisk);
-        Assert.All(onDisk, module => Assert.Contains(module, ProductionModules));
-        Assert.Contains("Mobile", ProductionModules);
-        Assert.Contains("QuickNotes", ProductionModules);
+        // 清单里的每个模块都必须真的能加载：deps.json 与输出目录不一致时在这里大声失败。
+        Assert.All(ProductionModules, module =>
+            Assert.NotNull(Assembly.Load("Pim.Module." + module)));
     }
 
     [Fact]
@@ -217,7 +222,7 @@ public sealed class MigrationSnapshotSyncTests
     [Fact]
     public void SnapshotModelLookup_FindKnownObjects()
     {
-        // 生产范围推导自 Pim.Api 的程序集引用：推导失效（空集）会让 diff 护栏静默放行，
+        // 生产范围推导自 Pim.Api.deps.json：推导失效（空集）会让 diff 护栏静默放行，
         // 必须在这里大声失败。
         Assert.NotEmpty(ProductionModules);
         Assert.Contains("PcTracker", ProductionModules);
@@ -327,8 +332,8 @@ public sealed class MigrationSnapshotSyncTests
 
     private static PimDbContext CreateDbContext()
     {
-        // 与生产一致：加载随 API 发布的全部模块（ProductionModules = Pim.Api 的程序集引用
-        // ∪ 输出目录里的 Pim.Module.*.dll，不手工维护）。测试项目与生产引用同一组模块；
+        // 与生产一致：加载随 API 发布的全部模块（ProductionModules = Pim.Api.deps.json
+        // 里的 Pim.Module.*，不手工维护也不受旧构建残留影响）。测试项目与生产引用同一组模块；
         // 模型里出现的**非生产实体**只可能来自测试程序集自造的实体（例如模型缓存金丝雀
         // model_cache_canaries），由 InProductionScope 按表名过滤。这样新模块接入 Pim.Api 后
         // 若忘同步快照，这里 fail-loud 而非静默绿。
