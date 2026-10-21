@@ -27,6 +27,10 @@
   `/api/v1/pc/summary`、`/api/v1/mobile/summary`。端点清单在
   `BusinessDayFieldsDocumentFilter.Endpoints` 里集中维护；端点被改名/删除时 swagger 生成**直接失败**，
   不会静默少字段。
+- **PC 业务日**：`pc.activity` / `pc.quality` 两个分区按 PC 业务日（04:00 切日）取数，
+  所以 `/today/sections/{pc.*}` 信封上的 `businessDate` **等于载荷里的 `businessDate`**，可能比同一次请求
+  里其它分区的 `businessDate` 早一天（例如 02:00 请求）。registry 同时给出 `date`（日历日）与
+  `pcBusinessDate`（PC 业务日），客户端不要假设三者总相等。
 
 ## 2. 写操作幂等（Idempotent writes）
 
@@ -36,23 +40,35 @@
 1. 键的作用域是「用户 + 方法 + 路径模板 + key」；不同用户之间互不影响。
    **注意模板作用域的含义**：`/tasks/{a}` 与 `/tasks/{b}` 落在**同一条**记录上，
    因此**每一次逻辑操作都必须生成新 key**，不能拿一个 key 去操作多个资源（否则第二个请求会拿到第一个的响应而不执行）。
-2. 首次请求成功后，把**该次的成功响应**缓存 24 小时：状态码 + 响应体（上限 1 MiB，超出则只缓存状态码）
-   + 需要随重放返回的响应头（`Location` / `ETag` / `Last-Modified`）。
+2. 首次请求成功后，把**该次的成功响应**缓存 24 小时：状态码 + 响应体 + 需要随重放返回的响应头
+   （`Location` / `ETag` / `Last-Modified`）。响应体上限 1 MiB：**超过上限的响应不缓存**
+   （占位随即释放，同 key 重试会真正重新执行）。不能只缓存状态码 —— 那会让重放返回「2xx + 空正文」，
+   客户端既反序列化失败，也无法用同一个 key 重新执行。
 3. 24 小时内同 key 重放：返回缓存的响应，不重复执行副作用；响应头 `Idempotent-Replayed: true` 标明这是重放。
 4. 首次请求仍在执行中时重放：返回 `409` + `code=40902`（契约里已为该端点声明 409），客户端应退避后重试。
+   **同一个 409 可能有两种 body**：端点自身的业务 409（例如 Outlook writeback）与这里的 `{code:40902}`。
+   契约里两者共用一个状态码，客户端必须按 body 的 `code` 区分。
 5. 首次请求失败（非 2xx）：不缓存，客户端可以用同一个 key 重试，服务端会重新执行。
 6. 读操作忽略该请求头。
-7. **只有唯一键冲突（PostgreSQL 23505）才会被解释为「另一个请求正在执行」**；其它存储错误一律降级为
-   「没有幂等」并把请求正常放行 —— 不能把永久性数据库错误伪装成可重试的 409。
-8. 过期记录不会让同一个 key 永久 409：唯一键冲突时会**接管**已过期的记录；另有每小时一次的后台清理任务
-   （`idempotency-cleanup`）删除过期行。
+7. **只有唯一键冲突（PostgreSQL 23505）才会被解释为「另一个请求正在执行」**；其它存储错误（含接管过期行
+   失败）一律降级为「没有幂等」并把请求正常放行 —— 不能把一次数据库抖动伪装成「另一个请求在执行」。
+8. 「执行中」占位是**短租约**（`InProgressLease` = 10 分钟），成功写回时才延到 24 小时。所以进程在
+   占位之后、写回之前被杀掉时，同一个 key 最多被锁 10 分钟，之后会被新的请求**接管**并重新执行；
+   另有每小时一次的后台清理任务（`idempotency-cleanup`）删除过期行。
 
 **不参与幂等的端点**（契约里也不会声明该请求头，见 `IdempotencyKeyDocumentFilter`）：
 
 - 匿名端点（`/api/v1/auth/login|register|refresh`、`/api/v1/mcp/verify` 等）与 OpsKey 端点（`/api/v1/ops/*`）：
   没有 JWT 用户，也就没有幂等作用域；
-- `POST /api/v1/mcp/clients`：响应里含**一次性明文 token**，缓存响应体等于把凭据落库 24 小时；
-- JSON 404 兜底 `/api/{path}`：不是业务端点。
+- 响应里含**一次性凭据**的端点：缓存响应体等于把凭据落库 24 小时，且凭据过期后的重放会伪装成成功。
+  当前清单（`IdempotencyMiddleware.NonReplayableRoutes`，新增同类端点必须同步加进去）：
+  - `POST /api/v1/mcp/clients`（明文 token）；
+  - `POST /api/v1/files/items/upload-session`（预授权上传 URL，分片 PUT 不带 Authorization）；
+  - `POST /api/v1/files/providers/onedrive`（设备码 user code + verification URI）；
+  - `POST /api/v1/files/providers/google/authorize`（带一次性 state 的授权地址）；
+  - `POST /api/v1/calendar/outlook/device-code`（设备码 user code）；
+- JSON 404 兜底 `/api/{*path}`（文档里写作 `/api/{path}`）：不是业务端点，不写幂等记录，
+  避免把 404 缓存 24 小时。
 
 - **破坏点**：此前契约里没有任何重试去重约定，离线客户端重发会制造重复数据（手机端历史上出现过死循环重复上报）。
 - **客户端迁移**：上传/采集类重试、用户可重复点击的「创建/确认」按钮，都必须带 key；重试时复用同一个值。

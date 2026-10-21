@@ -166,6 +166,9 @@ public sealed class IdempotencyRealDbTests
         // 同 key 再来一次：这次应当重放首次响应，而不是再建一条
         var second = await client.SendAsync(Post(new { title = "接管", priority = 0 }, key));
         Assert.Equal(HttpStatusCode.Created, second.StatusCode);
+        // 重放标记（真实 DB 路径也必须有：客户端靠它判断没有重复执行）
+        Assert.True(second.Headers.TryGetValues("Idempotent-Replayed", out var replayed));
+        Assert.Equal("true", Assert.Single(replayed!));
 
         using var a = JsonDocument.Parse(await first.Content.ReadAsStringAsync());
         using var b = JsonDocument.Parse(await second.Content.ReadAsStringAsync());

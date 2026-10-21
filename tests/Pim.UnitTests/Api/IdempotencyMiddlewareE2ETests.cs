@@ -75,6 +75,12 @@ public sealed class IdempotencyMiddlewareE2ETests
         Assert.Equal(a.GetProperty("data").GetProperty("id").GetString(),
                      b.GetProperty("data").GetProperty("id").GetString());
         Assert.Equal(1, await CountTasksAsync(factory));
+
+        // 客户端靠这个头判断「本次没有重复执行」（例如不要重放提交动画）；
+        // 只断言正文相同的话，删掉 ReplayAsync 里设置该头的那行也不会有测试失败。
+        Assert.False(first.Headers.Contains("Idempotent-Replayed"));
+        Assert.True(second.Headers.TryGetValues("Idempotent-Replayed", out var replayed));
+        Assert.Equal("true", Assert.Single(replayed!));
     }
 
     [Fact]
@@ -167,6 +173,40 @@ public sealed class IdempotencyMiddlewareE2ETests
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
         Assert.Equal(40902, (await AuthRegistrationTestHost.ReadJsonAsync(response)).GetProperty("code").GetInt32());
         Assert.Equal(0, await CountTasksAsync(factory));
+    }
+
+    /// <summary>
+    /// 进程在「占位已落库、响应还没写回」时被杀掉，会留下一条过期时间停在过去的 in_progress 行。
+    /// 这种行**不能**让同一个 key 一直 409 —— 过期占位不再算「正在执行」，重试必须真正执行。
+    /// </summary>
+    [Fact]
+    public async Task ExpiredInProgressPlaceholder_DoesNotBlockRetry()
+    {
+        var (factory, client, _) = await ArrangeAsync("idem-expired");
+        using var factoryScope = factory;
+        var key = Guid.NewGuid().ToString();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var session = await AuthRegistrationTestHost.LoginOkAsync(factory, "idem-expired");
+            db.IdempotencyRecords.Add(new IdempotencyRecordEntity
+            {
+                UserId = session.UserId,
+                Method = "POST",
+                Route = Tasks,
+                Key = key,
+                State = "in_progress",
+                CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-11),
+                ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var response = await client.SendAsync(Post(Tasks, new { title = "崩溃后重试", priority = 0 }, key));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(1, await CountTasksAsync(factory));
     }
 
     [Fact]

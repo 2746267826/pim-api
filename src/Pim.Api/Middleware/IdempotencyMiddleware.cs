@@ -1,5 +1,7 @@
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -40,7 +42,17 @@ public sealed class IdempotencyMiddleware
     public const int KeyInProgressErrorCode = 40902;
     public static readonly TimeSpan Retention = TimeSpan.FromHours(24);
 
-    /// <summary>缓存的响应体上限（超出则只缓存状态码，不缓存正文）。</summary>
+    /// <summary>
+    /// 「执行中」占位的租约，必须远短于 <see cref="Retention"/>：进程在占位之后、写回之前被杀掉时，
+    /// 这个 key 最多被锁 <see cref="InProgressLease"/>，之后会被新请求接管并重新执行，
+    /// 而不是锁满 24 小时（早期实现会让客户端同一 key 的合法重试在整天内都吃 409）。
+    /// </summary>
+    public static readonly TimeSpan InProgressLease = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// 捕获响应体的内存上限。超过后**不再缓冲**，改为边写边直通给客户端（不会把大响应整体读进内存），
+    /// 且本次请求不写幂等缓存：只缓存状态码会让重放返回「2xx + 空正文」，客户端反而无法恢复。
+    /// </summary>
     public const int MaxResponseBodyBytes = 1024 * 1024;
 
     private const int MaxKeyLength = 128;
@@ -51,13 +63,23 @@ public sealed class IdempotencyMiddleware
     };
 
     /// <summary>
-    /// 这些路由的响应包含一次性凭据（例如 MCP 客户端创建返回的明文 token），
-    /// **不能**缓存响应体 —— 缓存即等于把明文凭据落库 24 小时。整条幂等链路跳过。
-    /// 契约里这些端点也不会声明 <c>Idempotency-Key</c>（见 <c>IdempotencyKeyDocumentFilter</c>）。
+    /// 这些路由的响应包含一次性凭据（明文 token / 预授权 URL / 设备码 / 带一次性 state 的授权地址），
+    /// **不能**缓存响应体 —— 缓存即等于把明文凭据落库 24 小时，且凭据过期后的重放会伪装成成功。
+    /// 整条幂等链路跳过。契约里这些端点也不会声明 <c>Idempotency-Key</c>
+    /// （见 <c>IdempotencyKeyDocumentFilter</c>）。
     /// </summary>
     public static readonly IReadOnlySet<string> NonReplayableRoutes = new HashSet<string>(StringComparer.Ordinal)
     {
+        // MCP 客户端创建：响应里是明文 token。
         "/api/v1/mcp/clients",
+        // 预授权上传 URL：DTO 约定「分片 PUT 不带 Authorization」，即 bearer 能力 URL。
+        "/api/v1/files/items/upload-session",
+        // OneDrive 设备码（user code + verification URI）。
+        "/api/v1/files/providers/onedrive",
+        // Google 授权地址：带一次性 state。
+        "/api/v1/files/providers/google/authorize",
+        // Outlook 设备码：user code 是本次授权会话的凭据。
+        "/api/v1/calendar/outlook/device-code",
     };
 
     private static readonly string[] ReplayedHeaders = ["Location", "ETag", "Last-Modified"];
@@ -103,7 +125,9 @@ public sealed class IdempotencyMiddleware
         }
 
         var route = IdempotencyKey.RouteOf(ctx.GetEndpoint(), ctx.Request.Path);
-        if (NonReplayableRoutes.Contains(route) || string.Equals(route, IdempotencyKey.CatchAllRoute, StringComparison.Ordinal))
+        // 兜底路由的模板是 `/api/{*path}`（Swashbuckle 在文档里把它重建为 `/api/{path}`），
+        // 直接比较字符串容易写错一边；按路由段判断 catch-all 才是可靠的。
+        if (NonReplayableRoutes.Contains(route) || IdempotencyKey.IsCatchAll(ctx.GetEndpoint()))
         {
             await _next(ctx);
             return;
@@ -155,7 +179,8 @@ public sealed class IdempotencyMiddleware
                 Key = rawKey,
                 State = "in_progress",
                 CreatedAt = now,
-                ExpiresAt = now.Add(Retention)
+                // 占位只租一小段时间；成功写回时再延到 Retention（见 CompleteAsync）。
+                ExpiresAt = now.Add(InProgressLease)
             };
             db.IdempotencyRecords.Add(placeholder);
             await db.SaveChangesAsync(CancellationToken.None);
@@ -165,8 +190,21 @@ public sealed class IdempotencyMiddleware
         {
             db.ChangeTracker.Clear();
             // 唯一键冲突有两种来源：另一请求正在执行（→409），或一条**已过期**但还没被清理的记录。
-            // 后者如果不接管，这个 key 会永远 409 —— 过期行必须能被新请求替换。
-            var takenOver = await TryTakeOverExpiredAsync(db, userId.Value, method, route, rawKey, now);
+            // 后者如果不接管，这个 key 会一直 409 —— 过期行必须能被新请求替换。
+            Guid? takenOver;
+            try
+            {
+                takenOver = await TryTakeOverExpiredAsync(db, userId.Value, method, route, rawKey, now);
+            }
+            catch (Exception takeoverEx)
+            {
+                // 接管本身失败（存储处理不了条件更新 / 瞬时错误）：按「没有幂等」放行。
+                // 不能把它当成「另一个请求正在执行」——那会让客户端为一次数据库抖动无限退避。
+                _logger.LogWarning(takeoverEx, "幂等占位接管失败，按无幂等继续执行：{Method} {Route}", method, route);
+                db.ChangeTracker.Clear();
+                await _next(ctx);
+                return;
+            }
             if (takenOver is null)
             {
                 await WriteInProgressAsync(ctx);
@@ -184,8 +222,8 @@ public sealed class IdempotencyMiddleware
         }
 
         var originalBody = ctx.Response.Body;
-        using var buffer = new MemoryStream();
-        ctx.Response.Body = buffer;
+        using var capture = new CappedCaptureStream(originalBody, MaxResponseBodyBytes);
+        ctx.Response.Body = capture;
         var succeeded = false;
         var downstreamFailed = false;
         try
@@ -207,20 +245,27 @@ public sealed class IdempotencyMiddleware
                 // （那会启动响应，让外层 ExceptionMiddleware 无法再改写状态码）。
                 await ReleaseAsync(db, recordId);
             }
+            else if (succeeded && capture.Overflowed)
+            {
+                // 响应体超过缓存上限：正文已经边写边直通给客户端了。
+                // **不缓存**这次结果 —— 只缓存状态码会让重放返回「2xx + 空正文」，客户端无法反序列化，
+                // 该 key 也会在 24 小时内既拿不到数据也重新执行不了。释放占位让重试真正重新执行。
+                _logger.LogDebug("响应体超过幂等缓存上限，本次不缓存：{RecordId}", recordId);
+                await ReleaseAsync(db, recordId);
+            }
             else
             {
                 if (succeeded)
-                    await CompleteAsync(db, recordId, ctx, buffer);
+                    await CompleteAsync(db, recordId, ctx, capture);
                 else
                     await ReleaseAsync(db, recordId);
 
-                if (!ctx.Response.HasStarted)
+                if (!capture.Overflowed && !ctx.Response.HasStarted)
                 {
                     try
                     {
-                        buffer.Position = 0;
                         // 用 None 而不是 RequestAborted：客户端取消时再抛异常会盖掉真实结果。
-                        await buffer.CopyToAsync(originalBody, CancellationToken.None);
+                        await capture.CopyToClientAsync(originalBody, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {
@@ -231,7 +276,7 @@ public sealed class IdempotencyMiddleware
         }
     }
 
-    private async Task CompleteAsync(PimDbContext db, Guid recordId, HttpContext ctx, MemoryStream body)
+    private async Task CompleteAsync(PimDbContext db, Guid recordId, HttpContext ctx, CappedCaptureStream body)
     {
         try
         {
@@ -240,10 +285,10 @@ public sealed class IdempotencyMiddleware
             stored.State = "completed";
             stored.StatusCode = ctx.Response.StatusCode;
             stored.ContentType = ctx.Response.ContentType;
-            stored.ResponseBody = body.Length <= MaxResponseBodyBytes
-                ? System.Text.Encoding.UTF8.GetString(body.GetBuffer(), 0, (int)body.Length)
-                : null;
+            stored.ResponseBody = body.CapturedText();
             stored.ResponseHeaders = SerializeHeaders(ctx.Response);
+            // 只有成功写回后才把占位租约延到完整保留期。
+            stored.ExpiresAt = DateTimeOffset.UtcNow.Add(Retention);
             await db.SaveChangesAsync(CancellationToken.None);
         }
         catch (Exception ex)
@@ -271,37 +316,31 @@ public sealed class IdempotencyMiddleware
     }
 
     /// <summary>
-    /// 唯一键冲突时接管一条**已过期**的记录。返回接管到的记录 id；未接管（另一请求仍在执行）返回 null。
-    /// 用条件更新保证只有一个请求能接管成功。
+    /// 唯一键冲突时接管一条**已过期**的记录（过期 = 已完成的 24h 缓存，或已超租约的 in_progress 占位）。
+    /// 返回接管到的记录 id；未接管（另一请求仍在执行）返回 null。
+    /// 用条件更新保证只有一个请求能接管成功；存储失败时**抛出异常**，由调用方降级为「无幂等」。
     /// </summary>
     private static async Task<Guid?> TryTakeOverExpiredAsync(
         PimDbContext db, Guid userId, string method, string route, string key, DateTimeOffset now)
     {
-        try
-        {
-            var updated = await db.IdempotencyRecords
-                .Where(r => r.UserId == userId && r.Method == method && r.Route == route && r.Key == key
-                            && r.ExpiresAt <= now)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(r => r.State, "in_progress")
-                    .SetProperty(r => r.StatusCode, (int?)null)
-                    .SetProperty(r => r.ContentType, (string?)null)
-                    .SetProperty(r => r.ResponseBody, (string?)null)
-                    .SetProperty(r => r.ResponseHeaders, (string?)null)
-                    .SetProperty(r => r.CreatedAt, now)
-                    .SetProperty(r => r.ExpiresAt, now.Add(Retention)), CancellationToken.None);
-            if (updated != 1) return null;
+        var updated = await db.IdempotencyRecords
+            .Where(r => r.UserId == userId && r.Method == method && r.Route == route && r.Key == key
+                        && r.ExpiresAt <= now)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.State, "in_progress")
+                .SetProperty(r => r.StatusCode, (int?)null)
+                .SetProperty(r => r.ContentType, (string?)null)
+                .SetProperty(r => r.ResponseBody, (string?)null)
+                .SetProperty(r => r.ResponseHeaders, (string?)null)
+                .SetProperty(r => r.CreatedAt, now)
+                // 与新建占位一致：接管后同样只租 InProgressLease，成功写回时再延到 Retention。
+                .SetProperty(r => r.ExpiresAt, now.Add(InProgressLease)), CancellationToken.None);
+        if (updated != 1) return null;
 
-            var row = await db.IdempotencyRecords.AsNoTracking()
-                .FirstOrDefaultAsync(r => r.UserId == userId && r.Method == method && r.Route == route && r.Key == key,
-                    CancellationToken.None);
-            return row?.Id;
-        }
-        catch (Exception)
-        {
-            // 存储不支持条件更新时按「另一请求仍在执行」处理（保守：不重复执行）。
-            return null;
-        }
+        var row = await db.IdempotencyRecords.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.UserId == userId && r.Method == method && r.Route == route && r.Key == key,
+                CancellationToken.None);
+        return row?.Id;
     }
 
     private static string? SerializeHeaders(HttpResponse response)
@@ -349,13 +388,138 @@ public sealed class IdempotencyMiddleware
     /// <summary>只把 PostgreSQL 唯一键冲突（23505）当成并发占位冲突。</summary>
     private static bool IsUniqueViolation(DbUpdateException ex) =>
         ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
+
+    /// <summary>
+    /// 响应体捕获流：未超过 <c>limit</c> 时只缓冲、最后一次性回写真实 Body（保留「下游中途抛异常时
+    /// 客户端还没收到半个响应」的性质）；一旦超限就切换为直通模式 —— 已缓冲的部分立刻写出，
+    /// 之后的内容边产生边写，内存占用封顶在 limit，且本次请求不缓存（见 <see cref="Overflowed"/>）。
+    /// </summary>
+    internal sealed class CappedCaptureStream : Stream
+    {
+        private readonly Stream _inner;
+        private readonly int _limit;
+        private readonly MemoryStream _buffer = new();
+        private bool _passThrough;
+
+        public CappedCaptureStream(Stream inner, int limit)
+        {
+            _inner = inner;
+            _limit = limit;
+        }
+
+        /// <summary>true 表示响应体超过上限，本次结果无法缓存。</summary>
+        public bool Overflowed { get; private set; }
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => _buffer.Length;
+
+        public override long Position
+        {
+            get => _buffer.Position;
+            set => _buffer.Position = value;
+        }
+
+        /// <summary>缓冲的正文（仅在没有溢出时有意义）。</summary>
+        public string? CapturedText()
+            => Overflowed ? null : Encoding.UTF8.GetString(_buffer.GetBuffer(), 0, (int)_buffer.Length);
+
+        public Task CopyToClientAsync(Stream destination, CancellationToken ct)
+        {
+            _buffer.Position = 0;
+            return _buffer.CopyToAsync(destination, ct);
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+            => Capture(buffer.AsSpan(offset, count));
+
+        public override void Write(ReadOnlySpan<byte> buffer) => Capture(buffer);
+
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+            => WriteAsync(buffer.AsMemory(offset, count), ct).AsTask();
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
+        {
+            if (_passThrough)
+                return _inner.WriteAsync(buffer, ct);
+            if (_buffer.Length + buffer.Length <= _limit)
+            {
+                _buffer.Write(buffer.Span);
+                return ValueTask.CompletedTask;
+            }
+            return new ValueTask(PassThroughAsync(buffer, ct));
+        }
+
+        private void Capture(ReadOnlySpan<byte> data)
+        {
+            if (_passThrough)
+            {
+                _inner.Write(data);
+                return;
+            }
+            if (_buffer.Length + data.Length <= _limit)
+            {
+                _buffer.Write(data);
+                return;
+            }
+            EnterPassThrough();
+            _inner.Write(data);
+        }
+
+        private async Task PassThroughAsync(ReadOnlyMemory<byte> data, CancellationToken ct)
+        {
+            EnterPassThrough();
+            await _inner.WriteAsync(data, ct);
+        }
+
+        private void EnterPassThrough()
+        {
+            Overflowed = true;
+            _passThrough = true;
+            if (_buffer.Length == 0) return;
+            var buffered = _buffer.ToArray();
+            _buffer.SetLength(0);
+            _inner.Write(buffered);
+        }
+
+        public override void Flush() => _inner.Flush();
+        public override Task FlushAsync(CancellationToken ct) => _inner.FlushAsync(ct);
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _buffer.Dispose();
+            // 不能释放 _inner：它是 Kestrel 的响应流，由框架管理。
+            base.Dispose(disposing);
+        }
+    }
 }
 
 /// <summary>幂等作用域的纯粹逻辑（可单测，不依赖 HTTP）。</summary>
 public static class IdempotencyKey
 {
-    /// <summary>JSON 404 兜底路由：不是业务端点，不参与幂等。</summary>
+    /// <summary>
+    /// JSON 404 兜底路由在 **OpenAPI 文档**里的写法：Swashbuckle 丢掉 catch-all 的 <c>*</c>，
+    /// 只剩 <c>{path}</c>。运行时模板是 <see cref="RuntimeCatchAllRoute"/>，两者不要混用。
+    /// </summary>
     public const string CatchAllRoute = "/api/{path}";
+
+    /// <summary>JSON 404 兜底路由在**运行时**的真实模板（见 <c>Program.cs</c> 的 <c>MapMethods</c>）。</summary>
+    public const string RuntimeCatchAllRoute = "/api/{*path}";
+
+    /// <summary>
+    /// 是否是 JSON 404 兜底端点。按路由段的 catch-all 标记判断，避免文档模板与运行时模板写法不同
+    /// 导致字符串比较永远不成立（那会让未知路径也写幂等记录、把 404 缓存 24 小时）。
+    /// </summary>
+    public static bool IsCatchAll(Endpoint? endpoint)
+        => endpoint is RouteEndpoint routeEndpoint
+           && routeEndpoint.RoutePattern.PathSegments.Count > 0
+           && routeEndpoint.RoutePattern.PathSegments[^1].Parts
+               .Any(part => part is RoutePatternParameterPart { IsCatchAll: true });
 
     /// <summary>路由里的动态段（GUID / 纯数字）：只在「整段」匹配时才替换，避免把 <c>v1</c> 之类改坏。</summary>
     private static readonly System.Text.RegularExpressions.Regex VolatileSegment =

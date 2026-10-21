@@ -64,23 +64,68 @@ public sealed class ContractSemanticsTests : IClassFixture<ContractSemanticsTest
             $"{path} 缺少 x-business-day");
     }
 
-    /// <summary>§1：契约声明了还不够 —— 运行时必须真的下发（否则客户端删掉本地推算后会拿不到值）。</summary>
-    [Fact]
-    public async Task BusinessDayFields_ArePresentAtRuntime()
+    /// <summary>
+    /// §1：契约声明了还不够 —— 运行时必须真的下发（否则客户端删掉本地推算后会拿不到值）。
+    /// 四个端点都测：只测其中一两个时，其余端点的 `string.Empty` 默认值也能让「字段存在」通过。
+    /// </summary>
+    [Theory]
+    [InlineData("/api/v1/today/sections")]
+    [InlineData("/api/v1/today/sections/calendar.tasks")]
+    [InlineData("/api/v1/pc/summary?date=2026-10-21")]
+    [InlineData("/api/v1/mobile/summary?date=2026-10-21")]
+    public async Task BusinessDayFields_ArePresentAtRuntime(string path)
     {
-        var session = await AuthRegistrationTestHost.SeedAndLoginAsync(_host.Factory, "contract-sem-runtime");
+        // 同一个 fixture 共用一个库：theory 每个用例都要新用户，否则第二次登录会命中第一次创建的用户。
+        var session = await AuthRegistrationTestHost.SeedAndLoginAsync(
+            _host.Factory, $"contract-sem-runtime-{Guid.NewGuid():N}"[..40]);
         var client = _host.Factory.CreateClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
 
-        var root = await AuthRegistrationTestHost.ReadJsonAsync(
-            await client.GetAsync("/api/v1/today/sections"));
+        var root = await AuthRegistrationTestHost.ReadJsonAsync(await client.GetAsync(path));
         var data = root.GetProperty("data");
         var businessDate = data.GetProperty("businessDate").GetString();
         Assert.Matches(new Regex(@"^\d{4}-\d{2}-\d{2}$"), businessDate);
         Assert.Equal("Asia/Shanghai", data.GetProperty("businessTimeZone").GetString());
         Assert.Equal(4, data.GetProperty("businessDayStartHour").GetInt32());
-        // 与已有的 date 字段同源：两者必须一致，否则客户端会看到两个「今天」。
-        Assert.Equal(data.GetProperty("date").GetString(), businessDate);
+    }
+
+    /// <summary>§1：registry 的 businessDate 与既有 date 同源，否则客户端会看到两个「今天」。</summary>
+    [Fact]
+    public async Task TodayRegistry_BusinessDateMatchesDate()
+    {
+        var session = await AuthRegistrationTestHost.SeedAndLoginAsync(_host.Factory, "contract-sem-registry");
+        var client = _host.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
+
+        var data = (await AuthRegistrationTestHost.ReadJsonAsync(
+            await client.GetAsync("/api/v1/today/sections"))).GetProperty("data");
+        Assert.Equal(data.GetProperty("date").GetString(), data.GetProperty("businessDate").GetString());
+    }
+
+    /// <summary>
+    /// §1 回归：00:00–04:00 属于上一个业务日。pc.* 分区的载荷按 PcBusinessDate 取数，
+    /// 信封上的 businessDate 必须与载荷一致，不能一个说 21 号、另一个说 20 号。
+    /// </summary>
+    [Fact]
+    public async Task PcSections_EnvelopeBusinessDateMatchesPayload()
+    {
+        var session = await AuthRegistrationTestHost.SeedAndLoginAsync(_host.Factory, "contract-sem-pc");
+        var client = _host.Factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", session.AccessToken);
+
+        // 明确带时间 02:00：query.Date = 2026-10-21，PcBusinessDate = 2026-10-20。
+        var root = await AuthRegistrationTestHost.ReadJsonAsync(
+            await client.GetAsync("/api/v1/today/sections/pc.activity?date=2026-10-21T02:00"));
+        var data = root.GetProperty("data");
+        Assert.Equal("2026-10-20", data.GetProperty("businessDate").GetString());
+        Assert.Equal("2026-10-20",
+            data.GetProperty("data").GetProperty("summary").GetProperty("businessDate").GetString());
+
+        // 同一次请求里，不按 PC 业务日取数的分区仍然是日历日 21 号。
+        var other = (await AuthRegistrationTestHost.ReadJsonAsync(
+            await client.GetAsync("/api/v1/today/sections/calendar.tasks?date=2026-10-21T02:00")))
+            .GetProperty("data");
+        Assert.Equal("2026-10-21", other.GetProperty("businessDate").GetString());
     }
 
     /// <summary>
@@ -116,9 +161,18 @@ public sealed class ContractSemanticsTests : IClassFixture<ContractSemanticsTest
             foreach (var op in catchAll.EnumerateObject())
                 Assert.False(HasKey(op.Value), $"兜底路由 {op.Name} 不应声明 Idempotency-Key");
 
-        // 返回一次性明文凭据的端点：缓存响应体 = 凭据落库，必须豁免
+        // 返回一次性凭据的端点：缓存响应体 = 凭据落库 24h，必须豁免
         Assert.False(HasKey(paths.GetProperty("/api/v1/mcp/clients").GetProperty("post")),
             "POST /mcp/clients 返回明文 token，不能参与幂等缓存");
+        foreach (var path in new[]
+                 {
+                     "/api/v1/files/items/upload-session",   // 预授权上传 URL
+                     "/api/v1/files/providers/onedrive",     // 设备码 user code
+                     "/api/v1/files/providers/google/authorize", // 带一次性 state 的授权地址
+                     "/api/v1/calendar/outlook/device-code"  // 设备码 user code
+                 })
+            Assert.False(HasKey(paths.GetProperty(path).GetProperty("post")),
+                $"{path} 的响应含一次性凭据，不能参与幂等缓存");
     }
 
     /// <summary>§2：幂等运行时确实会返回的 409，以及重放标记，都必须在契约里。</summary>

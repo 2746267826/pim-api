@@ -19678,7 +19678,7 @@
                 }
               }
             },
-            "description": "Conflict"
+            "description": "Conflict 若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。"
           },
           "500": {
             "content": {
@@ -24307,17 +24307,6 @@
     },
     "/api/v1/calendar/outlook/device-code": {
       "post": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -24327,18 +24316,7 @@
                 }
               }
             },
-            "description": "OK",
-            "headers": {
-              "Idempotent-Replayed": {
-                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
-                "schema": {
-                  "enum": [
-                    "true"
-                  ],
-                  "type": "string"
-                }
-              }
-            }
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -24352,16 +24330,6 @@
           },
           "401": {
             "description": "Unauthorized"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StringApiResponse"
-                }
-              }
-            },
-            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -24716,7 +24684,7 @@
                 }
               }
             },
-            "description": "Conflict"
+            "description": "Conflict 若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。"
           },
           "500": {
             "content": {
@@ -29540,17 +29508,6 @@
     },
     "/api/v1/files/items/upload-session": {
       "post": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -29570,18 +29527,7 @@
                 }
               }
             },
-            "description": "OK",
-            "headers": {
-              "Idempotent-Replayed": {
-                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
-                "schema": {
-                  "enum": [
-                    "true"
-                  ],
-                  "type": "string"
-                }
-              }
-            }
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -29605,16 +29551,6 @@
               }
             },
             "description": "Not Found"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StringApiResponse"
-                }
-              }
-            },
-            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -31734,17 +31670,6 @@
     },
     "/api/v1/files/providers/google/authorize": {
       "post": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -31754,18 +31679,7 @@
                 }
               }
             },
-            "description": "OK",
-            "headers": {
-              "Idempotent-Replayed": {
-                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
-                "schema": {
-                  "enum": [
-                    "true"
-                  ],
-                  "type": "string"
-                }
-              }
-            }
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -31779,16 +31693,6 @@
           },
           "401": {
             "description": "Unauthorized"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StringApiResponse"
-                }
-              }
-            },
-            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "500": {
             "content": {
@@ -31813,17 +31717,6 @@
     },
     "/api/v1/files/providers/onedrive": {
       "post": {
-        "parameters": [
-          {
-            "description": "可选。同一逻辑操作重试时复用同一个值（建议 UUID）；成功后 24 小时内同 key 重放返回首次响应，首次仍在执行中返回 409（code=40902）。读操作忽略该头。",
-            "in": "header",
-            "name": "Idempotency-Key",
-            "schema": {
-              "maxLength": 128,
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -31843,18 +31736,7 @@
                 }
               }
             },
-            "description": "OK",
-            "headers": {
-              "Idempotent-Replayed": {
-                "description": "为 true 表示本次响应来自幂等缓存（未重复执行）。",
-                "schema": {
-                  "enum": [
-                    "true"
-                  ],
-                  "type": "string"
-                }
-              }
-            }
+            "description": "OK"
           },
           "400": {
             "content": {
@@ -31878,16 +31760,6 @@
               }
             },
             "description": "Not Found"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StringApiResponse"
-                }
-              }
-            },
-            "description": "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。"
           },
           "429": {
             "content": {
@@ -39876,7 +39748,7 @@
                 }
               }
             },
-            "description": "Conflict"
+            "description": "Conflict 若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。"
           },
           "500": {
             "content": {
@@ -39984,7 +39856,7 @@
                 }
               }
             },
-            "description": "Conflict"
+            "description": "Conflict 若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。"
           },
           "500": {
             "content": {
@@ -41633,7 +41505,7 @@
                 }
               }
             },
-            "description": "Conflict"
+            "description": "Conflict 若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。"
           },
           "500": {
             "content": {
@@ -42028,7 +41900,7 @@
                 }
               }
             },
-            "description": "Conflict"
+            "description": "Conflict 若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。"
           },
           "500": {
             "content": {
@@ -42117,7 +41989,7 @@
                 }
               }
             },
-            "description": "Conflict"
+            "description": "Conflict 若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。"
           },
           "500": {
             "content": {
@@ -42611,7 +42483,7 @@
                 }
               }
             },
-            "description": "Conflict"
+            "description": "Conflict 若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。"
           },
           "500": {
             "content": {
@@ -42719,7 +42591,7 @@
                 }
               }
             },
-            "description": "Conflict"
+            "description": "Conflict 若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。"
           },
           "500": {
             "content": {
@@ -42827,7 +42699,7 @@
                 }
               }
             },
-            "description": "Conflict"
+            "description": "Conflict 若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。"
           },
           "500": {
             "content": {
@@ -42925,7 +42797,7 @@
                 }
               }
             },
-            "description": "Conflict"
+            "description": "Conflict 若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。"
           },
           "500": {
             "content": {

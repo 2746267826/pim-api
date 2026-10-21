@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Pim.Api.Endpoints;
+using Pim.Core.Common;
 using Pim.Core.Today;
 
 namespace Pim.Api.Today;
@@ -61,7 +62,9 @@ public sealed class TodaySectionService
         }
 
         var query = BuildQuery(date);
-        var businessDate = FormatDate(query.Date);
+        // pc.* 分区取的是 PcBusinessDate（04:00 切日）的数据，信封上的业务日必须与载荷一致；
+        // 其余分区用 query.Date。否则在 00:00–04:00 会出现信封 businessDate 与 data.businessDate 打架。
+        var businessDate = FormatDate(UsesPcBusinessDate(provider.SectionId) ? query.PcBusinessDate : query.Date);
         try
         {
             // 业务日由服务端权威给出：provider 只负责载荷，口径由这里统一贴上去。
@@ -93,11 +96,26 @@ public sealed class TodaySectionService
         }
     }
 
+    /// <summary>
+    /// 恰好是这两个 provider 用 <see cref="TodayQuery.PcBusinessDate"/>（04:00 切日）取数，
+    /// 信封上的 <c>businessDate</c> 必须跟着载荷走；其余分区（包括 pc.classification_suggestions，
+    /// 它不按日取数）用 <see cref="TodayQuery.Date"/>。
+    /// </summary>
+    private static bool UsesPcBusinessDate(string sectionId)
+        => sectionId is "pc.activity" or "pc.quality";
+
+    /// <summary>
+    /// 当前墙钟（Asia/Shanghai）。**不能**用 <c>DateTime.Now</c>：宿主时区是 UTC 时
+    /// （容器默认未设 TZ），16:00–24:00 UTC 期间算出来的日期会比上海早一天。
+    /// </summary>
+    private static DateTime NowInBusinessTimeZone()
+        => TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, BusinessDay.TimeZone).DateTime;
+
     private static TodayQuery BuildQuery(string? date)
     {
         if (string.IsNullOrWhiteSpace(date))
         {
-            return BuildQuery(DateTime.Now, hasExplicitTime: true);
+            return BuildQuery(NowInBusinessTimeZone(), hasExplicitTime: true);
         }
 
         if (DateOnly.TryParseExact(

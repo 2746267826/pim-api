@@ -70,6 +70,12 @@ public sealed record McpToolSpec
     /// <summary>Tool sends a JSON body (all non-path, non-query arguments).</summary>
     public bool HasBody { get; init; }
 
+    /// <summary>
+    /// 分页参数在 **JSON body** 里（而不是 query）。省略时补 page=1 / pageSize=20，
+    /// 与 Python MCP server 一致；否则 .NET 侧会吃服务端默认的 50，同一工具两种实现在条数上不一致。
+    /// </summary>
+    public bool BodyPagination { get; init; }
+
     /// <summary>POST/PUT tool that sends no body at all (Python passed no json_body).</summary>
     public bool NoBody { get; init; }
 
@@ -118,7 +124,7 @@ public static class McpToolTable
         {
             // ===================== Calendar reads (31) =====================
             S("get_calendar_layers", "GET", "/api/v1/calendar/layers", Q("start", "end", "layers", "timezone", "redactUrls"), redact: true),
-            S("query_data_center", "POST", "/api/v1/calendar/data-center/query", body: true),
+            S("query_data_center", "POST", "/api/v1/calendar/data-center/query", body: true, bodyPage: true),
             S("preview_data_center_batch", "POST", "/api/v1/calendar/data-center/batch/preview", body: true),
             S("get_data_center_audit_export", "GET", "/api/v1/calendar/data-center/audit/export", Q("start", "end", "timezone")),
             S("preview_data_center_restore", "POST", "/api/v1/calendar/data-center/restore/preview", body: true),
@@ -319,6 +325,7 @@ public static class McpToolTable
         bool localPageTrunc = false,
         bool dateSpan = false,
         bool noBody = false,
+        bool bodyPage = false,
         McpToolKind kind = McpToolKind.None)
         => new()
         {
@@ -327,6 +334,7 @@ public static class McpToolTable
             Route = route,
             QueryParams = q ?? Array.Empty<string>(),
             HasBody = body,
+            BodyPagination = bodyPage,
             NoBody = noBody,
             RedactUrls = redact,
             LocalPagination = localPage,

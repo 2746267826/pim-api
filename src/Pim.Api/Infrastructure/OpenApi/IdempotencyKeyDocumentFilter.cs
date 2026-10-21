@@ -24,6 +24,10 @@ public sealed class IdempotencyKeyDocumentFilter : IDocumentFilter
 {
     private static readonly string[] SuccessCodes = ["200", "201", "202", "204"];
 
+    /// <summary>同时存在业务 409 时追加到描述里的幂等说明。</summary>
+    private const string ConflictNote =
+        "若同一 Idempotency-Key 的首次请求仍在执行中，服务端也用 409，但响应体是 StringApiResponse 形状的 {code:40902}；客户端应按 body 的 code 区分后两种 409。";
+
     public void Apply(OpenApiDocument document, DocumentFilterContext context)
     {
         foreach (var (path, item) in document.Paths)
@@ -65,7 +69,16 @@ public sealed class IdempotencyKeyDocumentFilter : IDocumentFilter
     private static void AddConflictResponse(OpenApiOperation operation)
     {
         operation.Responses ??= new OpenApiResponses();
-        if (operation.Responses.ContainsKey("409")) return;
+        if (operation.Responses.TryGetValue("409", out var existing))
+        {
+            // 端点本来就有业务 409（例如 Outlook writeback）：中间件的「执行中」复用同一个状态码，
+            // 但 body 是 {code:40902,...} 的 StringApiResponse。生成的客户端必须能区分这两者，
+            // 所以至少要在描述里写清楚，不能因为「已经有 409」就当作已经声明过。
+            existing.Description = string.IsNullOrEmpty(existing.Description)
+                ? ConflictNote
+                : $"{existing.Description} {ConflictNote}";
+            return;
+        }
         operation.Responses["409"] = new OpenApiResponse
         {
             Description = "同一 Idempotency-Key 的首次请求仍在执行中（业务码 40902）。客户端应稍后重试。",

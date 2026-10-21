@@ -463,6 +463,13 @@ public sealed class McpToolExecutor
                     continue;
                 bodyObject[property.Key] = property.Value.DeepClone();
             }
+            if (spec.BodyPagination)
+            {
+                // 分页在 body 里的工具（query_data_center）：Python 恒发 page/pageSize，
+                // 这里同样补齐，否则省略参数时 .NET 吃服务端默认 50、Python 是 20。
+                if (bodyObject["page"] is null) bodyObject["page"] = 1;
+                if (bodyObject["pageSize"] is null) bodyObject["pageSize"] = 20;
+            }
             if (spec.Kind == McpToolKind.SchedulePreview)
             {
                 // Python: body = {"taskIds": taskIds or []} — always present.
