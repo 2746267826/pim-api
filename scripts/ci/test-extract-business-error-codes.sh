@@ -182,12 +182,54 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 print("\n".join(m.public_paths_from_source(sys.argv[1])))
 PY
 has() { grep -qxF -- "$2" "$3" && pass "$1" || { fail "$1（找不到：$2）"; sed 's/^/       | /' "$3"; }; }
+# 上面的 has() 在这里被改成「整行相等」（用于公开端点的路径清单）；表格断言仍按子串查。
+has_part() { grep -qF -- "$2" "$3" && pass "$1" || { fail "$1（找不到：$2）"; sed 's/^/       | /' "$3" | head -30; }; }
 has "⑧ 链式 .AllowAnonymous() 归属自身端点" "/api/client/shell/latest" "$TMP/pub.txt"
 has "⑧ group 端点拼上前缀" "/api/v1/x/y" "$TMP/pub.txt"
 has "⑧ lambda 体内含分号不影响路径" "/api/v1/tiles/{}/{}/{}.png" "$TMP/pub.txt"
 hasnt "⑧ 不被同文件后面的 MapGroup 影响" "/api/v1/z/y" "$TMP/pub.txt"
 has "⑧ 中间夹了其它语句时仍归属自己的 group" "/api/v1/x/v1/k" "$TMP/pub.txt"
 [ "$(wc -l <"$TMP/pub.txt")" -eq 4 ] && pass "⑧ 恰好 4 个公开端点" || fail "⑧ 公开端点数量不对"
+
+# ⑮–⑳ review P1-1/P1-3：业务码不止「DomainException/Error(4–5 位, 字面量)」这一种形态。
+#    3 位码、`new XxxError(...)`、匿名对象 / 手拼 JSON 的错误体、BadRequest 包装都要采集；
+#    `new XxxException(200|429, …)` 的第一实参不是业务码，不能混进码表。
+mkdir -p "$TMP/newforms"
+cat >"$TMP/newforms/New.cs" <<'CS'
+public class NewForms
+{
+    static int ResolveDomainStatusCode(int errorCode) => errorCode switch
+    {
+        409 => StatusCodes.Status409Conflict,
+        41002 => StatusCodes.Status409Conflict,
+        _ => StatusCodes.Status400BadRequest
+    };
+
+    void A() => throw new DomainException(400, "参数缺失");
+    void H() => throw new DomainException(409, "状态冲突");
+    IResult B() => Results.BadRequest(new ValidationError(41001, "标题不能为空"));
+    IResult C() => Results.Json(new { code = 40010, message = "幂等键过长" }, statusCode: 400);
+    IResult D() => Results.Content("{\"code\":40501,\"message\":\"解析失败\"}", "application/json", statusCode: 400);
+    IResult E() => Results.BadRequest(ApiResponse<string>.Error(41002, "显式状态优先"));
+    void F() => _ = new GoogleDriveException(200, "上游状态，不是业务码");
+    void G() => _ = new ProviderTransientException(429, "上游状态，不是业务码");
+    public const int StatusCode = 41005;
+}
+CS
+
+"$PY" "$EXTRACT" --source-root "$TMP/newforms" --doc "$TMP/newforms.md" >"$TMP/newforms.txt" 2>&1
+RC=$?
+[ $RC -eq 0 ] && pass "⑮ 新形态可生成（退出 0）" || fail "⑮ 新形态生成失败（实际 $RC）"
+has_part "⑮ 3 位业务码（400）被采集" "| 400 | 400 |" "$TMP/newforms.md"
+has_part "⑮ 3 位业务码（409）被采集" "| 409 | 409 |" "$TMP/newforms.md"
+has_part "⑯ new XxxError(...) 携带的码被采集" "| 41001 | 400 |" "$TMP/newforms.md"
+has_part "⑰ 匿名对象 { code = … } 被采集" "| 40010 | 400 |" "$TMP/newforms.md"
+has_part "⑰ 手拼 JSON \"code\":… 被采集" "| 40501 | 400 |" "$TMP/newforms.md"
+has_part "⑱ 调用点 Results.BadRequest 覆盖映射里的 409" "| 41002 | 400 |" "$TMP/newforms.md"
+hasnt "⑱ 不会写成映射里的 409" "| 41002 | 409 |" "$TMP/newforms.md"
+hasnt "⑲ new GoogleDriveException(200, …) 不当作业务码" "| 200 |" "$TMP/newforms.md"
+hasnt "⑲ new ProviderTransientException(429, …) 不当作业务码" "| 429 |" "$TMP/newforms.md"
+hasnt "⑳ 名字含 Status 的常量不被猜成业务码" "| 41005 |" "$TMP/newforms.md"
 
 echo ""
 if [ "$FAIL" -ne 0 ]; then echo "FAILED：$FAIL 项失败，$PASS 项通过"; exit 1; fi

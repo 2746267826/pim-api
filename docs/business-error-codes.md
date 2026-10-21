@@ -25,6 +25,9 @@
 
 | 码 | HTTP | 模块 | 含义（源码消息样例，最多 3 条） | 客户端建议动作 |
 | --- | --- | --- | --- | --- |
+| 400 | 400 | AiEndpoints, Calendar, Mcp, Mobile, PcTracker, QuickNotes, TodayEndpoints | AI 请求状态无效。；Invalid Today date. Expected YYYY-MM-DD or a parseable date/time value.；需要 multipart/form-data | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 404 | 404 | AiEndpoints, Calendar, Mobile, PcTracker, Program, TodayEndpoints | 接口不存在: {ctx.Request.Path}；AI 请求日志不存在。；今日模块不存在。 | 目标不存在或已被删除：刷新列表，不要重试同一请求 |
+| 409 | 409 | PcTracker | （消息为变量或表达式，见源码） | 状态冲突（重复/并发/版本过期）：重新拉取最新数据后再操作 |
 | 01001 | 500 | ExceptionMiddleware | 内部服务器错误 | 服务端未预期错误：可重试一次，仍失败则上报 |
 | 01002 / 1002 | 400 | Calendar, EndpointStatusService, Files, OperationsEndpoints, QuickNotes | 未登录；Login required | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
 | 01003 | 409 | AdminEndpoints, AuthEndpoints | 用户名已存在；用户名已存在或邮箱已存在 | 状态冲突（重复/并发/版本过期）：重新拉取最新数据后再操作 |
@@ -135,27 +138,30 @@
 | 6202 | 400 | Mobile | Mobile location accuracy is not usable. | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
 | 6203 | 400 | Mobile | A location batch must not contain more than {MaxBatchPoints} points. | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
 | 40000 | 400 | ExceptionMiddleware | 请求参数格式无效: {ex.Message} | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
-| 40001 | 400 | Mcp | 客户端名称不能为空 | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
-| 40002 | 400 | Mcp, OpsDbService, OpsLogsService | InvalidTableName；（消息为变量或表达式，见源码）；InvalidFileName | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
-| 40003 | 400 | Mcp, OpsLogsService | Limit must be 1-500；客户端名称已存在 | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
-| 40004 | 400 | AuthEndpoints, UserCredentialsValidator | Password must be at least 8 characters | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
-| 40007 | 400 | UserCredentialsValidator | Password must not exceed 100 characters | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 40001 | 400 | Mcp, UserCredentialsValidator | Username is required；客户端名称不能为空 | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 40002 | 400 | Mcp, OpsDbService, OpsLogsService, UserCredentialsValidator | InvalidTableName；（消息为变量或表达式，见源码）；InvalidFileName | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 40003 | 400 | Mcp, OpsLogsService, UserCredentialsValidator | Limit must be 1-500；Invalid email format；客户端名称已存在 | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 40004 | 400 | AuthEndpoints, UserCredentialsValidator | Password must be at least 8 characters；（消息为变量或表达式，见源码） | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 40005 | 400 | UserCredentialsValidator | Username must not exceed 50 characters | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 40006 | 400 | UserCredentialsValidator | Email must not exceed 255 characters | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 40007 | 400 | UserCredentialsValidator | （消息为变量或表达式，见源码） | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 40008 | 400 | UserCredentialsValidator | DisplayName must not exceed 100 characters | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
 | 40030 | 403 | AuthEndpoints | 账号已停用，请联系管理员 | 无权限：不要重试；提示用户或联系管理员 |
 | 40040 | 404 | AdminEndpoints | 用户不存在 | 目标不存在或已被删除：刷新列表，不要重试同一请求 |
-| 40041 | 404 / 409 | AdminEndpoints | 无效的角色，仅支持 admin / user | 按具体状态处理：404 目标不存在或已被删除：刷新列表，不要重试同一请求；409 状态冲突（重复/并发/版本过期）：重新拉取最新数据后再操作 |
-| 40042 | 404 | AdminEndpoints | 至少需要保留一名管理员；至少需要保留一名有效管理员 | 目标不存在或已被删除：刷新列表，不要重试同一请求 |
-| 40043 | 404 / 409 | AdminEndpoints | 操作失败 | 按具体状态处理：404 目标不存在或已被删除：刷新列表，不要重试同一请求；409 状态冲突（重复/并发/版本过期）：重新拉取最新数据后再操作 |
+| 40041 | 400 | AdminEndpoints | 无效的角色，仅支持 admin / user | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 40042 | 400 | AdminEndpoints | 至少需要保留一名管理员；至少需要保留一名有效管理员 | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 40043 | 400 | AdminEndpoints | 操作失败 | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
 | 40044 | 400 | DataReliabilityEndpoints | 未知的尺子编号 | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
-| 40063 | 401 | AuthEndpoints, UserPasswordService | 当前密码不正确 | 刷新令牌后重试一次；刷新失败则回登录页 |
+| 40063 | 400 | AuthEndpoints, UserPasswordService | 当前密码不正确 | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
 | 40064 | 400 | AuthEndpoints, UserPasswordService | 新密码不能与当前密码相同 | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
-| 40065 | 400 / 401 | AuthEndpoints, UserPasswordService | 会话标识无效，请重新登录后再试 | 按具体状态处理：400 展示 message；多数是请求形状/参数问题，检查客户端组装；401 刷新令牌后重试一次；刷新失败则回登录页 |
-| 40101 | 401 | Mcp | missing bearer token；（消息为变量或表达式，见源码） | 刷新令牌后重试一次；刷新失败则回登录页 |
+| 40065 | 400 | AuthEndpoints, UserPasswordService | 会话标识无效，请重新登录后再试 | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 40101 | 401 | Mcp, OpsKeyMiddleware, Program | missing bearer token；（消息为变量或表达式，见源码） | 刷新令牌后重试一次；刷新失败则回登录页 |
 | 40301 | 403 | Mcp, QuickNotes | （消息为变量或表达式，见源码）；无权操作该客户端；无权访问该附件 | 无权限：不要重试；提示用户或联系管理员 |
 | 40302 | 403 | McpScopedTokenMiddleware, OpsDbService | mcp scope denied: {tool} cannot call {method} {path}；RestrictedColumn | 无权限：不要重试；提示用户或联系管理员 |
 | 40303 | 403 | Files | 敏感路径受保护，不允许该操作；敏感路径受保护，不允许分享 | 无权限：不要重试；提示用户或联系管理员 |
 | 40304 | 403 | AuthEndpoints, PublicRegistrationPolicy | 公开注册已关闭，请联系管理员创建账号 | 无权限：不要重试；提示用户或联系管理员 |
 | 40401 | 404 | Mcp, OpsDbService, OpsLogsService | TableNotFound；LogFileNotFound；客户端不存在 | 目标不存在或已被删除：刷新列表，不要重试同一请求 |
-| 42901 | 429 | Mcp | too many attempts | 限流：按 Retry-After 退避后重试 |
-| 50301 | 503 | OpsDbService | OpsRoConnectionNotConfigured | 服务不可用/功能被关闭：不要重试，展示配置提示 |
+| 42901 | 429 | Mcp, OpsRateLimitMiddleware | too many attempts | 限流：按 Retry-After 退避后重试 |
+| 50301 | 503 | OpsDbService, OpsKeyMiddleware | OpsRoConnectionNotConfigured | 服务不可用/功能被关闭：不要重试，展示配置提示 |
 
 <!-- END GENERATED -->

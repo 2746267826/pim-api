@@ -36,12 +36,22 @@
 严重度与批准：
   每条发现都带 severity（P0/P1/P2/P3），报告**按 severity 分组**（类别只是组内小节），
   `--fail-on` 默认只拦未批准的 P0/P1，`--strict` 才拦全部。
-  `approvedGaps` 的每条批准必须写全 `reason` / `owner` / `count` / `expires`：
+  `approvedGaps` 的每条批准必须写全 `reason` / `owner` / `count` / `fingerprint` / `expires`：
     * `count` 是该类别**当前**的发现数；新增同类实例会让 count 对不上（approval-exceeded）而失败，
       不会被「这个类别早已批准」静默放行；
+    * `fingerprint` 是该类别**实例集合**的摘要（`--print-approvals` 生成）：只比 count 挡不住
+      「删一条、加一条」——实例换了、数量不变；集合一变就是 approval-drift；
     * `expires`（YYYY-MM-DD）到期后批准失效（approval-expired）；
-    * 旧的纯字符串批准视为元数据不全（approval-metadata），不再生效。
+    * 旧的纯字符串批准视为元数据不全（approval-metadata），不再生效；
+    * **`drift-removed` 永不批准**（approval-forbidden）：端点被删除对存量客户端是硬性破坏，
+      只能恢复端点，或显式改基线并宣告下线。
   `excludePaths` 只用于刻意不审的路径，**不能**吞掉 P0（端点被删除）。
+
+端点删除检测的 fail-closed 规则：
+  * 门禁模式（`--fail-on`）下，基线里的 `operations` 必须非空，否则退出 4 ——
+    空集合会让「已发布端点被删」检测完全空转，而报告仍然显示「没有缺口」；
+  * `--record-operations` 不会静默抹掉删除记录：基线里删掉的端点必须用
+    `--acknowledge-removed` 显式确认（并在 PR 里声明替代端点）。
 
 退出码：
   0  审计完成（非门禁模式总是 0，除非读取失败）
@@ -53,6 +63,7 @@
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -493,6 +504,34 @@ def audit_schemas(doc, findings):
                                  severity="P1")
 
 
+# 契约文本里的业务码。业务码的**位数并不统一**：本仓同时存在 3 位（400 / 503）、
+# 4 位（2057，源码写 `02057`）与 5 位（40902 / 40010）。只认 5 位会漏掉一整批码（review P1-2）。
+#
+# 但 3 位数字与 HTTP 状态码在文本里无法区分（`401` 既可能是状态也可能是业务码），
+# 所以 3 位只在**明确的码上下文**里采（`code:400` / `{code:400}` / `错误码 400`）；
+# 4–5 位按独立数字采（不受上下文限制，保持原行为）。
+CODE_TEXT_ANY_RE = re.compile(r"(?<![\d.])(\d{4,5})(?![\d.])")
+CODE_TEXT_CTX_RE = re.compile(
+    r"(?:code|错误码|业务码)\s*[\"']?\s*[:=：]\s*[\"']?\{?\s*(\d{3})(?![\d])", re.IGNORECASE)
+# 业务码表的码在第一列（`| 02057 | 400 | …`）。只取第一列，避免把 HTTP 状态列/统计数字当码表内容。
+TABLE_ROW_RE = re.compile(r"^\|\s*([^|]+?)\s*\|", re.MULTILINE)
+
+
+def codes_in_contract_text(text):
+    codes = set(int(raw) for raw in CODE_TEXT_ANY_RE.findall(text))
+    codes.update(int(raw) for raw in CODE_TEXT_CTX_RE.findall(text))
+    return codes
+
+
+def codes_in_error_table(markdown):
+    """码表里「已登记」的码：4–5 位独立数字 + 表格第一列里的 3 位码。"""
+    documented = set(int(raw) for raw in re.findall(r"(?<!\d)(\d{4,5})(?!\d)", markdown))
+    for cell in TABLE_ROW_RE.findall(markdown):
+        for raw in re.findall(r"(?<!\d)(\d{3})(?!\d)", cell):
+            documented.add(int(raw))
+    return documented
+
+
 def audit_biz_codes(doc, findings, biz_table_path):
     """统一错误响应里引用的码必须是「服务端真会返回」的码。
 
@@ -502,16 +541,13 @@ def audit_biz_codes(doc, findings, biz_table_path):
     所以比较时**归一成整数**，并把带前导零的写法也收录进码表，避免「码表有 2057、契约写 02057」的假阴性。
     """
     text = json.dumps(doc, ensure_ascii=False)
-    codes = set()
-    for raw in re.findall(r"(?<![\d.])(\d{5})(?![\d.])", text):
-        codes.add(int(raw))
+    codes = codes_in_contract_text(text)
     if not codes:
         return 0
     documented = set()
     if biz_table_path and os.path.isfile(biz_table_path):
         with open(biz_table_path, "r", encoding="utf-8-sig") as fh:
-            for raw in re.findall(r"(?<!\d)(\d{5})(?!\d)", fh.read()):
-                documented.add(int(raw))
+            documented = codes_in_error_table(fh.read())
     for code in sorted(codes):
         if code not in documented:
             findings.add("biz-errors", "%d" % code,
@@ -908,7 +944,8 @@ SEVERITY_TITLES = [
 ]
 # 类别的固定渲染顺序（同 severity 内），与输入顺序无关，保证同输入同输出。
 CATEGORY_ORDER = (
-    "drift-removed", "approval-metadata", "approval-expired", "approval-exceeded",
+    "drift-removed", "approval-forbidden", "approval-metadata", "approval-expired",
+    "approval-exceeded", "approval-drift",
     "security", "request-body", "multipart", "binary-form", "error-semantics", "no-5xx",
     "op-meta", "is-api-response", "query-param", "pascal-query", "enum-typed",
     "required-nullable", "path-required", "response-header", "biz-errors", "stale-approval",
@@ -933,7 +970,9 @@ SUGGESTIONS = {
     "required-nullable": "required 与 nullable 只保留一个",
     "schema-desc": "给类型加 <summary>",
     "prop-desc": "给属性加 <summary>",
-    "drift-removed": "恢复端点，或在变更说明里宣告下线与替代端点",
+    "drift-removed": "恢复端点，或在变更说明里宣告下线与替代端点（该类别不可批准）",
+    "approval-forbidden": "删掉这条批准：端点删除是硬性破坏，只能恢复或显式改基线",
+    "approval-drift": "实例集合变了：复核后用 --print-approvals 重新生成 count/fingerprint",
     "drift-added": "在变更说明里宣告新端点",
     "drift-schema": "在变更说明里宣告字段增删",
     "stale-approval": "删除对应的 approvedGaps 条目",
@@ -994,15 +1033,36 @@ def source_side_categories(args):
 
 
 APPROVAL_FIELDS = ("reason", "owner", "count", "expires")
+# 这些类别**永远不能被批准**：它们描述的是「已经发布给客户端的契约被破坏」，
+# 批准一条就等于允许存量客户端 404（review P0-1b）。
+NON_APPROVABLE_CATEGORIES = {"drift-removed"}
+
+
+def instance_keys(items, category):
+    """一个类别的实例集合（稳定、与输入顺序无关）。label 已包含 path/method/参数名。"""
+    return sorted(f["label"] for f in items if f["category"] == category)
+
+
+def category_fingerprint(keys):
+    """实例集合的摘要（16 位十六进制）。
+
+    只比 count 有一个真实漏洞：删掉一条、再加一条，数量不变 —— 批准会继续放行一个
+    **形状已经变了**的缺口集合。摘要对「集合」而不是「数量」签名（review P1-4）。
+    """
+    payload = "\n".join(sorted(keys)).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()[:16]
 
 
 def evaluate_approvals(approved_raw, items, today, skip_categories=None):
     """判定每条「已批准缺口」是否仍然成立，返回 (active_categories, problems)。
 
-    批准必须是**数量有界、有人负责、会过期**的（review P1-3 / P2-4）：
-      { "reason": ..., "owner": ..., "count": 321, "expires": "2026-12-31" }
-    这样新增一个同类实例（count 变大）就会失败，而不是因为「这个类别早已批准」被静默放行。
-    旧的纯字符串批准视为元数据不全，直接不生效（避免历史写法继续开后门）。
+    批准必须是**实例集合有界、有人负责、会过期**的（review P1-3 / P1-4）：
+      { "reason": ..., "owner": ..., "count": 321,
+        "fingerprint": "sha256:…", "expires": "2026-12-31" }
+    其中 `fingerprint` 由 `--print-approvals` 生成；也接受显式的实例清单
+    `"fingerprints": ["类别 标签", …]`（小类别可读性更好）。两者至少要有一个。
+    任何不一致（数量变化、集合变化、过期、元数据缺失）都让这条批准**失效**，
+    而不是「这个类别早已批准」继续静默放行。旧的纯字符串批准同样直接不生效。
     """
     skip_categories = skip_categories or set()
     counts = {}
@@ -1014,16 +1074,23 @@ def evaluate_approvals(approved_raw, items, today, skip_categories=None):
         actual = counts.get(category, 0)
         if category in skip_categories and not actual:
             continue
+        if category in NON_APPROVABLE_CATEGORIES:
+            problems.append((category, "approval-forbidden", "P0",
+                             "该类别不允许批准：端点被删除会直接打断存量客户端。"
+                             "只能恢复端点，或显式改基线并用 --acknowledge-removed 记录下线"))
+            continue
         if not isinstance(spec, dict):
             problems.append((category, "approval-metadata", "P1",
                              "批准是旧的字符串写法，无法约束新增实例：请改为 {%s} 对象"
                              % ", ".join(APPROVAL_FIELDS)))
             continue
         missing = [k for k in APPROVAL_FIELDS if spec.get(k) in (None, "")]
-        if missing:
-            problems.append((category, "approval-metadata", "P1",
-                             "批准缺少字段 %s：没有 owner/count/expires 的批准无法防止新实例被静默放行"
-                             % ", ".join(missing)))
+        has_instance_list = isinstance(spec.get("fingerprints"), list) and spec["fingerprints"]
+        if missing or not (has_instance_list or spec.get("fingerprint")):
+            detail = ("批准缺少字段 %s：没有 owner/count/expires 的批准无法防止新实例被静默放行"
+                      % ", ".join(missing)) if missing else \
+                     "批准缺少实例指纹：请加 fingerprint（--print-approvals 生成）或 fingerprints 清单"
+            problems.append((category, "approval-metadata", "P1", detail))
             continue
         expires = str(spec.get("expires"))
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", expires):
@@ -1047,10 +1114,30 @@ def evaluate_approvals(approved_raw, items, today, skip_categories=None):
                              % (count, actual, actual - count)))
             continue
         if actual < count:
-            problems.append((category, "stale-approval", "P2",
-                             "批准上限 %d 条，但当前只有 %d 条：缺口在减少，请下调 count（或删除该条批准）"
-                             % (count, actual)))
+            problems.append((category, "stale-approval", "P1",
+                             "批准上限 %d 条，但当前只有 %d 条：缺口在减少，请下调 count / 重新生成指纹"
+                             "（或删除该条批准）" % (count, actual)))
             continue
+
+        keys = instance_keys(items, category)
+        if has_instance_list:
+            approved_keys = sorted(str(k) for k in spec["fingerprints"])
+            extra = sorted(set(keys) - set(approved_keys))
+            gone = sorted(set(approved_keys) - set(keys))
+            if extra or gone:
+                problems.append((category, "approval-drift", "P1",
+                                 "批准登记的实例集合与当前不一致：新增 %s；消失 %s"
+                                 "（删一条加一条时 count 不变，只有实例集合能发现）"
+                                 % (", ".join(extra) or "无", ", ".join(gone) or "无")))
+                continue
+        else:
+            expected = str(spec.get("fingerprint"))
+            actual_fp = category_fingerprint(keys)
+            if expected != actual_fp:
+                problems.append((category, "approval-drift", "P1",
+                                 "实例指纹不匹配（批准 %s，当前 %s）：集合变了，请复核后重新生成"
+                                 % (expected, actual_fp)))
+                continue
         active.add(category)
     return active, problems
 
@@ -1066,6 +1153,10 @@ def main(argv):
     ap.add_argument("--json", action="store_true", help="输出 JSON 而不是人读报告")
     ap.add_argument("--record-operations", action="store_true",
                     help="把当前契约的操作集写进基线的 operations（人工确认后用于发布新的契约基线）")
+    ap.add_argument("--acknowledge-removed", action="store_true",
+                    help="配合 --record-operations：确认基线里被删掉的端点是有意下线（会在 PR 里声明）")
+    ap.add_argument("--print-approvals", action="store_true",
+                    help="输出各类别当前的 count/fingerprint（用于刷新 docs/contract-baseline.json）")
     ap.add_argument("--fail-on", action="store_true", help="门禁模式：存在发现则退出 1")
     ap.add_argument("--max-per-category", type=int, default=0,
                     help="每个类别人读报告最多列几条（0=全部；JSON 输出不受影响）")
@@ -1083,15 +1174,27 @@ def main(argv):
         die_input("审计基线不存在：%s" % args.config)
     if args.record_operations:
         ops = sorted("%s %s" % (m, p) for m, p, _ in iter_operations(doc))
+        if not ops:
+            die_input("当前契约没有任何 operation，拒绝用它覆盖基线的 operations")
         record_path = args.config or DEFAULT_BASELINE
         if not record_path:
             die_input("--record-operations 需要 --config（或仓内 docs/contract-baseline.json）")
         raw = load_json(record_path, "审计基线") if os.path.isfile(record_path) else {}
+        previous = [str(o) for o in (raw.get("operations") or [])]
+        # 重新记录等于「用当前契约覆盖已发布操作集」。如果中间删过端点，这一步会把唯一的
+        # 删除证据（基线里的旧条目）抹掉，删除检测从此永远通过 —— 必须显式确认（review P0-1c）。
+        removed = sorted(set(previous) - set(ops))
+        if removed and not args.acknowledge_removed:
+            die_input("基线里有 %d 个 operation 在当前契约中已不存在：%s\n"
+                      "  若确为有意下线（并在 PR 里声明了替代端点），重新运行并加 --acknowledge-removed；"
+                      "  否则请先恢复端点。" % (len(removed), ", ".join(removed)))
         raw["operations"] = ops
         with open(record_path, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(raw, fh, ensure_ascii=False, indent=2)
             fh.write("\n")
         print("已记录 %d 个 operation 到 %s" % (len(ops), record_path))
+        if removed:
+            print("已确认下线（%d 个）：%s" % (len(removed), ", ".join(removed)))
         return EXIT_OK
     # 基线只在**显式**给出（或给了 --source-root 时用仓库默认基线）时生效：
     #   * 门禁脚本与 CI 始终显式传 --config，所以已发布操作集一定会参与删除检测（review I-2）；
@@ -1101,6 +1204,12 @@ def main(argv):
         config_path = DEFAULT_BASELINE
     cfg = load_baseline_config(config_path) if config_path else {"publicPaths": [], "excludePaths": [],
                                                                  "approvedGaps": {}, "operations": []}
+    # 门禁模式下 operations 为空 = 「端点删除检测」完全空转，而报告仍然显示「没有缺口」。
+    # 空集合与「真的一个端点都没发布过」无法区分，所以一律 fail-closed（review P0-1a）。
+    if args.fail_on and not cfg["operations"]:
+        die_input("门禁模式下审计基线没有 operations（%s）：端点删除检测会完全空转。"
+                  "请先用 --record-operations 记录当前操作集。"
+                  % (config_path or "<未指定 --config>"))
     excluded = set(cfg["excludePaths"])
     findings = Findings()
 
@@ -1121,6 +1230,16 @@ def main(argv):
         # 基线里被删除的端点无论是否命中排除规则都必须阻断（review P2-1）。
         findings.items = [f for f in findings.items
                           if f["path"] not in excluded or f["severity"] == "P0"]
+    if args.print_approvals:
+        # 与 evaluate_approvals 用的是同一份 findings（含 excludePaths 过滤后的结果），
+        # 所以打印出来的 count/fingerprint 直接可以贴回 approvedGaps。
+        # 注意：不带 --source-root 时 multipart / response-header 不产生发现，其 count 会是 0。
+        snapshot = {}
+        for cat in sorted({f["category"] for f in findings.items}):
+            keys = instance_keys(findings.items, cat)
+            snapshot[cat] = {"count": len(keys), "fingerprint": category_fingerprint(keys)}
+        print(json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True))
+        return EXIT_OK
     approved, approval_problems = evaluate_approvals(
         cfg["approvedGaps"], findings.items, args.today, skip_categories=source_side_categories(args))
     for category, problem_category, severity, detail in approval_problems:

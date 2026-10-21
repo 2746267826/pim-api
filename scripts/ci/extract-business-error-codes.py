@@ -52,20 +52,38 @@ ADVICE_BY_STATUS = {
 }
 
 # `const int Foo = 码;` + `throw new DomainException(Foo, "...")`：码走常量时也要能采集。
-CONST_CODE_RE = re.compile(r"const\s+int\s+(\w+)\s*=\s*(\d{4,5})\s*;")
+# 位数 3–5：本仓同时有 3 位（400 / 503）、4 位（2057，源码常写 `02057`）与 5 位（40902 / 40010）码。
+CONST_CODE_RE = re.compile(r"const\s+int\s+(\w+)\s*=\s*(\d{3,5})\s*;")
 # 类名（用于把 `PublicRegistrationPolicy.ClosedErrorCode` 解析成码）。
 CLASS_RE = re.compile(r"\b(?:class|record|struct)\s+(\w+)")
 # 所有把码交给客户端的调用点。消息形态不参与匹配 —— 消息可能是字面量、插值、变量，
 # 甚至第一个参数就是常量（review P1：只匹配 `(<数字>, "<字面量>")` 会漏掉 20 个码）。
+#
+# 第四种形态是「把码装进错误对象再返回」：`return Results.BadRequest(new CredentialValidationError(40007, "…"))`。
+# 这类码既不经过 `ApiResponse.Error`，也不是抛出的 `DomainException`，此前只能靠「常量名带 Code」的
+# 启发式兜到一部分（review P1-1）。
+#
+# 只收 `…Error`，**不收** `…Exception`：本仓的 `new XxxException(...)` 第一实参是消息、HTTP 状态
+# （`GoogleDriveException(200, …)`）或上游错误码（`ProviderTransientException(429, …)`），
+# 都不是业务码；唯一携带业务码的异常是 `DomainException`，已单独列出。
 CALL_RE = re.compile(
-    r"(?P<call>DomainException|ApiResponse(?:<[^>]*>)?\.Error|WriteDomainLikeErrorAsync)\s*\("
+    r"(?P<call>DomainException|ApiResponse(?:<[^>]*>)?\.Error|WriteDomainLikeErrorAsync"
+    r"|new\s+\w*Error)\s*\("
 )
+# 匿名声明的错误体：`Results.Json(new { code = 40001, message = "…" }, statusCode: 400)`。
+ANON_CODE_RE = re.compile(r"new\s*\{[^{}]*?\bcode\s*=\s*([^,}]+)")
+# 直接拼 JSON 的错误体：`"{\"code\":40501,…}"` / `@"{ ""code"": 40501 }"`。
+# 引号在源码里可能是 `\"`、`""` 或裸 `"`，所以两侧都允许 0–2 个引号/转义。
+JSON_CODE_RE = re.compile(r'\\?"{1,2}code\\?"{1,2}\s*:\s*(\d{3,5})')
 STRING_CONST_RE = re.compile(r'const\s+string\s+(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"\s*;')
 # 调用点的 HTTP 状态：显式 `Results.NotFound(...)` / `Results.Conflict(...)`、
 # `Results.Json(..., statusCode: 503)`、以及 `Response.StatusCode = 500`。
 RESULTS_STATUS = (
+    # 顺序即优先级：同一语句里出现多个时取最先匹配的那个（`BadRequest` 必须在内，
+    # 它是本仓最常见的 4xx 包装，漏掉会让所有参数类错误码被记成 400 以外的状态，review P1-3）。
     (re.compile(r"Results\s*\.\s*Conflict\s*\("), 409),
     (re.compile(r"Results\s*\.\s*NotFound\s*\("), 404),
+    (re.compile(r"Results\s*\.\s*BadRequest\s*\("), 400),
     (re.compile(r"Results\s*\.\s*Unauthorized\s*\("), 401),
     (re.compile(r"Results\s*\.\s*Forbid\s*\("), 403),
 )
@@ -103,7 +121,7 @@ def parse_status_map(text):
         if "=>" not in line:
             continue
         left, right = line.split("=>", 1)
-        codes = [int(c) for c in re.findall(r"(?<!\d)(\d{4,5})(?!\d)", left)]
+        codes = [int(c) for c in re.findall(r"(?<!\d)(\d{3,5})(?!\d)", left)]
         nums = re.findall(r"Status(?:_?)(\d{3})", right)
         named = [v for k, v in STATUS_NAMES.items() if k in right]
         status = int(nums[0]) if nums else (named[0] if named else None)
@@ -313,7 +331,7 @@ def literal_message(expr):
 
 def resolve_code(first_arg, qualified, bare):
     token = first_arg.strip().strip("()").strip()
-    if re.fullmatch(r"\d{4,5}", token):
+    if re.fullmatch(r"\d{3,5}", token):
         return int(token)
     if re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", token):
         if token in qualified:
@@ -392,9 +410,25 @@ def helper_status(text, call_end):
     return int(m.group(1)) if m else None
 
 
+def statement_tail(text, call_start, window=400):
+    """调用点所在的**单个语句/分支**：从最近的 `;`、`=>`、`{`、`}` 之后开始。
+
+    只看 `;` 会把整个 switch 表达式当成一条语句：`x => Results.NotFound(…)` 与
+    `y => Results.Conflict(…)` 在同一个 `return` 里，先匹配到的 `Conflict` 会把 NotFound 分支
+    也记成 409（review P1-3）。按最近的 `=>`/花括号切，每个分支各自推断。
+    """
+    before = text[max(0, call_start - window):call_start]
+    cut = 0
+    for sep in (";", "=>", "{", "}"):
+        idx = before.rfind(sep)
+        if idx != -1:
+            cut = max(cut, idx + len(sep))
+    return before[cut:]
+
+
 def status_for_call(text, call_start, mapping, code):
     """调用点上下文决定 HTTP 状态：显式 `Response.StatusCode = 500` 优先，
-    其次是 `Results.Conflict/NotFound/Unauthorized/Forbid` 与 `Results.Json(..., statusCode:)`，
+    其次是 `Results.Conflict/NotFound/BadRequest/Unauthorized/Forbid` 与 `Results.Json(..., statusCode:)`，
     都没有才回落到 `ResolveDomainStatusCode` 的映射（默认 400）。"""
     before = text[max(0, call_start - 400):call_start]
     explicit = None
@@ -403,7 +437,7 @@ def status_for_call(text, call_start, mapping, code):
     if explicit is not None:
         return explicit
 
-    statement = before.rsplit(";", 1)[-1]
+    statement = statement_tail(text, call_start)
     for pattern, status in RESULTS_STATUS:
         if pattern.search(statement):
             return status
@@ -461,7 +495,7 @@ def collect(source_root):
             # 常量形式的码用它声明处的写法。
             literal_token = code_arg.strip()
             entry["written"].add(
-                literal_token if re.fullmatch(r"\d{4,5}", literal_token) else written.get(code, "%d" % code))
+                literal_token if re.fullmatch(r"\d{3,5}", literal_token) else written.get(code, "%d" % code))
             entry["files"].add(rel)
             if match.group("call") == "WriteDomainLikeErrorAsync":
                 helper = helper_status(text, match.end())
@@ -475,12 +509,35 @@ def collect(source_root):
             if message and message not in entry["messages"]:
                 entry["messages"].append(message)
 
+        # 匿名错误体 `new { code = 40001, … }` 与直接拼的 JSON `"{\"code\":40501,…}"`：
+        # 码不经过任何构造函数，CALL_RE 看不见（review P1-1）。`code = 0` 是成功语义，跳过。
+        for match in ANON_CODE_RE.finditer(text):
+            code = resolve_code(match.group(1), qualified, bare)
+            if code is None or code == 0:
+                continue
+            entry = entries.setdefault(
+                code, {"messages": [], "files": set(), "written": set(), "statuses": set()})
+            entry["files"].add(rel)
+            entry["written"].add("%d" % code)
+            entry["statuses"].add(status_for_call(text, match.start(), mapping, code))
+        for match in JSON_CODE_RE.finditer(text):
+            code = int(match.group(1))
+            if code == 0:
+                continue
+            entry = entries.setdefault(
+                code, {"messages": [], "files": set(), "written": set(), "statuses": set()})
+            entry["files"].add(rel)
+            entry["written"].add(match.group(1))
+            entry["statuses"].add(status_for_call(text, match.start(), mapping, code))
+
         # 只经由常量/DTO 返回、没有被直接传给 Error(...) 的码（例如
         # `const int PasswordTooLongCode = 40007` → `new CredentialValidationError(...)`，
         # 端点再用 `error.Code` 返回）。常量名带 `Code` 才收录，避免把普通数字常量当成业务码。
         for const_match in CONST_CODE_RE.finditer(text):
             name = const_match.group(1)
-            if "Code" not in name:
+            # `HttpStatusCode = 404` 这类是 HTTP 状态常量，不是业务码：只按名字收 `…Code`，
+            # 并排除名字里带 `Status` 的（3 位数的误收会往码表里塞进一堆状态码）。
+            if "Code" not in name or "Status" in name:
                 continue
             code = int(const_match.group(2))
             entry = entries.setdefault(
@@ -500,11 +557,23 @@ def collect(source_root):
     return mapping, entries, (qualified, bare)
 
 
-def find_unattributed(source_root, entries, const_maps):
-    """独立的安全网（review P1）：用同样的「第一个实参里的第一个数字」粗扫，
-    找出抽取器没有归因到 entries 的码。`--check` 会因此失败，避免抽取器规则
-    再次悄悄漏采（文档与生成器互相印证是循环论证）。"""
-    qualified, bare = const_maps
+# 独立安全网用的**另一套**正则：安全网如果和被测代码共用同一套模式，
+# 它的盲区就是被测代码的盲区（循环论证，review P1-1）。这里只认「错误调用 / 错误对象 /
+# code 字段」之后、到下一个逗号/右括号之前的第一个 3–5 位数字。
+INDEPENDENT_HINT_RE = re.compile(
+    r"(?:DomainException|\.Error\s*\(|WriteDomainLikeErrorAsync"
+    r"|new\s+\w*Error"
+    # `code =` / `code:` 才算码字段；`code == 408`、`code >= 500` 是比较，不是赋值。
+    r"|\bcode\b[\\\"']{0,3}\s*(?::|(?<![=!<>])=(?!=)))\s*\(?")
+INDEPENDENT_NUM_RE = re.compile(r"(?<![\w.])(\d{3,5})(?![\w.])")
+
+
+def find_unattributed(source_root, entries):
+    """独立的安全网：找出抽取器没有归因到 entries 的码。
+
+    `--check` 会因此失败，避免抽取器规则再次悄悄漏采（文档与生成器互相印证是循环论证）。
+    失败是**安全**方向：宁可让人看一眼「这个数字是不是业务码」，也不要静默漏掉一个码。
+    """
     missing = {}
     for path in iter_cs(source_root):
         try:
@@ -512,15 +581,19 @@ def find_unattributed(source_root, entries, const_maps):
         except OSError:
             continue
         rel = os.path.relpath(path, REPO_ROOT).replace("\\", "/")
-        for match in CALL_RE.finditer(text):
-            index = code_argument_index(match.group("call"))
-            arg = nth_argument(text, match.end(), index)
-            code = resolve_code(arg, qualified, bare)
-            if code is None:
-                m = re.search(r"(?<![\w.])(\d{4,5})(?![\w.])", arg)
-                code = int(m.group(1)) if m else None
-            if code is not None and code not in entries:
-                missing.setdefault(code, set()).add(rel)
+        for hint in INDEPENDENT_HINT_RE.finditer(text):
+            tail = text[hint.end(): hint.end() + 80].lstrip()
+            # 第一个实参是消息字面量（`new ArgumentException("…240…")`）时里面的数字不是码。
+            if tail[:1] in ('"', "@", "$"):
+                continue
+            arg = re.split(r"[,)\n]", tail, maxsplit=1)[0]
+            m = INDEPENDENT_NUM_RE.search(arg)
+            if not m:
+                continue
+            code = int(m.group(1))
+            if code == 0 or code in entries:
+                continue
+            missing.setdefault(code, set()).add(rel)
     return missing
 
 
@@ -597,7 +670,7 @@ def main(argv):
     if not entries:
         print("没有从源码采集到任何业务错误码：%s" % args.source_root, file=sys.stderr)
         return 4
-    unattributed = find_unattributed(args.source_root, entries, const_maps)
+    unattributed = find_unattributed(args.source_root, entries)
     if unattributed:
         detail = ", ".join("%d（%s）" % (code, ", ".join(sorted(files)[:2]))
                            for code, files in sorted(unattributed.items()))

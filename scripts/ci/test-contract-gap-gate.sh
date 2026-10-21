@@ -73,15 +73,19 @@ grep -q "POST /api/v1/calendar/events — 写操作没有声明 requestBody" "$T
 
 # ③ 同一条缺口登记为已批准 → 放行。批准必须写清 owner/count/expires（review P1-3）：
 #    数量按当前实际缺口数登记，新增实例会让 count 对不上。
-"$PY" "$AUDIT" --contract "$TMP/bad.json" --config "$TMP/cfg.json" --json >"$TMP/bad-audit.json" 2>/dev/null
-"$PY" - "$CONFIG" "$TMP/cfg2.json" "$TMP/bad-audit.json" <<'PY'
+# 用 --print-approvals 生成 count/fingerprint（而不是自己另算一遍）：既能保证批准与
+# 审计器判定的实例集合一致，也顺带验证这个刷新入口真的可用（review P1-4）。
+"$PY" "$AUDIT" --contract "$TMP/bad.json" --config "$TMP/cfg.json" --print-approvals \
+  >"$TMP/approvals.json" 2>/dev/null
+"$PY" - "$CONFIG" "$TMP/cfg2.json" "$TMP/approvals.json" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1], encoding="utf-8"))
-report = json.load(open(sys.argv[3], encoding="utf-8"))
-# 上限按「审计器实际产出的条数」登记，而不是自己另算一遍（否则会漏掉 is_api 等过滤条件）。
-n = sum(1 for f in report["findings"] if f["category"] == "request-body")
+snap = json.load(open(sys.argv[3], encoding="utf-8"))
+approval = snap["request-body"]
 cfg["approvedGaps"]["request-body"] = {"reason": "测试用：本用例在临时基线里登记该类别",
-                                       "owner": "test", "count": n, "expires": "2999-12-31"}
+                                       "owner": "test", "count": approval["count"],
+                                       "fingerprint": approval["fingerprint"],
+                                       "expires": "2999-12-31"}
 json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False)
 PY
 "$PY" "$AUDIT" --contract "$TMP/bad.json" --config "$TMP/cfg2.json" --fail-on >/dev/null 2>&1

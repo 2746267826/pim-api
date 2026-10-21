@@ -16,7 +16,12 @@
 #   ⑪ 第二份契约与基线做 operation 差异（缺失 / 多出）→ 逐条；
 #   ⑫ 输出是确定性的（同输入两次运行逐字节相同），且 --json 可以被 json 解析；
 #   ⑬ 门禁模式：--fail-on 命中时退出 1，未命中退出 0（不是「永远 PASS」的摆设）；
-#   ⑭ 读取失败（文件不存在 / 非法 JSON）→ 退出 4，绝不当作「没有缺口」。
+#   ⑭ 读取失败（文件不存在 / 非法 JSON）→ 退出 4，绝不当作「没有缺口」；
+#   ⑰ 门禁模式下基线没有 operations → 退出 4（删除检测不能空转）；
+#   ⑱ drift-removed 永不批准（approval-forbidden，P0）；
+#   ⑲ --record-operations 不得静默抹掉删除记录，需 --acknowledge-removed；
+#   ⑳/㉑ 批准按实例指纹/清单校验，count 相同但集合变了 → approval-drift；
+#   ㉒ excludePaths 不吞 P0；㉓ --print-approvals 可回贴；㉔ 缺指纹 → approval-metadata。
 #
 # 用法：bash scripts/ci/test-contract-gap-audit.sh
 #   PIM_GAP_TEST_KEEP=1  保留临时工作目录（默认删除）
@@ -326,8 +331,14 @@ assert isinstance(d.get("counts"),dict) and d["counts"], "counts 为空"
 ' "$TMP/a.json" 2>/dev/null; then pass "⑫ --json 可解析且字段完整"; else
   fail "⑫ --json 不可解析或字段不全"; head -20 "$TMP/a.json"; fi
 
-# ⑬ 门禁模式
-run --contract "$TMP/clean.json" --fail-on --strict >/dev/null 2>&1; RC=$?
+# ⑬ 门禁模式（基线必须带 operations：门禁下空集合会 fail-closed，见 ⑰）
+"$PY" - "$TMP/cfg_gate.json" <<'PY'
+import json, sys
+cfg = {"publicPaths": [], "excludePaths": [],
+       "operations": ["GET /api/v1/things", "POST /api/v1/things"], "approvedGaps": {}}
+json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+run --contract "$TMP/clean.json" --config "$TMP/cfg_gate.json" --fail-on --strict >/dev/null 2>&1; RC=$?
 expect_exit "⑬ 门禁模式：干净契约退出 0" 0 $RC
 run --contract "$TMP/gappy.json" --source-root "$TMP/src" --fail-on >/dev/null 2>&1; RC=$?
 expect_exit "⑬ 门禁模式：有缺口退出 1" 1 $RC
@@ -345,9 +356,13 @@ expect_exit "⑭ 基线不存在退出 4" 4 $RC
 #     而不是因为「这个类别早已批准」继续静默放行。
 "$PY" - "$TMP/cfg_stale.json" <<'PY'
 import json, sys
-cfg = {"publicPaths": [], "excludePaths": [], "operations": [],
+cfg = {"publicPaths": [], "excludePaths": [],
+       "operations": ["GET /api/v1/things", "POST /api/v1/things"],
        "approvedGaps": {"no-such-category":
-                        {"reason": "stale", "owner": "test", "count": 3, "expires": "2999-12-31"}}}
+                        {"reason": "stale", "owner": "test", "count": 3,
+                         # 当前 0 条实例的指纹；必须给对，否则先报 approval-metadata
+                         "fingerprint": "sha256:e3b0c44298fc1c14",
+                         "expires": "2999-12-31"}}}
 json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"))
 PY
 OUT="$(run --contract "$TMP/clean.json" --config "$TMP/cfg_stale.json" 2>&1)"
@@ -357,7 +372,8 @@ expect_contains "⑭b 批准上限高于实际 → stale-approval" "no-such-cate
 #     否则新增实例会被历史批准静默放行。
 "$PY" - "$TMP/cfg_legacy.json" <<'PY'
 import json, sys
-cfg = {"publicPaths": [], "excludePaths": [], "operations": [],
+cfg = {"publicPaths": [], "excludePaths": [],
+       "operations": ["GET /api/v1/things", "POST /api/v1/things"],
        "approvedGaps": {"no-such-category": "历史遗留的整类批准"}}
 json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"))
 PY
@@ -413,6 +429,115 @@ if [ -d "$ROOT/src" ]; then
   OUT="$(run --contract "$CONTRACT" --source-root "$ROOT/src" 2>&1)"
   expect_contains "⑯ 真实仓：源码侧检出 multipart 缺口" "POST /api/v1/files/items/upload — 用 [FromForm]/IFormFile/ReadFormAsync 读表单" "$OUT"
 fi
+
+# ⑰ 门禁模式下基线没有 operations → 端点删除检测完全空转，必须 fail-closed（review P0-1a）
+"$PY" - "$TMP/cfg_no_ops.json" <<'PY'
+import json, sys
+cfg = {"publicPaths": [], "excludePaths": [], "operations": [], "approvedGaps": {}}
+json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+OUT="$(run --contract "$TMP/clean.json" --config "$TMP/cfg_no_ops.json" --fail-on 2>&1)"; RC=$?
+expect_exit "⑰ 门禁模式缺少 operations → 退出 4" 4 $RC
+expect_contains "⑰ 指出删除检测会空转" "端点删除检测会完全空转" "$OUT"
+
+# ⑱ drift-removed 永不批准：批准一条等于允许存量客户端 404（review P0-1b）
+"$PY" - "$TMP/cfg_removed.json" <<'PY'
+import json, sys
+cfg = {"publicPaths": [], "excludePaths": [],
+       "operations": ["GET /api/v1/things", "POST /api/v1/things", "DELETE /api/v1/gone"],
+       "approvedGaps": {"drift-removed":
+                        {"reason": "r", "owner": "o", "count": 1,
+                         "fingerprint": "sha256:0000000000000000", "expires": "2999-12-31"}}}
+json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+OUT="$(run --contract "$TMP/clean.json" --config "$TMP/cfg_removed.json" 2>&1)"
+expect_contains "⑱ 报 approval-forbidden" "### [approval-forbidden]" "$OUT"
+expect_contains "⑱ 说明端点删除是硬性破坏" "端点被删除会直接打断存量客户端" "$OUT"
+run --contract "$TMP/clean.json" --config "$TMP/cfg_removed.json" --fail-on >/dev/null 2>&1; RC=$?
+expect_exit "⑱ 门禁因 P0 approval-forbidden 失败" 1 $RC
+
+# ⑲ --record-operations 不能静默抹掉删除记录（review P0-1c）
+cp "$TMP/cfg_removed.json" "$TMP/cfg_record.json"
+run --contract "$TMP/clean.json" --config "$TMP/cfg_record.json" --record-operations >"$TMP/record.txt" 2>&1; RC=$?
+expect_exit "⑲ 未确认下线时拒绝记录（退出 4）" 4 $RC
+expect_contains "⑲ 指出基线里已不存在的 operation" "DELETE /api/v1/gone" "$(cat "$TMP/record.txt")"
+run --contract "$TMP/clean.json" --config "$TMP/cfg_record.json" --record-operations --acknowledge-removed \
+  >"$TMP/record2.txt" 2>&1; RC=$?
+expect_exit "⑲ --acknowledge-removed 后才允许记录" 0 $RC
+expect_contains "⑲ 明确报告已确认下线" "已确认下线（1 个）" "$(cat "$TMP/record2.txt")"
+if "$PY" -c '
+import json, sys
+cfg = json.load(open(sys.argv[1], encoding="utf-8"))
+assert cfg["operations"] == ["GET /api/v1/things", "POST /api/v1/things"], cfg["operations"]
+' "$TMP/cfg_record.json" 2>/dev/null; then pass "⑲ 记录的是当前契约的操作集"; else
+  fail "⑲ 记录的操作集不对"; fi
+
+# ⑳ 只比 count 挡不住「删一条、加一条」：实例指纹不匹配必须报 approval-drift（review P1-4）
+run --contract "$TMP/gappy.json" --print-approvals >"$TMP/approvals.json" 2>&1
+"$PY" - "$TMP/approvals.json" "$TMP/cfg_fp.json" <<'PY'
+import json, sys
+snap = json.load(open(sys.argv[1], encoding="utf-8"))
+cat = sorted(snap)[0]
+cfg = {"publicPaths": [], "excludePaths": [], "operations": [],
+       "approvedGaps": {cat: {"reason": "r", "owner": "o", "count": snap[cat]["count"],
+                              "fingerprint": "sha256:0123456789abcdef", "expires": "2999-12-31"}}}
+json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"))
+PY
+OUT="$(run --contract "$TMP/gappy.json" --config "$TMP/cfg_fp.json" 2>&1)"
+expect_contains "⑳ 数量相同但实例集合变了 → approval-drift" "[approval-drift]" "$OUT"
+expect_contains "⑳ 指出实例指纹不匹配" "实例指纹不匹配" "$OUT"
+
+# ㉑ 也接受显式实例清单：新增/消失都要报，便于小类别人工复核
+"$PY" - "$TMP/approvals.json" "$TMP/cfg_list.json" <<'PY'
+import json, sys
+snap = json.load(open(sys.argv[1], encoding="utf-8"))
+cat = sorted(snap)[0]
+cfg = {"publicPaths": [], "excludePaths": [], "operations": [],
+       "approvedGaps": {cat: {"reason": "r", "owner": "o", "count": snap[cat]["count"],
+                              "fingerprints": ["vanished-label"], "expires": "2999-12-31"}}}
+json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"))
+PY
+OUT="$(run --contract "$TMP/gappy.json" --config "$TMP/cfg_list.json" 2>&1)"
+expect_contains "㉑ 显式清单：消失的实例被报出" "消失 vanished-label" "$OUT"
+
+# ㉒ excludePaths 只用于刻意不审的路径，不能吞掉 P0 的端点删除（review P2-1）
+"$PY" - "$TMP/cfg_excl.json" <<'PY'
+import json, sys
+cfg = {"publicPaths": [], "excludePaths": ["/api/v1/gone"],
+       "operations": ["GET /api/v1/things", "POST /api/v1/things", "DELETE /api/v1/gone"],
+       "approvedGaps": {}}
+json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+OUT="$(run --contract "$TMP/clean.json" --config "$TMP/cfg_excl.json" 2>&1)"
+expect_contains "㉒ 被排除路径上的端点删除仍报 drift-removed" "[drift-removed]" "$OUT"
+expect_contains "㉒ 仍列出被删端点" "DELETE /api/v1/gone" "$OUT"
+
+# ㉓ --print-approvals 的输出可直接回贴为 approvedGaps（否则刷新基线只能靠手抄指纹）
+"$PY" - "$TMP/approvals.json" "$TMP/cfg_rt.json" <<'PY'
+import json, sys
+snap = json.load(open(sys.argv[1], encoding="utf-8"))
+approved = {cat: {"reason": "r", "owner": "o", "count": v["count"],
+                  "fingerprint": v["fingerprint"], "expires": "2999-12-31"}
+            for cat, v in snap.items()}
+cfg = {"publicPaths": [], "excludePaths": [], "operations": [], "approvedGaps": approved}
+json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"))
+PY
+OUT="$(run --contract "$TMP/gappy.json" --config "$TMP/cfg_rt.json" 2>&1)"; RC=$?
+expect_exit "㉓ 回贴后非门禁模式退出 0" 0 $RC
+expect_not_contains "㉓ 回贴后没有任何批准类问题" "approval-" "$OUT"
+
+# ㉔ 缺 fingerprint（只有 count）也必须失败：数量对不上或集合变了都无从发现（review P1-3）
+"$PY" - "$TMP/approvals.json" "$TMP/cfg_nofp.json" <<'PY'
+import json, sys
+snap = json.load(open(sys.argv[1], encoding="utf-8"))
+cat = sorted(snap)[0]
+cfg = {"publicPaths": [], "excludePaths": [], "operations": [],
+       "approvedGaps": {cat: {"reason": "r", "owner": "o", "count": snap[cat]["count"],
+                              "expires": "2999-12-31"}}}
+json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"))
+PY
+OUT="$(run --contract "$TMP/gappy.json" --config "$TMP/cfg_nofp.json" 2>&1)"
+expect_contains "㉔ 缺指纹 → approval-metadata" "批准缺少实例指纹" "$OUT"
 
 echo ""
 if [ "$FAIL" -ne 0 ]; then
