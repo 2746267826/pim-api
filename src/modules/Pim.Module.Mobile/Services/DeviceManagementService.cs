@@ -941,7 +941,8 @@ public sealed record DeviceExportDto(string FileName, string Json);
 /// 2) <c>app_usage</c>：实体与代码已随 <c>Pim.Module.Stats</c> 一并删除（三个客户端仓的**源码**零调用；
 /// 发布产物只 publish <c>Pim.Api.csproj</c>，不含该 DLL，因此路由只在引用它的测试宿主里被实例化过）。
 /// 经核实：迁移链与模型快照**从未创建**该表，生产发布也从未加载该模块，所以本代码库管理的库
-/// 不会有这张表；代码不再读写它。若运维侧曾**手工**建过同名表，其清理与保留策略由运维确认
+/// 不会有这张表；代码不再读写它。若运维侧曾**手工**建过、或历史 <c>EnsureCreated</c> 宿主残留同名表
+/// （<c>PimMigrationAdoptionService</c> 会原样接管既有 schema、不删除额外表），其清理与保留策略由运维确认
 /// （刻意不加 Drop 迁移：迁移链里没有它的创建记录，自动删除可能误删非本代码库所有的数据）。
 /// </para>
 /// </summary>

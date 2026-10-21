@@ -54,16 +54,60 @@ public sealed class MigrationSnapshotSyncTests
     ];
 
     /// <summary>
-    /// Pim.Api 实际引用的模块，从 <c>Pim.Api.csproj</c> 的程序集引用动态推导，
+    /// 生产模块清单 = <c>Pim.Api</c> 的程序集引用 ∪ 输出目录里的 <c>Pim.Module.*.dll</c>，
     /// 避免手工镜像清单在新模块接入后失真（失真 = 新模块的漂移被静默过滤）。
+    ///
+    /// <para>
+    /// 只按 <c>Pim.Api</c> 的 AssemblyRef 推导是不够的：<c>Mobile</c> / <c>QuickNotes</c>
+    /// 在 <c>Pim.Api.csproj</c> 里有 ProjectReference，但 Pim.Api 源码没有直接引用它们的类型，
+    /// 编译产物里就没有对应的 AssemblyRef。实测只按引用推导只有 4 个模块，15 张 <c>mobile_*</c>
+    /// 表与 2 张 <c>quick_note*</c> 表会被 <see cref="InProductionScope"/> 静默排除。
+    /// 扫描输出目录与生产 <c>ModuleRegistry</c> 的口径一致。
+    /// </para>
     /// </summary>
-    private static readonly string[] ProductionModules = typeof(Pim.Api.ModuleRegistry).Assembly
-        .GetReferencedAssemblies()
-        .Select(a => a.Name!)
-        .Where(name => name.StartsWith("Pim.Module.", StringComparison.Ordinal))
-        .Select(name => name["Pim.Module.".Length..])
-        .OrderBy(name => name, StringComparer.Ordinal)
-        .ToArray();
+    private static readonly string[] ProductionModules = DiscoverProductionModules();
+
+    private static string[] DiscoverProductionModules()
+    {
+        var names = typeof(Pim.Api.ModuleRegistry).Assembly
+            .GetReferencedAssemblies()
+            .Select(a => a.Name!)
+            .Where(name => name.StartsWith("Pim.Module.", StringComparison.Ordinal))
+            .ToList();
+
+        names.AddRange(Directory
+            .GetFiles(AppContext.BaseDirectory, "Pim.Module.*.dll")
+            .Select(Path.GetFileNameWithoutExtension)
+            .OfType<string>()
+            .Where(name => name.StartsWith("Pim.Module.", StringComparison.Ordinal)));
+
+        return names
+            .Select(name => name["Pim.Module.".Length..])
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// 定点回归：快照护栏必须覆盖**随 API 一起发布的所有模块**，而不只是 Pim.Api 源码
+    /// 直接引用类型的那几个。Mobile / QuickNotes 没有直接 AssemblyRef，只按引用推导时
+    /// 它们的表会被静默排除（review 发现）。
+    /// </summary>
+    [Fact]
+    public void ProductionModules_CoversEveryModuleShippedWithTheApi()
+    {
+        var onDisk = Directory
+            .GetFiles(AppContext.BaseDirectory, "Pim.Module.*.dll")
+            .Select(Path.GetFileNameWithoutExtension)
+            .OfType<string>()
+            .Select(name => name["Pim.Module.".Length..])
+            .ToArray();
+
+        Assert.NotEmpty(onDisk);
+        Assert.All(onDisk, module => Assert.Contains(module, ProductionModules));
+        Assert.Contains("Mobile", ProductionModules);
+        Assert.Contains("QuickNotes", ProductionModules);
+    }
 
     [Fact]
     public void ModelSnapshot_IsInSyncWithCurrentModel()
@@ -118,10 +162,20 @@ public sealed class MigrationSnapshotSyncTests
     [Fact]
     public void InProductionScope_FiltersKnownCanaryAndKeepsProductionTables()
     {
-        var snapshotTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "calendar_tasks" };
-        var targetTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "calendar_tasks" };
+        // 两侧故意不完全相同：只出现在目标模型的表（新实体、快照未更新）与只出现在快照里的表
+        // （实体已删、快照未更新）都必须纳入 —— 这正是 issue #320 的 fail-loud 方向。
+        var snapshotTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "calendar_tasks", "snapshot_only_table",
+        };
+        var targetTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "calendar_tasks", "target_only_table",
+        };
 
         Assert.True(InProductionScope(new CreateTableOperation { Name = "calendar_tasks" }, snapshotTables, targetTables));
+        Assert.True(InProductionScope(new CreateTableOperation { Name = "target_only_table" }, snapshotTables, targetTables));
+        Assert.True(InProductionScope(new DropTableOperation { Name = "snapshot_only_table" }, snapshotTables, targetTables));
         Assert.False(InProductionScope(new CreateTableOperation { Name = "model_cache_canaries" }, snapshotTables, targetTables));
         Assert.False(InProductionScope(new DropTableOperation { Name = "model_cache_canaries" }, snapshotTables, targetTables));
         Assert.False(InProductionScope(
@@ -273,8 +327,8 @@ public sealed class MigrationSnapshotSyncTests
 
     private static PimDbContext CreateDbContext()
     {
-        // 与生产一致：只加载 Pim.Api.csproj 实际引用的模块（ProductionModules 从
-        // Pim.Api 程序集的引用动态推导，不手工维护）。测试项目与生产引用同一组模块；
+        // 与生产一致：加载随 API 发布的全部模块（ProductionModules = Pim.Api 的程序集引用
+        // ∪ 输出目录里的 Pim.Module.*.dll，不手工维护）。测试项目与生产引用同一组模块；
         // 模型里出现的**非生产实体**只可能来自测试程序集自造的实体（例如模型缓存金丝雀
         // model_cache_canaries），由 InProductionScope 按表名过滤。这样新模块接入 Pim.Api 后
         // 若忘同步快照，这里 fail-loud 而非静默绿。
