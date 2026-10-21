@@ -9,7 +9,13 @@
 #   ④ 同码不同消息合并、消息去重；
 #   ⑤ 生成物确定（两次运行逐字节相同）；
 #   ⑥ --check：与源码一致退出 0；源码新增码后退出 1（文档落后）；
-#   ⑦ 在没有源码时不产出半张表（退出 4，fail-closed）。
+#   ⑦ 在没有源码时不产出半张表（退出 4，fail-closed）；
+#   ⑨ `$"..."` 插值消息完整采集（内部嵌套字符串/逗号不截断）；
+#   ⑩ 变量消息如实标注「消息为变量或表达式」，不臆造；
+#   ⑪ `类名.常量` 形式的码与配对 `const string ...Message`；
+#   ⑫ helper 的状态实参、`Results.Conflict(...)`、`Results.Json(..., statusCode:)` 覆盖 HTTP 状态；
+#   ⑬ 反向完整性：源码里有码但抽取器没归因 → 拒绝生成（退出 4 / --check 退出 1）；
+#   ⑭ 没有既有文档时生成完整模板（约定段与仓内文档一致）。
 #
 # 用法：bash scripts/ci/test-extract-business-error-codes.sh
 # ---------------------------------------------------------------------------
@@ -88,6 +94,62 @@ echo '    void E() => throw new DomainException(4999, "新错误");' >>"$TMP/src
 RC=$?
 [ $RC -eq 4 ] && pass "⑦ 源码目录不存在退出 4" || fail "⑦ 源码目录不存在应退出 4（实际 $RC）"
 [ ! -f "$TMP/doc3.md" ] && pass "⑦ 失败时不产出半张表" || fail "⑦ 失败时不应写文档"
+
+# ⑨–⑫ review P1：真实的业务码写法不止 `(数字, "字面量")`。旧实现按字面量正则采集，
+# 会把插值消息截断、把常量码/变量消息整条漏掉，且状态一律写成 400。
+mkdir -p "$TMP/forms"
+cat >"$TMP/forms/Forms.cs" <<'CS'
+public static class ErrorCodes
+{
+    public const int MissingCode = 5002;
+    public const string MissingMessage = "对象不存在";
+}
+public class Forms
+{
+    void A(string status) => throw new DomainException(02057,
+        $"任务状态 '{status}' 无效；允许值：{string.Join(", ", TaskStatuses.All)}");
+    void B(Exception ex) => throw new DomainException(5001, ex.Message);
+    void C() => throw new DomainException(ErrorCodes.MissingCode, ErrorCodes.MissingMessage);
+    Task D(HttpContext ctx) => WriteDomainLikeErrorAsync(ctx, StatusCodes.Status409Conflict, 5003, "已存在");
+    IResult E() => Results.Conflict(ApiResponse<string>.Error(5004, "重复"));
+    IResult F() => Results.Json(ApiResponse<string>.Error(5005, "上游失败"), statusCode: 502);
+}
+CS
+
+"$PY" "$EXTRACT" --source-root "$TMP/forms" --doc "$TMP/forms.md" >/dev/null 2>&1
+RC=$?
+[ $RC -eq 0 ] && pass "⑨ 新写法可生成（退出 0）" || fail "⑨ 新写法生成失败（实际 $RC）"
+has "⑨ 插值消息完整（内部字符串/逗号不截断）" "任务状态 '{status}' 无效；允许值：{string.Join(\", \", TaskStatuses.All)}" "$TMP/forms.md"
+has "⑨ 保留源码里的前导零写法" "| 02057 | 400 |" "$TMP/forms.md"
+has "⑩ 变量消息如实标注，不臆造" "| 5001 | 400 | Forms | （消息为变量或表达式，见源码）" "$TMP/forms.md"
+has "⑪ 类常量作码 + 配对的 Message 常量" "| 5002 | 400 | Forms | 对象不存在" "$TMP/forms.md"
+has "⑫ helper 的状态实参决定 HTTP" "| 5003 | 409 | Forms | 已存在" "$TMP/forms.md"
+has "⑫ Results.Conflict(...) 覆盖状态" "| 5004 | 409 | Forms | 重复" "$TMP/forms.md"
+has "⑫ Results.Json(statusCode:) 覆盖状态" "| 5005 | 502 | Forms | 上游失败" "$TMP/forms.md"
+
+# ⑬ 反向完整性（review P1）：抽取规则本身漏采时，--check 与生成都必须失败，
+# 而不是「文档与生成器互相印证」地静默通过。
+cat >>"$TMP/forms/Forms.cs" <<'CS'
+public class Odd
+{
+    void G() => throw new DomainException(Convert.ToInt32("5006"), "解析不了的码参数");
+}
+CS
+"$PY" "$EXTRACT" --source-root "$TMP/forms" --doc "$TMP/forms2.md" >"$TMP/forms2.txt" 2>&1
+RC=$?
+[ $RC -eq 4 ] && pass "⑬ 漏采时拒绝生成（退出 4）" || fail "⑬ 漏采时应退出 4（实际 $RC）"
+has "⑬ 指明漏采的码" "5006" "$TMP/forms2.txt"
+[ ! -f "$TMP/forms2.md" ] && pass "⑬ 漏采时不写出半张表" || fail "⑬ 漏采时不应写文档"
+"$PY" "$EXTRACT" --source-root "$TMP/forms" --doc "$TMP/forms.md" --check >/dev/null 2>&1
+RC=$?
+[ $RC -eq 1 ] && pass "⑬ --check 对漏采退出 1" || fail "⑬ --check 漏采时应退出 1（实际 $RC）"
+
+# ⑭ 没有既有文档时用完整模板：约定段必须与仓内 docs/business-error-codes.md 同源，
+# 否则重新生成的文档会悄悄退回到「HTTP 状态只由 ResolveDomainStatusCode 决定」的旧说法。
+"$PY" "$EXTRACT" --source-root "$TMP/src" --doc "$TMP/fresh.md" >/dev/null 2>&1
+has "⑭ 新模板说明调用点显式状态优先" "优先取调用点显式状态" "$TMP/fresh.md"
+has "⑭ 新模板说明前导零" "前导零只是源码可读性" "$TMP/fresh.md"
+has "⑭ 仓内文档与新模板一致" "优先取调用点显式状态" "$ROOT/docs/business-error-codes.md"
 
 # ⑧ 公开端点识别（review I-1）：.AllowAnonymous() 必须归属到它**自己**的注册调用，
 #    不能被上一条语句的 MapGet 借用，也不能受同文件后面的 MapGroup 影响。

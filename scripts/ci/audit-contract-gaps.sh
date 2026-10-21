@@ -11,7 +11,9 @@
 #
 # 门禁规则：
 #   * P0（基线里有、当前没有的 operation）与 P1（客户端会猜错/写不出来）→ 必须为 0；
-#   * 已识别的历史缺口按**类别**在 docs/contract-baseline.json 的 approvedGaps 里登记，
+#   * 已识别的历史缺口在 docs/contract-baseline.json 的 approvedGaps 里登记，且必须写全
+#     reason / owner / count / expires：count 是该类别当前的发现数，**新增同类实例会让 count
+#     对不上而失败**（不会被「这个类别早已批准」静默放行），expires 到期后批准失效；
 #     登记后不计入门禁，但报告里仍逐条列出并标「已批准」；
 #   * 新出现的类别默认失败 —— 这条门禁的用途是「不变得更差」，而不是「立刻全绿」。
 #
