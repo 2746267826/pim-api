@@ -14,12 +14,12 @@
 
 ```bash
 python scripts/ci/check-spec-drift.py            # 规格引用的端点必须都还在契约里
-bash   scripts/ci/test-check-spec-drift.sh       # 校验器自身的行为测试（离线，81 项）
+bash   scripts/ci/test-check-spec-drift.sh       # 校验器自身的行为测试（离线，98 项）
 ```
 
 **检查范围**：只检查本规格（默认 `docs/client-integration-spec.md`，可用 `--spec` 指向别的文件）。
 它**不**检查客户端源码、pim-web 的规格目录或 OpenAPI 的语义完整性——那些属于 PR #480 的缺口审计。
-测试脚本末尾断言通过数（`EXPECTED_PASS=81`），删掉任何一条用例同样会让门禁失败。
+测试脚本末尾断言通过数（`EXPECTED_PASS=98`），删掉任何一条用例同样会让门禁失败。
 
 规则：
 - 规格里写 `METHOD /path` 或反引号路径即视为对端点的引用；契约里找不到 → 红。分**三类**报错：
