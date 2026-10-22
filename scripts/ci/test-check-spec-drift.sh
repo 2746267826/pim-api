@@ -29,7 +29,7 @@
 #   ㉕ 全部引用都被 ignore 的规格 → 退出 4（不能静默放行）；
 #   ㉖ 具体裸路径不被更长的路径前缀掩护；
 #   ㉗ 方法枚举 `GET, POST /path` 逐个方法检查；
-#   ㉘ 真实兜底形状 `/api/{path}`（仅 404/500）同样不算端点；
+#   ㉘ 无 `*` 的兜底形状 `/api/{path}` 同样不算端点（不看响应状态，防止 200 + 自由字符串放行）；
 #   ㉙ 转述「详见 `GET /x`」只在同一端点已正式声明时跳过；
 #   ㉚/㉛ 行内代码里的 drift-ignore / drift-base 只是示例，不生效。
 #
@@ -221,7 +221,9 @@ expect_rc "⑲ 只有标题的规格退出 4" 4 $?
 # ⑳ 契约的 404 兜底 `/api/{*path}` 不算真实端点（否则任意单段伪路径都放行）
 cat >"$TMP/contract-catchall.json" <<'JSON'
 { "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
-  "paths": { "/api/{*path}": { "get": { "responses": { "200": { "description": "OK" } } } } } }
+  "paths": { "/api/{*path}": {
+    "parameters": [ { "name": "path", "in": "path", "required": true, "schema": { "type": "string" } } ],
+    "get": { "responses": { "200": { "description": "OK" } } } } } }
 JSON
 printf '# 规格\n- 伪端点：`GET /api/does-not-exist`\n' >"$TMP/spec-catchall.md"
 "$PY" "$CHECK" --spec "$TMP/spec-catchall.md" --contract "$TMP/contract-catchall.json" >"$TMP/catchall.txt" 2>&1
@@ -306,8 +308,9 @@ hasnt "㉗ 已有的 GET 不误报" "[missing-method] GET /api/v1/pc/summary" "$
 cat >"$TMP/contract-catchall-real.json" <<'JSON'
 { "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
   "paths": { "/api/{path}": {
-    "get": { "responses": { "404": { "description": "Not Found" }, "500": { "description": "Error" } } },
-    "post": { "responses": { "404": { "description": "Not Found" }, "500": { "description": "Error" } } } } } }
+    "parameters": [ { "name": "path", "in": "path", "required": true, "schema": { "type": "string" } } ],
+    "get": { "responses": { "200": { "description": "OK" }, "404": { "description": "Not Found" }, "500": { "description": "Error" } } },
+    "post": { "responses": { "200": { "description": "OK" }, "404": { "description": "Not Found" }, "500": { "description": "Error" } } } } } }
 JSON
 printf '# 规格\n- 伪端点：`GET /api/does-not-exist`\n' >"$TMP/spec-catchall-real.md"
 "$PY" "$CHECK" --spec "$TMP/spec-catchall-real.md" --contract "$TMP/contract-catchall-real.json" \
@@ -402,7 +405,7 @@ printf '# 规格\n- 恢复：`POST /api/v1/calendar/recycle-bin/%s/restore` <!--
   >"$TMP/loose-ignore.txt" 2>&1
 expect_rc "㉟ 具体 UUID 的路径级豁免被判为过期" 1 $?
 has "㉟ 报 stale-ignore" "[stale-ignore] /api/v1/calendar/recycle-bin/$UUID/restore" "$TMP/loose-ignore.txt"
-has "㉟ 并报 missing-path（豁免不再掩护）" "[missing-path] POST /api/v1/calendar/recycle-bin/$UUID/restore" "$TMP/loose-ignore.txt"
+hasnt "㉟ 具体 UUID 被识别为同一端点（不再误报 missing-path）" "[missing-path] POST /api/v1/calendar/recycle-bin/$UUID/restore" "$TMP/loose-ignore.txt"
 
 # ㊱ 只写基地址 `/api` 的规格不能算「有内容」而放行（fail-closed 绕过；review P2-3）
 printf '# 规格\n- 基地址：`/api`\n' >"$TMP/spec-base-only.md"
@@ -426,6 +429,107 @@ has "㊳ 两条引用都计入 findings" "findings: 2" "$TMP/meta.txt"
 has "㊳ 显式引用报 missing-path" "[missing-path] GET /api/v1/pc/alpha" "$TMP/meta.txt"
 has "㊳ 裸路径报 missing-prefix" "[missing-prefix] /api/v1/pc/beta" "$TMP/meta.txt"
 
+# ㊴ 中文紧邻方法名：`\b` 对汉字不成立，旧实现整条漏检（review P1-1）
+printf '# 规格\n- 由服务端提供：调用GET /api/v1/pc/missing\n' >"$TMP/spec-cjk.md"
+"$PY" "$CHECK" --spec "$TMP/spec-cjk.md" --contract "$TMP/contract.json" >"$TMP/cjk.txt" 2>&1
+expect_rc "㊴ 汉字紧邻的方法声明仍被检查" 1 $?
+has "㊴ 报出 CJK 句中的端点" "GET /api/v1/pc/missing" "$TMP/cjk.txt"
+
+# ㊵ 4 个反引号的围栏可以包住 3 个反引号：嵌套围栏不能提前闭合（review P1-2）
+cat >"$TMP/spec-fence-nested.md" <<'MD'
+# 规格
+````
+```
+<!-- drift-ignore: /api/v1/pc/missing -->
+```
+````
+- 真实引用：`GET /api/v1/pc/missing`
+MD
+"$PY" "$CHECK" --spec "$TMP/spec-fence-nested.md" --contract "$TMP/contract.json" \
+  >"$TMP/fence-nested.txt" 2>&1
+expect_rc "㊵ 嵌套围栏里的 ignore 不生效" 1 $?
+has "㊵ 嵌套围栏外的真实引用报红" "GET /api/v1/pc/missing" "$TMP/fence-nested.txt"
+
+# ㊶ 未闭合围栏屏蔽到文末（fail-safe），其中的 ignore 不生效
+cat >"$TMP/spec-fence-open.md" <<'MD'
+# 规格
+```
+<!-- drift-ignore: /api/v1/pc/missing -->
+- 真实引用：`GET /api/v1/pc/missing`
+MD
+"$PY" "$CHECK" --spec "$TMP/spec-fence-open.md" --contract "$TMP/contract.json" \
+  >"$TMP/fence-open.txt" 2>&1
+expect_rc "㊶ 未闭合围栏里的 ignore 不生效" 1 $?
+has "㊶ 真实引用仍被检查" "GET /api/v1/pc/missing" "$TMP/fence-open.txt"
+
+# ㊷ 整数参数不能被字面段匹配：`/x/{id}`(integer) ≠ `/x/abc`（review P2-4）
+cat >"$TMP/contract-int.json" <<'JSON'
+{ "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
+  "paths": { "/api/v1/x/{id}": {
+    "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "format": "int32" } } ],
+    "get": { "responses": { "200": { "description": "OK" } } } } } }
+JSON
+printf '# 规格\n- 端点：`GET /api/v1/x/abc`\n' >"$TMP/spec-int.md"
+"$PY" "$CHECK" --spec "$TMP/spec-int.md" --contract "$TMP/contract-int.json" >"$TMP/int.txt" 2>&1
+expect_rc "㊷ 整数参数不接受字面段" 1 $?
+has "㊷ 报 missing-path" "[missing-path] GET /api/v1/x/abc" "$TMP/int.txt"
+
+# ㊸ `$ref` 参数按「有约束」处理（fail-closed），不能靠 $ref 是对象就放行（review P2-4）
+cat >"$TMP/contract-ref.json" <<'JSON'
+{ "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
+  "paths": { "/api/v1/ref/{id}": {
+    "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/Slug" } } ],
+    "get": { "responses": { "200": { "description": "OK" } } } } },
+  "components": { "schemas": { "Slug": { "type": "string", "pattern": "^[a-z]+$" } } } }
+JSON
+printf '# 规格\n- 端点：`GET /api/v1/ref/ABC`\n' >"$TMP/spec-ref.md"
+"$PY" "$CHECK" --spec "$TMP/spec-ref.md" --contract "$TMP/contract-ref.json" >"$TMP/ref.txt" 2>&1
+expect_rc "㊸ \$ref 参数不接受不满足约束的字面段" 1 $?
+has "㊸ 报 missing-path" "[missing-path] GET /api/v1/ref/ABC" "$TMP/ref.txt"
+
+# ㊹ 真实 UUID 是合法字面值：能命中 `{id:guid}`，不误报（review P3-12）
+printf '<!-- drift-base: /api/v1 -->\n# 规格\n- 文件：`GET /files/items/3f2504e0-4f89-11d3-9a0c-0305e82c3301`\n' \
+  >"$TMP/spec-uuid.md"
+cat >"$TMP/contract-uuid-ok.json" <<'JSON'
+{ "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
+  "paths": { "/api/v1/files/items/{id}": {
+    "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } } ],
+    "get": { "responses": { "200": { "description": "OK" } } } } } }
+JSON
+"$PY" "$CHECK" --spec "$TMP/spec-uuid.md" --contract "$TMP/contract-uuid-ok.json" >/dev/null 2>&1
+expect_rc "㊹ 真实 UUID 命中 {id:guid}" 0 $?
+
+# ㊺ 相对路径的 drift-ignore 按同页 drift-base 解析（review P2-7）
+cat >"$TMP/contract-base.json" <<'JSON'
+{ "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
+  "paths": { "/api/v1/calendar/tasks": { "get": { "responses": { "200": { "description": "OK" } } } } } }
+JSON
+printf '<!-- drift-base: /api/v1 -->\n# 规格\n- 任务：`GET /calendar/tasks`\n- 已下线：`GET /calendar/missing` <!-- drift-ignore: /calendar/missing -->\n' \
+  >"$TMP/spec-base-ignore.md"
+"$PY" "$CHECK" --spec "$TMP/spec-base-ignore.md" --contract "$TMP/contract-base.json" \
+  >"$TMP/base-ignore.txt" 2>&1
+expect_rc "㊺ 相对路径豁免按 drift-base 解析" 0 $?
+
+# ㊻ 顶层具体路径不被子路径掩护：`/health` ≠ `/health/live`（review P2-8）
+cat >"$TMP/contract-health-live.json" <<'JSON'
+{ "openapi": "3.0.1", "info": { "title": "T", "version": "1" },
+  "paths": { "/health/live": { "get": { "responses": { "200": { "description": "OK" } } } } } }
+JSON
+printf '# 规格\n- 探针：`/health`\n' >"$TMP/spec-health-bare.md"
+"$PY" "$CHECK" --spec "$TMP/spec-health-bare.md" --contract "$TMP/contract-health-live.json" \
+  >"$TMP/health-bare.txt" 2>&1
+expect_rc "㊻ /health 不被 /health/live 掩护" 1 $?
+has "㊻ 报 missing-prefix" "[missing-prefix] /health" "$TMP/health-bare.txt"
+
+# ㊼ `GET/POST` 这类分隔也要逐个方法检查（review P3-14）
+printf '# 规格\n- 枚举：`GET/POST /api/v1/pc/summary`\n' >"$TMP/spec-slash-enum.md"
+"$PY" "$CHECK" --spec "$TMP/spec-slash-enum.md" --contract "$TMP/contract.json" >"$TMP/slash-enum.txt" 2>&1
+expect_rc "㊼ 斜杠分隔的方法枚举被检查" 1 $?
+has "㊼ 报出缺失的 POST" "[missing-method] POST /api/v1/pc/summary" "$TMP/slash-enum.txt"
+
+# ㊽ 弱断言补强：确认模板参数写法不同的端点**被识别**（而不是整行漏检）
+has "㊽ 显式端点计数包含 {deviceId:guid} 写法" "显式端点 3 个" "$TMP/ok.txt"
+
 # ⑧ fail-closed
 echo '{ not json' >"$TMP/broken.json"
 "$PY" "$CHECK" --spec "$TMP/spec-ok.md" --contract "$TMP/broken.json" >/dev/null 2>&1
@@ -439,7 +543,7 @@ echo ""
 if [ "$FAIL" -ne 0 ]; then echo "FAILED：$FAIL 项失败，$PASS 项通过"; exit 1; fi
 # 断言用例数量：删掉任意一条测试（例如 fail-closed 或 missing-method）时，
 # PASS 会变小但退出码仍是 0，门禁覆盖会静默缩小（review P2-5）。
-EXPECTED_PASS=81
+EXPECTED_PASS=98
 if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
   echo "FAILED：用例数量不符（期望 $EXPECTED_PASS，实际 $PASS）" >&2
   exit 1

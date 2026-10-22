@@ -140,7 +140,7 @@
 | 通道 | 端点 | 客户端处理 |
 |---|---|---|
 | 直链 JSON（200 + `{url}`） | `GET /api/v1/files/items/{id}/download-url`、`GET /api/v1/files/items/{id}/preview-url` | 交给系统浏览器/下载器打开；> 100 MB 先确认大小。响应是 JSON，**不是**文件体 |
-| **302 到网盘域** | `GET /api/v1/files/items/{id}/download`、`/content`、`/thumbnail`（可带 `?size=`） | 契约里这三个只有 302：`Location` 是网盘的下载地址 —— OneDrive 是预授权直链；Google 是 `webContentLink`（**依赖浏览器里已有的 Google 会话**，无头 HTTP 客户端跟随时会拿到登录页 HTML）。**不要**自己带 Bearer 跟随 —— 那是网盘域，我们的 JWT 无效（把 401/HTML 当成本服务端故障）；交给系统浏览器/下载器 |
+| **302 到网盘域** | `GET /api/v1/files/items/{id}/download`、`GET /api/v1/files/items/{id}/content`、`GET /api/v1/files/items/{id}/thumbnail`（可带 `?size=`） | 契约里这三个只有 302：`Location` 是网盘的下载地址 —— OneDrive 是预授权直链；Google 是 `webContentLink`（**依赖浏览器里已有的 Google 会话**，无头 HTTP 客户端跟随时会拿到登录页 HTML）。**不要**自己带 Bearer 跟随 —— 那是网盘域，我们的 JWT 无效（把 401/HTML 当成本服务端故障）；交给系统浏览器/下载器 |
 | **200 或 302（按状态码分派）** | `GET /api/v1/quick-notes/attachments/{id}/download` | 规则是**按能力而不是按提供方名字**：能给出真正免密直链的提供方（当前是 OneDrive，**将来接入的任何直链提供方同样如此**）→ **302**（`Location` 为预授权直链，同上处理）；没有免密直链的（**Google 刻意不使用 `webContentLink`**，因为它依赖浏览器里的 Google 会话）→ **200 + 字节流**（服务端代理）。客户端**必须按状态码分支**，不要按提供方名字猜：302 交给系统浏览器/下载器，**不要**带 Bearer 跟随；200 时按字节流保存（若把 302 的空体当文件存，会得到 0 字节文件）。契约同时声明了 200 与 302 |
 | 200 + 字节流（需 Bearer） | `GET /api/v1/calendar/export-ics`（`text/calendar`）、`GET /api/v1/mobile/devices/{deviceId}/export`（`application/json` 附件） | 带 Bearer 取成字节流（建议 < 100 MB）；**不要**再对返回内容做二次下载 |
 | 200 + JSON（导出数据） | `GET /api/v1/calendar/data-center/audit/export` | 是 JSON 体，不是文件下载；按 `AuditExportResponse` 解析 |
@@ -161,8 +161,9 @@
   | 端点 | 去重键（同一用户/设备内） | 重复时的表现 |
   |---|---|---|
   | `POST /api/v1/mobile/usage/events`（事件） | `(deviceId, packageName, eventType, eventTimestampUtc, className)` | HTTP 200，该条 `outcome="skipped"`、`code="duplicate"`，`accepted/skipped/rejected/failed` 计数相应变化 |
-  | `POST /api/v1/mobile/usage/events`（汇总） | `(deviceId, packageName, windowStartUtc, windowEndUtc, sourceKind)` | 同上 |
-  | `POST /api/v1/mobile/location/points`、`POST /api/v1/mobile/location/points/batch` | `(deviceId, recordedAtUtc, latitude, longitude)` | 条目级三种结果：已存在的**可用**点 → `outcome="skipped"`、`code="duplicate"`；坏精度的重复点 → `outcome="rejected"`、`code="unusable-accuracy"`；**先落库的坏精度点被后来的好精度点升级** → `outcome="accepted"`（不是 duplicate） |
+  | `POST /api/v1/mobile/usage/events`（汇总） | `(deviceId, packageName, windowStartUtc, windowEndUtc, sourceKind)` | 同一窗口**内容相同**（可见时长/质量标志一致）→ `outcome="skipped"`、`code="duplicate"`；同一窗口**内容不同** → **覆盖更新**（`accepted`，不是 duplicate）——汇总可以重传修正值；`totalTimeVisibleMs<=0` → `skipped`、`code="no-usage"`（合法的「该窗口没用过」，不是失败） |
+  | `POST /api/v1/mobile/location/points`（单条） | `(deviceId, recordedAtUtc, latitude, longitude)` | **没有逐条 `outcome`**：响应是单个 `MobileLocationPointDto`。重复的好精度点 → 200 返回既有行（不再新增）；坏精度点 → 先按 rejected 落库，再返回 **400 + `code=6202`**（不是 `outcome="rejected"`）；已存在的坏精度点被后来的好精度点**升级**为可用点后返回 200 |
+  | `POST /api/v1/mobile/location/points/batch`（批量） | 同上 | 逐条结果在 `items[]`：已存在的**可用**点 → `outcome="skipped"`、`code="duplicate"`；坏精度的重复点 → `outcome="rejected"`、`code="unusable-accuracy"`；**先落库的坏精度点被后来的好精度点升级** → `outcome="accepted"`（不是 duplicate）；缺 `deviceId` / 坐标非法 → `rejected` |
   | `POST /api/v1/mobile/forensics/events` | `(deviceId, clientItemKey)`，**`clientItemKey` 必填** | 重复计入 `skipped`；缺失/空 → 该条 `rejected` |
   | `POST /api/v1/pc/keystats/samples` | `(pimDeviceId, sampledAtUtc)`，时间**截断到分钟** | upsert：同一分钟覆盖，不报错、不累加 |
   | `POST /api/v1/pc/keystats/upload` | `(deviceId, date)` —— **整天快照**，键是请求里的 `date`（不是 `sampledAtUtc`） | **整天删除后重插（整体覆盖，不是合并）**：同一天再传一次会替换当天的键鼠快照。客户端同一天只应上传一次最终快照；要按分钟增量上报请用 `/pc/keystats/samples` |
@@ -292,9 +293,10 @@
 6. **桌面壳更新通道**：Windows 守护进程/浏览器扩展的安装包分发与签名不在本规格范围内。
 7. **规格漂移（已量化、可复现）**：给 `pim-web/frontend-rebuild-spec/05-api-reference/` 的每个文件顶部加一行
    `<!-- drift-base: /api/v1 -->`（写法见 `client-integration/README.md`），再用本仓
-   `scripts/ci/check-spec-drift.py --spec <file>` 逐个检查。按该仓 2026-10 基线实测：机器报 **39 条**，
-   人工复核后**确属契约缺失的 18 条**如下（其余 21 条是同一端点的简写、前端路由、磁盘路径或 `drift-base`
-   本身被当成裸路径；检查器现在会把 8 个文件里的 `/api/v1` 基地址写法各报一次，所以总数比早期版本多）。
+   `scripts/ci/check-spec-drift.py --spec <file>` 逐个检查。按该仓 2026-10 基线实测：机器报 **33 条**
+   （19 条 `missing-path` + 11 条 `missing-prefix` + 3 条 `missing-method`），人工复核后
+   **确属契约缺失的 18 条**如下（其余 15 条是同一端点的简写、前端路由、磁盘路径或 SPA 兜底路由；
+   `drift-base` 声明的基地址本身已不再被当成裸路径）。
    下面每一条都是**契约里不存在**的 web 文档陈旧条目，本规格用 `drift-ignore` 显式豁免，便于逐条复核：
    - `files.md`（10 条）：
      - 版本历史四条：`GET /api/v1/files/items/{id}/versions` <!-- drift-ignore: /api/v1/files/items/{}/versions -->、
@@ -326,8 +328,9 @@
      （运行时存在、不在契约，见 §1）、`POST /api/v1/stats/upload` <!-- drift-ignore: /api/v1/stats/upload -->（见 §11.1）。
    - `quick-notes-mcp.md`（1 条）：`POST /mcp` <!-- drift-ignore: POST /mcp --> —— 契约 `/mcp` 只声明
      `GET`/`DELETE`/`PATCH`（见 §11.1）。
-   - 复核后**不算漂移**的其余 21 条：8 个文件里的基地址写法 `/api/v1`（不是端点本身）；
-     auth 文档开头的 `/login`、`/refresh`、`/register`、`/me`（真实路径都带 `/auth` 前缀，属同端点简写）；
+   - 复核后**不算漂移**的其余 15 条：
+     auth 文档开头的 `/login`、`/refresh`、`/register`、`/me`（4 条；真实路径都带 `/auth` 前缀，属同端点简写）；
+     `files.md` / `mobile.md` / `pc-tracker.md` 里只写到命名空间一级的简写（`files`、`mobile`、`pc`，3 条）；
      `quick-notes-mcp.md` 的 `mcp/clients`（同端点简写，真实路径 `/api/v1/mcp/clients`）；
      `operations-status.md` 的 `/inspection`、`/sections`（同端点简写，真实路径分别带 `data-reliability/`、`today/` 前缀）；
      `calendar.md` 里 `detailUrl` 的 `/confirmations/{id}`、`/reminders/{id}`（**前端路由**，不是 API）；

@@ -21,12 +21,13 @@
     只有纯基地址写法（`/api`、`/api/v1`）不作为有效引用；
   * 规格可用 `<!-- drift-ignore: /path -->` 或 `<!-- drift-ignore: METHOD /path -->` 声明
     「这条路径/这个方法不属于本 API」（例如本机守护进程协议）。豁免是**全文按精确路径**生效，
-    不依赖所在行；**路径级豁免只对契约里不存在的路径生效** —— 路径若已在契约里（含「具体
-    字面量 vs `{id:guid}` 这类宽松匹配」），仍会检查并报 `stale-ignore`，避免同一路径上的
-    真实方法被静默放过。方法级写法只豁免那一个方法；
+    不依赖所在行，但**相对路径按声明该豁免的那一行的 drift-base 解析**；**路径级豁免只对
+    契约里不存在的路径生效** —— 路径若已在契约里（含「具体字面量 vs `{id:guid}` 这类宽松匹配」），
+    仍会检查并报 `stale-ignore`，避免同一路径上的真实方法被静默放过。方法级写法只豁免那一个方法；
   * 契约路径模板与文档写法都可能省略参数约束（`{id:guid}` / `{id}` / `{}`），比较前统一归一化；
-    逐段比较时，契约里**有约束**的参数（`format`/`pattern`/`enum`）不能匹配文档的字面段
-    （`{id:guid}` ≠ `upload`），无约束的字符串参数可以（`{type}` = `event`）；
+    逐段比较时，契约里**有约束**的参数（`format`/`pattern`/`enum`、`type: integer`、`$ref`）
+    不能随意匹配文档的字面段（`{id:guid}` ≠ `upload`），只有满足该约束的具体值才匹配
+    （真实 UUID、枚举值）；无约束的字符串参数可以取任意字面值（`{type}` = `event`）；
   * 「见 / 同 / 参见 `GET /x`」这类转述只在**同一 (method, path) 已在本文件其它位置正式声明**时跳过，
     否则照常检查（避免「详见 …」成为漏报后门）。
 
@@ -50,10 +51,14 @@ import sys
 
 METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
 _METHOD = "(?:" + "|".join(METHODS) + ")"
-# 方法枚举：`GET, POST /path` —— 整个列表都要检查。方法大小写不敏感（`get /x` 也要查，
-# 否则小写写法会整条漏检）。注意 `\b` 对中文不成立，但路径前的空格/反引号足够定位。
-EXPLICIT_RE = re.compile(r"\b((?:" + _METHOD + r"\s*,\s*)*" + _METHOD + r")\s+(/[A-Za-z0-9_\-{}/.:*]*)",
-                         re.IGNORECASE)
+# 方法枚举：`GET, POST /path`（也接受 `/`、`|`、`、` 分隔）—— 整个列表都要检查。
+# 方法大小写不敏感（`get /x` 也要查，否则小写写法会整条漏检）。
+# 前置不能用 `\b`：Python 的 `\w` 包含汉字，`调用GET /x` 里「用→G」不是词边界，
+# 整条引用会被静默漏掉（review P1-1）；这里只排除 ASCII 标识符字符。
+EXPLICIT_RE = re.compile(
+    r"(?<![A-Za-z0-9_])((?:" + _METHOD + r"\s*(?:,|/|\||、)\s*)*" + _METHOD
+    + r")\s+(/[A-Za-z0-9_\-{}/.:*]*)",
+    re.IGNORECASE)
 BARE_PATH_RE = re.compile(r"`(/(?:api|health|mcp|metrics|version)[A-Za-z0-9_\-{}/.:*]*)`")
 # 声明了 drift-base 的章节里，相对路径也可以写成任意 `/xxx`（如 `/calendar/tasks`、`/files/items/upload`）。
 RELATIVE_BARE_RE = re.compile(r"`(/[A-Za-z0-9_\-{}/.:*]+)`")
@@ -87,11 +92,14 @@ def mask_directive_text(text):
     for line in text.splitlines():
         fence_match = _FENCE_RE.match(line)
         if fence is None and fence_match:
-            fence = fence_match.group(1)[0] * 3
+            # 保存**完整**起始串（4 个反引号可以包住 3 个反引号），不能压缩成 3 个：
+            # 否则嵌套围栏会提前「闭合」，块里的 drift-ignore 会真的生效（review P1-2）。
+            fence = fence_match.group(1)
             masked_lines.append(" " * len(line))
             continue
         if fence is not None:
-            if fence_match and fence_match.group(1).startswith(fence):
+            if (fence_match and fence_match.group(1)[0] == fence[0]
+                    and len(fence_match.group(1)) >= len(fence)):
                 fence = None
             masked_lines.append(" " * len(line))
             continue
@@ -163,18 +171,53 @@ def _shape(segment):
     return re.sub(r"\{[^}]*\}", "{}", segment)
 
 
-def _free_form_parameter(segment, schemas):
-    """契约里的参数段能否匹配文档里的**字面段**（如 `event` 之于 `{type}`）。
+def _param_schema(segment, schemas):
+    """取参数段的 schema；catch-all 的 `{*path}` 同时接受 `path` 这个参数名。"""
+    name = segment[1:-1]
+    return schemas.get(name) or schemas.get(name.lstrip("*"))
 
-    只有无约束的纯字符串参数才可以：`format: uuid`（`{id:guid}`）、`pattern`、`enum`
-    都限定了取值，拿它们去匹配字面段正是 review 指出的漏报
+
+def _free_form_parameter(segment, schemas):
+    """契约里的参数段能否匹配文档里的**任意字面段**（如 `event` 之于 `{type}`）。
+
+    只有 `type: string` 且无 `format` / `pattern` / `enum` 的纯字符串参数才可以：
+    `format: uuid`（`{id:guid}`）等限定了取值，拿它们去匹配字面段正是 review 指出的漏报
     （`DELETE /files/items/upload` 会被 `/files/items/{id}` 放行，运行时是 404/405）。
-    取不到 schema 时按「有约束」处理（fail-closed）。
+    `type: integer`、`$ref`、取不到 schema 时一律按「有约束」处理（fail-closed）——
+    否则 `/x/{id}`（integer）会放行文档里的 `/x/abc`（review P2-4）。
     """
-    schema = schemas.get(segment[1:-1])
-    if not isinstance(schema, dict) or not schema:
+    schema = _param_schema(segment, schemas)
+    if not isinstance(schema, dict) or schema.get("$ref"):
+        return False
+    if schema.get("type") != "string":
         return False
     return not any(key in schema for key in ("format", "pattern", "enum"))
+
+
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _literal_matches_constraint(literal, schema):
+    """文档写具体值时，只有它**真的满足**参数约束，才算同一端点。
+
+    文档里出现真实 UUID / 枚举值很常见；把它们一律判成 missing-path 属于误报
+    （review P3-12）。约束无法解析时返回 False（仍按不匹配处理，保持 fail-closed）。
+    """
+    if not isinstance(schema, dict):
+        return False
+    if schema.get("format") == "uuid" and _UUID_RE.fullmatch(literal):
+        return True
+    enum = schema.get("enum")
+    if isinstance(enum, list) and literal in {str(value) for value in enum}:
+        return True
+    pattern = schema.get("pattern")
+    if isinstance(pattern, str) and pattern:
+        try:
+            return re.fullmatch(pattern, literal) is not None
+        except re.error:
+            return False
+    return False
 
 
 def template_matches(contract_path, doc_path, schemas):
@@ -190,8 +233,12 @@ def template_matches(contract_path, doc_path, schemas):
     for cs, ds in zip(c, d):
         if _shape(cs) == _shape(ds):
             continue  # 同形（含 `{y}.png` 这种带后缀的参数段），参数名差异不算漂移
-        if _is_param(cs) and "{}" not in _shape(ds) and _free_form_parameter(cs, schemas):
-            continue  # 无约束参数段取文档里的字面值（`{type}` = `event`）
+        if _is_param(cs) and "{}" not in _shape(ds):
+            # 无约束字符串参数可以取任意字面值（`{type}` = `event`）；有约束的参数
+            # 只接受**满足该约束**的字面值（真实 UUID / 枚举值 / 匹配 pattern）。
+            if (_free_form_parameter(cs, schemas)
+                    or _literal_matches_constraint(ds, _param_schema(cs, schemas))):
+                continue
         return False
     return True
 
@@ -259,9 +306,6 @@ def spec_references(text):
     directive_text = "\n".join(masked_lines)
 
     ignores = set()
-    for match in IGNORE_RE.finditer(directive_text):
-        method = (match.group("method") or "").upper() or None
-        ignores.add((method, normalize(match.group("path"))))
 
     bases = BASE_RE.findall(directive_text)
     # 第一个基地址也用于它**之前**的行（文档顺序不该影响判定）；之后按行切换，一份文档可以有多
@@ -275,6 +319,12 @@ def spec_references(text):
         line_base = BASE_RE.search(masked_line)
         if line_base:
             base = line_base.group(1)
+        # 豁免里的相对路径按**声明该豁免的那一行**的 drift-base 解析：
+        # 域文档里 `<!-- drift-ignore: /calendar/missing -->` 与 `GET /calendar/missing`
+        # 必须指向同一个端点，否则豁免永远不生效、文档只能写全路径（review P2-7）。
+        for match in IGNORE_RE.finditer(masked_line):
+            method = (match.group("method") or "").upper() or None
+            ignores.add((method, normalize(resolve(match.group("path"), base))))
         # `drift-ignore` 只豁免它点名的那条路径/方法，不豁免同一行的其它引用 ——
         # 否则在一行里再补一个端点会被整行静默放过。
         for match in EXPLICIT_RE.finditer(line):
@@ -285,7 +335,7 @@ def spec_references(text):
             target = resolve(path, base)
             normalized = normalize(target)
             explicit_paths.add(normalized)
-            for method in (part.strip().upper() for part in methods_blob.split(",")):
+            for method in (part.strip().upper() for part in re.split(r"[,/|、]", methods_blob)):
                 explicit_raw.append((method, normalized, quoted))
         # 声明了基地址的章节里，任何 `/xxx` 反引号路径都算引用；没有基地址时只认已知的顶层前缀
         # （避免把 SPA 路由 `/calendar` 之类当成 API 路径）。
@@ -400,8 +450,9 @@ def main(argv):
             ok = any(p == prefix or p.startswith(prefix + "/") for p in paths)
         elif path.count("/") < 2:
             # 顶层端点（`/health`、`/mcp`）：旧实现一律跳过，删掉 `/health` 也全绿（review P1-2）。
-            # 按「自身或子路径存在」校验 —— 与它的前缀语义一致。
-            ok = any(p == path or p.startswith(path + "/") for p in paths)
+            # 没有 `*` 就是**具体端点**，只做精确匹配 —— 否则 `/health` 会被 `/health/live`
+            # 掩护，与 README「只有星号才是前缀」相矛盾（review P2-8）。
+            ok = path in paths
         else:
             # 具体端点：只做精确/模板匹配。旧实现会用「更长路径前缀」掩护，
             # 删掉集合端点（`/api/v1/pc/summary`）时被 `/api/v1/pc/summary/detail` 放行（review P2-1）。

@@ -49,8 +49,10 @@ bash   scripts/ci/test-check-spec-drift.sh       # 校验器自身的行为测�
   `GET, POST /path` 这种方法枚举都不会整行跳过。
 - 退出码：`0` 无漂移；`1` 有缺失；`4` 输入非法（文件不存在、契约不是 OpenAPI 3.x、规格里识别不到任何引用 ——
   空文件或被截断的规格不会「0 findings」放行）。
-- 契约里的 404 兜底不算真实端点（`/api/{*path}`，以及只有 404/500 响应的 `/api/{path}`），
-  单段的伪路径不会被它匹配放行。
+- 契约里的 404 兜底不算真实端点：`/api/{*path}`（catch-all 写法）与单段的 `/api/{path}`
+  （生成器把 catch-all 渲染成普通参数名）。第二种**不看响应状态**——兜底一旦被补上 200 + 自由字符串 schema，
+  「任意 `/api/xxx` 都能匹配」会让所有缺失端点静默放行。真实的单段端点用有意义的名字（`{id}`、`{sectionId}`），
+  不会被误判。
 - 具体裸路径（`/api/v1/pc/summary`）按**精确/模板**匹配，不会被更长的前缀（`/api/v1/pc/summary/detail`）掩护；
   **只有星号写法** `/api/v1/pc/*` 按前缀判定。尾斜杠不算前缀：`/api/v1/pc/app-signatures/` 归一化后是具体端点，
   这样删除它时不会被兄弟路径 `/api/v1/pc/app-signatures/count` 掩护。
