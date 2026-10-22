@@ -25,8 +25,15 @@ public sealed class TodaySectionService
     }
 
     public Task<TodaySectionRegistryDto> GetRegistryAsync(string? date, CancellationToken ct)
+        => GetRegistryAsync(date, DateTimeOffset.UtcNow, ct);
+
+    /// <summary>
+    /// 与缓存键共用同一个时钟读数：键用 03:59:59.999 的「今天」、查数却用 04:00:00 的「明天」时，
+    /// 新业务日的数据会被写进旧键（review P3-6）。
+    /// </summary>
+    internal Task<TodaySectionRegistryDto> GetRegistryAsync(string? date, DateTimeOffset nowUtc, CancellationToken ct)
     {
-        var query = BuildQuery(date);
+        var query = BuildQuery(date, nowUtc);
         var formattedDate = FormatDate(query.Date);
         var sections = _providers
             .Select(provider => new TodaySectionRegistryItemDto(
@@ -43,7 +50,7 @@ public sealed class TodaySectionService
         return Task.FromResult(new TodaySectionRegistryDto(
             formattedDate,
             FormatDate(query.PcBusinessDate),
-            DateTimeOffset.UtcNow,
+            nowUtc,
             sections)
         {
             BusinessDate = formattedDate,
@@ -53,7 +60,12 @@ public sealed class TodaySectionService
         });
     }
 
-    public async Task<TodaySectionDto?> GetSectionAsync(string sectionId, string? date, CancellationToken ct)
+    public Task<TodaySectionDto?> GetSectionAsync(string sectionId, string? date, CancellationToken ct)
+        => GetSectionAsync(sectionId, date, DateTimeOffset.UtcNow, ct);
+
+    /// <summary>与缓存键共用同一个时钟读数（review P3-6）。</summary>
+    internal async Task<TodaySectionDto?> GetSectionAsync(
+        string sectionId, string? date, DateTimeOffset nowUtc, CancellationToken ct)
     {
         var provider = _providers.FirstOrDefault(candidate => string.Equals(
             candidate.SectionId,
@@ -64,7 +76,7 @@ public sealed class TodaySectionService
             return null;
         }
 
-        var query = BuildQuery(date);
+        var query = BuildQuery(date, nowUtc);
         // pc.* 分区取的是 PcBusinessDate（04:00 切日）的数据，信封上的业务日必须与载荷一致；
         // 其余分区用 query.Date（日历日）。否则在 00:00–04:00 会出现信封 businessDate 与 data.businessDate 打架。
         // startHour 必须跟着业务日一起给：日历日配 4 会让客户端推出一个与数据窗口错开 4 小时的区间。
@@ -116,13 +128,6 @@ public sealed class TodaySectionService
         => sectionId is "pc.activity" or "pc.quality";
 
     /// <summary>
-    /// 当前墙钟（Asia/Shanghai）。**不能**用 <c>DateTime.Now</c>：宿主时区是 UTC 时
-    /// （容器默认未设 TZ），16:00–24:00 UTC 期间算出来的日期会比上海早一天。
-    /// </summary>
-    private static DateTime NowInBusinessTimeZone()
-        => TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, BusinessDay.TimeZone).DateTime;
-
-    /// <summary>
     /// 不带 <c>date</c> 时服务端算出的业务日。缓存键必须包含它：否则 03:59 缓存的响应
     /// 会在 04:00 之后继续当作「今天」返回，信封上的业务日还是前一天（review P2-5）。
     /// </summary>
@@ -138,11 +143,12 @@ public sealed class TodaySectionService
         return $"{FormatDate(query.Date)}|{FormatDate(query.PcBusinessDate)}";
     }
 
-    private static TodayQuery BuildQuery(string? date)
+    private static TodayQuery BuildQuery(string? date, DateTimeOffset nowUtc)
     {
         if (string.IsNullOrWhiteSpace(date))
         {
-            return BuildQuery(NowInBusinessTimeZone(), hasExplicitTime: true);
+            var businessNow = TimeZoneInfo.ConvertTime(nowUtc, BusinessDay.TimeZone).DateTime;
+            return BuildQuery(businessNow, hasExplicitTime: true);
         }
 
         if (DateOnly.TryParseExact(

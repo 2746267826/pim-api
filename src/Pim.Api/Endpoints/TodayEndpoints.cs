@@ -32,10 +32,12 @@ public static class TodayEndpoints
         {
             return await RunWithDateValidationAsync(async () =>
             {
+                // 键与查数共用同一个时钟读数：跨 04:00 的瞬间不会把新业务日写进旧键（review P3-6）。
+                var nowUtc = DateTimeOffset.UtcNow;
                 var result = await cache.GetOrCreateAsync(
-                    BuildCacheKey(httpContext.Request, date, DateTimeOffset.UtcNow),
+                    BuildCacheKey(httpContext.Request, date, nowUtc),
                     force,
-                    () => today.GetRegistryAsync(date, ct),
+                    () => today.GetRegistryAsync(date, nowUtc, ct),
                     ct);
                 return Results.Ok(ApiResponse<TodaySectionRegistryDto>.Ok(result));
             });
@@ -56,10 +58,11 @@ public static class TodayEndpoints
         {
             return await RunWithDateValidationAsync(async () =>
             {
+                var nowUtc = DateTimeOffset.UtcNow;
                 var result = await cache.GetOrCreateAsync(
-                    BuildCacheKey(httpContext.Request, date, DateTimeOffset.UtcNow),
+                    BuildCacheKey(httpContext.Request, date, nowUtc),
                     force,
-                    () => today.GetSectionAsync(sectionId, date, ct),
+                    () => today.GetSectionAsync(sectionId, date, nowUtc, ct),
                     ct);
                 return result is null
                     ? Results.NotFound(ApiResponse<string>.Error(404, "今日模块不存在。"))

@@ -106,16 +106,15 @@ public sealed class BusinessDayFieldsDocumentFilter : IDocumentFilter
 
     /// <summary>
     /// 属性来自运行时 DTO（类型已由 Swashbuckle 生成），这里只**补齐语义**：描述、格式、示例。
-    /// 属性不存在时才新建 —— 否则会把 serializer 推导出的类型信息覆盖掉。
+    /// 属性必须已经存在：DTO 改名/删字段时**直接失败**，不能凭空声明一个运行时并不下发的字段
+    /// （否则契约会承诺客户端永远收不到的值，review P3-2）。
     /// </summary>
     private static void Upsert(
         OpenApiSchema schema, string name, string type, string? format, string description, IOpenApiAny? example)
     {
         if (!schema.Properties!.TryGetValue(name, out var field))
-        {
-            field = new OpenApiSchema { Type = type };
-            schema.Properties[name] = field;
-        }
+            throw new InvalidOperationException(
+                $"业务日字段 {name} 不在响应 schema 里：运行时 DTO 与 BusinessDayFieldsDocumentFilter 不同步");
         field.Type ??= type;
         field.Format ??= format;
         field.Description ??= description;

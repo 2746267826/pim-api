@@ -37,10 +37,11 @@
   `/api/v1/pc/summary`、`/api/v1/mobile/summary`。端点清单在
   `BusinessDayFieldsDocumentFilter.Endpoints` 里集中维护；端点被改名/删除时 swagger 生成**直接失败**，
   不会静默少字段。
-- **PC 业务日**：`pc.activity` / `pc.quality` 两个分区按 PC 业务日（04:00 切日）取数，
-  所以 `/today/sections/{pc.*}` 信封上的 `businessDate` **等于载荷里的 `businessDate`**，可能比同一次请求
-  里其它分区的 `businessDate` 早一天（例如 02:00 请求）。registry 同时给出 `date`（日历日）与
-  `pcBusinessDate`（PC 业务日），客户端不要假设三者总相等。
+- **PC 业务日**：`pc.activity` / `pc.quality` 两个分区按 PC 业务日（04:00 切日）取数，所以
+  `/today/sections/{pc.*}` 信封上的 `businessDate` 可能比同一次请求里其它分区的早一天（例如 02:00 请求）。
+  `pc.activity` 的载荷（`PcSummaryResponse`）**也带** `businessDate`，且与信封一致；
+  `pc.quality` 的载荷（`PcQualityResponse`）**没有** `businessDate`，对该分区只能以信封为准。
+  registry 同时给出 `date`（日历日）与 `pcBusinessDate`（PC 业务日），客户端不要假设三者总相等。
 
 ## 2. 写操作幂等（Idempotent writes）
 

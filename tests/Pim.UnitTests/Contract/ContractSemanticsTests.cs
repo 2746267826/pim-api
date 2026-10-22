@@ -129,6 +129,16 @@ public sealed class ContractSemanticsTests : IClassFixture<ContractSemanticsTest
         // PC 分区是 04:00 业务日：businessDate + startHour 必须正好是数据窗口。
         Assert.Equal(4, data.GetProperty("businessDayStartHour").GetInt32());
 
+        // pc.quality 的信封同样按 PC 业务日，但载荷（PcQualityResponse）**没有** businessDate：
+        // 契约与文档都只承诺信封，测试也只断言信封（review P3-3）。
+        var quality = (await AuthRegistrationTestHost.ReadJsonAsync(
+            await client.GetAsync("/api/v1/today/sections/pc.quality?date=2026-10-21T02:00")))
+            .GetProperty("data");
+        Assert.Equal("2026-10-20", quality.GetProperty("businessDate").GetString());
+        Assert.Equal(4, quality.GetProperty("businessDayStartHour").GetInt32());
+        Assert.False(quality.GetProperty("data").GetProperty("quality")
+            .TryGetProperty("businessDate", out _));
+
         // 同一次请求里，不按 PC 业务日取数的分区仍然是日历日 21 号，起算小时 0。
         var other = (await AuthRegistrationTestHost.ReadJsonAsync(
             await client.GetAsync("/api/v1/today/sections/calendar.tasks?date=2026-10-21T02:00")))

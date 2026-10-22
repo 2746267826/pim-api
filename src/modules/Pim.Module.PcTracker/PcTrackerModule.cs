@@ -400,8 +400,10 @@ public class PcTrackerModule : IModule
             [FromQuery] bool force = false,
             CancellationToken ct = default) =>
         {
-            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : BusinessToday().AddDays(-7);
-            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : BusinessToday();
+            // 起止缺省值必须取自**同一个**「今天」：分两次读时钟会在跨 04:00 的瞬间得到 8 天/31 天窗口。
+            var today = BusinessToday();
+            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : today.AddDays(-7);
+            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : today;
             var result = await cache.GetOrCreateAsync(
                 AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
                 force,
@@ -943,8 +945,10 @@ public class PcTrackerModule : IModule
             [FromQuery] bool force = false,
             CancellationToken ct = default) =>
         {
-            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : BusinessToday().AddDays(-30);
-            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : BusinessToday();
+            // 起止缺省值必须取自**同一个**「今天」：分两次读时钟会在跨 04:00 的瞬间得到 8 天/31 天窗口。
+            var today = BusinessToday();
+            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : today.AddDays(-30);
+            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : today;
             try
             {
                 var result = await cache.GetOrCreateAsync(
@@ -1600,8 +1604,10 @@ public class PcTrackerModule : IModule
             [FromQuery] bool force = false,
             CancellationToken ct = default) =>
         {
-            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : BusinessToday().AddDays(-7);
-            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : BusinessToday();
+            // 起止缺省值必须取自**同一个**「今天」：分两次读时钟会在跨 04:00 的瞬间得到 8 天/31 天窗口。
+            var today = BusinessToday();
+            var s = start is not null ? DateTime.Parse(start, CultureInfo.InvariantCulture) : today.AddDays(-7);
+            var e = end is not null ? DateTime.Parse(end, CultureInfo.InvariantCulture) : today;
             var result = await cache.GetOrCreateAsync(
                 AggregateResultCacheKeys.Build(httpContext.Request, overrides: [new("start", s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)), new("end", e.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))]),
                 force,

@@ -466,7 +466,16 @@ public sealed class IdempotencyMiddleware
                 // 与新建占位一致：接管后同样只租 InProgressLease，成功写回时再延到 Retention。
                 // 这个值同时是接管者的租约 fencing token。
                 .SetProperty(r => r.ExpiresAt, leaseExpiresAt), CancellationToken.None);
-        if (updated != 1) return (false, null);
+        if (updated != 1)
+        {
+            // 条件更新没命中：要么另一个请求**仍在执行**（租约未过期，正确回 409），
+            // 要么过期行恰好被清理任务删掉了 —— 此时根本没有进行中的请求，回 409 是假冲突
+            // （review P3-4）。按记录是否还存在区分；返回 (true, null) 表示「执行但不簿记」。
+            var exists = await db.IdempotencyRecords.AsNoTracking()
+                .AnyAsync(r => r.UserId == userId && r.Method == method && r.Route == route && r.Key == key,
+                    CancellationToken.None);
+            return exists ? (false, null) : (true, null);
+        }
 
         var row = await db.IdempotencyRecords.AsNoTracking()
             .FirstOrDefaultAsync(r => r.UserId == userId && r.Method == method && r.Route == route && r.Key == key,
