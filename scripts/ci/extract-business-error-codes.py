@@ -71,6 +71,17 @@ CALL_RE = re.compile(
     r"|new\s+\w*Error)\s*\("
 )
 # 匿名声明的错误体：`Results.Json(new { code = 40001, message = "…" }, statusCode: 400)`。
+# 过程间转发（review P1-1）：helper 把调用点传入的 int 参数原样交给错误调用，例如
+# `ValidateJson(json, 3006, "…")` → helper 内 `throw new DomainException(errorCode, message)`。
+# 语句内匹配只看「错误调用本身」，安全网也只认错误调用，于是这类码两边同时漏掉。
+HELPER_HEAD_RE = re.compile(
+    r"(?:(?:public|private|internal|protected)\s+)?"
+    r"(?:static\s+|async\s+|sealed\s+|override\s+|partial\s+)*"
+    r"[\w<>\[\],\.\?]+\s+(\w+)\s*\(([^)]*)\)\s*(?:where\s+[^{]+)?\{")
+FORWARDED_CALL_RE = re.compile(
+    r"(?:DomainException|ApiResponse(?:<[^>]*>)?\.Error|WriteDomainLikeErrorAsync)"
+    r"\s*\(\s*(\w+)\b")
+INT_PARAM_RE = re.compile(r"\bint\??\s+(\w+)")
 ANON_CODE_RE = re.compile(r"new\s*\{[^{}]*?\bcode\s*=\s*([^,}]+)")
 # 直接拼 JSON 的错误体：`"{\"code\":40501,…}"` / `@"{ ""code"": 40501 }"`。
 # 引号在源码里可能是 `\"`、`""` 或裸 `"`，所以两侧都允许 0–2 个引号/转义。
@@ -352,6 +363,9 @@ def first_argument(text, start):
         ch = text[i]
         if ch == '"' or (ch in "$@" and text[i + 1:i + 2] == '"'):
             i = skip_cs_string(text, i, limit)
+            # skip_cs_string 已经返回闭引号之后的位置；再走一次 `i += 1` 会跳过紧跟的逗号，
+            # 实参以字符串开头时（`ValidateJson("{}", 3006, …)`）整个切分会错位。
+            continue
         elif ch in "([{":
             depth += 1
         elif ch in ")]}":
@@ -376,6 +390,67 @@ def nth_argument(text, start, index):
         else:
             return ""
     return first_argument(text, pos)
+
+
+def split_parameters(text):
+    """按顶层逗号切参数表（跳过字符串与嵌套括号）。"""
+    params, depth, start, i = [], 0, 0, 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            i = skip_cs_string(text, i, len(text))
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            params.append(text[start:i])
+            start = i + 1
+        i += 1
+    if text[start:].strip():
+        params.append(text[start:])
+    return params
+
+
+def block_after(text, brace):
+    """`brace` 指向 `{`；返回配对 `}` 之前的文本（跳过字符串）。"""
+    depth, i = 0, brace
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            i = skip_cs_string(text, i, len(text))
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace + 1:i]
+        i += 1
+    return text[brace + 1:]
+
+
+def forwarding_helpers(text):
+    """{helper 名: 码参数下标}：方法把某个 int 参数原样传给错误调用（review P1-1）。
+
+    `WriteDomainLikeErrorAsync` 自带 HTTP 状态参数，它的调用点会由 CALL_RE 支路按
+    第二个实参取状态；再按「缺省 400」走一遍会把 502 之类的码记成 400，所以排除。
+    """
+    helpers = {}
+    for match in HELPER_HEAD_RE.finditer(text):
+        if match.group(1) == "WriteDomainLikeErrorAsync":
+            continue
+        body = block_after(text, match.end() - 1)
+        forwarded = {m.group(1) for m in FORWARDED_CALL_RE.finditer(body)}
+        if not forwarded:
+            continue
+        for index, param in enumerate(split_parameters(match.group(2))):
+            int_param = INT_PARAM_RE.search(param)
+            if int_param and int_param.group(1) in forwarded:
+                helpers.setdefault(match.group(1), index)
+                break
+    return helpers
 
 
 def code_argument_index(call_shape):
@@ -478,6 +553,11 @@ def collect(source_root):
     bare = {name: next(iter(values)) for name, values in bare_sets.items() if len(values) == 1}
     string_bare = {name: next(iter(values)) for name, values in string_bare_sets.items() if len(values) == 1}
     string_consts = (string_qualified, string_bare)
+    # helper 定义与调用点通常不在同一个文件：先全仓收集，再逐个文件找调用点。
+    forwarding = {}
+    for _path, source in sources:
+        for name, index in forwarding_helpers(source).items():
+            forwarding.setdefault(name, index)
 
     for path, text in sources:
         rel = os.path.relpath(path, REPO_ROOT).replace("\\", "/")
@@ -508,6 +588,25 @@ def collect(source_root):
             message = message_after(text, match.end(), index, string_consts)
             if message and message not in entry["messages"]:
                 entry["messages"].append(message)
+
+        # 转发 helper 的调用点：码在调用实参里，错误调用出现在 helper 体内（review P1-1）。
+        for helper_name, helper_index in forwarding.items():
+            for match in re.finditer(r"\b%s\s*\(" % re.escape(helper_name), text):
+                code_arg = nth_argument(text, match.end(), helper_index)
+                code = resolve_code(code_arg, qualified, bare)
+                if code is None:
+                    continue
+                entry = entries.setdefault(
+                    code, {"messages": [], "files": set(), "written": set(), "statuses": set()})
+                literal_token = code_arg.strip()
+                entry["written"].add(
+                    literal_token if re.fullmatch(r"\d{3,5}", literal_token)
+                    else written.get(code, "%d" % code))
+                entry["files"].add(rel)
+                entry["statuses"].add(status_for_call(text, match.start(), mapping, code))
+                message = message_after(text, match.end(), helper_index, string_consts)
+                if message and message not in entry["messages"]:
+                    entry["messages"].append(message)
 
         # 匿名错误体 `new { code = 40001, … }` 与直接拼的 JSON `"{\"code\":40501,…}"`：
         # 码不经过任何构造函数，CALL_RE 看不见（review P1-1）。`code = 0` 是成功语义，跳过。

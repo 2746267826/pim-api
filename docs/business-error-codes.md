@@ -90,6 +90,9 @@
 | 3003 | 400 | OperationConfirmationService | Confirmation record is not pending. | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
 | 3004 | 400 | OperationConfirmationService | Confirmation record has expired. | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
 | 3005 | 400 | OperationConfirmationService, OperationsEndpoints | Confirmation record is not assigned to the current user. | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 3006 | 400 | OperationConfirmationService | PayloadJson must be valid JSON | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 3007 | 400 | OperationConfirmationService | PreviewJson must be valid JSON | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
+| 3008 | 400 | OperationConfirmationService | ResultJson must be valid JSON | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
 | 3009 | 400 | OperationConfirmationService | Strict confirmation is required for this operation. | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
 | 3010 | 400 | DaemonHeartbeatService, OperationConfirmationService | StatusJson 必须是有效 JSON；Second-level confirmation is required for this operation. | 展示 message；多数是请求形状/参数问题，检查客户端组装 |
 | 04000 | 400 | Mobile | 别名长度需 1-50 | 展示 message；多数是请求形状/参数问题，检查客户端组装 |

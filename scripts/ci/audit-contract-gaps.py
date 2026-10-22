@@ -10,9 +10,7 @@
 
 发现分类（finding.category）：
   op-meta          operation 缺 operationId / summary（客户端无法知道这个端点干什么）
-  op-description   operation 缺 description（有 summary 但没写行为语义）
   security         operation 没有声明 security，也没落在明确的公开白名单里
-  parametric      路径模板参数没在 operation 的 parameters 里声明
   request-body     POST/PUT/PATCH 既无 requestBody、源码里也没有显式 FromBody/FromForm 参数
   multipart        源码出现 [FromForm]/IFormFile/BinaryFile，但契约里没有 multipart/form-data
   binary-form      契约里有 multipart，但 form schema 没把文件字段标成 format: binary
@@ -28,10 +26,8 @@
   response-header  源码里显式设置了响应头（X-Truncated / Retry-After …），契约没声明
   no-5xx           客户端会解析 2xx 响应的操作没有声明 5xx（服务端 500 时客户端拿到的是没见过的形状）
   biz-errors       契约文本里出现业务错误码，但没有登记到仓库内的业务错误码表
-  undocumented     契约里有、业务错误码表/说明文档里没有提到（需要 --spec，见 --spec）
   drift-added      当前契约有、基线没有的 operation（通常是「问题所在」或未被告知的变更）
   drift-removed    基线有、当前没有的 operation（客户端会 404 —— 最危险的一种）
-  drift-schema     同名 schema 的属性集合变了
 
 严重度与批准：
   每条发现都带 severity（P0/P1/P2/P3），报告**按 severity 分组**（类别只是组内小节），
@@ -63,6 +59,7 @@
 """
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -114,6 +111,26 @@ PROTOCOL_PATHS = {"/mcp", "/metrics", "/hangfire"}
 INFRA_PATHS = {"/api/{path}"}
 
 CJK = re.compile("[\u4e00-\u9fff]")
+# 枚举型字段的中文豁免：必须**真的列出取值**（review P2-4）。
+# 只写「状态」这种不含列表的中文描述不算——它没有给客户端任何可实现的取值集合。
+VALUE_SEPARATOR_RE = re.compile(r"[、，,|/]|\s或\s")
+ENUM_WORD_RE = re.compile(r"\benum\b", re.IGNORECASE)
+
+
+def lists_values(text):
+    """description 是否列出了枚举取值（或直接写了 enum 字样）。
+
+    判据是「至少两个由分隔符切开的、长度 ≥ 2 的候选值」，而不是「出现任意汉字」：
+    只写「状态」的描述会被当成已说明取值，从而掩盖一个 P1 客户端缺口。
+    """
+    if not text:
+        return False
+    if ENUM_WORD_RE.search(text):
+        return True
+    parts = VALUE_SEPARATOR_RE.split(text)
+    candidates = [part.strip(" \t\r\n（）()。；;：:") for part in parts]
+    return sum(1 for candidate in candidates if len(candidate) >= 2) >= 2
+
 
 # 「关键」头（第三项 True）：不声明客户端就没法正确实现（认证/限流/截断）。
 # 「提示」头（False）：文件下载天然带 ETag / Content-Disposition / Range，契约不声明也能工作，只记 P2。
@@ -139,13 +156,23 @@ def load_baseline_config(path):
     cfg = load_json(path, "审计基线")
     if not isinstance(cfg, dict):
         die_input("审计基线必须是 JSON 对象：%s" % path)
+    raw_operations = cfg.get("operations")
+    if raw_operations is None:
+        raw_operations = []
+    # 结构不对时 `[str(o) for o in ...]` 会把 `"GET /x"` 拆成逐字符列表，
+    # 于是端点删除检测报出一堆根本不存在的 drift-removed（review P3-9）。
+    if not isinstance(raw_operations, list) or not all(isinstance(o, str) for o in raw_operations):
+        die_input("审计基线的 operations 必须是「METHOD /path」字符串数组：%s" % path)
+    for operation in raw_operations:
+        if not re.fullmatch(r"(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+/\S*", operation):
+            die_input("审计基线的 operations 项不合法（应为 \"METHOD /path\"）：%r" % operation)
     return {
         "publicPaths": [str(p) for p in cfg.get("publicPaths") or []],
         "excludePaths": [str(p) for p in cfg.get("excludePaths") or []],
         # 值可以是旧的字符串（仅剩理由）或 {reason, owner, count, expires} 对象；后者才能约束
         # 「新增实例」不被整类批准静默放行（见 evaluate_approvals）。
         "approvedGaps": dict(cfg.get("approvedGaps") or {}),
-        "operations": [str(o) for o in cfg.get("operations") or []],
+        "operations": list(raw_operations),
     }
 
 # 源码里「显式读到请求体」的符号。审计**只**用它们去解释/核对契约，绝不用它们去「豁免」缺口：
@@ -419,10 +446,15 @@ def audit_operations(doc, findings, audit_cfg=None):
         is_api = path.startswith(API_PREFIX) and path not in PROTOCOL_PATHS
         is_write = method in ("POST", "PUT", "PATCH")
         has_body = isinstance(op.get("requestBody"), dict) and bool(op["requestBody"])
+        # description 里的「无请求体」是契约层面唯一能表达的「确实不要 body」；
+        # 文案与建议都承诺了这条路径，检查就必须真的读它（review P2-3）。
+        declares_no_body = bool(re.search(
+            r"无请求体|没有请求体|不使用请求体|no\s+request\s+body",
+            op.get("description") or "", re.IGNORECASE))
 
         # request-body：写操作没有声明请求体。契约层面无法区分「真的没有」与「导出时丢了」，
         # 所以前者需要在描述里写明（源码侧由 audit_sources 给出「自己解析请求体」的直接证据）。
-        if is_api and is_write and not has_body:
+        if is_api and is_write and not has_body and not declares_no_body:
             findings.add("request-body", "%s %s" % (method, path),
                          "写操作没有声明 requestBody（无论 JSON 还是 multipart），也没有写明「无请求体」",
                          path, method,
@@ -497,7 +529,7 @@ def audit_schemas(doc, findings):
             ptype = prop.get("type") or resolved.get("type")
             if prop_name in ENUM_TYPED_NAMES and "$ref" not in prop and ptype in ("string", "integer"):
                 text = (prop.get("description") or resolved.get("description") or "")
-                if "enum" not in prop and "enum" not in resolved and not CJK.search(text):
+                if "enum" not in prop and "enum" not in resolved and not lists_values(text):
                     findings.add("enum-typed", "%s.%s" % (owner, prop_name),
                                  "枚举型字段 %r 是裸 %s：既无 enum，也没有文字枚举说明" % (prop_name, ptype),
                                  suggestion="能导出成 enum 的写 enum（含响应方向）；不能的至少在 description 里列出全部取值与含义",
@@ -682,21 +714,6 @@ def _method_body(text, name):
             if depth == 0:
                 return text[start:j + 1]
     return ""
-
-
-def _handler_route(text, handler_name, consts, groups):
-    """方法组注册的路径：在同文件里找同名方法定义，返回它内部唯一的 `MapXxx("...", ...)` 路径。
-
-    方法组（`group.MapPost("/items/upload", UploadItemAsync)`）的路径就在注册行里，这里已经拿到了；
-    这个函数只处理**另一类写法**：注册行没有字面量、却在方法体里再挂一次路由的罕见情况。
-    找不到就返回 None（由调用方跳过，不猜）。
-    """
-    m = re.search(r"%s\s*\([^)]*\)\s*(?:=>|\{)" % re.escape(handler_name), text)
-    if not m:
-        return None
-    tail = text[m.start(): m.start() + 4000]
-    inner = re.findall(r'\.Map(?:Get|Post|Put|Patch|Delete)\(\s*"([^"]+)"', tail)
-    return inner[0] if len(set(inner)) == 1 else None
 
 
 def first_call_argument(text, open_paren_index):
@@ -974,7 +991,6 @@ SUGGESTIONS = {
     "approval-forbidden": "删掉这条批准：端点删除是硬性破坏，只能恢复或显式改基线",
     "approval-drift": "实例集合变了：复核后用 --print-approvals 重新生成 count/fingerprint",
     "drift-added": "在变更说明里宣告新端点",
-    "drift-schema": "在变更说明里宣告字段增删",
     "stale-approval": "删除对应的 approvedGaps 条目",
 }
 
@@ -991,7 +1007,6 @@ def render_text(result, max_per_category=0):
     by_sev = {}
     for f in result["findings"]:
         by_sev.setdefault(f["severity"], {}).setdefault(f["category"], []).append(f)
-    rendered = set()
     for severity, title in SEVERITY_TITLES:
         cats = by_sev.get(severity)
         if not cats:
@@ -1005,7 +1020,6 @@ def render_text(result, max_per_category=0):
             out.append("### [%s] %s（%d 条%s）" % (cat, SUGGESTIONS.get(cat, ""), len(items), suffix))
             shown = items[:max_per_category] if max_per_category else items
             for f in shown:
-                rendered.add((severity, cat))
                 mark = " [已批准]" if f.get("approved") else ""
                 out.append("  - %s — %s%s" % (f["label"], f["detail"], mark))
             if max_per_category and len(items) > max_per_category:
@@ -1093,9 +1107,13 @@ def evaluate_approvals(approved_raw, items, today, skip_categories=None):
             problems.append((category, "approval-metadata", "P1", detail))
             continue
         expires = str(spec.get("expires"))
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", expires):
+        # 形状对了还不够：`2026-02-31` 这种「看起来像日期」的值会永远 ≥ today，
+        # 批准就变成永不过期。用 fromisoformat 真正校验（review P3-8）。
+        try:
+            datetime.date.fromisoformat(expires)
+        except ValueError:
             problems.append((category, "approval-metadata", "P1",
-                             "expires 必须是 YYYY-MM-DD（当前 %r）" % spec.get("expires")))
+                             "expires 必须是合法的 YYYY-MM-DD（当前 %r）" % spec.get("expires")))
             continue
         if expires < today:
             problems.append((category, "approval-expired", "P1",
@@ -1164,7 +1182,6 @@ def main(argv):
     ap.add_argument("--today", default=None, help="判定批准是否过期的基准日期（YYYY-MM-DD，默认今天；测试用）")
     args = ap.parse_args(argv)
     if args.today is None:
-        import datetime
         args.today = datetime.date.today().isoformat()
 
     doc = load_contract(args.contract)
@@ -1234,12 +1251,20 @@ def main(argv):
         # 与 evaluate_approvals 用的是同一份 findings（含 excludePaths 过滤后的结果），
         # 所以打印出来的 count/fingerprint 直接可以贴回 approvedGaps。
         # 注意：不带 --source-root 时 multipart / response-header 不产生发现，其 count 会是 0。
+        #
+        # 不可批准的类别（drift-removed、approval-*）不能出现在快照里：贴回去只会换来
+        # approval-forbidden P0，等于把人引向一条永远修不好的路（review P2-2）。
         snapshot = {}
         for cat in sorted({f["category"] for f in findings.items}):
+            if cat in NON_APPROVABLE_CATEGORIES or cat.startswith("approval-"):
+                continue
             keys = instance_keys(findings.items, cat)
             snapshot[cat] = {"count": len(keys), "fingerprint": category_fingerprint(keys)}
         print(json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True))
-        return EXIT_OK
+        # 只有「纯打印」才提前返回：同时带 --fail-on 时继续走门禁判定，
+        # 否则 `--fail-on --print-approvals` 会在打印后静默 EXIT 0（review P2-2）。
+        if not args.fail_on:
+            return EXIT_OK
     approved, approval_problems = evaluate_approvals(
         cfg["approvedGaps"], findings.items, args.today, skip_categories=source_side_categories(args))
     for category, problem_category, severity, detail in approval_problems:

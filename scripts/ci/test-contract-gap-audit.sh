@@ -539,6 +539,79 @@ PY
 OUT="$(run --contract "$TMP/gappy.json" --config "$TMP/cfg_nofp.json" 2>&1)"
 expect_contains "㉔ 缺指纹 → approval-metadata" "批准缺少实例指纹" "$OUT"
 
+# ㉕–㉚ review P2-2/P2-3/P2-4/P3-8/P3-9：批准快照、门禁组合、description 兜底、
+# 枚举豁免、日期合法性与基线结构校验。
+cat >"$TMP/pr_a.json" <<'JSON'
+{
+  "openapi": "3.0.1",
+  "info": { "title": "PR", "version": "1" },
+  "paths": {
+    "/api/v1/a": { "get": { "operationId": "getA", "summary": "A", "security": [{ "bearerAuth": [] }],
+      "responses": { "200": { "description": "OK" }, "500": { "description": "E" } } } }
+  }
+}
+JSON
+cat >"$TMP/cfg_removed.json" <<'JSON'
+{ "publicPaths": [], "excludePaths": [], "approvedGaps": {},
+  "operations": ["GET /api/v1/a", "GET /api/v1/gone"] }
+JSON
+OUT="$(run --contract "$TMP/pr_a.json" --config "$TMP/cfg_removed.json" --print-approvals 2>&1)"; RC=$?
+expect_exit "㉕ 纯打印模式退出 0" 0 $RC
+expect_not_contains "㉕ 不为 drift-removed 生成批准" '"drift-removed"' "$OUT"
+OUT="$(run --contract "$TMP/pr_a.json" --config "$TMP/cfg_removed.json" --fail-on --print-approvals 2>&1)"; RC=$?
+expect_exit "㉖ --fail-on 下打印后仍按门禁退出" 1 $RC
+expect_contains "㉖ 仍报出未批准的端点删除" "[drift-removed]" "$OUT"
+
+# ㉗ description 写明「无请求体」是契约层面的合法表达，不能再报 request-body（review P2-3）
+cat >"$TMP/nobody.json" <<'JSON'
+{
+  "openapi": "3.0.1",
+  "info": { "title": "NoBody", "version": "1" },
+  "paths": {
+    "/api/v1/x": { "post": { "operationId": "doX", "summary": "X",
+      "description": "无请求体：本端点按查询参数工作",
+      "security": [{ "bearerAuth": [] }],
+      "responses": { "200": { "description": "OK" }, "500": { "description": "E" } } } }
+  }
+}
+JSON
+OUT="$(run --contract "$TMP/nobody.json" 2>&1)"
+expect_not_contains "㉗ 写明「无请求体」→ 不报 request-body" "写操作没有声明 requestBody" "$OUT"
+
+# ㉘ 非法日期（2026-02-31）不能被当成「永不过期」的批准（review P3-8）
+"$PY" - "$TMP/approvals.json" "$TMP/cfg_baddate.json" <<'PY'
+import json, sys
+snap = json.load(open(sys.argv[1], encoding="utf-8"))
+cat = sorted(snap)[0]
+cfg = {"publicPaths": [], "excludePaths": [], "operations": [],
+       "approvedGaps": {cat: {"reason": "r", "owner": "o", "count": snap[cat]["count"],
+                              "fingerprint": snap[cat]["fingerprint"], "expires": "2026-02-31"}}}
+json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"))
+PY
+OUT="$(run --contract "$TMP/gappy.json" --config "$TMP/cfg_baddate.json" 2>&1)"
+expect_contains "㉘ 非法日期 → approval-metadata" "合法的 YYYY-MM-DD" "$OUT"
+
+# ㉙ operations 结构不对必须退出 4，不能拆成逐字符后报一堆假 drift-removed（review P3-9）
+cat >"$TMP/cfg_badops.json" <<'JSON'
+{ "publicPaths": [], "excludePaths": [], "approvedGaps": {}, "operations": "GET /api/v1/a" }
+JSON
+OUT="$(run --contract "$TMP/pr_a.json" --config "$TMP/cfg_badops.json" --fail-on 2>&1)"; RC=$?
+expect_exit "㉙ operations 不是数组 → 退出 4" 4 $RC
+expect_contains "㉙ 指出 operations 结构错误" "operations 必须是" "$OUT"
+
+# ㉚ 只写「状态」的 description 没有列出取值，仍然要报 enum-typed（review P2-4）
+cat >"$TMP/enum_bare.json" <<'JSON'
+{
+  "openapi": "3.0.1",
+  "info": { "title": "Enum", "version": "1" },
+  "paths": {},
+  "components": { "schemas": { "Thing": { "type": "object",
+    "properties": { "status": { "type": "string", "description": "状态" } } } } }
+}
+JSON
+OUT="$(run --contract "$TMP/enum_bare.json" 2>&1)"
+expect_contains "㉚ 只写「状态」仍报 enum-typed" "Thing.status" "$OUT"
+
 echo ""
 if [ "$FAIL" -ne 0 ]; then
   echo "FAILED：$FAIL 项失败，$PASS 项通过"

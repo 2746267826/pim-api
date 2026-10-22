@@ -231,6 +231,29 @@ hasnt "⑲ new GoogleDriveException(200, …) 不当作业务码" "| 200 |" "$TM
 hasnt "⑲ new ProviderTransientException(429, …) 不当作业务码" "| 429 |" "$TMP/newforms.md"
 hasnt "⑳ 名字含 Status 的常量不被猜成业务码" "| 41005 |" "$TMP/newforms.md"
 
+# ㉑ helper 转发：码由调用点传入、错误调用在 helper 体内（review P1-1）。
+# 语句内匹配只认错误调用本身，安全网也只认错误调用，这类码会两边同时漏掉。
+mkdir -p "$TMP/forward"
+cat >"$TMP/forward/Forward.cs" <<'CS'
+public class Forward
+{
+    static void ValidateJson(string json, int errorCode, string message)
+    {
+        try { using var _ = JsonDocument.Parse(json); }
+        catch (JsonException) { throw new DomainException(errorCode, message); }
+    }
+
+    void A() => ValidateJson("{}", 41006, "Payload JSON is invalid");
+    void B() => ValidateJson("{}", 41007, "Preview JSON is invalid");
+}
+CS
+"$PY" "$EXTRACT" --source-root "$TMP/forward" --doc "$TMP/forward.md" >"$TMP/forward.txt" 2>&1
+RC=$?
+[ $RC -eq 0 ] && pass "㉑ helper 转发形态可生成（退出 0）" || fail "㉑ helper 转发生成失败（实际 $RC）"
+has_part "㉑ helper 转发的码被采集" "| 41006 | 400 |" "$TMP/forward.md"
+has_part "㉑ helper 转发的消息取自调用点" "Payload JSON is invalid" "$TMP/forward.md"
+hasnt "㉑ helper 的参数名不被当成码" "| errorCode |" "$TMP/forward.md"
+
 echo ""
 if [ "$FAIL" -ne 0 ]; then echo "FAILED：$FAIL 项失败，$PASS 项通过"; exit 1; fi
 echo "PASSED：$PASS 项通过"

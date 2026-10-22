@@ -56,7 +56,7 @@
       "fingerprint": "sha256:200b2769f2697f85"
     },
     "enum-typed": {
-      "reason": "136 个枚举型字段无 enum：需逐模块导出枚举（priority 值域见评审报告 P0-2）",
+      "reason": "枚举型字段无 enum（数量见 count）：需逐模块导出枚举（priority 值域见评审报告 P0-2）",
       "owner": "pim-api backend",
       "count": 135,
       "expires": "2026-12-31",
