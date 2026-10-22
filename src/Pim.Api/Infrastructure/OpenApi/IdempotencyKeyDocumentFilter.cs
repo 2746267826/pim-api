@@ -61,7 +61,7 @@ public sealed class IdempotencyKeyDocumentFilter : IDocumentFilter
     {
         if (string.Equals(path, Pim.Api.Middleware.IdempotencyKey.CatchAllRoute, StringComparison.Ordinal))
             return false;
-        if (Pim.Api.Middleware.IdempotencyMiddleware.NonReplayableRoutes.Contains(path))
+        if (Pim.Api.Middleware.IdempotencyMiddleware.IsNonReplayableRoute(path))
             return false;
         // 只有 JWT 用户才有幂等作用域（见 IdempotencyMiddleware.InvokeAsync 的 userId 判定）。
         return operation.Security is { Count: > 0 } requirements

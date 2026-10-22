@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Pim.Api.Middleware;
@@ -355,5 +356,34 @@ public sealed class IdempotencyMiddlewareE2ETests
         Assert.True(second.Headers.TryGetValues(IdempotencyMiddleware.ReplayedHeader, out var replayed));
         Assert.Equal("true", Assert.Single(replayed!));
         Assert.Equal(1, await CountTasksAsync(factory));
+    }
+
+    /// <summary>
+    /// 豁免清单必须与运行时端点表对得上：清单里每条都应有真实端点，且带行内约束的模板
+    /// （<c>{id:guid}</c>）归一化后也要命中（review P1-1）。
+    /// </summary>
+    [Fact]
+    public async Task NonReplayableRoutes_AllMatchRegisteredEndpoints()
+    {
+        var (factory, _, _) = await ArrangeAsync("idem-routes");
+        using var factoryScope = factory;
+
+        var routes = factory.Services.GetRequiredService<EndpointDataSource>()
+            .Endpoints
+            .OfType<RouteEndpoint>()
+            .Select(endpoint => IdempotencyMiddleware.NormalizeRouteTemplate(
+                endpoint.RoutePattern.RawText ?? string.Empty))
+            .ToHashSet(StringComparer.Ordinal);
+
+        var missing = IdempotencyMiddleware.NonReplayableRoutes
+            .Where(route => !routes.Contains(route))
+            .OrderBy(route => route, StringComparer.Ordinal)
+            .ToArray();
+        Assert.True(missing.Length == 0,
+            "豁免清单里的路由没有对应端点（改名/删除后必须同步更新）：" + string.Join(", ", missing));
+
+        // 真实模板带 `:guid` 约束；归一化后必须命中豁免集合。
+        Assert.True(IdempotencyMiddleware.IsNonReplayableRoute("/api/v1/files/items/{id:guid}/share"));
+        Assert.False(IdempotencyMiddleware.IsNonReplayableRoute("/api/v1/calendar/tasks"));
     }
 }

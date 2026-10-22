@@ -13324,7 +13324,7 @@
             "type": "integer"
           },
           "businessDate": {
-            "description": "该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：手机当日使用汇总。客户端不得自行推算。",
+            "description": "业务日标签（yyyy-MM-dd）：传 date 时取其所在业务日；传 rangeStart 时取起点所在业务日；都未传时为当前业务日。注意：未传日期或范围时汇总不做时间过滤，该字段不表示数据只覆盖这个窗口。",
             "format": "date",
             "type": "string"
           },

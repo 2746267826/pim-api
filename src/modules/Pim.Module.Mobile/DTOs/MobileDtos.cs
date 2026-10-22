@@ -379,7 +379,11 @@ public sealed record MobileUsageSummaryResponse(
     IReadOnlyList<MobileSyncBatchSummaryDto> SyncBatches,
     int QualityIssueCount)
 {
-    /// <summary>该响应覆盖的业务日（yyyy-MM-dd）。客户端不得自行推算（契约语义 §1）。</summary>
+    /// <summary>
+    /// 业务日标签（yyyy-MM-dd）：传 date 时取其所在业务日；传 rangeStart 时取起点所在业务日；
+    /// 都未传时为当前业务日。它**不**表示汇总数据只覆盖该窗口 —— 未传日期/范围时不做时间过滤
+    /// （契约语义 §1；review P3-3）。
+    /// </summary>
     public string BusinessDate { get; init; } = string.Empty;
 
     /// <summary>业务日时区（IANA，恒为 Asia/Shanghai）。</summary>

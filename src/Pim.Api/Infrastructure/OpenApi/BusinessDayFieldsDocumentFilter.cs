@@ -25,19 +25,23 @@ public sealed class BusinessDayFieldsDocumentFilter : IDocumentFilter
     /// 按日端点清单（与 docs/client-contract-semantics.md §1 保持一致）。
     /// StartHour 为 null 表示「按分区而定」，description 不写死 4（review P3-1）。
     /// </summary>
-    public static readonly IReadOnlyDictionary<string, (string Note, int? StartHour)> Endpoints =
-        new Dictionary<string, (string Note, int? StartHour)>(StringComparer.OrdinalIgnoreCase)
+    public static readonly IReadOnlyDictionary<string, (string Note, int? StartHour, string? BusinessDateDescription)> Endpoints =
+        new Dictionary<string, (string Note, int? StartHour, string? BusinessDateDescription)>(StringComparer.OrdinalIgnoreCase)
         {
-            ["/api/v1/today/sections"] = ("今日分区注册表（日历日）", 0),
+            ["/api/v1/today/sections"] = ("今日分区注册表（日历日）", 0, null),
             ["/api/v1/today/sections/{sectionId}"] =
-                ("单个今日分区（pc.activity / pc.quality 为 4，其余为 0）", null),
-            ["/api/v1/pc/summary"] = ("PC 当日汇总", Pim.Core.Common.BusinessDateEnvelope.StartHour),
-            ["/api/v1/mobile/summary"] = ("手机当日使用汇总", Pim.Core.Common.BusinessDateEnvelope.StartHour),
+                ("单个今日分区（pc.activity / pc.quality 为 4，其余为 0）", null, null),
+            ["/api/v1/pc/summary"] = ("PC 当日汇总", Pim.Core.Common.BusinessDateEnvelope.StartHour, null),
+            // 手机汇总在**不传日期/范围**时不过滤时间（返回历史全量），businessDate 只是「今天」的标签。
+            // 写成「该响应覆盖的业务日」会让客户端把全量数据当成今天的数据（review P3-3）。
+            ["/api/v1/mobile/summary"] = ("手机使用汇总", Pim.Core.Common.BusinessDateEnvelope.StartHour,
+                "业务日标签（yyyy-MM-dd）：传 date 时取其所在业务日；传 rangeStart 时取起点所在业务日；"
+                + "都未传时为当前业务日。注意：未传日期或范围时汇总不做时间过滤，该字段不表示数据只覆盖这个窗口。"),
         };
 
     public void Apply(OpenApiDocument document, DocumentFilterContext context)
     {
-        foreach (var (path, (note, startHour)) in Endpoints)
+        foreach (var (path, (note, startHour, businessDateDescription)) in Endpoints)
         {
             if (!document.Paths.TryGetValue(path, out var item) || item.Operations is null)
                 throw new InvalidOperationException($"业务日契约：契约里找不到路径 {path}（是否改名/删除？）");
@@ -51,7 +55,9 @@ public sealed class BusinessDayFieldsDocumentFilter : IDocumentFilter
                     ?? throw new InvalidOperationException($"业务日契约：{path} 的 200 响应 schema 无法解析");
                 payload.Properties ??= new Dictionary<string, OpenApiSchema>();
                 Upsert(payload, "businessDate", "string", "date",
-                    $"该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：{note}。客户端不得自行推算。", example: null);
+                    businessDateDescription
+                    ?? $"该响应覆盖的业务日（yyyy-MM-dd）。服务端权威口径：{note}。客户端不得自行推算。",
+                    example: null);
                 Upsert(payload, "businessTimeZone", "string", null,
                     $"业务日时区（IANA）：{Pim.Core.Common.BusinessDateEnvelope.TimeZoneId}",
                     example: new OpenApiString(Pim.Core.Common.BusinessDateEnvelope.TimeZoneId));

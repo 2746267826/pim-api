@@ -1,5 +1,6 @@
 ﻿using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Routing.Patterns;
@@ -96,6 +97,31 @@ public sealed class IdempotencyMiddleware
         "/api/v1/calendar/outlook/device-code/poll",
     };
 
+    /// <summary>
+    /// 去掉参数段上的约束/可选/默认值，把路由模板归一化成契约写法：
+    /// <c>{id:guid}</c> / <c>{id?}</c> / <c>{id=1}</c> → <c>{id}</c>；catch-all 的 <c>*</c> / <c>**</c> 保留。
+    /// </summary>
+    public static string NormalizeRouteTemplate(string template)
+        => RouteParamTemplate.Replace(template,
+            match => "{" + match.Groups[1].Value + match.Groups[2].Value + "}");
+
+    // 必须声明在 NonReplayableNormalized 之前：静态字段按文本顺序初始化，
+    // 反向声明会让归一化集合在建类时拿到 null 正则（TypeInitializationException）。
+    private static readonly Regex RouteParamTemplate =
+        new(@"\{(\*{1,2})?([A-Za-z_][A-Za-z0-9_]*)[^{}]*\}", RegexOptions.Compiled);
+
+    /// <summary>
+    /// 归一化后的豁免集合。运行时路由模板会保留行内约束
+    /// （<c>/api/v1/files/items/{id:guid}/share</c>），而上面按契约写法维护
+    /// （<c>{id}</c>）；不归一化就永远比较不上，豁免形同虚设（review P1-1）。
+    /// </summary>
+    private static readonly HashSet<string> NonReplayableNormalized = new(
+        NonReplayableRoutes.Select(NormalizeRouteTemplate), StringComparer.Ordinal);
+
+    /// <summary>该路由模板（运行时形态或契约形态）是否属于不缓存响应的一次性凭据端点。</summary>
+    public static bool IsNonReplayableRoute(string route)
+        => NonReplayableNormalized.Contains(NormalizeRouteTemplate(route));
+
     private static readonly string[] ReplayedHeaders = ["Location", "ETag", "Last-Modified"];
 
     private readonly RequestDelegate _next;
@@ -145,7 +171,7 @@ public sealed class IdempotencyMiddleware
         var route = IdempotencyKey.RouteOf(endpoint, ctx.Request.Path);
         // 兜底路由的模板是 `/api/{*path}`（Swashbuckle 在文档里把它重建为 `/api/{path}`），
         // 直接比较字符串容易写错一边；按路由段判断 catch-all 才是可靠的。
-        if (NonReplayableRoutes.Contains(route) || IdempotencyKey.IsCatchAll(endpoint))
+        if (IsNonReplayableRoute(route) || IdempotencyKey.IsCatchAll(endpoint))
         {
             await _next(ctx);
             return;

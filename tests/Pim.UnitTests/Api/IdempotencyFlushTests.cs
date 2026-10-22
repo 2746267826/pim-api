@@ -64,11 +64,21 @@ public sealed class IdempotencyFlushTests
             new EndpointMetadataCollection(new AllowAnonymousAttribute()),
             displayName: "anon-test");
 
-    private static DefaultHttpContext NewContext(ServiceProvider services, Endpoint endpoint, string key)
+    /// <summary>OpsKey 端点：既没有 <see cref="IAuthorizeData"/>，也没有 AllowAnonymous。</summary>
+    private static Endpoint NoAuthMetadata()
+        => new RouteEndpoint(
+            _ => Task.CompletedTask,
+            RoutePatternFactory.Parse(Path),
+            order: 0,
+            EndpointMetadataCollection.Empty,
+            displayName: "ops-test");
+
+    private static DefaultHttpContext NewContext(
+        ServiceProvider services, Endpoint endpoint, string key, string path = Path)
     {
         var ctx = new DefaultHttpContext { RequestServices = services };
         ctx.Request.Method = HttpMethods.Post;
-        ctx.Request.Path = Path;
+        ctx.Request.Path = path;
         ctx.Request.Headers[IdempotencyMiddleware.HeaderName] = key;
         ctx.Response.Body = new MemoryStream();
         ctx.SetEndpoint(endpoint);
@@ -83,14 +93,17 @@ public sealed class IdempotencyFlushTests
     }
 
     private static IdempotencyMiddleware Middleware(Action onCall)
-        => new(async ctx =>
+        => Middleware(async ctx =>
         {
             onCall();
             await ctx.Response.WriteAsync("{\"code\":0,\"data\":\"ok\"}");
             // 模拟「下游已经 flush / 响应已开始」：回写路径不能因此被跳过。
             await ctx.Response.Body.FlushAsync();
             ctx.Response.Body.Flush();
-        }, NullLogger<IdempotencyMiddleware>.Instance);
+        });
+
+    private static IdempotencyMiddleware Middleware(Func<HttpContext, Task> handler)
+        => new(ctx => handler(ctx), NullLogger<IdempotencyMiddleware>.Instance);
 
     [Fact]
     public async Task DownstreamFlush_BodyReachesClient_AndIsCached()
@@ -118,6 +131,83 @@ public sealed class IdempotencyFlushTests
         var record = await db.IdempotencyRecords.SingleAsync(r => r.Key == key);
         Assert.Equal("completed", record.State);
         Assert.Equal("{\"code\":0,\"data\":\"ok\"}", record.ResponseBody);
+    }
+
+    [Fact]
+    public async Task EndpointWithoutAuthMetadata_WithAuthenticatedUser_IsNotRecorded()
+    {
+        // 只判 AllowAnonymous 不够：OpsKey 端点（/api/v1/ops/*）没有任何授权元数据，
+        // 但请求可能同时带着有效 JWT。删掉 IAuthorizeData 判定会让它们被缓存 24 小时（review P3-2）。
+        var userId = Guid.NewGuid();
+        using var services = CreateServices(userId);
+        var key = Guid.NewGuid().ToString();
+        var calls = 0;
+        var middleware = Middleware(() => calls++);
+
+        await middleware.InvokeAsync(NewContext(services, NoAuthMetadata(), key));
+        await middleware.InvokeAsync(NewContext(services, NoAuthMetadata(), key));
+
+        Assert.Equal(2, calls);
+        using var scope = services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        Assert.Empty(await db.IdempotencyRecords.Where(r => r.Key == key).ToListAsync());
+    }
+
+    [Fact]
+    public async Task ShareRoute_WithInlineGuidConstraint_IsExemptFromIdempotency()
+    {
+        // 运行时 RoutePattern.RawText 保留 `{id:guid}`，而豁免清单按契约写法 `{id}` 维护。
+        // 不做归一化时这里会命中不到，分享链接的 webUrl（bearer 能力链接）会被缓存 24 小时（review P1-1）。
+        const string sharePath = "/api/v1/files/items/11111111-1111-1111-1111-111111111111/share";
+        var endpoint = new RouteEndpoint(
+            _ => Task.CompletedTask,
+            RoutePatternFactory.Parse("/api/v1/files/items/{id:guid}/share"),
+            order: 0,
+            new EndpointMetadataCollection(new AuthorizeAttribute()),
+            displayName: "share-test");
+
+        var userId = Guid.NewGuid();
+        using var services = CreateServices(userId);
+        var key = Guid.NewGuid().ToString();
+        var calls = 0;
+        var middleware = Middleware(() => calls++);
+
+        var first = NewContext(services, endpoint, key, sharePath);
+        await middleware.InvokeAsync(first);
+        var second = NewContext(services, endpoint, key, sharePath);
+        await middleware.InvokeAsync(second);
+
+        Assert.Equal(2, calls);
+        Assert.False(second.Response.Headers.ContainsKey(IdempotencyMiddleware.ReplayedHeader));
+        using var scope = services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        Assert.Empty(await db.IdempotencyRecords.Where(r => r.Key == key).ToListAsync());
+    }
+
+    [Fact]
+    public async Task OversizedResponse_IsNotCached_AndRetryExecutesAgain()
+    {
+        // 超过捕获上限时不缓存（只缓存状态码会让重放返回「2xx + 空正文」），
+        // 并且必须释放占位，让客户端用同一个 key 重试时真的重新执行（review P3-2）。
+        var userId = Guid.NewGuid();
+        using var services = CreateServices(userId);
+        var key = Guid.NewGuid().ToString();
+        var calls = 0;
+        var big = new string('x', IdempotencyMiddleware.MaxResponseBodyBytes + 1);
+        var middleware = Middleware(async ctx => { calls++; await ctx.Response.WriteAsync(big); });
+
+        var first = NewContext(services, Authorized(), key);
+        await middleware.InvokeAsync(first);
+        Assert.False(first.Response.Headers.ContainsKey(IdempotencyMiddleware.ReplayedHeader));
+
+        var second = NewContext(services, Authorized(), key);
+        await middleware.InvokeAsync(second);
+        Assert.False(second.Response.Headers.ContainsKey(IdempotencyMiddleware.ReplayedHeader));
+        Assert.Equal(2, calls);
+
+        using var scope = services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        Assert.Empty(await db.IdempotencyRecords.Where(r => r.Key == key).ToListAsync());
     }
 
     [Fact]

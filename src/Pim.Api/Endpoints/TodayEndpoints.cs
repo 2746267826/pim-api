@@ -33,7 +33,7 @@ public static class TodayEndpoints
             return await RunWithDateValidationAsync(async () =>
             {
                 var result = await cache.GetOrCreateAsync(
-                    AggregateResultCacheKeys.Build(httpContext.Request, overrides: ImplicitDateOverrides(date)),
+                    BuildCacheKey(httpContext.Request, date, DateTimeOffset.UtcNow),
                     force,
                     () => today.GetRegistryAsync(date, ct),
                     ct);
@@ -57,7 +57,7 @@ public static class TodayEndpoints
             return await RunWithDateValidationAsync(async () =>
             {
                 var result = await cache.GetOrCreateAsync(
-                    AggregateResultCacheKeys.Build(httpContext.Request, overrides: ImplicitDateOverrides(date)),
+                    BuildCacheKey(httpContext.Request, date, DateTimeOffset.UtcNow),
                     force,
                     () => today.GetSectionAsync(sectionId, date, ct),
                     ct);
@@ -74,12 +74,17 @@ public static class TodayEndpoints
     }
 
     /// <summary>
-    /// 不带 date 时把服务端算出的业务日放进缓存键（带 date 时键里本来就有 date）。
+    /// 端点实际使用的缓存键：不带 date 时把服务端算出的业务日放进键（带 date 时键里本来就有 date）。
     /// 否则 03:59 的快照会在 04:00 之后继续被当作「今天」返回（review P2-5）。
+    /// 抽成可传时钟的纯函数，测试才能覆盖「端点真的用了它」这条接线（review P3-2）。
     /// </summary>
-    private static IReadOnlyList<KeyValuePair<string, string>>? ImplicitDateOverrides(string? date)
+    internal static string BuildCacheKey(HttpRequest request, string? date, DateTimeOffset nowUtc)
+        => AggregateResultCacheKeys.Build(request, overrides: ImplicitDateOverrides(date, nowUtc));
+
+    private static IReadOnlyList<KeyValuePair<string, string>>? ImplicitDateOverrides(
+        string? date, DateTimeOffset nowUtc)
         => string.IsNullOrWhiteSpace(date)
-            ? [new("implicitDate", TodaySectionService.ImplicitDateCacheKey())]
+            ? [new("implicitDate", TodaySectionService.ImplicitDateCacheKey(nowUtc))]
             : null;
 
     public static IResult ToInvalidDateResult()

@@ -34,6 +34,33 @@ public class PcTrackerModule : IModule
     private static DateTime BusinessToday()
         => BusinessDay.GetBusinessDate(DateTimeOffset.UtcNow).ToDateTime(TimeOnly.MinValue);
 
+    /// <summary>
+    /// <c>/pc/quality</c> 的缓存键覆盖项。服务层的区间是
+    /// <c>[dateFrom ?? date ?? 今天, dateTo ?? date ?? from]</c>，所以键里必须出现每个**原始输入**，
+    /// 并单独记录「两者都缺省时才取今天」：
+    /// <list type="bullet">
+    /// <item><c>dateFrom=10-01</c> 与 <c>date=10-10&amp;dateFrom=10-01</c> 的实际区间不同
+    /// （一天 vs 十天），不能折叠成同一个键（review P2-1）；</item>
+    /// <item>只在缺省时引入今天，跨 04:00 才会换键（review P2-4）。</item>
+    /// </list>
+    /// </summary>
+    internal static IReadOnlyList<KeyValuePair<string, string>> QualityCacheOverrides(
+        DateTime? date, DateTime? dateFrom, DateTime? dateTo, DateTime today)
+    {
+        static string Format(DateTime? value)
+            => value?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty;
+
+        return
+        [
+            new("date", Format(date)),
+            new("dateFrom", Format(dateFrom)),
+            new("dateTo", Format(dateTo)),
+            new("implicitDate", date is null && dateFrom is null
+                ? today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                : string.Empty),
+        ];
+    }
+
     public void RegisterServices(IServiceCollection services, IConfiguration configuration)
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
@@ -429,16 +456,9 @@ public class PcTrackerModule : IModule
             var parsedDate = TryParseDate(date);
             var parsedDateFrom = TryParseDate(dateFrom);
             var parsedDateTo = TryParseDate(dateTo);
-            // 服务层缺省日期是「业务日今天」（dateFrom ?? date ?? 今天）。缓存键必须包含这个算出来的
-            // 日期，否则跨 04:00 边界仍会命中上一业务日的缓存（review P2-4）。
-            var effectiveDate = parsedDateFrom ?? parsedDate ?? BusinessToday();
             var result = await cache.GetOrCreateAsync(
                 AggregateResultCacheKeys.Build(httpContext.Request, overrides:
-                [
-                    new("date", effectiveDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
-                    new("dateFrom", parsedDateFrom?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty),
-                    new("dateTo", parsedDateTo?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty),
-                ]),
+                    QualityCacheOverrides(parsedDate, parsedDateFrom, parsedDateTo, BusinessToday())),
                 force,
                 () => svc.GetQualityAsync(
                     parsedDate,

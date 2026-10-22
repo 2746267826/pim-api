@@ -17,6 +17,9 @@
 - **窗口语义**：业务日 D 覆盖 `[D businessDayStartHour, D+1 businessDayStartHour)`，
   时区为 `businessTimeZone`（左闭右开）。客户端必须用响应里的 `businessDate + businessDayStartHour`
   推算窗口，**不要**假定起算小时固定。
+- **例外：`/api/v1/mobile/summary` 的 `businessDate` 是「标签」而不是「窗口」**。传 `date` 时取该业务日，
+  传 `rangeStart` 时取起点所在业务日，都未传时为当前业务日；但未传日期/范围时服务端**不做时间过滤**
+  （返回历史全量），此时它**不**表示数据只覆盖这个窗口。需要「今天的汇总」时必须显式传 `date`。
 - **取值**：`0` = 日历日 `[00:00, 24:00)`（`/today/sections` registry、`calendar` / `reminders` 等分区）；
   `4` = PC 业务日 `[04:00, 次日 04:00)`（`pc.activity` / `pc.quality` 分区、`/api/v1/pc/summary`）。
   两者按分区各取各的：同一个 `/today/sections` 响应里 registry 的 `businessDayStartHour` 是 `0`，
@@ -56,8 +59,10 @@
    **同一个 409 可能有两种 body**：端点自身的业务 409（例如 Outlook writeback）与这里的 `{code:40902}`。
    契约里两者共用一个状态码，**schema 声明为 `oneOf: [业务响应, StringApiResponse]`**，客户端必须按 body 的
    `code` 区分。
-   `Idempotency-Key` 超过 128 个字符时返回 `400` + `code=40010`（独立码，不复用 40002）；
-   该 400 已对每个参与幂等的 operation 声明，已有业务 400 的端点同样使用 `oneOf`。
+   `Idempotency-Key` 超过 128 个字符时返回 `400` + `code=40010`（独立码，不复用 40002）。
+   该 400 已对全部 161 个参与幂等的 operation 声明：原本缺 400 的 **12 个**新增声明，
+   已有业务 400 的端点直接复用既有的 `StringApiResponse`（两种 400 恰好同一 schema，因此**不做** `oneOf`）；
+   只有新增 400 的这 12 个 operation 会在 400 描述里写明 40010。
 5. 首次请求失败（非 2xx）：不缓存，客户端可以用同一个 key 重试，服务端会重新执行。
 6. 读操作忽略该请求头。
 7. **只有唯一键冲突（PostgreSQL 23505）才会被解释为「另一个请求正在执行」**；其它存储错误（含接管过期行
