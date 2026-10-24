@@ -92,10 +92,23 @@ try {
       if (path === '/api/v1/status/summary') return reply({ status: 0, label: 'fixture', message: '', checkedAt: new Date(NOW).toISOString() })
       if (path === '/api/v1/calendar/calendars' || path === '/api/v1/calendar/task-books') return reply([])
       if (path === '/api/v1/calendar/tasks') {
-        if (url.searchParams.has('page')) {
-          return reply({ items: tasks, totalCount: tasks.length, page: 1, pageSize: 100, totalPages: 1 })
+        let items = tasks
+        if (url.searchParams.has('priority')) {
+          items = items.filter((item) => item.priority === Number(url.searchParams.get('priority')))
         }
-        return reply(tasks)
+        if (url.searchParams.has('status')) {
+          items = items.filter((item) => item.status === url.searchParams.get('status'))
+        }
+        if (url.searchParams.has('page')) {
+          const pageNumber = Number(url.searchParams.get('page'))
+          const pageSize = Number(url.searchParams.get('pageSize') ?? 100)
+          return reply({
+            items: items.slice((pageNumber - 1) * pageSize, pageNumber * pageSize),
+            totalCount: items.length, page: pageNumber, pageSize,
+            totalPages: Math.ceil(items.length / pageSize),
+          })
+        }
+        return reply(items)
       }
       if (path === '/api/v1/calendar/layers') return reply({ start: url.searchParams.get('start'), end: url.searchParams.get('end'), items: [] })
       if (path === '/api/v1/calendar/events') return reply({ items: [], totalCount: 0, page: 1, pageSize: 100, totalPages: 1 })
