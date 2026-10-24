@@ -222,6 +222,19 @@ public sealed class OpenApiContractShapeTests
     private static readonly string[] ExpectedTaskStatuses =
         ["NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED"];
 
+    [Fact]
+    public void TaskUpdateSchemaDistinguishesOmissionFromNull()
+    {
+        var schema = Schema("UpdateTaskRequest");
+        Assert.Empty(RequiredOf(schema));
+        Assert.DoesNotContain("providedFields", schema.Properties.Keys);
+        Assert.Contains("omitted", schema.Description);
+        foreach (var name in new[] { "title", "priority", "percentComplete" })
+            Assert.False(schema.Properties[name].Nullable);
+        foreach (var name in new[] { "description", "calendarId", "taskBookId", "due", "dtStart", "plannedEnd", "estimatedDuration", "minimumSegment" })
+            Assert.True(schema.Properties[name].Nullable);
+    }
+
     /// <summary>
     /// 请求侧：三个任务状态写入口（新建 / 更新 / 批量更新）都必须标出 enum，
     /// 且与服务端真实白名单（<c>TaskStatuses.All</c>）逐字一致。

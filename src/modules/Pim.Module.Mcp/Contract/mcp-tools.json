@@ -3354,7 +3354,7 @@
   },
   {
     "name": "update_task",
-    "description": "Update a task (status/priority/due dates). Requires write permission update_task.",
+    "description": "Update a task (status/priority/due dates). Omitted arguments keep their current values. MCP null arguments are omitted for compatibility, not treated as clears; use REST with explicit null to clear nullable fields. Requires write permission update_task.",
     "inputSchema": {
       "properties": {
         "taskId": {

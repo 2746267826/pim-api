@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace Pim.Module.Calendar.DTOs;
 
@@ -188,11 +189,12 @@ public record CreateTaskRequest(
     int? PercentComplete = null
 );
 
+[JsonConverter(typeof(Services.UpdateTaskRequestJsonConverter))]
 public record UpdateTaskRequest(
     Guid? CalendarId,
-    [property:Required][property:MaxLength(255)] string Title,
+    [property:MaxLength(255)] string? Title,
     string? Description,
-    int Priority,
+    int? Priority,
     string? EstimatedDuration,
     string? MinimumSegment,
     DateTimeOffset? Due,
@@ -200,8 +202,20 @@ public record UpdateTaskRequest(
     string? Status = null,
     DateTimeOffset? PlannedEnd = null,
     Guid? TaskBookId = null,
-    int? PercentComplete = null
-);
+    int? PercentComplete = null)
+{
+    // JSON distinguishes omission from null; direct constructor callers keep their prior semantics.
+    [JsonIgnore]
+    internal HashSet<string>? ProvidedFields { get; init; }
+
+    internal bool WasProvided(string field) => ProvidedFields?.Contains(field) ?? field switch
+    {
+        nameof(Status) => Status is not null,
+        nameof(PlannedEnd) => PlannedEnd.HasValue,
+        nameof(PercentComplete) => PercentComplete.HasValue,
+        _ => true,
+    };
+}
 
 public record TaskResponse(
     Guid Id, Guid? CalendarId, string Uid, string Title,

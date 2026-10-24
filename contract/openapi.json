@@ -19240,6 +19240,7 @@
       },
       "UpdateTaskRequest": {
         "additionalProperties": false,
+        "description": "Partial task update: omitted fields keep their stored values. Explicit null clears nullable fields; status null keeps the existing status. title, priority and percentComplete cannot be null when provided.",
         "properties": {
           "calendarId": {
             "format": "uuid",
@@ -19269,8 +19270,8 @@
             "type": "string"
           },
           "percentComplete": {
+            "description": "Optional; omission preserves the current value. Explicit null is rejected (400).",
             "format": "int32",
-            "nullable": true,
             "type": "integer"
           },
           "plannedEnd": {
@@ -19279,6 +19280,7 @@
             "type": "string"
           },
           "priority": {
+            "description": "Optional; omission preserves the current value. Explicit null is rejected (400).",
             "format": "int32",
             "type": "integer"
           },
@@ -19298,15 +19300,11 @@
             "type": "string"
           },
           "title": {
+            "description": "Optional; omission preserves the current value. Explicit null is rejected (400).",
             "maxLength": 255,
-            "minLength": 1,
             "type": "string"
           }
         },
-        "required": [
-          "priority",
-          "title"
-        ],
         "type": "object"
       },
       "UpdateUserRoleRequest": {

@@ -106,7 +106,7 @@ export function TaskEditorDialog({ open, onOpenChange, taskBooks, task, initialP
     const dtStart = fromLocalInputValue(values.dtStart)
     const plannedEnd = fromLocalInputValue(values.plannedEnd)
     /* 契约类型（而非 Record<string, unknown>）：POST 与 PUT 的必填集由编译器校验 */
-    const body: components['schemas']['CreateTaskRequest'] | components['schemas']['UpdateTaskRequest'] = {
+    const body = {
       title: values.title,
       description: values.description || null,
       priority: Number(values.priority),
@@ -118,9 +118,9 @@ export function TaskEditorDialog({ open, onOpenChange, taskBooks, task, initialP
       status: values.status,
       percentComplete: Number(values.percentComplete) || 0,
       taskBookId: values.taskBookId || null,
-    }
+    } satisfies components['schemas']['CreateTaskRequest'] & components['schemas']['UpdateTaskRequest']
     try {
-      await save.mutateAsync({ id: task?.id, body })
+      await save.mutateAsync(task ? { id: task.id, body } : { body })
       onOpenChange(false)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : '保存失败，请稍后重试')
