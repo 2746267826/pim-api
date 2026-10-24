@@ -938,8 +938,12 @@ public sealed record DeviceExportDto(string FileName, string Json);
 /// <c>pc_browser_site_daily</c> / <c>pc_browser_site_tick</c> / <c>pc_activity_classifications</c>）：
 /// 这些表**没有任何用户归属列**，PC 的 device_id 由 PC 守护进程上报、与手机设备不同源；
 /// 按 device_id 处理等于跨用户改写。
-/// 2) <c>app_usage</c>（<c>Pim.Module.Stats</c> 遗留原型）：同样没有 <c>user_id</c>，
-/// 且只有 30 天滚动清理、没有任何读路由。
+/// 2) <c>app_usage</c>：实体与代码已随 <c>Pim.Module.Stats</c> 一并删除（三个客户端仓的**源码**零调用；
+/// 发布产物只 publish <c>Pim.Api.csproj</c>，不含该 DLL，因此路由只在引用它的测试宿主里被实例化过）。
+/// 经核实：迁移链与模型快照**从未创建**该表，生产发布也从未加载该模块，所以本代码库管理的库
+/// 不会有这张表；代码不再读写它。若运维侧曾**手工**建过、或历史 <c>EnsureCreated</c> 宿主残留同名表
+/// （<c>PimMigrationAdoptionService</c> 会原样接管既有 schema、不删除额外表），其清理与保留策略由运维确认
+/// （刻意不加 Drop 迁移：迁移链里没有它的创建记录，自动删除可能误删非本代码库所有的数据）。
 /// </para>
 /// </summary>
 internal static class DeviceScopedTables{

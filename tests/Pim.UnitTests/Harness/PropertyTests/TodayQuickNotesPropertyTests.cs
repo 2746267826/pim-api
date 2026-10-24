@@ -14,67 +14,13 @@ using Pim.Infrastructure.Operations;
 using Pim.Module.QuickNotes.DTOs;
 using Pim.Module.QuickNotes.Entities;
 using Pim.Module.QuickNotes.Services;
-using Pim.Module.Stats.DTOs;
-using Pim.Module.Stats.Entities;
 using Pim.UnitTests.Harness;
 using Xunit;
 
 namespace Pim.UnitTests.Harness.PropertyTests;
 
-public sealed class StatsTodayQuickNotesTests
+public sealed class TodayQuickNotesPropertyTests
 {
-    // ---------- StatsService ----------
-
-    [Fact]
-    public async Task Stats_IngestBatchAsync_ShouldPersistEntries()
-    {
-        await using var db = ServiceTestBase.CreateDb();
-        var service = ServiceTestBase.CreateStatsService(db);
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var batch = new UploadBatch("device-1", new List<AppUsageEntry>
-        {
-            new("com.example.app1", nowMs - 60000, nowMs, 60000, nowMs),
-            new("com.example.app2", nowMs - 120000, nowMs - 60000, 60000, nowMs - 60000),
-        });
-
-        var count = await service.IngestBatchAsync(batch, CancellationToken.None);
-
-        Assert.Equal(2, count);
-        var stored = await db.Set<AppUsageEntity>().ToListAsync();
-        Assert.Equal(2, stored.Count);
-        Assert.Contains(stored, e => e.PackageName == "com.example.app1" && e.DeviceId == "device-1");
-        Assert.Contains(stored, e => e.PackageName == "com.example.app2");
-    }
-
-    [Fact]
-    public async Task Stats_IngestBatchAsync_EmptyBatch_ShouldReturnZero()
-    {
-        await using var db = ServiceTestBase.CreateDb();
-        var service = ServiceTestBase.CreateStatsService(db);
-        var batch = new UploadBatch("device-empty", new List<AppUsageEntry>());
-
-        var count = await service.IngestBatchAsync(batch, CancellationToken.None);
-
-        Assert.Equal(0, count);
-        Assert.Empty(await db.Set<AppUsageEntity>().ToListAsync());
-    }
-
-    [Fact]
-    public async Task Stats_IngestBatchAsync_MultipleBatches_ShouldAccumulate()
-    {
-        await using var db = ServiceTestBase.CreateDb();
-        var service = ServiceTestBase.CreateStatsService(db);
-        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var batch1 = new UploadBatch("device-x", new List<AppUsageEntry> { new("com.a", nowMs - 1000, nowMs, 1000, nowMs) });
-        var batch2 = new UploadBatch("device-x", new List<AppUsageEntry> { new("com.b", nowMs - 2000, nowMs - 1000, 1000, nowMs) });
-
-        await service.IngestBatchAsync(batch1, CancellationToken.None);
-        await service.IngestBatchAsync(batch2, CancellationToken.None);
-
-        var stored = await db.Set<AppUsageEntity>().ToListAsync();
-        Assert.Equal(2, stored.Count);
-    }
-
     // ---------- TodaySectionService ----------
 
     [Fact]

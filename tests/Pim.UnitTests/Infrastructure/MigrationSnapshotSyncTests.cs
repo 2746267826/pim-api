@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -54,16 +56,63 @@ public sealed class MigrationSnapshotSyncTests
     ];
 
     /// <summary>
-    /// Pim.Api 实际引用的模块，从 <c>Pim.Api.csproj</c> 的程序集引用动态推导，
-    /// 避免手工镜像清单在新模块接入后失真（失真 = 新模块的漂移被静默过滤）。
+    /// 生产模块清单 = <c>Pim.Api.deps.json</c> 里随 API 一起发布的 <c>Pim.Module.*</c>。
+    ///
+    /// <para>
+    /// 用依赖清单而不是「AssemblyRef ∪ 输出目录扫描」：后者会把 <c>bin</c> 里的历史构建残留
+    /// （例如本分支刚删掉的 <c>Pim.Module.Stats.dll</c>）当成生产模块，导致干净构建通过、
+    /// 开发者本地增量构建却假失败（review P3-1）。deps.json 由当前 csproj 的 ProjectReference
+    /// 生成，必定与本次编译图一致。
+    /// </para>
+    ///
+    /// <para>
+    /// 只按 <c>Pim.Api</c> 的 AssemblyRef 推导同样不够：<c>Mobile</c> / <c>QuickNotes</c>
+    /// 在 <c>Pim.Api.csproj</c> 里有 ProjectReference，但 Pim.Api 源码没有直接引用它们的类型，
+    /// 编译产物里就没有对应的 AssemblyRef。实测只按引用推导只有 4 个模块，15 张 <c>mobile_*</c>
+    /// 表与 2 张 <c>quick_note*</c> 表会被 <see cref="InProductionScope"/> 静默排除。
+    /// </para>
     /// </summary>
-    private static readonly string[] ProductionModules = typeof(Pim.Api.ModuleRegistry).Assembly
-        .GetReferencedAssemblies()
-        .Select(a => a.Name!)
-        .Where(name => name.StartsWith("Pim.Module.", StringComparison.Ordinal))
-        .Select(name => name["Pim.Module.".Length..])
-        .OrderBy(name => name, StringComparer.Ordinal)
-        .ToArray();
+    private static readonly string[] ProductionModules = DiscoverProductionModules();
+
+    private static string[] DiscoverProductionModules()
+    {
+        var depsPath = Path.Combine(AppContext.BaseDirectory, "Pim.Api.deps.json");
+        if (!File.Exists(depsPath))
+        {
+            // 没有依赖清单时宁可大声失败：静默退化成「少几个模块」正是这张护栏要防的事。
+            throw new InvalidOperationException(
+                $"找不到 {depsPath}；无法确定随 API 发布的模块清单。");
+        }
+
+        using var document = JsonDocument.Parse(File.ReadAllText(depsPath));
+        return document.RootElement.GetProperty("libraries")
+            .EnumerateObject()
+            .Select(p => p.Name)
+            .Where(name => name.StartsWith("Pim.Module.", StringComparison.Ordinal))
+            .Select(name => name["Pim.Module.".Length..].Split('/')[0])
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// 定点回归：快照护栏必须覆盖**随 API 一起发布的所有模块**，而不只是 Pim.Api 源码
+    /// 直接引用类型的那几个。Mobile / QuickNotes 没有直接 AssemblyRef，只按引用推导时
+    /// 它们的表会被静默排除（review 发现）。
+    /// </summary>
+    [Fact]
+    public void ProductionModules_CoversEveryModuleShippedWithTheApi()
+    {
+        // 与 Pim.Api.csproj 的 ProjectReference 一一对应。少一个模块（例如 Mcp / Files 因构建
+        // 或复制问题缺失）就意味着它的表不再参与快照比对，护栏会静默失效（review P3-2）。
+        Assert.Equal(
+            new[] { "Calendar", "Files", "Mcp", "Mobile", "PcTracker", "QuickNotes" },
+            ProductionModules);
+
+        // 清单里的每个模块都必须真的能加载：deps.json 与输出目录不一致时在这里大声失败。
+        Assert.All(ProductionModules, module =>
+            Assert.NotNull(Assembly.Load("Pim.Module." + module)));
+    }
 
     [Fact]
     public void ModelSnapshot_IsInSyncWithCurrentModel()
@@ -110,6 +159,37 @@ public sealed class MigrationSnapshotSyncTests
     }
 
     /// <summary>
+    /// <see cref="InProductionScope"/> 的定点回归：**不依赖**同进程里是否恰好有其他测试注册了
+    /// 非生产实体（那取决于 xUnit collection 的执行顺序）。用合成的迁移操作直接断言：
+    /// 生产表保留、金丝雀表过滤、识别不了的操作类型按范围内（fail-loud）。
+    /// 这条用例保证「过滤」这一环本身不会静默失效（例如被改成恒 true）。
+    /// </summary>
+    [Fact]
+    public void InProductionScope_FiltersKnownCanaryAndKeepsProductionTables()
+    {
+        // 两侧故意不完全相同：只出现在目标模型的表（新实体、快照未更新）与只出现在快照里的表
+        // （实体已删、快照未更新）都必须纳入 —— 这正是 issue #320 的 fail-loud 方向。
+        var snapshotTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "calendar_tasks", "snapshot_only_table",
+        };
+        var targetTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "calendar_tasks", "target_only_table",
+        };
+
+        Assert.True(InProductionScope(new CreateTableOperation { Name = "calendar_tasks" }, snapshotTables, targetTables));
+        Assert.True(InProductionScope(new CreateTableOperation { Name = "target_only_table" }, snapshotTables, targetTables));
+        Assert.True(InProductionScope(new DropTableOperation { Name = "snapshot_only_table" }, snapshotTables, targetTables));
+        Assert.False(InProductionScope(new CreateTableOperation { Name = "model_cache_canaries" }, snapshotTables, targetTables));
+        Assert.False(InProductionScope(new DropTableOperation { Name = "model_cache_canaries" }, snapshotTables, targetTables));
+        Assert.False(InProductionScope(
+            new AddColumnOperation { Table = "model_cache_canaries", Name = "value" }, snapshotTables, targetTables));
+        // 未知操作类型：宁可误报也不漏报
+        Assert.True(InProductionScope(new SqlOperation { Sql = "select 1" }, snapshotTables, targetTables));
+    }
+
+    /// <summary>
     /// #320 的定点回归：12 个「实体有、快照无」的漂移对象必须已进快照。
     /// 独立于整体 diff 断言，让失败信息直接指向 issue 里的对象清单。
     /// </summary>
@@ -142,7 +222,7 @@ public sealed class MigrationSnapshotSyncTests
     [Fact]
     public void SnapshotModelLookup_FindKnownObjects()
     {
-        // 生产范围推导自 Pim.Api 的程序集引用：推导失效（空集）会让 diff 护栏静默放行，
+        // 生产范围推导自 Pim.Api.deps.json：推导失效（空集）会让 diff 护栏静默放行，
         // 必须在这里大声失败。
         Assert.NotEmpty(ProductionModules);
         Assert.Contains("PcTracker", ProductionModules);
@@ -252,10 +332,11 @@ public sealed class MigrationSnapshotSyncTests
 
     private static PimDbContext CreateDbContext()
     {
-        // 与生产一致：Pim.Api 通过 ModuleRegistry 从其输出目录加载 Pim.Module.*.dll，
-        // 而 Pim.Api.csproj 只引用 ProductionModules 这几个模块（Stats 未被引用、不在生产
-        // /design-time 模型里）。这里按同一来源动态加载，与 dotnet ef 的 design-time 模型
-        // 集合严格同源 —— 新模块接入 Pim.Api 后若忘同步快照，这里 fail-loud 而非静默绿。
+        // 与生产一致：加载随 API 发布的全部模块（ProductionModules = Pim.Api.deps.json
+        // 里的 Pim.Module.*，不手工维护也不受旧构建残留影响）。测试项目与生产引用同一组模块；
+        // 模型里出现的**非生产实体**只可能来自测试程序集自造的实体（例如模型缓存金丝雀
+        // model_cache_canaries），由 InProductionScope 按表名过滤。这样新模块接入 Pim.Api 后
+        // 若忘同步快照，这里 fail-loud 而非静默绿。
         foreach (var moduleName in ProductionModules)
         {
             PimDbContext.RegisterModuleAssembly(Assembly.Load($"Pim.Module.{moduleName}"));
@@ -279,8 +360,8 @@ public sealed class MigrationSnapshotSyncTests
     ///
     /// <para>
     /// 为什么需要过滤：<see cref="PimDbContext.RegisterModuleAssembly"/> 是进程级静态状态，
-    /// 同一测试进程里的其他测试会注册生产之外的「模块」—— 例如 Stats（未被 Pim.Api 引用，
-    /// 生产/design-time 模型里根本没有）与模型缓存测试的金丝雀实体（model_cache_canaries）。
+    /// 同一测试进程里的其他测试会注册生产之外的实体 —— 例如模型缓存测试的金丝雀实体
+    /// （model_cache_canaries）。
     /// 这些实体出现在本测试构建的当前模型里，但 <b>dotnet ef 永远看不见它们</b>，
     /// 也就不可能被吸收进迁移 —— 按生产范围过滤才与 dotnet ef 的真实行为等价。
     /// 识别不了的操作类型按范围内处理（宁可误报也不漏报）。

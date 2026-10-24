@@ -9,7 +9,7 @@ PIM 的后端服务：数据接入、确定性处理、结论输出。**所有�
 | `src/Pim.Api` | HTTP 宿主（Minimal API），端点集中在 `src/Pim.Api/Endpoints/` |
 | `src/Pim.Core` | 领域模型与核心逻辑 |
 | `src/Pim.Infrastructure` | 基础设施：数据库、鉴权、文件、外部集成 |
-| `src/modules/` | 业务模块 ×7：Calendar / Files / Mcp / Mobile / PcTracker / QuickNotes / Stats |
+| `src/modules/` | 业务模块 ×6：Calendar / Files / Mcp / Mobile / PcTracker / QuickNotes |
 | `tests/Pim.UnitTests` | 单元测试 |
 | `contract/` | **对外契约出口**：`openapi.json`，客户端仓据此生成类型 |
 | `sql/`、`deploy/`、`examples/` | 运维脚本、Grafana 看板、MCP 调用示例 |

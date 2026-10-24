@@ -12,8 +12,6 @@ using Pim.Module.Mobile;
 using Pim.Module.Mobile.Services;
 using Pim.Module.PcTracker;
 using Pim.Module.PcTracker.Services;
-using Pim.Module.Stats;
-using Pim.Module.Stats.Services;
 
 namespace Pim.UnitTests.Harness;
 
@@ -21,7 +19,7 @@ namespace Pim.UnitTests.Harness;
 /// Base class for Service-layer tests.
 /// Provides InMemory <see cref="PimDbContext"/> with all module assemblies registered,
 /// plus stubs for <see cref="ICurrentUserService"/> and <see cref="TimeProvider"/>.
-/// Also exposes factory helpers for the main domain services (Mobile, PcTracker, Calendar, Stats, Today).
+/// Also exposes factory helpers for the main domain services (Mobile, PcTracker, Calendar, Today).
 /// </summary>
 public abstract class ServiceTestBase
 {
@@ -36,7 +34,6 @@ public abstract class ServiceTestBase
         PimDbContext.RegisterModuleAssembly(typeof(Pim.Module.Mobile.Entities.MobileUsageSessionEntity).Assembly);
         PimDbContext.RegisterModuleAssembly(typeof(Pim.Module.PcTracker.Entities.AwEventEntity).Assembly);
         PimDbContext.RegisterModuleAssembly(typeof(Pim.Module.Calendar.Entities.EventEntity).Assembly);
-        PimDbContext.RegisterModuleAssembly(typeof(Pim.Module.Stats.Entities.AppUsageEntity).Assembly);
         PimDbContext.RegisterModuleAssembly(typeof(Pim.Module.QuickNotes.Entities.QuickNoteEntity).Assembly);
         PimDbContext.RegisterModuleAssembly(typeof(Pim.Module.Files.Entities.FileItemEntity).Assembly);
         var options = new DbContextOptionsBuilder<PimDbContext>()
@@ -108,10 +105,6 @@ public abstract class ServiceTestBase
         PimDbContext db,
         ICurrentUserService? user = null)
         => new(db, user ?? CurrentUser());
-
-    // Stats
-    public static StatsService CreateStatsService(PimDbContext db)
-        => new(db);
 
     // Today
     public static TodaySectionService CreateTodaySectionService(params ITodaySectionProvider[] providers)
