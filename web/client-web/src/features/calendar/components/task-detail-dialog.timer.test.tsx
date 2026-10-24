@@ -4,8 +4,10 @@
  *
  * - 正在计时时显示「计时中」与累计/本轮时长，开始按钮禁用、暂停/结束可用；
  * - 开始失败（如服务端 409）时在计时区内展示错误，不伪造时长；
+ * - segments/timer 任一未读回或失败时显示「暂不可用」并禁用操作，
+ *   不把 0/累计值当成可靠状态，也不会因缺段放行重复开始；
  * - 结束后关闭再打开（组件重挂载）仍能读到服务端累计值；
- * - 已结束/已取消的任务不再渲染计时区。
+ * - 已结束/已取消的任务保留历史累计，移除计时操作。
  *
  * 只替换 query hooks：HTTP 形状由 calendar-api.test.ts 覆盖，计时口径由
  * task-timer.test.ts 覆盖；本文件断言详情弹窗对这些数据的呈现与操作。
@@ -22,11 +24,11 @@ const { startMock, pauseMock, stopMock } = vi.hoisted(() => ({
   stopMock: vi.fn<(taskId: string) => Promise<unknown>>(),
 }))
 
-let segmentsFixture: TaskExecutionSegment[] = []
+let segmentsFixture: TaskExecutionSegment[] | null = []
 let timerFixture: TaskTimerState | null = null
 
 vi.mock('../queries', () => ({
-  useTaskSegments: () => ({ data: segmentsFixture, isLoading: false }),
+  useTaskSegments: () => ({ data: segmentsFixture, isLoading: false, isPending: segmentsFixture == null, isError: false }),
   useTaskTimer: () => ({ data: timerFixture, isPending: timerFixture == null, isError: false }),
   useTaskTimerActions: () => ({
     start: { mutateAsync: startMock, isPending: false },
@@ -173,8 +175,31 @@ describe('任务详情计时区（pim-web#29）', () => {
   it('段列表读取失败时同样不能凭空操作', () => {
     segmentsFixture = []
     timerFixture = timerState({ runningSegmentId: null, taskStatus: 'NEEDS-ACTION' })
-    renderDialog(task())
+    const section = renderDialog(task())
 
     expect(screen.getByRole('button', { name: '开始计时' }).hasAttribute('disabled')).toBe(false)
+    expect(section.textContent).toContain('00:02:00')
+  })
+
+  it('segments 读取失败但 timer 有效且存在开放段时，不放行重复开始也不误显累计', () => {
+    segmentsFixture = null
+    timerFixture = timerState({ runningSegmentId: 'seg-9', taskStatus: 'IN-PROCESS' })
+    const section = renderDialog(task({ status: 'IN-PROCESS' }))
+
+    expect(section.textContent).toContain('暂不可用')
+    expect(section.textContent).not.toContain('00:02:00')
+    expect(section.textContent).not.toContain('00:00:00')
+    expect(screen.getByRole('button', { name: /计时/ }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: '暂停' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: '结束' }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('segments 加载中时同样显示暂不可用并禁用操作', () => {
+    segmentsFixture = null
+    timerFixture = timerState({ runningSegmentId: null, taskStatus: 'NEEDS-ACTION' })
+    const section = renderDialog(task())
+
+    expect(section.textContent).toContain('暂不可用')
+    expect(screen.getByRole('button', { name: '开始计时' }).hasAttribute('disabled')).toBe(true)
   })
 })
