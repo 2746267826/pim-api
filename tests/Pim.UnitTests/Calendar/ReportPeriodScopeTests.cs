@@ -473,7 +473,7 @@ public class ReportPeriodScopeTests
     }
 
     [Fact]
-    public async Task ActualExecutionTime_IgnoresCancelledAndDeletedSegments()
+    public async Task ActualExecutionTime_KeepsWorkBeforeCancellationAndIgnoresDeletedSegments()
     {
         await using var db = CreateDb();
         var calendar = await SeedCalendarAsync(db);
@@ -498,7 +498,7 @@ public class ReportPeriodScopeTests
 
         var metrics = await MetricsAsync(db, "Daily", new DateOnly(2026, 8, 5));
 
-        Assert.Equal(60, metrics.GetProperty("actualExecutedMinutes").GetInt32());
+        Assert.Equal(120, metrics.GetProperty("actualExecutedMinutes").GetInt32());
     }
 
     [Fact]
@@ -559,6 +559,46 @@ public class ReportPeriodScopeTests
     }
 
     // ---- helpers ----
+
+    [Theory]
+    [InlineData(false, false, false, 10)]
+    [InlineData(true, true, false, 120)]
+    [InlineData(true, false, true, 10)]
+    public async Task ProjectReport_IncludesExecutionOutsideTaskPlanningFields(
+        bool scheduled, bool open, bool beforePlan, int expectedMinutes)
+    {
+        await using var db = CreateDb();
+        var project = new DomainProjectEntity { UserId = UserId, Name = "Execution span" };
+        var task = new TaskEntity
+        {
+            UserId = UserId, DomainProjectId = project.Id, Uid = "timed-project-task", Title = "Timed task",
+            CreatedAt = Sh(2026, 8, 5, 8),
+            DtStart = scheduled ? Sh(2026, 8, 5, beforePlan ? 10 : 9) : null,
+            PlannedEnd = scheduled ? Sh(2026, 8, 5, beforePlan ? 11 : 10) : null
+        };
+        var segment = new TaskExecutionSegmentEntity
+        {
+            TaskId = task.Id, UserId = UserId, StartsAt = Sh(2026, 8, 5, 9),
+            EndsAt = open ? null : Sh(2026, 8, 5, 9, 10), Status = open ? "active" : "completed"
+        };
+        // An unstarted plan must not stretch the project period.
+        var planned = new TaskExecutionSegmentEntity
+        {
+            TaskId = task.Id, UserId = UserId, StartsAt = Sh(2026, 9, 1, 9),
+            EndsAt = Sh(2026, 9, 1, 18), Status = "planned"
+        };
+        db.AddRange(project, task, segment, planned);
+        await db.SaveChangesAsync();
+        var clock = new FixedTimeProvider(Sh(2026, 8, 5, 11));
+        var report = await CreateService(db, clock).GenerateAsync(
+            new GenerateReportRequest("Project", new DateOnly(2026, 8, 5), project.Id));
+        using var metrics = JsonDocument.Parse(report.MetricsJson);
+
+        Assert.Equal(expectedMinutes, metrics.RootElement.GetProperty("actualExecutedMinutes").GetInt32());
+        Assert.Equal(expectedMinutes * 60L, PlanningModelService.AccumulatedSeconds([segment], clock.GetUtcNow()));
+        Assert.Equal(1, metrics.RootElement.GetProperty("tasksCreated").GetInt32());
+        Assert.DoesNotContain("2026-09-01", report.ContentMarkdown);
+    }
 
     /// <summary>
     /// A4（工单 03 复审）：正在计时的**开放段**（ends_at 为 null）必须按**注入时钟**计入「实际执行」，

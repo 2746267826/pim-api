@@ -327,6 +327,8 @@ export interface ReportArtifact {
   status: 'Active' | 'Archived'
 }
 
+export type DomainProject = components['schemas']['DomainProjectDto']
+
 /* ── 习惯 ─────────────────────────────────────────────────── */
 
 export interface HabitRoutine {

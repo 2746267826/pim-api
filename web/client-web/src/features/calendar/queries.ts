@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { deferredIntervalMs, standardIntervalMs } from '@/lib/polling'
-import { calendarsApi, checklistApi, eventsApi, layersApi, segmentsApi, taskBooksApi, taskTimerApi, tasksApi } from './api'
+import { calendarsApi, checklistApi, domainProjectsApi, eventsApi, layersApi, reportsApi, segmentsApi, taskBooksApi, taskTimerApi, tasksApi } from './api'
 import type { components } from '@/api/generated'
 import type { TaskResponse, TasksPagedParams } from './types'
 import { TASK_STATUS } from './types'
@@ -328,6 +328,7 @@ export const calendarExtraKeys = {
   reminders: ['calendar', 'reminders'] as const,
   deliveryLog: ['calendar', 'reminders', 'delivery-log'] as const,
   reports: ['calendar', 'reports'] as const,
+  domainProjects: ['calendar', 'domain-projects'] as const,
   habits: ['calendar', 'habits'] as const,
   aiSuggestions: ['calendar', 'ai-placeholders', 'suggested'] as const,
   outlookSettings: ['calendar', 'outlook', 'settings'] as const,
@@ -356,7 +357,12 @@ export function useDeliveryLog(enabled: boolean) {
 }
 
 export function useReports() {
-  return useQuery({ queryKey: calendarExtraKeys.reports, queryFn: () => import('./api').then((m) => m.reportsApi.list()) })
+  return useQuery({ queryKey: calendarExtraKeys.reports, queryFn: () => reportsApi.list() })
+}
+
+/** 项目报告项目选择（api#462）：真实项目列表；失败由页面明确呈现，不静默 */
+export function useDomainProjects() {
+  return useQuery({ queryKey: calendarExtraKeys.domainProjects, queryFn: () => domainProjectsApi.list() })
 }
 
 export function useHabits() {
@@ -479,8 +485,16 @@ export function useDeleteHabit() {
 export function useGenerateReport() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { kind: string; date: string }) => import('./api').then((m) => m.reportsApi.generate(body)),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['calendar', 'reports'] }),
+    mutationFn: (body: components['schemas']['GenerateReportRequest']) =>
+      reportsApi.generate(body),
+    onSuccess: (report) => {
+      // 先把真实返回 upsert 进列表缓存：即使随后 refetch 失败，刚生成的报告也能打开
+      qc.setQueryData<import('./types').ReportArtifact[]>(calendarExtraKeys.reports, (prev) => {
+        const list = prev ?? []
+        return [report, ...list.filter((r) => r.id !== report.id)]
+      })
+      void qc.invalidateQueries({ queryKey: ['calendar', 'reports'] })
+    },
   })
 }
 
