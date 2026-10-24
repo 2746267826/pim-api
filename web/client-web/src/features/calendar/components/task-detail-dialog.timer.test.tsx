@@ -26,10 +26,12 @@ const { startMock, pauseMock, stopMock } = vi.hoisted(() => ({
 
 let segmentsFixture: TaskExecutionSegment[] | null = []
 let timerFixture: TaskTimerState | null = null
+let segmentsError: Error | null = null
+let timerError: Error | null = null
 
 vi.mock('../queries', () => ({
-  useTaskSegments: () => ({ data: segmentsFixture, isLoading: false, isPending: segmentsFixture == null, isError: false }),
-  useTaskTimer: () => ({ data: timerFixture, isPending: timerFixture == null, isError: false }),
+  useTaskSegments: () => ({ data: segmentsFixture, isPending: segmentsFixture == null && segmentsError == null, isError: segmentsError != null, error: segmentsError }),
+  useTaskTimer: () => ({ data: timerFixture, isPending: timerFixture == null && timerError == null, isError: timerError != null, error: timerError }),
   useTaskTimerActions: () => ({
     start: { mutateAsync: startMock, isPending: false },
     pause: { mutateAsync: pauseMock, isPending: false },
@@ -41,6 +43,8 @@ afterEach(() => {
   cleanup()
   segmentsFixture = []
   timerFixture = null
+  segmentsError = null
+  timerError = null
   vi.clearAllMocks()
 })
 
@@ -161,7 +165,7 @@ describe('任务详情计时区（pim-web#29）', () => {
     expect(section.textContent).toContain('已结束的任务不可再计时')
   })
 
-  it('计时状怀未读回时不把 0 当真实值，且禁用开始/暂停/结束', () => {
+  it('计时状态未读回时不把 0 当真实值，且禁用开始/暂停/结束', () => {
     segmentsFixture = []
     timerFixture = null
     const section = renderDialog(task())
@@ -172,7 +176,7 @@ describe('任务详情计时区（pim-web#29）', () => {
     expect(screen.getByRole('button', { name: '结束' }).hasAttribute('disabled')).toBe(true)
   })
 
-  it('段列表读取失败时同样不能凭空操作', () => {
+  it('段列表确实为空时允许开始，累计仍以 timer 响应为准', () => {
     segmentsFixture = []
     timerFixture = timerState({ runningSegmentId: null, taskStatus: 'NEEDS-ACTION' })
     const section = renderDialog(task())
@@ -183,12 +187,28 @@ describe('任务详情计时区（pim-web#29）', () => {
 
   it('segments 读取失败但 timer 有效且存在开放段时，不放行重复开始也不误显累计', () => {
     segmentsFixture = null
+    segmentsError = new Error('fixture: 段列表读取失败')
     timerFixture = timerState({ runningSegmentId: 'seg-9', taskStatus: 'IN-PROCESS' })
     const section = renderDialog(task({ status: 'IN-PROCESS' }))
 
     expect(section.textContent).toContain('暂不可用')
+    expect(screen.getByRole('alert').textContent).toContain('fixture: 段列表读取失败')
     expect(section.textContent).not.toContain('00:02:00')
     expect(section.textContent).not.toContain('00:00:00')
+    expect(screen.getByRole('button', { name: /计时/ }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: '暂停' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: '结束' }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('timer 读取失败时明确报错，不展示旧累计或放行操作', () => {
+    segmentsFixture = [segment()]
+    timerFixture = timerState({ accumulatedSeconds: 120 })
+    timerError = new Error('fixture: 计时状态读取失败')
+    const section = renderDialog(task({ status: 'IN-PROCESS' }))
+
+    expect(screen.getByRole('alert').textContent).toContain('fixture: 计时状态读取失败')
+    expect(section.textContent).toContain('暂不可用')
+    expect(section.textContent).not.toContain('00:02:00')
     expect(screen.getByRole('button', { name: /计时/ }).hasAttribute('disabled')).toBe(true)
     expect(screen.getByRole('button', { name: '暂停' }).hasAttribute('disabled')).toBe(true)
     expect(screen.getByRole('button', { name: '结束' }).hasAttribute('disabled')).toBe(true)
