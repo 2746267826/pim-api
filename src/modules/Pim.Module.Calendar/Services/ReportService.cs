@@ -36,9 +36,10 @@ public sealed class ReportService
     /// <summary>
     /// 「实际执行时间」认可的计时段落状态：已经**开始过**的段落（工单 03 的
     /// <c>TaskSegmentStatus</c> 子集）。未开始的 <c>planned</c> 属于「已排入日程」不属于「实际执行」，
-    /// <c>cancelled</c> 两侧都不计。
+    /// 已执行后取消的 <c>cancelled</c> 仍计入，与任务计时器保持同一口径。
     /// </summary>
-    private static readonly string[] ExecutedSegmentStatuses = ["active", "paused", "completed"];
+    private static readonly string[] ExecutedSegmentStatuses =
+        [TaskSegmentStatuses.Active, TaskSegmentStatuses.Paused, TaskSegmentStatuses.Completed, TaskSegmentStatuses.Cancelled];
 
     /// <summary>
     /// 收集质量各数据源的报告字段后缀，需与对应 <see cref="ICollectionQualityProvider"/> 给出的
@@ -85,13 +86,14 @@ public sealed class ReportService
         CancellationToken ct = default)
     {
         var userId = UserId;
+        var asOf = _timeProvider.GetUtcNow();
         var kind = NormalizeKind(request.Kind);
         var project = await ResolveProjectAsync(kind, request.ProjectId, userId, ct);
         var period = project is null
             ? ResolveCalendarPeriod(kind, request.Date)
-            : await ResolveProjectPeriodAsync(project, userId, ct);
+            : await ResolveProjectPeriodAsync(project, userId, asOf, ct);
 
-        var facts = await CollectFactsAsync(userId, project?.Id, period, ct);
+        var facts = await CollectFactsAsync(userId, project?.Id, period, asOf, ct);
         var metrics = BuildMetrics(facts);
         var content = BuildContent(kind, period, facts);
         var inputs = BuildInputs(kind, request, project, period);
@@ -215,10 +217,11 @@ public sealed class ReportService
 
     /// <summary>
     /// 项目周期 = 项目下任务的时间跨度：起点取最早的「已排期起点（DtStart）/ 创建时刻」，
-    /// 终点取最晚的「完成时刻 / 计划结束 / 截止时刻 / 创建时刻」。项目下没有任何任务时，
+    /// 终点取最晚的「完成时刻 / 计划结束 / 截止时刻 / 创建时刻」，并纳入已执行段的跨度。
+    /// 开放段以本次生成时刻为终点。项目下没有任何任务时，
     /// 没有任何依据可以界定周期，报错而不是编一个窗口。
     /// </summary>
-    private async Task<ReportPeriod> ResolveProjectPeriodAsync(DomainProjectEntity project, Guid userId, CancellationToken ct)
+    private async Task<ReportPeriod> ResolveProjectPeriodAsync(DomainProjectEntity project, Guid userId, DateTimeOffset asOf, CancellationToken ct)
     {
         var tasks = await _db.Set<TaskEntity>()
             .AsNoTracking()
@@ -231,12 +234,25 @@ public sealed class ReportService
             throw new DomainException(02048, "项目下没有任何任务，无法推导项目周期。");
         }
 
-        var start = tasks.Min(t => t.DtStart ?? t.CreatedAt);
-        var end = tasks.Max(t => Latest(t.CompletedAt, t.PlannedEnd, t.Due, t.DtStart, t.CreatedAt));
-        if (end <= start)
+        var start = tasks.Min(t => t.DtStart < t.CreatedAt ? t.DtStart.Value : t.CreatedAt);
+        var lastFact = tasks.Max(t => Latest(t.CompletedAt, t.PlannedEnd, t.Due, t.DtStart, t.CreatedAt));
+        var segments = await _db.Set<TaskExecutionSegmentEntity>()
+            .AsNoTracking()
+            .Where(s => s.UserId == userId && s.DeletedAt == null
+                && _db.Set<TaskEntity>().Any(t => t.Id == s.TaskId && t.UserId == userId && t.DomainProjectId == project.Id))
+            .Select(s => new { s.StartsAt, s.EndsAt, s.Status })
+            .ToListAsync(ct);
+        foreach (var segment in segments.Where(s => ExecutedSegmentStatuses.Contains(s.Status, StringComparer.OrdinalIgnoreCase)))
         {
-            end = start.AddTicks(1);
+            var segmentEnd = segment.EndsAt ?? asOf;
+            if (segmentEnd <= segment.StartsAt) continue;
+            if (segment.StartsAt < start) start = segment.StartsAt;
+            if (segmentEnd > lastFact) lastFact = segmentEnd;
         }
+
+        // 项目末条事实也属于项目；半开查询的右端推进一个 PostgreSQL 可表达的微秒，
+        // 否则恰好定义终点的完成/到期事件会被自己的项目报告排除。
+        var end = lastFact.AddMicroseconds(1);
 
         var localStart = TimeZoneInfo.ConvertTime(start, BusinessDay.TimeZone);
         var localEnd = TimeZoneInfo.ConvertTime(end, BusinessDay.TimeZone);
@@ -269,7 +285,7 @@ public sealed class ReportService
 
     // === 取数 ===
 
-    private async Task<ReportFacts> CollectFactsAsync(Guid userId, Guid? projectId, ReportPeriod period, CancellationToken ct)
+    private async Task<ReportFacts> CollectFactsAsync(Guid userId, Guid? projectId, ReportPeriod period, DateTimeOffset asOf, CancellationToken ct)
     {
         // 排期窗口与周期**相交**即纳入（半开区间）：起点在周期之前、排期伸进周期的任务也要算进来，
         // 否则跨业务日边界（04:00）的排期会被整条漏掉；时长已由 period.Overlap 裁剪到周期内。
@@ -293,7 +309,7 @@ public sealed class ReportService
         //   · SQL 里 `s.EndsAt > x` 对 NULL 是 unknown，会把正在跑的段整行排除；
         //   · 直接给 Overlap 传可空值也编译不过。
         // 口径与 PlanningModelService.AccumulatedSeconds 一致（开放段算到查询时刻）。
-        var segmentsAsOf = _timeProvider.GetUtcNow();
+        var segmentsAsOf = asOf;
         var segments = await _db.Set<TaskExecutionSegmentEntity>()
             .AsNoTracking()
             .Where(s => s.UserId == userId
@@ -484,6 +500,11 @@ public sealed class ReportService
             string.Empty,
             "## 收集质量"
         };
+
+        if (kind == "Project")
+        {
+            lines.Insert(5, "> 范围：任务与执行时长仅统计本项目；日历占用、手机及 PC 收集质量统计项目周期内当前用户的全部记录，不代表项目专属用量。");
+        }
 
         if (!facts.HasPeriodFacts)
         {

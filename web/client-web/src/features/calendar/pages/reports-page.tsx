@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react'
 import { FileText, Sparkles } from 'lucide-react'
-import { useGenerateReport, useReports } from '../queries'
+import { useDomainProjects, useGenerateReport, useReports } from '../queries'
+import { parseReportMetrics, REPORT_METRIC_GROUP_LABELS } from '../report-metrics'
+import { ReportMarkdown } from '../components/report-markdown'
 import type { ReportArtifact } from '../types'
 import { todayBusinessDay } from '@/lib/businessDay'
 import { formatTime } from '@/lib/datetime'
-import { notifySuccess } from '@/lib/notify'
+import { notifyError, notifySuccess } from '@/lib/notify'
 import { EChartsBox } from '@/components/viz/echarts-box'
-import { Button, Card, CardSubtitle, CardTitle, Chip, EmptyState, MetricCard, PageHeader, Segmented, Skeleton, StatusBadge } from '@/components/ui'
+import { Button, Card, CardSubtitle, CardTitle, Chip, EmptyState, InlineAlert, MetricCard, PageHeader, Segmented, Select, Skeleton, StatusBadge } from '@/components/ui'
 
 type Kind = 'Daily' | 'Weekly' | 'Monthly' | 'Project'
 
@@ -21,29 +23,63 @@ const KIND_OPTIONS: { value: Kind; label: string }[] = [
 export function ReportsPage() {
   const [kind, setKind] = useState<Kind>('Daily')
   const [statusFilter, setStatusFilter] = useState<'all' | 'Active' | 'Archived'>('all')
-  const { data: reports = [], isLoading } = useReports()
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const reportsQuery = useReports()
+  const reports = useMemo(() => reportsQuery.data ?? [], [reportsQuery.data])
+  const isLoading = reportsQuery.isLoading
+  const projectsQuery = useDomainProjects()
   const generate = useGenerateReport()
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
+  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data])
+
+  /*
+   * 项目选择（api#462）：后端对 kind=Project 且缺 projectId 报 02046，前端必须
+   * 先选项目才允许生成；切走类型或项目被删时清掉选择，避免拿旧上下文生成。
+   */
+  /*
+   * projectId 只在 Project 上下文有意义；切走类型时在事件里同步清空，
+   * 避免回到项目报告时残留旧项目。
+   */
+  const switchKind = (next: Kind) => {
+    setKind(next)
+    if (next !== 'Project') setSelectedProjectId(null)
+  }
+  /* 项目从列表消失时选中值在渲染期收敛为空，生成按钮随之回到必选状态 */
+  const projectId = useMemo(
+    () => (selectedProjectId != null && projects.some((p) => p.id === selectedProjectId) ? selectedProjectId : null),
+    [projects, selectedProjectId],
+  )
+
   const filtered = useMemo(
-    () => reports.filter((r) => r.kind === kind && (statusFilter === 'all' || r.status === statusFilter)),
-    [reports, kind, statusFilter],
+    () => reports.filter(
+      (r) => r.kind === kind
+        && (kind !== 'Project' || r.projectId === projectId)
+        && (statusFilter === 'all' || r.status === statusFilter),
+    ),
+    [reports, kind, projectId, statusFilter],
   )
   const selected: ReportArtifact | null = filtered.find((r) => r.id === selectedId) ?? filtered[0] ?? null
 
   const metrics = useMemo(() => {
-    if (!selected) return null
-    try {
-      return JSON.parse(selected.metricsJson) as Record<string, number>
-    } catch {
-      return null
-    }
+    return selected ? parseReportMetrics(selected.metricsJson) : null
   }, [selected])
 
+  const metricGroups = useMemo(() => {
+    if (!metrics) return []
+    const order = ['plan-vs-actual', 'task-progress', 'calendar', 'collection'] as const
+    return order
+      .map((group) => ({ group, label: REPORT_METRIC_GROUP_LABELS[group], items: metrics.filter((m) => m.group === group) }))
+      .filter((g) => g.items.length > 0)
+  }, [metrics])
+
   /* 内嵌展览馆图表：漏斗（任务完成流）+ 仪表盘（完成率） */
+  /* 完成率只在「任务数与完成数都可计算且总数>0」时成立；无数据/0 任务不画假图 */
+  const taskMetric = metrics?.find((m) => m.key === 'tasks')?.value ?? null
+  const completedMetric = metrics?.find((m) => m.key === 'completedTasks')?.value ?? null
+  const completionKnowable = taskMetric !== null && completedMetric !== null && taskMetric > 0
+
   const funnelOption = useMemo(() => {
-    const done = Number(metrics?.completedTasks ?? 0)
-    const total = Number(metrics?.tasks ?? 0)
     return {
       tooltip: {},
       series: [{
@@ -53,18 +89,16 @@ export function ReportsPage() {
         bottom: 10,
         label: { color: '#334155', fontSize: 12 },
         data: [
-          { name: '任务总数', value: Math.max(total, 1) },
-          { name: '已完成', value: done },
+          { name: '任务总数', value: taskMetric ?? 0 },
+          { name: '已完成', value: completedMetric ?? 0 },
         ],
         color: ['#3B82F6', '#16A34A'],
       }],
     }
-  }, [metrics])
+  }, [taskMetric, completedMetric])
 
   const gaugeOption = useMemo(() => {
-    const done = Number(metrics?.completedTasks ?? 0)
-    const total = Math.max(Number(metrics?.tasks ?? 0), 1)
-    const pct = Math.round((done / total) * 100)
+    const pct = completionKnowable && taskMetric! > 0 ? Math.round((completedMetric! / taskMetric!) * 100) : null
     return {
       series: [{
         type: 'gauge',
@@ -79,10 +113,10 @@ export function ReportsPage() {
         axisLabel: { show: false },
         pointer: { show: false },
         detail: { valueAnimation: true, fontSize: 26, color: '#0F172A', formatter: '{value}%' },
-        data: [{ value: pct }],
+        data: [{ value: pct ?? 0 }],
       }],
     }
-  }, [metrics])
+  }, [completionKnowable, taskMetric, completedMetric])
 
   return (
     <div>
@@ -94,10 +128,21 @@ export function ReportsPage() {
             variant="primary"
             size="sm"
             loading={generate.isPending}
+            disabled={kind === 'Project' && (projectId == null || projectsQuery.isLoading || projectsQuery.isError)}
             onClick={async () => {
-              const r = await generate.mutateAsync({ kind, date: todayBusinessDay() })
-              notifySuccess(`已生成 ${KIND_OPTIONS.find((k) => k.value === kind)?.label}`)
-              setSelectedId(r.id)
+              try {
+                const r = await generate.mutateAsync({
+                  kind,
+                  date: todayBusinessDay(),
+                  ...(kind === 'Project' && projectId ? { projectId } : {}),
+                })
+                notifySuccess(`已生成 ${KIND_OPTIONS.find((k) => k.value === kind)?.label}`)
+                if (statusFilter === 'Archived') setStatusFilter('all')
+                setSelectedId(r.id)
+              } catch (error) {
+                /* 02046 未选项目 / 02047 项目不存在 / 02048 项目下无任务等按后端口径呈现 */
+                notifyError(error instanceof Error && error.message ? error.message : '生成报告失败，请稍后重试。')
+              }
             }}
           >
             <Sparkles className="size-4" aria-hidden /> 生成报告
@@ -106,7 +151,35 @@ export function ReportsPage() {
       />
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <Segmented value={kind} onValueChange={setKind} options={KIND_OPTIONS} />
+        <Segmented
+          value={kind}
+          onValueChange={switchKind}
+          options={KIND_OPTIONS.map((o) => ({ ...o, disabled: generate.isPending }))}
+        />
+        {kind === 'Project' && (
+          <div className="flex min-w-64 items-center gap-2">
+            {projectsQuery.isError ? (
+              <InlineAlert tone="crit" title="项目列表加载失败">
+                无法读取项目列表，请刷新重试。
+              </InlineAlert>
+            ) : projectsQuery.isLoading ? (
+              <Skeleton className="h-9 w-56" />
+            ) : projects.length === 0 ? (
+              <InlineAlert tone="warn" title="还没有项目">
+                请先在任务页创建项目，再回到这里生成项目报告。
+              </InlineAlert>
+            ) : (
+              <Select
+                ariaLabel="选择项目"
+                placeholder="选择项目（必选）"
+                value={projectId ?? ''}
+                onValueChange={(v) => setSelectedProjectId(v === '' ? null : v)}
+                options={projects.map((p) => ({ value: p.id, label: p.name }))}
+                disabled={generate.isPending}
+              />
+            )}
+          </div>
+        )}
         <div className="ml-auto flex gap-1.5">
           {(['all', 'Active', 'Archived'] as const).map((s) => (
             <Chip key={s} active={statusFilter === s} onClick={() => setStatusFilter(s)}>
@@ -117,17 +190,16 @@ export function ReportsPage() {
       </div>
 
       {/* 统计卡行 */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <MetricCard label="报告数（当前类型）" value={filtered.length} icon={FileText} />
         <MetricCard
-          label="已完成任务（最新报告）"
-          value={metrics?.completedTasks ?? '—'}
-          hint={metrics ? `共 ${metrics.tasks} 项` : undefined}
-          icon={FileText}
-        />
-        <MetricCard
-          label="待跟进确认"
-          value={useMemoPendingCount()}
+          label="已完成任务（当前报告）"
+          value={metrics?.find((m) => m.key === 'completedTasks')?.value ?? '—'}
+          hint={
+            metrics?.find((m) => m.key === 'tasks')?.value != null
+              ? `共 ${metrics.find((m) => m.key === 'tasks')?.value} 项`
+              : undefined
+          }
           icon={FileText}
         />
       </div>
@@ -135,11 +207,25 @@ export function ReportsPage() {
       <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
         {/* 报告列表 */}
         <div className="space-y-2">
-          {isLoading ? (
+          {reportsQuery.isError ? (
+            <Card>
+              <EmptyState
+                size="sm"
+                icon={FileText}
+                title="报告列表加载失败"
+                description="请刷新页面重试；网络恢复前无法生成或查看报告。"
+              />
+            </Card>
+          ) : isLoading ? (
             Array.from({ length: 3 }, (_, i) => <Skeleton key={i} className="h-20" />)
           ) : filtered.length === 0 ? (
             <Card>
-              <EmptyState size="sm" icon={FileText} title="暂无报告" description="点击右上角生成一份。" />
+              <EmptyState
+                size="sm"
+                icon={FileText}
+                title="暂无报告"
+                description={kind === 'Project' ? '选择项目后点击右上角生成一份项目报告。' : '点击右上角生成一份。'}
+              />
             </Card>
           ) : (
             filtered.map((r) => (
@@ -155,6 +241,9 @@ export function ReportsPage() {
                   <span className="text-[13px] font-semibold text-text-1">
                     {KIND_OPTIONS.find((k) => k.value === r.kind)?.label} · {r.generatedAt.slice(5, 10).replace('-', '/')}
                   </span>
+                  {r.kind === 'Project' && (
+                    <span className="truncate text-[11px] text-text-4">{projects.find((p) => p.id === r.projectId)?.name ?? r.projectId}</span>
+                  )}
                   <StatusBadge tone={r.status === 'Active' ? 'ok' : 'neutral'} dot={false} className="ml-auto">
                     {r.status === 'Active' ? '已发布' : '已归档'}
                   </StatusBadge>
@@ -177,8 +266,8 @@ export function ReportsPage() {
                   <StatusBadge tone="neutral" dot={false} className="ml-auto">{selected.riskLevel}</StatusBadge>
                   <span className="tnum text-xs text-text-4">生成于 {formatTime(selected.generatedAt)}</span>
                 </div>
-                <div className="mt-3 whitespace-pre-wrap text-[13px] leading-5 text-text-2">
-                  {selected.contentMarkdown}
+                <div className="mt-3 space-y-3 text-[13px] leading-5 text-text-2">
+                  <ReportMarkdown content={selected.contentMarkdown} />
                 </div>
               </Card>
 
@@ -186,24 +275,48 @@ export function ReportsPage() {
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <Card className="p-4">
                   <CardTitle>关键指标</CardTitle>
-                  <div className="mt-2 divide-y divide-divider">
-                    {metrics ? (
-                      Object.entries(metrics).slice(0, 8).map(([k, v]) => (
-                        <div key={k} className="flex items-center justify-between py-1.5 text-[13px]">
-                          <span className="text-text-3">{k}</span>
-                          <span className="tnum font-medium text-text-1">{String(v)}</span>
+                  {metrics === null ? (
+                    <div className="mt-2">
+                      <EmptyState size="sm" title="指标数据无法读取" description="报告元数据损坏或为空，请重新生成报告。" />
+                    </div>
+                  ) : (
+                    <div className="mt-2 space-y-3">
+                      {metricGroups.map(({ group, label, items }) => (
+                        <div key={group}>
+                          <CardSubtitle>{label}</CardSubtitle>
+                          <div className="mt-1 divide-y divide-divider">
+                            {items.map((m) => (
+                              <div key={m.key} className="flex items-center justify-between gap-3 py-1.5 text-[13px]">
+                                <span className="text-text-3">{m.label}</span>
+                                <span className={`tnum text-right font-medium ${m.value === null ? 'text-text-4' : 'text-text-1'}`}>
+                                  {m.display}
+                                  {m.unit ? <span className="ml-0.5 text-[11px] font-normal text-text-4">{m.unit}</span> : null}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      ))
-                    ) : (
-                      <EmptyState size="sm" title="无指标数据" />
-                    )}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                 </Card>
                 <Card className="p-4">
                   <CardTitle>任务完成漏斗</CardTitle>
-                  <EChartsBox option={funnelOption} height={170} />
+                  {completionKnowable ? (
+                    <EChartsBox option={funnelOption} height={170} />
+                  ) : (
+                    <div className="flex h-[170px] items-center justify-center text-[12px] text-text-4">
+                      暂无可展示的任务完成分布
+                    </div>
+                  )}
                   <CardSubtitle>完成率仪表盘</CardSubtitle>
-                  <EChartsBox option={gaugeOption} height={150} />
+                  {completionKnowable ? (
+                    <EChartsBox option={gaugeOption} height={150} />
+                  ) : (
+                    <div className="flex h-[150px] items-center justify-center rounded-ctl bg-surface-2 text-[12px] text-text-4">
+                      任务数为 0 或无数据，无法计算完成率
+                    </div>
+                  )}
                 </Card>
               </div>
             </>
@@ -219,6 +332,3 @@ export function ReportsPage() {
 }
 
 /** 待跟进确认（占位 0，P3 接确认中心联动） */
-function useMemoPendingCount(): number {
-  return useMemo(() => 0, [])
-}

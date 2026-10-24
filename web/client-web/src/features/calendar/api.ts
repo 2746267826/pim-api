@@ -41,6 +41,11 @@ export const taskBooksApi = {
   list: () => apiGet<TaskBook[]>('/api/v1/calendar/task-books'),
 }
 
+/** 项目报告的项目来源（api#462）：与任务本同源 /api/v1/calendar/projects */
+export const domainProjectsApi = {
+  list: () => apiGet<import('./types').DomainProject[]>('/api/v1/calendar/projects'),
+}
+
 /* ── 日程事件 ─────────────────────────────────────────────── */
 /* 双态端点：固定带 page/pageSize 命中 PagedResult 分支（02 §日历网格） */
 
