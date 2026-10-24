@@ -14,9 +14,10 @@ describe('parseDueMs', () => {
 })
 
 describe('dueUrgency（api#491：三档 + 状态边界）', () => {
-  it('过去与 due == now 都是已逾期', () => {
+  it('早于 now 是已逾期；due == now 恰好到达截止点，仍算即将到期', () => {
     expect(dueUrgency('2026-10-24T11:59:59.999Z', NOW)).toBe('overdue')
-    expect(dueUrgency('2026-10-24T12:00:00.000Z', NOW)).toBe('overdue')
+    expect(dueUrgency('2026-10-24T12:00:00.000Z', NOW)).toBe('dueSoon')
+    expect(dueUrgency('2026-10-24T12:00:00.001Z', NOW)).toBe('dueSoon')
   })
 
   it('正好 3 天是即将到期，3 天 + 1ms 是远期', () => {

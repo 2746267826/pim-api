@@ -12,14 +12,14 @@ export function parseDueMs(due: string | null | undefined): number | null {
 }
 
 /**
- * 截止紧迫度（api#491）：逾期=红、3 天内=黄、更远=灰。
+ * 截止紧迫度（api#491）：早于当前=红、从当前到 3 天（含端点）=黄、更远=灰。
  * 已完成/已取消一律灰；损坏的 due 只标记无效，不伪造成某个时间。
  */
 export function dueUrgency(due: string | null | undefined, nowMs: number, inactive = false): DueUrgency {
   if (inactive) return 'inactive'
   const dueMs = parseDueMs(due)
   if (dueMs == null) return 'invalid'
-  if (dueMs <= nowMs) return 'overdue'
+  if (dueMs < nowMs) return 'overdue'
   return dueMs - nowMs <= DUE_SOON_MS ? 'dueSoon' : 'distant'
 }
 
@@ -50,16 +50,16 @@ export function dueUrgencyView(urgency: DueUrgency): DueUrgencyView {
 const DUE_CLOCK_TICK_MS = 30_000
 const dueClockListeners = new Set<() => void>()
 let dueClockTimer: ReturnType<typeof setInterval> | null = null
-let dueClockWindowBound = false
+let dueClockDocumentBound = false
 
 function notifyDueClock() {
   for (const listener of dueClockListeners) listener()
 }
 
 function ensureDueClock() {
-  if (typeof window !== 'undefined' && !dueClockWindowBound) {
-    dueClockWindowBound = true
-    window.addEventListener('visibilitychange', notifyDueClock)
+  if (typeof document !== 'undefined' && !dueClockDocumentBound) {
+    dueClockDocumentBound = true
+    document.addEventListener('visibilitychange', notifyDueClock)
     window.addEventListener('focus', notifyDueClock)
   }
   if (dueClockTimer == null) dueClockTimer = setInterval(notifyDueClock, DUE_CLOCK_TICK_MS)
@@ -69,6 +69,11 @@ function releaseDueClock() {
   if (dueClockListeners.size > 0 || dueClockTimer == null) return
   clearInterval(dueClockTimer)
   dueClockTimer = null
+  if (dueClockDocumentBound) {
+    dueClockDocumentBound = false
+    document.removeEventListener('visibilitychange', notifyDueClock)
+    window.removeEventListener('focus', notifyDueClock)
+  }
 }
 
 export function useDueNow(): number {

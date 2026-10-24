@@ -17,6 +17,17 @@ afterEach(() => {
 })
 
 describe('DueText（四处入口共用呈现）', () => {
+  it('due == now 是即将到期，再过 1ms 才是已逾期', async () => {
+    render(<DueText due="2026-10-24T12:00:00.000Z" />)
+    expect(screen.getByText(/即将到期/).className).toContain('text-warn')
+
+    await act(async () => {
+      vi.setSystemTime(NOW + 1)
+      vi.advanceTimersByTime(30_000)
+    })
+    expect(screen.getByText(/已逾期/).className).toContain('text-crit')
+  })
+
   it('过去为红并带“已逾期”；未来到 3 天为黄并带“即将到期”', () => {
     render(<DueText due="2026-10-23T12:00:00.000Z" />)
     expect(screen.getByText(/已逾期/).className).toContain('text-crit')
