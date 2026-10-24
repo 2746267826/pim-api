@@ -13,6 +13,7 @@ import {
 import { usePendingConfirmations } from '@/features/operations/queries'
 import { TASK_STATUS } from '@/features/calendar/types'
 import type { AiPlanPlaceholder } from '@/features/calendar/types'
+import { DueText } from '@/features/calendar/components/due-text'
 import { apiGet } from '@/api/client'
 import { todayBusinessDay } from '@/lib/businessDay'
 import { formatDurationC, formatRange, formatTime } from '@/lib/datetime'
@@ -257,7 +258,9 @@ export function WorkbenchPage() {
                       >
                         <span className="block truncate">{t.title}</span>
                         <span className="text-[11px] text-text-4">
-                          {t.due ? `截止 ${formatTime(t.due)}` : '无截止'}
+                          {t.due
+                            ? <DueText due={t.due} inactive={t.status === TASK_STATUS.cancelled} />
+                            : '无截止'}
                           {t.estimatedDuration ? ` · ${formatDurationC(t.estimatedDuration)}` : ''}
                         </span>
                       </button>
