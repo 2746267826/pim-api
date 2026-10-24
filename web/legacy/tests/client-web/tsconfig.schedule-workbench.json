@@ -1,0 +1,23 @@
+{
+  "extends": "../../src/client-web/tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "typeRoots": ["../../src/client-web/node_modules/@types"],
+    "paths": {
+      "@tanstack/react-query": ["../../src/client-web/node_modules/@tanstack/react-query"]
+    }
+  },
+  "include": [
+    "./unifiedEventFields.test.ts",
+    "./eventFieldDiff.test.ts",
+    "./safeHtml.test.ts",
+    "./scheduleWorkbenchTypes.test.ts",
+    "./scheduleWorkbenchCompletionTypes.test.ts",
+    "./unifiedEventEditorUi.test.tsx",
+    "./beforeAfterDiff.test.tsx",
+    "./deviceMergeModel.test.ts",
+    "./deviceMergeDialog.test.tsx"
+  ]
+}

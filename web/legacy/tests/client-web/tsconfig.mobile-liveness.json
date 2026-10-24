@@ -1,0 +1,21 @@
+{
+  "extends": "../../src/client-web/tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "typeRoots": ["../../src/client-web/node_modules/@types"],
+    "paths": {
+      "@tanstack/react-query": ["../../src/client-web/node_modules/@tanstack/react-query"]
+    }
+  },
+  "include": [
+    "./mobileLivenessTypes.test.ts",
+    "./mobileLivenessApiPath.test.ts",
+    "./mobileLivenessModel.test.ts",
+    "./mobileLivenessUi.test.tsx",
+    "../../src/client-web/src/api/mobile.ts",
+    "../../src/client-web/src/components/mobile/deviceLivenessModel.ts",
+    "../../src/client-web/src/components/mobile/DeviceLivenessPanel.tsx"
+  ]
+}

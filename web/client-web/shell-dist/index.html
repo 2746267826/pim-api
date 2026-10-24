@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PIM · 连接服务器</title>
+  <style>
+    /* 与主应用同风格：浅色效率蓝，单文件零依赖 */
+    :root { --blue: #2563eb; --blue-hover: #1d4ed8; --text-1: #0f172a; --text-3: #64748b; --text-4: #94a3b8; --border: #e2e8f0; --surface: #f8fafc; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; background: #fff; color: var(--text-1); display: grid; place-items: center; min-height: 100vh; }
+    .card { width: 400px; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 1px 2px rgb(15 23 42 / .04), 0 8px 24px rgb(15 23 42 / .06); padding: 28px; }
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--blue); }
+    h1 { font-size: 20px; margin: 0; }
+    p.hint { color: var(--text-3); font-size: 13px; line-height: 1.6; margin: 6px 0 20px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    input { width: 100%; height: 38px; border: 1px solid var(--border); border-radius: 8px; padding: 0 12px; font-size: 14px; outline: none; }
+    input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb(37 99 235 / .15); }
+    .mono { font-family: Consolas, monospace; }
+    .row { display: flex; gap: 10px; margin-top: 16px; }
+    button { flex: 1; height: 38px; border-radius: 8px; border: 1px solid var(--border); background: #fff; color: var(--text-1); font-size: 14px; font-weight: 600; cursor: pointer; }
+    button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+    button.primary:hover { background: var(--blue-hover); }
+    button:hover { background: var(--surface); }
+    button.primary:hover { background: var(--blue-hover); }
+    .msg { margin-top: 12px; font-size: 13px; min-height: 18px; }
+    .ok { color: #16a34a; } .err { color: #dc2626; }
+    .redirect { text-align: center; }
+    .count { font-size: 28px; font-weight: 700; color: var(--blue); margin: 12px 0; }
+    a { color: var(--blue); text-decoration: none; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="card" id="app"></div>
+  <script>
+    'use strict'
+    var KEY = 'pim.shell.server'
+
+    function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML }
+
+    function normalize(v) {
+      var u = (v || '').trim().replace(/\/+$/, '')
+      u = u.replace(/\/api\/v1$/i, '').replace(/\/api$/i, '')
+      return u
+    }
+
+    /* 服务器地址表单（与主应用 /setup 同语义：源地址，不含 /api/v1） */
+    function renderForm(saved) {
+      var app = document.getElementById('app')
+      app.innerHTML =
+        '<div class="brand"><span class="dot"></span><h1>PIM</h1></div>' +
+        '<p class="hint">个人信息管理工作台（Windows 壳）。填入 PIM API 服务器的源地址，' +
+        '应用本身由该服务器直接伺服。<span class="mono">留空常用地址不保存。</span></p>' +
+        '<label for="server">API 地址</label>' +
+        '<input id="server" class="mono" placeholder="https://192.168.1.10:5858" value="' + esc(saved || '') + '" />' +
+        '<div class="row">' +
+        (saved ? '<button id="reset">清除记忆</button>' : '') +
+        '<button id="test" class="primary">测试并进入</button>' +
+        '</div>' +
+        '<div class="msg" id="msg"></div>'
+      document.getElementById('server').focus()
+      document.getElementById('test').onclick = function () { testAndGo() }
+      document.getElementById('server').onkeydown = function (e) { if (e.key === 'Enter') testAndGo() }
+      var reset = document.getElementById('reset')
+      if (reset) reset.onclick = function () { localStorage.removeItem(KEY); renderForm('') }
+    }
+
+    function testAndGo() {
+      var base = normalize(document.getElementById('server').value)
+      var msg = document.getElementById('msg')
+      if (!base) { msg.className = 'msg err'; msg.textContent = '地址需包含协议，例如 https://192.168.1.10:5858'; return }
+      msg.className = 'msg'; msg.textContent = '连接中…'
+      var ctrl = new AbortController()
+      var timer = setTimeout(function () { ctrl.abort() }, 8000)
+      fetch(base + '/api/version', { signal: ctrl.signal })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json() })
+        .then(function (info) {
+          clearTimeout(timer)
+          msg.className = 'msg ok'
+          msg.textContent = '已连接 · PIM API ' + (info.version || '未知版本') + '，正在进入…'
+          localStorage.setItem(KEY, base)
+          setTimeout(function () { location.replace(base + '/') }, 600)
+        })
+        .catch(function (e) {
+          clearTimeout(timer)
+          msg.className = 'msg err'
+          msg.textContent = e.name === 'AbortError' ? '连接超时（8 秒）：请检查地址与网络' : '无法连接：' + (e.message || e)
+        })
+    }
+
+    /* 已记住地址：倒计时自动进入（Esc 或点击取消可回表单） */
+    function renderRedirect(base) {
+      var app = document.getElementById('app')
+      var left = 3
+      app.innerHTML =
+        '<div class="redirect">' +
+        '<div class="brand" style="justify-content:center"><span class="dot"></span><h1>PIM</h1></div>' +
+        '<p class="hint mono">' + esc(base) + '</p>' +
+        '<div class="count" id="count">' + left + '</div>' +
+        '<p class="hint">秒后自动进入上次的服务器</p>' +
+        '<button id="cancel">更换服务器</button>' +
+        '</div>'
+      var timer = setInterval(function () {
+        left -= 1
+        var el = document.getElementById('count')
+        if (!el) { clearInterval(timer); return }
+        el.textContent = left
+        if (left <= 0) { clearInterval(timer); location.replace(base + '/') }
+      }, 1000)
+      function cancel() { clearInterval(timer); renderForm(base) }
+      document.getElementById('cancel').onclick = cancel
+      document.addEventListener('keydown', function onKey(e) {
+        if (e.key === 'Escape') { document.removeEventListener('keydown', onKey); cancel() }
+      })
+    }
+
+    var saved = localStorage.getItem(KEY)
+    if (saved) renderRedirect(saved)
+    else renderForm('')
+  </script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # 测试替身：模拟 `docker`，只实现 web-dist 相关脚本用到的子命令。
-# 让 resolve-web-dist.sh / build-web-ledger.sh 的逻辑可以在**没有 registry、
+# 让 build-web-ledger.sh 的逻辑可以在**没有 registry、
 # 没有真镜像**的情况下被断言（真镜像路径由 CI 里的真实构建覆盖）。
 #
 # 环境变量：

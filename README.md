@@ -11,7 +11,8 @@ PIM 的后端服务：数据接入、确定性处理、结论输出。**所有�
 | `src/Pim.Infrastructure` | 基础设施：数据库、鉴权、文件、外部集成 |
 | `src/modules/` | 业务模块 ×6：Calendar / Files / Mcp / Mobile / PcTracker / QuickNotes |
 | `tests/Pim.UnitTests` | 单元测试 |
-| `contract/` | **对外契约出口**：`openapi.json`，客户端仓据此生成类型 |
+| `contract/` | **唯一契约出口**：`openapi.json`，同仓 Web 与外部 Android/Windows 据此生成类型 |
+| `web/client-web/` | 原 pim-web 前端，内部应用结构保持不变 |
 | `sql/`、`deploy/`、`examples/` | 运维脚本、Grafana 看板、MCP 调用示例 |
 | `docs/mcp.md` | MCP 协议规范（本仓唯一保留的文档） |
 | `docker-compose*.yml`、`nginx.conf`、`litellm-config.yaml` | 部署编排 |
@@ -28,45 +29,32 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 > - **私钥文件缺失**：健康检查会持续失败（`start_period` 过后进入 `unhealthy`），容器日志中出现该文件的完整路径（不出现私钥内容）。注意 Docker 会把缺失的绑定源自动建成同名**目录**，且该路径同时存在于宿主机与命名卷 `pim_data`（Docker 里的实际卷名是 `<compose 项目名>_pim_data`）里（卷内路径 `keys/jwt_private.pem`）。恢复步骤：停止并移除容器 → 删除宿主机上的同名目录 → 删除卷内被挡住的同路径 → 放回 PEM 文件 → `docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --force-recreate`。只删宿主机目录、不处理卷内路径、不重建容器，服务起不来。另一种形态：卷内若留着上一次成功挂载产生的 0 字节同名文件，容器会在**创建阶段**就失败（报 `not a directory`），按上面的完整步骤同样能恢复，**不要** `down -v` 清掉整个数据卷。
 > - **数据保护密钥目录缺失**：容器仍会在约 20 秒内通过健康检查，并在该目录就地生成一把新的 `key-*.xml`。用旧密钥环保护的密文因此解不开（依赖 `ISecretProtector` 的令牌/绑定链路会失败），而健康检查仍是绿的 —— 故障不会自己暴露出来。请连同已有的 `key-*.xml` 一起预置该目录。
 
-> **镜像与前端**：`pim-api-server` 镜像**内嵌前端**（`/app/wwwroot`，API 同源伺服 SPA）。
-> 前端产物来自 `pim-web` 推的产物镜像 `ghcr.io/2746267826/pim-web-dist`（tag：`sha-<7 位短 SHA>` + `latest`），
-> 构建期多阶段 `COPY --from` 取用；**默认取最新并在构建开始时冻结成 `sha-<7>`**，
-> 也可以在 dispatch 时用 `web_dist_ref` 指定确切版本（回滚/复现）。
-> 旧的手工路径（把 dist 解包到 `src/Pim.Api/wwwroot/` 再 build）**已废弃**，不要再使用。
-> 详见 [前端随镜像发布](#前端随镜像发布)。
+> **镜像与前端**：`pim-api-server` 内嵌前端（`/app/wwwroot`，API 同源伺服 SPA）。
+> Dockerfile 直接构建本仓 `web/client-web`，前后端来自同一个提交，不再拉取旧 `pim-web-dist` 镜像或跨仓触发发版。
+> 不要手工把 dist 解包到 `src/Pim.Api/wwwroot/`。
 
 ## 前端随镜像发布
 
-一次 API 发布 = 后端 + **当时最新的前端**，装在同一个镜像里；发布侧三处可以机械互验"前端是哪一版"。
+一次发布包含同一提交中的 API 与 Web。Web 单独修改也会构建、测试并重新发布内嵌镜像；API/MCP 未变化时，保留现有的上一版资产复用逻辑。
 
 | 位置 | 内容 |
 | --- | --- |
-| 接口 | `GET /api/version` 的 `webVersion` / `webSha` / `webBuiltAt` 三个字段（读镜像内 `wwwroot/web-version.json`，缺失时返回 `"unknown"`） |
-| 镜像内文件 | `/app/wwwroot/web-version.json`（由 pim-web 的产物镜像带进来，字段：`version` / `gitSha` / `builtAt`） |
-| release 台账 | `pim-web-version.json`（releases 资产；前端三字段**原样转录**自烘焙好的镜像，另含产物镜像 tag/digest 与本次 API 版本） |
+| 接口 | `GET /api/version` 的 `webVersion` / `webSha` / `webBuiltAt`（读取镜像内版本文件） |
+| 镜像内文件 | `/app/wwwroot/web-version.json`，字段 `version` / `gitSha` / `builtAt` |
+| Release 资产 | `pim-web-version.json`，原样转录镜像内三字段，另含 `apiVersion` |
+| 镜像标签 | `org.pim.api-version` / `org.pim.web-version` / `org.pim.web-sha` |
 
-镜像 label（`docker inspect` 直接可读）：`org.pim.api-version`、`org.pim.web-version`、`org.pim.web-sha`。
+版本与 SHA 由同一次构建注入。Web 的 SHA 现在指本仓提交，不再指旧 pim-web 仓。
+Web 构建、契约类型检查、镜像内容检查、启动健康检查和实际 HTTP SPA 响应检查都必须通过。
+删除了 `web_dist_ref`、`rebuild_image_only` 两个跨仓输入；重跑完整构建可使用 `force_all=true`。
 
-**`workflow_dispatch` 输入**（两个契约输入都声明在 `ci.yml` 的 `workflow_dispatch.inputs`；
-其中 `web_dist_ref` 还必须同步声明在 `build-docker.yml` 的 `workflow_call.inputs`，否则传不到镜像构建。
-`rebuild_image_only` 只被 `ci.yml` 的组件判定消费，在 reusable workflow 里声明它只会变成一个没有行为的死参数）：
+**同仓开发**：前端源码位置与内部结构不变，见 `web/README.md`。
+`contract/openapi.json` 是唯一契约；API 形状变更后，在同一 PR 导出契约并运行
+`bash web/scripts/ci/update-contract.sh` 更新 Web 类型。Android/Windows 仍通过独立仓接收通知。
 
-| 输入 | 作用 |
-| --- | --- |
-| `web_dist_ref` | 要内嵌的前端产物镜像引用（`sha-<7>`）。留空 = 取 `latest` 并在构建开始时冻结成不可变引用 |
-| `rebuild_image_only` | 只重建镜像：只重烘 `pim-api-server`，API/MCP 资产从上一版 release 搬运。**后端确有变化时自动转全量构建**，绝不把旧资产搬进新版本的 release |
-
-前端产物包**必须是 public**：本 workflow 的 registry 登录发生在镜像构建之后、且只在发版时执行，
-构建阶段只能匿名拉取（这是契约，不接受在 pim-api 侧新增 registry 凭证）。
-
-**防重复发版**：本次内嵌的前端版本与上一版 release 台账一致、且后端源码无变化时，不发新 release、
-也不推新镜像 tag；判定依据（本次前端版本 / 上一版台账版本 / 后端 diff 是否为空）会写进 job summary。
-上一版 release 或台账缺失时按"需要发版"处理，并写明"无上一版台账，按需发版处理"。
-
-**契约刷新流程**：`/api/version` 属于跨仓契约。改了 `ApiVersionResponse` 必须在**同一个 PR** 里
-重新导出 `contract/openapi.json`（CI 会硬校验），下游 `pim-web` 仓随后用
-`scripts/ci/fetch-contract.sh` 刷新 `contract/openapi.json`、`provenance.json` 与
-`client-web/src/api/generated.ts`；在其刷新之前，pim-web 的契约新鲜度门禁会变红，这是预期行为。
+**迁移与回滚**：原始 Web 提交 `8bef21245a28da85fb16846d6d8c3c5a18730449` 及其历史未改写，
+通过无 squash 的 subtree 导入到 `web/`。旧 pim-web 仓、镜像和历史保持不变，暂不归档或删除。
+需要撤回时通过 PR revert 迁移的整组合并变更，不强推 master；生产镜像回滚需另行明确操作，代码回滚不会自动恢复数据库或部署。
 
 ## 日志级别与降噪
 

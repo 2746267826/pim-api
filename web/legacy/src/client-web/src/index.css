@@ -1,0 +1,935 @@
+@import "tailwindcss";
+
+/* ============================================================
+   PIM 基调 v1（2026-09-19 · lab）
+   方向：浅色清爽数据系（参照 Plausible / shadcn / Tremor）
+   - 灰阶：去蓝调 → 中性冷灰（更精致、更耐看）
+   - 主色：标准蓝 → 靛蓝（indigo，更高级的工程气质）
+   - 全站在 Tailwind 主题层一步换肤，无需逐文件改类名
+   ============================================================ */
+@theme {
+  /* 灰阶（slate 重定义：中性微冷） */
+  --color-slate-50: #f8f9fb;
+  --color-slate-100: #f1f2f6;
+  --color-slate-200: #e6e8ee;
+  --color-slate-300: #d4d7df;
+  --color-slate-400: #9fa3b0;
+  --color-slate-500: #717581;
+  --color-slate-600: #585b66;
+  --color-slate-700: #41434d;
+  --color-slate-800: #2a2c34;
+  --color-slate-900: #1a1b21;
+  --color-slate-950: #0f1014;
+
+  /* 主色（blue 重定义 → 靛蓝 indigo） */
+  --color-blue-50: #eef2ff;
+  --color-blue-100: #e0e7ff;
+  --color-blue-200: #c7d2fe;
+  --color-blue-300: #a5b4fc;
+  --color-blue-400: #818cf8;
+  --color-blue-500: #6366f1;
+  --color-blue-600: #4f46e5;
+  --color-blue-700: #4338ca;
+  --color-blue-800: #3730a3;
+  --color-blue-900: #312e81;
+  --color-blue-950: #1e1b4b;
+}
+
+:root {
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* 表面 */
+  --pim-bg: #f7f8fa;
+  --pim-surface: #ffffff;
+  --pim-surface-muted: #f4f5f7;
+  --pim-border: #e6e8ee;
+  --pim-border-soft: #edeff3;
+  --pim-text: #1a1b21;
+  --pim-text-muted: #717581;
+
+  /* 主色 */
+  --pim-primary: #4f46e5;
+  --pim-primary-hover: #4338ca;
+  --pim-primary-soft: #eef2ff;
+
+  /* 语义色 */
+  --pim-activity: #0d9488;
+  --pim-activity-soft: #ccfbf1;
+  --pim-success: #16a34a;
+  --pim-success-soft: #dcfce7;
+  --pim-warning: #d97706;
+  --pim-warning-soft: #fef3c7;
+  --pim-danger: #dc2626;
+  --pim-danger-soft: #fee2e2;
+  --pim-info: #0ea5e9;
+  --pim-info-soft: #e0f2fe;
+
+  /* 圆角 / 阴影 */
+  --pim-radius-sm: 8px;
+  --pim-radius-md: 12px;
+  --pim-radius-lg: 14px;
+  --pim-shadow-card: 0 1px 2px rgba(16, 17, 22, 0.04);
+  --pim-shadow-soft: 0 12px 32px rgba(16, 17, 22, 0.1);
+  --pim-shadow-pop: 0 16px 40px rgba(16, 17, 22, 0.14);
+
+  /* 图表色板（10 色） */
+  --pim-chart-1: #4f46e5;
+  --pim-chart-2: #0ea5e9;
+  --pim-chart-3: #10b981;
+  --pim-chart-4: #f59e0b;
+  --pim-chart-5: #ef4444;
+  --pim-chart-6: #8b5cf6;
+  --pim-chart-7: #14b8a6;
+  --pim-chart-8: #f97316;
+  --pim-chart-9: #64748b;
+  --pim-chart-10: #ec4899;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  background: var(--pim-bg);
+  color: var(--pim-text);
+}
+
+/* 滚动条（精致化） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d4d7df transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d4d7df;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #b3b7c2;
+  background-clip: padding-box;
+}
+
+/* 选区 */
+::selection {
+  background: rgba(79, 70, 229, 0.18);
+}
+
+/* 折叠收纳区（今日页「运维与状态」等） */
+.pim-collapsible summary {
+  list-style: none;
+}
+
+.pim-collapsible summary::-webkit-details-marker {
+  display: none;
+}
+
+.pim-collapsible .pim-collapsible-chevron {
+  display: inline-block;
+  transition: transform 150ms ease;
+}
+
+.pim-collapsible[open] .pim-collapsible-chevron {
+  transform: rotate(90deg);
+}
+
+.pim-collapsible summary:hover {
+  background: var(--pim-surface-muted);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.pim-shell {
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+  background: var(--pim-bg);
+}
+
+
+.pim-route-surface {
+  min-width: 0;
+}
+
+.pim-panel {
+  background: var(--pim-surface);
+  border: 1px solid var(--pim-border);
+  border-radius: var(--pim-radius-lg);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pim-card {
+  background: var(--pim-surface);
+  border: 1px solid var(--pim-border);
+  border-radius: var(--pim-radius-md);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pim-button-primary {
+  background: var(--pim-primary);
+  color: #ffffff;
+  border-radius: 10px;
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
+  transition: background-color 140ms ease, transform 140ms ease;
+}
+
+.pim-button-primary:hover {
+  background: #4338ca;
+}
+
+.pim-button-secondary {
+  background: #ffffff;
+  color: var(--pim-text);
+  border: 1px solid var(--pim-border);
+  border-radius: 10px;
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.2;
+  text-align: center;
+  white-space: normal;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.pim-button-secondary:hover {
+  border-color: #c7d2fe;
+  background: var(--pim-surface-muted);
+}
+
+.pim-drop-target {
+  background: rgba(20, 184, 166, 0.08);
+  box-shadow: inset 0 0 0 2px var(--pim-activity);
+}
+
+.pim-drag-card {
+  box-shadow: var(--pim-shadow-soft);
+  transform: rotate(-1deg);
+}
+
+.fc {
+  --fc-border-color: var(--pim-border-soft);
+  --fc-today-bg-color: rgba(79, 70, 229, 0.08);
+  --fc-neutral-bg-color: #f8fafc;
+  font-family: inherit;
+}
+
+.fc .fc-toolbar {
+  display: none;
+}
+
+.fc .fc-timegrid-slot,
+.fc .fc-scrollgrid,
+.fc .fc-col-header-cell,
+.fc .fc-daygrid-day {
+  border-color: var(--pim-border-soft);
+}
+
+.fc .fc-event {
+  border-radius: 10px;
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+  color: var(--pim-text);
+  box-shadow: 0 10px 24px rgba(79, 70, 229, 0.10);
+}
+
+.calendar-board {
+  background:
+    radial-gradient(circle at top left, rgba(20, 184, 166, 0.12), transparent 28rem),
+    linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.calendar-board .fc {
+  --fc-border-color: rgba(148, 163, 184, 0.22);
+  --fc-today-bg-color: rgba(79, 70, 229, 0.08);
+  --fc-neutral-bg-color: transparent;
+  color: var(--pim-text);
+}
+
+.calendar-board .fc-scrollgrid {
+  border: 0;
+}
+
+.calendar-board .fc-theme-standard td,
+.calendar-board .fc-theme-standard th {
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+.calendar-board .fc-col-header-cell {
+  background: rgba(248, 250, 252, 0.9);
+  color: #475569;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.calendar-board .fc-timegrid-slot {
+  height: 3.25rem;
+}
+
+.calendar-board .fc-timegrid-slot-lane {
+  background: linear-gradient(90deg, rgba(248, 250, 252, 0.74), rgba(255, 255, 255, 0.92));
+}
+
+.calendar-board .fc-timegrid-slot-label {
+  color: #94a3b8;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.calendar-board .fc-daygrid-day {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.calendar-board .fc-daygrid-day-frame {
+  height: 100%;
+  min-height: 7.5rem;
+  padding: 0.35rem;
+}
+
+.calendar-board .fc-day-today .fc-daygrid-day-frame,
+.calendar-board .fc-timegrid-col.fc-day-today {
+  background: linear-gradient(180deg, rgba(224, 231, 255, 0.65), rgba(240, 253, 250, 0.38));
+}
+
+.calendar-board .fc-daygrid-day-number {
+  margin: 0.35rem;
+  border-radius: 999px;
+  color: #475569;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.calendar-board .fc-day-today .fc-daygrid-day-number {
+  background: #4f46e5;
+  color: white;
+  padding: 0.2rem 0.45rem;
+}
+
+.calendar-board .fc-event {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.calendar-event-card {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 0.75rem;
+  padding: 0.25rem 0.45rem;
+  color: #0f172a;
+  font-size: 0.72rem;
+  font-weight: 700;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+}
+
+.calendar-event-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Title is the highest-priority content of month/daygrid cards: it must
+   keep a nonzero width and ellipsize even when time and dot are hidden. */
+.fc-daygrid-event .calendar-event-card[data-calendar-event-card] .calendar-event-title {
+  flex: 1 1 auto;
+  min-width: 2ch;
+}
+
+.calendar-event-time {
+  flex-shrink: 0;
+  color: rgba(15, 23, 42, 0.56);
+  font-size: 0.65rem;
+  font-weight: 600;
+}
+
+.calendar-event-dot {
+  height: 0.45rem;
+  width: 0.45rem;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.calendar-event--primary {
+  background: linear-gradient(135deg, #e0e7ff, #eef2ff);
+  color: #4338ca;
+}
+
+.calendar-event--warning {
+  background: linear-gradient(135deg, #fef3c7, #fffbeb);
+  color: #b45309;
+}
+
+.calendar-event--danger {
+  background: linear-gradient(135deg, #fee2e2, #fff1f2);
+  color: #dc2626;
+}
+
+.calendar-event--quiet {
+  background: linear-gradient(135deg, #ccfbf1, #f0fdfa);
+  color: #0f766e;
+}
+
+.pim-location-marker span {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border: 3px solid #ffffff;
+  border-radius: 999px;
+  background: #4f46e5;
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+}
+
+.pim-location-marker-selected span {
+  width: 22px;
+  height: 22px;
+  background: #e11d48;
+  box-shadow: 0 0 0 6px rgba(225, 29, 72, 0.15), 0 4px 12px rgba(225, 29, 72, 0.35);
+}
+
+.pim-location-marker-stay span {
+  width: 24px;
+  height: 24px;
+  background: #0d9488;
+  box-shadow: 0 0 0 5px rgba(13, 148, 136, 0.18), 0 4px 12px rgba(13, 148, 136, 0.35);
+}
+
+.pim-location-marker-jump span {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #ffffff;
+  background: #94a3b8;
+  box-shadow: 0 2px 6px rgba(100, 116, 139, 0.35);
+}
+
+@media (max-width: 768px) {
+  .pim-panel,
+  .pim-card {
+    border-radius: var(--pim-radius-sm);
+  }
+
+  .calendar-board {
+    flex: none;
+    height: 24rem;
+    height: max(24rem, calc(100dvh - 28rem));
+  }
+
+}
+
+
+.calendar-event-card[data-calendar-event-card] {
+  background: color-mix(in srgb, var(--calendar-accent, #4f46e5) 15%, transparent);
+  border-left: 3px solid var(--calendar-accent, #4f46e5);
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+/* Importance high adds an extra emphasized accent without replacing the
+   calendar color (background/border-left keep the calendar accent). */
+.calendar-event-card[data-calendar-event-card].calendar-event--important {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, #dc2626 40%, transparent);
+}
+
+.fc-timegrid-event .calendar-event-card[data-calendar-event-card] {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  overflow: hidden;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 0.7rem;
+  line-height: 1.3;
+}
+
+/* Timegrid titles stay width-constrained so they ellipsize instead of
+   overflowing the card, without changing the title/time vertical order. */
+.fc-timegrid-event .calendar-event-card[data-calendar-event-card] .calendar-event-title {
+  width: 100%;
+  min-width: 0;
+}
+
+.fc-timegrid-event .calendar-event-card[data-calendar-event-card] .calendar-event-dot {
+  display: none;
+}
+
+.fc-daygrid-event .calendar-event-card[data-calendar-event-card] {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  padding: 0 0.3rem;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  border-radius: 3px;
+  gap: 0.2rem;
+  min-width: 0;
+  overflow: hidden;
+  container-type: inline-size;
+  /* FullCalendar dot events are flex rows; the card must fill the event so
+     its container-query width reflects the real day cell width. */
+  flex: 1 1 auto;
+  width: 100%;
+}
+
+/* Card container queries: hide time first, then the dot, at narrower widths;
+   wide desktop cells (typically 77-121px) keep both, while ~44px mobile
+   cells hide both. Thresholds are measured against the card content box. */
+@container (max-width: 3.5rem) {
+  .fc-daygrid-event .calendar-event-card[data-calendar-event-card] .calendar-event-time {
+    display: none;
+  }
+}
+
+@container (max-width: 2.75rem) {
+  .fc-daygrid-event .calendar-event-card[data-calendar-event-card] .calendar-event-dot {
+    display: none;
+  }
+}
+
+.fc-daygrid-event .calendar-event-card[data-calendar-event-card] .calendar-event-title,
+.fc-daygrid-event .calendar-event-card[data-calendar-event-card] .calendar-event-time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar-event-location,
+.calendar-event-source,
+.calendar-event-description,
+.calendar-event-rrule,
+.calendar-event-showas,
+.calendar-event-importance,
+.calendar-event-reminder {
+  display: none;
+}
+
+.calendar-event-card[data-content-level="2"] > .calendar-event-location,
+.calendar-event-card[data-content-level="3"] > .calendar-event-location,
+.calendar-event-card[data-content-level="4"] > .calendar-event-location,
+.calendar-event-card[data-content-level="5"] > .calendar-event-location,
+.calendar-event-card[data-content-level="3"] > .calendar-event-source,
+.calendar-event-card[data-content-level="4"] > .calendar-event-source,
+.calendar-event-card[data-content-level="5"] > .calendar-event-source,
+.calendar-event-card[data-content-level="4"] > .calendar-event-description,
+.calendar-event-card[data-content-level="5"] > .calendar-event-description,
+.calendar-event-card[data-content-level="5"] > .calendar-event-rrule,
+.calendar-event-card[data-content-level="3"] > .calendar-event-showas,
+.calendar-event-card[data-content-level="4"] > .calendar-event-showas,
+.calendar-event-card[data-content-level="5"] > .calendar-event-showas,
+.calendar-event-card[data-content-level="5"] > .calendar-event-importance,
+.calendar-event-card[data-content-level="5"] > .calendar-event-reminder {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.calendar-event-description {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 12ch;
+  color: var(--pim-text-muted);
+  font-weight: 400;
+  font-size: 0.65rem;
+}
+
+.calendar-event-location,
+.calendar-event-source {
+  color: var(--pim-text-muted);
+  font-weight: 400;
+  font-size: 0.65rem;
+}
+
+.calendar-event-rrule {
+  color: var(--pim-text-muted);
+}
+
+.calendar-event-importance {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.calendar-event-reminder {
+  color: var(--pim-text-muted);
+}
+
+/* showAs=free is a non-blocking, dashed visual; tentative is dashed amber. */
+.calendar-event-showas {
+  border-radius: 3px;
+  padding: 0 0.3rem;
+  font-size: 0.62rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.calendar-event-showas--free {
+  border: 1px dashed rgba(15, 23, 42, 0.45);
+  color: rgba(15, 23, 42, 0.6);
+}
+
+.calendar-event-showas--tentative {
+  border: 1px solid rgba(234, 179, 8, 0.55);
+  background: rgba(253, 230, 138, 0.35);
+  color: #a16207;
+}
+
+.calendar-event--cancelled {
+  opacity: 0.55;
+  text-decoration: line-through;
+  filter: grayscale(0.35);
+}
+
+.calendar-event-cancelled {
+  display: none;
+  color: #64748b;
+  font-size: 0.62rem;
+  font-weight: 600;
+}
+
+.calendar-event-card[data-content-level="3"] > .calendar-event-cancelled,
+.calendar-event-card[data-content-level="4"] > .calendar-event-cancelled,
+.calendar-event-card[data-content-level="5"] > .calendar-event-cancelled,
+.calendar-event-card.calendar-event--cancelled > .calendar-event-cancelled {
+  display: inline-flex;
+}
+
+/* ── Unified event editor sections ─────────────────────────────────────── */
+
+.event-editor-section {
+  border-top: 1px solid var(--pim-border-soft);
+  min-width: 0;
+}
+
+.event-editor-section-heading {
+  margin: 0;
+}
+
+.event-editor-section-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.65rem 0.25rem;
+  background: transparent;
+  border: 0;
+  border-radius: var(--pim-radius-sm);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--pim-text);
+  cursor: pointer;
+}
+
+.event-editor-section-toggle:hover {
+  color: var(--pim-primary);
+  background: var(--pim-surface-muted);
+}
+
+.event-editor-section-title {
+  flex-shrink: 1;
+  min-width: 2ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-editor-section-summary {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pim-text-muted);
+  font-weight: 400;
+  font-size: 0.75rem;
+}
+
+.event-editor-section-caret {
+  flex-shrink: 0;
+  color: var(--pim-text-muted);
+  transition: transform 140ms ease;
+}
+
+.event-editor-section-caret-open {
+  transform: rotate(180deg);
+}
+
+.event-editor-section-body {
+  padding: 0.25rem 0 0.75rem;
+  min-width: 0;
+}
+
+/* ── Rich description editor (Tiptap) ──────────────────────────────────── */
+
+.event-rich-editor {
+  border: 1px solid var(--pim-border);
+  border-radius: var(--pim-radius-sm);
+  background: #ffffff;
+  min-width: 0;
+}
+
+.event-rich-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  padding: 0.3rem;
+  border-bottom: 1px solid var(--pim-border-soft);
+  background: var(--pim-surface-muted);
+  border-radius: var(--pim-radius-sm) var(--pim-radius-sm) 0 0;
+}
+
+.event-rich-editor-toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pim-text-muted);
+  cursor: pointer;
+}
+
+.event-rich-editor-toolbar-button:hover,
+.event-rich-editor-toolbar-button.is-active,
+.event-rich-editor-toolbar-button[aria-pressed='true'] {
+  background: var(--pim-primary-soft);
+  color: var(--pim-primary);
+}
+
+.event-rich-editor-toolbar-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.event-rich-editor .tiptap {
+  min-height: 8rem;
+  max-height: 18rem;
+  overflow-y: auto;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--pim-text);
+  outline: none;
+}
+
+.event-rich-editor .tiptap p {
+  margin: 0 0 0.5rem;
+}
+
+.event-rich-editor .tiptap h2,
+.event-rich-editor .tiptap h3 {
+  margin: 0.5rem 0 0.25rem;
+  font-weight: 600;
+}
+
+.event-rich-editor .tiptap h2 {
+  font-size: 1rem;
+}
+
+.event-rich-editor .tiptap h3 {
+  font-size: 0.9375rem;
+}
+
+.event-rich-editor .tiptap ul,
+.event-rich-editor .tiptap ol {
+  margin: 0 0 0.5rem;
+  padding-left: 1.25rem;
+}
+
+.event-rich-editor .tiptap blockquote {
+  margin: 0.5rem 0;
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--pim-border);
+  color: var(--pim-text-muted);
+}
+
+.event-rich-editor .tiptap pre {
+  margin: 0.5rem 0;
+  padding: 0.5rem;
+  border: 1px solid var(--pim-border-soft);
+  border-radius: 6px;
+  background: var(--pim-surface-muted);
+  overflow-x: auto;
+  font-size: 0.8125rem;
+}
+
+.event-rich-editor .tiptap code {
+  border-radius: 4px;
+  background: var(--pim-surface-muted);
+  padding: 0 0.25rem;
+  font-size: 0.8125rem;
+}
+
+.event-rich-editor .tiptap a {
+  color: var(--pim-primary);
+  text-decoration: underline;
+}
+
+.event-rich-editor[data-description-html-preview] {
+  max-width: 100%;
+}
+
+/* ── Category chips and attendee/attachment rows ────────────────────────── */
+
+.event-category-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+  padding: 0.2rem 0.2rem 0.2rem 0.55rem;
+  border: 1px solid var(--pim-border);
+  border-radius: 999px;
+  background: var(--pim-surface-muted);
+  color: var(--pim-text);
+  font-size: 0.75rem;
+}
+
+.event-category-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pim-text-muted);
+  cursor: pointer;
+}
+
+.event-category-chip-remove:hover {
+  background: var(--pim-danger-soft);
+  color: var(--pim-danger);
+}
+
+.event-attendee-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.event-attendee-row > input {
+  min-width: 0;
+  flex: 1 1 40%;
+}
+
+.event-attendee-row > select {
+  min-width: 0;
+}
+
+.event-attendee-remove,
+.event-attachment-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--pim-border-soft);
+  border-radius: var(--pim-radius-sm);
+  background: transparent;
+  color: var(--pim-text-muted);
+  cursor: pointer;
+}
+
+.event-attendee-remove:hover,
+.event-attachment-remove:hover {
+  background: var(--pim-danger-soft);
+  color: var(--pim-danger);
+}
+
+.event-attachment-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.event-recurrence-summary {
+  overflow-wrap: anywhere;
+}
+
+/* ── Quick Notes animations and shadows ───────────────────────────────── */
+
+.shadow-card {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.shadow-subtle {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+}
+
+.shadow-dialog {
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15), 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+.animate-dialog {
+  animation: dialog-in 0.2s ease-out;
+}
+
+.animate-backdrop {
+  animation: backdrop-in 0.15s ease-out;
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

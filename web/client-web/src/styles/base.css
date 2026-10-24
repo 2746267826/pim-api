@@ -1,0 +1,227 @@
+/* 基础元素样式（tokens 之外的全局默认） */
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text-1);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 数量字（时长/计数/字节/百分比）统一等宽数字 */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 等宽（设备 ID / JSON / SQL） */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+/* 全局焦点环 */
+:focus-visible {
+  outline: 2px solid var(--color-primary-ring);
+  outline-offset: 1px;
+}
+
+/* 滚动条（细、浅） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 浮层进入动效（抽屉/弹窗/菜单，240ms / cubic-bezier(.32,.72,.24,1)） */
+@keyframes pim-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes pim-slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes pim-slide-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes pim-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ── 退场动效：Radix 弹层 data-state="closed" 期间播放，动画结束自动卸载 ──
+ * transform 与 Tailwind v4 的 translate 属性分属两层，居中位移不会被打断。 */
+@keyframes pim-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes pim-pop-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}
+@keyframes pim-slide-out-right {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@keyframes pim-slide-out-left {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+}
+
+.pim-dialog-overlay[data-state='closed'] {
+  animation: pim-fade-out 150ms ease-in both;
+}
+.pim-dialog-content[data-state='closed'] {
+  animation: pim-pop-out 150ms ease-in both;
+}
+.pim-drawer-right[data-state='closed'] {
+  animation: pim-slide-out-right 180ms ease-in both;
+}
+.pim-drawer-left[data-state='closed'] {
+  animation: pim-slide-out-left 180ms ease-in both;
+}
+
+/* ── 路由级 View Transitions（React Router <Link viewTransition>）────
+   主内容区独立命名：旧页轻微上移淡出、新页淡入（transform/opacity only）。
+   侧边栏与页脚不参与（无 view-transition-name），保持静止锚点。 */
+main {
+  view-transition-name: main-content;
+}
+::view-transition-old(main-content) {
+  animation: 140ms ease-in both pim-vt-out;
+}
+::view-transition-new(main-content) {
+  animation: 180ms ease-out both pim-vt-in;
+}
+@keyframes pim-vt-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+@keyframes pim-vt-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* 根级默认交叉淡化保留，但压缩时长避免与新内容动画叠加发闷 */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 120ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root),
+  ::view-transition-old(main-content),
+  ::view-transition-new(main-content) {
+    animation: none !important;
+  }
+}
+
+/* 动效兜底：系统要求减少动效时全部禁用 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* 骨架呼吸 */
+@keyframes pim-skeleton {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+.skeleton-breathe {
+  animation: pim-skeleton 1.5s ease-in-out infinite;
+}
+
+/* 状态灯呼吸（仅状态页启用） */
+@keyframes pim-pulse-ring {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(220 38 38 / 0.25);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgb(220 38 38 / 0.08);
+  }
+}
+.status-dot-critical {
+  animation: pim-pulse-ring 2s ease-in-out infinite;
+}

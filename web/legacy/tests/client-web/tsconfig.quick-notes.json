@@ -1,0 +1,20 @@
+{
+  "extends": "../../src/client-web/tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "typeRoots": ["../../src/client-web/node_modules/@types"],
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": [
+    "quickNotesEntryBundle.test.ts",
+    "quickNotesApiPath.test.ts",
+    "quickNotesAttachmentUrls.test.ts",
+    "quickNotesTypes.test.ts",
+    "../../src/client-web/node_modules/vite/client.d.ts",
+    "../../src/client-web/src/api/client.ts",
+    "../../src/client-web/src/api/quickNotes.ts",
+    "../../src/client-web/src/components/quick-notes/quickNoteAttachmentBlobUrls.ts",
+    "../../src/client-web/src/types/index.ts"
+  ]
+}

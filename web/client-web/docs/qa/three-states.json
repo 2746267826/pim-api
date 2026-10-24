@@ -1,0 +1,92 @@
+[
+ {
+  "page": "today",
+  "state": "loading",
+  "shot": "docs/qa/screenshots/state-today-loading.png",
+  "error": null
+ },
+ {
+  "page": "today",
+  "state": "error",
+  "shot": "docs/qa/screenshots/state-today-error.png",
+  "error": null
+ },
+ {
+  "page": "today",
+  "state": "empty",
+  "shot": "docs/qa/screenshots/state-today-empty.png",
+  "error": null
+ },
+ {
+  "page": "tasks",
+  "state": "loading",
+  "shot": "docs/qa/screenshots/state-tasks-loading.png",
+  "error": null
+ },
+ {
+  "page": "tasks",
+  "state": "error",
+  "shot": "docs/qa/screenshots/state-tasks-error.png",
+  "error": null
+ },
+ {
+  "page": "tasks",
+  "state": "empty",
+  "shot": "docs/qa/screenshots/state-tasks-empty.png",
+  "error": null
+ },
+ {
+  "page": "files",
+  "state": "loading",
+  "shot": "docs/qa/screenshots/state-files-loading.png",
+  "error": null
+ },
+ {
+  "page": "files",
+  "state": "error",
+  "shot": "docs/qa/screenshots/state-files-error.png",
+  "error": null
+ },
+ {
+  "page": "files",
+  "state": "empty",
+  "shot": "docs/qa/screenshots/state-files-empty.png",
+  "error": null
+ },
+ {
+  "page": "pc-tracker",
+  "state": "loading",
+  "shot": "docs/qa/screenshots/state-pc-tracker-loading.png",
+  "error": null
+ },
+ {
+  "page": "pc-tracker",
+  "state": "error",
+  "shot": "docs/qa/screenshots/state-pc-tracker-error.png",
+  "error": null
+ },
+ {
+  "page": "pc-tracker",
+  "state": "empty",
+  "shot": "docs/qa/screenshots/state-pc-tracker-empty.png",
+  "error": null
+ },
+ {
+  "page": "calendar-week",
+  "state": "loading",
+  "shot": "docs/qa/screenshots/state-calendar-week-loading.png",
+  "error": null
+ },
+ {
+  "page": "calendar-week",
+  "state": "error",
+  "shot": "docs/qa/screenshots/state-calendar-week-error.png",
+  "error": null
+ },
+ {
+  "page": "calendar-week",
+  "state": "empty",
+  "shot": "docs/qa/screenshots/state-calendar-week-empty.png",
+  "error": null
+ }
+]

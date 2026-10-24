@@ -1,0 +1,27 @@
+{
+  "extends": "../../src/client-web/tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "typeRoots": ["../../src/client-web/node_modules/@types"],
+    "paths": {
+      "@tanstack/react-query": ["../../src/client-web/node_modules/@tanstack/react-query"]
+    }
+  },
+  "include": [
+    "./dataReliabilityTypes.test.ts",
+    "./dataReliabilityApiPath.test.ts",
+    "./dataReliabilityModel.test.ts",
+    "./dataReliabilityUi.test.tsx",
+    "../../src/client-web/src/api/dataReliability.ts",
+    "../../src/client-web/src/api/dataReliabilityTypes.ts",
+    "../../src/client-web/src/components/data-reliability/dataReliabilityModel.ts",
+    "../../src/client-web/src/components/data-reliability/DataReliabilityPanel.tsx",
+    "../../src/client-web/src/components/data-reliability/DataReliabilityRuleRow.tsx",
+    "../../src/client-web/src/components/data-reliability/DataReliabilityRuleDialog.tsx",
+    "../../src/client-web/src/components/data-reliability/DataReliabilityOverview.tsx",
+    "../../src/client-web/src/components/data-reliability/S2ThreeStateDistribution.tsx",
+    "../../src/client-web/src/pages/DataReliabilityPage.tsx"
+  ]
+}

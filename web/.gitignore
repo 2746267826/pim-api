@@ -1,0 +1,28 @@
+# 依赖与构建产物
+node_modules/
+# 误落入仓库的 npm 缓存（路径拼接事故的产物）
+**/Usersa2746AppDataLocalnpm-cache/
+dist/
+
+# Capacitor Android 生成物
+client-web/android/.gradle/
+client-web/android/build/
+client-web/android/app/build/
+client-web/android/local.properties
+client-web/android/.idea/
+client-web/android/capacitor-cordova-android-plugins/
+client-web/android/app/src/main/assets/public/
+
+# 未来 Tauri 产物
+client-web/src-tauri/target/
+
+# 日志与临时文件
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# 环境与密钥
+.env
+.env.*
+!.env.example

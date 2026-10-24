@@ -1,0 +1,317 @@
+/* 日历皮肤（预览与正式复用同一套覆盖样式，作用域 .skin-*） */
+
+/* ── 皮肤 A · 极简无格线（Linear/Notion 风） ──────────────── */
+.skin-minimal .fc,
+.skin-minimal .fc-theme-standard .fc-scrollgrid {
+  border: none;
+}
+.skin-minimal .fc-theme-standard td,
+.skin-minimal .fc-theme-standard th {
+  border: none;
+}
+.skin-minimal .fc-timegrid-divider {
+  display: none;
+}
+.skin-minimal .fc-timegrid-slot {
+  height: 2.4em;
+}
+.skin-minimal .fc-timegrid-slot-label-cushion {
+  color: var(--color-text-4);
+  font-size: 11px;
+}
+.skin-minimal .fc-col-header-cell-cushion {
+  color: var(--color-text-2);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 4px;
+  text-decoration: none;
+}
+.skin-minimal .fc-timegrid-col.fc-day-today,
+.skin-minimal .fc-daygrid-day.fc-day-today {
+  background: color-mix(in srgb, var(--color-primary-soft) 60%, transparent) !important;
+}
+.skin-minimal .fc-timegrid-event,
+.skin-minimal .fc-daygrid-event {
+  border: none;
+  border-radius: 8px;
+  box-shadow: var(--shadow-card);
+  padding: 2px 6px 2px 9px;
+}
+.skin-minimal .fc-event-main {
+  color: var(--color-text-1);
+}
+.skin-minimal .fc-event-title {
+  font-weight: 500;
+}
+.skin-minimal .fc-timegrid-now-indicator-line {
+  border-color: var(--color-crit);
+  border-width: 2px;
+}
+
+/* ── 皮肤 B · 纸面细格（Google Calendar 风） ──────────────── */
+.skin-paper .fc {
+  --fc-border-color: var(--color-border);
+  --fc-today-bg-color: var(--color-primary-soft);
+  --fc-page-bg-color: var(--color-bg);
+  --fc-neutral-bg-color: var(--color-surface);
+}
+.skin-paper .fc-theme-standard .fc-scrollgrid {
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+.skin-paper .fc-timegrid-slot {
+  height: 2em;
+}
+.skin-paper .fc-timegrid-slot-label-cushion {
+  color: var(--color-text-3);
+  font-size: 11px;
+}
+.skin-paper .fc-col-header-cell-cushion {
+  color: var(--color-text-2);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 4px;
+  text-decoration: none;
+}
+.skin-paper .fc-timegrid-col.fc-day-today,
+.skin-paper .fc-daygrid-day.fc-day-today {
+  background: var(--color-primary-soft) !important;
+}
+.skin-paper .fc-timegrid-event,
+.skin-paper .fc-daygrid-event {
+  border: none;
+  border-radius: 4px;
+  padding: 2px 4px 2px 8px;
+}
+.skin-paper .fc-event-main {
+  color: var(--color-text-1);
+}
+
+/* ── 皮肤 · 玻璃（Fantastical 式饱和渐变，正式日历采用） ──────
+   日历逻辑全部由 FullCalendar 提供；本段只做视觉层定制。 */
+.skin-glass .fc {
+  --fc-border-color: var(--color-border);
+  --fc-today-bg-color: var(--color-primary-soft);
+  --fc-page-bg-color: var(--color-bg);
+  --fc-neutral-bg-color: var(--color-surface);
+  --fc-now-indicator-color: var(--color-crit);
+}
+.skin-glass .fc-theme-standard .fc-scrollgrid {
+  border: none;
+}
+.skin-glass .fc-theme-standard td,
+.skin-glass .fc-theme-standard th {
+  border-color: var(--color-divider);
+}
+.skin-glass .fc-col-header-cell-cushion {
+  color: var(--color-text-2);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 4px;
+  text-decoration: none;
+}
+.skin-glass .fc-day-today {
+  background: var(--color-primary-soft) !important;
+}
+.skin-glass .fc-timegrid-slot {
+  height: 2.2em;
+}
+.skin-glass .fc-timegrid-slot-label-cushion {
+  color: var(--color-text-4);
+  font-size: 11px;
+}
+.skin-glass .fc-timegrid-divider {
+  display: none;
+}
+/* 事件块：圆角 8、无描边、同色投影由渲染层补充 */
+.skin-glass .fc-timegrid-event,
+.skin-glass .fc-daygrid-event {
+  border: none;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgb(15 23 42 / 0.18);
+  overflow: hidden;
+}
+.skin-glass .fc-event-main {
+  color: #ffffff;
+}
+.skin-glass .fc-event-title {
+  font-weight: 600;
+}
+.skin-glass .fc-daygrid-dot .fc-daygrid-event-dot {
+  border-color: currentColor;
+}
+/* 月视图日程 chips 同语言：饱和渐变胶囊 */
+.skin-glass .fc-daygrid-event {
+  border-radius: 6px;
+}
+.skin-glass .fc-timegrid-now-indicator-line {
+  border-color: var(--color-crit);
+  border-width: 2px;
+}
+/* 顶部高光（玻璃"果冻感"）：叠加在事件实色之上 */
+.skin-glass .fc-timegrid-event,
+.skin-glass .fc-daygrid-event {
+  background-image: linear-gradient(180deg, rgb(255 255 255 / 0.32), rgb(255 255 255 / 0) 45%);
+}
+
+/* ── 皮肤 · 谷歌（正式采用）─────────────────────────────
+   日视图 = Google Calendar 竖条事件；月视图 = GCal 圆点行。
+   每事件的颜色由 FullCalendar 写入元素级变量 --fc-event-bg-color，
+   左条/圆点直接引用它——无需逐事件写 CSS。日历逻辑全部来自库。 */
+.skin-gcal .fc {
+  --fc-border-color: var(--color-border);
+  --fc-today-bg-color: var(--color-primary-soft);
+  --fc-page-bg-color: var(--color-bg);
+  --fc-neutral-bg-color: var(--color-surface);
+  --fc-now-indicator-color: var(--color-crit);
+}
+.skin-gcal .fc-theme-standard .fc-scrollgrid {
+  border: none;
+}
+.skin-gcal .fc-theme-standard td,
+.skin-gcal .fc-theme-standard th {
+  border-color: var(--color-divider);
+}
+.skin-gcal .fc-col-header-cell-cushion {
+  color: var(--color-text-2);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 4px;
+  text-decoration: none;
+}
+.skin-gcal .fc-timegrid-col.fc-day-today,
+.skin-gcal .fc-daygrid-day.fc-day-today {
+  background: var(--color-primary-soft) !important;
+}
+.skin-gcal .fc-timegrid-slot {
+  height: 2.2em;
+}
+/* 短任务段（如 15 分钟排期）保证最小可读高度 */
+.skin-gcal .fc-timegrid-event {
+  min-height: 16px;
+}
+.skin-gcal .fc-timegrid-slot-label-cushion {
+  color: var(--color-text-4);
+  font-size: 11px;
+}
+.skin-gcal .fc-timegrid-divider {
+  display: none;
+}
+/* 日视图事件：白底 + 左缘 9px 日历色竖条 + 圆角 3 + 轻投影 */
+.skin-gcal .fc-timegrid-event {
+  background: #ffffff !important;
+  border: none !important;
+  border-left: 9px solid var(--fc-event-bg-color) !important;
+  border-radius: 3px !important;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.12);
+}
+.skin-gcal .fc-event-main {
+  color: var(--color-text-1);
+}
+.skin-gcal .fc-event-title {
+  font-weight: 600;
+}
+/* 卡片内容顶部对齐；data-density = 该卡可容纳的总行数（eventDidMount 按实测高度写入），
+   第 n+1 行起整体隐藏。用 :nth-child 而非逐行类名，可自适应「某行无内容而未渲染」的情况：
+   计数的是实际渲染出的行，因此 density=3 恒等于「显示前 3 行」。 */
+.skin-gcal .fc-timegrid-event .fc-event-main {
+  align-items: stretch;
+  justify-content: flex-start;
+}
+.skin-gcal .fc-timegrid-event[data-density='1'] .fc-event-main > div > span:nth-child(n + 2),
+.skin-gcal .fc-timegrid-event[data-density='2'] .fc-event-main > div > span:nth-child(n + 3),
+.skin-gcal .fc-timegrid-event[data-density='3'] .fc-event-main > div > span:nth-child(n + 4),
+.skin-gcal .fc-timegrid-event[data-density='4'] .fc-event-main > div > span:nth-child(n + 5),
+.skin-gcal .fc-timegrid-event[data-density='5'] .fc-event-main > div > span:nth-child(n + 6),
+.skin-gcal .fc-timegrid-event[data-density='6'] .fc-event-main > div > span:nth-child(n + 7) {
+  display: none;
+}
+/* 紧凑排版（data-compact，<48px 的卡片）：py 从 8px 收到 1px，行高 16/12 → 14/11，
+   使 30min≈31px 能显示 2 行、45min≈46px 能显示 3 行，且标题不被裁切。 */
+.skin-gcal .fc-timegrid-event[data-compact] .fc-event-main > div {
+  padding-top: 1px;
+  padding-bottom: 0;
+}
+.skin-gcal .fc-timegrid-event[data-compact] .fc-event-main > div > span:first-child {
+  line-height: 14px;
+}
+.skin-gcal .fc-timegrid-event[data-compact] .fc-event-main > div > span:nth-child(n + 2) {
+  line-height: 11px;
+}
+/* 月视图事件：GCal 圆点行（FC list-item 自带点，点色 = --fc-event-bg-color） */
+.skin-gcal .fc-daygrid-event {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 4px;
+  color: var(--color-text-1);
+}
+.skin-gcal .fc-daygrid-event:hover {
+  background: var(--color-surface);
+}
+.skin-gcal .fc-daygrid-dot-event .fc-daygrid-event-dot {
+  border-color: var(--fc-event-bg-color);
+}
+.skin-gcal .fc-timegrid-now-indicator-line {
+  border-color: var(--color-crit);
+  border-width: 2px;
+}
+
+/* ── 外部拖拽（收件箱任务 → 时间槽）──────────────────────────
+   镜像卡沿用玻璃皮肤的饱和渐变与投影，并明确"可落位"的视觉反馈。 */
+.skin-gcal .fc-event-mirror {
+  opacity: 0.9 !important;
+  border-radius: 8px !important;
+  box-shadow: 0 8px 24px rgb(15 23 42 / 0.28) !important;
+  /* 微倾斜：拖拽中的"实体感"（FC 用 left/top 定位镜像，transform 不冲突） */
+  transform: scale(1.02) rotate(2deg);
+  cursor: grabbing !important;
+}
+/* 拖拽经过的可落位时间槽高亮 */
+.skin-gcal .fc-timegrid-slot-lane.fc-highlight {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+/* 落位动画：新排期任务段淡入（客户端移除镜像后由服务端图层呈现） */
+@keyframes pim-segment-land {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.skin-gcal .fc-timegrid-event {
+  animation: pim-segment-land 220ms cubic-bezier(.32,.72,.24,1);
+}
+
+/* ── 周视图（timeGridWeek）：列头更紧凑，其余沿用日视图皮肤 ── */
+.skin-gcal .fc-timegrid .fc-col-header-cell-cushion {
+  padding: 6px 2px;
+}
+
+/* ── 列表视图（listWeek）：分组头、行悬停、圆点颜色 ── */
+.skin-gcal .fc-list-day-cushion {
+  background: var(--color-surface);
+  color: var(--color-text-2);
+  font-size: 12px;
+}
+.skin-gcal .fc-list-day-text,
+.skin-gcal .fc-list-day-side-text {
+  font-weight: 600;
+}
+.skin-gcal .fc-list-event {
+  border-color: var(--color-divider);
+}
+.skin-gcal .fc-list-event:hover td {
+  background: var(--color-surface);
+}
+.skin-gcal .fc-list-event .fc-list-event-dot {
+  border-color: var(--fc-event-border-color, var(--color-primary));
+}
+.skin-gcal .fc-list-event-time {
+  color: var(--color-text-3);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.skin-gcal .fc-list-event-title {
+  font-weight: 500;
+  color: var(--color-text-1);
+}
+.skin-gcal .fc-list {
+  border-color: var(--color-border);
+}

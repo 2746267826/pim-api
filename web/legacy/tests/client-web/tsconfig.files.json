@@ -1,0 +1,17 @@
+{
+  "extends": "../../src/client-web/tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "typeRoots": ["../../src/client-web/node_modules/@types"],
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": [
+    "filesApiPath.test.ts",
+    "filesTypes.test.ts",
+    "../../src/client-web/node_modules/vite/client.d.ts",
+    "../../src/client-web/src/api/client.ts",
+    "../../src/client-web/src/api/files.ts",
+    "../../src/client-web/src/types/index.ts"
+  ]
+}

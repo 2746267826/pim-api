@@ -1,0 +1,18 @@
+{
+  "extends": "../../src/client-web/tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "typeRoots": ["../../src/client-web/node_modules/@types"],
+    "strictNullChecks": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": [
+    "appKnowledgeApiPath.test.ts",
+    "appKnowledgeTypes.test.ts",
+    "../../src/client-web/node_modules/vite/client.d.ts",
+    "../../src/client-web/src/api/client.ts",
+    "../../src/client-web/src/api/appKnowledge.ts",
+    "../../src/client-web/src/types/index.ts"
+  ]
+}
