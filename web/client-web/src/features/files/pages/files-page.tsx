@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   ChevronRight,
   Download,
@@ -65,10 +66,21 @@ export function FilesPage() {
   const [mySharesOpen, setMySharesOpen] = useState(false)
   const [dragging, setDragging] = useState(false)
   const dragDepth = useRef(0)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const completedTransfers = useRef(new Set<string>())
+  const queryClient = useQueryClient()
 
   const providers = useProviders()
   const accounts = providers.data ?? []
   const { items: transfers } = useTransferQueue()
+
+  useEffect(() => {
+    const completed = transfers.filter((t) => t.status === 'done' && !completedTransfers.current.has(t.id))
+    if (completed.length === 0) return
+    for (const transfer of completed) completedTransfers.current.add(transfer.id)
+    // Only confirmed completions refresh server-backed views; queued/failed files never become list entries.
+    void queryClient.invalidateQueries({ queryKey: ['files'] })
+  }, [transfers, queryClient])
 
   /*
    * 账号选择（多网盘）：仅显示**已连接**的账号；默认选中记住的那个，
@@ -128,6 +140,7 @@ export function FilesPage() {
     for (const file of Array.from(files)) {
       uploadEngine.enqueue({ providerId: provider.id, file, targetPath: memory.path })
     }
+    setQ('')
     setTransferOpen(true)
     notifySuccess(`已加入上传队列（${files.length} 个文件）`)
   }
@@ -135,7 +148,10 @@ export function FilesPage() {
   /* 粘贴上传（文档级） */
   function onPaste(e: React.ClipboardEvent) {
     const files = e.clipboardData?.files
-    if (files?.length) onDropFiles(files)
+    if (files?.length) {
+      e.preventDefault()
+      onDropFiles(files)
+    }
   }
 
   async function download(item: FileItem) {
@@ -157,7 +173,11 @@ export function FilesPage() {
   if (!providers.isLoading && provider == null) {
     return (
       <div>
-        <PageHeader title="文件" subtitle="网盘文件浏览器" />
+        <PageHeader title="文件" subtitle="网盘文件浏览器" actions={
+          <Button variant="primary" size="sm" disabled title="请先连接网盘账号">
+            <Upload className="size-4" aria-hidden /> 上传文件
+          </Button>
+        } />
         <Card className="mx-auto max-w-[480px] p-6 text-center">
           <EmptyState
             icon={Link2}
@@ -176,7 +196,19 @@ export function FilesPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col" onPaste={onPaste}>
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        hidden
+        aria-label="选择上传文件"
+        onChange={(e) => {
+          onDropFiles(e.currentTarget.files)
+          e.currentTarget.value = ''
+        }}
+      />
       <PageHeader
+        className="[&>div:last-child]:max-w-full [&>div:last-child]:flex-wrap"
         title="文件"
         subtitle={provider ? `${providerLabel(provider.provider)} · ${provider.accountName ?? '已连接'}` : '网盘文件浏览器'}
         actions={
@@ -211,6 +243,15 @@ export function FilesPage() {
             )}
             <Button variant="ghost" size="sm" className="lg:hidden" onClick={() => setTreeOpen(true)}>
               目录
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!provider}
+              title={provider ? `上传到 ${provider.accountName ?? providerLabel(provider.provider)}：${memory.path}` : '请先连接网盘账号'}
+              onClick={() => fileInput.current?.click()}
+            >
+              <Upload className="size-4" aria-hidden /> 上传文件
             </Button>
             <Button variant="ghost" size="sm" className="relative" onClick={() => setTransferOpen((o) => !o)}>
               <Upload className="size-4" aria-hidden /> 传输
@@ -264,6 +305,9 @@ export function FilesPage() {
 
         {/* 中：工具行 + 列表（拖放热区） */}
         <div
+          role="region"
+          aria-label="文件列表，可拖放或粘贴文件上传"
+          tabIndex={0}
           className={cn('flex min-w-0 flex-1 flex-col rounded-card border bg-bg shadow-card transition-colors', dragging ? 'border-primary bg-primary-soft/30' : 'border-border')}
           onDragEnter={(e) => {
             e.preventDefault()
@@ -335,7 +379,7 @@ export function FilesPage() {
             ) : listItems.length === 0 ? (
               <EmptyState
                 title={q.trim() ? '没有匹配的文件' : '这个文件夹是空的'}
-                description={q.trim() ? '试试更换关键词或切换搜索范围。' : '把文件拖到这里即可上传。'}
+                description={q.trim() ? '试试更换关键词或切换搜索范围。' : '点击「上传文件」选择文件，也可拖放或粘贴到这里。'}
               />
             ) : memory.view === 'list' ? (
               <table className="w-full text-[13px]">
@@ -442,7 +486,12 @@ export function FilesPage() {
           （此前恒定显示「选择文件以预览」空态，白白吃掉 340px）。
         */}
         {(previewItem != null || transferOpen || activeTransfers > 0) && (
-          <aside className="hidden w-[340px] shrink-0 xl:block">
+          <aside className={cn(
+            'shrink-0',
+            transferOpen
+              ? 'fixed inset-x-3 bottom-24 z-30 max-h-[70dvh] overflow-y-auto xl:static xl:z-auto xl:max-h-none xl:w-[340px] xl:overflow-visible'
+              : 'hidden w-[340px] xl:block',
+          )}>
             {transferOpen || activeTransfers > 0 ? (
               <TransferPanel onClose={() => setTransferOpen(false)} />
             ) : (
