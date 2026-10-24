@@ -477,9 +477,9 @@ export type { PagedResult }
 
 
 /**
- * 任务 → PUT/POST 请求体（整体替换式端点的必备适配，规格 calendar.md:379-391）。
- * PUT /calendar/tasks/{id} 会把 title/description/priority/due/时长/dtStart 全部按请求写入，
- * 任何部分更新（如仅切换完成状态）都必须先补齐当前值，否则字段被清空。
+ * 任务 → 请求体的全量字段适配（兼容导出；api#465 后服务端更新为三态语义：
+ * 缺失字段=保留原值，因此完整替换编辑弹窗之外的调用方无需再用它补齐字段，
+ * 直接发送真正要改的字段即可）。旧「必须补齐否则清空」的说法已不成立。
  */
 export function taskToMutationData(task: TaskResponse): components['schemas']['UpdateTaskRequest'] {
   return {

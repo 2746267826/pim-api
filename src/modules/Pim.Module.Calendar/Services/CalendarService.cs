@@ -13,6 +13,7 @@ public class CalendarService
 {
     /// <summary>工单 03 D1.1：任务状态集合外的值一律明确拒绝（400 + ApiResponse 包络）。</summary>
     internal const int InvalidTaskStatusErrorCode = 02057;
+    internal const int InvalidTaskUpdateErrorCode = 02061;
 
     private readonly PimDbContext _db;
     private readonly ICurrentUserService _currentUser;
@@ -1181,47 +1182,87 @@ public class CalendarService
             .FirstOrDefaultAsync(t => t.Id == id && t.UserId == UserId, ct)
             ?? throw new DomainException(02004, "任务不存在");
 
-        if (request.CalendarId.HasValue)
+        // Validate the merged task before mutating the tracked entity.
+        var titleProvided = request.WasProvided(nameof(UpdateTaskRequest.Title));
+        if (titleProvided && string.IsNullOrWhiteSpace(request.Title))
+            throw new DomainException(InvalidTaskUpdateErrorCode, "任务标题不能为空；如只想修改其他字段，请不要传 title。");
+        if (titleProvided && request.Title!.Length > 255)
+            throw new DomainException(InvalidTaskUpdateErrorCode, "任务标题不能超过 255 个字符。");
+        var priorityProvided = request.WasProvided(nameof(UpdateTaskRequest.Priority));
+        if (priorityProvided && request.Priority is null)
+            throw new DomainException(InvalidTaskUpdateErrorCode, "priority 不能为 null；省略该字段表示保留原值。");
+        var percentCompleteProvided = request.WasProvided(nameof(UpdateTaskRequest.PercentComplete));
+        if (percentCompleteProvided && request.PercentComplete is null)
+            throw new DomainException(InvalidTaskUpdateErrorCode, "percentComplete 不能为 null；省略该字段表示保留原值。");
+
+        Guid? calendarId = null;
+        var calendarIdProvided = request.WasProvided(nameof(UpdateTaskRequest.CalendarId));
+        if (calendarIdProvided)
         {
-            var calendar = await _db.Set<CalendarEntity>()
-                .FirstOrDefaultAsync(c => c.Id == request.CalendarId.Value && c.UserId == UserId, ct)
-                ?? throw new DomainException(02003, "日历不存在");
+            calendarId = request.CalendarId;
+            if (calendarId.HasValue)
+            {
+                _ = await _db.Set<CalendarEntity>()
+                    .FirstOrDefaultAsync(c => c.Id == calendarId.Value && c.UserId == UserId, ct)
+                    ?? throw new DomainException(02003, "日历不存在");
+            }
         }
 
-        var due = NormalizeToUtc(request.Due);
-        var estimatedDuration = ParseEstimatedDuration(request.EstimatedDuration);
-        var minimumSegment = ParseDuration(request.MinimumSegment);
+        var dueProvided = request.WasProvided(nameof(UpdateTaskRequest.Due));
+        var due = dueProvided ? NormalizeToUtc(request.Due) : task.Due;
+        var estimatedDurationProvided = request.WasProvided(nameof(UpdateTaskRequest.EstimatedDuration));
+        var estimatedDuration = estimatedDurationProvided
+            ? ParseEstimatedDuration(request.EstimatedDuration)
+            : task.EstimatedDuration;
+        var minimumSegmentProvided = request.WasProvided(nameof(UpdateTaskRequest.MinimumSegment));
+        var minimumSegment = minimumSegmentProvided ? ParseDuration(request.MinimumSegment) : task.MinimumSegment;
 
-        var finalStart = NormalizeToUtc(request.DtStart);
-        var finalEnd = request.PlannedEnd.HasValue
-            ? request.PlannedEnd.Value.ToUniversalTime()
+        var dtStartProvided = request.WasProvided(nameof(UpdateTaskRequest.DtStart));
+        var finalStart = dtStartProvided ? NormalizeToUtc(request.DtStart) : task.DtStart;
+        var plannedEndProvided = request.WasProvided(nameof(UpdateTaskRequest.PlannedEnd));
+        var finalEnd = plannedEndProvided
+            ? request.PlannedEnd?.ToUniversalTime()
             : task.PlannedEnd;
 
         ValidateTaskRange(finalStart, finalEnd);
 
-        ManualDescriptionValidator.EnsureSafe(request.Description);
+        var descriptionProvided = request.WasProvided(nameof(UpdateTaskRequest.Description));
+        if (descriptionProvided)
+            ManualDescriptionValidator.EnsureSafe(request.Description);
 
-        task.Title = request.Title;
-        task.Description = request.Description;
-        task.Priority = request.Priority;
+        var statusProvided = request.WasProvided(nameof(UpdateTaskRequest.Status));
+        if (statusProvided && request.Status is not null)
+            ValidateTaskStatus(request.Status);
+
+        var taskBookIdProvided = request.WasProvided(nameof(UpdateTaskRequest.TaskBookId));
+        if (taskBookIdProvided && request.TaskBookId.HasValue)
+        {
+            _ = await _db.Set<TaskBookEntity>()
+                .FirstOrDefaultAsync(b => b.Id == request.TaskBookId.Value && b.UserId == UserId, ct)
+                ?? throw new DomainException(02003, "任务本不存在");
+        }
+
+        if (titleProvided)
+            task.Title = request.Title!;
+        if (descriptionProvided)
+            task.Description = request.Description;
+        if (priorityProvided)
+            task.Priority = request.Priority!.Value;
         task.Due = due;
         task.EstimatedDuration = estimatedDuration;
         task.MinimumSegment = minimumSegment;
         task.DtStart = finalStart;
-        if (request.PlannedEnd.HasValue)
+        if (plannedEndProvided)
             task.PlannedEnd = finalEnd;
-        task.CalendarId = request.CalendarId;
-        if (request.TaskBookId.HasValue)
-        {
-            var book = await _db.Set<TaskBookEntity>()
-                .FirstOrDefaultAsync(b => b.Id == request.TaskBookId.Value && b.UserId == UserId, ct)
-                ?? throw new DomainException(02003, "任务本不存在");
-        }
-        task.TaskBookId = request.TaskBookId;
-        task.PercentComplete = request.PercentComplete ?? task.PercentComplete;
-        if (finalStart.HasValue || request.CalendarId.HasValue)
+        if (calendarIdProvided)
+            task.CalendarId = calendarId;
+        if (taskBookIdProvided)
+            task.TaskBookId = request.TaskBookId;
+        if (percentCompleteProvided)
+            task.PercentComplete = request.PercentComplete!.Value;
+        if ((dtStartProvided && finalStart.HasValue) || (calendarIdProvided && calendarId.HasValue))
             task.IsInbox = false;
-        if (request.Status is not null)
+        if (statusProvided && request.Status is not null)
         {
             var statusChangedAt = _timeProvider.GetUtcNow();
             task.Status = request.Status;

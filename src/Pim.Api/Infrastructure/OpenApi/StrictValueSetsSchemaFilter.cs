@@ -71,6 +71,17 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
 
         ApplyMap(schema, context, Map);
         ApplyNotes(schema, context);
+        if (context.Type == typeof(Pim.Module.Calendar.DTOs.UpdateTaskRequest))
+        {
+            schema.Description = "Partial task update: omitted fields keep their stored values. "
+                + "Explicit null clears nullable fields; status null keeps the existing status. "
+                + "title, priority and percentComplete cannot be null when provided.";
+            foreach (var name in new[] { "title", "priority", "percentComplete" })
+            {
+                schema.Properties[name].Nullable = false;
+                schema.Properties[name].Description = "Optional; omission preserves the current value. Explicit null is rejected (400).";
+            }
+        }
     }
 
     /// <summary>把响应侧口径说明写进字段 description（不改变字段类型，也不声明 enum）。</summary>

@@ -3,7 +3,7 @@ import { deferredIntervalMs, standardIntervalMs } from '@/lib/polling'
 import { calendarsApi, checklistApi, eventsApi, layersApi, segmentsApi, taskBooksApi, taskTimerApi, tasksApi } from './api'
 import type { components } from '@/api/generated'
 import type { TaskResponse, TasksPagedParams } from './types'
-import { TASK_STATUS, taskToMutationData } from './types'
+import { TASK_STATUS } from './types'
 
 /* ── queryKey 工厂（CONVENTIONS §4：禁止散写字符串数组） ───── */
 
@@ -205,10 +205,10 @@ export function useDeleteEvent() {
 export function useSaveTask() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (input: {
-      id?: string
-      body: components['schemas']['CreateTaskRequest'] | components['schemas']['UpdateTaskRequest']
-    }) => (input.id ? tasksApi.update(input.id, input.body) : tasksApi.create(input.body)),
+    mutationFn: async (input:
+      | { id: string; body: components['schemas']['UpdateTaskRequest'] }
+      | { id?: undefined; body: components['schemas']['CreateTaskRequest'] }
+    ) => (input.id !== undefined ? tasksApi.update(input.id, input.body) : tasksApi.create(input.body)),
     onSuccess: () => invalidateCalendar(qc),
   })
 }
@@ -245,16 +245,15 @@ export function usePlanTask() {
 }
 
 /**
- * 完成状态切换：PUT /calendar/tasks/{id} 是**整体替换式**语义
- * （title/description/priority/due/时长/dtStart 均按请求写入），
- * 因此必须先经 taskToMutationData 把当前值补齐再提交，否则字段会被清空。
+ * 完成状态切换：服务端任务更新是三态语义（字段缺失=保留原值，api#465），
+ * 这里只发 status/percentComplete；快照里的 title/description/日期等不必回写，
+ * 避免把缓存外的并发编辑覆盖成旧值。
  */
 export function useToggleTaskComplete() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ task, completed }: { task: TaskResponse; completed: boolean }) =>
       tasksApi.update(task.id, {
-        ...taskToMutationData(task),
         status: completed ? TASK_STATUS.completed : TASK_STATUS.needsAction,
         percentComplete: completed ? 100 : 0,
       }),
