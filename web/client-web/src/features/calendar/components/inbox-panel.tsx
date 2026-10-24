@@ -4,7 +4,8 @@ import { scheduleApi, tasksApi } from '../api'
 import { useInboxTasks, usePlanTask } from '../queries'
 import { TASK_STATUS } from '../types'
 import type { TaskResponse } from '../types'
-import { formatDurationC, formatTime } from '@/lib/datetime'
+import { formatDurationC } from '@/lib/datetime'
+import { DueText } from './due-text'
 import { notifyError, notifySuccess } from '@/lib/notify'
 import { Button, EmptyState, Spinner } from '@/components/ui'
 import { cn } from '@/lib/utils'
@@ -112,7 +113,12 @@ export function InboxPanel({ onNewTask, onNewEvent, className }: InboxPanelProps
                   />
                   <span className="min-w-0 flex-1 truncate text-[13px] text-text-1">{task.title}</span>
                   {task.due && (
-                    <span className="tnum shrink-0 text-[11px] text-warn">≤ {formatTime(task.due)}</span>
+                    <DueText
+                      due={task.due}
+                      inactive={task.status === TASK_STATUS.completed || task.status === TASK_STATUS.cancelled}
+                      prefix="≤"
+                      className="shrink-0 text-[11px]"
+                    />
                   )}
                 </div>
                 <div className="mt-0.5 pl-3.5 text-[11px] text-text-4">

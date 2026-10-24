@@ -8,6 +8,7 @@ import { tasksApi } from '../api'
 import { TaskEditorDialog } from '../components/task-editor-dialog'
 import { TaskSegmentsDialog } from '../components/task-segments-dialog'
 import { TaskDetailDialog } from '../components/entity-detail-dialogs'
+import { DueText } from '../components/due-text'
 import { TASK_STATUS } from '../types'
 import type { TaskResponse } from '../types'
 import { dayEndIso, dayStartIso, formatDurationC, formatTime } from '@/lib/datetime'
@@ -329,7 +330,9 @@ export function TasksPage() {
                         </span>
                         <span className="mt-0.5 flex items-center gap-2 text-[11px] text-text-4">
                           {book && <span>{book.name}</span>}
-                          {task.due && <span className="tnum text-warn">截止 {formatTime(task.due)}</span>}
+                          {task.due && (
+                            <DueText due={task.due} inactive={done || task.status === TASK_STATUS.cancelled} />
+                          )}
                           {task.dtStart && <span className="tnum">已排 {formatTime(task.dtStart)}</span>}
                           {task.estimatedDuration && <span>预计 {formatDurationC(task.estimatedDuration)}</span>}
                         </span>

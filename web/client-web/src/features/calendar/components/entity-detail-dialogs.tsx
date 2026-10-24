@@ -21,6 +21,7 @@ import {
 import { currentRunSeconds, formatClock, runningSegment } from '../timer'
 import type { EventResponse, TaskResponse } from '../types'
 import { readEventRrule } from '../rrule'
+import { DueText } from './due-text'
 
 /*
  * 日程 / 任务详情弹窗（先看后改）：
@@ -399,7 +400,9 @@ export function TaskDetailDialog({
             <Row label="优先级">{PRIORITY_LABEL[task.priority] ?? String(task.priority)}</Row>
             <Row label="完成度">{task.percentComplete}%</Row>
             <Row label="任务本">{taskBookName ?? <Empty />}</Row>
-            <Row label="截止">{task.due ? formatTime(task.due) : <Empty />}</Row>
+            <Row label="截止">
+              {task.due ? <DueText due={task.due} inactive={done} /> : <Empty />}
+            </Row>
             <Row label="计划开始">{task.dtStart ? formatTime(task.dtStart) : <Empty />}</Row>
             <Row label="计划结束">{task.plannedEnd ? formatTime(task.plannedEnd) : <Empty />}</Row>
             <Row label="预计时长">
