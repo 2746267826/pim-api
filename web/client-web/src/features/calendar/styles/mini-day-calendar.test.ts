@@ -3,7 +3,9 @@ import { layoutColumns, PX_PER_HOUR } from './mini-day-calendar'
 import type { MiniEvent } from './mini-day-calendar'
 
 function ev(id: string, startHour: number, endHour: number, color = '#2563EB'): MiniEvent {
-  const d = (h: number) => `2026-09-26T${String(h).padStart(2, '0')}:00:00+08:00`
+  // Build the instant from local wall-clock time so the test is independent of
+  // the runner's timezone (layoutColumns intentionally reads local getHours()).
+  const d = (h: number) => new Date(2026, 8, 26, h).toISOString()
   return { id, title: id, start: d(startHour), end: d(endHour), color }
 }
 
