@@ -1,0 +1,492 @@
+[
+ {
+  "route": "/today",
+  "viewport": "desktop",
+  "textLength": 505,
+  "screenshot": "docs/qa/screenshots/_today-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/calendar?view=timeline",
+  "viewport": "desktop",
+  "textLength": 939,
+  "screenshot": "docs/qa/screenshots/_calendar_view_timeline-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/calendar?view=week",
+  "viewport": "desktop",
+  "textLength": 1658,
+  "screenshot": "docs/qa/screenshots/_calendar_view_week-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/calendar?view=month",
+  "viewport": "desktop",
+  "textLength": 1884,
+  "screenshot": "docs/qa/screenshots/_calendar_view_month-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/calendar?view=list",
+  "viewport": "desktop",
+  "textLength": 9854,
+  "screenshot": "docs/qa/screenshots/_calendar_view_list-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/calendar-styles",
+  "viewport": "desktop",
+  "textLength": 2034,
+  "screenshot": "docs/qa/screenshots/_calendar-styles-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/workbench",
+  "viewport": "desktop",
+  "textLength": 599,
+  "screenshot": "docs/qa/screenshots/_workbench-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/tasks",
+  "viewport": "desktop",
+  "textLength": 846,
+  "screenshot": "docs/qa/screenshots/_tasks-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/confirmations",
+  "viewport": "desktop",
+  "textLength": 224,
+  "screenshot": "docs/qa/screenshots/_confirmations-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/pc-tracker",
+  "viewport": "desktop",
+  "textLength": 844,
+  "screenshot": "docs/qa/screenshots/_pc-tracker-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/pc-tracker/browser",
+  "viewport": "desktop",
+  "textLength": 282,
+  "screenshot": "docs/qa/screenshots/_pc-tracker_browser-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/mobile-records",
+  "viewport": "desktop",
+  "textLength": 348,
+  "screenshot": "docs/qa/screenshots/_mobile-records-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/location-history",
+  "viewport": "desktop",
+  "textLength": 382,
+  "screenshot": "docs/qa/screenshots/_location-history-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/quick-notes",
+  "viewport": "desktop",
+  "textLength": 236,
+  "screenshot": "docs/qa/screenshots/_quick-notes-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/files",
+  "viewport": "desktop",
+  "textLength": 1146,
+  "screenshot": "docs/qa/screenshots/_files-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/data-center",
+  "viewport": "desktop",
+  "textLength": 23267,
+  "screenshot": "docs/qa/screenshots/_data-center-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/reminders",
+  "viewport": "desktop",
+  "textLength": 260,
+  "screenshot": "docs/qa/screenshots/_reminders-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/reports",
+  "viewport": "desktop",
+  "textLength": 529,
+  "screenshot": "docs/qa/screenshots/_reports-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/habits",
+  "viewport": "desktop",
+  "textLength": 303,
+  "screenshot": "docs/qa/screenshots/_habits-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/status",
+  "viewport": "desktop",
+  "textLength": 1428,
+  "screenshot": "docs/qa/screenshots/_status-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/settings",
+  "viewport": "desktop",
+  "textLength": 492,
+  "screenshot": "docs/qa/screenshots/_settings-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/settings/server",
+  "viewport": "desktop",
+  "textLength": 345,
+  "screenshot": "docs/qa/screenshots/_settings_server-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/settings/microsoft",
+  "viewport": "desktop",
+  "textLength": 1633,
+  "screenshot": "docs/qa/screenshots/_settings_microsoft-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/settings/data-reliability",
+  "viewport": "desktop",
+  "textLength": 406,
+  "screenshot": "docs/qa/screenshots/_settings_data-reliability-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/settings/mcp",
+  "viewport": "desktop",
+  "textLength": 400,
+  "screenshot": "docs/qa/screenshots/_settings_mcp-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/settings/calendar-data",
+  "viewport": "desktop",
+  "textLength": 2565,
+  "screenshot": "docs/qa/screenshots/_settings_calendar-data-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/settings/recycle-bin",
+  "viewport": "desktop",
+  "textLength": 2489,
+  "screenshot": "docs/qa/screenshots/_settings_recycle-bin-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/settings/pc-data",
+  "viewport": "desktop",
+  "textLength": 270,
+  "screenshot": "docs/qa/screenshots/_settings_pc-data-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/settings/ai",
+  "viewport": "desktop",
+  "textLength": 211,
+  "screenshot": "docs/qa/screenshots/_settings_ai-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/settings/users",
+  "viewport": "desktop",
+  "textLength": 211,
+  "screenshot": "docs/qa/screenshots/_settings_users-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/app-knowledge-base",
+  "viewport": "desktop",
+  "textLength": 8375,
+  "screenshot": "docs/qa/screenshots/_app-knowledge-base-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/app-knowledge-base/categories",
+  "viewport": "desktop",
+  "textLength": 477,
+  "screenshot": "docs/qa/screenshots/_app-knowledge-base_categories-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/endpoint-shell",
+  "viewport": "desktop",
+  "textLength": 298,
+  "screenshot": "docs/qa/screenshots/_endpoint-shell-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/exhibition",
+  "viewport": "desktop",
+  "textLength": 219,
+  "screenshot": "docs/qa/screenshots/_exhibition-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/devices",
+  "viewport": "desktop",
+  "textLength": 429,
+  "screenshot": "docs/qa/screenshots/_devices-desktop.png",
+  "error": null
+ },
+ {
+  "route": "/today",
+  "viewport": "mobile",
+  "textLength": 366,
+  "screenshot": "docs/qa/screenshots/_today-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/calendar?view=timeline",
+  "viewport": "mobile",
+  "textLength": 170,
+  "screenshot": "docs/qa/screenshots/_calendar_view_timeline-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/calendar?view=week",
+  "viewport": "mobile",
+  "textLength": 889,
+  "screenshot": "docs/qa/screenshots/_calendar_view_week-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/calendar?view=month",
+  "viewport": "mobile",
+  "textLength": 1115,
+  "screenshot": "docs/qa/screenshots/_calendar_view_month-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/calendar?view=list",
+  "viewport": "mobile",
+  "textLength": 9085,
+  "screenshot": "docs/qa/screenshots/_calendar_view_list-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/calendar-styles",
+  "viewport": "mobile",
+  "textLength": 1895,
+  "screenshot": "docs/qa/screenshots/_calendar-styles-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/workbench",
+  "viewport": "mobile",
+  "textLength": 457,
+  "screenshot": "docs/qa/screenshots/_workbench-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/tasks",
+  "viewport": "mobile",
+  "textLength": 637,
+  "screenshot": "docs/qa/screenshots/_tasks-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/confirmations",
+  "viewport": "mobile",
+  "textLength": 72,
+  "screenshot": "docs/qa/screenshots/_confirmations-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/pc-tracker",
+  "viewport": "mobile",
+  "textLength": 705,
+  "screenshot": "docs/qa/screenshots/_pc-tracker-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/pc-tracker/browser",
+  "viewport": "mobile",
+  "textLength": 143,
+  "screenshot": "docs/qa/screenshots/_pc-tracker_browser-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/mobile-records",
+  "viewport": "mobile",
+  "textLength": 209,
+  "screenshot": "docs/qa/screenshots/_mobile-records-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/location-history",
+  "viewport": "mobile",
+  "textLength": 241,
+  "screenshot": "docs/qa/screenshots/_location-history-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/quick-notes",
+  "viewport": "mobile",
+  "textLength": 97,
+  "screenshot": "docs/qa/screenshots/_quick-notes-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/files",
+  "viewport": "mobile",
+  "textLength": 507,
+  "screenshot": "docs/qa/screenshots/_files-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/data-center",
+  "viewport": "mobile",
+  "textLength": 23128,
+  "screenshot": "docs/qa/screenshots/_data-center-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/reminders",
+  "viewport": "mobile",
+  "textLength": 121,
+  "screenshot": "docs/qa/screenshots/_reminders-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/reports",
+  "viewport": "mobile",
+  "textLength": 390,
+  "screenshot": "docs/qa/screenshots/_reports-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/habits",
+  "viewport": "mobile",
+  "textLength": 164,
+  "screenshot": "docs/qa/screenshots/_habits-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/status",
+  "viewport": "mobile",
+  "textLength": 1289,
+  "screenshot": "docs/qa/screenshots/_status-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/settings",
+  "viewport": "mobile",
+  "textLength": 353,
+  "screenshot": "docs/qa/screenshots/_settings-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/settings/server",
+  "viewport": "mobile",
+  "textLength": 206,
+  "screenshot": "docs/qa/screenshots/_settings_server-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/settings/microsoft",
+  "viewport": "mobile",
+  "textLength": 1494,
+  "screenshot": "docs/qa/screenshots/_settings_microsoft-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/settings/data-reliability",
+  "viewport": "mobile",
+  "textLength": 267,
+  "screenshot": "docs/qa/screenshots/_settings_data-reliability-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/settings/mcp",
+  "viewport": "mobile",
+  "textLength": 261,
+  "screenshot": "docs/qa/screenshots/_settings_mcp-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/settings/calendar-data",
+  "viewport": "mobile",
+  "textLength": 2426,
+  "screenshot": "docs/qa/screenshots/_settings_calendar-data-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/settings/recycle-bin",
+  "viewport": "mobile",
+  "textLength": 2350,
+  "screenshot": "docs/qa/screenshots/_settings_recycle-bin-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/settings/pc-data",
+  "viewport": "mobile",
+  "textLength": 131,
+  "screenshot": "docs/qa/screenshots/_settings_pc-data-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/settings/ai",
+  "viewport": "mobile",
+  "textLength": 72,
+  "screenshot": "docs/qa/screenshots/_settings_ai-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/settings/users",
+  "viewport": "mobile",
+  "textLength": 72,
+  "screenshot": "docs/qa/screenshots/_settings_users-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/app-knowledge-base",
+  "viewport": "mobile",
+  "textLength": 8236,
+  "screenshot": "docs/qa/screenshots/_app-knowledge-base-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/app-knowledge-base/categories",
+  "viewport": "mobile",
+  "textLength": 338,
+  "screenshot": "docs/qa/screenshots/_app-knowledge-base_categories-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/endpoint-shell",
+  "viewport": "mobile",
+  "textLength": 159,
+  "screenshot": "docs/qa/screenshots/_endpoint-shell-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/exhibition",
+  "viewport": "mobile",
+  "textLength": 80,
+  "screenshot": "docs/qa/screenshots/_exhibition-mobile.png",
+  "error": null
+ },
+ {
+  "route": "/devices",
+  "viewport": "mobile",
+  "textLength": 290,
+  "screenshot": "docs/qa/screenshots/_devices-mobile.png",
+  "error": null
+ }
+]

@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">PIM</string>
+    <string name="title_activity_main">PIM</string>
+    <string name="package_name">dev.pim.shell</string>
+    <string name="custom_url_scheme">dev.pim.shell</string>
+    <!-- pim_default_server / pim_default_user / pim_default_pass 由构建期注入：
+         app/build.gradle 读取 client-web/.env（已 gitignore），故此处不硬编码地址与账号。 -->
+</resources>

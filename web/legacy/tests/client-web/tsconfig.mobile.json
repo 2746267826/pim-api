@@ -1,0 +1,29 @@
+{
+  "extends": "../../src/client-web/tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "typeRoots": ["../../src/client-web/node_modules/@types"],
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": [
+    "mobileApiPath.test.ts",
+    "mobileFormatting.test.ts",
+    "mobileTypes.test.ts",
+    "mobileNavigation.test.tsx",
+    "mobileAnalyticsComponents.test.tsx",
+    "mobileAnalyticsInteractions.test.tsx",
+    "mobileChartOptions.test.tsx",
+    "locationAnalyticsComponents.test.tsx",
+    "locationAnalyticsInteractions.test.tsx",
+    "../../src/client-web/node_modules/vite/client.d.ts",
+    "../../src/client-web/src/api/client.ts",
+    "../../src/client-web/src/api/mobile.ts",
+    "../../src/client-web/src/components/mobile/**/*.ts",
+    "../../src/client-web/src/components/mobile/**/*.tsx",
+    "../../src/client-web/src/layout/Sidebar.tsx",
+    "../../src/client-web/src/pages/MobileRecordsPage.tsx",
+    "../../src/client-web/src/pages/HistoricalLocationPage.tsx",
+    "../../src/client-web/src/types/index.ts"
+  ]
+}

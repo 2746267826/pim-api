@@ -1,0 +1,11 @@
+{
+  "extends": "../../src/client-web/tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "typeRoots": ["../../src/client-web/node_modules/@types"]
+  },
+  "include": [
+    "./calendarStage5Types.test.ts"
+  ]
+}

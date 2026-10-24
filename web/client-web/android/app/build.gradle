@@ -1,0 +1,74 @@
+apply plugin: 'com.android.application'
+
+// 从 client-web/.env 读取构建期配置（该文件已 gitignore，模板见 .env.example）。
+// 服务器地址与测试账号因此不硬编码进仓库，也不随源码提交。
+def envFile = rootProject.file('../.env')
+def localEnv = [:]
+if (envFile.exists()) {
+    envFile.eachLine { line ->
+        def trimmed = line.trim()
+        if (trimmed && !trimmed.startsWith('#') && trimmed.contains('=')) {
+            def idx = trimmed.indexOf('=')
+            localEnv[trimmed.substring(0, idx).trim()] = trimmed.substring(idx + 1).trim()
+        }
+    }
+}
+// 优先取 shell/CI 传入的环境变量，其次取 .env，缺失时为空串。
+def envValue = { String name -> System.getenv(name) ?: (localEnv[name] ?: '') }
+
+android {
+    namespace = "dev.pim.shell"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "dev.pim.shell"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // PimBridge 壳的默认服务器与账号：构建期注入，替代原先硬编码在 strings.xml 的值。
+        resValue "string", "pim_default_server", envValue('PIM_API_TARGET')
+        resValue "string", "pim_default_user", envValue('PIM_TEST_USER')
+        resValue "string", "pim_default_pass", envValue('PIM_TEST_PASS')
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

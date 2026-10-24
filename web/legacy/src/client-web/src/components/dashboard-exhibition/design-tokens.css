@@ -1,0 +1,43 @@
+/* 设计Token统一 — 展览馆与 React 画廊共用 */
+:root{
+  --pim-bg:#f6f8fb;
+  --pim-surface:#ffffff;
+  --pim-surface-muted:#f8fafc;
+  --pim-border:#dfe7f1;
+  --pim-border-soft:#e2e8f0;
+  --pim-text:#0f172a;
+  --pim-text-inv:#ffffff;
+  --pim-muted:#64748b;
+  --pim-primary:#2563eb;
+  --pim-primary-soft:#dbeafe;
+  --pim-activity:#14b8a6;
+  --pim-activity-soft:#ccfbf1;
+  --pim-warning:#f59e0b;
+  --pim-warning-soft:#fef3c7;
+  --pim-danger:#ef4444;
+  --pim-danger-soft:#fee2e2;
+  --pim-radius:12px;
+  --pim-radius-lg:16px;
+  --pim-radius-sm:8px;
+  --pim-shadow:0 4px 24px rgba(15,23,42,.08);
+  --pim-shadow-lg:0 18px 42px rgba(15,23,42,.12);
+  --pim-font:"Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,-apple-system,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --pim-bg:#0f172a;
+    --pim-surface:#1e293b;
+    --pim-surface-muted:#0f172a;
+    --pim-border:#334155;
+    --pim-border-soft:#334155;
+    --pim-text:#f1f5f9;
+    --pim-text-inv:#0f172a;
+    --pim-muted:#94a3b8;
+    --pim-primary:#3b82f6;
+    --pim-primary-soft:#1e3a5f;
+    --pim-activity:#14b8a6;
+    --pim-activity-soft:#134e4a;
+    --pim-shadow:0 4px 24px rgba(0,0,0,.32);
+    --pim-shadow-lg:0 18px 42px rgba(0,0,0,.48);
+  }
+}

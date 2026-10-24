@@ -1,0 +1,4 @@
+/* 样式入口：main.tsx 只 import 本文件 */
+@import 'tailwindcss';
+@import './tokens.css';
+@import './base.css';

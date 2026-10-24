@@ -1,0 +1,15 @@
+export const outlookSyncInvalidationKeys = [
+  ['outlook-settings'],
+  ['workbench-outlook-settings'],
+  ['outlook-sync-batches'],
+  ['workbench-outlook-sync-batches'],
+  ['today-outlook-sync-batches'],
+  ['pending-confirmations'],
+  ['workbench-pending-confirmations'],
+  ['today-pending-confirmations'],
+  ['workbench-calendar-layers'],
+  ['calendar-layers'],
+  ['data-center-query'],
+  ['today-sections'],
+  ['today-section'],
+] as const;

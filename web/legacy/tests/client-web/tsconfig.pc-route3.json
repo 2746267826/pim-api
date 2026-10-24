@@ -1,0 +1,16 @@
+{
+  "extends": "../../src/client-web/tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "typeRoots": ["../../src/client-web/node_modules/@types"],
+    "paths": {
+      "@tanstack/react-query": ["../../src/client-web/node_modules/@tanstack/react-query"]
+    }
+  },
+  "include": [
+    "./pcRoute3Types.test.ts",
+    "../../src/client-web/src/types/index.ts"
+  ]
+}
