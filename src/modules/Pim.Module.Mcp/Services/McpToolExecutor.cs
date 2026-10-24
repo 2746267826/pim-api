@@ -920,52 +920,16 @@ public sealed class McpToolExecutor
         return ShapeResponse(dc.Status, dc.Text, dc.ContentType, dc.Data, addAuthHint: false);
     }
 
-    private async Task<JsonNode?> TaskChecklistAsync(McpToolSpec spec, JsonObject args, string accessToken, CancellationToken ct)
-    {
-        var direct = await CallAsync(spec, args, accessToken, redact: false, ct);
-        var directObj = direct as JsonObject;
-        var code = directObj is not null ? GetInt(directObj, "code") : null;
-        if (code is not (404 or 405) && directObj is not null && !directObj.ContainsKey("error"))
-            return direct;
-
-        // Fallback: task detail may embed checklist items.
-        var taskId = GetString(args, "task_id") ?? string.Empty;
-        var taskSpec = new McpToolSpec { Name = "get_task_by_id", Method = "GET", Route = "/api/v1/calendar/tasks/{task_id}" };
-        var taskRes = await CallAsync(taskSpec, new JsonObject { ["task_id"] = taskId }, accessToken, redact: false, ct);
-        if (taskRes is JsonObject taskObj && taskObj.TryGetPropertyValue("data", out var dataNode))
-        {
-            if (dataNode is JsonObject dataObj)
-            {
-                var embedded = ExtractChecklist(dataObj, taskId);
-                if (embedded is not null)
-                    return embedded;
-            }
-            else if (dataNode is JsonArray array)
-            {
-                foreach (var item in array)
-                {
-                    if (item is JsonObject itemObj)
-                    {
-                        var embedded = ExtractChecklist(itemObj, taskId);
-                        if (embedded is not null)
-                            return embedded;
-                    }
-                }
-            }
-        }
-        return new JsonObject { ["error"] = "checklist endpoint not available and not embedded in task", ["code"] = 404, ["details"] = taskRes?.DeepClone() };
-    }
-
-    private static JsonNode? ExtractChecklist(JsonObject obj, string taskId)
-    {
-        if (!string.Equals(GetString(obj, "id"), taskId, StringComparison.Ordinal))
-            return null;
-        if (obj.TryGetPropertyValue("checklist", out var checklist) && checklist is not null)
-            return new JsonObject { ["code"] = 0, ["data"] = checklist.DeepClone() };
-        if (obj.TryGetPropertyValue("checklistItems", out var items) && items is not null)
-            return new JsonObject { ["code"] = 0, ["data"] = items.DeepClone() };
-        return null;
-    }
+    /// <summary>
+    /// api#443 起有专用 <c>GET /tasks/{id}/checklist</c>，响应原样透传：
+    /// 任务不存在或不属于当前用户时服务端给 <c>400 + code=02004</c>（刻意没有 404，避免泄露存在性），
+    /// 401 / 5xx 同样原样返回。
+    /// 之前的「从任务详情里找内嵌清单」回退已删除：<c>TaskResponse</c> 从来没有 checklist 字段，
+    /// 该分支永远不会命中，却会把 400/401/5xx 掩盖成 404，让客户端误判成「服务端太旧」。
+    /// 真遇到旧服务端时，这里会如实返回 404/405。
+    /// </summary>
+    private Task<JsonNode?> TaskChecklistAsync(McpToolSpec spec, JsonObject args, string accessToken, CancellationToken ct)
+        => CallAsync(spec, args, accessToken, redact: false, ct);
 
     private async Task<JsonNode?> CalendarByIdAsync(McpToolSpec spec, JsonObject args, string accessToken, CancellationToken ct)
     {

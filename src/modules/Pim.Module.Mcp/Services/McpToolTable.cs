@@ -28,7 +28,7 @@ public enum McpToolKind
     /// <summary>GET habit occurrences with data-center query fallback.</summary>
     HabitOccurrences,
 
-    /// <summary>GET task checklist with embedded-checklist fallback.</summary>
+    /// <summary>GET task checklist from the dedicated endpoint (errors passed through).</summary>
     TaskChecklist,
 
     /// <summary>GET calendars and filter by id locally.</summary>

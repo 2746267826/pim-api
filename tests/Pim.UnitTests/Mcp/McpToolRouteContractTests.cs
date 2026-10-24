@@ -78,7 +78,8 @@ public sealed class McpToolRouteContractTests
             McpToolKind.EventById,
             McpToolKind.TaskById,
             McpToolKind.HabitOccurrences,
-            McpToolKind.TaskChecklist,
+            // TaskChecklist 不再跳过：它已改为通用 CallAsync + BuildPath（api#443），
+            // 路由占位符 {task_id} 必须与契约参数一一对应（review P3）。
             McpToolKind.MobileLocationLatest,
             McpToolKind.SearchEvents,
             McpToolKind.SearchTasks,
