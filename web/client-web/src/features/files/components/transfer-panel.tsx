@@ -18,7 +18,7 @@ export function TransferPanel({ onClose }: { onClose?: () => void }) {
   const active = items.filter((t) => t.status === 'uploading' || t.status === 'queued').length
 
   return (
-    <Card className="flex max-h-[420px] flex-col p-4">
+    <Card role="region" aria-label="传输队列" className="flex max-h-[420px] flex-col p-4">
       <div className="flex items-center gap-2">
         <HardDrive className="size-4 text-text-3" aria-hidden />
         <span className="text-sm font-semibold text-text-1">传输队列</span>
@@ -35,7 +35,7 @@ export function TransferPanel({ onClose }: { onClose?: () => void }) {
 
       <div className="mt-3 min-h-0 flex-1 space-y-1.5 overflow-y-auto">
         {items.length === 0 ? (
-          <EmptyState size="sm" title="没有传输任务" description="拖放文件到列表区即可上传。" />
+          <EmptyState size="sm" title="没有传输任务" description="点击「上传文件」选择文件，也可拖放或粘贴到文件列表。" />
         ) : (
           items.slice(0, 20).map((t) => {
             const meta = STATUS_META[t.status]
