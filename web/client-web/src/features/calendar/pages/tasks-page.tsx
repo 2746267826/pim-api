@@ -16,13 +16,14 @@ import { CountUp } from '@/components/motion/primitives'
 import { Button, Card, Checkbox, Chip, EmptyState, Input, PageHeader, Select, Skeleton, StatusBadge } from '@/components/ui'
 import { cn } from '@/lib/utils'
 
-type QuickFilter = 'all' | 'inbox' | 'due-today' | 'planned-today' | 'high' | 'completed'
+type QuickFilter = 'all' | 'inbox' | 'due-today' | 'planned-today' | 'in-process' | 'high' | 'completed'
 
 const QUICK_OPTIONS: { value: QuickFilter; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'inbox', label: '收集箱' },
   { value: 'due-today', label: '今日截止' },
   { value: 'planned-today', label: '今日已安排' },
+  { value: 'in-process', label: '进行中' },
   { value: 'high', label: '高优先' },
   { value: 'completed', label: '已完成' },
 ]
@@ -40,6 +41,8 @@ function quickToParams(filter: QuickFilter): { inbox?: boolean; status?: string;
       return { dueFrom: dayStartIso(now), dueTo: dayEndIso(now) }
     case 'planned-today':
       return { plannedFrom: dayStartIso(now), plannedTo: dayEndIso(now) }
+    case 'in-process':
+      return { status: TASK_STATUS.inProcess }
     default:
       return {}
   }
@@ -91,6 +94,8 @@ export function TasksPage() {
   const toggleComplete = useToggleTaskComplete()
 
   const tasks = data?.items ?? []
+  // 计时动作会让服务端任务状态变化：详情用列表里的实时对象，避免弹窗里停留陈旧快照
+  const liveDetailTask = detailTask ? tasks.find((t) => t.id === detailTask.id) ?? detailTask : null
   const totalPages = data?.totalPages ?? 1
 
   /*
@@ -414,7 +419,7 @@ export function TasksPage() {
 
       {/* 详情（只读）→ 点「编辑」才进编辑弹窗 */}
       <TaskDetailDialog
-        task={detailTask}
+        task={liveDetailTask}
         taskBookName={taskBooks.find((b) => b.id === detailTask?.taskBookId)?.name}
         onClose={() => setDetailTask(null)}
         onEdit={(t) => {
