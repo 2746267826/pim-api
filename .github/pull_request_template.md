@@ -39,9 +39,12 @@
 
 ## 需求与验收映射 / Requirement & Acceptance Mapping
 
-<!-- 每行一条验收条件（AC）；编号须与工单一致。
-     要求、编号规则、结果状态语义见 docs/ai-dev-workflow.md。
-     无需求来源的维护性改动写「无 / None」，但「测试」章节仍须给出实际执行结果。 -->
+<!-- 必填：每行一条验收条件（AC）；有工单时编号与工单一致。
+     无外部工单时，直接在 PR 中说明需求和验收条件，不要求先创建工单。
+     维护性改动可填「无 / None」，但仍须给出实际验证结果。
+     PASS 必须有覆盖该项的执行证据；FAIL 表示未达成；BLOCKED 须说明缺失条件；
+     NOT-VERIFIED 表示证据不足；APPROVED-EXCEPTION 须附用户批准记录。
+     mock、静态检查、真实环境验证不能互相冒充。 / Required: map each acceptance item to actual evidence; no separate work order is required. -->
 
 | 编号 | 实现（文件/函数） | 验证方式 | 结果 | 证据 |
 |---|---|---|---|---|
