@@ -144,6 +144,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/actions/**'
             docker:
+              - '.dockerignore'
               - 'src/Pim.Api/Dockerfile'
               - 'scripts/docker/**'
               # 前端与 API 同仓后，前端源码变化必须重烘内嵌 SPA 的镜像。

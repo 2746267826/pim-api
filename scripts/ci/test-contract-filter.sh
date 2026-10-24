@@ -114,6 +114,8 @@ for candidate in ["README.md", "docs/contract-mapping.md", "deploy/x.sh"]:
 docker = filters.get("docker", [])
 check("docker 过滤器仍覆盖 Dockerfile",
       bool(matches(docker, "src/Pim.Api/Dockerfile")))
+check("docker 过滤器覆盖 .dockerignore（避免只改构建上下文却不重烘镜像）",
+      bool(matches(docker, ".dockerignore")))
 check("反向对照：contract/openapi.json 不应命中 docker 过滤器（契约变更不该重建镜像定义）",
       not matches(docker, "contract/openapi.json"))
 
