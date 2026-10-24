@@ -5,7 +5,7 @@
 # 这是「api 侧真的把通知发出去」的那一步，所以测试必须是**真 HTTP**：
 # 起一个本地 stub（python3 http.server）当 GitHub API，断言
 #   * 真的 POST 到 /repos/<owner>/<repo>/dispatches，且 body 形状正确；
-#   * 三个仓个个都发了（一个失败不许拖住另外两个）；
+#   * Android/Windows 两个仓都发了（一个失败不许拖住另一个）；
 #   * 5xx 会重试、4xx 不重试；
 #   * token 绝不出现在任何输出里；
 #   * --dry-run 不发请求。
@@ -117,13 +117,13 @@ run_base() {
 
 echo "== notify-contract-sync.sh =="
 
-# --- 1) 全部成功 → 三个仓各一次 POST，退出码 0 -----------------------------
+# --- 1) 全部成功 → Android/Windows 各一次 POST，退出码 0 --------------------
 echo '{}' > "$TMP/cfg.json"; start_stub
-run_base --repos "pim-web pim-android pim-windows"
+run_base --repos "pim-android pim-windows"
 check "全成功 → 退出码 0" "0" "$RC"
-check "全成功 → 发了 3 次 dispatch" "3" "$(req_count)"
-check "全成功 → 三个仓都打到 dispatches 端点" "3" "$(req_paths | grep -c "/dispatches$")"
-contains "全成功 → 打印 pim-web 的 204" "pim-web" "$OUT"
+check "全成功 → 发了 2 次 dispatch" "2" "$(req_count)"
+check "全成功 → 两个仓都打到 dispatches 端点" "2" "$(req_paths | grep -c "/dispatches$")"
+contains "全成功 → 打印 pim-windows 的 204" "pim-windows" "$OUT"
 
 FIRST_REQ="$(python3 - "$REQ_LOG" <<'PY'
 import json, os, sys
@@ -160,7 +160,7 @@ except Exception: print('False')
 " "$FIRST_REQ")"
 not_contains "token 不出现在任何输出里" "$TOKEN" "$OUT"
 
-# --- 2) 一个仓 403（App 没装/权限不对）→ 仍发完另外两个，整体红 ------------
+# --- 2) Android 403（App 没装/权限不对）→ 仍发 Windows，整体红 --------
 python3 - "$TMP/cfg.json" "$OWNER" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -168,9 +168,9 @@ cfg["/repos/%s/pim-android/dispatches" % sys.argv[2]] = [403]
 json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"))
 PY
 start_stub
-run_base --repos "pim-web pim-android pim-windows"
+run_base --repos "pim-android pim-windows"
 check "有仓 403 → 退出码非 0" "1" "$RC"
-check "有仓 403 → 三个仓都尝试了（不早退）" "3" "$(req_count)"
+check "有仓 403 → 两个仓都尝试了（不早退）" "2" "$(req_count)"
 contains "有仓 403 → 明确报出是哪个仓失败" "pim-android" "$OUT"
 contains "有仓 403 → 报出 HTTP 状态" "403" "$OUT"
 contains "有仓 403 → 给出手动补发命令" "force_contract_notify=true" "$OUT"
@@ -180,33 +180,33 @@ contains "有仓 403 → 说明自动补发不是万能的" "客户端" "$OUT"
 python3 - "$TMP/cfg.json" "$OWNER" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1], encoding="utf-8"))
-cfg["/repos/%s/pim-web/dispatches" % sys.argv[2]] = [500, 204]
+cfg["/repos/%s/pim-windows/dispatches" % sys.argv[2]] = [500, 204]
 json.dump(cfg, open(sys.argv[1], "w", encoding="utf-8"))
 PY
 start_stub
-run_base --repos "pim-web"
+run_base --repos "pim-windows"
 check "5xx 后重试成功 → 退出码 0" "0" "$RC"
 check "5xx 后重试成功 → 共 2 次请求" "2" "$(req_count)"
 
 # --- 4) --dry-run：不发请求，只打印计划 ------------------------------------
 echo '{}' > "$TMP/cfg.json"; start_stub
-run_base --repos "pim-web pim-android" --dry-run
+run_base --repos "pim-android pim-windows" --dry-run
 check "dry-run → 退出码 0" "0" "$RC"
 check "dry-run → 一次请求都没发" "0" "$(req_count)"
 contains "dry-run → 打印了将发送的 payload sha256" "$SHA256" "$OUT"
 
 # --- 5) 参数校验：坏的 sha256 / 空 repos / 缺 token → 退出码 2，不发请求 ----
-run --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "nothex" --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-web"
+run --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "nothex" --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-windows"
 check "坏 sha256 → 退出码 2" "2" "$RC"
 check "坏 sha256 → 没发请求" "0" "$(req_count)"
 run_base --repos "   "
 check "空 repos → 退出码 2" "2" "$RC"
-run --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-web" --event-type "bad event type!"
+run --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-windows" --event-type "bad event type!"
 check "非法 event_type → 退出码 2" "2" "$RC"
 set +e
 OUT="$(env -u GITHUB_STEP_SUMMARY -u CONTRACT_SYNC_TOKEN PIM_CONTRACT_SYNC_RETRY_DELAY=0 \
       bash "$SCRIPT" --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" \
-      --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-web" \
+      --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-windows" \
       --github-ref refs/heads/master --build-api-result success 2>&1)"
 RC=$?
 set -e
@@ -216,7 +216,7 @@ contains "缺 token → 提示走 secrets" "CONTRACT_SYNC_TOKEN" "$OUT"
 # --- 5b) 非 master 的 ref → 强制 dry-run，一次请求都不发 --------------------
 echo '{}' > "$TMP/cfg.json"; start_stub
 run --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 \
-    --contract-commit "$COMMIT" --repos "pim-web pim-android pim-windows" \
+    --contract-commit "$COMMIT" --repos "pim-android pim-windows" \
     --github-ref refs/heads/dsh-linux/some-feature --build-api-result success
 check "非 master ref → 退出码 0（降级为 dry-run 而不是失败）" "0" "$RC"
 check "非 master ref → 一次请求都没发" "0" "$(req_count)"
@@ -225,20 +225,20 @@ contains "非 master ref → 说明权威版本在 master" "master 上的文件"
 
 # --- 5c) 真发通知却不声明 ref → 拒绝（漏传会绕过上面那条限制）--------------
 run --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 \
-    --contract-commit "$COMMIT" --repos "pim-web" --build-api-result success
+    --contract-commit "$COMMIT" --repos "pim-windows" --build-api-result success
 check "真发但不传 --github-ref → 退出码 2" "2" "$RC"
 check "  → 没发请求" "0" "$(req_count)"
 contains "  → 提示必须声明 ref" "github-ref" "$OUT"
 
 # --- 5d) build-api 没成功：不通知，且**不静默** -----------------------------
 echo '{}' > "$TMP/cfg.json"; start_stub
-run_base --repos "pim-web pim-android pim-windows" --build-api-result skipped
+run_base --repos "pim-android pim-windows" --build-api-result skipped
 check "build-api 被跳过（非强制）→ 退出码 0 但明确不通知" "0" "$RC"
 check "  → 一次请求都没发" "0" "$(req_count)"
 contains "  → 日志说明未经硬校验的契约不推给客户端" "不通知客户端" "$OUT"
 
 # --- 5e) 强制补发但 build-api 被跳过 → 必须报错并给出可用的补发命令 ----------
-run_base --repos "pim-web pim-android pim-windows" --build-api-result skipped --force true
+run_base --repos "pim-android pim-windows" --build-api-result skipped --force true
 check "强制补发但 build-api 未成功 → 退出码 2（不是静默跳过）" "2" "$RC"
 check "  → 没发请求" "0" "$(req_count)"
 contains "  → 给出带 force_all=true 的补发命令" "force_all=true" "$OUT"
@@ -246,7 +246,7 @@ contains "  → 说明为什么必须带 force_all" "build-api" "$OUT"
 
 # --- 5f) 缺 --build-api-result → 拒绝执行（漏传会让门槛失效）----------------
 run --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 \
-    --contract-commit "$COMMIT" --repos "pim-web" --github-ref refs/heads/master
+    --contract-commit "$COMMIT" --repos "pim-windows" --github-ref refs/heads/master
 check "漏传 --build-api-result → 退出码 2" "2" "$RC"
 check "  → 没发请求" "0" "$(req_count)"
 
@@ -256,11 +256,11 @@ echo '{}' > "$TMP/cfg.json"; start_stub
 set +e
 OUT="$(CONTRACT_SYNC_TOKEN="$TOKEN" PIM_CONTRACT_SYNC_RETRY_DELAY=0 \
       GITHUB_STEP_SUMMARY="$TMP/summary.md" \
-      bash "$SCRIPT" --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-web" --github-ref refs/heads/master --build-api-result success 2>&1)"
+      bash "$SCRIPT" --owner "$OWNER" --api-base "$API_BASE" --contract-sha256 "$SHA256" --contract-bytes 1 --contract-commit "$COMMIT" --repos "pim-windows" --github-ref refs/heads/master --build-api-result success 2>&1)"
 RC=$?
 set -e
 check "写 summary → 退出码 0" "0" "$RC"
-contains "summary 里记录了投递结果" "pim-web" "$(cat "$TMP/summary.md")"
+contains "summary 里记录了投递结果" "pim-windows" "$(cat "$TMP/summary.md")"
 not_contains "summary 里没有 token" "$TOKEN" "$(cat "$TMP/summary.md")"
 
 echo ""

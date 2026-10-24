@@ -6,7 +6,7 @@
 #   * token 只从环境变量 CONTRACT_SYNC_TOKEN 读（由 actions/create-github-app-token
 #     现签的 installation token）—— **不进 argv**（否则会出现在进程参数表里）、
 #     不落盘、任何输出里都不回显；
-#   * 一个仓失败**不许拖住**另外两个：三个仓都尝试完，再按失败数决定退出码；
+#   * 一个仓失败**不许拖住**另一个：所有仓都尝试完，再按失败数决定退出码；
 #   * 5xx / 429 / 网络错误会重试，4xx 不重试（4xx 是配置或权限问题，重试无意义）；
 #   * 通知里带 `ref`（契约所在 commit）+ `sha256` + `bytes`：客户端据此用
 #     `PIM_CONTRACT_REF=<ref>` 精确取那个 commit 的字节，避免"收到通知时 master
@@ -14,7 +14,7 @@
 #
 # 用法：
 #   CONTRACT_SYNC_TOKEN=<installation token> scripts/ci/notify-contract-sync.sh \
-#     --owner 2746267826 --repos "pim-web pim-android pim-windows" \
+#     --owner 2746267826 --repos "pim-android pim-windows" \
 #     --contract-sha256 <64hex> --contract-bytes <n> --contract-commit <40hex> \
 #     [--contract-repo 2746267826/pim-api] [--source-path contract/openapi.json] \
 #     [--event-type contract-updated] [--api-base https://api.github.com] \

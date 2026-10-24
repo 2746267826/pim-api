@@ -17,7 +17,7 @@
 
 - `client-web/src/api/generated.ts` 当前**没有任何产品代码 import**（`git grep "api/generated" client-web/src` 为空）。
   因此 `tsc` / `vite build` / `vitest`（146 用例）全绿**不能**证明「手写模型符合契约」，它们只能证明
-  「本次刷新没有破坏既有回归」。契约符合性由 CI 的 `check-contract-freshness.sh` 逐字节校验 + 本报告的人工逐条比对负责。
+  「本次刷新没有破坏既有回归」。契约符合性由 `web/scripts/ci/check-contract.sh` 的「从根契约重生成并逐字节比对」+ 本报告的人工逐条比对负责。
 - 「客户端统一注入 Bearer」只能支撑「客户端默认带 Bearer 与契约声明一致」，**不能**推出逐端点的授权语义正确。
 - 本报告不修改产品行为，出现运行期风险时也不在本次修复。
 

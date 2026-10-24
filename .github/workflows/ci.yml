@@ -17,22 +17,8 @@ on:
         required: false
         default: true
         type: boolean
-      # 契约输入名（工单 §5）：前端版本引用 + 只重建镜像开关。
-      # 两个都必须在 ci.yml 的 workflow_dispatch.inputs 声明（否则 workflow_dispatch
-      # 根本收不到），web_dist_ref 还必须在 build-docker.yml 的 workflow_call.inputs
-      # 里同步声明才能一路传到镜像构建（见 REQ-4 的「输入要真正送达」）。
-      web_dist_ref:
-        description: 'Frontend dist image ref to embed (e.g. sha-abc1234). Empty = latest, frozen once at build start'
-        required: false
-        default: ''
-        type: string
-      rebuild_image_only:
-        description: 'Only rebuild the API image (carry API/MCP assets over). Auto-upgrades to a full build when the backend changed'
-        required: false
-        default: false
-        type: boolean
       # 契约同步（#415）的补发开关：契约检测本身是自动的（master 上 contract/openapi.json
-      # 真的变了、且通过了 build-api 的硬校验，就通知三个客户端仓）。这个输入用于
+      # 真的变了、且通过了 build-api 的硬校验，就通知 Android/Windows 两个客户端仓）。这个输入用于
       # 「通知没发出去 / 客户端漏收 / 需要重新投递」时手动补发一次。
       # 它是真接线的（被 contract-notify 消费并覆盖检测结果），不是死参数。
       force_contract_notify:
@@ -93,8 +79,6 @@ jobs:
       api: ${{ steps.flags.outputs.api }}
       docker: ${{ steps.flags.outputs.docker }}
       mcp: ${{ steps.flags.outputs.mcp }}
-      rebuild_image_only: ${{ steps.flags.outputs.rebuild_image_only }}
-      backend_changed: ${{ steps.flags.outputs.backend_changed }}
       baseline_ok: ${{ steps.baseline.outputs.ok }}
       previous_tag: ${{ steps.rel.outputs.previous_tag }}
       contract_changed: ${{ steps.contract.outputs.changed }}
@@ -162,6 +146,9 @@ jobs:
             docker:
               - 'src/Pim.Api/Dockerfile'
               - 'scripts/docker/**'
+              # 前端与 API 同仓后，前端源码变化必须重烘内嵌 SPA 的镜像。
+              - 'web/client-web/**'
+              - 'web/scripts/ci/**'
               - '.github/workflows/build-docker.yml'
               - '.github/workflows/ci.yml'
               - 'docker-compose.prod.yml'
@@ -263,7 +250,6 @@ jobs:
         # 手动触发时恒为空串 → 开关形同虚设（伪生效）。现在这些变量都有真实定义。
         env:
           FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all || 'false' }}
-          REBUILD_IMAGE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild_image_only || 'false' }}
           BASELINE_OK: ${{ steps.baseline.outputs.ok }}
           PREVIOUS_TAG: ${{ steps.rel.outputs.previous_tag }}
           PREVIOUS_LEDGER: ${{ steps.prevledger.outputs.present }}
@@ -273,127 +259,111 @@ jobs:
           F_MCP: ${{ steps.filter.outputs.mcp }}
         run: bash "$GITHUB_WORKSPACE/scripts/ci/decide-components.sh"
 
-  # 前端产物镜像的解析/冻结（REQ-3）与「防重复发版」判定（REQ-6）。
+  # 同仓前端构建与校验：lint / 单测 / 契约一致 / 产物完整性。
   #
-  # 为什么单独一个 job 且放在镜像构建**之前**：冻结值必须在构建开始时确定并只解析一次，
-  # 后续镜像内容、台账、比对全部用同一个不可变引用；而「本次是否要发版」又要在这个
-  # 引用拿到之后、镜像被推之前决定（不发版时不得推出新镜像 tag、不得产生新镜像）。
-  web-dist:
+  # 前端源码在 web/client-web，与 API 在同一个 commit、同一个 release 中发布，
+  # 不再解析 ghcr.io/pim-web-dist，也不再有跨仓 workflow_dispatch。
+  web-build:
     needs: [resolve-version, changes]
     if: needs.changes.outputs.all == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
-      image: ${{ steps.resolve.outputs.web_dist_image }}
-      ref: ${{ steps.resolve.outputs.web_dist_ref }}
-      digest: ${{ steps.resolve.outputs.web_dist_digest }}
-      version: ${{ steps.resolve.outputs.web_version }}
-      git_sha: ${{ steps.resolve.outputs.web_git_sha }}
-      built_at: ${{ steps.resolve.outputs.web_built_at }}
-      publish: ${{ steps.decide.outputs.publish }}
-      dedupe_reason: ${{ steps.decide.outputs.dedupe_reason }}
+      version: ${{ needs.resolve-version.outputs.version }}
+      git_sha: ${{ needs.resolve-version.outputs.git_sha_short }}
+      built_at: ${{ steps.meta.outputs.built_at }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 新增的发布脚本先自检（纯逻辑、不依赖 registry）：判定规则错了要在这一步就红。
+      # 发布脚本自检：纯逻辑、不依赖 registry。
       - name: Self-test release scripts
         run: |
           set -euo pipefail
           bash scripts/ci/test-decide-components.sh
           bash scripts/ci/test-evaluate-gate.sh
-          bash scripts/ci/test-release-dedupe.sh
-          bash scripts/ci/test-resolve-web-dist.sh
           bash scripts/ci/test-build-web-ledger.sh
-          # 契约变更检测与客户端通知（#415）：判定错了/请求发错了不会有别的信号，
-          # 只会静默地"永远不通知"，所以这两套行为测试是必需的，不是装饰。
+          # 契约变更检测与客户端通知（#415）：判定错了不会有别的信号，只会静默地不通知。
           bash scripts/ci/test-detect-contract-change.sh
           bash scripts/ci/test-notify-contract-sync.sh
-          # 过滤器配置本身也要有回归测试：漏掉 contract/** 不会有任何报错，
-          # 只会静默回到"契约-only 的 PR 全绿但契约没被校验"（工单 §9 的假绿）。
+          # 漏掉 contract/** 会让「契约-only 的 PR 全绿但契约没被校验」。
           bash scripts/ci/test-contract-filter.sh
 
-      # 解析并冻结前端产物镜像引用；失败即红（拉不到 / 文件缺失 / 引用与内容不同源）。
-      - name: Resolve and freeze frontend dist ref
-        id: resolve
-        run: |
-          bash scripts/ci/resolve-web-dist.sh \
-            --ref "${{ github.event_name == 'workflow_dispatch' && inputs.web_dist_ref || '' }}"
+      - name: Record build time
+        id: meta
+        run: echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
-      # 上一版台账（REQ-6 的比对数据源）。取不到不算错：判定脚本会按「无上一版台账，
-      # 按需发版处理」走，并且把这件事写进 summary（不报错中断、也不静默跳过发布）。
-      # 基线不可用（首次发布 / 历史被改写）时直接跳过：那个 tag 上的台账与本仓历史无关，
-      # 拿它比对会得出"前端没变 → 不发版"的错误结论。
-      - name: Resolve previous release ledger
-        id: prev
-        if: needs.resolve-version.outputs.is_release == 'true' && needs.changes.outputs.baseline_ok == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -uo pipefail
-          # 解析时排除本次自己的 tag（重跑时 tag 已存在，不能被当成"上一版"）。
-          TAG="$(bash "$GITHUB_WORKSPACE/scripts/ci/latest-release-tag.sh" \
-            --repo "$GITHUB_REPOSITORY" \
-            --exclude "${{ needs.resolve-version.outputs.release_tag }}" || true)"
-          if [[ -n "$TAG" ]] && ! git merge-base --is-ancestor "$TAG" HEAD; then
-            echo "::warning::${TAG} 不是 HEAD 的祖先（历史被改写）→ 不作为台账比对基线"
-            TAG=""
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "上一版 release: ${TAG:-(none)}"
-          mkdir -p previous-ledger
-          if [[ -n "$TAG" ]]; then
-            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --pattern 'pim-web-version.json' --dir previous-ledger \
-              && echo "已取到上一版台账" \
-              || echo "上一版 release 没有 pim-web-version.json 资产（按无台账处理）"
-          fi
-          ls -la previous-ledger || true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/client-web/package-lock.json
 
-      - name: Decide whether to publish
-        id: decide
+      - name: Install web dependencies
+        working-directory: web/client-web
+        run: npm ci
+
+      - name: Self-test web release scripts
+        run: |
+          bash web/scripts/ci/test-contract.sh
+          bash web/scripts/ci/test-write-web-version.sh
+
+      - name: Lint
+        working-directory: web/client-web
+        run: npm run lint
+
+      - name: Unit tests
+        working-directory: web/client-web
+        run: npm run test
+
+      # 同仓后契约唯一来源是根目录 contract/openapi.json：
+      # generated.ts 必须能由它与仓内锁定生成器逐字节重现。
+      - name: Verify web contract snapshot and generated types
+        run: bash web/scripts/ci/check-contract.sh
+
+      - name: Build (tsc -b && vite build)
+        working-directory: web/client-web
         env:
-          IS_RELEASE: ${{ needs.resolve-version.outputs.is_release }}
-          BACKEND_CHANGED: ${{ needs.changes.outputs.backend_changed }}
+          VITE_APP_VERSION: ${{ needs.resolve-version.outputs.version }}
+          VITE_GIT_SHA: ${{ needs.resolve-version.outputs.git_sha_short }}
+        run: npm run build
+
+      - name: Write web-version.json into dist
+        env:
+          PIM_WEB_BUILT_AT: ${{ steps.meta.outputs.built_at }}
+        run: |
+          bash web/scripts/ci/write-web-version.sh \
+            --out web/client-web/dist/web-version.json \
+            --version "${{ needs.resolve-version.outputs.version }}" \
+            --git-sha "${{ needs.resolve-version.outputs.git_sha_short }}" \
+            --built-at "$PIM_WEB_BUILT_AT"
+
+      - name: Verify dist payload
         run: |
           set -euo pipefail
-          if [ "$IS_RELEASE" != "true" ]; then
-            # PR / 非 master 运行不发布：不做台账比对（也没有台账可比）。
-            {
-              echo "publish=true"
-              echo "dedupe_reason=非发版运行（is_release=false），不做防重复发版判定"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          bash scripts/ci/release-dedupe.sh \
-            --web-version "${{ steps.resolve.outputs.web_version }}" \
-            --web-git-sha "${{ steps.resolve.outputs.web_git_sha }}" \
-            --backend-changed "$BACKEND_CHANGED" \
-            --previous-release-tag "${{ steps.prev.outputs.tag }}" \
-            --ledger previous-ledger/pim-web-version.json
+          test -s web/client-web/dist/index.html
+          test -d web/client-web/dist/assets
+          test -n "$(find web/client-web/dist/assets -type f -print -quit)"
+          test -s web/client-web/dist/web-version.json
+          test "$(jq -r .version web/client-web/dist/web-version.json)" = "${{ needs.resolve-version.outputs.version }}"
+          test "$(jq -r .gitSha web/client-web/dist/web-version.json)" = "${{ needs.resolve-version.outputs.git_sha_short }}"
+          echo "web-version.json: $(cat web/client-web/dist/web-version.json)"
 
-      - name: Write web dist summary
+      - name: Write web build summary
         if: always()
-        env:
-          PUBLISH: ${{ steps.decide.outputs.publish }}
-          REASON: ${{ steps.decide.outputs.dedupe_reason }}
         run: |
           {
-            echo "### 本次内嵌的前端（冻结值，REQ-3）"
+            echo "### 同仓前端构建"
             echo ""
             echo "| 项 | 值 |"
             echo "| --- | --- |"
-            echo "| 产物镜像 | \`${{ steps.resolve.outputs.web_dist_image }}:${{ steps.resolve.outputs.web_dist_ref }}\` |"
-            echo "| digest | \`${{ steps.resolve.outputs.web_dist_digest }}\` |"
-            echo "| 前端版本 | \`${{ steps.resolve.outputs.web_version }}\` |"
-            echo "| 前端 git sha | \`${{ steps.resolve.outputs.web_git_sha }}\` |"
-            echo "| 构建时间(UTC) | \`${{ steps.resolve.outputs.web_built_at }}\` |"
-            echo ""
-            echo "是否发版：**${PUBLISH:-<未判定>}** —— ${REASON:-<无>}"
+            echo "| 源码 | \`web/client-web\` |"
+            echo "| 前端版本 | \`${{ needs.resolve-version.outputs.version }}\` |"
+            echo "| git sha | \`${{ needs.resolve-version.outputs.git_sha_short }}\` |"
+            echo "| 构建时间(UTC) | \`${{ steps.meta.outputs.built_at }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
-
   build-api:
     needs: [resolve-version, changes]
     if: needs.changes.outputs.all == 'true' || needs.changes.outputs.api == 'true'
@@ -406,12 +376,9 @@ jobs:
       git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
 
   build-docker:
-    needs: [resolve-version, changes, web-dist]
-    # 镜像里内嵌前端，因此「后端有变化（api）」「镜像定义有变化（docker）」都要重烘镜像；
-    # 另外只有在前端/后端判定为需要发版时才烘（REQ-6：不发版就不得推出新镜像 tag）。
-    if: |
-      (needs.changes.outputs.all == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.docker == 'true') &&
-      (needs.resolve-version.outputs.is_release != 'true' || needs.web-dist.outputs.publish != 'false')
+    needs: [resolve-version, changes, web-build]
+    # 镜像里内嵌前端，因此「后端有变化（api）」「镜像/前端有变化（docker）」都要重烘镜像。
+    if: needs.changes.outputs.all == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.docker == 'true'
     uses: ./.github/workflows/build-docker.yml
     with:
       version: ${{ needs.resolve-version.outputs.version }}
@@ -419,8 +386,7 @@ jobs:
       git_sha_short: ${{ needs.resolve-version.outputs.git_sha_short }}
       is_release: ${{ needs.resolve-version.outputs.is_release }}
       assembly_version: ${{ needs.resolve-version.outputs.assembly_version }}
-      web_dist_ref: ${{ needs.web-dist.outputs.ref }}
-      web_dist_digest: ${{ needs.web-dist.outputs.digest }}
+      web_built_at: ${{ needs.web-build.outputs.built_at }}
 
   build-mcp:
     needs: [resolve-version, changes]
@@ -436,7 +402,7 @@ jobs:
   #   * 为什么 needs build-api 且要求 success：通知里带的是"哪个 commit 的契约"，
   #     而"那份契约与代码一致"这件事只有 build-api 的硬校验能证明。没被校验过的
   #     契约不许发给客户端 —— 宁可不发（客户端的新鲜度门禁会继续报红，可见），
-  #     也不把一份可能错的契约推给三个仓。build-api 失败时本次不通知；下一条成功
+  #     也不把一份可能错的契约推给 Android/Windows。build-api 失败时本次不通知；下一条成功
   #     的 master push 仍会检测到同样的差异并补发（检测基线是上一版 release，自愈）。
   #   * 为什么不在 pull_request 上跑：契约的权威版本是 master 上的文件。PR 还没合，
   #     推给客户端就是让它们按一份"可能不会进 master"的契约开 PR。
@@ -444,7 +410,7 @@ jobs:
   #     本仓的发版，也不该把本仓的必需检查变红（工单 §7「不阻塞任何一侧」）。
   #     失败是这一条 job 的红色 + summary，另外客户端的新鲜度门禁是第二道网。
   #
-  # 凭据：GitHub App（pim-contract-sync，安装范围仅三个客户端仓，
+  # 凭据：GitHub App（pim-contract-sync，安装范围仅 Android/Windows 两个客户端仓，
   # 权限 contents:write / pull_requests:write / metadata:read）。用
   # actions/create-github-app-token 现签 1 小时有效的 installation token：
   # 由 action 负责 JWT / 换 token / 换行转义，比手搓 JWT 少一类"写法坑"；
@@ -472,9 +438,9 @@ jobs:
         with:
           app-id: ${{ secrets.PIM_CONTRACT_SYNC_APP_ID }}
           private-key: ${{ secrets.PIM_CONTRACT_SYNC_PRIVATE_KEY }}
-          # owner/repositories 决定为哪个安装签发 token；三个客户端仓与本源仓同属一个 owner。
+          # Web 已并入本仓，只需通知仍独立的原生客户端仓。
           owner: ${{ github.repository_owner }}
-          repositories: pim-web,pim-android,pim-windows
+          repositories: pim-android,pim-windows
 
       - name: Dispatch contract-updated to client repos
         env:
@@ -490,7 +456,7 @@ jobs:
             --owner "${{ github.repository_owner }}" \
             --build-api-result "${{ needs.build-api.result }}" \
             --force "${FORCE:-false}" \
-            --repos "pim-web pim-android pim-windows" \
+            --repos "pim-android pim-windows" \
             --contract-repo "${{ github.repository }}" \
             --source-path contract/openapi.json \
             --event-type contract-updated \
@@ -500,7 +466,7 @@ jobs:
             --github-ref "${{ github.ref }}"
 
   summarize:
-    needs: [resolve-version, changes, web-dist, build-api, build-docker, build-mcp, contract-notify]
+    needs: [resolve-version, changes, web-build, build-api, build-docker, build-mcp, contract-notify]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -512,13 +478,12 @@ jobs:
           echo "| Platform | Status |"
           echo "|:---------|:-------|"
           echo "| 🖥️  API     | ${{ needs.build-api.result == 'success' && '✅ Built' || needs.build-api.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
+          echo "| 🌐  Web     | ${{ needs.web-build.result == 'success' && '✅ Built' || needs.web-build.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo "| 🐳  Docker  | ${{ needs.build-docker.result == 'success' && '✅ Built' || needs.build-docker.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo "| 🤖 MCP | ${{ needs.build-mcp.result == 'success' && '✅ Built' || needs.build-mcp.result == 'skipped' && '⏭️ Skipped' || '❌ Failed' }} |"
           echo ""
           echo "数组件判定：all=${{ needs.changes.outputs.all }} api=${{ needs.changes.outputs.api }} docker=${{ needs.changes.outputs.docker }} mcp=${{ needs.changes.outputs.mcp }}"
-          echo "本次仅重建镜像：${{ needs.changes.outputs.rebuild_image_only }}（开关真接线，见 REQ-5/AC-8）"
-          echo "内嵌前端（冻结值）：${{ needs.web-dist.outputs.version }} / ${{ needs.web-dist.outputs.git_sha }}（引用 ${{ needs.web-dist.outputs.ref }}）"
-          echo "发版判定：${{ needs.web-dist.outputs.publish }} —— ${{ needs.web-dist.outputs.dedupe_reason }}"
+          echo "内嵌前端（同仓）：${{ needs.web-build.outputs.version }} / ${{ needs.web-build.outputs.git_sha }}"
           echo "契约变化检测：changed=${{ needs.changes.outputs.contract_changed }}（sha256=${{ needs.changes.outputs.contract_sha256 }}，${{ needs.changes.outputs.contract_bytes }} 字节）；客户端通知 job：${{ needs.contract-notify.result }}"
           echo ""
           echo "> Artifacts: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -527,12 +492,13 @@ jobs:
             echo ""
             echo "| 组件 | 结果 | 判定 |"
             echo "| --- | --- | --- |"
+            echo "| web-build | ${{ needs.web-build.result }} | docker=${{ needs.changes.outputs.docker }} |"
             echo "| build-api | ${{ needs.build-api.result }} | api=${{ needs.changes.outputs.api }} |"
             echo "| build-docker | ${{ needs.build-docker.result }} | docker=${{ needs.changes.outputs.docker }} |"
             echo "| build-mcp | ${{ needs.build-mcp.result }} | mcp=${{ needs.changes.outputs.mcp }} |"
             echo "| contract-notify | ${{ needs.contract-notify.result }} | contract_changed=${{ needs.changes.outputs.contract_changed }} |"
             echo ""
-            echo "仅重建镜像开关：\`${{ needs.changes.outputs.rebuild_image_only }}\`；本次内嵌前端：\`${{ needs.web-dist.outputs.version }}\` / \`${{ needs.web-dist.outputs.git_sha }}\`；发版：\`${{ needs.web-dist.outputs.publish }}\`"
+            echo "本次内嵌前端：\`${{ needs.web-build.outputs.version }}\` / \`${{ needs.web-build.outputs.git_sha }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # 汇总门禁：把「子任务失败 / 应跑却未跑」变成整体失败。
@@ -548,19 +514,18 @@ jobs:
   # 修改那些 if 条件（例如新增组件、调整路径过滤）时，请同步更新这里，否则会漏报或误报。
   gate:
     name: CI Gate
-    needs: [resolve-version, changes, web-dist, build-api, build-docker, build-mcp]
+    needs: [resolve-version, changes, web-build, build-api, build-docker, build-mcp]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Evaluate required jobs
-        # 判定逻辑在 scripts/ci/evaluate-gate.sh 里（可被组合测试覆盖，见 test-evaluate-gate.sh）：
-        # 只有**显式** publish=false 才把镜像构建的跳过视为"按设计"，空值/异常值一律判红。
+        # 判定逻辑在 scripts/ci/evaluate-gate.sh 里（可被组合测试覆盖，见 test-evaluate-gate.sh）。
         env:
           R_RESOLVE: ${{ needs.resolve-version.result }}
           R_CHANGES: ${{ needs.changes.result }}
-          R_WEBDIST: ${{ needs.web-dist.result }}
+          R_WEBBUILD: ${{ needs.web-build.result }}
           R_API: ${{ needs.build-api.result }}
           R_DOCKER: ${{ needs.build-docker.result }}
           R_MCP: ${{ needs.build-mcp.result }}
@@ -568,17 +533,16 @@ jobs:
           W_API: ${{ needs.changes.outputs.api }}
           W_DOCKER: ${{ needs.changes.outputs.docker }}
           W_MCP: ${{ needs.changes.outputs.mcp }}
-          IS_RELEASE: ${{ needs.resolve-version.outputs.is_release }}
-          W_PUBLISH: ${{ needs.web-dist.outputs.publish }}
         run: bash "$GITHUB_WORKSPACE/scripts/ci/evaluate-gate.sh"
 
   release:
-    needs: [resolve-version, summarize, web-dist, build-api, build-docker, build-mcp]
+    needs: [resolve-version, summarize, gate, web-build, build-api, build-docker, build-mcp]
     # Release on every master push where no build failed. Skipped (unchanged)
     # components are fine: their assets are copied from the previous release.
     if: |
       always() &&
       needs.resolve-version.outputs.is_release == 'true' &&
+      needs.gate.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-latest
@@ -593,26 +557,8 @@ jobs:
       # Docs-only changes build nothing - skip the release entirely.
       - name: Decide whether to create a release
         id: decide
-        env:
-          PUBLISH: ${{ needs.web-dist.outputs.publish }}
-          DEDUPE_REASON: ${{ needs.web-dist.outputs.dedupe_reason }}
         run: |
-          # 防重复发版（REQ-6）：前端版本与上一版台账一致且后端无变化 → 不发新 release，
-          # 也不推新镜像 tag（build-docker 已按 publish=false 跳过）。这里必须显式写明
-          # 结论与依据，不能静默跳过。
-          if [ "$PUBLISH" = "false" ]; then
-            echo "do_release=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::防重复发版：本次不发版（${DEDUPE_REASON}）"
-            {
-              echo "### 本次不发版（REQ-6 防重复发版）"
-              echo ""
-              echo "${DEDUPE_REASON}"
-              echo ""
-              echo "不产生新 release，不推送新镜像 tag，复用既有产物。"
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
+          # 同仓后不再需要跨仓产物去重：只要本次有组件构建成功就发布。
           BUILT=0
           for r in "${{ needs.build-api.result }}" \
                     "${{ needs.build-docker.result }}" \
@@ -693,7 +639,10 @@ jobs:
               exit 1
             fi
           }
-          fill_if_skipped "${{ needs.build-api.result }}" 'pim-api-*.tar.gz'
+          # pim-api-*.tar.gz also matches pim-api-server-*.tar.gz. Keep the API
+          # family exact or a skipped API build can look present because the
+          # freshly built image tarball matched.
+          fill_if_skipped "${{ needs.build-api.result }}" 'pim-api-v*.tar.gz'
           fill_if_skipped "${{ needs.build-docker.result }}" 'pim-api-server-*.tar.gz'
           fill_if_skipped "${{ needs.build-mcp.result }}" 'pim-mcp-server-*.tar.gz'
           # 台账（REQ-7）：每次 release 都必须有一份。镜像这次没重建时，本次发布里前端
@@ -711,7 +660,7 @@ jobs:
             cat release-assets/pim-web-version.json
           fi
           # Sanity check: every asset family must be present before uploading.
-          for p in pim-api-*.tar.gz pim-api-server-*.tar.gz pim-mcp-server-*.tar.gz pim-web-version.json; do
+          for p in pim-api-v*.tar.gz pim-api-server-*.tar.gz pim-mcp-server-*.tar.gz pim-web-version.json; do
             ls release-assets/${p} >/dev/null 2>&1 \
               || { echo "::error::Missing release asset family: ${p}" >&2; exit 1; }
           done
@@ -742,8 +691,7 @@ jobs:
           if [ -s "$LEDGER" ]; then
             WEB_SHA="$(jq -r '.gitSha' "$LEDGER")"
             WEB_VERSION="$(jq -r '.version' "$LEDGER")"
-            WEB_TAG="$(jq -r '.imageTag' "$LEDGER")"
-            NOTES="${NOTES}"$'\n\n'"---"$'\n'"内嵌前端 / Embedded web: \`sha-${WEB_SHA}\` (${WEB_VERSION}) — from \`${WEB_TAG}\`"$'\n'
+            NOTES="${NOTES}"$'\n\n'"---"$'\n'"内嵌前端 / Embedded web: \`sha-${WEB_SHA}\` (${WEB_VERSION}) — built with the API in this repository"$'\n'
           else
             NOTES="${NOTES}"$'\n\n'"内嵌前端 / Embedded web: 台账缺失（未读到 pim-web-version.json）"$'\n'
           fi
@@ -765,7 +713,7 @@ jobs:
           name: ${{ needs.resolve-version.outputs.release_tag }}
           body: ${{ steps.notes.outputs.notes }}
           files: |
-            release-assets/pim-api-*.tar.gz
+            release-assets/pim-api-v*.tar.gz
             release-assets/pim-api-server-*.tar.gz
             release-assets/pim-mcp-server-*.tar.gz
             release-assets/pim-web-version.json

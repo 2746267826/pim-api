@@ -117,6 +117,15 @@ check("docker 过滤器仍覆盖 Dockerfile",
 check("反向对照：contract/openapi.json 不应命中 docker 过滤器（契约变更不该重建镜像定义）",
       not matches(docker, "contract/openapi.json"))
 
+# Web-only 变更：只重烘内嵌 SPA 的镜像，不应重跑 API/MCP 构建。
+web_change = "web/client-web/src/App.tsx"
+check("Web 源码变化命中 docker 过滤器 → 会重烘镜像并发布",
+      bool(matches(docker, web_change)))
+check("Web 源码变化不命中 api 过滤器 → build-api 跳过、资产复用",
+      not matches(api, web_change))
+check("Web 源码变化不命中 mcp 过滤器 → build-mcp 跳过、资产复用",
+      not matches(filters.get("mcp", []), web_change))
+
 print("")
 print(f"contract-filter: passed={passed} failed={failed}")
 sys.exit(1 if failed else 0)

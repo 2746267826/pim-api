@@ -18,15 +18,8 @@ on:
       assembly_version:
         required: true
         type: string
-      # 契约输入（工单 §5）：要内嵌的前端产物镜像版本引用（sha-<7>；空 = 取最新并冻结）。
-      # 必须在 workflow_call.inputs 里声明，否则 ci.yml 传进来的值到不了镜像构建。
-      web_dist_ref:
-        required: false
-        default: ''
-        type: string
-      # 内部管线参数（不是 dispatch 输入）：ci.yml 的 web-dist job 解析出的 digest，
-      # 用来核对 build-docker 自己解析到的 digest 是否一致（防 tag 在两者之间被重推）。
-      web_dist_digest:
+      # ci.yml 的 web-build job 记录的构建时间；与 web-version.json 同源。
+      web_built_at:
         required: false
         default: ''
         type: string
@@ -52,11 +45,7 @@ on:
         required: false
         default: ''
         type: string
-      web_dist_ref:
-        required: false
-        default: ''
-        type: string
-      web_dist_digest:
+      web_built_at:
         required: false
         default: ''
         type: string
@@ -89,32 +78,14 @@ jobs:
             bash "$GITHUB_WORKSPACE/scripts/ci/resolve-version.sh"
           fi
 
-      # 解析并冻结前端来源（REQ-3）。ci.yml 传进来的是已经冻结好的 sha-<7>，
-      # 这里再解析一次并**核对与镜像内容同源**：同一个不可变引用，重复解析不会漂；
-      # 若 tag 被改成别的内容，这里立刻红。
-      - name: Resolve and freeze frontend dist ref
-        id: web
-        run: bash "$GITHUB_WORKSPACE/scripts/ci/resolve-web-dist.sh" --ref "${{ inputs.web_dist_ref }}"
-
-      # 冻结后的引用必须是"同一个字节"：ci.yml 的 web-dist job 已经解析过一次 digest，
-      # 这里再解析一次并逐字核对。tag 在两次解析之间被重推（同一 commit 重新构建 → 新
-      # builtAt）会让两边不一致，必须硬失败而不是把不同的前端烘进镜像。
-      - name: Verify the frozen ref resolves to the same bytes
-        env:
-          EXPECTED_DIGEST: ${{ inputs.web_dist_digest }}
+      - name: Resolve web build time
+        id: webtime
         run: |
-          set -euo pipefail
-          if [ -z "$EXPECTED_DIGEST" ]; then
-            echo "未收到上游解析的 digest（直接触发本 workflow 的情形），跳过一致性核对"
-            exit 0
+          BUILT_AT="${{ inputs.web_built_at }}"
+          if [ -z "$BUILT_AT" ]; then
+            BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           fi
-          ACTUAL="${{ steps.web.outputs.web_dist_digest }}"
-          if [ "$EXPECTED_DIGEST" != "$ACTUAL" ]; then
-            echo "::error::产物镜像引用 ${{ steps.web.outputs.web_dist_image }}:${{ steps.web.outputs.web_dist_ref }} 的 digest 与上游解析结果不一致：上游=${EXPECTED_DIGEST} 本次=${ACTUAL}。tag 可能被重推，拒绝烘焙。"
-            exit 1
-          fi
-          echo "✅ digest 一致：${ACTUAL}"
-
+          echo "built_at=$BUILT_AT" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -133,10 +104,9 @@ jobs:
           build-args: |
             PIM_VERSION=${{ steps.ver.outputs.version }}
             ASSEMBLY_VERSION=${{ steps.ver.outputs.assembly_version }}
-            # 来源按 digest 钉死：tag 只作为可读信息，实际字节由 digest 决定。
-            PIM_WEB_DIST_SOURCE=${{ steps.web.outputs.web_dist_image }}:${{ steps.web.outputs.web_dist_ref }}@${{ steps.web.outputs.web_dist_digest }}
-            PIM_WEB_VERSION=${{ steps.web.outputs.web_version }}
-            PIM_WEB_SHA=${{ steps.web.outputs.web_git_sha }}
+            PIM_WEB_VERSION=${{ steps.ver.outputs.version }}
+            PIM_WEB_SHA=${{ steps.ver.outputs.git_sha_short }}
+            PIM_WEB_BUILT_AT=${{ steps.webtime.outputs.built_at }}
 
       # 镜像内容校验：Dockerfile 里已硬失败，这里再把结果打出来做证据（含三个 label）。
       - name: Verify embedded frontend and labels
@@ -157,10 +127,21 @@ jobs:
           API_LABEL="$(docker inspect --format '{{ index .Config.Labels "org.pim.api-version" }}' "$IMG")"
           WEB_LABEL="$(docker inspect --format '{{ index .Config.Labels "org.pim.web-version" }}' "$IMG")"
           SHA_LABEL="$(docker inspect --format '{{ index .Config.Labels "org.pim.web-sha" }}' "$IMG")"
-          test "$WEB_LABEL" = "${{ steps.web.outputs.web_version }}"
-          test "$SHA_LABEL" = "${{ steps.web.outputs.web_git_sha }}"
+          test "$WEB_LABEL" = "${{ steps.ver.outputs.version }}"
+          test "$SHA_LABEL" = "${{ steps.ver.outputs.git_sha_short }}"
           test "$API_LABEL" = "${{ steps.ver.outputs.version }}"
-          echo "labels 与冻结值一致：api=$API_LABEL web=$WEB_LABEL sha=$SHA_LABEL"
+          echo "labels 与本次注入值一致：api=$API_LABEL web=$WEB_LABEL sha=$SHA_LABEL"
+
+          # metadata 一致性：镜像内 web-version.json 必须与本次注入的 version/sha/builtAt 同源，
+          # 不能只信 label（label 可能对、文件却是别的构建）。
+          docker run --rm --entrypoint sh "$IMG" -c 'cat /app/wwwroot/web-version.json' > /tmp/image-web-version.json
+          FILE_WEB_VERSION="$(jq -r '.version' /tmp/image-web-version.json)"
+          FILE_WEB_SHA="$(jq -r '.gitSha' /tmp/image-web-version.json)"
+          FILE_WEB_BUILT_AT="$(jq -r '.builtAt' /tmp/image-web-version.json)"
+          test "$FILE_WEB_VERSION" = "${{ steps.ver.outputs.version }}"
+          test "$FILE_WEB_SHA" = "${{ steps.ver.outputs.git_sha_short }}"
+          test "$FILE_WEB_BUILT_AT" = "${{ steps.webtime.outputs.built_at }}"
+          echo "web-version.json 与注入值一致：version=$FILE_WEB_VERSION sha=$FILE_WEB_SHA builtAt=$FILE_WEB_BUILT_AT"
 
       - name: Smoke test
         run: |
@@ -209,8 +190,6 @@ jobs:
           set -euo pipefail
           bash "$GITHUB_WORKSPACE/scripts/ci/build-web-ledger.sh" \
             --api-image "${{ env.IMAGE }}:v${{ steps.ver.outputs.artifact_slug }}" \
-            --dist-ref "${{ steps.web.outputs.web_dist_image }}:${{ steps.web.outputs.web_dist_ref }}" \
-            --dist-digest "${{ steps.web.outputs.web_dist_digest }}" \
             --api-version "${{ steps.ver.outputs.version }}" \
             --out pim-web-version.json
           echo "台账内容："; cat pim-web-version.json

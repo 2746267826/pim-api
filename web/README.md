@@ -1,10 +1,10 @@
-# pim-web
+# Web 前端（pim-api/web）
 
 个人信息管理（PIM）系统的 Web 前端：一套 **React 19 SPA**，同时服务桌面浏览器、Windows 桌面壳（Tauri 2）与 Android 壳（Capacitor 8）。由 [`frontend-rebuild-spec/`](frontend-rebuild-spec/README.md) 规格文档独立重建而成——规格只描述模块、接口与数据行为，不含视觉实现。
 
 | | |
 |---|---|
-| 后端 | PIM API（`/api/v1`，独立仓库），本仓库只含前端 |
+| 后端 | 同一仓库的 PIM API（`/api/v1`）；Web 源码位于 `web/` |
 | 业务日口径 | Asia/Shanghai **04:00 起算**（贯穿 PC/手机/聚合全域） |
 | 部署形态 | SPA 构建产物由 PIM API **同源伺服**；桌面/移动壳按「远程加载」架构打开服务器地址 |
 | 状态 | P0–P5 六阶段全部交付；146 单测 + 四套可重复验收脚本 |
@@ -23,6 +23,8 @@
 React 19 · TypeScript · Vite 8 · Tailwind 4 · TanStack Query/Table/Virtual · FullCalendar 6 · ECharts 6 · Leaflet 1.9 · TipTap 2 · motion · Radix UI（自封装设计系统原语）
 
 ## 仓库结构
+
+以下路径相对 `web/`。
 
 ```
 client-web/              前端主体（本文件大部分内容的所在地，见其 README）
@@ -46,9 +48,9 @@ frontend-rebuild-spec/   重建规格（模块×接口×数据行为 + 字段级
 要求：Node ≥ 20（开发验证于 24）；后端可用（本地或测试服务器）。
 
 ```bash
-git clone https://github.com/2746267826/pim-web.git
-cd pim-web/client-web
-npm install
+git clone https://github.com/2746267826/pim-api.git
+cd pim-api/web/client-web
+npm ci
 cp .env.example .env      # 填 PIM_API_TARGET（后端地址）；QA 脚本另需 PIM_TEST_USER/PIM_TEST_PASS
 npm run dev               # http://127.0.0.1:3000（/api 代理到 PIM_API_TARGET）
 ```
@@ -60,35 +62,14 @@ npm run dev               # http://127.0.0.1:3000（/api 代理到 PIM_API_TARGE
 ## 构建与分发
 
 ```bash
-npm run build            # tsc + vite build → client-web/dist/（由 PIM API 同源伺服）
+npm run build            # tsc + vite build → dist/（即 web/client-web/dist，由 PIM API 同源伺服）
 ```
 
-### 产物镜像与自动触发（`pim-web-dist`）
+### 产物与版本
 
-master 上 lint + 单测 + 契约新鲜度门禁**全部通过之后**，CI 会把 `client-web/dist` 全量打成
-一个**只含静态文件**的镜像推到 GHCR（包必须 public）：
+`npm run build` 生成 `client-web/dist/`；合仓后由仓库根流水线负责打包、发布与镜像同步，`web/` 不再单独推包或触发 API 发版。
 
-```
-ghcr.io/2746267826/pim-web-dist:sha-<7 位短 SHA>   # 不可变，与本次 master 提交一一对应
-ghcr.io/2746267826/pim-web-dist:latest             # 滚动
-```
-
-- 产物里带一份 **`web-version.json`**（字段：`version` / `gitSha` / `builtAt`(UTC)），版本号与 sha
-  与本次构建注入构建过程的 `VITE_APP_VERSION` / `VITE_GIT_SHA` **同源**，不另算一份。
-- 推包成功后，CI 用 GitHub App（`pim-release-trigger`）现签的临时 token 触发 `pim-api` 的
-  `workflow_dispatch`，带上本次前端的确切引用（`sha-<7>`）与「只重建镜像」意图 ——
-  于是"前端合并"会自动产出一版内嵌该前端的新 API 镜像；触发失败会让本仓 CI 变红（打印 HTTP 状态与响应体）。
-- PR 上**不推包**；master 上"该跑却没跑"（例如推包被跳过）会被 `Release Gate` 判红，没有静默旁路。
-- 本仓仍然**不单独发 release**：产物通过产物镜像进入 `pim-api` 的镜像与 release 台账。
-
-```bash
-# 本地复核产物镜像（包是 public，未登录也能拉）
-docker pull ghcr.io/2746267826/pim-web-dist:latest
-CID=$(docker create ghcr.io/2746267826/pim-web-dist:latest /reader)   # scratch 镜像没有 shell
-docker cp "$CID:/web-version.json" -   # 版本号 / git sha / 构建时间(UTC)
-docker cp "$CID:/index.html" -
-docker rm "$CID"
-```
+产物内仍包含 `web-version.json`（字段 `version` / `gitSha` / `builtAt`(UTC)），由 `web/scripts/ci/write-web-version.sh` 生成；版本号与 sha 必须与本次构建注入的 `VITE_APP_VERSION` / `VITE_GIT_SHA` 同源。
 
 ### Android（Capacitor 8）
 
@@ -154,13 +135,14 @@ npm run test             # vitest 全量单测：client-web/src + audit-tests
 
 ## 接口契约
 
-接口类型由 `pim-api` 的 `contract/openapi.json` 生成。契约变更后重新生成，字段不符会在 `tsc` 阶段直接报错，无需等联调。
+接口类型由仓库根的 `contract/openapi.json` 生成：运行 `bash web/scripts/ci/update-contract.sh` 刷新 `web/client-web/src/api/generated.ts`，运行 `bash web/scripts/ci/check-contract.sh` 做只读校验。字段不符会在 `tsc` 阶段直接报错，无需等联调。
 
-## 相关仓库
+## 相关目录与仓库
 
-| 仓库 | 角色 |
+| 位置 / 仓库 | 角色 |
 | --- | --- |
-| [pim-api](https://github.com/2746267826/pim-api) | 后端 + MCP + 部署 + 契约出口 |
+| [`web/`](.)（本仓） | Web 前端 + 桌面/安卓双壳 |
+| [`contract/`](../contract)（本仓） | API 与客户端共享的 OpenAPI 契约 |
 | [pim-android](https://github.com/2746267826/pim-android) | 安卓采集端 |
 | [pim-windows](https://github.com/2746267826/pim-windows) | Windows 守护 + 浏览器扩展 |
 | [pim-docs](https://github.com/2746267826/pim-docs) | 文档与归档（private） |

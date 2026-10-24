@@ -1,51 +1,23 @@
 # Repository Git Hygiene
 
-This repository is shared by multiple agent conversations. Keep `master` useful as the latest runnable version of the API (backend + MCP). It is the producer of the client-facing contract in `contract/openapi.json`.
+This repository contains the API, MCP and Web application. Keep `master` runnable.
 
+## Same-Repository API And Web
 
-## 接口契约与门禁
+- API source remains under `src/`; Web source is under `web/client-web/` (imported from pim-web with original Git history preserved).
+- `contract/openapi.json` is the only OpenAPI authority. Do not guess endpoints, fields or enum values. Implement API and Web consumers in the same PR when they belong to one feature.
+- API shape changes require exporting the contract in the same PR: run the API in `ASPNETCORE_ENVIRONMENT=Test`, fetch `/swagger/v1/swagger.json`, normalize with `jq -S .`.
+- Regenerate Web types with `bash web/scripts/ci/update-contract.sh`; verify with `bash web/scripts/ci/check-contract.sh`. Do not edit generated types manually or fetch a second Web contract snapshot.
+- Android and Windows remain separate consumers. Contract notification targets only those two repositories. Notification failure is visible but is not a release blocker; retry on master with `gh workflow run ci.yml --repo 2746267826/pim-api --ref master -f force_all=true -f force_contract_notify=true`.
 
-### 与后端的接口
-- 本仓与 `pim-api` 的接口以 `contract/openapi.json` 为准（快照随本仓提交，说明见 `contract/README.md`）。
-- **不要凭猜测调用接口**：不得手写或臆测契约里不存在的路径、字段、枚举值。改动涉及接口时，先对照契约确认形状。
-- **需要新接口时不要自己造**：把需求写给用户转交后端实现 —— 说明用途、请求方法与路径、请求字段、响应字段、示例。后端在 `pim-api` 实现并更新契约后，本仓再刷新快照并接入。
-- 后端契约更新后，用 `scripts/ci/fetch-contract.sh` 刷新本仓快照再提交。快照落后不影响本仓 CI（不阻塞），但接入新字段前必须先刷新。
+## CI And Release
 
-### 门禁怎么过
-- 四个公开仓（api / web / android / windows）的 `master` 有两把锁：**`CI Gate`** 与 **`PIM Independent Acceptance`**。
-- **CI 全绿 ≠ 可以合并**：PR 此时仍会显示 `BLOCKED`，因为还差第二把锁的盖章。
-- 该 Check Run 只能由独立验收身份发布，**agent 没有权限**。交付后在 PR 里写明「等待独立验收」即可 ——
-  **不要重试、不要绕过、不要为了让门禁变绿去改 ruleset 或 `.github/workflows/*`。**
-
-### 本仓是契约生产方
-- 改任何 API 形状（路径、字段、枚举）时，必须在同一个 PR 里重新导出 `contract/openapi.json`；CI 会硬校验契约与代码同步，不同步即失败。
-- 下游三个客户端仓（web / android / windows）以本仓契约为准。契约变更请在 PR 描述里写清影响面。
-- 导出方法（与 CI 一致）：以 `ASPNETCORE_ENVIRONMENT=Test` 启动 `src/Pim.Api`，取 `curl /swagger/v1/swagger.json`，再 `jq -S .` 规范化后覆盖 `contract/openapi.json`。
-
-### 契约变更会主动通知客户端仓（#415）
-- **`contract/**` 在 `changes` 的 `api` 过滤器里**：只改契约的 PR 也会跑 `build-api` —— 契约硬校验就在那个 job 里。曾经漏掉这一条，导致契约-only 的 PR「flag 全不亮 → `build-api` 整条跳过 → CI 全绿但契约从未被校验」（工单 §9 的假绿）。
-- **通知的判定不看路径过滤器**：`scripts/ci/detect-contract-change.sh` 比较基线与 head 上 `contract/openapi.json` 的 **blob 字节**（基线优先取上一版 release tag，其次 `push.before`；基线不可用则按"可能变了"处理）。所以契约变化即使夹在一个镜像/CI PR 里，也不会被漏掉。
-- **先校验、后通知**：只有契约硬校验所在的 `build-api` 成功，才发 `repository_dispatch`（`event_type: contract-updated`）。这道门槛在 `scripts/ci/notify-contract-sync.sh`（`--build-api-result`）里，**不写在 job 的 `if` 里** —— 写在 `if` 里会变成「静默跳过」：手动补发时后端相对上一版没变化、`build-api` 是 `skipped`，于是补发什么都没发生还不报错。
-- **只有 master 上的契约允许真的推给客户端**：脚本按 `--github-ref`（workflow 传 `${{ github.ref }}`）判定，非 `refs/heads/master` 一律降级成 dry-run（只打印将发送的内容）；缺 `--github-ref` 时拒绝执行。特性分支上验证用 dry-run，不要真发。
-- **自动补发的边界（别过度承诺）**：检测基线是上一版 release tag，所以「本次通知失败 → 下次 push 自动补发」只在契约相对上一版 release **仍然不同**时成立。若失败那一次仍发布了 release（tag 已包含这份契约），后续 push 会算出 `changed=false`，不会再自动补发 —— 这时手动补发一次：
-  `gh workflow run ci.yml --repo 2746267826/pim-api --ref master -f force_all=true -f force_contract_notify=true`
-  **必须带 `force_all=true`**：不带它、且后端相对上一版无变化时，契约硬校验所在的 `build-api` 会被跳过，补发会被明确拒绝并打印这条命令（不会静默跳过）。`contract-notify` 投递失败时也会打印它。客户端的新鲜度门禁会继续报红，漂移不会被静默放过。
-- **凭据是 GitHub App `pim-contract-sync`**（安装范围仅三个客户端仓；`contents:write` / `pull_requests:write` / `metadata:read`），CI 用 `actions/create-github-app-token` 现签 installation token，对应 secrets `PIM_CONTRACT_SYNC_APP_ID` / `PIM_CONTRACT_SYNC_PRIVATE_KEY`。token 只走环境变量，不进 argv、不落盘、不回显。
-- **客户端侧用同一个 App 的 installation token 推分支/开 PR**，不要用默认的 `GITHUB_TOKEN`：用 `GITHUB_TOKEN` 推的分支不会再触发客户端的 CI 工作流（GitHub 防递归），刷新 PR 上会没有检查结果。
-- **`contract-notify` 不进 `CI Gate`、也不进 release 的 `needs`**：客户端投递失败不该阻塞本仓发版或把本仓必需检查变红；失败会以红色 job + step summary 呈现，客户端的新鲜度门禁是第二道网。手动补发：`workflow_dispatch` 同时勾 `force_all=true` 与 `force_contract_notify=true`。
-- 行为测试：`scripts/ci/test-detect-contract-change.sh`（真 git 仓库 fixture）、`scripts/ci/test-notify-contract-sync.sh`（本地 stub HTTP + 真 curl，含"一个仓失败不拖住另外两个""不泄漏 token""dry-run 不发请求""非 master 强制 dry-run"）、`scripts/ci/test-contract-filter.sh`（过滤器配置层回归：`contract/openapi.json` 必须命中 `api` 过滤器，且不许用"所有路径都命中"的方式蒙混）。改了判定/过滤器，必须让对应测试跟着红。
-
-### 镜像内嵌前端与发布链路（`pim-api-server`）
-- **镜像必须内嵌前端**：`src/Pim.Api/Dockerfile` 多阶段从产物镜像 `ghcr.io/2746267826/pim-web-dist`（tag `sha-<7>`/`latest`）取 `dist` 全量，落到 `/app/wwwroot`。取不到来源、或缺 `index.html`/`assets/`/`web-version.json` → **构建硬失败**。不要恢复"手工把 dist 解包到 `src/Pim.Api/wwwroot` 再 build"的路径，也不要新增可产出"没前端镜像"的构建分支。
-- **产物包必须 public**：构建阶段没有 registry 登录态（登录发生在镜像构建之后、仅发版时执行），只能匿名拉取。不要改成为"私有包 + 在本仓新增 registry 凭证"。
-- **两个契约 dispatch 输入**：`web_dist_ref`（前端版本引用，空=取最新并冻结）+ `rebuild_image_only`（只重建镜像）。`web_dist_ref` 必须在 `ci.yml` 的 `workflow_dispatch.inputs` 与 `build-docker.yml` 的 `workflow_call.inputs` **两处**声明才能一路传到镜像构建；`rebuild_image_only` 只在 `ci.yml` 的组件判定里消费（放进 `workflow_call.inputs` 会变成没有行为的死参数，即工单禁止的"伪生效"）。新增开关必须**真接线**（历史上 `force_all` 只被引用、变量全仓无定义，属伪生效）。
-- **后端变了就不许走"只重建镜像"**：`rebuild_image_only` 请求下若 API/MCP 相对上一版 release 有变化，`changes` 会自动转全量构建并打 warning；禁止把旧 API/MCP 资产搬进带新版本号的 release。
-- **台账 `pim-web-version.json`**（契约，与前端产物内的 `web-version.json` 是**两个不同文件**）：每次 api release 都要有。前端三字段由烘焙好的镜像内 `/app/wwwroot/web-version.json` **原样转录**，不得重算；另含产物镜像 tag/digest 与本次 API 版本。它也是防重复发版（REQ-6）的比对数据源。
-- **防重复发版**：前端版本与上一版台账一致且后端无变化 → 不发新 release、不推新镜像 tag；判定依据写进 job summary。上一版 release / 台账缺失或不可读 → 按"需要发版"处理并写明原因，不报错中断、也不静默跳过。
-- **脚本与自检**：`scripts/ci/resolve-web-dist.sh`（解析+冻结+读版本文件）、`scripts/ci/release-dedupe.sh`（发版判定）、`scripts/ci/build-web-ledger.sh`（台账）、`scripts/ci/web-dist-lib.sh`（公共原语）。改这些逻辑要同步改对应的 `scripts/ci/test-*.sh`（CI 会在 `web-dist` job 里跑它们）。
-- **冻结的可信链**：产物镜像的 `sha-<7>` tag 在 pim-web 侧**只写一次**（存在即复用、不覆盖），因此 `tag → 字节` 是稳定的；本仓在此基础上再做两道：`web_dist_digest`（ci.yml 的 `web-dist` job → `build-docker`）逐字核对两次解析结果，并且 Dockerfile 的 `FROM` 用 **tag@digest** 钉住来源（`PIM_WEB_DIST_SOURCE`）——builder 是 docker-container driver，看不到宿主机的本地 tag，所以"本地打 tag"约束不住它，必须把 digest 写进 `FROM`。台账读的是**本次本地烘焙出来的** api 镜像（`pim_image_cat --local`），绝不回退去拉远端同名镜像。
-- **镜像标签（契约）**：`org.pim.api-version`、`org.pim.web-version`、`org.pim.web-sha`。
-- **新旧镜像差异**：`pim-platform-server` 系列（生产在跑）内嵌前端；`pim-api-server` 在 2026-10-08 之后的一段时间里**不含**前端；本次改造后 `pim-api-server` 重新内嵌前端。升级时不要因为"镜像里有没有 wwwroot"误判版本。
+- Required merge check is `CI Gate`, with a PR and one focused review. The owner removed the Independent Acceptance App; no external stamp is required. Do not add replacement approval loops or weaken CI to get a green check.
+- The server Dockerfile builds `web/client-web` directly from the same checkout and embeds the result in `/app/wwwroot`. Do not restore external `pim-web-dist` image resolution or cross-repository release dispatch.
+- CI verifies frontend lint/tests/build and generated types, then builds and smoke-tests the embedded image. Web-only changes must rebuild that image; backend changes must not reuse stale API/MCP assets.
+- `/app/wwwroot/web-version.json`, `/api/version`, image labels and release `pim-web-version.json` identify the actual embedded source/version. The ledger reads the built image, not a separate calculation.
+- Docs-only changes need no product rebuild. A failed, cancelled or unexpectedly skipped required build must not pass `CI Gate`.
+- Preserve production isolation, required PRs, no force-push/delete protection and existing release asset formats. Never use admin bypass.
 
 ## Communication And Planning
 
@@ -115,7 +87,7 @@ Apply this policy at the start of every session/task:
 ### Process discipline
 
 - **A1. Mandatory TDD (RED-GREEN-REFACTOR).** Write a failing test and watch it fail before writing the minimal implementation. Never substitute a "looks right" implementation for real concurrency/timing correctness.
-- **A2. Verify before claiming done, using fresh output only.** Re-run the relevant gate commands and base claims on that run, never on stale results. Re-run the full suite once before commit and once before opening a PR.
+- **A2. Verify before claiming done, using fresh output only.** Re-run the relevant gate commands and base claims on that run, never on stale results. Run relevant local tests once for the final changes; CI runs the complete required checks. Do not repeat an unchanged full suite merely for a new review stage.
 - **A3. Review is a mandatory gate: severity-graded, zero-blockers to proceed.** Classify findings Critical/Important/Minor; no Important+ findings may remain before commit/merge. After fixing, always re-review the changed result.
 - **A4. Review cadence.** Small changes: single review round, then re-review after fixes. Large stages: one holistic review at stage end.
 - **A5. Deliverables carry explicit acceptance criteria.** State in the PR both how success will be judged after merge and how to test it, written in plain language (avoid overly technical control names and jargon).

@@ -1,134 +1,29 @@
-# Repository Git Hygiene
+# Web Subdirectory Rules
 
-This repository is shared by multiple agent conversations. Keep `master` useful as the latest runnable version of the web frontend (`client-web/`) and its shell builds.
+本文件只补充 `web/**` 的差异；其余规范（分支/PR/worktree、评审、安全、生产隔离等）全部继承仓库根 `AGENTS.md`。冲突时以根规范为准，不要在本文件重复整套流程。
 
+## 路径
 
-## 接口契约与门禁
+- `web/client-web/`：前端源码；未特别说明时，命令均在此目录执行。
+- `contract/openapi.json`（仓库根）：唯一 OpenAPI 权威；`web/` 不保存副本。
+- `web/client-web/src/api/generated.ts`：生成物，禁止手工编辑。
 
-### 与后端的接口
-- 本仓与 `pim-api` 的接口以 `contract/openapi.json` 为准（快照随本仓提交，说明见 `contract/README.md`）。
-- **不要凭猜测调用接口**：不得手写或臆测契约里不存在的路径、字段、枚举值。改动涉及接口时，先对照契约确认形状。
-- **需要新接口时不要自己造**：把需求写给用户转交后端实现 —— 说明用途、请求方法与路径、请求字段、响应字段、示例。后端在 `pim-api` 实现并更新契约后，本仓再刷新快照并接入。
-- 后端契约更新后，用 `scripts/ci/fetch-contract.sh` 刷新本仓快照再提交。**快照落后会让本仓 CI 变红**（`CI Gate` 里的 `Verify client contract is up to date` 步骤会逐字节比对上游），这是预期行为；正确做法是刷新并提交，不是跳过或放宽门禁。
+## 契约
 
-### 门禁怎么过
-- 四个公开仓（api / web / android / windows）的 `master` 有两把锁：**`CI Gate`** 与 **`PIM Independent Acceptance`**。
-- **CI 全绿 ≠ 可以合并**：PR 此时仍会显示 `BLOCKED`，因为还差第二把锁的盖章。
-- 该 Check Run 只能由独立验收身份发布，**agent 没有权限**。交付后在 PR 里写明「等待独立验收」即可 ——
-  **不要重试、不要绕过、不要为了让门禁变绿去改 ruleset 或 `.github/workflows/*`。**
+- 更新：在仓库根执行 `bash web/scripts/ci/update-contract.sh`（从根契约重生成）。
+- 只读校验：`bash web/scripts/ci/check-contract.sh`；离线自检：`bash web/scripts/ci/test-contract.sh`（前置 `npm ci`）。
+- 不追远端分支或 release，不再有跨仓刷新 PR。
+- 脚本先规范化为 LF 再生成，保证 Windows 本地与 CI 逐字节一致。
 
-### 本仓特有的三条
-- `client-web/src/api/generated.ts` 由 `scripts/ci/fetch-contract.sh` 生成，**禁止手工编辑**；契约更新后重跑该脚本并提交结果。
-- 契约新鲜度由 `scripts/ci/check-contract-freshness.sh`（**只读**，不写仓）校验：快照与 pim-api 当前上游逐字节比较，`generated.ts` 与「由仓内快照重新生成」的结果逐字节比较，并核对 `contract/provenance.json`。谁写（refresh）与谁只读（check）是分开的两个入口。
-- 本仓不单独发 release；产物以**产物镜像**（`ghcr.io/2746267826/pim-web-dist`，tag `sha-<7>` + `latest`）发布，并自动触发 pim-api 发版。细节见下一节。
+## 构建与验证
 
-### 发布链路（产物镜像 + 自动触发，改 workflow/脚本前必读）
+- 依赖：`npm ci`
+- 常规：`npm run lint`、`npm run test`、`npm run build`
+- UI 可见改动另跑 `scripts/verify-pitfalls.mjs`、`qa-screenshots.mjs`、`qa-three-states.mjs`。
+- 只重跑受影响的检查；根 CI 执行完整必需检查，不为新一轮 review 重复整套。
+- `web-version.json` 由 `web/scripts/ci/write-web-version.sh` 生成；改逻辑要同步 `test-write-web-version.sh`。
 
-`ci.yml` 的发布链路是「门禁形态丙」，不要随意改动依赖关系：
+## 产物与 CI
 
-```
-gate(CI Gate) → push-dist → trigger-api → release-gate
-```
-
-- `push-dist`：`needs: [resolve-version, build-web, gate]` + `if: master`。**只有 master、且 lint/单测/契约门禁全绿之后**才推包（gate 没过它根本不会跑）；它**不在** gate 的 needs 里，所以不存在循环依赖。
-- `trigger-api`：用 `actions/create-github-app-token` 现签临时 token 调 pim-api 的 `workflow_dispatch`，传 `web_dist_ref=sha-<7>` 与 `rebuild_image_only=true`。失败必须红并打印 HTTP 状态 + 响应体；**token 只经环境变量传入（`TRIGGER_TOKEN`），认证头由 curl 从 stdin 读（`--config /dev/stdin`）——不进命令行参数、不落盘、不回显**。
-- `release-gate`：`needs: [push-dist, trigger-api]` + `if: always()`。master 上两者必须都 success（被 skip 也判红，挡住"该跑却没跑"的静默旁路）；非 master 上两者必须都是 skipped（PR 不推包）。
-- **权限只多 `packages: write` 一项**，不要顺手扩大其它权限。
-- 产物包**必须 public**：GHCR 新建包默认 private，且包只继承仓库访问权限、不继承可见性。`push-dist` 会先探测匿名可拉，未公开就尝试自设，设不了就报红并给出人工设置指引（不接受"私有包 + 在 pim-api 侧新增 registry 凭证"的替代方案）。
-- **`sha-<7>` 只写一次**：`push-dist` 先在登录态下用 `docker manifest inspect` 判定 tag 是否存在——存在即复用既有产物（核对镜像内 `gitSha`）并把 `latest` 指到同一 digest；**只有明确"不存在"才创建**；探测本身失败（网络/鉴权/未公开）一律报红，绝不覆盖可能的既有 tag。这是"不可变 tag"和下游"按 tag 冻结字节"的前提。
-- **产物内的 `web-version.json` 是契约**（字段 `version` / `gitSha` / `builtAt`），由 `scripts/ci/write-web-version.sh` 写；版本号与 sha 必须与同一次构建注入的 `VITE_APP_VERSION` / `VITE_GIT_SHA` 同源，不另算一份。
-- **脚本与自检**：`scripts/ci/write-web-version.sh`、`scripts/ci/trigger-api-release.sh`、`scripts/ci/check-ghcr-public.sh`（对应 `scripts/ci/test-*.sh`，CI 在 `build-web` 里跑）；改逻辑要同步改测试。
-- **改了 `/api/version` 这类跨仓契约时**：先在 pim-api 仓合并契约变更，再在本仓跑 `scripts/ci/fetch-contract.sh` 刷新快照与生成类型并提交 —— 在刷新之前本仓 `CI Gate` 会红，这是预期行为，不要放宽门禁。
-
-## Communication And Planning
-
-- Communicate with the user in Simplified Chinese by default.
-- For user-facing UI, default visible text to Simplified Chinese. Keep code identifiers, API names, logs, protocol fields, and third-party product names in English unless localization is explicitly part of the task.
-
-## Start Of Every Session
-
-- Run `git status --short --branch` before changing files.
-- Run `git fetch --all --prune`; if `master` is behind `origin/master`, pull before making new work unless the user explicitly asks otherwise.
-- Move the main workspace to the latest `origin/master` at the start of every conversation, unless the user explicitly asks to base work on another branch (e.g. a handoff task). The main workspace is for read-only investigation; all file-changing work happens in worktrees — see the branch and worktree policy below.
-- Note existing dirty files and do not revert or overwrite work you did not create.
-
-## Branch, PR, And GitHub Actions Workflow
-
-- All file-changing work must happen on a non-`master` branch.
-- Create branches with an `{agent}-{os}/{topic}` prefix (e.g. `antigravity-linux/location-fix`, `xiaoi-linux/ci-release-serialization`) unless the user asks for another branch name. `agent` is the AI agent's name, `os` is the operating system the agent runs on (`win` or `linux`), and `topic` is a short kebab-case English summary of the branch's purpose. Branches opened automatically by tooling (e.g. `task/<n>`) do not follow this scheme.
-- Make focused commits at suitable checkpoints. Push the working branch to GitHub when creating a PR, enabling CI visibility, handing work off, or preserving a useful checkpoint.
-- Open a pull request for all file-changing work.
-- After opening or updating a PR, wait for triggered GitHub Actions checks and confirm they pass before calling the task complete.
-- If no GitHub Actions workflow is triggered because the changed files do not match workflow path filters, state that explicitly instead of waiting.
-- Do not modify `.github/workflows/*` unless the task is specifically about CI/release automation or the user explicitly asks for it. If a workflow change is unavoidable, explain why before editing it.
-- Write PR titles and descriptions in both English and Simplified Chinese.
-- Create git worktrees under a single short root directory per platform, never scattered across filesystem roots:
-  - **Windows**: `C:\pim-wt\{topic}`. Use short directory names (topic only, ≤ 12 chars) to avoid Windows MAX_PATH issues from long nested paths.
-  - **Linux (codeg workspace)**: `/home/coder/workspace/pim-wt/{topic}`. **Never use `/tmp`** (wiped on rebuild, losing in-progress work). No MAX_PATH constraint, but keep names short for consistency. Other Linux agents use `pim-wt/{topic}` under their own persistent work directory.
-
-### Branch And Worktree Policy (L0/L1/L2)
-
-Apply this policy at the start of every session/task:
-
-- **L0 — read-only sessions** (investigation, discussion, review, inspection): make no file changes; work directly in the main workspace. Before investigating, run `git fetch --all --prune` and fast-forward local `master` to `origin/master` — the remote is the source of truth, so the main workspace must always read the latest `master`. The main workspace is a valid baseline only after it has been fast-forwarded to `origin/master` this session; otherwise read baseline content via `git show origin/master:<path>` or an up-to-date worktree. Targeted reads (PR head/diff, handoff source branch, local changes under review) read their own target refs and are compared against the latest `origin/master`. No branch or worktree is created.
-- **L1 — file-changing tasks**: before editing any file, fetch the latest `origin/master`, create a branch `{agent}-{os}/{topic}` based on it, and add a worktree for that branch. Do all edits inside that worktree; the main workspace never receives file changes.
-- **L2 — handoff tasks**: when new work must build on an unmerged branch (e.g. continuing another agent's PR), base the new branch on that branch's latest HEAD and state the base in the PR description. If the source branch is already merged, base on `origin/master` instead.
-- Cleaning is part of the definition of done: when a PR is merged or work is abandoned, remove the worktree (`git worktree remove`) and delete the local branch in the same task. Dead worktrees/branches from earlier tasks must be cleaned when noticed — e.g. if the main workspace is found on a stale or merged branch, move it back to `origin/master` before starting new work.
-
-## Pull Request Descriptions Feed The Release Changelog
-
-- Every PR description MUST include the four bilingual sections below, keeping the exact heading format. CI extracts these into the GitHub Release changelog (`scripts/ci/build-release-notes.sh`):
-  - `## 技术修改 / Technical changes` — modules/files touched, key design decisions, API or schema changes, dependency changes
-  - `## 功能变化 / Feature changes` — user-visible changes; write `无 / None` if none
-  - `## 如何体验 / How to try it` — how a user experiences the feature: which screen, what actions, what visible effect to expect (step-by-step is fine). This is an experience guide for users, NOT deployment/build instructions — build/run/verify commands belong in 测试 / Tests
-  - `## 测试 / Tests` — verification commands run and their results
-- PRs without these sections still merge, but their release entry falls back to a bare title link — filling them in keeps the changelog useful.
-- Docs-only merges skip all platform builds and do not produce a GitHub Release (path-filtered); the sections above are still expected for accurate history.
-
-## During Work
-
-- Keep generated outputs out of commits: `node_modules/`, `dist/`, `shell-dist/`, `client-web/android/app/build/`, `client-web/src-tauri/target/`, npm caches.
-- Commit source changes, tests, scripts, and docs that are needed to reproduce the current runnable version.
-- Keep API and daemon defaults aligned. The local API is expected at `http://127.0.0.1:5858`, and the Windows daemon default server URL should match it.
-- Use focused commits with conventional messages such as `feat:`, `fix:`, `docs:`, or `chore:`. Write both commit messages (titles & descriptions) and PR titles/descriptions in bilingual format (English and Simplified Chinese).
-
-## Before Pushing Or Opening A PR
-
-- Run `cd client-web && npm run test` and `npm run build` for any frontend change (the working directory is described in `README.md`); UI-visible changes also run the repeatable scripts in `client-web/scripts/` (`verify-pitfalls.mjs`, `qa-screenshots.mjs`, `qa-three-states.mjs`).
-- Re-run `git status --short --branch` and confirm only intentional changes are staged.
-- Push the working branch to `origin` and open a pull request. Do not push directly to `master` unless the user explicitly asks for a direct update and understands it bypasses the PR workflow.
-
-## If Verification Fails
-
-- Do not claim the branch is complete.
-- Commit only if the failure is clearly unrelated and document the exact failure in the final response.
-
-## Working Practices (derived from session experience)
-
-### Process discipline
-
-- **A1. Mandatory TDD (RED-GREEN-REFACTOR).** Write a failing test and watch it fail before writing the minimal implementation. Never substitute a "looks right" implementation for real concurrency/timing correctness.
-- **A2. Verify before claiming done, using fresh output only.** Re-run the relevant gate commands and base claims on that run, never on stale results. Re-run the full suite once before commit and once before opening a PR.
-- **A3. Review is a mandatory gate: severity-graded, zero-blockers to proceed.** Classify findings Critical/Important/Minor; no Important+ findings may remain before commit/merge. After fixing, always re-review the changed result.
-- **A4. Review cadence.** Small changes: single review round, then re-review after fixes. Large stages: one holistic review at stage end.
-- **A5. Deliverables carry explicit acceptance criteria.** State in the PR both how success will be judged after merge and how to test it, written in plain language (avoid overly technical control names and jargon).
-
-### Quality habits
-
-- **B1. Use injected clocks in tests; never fixed timestamps.** Prefer TimeProvider/clock injection over direct UtcNow and hard-coded dates.
-- **B2. Classify test failures before fixing.** Failures may be environmental: wrong cwd (relative-path false positives), build-tool injection (Playwright evaluate rewritten by esbuild), or CI-only races. Confirm the failure's ownership before changing product code or tests.
-- **B3. Bug fixing is log/data-driven; disproving assumptions is normal.** Locate issues from logs, data, and precise timelines before touching code. When an assumption is falsified, restart that line of investigation.
-- **B4. Verify external sub-agent output.** Delegated workers may fabricate, exit early, or return unreliable conclusions. Check their actual tool-call traces and require reproducible evidence; re-dispatch on anomalies.
-- **B5. Security review for anything touching external URLs, credentials, or privacy.** Whitelist-style validation must be re-checked against "follow what the server returns" semantics. Logs/confirmation pages must not leak tokens, GraphEventId, ChangeKey, etc. Tokens live in memory or encrypted storage only — never in WebView or uploads.
-
-### Collaboration
-
-- **C1. Maximize parallelism, serialize writes.** Read/investigation/review tasks run in parallel; file-writing tasks serialize or declare non-overlapping paths. Do not use subagents for tightly coupled edits where coordination overhead would create risk.
-- **C2. Leave resumable state when interrupted.** End sessions by stating the current step and what the next agent should do first.
-
-## Production Database And Logs
-
-- Production runs on the home Docker host: the API in the `pim-pim-1` container, the database `pim_prod` in the 1Panel PostgreSQL container (`127.0.0.1:5432`).
-- **Never point an agent session at `pim_prod`.** Work that needs real data uses the mirrored database `pim_test`, restored from a `pim_prod` snapshot (`pg_dump -Fc` → `pg_restore`) with credentials and personal tokens sanitized. The mirror is disposable and safe to mutate; its contents are "as of the snapshot time", so never write results back to production.
-- Production logs are JSONL files inside the running container — `/data/pim/logs/pim-api-<YYYYMMDD>[_NNN].jsonl` (Serilog compact JSON; `@t` is UTC, and files roll at ~1 GB so the newest data may live in a `_NNN` file). Read them with `docker exec pim-pim-1 tail` / `grep`; `docker logs` only carries startup and crash output.
-- Never copy production dumps, log extracts, or credentials into a PR, an issue, or any artifact.
+- `web/` 不维护 `.github/workflows`，也不单独发布或触发 API 发版；打包与发布由根流水线负责。
+- 不提交 `node_modules/`、`dist/`、`shell-dist/`、`client-web/android/app/build/`、`client-web/src-tauri/target/`。

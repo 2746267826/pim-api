@@ -32,8 +32,6 @@ echo "== build-web-ledger.sh =="
 
 OUT="$TMP/pim-web-version.json"
 if bash "$SCRIPT" --api-image "$IMAGE" \
-  --dist-ref "ghcr.io/2746267826/pim-web-dist:sha-abc1234" \
-  --dist-digest "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" \
   --api-version "26.10.835" --out "$OUT" 2>"$TMP/last.err"; then
   echo "  ✅ 生成成功"; pass=$((pass+1))
 else
@@ -43,15 +41,11 @@ fi
 check "前端三字段原样转录-version" "26.10.831" "$(jq -r '.version' "$OUT")"
 check "前端三字段原样转录-gitSha" "abc1234" "$(jq -r '.gitSha' "$OUT")"
 check "前端三字段原样转录-builtAt" "2026-10-13T10:00:00Z" "$(jq -r '.builtAt' "$OUT")"
-check "含产物镜像 tag" "ghcr.io/2746267826/pim-web-dist:sha-abc1234" "$(jq -r '.imageTag' "$OUT")"
-check "含产物镜像 digest" "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" "$(jq -r '.imageDigest' "$OUT")"
 check "含本次 API 版本" "26.10.835" "$(jq -r '.apiVersion' "$OUT")"
-check "字段集合固定为 6 项" "6" "$(jq -r 'keys | length' "$OUT")"
+check "字段集合固定为 4 项" "4" "$(jq -r 'keys | length' "$OUT")"
 
 # 镜像里没有版本文件（未内嵌前端）→ 必须硬失败，不许产出空壳台账
 if bash "$SCRIPT" --api-image "ghcr.io/example/pim-api-server:v-empty" \
-  --dist-ref "ghcr.io/2746267826/pim-web-dist:sha-abc1234" \
-  --dist-digest "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" \
   --api-version "26.10.835" --out "$TMP/should-not-exist.json" >/dev/null 2>&1; then
   echo "  ❌ 缺版本文件应当硬失败"; fail=$((fail+1))
 else
@@ -62,8 +56,6 @@ fi
 # 如果本地镜像库里没有它（例如同一 run 重跑、本地构建产物丢了），绝不能回退去拉远端同名镜像
 # —— 那会把上一版推上去的旧镜像当成本次烘焙结果写进台账。
 if FAKE_DOCKER_REMOTE_ONLY="$IMAGE" bash "$SCRIPT" --api-image "$IMAGE" \
-  --dist-ref "ghcr.io/2746267826/pim-web-dist:sha-abc1234" \
-  --dist-digest "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" \
   --api-version "26.10.835" --out "$TMP/remote-only.json" >/dev/null 2>&1; then
   echo "  ❌ 本地镜像不存在时应当硬失败，不许去拉远端"; fail=$((fail+1))
 else

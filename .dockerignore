@@ -10,3 +10,8 @@ src/client-android
 tests
 *.md
 .claude
+**/dist
+**/.git
+**/.codex-tmp
+**/coverage
+web/.github

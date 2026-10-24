@@ -42,8 +42,17 @@ if [[ ! "$BUILT_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ 
   exit 2
 fi
 
-mkdir -p "$(dirname "$OUT")"
-jq -S -n --arg version "$VERSION" --arg gitSha "$GIT_SHA" --arg builtAt "$BUILT_AT" \
-  '{version:$version, gitSha:$gitSha, builtAt:$builtAt}' > "$OUT"
+command -v node >/dev/null 2>&1 || { echo "[web-version][错误] 缺少 node（用于写 web-version.json）" >&2; exit 2; }
 
+mkdir -p "$(dirname "$OUT")"
+# 值只经环境变量传给 node（不进 argv），避免命令注入；字段固定三项。
+OUT="$OUT" VERSION="$VERSION" GIT_SHA="$GIT_SHA" BUILT_AT="$BUILT_AT" node <<'JS'
+const fs = require('fs');
+const doc = {
+  version: process.env.VERSION,
+  gitSha: process.env.GIT_SHA,
+  builtAt: process.env.BUILT_AT,
+};
+fs.writeFileSync(process.env.OUT, JSON.stringify(doc, null, 2) + '\n', 'utf8');
+JS
 echo "[web-version] 已写 $OUT：version=$VERSION gitSha=$GIT_SHA builtAt=$BUILT_AT" >&2
