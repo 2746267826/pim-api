@@ -1,10 +1,24 @@
-import { type ReactNode } from 'react'
-import { CalendarClock, Pencil } from 'lucide-react'
-import { Button, Dialog, DialogBody, DialogContent, DialogHeader, StatusBadge } from '@/components/ui'
+import { type ReactNode, useState } from 'react'
+import { CalendarClock, Pause, Pencil, Play, Square, Timer } from 'lucide-react'
+import {
+  Button,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogHeader,
+  InlineAlert,
+  StatusBadge,
+} from '@/components/ui'
 import { formatRange, formatTime, durationToMinutes, formatDuration } from '@/lib/datetime'
 import { htmlToPlainText } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { TASK_STATUS, TASK_STATUS_LABEL } from '../types'
+import {
+  useTaskSegments,
+  useTaskTimer,
+  useTaskTimerActions,
+} from '../queries'
+import { currentRunSeconds, formatClock, runningSegment } from '../timer'
 import type { EventResponse, TaskResponse } from '../types'
 import { readEventRrule } from '../rrule'
 
@@ -241,6 +255,94 @@ export function EventDetailDialog({
   )
 }
 
+/**
+ * 详情弹窗内的计时区（pim-web#29）：与任务计时面板同一批 hooks 与服务端口径，
+ * 仅提供开始/继续、暂停、结束与累计时长；逐段管理与计划段仍走既有计时面板。
+ */
+function TaskTimerSection({ taskId, readOnly = false }: { taskId: string; readOnly?: boolean }) {
+  const segmentsQuery = useTaskSegments(taskId)
+  const segments = segmentsQuery.data ?? []
+  const running = runningSegment(segments)
+  const timerQuery = useTaskTimer(taskId, running != null)
+  const timer = timerQuery.data
+  const actions = useTaskTimerActions()
+  const [errorFor, setErrorFor] = useState<{ taskId: string; message: string } | null>(null)
+  const error = errorFor?.taskId === taskId ? errorFor.message : null
+
+  // 数据没读回来（加载中/失败）时不能把 0 当作真实累计，也不允许凭空开一段：
+  // 等真实口径到位再操作，失败时把错误显示出来而不是默默按 0 处理。
+  // 加载中/读取失败都算未知：既不把 0 当真实累计，也不允许凭空开段
+  const timerUnread = timerQuery.isPending || timerQuery.isError
+  const timerError = timerQuery.isError
+    ? timerQuery.error instanceof Error ? timerQuery.error.message : '计时状态读取失败'
+    : null
+
+  async function act(run: () => Promise<unknown>) {
+    setErrorFor(null)
+    try {
+      await run()
+    } catch (err) {
+      setErrorFor({ taskId, message: err instanceof Error ? err.message : '操作失败' })
+    }
+  }
+
+  const busy = actions.start.isPending || actions.pause.isPending || actions.stop.isPending
+  // 与计时面板一致：累计值以服务端为准，当前一轮由累计 − 已闭合段反推。
+  const totalSeconds = timer?.accumulatedSeconds ?? 0
+  const currentRun = currentRunSeconds(segments, totalSeconds)
+
+  return (
+    <section aria-label="任务计时" className="mb-3 rounded-ctl border border-border bg-surface p-3">
+      {(error || timerError) && <InlineAlert tone="crit">{error ?? timerError}</InlineAlert>}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5 text-[11px] text-text-3">
+            <Timer className="size-3.5" aria-hidden />
+            已累计实际执行（计划段不计）
+          </div>
+          <div className="tnum text-[22px] leading-tight font-semibold text-text-1">
+            {timerUnread ? <span className="text-text-4">读取中…</span> : formatClock(totalSeconds)}
+          </div>
+          {running && !timerUnread && <span className="tnum text-[11px] text-text-3">本轮 {formatClock(currentRun)}</span>}
+        </div>
+        {readOnly ? (
+          <p className="self-center text-[11px] text-text-4">已结束的任务不可再计时</p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={timerUnread || busy || running != null}
+              loading={actions.start.isPending}
+              onClick={() => void act(() => actions.start.mutateAsync(taskId))}
+            >
+              <Play className="size-3.5" aria-hidden /> {segments.length > 0 ? '继续计时' : '开始计时'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={timerUnread || busy || running == null}
+              loading={actions.pause.isPending}
+              onClick={() => void act(() => actions.pause.mutateAsync(taskId))}
+            >
+              <Pause className="size-3.5" aria-hidden /> 暂停
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={timerUnread || busy || running == null}
+              loading={actions.stop.isPending}
+              onClick={() => void act(() => actions.stop.mutateAsync(taskId))}
+            >
+              <Square className="size-3.5" aria-hidden /> 结束
+            </Button>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
 /* ── 任务详情 ───────────────────────────────────────────────── */
 
 export function TaskDetailDialog({
@@ -255,6 +357,7 @@ export function TaskDetailDialog({
   onEdit: (task: TaskResponse) => void
 }) {
   if (!task) return null
+  const done = task.status === TASK_STATUS.completed || task.status === TASK_STATUS.cancelled
   const checklist = task.checklistItems ?? []
   const doneCount = checklist.filter((c) => c.isDone).length
 
@@ -285,6 +388,7 @@ export function TaskDetailDialog({
           </div>
 
           <div className="mt-2">
+            <TaskTimerSection taskId={task.id} readOnly={done} />
             <Row label="状态">{TASK_STATUS_LABEL[task.status] ?? task.status}</Row>
             <Row label="优先级">{PRIORITY_LABEL[task.priority] ?? String(task.priority)}</Row>
             <Row label="完成度">{task.percentComplete}%</Row>
