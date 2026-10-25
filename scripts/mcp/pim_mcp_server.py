@@ -3179,8 +3179,6 @@ async def create_category(
     for f in ("appPattern", "categoryName", "color"):
         if not locals().get(f):
             return {"error": f"{f} is required", "code": 400}
-    if priority is None:
-        return {"error": "priority is required", "code": 400}
     body = _clean_params(appPattern=appPattern, categoryName=categoryName, color=color, priority=priority)
     return await _call_api("POST", "/api/v1/pc/app-category-rules", json_body=body)
 
@@ -3194,11 +3192,18 @@ async def update_categories_order(items: List[Dict[str, Any]]) -> Any:
 
 
 @mcp.tool()
-async def delete_category(categoryId: str) -> Any:
-    """Delete a PC category. Requires write permission delete_category."""
+async def delete_category(categoryId: str, resourceType: str = "tree") -> Any:
+    """Delete a tree node (legacy default) or an app-pattern rule (resourceType=appRule).
+
+    Use appRule for ids returned by create_category. Never guesses a resource by id.
+    Requires write permission delete_category.
+    """
     if not categoryId:
         return {"error": "categoryId is required", "code": 400}
-    return await _call_api("DELETE", f"/api/v1/pc/categories/{categoryId}")
+    if resourceType not in ("tree", "appRule"):
+        return {"error": "resourceType must be tree or appRule", "code": 400}
+    resource = "app-category-rules" if resourceType == "appRule" else "categories"
+    return await _call_api("DELETE", f"/api/v1/pc/{resource}/{categoryId}")
 
 
 @mcp.tool()

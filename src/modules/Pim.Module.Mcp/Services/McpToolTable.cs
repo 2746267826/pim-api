@@ -288,7 +288,7 @@ public static class McpToolTable
             W("restore_file", "POST", "/api/v1/files/items/{fileId}/restore", req: R("fileId")),
 
             // ===================== PcTracker writes (4) =====================
-            W("create_category", "POST", "/api/v1/pc/app-category-rules", req: R("appPattern", "categoryName", "color", "priority")),
+            W("create_category", "POST", "/api/v1/pc/app-category-rules", req: R("appPattern", "categoryName", "color")),
             W("update_categories_order", "PUT", "/api/v1/pc/categories/reorder", req: R("items")),
             W("delete_category", "DELETE", "/api/v1/pc/categories/{categoryId}", req: R("categoryId")),
             W("seed_categories", "POST", "/api/v1/pc/categories/seed", noBody: true),

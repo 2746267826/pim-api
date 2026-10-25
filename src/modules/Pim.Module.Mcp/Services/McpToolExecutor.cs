@@ -84,7 +84,7 @@ public sealed class McpToolExecutor
         try
         {
             result = await ExecuteSpecAsync(spec, args, ct);
-            RecordActivity(startedAt, toolName, 200, args);
+            RecordActivity(startedAt, toolName, IsToolError(result) ? GetInt(result as JsonObject, "code") ?? 500 : 200, args);
         }
         catch (McpToolAuthException auth)
         {
@@ -129,7 +129,7 @@ public sealed class McpToolExecutor
 
     private async Task<JsonNode?> ExecuteSpecAsync(McpToolSpec spec, JsonObject args, CancellationToken ct)
     {
-        var validationError = Validate(spec, args);
+        var validationError = Validate(spec, args) ?? McpToolInputPolicy.Apply(spec.Name, args);
         if (validationError is not null)
             return validationError;
 
@@ -140,6 +140,9 @@ public sealed class McpToolExecutor
                 ? Error("missing bearer token: call MCP with Authorization: Bearer <PIM JWT>. Obtain token via POST /api/v1/auth/login {\"username\",\"password\"} -> accessToken", 401)
                 : Error("missing bearer token: call MCP with Authorization: Bearer <pim_mcp_* token>. Generate a token in WebUI Settings -> MCP 管理.", 401);
         }
+
+        if (spec.Name == "delete_category" && GetString(args, "resourceType") == "appRule")
+            spec = spec with { Route = "/api/v1/pc/app-category-rules/{categoryId}" };
 
         return await DispatchAsync(spec, args, accessToken, ct);
     }
@@ -239,7 +242,7 @@ public sealed class McpToolExecutor
             return Error($"invalid time format: {endError}", 400);
         if (startDt > endDt)
             return Error("invalid time range: start must be <= end", 400);
-        if ((endDt - startDt).Days > MaxTimeSpanDays)
+        if (endDt - startDt > TimeSpan.FromDays(MaxTimeSpanDays))
             return Error("time range too large: max span 366 days", 400);
         return null;
     }
@@ -382,7 +385,7 @@ public sealed class McpToolExecutor
             else
                 shaped = Redact(shapedObject);
         }
-        return PostProcess(shaped, spec, args);
+        return PostProcess(McpToolResponseProjection.Apply(spec.Name, shaped), spec, args);
     }
 
     /// <summary>Post-processes the shaped response: local pagination, >50KB truncation hint.</summary>
@@ -1127,9 +1130,13 @@ public sealed class McpToolExecutor
         var text = result?.ToJsonString(SerializerOptions) ?? "null";
         return new CallToolResult
         {
+            IsError = IsToolError(result),
             Content = new List<ContentBlock> { new TextContentBlock { Text = text } },
         };
     }
+
+    private static bool IsToolError(JsonNode? result)
+        => result is JsonObject obj && (obj["error"] is not null || GetInt(obj, "code") is >= 400);
 
     private static McpToolContract[] LoadContract()
     {

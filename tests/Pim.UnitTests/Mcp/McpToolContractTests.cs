@@ -101,11 +101,16 @@ public sealed class McpToolContractTests
     {
         var byName = McpToolExecutor.ToolContract.ToDictionary(t => t.Name, StringComparer.Ordinal);
 
-        // get_events: start/end/calendarId optional, redactUrls default true.
+        // MCP requires a bounded window; REST's legacy list shape is unchanged.
         var events = byName["get_events"];
         var eventsProperties = events.InputSchema.GetProperty("properties");
         Assert.True(eventsProperties.GetProperty("redactUrls").GetProperty("default").GetBoolean());
-        Assert.False(events.InputSchema.TryGetProperty("required", out _)); // all params optional
+        Assert.Equal(new[] { "start", "end" }, events.InputSchema.GetProperty("required").EnumerateArray().Select(x => x.GetString()));
+        foreach (var name in new[] { "start", "end" })
+        {
+            Assert.Equal("string", eventsProperties.GetProperty(name).GetProperty("type").GetString());
+            Assert.False(eventsProperties.GetProperty(name).TryGetProperty("default", out _));
+        }
 
         // create_event: calendarId/title/dtStart/dtEnd required.
         var createEvent = byName["create_event"];

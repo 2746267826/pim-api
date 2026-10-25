@@ -216,6 +216,65 @@ public sealed class McpToolExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task TimeRange_Exact366Days_IsAccepted()
+    {
+        CreateExecutor();
+        _routes["GET /api/v1/calendar/events"] = new(200, "{\"code\":0,\"data\":[]}");
+        var result = await CallTool("get_events", new Dictionary<string, JsonElement>
+        {
+            ["start"] = Json("\"2025-01-01T00:00:00Z\""),
+            ["end"] = Json("\"2026-01-02T00:00:00Z\""),
+        });
+        Assert.Equal(0, result!["code"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task TimeRange_366DaysPlusOneSecond_Returns400()
+    {
+        CreateExecutor();
+        var result = await CallTool("get_events", new Dictionary<string, JsonElement>
+        {
+            ["start"] = Json("\"2025-01-01T00:00:00Z\""),
+            ["end"] = Json("\"2026-01-02T00:00:01Z\""),
+        });
+        Assert.Equal("time range too large: max span 366 days", result!["error"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task SuccessPayload_NullError_IsNotMarkedAsToolError()
+    {
+        CreateExecutor();
+        _routes["GET /api/v1/calendar/calendars"] = new(200, "{\"code\":0,\"error\":null,\"data\":[]}");
+        var result = await _executor.ExecuteAsync(new CallToolRequestParams
+        {
+            Name = "get_calendars",
+            Arguments = new Dictionary<string, JsonElement>(),
+        }, CancellationToken.None);
+        Assert.False(result.IsError);
+    }
+
+    [Fact]
+    public async Task FailedToolCall_MarksIsError_TrueWhileSuccessDoesNot()
+    {
+        CreateExecutor();
+        _routes["GET /api/v1/calendar/calendars"] = new(200, "{\"code\":0,\"data\":[]}");
+        var ok = await _executor.ExecuteAsync(new CallToolRequestParams
+        {
+            Name = "get_calendars",
+            Arguments = new Dictionary<string, JsonElement>(),
+        }, CancellationToken.None);
+        Assert.False(ok.IsError);
+
+        _routes["GET /api/v1/calendar/calendars"] = new(500, "{\"error\":\"boom\",\"code\":500}");
+        var failed = await _executor.ExecuteAsync(new CallToolRequestParams
+        {
+            Name = "get_calendars",
+            Arguments = new Dictionary<string, JsonElement>(),
+        }, CancellationToken.None);
+        Assert.True(failed.IsError);
+    }
+
+    [Fact]
     public async Task WriteTool_MissingRequired_Returns400()
     {
         CreateExecutor(withWritePermission: true);

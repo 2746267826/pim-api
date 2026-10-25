@@ -11,11 +11,11 @@ public static class McpWriteEndpointMap
 {
     private sealed record Endpoint(string Method, Regex PathPattern);
 
-    private static readonly Dictionary<string, Endpoint> Map = BuildMap();
+    private static readonly Dictionary<string, List<Endpoint>> Map = BuildMap();
 
-    private static Dictionary<string, Endpoint> BuildMap()
+    private static Dictionary<string, List<Endpoint>> BuildMap()
     {
-        var map = new Dictionary<string, Endpoint>(StringComparer.Ordinal);
+        var map = new Dictionary<string, List<Endpoint>>(StringComparer.Ordinal);
 
         // Calendar events
         Add(map, "create_event", "POST", "/api/v1/calendar/events");
@@ -78,6 +78,7 @@ public static class McpWriteEndpointMap
         Add(map, "create_category", "POST", "/api/v1/pc/app-category-rules");
         Add(map, "update_categories_order", "PUT", "/api/v1/pc/categories/reorder");
         Add(map, "delete_category", "DELETE", "/api/v1/pc/categories/{id}");
+        Add(map, "delete_category", "DELETE", "/api/v1/pc/app-category-rules/{id}");
         Add(map, "seed_categories", "POST", "/api/v1/pc/categories/seed");
 
         // Mobile goals
@@ -87,7 +88,7 @@ public static class McpWriteEndpointMap
         return map;
     }
 
-    private static void Add(Dictionary<string, Endpoint> map, string tool, string method, string pathTemplate)
+    private static void Add(Dictionary<string, List<Endpoint>> map, string tool, string method, string pathTemplate)
     {
         // {param} segments become [^/]+; literal parts are escaped.
         var parts = Regex.Split(pathTemplate, @"\{[^}]*\}");
@@ -99,13 +100,15 @@ public static class McpWriteEndpointMap
             regex += Regex.Escape(parts[i]);
         }
         regex += "$";
-        map[tool] = new Endpoint(method, new Regex(regex, RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
+        if (!map.TryGetValue(tool, out var endpoints))
+            map[tool] = endpoints = new List<Endpoint>();
+        endpoints.Add(new Endpoint(method, new Regex(regex, RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)));
     }
 
     /// <summary>True if a (method, path) request targets any write endpoint.</summary>
     public static bool IsWriteEndpoint(string method, string path)
     {
-        foreach (var endpoint in Map.Values)
+        foreach (var endpoint in Map.Values.SelectMany(endpoints => endpoints))
         {
             if (string.Equals(endpoint.Method, method, StringComparison.OrdinalIgnoreCase)
                 && endpoint.PathPattern.IsMatch(path))
@@ -119,9 +122,9 @@ public static class McpWriteEndpointMap
     /// <summary>True if the request (method, path) is exactly the write tool's allowed endpoint.</summary>
     public static bool IsAllowedForTool(string tool, string method, string path)
     {
-        if (!Map.TryGetValue(tool, out var endpoint))
+        if (!Map.TryGetValue(tool, out var endpoints))
             return false;
-        return string.Equals(endpoint.Method, method, StringComparison.OrdinalIgnoreCase)
-            && endpoint.PathPattern.IsMatch(path);
+        return endpoints.Any(endpoint => string.Equals(endpoint.Method, method, StringComparison.OrdinalIgnoreCase)
+            && endpoint.PathPattern.IsMatch(path));
     }
 }

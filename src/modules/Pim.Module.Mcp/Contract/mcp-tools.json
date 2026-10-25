@@ -483,31 +483,15 @@
   },
   {
     "name": "get_events",
-    "description": "List calendar events with optional time range and calendar filter. Core query. Returns Event[] (PagedResult when page params sent).",
+    "description": "List calendar events in a required explicit start/end ISO 8601 range, maximum 366 days. Always returns PagedResult<EventResponse>, default page=1/pageSize=20; follow totalPages. Missing dates are rejected instead of querying all history. dtStart/dtEnd offsets identify instants: convert once to your display timezone; timeZoneId/sourceTimeZoneId describe source metadata (null means unavailable), not an instruction to add hours again. All-day events use their date semantics, not a timed-event conversion.",
     "inputSchema": {
       "properties": {
         "start": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
+          "type": "string",
           "title": "Start"
         },
         "end": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
+          "type": "string",
           "title": "End"
         },
         "calendarId": {
@@ -525,12 +509,15 @@
         "page": {
           "default": 1,
           "title": "Page",
-          "type": "integer"
+          "type": "integer",
+          "minimum": 1
         },
         "pageSize": {
           "default": 20,
           "title": "Pagesize",
-          "type": "integer"
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
         },
         "redactUrls": {
           "default": true,
@@ -539,25 +526,36 @@
         }
       },
       "title": "get_eventsArguments",
-      "type": "object"
+      "type": "object",
+      "required": [
+        "start",
+        "end"
+      ]
     }
   },
   {
     "name": "get_tasks",
-    "description": "List tasks filtered by status and calendar. Returns Task[] (PagedResult when filters present).",
+    "description": "List tasks. Returns PagedResult<TaskResponse>, default page=1/pageSize=20. status accepts exactly one of NEEDS-ACTION, IN-PROCESS, COMPLETED, CANCELLED; comma-separated or unknown values are rejected, never interpreted as an empty result.",
     "inputSchema": {
       "properties": {
         "status": {
           "anyOf": [
             {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "NEEDS-ACTION",
+                "IN-PROCESS",
+                "COMPLETED",
+                "CANCELLED"
+              ]
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "title": "Status"
+          "title": "Status",
+          "description": "One supported status only. Omit/null for all statuses. Multiple values are not supported."
         },
         "calendarId": {
           "anyOf": [
@@ -574,12 +572,15 @@
         "page": {
           "default": 1,
           "title": "Page",
-          "type": "integer"
+          "type": "integer",
+          "minimum": 1
         },
         "pageSize": {
           "default": 20,
           "title": "Pagesize",
-          "type": "integer"
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
         }
       },
       "title": "get_tasksArguments",
@@ -1000,7 +1001,7 @@
   },
   {
     "name": "get_pc_summary",
-    "description": "Get PC summary for a day. Returns PcSummaryResponse. date format YYYY-MM-DD.",
+    "description": "Get PC summary for a day. Returns PcSummaryResponse. date format YYYY-MM-DD. MCP omits a wholly zero activity heatmap by returning heatmap=[]; other signals are unchanged. An empty grid does NOT prove collection was absent, healthy, or that keystats/idle data were zero.",
     "inputSchema": {
       "properties": {
         "date": {
@@ -1655,7 +1656,7 @@
   },
   {
     "name": "get_mobile_timeline",
-    "description": "Get mobile timeline for a day (app usage sessions). Returns MobileTimelineResponse.",
+    "description": "Get mobile timeline for a day (app usage sessions). Returns MobileTimelineResponse. MCP returns one canonical paginated items array containing both session and fallback kinds; duplicate sessions/fallbackSummaries aliases are omitted. Counts and hasMore/truncated remain. REST clients keep their existing aliases.",
     "inputSchema": {
       "properties": {
         "date": {
@@ -2379,7 +2380,7 @@
   },
   {
     "name": "get_today_sections",
-    "description": "Get today sections registry (all sections for a day). Returns TodaySectionRegistryDto. date YYYY-MM-DD or omit for today.",
+    "description": "List the today section REGISTRY (metadata), not every section payload. Use get_today_section(sectionId=..., date=...) to read one section. sectionId is not accepted by this registry tool.",
     "inputSchema": {
       "properties": {
         "date": {
@@ -2406,7 +2407,7 @@
   },
   {
     "name": "get_today_section",
-    "description": "Get single today section by id. Returns TodaySectionDto.",
+    "description": "Get single today section by id. Returns TodaySectionDto. This is the tool for a single section; use get_today_sections only to discover section metadata.",
     "inputSchema": {
       "properties": {
         "sectionId": {
@@ -2685,7 +2686,7 @@
   },
   {
     "name": "create_event",
-    "description": "Create a calendar event. Requires write permission create_event. Returns the created EventResponse.",
+    "description": "Create a calendar event. Requires write permission create_event. Returns the created EventResponse. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
     "inputSchema": {
       "properties": {
         "calendarId": {
@@ -2920,7 +2921,7 @@
   },
   {
     "name": "update_event",
-    "description": "Update a calendar event. scope=This/Series with recurrenceId updates repeating events. Requires write permission update_event.",
+    "description": "Update a calendar event. scope=This/Series with recurrenceId updates repeating events. Requires write permission update_event. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
     "inputSchema": {
       "properties": {
         "eventId": {
@@ -3128,7 +3129,7 @@
   },
   {
     "name": "delete_event",
-    "description": "Delete a calendar event (moves to recycle bin). scope=This/Series for repeating events. Requires write permission delete_event.",
+    "description": "Delete a calendar event (moves to recycle bin). scope=This/Series for repeating events. Requires write permission delete_event. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
     "inputSchema": {
       "properties": {
         "eventId": {
@@ -3203,7 +3204,7 @@
   },
   {
     "name": "batch_delete_events",
-    "description": "Batch delete events by ids (move to recycle bin). Requires write permission batch_delete_events.",
+    "description": "Batch delete events by ids (move to recycle bin). Requires write permission batch_delete_events. LOCAL EVENTS ONLY: Outlook-bound calendars/events require the existing confirmed Outlook writeback flow, which this MCP tool does NOT expose. Calendar canEdit does not imply event-write support. If all available calendars are Outlook-bound, this tool cannot perform the operation; do not retry with different credentials or bypass confirmation.",
     "inputSchema": {
       "properties": {
         "ids": {
@@ -4759,7 +4760,7 @@
   },
   {
     "name": "create_category",
-    "description": "Create a PC activity category (maps an app pattern to a category). Requires write permission create_category.",
+    "description": "Save an app-pattern classification rule (upsert by appPattern), NOT a category tree node. Returns AppCategoryRule with id. priority is optional (server default 0). To delete this returned id call delete_category(categoryId=id, resourceType=\"appRule\"). Requires write permission create_category.",
     "inputSchema": {
       "properties": {
         "appPattern": {
@@ -4798,7 +4799,7 @@
   },
   {
     "name": "update_categories_order",
-    "description": "Reorder PC categories. items: [{id, parentId?, sortOrder}]. Requires write permission update_categories_order.",
+    "description": "Reorder PC categories. items: [{id, parentId?, sortOrder}]. Requires write permission update_categories_order. Operates on category tree nodes, not app-pattern rules created by create_category.",
     "inputSchema": {
       "properties": {
         "items": {
@@ -4819,12 +4820,21 @@
   },
   {
     "name": "delete_category",
-    "description": "Delete a PC category. Requires write permission delete_category.",
+    "description": "Delete the explicitly selected PC resource. resourceType=\"tree\" (legacy default) deletes a category tree node; resourceType=\"appRule\" deletes an app-pattern rule returned by create_category/get_pc_categories. The tool never guesses or falls back to another resource with the same id. Requires write permission delete_category.",
     "inputSchema": {
       "properties": {
         "categoryId": {
           "title": "Categoryid",
           "type": "string"
+        },
+        "resourceType": {
+          "type": "string",
+          "enum": [
+            "tree",
+            "appRule"
+          ],
+          "default": "tree",
+          "description": "Use appRule for create_category ids; tree preserves the existing category-tree delete behavior."
         }
       },
       "required": [
