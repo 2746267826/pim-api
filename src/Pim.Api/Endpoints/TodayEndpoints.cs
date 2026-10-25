@@ -30,6 +30,10 @@ public static class TodayEndpoints
             [FromQuery] bool force = false,
             CancellationToken ct = default) =>
         {
+            if (httpContext.Request.Query.ContainsKey("sectionId"))
+                return Results.BadRequest(ApiResponse<string>.Error(400,
+                    "sectionId 不是注册表查询参数；请使用 /api/v1/today/sections/{sectionId} 获取单个模块。"));
+
             return await RunWithDateValidationAsync(async () =>
             {
                 var result = await cache.GetOrCreateAsync(

@@ -45,14 +45,20 @@ public static class McpServerBootstrap
                 }
                 var isMcpPath = string.Equals(path, mcpPath, StringComparison.OrdinalIgnoreCase)
                     || path.StartsWith(mcpPath + "/", StringComparison.OrdinalIgnoreCase);
-                if (isMcpPath
-                    && !HttpMethods.IsOptions(context.Request.Method)
-                    && !HasBearerHeader(context))
+                if (isMcpPath && !HttpMethods.IsOptions(context.Request.Method))
                 {
-                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                    context.Response.ContentType = "application/json";
-                    await context.Response.WriteAsJsonAsync(new { code = 40101, message = "missing bearer token", data = (object?)null });
-                    return;
+                    var token = BearerToken(context);
+                    var message = string.IsNullOrWhiteSpace(token) ? "missing bearer token"
+                        : !token.StartsWith(McpTokenService.Prefix, StringComparison.Ordinal)
+                            ? "MCP HTTP requires a pim_mcp_* client token, not a login JWT. Generate one in WebUI Settings -> MCP management."
+                            : null;
+                    if (message is not null)
+                    {
+                        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                        context.Response.ContentType = "application/json";
+                        await context.Response.WriteAsJsonAsync(new { code = 40101, message, data = (object?)null });
+                        return;
+                    }
                 }
                 await next();
             });
@@ -89,9 +95,10 @@ public static class McpServerBootstrap
         await server.RunAsync(ct);
     }
 
-    private static bool HasBearerHeader(HttpContext context)
+    private static string? BearerToken(HttpContext context)
     {
         var auth = context.Request.Headers.Authorization.ToString();
-        return auth.TrimStart().StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase);
+        auth = auth.TrimStart();
+        return auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? auth[7..].Trim() : null;
     }
 }

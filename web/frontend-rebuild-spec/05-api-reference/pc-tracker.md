@@ -1,9 +1,10 @@
 # PC 活动追踪域接口规格（/api/v1/pc）
+> 历史重建参考，不是当前契约权威；路径、鉴权和字段以仓库根 `contract/openapi.json` 与当前实现为准。2026-10-24 更新：分类路由已分离，不再有下文旧稿所述双注册；PC 读取同样要求授权。MCP `create_category` 保存应用模式规则，删除其返回 ID 时必须选择 `delete_category(resourceType="appRule")`，默认 `tree` 仍表示树节点。
 > 基地址 `/api/v1`；响应封装 `ApiResponse<T>` = `{ code, message, data, timestamp }`（`code=0` 成功）；下文"响应 data"均指 `data` 字段内容；列表分页封装 `PagedResult<T>` = `{ items[], totalCount, page, pageSize, totalPages }`。
 > 认证图例：JWT = `Authorization: Bearer <accessToken>`；匿名 = 无需认证；Admin = JWT 且 role=admin；OpsKey = 请求头 `X-PIM-Ops-Key`。
-> ⚠️ 本域特殊：写操作组（POST/PUT/DELETE）要求 JWT，但**读操作组（GET）当前未挂 RequireAuthorization，即匿名可读**（PcTrackerModule.cs 路由分组处，写明行号）。重建时建议按 JWT 处理，但现状如此。
+> 读写操作均要求授权；旧稿中“GET 匿名可读”的描述已过时。
 >
-> 补充（源码核实）：上述"读匿名"仅指 `readGroup = MapGroup("/api/v1/pc")`（src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:60，未挂授权）；写操作组 `writeGroup`（PcTrackerModule.cs:61-62，挂 RequireAuthorization）。但以下子分组**读写都挂了 RequireAuthorization**：app-knowledge（PcTrackerModule.cs:746-747）、app-signatures（PcTrackerModule.cs:890-891）、categories 树分组（PcTrackerModule.cs:1121-1122）、productivity 读分组（PcTrackerModule.cs:1201）。各端点"认证"行按实际注册标注。
+> `readGroup`、`writeGroup` 及分类树等子分组均挂授权。历史行号可能过时，不能据此恢复匿名读取或重复分类路由。
 > 序列化约定：ASP.NET Core 默认 camelCase；个别字段带 `[JsonPropertyName]` 别名（在对应节注明）。`force=true` 时跳过聚合结果缓存（IAggregateResultCache）直接重算。
 
 ---
@@ -12,7 +13,7 @@
 
 ### GET /api/v1/pc/summary
 - 用途：按业务日返回 PC 活动总览（键鼠统计、小时热力图、应用排行、时间线、工作会话、派生指标、分类占比）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（PC 追踪总览页 PcTrackerPage、工作台 WorkbenchPage、展览数据钩子 useExhibitionData——ExhibitionPage 等使用）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -93,7 +94,7 @@
 
 ### GET /api/v1/pc/detail
 - 用途：跨来源（AW 事件 / 原生 tracker 事件 / 键鼠采样）统一明细查询，前端在此响应基础上浏览器内生成 CSV/JSON 导出。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（PC 明细查询面板 PcDetailQueryPanel，宿主 PcDetailQueryPage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -165,7 +166,7 @@
 
 ### GET /api/v1/pc/quality
 - 用途：PC 数据质量体检（总状态、组件状态、问题清单、下一步建议）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（PC 明细查询面板 PcDetailQueryPanel、状态页 StatusPage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -197,7 +198,7 @@
 
 ### GET /api/v1/pc/heatmap/grid
 - 用途：键盘热力图网格（按小时单行或按周 7 列网格）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（PC 追踪总览页 PcTrackerPage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -221,7 +222,7 @@
 
 ### GET /api/v1/pc/activity-analysis
 - 用途：按时间块（默认 60 分钟）分析当日活动强度、待分类数量与上下文切换。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（PC 追踪总览页 PcTrackerPage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -257,7 +258,7 @@
 
 ### GET /api/v1/pc/aggregation/focus-blocks
 - 用途：专注块列表（连续高专注时段及主要应用）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（今日页 PC 概览区块 TodayPcOverview、PC 追踪总览页 PcTrackerPage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -282,7 +283,7 @@
 
 ### GET /api/v1/pc/aggregation/app-usage
 - 用途：应用时长排行与总时长。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（PC 追踪总览页 PcTrackerPage、应用条形图组件 PcAppGradientBar、展览数据钩子 useExhibitionData）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -304,7 +305,7 @@
 
 ### GET /api/v1/pc/aggregation/late-night
 - 用途：深夜使用统计（按业务日）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（PC 追踪总览页 PcTrackerPage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -323,7 +324,7 @@
 
 ### GET /api/v1/pc/aggregation/category-distribution
 - 用途：分类时长分布。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（今日页 PC 概览区块 TodayPcOverview、PC 追踪总览页 PcTrackerPage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -347,7 +348,7 @@
 
 ### GET /api/v1/pc/categories
 - 用途：旧版应用→分类规则（AppCategoryRule 平铺列表，按优先级倒序）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：否（前端封装 getPcCategories 保留但无页面调用）
 - Query 参数：无
 - 响应 data：`AppCategoryRule[]`
@@ -359,16 +360,7 @@
   | priority | number | 优先级 |
   | isBuiltin | boolean | 是否内置 |
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:370-376`；DTO `DTOs/PcTrackerDtos.cs:139-146`；前端 `src/client-web/src/api/pcTracker.ts:172-174`
-- 备注：与下方 `GET /pc/categories/`（树分组，JWT）路径仅差一个尾斜杠、响应结构完全不同，重建时应合并为一套。
-
-### GET /api/v1/pc/categories/
-- 用途：分类树（与 `/pc/categories/tree` 同一实现，返回 CategoryTreeNode 树）。
-- 认证：JWT（catRead 分组挂 RequireAuthorization，PcTrackerModule.cs:1121-1122、1124-1130）
-- Web 前端使用：否（前端一律请求 `/pc/categories/tree`）
-- Query 参数：无
-- 响应 data：`CategoryTreeNode[]`（字段同 GET /pc/categories/tree）
-- 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:1124-1130`；DTO `DTOs/Phase2Dtos.cs:3-14`；前端 `src/client-web/src/api/pcTracker.ts:319-321`（仅 tree 版）
-- 备注：清单外发现：与 `/tree` 重复注册（同一 handler `svc.GetTreeAsync`）。
+- 备注：尾斜杠不切换资源；分类树使用下面的 `/pc/categories/tree`，旧树根 GET 注册已移除。
 
 ### GET /api/v1/pc/categories/tree
 - 用途：分类树（父子结构）。
@@ -401,21 +393,21 @@
   | icon | string \| null | 图标 |
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:1140-1146`；DTO `DTOs/ActivityLabelingDtos.cs:13`；前端 `src/client-web/src/api/classificationLabeling.ts:39-41`
 
-### POST /api/v1/pc/categories
+### POST /api/v1/pc/app-category-rules
 - 用途：旧版应用→分类规则保存（按 appPattern upsert）。
 - 认证：JWT（writeGroup，PcTrackerModule.cs:61-62、378-387）
-- Web 前端使用：是（分类树页 CategoryTreePage 的 saveCategory 也请求同一路径 `/pc/categories`，见备注）
+- Web 分类树不是本资源；树节点保存使用 `/pc/categories`。
 - Body：
   | 字段 | 类型 | 必填 | 说明 |
   | appPattern | string | 是 | 应用匹配模式（upsert 键，PcTrackerService.cs:634-645） |
   | categoryName | string | 是 | 分类名 |
   | color | string | 是 | 颜色 |
-  | priority | number | 是 | 优先级 |
+  | priority | number | 否 | 优先级，省略时默认 0 |
 - 响应 data：`AppCategoryRule`（字段同 GET /pc/categories 条目）
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:378-387`（服务 `Services/PcTrackerService.cs:634-662`）；DTO `DTOs/PcTrackerDtos.cs:226-231`；前端 `src/client-web/src/api/pcTracker.ts:288-290`（savePcCategory，无页面调用）、`323-325`（saveCategory）
-- 备注：同一路径存在两套注册（本节 legacy SaveCategoryRequest 与下方树版 CategorySaveRequest 仅差尾斜杠）；前端 saveCategory 实际请求不带尾斜杠的 `/pc/categories`，落到的具体端点由路由解析，重建时需合并两套语义。成功后按前缀清空 `/api/v1/pc/` 聚合缓存（PcTrackerModule.cs:385）。
+- 备注：按 appPattern 保存应用分类规则，与树节点是不同资源。配套删除为 `DELETE /api/v1/pc/app-category-rules/{id}`；内置项不可删除，不会转向树节点。旧行号仅保留历史来源，不代表当前注册位置。
 
-### POST /api/v1/pc/categories/
+### POST /api/v1/pc/categories
 - 用途：分类树节点保存（新建或更新）。
 - 认证：JWT（catWrite 分组挂 RequireAuthorization，PcTrackerModule.cs:1121-1122、1148-1157）
 - Web 前端使用：是（分类树页 CategoryTreePage，实际请求路径 `/pc/categories`，见上节备注）
@@ -432,14 +424,14 @@
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:1148-1157`；DTO `DTOs/Phase2Dtos.cs:16-25`；前端 `src/client-web/src/api/pcTracker.ts:309-325`
 
 ### DELETE /api/v1/pc/categories/{id}
-- 用途：删除分类（两套注册并存：legacy 应用规则删除与树节点删除，路径相同）。
+- 用途：仅删除分类树节点；应用模式规则使用 `/app-category-rules/{id}`，不存在双注册。
 - 认证：JWT（writeGroup PcTrackerModule.cs:61-62、389-400；catWrite PcTrackerModule.cs:1121-1122、1159-1177）
 - Web 前端使用：是（分类树页 CategoryTreePage）
 - Path 参数：
   | 字段 | 类型 | 必填 | 说明 |
   | id | string (uuid) | 是 | 分类/规则 ID（树版带 `:guid` 路由约束） |
 - Body：无
-- 响应 data：`string`（成功 `"已删除"`；legacy 版删除失败或内置项 404 `"不存在或为内置项"`，树版 400 `"内置项不可删除或不存在"`；树版另有 InvalidOperationException 时 409）
+- 响应 data：`string`（成功 `"已删除"`；树节点删除失败或内置项 400 `"内置项不可删除或不存在"`，冲突时 409）。规则资源删除失败或内置项则为 404，不是本端点行为。
 - 来源：后端 `src/modules/Pim.Module.PcTracker/PcTrackerModule.cs:389-400（legacy）、1159-1177（树版）`；前端 `src/client-web/src/api/pcTracker.ts:292-294（deletePcCategory）、327-329（deleteCategory）`
 - 备注：树版删除时会级联处理子节点冲突（409），见 `Services/PcCategoryService.cs`。
 
@@ -467,7 +459,7 @@
 
 ### GET /api/v1/pc/classification/rules
 - 用途：活动分类规则列表。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（PC 分类页 PcClassificationPage）
 - Query 参数：无
 - 响应 data：`ActivityClassificationRuleDto[]`
@@ -540,7 +532,7 @@
 
 ### GET /api/v1/pc/classification/suggestions
 - 用途：v1 分类建议（按指定日待分类明细聚类生成）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（PC 追踪总览页 PcTrackerPage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -568,7 +560,7 @@
 
 ### GET /api/v1/pc/classification/suggestions/v2
 - 用途：v2 分类建议（基于应用签名/域名知识库/启发式的聚类建议）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：否（前端封装 getSuggestionsV2 无页面调用）
 - Query 参数：无
 - 响应 data：`ActivityClassificationSuggestionV2Dto[]`
@@ -679,7 +671,7 @@
 
 ### GET /api/v1/pc/classification/queue
 - 用途：待标注队列（按未覆盖的应用/域名聚合）或向导候选。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（标注队列组件 LabelingQueue、首次标注向导 FirstLabelingWizard、今日页分类建议区块 TodayClassificationSuggestionsSection）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -720,7 +712,7 @@
 
 ### GET /api/v1/pc/classification/settings
 - 用途：读取分类全局设置（推荐最短分类时长）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（PC 分类页 PcClassificationPage）
 - Query 参数：无
 - 响应 data：`ActivityClassificationSettingsDto`
@@ -742,7 +734,7 @@
 
 ### GET /api/v1/pc/classification/project-tags/recent
 - 用途：最近使用的项目标签（建议/标注输入联想）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：否（前端封装 getRecentActivityProjectTags 无页面调用）
 - Query 参数：无
 - 响应 data：`string[]`（项目标签列表）
@@ -1158,7 +1150,7 @@
 
 ### GET /api/v1/pc/tracker/health/latest
 - 用途：读取最近一条守护进程心跳（状态页采集健康卡片）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（状态页 StatusPage）
 - Query 参数：无
 - 响应 data：`TrackerHealthEntity`
@@ -1187,7 +1179,7 @@
 
 ### GET /api/v1/pc/tracker/health
 - 用途：按设备读取最近一条守护进程心跳。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：否（状态页只用 latest 版本）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -1241,7 +1233,7 @@
 
 ### GET /api/v1/pc/browser-tt/summary
 - 用途：站点使用汇总（总专注/访问/运行/媒体时长与 Top 站点）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（浏览器站点页 PcBrowserSitePage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -1266,7 +1258,7 @@
 
 ### GET /api/v1/pc/browser-tt/daily
 - 用途：站点按日明细行。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（浏览器站点页 PcBrowserSitePage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -1286,7 +1278,7 @@
 
 ### GET /api/v1/pc/browser-tt/timeline
 - 用途：单日站点时间线块。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：是（浏览器站点页 PcBrowserSitePage）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -1363,7 +1355,7 @@
 
 ### GET /api/v1/pc/aw/timeline
 - 用途：v1 活动时间线（AW+tracker 合并平滑）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：否（前端封装 getPcTimeline 无页面调用；Web 已改用 timeline/v2）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -1375,7 +1367,7 @@
 
 ### GET /api/v1/pc/aw/heatmap
 - 用途：v1 小时级活动热力（单层桶列表）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：否（前端封装 getPcHeatmap 无页面调用；Web 已改用 heatmap/grid）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -1388,7 +1380,7 @@
 
 ### GET /api/v1/pc/keystats/range
 - 用途：区间逐日键鼠统计（热力图/趋势数据源）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：否（前端无封装无调用；数据消费方为键盘热力图等面板的替代实现）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -1401,7 +1393,7 @@
 
 ### GET /api/v1/pc/timeline/v2
 - 用途：v2 业务日时间线（带生产力属性与置信度）。
-- 认证：匿名（readGroup 未挂授权，PcTrackerModule.cs:60）
+- 认证：JWT（readGroup 要求授权；旧行号仅供历史参考）
 - Web 前端使用：否（前端存在两个封装 getTimelineV2/getPcTimelineV2 但当前均无页面调用）
 - Query 参数：
   | 字段 | 类型 | 必填 | 说明 |
@@ -1426,8 +1418,5 @@
 
 ## 清单外补充说明
 
-- 全模块共 71 处路由注册（grep 计数），无清单之外的额外路径；仅以下重复注册需注意：
-  - `GET /pc/categories`（legacy，匿名，返回 AppCategoryRule 平铺列表）与 `GET /pc/categories/`（树分组，JWT，返回 CategoryTreeNode 树），同一路径仅尾斜杠之差、响应结构不同（PcTrackerModule.cs:370 vs 1124）。
-  - `POST /pc/categories`（legacy SaveCategoryRequest）与 `POST /pc/categories/`（树版 CategorySaveRequest）（PcTrackerModule.cs:378 vs 1148）。
-  - `DELETE /pc/categories/{id}` 双注册（PcTrackerModule.cs:389 writeGroup 与 1159 catWrite，后者带 `:guid` 约束与 409 分支）。
+- 分类入口已分离且要求授权：`GET /pc/categories` 返回应用模式规则；`GET /pc/categories/tree` 返回分类树；`POST/DELETE /pc/app-category-rules[/{id}]` 保存/删除规则；`POST/DELETE /pc/categories[/{id}]` 保存/删除树节点。尾斜杠不表示另一种资源，不再按旧重复注册说明实现客户端。
 - `GET /pc/app-signatures/` 前端封装请求带尾斜杠（appSignatures.ts:32：`${basePath}/${params}`）。

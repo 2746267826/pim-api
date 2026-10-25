@@ -59,8 +59,8 @@ public static class McpToolCatalog
         Add(tools, "calendar", "get_reports", "List reports.");
         Add(tools, "calendar", "get_report", "Get a report by id.");
         Add(tools, "calendar", "get_calendars", "List calendars.");
-        Add(tools, "calendar", "get_events", "List events in range.");
-        Add(tools, "calendar", "get_tasks", "List tasks.");
+        Add(tools, "calendar", "get_events", "List events in an explicit start/end range (maximum 366 days), with stable pagination (default page 1, pageSize 20).");
+        Add(tools, "calendar", "get_tasks", "List tasks with pagination. Status accepts one supported value, not a comma-separated list.");
         Add(tools, "calendar", "get_task_segments", "Task execution segments.");
         Add(tools, "calendar", "get_recycle_bin", "Recycle bin items.");
         Add(tools, "calendar", "preview_recycle_bin_restore", "Preview recycle-bin restore.");
@@ -164,11 +164,11 @@ public static class McpToolCatalog
         var tools = new List<McpToolInfo>();
 
         // Calendar 事件 5
-        AddW(tools, "calendar.events", "create_event", "Create a calendar event.");
-        AddW(tools, "calendar.events", "update_event", "Update a calendar event (scope/recurrenceId for series).");
-        AddW(tools, "calendar.events", "delete_event", "Delete a calendar event.");
+        AddW(tools, "calendar.events", "create_event", "Create a local calendar event. Outlook-bound calendars require confirmed writeback, which this MCP tool does not expose; canEdit is not event-write capability.");
+        AddW(tools, "calendar.events", "update_event", "Update a local event (scope/recurrenceId for series). Outlook-bound events/calendars require confirmed writeback, not supported by this tool.");
+        AddW(tools, "calendar.events", "delete_event", "Delete a local event. Outlook-bound events/calendars require confirmed writeback, not supported by this tool.");
         AddW(tools, "calendar.events", "restore_event", "Restore a deleted event from recycle bin.");
-        AddW(tools, "calendar.events", "batch_delete_events", "Batch delete events.");
+        AddW(tools, "calendar.events", "batch_delete_events", "Batch delete local events. Outlook-bound events require confirmed writeback, not supported by this tool.");
 
         // Calendar 任务 14
         AddW(tools, "calendar.tasks", "create_task", "Create a task.");
@@ -221,9 +221,9 @@ public static class McpToolCatalog
         AddW(tools, "files", "restore_file", "Restore a PIM-soft-deleted file; only possible while the file still exists in the cloud drive.");
 
         // PcTracker 分类 4
-        AddW(tools, "pctracker.categories", "create_category", "Create a PC activity category.");
-        AddW(tools, "pctracker.categories", "update_categories_order", "Reorder PC categories.");
-        AddW(tools, "pctracker.categories", "delete_category", "Delete a PC category.");
+        AddW(tools, "pctracker.categories", "create_category", "Save an app-pattern classification rule, not a category tree node. Delete its returned id with delete_category(resourceType=appRule).");
+        AddW(tools, "pctracker.categories", "update_categories_order", "Reorder category tree nodes, not app-pattern rules.");
+        AddW(tools, "pctracker.categories", "delete_category", "Delete a category tree node (resourceType=tree, legacy default) or an app-pattern rule (resourceType=appRule). Never guesses the resource from its id.");
         AddW(tools, "pctracker.categories", "seed_categories", "Seed default PC categories.");
 
         // Mobile 目标 2

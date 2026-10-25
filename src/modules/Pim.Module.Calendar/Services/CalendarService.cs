@@ -249,6 +249,7 @@ public class CalendarService
 
         var items = expanded
             .OrderByDescending(x => x.OccurrenceStart)
+            .ThenBy(x => x.OccurrenceId)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .Select(EventResponseMapper.MapExpanded)
