@@ -111,6 +111,39 @@ public class CalendarTaskPlanningTests
     }
 
     [Fact]
+    public async Task GetTasksPagedAsync_RejectsInvalidStatusEvenWithoutMatchingRows()
+    {
+        await using var db = CreateDb();
+        var service = CreateCalendarService(db);
+
+        foreach (var status in new[] { "NEEDS-ACTION,IN-PROCESS", "UNKNOWN", "needs-action", " NEEDS-ACTION " })
+        {
+            var error = await Assert.ThrowsAsync<DomainException>(() => service.GetTasksPagedAsync(
+                null, null, null, status, null, null, null, null, null));
+            Assert.Equal(CalendarService.InvalidTaskStatusErrorCode, error.ErrorCode);
+            Assert.Contains("NEEDS-ACTION", error.Message);
+        }
+    }
+
+    [Fact]
+    public async Task GetTasksPagedAsync_BlankStatusPreservesUnfilteredReads()
+    {
+        await using var db = CreateDb();
+        db.AddRange(
+            new TaskEntity { UserId = UserId, Uid = "open@pim", Title = "Open", Status = "NEEDS-ACTION" },
+            new TaskEntity { UserId = UserId, Uid = "done@pim", Title = "Done", Status = "COMPLETED" });
+        await db.SaveChangesAsync();
+        var service = CreateCalendarService(db);
+
+        foreach (var status in new string?[] { null, "", "  " })
+        {
+            var page = await service.GetTasksPagedAsync(null, null, null, status, null, null, null, null, null);
+            Assert.Equal(2, page.TotalCount);
+            Assert.Equal(2, page.Items.Count);
+        }
+    }
+
+    [Fact]
     public async Task BatchUpdateTasksAsync_UpdatesStatusForRequestedTasksOnly()
     {
         await using var db = CreateDb();

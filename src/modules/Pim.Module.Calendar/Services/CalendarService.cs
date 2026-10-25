@@ -1046,6 +1046,9 @@ public class CalendarService
         int pageSize = 50,
         CancellationToken ct = default)
     {
+        if (!string.IsNullOrWhiteSpace(status))
+            ValidateTaskStatus(status);
+
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
 

@@ -70,6 +70,51 @@ public sealed class McpBugJourneyTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task Tasks_RestRejectsInvalidStatuses_AndPreservesValidAndUnfilteredReads()
+    {
+        using var setup = await Setup.CreateAsync();
+        var statuses = new[] { "NEEDS-ACTION", "IN-PROCESS", "COMPLETED", "CANCELLED" };
+        using (var scope = setup.Factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            foreach (var status in statuses)
+                db.Add(new TaskEntity { UserId = setup.UserId, Uid = $"rest-{status}", Title = status, Status = status });
+            db.Add(new TaskEntity { UserId = Guid.NewGuid(), Uid = "rest-other-owner", Title = "Not mine" });
+            await db.SaveChangesAsync();
+        }
+
+        foreach (var status in new[] { "NEEDS-ACTION,IN-PROCESS", "UNKNOWN", "needs-action", " NEEDS-ACTION " })
+        {
+            using var response = await setup.Rest.GetAsync($"/api/v1/calendar/tasks?pageSize=100&status={Uri.EscapeDataString(status)}");
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            var body = await AuthRegistrationTestHost.ReadJsonAsync(response);
+            Assert.Equal(2057, body.GetProperty("code").GetInt32());
+            Assert.Contains("NEEDS-ACTION", body.GetProperty("message").GetString());
+            Assert.DoesNotContain("totalCount", body.GetRawText());
+        }
+
+        foreach (var status in statuses)
+        {
+            var page = await Success(await setup.Rest.GetAsync($"/api/v1/calendar/tasks?pageSize=100&status={status}"));
+            Assert.Equal(1, page.GetProperty("totalCount").GetInt32());
+            Assert.Equal(status, Assert.Single(page.GetProperty("items").EnumerateArray()).GetProperty("status").GetString());
+        }
+
+        foreach (var suffix in new[] { "", "&status=", "&status=%20%20" })
+        {
+            var page = await Success(await setup.Rest.GetAsync($"/api/v1/calendar/tasks?pageSize=100{suffix}"));
+            Assert.Equal(4, page.GetProperty("totalCount").GetInt32());
+            Assert.Equal(4, page.GetProperty("items").GetArrayLength());
+        }
+        var legacy = await Success(await setup.Rest.GetAsync("/api/v1/calendar/tasks"));
+        Assert.Equal(JsonValueKind.Array, legacy.ValueKind);
+        Assert.Equal(4, legacy.GetArrayLength());
+        using var reread = setup.Factory.Services.CreateScope();
+        Assert.Equal(5, await reread.ServiceProvider.GetRequiredService<PimDbContext>().Set<TaskEntity>().CountAsync());
+        output.WriteLine("REST rejected comma-separated, unknown, lowercase and padded statuses with HTTP 400/code 2057 instead of false emptiness. All four valid single statuses, unfiltered/blank paged reads, legacy arrays and user isolation remained intact; no rows were mutated.");
+    }
+
+    [Fact]
     public async Task Events_RequireBoundedWindow_AlwaysPage_AndKeepRestLegacyList()
     {
         using var setup = await Setup.CreateAsync();
