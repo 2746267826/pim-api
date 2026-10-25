@@ -14,7 +14,8 @@ PIM 的后端服务：数据接入、确定性处理、结论输出。**所有�
 | `contract/` | **唯一契约出口**：`openapi.json`，同仓 Web 与外部 Android/Windows 据此生成类型 |
 | `web/client-web/` | 原 pim-web 前端，内部应用结构保持不变 |
 | `sql/`、`deploy/`、`examples/` | 运维脚本、Grafana 看板、MCP 调用示例 |
-| `docs/mcp.md` | MCP 协议规范（本仓唯一保留的文档） |
+| `docs/mcp.md` | MCP 协议规范 |
+| `docs/product/native-notes-roadmap.md` | 原生客户端与笔记的持续路线图、完整需求编号及分批交付边界 |
 | `docker-compose*.yml`、`nginx.conf`、`litellm-config.yaml` | 部署编排 |
 
 ## 部署要点
@@ -95,6 +96,14 @@ dotnet run --project src/Pim.Api   # 本地启动
 | [pim-docs](https://github.com/2746267826/pim-docs) | 文档与归档（private） |
 
 后端开发流程、模块开发规范、运维只读 API 等文档在 `pim-docs` 仓。
+
+## 原生客户端与笔记
+
+[完整路线图](docs/product/native-notes-roadmap.md)是这项跨端功能的需求依据；
+[首版范围与交互](docs/product/native-notes-first-release.md)和
+[视觉基础与组件复用规则](docs/product/native-notes-visual-foundation.md)细化当前切片。
+安卓先行不取消 Windows 记录、Web、多端编辑、任务提取或既有业务原生化；
+主题基础落地不等于录音、手写或云端闭环已经交付。
 
 ## 贡献约定
 
