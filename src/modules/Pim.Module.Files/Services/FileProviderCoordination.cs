@@ -121,23 +121,31 @@ public sealed class FileProviderSessionFactory(
 public static class FileProviderLookup
 {
     /// <summary>取该用户在某 provider 下的**默认**账号（附件/闪念图片的落点）。</summary>
-    public static Task<FileProviderEntity?> FindDefaultAsync(
+    public static async Task<FileProviderEntity?> FindDefaultAsync(
         PimDbContext db,
         Guid userId,
         string? providerKey = null,
         CancellationToken ct = default)
     {
-        var query = db.Set<FileProviderEntity>()
-            .Where(row => row.UserId == userId && row.Status == "connected");
+        var query = db.Set<FileProviderEntity>().Where(row => row.UserId == userId);
         if (!string.IsNullOrWhiteSpace(providerKey))
         {
             query = query.Where(row => row.Provider == providerKey);
         }
 
-        return query
-            .OrderByDescending(row => row.IsDefault)
+        var explicitDefault = await query.FirstOrDefaultAsync(row => row.IsDefault, ct);
+        if (explicitDefault is not null)
+        {
+            if (explicitDefault.Status != "connected") throw new Pim.Core.Exceptions.DomainException(5322, "默认文件来源不可用，请重新连接或明确切换默认存储");
+            return explicitDefault;
+        }
+        var connected = await query.Where(row => row.Status == "connected")
+            .OrderBy(row => row.Provider == "local")
             .ThenBy(row => row.CreatedAt)
             .FirstOrDefaultAsync(ct);
+        if (connected is not null || providerKey is not null && providerKey != "local") return connected;
+        var local = await BuiltinLocalAccount.EnsureAsync(db, userId, ct);
+        return await db.Set<FileProviderEntity>().SingleAsync(row => row.Id == local.Id && row.UserId == userId, ct);
     }
 
     /// <summary>
@@ -179,7 +187,7 @@ public static class FileProviderLookup
         }
 
         var connected = await db.Set<FileProviderEntity>()
-            .Where(row => row.UserId == userId && row.Status == "connected")
+            .Where(row => row.UserId == userId && row.Status == "connected" && row.Provider != "local")
             .OrderByDescending(row => row.IsDefault)
             .ThenBy(row => row.CreatedAt)
             .Select(row => row.Id)
@@ -187,7 +195,7 @@ public static class FileProviderLookup
 
         return connected.Count switch
         {
-            0 => throw new Pim.Core.Exceptions.DomainException(5343, "尚未绑定网盘账号"),
+            0 => (await BuiltinLocalAccount.EnsureAsync(db, userId, ct)).Id,
             1 => connected[0],
             _ => throw new Pim.Core.Exceptions.DomainException(
                 5342, "存在多个网盘账号，请指定 providerId 后重试"),

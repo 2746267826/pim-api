@@ -244,7 +244,10 @@ public class OneDriveSyncStatusCountSemanticsTests
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         var providers = document.RootElement.GetProperty("data").EnumerateArray().ToList();
 
-        var provider = Assert.Single(providers);
+        var provider = Assert.Single(providers.Where(item => item.GetProperty("provider").GetString() == "onedrive"));
         Assert.Equal(11, provider.GetProperty("totalIndexedCount").GetInt64());
+        var builtin = Assert.Single(providers.Where(item => item.GetProperty("provider").GetString() == "local"));
+        Assert.Equal(1, builtin.GetProperty("totalIndexedCount").GetInt64());
+        Assert.Equal(2, providers.Count);
     }
 }

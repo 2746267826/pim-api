@@ -99,9 +99,8 @@ public class FileEndpointPathTests
                 $"Missing route: {route.Method} {route.Route}. Found: {string.Join(", ", normalized.OrderBy(r => r.Route))}");
         }
 
-        // 唯一**刻意**豁免鉴权的路由是 Google 授权回调：浏览器 302 回来时没有 PIM 凭据，
-        // 它靠一次性、短时效、服务端加密保存的 state 建立安全边界（工单 F4.1）。
-        // 除它之外一律要求鉴权 —— 这里逐个断言，而不是放宽成「大部分要求鉴权」。
+        // Google 回调靠一次性 state；内置盘字节端点只接受专用、短时、资源绑定的保护票据。
+        // 票据创建端点仍要求 JWT；不能把此豁免扩展到目录、附件或其他文件操作。
         var allowAnonymous = routes
             .Where(endpoint => endpoint.Metadata.GetMetadata<IAllowAnonymous>() is not null)
             .Select(endpoint => Normalize(endpoint))
@@ -109,6 +108,8 @@ public class FileEndpointPathTests
         var expectedAnonymous = new (string Method, string Route)[]
         {
             ("GET", "/api/v1/files/google/callback"),
+            ("GET", "/api/v1/files/local/content"),
+            ("PUT", "/api/v1/files/local/uploads/{id:guid}"),
         };
         Assert.Equal(
             expectedAnonymous.OrderBy(r => r.Route).ToArray(),

@@ -3,7 +3,7 @@ import { Download, ExternalLink, RotateCcw, Save, X } from 'lucide-react'
 import { fetchBlob } from '@/api/client'
 import { filesApi } from '../api'
 import { useFileMutations } from '../queries'
-import type { FileItem, FileTextSnapshot } from '../types'
+import { providerLabel, type FileItem, type FileTextSnapshot, type ProviderKey } from '../types'
 import { formatBytes } from '../upload-chunk-plan'
 import { Button, Card, CardTitle, EmptyState, Spinner, StatusBadge, Textarea } from '@/components/ui'
 import { notifyError, notifySuccess } from '@/lib/notify'
@@ -11,7 +11,7 @@ import { formatTime } from '@/lib/datetime'
 import { cn } from '@/lib/utils'
 
 /** 文件预览面板：图片（blob）/ 可编辑文本（含快照）/ Office 在线预览 */
-export function FilePreview({ item, onClose }: { item: FileItem; onClose: () => void }) {
+export function FilePreview({ item, onClose, providerKey }: { item: FileItem; onClose: () => void; providerKey?: ProviderKey }) {
   const isImage = item.mimeType?.startsWith('image/')
   const isText = isTextLike(item)
   const [imageUrl, setImageUrl] = useState<string | null>(null)
@@ -94,10 +94,10 @@ export function FilePreview({ item, onClose }: { item: FileItem; onClose: () => 
         ) : previewUrl ? (
           <div className="space-y-2">
             <iframe src={previewUrl} title={item.name} className="h-[380px] w-full rounded-ctl border border-border" />
-            <p className="text-[11px] text-text-4">由 Microsoft Office 在线预览（服务器只提供链接，不中转字节）</p>
+            <p className="text-[11px] text-text-4">{providerKey === 'local' ? '由 PIM 服务器提供临时预览' : '由文件来源提供在线预览'}</p>
           </div>
         ) : (
-          <EmptyState size="sm" title="该类型暂不支持在线预览" description="可下载后在本地打开，或在 OneDrive 中查看。" />
+          <EmptyState size="sm" title="该类型暂不支持在线预览" description={providerKey === 'local' ? '可下载后在本机打开。' : '可下载后在本机打开，或在文件来源中查看。'} />
         )}
 
         {/* 文本快照 */}
@@ -149,7 +149,7 @@ export function FilePreview({ item, onClose }: { item: FileItem; onClose: () => 
         >
           <Download className="size-3.5" aria-hidden /> 下载
         </Button>
-        <Button
+        {providerKey !== 'local' && <Button
           variant="ghost"
           size="sm"
           onClick={async () => {
@@ -157,8 +157,8 @@ export function FilePreview({ item, onClose }: { item: FileItem; onClose: () => 
             window.open(url, '_blank', 'noopener')
           }}
         >
-          <ExternalLink className="size-3.5" aria-hidden /> OneDrive
-        </Button>
+          <ExternalLink className="size-3.5" aria-hidden /> {providerKey ? providerLabel(providerKey) : '打开来源'}
+        </Button>}
         {isText && (
           <Button
             variant="primary"

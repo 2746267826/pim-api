@@ -1,11 +1,12 @@
 /* 文件域（05/files.md，多网盘三栏浏览器） */
 
 /** 已支持的网盘类型。与后端 file_providers.provider 同域。 */
-export type ProviderKey = 'onedrive' | 'google'
+export type ProviderKey = 'onedrive' | 'google' | 'local'
 
 export const PROVIDER_LABELS: Record<ProviderKey, string> = {
   onedrive: 'OneDrive',
   google: 'Google Drive',
+  local: '内置存储',
 }
 
 export function providerLabel(key: string): string {

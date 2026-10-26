@@ -105,6 +105,11 @@ builder.Services.AddHostedService<Pim.Infrastructure.Metrics.MetricsRefreshServi
 // Infrastructure
 builder.Services.AddPimInfrastructure(builder.Configuration);
 builder.Services.AddPimAuth();
+builder.Services.AddOptions<Pim.Infrastructure.Notes.NoteMaterialUploadOptions>()
+    .Bind(builder.Configuration.GetSection("NativeNotes"))
+    .Validate(options => options.IsValid(), "NativeNotes storage configuration is invalid")
+    .ValidateOnStart();
+builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMaterialUploadStore>();
 builder.Services.AddAggregateResultCaching();
 builder.Services.Configure<OpsOptions>(o =>
 {
@@ -407,6 +412,7 @@ app.MapOperationsEndpoints();
 app.MapDataReliabilityEndpoints();
 app.MapTodayEndpoints();
 app.MapAiEndpoints();
+app.MapNoteMaterialEndpoints();
 app.MapClientShell();
 app.MapTileEndpoints();
 

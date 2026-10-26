@@ -201,6 +201,7 @@ public sealed class FileWriteService
         }
 
         var session = await _sessions.OpenAsync(provider, ct);
+        if (session.Writer is IRestorableFileItemWriter restorable) await restorable.RestoreItemAsync(item.ExternalFileId, ct);
         if (!await RemoteItemExistsAsync(session, item.ExternalFileId, ct))
         {
             throw new DomainException(5340, "文件已在网盘端删除，无法恢复");
@@ -301,6 +302,7 @@ public sealed class FileWriteService
     {
         try
         {
+            if (session.Writer is IRestorableFileItemWriter) return await session.Content.GetItemAsync(externalFileId, ct) is not null;
             return await session.Content.GetDownloadUrlAsync(externalFileId, ct) is not null;
         }
         catch (ProviderItemNotFoundException)

@@ -21,6 +21,8 @@ using Pim.Module.Files.Entities;
 using Pim.Module.Files.Providers;
 using Pim.Module.Files.Providers.Abstractions;
 using Pim.Module.Files.Providers.Google;
+using Pim.Module.Files.Providers.Local;
+using Pim.Infrastructure.Storage;
 using Pim.Module.Files.Services;
 
 namespace Pim.Module.Files;
@@ -34,6 +36,11 @@ public sealed class FilesModule : IModule
     {
         PimDbContext.RegisterModuleAssembly(Assembly.GetExecutingAssembly());
         services.AddScoped<FileProviderBindingService>();
+        services.Configure<ManagedBinaryOptions>(configuration.GetSection("ManagedStorage"));
+        services.AddSingleton<ManagedBinaryStore>();
+        services.AddSingleton<LocalFileStore>();
+        services.AddScoped<LocalFileGrants>();
+        services.AddScoped<IFileProvider, LocalFileProvider>();
         services.AddScoped<FileOperationService>();
         services.AddScoped<FileSearchService>();
         // 文本抽取后端（可选）：只服务 read_file_text 的 pdf 等分支。
@@ -106,6 +113,7 @@ public sealed class FilesModule : IModule
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
     {
+        endpoints.MapLocalFileEndpoints();
         var group = endpoints.MapGroup(FileEndpointPaths.Root).RequireAuthorization();
 
         group.MapGet("/providers", async (
