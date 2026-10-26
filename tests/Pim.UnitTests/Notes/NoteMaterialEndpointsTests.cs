@@ -21,7 +21,9 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
     private readonly WebApplicationFactory<Program> _factory;
 
     public NoteMaterialEndpointsTests() => _factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("note-upload"))
-        .WithWebHostBuilder(builder => builder.UseEnvironment("Test").UseSetting("NativeNotes:StorageRoot", _storage));
+        .WithWebHostBuilder(builder => builder.UseEnvironment("Test")
+            .UseSetting("NativeNotes:StorageRoot", Path.Combine(_storage, "materials"))
+            .UseSetting("DataProtection:KeysPath", Path.Combine(_storage, "keys")));
 
     [Fact]
     public async Task RealAuthenticatedHttpResumesAllMixedMaterialsAndPublishesOneFixedVersion()
