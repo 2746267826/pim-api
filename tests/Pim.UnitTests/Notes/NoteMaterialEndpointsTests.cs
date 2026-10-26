@@ -23,6 +23,7 @@ public sealed class NoteMaterialEndpointsTests : IDisposable
     public NoteMaterialEndpointsTests() => _factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("note-upload"))
         .WithWebHostBuilder(builder => builder.UseEnvironment("Test")
             .UseSetting("NativeNotes:StorageRoot", Path.Combine(_storage, "materials"))
+            .UseSetting("ManagedStorage:Root", Path.Combine(_storage, "binary"))
             .UseSetting("DataProtection:KeysPath", Path.Combine(_storage, "keys")));
 
     [Fact]

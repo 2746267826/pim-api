@@ -8,7 +8,7 @@ import { STORAGE_KEYS } from '@/lib/storage'
 
 const api = vi.hoisted(() => ({
   providers: vi.fn(), listItems: vi.fn(), syncStatus: vi.fn(), search: vi.fn(),
-  uploadSimple: vi.fn(), createUploadSession: vi.fn(), completeUploadSession: vi.fn(),
+  uploadSimple: vi.fn(), createUploadSession: vi.fn(), completeUploadSession: vi.fn(), setDefault: vi.fn(),
 }))
 vi.mock('../api', () => ({ filesApi: api }))
 vi.mock('@/lib/notify', () => ({ notifySuccess: vi.fn(), notifyError: vi.fn() }))
@@ -34,10 +34,10 @@ function item(providerId: string, path: string, size: number): FileItem {
   }
 }
 
-async function openPage() {
+async function openPage(ready = true) {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } })
   render(<QueryClientProvider client={client}><FilesPage /></QueryClientProvider>)
-  await waitFor(() => expect((screen.getByRole('button', { name: '上传文件' }) as HTMLButtonElement).disabled).toBe(false))
+  if (ready) await waitFor(() => expect((screen.getByRole('button', { name: '上传文件' }) as HTMLButtonElement).disabled).toBe(false))
 }
 
 function picker() { return screen.getByLabelText('选择上传文件') as HTMLInputElement }
@@ -62,6 +62,30 @@ describe('文件上传用户闭环（真实页面、查询缓存和上传引擎�
     })
   })
   afterEach(() => { cleanup(); client?.clear() })
+
+  it('没有第三方云盘时可直接在内置存储上传', async () => {
+    api.providers.mockResolvedValue([{ ...account('builtin', 'onedrive'), provider: 'local', accountName: '内置存储（服务器）', isDefault: true }])
+    await openPage()
+    expect(screen.getByText('服务器持久化存储 · 无需连接云盘')).toBeTruthy()
+    fireEvent.change(picker(), { target: { files: [new File(['本地附件'], 'note.txt', { type: 'text/plain' })] } })
+    await waitFor(() => expect(api.uploadSimple).toHaveBeenCalled())
+    expect(api.uploadSimple.mock.calls.at(-1)?.[0]).toBe('builtin')
+    await waitFor(() => expect(screen.getByText('note.txt')).toBeTruthy())
+  })
+
+  it('默认云盘失效时保留选择，只有手动切换后才允许上传到内置盘', async () => {
+    api.providers.mockResolvedValue([
+      { ...account('account-a', 'onedrive'), status: 'expired' },
+      { ...account('builtin', 'onedrive'), provider: 'local', isDefault: false },
+    ])
+    await openPage(false)
+    await screen.findByRole('alert')
+    expect((screen.getByRole('button', { name: '上传文件' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(api.uploadSimple).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText('选择网盘账号'), { target: { value: 'builtin' } })
+    await waitFor(() => expect((screen.getByRole('button', { name: '上传文件' }) as HTMLButtonElement).disabled).toBe(false))
+    expect(api.uploadSimple).not.toHaveBeenCalled()
+  })
 
   it('可见按钮打开可多选的文件选择器', async () => {
     await openPage()
@@ -136,13 +160,13 @@ describe('文件上传用户闭环（真实页面、查询缓存和上传引擎�
     expect(screen.queryByRole('button', { name: 'too-large.txt' })).toBeNull()
   })
 
-  it('没有连接账号时禁用上传并显示连接入口', async () => {
+  it('来源加载异常时禁用上传并提供重试，避免误导用户必须连接云盘', async () => {
     api.providers.mockResolvedValue([])
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={client}><FilesPage /></QueryClientProvider>)
-    await screen.findByText('尚未连接网盘')
+    await screen.findByText('暂时无法加载文件来源')
     expect((screen.getByRole('button', { name: '上传文件' }) as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.getByRole('button', { name: '去连接网盘' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '重试' })).toBeTruthy()
     expect(api.uploadSimple).not.toHaveBeenCalled()
   })
 

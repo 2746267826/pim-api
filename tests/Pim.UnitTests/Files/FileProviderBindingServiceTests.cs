@@ -63,7 +63,13 @@ public class FileProviderBindingServiceTests
 
         var providers = await service.ListProvidersAsync();
 
-        var provider = Assert.Single(providers);
+        Assert.Equal(2, providers.Count);
+        var builtin = Assert.Single(providers.Where(item => item.Provider == "local"));
+        Assert.Equal("connected", builtin.Status);
+        Assert.Null(builtin.TokenExpiresAt);
+        var provider = Assert.Single(providers.Where(item => item.Provider == "onedrive"));
+        Assert.True(provider.IsDefault);
+        Assert.DoesNotContain(providers, item => item.ClientId == "cid-other");
         Assert.Equal("onedrive", provider.Provider);
         Assert.Equal("cid-mine", provider.ClientId);
         Assert.Equal("drive-1", provider.DriveId);

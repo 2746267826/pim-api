@@ -7,6 +7,11 @@ using Pim.Infrastructure.Secrets;
 using Pim.Module.Files.Entities;
 using Pim.Module.Files.Services;
 using Xunit;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
+using Pim.Infrastructure.Storage;
+using Pim.Module.Files.Providers.Local;
 
 namespace Pim.UnitTests.Files;
 
@@ -213,17 +218,25 @@ public class FileAttachmentStoreTests
     }
 
     [Fact]
-    public async Task WithoutAnyBinding_Throws5320()
+    public async Task WithoutAnyBinding_UsesBuiltinLocalStorageWithoutOAuth()
     {
         await using var db = CreateDb();
         var graph = new FakeOneDriveGraphClient();
-        var store = CreateStore(db, graph);
-        await using var content = new MemoryStream("x"u8.ToArray());
-
-        var error = await Assert.ThrowsAsync<DomainException>(
-            () => store.StoreAsync(UserId, "k", content, "text/plain", 1));
-
-        Assert.Equal(5320, error.ErrorCode);
+        var root = Path.Combine(Path.GetTempPath(), "pim-attachment-local", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var bytes = new ManagedBinaryStore(Options.Create(new ManagedBinaryOptions { Root = root }));
+            var files = new LocalFileStore(bytes);
+            var local = new LocalFileProvider(files, new LocalFileGrants(new EphemeralDataProtectionProvider(), files, new HttpContextAccessor()));
+            using var harness = new FilesProviderHarness(db, graph, new TestSecretProtector(), extraProvider: local);
+            var store = new FileAttachmentStore(db, harness.Sessions);
+            await using var content = new MemoryStream("x"u8.ToArray());
+            var stored = await store.StoreAsync(UserId, "quick-notes/k/a.txt", content, "text/plain", 1);
+            Assert.Equal("local", stored.ProviderKey); Assert.Equal(LocalFileProvider.IdFor(UserId), stored.ProviderId);
+            await using var read = await store.OpenReadAsync(UserId, stored);
+            Assert.Equal('x', read.ReadByte()); Assert.Empty(graph.PutNewFileCalls);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
 
     /// <summary>账号行存在但拿不到令牌：必须是「绑定不完整」的明确错误，而不是静默失败。</summary>

@@ -330,6 +330,7 @@ public sealed class FileProviderAuthorizationService
     public async Task DisconnectAsync(Guid userId, Guid providerId, CancellationToken ct = default)
     {
         var provider = await LoadOwnedAsync(userId, providerId, ct);
+        if (provider.Provider == "local") throw new DomainException(5323, "内置存储无需连接，不能断开；可在文件中管理内容");
 
         var items = await _db.Set<FileItemEntity>()
             .Where(item => item.ProviderId == providerId)

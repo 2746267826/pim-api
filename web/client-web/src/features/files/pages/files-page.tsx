@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   ChevronRight,
@@ -34,7 +35,7 @@ import {
 import { uploadEngine } from '../upload-engine'
 import { formatBytes } from '../upload-chunk-plan'
 import { STORAGE_KEYS, getJSON, setJSON } from '@/lib/storage'
-import { notifySuccess } from '@/lib/notify'
+import { notifySuccess, notifyError } from '@/lib/notify'
 import { Button, Card, Chip, EmptyState, Input, PageHeader, Segmented, Skeleton } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { providerLabel, type FileItem } from '../types'
@@ -83,7 +84,7 @@ export function FilesPage() {
   }, [transfers, queryClient])
 
   /*
-   * 账号选择（多网盘）：仅显示**已连接**的账号；默认选中记住的那个，
+   * 账号选择：保留记住或显式默认的失效来源，要求用户主动切换；
    * 其次是默认落点账号，最后退回第一个。绝不写死 providers[0] ——
    * 那正是多账号第一次落地的坑（会把另一个账号的文件当成这个账号的）。
    */
@@ -91,10 +92,10 @@ export function FilesPage() {
   const [accountId, setAccountId] = useState<string | null>(() => getJSON<string | null>(STORAGE_KEYS.fileAccountId, null))
   const provider = useMemo(
     () =>
-      connectedAccounts.find((a) => a.id === accountId) ??
-      connectedAccounts.find((a) => a.isDefault) ??
+      accounts.find((a) => a.id === accountId) ??
+      accounts.find((a) => a.isDefault) ??
       connectedAccounts[0],
-    [connectedAccounts, accountId],
+    [accounts, connectedAccounts, accountId],
   )
 
   useEffect(() => {
@@ -104,7 +105,9 @@ export function FilesPage() {
     }
   }, [provider, accountId])
 
-  const providerId = provider?.id
+  const providerReady = provider?.status === 'connected'
+  const providerId = providerReady ? provider?.id : undefined
+  const selectableAccounts = accounts.filter((account) => account.status === 'connected' || account.id === provider?.id)
 
   const isGlobalSearch = memory.searchScope === 'all' && q.trim().length > 0
   const folderQuery = useFileItems(providerId, memory.path, isGlobalSearch ? '' : q, memory.sort, memory.order)
@@ -115,7 +118,7 @@ export function FilesPage() {
   const isLoading = isGlobalSearch ? globalQuery.isLoading : folderQuery.isLoading
   const total = isGlobalSearch ? (globalQuery.data?.totalCount ?? 0) : (folderQuery.data?.result.totalCount ?? 0)
 
-  const syncStatus = useSyncStatus(provider?.id)
+  const syncStatus = useSyncStatus(providerId)
   const mutations = useFileMutations()
 
   /* 持久化浏览器记忆 */
@@ -137,6 +140,7 @@ export function FilesPage() {
   /* 拖放上传：整中栏为热区 */
   function onDropFiles(files: FileList | null) {
     if (!files?.length || !provider) return
+    if (!providerReady) { notifyError('当前文件来源不可用，请重新连接或手动选择其他存储'); return }
     for (const file of Array.from(files)) {
       uploadEngine.enqueue({ providerId: provider.id, file, targetPath: memory.path })
     }
@@ -181,11 +185,11 @@ export function FilesPage() {
         <Card className="mx-auto max-w-[480px] p-6 text-center">
           <EmptyState
             icon={Link2}
-            title="尚未连接网盘"
-            description="连接 OneDrive 或 Google Drive 后即可在此浏览、上传、预览与分享文件（文件仍在你自己网盘里）。"
+            title="暂时无法加载文件来源"
+            description="内置存储无需连接云盘。请重试；若仍不可用，请检查服务端存储状态。"
             action={
-              <Button variant="primary" size="sm" onClick={() => (window.location.href = '/settings/microsoft?tab=onedrive')}>
-                <Link2 className="size-4" aria-hidden /> 去连接网盘
+              <Button variant="primary" size="sm" onClick={() => void providers.refetch()}>
+                <Link2 className="size-4" aria-hidden /> 重试
               </Button>
             }
           />
@@ -210,16 +214,16 @@ export function FilesPage() {
       <PageHeader
         className="[&>div:last-child]:max-w-full [&>div:last-child]:flex-wrap"
         title="文件"
-        subtitle={provider ? `${providerLabel(provider.provider)} · ${provider.accountName ?? '已连接'}` : '网盘文件浏览器'}
+        subtitle={provider?.provider === 'local' ? '服务器持久化存储 · 无需连接云盘' : provider ? `${providerLabel(provider.provider)} · ${provider.accountName ?? '已连接'}` : '文件浏览器'}
         actions={
           <>
             {/* 账号选择：两个及以上账号时必须能切换（工单 F2.3 / AC-5） */}
-            {connectedAccounts.length > 1 && (
-              <label className="flex items-center gap-1.5 text-xs text-text-3">
+            {selectableAccounts.length > 1 && (
+              <label className="flex min-w-0 max-w-full items-center gap-1.5 text-xs text-text-3">
                 <span className="sr-only">选择网盘账号</span>
                 <select
                   aria-label="选择网盘账号"
-                  className="rounded-ctl border border-border bg-bg px-2 py-1 text-xs text-text-1 outline-none"
+                  className="max-w-full rounded-ctl border border-border bg-bg px-2 py-1 text-xs text-text-1 outline-none"
                   value={provider?.id ?? ''}
                   onChange={(e) => {
                     setAccountId(e.target.value)
@@ -229,17 +233,24 @@ export function FilesPage() {
                     setSelectedIds(new Set())
                   }}
                 >
-                  {connectedAccounts.map((account) => (
+                  {selectableAccounts.map((account) => (
                     <option key={account.id} value={account.id}>
                       {providerLabel(account.provider)} · {account.accountName ?? account.id.slice(0, 8)}
                       {account.isDefault ? '（默认）' : ''}
+                      {account.status !== 'connected' ? '（不可用）' : ''}
                     </option>
                   ))}
                 </select>
               </label>
             )}
-            {connectedAccounts.length === 1 && provider && (
+            {selectableAccounts.length === 1 && provider && (
               <Chip>{providerLabel(provider.provider)}</Chip>
+            )}
+            {providerReady && provider && !provider.isDefault && (
+              <Button variant="ghost" size="sm" onClick={() => {
+                void filesApi.setDefault(provider.id).then(() => queryClient.invalidateQueries({ queryKey: ['files'] }))
+                  .catch((error: unknown) => notifyError(error instanceof Error ? error.message : '设置默认存储失败'))
+              }}>设为附件默认</Button>
             )}
             <Button variant="ghost" size="sm" className="lg:hidden" onClick={() => setTreeOpen(true)}>
               目录
@@ -247,7 +258,7 @@ export function FilesPage() {
             <Button
               variant="primary"
               size="sm"
-              disabled={!provider}
+              disabled={!providerReady}
               title={provider ? `上传到 ${provider.accountName ?? providerLabel(provider.provider)}：${memory.path}` : '请先连接网盘账号'}
               onClick={() => fileInput.current?.click()}
             >
@@ -262,12 +273,16 @@ export function FilesPage() {
             <Button variant="secondary" size="sm" onClick={() => setMySharesOpen(true)}>
               <Share2 className="size-4" aria-hidden /> 我的分享
             </Button>
-            <Button variant="primary" size="sm" onClick={() => setNameDialog({ mode: 'folder' })}>
+            <Button variant="primary" size="sm" disabled={!providerReady} onClick={() => setNameDialog({ mode: 'folder' })}>
               <FolderPlus className="size-4" aria-hidden /> 新建文件夹
             </Button>
           </>
         }
       />
+      {provider && !providerReady && <div role="alert" className="mx-3 mb-3 rounded-card border border-border bg-surface px-3 py-2 text-sm text-text-2">
+        当前文件来源不可用。请重新连接，或手动选择内置存储；不会自动更换上传位置。
+      </div>}
+      {provider?.provider === 'local' && <div className="px-3 pb-2 text-xs text-text-3">内容保存在 PIM 服务器。支持文件与附件，不提供对外分享；存储容量受服务器配额限制。</div>}
 
       {/* 同步状态横幅（条件轮询） */}
       {syncStatus.data?.syncStatus === 'syncing' && (
@@ -426,9 +441,9 @@ export function FilesPage() {
                       onRename={() => setNameDialog({ mode: 'rename', target: item })}
                       onMove={() => setMoveDialog([item])}
                       onDelete={() => setDeleteDialog([item])}
-                      onShare={() => setShareDialog(item)}
+                      onShare={accounts.find((account) => account.id === item.providerId)?.provider === 'local' ? undefined : () => setShareDialog(item)}
                       onDownload={() => void download(item)}
-                      onOpenOneDrive={() => void openInProvider(item)}
+                      onOpenOneDrive={accounts.find((account) => account.id === item.providerId)?.provider === 'local' ? undefined : () => void openInProvider(item)}
                     />
                   ))}
                 </tbody>
@@ -495,15 +510,15 @@ export function FilesPage() {
             {transferOpen || activeTransfers > 0 ? (
               <TransferPanel onClose={() => setTransferOpen(false)} />
             ) : (
-              <FilePreview item={previewItem!} onClose={() => setPreviewItem(null)} />
+              <FilePreview item={previewItem!} providerKey={accounts.find((account) => account.id === previewItem?.providerId)?.provider} onClose={() => setPreviewItem(null)} />
             )}
           </aside>
         )}
       </div>
 
       {/* 窄屏抽屉：目录树 */}
-      {treeOpen && (
-        <div className="fixed inset-0 z-40 flex lg:hidden">
+      {treeOpen && createPortal(
+        <div className="fixed inset-0 z-50 flex lg:hidden">
           <div className="absolute inset-0 bg-text-1/30" onClick={() => setTreeOpen(false)} />
           <div className="relative z-10 h-full w-[260px] animate-[pim-slide-in-left_240ms_cubic-bezier(.32,.72,.24,1)] overflow-y-auto bg-bg p-3">
             <FolderTree
@@ -515,17 +530,17 @@ export function FilesPage() {
               }}
             />
           </div>
-        </div>
+        </div>, document.body
       )}
 
       {/* 窄屏抽屉：预览 */}
-      {previewItem && (
-        <div className="fixed inset-0 z-40 xl:hidden">
+      {previewItem && createPortal(
+        <div className="fixed inset-0 z-50 xl:hidden">
           <div className="absolute inset-0 bg-text-1/30" onClick={() => setPreviewItem(null)} />
           <div className="absolute inset-y-0 right-0 z-10 flex w-[min(420px,100vw)] flex-col bg-bg">
-            <FilePreview item={previewItem} onClose={() => setPreviewItem(null)} />
+            <FilePreview item={previewItem} providerKey={accounts.find((account) => account.id === previewItem.providerId)?.provider} onClose={() => setPreviewItem(null)} />
           </div>
-        </div>
+        </div>, document.body
       )}
 
       {/* 弹窗族 */}
@@ -609,9 +624,9 @@ function FileRow({
   onRename: () => void
   onMove: () => void
   onDelete: () => void
-  onShare: () => void
+  onShare?: () => void
   onDownload: () => void
-  onOpenOneDrive: () => void
+  onOpenOneDrive?: () => void
 }) {
   return (
     <tr className={cn('transition-colors hover:bg-surface', (selected || previewing) && 'bg-primary-soft/60')}>
@@ -645,10 +660,10 @@ function FileRow({
               )}
               <MenuItem onSelect={onRename}>重命名</MenuItem>
               <MenuItem onSelect={onMove}>移动到…</MenuItem>
-              <MenuItem onSelect={onShare}>
+              {onShare && <MenuItem onSelect={onShare}>
                 <ExternalLink className="size-3.5" aria-hidden /> 分享
-              </MenuItem>
-              <MenuItem onSelect={onOpenOneDrive}>在网盘中打开</MenuItem>
+              </MenuItem>}
+              {onOpenOneDrive && <MenuItem onSelect={onOpenOneDrive}>在网盘中打开</MenuItem>}
               <DropdownMenu.Separator className="my-1 h-px bg-divider" />
               <MenuItem onSelect={onDelete} danger>
                 <Trash2 className="size-3.5" aria-hidden /> 删除

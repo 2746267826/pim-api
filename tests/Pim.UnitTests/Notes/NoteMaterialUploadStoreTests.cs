@@ -62,7 +62,7 @@ public sealed class NoteMaterialUploadStoreTests : IDisposable
         await Error(40901, () => store.CompleteAsync(_user, fixture.Request.VersionId));
         Assert.Null((await store.GetAsync(_user, fixture.Request.VersionId)).Upload.CurrentVersionId);
         await UploadAll(store, fixture);
-        var path = Path.Combine(_root, _user.ToString("D"), fixture.Request.VersionId.ToString("D"), "parts", "0", "0.part");
+        var path = Path.Combine(_root, "binary", _user.ToString("D"), "note-parts", fixture.Request.VersionId.ToString("D"), Hash(Encoding.UTF8.GetBytes("0/0")) + ".blob");
         var bytes = await File.ReadAllBytesAsync(path); bytes[0] ^= 1; await File.WriteAllBytesAsync(path, bytes);
         await Error(40001, () => store.CompleteAsync(_user, fixture.Request.VersionId));
         Assert.Equal("Uploading", (await store.GetAsync(_user, fixture.Request.VersionId)).Upload.Phase);

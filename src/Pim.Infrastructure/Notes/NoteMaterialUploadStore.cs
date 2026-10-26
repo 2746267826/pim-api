@@ -6,17 +6,19 @@ using System.Text;
 using Microsoft.Extensions.Options;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
+using Pim.Infrastructure.Storage;
 
 namespace Pim.Infrastructure.Notes;
 
 /// <summary>Immutable, account-isolated material versions on the server's persistent data volume.</summary>
-public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> options, TimeProvider? clock = null)
+public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> options, TimeProvider? clock = null, ManagedBinaryStore? binaries = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly NoteMaterialUploadOptions ReadLimits = new()
     { MaxVersionBytes = 64L * 1024 * 1024 * 1024, MaxUserReservedBytes = 64L * 1024 * 1024 * 1024, MaxFiles = 100_000 };
     private readonly NoteMaterialUploadOptions _options = options.Value;
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly ManagedBinaryStore _binaries = binaries ?? new(Options.Create(new ManagedBinaryOptions { Root = Path.Combine(options.Value.StorageRoot, "binary") }));
 
     public NoteMaterialUploadLimitsDto Limits => new(NoteMaterialUploadOptions.PartSizeBytes, NoteMaterialUploadOptions.MaxMetadataCharacters,
         _options.MaxVersionBytes, _options.MaxUserReservedBytes, _options.MaxFiles,
@@ -123,7 +125,8 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         }
         if (entry.Phase != "Uploading") throw Conflict("完整材料版本已经固定，不能继续修改");
         content.Position = 0;
-        await WriteFileAsync(target, stream => content.CopyToAsync(stream, ct), ct);
+        await _binaries.PutAsync(userId, ManagedBinaryStore.NoteParts, versionId, content, content.Length, ct,
+            PartKey(fileIndex, partIndex), sha256);
     }
 
     public async Task<NoteMaterialUploadDto> CompleteAsync(Guid userId, Guid versionId, CancellationToken ct = default)
@@ -204,7 +207,9 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         var files = NoteMaterialManifestValidator.Validate(await RequestAsync(userId, versionId, ct), ReadLimits);
         var file = FileAt(files, fileIndex);
         if (partIndex < 0 || partIndex >= PartCount(file)) throw Invalid("分块位置无效");
-        File.Delete(PartFile(userId, versionId, fileIndex, partIndex));
+        await _binaries.DeleteAsync(userId, ManagedBinaryStore.NoteParts, versionId, PartKey(fileIndex, partIndex), ct);
+        var legacy = LegacyPartFile(userId, versionId, fileIndex, partIndex);
+        if (File.Exists(legacy)) File.Delete(legacy);
     }
 
     public async Task DeleteNoteAsync(Guid userId, Guid noteId, CancellationToken ct = default)
@@ -299,7 +304,12 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
     private async Task PurgeAsync(Guid userId, Ledger ledger, CancellationToken ct)
     {
         if (ledger.Deletions.Count == 0) return;
-        foreach (var key in ledger.Deletions) { ct.ThrowIfCancellationRequested(); DeleteFolder(VersionFolder(userId, Guid.ParseExact(key, "D"))); }
+        foreach (var key in ledger.Deletions)
+        {
+            ct.ThrowIfCancellationRequested(); var version = Guid.ParseExact(key, "D");
+            await _binaries.DeleteCollectionAsync(userId, ManagedBinaryStore.NoteParts, version, ct);
+            DeleteFolder(VersionFolder(userId, version));
+        }
         ledger.Deletions.Clear();
         await SaveLedgerAsync(userId, ledger, ct);
     }
@@ -325,8 +335,14 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         return Path.Combine(Path.GetFullPath(_options.StorageRoot), Key(userId));
     }
     private string VersionFolder(Guid userId, Guid versionId) => Path.Combine(UserFolder(userId), Key(versionId));
-    private string PartFile(Guid userId, Guid versionId, int file, int part) => Path.Combine(VersionFolder(userId, versionId),
+    private string LegacyPartFile(Guid userId, Guid versionId, int file, int part) => Path.Combine(VersionFolder(userId, versionId),
         "parts", file.ToString(CultureInfo.InvariantCulture), part.ToString(CultureInfo.InvariantCulture) + ".part");
+    private static string PartKey(int file, int part) => NoteMaterialManifestValidator.Hash($"{file}/{part}");
+    private string PartFile(Guid userId, Guid versionId, int file, int part)
+    {
+        var path = _binaries.ObjectPath(userId, ManagedBinaryStore.NoteParts, versionId, PartKey(file, part));
+        return File.Exists(path) ? path : LegacyPartFile(userId, versionId, file, part);
+    }
     private static string Key(Guid id) { if (id == Guid.Empty) throw Invalid("标识无效"); return id.ToString("D"); }
     private Task<BeginNoteMaterialUploadRequest> RequestAsync(Guid userId, Guid versionId, CancellationToken ct) =>
         ReadAsync<BeginNoteMaterialUploadRequest>(Path.Combine(VersionFolder(userId, versionId), "request.json"), ct);

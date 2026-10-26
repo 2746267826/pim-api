@@ -26,6 +26,7 @@ public sealed class FileProviderBindingService(
     public async Task<IReadOnlyList<FileProviderDto>> ListProvidersAsync(CancellationToken ct = default)
     {
         var userId = UserId;
+        await BuiltinLocalAccount.EnsureAsync(_db, userId, ct);
         var providers = await _db.Set<FileProviderEntity>()
             .AsNoTracking()
             .Where(provider => provider.UserId == userId)
@@ -44,14 +45,17 @@ public sealed class FileProviderBindingService(
                 .Select(group => new { ProviderId = group.Key, Total = (long)group.Count() })
                 .ToDictionaryAsync(item => item.ProviderId, item => item.Total, ct);
 
+        var effectiveDefault = providers.FirstOrDefault(provider => provider.IsDefault)
+            ?? providers.Where(provider => provider.Status == "connected").OrderBy(provider => provider.Provider == "local").ThenBy(provider => provider.CreatedAt).FirstOrDefault();
         return providers
             .Select(provider => MapProvider(
                 provider,
-                indexedTotals.TryGetValue(provider.Id, out var total) ? total : 0))
+                indexedTotals.TryGetValue(provider.Id, out var total) ? total : 0,
+                provider.Id == effectiveDefault?.Id))
             .ToList();
     }
 
-    private static FileProviderDto MapProvider(FileProviderEntity provider, long totalIndexedCount = 0)
+    private static FileProviderDto MapProvider(FileProviderEntity provider, long totalIndexedCount = 0, bool? isDefault = null)
         => new(
             provider.Id,
             provider.Provider,
@@ -69,5 +73,5 @@ public sealed class FileProviderBindingService(
             provider.DeltaResetAt,
             provider.TokenExpiresAt,
             totalIndexedCount,
-            provider.IsDefault);
+            isDefault ?? provider.IsDefault);
 }

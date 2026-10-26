@@ -177,7 +177,7 @@ export class UploadEngine {
     await this.uploadBySession(item)
   }
 
-  /** Graph 会话分片直传（字节不经过 PIM 服务器；分片 PUT 不带认证头） */
+  /** Provider 会话分片上传：云盘直传或内置存储；PUT 只使用返回的资源授权 URL。 */
   private async uploadBySession(item: TransferItem) {
     const session = await filesApi.createUploadSession(item.targetPath, item.fileName, item.providerId)
     let offset = 0
@@ -194,8 +194,8 @@ export class UploadEngine {
       for (;;) {
         const res = await fetch(session.uploadUrl, {
           method: 'PUT',
-          // 刻意不带 Authorization：Graph 预授权 URL 免鉴权，带认证头会被拒
-          headers: { 'Content-Range': contentRangeHeader(item.fileSize, chunk) },
+          // 不带账号 Authorization；只向服务端返回的临时会话地址发送分片。
+          headers: { 'Content-Range': contentRangeHeader(item.fileSize, chunk), 'Content-Type': 'application/octet-stream' },
           body: blob,
         })
         if (res.status === 201 || res.status === 200) {

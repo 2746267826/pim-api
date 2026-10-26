@@ -44,8 +44,14 @@ public sealed record RemoteFolderRef(string? ExternalId, string Path);
 /// <summary>远端瞬时读到的内容。</summary>
 public sealed record RemoteContent(byte[] Bytes, string? ContentType);
 
-/// <summary>远端上传会话：<see cref="UploadUrl"/> 已预授权，客户端直接分片 PUT，PIM 不搬字节。</summary>
+/// <summary>Provider 上传会话：<see cref="UploadUrl"/> 已预授权，客户端按返回地址分片 PUT。</summary>
 public sealed record RemoteUploadSession(string UploadUrl, DateTimeOffset? ExpirationDateTime);
+
+/// <summary>支持实际恢复回收站内容的可选能力；其他 provider 仍仅恢复存在的远端索引。</summary>
+public interface IRestorableFileItemWriter
+{
+    Task RestoreItemAsync(string id, CancellationToken ct);
+}
 
 /// <summary>分享权限档（个人自用只有这两档）。</summary>
 public enum FileSharePermission
@@ -244,6 +250,8 @@ public enum FileProviderAuthorizationMode
 
     /// <summary>浏览器跳转（Google）。需要回调端点 + 人工点同意。</summary>
     BrowserRedirect,
+    /// <summary>内置存储，无需第三方授权。</summary>
+    None,
 }
 
 /// <summary>发起授权得到的挑战。</summary>
