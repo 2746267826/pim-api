@@ -28,12 +28,16 @@ public sealed class AiTextCallGate
 {
     private readonly SemaphoreSlim _gate = new(4, 4);
     private readonly SemaphoreSlim _visionGate = new(2, 2);
-    public bool TryEnter(bool vision = false)
+    private readonly SemaphoreSlim _asrGate = new(2, 2);
+    public bool TryEnter(bool vision = false, bool asr = false)
     {
+        if (vision && asr) throw new ArgumentException("A call has one media kind");
         if (vision && !_visionGate.Wait(0)) return false;
+        if (asr && !_asrGate.Wait(0)) return false;
         if (_gate.Wait(0)) return true;
         if (vision) _visionGate.Release();
+        if (asr) _asrGate.Release();
         return false;
     }
-    public void Exit(bool vision = false) { _gate.Release(); if (vision) _visionGate.Release(); }
+    public void Exit(bool vision = false, bool asr = false) { _gate.Release(); if (vision) _visionGate.Release(); if (asr) _asrGate.Release(); }
 }

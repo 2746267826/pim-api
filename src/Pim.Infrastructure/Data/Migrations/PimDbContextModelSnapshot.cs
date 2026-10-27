@@ -95,6 +95,60 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.ToTable("audit_versions");
                 });
 
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiCallAudioEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Format")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("format");
+
+                    b.Property<Guid>("LogId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("log_id");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("ObjectKey")
+                        .HasColumnType("text")
+                        .HasColumnName("object_key");
+
+                    b.Property<Guid?>("ProviderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("provider_id");
+
+                    b.Property<string>("ProviderKey")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("provider_key");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("sha256");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("size_bytes");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LogId")
+                        .IsUnique();
+
+                    b.ToTable("ai_call_audio");
+                });
+
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiCallImageEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -164,6 +218,11 @@ namespace Pim.Infrastructure.Data.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("api_key_secret");
+
+                    b.Property<string>("AsrPresetId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("asr_preset_id");
 
                     b.Property<string>("BaseUrl")
                         .IsRequired()
@@ -7178,6 +7237,15 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("UserId", "Status", "UpdatedAt");
 
                     b.ToTable("quick_notes");
+                });
+
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiCallAudioEntity", b =>
+                {
+                    b.HasOne("Pim.Infrastructure.Data.Entities.AiRequestLogEntity", null)
+                        .WithMany()
+                        .HasForeignKey("LogId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiCallImageEntity", b =>

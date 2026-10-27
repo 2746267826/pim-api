@@ -9,6 +9,7 @@ import { aiApi, type CallRequest, type CallResult, type Model, type ModelSetting
 import { createAiRequestId } from './request-id'
 import { capabilities, capabilityNames, ModelEditor } from './model-editor'
 import { CallImages, VisionCall } from './vision-call'
+import { AsrCall, CallAudio } from './asr-call'
 
 const states = { Succeeded: '成功', Failed: '失败', Blocked: '未执行', TimedOut: '超时', FailedValidation: '结构不符', Running: '进行中', Cancelled: '已取消', Incomplete: '未完整/未确认' }
 function State({ value }: { value: string }) {
@@ -26,7 +27,9 @@ function Workspace({ userId }: { userId: string }) {
   const qc = useQueryClient()
   const prefix = ['ai', userId]
   const [tab, setTab] = useState<'models' | 'history' | 'usage'>('models')
-  const [callMode, setCallMode] = useState<'text' | 'vision'>('text')
+  const [callMode, setCallMode] = useState<'text' | 'vision' | 'asr'>('text')
+  const [asrOpened, setAsrOpened] = useState(false)
+  const [creatingAsr, setCreatingAsr] = useState(false)
   const [editing, setEditing] = useState<Model | null | undefined>(undefined)
   const [deleting, setDeleting] = useState<Model | null>(null)
   const [busy, setBusy] = useState(false)
@@ -66,26 +69,29 @@ function Workspace({ userId }: { userId: string }) {
                 options={[{ value: '', label: '未选择' }, ...options.map((m) => ({ value: m.id, label: m.name + (m.enabled ? '' : '（已停用）') }))]}
                 onValueChange={(value) => void patchSettings({ [field]: value || null })} /></div>
             })}</div>
-            <p className="text-xs text-text-3">已开始的调用使用固定配置。视觉支持PNG/JPEG多图调用；语音转写当前仅可配置，调用能力待接入。</p>
+            <p className="text-xs text-text-3">已开始的调用使用固定配置。文本与图片直接调用，ASR通过接入预设使用独立模型与凭据。</p>
           </Card>
-          <Card className="p-5"><div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-sm font-semibold text-text-1">模型配置（{models.data.length}）</h2><Button size="sm" variant="primary" onClick={() => setEditing(null)}><Plus className="size-4" aria-hidden />添加模型</Button></div>
+          <Card className="p-5"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 className="text-sm font-semibold text-text-1">模型配置（{models.data.length}）</h2><div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="secondary" onClick={() => { setCreatingAsr(true); setEditing(null) }}>添加ASR配置</Button>
+            <Button size="sm" variant="primary" onClick={() => { setCreatingAsr(false); setEditing(null) }}><Plus className="size-4" aria-hidden />添加模型</Button></div></div>
             {models.data.length === 0 ? <EmptyState title="添加第一个模型" description="保存服务地址、模型标识和凭据，即可启用文字调用。" />
               : <div className="grid gap-3 lg:grid-cols-2">{models.data.map((model) => <div key={model.id} className="min-w-0 space-y-2 rounded-ctl border border-border p-4">
                 <div className="flex flex-wrap items-center gap-2"><span className="font-medium text-text-1">{model.name}</span><StatusBadge tone={model.enabled ? 'ok' : 'neutral'} dot={false}>{model.enabled ? '已启用' : '已停用'}</StatusBadge></div>
                 <p className="break-all font-mono text-xs text-text-2">{model.model}</p><p className="break-all text-xs text-text-3">{model.baseUrl}</p>
                 <div className="flex flex-wrap gap-1">{model.capabilities.map((cap) => <Chip key={cap}>{capabilityNames[cap]}</Chip>)}</div>
-                <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-text-3">凭据{model.hasApiKey ? '已保存' : '未设置'} · {model.timeoutSeconds}秒 · {model.maxOutputTokens}输出上限</span><div className="flex gap-1"><Button size="sm" variant="ghost" onClick={() => setEditing(model)} aria-label={`编辑 ${model.name}`}>编辑</Button><Button size="sm" variant="ghost" onClick={() => setDeleting(model)} aria-label={`删除 ${model.name}`}>删除</Button></div></div>
+                <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-text-3">凭据{model.hasApiKey ? '已保存' : '未设置'} · {model.timeoutSeconds}秒 · {model.asrPresetId ? `ASR预设 ${model.asrPresetId}` : `${model.maxOutputTokens}输出上限`}</span><div className="flex gap-1"><Button size="sm" variant="ghost" onClick={() => setEditing(model)} aria-label={`编辑 ${model.name}`}>编辑</Button><Button size="sm" variant="ghost" onClick={() => setDeleting(model)} aria-label={`删除 ${model.name}`}>删除</Button></div></div>
               </div>)}</div>}
           </Card>
-          <Segmented value={callMode} onValueChange={setCallMode} options={[{ value: 'text', label: '文字调用' }, { value: 'vision', label: '图片与正文' }]} />
+          <Segmented value={callMode} onValueChange={(value) => { setCallMode(value); if (value === 'asr') setAsrOpened(true) }} options={[{ value: 'text', label: '文字调用' }, { value: 'vision', label: '图片与正文' }, { value: 'asr', label: '音频转写' }]} />
           <div hidden={callMode !== 'text'}><TextCall userId={userId} models={models.data} settings={settings.data} changed={() => void refresh()} showDetail={setDetailId} /></div>
           <div hidden={callMode !== 'vision'}><VisionCall userId={userId} models={models.data} settings={settings.data} changed={() => void refresh()} showDetail={setDetailId} renderStatus={(status) => <State value={status} />} /></div>
+          {asrOpened && <div hidden={callMode !== 'asr'}><AsrCall userId={userId} models={models.data} settings={settings.data} changed={() => void refresh()} showDetail={setDetailId} renderStatus={(status) => <State value={status} />} /></div>}
           <LegacyInfo prefix={prefix} />
         </>}
     </div>
     {tab === 'history' && <History prefix={prefix} showDetail={setDetailId} />}
     {tab === 'usage' && <Statistics prefix={prefix} />}
-    {editing !== undefined && <ModelEditor key={editing?.id ?? 'new'} model={editing} close={() => setEditing(undefined)} save={async (body) => { const result = await aiApi.saveModel(editing?.id, body); await refresh(); notifySuccess('模型已保存'); return result }} />}
+    {editing !== undefined && <ModelEditor key={editing?.id ?? (creatingAsr ? 'new-asr' : 'new')} model={editing} initialAsr={creatingAsr && editing === null} close={() => setEditing(undefined)} save={async (body) => { const result = await aiApi.saveModel(editing?.id, body); await refresh(); notifySuccess('模型已保存'); return result }} />}
     <Dialog open={deleting != null} onOpenChange={(open) => { if (!open && !busy) setDeleting(null) }}><DialogContent showClose={!busy}>
       <DialogHeader title="删除模型配置" description="已有调用记录保留；默认模型需先切换或清空。" /><DialogBody><p className="text-sm text-text-2">确认删除“{deleting?.name}”？</p></DialogBody>
       <DialogFooter><Button variant="secondary" disabled={busy} onClick={() => setDeleting(null)}>取消</Button><Button variant="primary" loading={busy} onClick={() => {
@@ -145,7 +151,7 @@ function History({ prefix, showDetail }: { prefix: string[]; showDetail: (id: st
       <form className="flex min-w-0 flex-1 gap-2" onSubmit={(e) => { e.preventDefault(); setFilter(model); setPage(1) }}><Input aria-label="按模型标识筛选" value={model} onChange={(e) => setModel(e.target.value)} placeholder="模型标识（精确匹配）" /><Button type="submit" variant="secondary">筛选</Button></form></div>
     {rows.isLoading ? <Skeleton className="h-40" /> : rows.isError ? <EmptyState title="记录读取失败" description={errorText(rows.error)} action={<Button onClick={() => void rows.refetch()}>重试</Button>} /> : !rows.data?.items.length ? <EmptyState title="暂无调用记录" description="完成一次文字调用后，会在这里显示实际请求与回复。" />
       : <div className="space-y-2">{rows.data.items.map((row) => <button key={row.id} type="button" className="flex w-full flex-wrap items-center justify-between gap-3 rounded-ctl border border-border p-3 text-left hover:bg-surface" onClick={() => showDetail(row.id)}>
-        <div className="min-w-0"><p className="truncate text-sm font-medium text-text-1">{row.modelProfileName ?? row.model}</p><p className="mt-1 text-xs text-text-3">{formatTime(row.startedAt)} · {row.purpose === 'ai.vision-call' ? 'SDK 视觉' : row.purpose === 'ai.text-call' ? 'SDK 直连' : row.module + ' / ' + row.purpose}</p></div>
+        <div className="min-w-0"><p className="truncate text-sm font-medium text-text-1">{row.modelProfileName ?? row.model}</p><p className="mt-1 text-xs text-text-3">{formatTime(row.startedAt)} · {row.purpose === 'ai.asr-call' ? 'ASR 转写' : row.purpose === 'ai.vision-call' ? 'SDK 视觉' : row.purpose === 'ai.text-call' ? 'SDK 直连' : row.module + ' / ' + row.purpose}</p></div>
         <div className="flex flex-wrap items-center gap-3 text-xs text-text-3"><State value={row.status} /><span>{row.totalTokens == null ? 'Token 未上报' : `${row.totalTokens} token`}</span><span>{row.durationMs == null ? '—' : `${row.durationMs}ms`}</span></div>
       </button>)}</div>}
     <div className="flex items-center justify-between gap-3 text-xs text-text-3"><span>{rows.data?.totalCount ?? 0} 条记录</span><div className="flex items-center gap-2"><Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage((v) => v - 1)}>上一页</Button><span>{page} / {Math.max(1, rows.data?.totalPages ?? 1)}</span><Button size="sm" variant="secondary" disabled={page >= (rows.data?.totalPages ?? 1)} onClick={() => setPage((v) => v + 1)}>下一页</Button></div></div>
@@ -170,18 +176,24 @@ function Detail({ id, prefix, close }: { id: string; prefix: string[]; close: ()
   const row = data.data
   return <Dialog open onOpenChange={(open) => { if (!open) close() }}><DialogContent className="max-w-[760px]"><DialogHeader title="调用详情" description={row ? `${row.modelProfileName ?? row.model} · ${formatTime(row.startedAt)}` : '正在读取记录'} />
     <DialogBody className="space-y-4">{data.isLoading ? <Skeleton className="h-40" /> : data.isError || !row ? <EmptyState title="详情读取失败" description={errorText(data.error)} action={<Button onClick={() => void data.refetch()}>重试</Button>} /> : <>
-      <div className="flex flex-wrap items-center gap-3"><State value={row.status} /><Chip>{row.purpose === 'ai.vision-call' ? 'SDK 视觉调用' : row.purpose === 'ai.text-call' ? 'SDK 调用记录' : '旧链路记录'}</Chip><span className="text-xs text-text-3">结束原因：{row.finishReason ?? '未提供'} · Token：{row.usage?.totalTokens ?? '未上报'}</span></div>
+      <div className="flex flex-wrap items-center gap-3"><State value={row.status} /><Chip>{row.purpose === 'ai.asr-call' ? 'ASR 调用记录' : row.purpose === 'ai.vision-call' ? 'SDK 视觉调用' : row.purpose === 'ai.text-call' ? 'SDK 调用记录' : '旧链路记录'}</Chip><span className="text-xs text-text-3">结束原因：{row.finishReason ?? '未提供'} · Token：{row.usage?.totalTokens ?? '未上报'}</span></div>
       <p className="text-xs text-text-3">输入 Token {row.usage?.promptTokens ?? '未上报'} · 输出 Token {row.usage?.completionTokens ?? '未上报'} · 耗时 {row.durationMs == null ? '未记录' : `${row.durationMs}ms`} · 费用 {row.usage?.estimatedCost == null ? '未知' : `${row.usage.estimatedCost} ${row.usage.currency ?? '（币种未提供）'}（估算）`}</p>
       {row.errorMessage && <p role="alert" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{row.errorMessage}</p>}
       {row.contentRedacted && <p className="text-xs text-text-3">本条内容中出现的认证凭据已遮盖，并作此标记。</p>}
       <div><Label htmlFor="ai-record-messages">实际请求消息／上下文</Label><Textarea id="ai-record-messages" className="font-mono text-xs" readOnly rows={8} value={pretty(row.requestMessagesJson)} /></div>
       <div><Label htmlFor="ai-record-reply">实际回复</Label><Textarea id="ai-record-reply" readOnly rows={8} value={row.responseText ?? '未收到普通文本回复；可查看下方SDK/错误快照。'} /></div>
       {row.purpose === 'ai.vision-call' && <><p className="text-xs text-text-3">SDK消息中的图片按指纹引用到下方材料，正文和回复按原内容保留；未执行或准备失败的记录不代表图片已发送。</p><CallImages logId={id} owner={row.userId} viewer={prefix[1]!} running={row.status === 'Running'} /></>}
+      {row.purpose === 'ai.asr-call' && <><AsrInfo metadata={row.metadataJson} /><CallAudio key={`${id}/${row.status === 'Running'}`} logId={id} owner={row.userId} viewer={prefix[1]!} running={row.status === 'Running'} /></>}
       <details className="text-xs text-text-3"><summary className="cursor-pointer">配置与 SDK／错误结果快照</summary><div className="mt-3 space-y-2"><p className="break-all">{row.modelEndpoint ?? '旧链路未记录地址'} · 模型 {row.model}</p><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{pretty(row.requestPayloadJson)}</pre><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{pretty(row.responseRawJson)}</pre><p>请求标识：{row.clientRequestId ?? '旧记录未提供'}</p></div></details>
     </>}</DialogBody><DialogFooter><Button variant="secondary" onClick={close}>关闭</Button></DialogFooter>
   </DialogContent></Dialog>
 }
 function pretty(value: string) { try { return JSON.stringify(JSON.parse(value), null, 2) } catch { return value } }
+function AsrInfo({ metadata }: { metadata: string }) {
+  let value: Record<string, unknown>
+  try { const parsed: unknown = JSON.parse(metadata); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null; value = parsed as Record<string, unknown> } catch { return null }
+  return <p className="text-xs text-text-3">ASR预设 {String(value.asrPresetId ?? '未提供')} · v{String(value.asrPresetVersion ?? '—')} · 语言 {String(value.language ?? '—')} · 服务商报告音频 {typeof value.reportedAudioSeconds === 'number' ? `${value.reportedAudioSeconds}秒` : '时长未知'}；音频按指纹引用保存。</p>
+}
 
 function LegacyInfo({ prefix }: { prefix: string[] }) {
   const [open, setOpen] = useState(false)

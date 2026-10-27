@@ -14,6 +14,7 @@ public sealed class AiModelProfileEntity
     [Column("model"), MaxLength(128)] public string Model { get; set; } = "";
     [Column("enabled")] public bool Enabled { get; set; }
     [Column("capabilities")] public int Capabilities { get; set; }
+    [Column("asr_preset_id"), MaxLength(64)] public string? AsrPresetId { get; set; }
     [Column("api_key_secret")] public string ApiKeySecret { get; set; } = "";
     [Column("timeout_seconds")] public int TimeoutSeconds { get; set; } = 60;
     [Column("max_output_tokens")] public int MaxOutputTokens { get; set; } = 1024;

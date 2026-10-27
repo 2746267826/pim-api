@@ -5,10 +5,11 @@ using Pim.Core.Exceptions;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Secrets;
+using Pim.Infrastructure.Ai.Asr;
 
 namespace Pim.Infrastructure.Ai;
 
-public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector secrets)
+public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector secrets, AiAsrPresetRegistry? asrPresets = null)
 {
     public async Task<IReadOnlyList<AiModelDto>> ListAsync(CancellationToken ct) =>
         (await db.AiModelProfiles.AsNoTracking().OrderBy(x => x.Name).ToListAsync(ct)).Select(Map).ToArray();
@@ -19,6 +20,7 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         var model = Clean(request.Model, 128, "模型标识");
         var endpoint = Endpoint(request.BaseUrl);
         var capabilities = ToFlags(request.Capabilities);
+        var presetId = string.IsNullOrWhiteSpace(request.AsrPresetId) ? null : request.AsrPresetId.Trim();
         if (request.TimeoutSeconds is < 1 or > 600 || request.MaxOutputTokens is < 1 or > 131072)
             throw Invalid("超时须为1–600秒，输出上限须为1–131072 token");
         var key = request.ApiKey?.Trim();
@@ -42,6 +44,18 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
             if (string.IsNullOrEmpty(key)) throw Invalid("新模型需要API Key；无鉴权本地服务可填写非空占位值");
             row = new(); db.AiModelProfiles.Add(row);
         }
+        if (row.AsrPresetId is not null && capabilities != 4)
+            throw Invalid("ASR独立配置不可改为文本/视觉配置，请另建模型以隔离凭据");
+        if (capabilities == 4 && presetId is null) presetId = row.AsrPresetId;
+        if (capabilities == 4 && id is null && presetId is null) throw Invalid("新建ASR配置需要选择接入预设");
+        if (presetId is not null)
+        {
+            if (capabilities != 4) throw Invalid("ASR预设需使用独立语音转写配置，不可混用文本/视觉凭据");
+            if (row.AsrPresetId is not null && row.AsrPresetId != presetId && key is null)
+                throw Invalid("切换ASR厂商预设需要重新填写凭据，不能自动沿用旧密钥");
+            var preset = asrPresets?.Resolve(presetId) ?? throw Invalid("ASR预设不可用");
+            preset.ValidateModel(model); endpoint = preset.NormalizeEndpoint(endpoint);
+        }
         var normalized = name.ToUpperInvariant();
         string effectiveKey;
         try { effectiveKey = key ?? secrets.Unprotect(row.ApiKeySecret); }
@@ -52,6 +66,7 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
             throw new DomainException(40901, "已有同名模型配置");
         row.Name = name; row.NormalizedName = normalized; row.BaseUrl = endpoint; row.Model = model;
         row.Enabled = request.Enabled; row.Capabilities = capabilities; row.TimeoutSeconds = request.TimeoutSeconds;
+        row.AsrPresetId = presetId;
         row.MaxOutputTokens = request.MaxOutputTokens; row.Revision = Guid.NewGuid(); row.UpdatedAt = DateTimeOffset.UtcNow;
         if (key is not null) row.ApiKeySecret = secrets.Protect(key);
         try { await db.SaveChangesAsync(ct); }
@@ -122,7 +137,7 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
     }
     public static AiModelDto Map(AiModelProfileEntity row) => new(row.Id, row.Revision, row.Name, row.BaseUrl,
         row.Model, row.Enabled, Enum.GetValues<AiModelCapability>().Where(v => (row.Capabilities & (1 << (int)v)) != 0).ToArray(),
-        row.ApiKeySecret.Length != 0, row.TimeoutSeconds, row.MaxOutputTokens, row.CreatedAt, row.UpdatedAt);
+        row.ApiKeySecret.Length != 0, row.TimeoutSeconds, row.MaxOutputTokens, row.CreatedAt, row.UpdatedAt, row.AsrPresetId);
     private static AiModelSettingsDto Map(AiModelRuntimeEntity row) => new(row.Revision, row.Enabled,
         row.TextModelId, row.VisionModelId, row.TranscriptionModelId);
     private static DomainException Invalid(string message) => new(40001, message);
