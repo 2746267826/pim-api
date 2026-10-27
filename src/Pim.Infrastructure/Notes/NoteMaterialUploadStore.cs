@@ -250,11 +250,10 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             throw Invalid("材料文件摘要不匹配，未接受为完整版本");
         if (file.Kind is "Photo" or "InkPreview")
         {
-            var valid = file.Path.EndsWith(".png", StringComparison.Ordinal) && headerLength >= 8 &&
-                header.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }) ||
-                file.Path.EndsWith(".jpg", StringComparison.Ordinal) && headerLength >= 3 && header[0] == 255 && header[1] == 216 && header[2] == 255 ||
-                file.Path.EndsWith(".webp", StringComparison.Ordinal) && headerLength >= 12 &&
-                header.AsSpan(0, 4).SequenceEqual("RIFF"u8) && header.AsSpan(8, 4).SequenceEqual("WEBP"u8);
+            var mime = ImageFileSignature.Detect(header.AsSpan(0, headerLength));
+            var valid = file.Path.EndsWith(".png", StringComparison.Ordinal) && mime == "image/png" ||
+                file.Path.EndsWith(".jpg", StringComparison.Ordinal) && mime == "image/jpeg" ||
+                file.Path.EndsWith(".webp", StringComparison.Ordinal) && mime == "image/webp";
             if (!valid) throw Invalid("照片或手写预览图的文件类型与固定材料不一致");
         }
         if (file.Kind == "AudioChunk" && (headerLength != 44 ||

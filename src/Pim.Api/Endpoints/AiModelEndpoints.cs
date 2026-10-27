@@ -36,5 +36,24 @@ public static class AiModelEndpoints
         group.MapGet("/text-calls/{clientRequestId:guid}", async (Guid clientRequestId, [FromServices] AiTextCallService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiTextCallResultDto>.Ok(await service.GetAsync(clientRequestId, ct))))
             .Produces<ApiResponse<AiTextCallResultDto>>(200).Produces(401).Produces(403).Produces(404);
+        group.MapPost("/vision-calls", async (AiVisionCallRequest request, [FromServices] AiTextCallService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiTextCallResultDto>.Ok(await service.CallVisionAsync(request, ct))))
+            .WithMetadata(new RequestSizeLimitAttribute(13 * 1024 * 1024))
+            .Produces<ApiResponse<AiTextCallResultDto>>(200).Produces(400).Produces(401).Produces(403).Produces(409).Produces(413).Produces(503);
+        group.MapGet("/vision-calls/{clientRequestId:guid}", async (Guid clientRequestId, [FromServices] AiTextCallService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiTextCallResultDto>.Ok(await service.GetAsync(clientRequestId, ct))))
+            .Produces<ApiResponse<AiTextCallResultDto>>(200).Produces(401).Produces(403).Produces(404);
+        group.MapGet("/requests/{logId:guid}/images", async (Guid logId, [FromServices] AiVisionMaterialService images, CancellationToken ct) =>
+            Results.Ok(ApiResponse<IReadOnlyList<AiCallImageDto>>.Ok(await images.ListAsync(logId, ct))))
+            .Produces<ApiResponse<IReadOnlyList<AiCallImageDto>>>(200).Produces(401).Produces(403).Produces(404);
+        group.MapGet("/requests/{logId:guid}/images/{imageId:guid}", async (Guid logId, Guid imageId, HttpResponse response,
+            [FromServices] AiVisionMaterialService images, CancellationToken ct) =>
+        {
+            // ReadAsync verifies current-user ownership before accessing the original file provider.
+            var content = await images.ReadAsync(logId, imageId, ct);
+            response.Headers.CacheControl = "private, no-store";
+            response.Headers["X-Content-Type-Options"] = "nosniff";
+            return Results.File(content.Bytes, content.ContentType);
+        }).Produces(200, contentType: "image/png", additionalContentTypes: ["image/jpeg"]).Produces(401).Produces(403).Produces(404).Produces(409);
     }
 }

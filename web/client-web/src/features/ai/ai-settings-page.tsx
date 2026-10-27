@@ -6,7 +6,9 @@ import { notifyError, notifySuccess } from '@/lib/notify'
 import { formatTime } from '@/lib/datetime'
 import { Button, Card, Chip, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, EmptyState, Input, Label, PageHeader, Segmented, Select, Skeleton, StatusBadge, Switch, Textarea } from '@/components/ui'
 import { aiApi, type CallRequest, type CallResult, type Model, type ModelSettings, type SaveSettings } from './api'
+import { createAiRequestId } from './request-id'
 import { capabilities, capabilityNames, ModelEditor } from './model-editor'
+import { CallImages, VisionCall } from './vision-call'
 
 const states = { Succeeded: '成功', Failed: '失败', Blocked: '未执行', TimedOut: '超时', FailedValidation: '结构不符', Running: '进行中', Cancelled: '已取消', Incomplete: '未完整/未确认' }
 function State({ value }: { value: string }) {
@@ -24,6 +26,7 @@ function Workspace({ userId }: { userId: string }) {
   const qc = useQueryClient()
   const prefix = ['ai', userId]
   const [tab, setTab] = useState<'models' | 'history' | 'usage'>('models')
+  const [callMode, setCallMode] = useState<'text' | 'vision'>('text')
   const [editing, setEditing] = useState<Model | null | undefined>(undefined)
   const [deleting, setDeleting] = useState<Model | null>(null)
   const [busy, setBusy] = useState(false)
@@ -63,7 +66,7 @@ function Workspace({ userId }: { userId: string }) {
                 options={[{ value: '', label: '未选择' }, ...options.map((m) => ({ value: m.id, label: m.name + (m.enabled ? '' : '（已停用）') }))]}
                 onValueChange={(value) => void patchSettings({ [field]: value || null })} /></div>
             })}</div>
-            <p className="text-xs text-text-3">已开始的调用使用开始时的配置快照。视觉与语音转写目前可配置，调用能力将在后续批次接入。</p>
+            <p className="text-xs text-text-3">已开始的调用使用固定配置。视觉支持PNG/JPEG多图调用；语音转写当前仅可配置，调用能力待接入。</p>
           </Card>
           <Card className="p-5"><div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-sm font-semibold text-text-1">模型配置（{models.data.length}）</h2><Button size="sm" variant="primary" onClick={() => setEditing(null)}><Plus className="size-4" aria-hidden />添加模型</Button></div>
             {models.data.length === 0 ? <EmptyState title="添加第一个模型" description="保存服务地址、模型标识和凭据，即可启用文字调用。" />
@@ -74,7 +77,9 @@ function Workspace({ userId }: { userId: string }) {
                 <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-text-3">凭据{model.hasApiKey ? '已保存' : '未设置'} · {model.timeoutSeconds}秒 · {model.maxOutputTokens}输出上限</span><div className="flex gap-1"><Button size="sm" variant="ghost" onClick={() => setEditing(model)} aria-label={`编辑 ${model.name}`}>编辑</Button><Button size="sm" variant="ghost" onClick={() => setDeleting(model)} aria-label={`删除 ${model.name}`}>删除</Button></div></div>
               </div>)}</div>}
           </Card>
-          <TextCall userId={userId} models={models.data} settings={settings.data} changed={() => void refresh()} showDetail={setDetailId} />
+          <Segmented value={callMode} onValueChange={setCallMode} options={[{ value: 'text', label: '文字调用' }, { value: 'vision', label: '图片与正文' }]} />
+          <div hidden={callMode !== 'text'}><TextCall userId={userId} models={models.data} settings={settings.data} changed={() => void refresh()} showDetail={setDetailId} /></div>
+          <div hidden={callMode !== 'vision'}><VisionCall userId={userId} models={models.data} settings={settings.data} changed={() => void refresh()} showDetail={setDetailId} renderStatus={(status) => <State value={status} />} /></div>
           <LegacyInfo prefix={prefix} />
         </>}
     </div>
@@ -90,12 +95,6 @@ function Workspace({ userId }: { userId: string }) {
     </DialogContent></Dialog>
     {detailId && <Detail id={detailId} prefix={prefix} close={() => setDetailId(null)} />}
   </div>
-}
-
-function requestId() {
-  const bytes = crypto.getRandomValues(new Uint8Array(16)); bytes[6] = (bytes[6]! & 15) | 64; bytes[8] = (bytes[8]! & 63) | 128
-  const hex = [...bytes].map((v) => v.toString(16).padStart(2, '0')).join('')
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
 function TextCall({ userId, models, settings, changed, showDetail }: { userId: string; models: Model[]; settings: ModelSettings; changed: () => void; showDetail: (id: string) => void }) {
@@ -118,7 +117,7 @@ function TextCall({ userId, models, settings, changed, showDetail }: { userId: s
     <div><Label htmlFor="ai-call-prompt">正文与上下文</Label><Textarea id="ai-call-prompt" value={prompt} maxLength={200000} rows={6} onChange={(e) => setPrompt(e.target.value)} placeholder="填写本次实际发送给模型的内容" /><p className="mt-1 text-xs text-text-3">总输入 {system.length + prompt.length} / 200000 字符；按原输入保留。当前为单次非流式调用。</p></div>
     <div className="flex flex-wrap gap-2">
       <Button variant="primary" loading={pending} disabled={!ready || !prompt.trim() || system.length + prompt.length > 200000 || submitted !== null} onClick={() => {
-        const body: CallRequest = { clientRequestId: requestId(), expectedUserId: userId, prompt, systemPrompt: system || null, modelId: selected || null }
+        const body: CallRequest = { clientRequestId: createAiRequestId(), expectedUserId: userId, prompt, systemPrompt: system || null, modelId: selected || null }
         const controller = new AbortController(); abort.current = controller; setSubmitted(body); setResult(null); setMessage(null); setPending(true)
         void aiApi.call(body, controller.signal).then(setResult).catch((error: unknown) => setMessage(controller.signal.aborted ? '已请求取消，请在调用记录中核对状态；上游是否结束以其记录为准。' : errorText(error) + '；请先核对本次记录，页面不会自动重发。'))
           .finally(() => { setPending(false); changed() })
@@ -146,7 +145,7 @@ function History({ prefix, showDetail }: { prefix: string[]; showDetail: (id: st
       <form className="flex min-w-0 flex-1 gap-2" onSubmit={(e) => { e.preventDefault(); setFilter(model); setPage(1) }}><Input aria-label="按模型标识筛选" value={model} onChange={(e) => setModel(e.target.value)} placeholder="模型标识（精确匹配）" /><Button type="submit" variant="secondary">筛选</Button></form></div>
     {rows.isLoading ? <Skeleton className="h-40" /> : rows.isError ? <EmptyState title="记录读取失败" description={errorText(rows.error)} action={<Button onClick={() => void rows.refetch()}>重试</Button>} /> : !rows.data?.items.length ? <EmptyState title="暂无调用记录" description="完成一次文字调用后，会在这里显示实际请求与回复。" />
       : <div className="space-y-2">{rows.data.items.map((row) => <button key={row.id} type="button" className="flex w-full flex-wrap items-center justify-between gap-3 rounded-ctl border border-border p-3 text-left hover:bg-surface" onClick={() => showDetail(row.id)}>
-        <div className="min-w-0"><p className="truncate text-sm font-medium text-text-1">{row.modelProfileName ?? row.model}</p><p className="mt-1 text-xs text-text-3">{formatTime(row.startedAt)} · {row.purpose === 'ai.text-call' ? 'SDK 直连' : row.module + ' / ' + row.purpose}</p></div>
+        <div className="min-w-0"><p className="truncate text-sm font-medium text-text-1">{row.modelProfileName ?? row.model}</p><p className="mt-1 text-xs text-text-3">{formatTime(row.startedAt)} · {row.purpose === 'ai.vision-call' ? 'SDK 视觉' : row.purpose === 'ai.text-call' ? 'SDK 直连' : row.module + ' / ' + row.purpose}</p></div>
         <div className="flex flex-wrap items-center gap-3 text-xs text-text-3"><State value={row.status} /><span>{row.totalTokens == null ? 'Token 未上报' : `${row.totalTokens} token`}</span><span>{row.durationMs == null ? '—' : `${row.durationMs}ms`}</span></div>
       </button>)}</div>}
     <div className="flex items-center justify-between gap-3 text-xs text-text-3"><span>{rows.data?.totalCount ?? 0} 条记录</span><div className="flex items-center gap-2"><Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage((v) => v - 1)}>上一页</Button><span>{page} / {Math.max(1, rows.data?.totalPages ?? 1)}</span><Button size="sm" variant="secondary" disabled={page >= (rows.data?.totalPages ?? 1)} onClick={() => setPage((v) => v + 1)}>下一页</Button></div></div>
@@ -171,12 +170,13 @@ function Detail({ id, prefix, close }: { id: string; prefix: string[]; close: ()
   const row = data.data
   return <Dialog open onOpenChange={(open) => { if (!open) close() }}><DialogContent className="max-w-[760px]"><DialogHeader title="调用详情" description={row ? `${row.modelProfileName ?? row.model} · ${formatTime(row.startedAt)}` : '正在读取记录'} />
     <DialogBody className="space-y-4">{data.isLoading ? <Skeleton className="h-40" /> : data.isError || !row ? <EmptyState title="详情读取失败" description={errorText(data.error)} action={<Button onClick={() => void data.refetch()}>重试</Button>} /> : <>
-      <div className="flex flex-wrap items-center gap-3"><State value={row.status} /><Chip>{row.purpose === 'ai.text-call' ? 'SDK 调用记录' : '旧链路记录'}</Chip><span className="text-xs text-text-3">结束原因：{row.finishReason ?? '未提供'} · Token：{row.usage?.totalTokens ?? '未上报'}</span></div>
+      <div className="flex flex-wrap items-center gap-3"><State value={row.status} /><Chip>{row.purpose === 'ai.vision-call' ? 'SDK 视觉调用' : row.purpose === 'ai.text-call' ? 'SDK 调用记录' : '旧链路记录'}</Chip><span className="text-xs text-text-3">结束原因：{row.finishReason ?? '未提供'} · Token：{row.usage?.totalTokens ?? '未上报'}</span></div>
       <p className="text-xs text-text-3">输入 Token {row.usage?.promptTokens ?? '未上报'} · 输出 Token {row.usage?.completionTokens ?? '未上报'} · 耗时 {row.durationMs == null ? '未记录' : `${row.durationMs}ms`} · 费用 {row.usage?.estimatedCost == null ? '未知' : `${row.usage.estimatedCost} ${row.usage.currency ?? '（币种未提供）'}（估算）`}</p>
       {row.errorMessage && <p role="alert" className="rounded-ctl bg-surface p-3 text-sm text-text-2">{row.errorMessage}</p>}
       {row.contentRedacted && <p className="text-xs text-text-3">本条内容中出现的认证凭据已遮盖，并作此标记。</p>}
       <div><Label htmlFor="ai-record-messages">实际请求消息／上下文</Label><Textarea id="ai-record-messages" className="font-mono text-xs" readOnly rows={8} value={pretty(row.requestMessagesJson)} /></div>
       <div><Label htmlFor="ai-record-reply">实际回复</Label><Textarea id="ai-record-reply" readOnly rows={8} value={row.responseText ?? '未收到普通文本回复；可查看下方SDK/错误快照。'} /></div>
+      {row.purpose === 'ai.vision-call' && <><p className="text-xs text-text-3">SDK消息中的图片按指纹引用到下方材料，正文和回复按原内容保留；未执行或准备失败的记录不代表图片已发送。</p><CallImages logId={id} owner={row.userId} viewer={prefix[1]!} running={row.status === 'Running'} /></>}
       <details className="text-xs text-text-3"><summary className="cursor-pointer">配置与 SDK／错误结果快照</summary><div className="mt-3 space-y-2"><p className="break-all">{row.modelEndpoint ?? '旧链路未记录地址'} · 模型 {row.model}</p><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{pretty(row.requestPayloadJson)}</pre><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{pretty(row.responseRawJson)}</pre><p>请求标识：{row.clientRequestId ?? '旧记录未提供'}</p></div></details>
     </>}</DialogBody><DialogFooter><Button variant="secondary" onClick={close}>关闭</Button></DialogFooter>
   </DialogContent></Dialog>

@@ -3,6 +3,7 @@ using OpenAI;
 using OpenAI.Chat;
 using System.ClientModel;
 using System.ClientModel.Primitives;
+using System.Text.Json.Nodes;
 
 namespace Pim.Infrastructure.Ai;
 
@@ -23,6 +24,11 @@ public sealed class AiProfileClientLease(IChatClient client, IDisposable? transp
 }
 
 /// <summary>Per logical call, async-flow local capture. Never captures authentication headers.</summary>
+public sealed record AiVisionAuditImage(Guid Id, string DataUrl)
+{
+    public override string ToString() => $"AiVisionAuditImage {{ Id = {Id}, Data = [image] }}";
+}
+
 public sealed class AiTextWireCapture : IDisposable
 {
     private static readonly AsyncLocal<AiTextWireCapture?> Slot = new();
@@ -31,8 +37,31 @@ public sealed class AiTextWireCapture : IDisposable
     public string? RequestBody { get; private set; }
     public string? ResponseBody { get; private set; }
     public bool ResponseTooLarge { get; private set; }
-    public AiTextWireCapture() => Slot.Value = this;
-    public void Request(byte[] bytes) => RequestBody = System.Text.Encoding.UTF8.GetString(bytes);
+    public bool RequestRejected { get; private set; }
+    public bool ProviderAttempted { get; private set; }
+    private IReadOnlyList<AiVisionAuditImage>? _images;
+    public int MaxRequestBytes => _images is null ? 2 * 1024 * 1024 : 12 * 1024 * 1024;
+    public AiTextWireCapture(IReadOnlyList<AiVisionAuditImage>? images = null) { _images = images; Slot.Value = this; }
+    public void SetImages(IReadOnlyList<AiVisionAuditImage> images) => _images = images;
+    public void Request(byte[] bytes)
+    {
+        if (_images is null) { RequestBody = System.Text.Encoding.UTF8.GetString(bytes); return; }
+        // Normalize only the SDK's binary image parts for audit storage. Sent bytes remain untouched.
+        // All referenced bytes are separately stored and hashed; text is never summarized/replaced.
+        var body = JsonNode.Parse(bytes)!;
+        var parts = body["messages"]!.AsArray().SelectMany(m => m?["content"] is JsonArray content
+            ? content.OfType<JsonObject>() : Enumerable.Empty<JsonObject>())
+            .Where(p => p["type"]?.GetValue<string>() == "image_url").ToArray();
+        if (parts.Length != _images.Count) Reject();
+        for (var index = 0; index < parts.Length; index++)
+        {
+            if (parts[index]["image_url"]?["url"]?.GetValue<string>() != _images[index].DataUrl) Reject();
+            parts[index]["image_url"]!["url"] = $"pim-ai-image:{_images[index].Id:D}";
+        }
+        RequestBody = body.ToJsonString();
+    }
+    private void Reject() { RequestRejected = true; throw new InvalidDataException("SDK图片清单与固定材料不一致，本次未发送模型"); }
+    public void Attempt() => ProviderAttempted = true;
     public void Response(byte[] bytes) => ResponseBody = System.Text.Encoding.UTF8.GetString(bytes);
     public void TooLarge() => ResponseTooLarge = true;
     public void Dispose() => Slot.Value = _previous;
@@ -71,12 +100,13 @@ public sealed class AiTextResponseLimitHandler : DelegatingHandler
         var capture = AiTextWireCapture.Current;
         if (request.Content is { } requestContent)
         {
-            var bytes = await ReadAsync(requestContent, 2 * 1024 * 1024, ct);
+            var bytes = await ReadAsync(requestContent, capture?.MaxRequestBytes ?? 2 * 1024 * 1024, ct);
             capture?.Request(bytes);
             var replacement = new ByteArrayContent(bytes);
             foreach (var header in requestContent.Headers) replacement.Headers.TryAddWithoutValidation(header.Key, header.Value);
             request.Content = replacement; requestContent.Dispose();
         }
+        capture?.Attempt();
         var response = await base.SendAsync(request, ct);
         try
         {

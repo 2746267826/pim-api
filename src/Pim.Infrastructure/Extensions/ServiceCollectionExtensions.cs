@@ -50,6 +50,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAiChatClientFactory, AiChatClientFactory>();
         services.AddScoped<AiModelSettingsService>();
         services.AddScoped<AiTextCallService>();
+        services.AddScoped<AiVisionMaterialService>();
         services.AddSingleton<AiTextCallGate>();
         services.AddSingleton<IAiProfileChatClientFactory, AiProfileChatClientFactory>();
         services.AddTransient<AiTextResponseLimitHandler>();
