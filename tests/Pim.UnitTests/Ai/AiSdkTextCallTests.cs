@@ -64,6 +64,23 @@ public sealed class AiSdkTextCallTests : IDisposable
         Assert.Empty(await Settings.ListAsync(default));
     }
 
+    [Fact]
+    public async Task SdkCanBeTurnedOffAfterItsDefaultProfileIsDisabled()
+    {
+        var model = await Model(); await Enable(model);
+        await Settings.SaveAsync(model.Id, new(model.Name, model.BaseUrl, model.Model, false,
+            model.Capabilities, model.TimeoutSeconds, model.MaxOutputTokens, null, model.Revision), default);
+        var config = await Settings.GetSettingsAsync(default);
+
+        var disabled = await Settings.SaveSettingsAsync(new(config.Revision, false, model.Id, null, null), default);
+
+        Assert.False(disabled.Enabled); Assert.Equal(model.Id, disabled.TextModelId);
+        var blocked = await Caller.CallAsync(Request(), default);
+        Assert.Equal(AiRequestStatus.Blocked, blocked.Status); Assert.Equal(0, _wire.Calls);
+        await Assert.ThrowsAsync<DomainException>(() => Settings.SaveSettingsAsync(
+            new(disabled.Revision, true, model.Id, null, null), default));
+    }
+
     [Theory]
     [InlineData("file:///etc/passwd")]
     [InlineData("https://user:pass@example.com/v1")]

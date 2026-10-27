@@ -87,7 +87,7 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
         {
             if (id is null) continue;
             var profile = await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
-            if (profile is null || !profile.Enabled || (profile.Capabilities & flag) == 0)
+            if (profile is null || request.Enabled && !profile.Enabled || (profile.Capabilities & flag) == 0)
                 throw Invalid("默认模型不存在、未启用或未声明对应能力");
         }
         if (row is null) { row = new(); db.AiModelRuntime.Add(row); }
