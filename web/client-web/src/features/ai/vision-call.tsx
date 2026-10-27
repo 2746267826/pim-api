@@ -3,23 +3,10 @@ import { useQuery } from '@tanstack/react-query'
 import { Button, Card, EmptyState, Label, Select, Skeleton, Textarea } from '@/components/ui'
 import { aiApi, type CallImage, type CallResult, type Model, type ModelSettings, type VisionRequest } from './api'
 import { createAiRequestId } from './request-id'
+import { readMediaFile } from './media-file'
 
 const maxImage = 4 * 1024 * 1024
 const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败'
-
-function readImage(file: File, signal: AbortSignal): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    const abort = () => reader.abort()
-    const clean = () => signal.removeEventListener('abort', abort)
-    if (signal.aborted) { reject(new DOMException('已取消', 'AbortError')); return }
-    signal.addEventListener('abort', abort, { once: true })
-    reader.onload = () => { clean(); const value = String(reader.result); resolve(value.slice(value.indexOf(',') + 1)) }
-    reader.onerror = () => { clean(); reject(new Error('图片读取失败，请重新选择')) }
-    reader.onabort = () => { clean(); reject(new DOMException('已取消', 'AbortError')) }
-    reader.readAsDataURL(file)
-  })
-}
 
 function FilePreview({ file }: { file: File }) {
   const attach = useCallback((node: HTMLImageElement | null) => {
@@ -60,7 +47,7 @@ export function VisionCall({ userId, models, settings, changed, showDetail, rend
     const id = createAiRequestId(); setSubmitted({ id, target }); setPending(true); setResult(null); setMessage(null)
     try {
       const images = []
-      for (const file of files) images.push({ name: file.name, contentType: file.type, base64: await readImage(file, abort.signal) })
+      for (const file of files) images.push({ name: file.name, contentType: file.type, base64: await readMediaFile(file, abort.signal) })
       const body: VisionRequest = { clientRequestId: id, expectedUserId: userId, prompt, systemPrompt: system || null,
         imageCount: images.length, images, modelId: selected || null,
         consent: { modelId: target.id, modelRevision: target.revision, endpoint: target.baseUrl, confirmed: true } }

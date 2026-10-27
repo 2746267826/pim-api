@@ -40,11 +40,20 @@ public sealed class AiTextWireCapture : IDisposable
     public bool RequestRejected { get; private set; }
     public bool ProviderAttempted { get; private set; }
     private IReadOnlyList<AiVisionAuditImage>? _images;
-    public int MaxRequestBytes => _images is null ? 2 * 1024 * 1024 : 12 * 1024 * 1024;
+    private Func<byte[], string>? _requestAudit;
+    public int MaxRequestBytes => _requestAudit is not null ? 8 * 1024 * 1024 : _images is null ? 2 * 1024 * 1024 : 12 * 1024 * 1024;
     public AiTextWireCapture(IReadOnlyList<AiVisionAuditImage>? images = null) { _images = images; Slot.Value = this; }
     public void SetImages(IReadOnlyList<AiVisionAuditImage> images) => _images = images;
+    public void SetAsrAudit(Func<byte[], string> audit) => _requestAudit = audit;
     public void Request(byte[] bytes)
     {
+        if (_requestAudit is not null)
+        {
+            try { RequestBody = _requestAudit(bytes); }
+            catch (Exception error) when (error is InvalidDataException or System.Text.Json.JsonException or InvalidOperationException or ArgumentException)
+            { RequestRejected = true; throw new InvalidDataException("ASR请求与固定输入不一致，本次未发送", error); }
+            return;
+        }
         if (_images is null) { RequestBody = System.Text.Encoding.UTF8.GetString(bytes); return; }
         // Normalize only the SDK's binary image parts for audit storage. Sent bytes remain untouched.
         // All referenced bytes are separately stored and hashed; text is never summarized/replaced.

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Pim.Core.Ai;
 using Pim.Core.Common;
 using Pim.Infrastructure.Ai;
+using Pim.Infrastructure.Ai.Asr;
 
 namespace Pim.Api.Endpoints;
 
@@ -11,6 +12,26 @@ public static class AiModelEndpoints
     public static void MapAiModelEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/v1/ai").RequireAuthorization(new AuthorizeAttribute { Roles = "admin" });
+        group.MapGet("/asr-presets", ([FromServices] AiAsrPresetRegistry presets) =>
+            Results.Ok(ApiResponse<IReadOnlyList<AiAsrPresetDto>>.Ok(presets.List())))
+            .Produces<ApiResponse<IReadOnlyList<AiAsrPresetDto>>>(200).Produces(401).Produces(403);
+        group.MapPost("/asr-calls", async (AiAsrCallRequest request, [FromServices] AiAsrCallService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiTextCallResultDto>.Ok(await service.CallAsync(request, ct))))
+            .WithMetadata(new RequestSizeLimitAttribute(7 * 1024 * 1024))
+            .Produces<ApiResponse<AiTextCallResultDto>>(200).Produces(400).Produces(401).Produces(403).Produces(409).Produces(413).Produces(503);
+        group.MapGet("/asr-calls/{clientRequestId:guid}", async (Guid clientRequestId, [FromServices] AiAsrCallService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiTextCallResultDto>.Ok(await service.GetAsync(clientRequestId, ct))))
+            .Produces<ApiResponse<AiTextCallResultDto>>(200).Produces(401).Produces(403).Produces(404);
+        group.MapGet("/requests/{logId:guid}/audio", async (Guid logId, [FromServices] AiAsrMaterialService audio, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiCallAudioDto?>.Ok(await audio.DescribeAsync(logId, ct))))
+            .Produces<ApiResponse<AiCallAudioDto>>(200).Produces(401).Produces(403).Produces(404);
+        group.MapGet("/requests/{logId:guid}/audio/content", async (Guid logId, HttpResponse response,
+            [FromServices] AiAsrMaterialService audio, CancellationToken ct) =>
+        {
+            var content = await audio.ReadAsync(logId, ct);
+            response.Headers.CacheControl = "private, no-store"; response.Headers["X-Content-Type-Options"] = "nosniff";
+            return Results.File(content.Bytes, content.ContentType);
+        }).Produces(200, contentType: "audio/wav", additionalContentTypes: ["audio/mpeg"]).Produces(401).Produces(403).Produces(404).Produces(409);
         group.MapGet("/models", async ([FromServices] AiModelSettingsService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<IReadOnlyList<AiModelDto>>.Ok(await service.ListAsync(ct))))
             .Produces<ApiResponse<IReadOnlyList<AiModelDto>>>(200).Produces(401).Produces(403);

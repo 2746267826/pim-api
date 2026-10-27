@@ -969,6 +969,244 @@
         ],
         "type": "object"
       },
+      "AiAsrAudioRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "base64": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "base64",
+          "format",
+          "name"
+        ],
+        "type": "object"
+      },
+      "AiAsrCallRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "audio": {
+            "$ref": "#/components/schemas/AiAsrAudioRequest"
+          },
+          "clientRequestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "consent": {
+            "$ref": "#/components/schemas/AiAsrDestinationConsent"
+          },
+          "expectedUserId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "modelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "audio",
+          "clientRequestId",
+          "consent",
+          "expectedUserId"
+        ],
+        "type": "object"
+      },
+      "AiAsrDestinationConsent": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "type": "boolean"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "modelId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "modelRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "presetId": {
+            "type": "string"
+          },
+          "presetVersion": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "confirmed",
+          "endpoint",
+          "modelId",
+          "modelRevision",
+          "presetId",
+          "presetVersion"
+        ],
+        "type": "object"
+      },
+      "AiAsrPresetDto": {
+        "additionalProperties": false,
+        "properties": {
+          "defaultBaseUrl": {
+            "type": "string"
+          },
+          "defaultModel": {
+            "type": "string"
+          },
+          "formats": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "type": "string"
+          },
+          "languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "maxAudioBytes": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "operationPath": {
+            "type": "string"
+          },
+          "streaming": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "defaultBaseUrl",
+          "defaultModel",
+          "formats",
+          "id",
+          "languages",
+          "maxAudioBytes",
+          "models",
+          "name",
+          "operationPath",
+          "streaming",
+          "version"
+        ],
+        "type": "object"
+      },
+      "AiAsrPresetDtoIReadOnlyListApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AiAsrPresetDto"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "AiCallAudioDto": {
+        "additionalProperties": false,
+        "properties": {
+          "contentType": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "stored": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "contentType",
+          "id",
+          "name",
+          "sha256",
+          "sizeBytes",
+          "stored"
+        ],
+        "type": "object"
+      },
+      "AiCallAudioDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AiCallAudioDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "AiCallImageDto": {
         "additionalProperties": false,
         "properties": {
@@ -1048,6 +1286,10 @@
       "AiModelDto": {
         "additionalProperties": false,
         "properties": {
+          "asrPresetId": {
+            "nullable": true,
+            "type": "string"
+          },
           "baseUrl": {
             "type": "string"
           },
@@ -17625,6 +17867,10 @@
             "nullable": true,
             "type": "string"
           },
+          "asrPresetId": {
+            "nullable": true,
+            "type": "string"
+          },
           "baseUrl": {
             "type": "string"
           },
@@ -20807,6 +21053,132 @@
         ]
       }
     },
+    "/api/v1/ai/asr-calls": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiAsrCallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiTextCallResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/ai/asr-calls/{clientRequestId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "clientRequestId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiTextCallResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/ai/asr-presets": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiAsrPresetDtoIReadOnlyListApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
     "/api/v1/ai/health-check": {
       "post": {
         "responses": {
@@ -21292,6 +21664,90 @@
               }
             },
             "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/ai/requests/{logId}/audio": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiCallAudioDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/ai/requests/{logId}/audio/content": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
           }
         },
         "security": [
