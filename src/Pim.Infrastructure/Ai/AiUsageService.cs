@@ -15,6 +15,7 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
         var recentSuccess = await db.AiRequestLogs
             .Where(l => l.Status == "succeeded")
             .OrderByDescending(l => l.StartedAt)
+            .ThenByDescending(l => l.Id)
             .Select(l => (DateTimeOffset?)l.StartedAt)
             .FirstOrDefaultAsync(ct);
 
@@ -34,12 +35,14 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
         AiRequestLogFilter filter,
         CancellationToken ct = default)
     {
+        await AiCallRecovery.RecoverExpiredAsync(db, ct);
         var query = ApplyFilter(db.AiRequestLogs.AsNoTracking(), filter);
         var total = await query.CountAsync(ct);
         var page = Math.Max(1, filter.Page);
         var pageSize = Math.Clamp(filter.PageSize, 1, 200);
         var items = await query
             .OrderByDescending(l => l.StartedAt)
+            .ThenByDescending(l => l.Id)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .Select(l => new AiRequestLogListItemDto(
@@ -54,7 +57,11 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
                 l.DurationMs,
                 l.SourceObjectType,
                 l.SourceObjectId,
-                l.ErrorMessage))
+                l.ErrorMessage,
+                l.ModelProfileId,
+                l.ModelProfileName,
+                l.FinishReason,
+                l.ContentRedacted))
             .ToListAsync(ct);
 
         return new PagedResult<AiRequestLogListItemDto>(
@@ -67,6 +74,7 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
 
     public async Task<AiRequestLogDetailDto?> GetRequestDetailAsync(Guid id, CancellationToken ct = default)
     {
+        await AiCallRecovery.RecoverExpiredAsync(db, ct);
         var l = await db.AiRequestLogs.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
         if (l is null)
         {
@@ -102,7 +110,14 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
             new AiTokenUsage(l.PromptTokens, l.CompletionTokens, l.TotalTokens, l.EstimatedCost, l.Currency),
             l.ErrorCode,
             l.ErrorMessage,
-            l.MetadataJson);
+            l.MetadataJson,
+            l.ClientRequestId,
+            l.ModelProfileId,
+            l.ModelProfileName,
+            l.ModelEndpoint,
+            l.ModelRevision,
+            l.FinishReason,
+            l.ContentRedacted);
     }
 
     public async Task<AiUsageSummaryDto> GetUsageSummaryAsync(
@@ -110,6 +125,7 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
         DateTimeOffset? to,
         CancellationToken ct = default)
     {
+        await AiCallRecovery.RecoverExpiredAsync(db, ct);
         var filter = new AiRequestLogFilter(from, to, null, null, null, null, null, null, null);
         var logs = await ApplyFilter(db.AiRequestLogs.AsNoTracking(), filter)
             .Select(l => new AiUsageSummaryRow(
@@ -120,13 +136,14 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
                 l.PromptTokens,
                 l.CompletionTokens,
                 l.TotalTokens,
-                l.EstimatedCost))
+                l.EstimatedCost,
+                l.DurationMs))
             .ToListAsync(ct);
 
         return new AiUsageSummaryDto(
             logs.Count,
             logs.Count(IsSuccess),
-            logs.Count(l => !IsSuccess(l)),
+            logs.Count(l => !IsSuccess(l) && l.Status != "running"),
             logs.Sum(l => l.PromptTokens ?? 0),
             logs.Sum(l => l.CompletionTokens ?? 0),
             logs.Sum(l => l.TotalTokens ?? 0),
@@ -134,7 +151,11 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
             Group(logs, l => l.Module),
             Group(logs, l => l.Purpose),
             Group(logs, l => l.Model),
-            Group(logs, l => l.Status));
+            Group(logs, l => l.Status),
+            logs.Count(l => l.Status == "running"),
+            logs.Count(l => l.PromptTokens is null || l.CompletionTokens is null || l.TotalTokens is null),
+            logs.Count(l => l.EstimatedCost is not null),
+            logs.Average(l => (double?)l.DurationMs));
     }
 
     private static IQueryable<AiRequestLogEntity> ApplyFilter(
@@ -197,7 +218,8 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
         int? PromptTokens,
         int? CompletionTokens,
         int? TotalTokens,
-        decimal? EstimatedCost);
+        decimal? EstimatedCost,
+        long? DurationMs);
 
     private static IReadOnlyList<AiUsageGroupDto> Group(
         IEnumerable<AiUsageSummaryRow> logs,
@@ -208,11 +230,15 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
                 g.Key,
                 g.Count(),
                 g.Count(IsSuccess),
-                g.Count(l => !IsSuccess(l)),
+                g.Count(l => !IsSuccess(l) && l.Status != "running"),
                 g.Sum(l => l.PromptTokens ?? 0),
                 g.Sum(l => l.CompletionTokens ?? 0),
                 g.Sum(l => l.TotalTokens ?? 0),
-                g.Sum(l => l.EstimatedCost ?? 0)))
+                g.Sum(l => l.EstimatedCost ?? 0),
+                g.Count(l => l.Status == "running"),
+                g.Count(l => l.PromptTokens is null || l.CompletionTokens is null || l.TotalTokens is null),
+                g.Count(l => l.EstimatedCost is not null),
+                g.Average(l => (double?)l.DurationMs)))
             .ToList();
 
     private static bool IsSuccess(AiRequestLogEntity log) => log.Status == "succeeded";
@@ -226,6 +252,9 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
         AiRequestStatus.Blocked => "blocked",
         AiRequestStatus.TimedOut => "timed_out",
         AiRequestStatus.FailedValidation => "failed_validation",
+        AiRequestStatus.Running => "running",
+        AiRequestStatus.Cancelled => "cancelled",
+        AiRequestStatus.Incomplete => "incomplete",
         _ => "failed"
     };
 
@@ -235,6 +264,9 @@ public sealed class AiUsageService(PimDbContext db, IOptions<AiOptions> options)
         "blocked" => AiRequestStatus.Blocked,
         "timed_out" => AiRequestStatus.TimedOut,
         "failed_validation" => AiRequestStatus.FailedValidation,
+        "running" => AiRequestStatus.Running,
+        "cancelled" => AiRequestStatus.Cancelled,
+        "incomplete" => AiRequestStatus.Incomplete,
         _ => AiRequestStatus.Failed
     };
 }

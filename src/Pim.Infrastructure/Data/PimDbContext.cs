@@ -66,6 +66,8 @@ public class PimDbContext : DbContext
     public DbSet<EndpointNotificationActionEntity> EndpointNotificationActions => Set<EndpointNotificationActionEntity>();
     public DbSet<AiProviderSettingEntity> AiProviderSettings => Set<AiProviderSettingEntity>();
     public DbSet<AiRequestLogEntity> AiRequestLogs => Set<AiRequestLogEntity>();
+    public DbSet<AiModelProfileEntity> AiModelProfiles => Set<AiModelProfileEntity>();
+    public DbSet<AiModelRuntimeEntity> AiModelRuntime => Set<AiModelRuntimeEntity>();
 
     public override int SaveChanges()
     {
@@ -188,6 +190,9 @@ public class PimDbContext : DbContext
 
         modelBuilder.Entity<AiRequestLogEntity>(e =>
         {
+            e.HasIndex(a => new { a.UserId, a.ClientRequestId }).IsUnique()
+                .HasFilter("client_request_id IS NOT NULL");
+            e.HasIndex(a => new { a.Status, a.ExecutionExpiresAt });
             e.Property(a => a.Provider).HasDefaultValue("litellm");
             e.Property(a => a.RequestMessagesJson).HasDefaultValue("[]");
             e.Property(a => a.RequestPayloadJson).HasDefaultValue("{}");
@@ -203,6 +208,19 @@ public class PimDbContext : DbContext
             e.HasIndex(a => a.StartedAt);
             e.HasIndex(a => new { a.SourceObjectType, a.SourceObjectId });
             e.HasIndex(a => a.CorrelationId);
+        });
+
+        modelBuilder.Entity<AiModelProfileEntity>(e =>
+        {
+            e.HasIndex(a => a.NormalizedName).IsUnique();
+            e.Property(a => a.Revision).IsConcurrencyToken();
+        });
+        modelBuilder.Entity<AiModelRuntimeEntity>(e =>
+        {
+            e.Property(a => a.Revision).IsConcurrencyToken();
+            e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.TextModelId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.VisionModelId).OnDelete(DeleteBehavior.Restrict);
+            e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.TranscriptionModelId).OnDelete(DeleteBehavior.Restrict);
         });
 
         Assembly[] moduleAssemblies;

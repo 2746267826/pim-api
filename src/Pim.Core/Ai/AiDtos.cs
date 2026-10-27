@@ -87,7 +87,11 @@ public sealed record AiRequestLogListItemDto(
     long? DurationMs,
     string SourceObjectType,
     string SourceObjectId,
-    string? ErrorSummary);
+    string? ErrorSummary,
+    Guid? ModelProfileId = null,
+    string? ModelProfileName = null,
+    string? FinishReason = null,
+    bool? ContentRedacted = null);
 
 public sealed record AiRequestLogDetailDto(
     Guid Id,
@@ -118,7 +122,14 @@ public sealed record AiRequestLogDetailDto(
     AiTokenUsage Usage,
     string? ErrorCode,
     string? ErrorMessage,
-    string MetadataJson);
+    string MetadataJson,
+    Guid? ClientRequestId = null,
+    Guid? ModelProfileId = null,
+    string? ModelProfileName = null,
+    string? ModelEndpoint = null,
+    Guid? ModelRevision = null,
+    string? FinishReason = null,
+    bool? ContentRedacted = null);
 
 public sealed record AiUsageGroupDto(
     string GroupKey,
@@ -128,7 +139,11 @@ public sealed record AiUsageGroupDto(
     int PromptTokens,
     int CompletionTokens,
     int TotalTokens,
-    decimal EstimatedCost);
+    decimal EstimatedCost,
+    int RunningCount = 0,
+    int UnknownTokenUsageCount = 0,
+    int KnownCostRequestCount = 0,
+    double? AverageDurationMs = null);
 
 public sealed record AiUsageSummaryDto(
     int RequestCount,
@@ -141,4 +156,8 @@ public sealed record AiUsageSummaryDto(
     IReadOnlyList<AiUsageGroupDto> ByModule,
     IReadOnlyList<AiUsageGroupDto> ByPurpose,
     IReadOnlyList<AiUsageGroupDto> ByModel,
-    IReadOnlyList<AiUsageGroupDto> ByStatus);
+    IReadOnlyList<AiUsageGroupDto> ByStatus,
+    int RunningCount = 0,
+    int UnknownTokenUsageCount = 0,
+    int KnownCostRequestCount = 0,
+    double? AverageDurationMs = null);

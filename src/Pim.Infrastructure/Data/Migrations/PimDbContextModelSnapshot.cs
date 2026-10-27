@@ -95,6 +95,118 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.ToTable("audit_versions");
                 });
 
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiModelProfileEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ApiKeySecret")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("api_key_secret");
+
+                    b.Property<string>("BaseUrl")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("base_url");
+
+                    b.Property<int>("Capabilities")
+                        .HasColumnType("integer")
+                        .HasColumnName("capabilities");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<int>("MaxOutputTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_output_tokens");
+
+                    b.Property<string>("Model")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("model");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("NormalizedName")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("normalized_name");
+
+                    b.Property<Guid>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("revision");
+
+                    b.Property<int>("TimeoutSeconds")
+                        .HasColumnType("integer")
+                        .HasColumnName("timeout_seconds");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NormalizedName")
+                        .IsUnique();
+
+                    b.ToTable("ai_model_profiles");
+                });
+
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiModelRuntimeEntity", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("id");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<Guid>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("uuid")
+                        .HasColumnName("revision");
+
+                    b.Property<Guid?>("TextModelId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("text_model_id");
+
+                    b.Property<Guid?>("TranscriptionModelId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("transcription_model_id");
+
+                    b.Property<Guid?>("VisionModelId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("vision_model_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TextModelId");
+
+                    b.HasIndex("TranscriptionModelId");
+
+                    b.HasIndex("VisionModelId");
+
+                    b.ToTable("ai_model_runtime");
+                });
+
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiProviderSettingEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -176,9 +288,17 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("attempt_number");
 
+                    b.Property<Guid?>("ClientRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("client_request_id");
+
                     b.Property<int?>("CompletionTokens")
                         .HasColumnType("integer")
                         .HasColumnName("completion_tokens");
+
+                    b.Property<bool?>("ContentRedacted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("content_redacted");
 
                     b.Property<string>("CorrelationId")
                         .IsRequired()
@@ -208,6 +328,15 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasPrecision(18, 8)
                         .HasColumnType("numeric(18,8)")
                         .HasColumnName("estimated_cost");
+
+                    b.Property<DateTimeOffset?>("ExecutionExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("execution_expires_at");
+
+                    b.Property<string>("FinishReason")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("finish_reason");
 
                     b.Property<DateTimeOffset?>("FinishedAt")
                         .HasColumnType("timestamp with time zone")
@@ -244,6 +373,24 @@ namespace Pim.Infrastructure.Data.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)")
                         .HasColumnName("model");
+
+                    b.Property<string>("ModelEndpoint")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("model_endpoint");
+
+                    b.Property<Guid?>("ModelProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("model_profile_id");
+
+                    b.Property<string>("ModelProfileName")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("model_profile_name");
+
+                    b.Property<Guid?>("ModelRevision")
+                        .HasColumnType("uuid")
+                        .HasColumnName("model_revision");
 
                     b.Property<string>("Module")
                         .IsRequired()
@@ -376,6 +523,12 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("UserId");
 
                     b.HasIndex("SourceObjectType", "SourceObjectId");
+
+                    b.HasIndex("Status", "ExecutionExpiresAt");
+
+                    b.HasIndex("UserId", "ClientRequestId")
+                        .IsUnique()
+                        .HasFilter("client_request_id IS NOT NULL");
 
                     b.ToTable("ai_request_logs");
                 });
@@ -6967,6 +7120,24 @@ namespace Pim.Infrastructure.Data.Migrations
                     b.HasIndex("UserId", "Status", "UpdatedAt");
 
                     b.ToTable("quick_notes");
+                });
+
+            modelBuilder.Entity("Pim.Infrastructure.Data.Entities.AiModelRuntimeEntity", b =>
+                {
+                    b.HasOne("Pim.Infrastructure.Data.Entities.AiModelProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("TextModelId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Pim.Infrastructure.Data.Entities.AiModelProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("TranscriptionModelId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Pim.Infrastructure.Data.Entities.AiModelProfileEntity", null)
+                        .WithMany()
+                        .HasForeignKey("VisionModelId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Pim.Infrastructure.Data.Entities.LoginAttemptEntity", b =>

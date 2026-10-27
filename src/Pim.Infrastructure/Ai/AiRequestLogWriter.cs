@@ -112,6 +112,9 @@ public sealed class AiRequestLogWriter(PimDbContext db) : IAiRequestLogWriter
         AiRequestStatus.Blocked => "blocked",
         AiRequestStatus.TimedOut => "timed_out",
         AiRequestStatus.FailedValidation => "failed_validation",
+        AiRequestStatus.Running => "running",
+        AiRequestStatus.Cancelled => "cancelled",
+        AiRequestStatus.Incomplete => "incomplete",
         _ => "failed"
     };
 

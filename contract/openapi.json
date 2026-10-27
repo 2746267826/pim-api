@@ -969,6 +969,190 @@
         ],
         "type": "object"
       },
+      "AiModelCapability": {
+        "enum": [
+          "Text",
+          "Vision",
+          "Transcription"
+        ],
+        "type": "string"
+      },
+      "AiModelDto": {
+        "additionalProperties": false,
+        "properties": {
+          "baseUrl": {
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "$ref": "#/components/schemas/AiModelCapability"
+            },
+            "type": "array"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "hasApiKey": {
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "maxOutputTokens": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "timeoutSeconds": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseUrl",
+          "capabilities",
+          "createdAt",
+          "enabled",
+          "hasApiKey",
+          "id",
+          "maxOutputTokens",
+          "model",
+          "name",
+          "revision",
+          "timeoutSeconds",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "AiModelDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AiModelDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "AiModelDtoIReadOnlyListApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AiModelDto"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "AiModelSettingsDto": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "textModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "transcriptionModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "visionModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "AiModelSettingsDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AiModelSettingsDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "AiPlanPlaceholderViewDto": {
         "additionalProperties": false,
         "properties": {
@@ -1135,6 +1319,15 @@
             "format": "int32",
             "type": "integer"
           },
+          "clientRequestId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "contentRedacted": {
+            "nullable": true,
+            "type": "boolean"
+          },
           "correlationId": {
             "type": "string"
           },
@@ -1148,6 +1341,10 @@
             "type": "string"
           },
           "errorMessage": {
+            "nullable": true,
+            "type": "string"
+          },
+          "finishReason": {
             "nullable": true,
             "type": "string"
           },
@@ -1172,6 +1369,24 @@
             "type": "string"
           },
           "model": {
+            "type": "string"
+          },
+          "modelEndpoint": {
+            "nullable": true,
+            "type": "string"
+          },
+          "modelProfileId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "modelProfileName": {
+            "nullable": true,
+            "type": "string"
+          },
+          "modelRevision": {
+            "format": "uuid",
+            "nullable": true,
             "type": "string"
           },
           "module": {
@@ -1287,6 +1502,10 @@
       "AiRequestLogListItemDto": {
         "additionalProperties": false,
         "properties": {
+          "contentRedacted": {
+            "nullable": true,
+            "type": "boolean"
+          },
           "durationMs": {
             "format": "int64",
             "nullable": true,
@@ -1301,11 +1520,24 @@
             "nullable": true,
             "type": "number"
           },
+          "finishReason": {
+            "nullable": true,
+            "type": "string"
+          },
           "id": {
             "format": "uuid",
             "type": "string"
           },
           "model": {
+            "type": "string"
+          },
+          "modelProfileId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "modelProfileName": {
+            "nullable": true,
             "type": "string"
           },
           "module": {
@@ -1411,7 +1643,10 @@
           "Failed",
           "Blocked",
           "TimedOut",
-          "FailedValidation"
+          "FailedValidation",
+          "Running",
+          "Cancelled",
+          "Incomplete"
         ],
         "type": "string"
       },
@@ -1543,6 +1778,91 @@
         ],
         "type": "object"
       },
+      "AiTextCallRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "clientRequestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expectedUserId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "modelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "systemPrompt": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "clientRequestId",
+          "expectedUserId",
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "AiTextCallResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "errorMessage": {
+            "nullable": true,
+            "type": "string"
+          },
+          "logId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "responseText": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AiRequestStatus"
+          }
+        },
+        "required": [
+          "logId",
+          "replayed",
+          "status"
+        ],
+        "type": "object"
+      },
+      "AiTextCallResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AiTextCallResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "AiTokenUsage": {
         "additionalProperties": false,
         "properties": {
@@ -1576,6 +1896,11 @@
       "AiUsageGroupDto": {
         "additionalProperties": false,
         "properties": {
+          "averageDurationMs": {
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
           "completionTokens": {
             "format": "int32",
             "type": "integer"
@@ -1591,6 +1916,10 @@
           "groupKey": {
             "type": "string"
           },
+          "knownCostRequestCount": {
+            "format": "int32",
+            "type": "integer"
+          },
           "promptTokens": {
             "format": "int32",
             "type": "integer"
@@ -1599,11 +1928,19 @@
             "format": "int32",
             "type": "integer"
           },
+          "runningCount": {
+            "format": "int32",
+            "type": "integer"
+          },
           "successCount": {
             "format": "int32",
             "type": "integer"
           },
           "totalTokens": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "unknownTokenUsageCount": {
             "format": "int32",
             "type": "integer"
           }
@@ -1623,6 +1960,11 @@
       "AiUsageSummaryDto": {
         "additionalProperties": false,
         "properties": {
+          "averageDurationMs": {
+            "format": "double",
+            "nullable": true,
+            "type": "number"
+          },
           "byModel": {
             "items": {
               "$ref": "#/components/schemas/AiUsageGroupDto"
@@ -1659,6 +2001,10 @@
             "format": "int32",
             "type": "integer"
           },
+          "knownCostRequestCount": {
+            "format": "int32",
+            "type": "integer"
+          },
           "promptTokens": {
             "format": "int32",
             "type": "integer"
@@ -1667,11 +2013,19 @@
             "format": "int32",
             "type": "integer"
           },
+          "runningCount": {
+            "format": "int32",
+            "type": "integer"
+          },
           "successCount": {
             "format": "int32",
             "type": "integer"
           },
           "totalTokens": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "unknownTokenUsageCount": {
             "format": "int32",
             "type": "integer"
           }
@@ -17103,6 +17457,86 @@
         ],
         "type": "object"
       },
+      "SaveAiModelRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "apiKey": {
+            "nullable": true,
+            "type": "string"
+          },
+          "baseUrl": {
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "$ref": "#/components/schemas/AiModelCapability"
+            },
+            "type": "array"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "expectedRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "maxOutputTokens": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "timeoutSeconds": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "baseUrl",
+          "capabilities",
+          "enabled",
+          "model",
+          "name"
+        ],
+        "type": "object"
+      },
+      "SaveAiModelSettingsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "expectedRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "textModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "transcriptionModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "visionModelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "expectedRevision"
+        ],
+        "type": "object"
+      },
       "SaveAppKnowledgeContextRequest": {
         "additionalProperties": false,
         "properties": {
@@ -20252,6 +20686,268 @@
         ]
       }
     },
+    "/api/v1/ai/model-settings": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiModelSettingsDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      },
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveAiModelSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiModelSettingsDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/ai/models": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiModelDtoIReadOnlyListApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveAiModelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiModelDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/ai/models/{id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BooleanApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      },
+      "put": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveAiModelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiModelDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
     "/api/v1/ai/requests": {
       "get": {
         "parameters": [
@@ -20515,6 +21211,102 @@
               }
             },
             "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/ai/text-calls": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiTextCallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiTextCallResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/ai/text-calls/{clientRequestId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "clientRequestId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiTextCallResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
           }
         },
         "security": [
