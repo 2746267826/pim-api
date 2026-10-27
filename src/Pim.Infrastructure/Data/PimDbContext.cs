@@ -66,6 +66,7 @@ public class PimDbContext : DbContext
     public DbSet<EndpointNotificationActionEntity> EndpointNotificationActions => Set<EndpointNotificationActionEntity>();
     public DbSet<AiProviderSettingEntity> AiProviderSettings => Set<AiProviderSettingEntity>();
     public DbSet<AiRequestLogEntity> AiRequestLogs => Set<AiRequestLogEntity>();
+    public DbSet<AiCallImageEntity> AiCallImages => Set<AiCallImageEntity>();
     public DbSet<AiModelProfileEntity> AiModelProfiles => Set<AiModelProfileEntity>();
     public DbSet<AiModelRuntimeEntity> AiModelRuntime => Set<AiModelRuntimeEntity>();
 
@@ -208,6 +209,12 @@ public class PimDbContext : DbContext
             e.HasIndex(a => a.StartedAt);
             e.HasIndex(a => new { a.SourceObjectType, a.SourceObjectId });
             e.HasIndex(a => a.CorrelationId);
+        });
+
+        modelBuilder.Entity<AiCallImageEntity>(e =>
+        {
+            e.HasIndex(x => new { x.LogId, x.Index }).IsUnique();
+            e.HasOne<AiRequestLogEntity>().WithMany().HasForeignKey(x => x.LogId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<AiModelProfileEntity>(e =>

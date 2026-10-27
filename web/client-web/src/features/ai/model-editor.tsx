@@ -39,7 +39,7 @@ export function ModelEditor({ model, save, close }: { model: Model | null; save:
             <p className="mt-1 text-xs text-text-3">保存后不再回显；编辑时留空保留。无鉴权的本地服务可填写非空占位值。</p></div>
           <fieldset><legend className="mb-2 text-sm font-medium text-text-1">声明能力</legend><div className="flex flex-wrap gap-4">
             {capabilities.map((cap) => <label key={cap} className="flex items-center gap-2 text-sm text-text-2"><input type="checkbox" checked={caps.includes(cap)} onChange={(e) => setCaps((old) => e.target.checked ? [...old, cap] : old.filter((c) => c !== cap))} />{capabilityNames[cap]}</label>)}
-          </div><p className="mt-2 text-xs text-text-3">同一模型可声明多种能力。本批提供文本调用，视觉和语音转写调用将在后续接入。</p></fieldset>
+          </div><p className="mt-2 text-xs text-text-3">同一模型可声明多种能力。当前支持文本与PNG/JPEG多图视觉调用，语音转写调用待接入。</p></fieldset>
           <div className="grid grid-cols-2 gap-3"><div><Label htmlFor="ai-model-timeout">超时（秒）</Label><Input id="ai-model-timeout" type="number" required min={1} max={600} value={timeout} onChange={(e) => setTimeoutValue(Number(e.target.value))} /></div>
             <div><Label htmlFor="ai-model-output">输出 token 上限</Label><Input id="ai-model-output" type="number" required min={1} max={131072} value={tokens} onChange={(e) => setTokens(Number(e.target.value))} /></div></div>
           <label className="flex items-center gap-2 text-sm text-text-2"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />启用此模型配置</label>

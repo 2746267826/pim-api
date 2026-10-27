@@ -82,7 +82,11 @@ public class AiEndpointPathTests
             "/api/v1/ai/models/{id:guid}",
             "/api/v1/ai/model-settings",
             "/api/v1/ai/text-calls",
-            "/api/v1/ai/text-calls/{clientRequestId:guid}"
+            "/api/v1/ai/text-calls/{clientRequestId:guid}",
+            "/api/v1/ai/vision-calls",
+            "/api/v1/ai/vision-calls/{clientRequestId:guid}",
+            "/api/v1/ai/requests/{logId:guid}/images",
+            "/api/v1/ai/requests/{logId:guid}/images/{imageId:guid}"
         })
         {
             var endpoints = routes[expected].ToList();

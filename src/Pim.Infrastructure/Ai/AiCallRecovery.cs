@@ -27,6 +27,13 @@ public static class AiCallRecovery
 public sealed class AiTextCallGate
 {
     private readonly SemaphoreSlim _gate = new(4, 4);
-    public bool TryEnter() => _gate.Wait(0);
-    public void Exit() => _gate.Release();
+    private readonly SemaphoreSlim _visionGate = new(2, 2);
+    public bool TryEnter(bool vision = false)
+    {
+        if (vision && !_visionGate.Wait(0)) return false;
+        if (_gate.Wait(0)) return true;
+        if (vision) _visionGate.Release();
+        return false;
+    }
+    public void Exit(bool vision = false) { _gate.Release(); if (vision) _visionGate.Release(); }
 }
