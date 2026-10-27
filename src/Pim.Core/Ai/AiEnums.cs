@@ -16,5 +16,8 @@ public enum AiRequestStatus
     Failed,
     Blocked,
     TimedOut,
-    FailedValidation
+    FailedValidation,
+    Running,
+    Cancelled,
+    Incomplete
 }

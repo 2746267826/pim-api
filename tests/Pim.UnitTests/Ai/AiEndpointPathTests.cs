@@ -19,6 +19,9 @@ public class AiEndpointPathTests
     [InlineData("TimedOut", AiRequestStatus.TimedOut)]
     [InlineData("timed_out", AiRequestStatus.TimedOut)]
     [InlineData("succeeded", AiRequestStatus.Succeeded)]
+    [InlineData("running", AiRequestStatus.Running)]
+    [InlineData("cancelled", AiRequestStatus.Cancelled)]
+    [InlineData("incomplete", AiRequestStatus.Incomplete)]
     public void TryParseStatus_AcceptsPublicStatusValues(string value, AiRequestStatus expected)
     {
         var parsed = AiEndpoints.TryParseStatus(value, out var status);
@@ -74,7 +77,12 @@ public class AiEndpointPathTests
             "/api/v1/ai/requests",
             "/api/v1/ai/requests/{id:guid}",
             "/api/v1/ai/usage/summary",
-            "/api/v1/ai/health-check"
+            "/api/v1/ai/health-check",
+            "/api/v1/ai/models",
+            "/api/v1/ai/models/{id:guid}",
+            "/api/v1/ai/model-settings",
+            "/api/v1/ai/text-calls",
+            "/api/v1/ai/text-calls/{clientRequestId:guid}"
         })
         {
             var endpoints = routes[expected].ToList();

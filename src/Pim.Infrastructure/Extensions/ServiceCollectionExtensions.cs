@@ -48,6 +48,15 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAiRequestLogWriter, AiRequestLogWriter>();
         services.AddSingleton<IAiSchemaRegistry, AiSchemaRegistry>();
         services.AddSingleton<IAiChatClientFactory, AiChatClientFactory>();
+        services.AddScoped<AiModelSettingsService>();
+        services.AddScoped<AiTextCallService>();
+        services.AddSingleton<AiTextCallGate>();
+        services.AddSingleton<IAiProfileChatClientFactory, AiProfileChatClientFactory>();
+        services.AddTransient<AiTextResponseLimitHandler>();
+        services.AddHttpClient(AiProfileChatClientFactory.ClientName, client => client.Timeout = Timeout.InfiniteTimeSpan)
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false,
+                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate | System.Net.DecompressionMethods.Brotli })
+            .AddHttpMessageHandler<AiTextResponseLimitHandler>();
         services.AddHttpClient("litellm-health");
         var conn = configuration.GetConnectionString("DefaultConnection");
         var disableHangfire = bool.TryParse(configuration["DisableHangfire"], out var d) && d;

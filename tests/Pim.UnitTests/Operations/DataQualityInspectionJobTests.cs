@@ -174,6 +174,64 @@ public class DataQualityInspectionJobTests
     }
 
     [Fact]
+    public async Task AiGatewayQualityInspector_StoredSuccessAndLegacySuccess_ExcludeActiveCalls()
+    {
+        using var db = CreateInMemoryDb(Guid.NewGuid().ToString());
+        var now = DateTimeOffset.UtcNow;
+        foreach (var status in new[] { "succeeded", "succeeded", "succeeded", "Success", "Success", "Success" })
+            db.AiRequestLogs.Add(new() { Status = status, StartedAt = now.AddMinutes(-1) });
+        for (var i = 0; i < 5; i++)
+            db.AiRequestLogs.Add(new() { Status = "running", StartedAt = now, ExecutionExpiresAt = now.AddMinutes(5) });
+        await db.SaveChangesAsync();
+        var inspector = new AiGatewayQualityInspector(db, NullLogger<AiGatewayQualityInspector>.Instance);
+
+        var result = await inspector.InspectAsync(now);
+
+        Assert.True(result.IsHealthy);
+        Assert.Equal("6", result.Details!["totalRequests24h"]);
+        Assert.Equal("0", result.Details["failedRequests24h"]);
+    }
+
+    [Fact]
+    public async Task AiGatewayQualityInspector_ExpiredRunning_IsUnknownRatherThanHiddenForever()
+    {
+        using var db = CreateInMemoryDb(Guid.NewGuid().ToString());
+        var now = DateTimeOffset.UtcNow;
+        for (var i = 0; i < 5; i++)
+            db.AiRequestLogs.Add(new() { Status = "running", StartedAt = now.AddMinutes(-5), ExecutionExpiresAt = now.AddMinutes(-1) });
+        db.AiRequestLogs.Add(new() { Status = "running", StartedAt = now, ExecutionExpiresAt = now.AddMinutes(5) });
+        await db.SaveChangesAsync();
+        var inspector = new AiGatewayQualityInspector(db, NullLogger<AiGatewayQualityInspector>.Instance);
+
+        var result = await inspector.InspectAsync(now);
+
+        Assert.False(result.IsHealthy);
+        Assert.Equal(5, result.IssueCount);
+        Assert.Equal("5", result.Details!["totalRequests24h"]);
+        Assert.Equal(5, await db.AiRequestLogs.CountAsync(x => x.Status == "incomplete" && x.ErrorCode == "outcome_unknown"));
+        Assert.Equal(1, await db.AiRequestLogs.CountAsync(x => x.Status == "running"));
+    }
+
+    [Theory]
+    [InlineData("cancelled")]
+    [InlineData("incomplete")]
+    public async Task AiGatewayQualityInspector_NewNonSuccessTerminalStates_RemainVisible(string status)
+    {
+        using var db = CreateInMemoryDb(Guid.NewGuid().ToString());
+        var now = DateTimeOffset.UtcNow;
+        for (var i = 0; i < 5; i++)
+            db.AiRequestLogs.Add(new() { Status = status, StartedAt = now });
+        await db.SaveChangesAsync();
+        var inspector = new AiGatewayQualityInspector(db, NullLogger<AiGatewayQualityInspector>.Instance);
+
+        var result = await inspector.InspectAsync(now);
+
+        Assert.False(result.IsHealthy);
+        Assert.Equal(5, result.IssueCount);
+        Assert.Equal("5", result.Details!["failedRequests24h"]);
+    }
+
+    [Fact]
     public async Task HeartbeatStaleInspectionJob_WhenDeviceStale_RecordsAuditLog()
     {
         using var db = CreateInMemoryDb(Guid.NewGuid().ToString());

@@ -6,6 +6,14 @@ namespace Pim.Infrastructure.Data.Entities;
 [Table("ai_request_logs")]
 public sealed class AiRequestLogEntity
 {
+    [Column("client_request_id")] public Guid? ClientRequestId { get; set; }
+    [Column("model_profile_id")] public Guid? ModelProfileId { get; set; }
+    [Column("model_profile_name"), MaxLength(120)] public string? ModelProfileName { get; set; }
+    [Column("model_endpoint"), MaxLength(2048)] public string? ModelEndpoint { get; set; }
+    [Column("model_revision")] public Guid? ModelRevision { get; set; }
+    [Column("finish_reason"), MaxLength(80)] public string? FinishReason { get; set; }
+    [Column("content_redacted")] public bool? ContentRedacted { get; set; }
+    [Column("execution_expires_at")] public DateTimeOffset? ExecutionExpiresAt { get; set; }
     [Key]
     [Column("id")]
     public Guid Id { get; set; } = Guid.NewGuid();

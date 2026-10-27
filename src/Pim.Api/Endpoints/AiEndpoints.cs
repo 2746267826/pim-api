@@ -9,6 +9,7 @@ public static class AiEndpoints
 {
     public static void MapAiEndpoints(this IEndpointRouteBuilder endpoints)
     {
+        endpoints.MapAiModelEndpoints();
         var group = endpoints.MapGroup("/api/v1/ai")
             .RequireAuthorization(new AuthorizeAttribute { Roles = "admin" });
 
@@ -118,6 +119,9 @@ public static class AiEndpoints
             "timed_out" => AiRequestStatus.TimedOut,
             "failedvalidation" => AiRequestStatus.FailedValidation,
             "failed_validation" => AiRequestStatus.FailedValidation,
+            "running" => AiRequestStatus.Running,
+            "cancelled" => AiRequestStatus.Cancelled,
+            "incomplete" => AiRequestStatus.Incomplete,
             _ => null
         };
 
