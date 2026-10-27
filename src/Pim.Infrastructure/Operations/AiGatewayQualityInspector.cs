@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Metrics;
 
@@ -23,12 +24,15 @@ public sealed class AiGatewayQualityInspector : IDataQualityInspector
     public async Task<DataQualityInspectionResult> InspectAsync(DateTimeOffset now, CancellationToken ct = default)
     {
         var windowStart = now.AddHours(-24);
-        List<Data.Entities.AiRequestLogEntity> logs;
+        List<LogOutcome> logs;
         try
         {
+            await AiCallRecovery.RecoverExpiredAsync(_db, ct);
             logs = await _db.AiRequestLogs
                 .AsNoTracking()
-                .Where(l => l.StartedAt >= windowStart)
+                .Where(l => l.StartedAt >= windowStart && l.Status != "running")
+                // Full prompts/replies can be large; this check only needs terminal outcomes.
+                .Select(l => new LogOutcome(l.Status, l.ErrorCode))
                 .ToListAsync(ct);
         }
         catch (Exception ex)
@@ -54,12 +58,13 @@ public sealed class AiGatewayQualityInspector : IDataQualityInspector
                 CheckName,
                 true,
                 0,
-                "No AI requests in the last 24 hours.",
+                "No completed AI requests in the last 24 hours.",
                 new Dictionary<string, string> { ["totalRequests24h"] = "0", ["errorRate"] = "0%" });
         }
 
         var failed = logs.Count(l =>
-            !string.Equals(l.Status, "Success", StringComparison.OrdinalIgnoreCase) ||
+            !(string.Equals(l.Status, "succeeded", StringComparison.OrdinalIgnoreCase) ||
+              string.Equals(l.Status, "Success", StringComparison.OrdinalIgnoreCase)) ||
             !string.IsNullOrWhiteSpace(l.ErrorCode));
 
         var errorRate = (double)failed / total;
@@ -90,4 +95,6 @@ public sealed class AiGatewayQualityInspector : IDataQualityInspector
             message,
             details);
     }
+
+    private sealed record LogOutcome(string Status, string? ErrorCode);
 }
