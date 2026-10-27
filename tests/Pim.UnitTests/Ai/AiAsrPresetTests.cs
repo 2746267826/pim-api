@@ -46,14 +46,18 @@ public sealed class AiAsrPresetTests : IDisposable
     }
 
     [Theory]
-    [InlineData("auto")]
-    [InlineData("zh")]
-    [InlineData("en")]
-    public async Task OfficialSdkBuildsAudioOnlyRequestWithProviderLanguage_NoTextTokenOverride(string language)
+    [InlineData("auto", "wav")]
+    [InlineData("zh", "wav")]
+    [InlineData("en", "wav")]
+    [InlineData("auto", "mp3")]
+    public async Task OfficialSdkBuildsAudioOnlyRequestWithProviderLanguage_NoTextTokenOverride(string language, string format)
     {
-        var preset = new MimoAsrPreset(Factory); using var capture = new AiTextWireCapture(); var bytes = Wave();
+        var preset = new MimoAsrPreset(Factory); using var capture = new AiTextWireCapture();
+        var bytes = format == "wav" ? Wave() : "ID3synthetic-mp3-fixture"u8.ToArray();
+        var decoded = AiAsrMaterialService.Decode(new("test." + format, format, Convert.ToBase64String(bytes)));
+        Assert.Equal(bytes, decoded.Bytes);
         var result = await preset.TranscribeAsync(new("http://synthetic-asr.invalid/v1/", "mimo-v2.5-asr", "synthetic-asr-key", 30),
-            new("test.wav", "wav", bytes, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()), language, default);
+            decoded, language, default);
         Assert.Equal("识别结果", result.Text); Assert.Equal(5, result.ReportedSeconds);
         using var json = JsonDocument.Parse(_wire.Bodies.Single()); var root = json.RootElement;
         Assert.Equal(language, root.GetProperty("asr_options").GetProperty("language").GetString());
@@ -61,7 +65,7 @@ public sealed class AiAsrPresetTests : IDisposable
         var messages = root.GetProperty("messages"); Assert.Equal(1, messages.GetArrayLength()); Assert.Equal("user", messages[0].GetProperty("role").GetString());
         var parts = messages[0].GetProperty("content"); Assert.Equal(1, parts.GetArrayLength()); Assert.Equal("input_audio", parts[0].GetProperty("type").GetString());
         Assert.Equal(Convert.ToBase64String(bytes), parts[0].GetProperty("input_audio").GetProperty("data").GetString());
-        Assert.Equal("wav", parts[0].GetProperty("input_audio").GetProperty("format").GetString());
+        Assert.Equal(format, parts[0].GetProperty("input_audio").GetProperty("format").GetString());
     }
 
     [Fact]
