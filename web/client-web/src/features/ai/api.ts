@@ -14,11 +14,23 @@ export type CallImage = components['schemas']['AiCallImageDto']
 export type AsrPreset = components['schemas']['AiAsrPresetDto']
 export type AsrRequest = components['schemas']['AiAsrCallRequest']
 export type CallAudio = components['schemas']['AiCallAudioDto']
+export type NoteAsrTask = components['schemas']['NoteAsrTaskDto']
+export type NoteAsrStart = components['schemas']['StartNoteAsrRequest']
+export type NoteAsrRetry = components['schemas']['RetryNoteAsrRequest']
+export type NoteAsrSegments = components['schemas']['NoteAsrSegmentsDto']
+export type NoteAsrSources = components['schemas']['NoteAsrSourcesDto']
 export type CallItem = components['schemas']['AiRequestLogListItemDto']
 export type CallDetail = components['schemas']['AiRequestLogDetailDto']
 export type Usage = components['schemas']['AiUsageSummaryDto']
 
 export const aiApi = {
+  noteAsrSources: (offset: number, signal?: AbortSignal) => apiGet<NoteAsrSources>(`/api/v1/native-notes/asr-tasks/sources?offset=${offset}&limit=20`, { signal }),
+  noteAsrTasks: (signal?: AbortSignal) => apiGet<NoteAsrTask[]>('/api/v1/native-notes/asr-tasks', { signal }),
+  noteAsrStart: (body: NoteAsrStart) => apiPost<NoteAsrTask>('/api/v1/native-notes/asr-tasks', body),
+  noteAsrTask: (id: string, signal?: AbortSignal) => apiGet<NoteAsrTask>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(id)}`, { signal }),
+  noteAsrSegments: (id: string, offset: number, signal?: AbortSignal) => apiGet<NoteAsrSegments>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(id)}/segments?offset=${offset}&limit=10`, { signal }),
+  noteAsrStop: (id: string) => apiPost<NoteAsrTask>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(id)}/stop`, {}),
+  noteAsrRetry: (id: string, body: NoteAsrRetry) => apiPost<NoteAsrTask>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(id)}/retry`, body),
   asrPresets: (signal?: AbortSignal) => apiGet<AsrPreset[]>('/api/v1/ai/asr-presets', { signal }),
   asrCall: (body: AsrRequest, signal: AbortSignal) => apiPost<CallResult>('/api/v1/ai/asr-calls', body, { signal }),
   asrLookup: (id: string) => apiGet<CallResult>(`/api/v1/ai/asr-calls/${encodeURIComponent(id)}`),

@@ -33,7 +33,11 @@ public sealed class AiAsrMaterialService(PimDbContext db, IFileAttachmentStore f
     public async Task StoreAsync(Guid owner, AiCallAudioEntity row, AiAsrInput audio, CancellationToken ct)
     {
         if (owner != currentUser.UserId) throw new DomainException(40301, "音频只能存入当前调用账号的文件来源");
-        await RequireOwnerAsync(row.LogId, ct);
+        await StoreForOwnerAsync(owner, row, audio, ct);
+    }
+    internal async Task StoreForOwnerAsync(Guid owner, AiCallAudioEntity row, AiAsrInput audio, CancellationToken ct)
+    {
+        if (!await db.AiRequestLogs.AsNoTracking().AnyAsync(x => x.Id == row.LogId && x.UserId == owner, ct)) throw Missing();
         using var content = new MemoryStream(audio.Bytes, writable: false);
         var reference = await files.StoreAsync(owner, $"ai-calls/{row.LogId:D}/{row.Id:D}.{audio.Format}", content, audio.ContentType, audio.Bytes.Length, ct);
         row.ProviderId = reference.ProviderId; row.ProviderKey = reference.ProviderKey; row.ObjectKey = reference.ObjectKey;

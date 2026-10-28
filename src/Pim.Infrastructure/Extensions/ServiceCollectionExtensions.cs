@@ -86,6 +86,7 @@ public static class ServiceCollectionExtensions
                 config.UsePostgreSqlStorage(options =>
                     options.UseNpgsqlConnection(conn)));
             services.AddHangfireServer();
+            services.AddScoped<Pim.Infrastructure.Notes.NoteAsrDispatchJob>();
             services.AddScoped<IHangfireMonitoringClient, HangfireMonitoringClient>();
         }
         services.AddScoped<IBackgroundJobStatusService, HangfireJobStatusService>();
