@@ -10,6 +10,7 @@ import { createAiRequestId } from './request-id'
 import { capabilities, capabilityNames, ModelEditor } from './model-editor'
 import { CallImages, VisionCall } from './vision-call'
 import { AsrCall, CallAudio } from './asr-call'
+import { NoteAsrTasks } from './note-asr-tasks'
 
 const states = { Succeeded: '成功', Failed: '失败', Blocked: '未执行', TimedOut: '超时', FailedValidation: '结构不符', Running: '进行中', Cancelled: '已取消', Incomplete: '未完整/未确认' }
 function State({ value }: { value: string }) {
@@ -27,7 +28,8 @@ function Workspace({ userId }: { userId: string }) {
   const qc = useQueryClient()
   const prefix = ['ai', userId]
   const [tab, setTab] = useState<'models' | 'history' | 'usage'>('models')
-  const [callMode, setCallMode] = useState<'text' | 'vision' | 'asr'>('text')
+  const [callMode, setCallMode] = useState<'text' | 'vision' | 'asr' | 'note-asr'>('text')
+  const [noteAsrOpened, setNoteAsrOpened] = useState(false)
   const [asrOpened, setAsrOpened] = useState(false)
   const [creatingAsr, setCreatingAsr] = useState(false)
   const [editing, setEditing] = useState<Model | null | undefined>(undefined)
@@ -82,10 +84,11 @@ function Workspace({ userId }: { userId: string }) {
                 <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-text-3">凭据{model.hasApiKey ? '已保存' : '未设置'} · {model.timeoutSeconds}秒 · {model.asrPresetId ? `ASR预设 ${model.asrPresetId}` : `${model.maxOutputTokens}输出上限`}</span><div className="flex gap-1"><Button size="sm" variant="ghost" onClick={() => setEditing(model)} aria-label={`编辑 ${model.name}`}>编辑</Button><Button size="sm" variant="ghost" onClick={() => setDeleting(model)} aria-label={`删除 ${model.name}`}>删除</Button></div></div>
               </div>)}</div>}
           </Card>
-          <Segmented value={callMode} onValueChange={(value) => { setCallMode(value); if (value === 'asr') setAsrOpened(true) }} options={[{ value: 'text', label: '文字调用' }, { value: 'vision', label: '图片与正文' }, { value: 'asr', label: '音频转写' }]} />
+          <Segmented className="flex-wrap rounded-2xl" value={callMode} onValueChange={(value) => { setCallMode(value); if (value === 'asr') setAsrOpened(true); if (value === 'note-asr') setNoteAsrOpened(true) }} options={[{ value: 'text', label: '文字调用' }, { value: 'vision', label: '图片与正文' }, { value: 'asr', label: '音频转写' }, { value: 'note-asr', label: '笔记录音任务' }]} />
           <div hidden={callMode !== 'text'}><TextCall userId={userId} models={models.data} settings={settings.data} changed={() => void refresh()} showDetail={setDetailId} /></div>
           <div hidden={callMode !== 'vision'}><VisionCall userId={userId} models={models.data} settings={settings.data} changed={() => void refresh()} showDetail={setDetailId} renderStatus={(status) => <State value={status} />} /></div>
           {asrOpened && <div hidden={callMode !== 'asr'}><AsrCall userId={userId} models={models.data} settings={settings.data} changed={() => void refresh()} showDetail={setDetailId} renderStatus={(status) => <State value={status} />} /></div>}
+          {noteAsrOpened && <div hidden={callMode !== 'note-asr'}><NoteAsrTasks userId={userId} models={models.data} settings={settings.data} showDetail={setDetailId} /></div>}
           <LegacyInfo prefix={prefix} />
         </>}
     </div>

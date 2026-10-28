@@ -19,6 +19,12 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
     public async Task<AiTextCallResultDto> CallAsync(AiAsrCallRequest request, CancellationToken ct)
     {
         var owner = currentUser.UserId ?? throw new DomainException(1002, "请先登录");
+        return await CallForOwnerAsync(owner, request, null, ct);
+    }
+
+    // Only the durable task runner supplies this identity, read from its persisted owner-bound intent.
+    internal async Task<AiTextCallResultDto> CallForOwnerAsync(Guid owner, AiAsrCallRequest request, Guid? taskId, CancellationToken ct)
+    {
         if (request.ExpectedUserId != owner) throw new DomainException(40301, "会话已改变，音频未发送，请重新核对账号");
         if (request.ClientRequestId == Guid.Empty || request.Consent?.Confirmed != true)
             throw new DomainException(40001, "请核对本次音频、ASR预设、模型和目标地址，并明确同意发送");
@@ -53,7 +59,8 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         }
         var now = DateTimeOffset.UtcNow;
         var row = new AiRequestLogEntity { UserId = owner, ClientRequestId = request.ClientRequestId, InputHash = fingerprint,
-            Module = "system", Purpose = "ai.asr-call", SourceObjectType = "ai-model", SourceObjectId = profile.Id.ToString(),
+            Module = taskId is null ? "system" : "notes", Purpose = "ai.asr-call",
+            SourceObjectType = taskId is null ? "ai-model" : "native-note-asr-task", SourceObjectId = (taskId ?? profile.Id).ToString(),
             Provider = description.Id, Model = profile.Model, ModelProfileId = profile.Id, ModelProfileName = profile.Name,
             ModelRevision = profile.Revision, ModelEndpoint = operation, CorrelationId = Guid.NewGuid().ToString("N"),
             Status = configurationError is null ? "running" : "blocked", StartedAt = now, FinishedAt = configurationError is null ? null : now,
@@ -81,7 +88,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         using var wire = new AiTextWireCapture(); var prepared = false; double? reportedSeconds = null;
         try
         {
-            await materials.StoreAsync(owner, storedAudio, audio, linked.Token); prepared = true;
+            await materials.StoreForOwnerAsync(owner, storedAudio, audio, linked.Token); prepared = true;
             var connection = new AiModelConnection(endpoint, profile.Model, key!, profile.TimeoutSeconds);
             wire.SetAsrAudit(bytes => preset.AuditRequest(bytes, connection, audio, storedAudio.Id, request.Language));
             var response = await preset.TranscribeAsync(connection, audio, request.Language, linked.Token);

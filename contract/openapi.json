@@ -14252,6 +14252,407 @@
         },
         "type": "object"
       },
+      "NoteAsrAttemptDto": {
+        "additionalProperties": false,
+        "properties": {
+          "errorMessage": {
+            "nullable": true,
+            "type": "string"
+          },
+          "logId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "requestId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "NoteAsrSegmentDto": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/NoteAsrAttemptDto"
+            },
+            "type": "array"
+          },
+          "chunkIndex": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "index": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "recordingId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "recordingOffsetSamples": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "recordingSegment": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "samples": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "sourceFileIndex": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "sourceOffsetSamples": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "sourcePath": {
+            "type": "string"
+          },
+          "sourceSha256": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "timelineOffsetSamples": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "transcript": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempts",
+          "chunkIndex",
+          "index",
+          "recordingId",
+          "recordingOffsetSamples",
+          "recordingSegment",
+          "samples",
+          "sourceFileIndex",
+          "sourceOffsetSamples",
+          "sourcePath",
+          "sourceSha256",
+          "status",
+          "timelineOffsetSamples"
+        ],
+        "type": "object"
+      },
+      "NoteAsrSegmentsDto": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NoteAsrSegmentDto"
+            },
+            "type": "array"
+          },
+          "offset": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "total": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "total"
+        ],
+        "type": "object"
+      },
+      "NoteAsrSegmentsDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteAsrSegmentsDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteAsrSourceDto": {
+        "additionalProperties": false,
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "hasConflict": {
+            "type": "boolean"
+          },
+          "isCurrent": {
+            "type": "boolean"
+          },
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "recordings": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "sampleRate": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "totalSamples": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "createdAt",
+          "hasConflict",
+          "isCurrent",
+          "noteId",
+          "recordings",
+          "sampleRate",
+          "title",
+          "totalSamples",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NoteAsrSourcesDto": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NoteAsrSourceDto"
+            },
+            "type": "array"
+          },
+          "offset": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "total": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "total"
+        ],
+        "type": "object"
+      },
+      "NoteAsrSourcesDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteAsrSourcesDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteAsrTaskDto": {
+        "additionalProperties": false,
+        "properties": {
+          "backgroundProcessingAvailable": {
+            "type": "boolean"
+          },
+          "completedSamples": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "completedSegments": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/AiAsrDestinationConsent"
+          },
+          "failedSegments": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "inputSha256": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "manifestSha256": {
+            "type": "string"
+          },
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sampleRate": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "stopRequested": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "totalSamples": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "totalSegments": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "completedSamples",
+          "completedSegments",
+          "createdAt",
+          "destination",
+          "failedSegments",
+          "inputSha256",
+          "language",
+          "manifestSha256",
+          "noteId",
+          "phase",
+          "revision",
+          "sampleRate",
+          "stopRequested",
+          "taskId",
+          "totalSamples",
+          "totalSegments",
+          "updatedAt",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NoteAsrTaskDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteAsrTaskDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteAsrTaskDtoIReadOnlyListApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/NoteAsrTaskDto"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "NoteMaterialUploadDto": {
         "additionalProperties": false,
         "properties": {
@@ -17753,6 +18154,45 @@
         ],
         "type": "object"
       },
+      "RetryNoteAsrRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledgePossibleDuplicateCharge": {
+            "type": "boolean"
+          },
+          "consent": {
+            "$ref": "#/components/schemas/AiAsrDestinationConsent"
+          },
+          "expectedRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expectedUserId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "retryId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "segmentIndexes": {
+            "items": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "acknowledgePossibleDuplicateCharge",
+          "consent",
+          "expectedRevision",
+          "expectedUserId",
+          "retryId",
+          "segmentIndexes"
+        ],
+        "type": "object"
+      },
       "S2ThreeStateDistribution": {
         "additionalProperties": false,
         "properties": {
@@ -18626,6 +19066,36 @@
           "focusMs",
           "host",
           "visitCount"
+        ],
+        "type": "object"
+      },
+      "StartNoteAsrRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "consent": {
+            "$ref": "#/components/schemas/AiAsrDestinationConsent"
+          },
+          "expectedUserId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "taskId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "consent",
+          "expectedUserId",
+          "taskId",
+          "versionId"
         ],
         "type": "object"
       },
@@ -35975,6 +36445,355 @@
         ],
         "tags": [
           "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/native-notes/asr-tasks": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteAsrTaskDtoIReadOnlyListApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note ASR"
+        ]
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartNoteAsrRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteAsrTaskDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note ASR"
+        ]
+      }
+    },
+    "/api/v1/native-notes/asr-tasks/sources": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteAsrSourcesDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note ASR"
+        ]
+      }
+    },
+    "/api/v1/native-notes/asr-tasks/{taskId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteAsrTaskDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note ASR"
+        ]
+      }
+    },
+    "/api/v1/native-notes/asr-tasks/{taskId}/retry": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetryNoteAsrRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteAsrTaskDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note ASR"
+        ]
+      }
+    },
+    "/api/v1/native-notes/asr-tasks/{taskId}/segments": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 10,
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteAsrSegmentsDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note ASR"
+        ]
+      }
+    },
+    "/api/v1/native-notes/asr-tasks/{taskId}/stop": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteAsrTaskDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note ASR"
         ]
       }
     },

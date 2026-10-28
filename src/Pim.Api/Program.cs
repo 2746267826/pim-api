@@ -110,6 +110,10 @@ builder.Services.AddOptions<Pim.Infrastructure.Notes.NoteMaterialUploadOptions>(
     .Validate(options => options.IsValid(), "NativeNotes storage configuration is invalid")
     .ValidateOnStart();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMaterialUploadStore>();
+builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteAsrTaskStore>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrService>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrJob>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrDispatchJob>();
 builder.Services.AddAggregateResultCaching();
 builder.Services.Configure<OpsOptions>(o =>
 {
@@ -413,6 +417,7 @@ app.MapDataReliabilityEndpoints();
 app.MapTodayEndpoints();
 app.MapAiEndpoints();
 app.MapNoteMaterialEndpoints();
+app.MapNoteAsrEndpoints();
 app.MapClientShell();
 app.MapTileEndpoints();
 
@@ -444,6 +449,9 @@ else
             "stage0-diagnostic",
             job => job.RunAsync(CancellationToken.None),
             Cron.Hourly);
+
+        RecurringJob.AddOrUpdate<Pim.Infrastructure.Notes.NoteAsrDispatchJob>(
+            "native-note-asr-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
 
         RecurringJob.AddOrUpdate<HeartbeatStaleInspectionJob>(
             "heartbeat-stale-inspection",

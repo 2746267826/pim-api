@@ -91,6 +91,25 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         return result;
     }
 
+    public async Task<NoteAsrSourcesDto> ListAsrSourcesAsync(Guid owner, int offset, int limit, CancellationToken ct)
+    {
+        if (offset < 0 || limit is < 1 or > 50) throw Invalid("材料分页范围无效");
+        await using var lease = await LockAsync(owner, ct);
+        var ledger = await LoadLedgerAsync(owner, ct);
+        var versions = ledger.Versions.Where(x => x.Value.Phase != "Uploading").OrderByDescending(x => x.Value.CreatedAt).ToArray();
+        var result = new List<NoteAsrSourceDto>();
+        foreach (var (key, entry) in versions.Skip(offset).Take(limit))
+        {
+            var versionId = Guid.Parse(key); var request = await RequestAsync(owner, versionId, ct);
+            using var input = JsonDocument.Parse(request.InputJson);
+            var recordings = input.RootElement.GetProperty("recordings");
+            var samples = recordings.EnumerateArray().Sum(r => r.GetProperty("chunks").EnumerateArray().Sum(c => c.GetProperty("samples").GetInt64()));
+            result.Add(new(entry.NoteId, versionId, input.RootElement.GetProperty("note").GetProperty("title").GetString() ?? "未命名笔记",
+                entry.CreatedAt, Current(ledger, entry.NoteId) == versionId, entry.Phase == "Conflict", recordings.GetArrayLength(), samples, NoteAsrPlan.SampleRate));
+        }
+        return new(versions.Length, offset, result);
+    }
+
     public async Task UploadPartAsync(Guid userId, Guid versionId, int fileIndex, int partIndex,
         string sha256, Stream body, CancellationToken ct = default)
     {
@@ -183,6 +202,37 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             await using var stream = File.OpenRead(PartFile(userId, versionId, fileIndex, part));
             await stream.CopyToAsync(output, ct);
         }
+    }
+
+    internal async Task<byte[]> ReadAudioSliceAsync(Guid owner, Guid versionId, int fileIndex,
+        long offsetSamples, long samples, CancellationToken ct)
+    {
+        await using var lease = await LockAsync(owner, ct);
+        var ledger = await LoadLedgerAsync(owner, ct);
+        if (Find(ledger, versionId).Phase == "Uploading") throw Conflict("材料尚未提交完整");
+        var file = FileAt(NoteMaterialManifestValidator.Validate(await RequestAsync(owner, versionId, ct), ReadLimits), fileIndex);
+        if (file.Kind != "AudioChunk" || offsetSamples < 0 || samples is <= 0 or > NoteAsrPlan.SamplesPerCall ||
+            offsetSamples > file.Samples || samples > file.Samples - offsetSamples) throw Invalid("录音分片范围无效");
+        await VerifyFileAsync(owner, versionId, fileIndex, file, ct);
+        var bytes = new byte[checked(44 + (int)samples * 2)];
+        "RIFF"u8.CopyTo(bytes); BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), (uint)(bytes.Length - 8));
+        "WAVEfmt "u8.CopyTo(bytes.AsSpan(8)); BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(16), 16);
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(20), 1); BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(22), 1);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(24), 16_000); BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(28), 32_000);
+        BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(32), 2); BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(34), 16);
+        "data"u8.CopyTo(bytes.AsSpan(36)); BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(40), (uint)samples * 2);
+        long position = 44 + offsetSamples * 2; var written = 44;
+        while (written < bytes.Length)
+        {
+            var part = (int)(position / NoteMaterialUploadOptions.PartSizeBytes);
+            var within = position % NoteMaterialUploadOptions.PartSizeBytes;
+            await using var stream = File.OpenRead(PartFile(owner, versionId, fileIndex, part));
+            stream.Position = within;
+            var count = (int)Math.Min(bytes.Length - written, stream.Length - within);
+            if (count <= 0) throw Invalid("录音材料分块损坏");
+            await stream.ReadExactlyAsync(bytes.AsMemory(written, count), ct); written += count; position += count;
+        }
+        return bytes;
     }
 
     public async Task CancelAsync(Guid userId, Guid versionId, CancellationToken ct = default)
