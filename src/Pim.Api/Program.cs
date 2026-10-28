@@ -113,7 +113,6 @@ builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMaterialUploadStore>(
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteAsrTaskStore>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrJob>();
-builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrDispatchJob>();
 builder.Services.AddAggregateResultCaching();
 builder.Services.Configure<OpsOptions>(o =>
 {
