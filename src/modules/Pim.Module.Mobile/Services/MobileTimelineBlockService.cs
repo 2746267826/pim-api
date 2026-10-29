@@ -2,6 +2,7 @@
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
@@ -18,6 +19,7 @@ public sealed class MobileTimelineBlockService
     private readonly ICurrentUserService _currentUser;
     private readonly TimeProvider _timeProvider;
     private readonly MobileAppClassificationService? _classificationService;
+    private readonly int _blockIdMaxLength;
 
     public MobileTimelineBlockService(
         PimDbContext db,
@@ -29,6 +31,12 @@ public sealed class MobileTimelineBlockService
         _currentUser = currentUser;
         _timeProvider = timeProvider;
         _classificationService = classificationService;
+        // Enforce the mapped varchar limit instead of duplicating a second payload-size budget.
+        _blockIdMaxLength = db.Model
+            .FindEntityType(typeof(MobileTimelineBlockEntity))
+            ?.FindProperty(nameof(MobileTimelineBlockEntity.BlockId))
+            ?.GetMaxLength()
+            ?? throw new InvalidOperationException("Mobile timeline block id storage limit is not configured.");
     }
 
     public async Task<MobileTimelineBlockPageDto> GetBlocksAsync(
@@ -264,7 +272,7 @@ public sealed class MobileTimelineBlockService
         {
             if (current is null || !current.CanAccept(item))
             {
-                current = new BlockBuilder(item);
+                current = new BlockBuilder(item, _blockIdMaxLength);
                 builders.Add(current);
                 continue;
             }
@@ -724,13 +732,15 @@ public sealed class MobileTimelineBlockService
     private sealed class BlockBuilder
     {
         private readonly List<TimelineItem> _items = [];
+        private readonly int _blockIdMaxLength;
 
-        public BlockBuilder(TimelineItem item)
+        public BlockBuilder(TimelineItem item, int blockIdMaxLength)
         {
             _items.Add(item);
             StartUtc = item.StartUtc;
             EndUtc = item.EndUtc;
             LifeCategory = item.LifeCategory;
+            _blockIdMaxLength = blockIdMaxLength;
         }
 
         private DateTimeOffset StartUtc { get; }
@@ -740,8 +750,20 @@ public sealed class MobileTimelineBlockService
         private string LifeCategory { get; }
 
         public bool CanAccept(TimelineItem item)
-            => string.Equals(LifeCategory, item.LifeCategory, StringComparison.OrdinalIgnoreCase)
-                && item.StartUtc <= EndUtc.Add(BlockMergeGap);
+        {
+            if (!string.Equals(LifeCategory, item.LifeCategory, StringComparison.OrdinalIgnoreCase)
+                || item.StartUtc > EndUtc.Add(BlockMergeGap))
+                return false;
+
+            var candidateItems = _items.Append(item).ToList();
+            var candidateEndUtc = item.EndUtc > EndUtc ? item.EndUtc : EndUtc;
+            var candidateLifeCategory = ResolveLifeCategory(candidateItems);
+            return EncodeBlockId(
+                candidateEndUtc,
+                candidateItems,
+                candidateLifeCategory,
+                enforceLimit: false).Length <= _blockIdMaxLength;
+        }
 
         public void Add(TimelineItem item)
         {
@@ -752,19 +774,8 @@ public sealed class MobileTimelineBlockService
 
         public ComputedBlock Build(TimeZoneInfo timeZoneInfo)
         {
-            var itemIds = _items
-                .OrderBy(item => item.StartUtc)
-                .ThenBy(item => item.Source, StringComparer.Ordinal)
-                .ThenBy(item => item.Id, StringComparer.Ordinal)
-                .Select(item => item.Id)
-                .ToList();
-            var lifeCategory = _items
-                .GroupBy(item => item.LifeCategory)
-                .OrderByDescending(group => group.Sum(item => item.DurationSeconds))
-                .ThenBy(group => group.Key, StringComparer.Ordinal)
-                .First()
-                .Key;
-            var id = EncodePayload(new BlockIdPayload(1, StartUtc, EndUtc, lifeCategory, itemIds));
+            var lifeCategory = ResolveLifeCategory(_items);
+            var id = EncodeBlockId(EndUtc, _items, lifeCategory);
             var topApps = _items
                 .GroupBy(item => new { item.PackageName, item.DisplayName })
                 .Select(group => new MobileTimelineBlockAppDto(
@@ -801,6 +812,36 @@ public sealed class MobileTimelineBlockService
 
             return new ComputedBlock(id, StartUtc, dto, _items.ToList());
         }
+
+        private string EncodeBlockId(
+            DateTimeOffset endUtc,
+            IReadOnlyCollection<TimelineItem> items,
+            string lifeCategory,
+            bool enforceLimit = true)
+        {
+            var itemIds = items
+                .OrderBy(item => item.StartUtc)
+                .ThenBy(item => item.Source, StringComparer.Ordinal)
+                .ThenBy(item => item.Id, StringComparer.Ordinal)
+                .Select(item => item.Id)
+                .ToList();
+            var id = EncodePayload(new BlockIdPayload(1, StartUtc, endUtc, lifeCategory, itemIds));
+            if (enforceLimit && id.Length > _blockIdMaxLength)
+            {
+                throw new InvalidOperationException(
+                    $"Timeline block id length {id.Length} exceeds configured storage limit {_blockIdMaxLength}.");
+            }
+
+            return id;
+        }
+
+        private static string ResolveLifeCategory(IReadOnlyCollection<TimelineItem> items)
+            => items
+                .GroupBy(item => item.LifeCategory)
+                .OrderByDescending(group => group.Sum(item => item.DurationSeconds))
+                .ThenBy(group => group.Key, StringComparer.Ordinal)
+                .First()
+                .Key;
 
         private static string FormatLocal(DateTimeOffset value, TimeZoneInfo timeZoneInfo)
             => TimeZoneInfo.ConvertTime(value, timeZoneInfo)

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
 using Pim.Module.Mobile.Entities;
@@ -211,6 +212,66 @@ public sealed class MobileAnalyticsMaterializationTests
         Assert.All(rows, row => Assert.False(row.IsStale));
     }
 
+    [Fact]
+    public async Task MaterializeAsync_LargeIntradayBlockSplitsAtStorageLimitAndRebuildsDeterministically()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        const int sessionCount = 220;
+        const int durationSeconds = 60;
+        var firstStart = DayStartUtc.AddHours(1);
+        db.Set<MobileUsageSessionEntity>().AddRange(Enumerable.Range(0, sessionCount)
+            .Select(index =>
+            {
+                var start = firstStart.AddMinutes(index);
+                return Session("com.example.bulk-chat", start, start.AddSeconds(durationSeconds));
+            }));
+        await db.SaveChangesAsync();
+
+        var request = new MobileAnalyticsQueryRequest(DayStartUtc, DayEndUtc, DeviceId: DeviceId);
+        var service = CreateBlocks(db);
+        await MaterializeAsync(db);
+
+        var firstRows = await db.Set<MobileTimelineBlockEntity>()
+            .AsNoTracking()
+            .OrderBy(row => row.StartUtc)
+            .ThenBy(row => row.BlockId)
+            .ToListAsync();
+        var blockIdLimit = GetBlockIdStorageLimit(db);
+
+        Assert.Equal(8192, blockIdLimit);
+        Assert.True(firstRows.Count > 1);
+        Assert.All(firstRows, row => Assert.InRange(row.BlockId.Length, 1, blockIdLimit));
+        Assert.Equal(sessionCount, firstRows.Sum(row => row.SessionCount));
+        Assert.Equal(
+            sessionCount * durationSeconds,
+            firstRows.Sum(row => row.ForegroundSeconds));
+        Assert.All(firstRows, row =>
+        {
+            Assert.Equal(MobileAnalyticsDefaults.DefaultTimezone, row.Timezone);
+            Assert.Equal(MobileLifeCategories.Uncategorized, row.LifeCategory);
+        });
+
+        var fromMaterialized = await service.GetBlocksAsync(request, CancellationToken.None);
+        Assert.Equal(firstRows.Count, fromMaterialized.TotalCount);
+
+        await MaterializeAsync(db);
+        var secondRows = await db.Set<MobileTimelineBlockEntity>()
+            .AsNoTracking()
+            .OrderBy(row => row.StartUtc)
+            .ThenBy(row => row.BlockId)
+            .ToListAsync();
+        Assert.Equal(
+            firstRows.Select(row => row.BlockId),
+            secondRows.Select(row => row.BlockId));
+
+        var fromRebuilt = await service.GetBlocksAsync(request, CancellationToken.None);
+        Assert.Equivalent(fromMaterialized.Items, fromRebuilt.Items, strict: true);
+
+        await ClearDerivedRowsAsync(db);
+        var fromOnline = await service.GetBlocksAsync(request, CancellationToken.None);
+        Assert.Equivalent(fromMaterialized.Items, fromOnline.Items, strict: true);
+    }
+
     private static async Task MaterializeAsync(PimDbContext db)
     {
         var service = CreateMaterialization(db);
@@ -230,6 +291,13 @@ public sealed class MobileAnalyticsMaterializationTests
             await db.Set<MobileAnalyticsMaterializationEntity>().ToListAsync());
         await db.SaveChangesAsync();
     }
+
+    private static int GetBlockIdStorageLimit(PimDbContext db)
+        => db.Model
+            .FindEntityType(typeof(MobileTimelineBlockEntity))
+            ?.FindProperty(nameof(MobileTimelineBlockEntity.BlockId))
+            ?.GetMaxLength()
+            ?? throw new InvalidOperationException("Mobile timeline block id storage limit is not configured.");
 
     private static async Task SeedSessionsAsync(PimDbContext db)
     {

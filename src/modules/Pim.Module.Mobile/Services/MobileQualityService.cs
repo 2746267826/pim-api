@@ -19,9 +19,6 @@ public sealed class MobileQualityService
     /// <summary>汇总断流红线：超过 1 天没有新汇总，且事件仍在入库。</summary>
     private static readonly TimeSpan BrokenSummaryLag = TimeSpan.FromHours(24);
 
-    /// <summary>批次积压线：pending 超过 30 分钟仍未完成视为卡住（与 MobileSyncBacklogInspector 一致）。</summary>
-    private static readonly TimeSpan StalledBatchAge = TimeSpan.FromMinutes(30);
-
     /// <summary>质量报告里内联展示的待补包名样例数量。</summary>
     private const int MissingPackageSampleSize = 10;
     private readonly PimDbContext _db;
@@ -453,7 +450,11 @@ public sealed class MobileQualityService
 
         var failedBatchCount = batches.Count(b => MobileSyncBatchStatus.IsFailed(b.FailedCount, b.Status));
         var stalledBatchCount = batches.Count(b =>
-            MobileSyncBatchStatus.IsActive(b.Status) && checkedAt - b.CreatedAt > StalledBatchAge);
+            MobileSyncBatchStatus.IsActive(b.Status)
+            && !MobileSyncBatchEnvelopeCodec.HasActiveLease(
+                b.CreatedAt,
+                b.ErrorJson,
+                checkedAt));
         var rejectedItemCount = batches.Sum(b => b.RejectedCount);
 
         if (failedBatchCount > 0)

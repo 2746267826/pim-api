@@ -139,6 +139,32 @@ public sealed class DeviceManagementServiceTests
     }
 
     [Fact]
+    public async Task DeleteAsync_BlocksWhileEnvelopeLeaseIsActiveEvenIfCreatedAtIsOld()
+    {
+        await using var ctx = await DeviceManagementTestDb.CreateAsync();
+        var db = ctx.Db;
+        SeedDevice(db, TargetDeviceId, Now);
+        SeedPendingBatch(
+            db,
+            TargetDeviceId,
+            "batch-active-lease",
+            Now.AddHours(-2),
+            MobileSyncBatchEnvelopeCodec.Serialize(
+                [],
+                [],
+                leaseUntilUtc: Now.AddMinutes(5),
+                attemptCount: 2,
+                leaseId: Guid.NewGuid().ToString("N")));
+        await db.SaveChangesAsync();
+        var service = CreateService(db);
+
+        var ex = await Assert.ThrowsAsync<Pim.Core.Exceptions.DomainException>(
+            () => service.DeleteAsync(TargetDeviceId, CancellationToken.None));
+
+        Assert.Equal(04002, ex.ErrorCode);
+    }
+
+    [Fact]
     public async Task DeleteAsync_IgnoresAbandonedPendingBatchSoDeviceStaysDeletable()
     {
         await using var ctx = await DeviceManagementTestDb.CreateAsync();
@@ -650,7 +676,12 @@ public sealed class DeviceManagementServiceTests
             CompletedAtUtc = windowStart.AddMinutes(15),
         });
 
-    private static void SeedPendingBatch(PimDbContext db, string deviceId, string batchId, DateTimeOffset createdAt)
+    private static void SeedPendingBatch(
+        PimDbContext db,
+        string deviceId,
+        string batchId,
+        DateTimeOffset createdAt,
+        string errorJson = "{}")
         => db.Set<MobileSyncBatchEntity>().Add(new MobileSyncBatchEntity
         {
             UserId = MobileTestHelpers.UserId,
@@ -660,7 +691,7 @@ public sealed class DeviceManagementServiceTests
             WindowEndUtc = createdAt,
             AcceptedCount = 0,
             Status = MobileSyncBatchStatus.Pending,
-            ErrorJson = "{}",
+            ErrorJson = errorJson,
             CreatedAt = createdAt,
             CompletedAtUtc = null,
         });
