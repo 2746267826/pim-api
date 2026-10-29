@@ -299,7 +299,7 @@ public sealed class MobileUsageIngestServiceTests
     }
 
     [Fact]
-    public async Task IngestAsync_DoesNotPersistAcknowledgementWhenDerivedWorkFails()
+    public async Task IngestAsync_InvalidWindowIsRejectedBeforeCreatingPending()
     {
         await using var db = MobileTestHelpers.CreateDb();
         var staleService = new MobileAppCatalogOverrideService(
@@ -315,15 +315,12 @@ public sealed class MobileUsageIngestServiceTests
         var source = UploadRequest("batch-derived-failure", "Messages");
         var request = source with { SourceWindowEndUtc = source.SourceWindowStartUtc };
 
-        await Assert.ThrowsAsync<ArgumentException>(() =>
+        await Assert.ThrowsAsync<MobileSyncBatchRequestValidationException>(() =>
             service.IngestAsync(request, CancellationToken.None));
 
         db.ChangeTracker.Clear();
-        // 失败的批次不再"消失"：它以 pending 落库，让积压监控/质量面板能发现未完成的同步（#243）。
-        // 客户端的下一次重投会接管它（租约过期后）并把状态推进到终态。
-        var batch = await db.Set<MobileSyncBatchEntity>().SingleAsync();
-        Assert.Equal(MobileSyncBatchStatus.Pending, batch.Status);
-        Assert.Null(batch.CompletedAtUtc);
+        Assert.False(await db.Set<MobileSyncBatchEntity>().AnyAsync());
+        Assert.False(await db.Set<MobileAppCatalogEntity>().AnyAsync());
     }
 
     [Fact]

@@ -1,3 +1,6 @@
+using System.Text;
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
 using Pim.Module.Mobile.Entities;
@@ -321,6 +324,81 @@ public sealed class MobileTimelineBlockServiceTests
             });
     }
 
+    [Fact]
+    public async Task GetBlocksAsync_LargeSameCategoryWindowSplitsAtConfiguredBlockIdLimitWithoutLosingSessions()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        const int sessionCount = 220;
+        var firstStart = DateTimeOffset.Parse("2026-07-07T10:00:00Z");
+        var seededIds = Enumerable.Range(0, sessionCount)
+            .Select(index => Guid.Parse($"50000000-0000-0000-0000-{index + 1:000000000000}"))
+            .ToHashSet();
+
+        db.Set<MobileAppCatalogEntity>().Add(Catalog("com.tencent.mobileqq", "QQ", "聊天"));
+        db.Set<MobileAppCatalogOverrideEntity>().Add(Override("com.tencent.mobileqq", "聊天"));
+        db.Set<MobileUsageSessionEntity>().AddRange(seededIds.Select((sessionId, index) =>
+            Session(sessionId, "com.tencent.mobileqq", firstStart.AddMinutes(index), 60)));
+        await db.SaveChangesAsync();
+
+        var blockIdLimit = GetBlockIdStorageLimit(db);
+        Assert.Equal(8192, blockIdLimit);
+
+        var service = Service(db);
+        var request = Query(minDurationSeconds: 0, pageSize: 200);
+        var page = await service.GetBlocksAsync(request, CancellationToken.None);
+
+        Assert.True(page.Items.Count > 1);
+        Assert.Equal(sessionCount, page.Items.Sum(block => block.SessionCount));
+        Assert.All(page.Items, block => Assert.InRange(block.Id.Length, 1, blockIdLimit));
+
+        var returnedIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var block in page.Items)
+        {
+            var sessions = await service.GetSessionsForBlockAsync(block.Id, request, CancellationToken.None);
+            Assert.Equal(block.SessionCount, sessions.Count);
+            Assert.All(sessions, session => Assert.Contains(Guid.Parse(session.Id), seededIds));
+            Assert.All(sessions, session => Assert.True(returnedIds.Add(session.Id)));
+        }
+
+        Assert.Equal(
+            seededIds.Select(id => id.ToString("N")).OrderBy(id => id, StringComparer.Ordinal),
+            returnedIds.OrderBy(id => id, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task Drilldown_DecodesPersistedLegacyBlockIdThatNoLongerMatchesCurrentChunking()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var firstSessionId = Guid.Parse("51000000-0000-0000-0000-000000000001");
+        var secondSessionId = Guid.Parse("51000000-0000-0000-0000-000000000002");
+        var start = DateTimeOffset.Parse("2026-07-07T10:00:00Z");
+
+        db.Set<MobileAppCatalogEntity>().Add(Catalog("com.tencent.mobileqq", "QQ", "聊天"));
+        db.Set<MobileAppCatalogOverrideEntity>().Add(Override("com.tencent.mobileqq", "聊天"));
+        db.Set<MobileUsageSessionEntity>().AddRange(
+            Session(firstSessionId, "com.tencent.mobileqq", start, 60),
+            Session(secondSessionId, "com.tencent.mobileqq", start.AddMinutes(1), 60));
+        await db.SaveChangesAsync();
+
+        var request = Query(minDurationSeconds: 0);
+        var currentBlock = Assert.Single((await Service(db).GetBlocksAsync(request, CancellationToken.None)).Items);
+        Assert.Equal(2, currentBlock.SessionCount);
+
+        // A persisted v1 id may contain only a historical subset of today's merged block.
+        var legacyBlockId = EncodeLegacyBlockId(
+            start,
+            start.AddMinutes(1),
+            "聊天",
+            firstSessionId.ToString("N"));
+        var sessions = await Service(db).GetSessionsForBlockAsync(
+            legacyBlockId,
+            request,
+            CancellationToken.None);
+
+        var session = Assert.Single(sessions);
+        Assert.Equal(firstSessionId.ToString("N"), session.Id);
+    }
+
     private static MobileTimelineBlockService Service(PimDbContext db)
     {
         var currentUser = MobileTestHelpers.CurrentUser();
@@ -329,6 +407,35 @@ public sealed class MobileTimelineBlockServiceTests
             currentUser,
             MobileTestHelpers.Time(Now),
             new MobileAppClassificationService(db, currentUser));
+    }
+
+    private static int GetBlockIdStorageLimit(PimDbContext db)
+        => db.Model
+            .FindEntityType(typeof(MobileTimelineBlockEntity))
+            ?.FindProperty(nameof(MobileTimelineBlockEntity.BlockId))
+            ?.GetMaxLength()
+            ?? throw new InvalidOperationException("Mobile timeline block id storage limit is not configured.");
+
+    private static string EncodeLegacyBlockId(
+        DateTimeOffset startUtc,
+        DateTimeOffset endUtc,
+        string lifeCategory,
+        params string[] itemIds)
+    {
+        var json = JsonSerializer.Serialize(
+            new
+            {
+                version = 1,
+                startUtc,
+                endUtc,
+                lifeCategory,
+                itemIds
+            },
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        return Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
     }
 
     private static MobileAnalyticsQueryRequest Query(

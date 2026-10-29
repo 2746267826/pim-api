@@ -649,20 +649,23 @@ public sealed class DeviceManagementService
 
         await using var tx = _db.Database.IsRelational() ? await _db.Database.BeginTransactionAsync(ct) : null;
 
-        // 只拦截"最近还在处理"的批次：中断的上传会留下 pending 行（#243），
+        // 只拦截"当前仍有 active lease / retry cooldown"的批次：中断上传会留下 pending 行（#243），
         // 若把它当成永久"正在同步"，设备将永远无法删除。
         // 检查放在事务内、删除之前，尽量收窄"检查完就有新上传开始"的窗口；
         // 时间比较放在内存里做：SQLite（部分测试用）不支持 DateTimeOffset 的服务器端比较。
-        var activeSince = _timeProvider.GetUtcNow() - MobileSyncBatchStatus.ActiveWindow;
-        var activeBatchCreatedAt = await _db.Set<MobileSyncBatchEntity>()
+        var now = _timeProvider.GetUtcNow();
+        var activeBatches = await _db.Set<MobileSyncBatchEntity>()
             .Where(b => b.UserId == userId
                 && b.DeviceId == deviceId
                 && (b.Status == MobileSyncBatchStatus.Pending
                     || b.Status == "processing"
                     || b.Status == "syncing"))
-            .Select(b => b.CreatedAt)
+            .Select(b => new { b.CreatedAt, b.ErrorJson })
             .ToListAsync(ct);
-        if (activeBatchCreatedAt.Any(createdAt => createdAt >= activeSince))
+        if (activeBatches.Any(batch => MobileSyncBatchEnvelopeCodec.HasActiveLease(
+                batch.CreatedAt,
+                batch.ErrorJson,
+                now)))
             throw new DomainException(04002, "设备正在同步，禁止删除");
 
         // daemon_heartbeats 没有 user_id，"按 device_id 删"会把别的用户同名字符串设备的心跳一起删掉；

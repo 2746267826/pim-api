@@ -9,8 +9,6 @@ namespace Pim.Module.Mobile.Services;
 
 public sealed class MobileSyncBacklogInspector : IDataQualityInspector
 {
-    private static readonly TimeSpan OverdueThreshold = TimeSpan.FromMinutes(30);
-
     /// <summary>
     /// 处理中的状态词表。写入侧在开始处理前先落一条 <c>pending</c> 批次（#243），
     /// 因此"上传中断 / 进程崩溃 / 长时间未完成"在这里是可见的，而不是永远查不到。
@@ -31,15 +29,77 @@ public sealed class MobileSyncBacklogInspector : IDataQualityInspector
 
     public async Task<DataQualityInspectionResult> InspectAsync(DateTimeOffset now, CancellationToken ct = default)
     {
-        var overdueCutoff = now - OverdueThreshold;
-        List<MobileSyncBatchEntity> overdueBatches;
-
         try
         {
-            overdueBatches = await _db.Set<MobileSyncBatchEntity>()
+            var activeBatches = await _db.Set<MobileSyncBatchEntity>()
                 .AsNoTracking()
-                .Where(b => ActiveStatuses.Contains(b.Status) && b.CreatedAt <= overdueCutoff)
+                .Where(batch => ActiveStatuses.Contains(batch.Status))
                 .ToListAsync(ct);
+            var inspected = activeBatches
+                .Select(batch =>
+                {
+                    var envelope = MobileSyncBatchEnvelopeCodec.DeserializeOrEmpty(batch.ErrorJson);
+                    var leaseUntilUtc = MobileSyncBatchEnvelopeCodec.EffectiveLeaseUntil(
+                        batch.CreatedAt,
+                        envelope);
+                    var retryDue = envelope.RetryAfterUtc is null
+                        || envelope.RetryAfterUtc <= now;
+                    return new
+                    {
+                        Batch = batch,
+                        Envelope = envelope,
+                        ActiveLease = leaseUntilUtc > now,
+                        ScheduledRetry = envelope.RetryAfterUtc is { } retryAfter && retryAfter > now,
+                        Overdue = leaseUntilUtc <= now && retryDue
+                    };
+                })
+                .ToList();
+
+            var overdueBatches = inspected
+                .Where(item => item.Overdue)
+                .Select(item => item.Batch)
+                .ToList();
+            var backlogCount = overdueBatches.Count;
+            try
+            {
+                PimMetrics.SyncBatchBacklog.Set(backlogCount);
+            }
+            catch { }
+
+            var activeLeaseCount = inspected.Count(item => item.ActiveLease);
+            var scheduledRetryCount = inspected.Count(item => item.ScheduledRetry);
+            var legacyPendingCount = inspected.Count(item =>
+                item.Batch.Status == MobileSyncBatchStatus.Pending
+                && item.Envelope.LeaseUntilUtc is null
+                && item.Envelope.AttemptCount == 0);
+            var isHealthy = backlogCount == 0;
+            var message = isHealthy
+                ? "No overdue mobile sync batches found."
+                : $"{backlogCount} mobile sync batch(es) have no active lease or due retry.";
+
+            var details = new Dictionary<string, string>
+            {
+                ["overdueCount"] = backlogCount.ToString(),
+                ["processingLeaseMinutes"] = MobileUsageIngestService.PendingBatchLease.TotalMinutes.ToString(),
+                ["activeLeaseCount"] = activeLeaseCount.ToString(),
+                ["scheduledRetryCount"] = scheduledRetryCount.ToString(),
+                ["legacyPendingCount"] = legacyPendingCount.ToString()
+            };
+
+            if (overdueBatches.Count > 0)
+            {
+                var oldest = overdueBatches.OrderBy(batch => batch.CreatedAt).First();
+                details["oldestBatchId"] = oldest.BatchId;
+                details["oldestBatchCreatedAt"] = oldest.CreatedAt.ToString("O");
+                details["oldestBatchDeviceId"] = oldest.DeviceId;
+            }
+
+            return new DataQualityInspectionResult(
+                CheckName,
+                isHealthy,
+                backlogCount,
+                message,
+                details);
         }
         catch (Exception ex)
         {
@@ -50,38 +110,5 @@ public sealed class MobileSyncBacklogInspector : IDataQualityInspector
                 1,
                 $"Database error querying mobile sync batches: {ex.Message}");
         }
-
-        var backlogCount = overdueBatches.Count;
-        try
-        {
-            PimMetrics.SyncBatchBacklog.Set(backlogCount);
-        }
-        catch { }
-
-        var isHealthy = backlogCount == 0;
-        var message = isHealthy
-            ? "No overdue mobile sync batches found."
-            : $"{backlogCount} mobile sync batch(es) overdue (>30 minutes in progress/pending).";
-
-        var details = new Dictionary<string, string>
-        {
-            ["overdueCount"] = backlogCount.ToString(),
-            ["thresholdMinutes"] = OverdueThreshold.TotalMinutes.ToString()
-        };
-
-        if (overdueBatches.Count > 0)
-        {
-            var oldest = overdueBatches.OrderBy(b => b.CreatedAt).First();
-            details["oldestBatchId"] = oldest.BatchId;
-            details["oldestBatchCreatedAt"] = oldest.CreatedAt.ToString("O");
-            details["oldestBatchDeviceId"] = oldest.DeviceId;
-        }
-
-        return new DataQualityInspectionResult(
-            CheckName,
-            isHealthy,
-            backlogCount,
-            message,
-            details);
     }
 }

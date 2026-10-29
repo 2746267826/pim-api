@@ -167,6 +167,24 @@ public sealed class MobileSyncBatchSemanticsTests
                 ErrorJson = "{}",
                 CreatedAt = Now.AddHours(-1),
                 CompletedAtUtc = null
+            },
+            new MobileSyncBatchEntity
+            {
+                UserId = MobileTestHelpers.UserId,
+                DeviceId = "android-main",
+                BatchId = "batch-active-old-created",
+                WindowStartUtc = Now.AddHours(-2),
+                WindowEndUtc = Now.AddHours(-1),
+                AcceptedCount = 0,
+                Status = MobileSyncBatchStatus.Pending,
+                ErrorJson = MobileSyncBatchEnvelopeCodec.Serialize(
+                    [],
+                    [],
+                    leaseUntilUtc: Now.AddMinutes(5),
+                    attemptCount: 2,
+                    leaseId: Guid.NewGuid().ToString("N")),
+                CreatedAt = Now.AddHours(-2),
+                CompletedAtUtc = null
             });
         await db.SaveChangesAsync();
 
@@ -336,6 +354,93 @@ public sealed class MobileSyncBatchSemanticsTests
     }
 
     [Fact]
+    public async Task BacklogInspector_UsesLeaseAndRetryMetadataInsteadOfCreatedAt()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        db.Set<MobileSyncBatchEntity>().AddRange(
+            new MobileSyncBatchEntity
+            {
+                UserId = MobileTestHelpers.UserId,
+                DeviceId = "android-main",
+                BatchId = "batch-active-lease",
+                WindowStartUtc = Now.AddHours(-3),
+                WindowEndUtc = Now.AddHours(-2),
+                Status = MobileSyncBatchStatus.Pending,
+                ErrorJson = MobileSyncBatchEnvelopeCodec.Serialize(
+                    [],
+                    [],
+                    leaseUntilUtc: Now.AddMinutes(5),
+                    attemptCount: 2,
+                    leaseId: Guid.NewGuid().ToString("N")),
+                CreatedAt = Now.AddHours(-2)
+            },
+            new MobileSyncBatchEntity
+            {
+                UserId = MobileTestHelpers.UserId,
+                DeviceId = "android-main",
+                BatchId = "batch-scheduled-retry",
+                WindowStartUtc = Now.AddHours(-3),
+                WindowEndUtc = Now.AddHours(-2),
+                Status = MobileSyncBatchStatus.Pending,
+                ErrorJson = MobileSyncBatchEnvelopeCodec.Serialize(
+                    [],
+                    ["processing-timeout"],
+                    leaseUntilUtc: null,
+                    attemptCount: 1,
+                    failureCode: "processing-timeout",
+                    leaseId: Guid.NewGuid().ToString("N"),
+                    retryAfterUtc: Now.AddMinutes(2)),
+                CreatedAt = Now.AddHours(-2)
+            });
+        await db.SaveChangesAsync();
+
+        var inspector = new MobileSyncBacklogInspector(
+            db,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<MobileSyncBacklogInspector>.Instance);
+        var result = await inspector.InspectAsync(Now, CancellationToken.None);
+
+        Assert.True(result.IsHealthy);
+        Assert.Equal("1", result.Details["activeLeaseCount"]);
+        Assert.Equal("1", result.Details["scheduledRetryCount"]);
+        Assert.Equal("0", result.Details["overdueCount"]);
+    }
+
+    [Fact]
+    public async Task BacklogInspector_ReportsDueRetryAsOverdueWithoutRefreshingCreatedAt()
+    {
+        await using var db = MobileTestHelpers.CreateDb();
+        var created = Now.AddHours(-2);
+        db.Set<MobileSyncBatchEntity>().Add(new MobileSyncBatchEntity
+        {
+            UserId = MobileTestHelpers.UserId,
+            DeviceId = "android-main",
+            BatchId = "batch-retry-due",
+            WindowStartUtc = Now.AddHours(-3),
+            WindowEndUtc = Now.AddHours(-2),
+            Status = MobileSyncBatchStatus.Pending,
+            ErrorJson = MobileSyncBatchEnvelopeCodec.Serialize(
+                [],
+                ["processing-timeout"],
+                leaseUntilUtc: null,
+                attemptCount: 1,
+                failureCode: "processing-timeout",
+                leaseId: Guid.NewGuid().ToString("N"),
+                retryAfterUtc: Now.AddMinutes(-1)),
+            CreatedAt = created
+        });
+        await db.SaveChangesAsync();
+
+        var inspector = new MobileSyncBacklogInspector(
+            db,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<MobileSyncBacklogInspector>.Instance);
+        var result = await inspector.InspectAsync(Now, CancellationToken.None);
+
+        Assert.False(result.IsHealthy);
+        Assert.Equal("1", result.Details["overdueCount"]);
+        Assert.Equal(created.ToString("O"), result.Details["oldestBatchCreatedAt"]);
+    }
+
+    [Fact]
     public async Task Ingest_TakesOverStalePendingBatchAndFinalizesIt()
     {
         await using var db = MobileTestHelpers.CreateDb();
@@ -385,8 +490,10 @@ public sealed class MobileSyncBatchSemanticsTests
         Assert.Equal(MobileSyncBatchStatus.Completed, batch.Status);
         Assert.NotNull(batch.CompletedAtUtc);
         Assert.Equal(1, batch.AcceptedCount);
-        // 认领时把租约刷新到本次尝试的开始时间（"还在动"由此可判），而不是保留 30 分钟前的时间
-        Assert.Equal(Now, batch.CreatedAt);
+        // created_at 是原始创建时间，不得被租约刷新覆盖；租约/尝试次数只存在内部 envelope。
+        Assert.Equal(Now.AddMinutes(-30), batch.CreatedAt);
+        var envelope = MobileSyncBatchEnvelopeCodec.DeserializeOrEmpty(batch.ErrorJson);
+        Assert.Equal(2, envelope.AttemptCount);
     }
 
     [Fact]
@@ -430,6 +537,7 @@ public sealed class MobileSyncBatchSemanticsTests
                 []),
             CancellationToken.None);
 
+        Assert.Equal(1, result.FailedCount);
         Assert.Empty(result.ItemResults);
         Assert.Empty(await db.Set<MobileUsageEventEntity>().ToListAsync());
     }

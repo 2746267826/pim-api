@@ -6,6 +6,7 @@ using Pim.Api.Middleware;
 using Pim.Core.Common;
 using Pim.Core.Exceptions;
 using Pim.Module.Files.Providers;
+using Pim.Module.Mobile.Services;
 using Xunit;
 
 namespace Pim.UnitTests.Api;
@@ -66,6 +67,27 @@ public class ExceptionMiddlewareTests
         Assert.Equal(StatusCodes.Status400BadRequest, context.Response.StatusCode);
         var response = await ReadResponseAsync(context);
         Assert.Equal(4003, response.Code);
+    }
+
+    [Theory]
+    [InlineData(40901)]
+    [InlineData(MobileSyncErrorCodes.PayloadConflict)]
+    [InlineData(MobileSyncErrorCodes.RetryExhausted)]
+    [InlineData(MobileSyncErrorCodes.LeaseLost)]
+    public async Task InvokeAsync_MapsMobileSyncConflictCodesTo409(int errorCode)
+    {
+        var context = new DefaultHttpContext();
+        context.Response.Body = new MemoryStream();
+        var middleware = new ExceptionMiddleware(
+            _ => throw new DomainException(errorCode, "Synthetic mobile sync conflict"),
+            NullLogger<ExceptionMiddleware>.Instance);
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(StatusCodes.Status409Conflict, context.Response.StatusCode);
+        var response = await ReadResponseAsync(context);
+        Assert.Equal(errorCode, response.Code);
+        Assert.Equal("Synthetic mobile sync conflict", response.Message);
     }
 
     /// <summary>
