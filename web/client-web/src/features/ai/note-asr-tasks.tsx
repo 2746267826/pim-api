@@ -46,9 +46,9 @@ export function NoteAsrTasks({ userId, models, settings, showDetail }: { userId:
   }
   return <div className="space-y-4">
     <Card className="space-y-4 p-5"><div><h2 className="text-sm font-semibold text-text-1">固定笔记录音转写</h2>
-      <p className="mt-1 text-xs text-text-3">选择已上传的材料版本，后台逐片转写。关闭页面后继续，已完成分片保留；编辑原笔记不会改变本次材料。当前本机预览暂不可上传，完整记录与分析尚未开放。</p></div>
+      <p className="mt-1 text-xs text-text-3">选择已上传的材料版本，后台逐片转写。关闭页面后继续，已完成分片保留；编辑原笔记不会改变本次材料。Android 客户端可正式上传材料，Web 本机预览仍不能上传；材料接收后可前往“笔记处理”生成完整记录与独立分析。</p></div>
       {sources.isPending ? <Skeleton className="h-20" /> : sources.isError ? <EmptyState title="材料版本加载失败" action={<Button onClick={() => void sources.refetch()}>重试</Button>} />
-        : !sources.data?.items.length ? <EmptyState title="没有已上传材料" description="需要先提交完整笔记材料版本，本机预览尚未接通上传。" />
+        : !sources.data?.items.length ? <EmptyState title="没有已上传材料" description="Android 客户端可正式上传完整笔记材料；Web 本机预览仍不能上传。材料接收后请前往“笔记处理”。" action={<Button size="sm" variant="secondary" onClick={() => { window.location.assign('/native-notes') }}>前往笔记处理</Button>} />
           : <><Label htmlFor="note-asr-source">固定材料版本</Label><Select id="note-asr-source" ariaLabel="固定材料版本" value={versionId} disabled={busy || !!intent}
             options={sources.data.items.map((s) => ({ value: s.versionId, label: `${s.title || '未命名笔记'} · ${formatTime(s.createdAt)}${s.isCurrent ? ' · 当前版' : ' · 历史版'}${s.hasConflict ? ' · 冲突保全' : ''}` }))}
             onValueChange={(value) => { setVersionId(value); setApproved('') }} />

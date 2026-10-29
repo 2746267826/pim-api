@@ -22,6 +22,7 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
     ICurrentUserService currentUser, AiTextCallGate gate, AiVisionMaterialService? visionMaterials = null)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private sealed record OwnerCallScope(string SourceObjectType, string SourceObjectId, string Purpose);
 
     public async Task<AiTextCallResultDto> GetAsync(Guid clientRequestId, CancellationToken ct)
     {
@@ -31,31 +32,56 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
         return Result(row, true);
     }
 
-    public Task<AiTextCallResultDto> CallAsync(AiTextCallRequest request, CancellationToken ct) => CallCoreAsync(request, null, null, ct);
+    public Task<AiTextCallResultDto> CallAsync(AiTextCallRequest request, CancellationToken ct)
+    {
+        var owner = currentUser.UserId ?? throw new DomainException(1002, "请先登录");
+        return CallCoreAsync(owner, request, null, null, null, ct);
+    }
 
     public Task<AiTextCallResultDto> CallVisionAsync(AiVisionCallRequest request, CancellationToken ct)
     {
         if (request.ExpectedUserId != currentUser.UserId) throw new DomainException(40301, "会话已改变，图片未发送；请重新核对账号");
         if (request.Consent?.Confirmed != true)
             throw new DomainException(40001, "请先核对本次图片、模型与目标地址，并明确同意发送图片");
-        return CallCoreAsync(new(request.ClientRequestId, request.ExpectedUserId, request.Prompt, request.SystemPrompt, request.ModelId),
-            AiVisionMaterialService.Decode(request), request.Consent, ct);
+        return CallCoreAsync(currentUser.UserId!.Value,
+            new(request.ClientRequestId, request.ExpectedUserId, request.Prompt, request.SystemPrompt, request.ModelId),
+            AiVisionMaterialService.Decode(request), request.Consent, null, ct);
     }
 
-    private async Task<AiTextCallResultDto> CallCoreAsync(AiTextCallRequest request, IReadOnlyList<AiVisionInput>? images,
-        AiVisionDestinationConsent? consent, CancellationToken ct)
+    // Background callers must supply the durable owner from their persisted task. This never impersonates an HTTP user.
+    internal async Task<AiTextCallResultDto> CallForOwnerAsync(Guid owner, AiTextCallRequest request,
+        AiVisionDestinationConsent destination, string sourceObjectType, string sourceObjectId, string purpose,
+        CancellationToken ct)
+    {
+        var scope = RequireOwnerCallScope(sourceObjectType, sourceObjectId, purpose);
+        await RequireActiveOwnerAsync(owner, ct);
+        return await CallCoreAsync(owner, request, null, destination, scope, ct);
+    }
+
+    internal async Task<AiTextCallResultDto> CallVisionForOwnerAsync(Guid owner, AiVisionCallRequest request,
+        string sourceObjectType, string sourceObjectId, string purpose, CancellationToken ct)
+    {
+        var scope = RequireOwnerCallScope(sourceObjectType, sourceObjectId, purpose);
+        await RequireActiveOwnerAsync(owner, ct);
+        if (request.ExpectedUserId != owner) throw new DomainException(40301, "会话已改变，图片未发送；请重新核对账号");
+        if (request.Consent?.Confirmed != true)
+            throw new DomainException(40001, "请先核对本次图片、模型与目标地址，并明确同意发送图片");
+        return await CallCoreAsync(owner,
+            new(request.ClientRequestId, request.ExpectedUserId, request.Prompt, request.SystemPrompt, request.ModelId),
+            AiVisionMaterialService.Decode(request), request.Consent, scope, ct);
+    }
+
+    private async Task<AiTextCallResultDto> CallCoreAsync(Guid userId, AiTextCallRequest request,
+        IReadOnlyList<AiVisionInput>? images, AiVisionDestinationConsent? consent, OwnerCallScope? scope,
+        CancellationToken ct)
     {
         var vision = images is not null;
         var recordFormat = vision ? "sdk-vision-v1" : "sdk-text-v1";
-        var userId = currentUser.UserId ?? throw new DomainException(1002, "请先登录");
         if (request.ExpectedUserId != userId) throw new DomainException(40301, "会话已改变，输入未发送；请重新核对账号后再调用");
         if (request.ClientRequestId == Guid.Empty || string.IsNullOrWhiteSpace(request.Prompt) ||
             request.Prompt.Length + (request.SystemPrompt?.Length ?? 0) > 200_000 || request.SystemPrompt?.Length > 32_000)
             throw new DomainException(40001, "需要有效请求标识和正文；系统提示最多32000字符，总输入最多200000字符");
-        // Existing text request IDs keep their original fingerprint. Vision binds consent to an immutable destination.
-        var fingerprint = Hash(vision ? JsonSerializer.Serialize(new { kind = "vision", request.ModelId, request.SystemPrompt, request.Prompt,
-            consent, images = images!.Select(x => new { x.Name, x.ContentType, x.Sha256, size = x.Bytes.Length }) }, Json)
-            : JsonSerializer.Serialize(new { request.ModelId, request.SystemPrompt, request.Prompt }, Json));
+        var fingerprint = Fingerprint(request, images, consent, scope);
         await AiCallRecovery.RecoverExpiredAsync(db, ct);
         var old = await FindAsync(userId, request.ClientRequestId, ct);
         if (old is not null) return Replay(old, fingerprint);
@@ -65,9 +91,11 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
         var profile = selected is { } id ? await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct) : null;
         // Consent is an assertion against server configuration, never a client-controlled routing override.
         // No file upload or model transport occurs if the displayed model/address/revision has changed.
-        if (vision && (consent?.Confirmed != true || profile is null || consent.ModelId != profile.Id ||
+        if ((vision || scope is not null) && (consent?.Confirmed != true || profile is null || consent.ModelId != profile.Id ||
             consent.ModelRevision != profile.Revision || !string.Equals(consent.Endpoint, profile.BaseUrl, StringComparison.Ordinal)))
-            throw new DomainException(40901, "模型或目标地址已变化；图片未发送，请刷新并重新核对同意");
+            throw new DomainException(40901, scope is null
+                ? "模型或目标地址已变化；图片未发送，请刷新并重新核对同意"
+                : "模型或目标地址已变化；材料未发送，请刷新并重新核对同意");
         var messages = new List<ChatMessage>();
         if (!string.IsNullOrEmpty(request.SystemPrompt)) messages.Add(new(ChatRole.System, request.SystemPrompt));
         messages.Add(new(ChatRole.User, request.Prompt));
@@ -87,8 +115,11 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
         var row = new AiRequestLogEntity
         {
             UserId = userId, ClientRequestId = request.ClientRequestId, InputHash = fingerprint,
-            Module = "system", Purpose = vision ? "ai.vision-call" : "ai.text-call", SourceObjectType = "ai-model",
-            SourceObjectId = selected?.ToString() ?? "default", Provider = "openai-compatible",
+            Module = scope is null ? "system" : "notes",
+            Purpose = scope?.Purpose ?? (vision ? "ai.vision-call" : "ai.text-call"),
+            SourceObjectType = scope?.SourceObjectType ?? "ai-model",
+            SourceObjectId = scope?.SourceObjectId ?? selected?.ToString() ?? "default",
+            Provider = "openai-compatible",
             Model = profile?.Model ?? "未选择", ModelProfileId = profile?.Id, ModelProfileName = profile?.Name,
             ModelRevision = profile?.Revision, ModelEndpoint = profile?.BaseUrl,
             CorrelationId = Guid.NewGuid().ToString("N"), Status = configurationError is null ? "running" : "blocked",
@@ -137,7 +168,7 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
         {
             if (vision)
             {
-                await visionMaterials!.StoreAsync(userId, imageRows, images!, linked.Token);
+                await visionMaterials!.StoreForOwnerAsync(userId, imageRows, images!, linked.Token);
                 materialsReady = true;
                 wire.SetImages(imageRows.Select((x, index) => new AiVisionAuditImage(x.Id,
                     $"data:{images![index].ContentType};base64,{Convert.ToBase64String(images[index].Bytes)}")).ToArray());
@@ -225,6 +256,41 @@ public sealed class AiTextCallService(PimDbContext db, ISecretProtector secrets,
 
     private Task<AiRequestLogEntity?> FindAsync(Guid user, Guid request, CancellationToken ct) =>
         db.AiRequestLogs.AsNoTracking().SingleOrDefaultAsync(x => x.UserId == user && x.ClientRequestId == request, ct);
+
+    private static string Fingerprint(AiTextCallRequest request, IReadOnlyList<AiVisionInput>? images,
+        AiVisionDestinationConsent? consent, OwnerCallScope? scope)
+    {
+        var vision = images is not null;
+        if (scope is null)
+        {
+            // Existing HTTP text request IDs keep their original fingerprint.
+            return Hash(vision ? JsonSerializer.Serialize(new { kind = "vision", request.ModelId, request.SystemPrompt, request.Prompt,
+                consent, images = images!.Select(x => new { x.Name, x.ContentType, x.Sha256, size = x.Bytes.Length }) }, Json)
+                : JsonSerializer.Serialize(new { request.ModelId, request.SystemPrompt, request.Prompt }, Json));
+        }
+        return Hash(vision ? JsonSerializer.Serialize(new { kind = "vision", sourceObjectType = scope.SourceObjectType,
+            sourceObjectId = scope.SourceObjectId, purpose = scope.Purpose, request.ModelId, request.SystemPrompt, request.Prompt,
+            consent, images = images!.Select(x => new { x.Name, x.ContentType, x.Sha256, size = x.Bytes.Length }) }, Json)
+            : JsonSerializer.Serialize(new { kind = "text", sourceObjectType = scope.SourceObjectType,
+                sourceObjectId = scope.SourceObjectId, purpose = scope.Purpose, request.ModelId, request.SystemPrompt,
+                request.Prompt, consent }, Json));
+    }
+
+    private async Task RequireActiveOwnerAsync(Guid owner, CancellationToken ct)
+    {
+        if (owner == Guid.Empty || !await db.Users.AsNoTracking().AnyAsync(x => x.Id == owner && x.IsActive, ct))
+            throw new DomainException(40301, "发起账号已停用，派生任务未发送");
+    }
+
+    private static OwnerCallScope RequireOwnerCallScope(string sourceObjectType, string sourceObjectId, string purpose)
+    {
+        if (string.IsNullOrWhiteSpace(sourceObjectType) || sourceObjectType.Length > 128 || sourceObjectType.Any(char.IsControl) ||
+            string.IsNullOrWhiteSpace(sourceObjectId) || sourceObjectId.Length > 256 || sourceObjectId.Any(char.IsControl) ||
+            string.IsNullOrWhiteSpace(purpose) || purpose.Length > 128 || purpose.Any(char.IsControl))
+            throw new DomainException(40001, "派生调用来源或用途无效");
+        return new(sourceObjectType, sourceObjectId, purpose);
+    }
+
     private static AiTextCallResultDto Replay(AiRequestLogEntity row, string fingerprint)
     {
         if (row.InputHash != fingerprint) throw new DomainException(40901, "同一请求标识已绑定另一份输入，原记录保留");

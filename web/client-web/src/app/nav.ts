@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   MapPinned,
   Monitor,
+  NotebookPen,
   Repeat,
   Settings,
   ShieldCheck,
@@ -56,6 +57,7 @@ export const NAV_GROUPS: NavGroup[] = [
     label: '收集',
     items: [
       { to: '/quick-notes', label: '快速记录', icon: Zap },
+      { to: '/native-notes', label: '笔记处理', icon: NotebookPen },
       { to: '/files', label: '文件', icon: FolderClosed },
     ],
   },

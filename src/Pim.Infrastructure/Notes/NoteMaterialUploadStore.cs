@@ -6,6 +6,7 @@ using System.Text;
 using Microsoft.Extensions.Options;
 using Pim.Core.Exceptions;
 using Pim.Core.Notes;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Storage;
 
 namespace Pim.Infrastructure.Notes;
@@ -91,23 +92,31 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
         return result;
     }
 
-    public async Task<NoteAsrSourcesDto> ListAsrSourcesAsync(Guid owner, int offset, int limit, CancellationToken ct)
+    public Task<NoteAsrSourcesDto> ListAsrSourcesAsync(Guid owner, int offset, int limit, CancellationToken ct) =>
+        ListAsrSourcesAsync(owner, offset, limit, ct, includeWithoutAudio: true);
+
+    internal async Task<NoteAsrSourcesDto> ListAsrSourcesAsync(Guid owner, int offset, int limit,
+        CancellationToken ct, bool includeWithoutAudio)
     {
         if (offset < 0 || limit is < 1 or > 50) throw Invalid("材料分页范围无效");
         await using var lease = await LockAsync(owner, ct);
         var ledger = await LoadLedgerAsync(owner, ct);
         var versions = ledger.Versions.Where(x => x.Value.Phase != "Uploading").OrderByDescending(x => x.Value.CreatedAt).ToArray();
-        var result = new List<NoteAsrSourceDto>();
-        foreach (var (key, entry) in versions.Skip(offset).Take(limit))
+        var sources = new List<(Guid VersionId, StoredVersion Entry, string Title, int Recordings, long Samples)>();
+        foreach (var (key, entry) in versions)
         {
             var versionId = Guid.Parse(key); var request = await RequestAsync(owner, versionId, ct);
             using var input = JsonDocument.Parse(request.InputJson);
             var recordings = input.RootElement.GetProperty("recordings");
+            if (!includeWithoutAudio && recordings.GetArrayLength() == 0) continue;
             var samples = recordings.EnumerateArray().Sum(r => r.GetProperty("chunks").EnumerateArray().Sum(c => c.GetProperty("samples").GetInt64()));
-            result.Add(new(entry.NoteId, versionId, input.RootElement.GetProperty("note").GetProperty("title").GetString() ?? "未命名笔记",
-                entry.CreatedAt, Current(ledger, entry.NoteId) == versionId, entry.Phase == "Conflict", recordings.GetArrayLength(), samples, NoteAsrPlan.SampleRate));
+            sources.Add((versionId, entry, input.RootElement.GetProperty("note").GetProperty("title").GetString() ?? "未命名笔记",
+                recordings.GetArrayLength(), samples));
         }
-        return new(versions.Length, offset, result);
+        var page = sources.Skip(offset).Take(limit).Select(x => new NoteAsrSourceDto(x.Entry.NoteId, x.VersionId, x.Title,
+            x.Entry.CreatedAt, Current(ledger, x.Entry.NoteId) == x.VersionId, x.Entry.Phase == "Conflict",
+            x.Recordings, x.Samples, NoteAsrPlan.SampleRate)).ToArray();
+        return new(sources.Count, offset, page);
     }
 
     public async Task UploadPartAsync(Guid userId, Guid versionId, int fileIndex, int partIndex,
@@ -232,6 +241,35 @@ public sealed class NoteMaterialUploadStore(IOptions<NoteMaterialUploadOptions> 
             if (count <= 0) throw Invalid("录音材料分块损坏");
             await stream.ReadExactlyAsync(bytes.AsMemory(written, count), ct); written += count; position += count;
         }
+        return bytes;
+    }
+
+    internal async Task<byte[]> ReadImageBytesAsync(Guid owner, Guid versionId, int fileIndex, CancellationToken ct)
+    {
+        await using var lease = await LockAsync(owner, ct);
+        var ledger = await LoadLedgerAsync(owner, ct);
+        var entry = Find(ledger, versionId);
+        if (entry.Phase is not ("Uploaded" or "Conflict")) throw Conflict("材料尚未提交完整");
+        var files = NoteMaterialManifestValidator.Validate(await RequestAsync(owner, versionId, ct), ReadLimits);
+        var file = FileAt(files, fileIndex);
+        if (file.Kind is not ("Photo" or "InkPreview")) throw Invalid("派生视觉任务只能读取照片或手写预览图");
+        if (file.Path.EndsWith(".webp", StringComparison.Ordinal)) throw Invalid("当前视觉模型不支持WebP，请在派生计划中转换或排除");
+        if (file.SizeBytes > AiVisionMaterialService.MaxImageBytes)
+            throw new DomainException(41301, "图片超过单次视觉调用4MiB上限，请在派生计划中排除或压缩后重新上传");
+        var expectedMime = file.Path.EndsWith(".png", StringComparison.Ordinal) ? "image/png" :
+            file.Path.EndsWith(".jpg", StringComparison.Ordinal) ? "image/jpeg" : throw Invalid("图片路径类型无效");
+        await VerifyFileAsync(owner, versionId, fileIndex, file, ct);
+        using var output = new MemoryStream(checked((int)file.SizeBytes));
+        for (var part = 0; part < PartCount(file); part++)
+        {
+            await using var stream = File.OpenRead(PartFile(owner, versionId, fileIndex, part));
+            await stream.CopyToAsync(output, ct);
+        }
+        var bytes = output.ToArray();
+        if (bytes.Length != file.SizeBytes ||
+            Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() != file.Sha256 ||
+            ImageFileSignature.Detect(bytes) != expectedMime)
+            throw Conflict("材料中的图片已改变，不能作为本次视觉输入");
         return bytes;
     }
 

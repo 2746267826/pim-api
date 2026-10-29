@@ -33,6 +33,7 @@ const RemindersPage = lazyPage(() => import('@/features/calendar/pages/reminders
 const ReportsPage = lazyPage(() => import('@/features/calendar/pages/reports-page'), 'ReportsPage')
 const HabitsPage = lazyPage(() => import('@/features/calendar/pages/habits-page'), 'HabitsPage')
 const QuickNotesPage = lazyPage(() => import('@/features/quick-notes/pages/quick-notes-page'), 'QuickNotesPage')
+const NoteDerivedPage = lazyPage(() => import('@/features/ai/note-derived/note-derived-page'), 'NoteDerivedPage')
 const DataCenterPage = lazyPage(() => import('@/features/calendar/pages/data-center-page'), 'DataCenterPage')
 const AuditTimelinePage = lazyPage(() => import('@/features/operations/pages/audit-timeline-page'), 'AuditTimelinePage')
 
@@ -107,6 +108,7 @@ export const router = createBrowserRouter([
 
           // ── 收集 ──
           { path: 'quick-notes', element: <QuickNotesPage /> },
+          { path: 'native-notes', element: <NoteDerivedPage /> },
           { path: 'files', element: <FilesPage /> },
 
           // ── 治理 ──

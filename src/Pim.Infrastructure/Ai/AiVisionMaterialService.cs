@@ -53,7 +53,14 @@ public sealed class AiVisionMaterialService(PimDbContext db, IFileAttachmentStor
     public async Task StoreAsync(Guid owner, IReadOnlyList<AiCallImageEntity> rows, IReadOnlyList<AiVisionInput> input, CancellationToken ct)
     {
         if (owner != currentUser.UserId) throw new DomainException(40301, "图片只能存入当前调用账号的文件来源");
-        foreach (var logId in rows.Select(x => x.LogId).Distinct()) await RequireOwnerAsync(logId, ct);
+        await StoreForOwnerAsync(owner, rows, input, ct);
+    }
+
+    internal async Task StoreForOwnerAsync(Guid owner, IReadOnlyList<AiCallImageEntity> rows,
+        IReadOnlyList<AiVisionInput> input, CancellationToken ct)
+    {
+        if (rows.Count != input.Count) throw Invalid("图片材料清单数量不一致");
+        foreach (var logId in rows.Select(x => x.LogId).Distinct()) await RequireLogOwnerAsync(owner, logId, ct);
         for (var index = 0; index < rows.Count; index++)
         {
             var row = rows[index]; var image = input[index];
@@ -95,8 +102,12 @@ public sealed class AiVisionMaterialService(PimDbContext db, IFileAttachmentStor
     private async Task<Guid> RequireOwnerAsync(Guid logId, CancellationToken ct)
     {
         var user = currentUser.UserId ?? throw new DomainException(40301, "请先登录调用发起账号");
-        if (!await db.AiRequestLogs.AsNoTracking().AnyAsync(x => x.Id == logId && x.UserId == user, ct)) throw Missing();
+        await RequireLogOwnerAsync(user, logId, ct);
         return user;
+    }
+    private async Task RequireLogOwnerAsync(Guid owner, Guid logId, CancellationToken ct)
+    {
+        if (!await db.AiRequestLogs.AsNoTracking().AnyAsync(x => x.Id == logId && x.UserId == owner, ct)) throw Missing();
     }
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     private static DomainException Invalid(string message) => new(40001, message);

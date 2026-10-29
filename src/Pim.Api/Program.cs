@@ -111,8 +111,11 @@ builder.Services.AddOptions<Pim.Infrastructure.Notes.NoteMaterialUploadOptions>(
     .ValidateOnStart();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMaterialUploadStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteAsrTaskStore>();
+builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteDerivedStore>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrService>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrJob>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedJob>();
 builder.Services.AddAggregateResultCaching();
 builder.Services.Configure<OpsOptions>(o =>
 {
@@ -417,6 +420,7 @@ app.MapTodayEndpoints();
 app.MapAiEndpoints();
 app.MapNoteMaterialEndpoints();
 app.MapNoteAsrEndpoints();
+app.MapNoteDerivedEndpoints();
 app.MapClientShell();
 app.MapTileEndpoints();
 
@@ -451,6 +455,8 @@ else
 
         RecurringJob.AddOrUpdate<Pim.Infrastructure.Notes.NoteAsrDispatchJob>(
             "native-note-asr-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
+        RecurringJob.AddOrUpdate<Pim.Infrastructure.Notes.NoteDerivedDispatchJob>(
+            "native-note-derived-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
 
         RecurringJob.AddOrUpdate<HeartbeatStaleInspectionJob>(
             "heartbeat-stale-inspection",
