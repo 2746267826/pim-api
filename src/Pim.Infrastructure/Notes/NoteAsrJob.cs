@@ -54,14 +54,17 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                 if (receipt.Purpose != "ai.asr-call" || receipt.SourceObjectId != id.ToString())
                 { await MarkAsync("Blocked", "请求标识已被另一条调用占用，请核对记录后明确恢复", true); return; }
                 if (receipt.Status == "running") return;
-                await RecordAsync(AiCallAudit.Result(receipt, true)); continue;
+                var recovered = AiCallAudit.Result(receipt, true);
+                await RecordAsync(recovered);
+                if (recovered.Status is AiRequestStatus.Running or AiRequestStatus.Blocked) return;
+                continue;
             }
             if (state.StopRequested)
             {
                 await MarkAsync("Cancelled", "任务已停止，此片没有发送记录", false); continue;
             }
-            if (!await db.Users.AsNoTracking().AnyAsync(x => x.Id == owner && x.IsActive && x.Role == "admin", ct))
-            { await MarkAsync("Blocked", "发起账号已停用或无ASR权限，任务已停止", true); return; }
+            if (!await db.Users.AsNoTracking().AnyAsync(x => x.Id == owner && x.IsActive, ct))
+            { await MarkAsync("Blocked", "发起账号已停用，任务已停止", true); return; }
             await tasks.UpdateAsync(owner, id, current =>
             {
                 if (!current.StopRequested) current.Steps[step.Index].Current.Status = "Running";
@@ -81,11 +84,17 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                     state.Request.Consent, state.Request.Language, state.Request.Consent.ModelId);
                 var result = await calls.CallForOwnerAsync(owner, request, id, ct);
                 await RecordAsync(result);
-                if (result.Status == AiRequestStatus.Running) return;
+                if (result.Status is AiRequestStatus.Running or AiRequestStatus.Blocked) return;
             }
             catch (OperationCanceledException) { throw; } // The next dispatch reconciles the same request ID; it never allocates another attempt.
             catch (DomainException error)
             {
+                if (error.ErrorCode == 50302)
+                {
+                    // Busy is transient. Keep the same request ID queued for the next dispatch.
+                    await MarkAsync("Queued", error.Message, false);
+                    return;
+                }
                 await MarkAsync(error.ErrorCode == 50301 ? "Unknown" : "Blocked",
                     error.ErrorCode == 50301 ? "调用结果未确认保存，请核对调用记录后明确重试" : error.Message, true);
                 return;
@@ -101,6 +110,7 @@ public sealed class NoteAsrJob(NoteAsrTaskStore tasks, NoteMaterialUploadStore m
                     var attempt = current.Steps[step.Index].Current;
                     if (attempt.RequestId != requestId) throw new InvalidDataException("ASR attempt changed during execution");
                     attempt.LogId = result.LogId; attempt.Status = result.Status.ToString(); attempt.ErrorMessage = result.ErrorMessage;
+                    current.StopRequested |= result.Status == AiRequestStatus.Blocked;
                 }, budget.Token);
             }
             async Task MarkAsync(string status, string message, bool stop)

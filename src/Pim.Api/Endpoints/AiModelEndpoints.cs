@@ -11,7 +11,9 @@ public static class AiModelEndpoints
 {
     public static void MapAiModelEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        var group = endpoints.MapGroup("/api/v1/ai").RequireAuthorization(new AuthorizeAttribute { Roles = "admin" });
+        var group = endpoints.MapGroup("/api/v1/ai")
+            .RequireAuthorization(new AuthorizeAttribute { Roles = "admin" })
+            .RequireCurrentActiveAdmin();
         group.MapGet("/asr-presets", ([FromServices] AiAsrPresetRegistry presets) =>
             Results.Ok(ApiResponse<IReadOnlyList<AiAsrPresetDto>>.Ok(presets.List())))
             .Produces<ApiResponse<IReadOnlyList<AiAsrPresetDto>>>(200).Produces(401).Produces(403);

@@ -14278,6 +14278,100 @@
         ],
         "type": "object"
       },
+      "NoteAsrDestinationDto": {
+        "additionalProperties": false,
+        "properties": {
+          "backgroundProcessingAvailable": {
+            "type": "boolean"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "languages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "model": {
+            "type": "string"
+          },
+          "modelId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "modelRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "presetId": {
+            "type": "string"
+          },
+          "presetVersion": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "backgroundProcessingAvailable",
+          "displayName",
+          "endpoint",
+          "languages",
+          "model",
+          "modelId",
+          "modelRevision",
+          "presetId",
+          "presetVersion"
+        ],
+        "type": "object"
+      },
+      "NoteAsrDestinationsDto": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NoteAsrDestinationDto"
+            },
+            "type": "array"
+          },
+          "total": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "type": "object"
+      },
+      "NoteAsrDestinationsDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteAsrDestinationsDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "NoteAsrSegmentDto": {
         "additionalProperties": false,
         "properties": {
@@ -36516,6 +36610,36 @@
           },
           "413": {
             "description": "Content Too Large"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note ASR"
+        ]
+      }
+    },
+    "/api/v1/native-notes/asr-tasks/destinations": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteAsrDestinationsDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
           }
         },
         "security": [

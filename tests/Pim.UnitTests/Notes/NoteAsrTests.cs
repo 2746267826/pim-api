@@ -15,6 +15,7 @@ using Microsoft.Extensions.Logging;
 using Pim.Core.Ai;
 using Pim.Core.Common;
 using Pim.Core.Notes;
+using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Data;
 using Pim.Infrastructure.Notes;
 using Pim.UnitTests.Api;
@@ -223,17 +224,189 @@ public sealed class NoteAsrTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task UnauthenticatedNormalAccountAndCrossSessionCannotCreateTasksOrReadResults()
+    public async Task NormalAccountOwnsTaskLifecycleAndOnlyReceivesSafeDestinationsWhileAdminSettingsStayProtected()
     {
-        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(); await Upload(fixture); var request = Start(fixture);
-        using var anonymous = _factory.CreateClient();
-        Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(Route)).StatusCode);
-        var normal = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "normal-user");
+        var adminFixture = NoteMaterialUploadStoreTests.Fixture.Create(); await Upload(adminFixture);
+        var adminRequest = Start(adminFixture);
+        var adminTask = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, adminRequest));
+        var normal = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "ordinary-note-asr");
         using var client = AuthRegistrationTestHost.Authed(_factory, normal.AccessToken);
-        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync(Route, request)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await _client.PostAsJsonAsync(Route, request with { ExpectedUserId = normal.UserId })).StatusCode);
-        Assert.Equal(HttpStatusCode.BadRequest, (await _client.PostAsJsonAsync(Route, request with { Consent = _consent with { Confirmed = false } })).StatusCode);
+        using var anonymous = _factory.CreateClient();
+        foreach (var path in new[] { Route, Route + "/sources", Route + "/destinations" })
+            Assert.Equal(HttpStatusCode.Unauthorized, (await anonymous.GetAsync(path)).StatusCode);
+
+        var destinationResponse = await client.GetAsync(Route + "/destinations");
+        var destinationRaw = await destinationResponse.Content.ReadAsStringAsync();
+        var destinations = await Data<NoteAsrDestinationsDto>(destinationResponse);
+        var destination = Assert.Single(destinations.Items);
+        Assert.Equal(1, destinations.Total); Assert.Equal(_model.Id, destination.ModelId);
+        Assert.Equal(_model.Revision, destination.ModelRevision); Assert.Equal(_model.Name, destination.DisplayName);
+        Assert.Equal(_model.Model, destination.Model); Assert.Equal(_consent.Endpoint, destination.Endpoint);
+        Assert.Equal("mimo-asr", destination.PresetId); Assert.Equal("1", destination.PresetVersion);
+        Assert.Contains("zh", destination.Languages);
+        Assert.DoesNotContain("synthetic-key", destinationRaw, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("apiKey", destinationRaw, StringComparison.OrdinalIgnoreCase);
+        using (var document = JsonDocument.Parse(destinationRaw))
+        {
+            var item = document.RootElement.GetProperty("data").GetProperty("items")[0];
+            Assert.Equal(new[] { "modelId", "modelRevision", "displayName", "model", "endpoint", "presetId",
+                "presetVersion", "languages", "backgroundProcessingAvailable" }, item.EnumerateObject().Select(x => x.Name));
+        }
+
+        foreach (var path in new[] { "/api/v1/ai/models", "/api/v1/ai/model-settings", "/api/v1/ai/asr-presets" })
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/api/v1/ai/models", new { })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PutAsJsonAsync("/api/v1/ai/model-settings", new { })).StatusCode);
+
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(); await UploadAs(normal.UserId, fixture);
         Assert.Equal(0, _calls);
+        var consent = new AiAsrDestinationConsent(destination.ModelId, destination.ModelRevision, destination.Endpoint,
+            destination.PresetId, destination.PresetVersion, true);
+        var request = StartFor(normal.UserId, fixture, consent);
+        var task = await Data<NoteAsrTaskDto>(await client.PostAsJsonAsync(Route, request));
+        await RunAs(normal.UserId, task.TaskId);
+        task = await Data<NoteAsrTaskDto>(await client.GetAsync($"{Route}/{task.TaskId}"));
+        Assert.Equal("Succeeded", task.Phase); Assert.Equal(1, _calls);
+        Assert.Equal(fixture.Request.VersionId, Assert.Single(
+            (await Data<NoteAsrSourcesDto>(await client.GetAsync(Route + "/sources"))).Items).VersionId);
+        Assert.Equal(task.TaskId, Assert.Single(await Data<NoteAsrTaskDto[]>(await client.GetAsync(Route))).TaskId);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"{Route}/{adminTask.TaskId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync($"{Route}/{adminTask.TaskId}/stop", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await _client.GetAsync($"{Route}/{task.TaskId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await _client.GetAsync($"{Route}/{adminTask.TaskId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsJsonAsync(Route, StartFor(normal.UserId,
+            adminFixture, consent))).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync(Route,
+            StartFor(normal.UserId, fixture, consent with { Confirmed = false }))).StatusCode);
+    }
+
+    [Fact]
+    public async Task DisabledNormalAccountCannotStartReplayRetryQueryOrResumeQueuedWork()
+    {
+        var normal = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "disabled-note-asr");
+        using var client = AuthRegistrationTestHost.Authed(_factory, normal.AccessToken);
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(); await UploadAs(normal.UserId, fixture);
+        var request = StartFor(normal.UserId, fixture, _consent);
+        var task = await Data<NoteAsrTaskDto>(await client.PostAsJsonAsync(Route, request));
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var owner = await db.Users.SingleAsync(x => x.Id == normal.UserId); owner.IsActive = false; await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync(Route, request)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync(Route)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync(Route + "/destinations")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync($"{Route}/{task.TaskId}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync($"{Route}/{task.TaskId}/stop", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync($"{Route}/{task.TaskId}/retry",
+            new RetryNoteAsrRequest(Guid.NewGuid(), normal.UserId, task.Revision, [0], _consent, true))).StatusCode);
+
+        await RunAs(normal.UserId, task.TaskId);
+        Assert.Equal(0, _calls);
+        var checkpoint = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(normal.UserId, task.TaskId)))!;
+        Assert.True(checkpoint["stopRequested"]!.GetValue<bool>());
+        Assert.Equal("Blocked", checkpoint["steps"]![0]!["attempts"]![0]!["status"]!.GetValue<string>());
+        Assert.Contains("停用", checkpoint["steps"]![0]!["attempts"]![0]!["errorMessage"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task DestinationCatalogueFiltersUnavailableTargetsAndGlobalRuntimeDisableStopsAfterCurrentSegment()
+    {
+        var disabled = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models", new SaveAiModelRequest(
+            "停用ASR", _provider.Urls.Single() + "/v1/", "mimo-v2.5-asr", false, [AiModelCapability.Transcription],
+            30, 123, "disabled-synthetic-key", AsrPresetId: "mimo-asr")));
+        var text = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models", new SaveAiModelRequest(
+            "文字模型", _provider.Urls.Single() + "/v1/", "text-model", true, [AiModelCapability.Text],
+            30, 123, "text-synthetic-key")));
+        var normal = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "filtered-destination-asr");
+        using var client = AuthRegistrationTestHost.Authed(_factory, normal.AccessToken);
+        var destinations = await Data<NoteAsrDestinationsDto>(await client.GetAsync(Route + "/destinations"));
+        var destination = Assert.Single(destinations.Items);
+        Assert.Equal(_model.Id, destination.ModelId);
+        Assert.DoesNotContain(destinations.Items, x => x.ModelId == disabled.Id || x.ModelId == text.Id);
+
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(16_000 * 181); await UploadAs(normal.UserId, fixture);
+        var consent = new AiAsrDestinationConsent(destination.ModelId, destination.ModelRevision, destination.Endpoint,
+            destination.PresetId, destination.PresetVersion, true);
+        var task = await Data<NoteAsrTaskDto>(await client.PostAsJsonAsync(Route, StartFor(normal.UserId, fixture, consent)));
+        var runtime = await Data<AiModelSettingsDto>(await _client.GetAsync("/api/v1/ai/model-settings"));
+        _ = await Data<AiModelSettingsDto>(await _client.PutAsJsonAsync("/api/v1/ai/model-settings",
+            new SaveAiModelSettingsRequest(runtime.Revision, false, runtime.TextModelId, runtime.VisionModelId, runtime.TranscriptionModelId)));
+        Assert.Empty((await Data<NoteAsrDestinationsDto>(await client.GetAsync(Route + "/destinations"))).Items);
+
+        await RunAs(normal.UserId, task.TaskId);
+        Assert.Equal(0, _calls);
+        var checkpoint = JsonNode.Parse(await File.ReadAllTextAsync(TaskPath(normal.UserId, task.TaskId)))!;
+        Assert.True(checkpoint["stopRequested"]!.GetValue<bool>());
+        Assert.Equal("Blocked", checkpoint["steps"]![0]!["attempts"]![0]!["status"]!.GetValue<string>());
+        Assert.All(checkpoint["steps"]!.AsArray().Skip(1), step =>
+            Assert.Equal("Queued", step!["attempts"]![0]!["status"]!.GetValue<string>()));
+        var segments = await Data<NoteAsrSegmentsDto>(await client.GetAsync($"{Route}/{task.TaskId}/segments"));
+        Assert.Equal(4, segments.Total);
+        Assert.Equal("Blocked", segments.Items[0].Status);
+        Assert.All(segments.Items.Skip(1), segment => Assert.Equal("Queued", segment.Status));
+        task = await Data<NoteAsrTaskDto>(await client.GetAsync($"{Route}/{task.TaskId}"));
+        Assert.True(task.StopRequested); Assert.Equal("Stopped", task.Phase);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+        Assert.Equal(1, await db.AiRequestLogs.CountAsync(x => x.UserId == normal.UserId &&
+            x.SourceObjectId == task.TaskId.ToString()));
+    }
+
+    [Fact]
+    public async Task BusyAsrGateKeepsCurrentAndFollowingSegmentsQueuedForAutomaticResume()
+    {
+        var normal = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "busy-note-asr");
+        using var client = AuthRegistrationTestHost.Authed(_factory, normal.AccessToken);
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(16_000 * 181); await UploadAs(normal.UserId, fixture);
+        var task = await Data<NoteAsrTaskDto>(await client.PostAsJsonAsync(Route, StartFor(normal.UserId, fixture, _consent)));
+        var gate = _factory.Services.GetRequiredService<AiTextCallGate>();
+        Assert.True(gate.TryEnter(asr: true)); Assert.True(gate.TryEnter(asr: true));
+        try { await RunAs(normal.UserId, task.TaskId); }
+        finally { gate.Exit(asr: true); gate.Exit(asr: true); }
+
+        Assert.Equal(0, _calls);
+        task = await Data<NoteAsrTaskDto>(await client.GetAsync($"{Route}/{task.TaskId}"));
+        Assert.False(task.StopRequested); Assert.Equal("Queued", task.Phase);
+        var queued = await Data<NoteAsrSegmentsDto>(await client.GetAsync($"{Route}/{task.TaskId}/segments"));
+        Assert.Equal(4, queued.Total); Assert.All(queued.Items, segment => Assert.Equal("Queued", segment.Status));
+        using (var scope = _factory.Services.CreateScope())
+            Assert.Equal(0, await scope.ServiceProvider.GetRequiredService<PimDbContext>().AiRequestLogs
+                .CountAsync(x => x.SourceObjectId == task.TaskId.ToString()));
+
+        await RunAs(normal.UserId, task.TaskId);
+        task = await Data<NoteAsrTaskDto>(await client.GetAsync($"{Route}/{task.TaskId}"));
+        Assert.Equal("Succeeded", task.Phase); Assert.Equal(4, _calls);
+    }
+
+    [Fact]
+    public async Task DemotedAdminOldTokenLosesAiAdminButKeepsOwnNativeAsrAndDisabledAccountIsRejected()
+    {
+        var target = await AuthRegistrationTestHost.SeedAndLoginAsync(_factory, "downgraded-ai-admin", "admin");
+        using var targetClient = AuthRegistrationTestHost.Authed(_factory, target.AccessToken);
+        Assert.Equal(HttpStatusCode.OK, (await targetClient.GetAsync("/api/v1/ai/models")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await _client.PostAsJsonAsync($"/api/v1/admin/users/{target.UserId}/role",
+            new { role = "user" })).StatusCode);
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await targetClient.GetAsync("/api/v1/ai/models")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await targetClient.PutAsJsonAsync($"/api/v1/ai/models/{_model.Id}",
+            new SaveAiModelRequest(_model.Name, _model.BaseUrl, _model.Model, true, _model.Capabilities,
+                ExpectedRevision: _model.Revision, AsrPresetId: "mimo-asr"))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await targetClient.PostAsJsonAsync("/api/v1/ai/asr-calls",
+            new AiAsrCallRequest(Guid.NewGuid(), target.UserId, new("probe.wav", "wav", ""), _consent, "zh"))).StatusCode);
+
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(); await UploadAs(target.UserId, fixture);
+        var task = await Data<NoteAsrTaskDto>(await targetClient.PostAsJsonAsync(Route, StartFor(target.UserId, fixture, _consent)));
+        await RunAs(target.UserId, task.TaskId);
+        Assert.Equal("Succeeded", (await Data<NoteAsrTaskDto>(
+            await targetClient.GetAsync($"{Route}/{task.TaskId}"))).Phase);
+
+        Assert.Equal(HttpStatusCode.OK, (await _client.PostAsJsonAsync($"/api/v1/admin/users/{target.UserId}/status",
+            new { isActive = false })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await targetClient.GetAsync("/api/v1/ai/models")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await targetClient.GetAsync(Route + "/destinations")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await targetClient.GetAsync($"{Route}/{task.TaskId}")).StatusCode);
     }
 
     [Fact]
@@ -286,7 +459,9 @@ public sealed class NoteAsrTests : IAsyncLifetime
         public bool ChangeState(string jobId, Hangfire.States.IState state, string expectedState) => throw new NotSupportedException();
     }
 
-    private StartNoteAsrRequest Start(NoteMaterialUploadStoreTests.Fixture fixture) => new(Guid.NewGuid(), _owner, fixture.Request.VersionId, _consent, "zh");
+    private StartNoteAsrRequest Start(NoteMaterialUploadStoreTests.Fixture fixture) => StartFor(_owner, fixture, _consent);
+    private static StartNoteAsrRequest StartFor(Guid owner, NoteMaterialUploadStoreTests.Fixture fixture,
+        AiAsrDestinationConsent consent) => new(Guid.NewGuid(), owner, fixture.Request.VersionId, consent, "zh");
     private static NoteMaterialUploadStoreTests.Fixture Patterned(NoteMaterialUploadStoreTests.Fixture fixture)
     {
         var bytes = fixture.Content[^1];
@@ -336,22 +511,26 @@ public sealed class NoteAsrTests : IAsyncLifetime
         { ["path"] = path, ["kind"] = kind, ["sizeBytes"] = bytes.Length, ["sha256"] = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), ["recordingId"] = recording.ToString("D") };
     }
     private async Task Upload(NoteMaterialUploadStoreTests.Fixture fixture)
+        => await UploadAs(_owner, fixture);
+    private async Task UploadAs(Guid owner, NoteMaterialUploadStoreTests.Fixture fixture)
     {
-        var store = _factory.Services.GetRequiredService<NoteMaterialUploadStore>(); await store.BeginAsync(_owner, fixture.Request);
+        var store = _factory.Services.GetRequiredService<NoteMaterialUploadStore>(); await store.BeginAsync(owner, fixture.Request);
         for (var file = 0; file < fixture.Content.Count; file++)
             for (var position = 0; position < fixture.Content[file].Length; position += NoteMaterialUploadOptions.PartSizeBytes)
             {
                 var part = fixture.Content[file].AsSpan(position, Math.Min(NoteMaterialUploadOptions.PartSizeBytes, fixture.Content[file].Length - position)).ToArray();
-                await store.UploadPartAsync(_owner, fixture.Request.VersionId, file, position / NoteMaterialUploadOptions.PartSizeBytes,
+                await store.UploadPartAsync(owner, fixture.Request.VersionId, file, position / NoteMaterialUploadOptions.PartSizeBytes,
                     Convert.ToHexString(SHA256.HashData(part)).ToLowerInvariant(), new MemoryStream(part));
             }
-        await store.CompleteAsync(_owner, fixture.Request.VersionId);
+        await store.CompleteAsync(owner, fixture.Request.VersionId);
     }
-    private async Task Run(Guid id)
-    { using var scope = _factory.Services.CreateScope(); await scope.ServiceProvider.GetRequiredService<NoteAsrJob>().RunAsync(_owner, id, default); }
+    private async Task Run(Guid id) => await RunAs(_owner, id);
+    private async Task RunAs(Guid owner, Guid id)
+    { using var scope = _factory.Services.CreateScope(); await scope.ServiceProvider.GetRequiredService<NoteAsrJob>().RunAsync(owner, id, default); }
     private async Task<NoteAsrTaskDto> Get(Guid id) => await Data<NoteAsrTaskDto>(await _client.GetAsync($"{Route}/{id}"));
     private async Task<NoteAsrSegmentsDto> Segments(Guid id) => await Data<NoteAsrSegmentsDto>(await _client.GetAsync($"{Route}/{id}/segments"));
-    private string TaskPath(Guid id) => Path.Combine(_root, "materials", "asr-tasks", _owner.ToString("D"), id.ToString("D") + ".json");
+    private string TaskPath(Guid id) => TaskPath(_owner, id);
+    private string TaskPath(Guid owner, Guid id) => Path.Combine(_root, "materials", "asr-tasks", owner.ToString("D"), id.ToString("D") + ".json");
     private static async Task<T> Data<T>(HttpResponseMessage response)
     { Assert.True(response.IsSuccessStatusCode, response.StatusCode + ": " + await response.Content.ReadAsStringAsync()); return (await response.Content.ReadFromJsonAsync<ApiResponse<T>>())!.Data!; }
     public async Task DisposeAsync()

@@ -77,6 +77,26 @@ describe('AI文字调用完整页面', () => {
     expect(fixture.api.saveModel).toHaveBeenCalledWith(id, expect.objectContaining({ apiKey: null, expectedRevision: revision }))
   })
 
+  it('编辑API地址时禁止沿用旧密钥，重新输入后才保存', async () => {
+    open(); await screen.findByRole('button', { name: '编辑 文字主模型' })
+    await userEvent.click(screen.getByRole('button', { name: '编辑 文字主模型' }))
+    const dialog = screen.getByRole('dialog')
+    const endpoint = within(dialog).getByLabelText('API 根地址')
+    await userEvent.clear(endpoint)
+    await userEvent.type(endpoint, 'https://moved.fixture/v1')
+    await screen.findByText(/API 地址已变化，必须重新输入 API Key/)
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存模型' }))
+    expect(fixture.api.saveModel).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeTruthy()
+
+    await userEvent.type(within(dialog).getByLabelText('API Key（已保存）'), 'new-address-key')
+    await userEvent.click(within(dialog).getByRole('button', { name: '保存模型' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(fixture.api.saveModel).toHaveBeenCalledWith(id, expect.objectContaining({
+      baseUrl: 'https://moved.fixture/v1', apiKey: 'new-address-key', expectedRevision: revision,
+    }))
+  })
+
   it('单次发送精确保留输入、绑定当前账号，重复点击不重复发模型请求', async () => {
     open(); await screen.findByRole('button', { name: '编辑 文字主模型' })
     const prompt = '  原始上下文\npassword=普通文本  '

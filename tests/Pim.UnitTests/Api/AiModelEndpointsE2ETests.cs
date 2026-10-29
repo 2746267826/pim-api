@@ -138,7 +138,20 @@ public sealed class AiModelEndpointsE2ETests(AiModelEndpointFixture host) : ICla
                 [AiModelCapability.Text], ApiKey: "fake-revision-key")));
         var changed = new SaveAiModelRequest(model.Name, model.BaseUrl, "new-model", true, model.Capabilities,
             ExpectedRevision: model.Revision);
-        await Data<AiModelDto>(await client.PutAsJsonAsync($"/api/v1/ai/models/{model.Id}", changed));
+        var renamed = await Data<AiModelDto>(await client.PutAsJsonAsync($"/api/v1/ai/models/{model.Id}", changed));
+        Assert.Equal(model.BaseUrl, renamed.BaseUrl); Assert.Equal("new-model", renamed.Model); Assert.True(renamed.HasApiKey);
+
+        var changedEndpoint = new SaveAiModelRequest(renamed.Name, "http://other-provider.fixture/v1", renamed.Model,
+            true, renamed.Capabilities, ExpectedRevision: renamed.Revision);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PutAsJsonAsync(
+            $"/api/v1/ai/models/{model.Id}", changedEndpoint)).StatusCode);
+        var unchanged = Assert.Single(await Data<List<AiModelDto>>(await client.GetAsync("/api/v1/ai/models")),
+            x => x.Id == model.Id);
+        Assert.Equal(renamed.BaseUrl, unchanged.BaseUrl); Assert.Equal(renamed.Revision, unchanged.Revision);
+
+        var moved = await Data<AiModelDto>(await client.PutAsJsonAsync($"/api/v1/ai/models/{model.Id}",
+            changedEndpoint with { ApiKey = "new-endpoint-key" }));
+        Assert.Equal("http://other-provider.fixture/v1/", moved.BaseUrl); Assert.True(moved.HasApiKey);
         Assert.Equal(HttpStatusCode.Conflict, (await client.PutAsJsonAsync($"/api/v1/ai/models/{model.Id}", changed)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/api/v1/ai/text-calls",
             new AiTextCallRequest(Guid.NewGuid(), Guid.NewGuid(), "会话已变"))).StatusCode);
