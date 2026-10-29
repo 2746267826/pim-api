@@ -1,6 +1,6 @@
 ﻿# PIM 视觉基础与笔记样板
 
-版本：v0.12 普通账号ASR状态与下一切片边界。日期：2026-10-29。
+版本：v0.13 普通账号逐段ASR阶段交付与下一切片边界。日期：2026-10-29。
 
 用户已同意“先薄视觉基础和关键页样板，随后立即进入真实功能”的方法，并明确延续 PIM 蓝色基调、取消常驻“PIM 笔记”品牌栏、将结束操作放在右上角悬浮，以及颜色和基础组件一处定义、多处引用。用户已确认外观足够，先统一后继续，不再扩展大批静态样板。其余细节在真实切片中完善，业务规则与稳定需求编号仍以 [PIM原生客户端与笔记路线图](native-notes-roadmap.md) 为准。
 
@@ -8,7 +8,7 @@
 
 Android #40已合并，受限离线正文沿用PimTheme语义色、文字层级、字号和间距，格式栏为原生控件；活跃叶块/提交期间保活与实测视口跟随光标。本轮输入交接、渲染故障/显式原文核对及重建已验收；整篇撤销、极长文/大量块、其他硬件异常和OPPO仍有缺口，具体修订及证据以总路线图为准。
 
-正式发布前必须覆盖[首版 UI 清单](native-notes-first-release.md#正式入口与完整-ui-的发布清单)，并按[总路线图](native-notes-roadmap.md)推进真实切片。#48补正式笔记库/搜索、宽窗口侧栏和存储上传同意/状态；普通账号ASR API授权已随#528合并并过PR/master CI，Android ASR当前PR#51 OPEN且CI/Gate SUCCESS，但设备未完成；sourceTag`f9a6bd5`与QA`7b41a176`已提交；旧frozen`852bce4`为Tests run 6 / Failures 3。结果/修订/冲突完整页面和发布体验仍未完成，下一切片写集/门槛见[总路线图](native-notes-roadmap.md#v032-下一切片全材料双产物与修订保护)。通用流式/旧调用迁移与客户端并行保留；不继续扩展静态样板。
+正式发布前必须覆盖[首版 UI 清单](native-notes-first-release.md#正式入口与完整-ui-的发布清单)，并按[总路线图](native-notes-roadmap.md)推进真实切片。#48补正式笔记库/搜索、宽窗口侧栏和存储上传同意/状态；普通账号ASR API授权已随#528合并并过PR/master CI。Android ASR PR#51已普通MERGED`93d93437`，exact head`8b1d091`/R8 sha`67f0`，CI40874958748全SUCCESS/CLEAN，QA FINAL33/33PASS0FAIL；Source组件3按同源R5 lineage另记。P2 UI余项保留：窄Legacy四字段/取消确认实见，但说明尾部截于“拒绝”、浅过渡帧不足，fullBody NOT-VERIFIED；因此完整UI不认全过。结果/修订/冲突完整页面和发布体验仍未完成，下一切片写集/门槛见[总路线图](native-notes-roadmap.md#v032-下一切片全材料双产物与修订保护)。通用流式/旧调用迁移与客户端并行保留；不继续扩展静态样板。
 
 ## 1. 设计原则
 
@@ -144,4 +144,4 @@ Android #40已合并，受限离线正文沿用PimTheme语义色、文字层级�
 - 浅色仍是现有默认，深色资源可显式用于组件验证；这不是新交付的全应用深色设置，也没有验证嵌入 Web 页面自动适配深色。
 - 本批没有新增笔记列表/混合编辑器、麦克风服务、手写引擎、上传或 ASR/AI。首版手写及其他平台目标继续保留；主题测试不能填作后台录音或 OPPO 真机验收证据。
 
-以上是主题#32的历史范围。本机记录#39和离线富文本/输入恢复#40均已合并，当批1870 JVM与30/13/13矩阵、必需CI通过。#48复用该记录层补正式导航和存储上传，窄屏截图发现新建按钮遮挡状态后改为独立操作区；本批准确修订及验证见总路线图。Android ASR当前PR#51 OPEN@`dae87c32`，all required CI/Gate SUCCESS；sourceTag`f9a6bd5`已修正为同卡merged semantics，QA`7b41a176`已改bool/exact state/逐片断言，但尚未形成最终build/device证据。旧frozen`852bce4`/app`5da8`/test`6a84`为Tests run 6 / Failures 3，另有3 focused PASS只作历史，均不转移到`dae87c`/`7b41`。最终设备矩阵与P0最终binary整合未完成。旧18ce 3/5与未绑定3 PASS不能作为其视觉验收。当前宽度分支使用既有Material3，不表示Material3 Adaptive或BOM/编译器版本对齐已完成。完整转写/结果/修订/冲突页面、字体/动画、长文性能、云流程和OPPO验收继续保留。
+以上是主题#32的历史范围。本机记录#39和离线富文本/输入恢复#40均已合并，当批1870 JVM与30/13/13矩阵、必需CI通过。#48复用该记录层补正式导航和存储上传，窄屏截图发现新建按钮遮挡状态后改为独立操作区；本批准确修订及验证见总路线图。Android ASR PR#51已普通MERGED`93d93437`；App source`1eaa3c5`/sha`001546`不变，Test source`8b1d091`/R8 sha`67f0`仅test helper变化，CI40874958748全SUCCESS/CLEAN。QA FINAL33/33PASS0FAIL：phone12+narrow12+tablet9，跨R6/R7/R8。Source组件3按同源R5 lineage另记，不拼成36 PASS；R7 narrow 3/6 selector fail与旧frozen失败保留。P2 UI余项（窄Legacy说明尾部截于“拒绝”/浅过渡帧、fullBody NOT-VERIFIED）不认完整UI全过。当前宽度分支使用既有Material3，不表示Material3 Adaptive或BOM/编译器版本对齐已完成。完整转写/结果/修订/冲突页面、字体/动画、长文性能、云流程和OPPO验收继续保留。

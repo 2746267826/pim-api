@@ -1,10 +1,10 @@
 ﻿# PIM 笔记首版范围与交互草案
 
-版本：v0.28 普通账号ASR合并与下一切片。日期：2026-10-29。
+版本：v0.29 普通账号逐段ASR阶段交付与下一切片。日期：2026-10-29。
 
 本文把已明确的使用愿景落实为页面流程和首版边界，保留早期可点击草图的讨论记录。已确认事项按决议执行，其余细节不因局部接受而全部获批；本文不是工期承诺或功能完成报告。总目标与稳定需求编号继续以 [PIM原生客户端与笔记路线图](native-notes-roadmap.md) 为索引，本文不替代总路线图。
 
-安卓主题#32、录音#34、混合文档/手写#36和固定材料#38已随[本机预览#39](https://github.com/2746267826/pim-android/pull/39)保留历史合并，原批设备证据不冒充OPPO。服务器#507～#510收包/内置存储、#520持久逐段ASR及[API #528](https://github.com/2746267826/pim-api/pull/528)普通账号授权/destinations已合并；[Android #48](https://github.com/2746267826/pim-android/pull/48)补正式笔记库/搜索和账号服务器绑定存储上传。P0 API #529 PR/master CI与Release[api-v26.10.997](https://github.com/2746267826/pim-api/releases/tag/api-v26.10.997)（target`c5ff06fe`）成功；`api-v26.10.995`→`a3b35dc`保留为#528历史。GitHub Release不等于生产，生产仍待核。Android ASR当前PR[#51](https://github.com/2746267826/pim-android/pull/51) OPEN@`dae87c32`，native/shell/freshness/codegen SUCCESS、all required CI/Gate SUCCESS；QA assertions `7b41a176` 尚未形成最终build/device证据。旧frozen`852bce4`的phone ASR 6 case为3 PASS/3 FAIL，另有3 focused PASS只作历史，最终矩阵未到。Android bot #49 merge`e629febe` masterCI 40839118734 SUCCESS、Release`android-v26.10.1112`；Windows bot #37 merge`94384c9e` masterCI/Release成功。全材料完整记录/独立分析和修订保护仍需编码。实际长时后台/OEM课堂与课堂质量仍待验收。此前浏览器草图仍为模拟，完整MVP未完成。
+安卓主题#32、录音#34、混合文档/手写#36和固定材料#38已随[本机预览#39](https://github.com/2746267826/pim-android/pull/39)保留历史合并，原批设备证据不冒充OPPO。服务器#507～#510收包/内置存储、#520持久逐段ASR及[API #528](https://github.com/2746267826/pim-api/pull/528)普通账号授权/destinations已合并；[Android #48](https://github.com/2746267826/pim-android/pull/48)补正式笔记库/搜索和账号服务器绑定存储上传。P0 API #529 PR/master CI与Release[api-v26.10.997](https://github.com/2746267826/pim-api/releases/tag/api-v26.10.997)成功；Android current Release[android-v26.10.1123](https://github.com/2746267826/pim-android/releases/tag/android-v26.10.1123)→`93d93437`，P0 Release1116为历史。GitHub Release不等于生产，生产仍待核。Android ASR [PR #51](https://github.com/2746267826/pim-android/pull/51) 已普通MERGED exact head`8b1d091`→`93d934379b9a0e10318a9369e4d9d80a0c47e5e2`；CI40874958748/master40877083407全SUCCESS/CLEAN。QA FINAL33/33PASS0FAIL：phone12+narrow12+tablet9，跨R6/R7/R8；Source组件3按同源R5 lineage另记。P2 UI limitation：窄Legacy四字段/取消确认实见，但说明尾部截于“拒绝”、浅过渡帧不足，fullBody NOT-VERIFIED。全材料完整记录/独立分析和修订保护仍需编码；实际长时后台/OEM课堂、old queue upgrade与课堂质量仍待验收。此前浏览器草图仍为模拟，完整MVP未完成。
 
 记录页体验纠偏#39和[离线富文本#40](https://github.com/2746267826/pim-android/pull/40)均已合并。#40当前 `749c39c` 的1870 JVM、默认手机30、窄屏/平板大字号各13项与必需CI通过，包含首次结束、实际渲染终止/原文核对继续、页面滚动和独立视图延迟交接。原生宿主/录音、照片/向量手写、原稿schema-v1保留；不把本轮局部验收当完整MVP，范围和限制仍见[差距台账](native-notes-roadmap.md#mvp-执行与差距台账)。
 
@@ -12,7 +12,7 @@
 
 补充已知条件：首批安卓目标设备为 OPPO Find X9 Pro 和 OPPO Pad 4 Pro，典型课堂约 100 分钟。用户已接受录音分段/暂停、第 5 节六条规则，以及薄视觉基础和关键页样板后接真实功能的方法。现已明确延续 PIM 蓝色、取消常驻“PIM 笔记”品牌栏、“结束”右上角悬浮，颜色和基础组件统一定义、多处引用。用户已确认视觉足够，停止扩展静态样板；既有安卓页面已合并薄主题与组件复用，其余参数在真实切片中完善，不表示原生笔记功能已交付。
 
-服务端#507～#510与安卓本机基础#39已合并，离线富文本#40及本轮输入恢复现已合并。用户收窄通用AI层为模型类型设置、实际提示词/回复记录与统计，并接受Microsoft.Extensions.AI+官方OpenAI .NET SDK服务端直连。管理员Web最小文字闭环已随#514合并且主干CI/发布通过，具体实现/限制见[说明](../architecture/ai-text-model-settings.md)；视觉#515已合并并通过完整CI和主干发布；文字基线之后本批接通[多图视觉基础](../architecture/ai-vision-calls.md)并以用户授权本机模型做合成小样，真实照片/笔迹质量仍未验收；[ASR预设/单音频调用](../architecture/ai-asr-presets.md)已随#517合并，当前仅MiMo；[固定材料持久分段任务](../architecture/native-note-asr-tasks.md)、覆盖/时偏及明确恢复已随#520合并；API #528普通账号授权/destinations已普通MERGED到`a3b35dc`，Release`api-v26.10.995`为历史；P0 API #529 PR/master CI与current Release`api-v26.10.997`成功。GitHub Release不等于production。Android ASR当前PR#51 OPEN@`dae87c32`，native/shell/freshness/codegen SUCCESS、all required CI/Gate SUCCESS；旧frozen`852bce4` phone ASR 6 case为3 PASS/3 FAIL，最终矩阵/merge待办。旧调用方及LiteLLM待兼容迁移后清理。这不改变笔记MVP范围。执行前置为[AI调用基础](../architecture/ai-invocation-foundation.md)，具体依赖与下一切片写集以[总路线图第7节](native-notes-roadmap.md#v032-下一切片全材料双产物与修订保护)为准。历史入口说明（#48 前）：旧“今日”顶部预览入口及 debug 体验包不适合正式发布，源码入口并非仅 debug 可见。当前 #48 已交付正式导航/本机库/固定材料上传，但完整 MVP、处理/双产物/修订 UI 仍未交付。
+服务端#507～#510与安卓本机基础#39已合并，离线富文本#40及本轮输入恢复现已合并。用户收窄通用AI层为模型类型设置、实际提示词/回复记录与统计，并接受Microsoft.Extensions.AI+官方OpenAI .NET SDK服务端直连。管理员Web最小文字闭环已随#514合并且主干CI/发布通过，具体实现/限制见[说明](../architecture/ai-text-model-settings.md)；视觉#515已合并并通过完整CI和主干发布；文字基线之后本批接通[多图视觉基础](../architecture/ai-vision-calls.md)并以用户授权本机模型做合成小样，真实照片/笔迹质量仍未验收；[ASR预设/单音频调用](../architecture/ai-asr-presets.md)已随#517合并，当前仅MiMo；[固定材料持久分段任务](../architecture/native-note-asr-tasks.md)、覆盖/时偏及明确恢复已随#520合并；API #528普通账号授权/destinations已普通MERGED到`a3b35dc`，Release`api-v26.10.995`为历史；P0 API #529 PR/master CI与current Release`api-v26.10.997`成功。GitHub Release不等于production。Android ASR PR#51已MERGED`93d93437`，exact head`8b1d091`/R8 sha`67f0`的CI40874958748/master40877083407全SUCCESS，Release1123，QA FINAL33/33PASS0FAIL；Source组件3按同源R5另记。旧调用方及LiteLLM待兼容迁移后清理。这不改变笔记MVP范围。执行前置为[AI调用基础](../architecture/ai-invocation-foundation.md)，具体依赖与下一切片写集以[总路线图第7节](native-notes-roadmap.md#v032-下一切片全材料双产物与修订保护)为准。历史入口说明（#48 前）：旧“今日”顶部预览入口及 debug 体验包不适合正式发布，源码入口并非仅 debug 可见。当前 #48 已交付正式导航/本机库/固定材料上传，但完整 MVP、处理/双产物/修订 UI 仍未交付。
 
 当前四类进度及下一批顺序见[总路线图快照](native-notes-roadmap.md#四类进度总览2026-10-29-校对)。Android组件分工已确认：Material3、Compose Animation、Material3 Adaptive，图片/装饰动画按需Coil/Lottie；先核对稳定BOM与编译器兼容再实施，见[视觉组件说明](native-notes-visual-foundation.md#41-用户已确认的原生组件方向)。选型接受不代表已升级、已接入或正式UI已完成。
 
@@ -126,7 +126,7 @@
 - 富文本插入位置用“期望原文 + 光标两侧各自合法 Markdown”表达，不把 ProseMirror offset 当源码字符下标；取消相机/相册不提前改写原稿。大锚点原子保存为私有文件、Activity 只存 token，重建仍能定位；原文变化时拒绝旧锚点，不偷偷插在末尾。离开/结束/插入/导出/模式切换先等待输入法提交；失败不假装成功。渲染器崩溃前从未交给原生层的字不能承诺恢复，必须提示核对最近保留原文。
 - 正文只加载 APK 内三个明确资源，网络/导航/file/content/iframe 禁止；使用受限 `WebMessageListener`，不开放全局 `addJavascriptInterface`。主框架来源、协议、随机会话、native epoch/本地序号校验隔离旧消息；读取同步原生仓库避免 Compose 旧回显覆盖快速输入。账号凭据不进脚本，颜色/字号/间距由宿主题传入，字号缩放只算一次。
 
-本轮[服务器收包实现](../architecture/native-notes-material-upload.md)是M2前置：原稿/全部录音清单、分块/摘要/格式核对、版本比较及冲突保全已实现。#48接入Android账号/服务器绑定、明确存储同意、持久队列与同版本对账；只发布可确认的材料接收状态。普通账号ASR API授权/destinations已随#528合并：材料/任务/调用账号按owner隔离，转写目标来自管理员已配置并启用的共享目录；空目录先由管理员配置，不提供普通账号BYOK。Android ASR当前PR#51 OPEN但设备未完成；旧frozen`852bce4` phone 6 case仅3 PASS/3 FAIL。双产物及修订保护继续是完整MVP必需项，不能由上传/API合并代替。
+本轮[服务器收包实现](../architecture/native-notes-material-upload.md)是M2前置：原稿/全部录音清单、分块/摘要/格式核对、版本比较及冲突保全已实现。#48接入Android账号/服务器绑定、明确存储同意、持久队列与同版本对账；只发布可确认的材料接收状态。普通账号ASR API授权/destinations已随#528合并：材料/任务/调用账号按owner隔离，转写目标来自管理员配置并启用的共享目录；空目录先由管理员配置，不提供普通账号BYOK。Android ASR PR#51已普通MERGED`93d93437`，exact-head CI全SUCCESS/CLEAN，QA FINAL33/33PASS0FAIL；Source组件3按同源R5另记。双产物及修订保护继续是完整MVP必需项，不能由上传/API合并代替。
 - 插入以选中文本块中的光标为锚点，保留前后文字。手写用文档坐标向量保存，右下角拖拽增加空白或收缩至笔迹边界，不把笔迹分别按宽高拉伸；窄屏统一缩放整个卡片，不改写原始点。实际 OPPO 手写笔、掌触和滚动表现仍需实测。
 - 照片保留私有原图；相机只获得专用临时目录的 URI，不开放笔记/录音目录。取消或校验失败不插入假图片。PNG 手写图是按内容标识的派生材料，不能替代向量原稿。
 - 本批“导出文档包”只包含正文、照片、向量及派生图，以包内相对路径引用；明确不含录音，不是完整记录备份或上传包。未知材料类型或附件缺失阻止完整导出，不自称已实现跨端往返编辑。
@@ -229,7 +229,7 @@ OPPO Find X9 Pro 和 OPPO Pad 4 Pro 已确定为首批实测对象，约 100 分
 
 ## 7. 下一步的落地顺序建议
 
-用户已明确恢复开发并要求尽快形成MVP。服务端收包、SDK文字/视觉/单片与持久分段ASR均已合并；#48正式入口与绑定存储上传已通过准确head验收并合并；普通账号ASR API已随#528合并，P0 API #529的PR/master CI与Release`api-v26.10.997`也成功，但GitHub Release不代表生产、生产仍未验证。Android ASR当前PR#51 OPEN@`dae87c32`，native/shell/freshness/codegen SUCCESS、all required CI/Gate SUCCESS；sourceTag`f9a6bd5`已修正为同卡merged semantics，QA `7b41a176` 已改bool/exact state/逐片断言，但尚未 build 成最终 test APK，也不能借用旧 frozen `5da8`/`6a84` 的 Tests run 6 / Failures 3或3 focused PASS。下一步整合源码修复与P0最终binary，形成最终集成APK，再跑新矩阵与准确merge，之后进入全材料完整记录/独立分析及人工修订保护。完整页面、组件版本对齐、实际长时后台/OEM课堂和目标设备验收随批推进；通用流式/部分结果及旧调用迁移并行保留，不作为所有客户端工作的统一前置。全部稳定编号与缺口以总路线图为准，不重开纯样板或重复确认已有决议。
+用户已明确恢复开发并要求尽快形成MVP。服务端收包、SDK文字/视觉/单片与持久分段ASR均已合并；#48正式入口与绑定存储上传已通过准确head验收并合并；普通账号ASR API已随#528合并，P0 API #529的PR/master CI与Release`api-v26.10.997`也成功，Android current Release为`android-v26.10.1123`。GitHub Release不代表生产。Android ASR PR#51已普通MERGED exact head`8b1d091`→`93d93437`，CI40874958748/master40877083407全SUCCESS，Release1123，QA FINAL33/33PASS0FAIL；Source组件3为同源R5 lineage另记。下一步完成P2 UI limitation收尾后，进入全材料完整记录/独立分析及人工修订保护。完整页面、组件版本对齐、实际长时后台/OEM课堂和目标设备验收随批推进；通用流式/部分结果及旧调用迁移并行保留，不作为所有客户端工作的统一前置。全部稳定编号与缺口以总路线图为准，不重开纯样板或重复确认已有决议。
 
 1. 按已确认的录音、手写和六条提交/修改规则推进；薄视觉基础与真实切片相互验证的方法已经同意。延续 PIM 蓝色、无常驻品牌栏、右上角结束和主题/基础组件复用均已明确，两台 OPPO 设备上的录音/编辑器风险验证不必等所有外观参数定稿，不重复询问已知规则。
 2. 本文、总路线图与视觉规范已通过 PR #506 合并至 `pim-api/docs/product/`，继续更新同一来源并由客户端引用；不继续维护另一个本地需求正文，也不复制 Windows/Web 版本的路线图。
@@ -260,7 +260,7 @@ Android 已有 `PimTheme`（主入口使用）和 `PimSection`，Windows 已有�
 
 ### 正式入口与完整 UI 的发布清单
 
-下表是现有能力的界面验收，不新增产品能力编号；具体实现按总路线图第7节的依赖推进。长材料/持久处理的服务端基础已随 #520 合并，正式导航、本机库和固定材料上传已由 #48 交付，普通账号 API 已随 #528 合并；Android ASR当前PR#51 OPEN且CI/Gate SUCCESS，旧frozen`852bce4` phone ASR 6 case为3 PASS/3 FAIL，最终QA矩阵/merge未到。处理/结果/全材料双产物、人工修订及冲突等完整 UI 仍未完成，因此本清单不能整体视为已做。
+下表是现有能力的界面验收，不新增产品能力编号；具体实现按总路线图第7节的依赖推进。长材料/持久处理的服务端基础已随 #520 合并，正式导航、本机库和固定材料上传已由 #48 交付，普通账号 API 已随 #528 合并；Android ASR PR#51已MERGED`93d93437`，exact-head CI全SUCCESS/CLEAN，QA FINAL33/33PASS0FAIL。P2窄Legacy说明尾部/fullBody仍NOT-VERIFIED；处理/结果/全材料双产物、人工修订及冲突等完整 UI 仍未完成，因此本清单不能整体视为已做。
 
 | 页面/入口 | 正式可用要求 | 关键失败/恢复检查 |
 | --- | --- | --- |
@@ -268,7 +268,7 @@ Android 已有 `PimTheme`（主入口使用）和 `PimSection`，Windows 已有�
 | 记录编辑与材料 | 普通 Markdown、照片和可编辑手写共存；右下拖宽高；左下真实录音浮条、右上结束，统一主题引用 | 首次结束、中文 IME、键盘/格式栏、手机窄屏/平板/大字号、相机取消、离屏/渲染故障、重开不丢材料 |
 | 录音段管理 | 每段回放/状态、当前段暂停/续段与全文关系清楚 | 后台/锁屏、接续失败、权限/空间不足及实际中断如实显示 |
 | 固定材料与上传 | 版本、全部材料、明确同意、待上传/上传/已上传/失败分别展示；可重试 | 退出/换账号或服务器、断网重开、冲突/配额不足；不得自动上传未同意的本机稿 |
-| 逐段正式转写 | 各段独立查看、全部段状态/来源版本、失败段可重试 | API授权已合并、Android PR#51 OPEN但设备未完成；sourceTag`f9a6bd5`与QA`7b41a176`已提交；旧frozen`852bce4`为3 PASS/3 FAIL；缺段/长音频不能显示整篇处理成功，实时临时文字不得替代正式转写 |
+| 逐段正式转写 | 各段独立查看、全部段状态/来源版本、失败段可重试 | API授权已合并；Android PR#51已MERGED`93d93437`，QA FINAL33/33PASS0FAIL；Source组件3按同源R5另记；P2窄Legacy说明尾部/fullBody仍NOT-VERIFIED；缺段/长音频不能显示整篇处理成功，实时临时文字不得替代正式转写 |
 | 完整记录与独立分析 | 与原稿和转写分别可访问/编辑，呈现全部材料来源与覆盖 | 长结果可读、部分失败、旧版提示、重新生成与人工修改不互相覆盖 |
 | 冲突与恢复 | 保留双方完整材料，明确查看/选择；继续处理旧版和补录新稿的关系可理解 | 旧基线提交、乱序结果、应用重开、删除与迟到结果，不能自动丢稿 |
 | 签名构建与设备发布 | 从正式导航走完记录→上传→转写→双产物；功能声明与实际状态一致 | 输入、设备/长时或完整云流程未通过时保持预览，不以 release 编译成功代替可发布 |
