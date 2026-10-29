@@ -290,6 +290,162 @@ public sealed class NoteDerivedRecoveryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task GetRecoversUnknownRecordCheckpointFromRealReceiptWithoutResendOrDuplicateCandidate()
+    {
+        var material = NoteDerivedFixture.CreateMaterial(withAudio: false);
+        await UploadAsync(material);
+        var task = await StartDerivedAsync(material);
+        await RunDerivedAsync(task.TaskId);
+        var completed = await GetDerivedAsync(task.TaskId);
+        Assert.Equal("Succeeded", completed.Phase);
+
+        Guid versionId;
+        Guid damagedRevision;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var store = scope.ServiceProvider.GetRequiredService<NoteDerivedStore>();
+            var state = await store.ReadTaskAsync(_owner, task.TaskId, default);
+            var record = state.Steps.Single(x => x.Key == "record-synthesis");
+            var artifact = await store.DescribeArtifactAsync(_owner, state.CompleteRecordArtifactId, default);
+            versionId = Assert.Single(artifact.Versions, x => x.GenerationTaskId == task.TaskId).VersionId;
+            var damaged = await store.UpdateTaskAsync(_owner, task.TaskId, current =>
+            {
+                var step = current.Steps.Single(x => x.Key == record.Key);
+                step.Current.Status = "Unknown";
+                step.Current.LogId = null;
+                step.Current.ErrorCode = "checkpoint_unknown";
+                step.Current.ErrorMessage = "Synthetic lost checkpoint";
+                current.Steps.Single(x => x.Key == "analysis-synthesis").Current.Status = "Queued";
+            }, default);
+            damagedRevision = damaged.Revision;
+        }
+
+        var versionPath = Assert.Single(Directory.GetFiles(_root, versionId.ToString("D") + ".json",
+            SearchOption.AllDirectories));
+        File.Delete(versionPath);
+        var calls = (_visionCalls, _recordCalls, _analysisCalls);
+
+        var recovered = await GetDerivedAsync(task.TaskId);
+        Assert.Equal("Succeeded", recovered.Steps.Single(x => x.Key == "record-synthesis").Status);
+        Assert.Equal("Queued", recovered.Steps.Single(x => x.Key == "analysis-synthesis").Status);
+        Assert.NotEqual(damagedRevision, recovered.Revision);
+        Assert.Equal(calls, (_visionCalls, _recordCalls, _analysisCalls));
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var store = scope.ServiceProvider.GetRequiredService<NoteDerivedStore>();
+            var state = await store.ReadTaskAsync(_owner, task.TaskId, default);
+            var artifact = await store.DescribeArtifactAsync(_owner, state.CompleteRecordArtifactId, default);
+            Assert.Single(artifact.Versions, x => x.VersionId == versionId);
+        }
+
+        var repeated = await GetDerivedAsync(task.TaskId);
+        Assert.Equal(recovered.Revision, repeated.Revision);
+        Assert.Equal("Queued", repeated.Steps.Single(x => x.Key == "analysis-synthesis").Status);
+        Assert.Equal(calls, (_visionCalls, _recordCalls, _analysisCalls));
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var store = scope.ServiceProvider.GetRequiredService<NoteDerivedStore>();
+            var state = await store.ReadTaskAsync(_owner, task.TaskId, default);
+            var artifact = await store.DescribeArtifactAsync(_owner, state.CompleteRecordArtifactId, default);
+            Assert.Single(artifact.Versions, x => x.VersionId == versionId);
+        }
+    }
+
+    [Fact]
+    public async Task RetryReconcilesActualVisionReceiptBeforeRejectingNewAttempt()
+    {
+        var material = NoteDerivedFixture.CreateMaterial(withAudio: false);
+        await UploadAsync(material);
+        var task = await StartDerivedAsync(material);
+        await RunDerivedAsync(task.TaskId);
+        _ = await GetDerivedAsync(task.TaskId);
+
+        Guid revision;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var store = scope.ServiceProvider.GetRequiredService<NoteDerivedStore>();
+            var damaged = await store.UpdateTaskAsync(_owner, task.TaskId, current =>
+            {
+                var vision = current.Steps.Single(x => x.Key == "image-batch:0001");
+                vision.Current.Status = "Unknown";
+                vision.Current.LogId = null;
+                vision.Current.ErrorCode = "checkpoint_unknown";
+                vision.Current.ErrorMessage = "Synthetic lost checkpoint";
+                current.Steps.Single(x => x.Key == "record-synthesis").Current.Status = "Queued";
+            }, default);
+            revision = damaged.Revision;
+        }
+        var calls = (_visionCalls, _recordCalls, _analysisCalls);
+
+        var retry = new RetryNoteDerivedTaskRequest(Guid.NewGuid(), _owner, revision,
+            ["image-batch:0001"], _consent, true);
+        var response = await _client.PostAsJsonAsync($"{DerivedRoute}/{task.TaskId}/retry", retry);
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+        var recovered = await GetDerivedAsync(task.TaskId);
+        Assert.Equal("Succeeded", recovered.Steps.Single(x => x.Key == "image-batch:0001").Status);
+        Assert.Equal(1, recovered.Steps.Single(x => x.Key == "image-batch:0001").Attempts.Count);
+        Assert.Equal("Queued", recovered.Steps.Single(x => x.Key == "record-synthesis").Status);
+        Assert.Equal(calls, (_visionCalls, _recordCalls, _analysisCalls));
+    }
+
+    [Theory]
+    [InlineData("owner")]
+    [InlineData("source")]
+    [InlineData("request")]
+    [InlineData("target")]
+    public async Task MismatchedReceiptCannotRecoverUnknownCheckpoint(string defect)
+    {
+        var material = NoteDerivedFixture.CreateMaterial(withAudio: false);
+        await UploadAsync(material);
+        var task = await StartDerivedAsync(material);
+        await RunDerivedAsync(task.TaskId);
+        _ = await GetDerivedAsync(task.TaskId);
+
+        Guid revision;
+        Guid requestId;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var store = scope.ServiceProvider.GetRequiredService<NoteDerivedStore>();
+            var damaged = await store.UpdateTaskAsync(_owner, task.TaskId, current =>
+            {
+                var record = current.Steps.Single(x => x.Key == "record-synthesis");
+                record.Current.Status = "Unknown";
+                record.Current.LogId = null;
+                record.Current.ErrorCode = "checkpoint_unknown";
+                record.Current.ErrorMessage = "Synthetic lost checkpoint";
+            }, default);
+            revision = damaged.Revision;
+            requestId = damaged.Steps.Single(x => x.Key == "record-synthesis").Current.RequestId;
+        }
+
+        var otherOwner = defect == "owner"
+            ? await AuthRegistrationTestHost.SeedUserAsync(_factory, $"other-receipt-{Guid.NewGuid():N}")
+            : (Guid?)null;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var receipt = await db.AiRequestLogs.SingleAsync(x =>
+                x.UserId == _owner && x.ClientRequestId == requestId);
+            switch (defect)
+            {
+                case "owner": receipt.UserId = otherOwner!.Value; break;
+                case "source": receipt.SourceObjectId = Guid.NewGuid().ToString("D"); break;
+                case "request": receipt.ClientRequestId = Guid.NewGuid(); break;
+                case "target": receipt.ModelRevision = Guid.NewGuid(); break;
+            }
+            await db.SaveChangesAsync();
+        }
+        var calls = (_visionCalls, _recordCalls, _analysisCalls);
+
+        var current = await GetDerivedAsync(task.TaskId);
+        Assert.Equal("Unknown", current.Steps.Single(x => x.Key == "record-synthesis").Status);
+        Assert.Equal(revision, current.Revision);
+        Assert.Equal(calls, (_visionCalls, _recordCalls, _analysisCalls));
+    }
+
+    [Fact]
     public async Task OneHundredTwentyOneSecondWaveCreatesThreeAsrSlicesWithoutDuplicateCoverage()
     {
         var material = NoteDerivedFixture.CreateMaterial(audioSamples: 16_000 * 121);

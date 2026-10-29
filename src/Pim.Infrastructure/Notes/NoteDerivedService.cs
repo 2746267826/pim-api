@@ -14,6 +14,7 @@ namespace Pim.Infrastructure.Notes;
 
 public sealed class NoteDerivedService(
     NoteDerivedStore store,
+    NoteDerivedJob job,
     NoteMaterialUploadStore materials,
     NoteAsrTaskStore asrTasks,
     PimDbContext db,
@@ -73,6 +74,7 @@ public sealed class NoteDerivedService(
     public async Task<NoteDerivedTaskDto> GetAsync(Guid taskId, CancellationToken ct)
     {
         var owner = await RequireActiveOwnerAsync(ct);
+        await job.ReconcileAsync(owner, taskId, ct);
         return await DescribeAsync(await store.ReadTaskAsync(owner, taskId, ct), ct);
     }
 
@@ -105,6 +107,11 @@ public sealed class NoteDerivedService(
             request.StepKeys.Distinct(StringComparer.Ordinal).Count() != request.StepKeys.Count ||
             request.StepKeys.Any(string.IsNullOrWhiteSpace))
             throw Invalid("请选择待恢复步骤，核对原目标，并确认重试可能重复计费");
+
+        using var lease = store.TryRunLease(owner, taskId);
+        if (lease is null)
+            throw Conflict("派生任务正在执行，请先核对当前回执状态");
+        await job.ReconcileLockedAsync(owner, taskId, ct);
 
         var before = await store.ReadTaskAsync(owner, taskId, ct);
         var fingerprint = NoteMaterialManifestValidator.Hash(JsonSerializer.Serialize(request, Json));

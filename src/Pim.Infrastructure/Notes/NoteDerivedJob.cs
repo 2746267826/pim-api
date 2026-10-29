@@ -163,6 +163,41 @@ public sealed class NoteDerivedJob(
         }
     }
 
+    internal async Task ReconcileAsync(Guid owner, Guid taskId, CancellationToken ct)
+    {
+        using var lease = tasks.TryRunLease(owner, taskId);
+        if (lease is null) return;
+        await ReconcileLockedAsync(owner, taskId, ct);
+    }
+
+    internal async Task ReconcileLockedAsync(Guid owner, Guid taskId, CancellationToken ct)
+    {
+        var state = await tasks.ReadTaskAsync(owner, taskId, ct);
+        var candidates = state.Steps
+            .Where(x => x.Current.RequestId != Guid.Empty &&
+                x.Current.Status is "Running" or "Unknown")
+            .Select(x => (x.Key, x.Current.RequestId))
+            .ToArray();
+
+        foreach (var candidate in candidates)
+        {
+            ct.ThrowIfCancellationRequested();
+            state = await tasks.ReadTaskAsync(owner, taskId, ct);
+            var step = state.Steps.SingleOrDefault(x => x.Key == candidate.Key);
+            if (step is null || step.Current.RequestId != candidate.RequestId ||
+                step.Current.Status is not ("Running" or "Unknown"))
+                continue;
+
+            var receipt = await FindReceiptAsync(owner, candidate.RequestId, ct);
+            if (receipt is null || receipt.Status != "succeeded" ||
+                !ReceiptMatches(step, receipt, state, out _))
+                continue;
+
+            var result = AiCallAudit.Result(receipt, true);
+            _ = await ApplyResultAsync(owner, taskId, step.Key, candidate.RequestId, result, receipt, ct);
+        }
+    }
+
     private static NoteDerivedStepState? ReadyStep(NoteDerivedTaskState state)
     {
         var running = state.Steps.FirstOrDefault(x => x.Current.Status == "Running");
@@ -343,7 +378,7 @@ public sealed class NoteDerivedJob(
             }
             else
             {
-                var coverage = await BuildCoverageAsync(state, ct);
+                var coverage = await BuildCoverageAsync(state, ct, stepKey);
                 if (!coverage.Coverage.Complete)
                 {
                     await StopWithIssueAsync(owner, taskId, stepKey, "synthesis_coverage_incomplete",
@@ -528,12 +563,14 @@ public sealed class NoteDerivedJob(
         return new(completed, issues);
     }
 
-    private async Task<CoverageCheck> BuildCoverageAsync(NoteDerivedTaskState state, CancellationToken ct)
+    private async Task<CoverageCheck> BuildCoverageAsync(NoteDerivedTaskState state, CancellationToken ct,
+        string? successfulStepKey = null)
     {
         var transcripts = await ValidateTranscriptsAsync(state, ct);
         var issues = new List<NoteDerivedIssueDto>(state.Plan.InitialCoverage.Issues);
         issues.AddRange(transcripts.Issues);
-        foreach (var step in state.Steps.Where(x => x.Current.Status is "Failed" or "Unknown" or "Blocked"))
+        foreach (var step in state.Steps.Where(x => x.Key != successfulStepKey &&
+            (x.Current.Status is "Failed" or "Unknown" or "Blocked")))
         {
             issues.Add(Issue("step_" + step.Current.Status.ToLowerInvariant(),
                 step.Current.ErrorMessage ?? "派生步骤未成功", stepKey: step.Key));
