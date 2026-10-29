@@ -19,6 +19,8 @@ export function ModelEditor({ model, save, close, initialAsr = false }: { model:
   const [tokens, setTokens] = useState(model?.maxOutputTokens ?? 1024)
   const [saving, setSaving] = useState(false)
   const asr = caps.includes('Transcription')
+  const endpointChanged = Boolean(model && baseUrl.trim().replace(/\/+$/, '') !== model.baseUrl.trim().replace(/\/+$/, ''))
+  const keyRequired = !model || endpointChanged || !model.hasApiKey
   const presets = useQuery({ queryKey: ['ai-asr-presets'], queryFn: ({ signal }) => aiApi.asrPresets(signal), enabled: asr })
   const preset = presets.data?.find((p) => p.id === presetId)
   function choosePreset(value: string) {
@@ -35,6 +37,7 @@ export function ModelEditor({ model, save, close, initialAsr = false }: { model:
         event.preventDefault()
         if (!caps.length) { notifyError('请选择至少一种模型能力'); return }
         if (asr && !preset) { notifyError('请选择可用的ASR接入预设'); return }
+        if (keyRequired && !key.trim()) { notifyError('API地址已变化，必须重新输入 API Key；不会沿用旧地址的凭据'); return }
         setSaving(true)
         void save({ name, baseUrl, model: modelId, enabled, capabilities: caps, timeoutSeconds: timeout, maxOutputTokens: tokens,
           apiKey: key || null, expectedRevision: model?.revision ?? null, ...(asr ? { asrPresetId: presetId } : {}) })
@@ -52,8 +55,8 @@ export function ModelEditor({ model, save, close, initialAsr = false }: { model:
             <p className="mt-1 text-xs text-text-3">地址由 PIM 服务器访问。填写实际前缀（如 /v1），不包含密钥或查询参数。</p></div>
           <div><Label htmlFor="ai-model-identifier">模型标识</Label>{asr && preset && preset.models.length > 1 ? <Select id="ai-model-identifier" ariaLabel="模型标识" value={modelId} options={preset.models.map((value) => ({ value, label: value }))} onValueChange={setModelId} />
             : <Input id="ai-model-identifier" required maxLength={128} value={modelId} readOnly={asr} onChange={(e) => setModelId(e.target.value)} placeholder="服务商提供的模型 ID" />}</div>
-          <div><Label htmlFor="ai-model-key">API Key{model?.hasApiKey ? '（已保存）' : ''}</Label><Input id="ai-model-key" required={!model} type="password" autoComplete="new-password" maxLength={4096} value={key} onChange={(e) => setKey(e.target.value)} />
-            <p className="mt-1 text-xs text-text-3">保存后不再回显；编辑时留空保留。无鉴权的本地服务可填写非空占位值。</p></div>
+          <div><Label htmlFor="ai-model-key">API Key{model?.hasApiKey ? '（已保存）' : ''}</Label><Input id="ai-model-key" required={keyRequired} type="password" autoComplete="new-password" maxLength={4096} value={key} onChange={(e) => setKey(e.target.value)} />
+            <p className="mt-1 text-xs text-text-3">{endpointChanged ? 'API 地址已变化，必须重新输入 API Key；不会沿用旧地址的凭据。' : '保存后不再回显；地址不变时编辑可留空保留原凭据。无鉴权的本地服务可填写非空占位值。'}</p></div>
           <fieldset><legend className="mb-2 text-sm font-medium text-text-1">声明能力</legend><div className="flex flex-wrap gap-4">
             {capabilities.map((cap) => <label key={cap} className="flex items-center gap-2 text-sm text-text-2"><input type="checkbox" checked={caps.includes(cap)} disabled={Boolean(model?.asrPresetId)} onChange={(e) => {
               if (cap === 'Transcription') { setCaps(e.target.checked ? ['Transcription'] : ['Text']); setPresetId('') }

@@ -243,7 +243,7 @@ public class ExceptionMiddleware
         40901 => StatusCodes.Status409Conflict,
         41301 => StatusCodes.Status413PayloadTooLarge,
         42901 => StatusCodes.Status429TooManyRequests,
-        50301 => StatusCodes.Status503ServiceUnavailable,
+        50301 or 50302 => StatusCodes.Status503ServiceUnavailable,
         _ => StatusCodes.Status400BadRequest
     };
 }

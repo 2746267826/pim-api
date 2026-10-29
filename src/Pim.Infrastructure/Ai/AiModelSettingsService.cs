@@ -56,6 +56,8 @@ public sealed class AiModelSettingsService(PimDbContext db, ISecretProtector sec
             var preset = asrPresets?.Resolve(presetId) ?? throw Invalid("ASR预设不可用");
             preset.ValidateModel(model); endpoint = preset.NormalizeEndpoint(endpoint);
         }
+        if (id is not null && !string.Equals(row.BaseUrl, endpoint, StringComparison.Ordinal) && key is null)
+            throw Invalid("API地址已变化，必须重新填写API Key；不会沿用旧地址的凭据");
         var normalized = name.ToUpperInvariant();
         string effectiveKey;
         try { effectiveKey = key ?? secrets.Unprotect(row.ApiKeySecret); }

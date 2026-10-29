@@ -1,4 +1,3 @@
-using Microsoft.AspNetCore.Authorization;
 using Pim.Core.Ai;
 using Pim.Core.Common;
 using Pim.Infrastructure.Ai;
@@ -11,7 +10,7 @@ public static class AiEndpoints
     {
         endpoints.MapAiModelEndpoints();
         var group = endpoints.MapGroup("/api/v1/ai")
-            .RequireAuthorization(new AuthorizeAttribute { Roles = "admin" });
+            .RequireAuthorization().RequireCurrentActiveAdmin();
 
         group.MapGet("/status", async (IAiUsageService usage, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiStatusDto>.Ok(await usage.GetStatusAsync(ct))))
