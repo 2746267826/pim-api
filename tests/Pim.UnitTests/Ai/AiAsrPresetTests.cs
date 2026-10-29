@@ -11,6 +11,7 @@ using Pim.Infrastructure.Ai;
 using Pim.Infrastructure.Ai.Asr;
 using Pim.Infrastructure.Auth;
 using Pim.Infrastructure.Data;
+using Pim.Infrastructure.Data.Entities;
 using Pim.Infrastructure.Secrets;
 using Xunit;
 
@@ -27,6 +28,11 @@ public sealed class AiAsrPresetTests : IDisposable
     private AiModelSettingsService Settings => new(_db, _secrets, Registry);
     private AiAsrMaterialService Materials => new(_db, _files, _owner);
     private AiAsrCallService Caller => new(_db, _secrets, _owner, _gate, Registry, Materials);
+    public AiAsrPresetTests()
+    {
+        _db.Users.Add(new UserEntity { Id = _owner.UserId!.Value, Username = _owner.Username!, Role = "admin", IsActive = true });
+        _db.SaveChanges();
+    }
     internal static byte[] Wave()
     {
         using var stream = new MemoryStream(); using var writer = new BinaryWriter(stream);
