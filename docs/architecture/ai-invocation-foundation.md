@@ -1,6 +1,6 @@
-# AI 调用基础与开源组件选型
+﻿# AI 调用基础与开源组件选型
 
-版本：v0.8。核对日期：2026-10-28。状态：SDK文字#514、多图视觉#515、可扩展MiMo单音频ASR#517均已合并，覆盖模型设置、实际内容记录和统计；完整CI及受控真实模型小样分别留证。**长录音持久任务、流式/部分结果、旧调用迁移和真实笔记质量未完成**。实现与限制见[文字调用](ai-text-model-settings.md)、[多图视觉](ai-vision-calls.md)、[ASR预设](ai-asr-presets.md)。唯一范围/45稳定编号和下一顺序以[总路线图](../product/native-notes-roadmap.md)为准，不另建产品台账。
+版本：v0.9。核对日期：2026-10-29。状态：SDK文字#514、多图视觉#515、可扩展MiMo单音频ASR#517、固定材料持久分段任务#520及普通账号ASR授权/destinations#528均已合并，覆盖模型设置、实际内容记录和统计；完整CI及受控真实模型小样分别留证。API #528 master CI 40829847795成功，Release`api-v26.10.995`指向`a3b35dc`，GitHub Release不等于production；Android ASR当前PR#51 OPEN@`dae87c32`，native/shell/freshness/codegen SUCCESS、all required CI/Gate SUCCESS、device NOT-VERIFIED；旧frozen`852bce4` phone ASR 6 case为3 PASS/3 not-pass且原因待诊断。**流式/部分结果、完整记录/独立分析/人工修订、旧调用迁移和真实笔记质量未完成**。实现与限制见[文字调用](ai-text-model-settings.md)、[多图视觉](ai-vision-calls.md)、[ASR预设](ai-asr-presets.md)、[持久分段任务](native-note-asr-tasks.md)。唯一范围/45稳定编号和下一顺序以[总路线图](../product/native-notes-roadmap.md)为准，不另建产品台账。
 
 用户要求先完善 AI 调用基础，再推进具体 AI 功能；底层调用优先采用成熟开源组件。模型请求协议、流式解析、供应商适配与通用重试优先由成熟组件承担；本期采用服务端 SDK 直连，不将独立网关列为前置。PIM 保留材料归属、版本、授权、任务状态和产物修订保护；这些业务规则不能交给模型自行决定。
 
@@ -25,13 +25,13 @@
 | 仓内位置 | 当前事实 | 接入前要解决的问题 |
 | --- | --- | --- |
 | `Pim.Infrastructure.csproj` | 已引用 `Microsoft.Extensions.AI.OpenAI` 10.6.0 | 此版本是当前依赖，不代表调研时最新版；实施时锁定、验证兼容组合并保留许可证 |
-| `AiChatClientFactory` / `AiProfileChatClientFactory` | 旧客户端保留；新直连按固定配置创建 SDK 客户端并释放，禁止重定向、通用重试为 0，正文审计不抓认证头 | 视觉有受控真实模型合成小样；ASR、流式和真实照片/笔迹质量仍待验收，不把本机HTTP当质量证明 |
-| `AiGateway` / `AiDtos` | 已有文本调用、结构校验、请求关联和用量记录 | 旧`AiMessage`仍承载字符串；新直连通过SDK图文内容接入图片，MiMo单片ASR本批接通，长材料处理未完成，保留旧调用兼容 |
+| `AiChatClientFactory` / `AiProfileChatClientFactory` | 旧客户端保留；新直连按固定配置创建 SDK 客户端并释放，禁止重定向、通用重试为 0，正文审计不抓认证头 | 视觉有受控真实模型合成小样；单音频/持久分段ASR已接通，流式、完整记录和真实照片/笔迹/课堂质量仍待验收，不把本机HTTP当质量证明 |
+| `AiGateway` / `AiDtos` | 已有文本调用、结构校验、请求关联和用量记录 | 旧`AiMessage`仍承载字符串；新直连通过SDK图文内容接入图片，MiMo单片及#520持久分段ASR已接通；完整记录/独立分析/人工修订未完成，保留旧调用兼容 |
 | `AiOptions` / `docker-compose.yml` | 默认 LiteLLM 地址；30 秒、1000 输出 token；最多两次应用尝试 | 不能用一个短请求参数覆盖 ASR、长文整理和分析；需要按能力配置限制，并统一重试预算 |
 | Compose / LiteLLM 配置 | 已有 LiteLLM 服务与配置挂载，镜像使用 `main-latest` | 目标迁往 SDK 直连；先做兼容迁移与回归，再清理代理。现有 `main-latest` 和部署本轮未改变 |
 | 提示词与响应日志 | 新非流式文字保留实际 SDK 请求/响应正文、消息和配置版本，已收到的非法 JSON/错误正文也保留；旧记录/开关不变 | 仅遮盖本次已知凭据并标记；4 MiB 响应上限/未收全正文/写库失败边界见实现说明，流式与保留清理待补 |
 | `AiEndpoints` / `AiModelEndpoints` / Web AI 设置 | 管理员可设置模型、执行文本/多图调用、查询记录/原图/统计；文字基线5路径/8操作，本批另加4路径/4操作，唯一契约与生成类型已更新 | 视觉已接通PNG/JPEG，ASR已通过预设接通MiMo单片，长录音持久处理未完成；旧业务未自动迁移，不把管理员接口开放给普通用户 |
-| 现有 Hangfire 与笔记版本库 | 已有后台任务基础及不可变完整材料收包 | 复用持久任务设施；新增业务步骤状态与重开恢复，不自建通用队列/工作流框架 |
+| 现有 Hangfire 与笔记版本库 | 已有后台任务基础、不可变完整材料收包、#520 持久分段任务与 #528 普通账号授权/destinations | 复用持久任务设施；下一切片新增全材料覆盖、双产物与修订版本，不重写队列/分片/检查点，不自建通用工作流框架 |
 
 这里记录源码事实，不证明生产部署已配置好模型。本批按用户明确授权使用其本机网关和合成材料进行4次真实服务层调用，密钥仅在内存；详见视觉说明的验证分类，不等于真实笔记或设备验收。
 

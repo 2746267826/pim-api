@@ -1,4 +1,4 @@
-# 原生笔记固定材料收包
+﻿# 原生笔记固定材料收包
 
 本文件说明 `NativeNotes` 收包实现及部署边界，功能范围与缺口继续以 [总路线图](../product/native-notes-roadmap.md) 为唯一索引。收包接受完整原材料；ASR、整理和分析尚未在此实现。
 
@@ -36,4 +36,4 @@
 
 隔离测试覆盖大于 4 MB 的真实格式合成 WAV、重开续传、幂等、缺失/损坏拒收、并发配额预留、跨用户隔离、版本竞争、显式选择、删除意图恢复和限额调整。HTTP 测试使用真实 API 宿主、JWT 与隔离内存数据库。故障夹具模拟特定持久化窗口，不作为实际断电、长时录音、生产磁盘或 OPPO 真机证据。
 
-Android #44与Windows #35已同步唯一契约；[Android #48](https://github.com/2746267826/pim-android/pull/48)接入正式笔记入口、明确存储同意及账号/服务器绑定的持久上传、暂停/恢复与同版本回执核对，准确提交/验收见[总路线图](../product/native-notes-roadmap.md)。真实课堂长时上传、进程/设备重启、Doze/OEM与无公网LAN仍未验收；普通账号/Android逐段ASR入口、全材料双产物及人工修订仍待开发。第三方模型同意与保留政策不由收包同意替代，上传不会自动调用模型。服务器冲突材料保全不等于跨端编辑或比较/解决UI已完成。
+Android #44与Windows #35已同步旧唯一契约；[Android #48](https://github.com/2746267826/pim-android/pull/48)接入正式笔记入口、明确存储同意及账号/服务器绑定的持久上传、暂停/恢复与同版本回执核对。API #528已合并普通账号ASR授权/destinations，Android ASR当前PR#51 OPEN@`dae87c32`，device未完成；旧frozen`852bce4` phone 6 case仅3 PASS/3 not-pass且原因待诊断。Android bot #49 merge `e629febe` masterCI PENDING；Windows bot #37 merge `94384c9e` masterCI/Release成功。准确提交/验收见[总路线图](../product/native-notes-roadmap.md)。真实课堂长时上传、进程/设备重启、Doze/OEM与无公网LAN仍未验收；全材料双产物及人工修订仍待开发。第三方模型同意与保留政策不由收包同意替代，上传不会自动调用模型。服务器冲突材料保全不等于跨端编辑或比较/解决UI已完成。

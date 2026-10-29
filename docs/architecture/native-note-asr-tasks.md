@@ -1,10 +1,10 @@
-# 固定笔记材料的持久分段 ASR
+﻿# 固定笔记材料的持久分段 ASR
 
-更新日期：2026-10-29。本片在已上传的不可变材料版本上实现任务、逐片进度与恢复，已随#520合并。Android #48另行接入存储上传；普通账号/Android逐段处理入口、完整记录/独立分析、流式和真实课堂质量仍未交付。准确提交和证据以各片PR及[唯一总路线图](../product/native-notes-roadmap.md)为准。
+更新日期：2026-10-29。本片在已上传的不可变材料版本上实现任务、逐片进度与恢复，已随#520合并；普通账号授权与安全 destinations 已在#528合并到 API master `a3b35dc`，准确 head `1b3b0edb` 的 PR CI 40825191098 为 SUCCESS（6122通过/15跳过/0失败），master CI 40829847795 整体SUCCESS且Gate/contract notify/release job成功，[api-v26.10.995](https://github.com/2746267826/pim-api/releases/tag/api-v26.10.995) 已发布并指向`a3b35dc`；GitHub Release不等于production，生产仍NOT-VERIFIED。Android #48另行接入存储上传；Android ASR 当前 PR[#51](https://github.com/2746267826/pim-android/pull/51) OPEN@`dae87c32`，已合并 bot 契约、source semantics fix `f9a6bd5` 与 QA assets；native/shell/freshness/codegen SUCCESS，all required CI/Gate SUCCESS，device NOT-VERIFIED。旧frozen`852bce4`/app`5da8`/test`6a84` phone ASR 6 case为3 PASS/3 not-pass，最终矩阵与merge未完成。Windows bot #37已merge`94384c9e`，masterCI/Release成功；Android bot #49 merge`e629febe`，masterCI 40839118734 PENDING。完整记录/独立分析、人工修订保护、流式和真实课堂质量仍未交付。准确提交和证据以各片PR及[唯一总路线图](../product/native-notes-roadmap.md)为准。
 
 ## 使用入口与授权
 
-管理员进入“设置 → AI 设置 → 笔记录音任务”，选择自己已上传的固定材料版本、ASR模型和语言，核对实际目标地址/预设版本，明确同意发送该版本的全部录音。无已上传材料时显示空态；Android #48仅接入明确同意的存储上传，没有自动发起处理。本片沿用现有AI管理员权限，普通账号及Android任务入口另行接入，不因拥有材料读取权限就获得任意模型调用权限。
+管理员进入“设置 → AI 设置 → 笔记录音任务”，选择自己已上传的固定材料版本、ASR模型和语言，核对实际目标地址/预设版本，明确同意发送该版本的全部录音。无已上传材料时显示空态；Android #48仅接入明确同意的存储上传，没有自动发起处理。普通账号 API 路径已随 #528 合并：`GET /api/v1/native-notes/asr-tasks/destinations`只投影当前活动 owner 可见的启用目标，不含凭据；任务、列表、详情、停止和恢复均重新校验 owner、账号状态和固定版本，不因拥有材料读取权限就获得任意模型调用权限。Android 当前PR#51@`dae87c32`已消费该路径，PR OPEN、all required CI/Gate SUCCESS、device NOT-VERIFIED；旧frozen`852bce4` phone ASR 6 case为3 PASS/3 not-pass，根因待诊断。API Release `api-v26.10.995`已发布，生产仍未验证。
 
 任务固定 owner、材料版本、输入/清单 SHA256、模型 ID/revision、厂商预设版本、实际操作地址和语言。后续编辑/新上传版本、默认模型切换均不把原任务改成另一份材料。配置修改或账号停用/失去权限会阻止后续发送；切换目标需要新建明确授权的任务。
 
@@ -36,7 +36,7 @@ HTTP 请求只保存意图。前端丢失响应后保留同一任务标识，先
 
 ## 接口与资源边界
 
-唯一契约包含 `/api/v1/native-notes/asr-tasks` 下的任务创建/列表、`sources` 固定版本选择、单任务、分页 `segments`、`stop` 和 `retry`，与Web类型同片从实际Test API导出生成。Android #44和Windows #35已同步快照；Android #48只启用四个材料存储operation，ASR任务调用仍待后续通过既有operation清单/生成脚本接入，不手写猜测接口。
+唯一契约包含 `/api/v1/native-notes/asr-tasks` 下的任务创建/列表、`sources` 固定版本选择、`destinations` 普通账号安全目标、单任务、分页 `segments`、`stop` 和 `retry`，与Web类型同片从实际Test API导出生成。#528把 contract SHA256 `eff87d962f5a935148c7f74ef1d73793d534719c4493397fd8a8247567d644c0` 合并进 `a3b35dc`；Android bot #49 merge `e629febe`、Windows bot #37 merge `94384c9e`，准确PR CI全SUCCESS。Android #48只启用四个材料存储operation；Android PR#51已包含 bot官方generated contract、source semantics fix与QA assets，freshness/codegen SUCCESS，all required CI/Gate SUCCESS，不手写猜测接口。
 
 当前每账号最多200任务、10个创建时待处理任务；单任务最多5000片、50次恢复意图、每片最多10次尝试，分片每页最多20条。现有 SDK 总并发4、ASR并发2、单片时限/原音频默认文件来源容量仍生效。没有任何同篇产品录音时长新承诺；任务操作受当前资源限额约束。任务历史归档/删除与文件回收尚未提供产品入口，不自动删除用户记录来掩盖限额。
 
@@ -44,8 +44,8 @@ HTTP 请求只保存意图。前端丢失响应后保留同一任务标识，先
 
 ## 验证与剩余范围
 
-永久回归使用隔离 Test API/JWT、真实本机 SDK HTTP、内置文件存储与合成 PCM；涵盖精确拆分/字节覆盖、多个录音/产品段、100/180分钟合成材料、失败片恢复、同任务互斥、停止、任务重开/回执恢复、未知结果、配置/权限/原材料保护和所有者隔离。早期长时fixture的材料摘要不一致失败保留，修正fixture序列化，不放宽材料完整性校验。
+永久回归使用隔离 Test API/JWT、真实本机 SDK HTTP、内置文件存储与合成 PCM；涵盖精确拆分/字节覆盖、多个录音/产品段、100/180分钟合成材料、失败片恢复、同任务互斥、停止、任务重开/回执恢复、未知结果、配置/权限/原材料保护和所有者隔离。#528准确head另覆盖普通账号自有目标、非owner/停用/配置变化拒绝与任务授权快照，完整PR CI测试6122通过/15跳过。早期长时fixture的材料摘要不一致失败保留，修正fixture序列化，不放宽材料完整性校验。
 
 Web 有明确同意、丢失响应核对、只选失败片恢复的交互测试；`web/client-web/scripts/qa-note-asr-tasks.mjs` 使用构建产物和隔离合成接口验证桌面/390px窄屏空态、部分成功和恢复，无外部网络请求。各项最终执行结果见PR，合成API页面不等于真实后台调度或模型质量验收。
 
-仍待：真实Hangfire进程崩溃/重启与部署恢复演练、真实100/180分钟课堂和分片边缘质量、流式/中断部分输出、普通账号ASR授权/Android任务与完整结果界面、全材料双产物/人工修订保护、旧调用迁移与LiteLLM清理及OPPO验收。#48存储上传不销项这些范围；不得以合成长材料或短句模型验收冒充真实课堂。
+Android 当前PR#51 OPEN@`dae87c32`，native/shell/freshness/codegen SUCCESS、all required CI/Gate SUCCESS、device NOT-VERIFIED。旧frozen`852bce4`/app`5da8`/test`6a84`的1978 JVM只证明单元/编译，phone ASR 6 case为3 PASS/3 not-pass；重复sourceTag、Unknown“失败”断言与localeditor JS Boolean literal根因及跨Activity/root测试scope影响待诊断，不能直接判为产品缺陷。后续需QA修复、整合P0最终binary、形成最终集成APK，再跑phone 6+3/narrow/tablet矩阵。旧APK`18ce`的5项3 PASS/2 FAIL和另一新hash的未绑定3 PASS继续隔离。仍待：PR#51 device/merge、真实Hangfire进程崩溃/重启与部署恢复演练、真实100/180分钟课堂和分片边缘质量、长时后台/OEM、流式/中断部分输出、完整结果界面、全材料双产物/人工修订保护、旧调用迁移与LiteLLM清理及OPPO验收。GitHub Release不代表生产升级。
