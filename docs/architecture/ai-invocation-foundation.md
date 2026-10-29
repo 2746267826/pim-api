@@ -1,6 +1,6 @@
 ﻿# AI 调用基础与开源组件选型
 
-版本：v0.9。核对日期：2026-10-29。状态：SDK文字#514、多图视觉#515、可扩展MiMo单音频ASR#517、固定材料持久分段任务#520及普通账号ASR授权/destinations#528均已合并，覆盖模型设置、实际内容记录和统计；完整CI及受控真实模型小样分别留证。API #528 master CI 40829847795成功，Release`api-v26.10.995`指向`a3b35dc`，GitHub Release不等于production；Android ASR当前PR#51 OPEN@`dae87c32`，native/shell/freshness/codegen SUCCESS、all required CI/Gate SUCCESS、device NOT-VERIFIED；旧frozen`852bce4` phone ASR 6 case为3 PASS/3 not-pass且原因待诊断。**流式/部分结果、完整记录/独立分析/人工修订、旧调用迁移和真实笔记质量未完成**。实现与限制见[文字调用](ai-text-model-settings.md)、[多图视觉](ai-vision-calls.md)、[ASR预设](ai-asr-presets.md)、[持久分段任务](native-note-asr-tasks.md)。唯一范围/45稳定编号和下一顺序以[总路线图](../product/native-notes-roadmap.md)为准，不另建产品台账。
+版本：v0.9。核对日期：2026-10-29。状态：SDK文字#514、多图视觉#515、可扩展MiMo单音频ASR#517、固定材料持久分段任务#520及普通账号ASR授权/destinations#528均已合并，覆盖模型设置、实际内容记录和统计；完整CI及受控真实模型小样分别留证。API #528 master CI 40829847795成功，Release`api-v26.10.995`指向`a3b35dc`，GitHub Release不等于production；Android ASR当前PR#51 OPEN@`dae87c32`，all required CI/Gate SUCCESS、device NOT-VERIFIED；sourceTag`f9a6bd5`与QA`7b41a176`已提交但未形成最终binary，旧frozen`852bce4`为3 PASS/3 FAIL。**流式/部分结果、完整记录/独立分析/人工修订、旧调用迁移和真实笔记质量未完成**。实现与限制见[文字调用](ai-text-model-settings.md)、[多图视觉](ai-vision-calls.md)、[ASR预设](ai-asr-presets.md)、[持久分段任务](native-note-asr-tasks.md)。唯一范围/45稳定编号和下一顺序以[总路线图](../product/native-notes-roadmap.md)为准，不另建产品台账。
 
 用户要求先完善 AI 调用基础，再推进具体 AI 功能；底层调用优先采用成熟开源组件。模型请求协议、流式解析、供应商适配与通用重试优先由成熟组件承担；本期采用服务端 SDK 直连，不将独立网关列为前置。PIM 保留材料归属、版本、授权、任务状态和产物修订保护；这些业务规则不能交给模型自行决定。
 
