@@ -46054,6 +46054,53 @@
           "Pim.Api"
         ]
       }
+    },
+    "/mcp": {
+      "delete": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      },
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      },
+      "patch": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
     }
   }
 }
