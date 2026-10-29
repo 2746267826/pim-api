@@ -11,7 +11,8 @@ public static class AiEndpoints
     {
         endpoints.MapAiModelEndpoints();
         var group = endpoints.MapGroup("/api/v1/ai")
-            .RequireAuthorization(new AuthorizeAttribute { Roles = "admin" });
+            .RequireAuthorization(new AuthorizeAttribute { Roles = "admin" })
+            .RequireCurrentActiveAdmin();
 
         group.MapGet("/status", async (IAiUsageService usage, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiStatusDto>.Ok(await usage.GetStatusAsync(ct))))

@@ -26,3 +26,9 @@ public sealed record NoteAsrSegmentsDto(int Total, int Offset, IReadOnlyList<Not
 public sealed record NoteAsrSourceDto(Guid NoteId, Guid VersionId, string Title, DateTimeOffset CreatedAt,
     bool IsCurrent, bool HasConflict, int Recordings, long TotalSamples, int SampleRate);
 public sealed record NoteAsrSourcesDto(int Total, int Offset, IReadOnlyList<NoteAsrSourceDto> Items);
+
+public sealed record NoteAsrDestinationDto(Guid ModelId, Guid ModelRevision, string DisplayName, string Model,
+    string Endpoint, string PresetId, string PresetVersion, IReadOnlyList<string> Languages,
+    bool BackgroundProcessingAvailable);
+
+public sealed record NoteAsrDestinationsDto(int Total, IReadOnlyList<NoteAsrDestinationDto> Items);
