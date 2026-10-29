@@ -1,6 +1,6 @@
 ﻿# ASR 接入预设与单音频调用
 
-更新日期：2026-10-29。本切片实现“选择预设 → 独立ASR配置 → 单音频调用 → 转写/记录/原音频核对”。当前仅注册 MiMo，准确 head 验证和合并以本切片 PR 为准。后续 #520 已合并固定材料持久分段任务；#528 已合并普通账号消费已启用共享 destinations，模型/运行时仍由管理员全局配置，空目录需管理员先配置；Android当前PR#51 OPEN但device未完成。**本文单音频切片仍不是完整笔记MVP**，全部目标继续引用[唯一总路线图](../product/native-notes-roadmap.md)。
+更新日期：2026-10-29。本切片实现“选择预设 → 独立ASR配置 → 单音频调用 → 转写/记录/原音频核对”。当前仅注册 MiMo，准确 head 验证和合并以本切片 PR 为准。后续 #520 已合并固定材料持久分段任务；#528 已合并普通账号消费已启用共享 destinations，模型/运行时仍由管理员全局配置，空目录需管理员先配置。Android PR#51已普通MERGED`93d93437`，exact head`8b1d091`/sha`67f0`的CI40874958748全SUCCESS/CLEAN，QA FINAL33/33PASS0FAIL；master CI/release pending。**本文单音频切片仍不是完整笔记MVP**，全部目标继续引用[唯一总路线图](../product/native-notes-roadmap.md)。
 
 ## 预设与扩展入口
 
@@ -36,7 +36,7 @@ MiMo 通过 OpenAI-compatible Chat Completions 的单条 `user/input_audio` 识�
 
 本次单音频入口 WAV/MP3、最多4MiB，做Base64/大小/签名识别而非完整编解码/内容扫描；该上限来自目前单片附件存储能力，是PIM限制，不是宣称MiMo的统一上限。它不承载100/180分钟整条录音，更不削减同篇多段录音目标。后续须按固定原材料版本、厂商实际限制及既有后台设施实现全部分片/时偏/覆盖、持久步骤、失败段恢复与逐段结果。
 
-截至 2026-10-27 的边界是非流式；流式/中断部分转写、完整记录和独立分析/人工修订保护均未交付。后续 #520 已合并后台持久分段任务，#48 已接入 Android 材料存储上传，#528 已合并普通账号 API 授权/destinations；Release`api-v26.10.995`保留为#528历史，P0 API #529 PR/master CI与current Release`api-v26.10.997`成功。GitHub Release不等于production。普通账号只能处理自己的固定材料/任务，转写目标来自管理员配置并启用的共享目录；空目录先由管理员配置，admin CRUD/runtimeWeb仍admin-only。Android PR#51 OPEN@`dae87c32`但device未完成，旧frozen`852bce4` phone ASR仍3 PASS/3 FAIL。本单片预设切片仍不包含这些能力；完整记录和独立分析/人工修订保护仍待开发。就本单音频入口自身而言，未知单次供应商结果仍需核对，音频保留期/回收及该入口的大文件边界仍未在本切片闭合；这些不否定 #48/#520/#528 的当前能力，也不自动删除用户文件掩盖未知状态。全部项目继续记在MVP差距表。
+截至 2026-10-27 的边界是非流式；流式/中断部分转写、完整记录和独立分析/人工修订保护均未交付。后续 #520 已合并后台持久分段任务，#48 已接入 Android 材料存储上传，#528 已合并普通账号 API 授权/destinations；Release`api-v26.10.995`保留为#528历史，P0 API #529 PR/master CI与current Release`api-v26.10.997`成功。GitHub Release不等于production。普通账号只能处理自己的固定材料/任务，转写目标来自管理员配置并启用的共享目录；空目录先由管理员配置，admin CRUD/runtimeWeb仍admin-only。Android PR#51已普通MERGED`93d93437`，exact head`8b1d091`/R8 sha`67f0`，CI40874958748全SUCCESS/CLEAN，QA FINAL33/33PASS0FAIL；Source组件3按同源R5 lineage另记。P2 UI余项（窄Legacy说明尾部/fullBody NOT-VERIFIED）保留。本单片预设切片仍不包含这些能力；完整记录和独立分析/人工修订保护仍待开发。就本单音频入口自身而言，未知单次供应商结果仍需核对，音频保留期/回收及该入口的大文件边界仍未在本切片闭合；这些不否定 #48/#520/#528 的当前能力，也不自动删除用户文件掩盖未知状态。全部项目继续记在MVP差距表。
 
 ## 验证分类
 
