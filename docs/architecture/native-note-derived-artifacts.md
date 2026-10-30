@@ -1,8 +1,8 @@
 # 原生笔记全材料派生稿：设计与验收
 
-状态：**API/Web 已实现，受控验收进行中；最终 CI、真实 API + Web 最终 revision、Android 网络接入与 merge 未完成**。更新日期：2026-10-29。当前源码在 `codex-win/note-derived-artifacts` 工作树，canonical master 仍为 v0.33；本文不把分支实现、本机专项测试、合成 QA 或 GitHub Release 当作合并、发布或完整 MVP。
+状态：**API/Web 已于 PR #532 普通 merge、required CI 与 GitHub Release；Android functional 仅本地未提交，fullapp/test APK/device E2E 未完成**。更新日期：2026-10-30。本文不把 Android 本地源码、focused 测试、GitHub Release、受控 QA 或契约 bot 当作 Android 功能验收、production 或完整 MVP。
 
-本文定义“固定版本全部材料 → 完整记录 + 独立分析 → 人工修订/重生成保护”的领域边界、必须成立的不变量和验收矩阵。API 领域/编排、同仓 Web 页面和 Android 本机人工稿已落到工作树；真实 Test Swagger v2、官方 Web 生成物、本机专项测试和合成浏览器 QA 已分别有回执。真实 Test API 的首次 phone core 已在旧 Web build 上通过，但 manifest 的 WebIndex `f6bd...` 与最终 dist index `c915835a...` 不一致，不能记作最终 revision 验收。最终 CI、真实 API + Web 最终 revision、Android 网络、merge、release 与完整 MVP 仍未完成。
+本文定义“固定版本全部材料 → 完整记录 + 独立分析 → 人工修订/重生成保护”的领域边界、必须成立的不变量和验收矩阵。API 领域/编排与同仓 Web 已从 exact head `5026e455` 普通合并为 `3e3829aa959f34cd602d193a82462116b80d0737`；exact PR CI 40907900018 为 6193 pass / 15 skip / 0 fail，Web 349/349，master CI 40994288275 的 Gate/Release/Notify 均 success，Release `api-v26.10.1011` 指向该 merge。最终 Web `c915835a...` 已在真实隔离 Test API + loopback SDK 下完成 phone/narrow core 与负向复验。Android 本地工作树已接 typed 14 operations，但 fullapp 1985 有 33 FAIL、test APK 编译和真实设备 E2E 未完成，且无 functional PR；这仍是 API/Web 交付，不是 Android 功能交付或 production。
 
 需求映射：AI-03/04/05/06/07/08、NOTE-04/05、SYNC-01/02、SAFE-01。本文不新增稳定需求编号，不替代 [总路线图](../product/native-notes-roadmap.md) 的 45 个稳定 ID、32 项能力差距行、13 个 MIG 或既有历史失败台账。
 
@@ -14,19 +14,19 @@
 
 1. 一次派生处理必须固定 owner、笔记/材料版本、源清单及摘要、现有成功 ASR 转写/回执（仅当存在录音）、照片、Markdown、与同一版本匹配且已上传的手写渲染图、模型目标、预设/地址/语言和明确同意。没有录音的纯文字/照片笔记允许 ASR 任务关联为空，不得强制伪造或创建 ASR。
 2. 完整记录与独立分析分别对应独立的 `record-synthesis` 与 `analysis-synthesis` 产物身份、版本、状态、来源快照和生成/修订历史，不得用一份内容或一个版本号代替另一份。
-3. 自动生成、人工修订和再次生成都只能追加不可变候选版本。生成成功不移动 head；人工提交使用 CAS，冲突候选可以保存，但不得改变现有 head。当前 v2 分支契约已包含 `hasConflict` 与 `isHead`，但仍以最终合并契约为准。
+3. 自动生成、人工修订和再次生成都只能追加不可变候选版本。生成成功不移动 head；人工提交使用 CAS，冲突候选可以保存，但不得改变现有 head。canonical contract 已包含 `hasConflict` 与 `isHead`。
 4. 任一必需材料缺失、失败、未完整确认、版本不匹配或被替换时，不得把产物标记为“完整”。停止、未知和部分成功都必须保留已有结果并显示缺口。
 5. 重放、并发、恢复和重生成不得覆盖较新人工修订，不得重复产生未确认的付费调用，也不得把旧目标的成功结果挂到新目标下。
 
-### 1.2 分支契约与受控实现现状
+### 1.2 canonical 契约与已交付实现现状
 
-当前工作树已用 `ASPNETCORE_ENVIRONMENT=Test`、loopback Kestrel 和真实 `/swagger/v1/swagger.json` 导出 v2 契约：HTTP 200，规范化契约 SHA-256 为 `b745bcd4bc3fd7d09e8971d59cdcf2e40de2d9454a8e48dda6ff01ffd1b250b5`（1,118,682 bytes）；官方 `update-contract.sh` 与 `check-contract.sh` 均 exit 0，生成 Web 类型 SHA-256 为 `11acd5eb5b2d577522658679ee9bd70bed3ce3c518a592a70f300026a4891be6`。这是分支级真实 Test 回执，不是 canonical master、最终 CI 或 Android 官方快照。
+canonical contract 现为 `e38d1991b372174a3a4bac10df0a35eee90de92d268a5f1d35762d76da07f0f9`（1,119,472 bytes，329 paths，659 schemas）。CI 从真实生成 artifact 校验收紧了旧本机导出缺 `/mcp` 的问题，所有历史失败保留。Android officialbot PR #52 与 Windows bot PR #38 已同步契约/生成物，分别 merge `4a05a68b`、`69defe7a`；这证明消费者契约同步，不证明 Android derived 原生功能已实现或验收。
 
 | 范围 | 当前实现与证据 | 仍未完成 |
 | --- | --- | --- |
-| API 领域/编排 | `NoteDerivedDtos`、endpoint、planner、coverage、service、store、job 已实现；固定正文原文/摘要、全部成功 ASR 计划与回执、实际图片字节、双产物、候选/head、CAS、停止/未知/有限恢复有专项测试 | 最终整库 CI、真实 API + Web 闭环、完整领域负向集复跑与 merge |
-| Web（同仓） | 已使用正式生成类型实现“笔记处理”；最终检查 `349/349`（46 files，23:10:22，25.27s）、note-derived 聚焦 `36/36`、storage 独立 `20/20` + TS/lint，lint/build exit 0；双视口合成 QA 各 8 状态通过，但不是真实 API | 最新 dist `c915835a...` 上的 phone+narrow 真实 Test API QA、最终 CI、merge/release |
-| Android（跨仓） | 本机人工稿 store/model/纯结果 UI 已在另一工作树推进；本机草稿曾 `10/10 PASS`，纯结果 UI 仍在办 | 上游官方合并契约快照、网络读取/生成/CAS/冲突/双产物与设备验收；当前不得写成已对 Android 开放 |
+| API 领域/编排 | `NoteDerivedDtos`、endpoint、planner、coverage、service、store、job 已随 PR #532 合并；exact CI 40907900018 与 master 40994288275 成功，Release 1011 指向 merge；固定正文、ASR 计划/回执、原图字节、双产物、候选/head、CAS、停止/未知/恢复均有最终门禁和真实受控回执 | production、真实课堂质量和 Android functional E2E 仍未验证 |
+| Web（同仓） | 已使用正式生成类型实现“笔记处理”并随 PR #532 合并；exact PR Web `349/349`（46 files）、note-derived 聚焦 `36/36`、storage `20/20` + TS/lint、lint/build exit 0；最终 `c915835a...` 真实 Test API + loopback SDK phone/narrow core 与 negative PASS | 合成 provider 不代表真实质量；narrow 过渡截图不证明完整视觉；公开逐图 receipt 仍 P2 |
+| Android（跨仓） | 本地工作树 `wt/note-derived-android` HEAD `967ad5cb` 已接 typed 14 operations、Client/Repo/VM/导航/EntrySheet/UI/人工修订/再生；Debug APK `2375cb77...` / 20,476,254 bytes；focused 30/30 + core 69/69 PASS | fullapp 1985 有 33 FAIL（旧 ASRStore checkpoints 写入，根因未证实）；instrumentation test APK 未编译、真实设备 E2E 未执行、无 functional PR；不得写成已对 Android 开放 |
 
 当前 API 已实现的关键不变量不只停留在设计：固定版本 `document.md` 原文和 hash 校验；成功 ASR 按完整计划、slice offset、audio/owner/version/receipt 目标核对；照片/手写图使用原字节 SHA 并读取原图；视觉按每批最多 4 张、单图 4 MiB、单批 8 MiB，最多 32 图/8 批；合成输入上限 200,000 字符、单证据 50,000 字符；WebP/超限明确 blocked，且不改变上传 32/40 MiB 与既有 WebP 能力。`record-synthesis` 与 `analysis-synthesis` 独立调用、独立不可变 version；分析实际读取记录正文与来源；生成不移动人工 head；人工 payload 幂等，CAS 冲突保存双方全文，`Mutation.IsHead` 区分 crash 候选；locator 可修复；no-op 不变 Revision；stop 保留 success/unknown、不自动重发，retry 只覆盖显式范围并要求 ack。
 
@@ -157,7 +157,7 @@
 
 所有人工写操作必须携带或服务端核验“预期当前版本/修订”并执行 CAS。两个客户端基于同一父版本提交人工修订时，后到的 CAS 冲突候选可以保存，但不得改变现有 head，也不得覆盖先到版本；由用户显式选择、合并或另存新版本。
 
-CAS 冲突候选的版本 ID 表达和 `hasConflict`/`isHead` 已在当前 v2 分支契约实现，但仍须由最终 CI 与合并契约确认。行为不变：冲突内容不丢失、当前 head 不变、冲突可观察、用户选择后才改变 head。
+CAS 冲突候选的版本 ID 表达和 `hasConflict`/`isHead` 已进入 canonical contract 与最终 CI。行为不变：冲突内容不丢失、当前 head 不变、冲突可观察、用户选择后才改变 head。
 
 较旧的生成响应晚到，而当前已有更新人工版本时：
 
@@ -203,50 +203,50 @@ CAS 冲突候选的版本 ID 表达和 `hasConflict`/`isHead` 已在当前 v2 �
 
 ## 8. 验收矩阵
 
-状态缩写：**本机 PASS** = 当前源码上的本机构建/专项测试实际通过，不等于最终 CI；**部分 PASS** = 只有明确列出的界面或内部路径有证据；**PENDING** = 尚未执行成功；**NOT-VERIFIED** = 没有可计入的当前证据。最终验收证据必须来自对应源码修订的最终 CI、真实隔离 Test API/受控上游或目标设备；本表、设计文档、合成夹具和聊天记录都不能替代。
+状态缩写：**API/Web PASS** = 已进入 PR #532 的最终 CI、merge/release，或明确列出的最终 Web 真实受控复验；**部分 PASS** = 只有明确列出的界面或内部路径有证据；**PENDING** = 尚未执行成功；**NOT-VERIFIED** = 没有可计入的当前证据。Android functional 必须另有 fullapp、test APK 编译、真实设备 E2E 与 functional PR 证据；本表、设计文档、合成夹具和聊天记录都不能替代。
 
 | ID | 需求 | 场景与预期 | 必需证据 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| DA-01 | AI-03/06、NOTE-04/05、SAFE-01 | 创建派生运行时固定 owner、材料版本、源清单摘要和全部文件摘要；后续编辑当前笔记不改变旧运行 | 领域单测、持久化重开、版本竞争测试 | 本机 PASS；最终 CI PENDING |
-| DA-02 | AI-03/06 | 有录音时，全部录音分片均复用同版本既有成功转写与回执，无新的 ASR 外发 | 调用记录断言、假上游计数、真实隔离 Test API 回执 | 本机 PASS（121 秒三 slice 与完整计划回执）；真实 E2E PENDING |
-| DA-03 | AI-03/06 | 任一录音分片失败、停止后未完成或结果未知时，记录/分析均不得标记完整，并逐项显示缺口 | 部分成功、停止、未知和恢复测试 | 本机 PASS；真实 E2E PENDING |
+| DA-01 | AI-03/06、NOTE-04/05、SAFE-01 | 创建派生运行时固定 owner、材料版本、源清单摘要和全部文件摘要；后续编辑当前笔记不改变旧运行 | 领域单测、持久化重开、版本竞争测试 | API/Web PASS（PR#532 exact CI） |
+| DA-02 | AI-03/06 | 有录音时，全部录音分片均复用同版本既有成功转写与回执，无新的 ASR 外发 | 调用记录断言、假上游计数、真实隔离 Test API 回执 | API/Web 真实受控 PASS（121 秒三 slice 与完整计划）；Android functional E2E NOT-VERIFIED |
+| DA-03 | AI-03/06 | 任一录音分片失败、停止后未完成或结果未知时，记录/分析均不得标记完整，并逐项显示缺口 | 部分成功、停止、未知和恢复测试 | API/Web PASS（部分/停止/未知/恢复进入最终 CI）；Android functional E2E NOT-VERIFIED |
 | DA-04 | AI-03/06 | 成功但空转写保留占位、试听/复核提示和调用回执；不被静默剔除或冒充有效内容 | 空转写夹具与界面状态测试 | 实现；空转写专项与真实界面 NOT-VERIFIED |
-| DA-05 | NOTE-04、AI-06 | Markdown 使用固定版本原文/摘要及块顺序，不使用更新后的当前笔记内容 | 摘要/顺序篡改与版本竞争负向测试 | 本机 PASS（原 document.md 与篡改阻断）；真实 E2E PENDING |
-| DA-06 | NOTE-04、AI-06/07 | 全部关联照片使用固定版本原图、摘要和顺序；缺图、损坏或未知类型阻止完整 | 文件缺失/替换/类型错误负向测试 | 本机 PASS；真实 E2E PENDING |
-| DA-07 | NOTE-04、INK-04、AI-06/07 | Android 已渲染并上传的手写图实际进入下游 SDK；每个手写块使用同版本图片/块身份/笔迹摘要/尺寸，并有逐图实际消费与覆盖回执 | 从固定包到 SDK 请求的逐图证据、批次覆盖、错配/缺失测试；仅证明上传不算通过 | 内部实际字节/逐图覆盖 PASS；公开逐图/block receipt NOT-VERIFIED；Android 网络未开放 |
+| DA-05 | NOTE-04、AI-06 | Markdown 使用固定版本原文/摘要及块顺序，不使用更新后的当前笔记内容 | 摘要/顺序篡改与版本竞争负向测试 | API/Web PASS（固定 document.md 与篡改阻断进入最终 CI） |
+| DA-06 | NOTE-04、AI-06/07 | 全部关联照片使用固定版本原图、摘要和顺序；缺图、损坏或未知类型阻止完整 | 文件缺失/替换/类型错误负向测试 | API/Web PASS（最终受控复验确认 Photo/Ink 原图 bytes match） |
+| DA-07 | NOTE-04、INK-04、AI-06/07 | Android 已渲染并上传的手写图实际进入下游 SDK；每个手写块使用同版本图片/块身份/笔迹摘要/尺寸，并有逐图实际消费与覆盖回执 | 从固定包到 SDK 请求的逐图证据、批次覆盖、错配/缺失测试；仅证明上传不算通过 | 内部实际字节/逐图覆盖 PASS；公开逐图/block receipt NOT-VERIFIED；Android functional E2E NOT-VERIFIED |
 | DA-08 | AI-03/06、NOTE-04 | 未知块、无法解释的附件关系或清单外引用阻止完整，不能静默忽略 | 未知块夹具与契约回归 | 实现；未知块专项 NOT-VERIFIED |
-| DA-09 | AI-03/06 | 全部必需来源恰好解析一次；重复归属、跨版本替换或来源重复计数均拒绝 | 覆盖证明单元/集成测试 | 本机 PASS；真实 E2E PENDING |
-| DA-10 | AI-03/06 | 无录音纯文字/照片笔记允许 ASR 任务关联为空并可处理；不伪造空转写，也不因缺少预期录音而误判；有录音时仍要求成功 ASR | 无录音合法双产物样本、`AsrTaskId` 为空、缺失录音负向样本 | 本机 PASS；真实 E2E PENDING |
-| DA-11 | AI-04/06/07/08 | `record-synthesis` 拥有独立产物身份、版本和覆盖结论，不写入 ASR 分片状态 | 持久化模型、重启恢复和 API 断言 | 本机 PASS；真实 E2E PENDING |
-| DA-12 | AI-04/06/07/08 | `analysis-synthesis` 拥有独立产物身份、版本和目标快照，不能替代或覆盖 `record-synthesis` | 双产物分离、独立选择和读取测试 | 本机 PASS；真实 E2E PENDING |
-| DA-13 | AI-04/06/08 | 分析准确引用完整记录版本与同一材料快照；记录新修订后旧分析标记为基于旧版本 | 版本关系、陈旧标记和再次生成测试 | 部分 PASS（来源/版本字段与提示词测试）；真实 E2E PENDING |
-| DA-14 | AI-04 | 人工修订创建不可变子版本，可追溯父版本与来源；不改变原始材料 | 人工提交、重开和历史读取测试 | 本机 PASS；真实 E2E PENDING |
-| DA-15 | AI-04 | 首次生成、再次生成和恢复都只追加候选，不覆盖较新人工版本且不移动 head | 自动 A0 → 人工 H1 → 重生成 R1 场景及 head 前后断言 | 本机 PASS；真实 E2E PENDING |
-| DA-16 | AI-04、SYNC-02 | 两个并发人工提交基于同一父版本时，CAS 冲突候选可保存但现 head 不变，双方内容不丢失 | 并发 CAS、冲突候选保存、head 不变和服务端回执测试 | 本机 PASS；真实 E2E PENDING |
-| DA-17 | AI-04、SYNC-02 | 晚到的旧生成响应只能成为旧父版本候选，不改变当前人工版本或 head/选择指针 | 延迟响应、人工先行和版本图测试 | Web 本机 PASS；真实 API 竞态 E2E PENDING |
-| DA-18 | AI-04、SAFE-01 | 同一幂等身份和同一输入返回原结果，不新增付费调用、版本或修订 | 重放请求、调用计数和持久化断言 | 本机 PASS；最终 CI PENDING |
-| DA-19 | AI-04、SAFE-01 | 同一幂等身份换材料、目标、父版本或输入指纹时显式冲突 | 输入指纹不一致负向测试 | 本机 PASS（fingerprint mismatch 409）；真实 E2E PENDING |
-| DA-20 | AI-04、SAFE-01 | 响应丢失和未知结果先核对既有回执，不自动重发；恢复显式提示可能重复计费 | 断连、超时、回执恢复和付费提示测试 | 本机 PASS（failed/unknown replay + ack retry）；真实 E2E PENDING |
-| DA-21 | SAFE-01 | 非 owner 不能读取、生成、修订、停止、恢复或重放他人的材料/产物 | 跨 owner API 与持久化负向测试 | 本机 PASS；真实 E2E PENDING |
-| DA-22 | AI-02/03/04/05、SAFE-01 | 每次外发固定模型/预设/地址/语言和明确同意；上传同意不能替代模型同意 | 同意快照、目标展示和拒绝路径测试 | 本机 PASS；真实目标 E2E PENDING |
-| DA-23 | AI-02/03/04、SAFE-01 | 目标停用、配置变化、权限失效或疑似目标漂移时停止后续外发并保留已有结果 | 配置变化、禁用账号与目标不一致测试 | 本机 PASS（禁停账号与 precheck 后目标变化）；真实 E2E PENDING |
+| DA-09 | AI-03/06 | 全部必需来源恰好解析一次；重复归属、跨版本替换或来源重复计数均拒绝 | 覆盖证明单元/集成测试 | API/Web PASS（进入 PR#532 最终 CI） |
+| DA-10 | AI-03/06 | 无录音纯文字/照片笔记允许 ASR 任务关联为空并可处理；不伪造空转写，也不因缺少预期录音而误判；有录音时仍要求成功 ASR | 无录音合法双产物样本、`AsrTaskId` 为空、缺失录音负向样本 | API/Web PASS；Android functional E2E NOT-VERIFIED |
+| DA-11 | AI-04/06/07/08 | `record-synthesis` 拥有独立产物身份、版本和覆盖结论，不写入 ASR 分片状态 | 持久化模型、重启恢复和 API 断言 | API/Web PASS（PR#532 exact CI） |
+| DA-12 | AI-04/06/07/08 | `analysis-synthesis` 拥有独立产物身份、版本和目标快照，不能替代或覆盖 `record-synthesis` | 双产物分离、独立选择和读取测试 | API/Web PASS（PR#532 exact CI） |
+| DA-13 | AI-04/06/08 | 分析准确引用完整记录版本与同一材料快照；记录新修订后旧分析标记为基于旧版本 | 版本关系、陈旧标记和再次生成测试 | 部分 PASS（API/Web 来源/版本路径进入最终 CI）；Android E2E NOT-VERIFIED |
+| DA-14 | AI-04 | 人工修订创建不可变子版本，可追溯父版本与来源；不改变原始材料 | 人工提交、重开和历史读取测试 | API/Web PASS（PR#532 exact CI） |
+| DA-15 | AI-04 | 首次生成、再次生成和恢复都只追加候选，不覆盖较新人工版本且不移动 head | 自动 A0 → 人工 H1 → 重生成 R1 场景及 head 前后断言 | API/Web PASS（最终受控复验保人工 head） |
+| DA-16 | AI-04、SYNC-02 | 两个并发人工提交基于同一父版本时，CAS 冲突候选可保存但现 head 不变，双方内容不丢失 | 并发 CAS、冲突候选保存、head 不变和服务端回执测试 | API/Web 真实受控 PASS（CAS 双留、head 不变）；Android E2E NOT-VERIFIED |
+| DA-17 | AI-04、SYNC-02 | 晚到的旧生成响应只能成为旧父版本候选，不改变当前人工版本或 head/选择指针 | 延迟响应、人工先行和版本图测试 | Web 真实受控 PASS（late-success 12/12 独立）；Android E2E NOT-VERIFIED |
+| DA-18 | AI-04、SAFE-01 | 同一幂等身份和同一输入返回原结果，不新增付费调用、版本或修订 | 重放请求、调用计数和持久化断言 | API/Web PASS（503→200 同版本 model call 不增） |
+| DA-19 | AI-04、SAFE-01 | 同一幂等身份换材料、目标、父版本或输入指纹时显式冲突 | 输入指纹不一致负向测试 | API/Web PASS（fingerprint mismatch 409） |
+| DA-20 | AI-04、SAFE-01 | 响应丢失和未知结果先核对既有回执，不自动重发；恢复显式提示可能重复计费 | 断连、超时、回执恢复和付费提示测试 | API/Web PASS（failed/unknown replay + ack retry；503→200无增调用） |
+| DA-21 | SAFE-01 | 非 owner 不能读取、生成、修订、停止、恢复或重放他人的材料/产物 | 跨 owner API 与持久化负向测试 | API/Web PASS（进入最终 CI） |
+| DA-22 | AI-02/03/04/05、SAFE-01 | 每次外发固定模型/预设/地址/语言和明确同意；上传同意不能替代模型同意 | 同意快照、目标展示和拒绝路径测试 | API/Web PASS；Android 真实目标 E2E NOT-VERIFIED |
+| DA-23 | AI-02/03/04、SAFE-01 | 目标停用、配置变化、权限失效或疑似目标漂移时停止后续外发并保留已有结果 | 配置变化、禁用账号与目标不一致测试 | API/Web PASS（禁停账号与 precheck 后目标变化）；Android E2E NOT-VERIFIED |
 | DA-24 | SAFE-01 | 任务、版本、WorkData 和日志不持久化令牌、JWT、私有下载地址或模型凭据 | 持久化扫描、日志断言和安全审查 | 源码边界已审查；自动持久化/日志扫描 NOT-VERIFIED |
-| DA-25 | AI-03/04、REC-04 | 停止立即阻止新外发，但保留成功/未知回执并继续核对已发送调用；停止后不得标记完整 | 停止竞态、已发送调用和恢复测试 | 本机 PASS；真实 E2E PENDING |
-| DA-26 | AI-03/04 | 明确恢复只处理缺口/未知范围，不重跑成功 ASR，不覆盖人工稿，不复用不同输入的恢复身份 | 局部恢复、成功片跳过和版本保护测试 | 本机 PASS；真实 E2E PENDING |
-| DA-27 | NOTE-04/05、SYNC-01/02 | 界面可区分完整、部分、停止、未知、失败、缺口和基于旧版本；重开页面状态不丢失 | Web 桌面/窄屏、Android 手机/平板/大字号状态测试 | Web 双视口合成 QA + focused PASS；真实 API Web PENDING；Android 完整结果 UI/网络 PENDING |
-| DA-28 | AI-04、SYNC-02 | 用户可比较自动稿、人工稿、重生成稿和来源差异，并显式选择；选择不改写历史 | 比较/选择界面与 API 集成测试 | Web 合成 UI/单元 PASS；真实 API 集成与 Android PENDING |
-| DA-29 | 跨端 | Web/Android 先完成本机人工稿；API 官方合并契约冻结后，两端口径只消费同一实际 Swagger/官方生成类型，网络读取与双产物状态可端到端读取 | 本机人工稿测试、真实 Test API、生成物 freshness、受控 Web/Android E2E | 历史探路 PASS（phone core 于旧 WebIndex `f6bd...`）；最终 dist `c915835a...` phone+narrow 复验 PENDING；Android 网络未接 |
-| DA-30 | AI-03/04/06/07/08 | 真实受控 API 全链：全部材料 → 双产物 → 人工修订 → 材料变化/重生成 → 并发/重放/恢复选择 | 隔离 Test API、受控真实模型目标、完整审计回执；不使用生产 | 历史手机 core 探路 PASS（9 calls，确原图 bytes、无重 ASR、手工后再生成保 head）；最终 revision 全链与并发/恢复 PENDING |
+| DA-25 | AI-03/04、REC-04 | 停止立即阻止新外发，但保留成功/未知回执并继续核对已发送调用；停止后不得标记完整 | 停止竞态、已发送调用和恢复测试 | API/Web PASS（PR#532 exact CI）；Android E2E NOT-VERIFIED |
+| DA-26 | AI-03/04 | 明确恢复只处理缺口/未知范围，不重跑成功 ASR，不覆盖人工稿，不复用不同输入的恢复身份 | 局部恢复、成功片跳过和版本保护测试 | API/Web PASS（PR#532 exact CI）；Android E2E NOT-VERIFIED |
+| DA-27 | NOTE-04/05、SYNC-01/02 | 界面可区分完整、部分、停止、未知、失败、缺口和基于旧版本；重开页面状态不丢失 | Web 桌面/窄屏、Android 手机/平板/大字号状态测试 | Web 最终 phone/narrow core PASS；narrow 过渡截图不证明完整视觉；Android 完整结果 UI/设备 E2E NOT-VERIFIED |
+| DA-28 | AI-04、SYNC-02 | 用户可比较自动稿、人工稿、重生成稿和来源差异，并显式选择；选择不改写历史 | 比较/选择界面与 API 集成测试 | Web 候选/选择路径受控 PASS；完整差异比较视觉与 Android E2E NOT-VERIFIED |
+| DA-29 | 跨端 | Web/Android 先完成本机人工稿；API 官方合并契约冻结后，两端口径只消费同一实际 Swagger/官方生成类型，网络读取与双产物状态可端到端读取 | 本机人工稿测试、真实 Test API、生成物 freshness、受控 Web/Android E2E | Web 最终真实受控 PASS；Android 本地 typed 14 operations 已有，但无 functional PR/test APK 编译/设备 E2E，NOT-VERIFIED |
+| DA-30 | AI-03/04/06/07/08 | 真实受控 API 全链：全部材料 → 双产物 → 人工修订 → 材料变化/重生成 → 并发/重放/恢复选择 | 隔离 Test API、受控真实模型目标、完整审计回执；不使用生产 | Web 最终 phone/narrow core + negative PASS；完整并发/恢复压力与 Android E2E NOT-VERIFIED |
 | DA-31 | AI-06/07 | 当前 SDK 以 PNG/JPEG、单次最多 4 张、单张最多 4 MiB、单次合计最多 8 MiB 消费材料；超过单批时经可审计多批覆盖，不丢图/文 | SDK 请求回执、逐图/逐块覆盖清单、多批失败与合并测试 | 内部本机 PASS（32 图/8 批上限、真实 loopback 字节）；公开逐图 receipt NOT-VERIFIED |
-| DA-32 | AI-06/07 | WebP、超大单图、超总量或正文超限等当前 SDK 不支持/超限资料明确阻断并显示缺口；不静默前 N 张、截正文或转码 | 负向夹具、原始上传字节不变、无隐式转码/截断断言 | 本机 PASS；真实 E2E PENDING |
-| DA-33 | AI-03/04、NOTE-04 | 无录音纯文字/照片笔记可以生成 `record-synthesis` 与 `analysis-synthesis`，ASR 任务关联为空；有录音但无成功 ASR 时阻断完整 | 无录音合法闭环、有录音缺 ASR 负向路径 | 本机 PASS；真实 E2E PENDING |
-| DA-34 | AI-04 | `record-synthesis` 与 `analysis-synthesis` 的类型、head 和候选互不混用；任一自动生成完成后 head 保持原值 | 双产物存储、API 和 UI 的候选/head 断言 | 本机 PASS；真实 E2E PENDING |
-| DA-35 | AI-04、SYNC-02 | 人工 CAS 冲突保存候选且现 head 不变；最终版本 ID 与 `hasConflict` 表达在唯一契约冻结后补齐 | 并发冲突回执、head 前后快照、冻结契约对照 | 本机 PASS；v2 分支契约含 `hasConflict`/`isHead`；最终 CI/合并契约 PENDING |
-| DA-36 | 跨端 | Web 以真实 Test Swagger 和正式生成物与 API 同 PR 接入；Android 先本机人工稿，取得上游官方契约快照后接网络；均不手写猜测字段 | 同仓 Web 生成物 freshness 与网络 E2E、Android 本机稿与官方快照后网络 E2E | 部分 PASS（官方 Web 生成/check、Android draft 10/10）；真实 Web E2E/Android 网络 PENDING |
+| DA-32 | AI-06/07 | WebP、超大单图、超总量或正文超限等当前 SDK 不支持/超限资料明确阻断并显示缺口；不静默前 N 张、截正文或转码 | 负向夹具、原始上传字节不变、无隐式转码/截断断言 | API/Web 负向受控 PASS；Android E2E NOT-VERIFIED |
+| DA-33 | AI-03/04、NOTE-04 | 无录音纯文字/照片笔记可以生成 `record-synthesis` 与 `analysis-synthesis`，ASR 任务关联为空；有录音但无成功 ASR 时阻断完整 | 无录音合法闭环、有录音缺 ASR 负向路径 | API/Web PASS（进入最终 CI）；Android functional E2E NOT-VERIFIED |
+| DA-34 | AI-04 | `record-synthesis` 与 `analysis-synthesis` 的类型、head 和候选互不混用；任一自动生成完成后 head 保持原值 | 双产物存储、API 和 UI 的候选/head 断言 | API/Web PASS（最终受控 head 断言）；Android E2E NOT-VERIFIED |
+| DA-35 | AI-04、SYNC-02 | 人工 CAS 冲突保存候选且现 head 不变；最终版本 ID 与 `hasConflict` 表达在唯一契约冻结后补齐 | 并发冲突回执、head 前后快照、冻结契约对照 | canonical contract 含 `hasConflict`/`isHead`，API/Web CAS 双留 PASS；Android E2E NOT-VERIFIED |
+| DA-36 | 跨端 | Web 以真实 Test Swagger 和正式生成物与 API 同 PR 接入；Android 先本机人工稿，取得上游官方契约快照后接网络；均不手写猜测字段 | 同仓 Web 生成物 freshness 与网络 E2E、Android 本机稿与官方快照后网络 E2E | Web 官方生成/check、PR#532 CI 与真实受控 E2E PASS；Android typed 14 operations 已有，但功能 PR/test APK/设备 E2E NOT-VERIFIED |
 
-## 9. 当前 v2 契约与待合并检查
+## 9. canonical 契约与已合并检查
 
-当前分支 v2 契约已能直接回答下列结构性问题；canonical master 与 Android 官方快照仍须在最终契约合并后重新取得：
+PR #532 合并后的 canonical contract（SHA-256 `e38d1991...f0f9`）已能直接回答下列结构性问题；Android officialbot 与 Windows bot 已同步生成物，但 Android functional 结果界面与设备 E2E 仍须另验：
 
 1. 如何固定 owner、材料版本、源清单摘要、可选 ASR 任务关联（无录音时为空）、有录音时的成功 ASR 证据和目标/同意快照。
 2. 如何逐项表达 `record-synthesis`/`analysis-synthesis` 的独立身份、版本、父版本、候选、head 和覆盖缺口。
@@ -257,16 +257,17 @@ CAS 冲突候选的版本 ID 表达和 `hasConflict`/`isHead` 已在当前 v2 �
 7. 非 owner、停用账号、目标撤销和发布版本/配置变化如何一致拒绝。
 8. 哪些读取操作允许查看旧版本和冲突候选，哪些操作必须要求明确选择 head。
 
-本分支已具备 `derived-tasks` 的 start/list/get/steps/stop/retry 与 limits/destinations/sources，`derived-artifacts` 的 list/get/version/manual-revisions/select；产物 kind 为 `CompleteRecord`/`IndependentAnalysis`，mutation 含 `hasConflict`/`isHead`。coverage 当前仅公开聚合 count 与 issues，尚未公开逐图/逐 block 成功 receipt。Android 必须等待上游最终官方快照后再生成网络模型；不得把本分支合成 QA 当作已开放网络功能。
+API 已具备 `derived-tasks` 的 start/list/get/steps/stop/retry 与 limits/destinations/sources，`derived-artifacts` 的 list/get/version/manual-revisions/select；产物 kind 为 `CompleteRecord`/`IndependentAnalysis`，mutation 含 `hasConflict`/`isHead`。coverage 当前仅公开聚合 count 与 issues，尚未公开逐图/逐 block 成功 receipt。Android officialbot 已同步契约，Android 本地工作树也已有 typed 14 operations；但 fullapp/test APK/device E2E 未完成，不得把本机 focused 或契约 bot 当作已开放网络功能。
 
 ## 10. 证据边界
 
-- API/Web 源码和本机受控证据已存在，但最终整库 CI、真实 API + Web QA、merge 与 release 尚未完成。本文不把“有实现”写成“已验收”。
-- API 最终统一 build 为 0 errors / 64 warnings；专项轮次按历史独立记账：首轮 `50/57`（7 failed，historical）、下一轮 `24/25`（1 failed）、失败项最后单回归 `1/1 PASS`；三轮不求和，整组未在最后一次修复后重跑。真实 swagger v2 为 loopback Test HTTP 200，官方 Web update/check exit 0。
-- Web 最终检查全量 `349/349`（46 files，23:10:22，25.27s），note-derived focused `36/36`；storage 独立 `20/20` + TS/lint，lint/build exit 0；日志位于 `.codex-tmp/acceptance/note-derived-api/web-final-p1-{test,lint,build}.log`，源快照为 `web-final-p1-source-snapshot.json`。先前 Pauli `341/341`/focused `14` 和本次曾观测的 `347/347`/`34/34` 均只作历史检查点。双视口合成 QA 各 8 状态、无水平溢出，但它是隔离合成 API，不是真实 API。
-- Android 本机人工稿 `10/10 PASS`；纯结果 UI 仍在办，网络接入继续等待上游官方合并契约。不能写成“已对 Android 开放”。
-- 真实 Test API + Web 首次手机 core 探路 PASS：ordinary/admin call 0、ASR 3/3、vision 2/2、text 4/4（共 9），确原图 bytes、无重 ASR、手工修订后再生成保持人工 head。该轮 manifest WebIndex 为旧 `f6bd...`，最终 `dist/index.html` 为 `c915835a992295e13c3e26735d2cea0cc4148909b7cc50e62053be47ab6c17c9`；已要求用最新构建复验 phone+narrow。当前状态仅“历史探路 PASS / 最终 revision NOT-VERIFIED”。
-- 手写图已由 Android 固定包渲染上传，且内部 API 测试验证原字节进入 loopback SDK；下游真实目标、公开逐图 audit 和 Android 网络端到端仍为 `NOT-VERIFIED`。
-- 单元测试、API 集成、Web 合成状态、Android 模拟器和真实隔离 Test API 分别记账，不能互相替代。
-- GitHub Release 不等于 production；真实 upgrade E2E、#525 历史 303 pending、OEM、100/180 分钟真实课堂、全 MVP 和课堂质量仍为 `NOT-VERIFIED`。
-- #505 与 #525 保持 OPEN；本切片未 commit/push、未创建或修改 issue、未触发 CI、未合并，也未执行课堂或生产验证。
+- API/Web 已完成 [PR #532](https://github.com/2746267826/pim-api/pull/532) 普通 merge、[CI 40907900018](https://github.com/2746267826/pim-api/actions/runs/40907900018)、[master CI 40994288275](https://github.com/2746267826/pim-api/actions/runs/40994288275) 与 [api-v26.10.1011](https://github.com/2746267826/pim-api/releases/tag/api-v26.10.1011)。exact head `5026e455`，merge `3e3829aa959f34cd602d193a82462116b80d0737`；PR 6193 pass / 15 skip / 0 fail（6208 total），Web 349/349；master Gate/Release/Notify success，`build-mcp` 合法 skipped，不计 pass。
+- canonical contract 为 `e38d1991b372174a3a4bac10df0a35eee90de92d268a5f1d35762d76da07f0f9`（1,119,472 bytes，329 paths，659 schemas）。CI 用真实生成 artifact 修复旧本机导出缺 `/mcp`；历史失败保留。JSON evidence 在不入仓的 `.codex-tmp/note-derived-implementation/final-planning/api-master-run.json` 与 `api-releases.json`。
+- Web exact PR 全量 `349/349`（46 files），note-derived focused `36/36`，storage `20/20` + TS/lint，lint/build exit 0。最终 `dist/index.html` 为 `c915835a992295e13c3e26735d2cea0cc4148909b7cc50e62053be47ab6c17c9`；先前 `f6bd...` 手机探路、`347/347` 等只作历史检查点。专项/focused 计数不与完整 CI 6193 相加。
+- 最终 Web 真实 Test API + loopback SDK：phone 390×844 core PASS、narrow 320×720 core PASS；CAS 双留、丢失响应 503→200 且同版本 model call 不增、dirty 刷新/切候选保留、late-success 12/12 独立 PASS。Photo/Ink bytes match，ASR 3 + vision 2 + text 4 = 9，普通账号 admin 0。public evidence 为 `.codex-tmp/note-derived-implementation/qa-runtime/public-evidence/final-C915-20261029`；合成 provider 不代表真实质量，narrow 过渡截图不证明完整视觉。
+- Android functional 工作树 HEAD `967ad5cb` 已接 typed 14 operations、Client/Repo/VM/导航/EntrySheet/UI/人工修订/再生；Debug APK SHA-256 `2375cb77...`，20,476,254 bytes。focused 30/30 + core 69/69 PASS；fullapp 1985 有 33 FAIL（旧 ASRStore checkpoints 写入，根因未证实），instrumentation test APK 编译和真实设备 E2E 未完成，且没有 functional PR。owned AVD/Test API 只是准备状态。
+- Android officialbot PR #52 与 Windows bot PR #38 只同步 contract/generated：Android merge `4a05a68b`、master CI 40995211845、Release `android-v26.10.1125`；Windows merge `69defe7a`、master CI 40995706728、Release `windows-v26.10.1104`。不得把消费者 bot Release 当成本地 derived 功能或完整 MVP 发布。
+- 手写图已由 Android 固定包渲染上传，API/Web 内部与最终受控证据验证原图 bytes 进入 loopback SDK；公开逐图 audit、Android functional 设备 E2E 和真实目标质量仍为 `NOT-VERIFIED`。
+- 单元测试、API 集成、Web 真实受控状态、Android focused/fullapp、instrumentation test APK、真实设备和隔离 Test API 分别记账，不能互相替代。
+- GitHub Release 不等于 production；真实 upgrade E2E、#525 历史 303 pending、OEM、OPPO、100/180 分钟真实课堂、长时后台、全 MVP 和课堂质量仍为 `NOT-VERIFIED`。
+- #505 与 #525 保持 OPEN。本文更新只记录已经发生的 PR/CI/Release 与本机证据；不修改 issue，也不执行课堂或生产验证。
