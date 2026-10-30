@@ -23,6 +23,9 @@ public sealed class MobileUsageIngestService
     internal static readonly TimeSpan MaxAttemptDuration = TimeSpan.FromMinutes(12);
     internal const int MaxProcessingAttempts = 5;
 
+    // Test seam only. The public constructor keeps the production 12-minute deadline.
+    internal TimeSpan AttemptDeadline { get; init; } = MaxAttemptDuration;
+
     internal static readonly TimeSpan MaxUploadWindow = TimeSpan.FromHours(25);
     internal const int MaxUploadItems = 1_500;
 
@@ -61,7 +64,7 @@ public sealed class MobileUsageIngestService
         var strategy = _db.Database.CreateExecutionStrategy();
         var attemptState = new IngestAttemptState();
         using var attemptDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        attemptDeadline.CancelAfter(MaxAttemptDuration);
+        attemptDeadline.CancelAfter(AttemptDeadline);
         try
         {
             return await strategy.ExecuteAsync(
@@ -229,7 +232,8 @@ public sealed class MobileUsageIngestService
                     request.DeviceId,
                     request.WindowStartUtc,
                     request.WindowEndUtc,
-                    ct);
+                    ct,
+                    request.Events.Select(usageEvent => usageEvent.EventTimestampUtc).ToArray());
             }
 
             // 派生工作（会话重建 / 派生表标记 / 物化）先跑，成功之后才把批次推进到终态：
