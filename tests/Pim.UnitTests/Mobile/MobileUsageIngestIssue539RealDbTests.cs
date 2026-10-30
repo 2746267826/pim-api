@@ -20,7 +20,7 @@ public sealed class MobileUsageIngestIssue539RealDbTests
     private const string TempDatabasePrefix = "mobile539_ingest";
     private const string LocalDatabase = "pim_mobile539_synthetic";
     private const int LocalPort = 55441;
-    private const string LocalUser = "a2746";
+    private const string LocalUser = "pim";
     private const string CiDatabase = "pim_ci";
     private const int CiPort = 5432;
     private const string CiPostgresUser = "pim_ci";
