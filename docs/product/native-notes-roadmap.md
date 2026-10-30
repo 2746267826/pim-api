@@ -22,18 +22,17 @@ v0.39 完成 #516 的设计与依赖排期，不授权把整套 Windows 本地 A
 | Android [#533](https://github.com/2746267826/pim-api/issues/533) | `OPEN`；body 已收窄为 App 1140 状态中心导出转圈/闪退，仍无 logcat；当前 fullApp `2027 / 0 fail`，作者正补修并复测 | 只读复审发现分页并发 cleanup 可能漏行、空间预算存在退步，故 `2027/0` 不能作为新修复最终 PASS。旧 `snapshotFiles` 源码引用未反映 1140 有界日志；分页/流式最终结论与物理设备证据仍未完成 |
 | API [#539](https://github.com/2746267826/pim-api/issues/539) | `OPEN`；body 于 `2026-10-30T13:11:30Z` 增加残余队列/重试/时延报告；性能与 ID 保持此前 `5/5 green`，正在补修 | 正常 in-flight 协议尚未修改，用户线上尾批仍未验证。复审又发现 `day_overflow` 派生 flag 残留、较早 late 事件漏读及同设备并发边界，不能做最终 PASS。隔离合成 PG 已复现 5006 rows 回扫，但不等于现网唯一根因；不写已修复、不关闭 |
 | Web ASR 配置入口 | `DELIVERED / GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED`；[PR #540](https://github.com/2746267826/pim-api/pull/540) 已于 `2026-10-30T14:29:51Z` 普通 merge 为 `0e6d9f4adcf283138d68405d9ca65b04b7c51793` | exact CI `41069510853` Gate/Web/Docker SUCCESS；master CI `41072022034` SUCCESS/Gate/release，Release `api-v26.10.1023` 于 `14:38:55Z` 发布、4 assets 尺寸/SHA 已核，`pim-web-version` 为 26.10.1023/git`0e6d9f4`。管理员 ASR 配置入口与普通用户权限隔离经冻结 preview/合成 API QA 6/6 验证，未改变权限模型；不是 live-backend E2E 或 production |
-| API [#516](https://github.com/2746267826/pim-api/issues/516) | `OPEN`，`feature`，0 comments，更新于 `2026-10-30T13:36:30Z`；body SHA-256 `720e789e88af5241f7f3975666e569f9cb29b0873ba76be1b6fefaefe3a20ef9` | v0.39 完成设计与排期，#516 产品仍未实现；Issue body 中“目前没有转写”是过时背景，当前已有专用/分段 ASR，不能照抄抹去已交付事实 |
-| 总跟踪 [#505](https://github.com/2746267826/pim-api/issues/505) | `OPEN`；当前 body SHA-256 `391b2dca476ba0fee3d4e3e03dcc5b56a74cdc0a35972030160297bb84a7186f`，17 checkbox 为 11 checked / 6 unchecked | 仅保存元数据摘要，不复制正文/私有日志；后续插入覆盖层前必须重新鲜读。写入后校验应移除新版 marker 区块，并将剩余 body 与原 body 逐字节比较，而不是要求原 body 在插入后仍整体连续出现 |
+| API [#516](https://github.com/2746267826/pim-api/issues/516) | `OPEN`，`feature`；鲜读快照时间为 `2026-10-30T13:36:30Z`，当时 0 comments；body SHA-256 `720e789e88af5241f7f3975666e569f9cb29b0873ba76be1b6fefaefe3a20ef9` | v0.39 完成设计与排期，#516 产品仍未实现；评论数仅是上述鲜读快照，后续评论不使本轮正文失真。Issue body 中“目前没有转写”是过时背景，当前已有专用/分段 ASR，不能照抄抹去已交付事实 |
+| 总跟踪 [#505](https://github.com/2746267826/pim-api/issues/505) | `OPEN`；本轮写入前鲜读的保护基线 body SHA-256 `391b2dca476ba0fee3d4e3e03dcc5b56a74cdc0a35972030160297bb84a7186f`，17 checkbox 为 11 checked / 6 unchecked | 该 SHA 是写前保护基线而非“当前 body”自引用；仅保存元数据摘要，不复制正文/私有日志。后续插入覆盖层前必须重新鲜读。写入后校验应移除新版 marker 区块，并将剩余 body 与该保护基线逐字节比较，而不是要求原 body 在插入后仍整体连续出现 |
 
-当前执行顺序固定为：
+当前执行按优先级/稳定性波次组织，不是一条全串行链，也不作日历承诺：
 
 1. Web ASR 配置入口已完成 GitHub Release 交付收口；production 仍另证。
-2. #533 取得 core 稳定快照、空间守护与设备受控验收。
-3. #539 完成语义保持修复，保留性能/ID 不变量。
-4. #539 明确 processing 状态与退避契约，并与 Android 消费者形成成套闭环；该协议增强尚未实现。
-5. 最后进入 #516 阶段 1 路由、节点与 claim/lease 契约骨架。
+2. 第一稳定性波次：#533 core 安全修/受控设备 QA 与 #539 semantic fix 并行；两者无跨仓前置，可独立推进和验收。
+3. 第二稳定性波次：#539 processing/退避契约与 Android 消费者成套闭环；该协议增强尚未实现。
+4. 随后进入 #516 阶段 1 路由、节点与 claim/lease 契约骨架。
 
-以上是依赖顺序，不是日历承诺；不能用后项局部绿灯抵销前项未验收。
+波次表示默认优先级，不等于前一波所有项目都必须完成才能启动后一波；某条独立工作满足自身前置后即可推进。真实依赖只按本节和 #516 五阶段表中列出的前置判定。物理 OPPO 或 production 未验收时保留 `NOT-VERIFIED` 边界，但不把它写成无限期阻塞所有笔记规划或独立工作的硬门。
 
 **#516 的实际增量**
 
@@ -43,7 +42,7 @@ v0.39 完成 #516 的设计与依赖排期，不授权把整套 Windows 本地 A
 
 **五阶段最小排期**
 
-阶段是依赖顺序，不是具体日历承诺；每阶段独立验收，前一阶段未完成不能由后一阶段局部绿灯抵销。
+阶段编号用于表达本表列出的真实前置，不是具体日历承诺；每阶段按自身退出条件独立验收，后续阶段证据不能替代尚未满足的本阶段前置或验收缺口。
 
 | 阶段 | 交付范围 | 关键依赖 | 最小验收/退出条件 | 当前状态 |
 | --- | --- | --- | --- | --- |
@@ -53,7 +52,7 @@ v0.39 完成 #516 的设计与依赖排期，不授权把整套 Windows 本地 A
 | 4. 拉取、资源退避、本地执行与清退 | Windows 主动 claim、资源门槛、结构化退避、自动上限、手动触发；本机推理子进程；成功/失败/取消/退出/崩溃后清理 | 阶段 1、3；两项用户 decision；目标硬件；owner/节点范围 | 受控 Windows + Test API 覆盖 AC3–7；资源原因可见；显存/内存回任务前基线且重启无残留；无真实硬件证据不写 PASS | `PLANNED / NOT IMPLEMENTED` |
 | 5. 重跑、异常与全链验收 | 笔记页强制云端、完成态跨通道重跑、不可变历史、状态/错误展示、异常标红、AC1–19 全矩阵 | 阶段 2、4；Web ASR 配置入口；阶段 1 路由/lease；AI-04 版本保护模式 | 三通道重跑、旧结果回读、原音频/元数据不变、异常 UI；AC1–19 逐项真实证据，缺付费/硬件证据保持 `NOT-VERIFIED` | `PLANNED / NOT IMPLEMENTED` |
 
-阶段 1 完成后，阶段 2 云端多模态与阶段 3 Windows 模型管理可并行推进；阶段 4 依赖阶段 3 的真实模型生命周期；阶段 5 依赖本地与云端两条路径均可审计。Cloud 多模态的 8–10 分钟与真实 CER/质量、本地 AC6/7 的显存清理均不能以合成 CI 或文档代替。
+#516 阶段内部依赖保持：阶段 1 完成后，阶段 2 云端多模态与阶段 3 Windows 模型管理可并行推进；阶段 4 依赖阶段 3 的真实模型生命周期；阶段 5 依赖阶段 2、阶段 4 以及路由/租约可审计。Cloud 多模态的 8–10 分钟与真实 CER/质量、本地 AC6/7 的显存清理均不能以合成 CI 或文档代替。物理 OPPO 或 production 未验收只把相应结果保持为 `NOT-VERIFIED`，不构成所有独立笔记工作的全局硬阻塞。
 
 **待用户决定与阻塞**
 
@@ -913,4 +912,4 @@ Windows 记录、Web 编辑、TASK-01 和 MIG-01 至 MIG-13 继续保留原阶�
 | 2026-10-30 | Android 切片普通 merge、master CI、Release 与资产回执定稿 | PR#54 heada8507365→merge3844ef62409765be0d5d229d8d3955cc31fcb261@10:21:27Z，main tree201a4f不变；exact PR CI41038364205所有required/Gate SUCCESS、PR release按规则SKIPPED；masterCI41040144538整体SUCCESS（Gate10:32:53Z/release10:33:03Z）；Release`android-v26.10.1137` published10:33:00Z non-draft/non-prerelease，target字段master但tag实际解析merge3844ef62。APK14,477,900bytes SHA`297b...ec89e`、shell2,550,430bytes SHA`fa3d...126ebd`、version.json480bytes SHA`8c1d...50ecf`。四 cohort 仍为真实TestAPI+owned AVD5556/API36.1分轮PASS（normal9/conflict6/unknown6/narrow9），同AppD197/debug兼容重签/main201a4f，narrow built-before-commit并匹配FACCE blob，TestAPK/source不同不拼4/4。GitHubRelease不是production/物理设备/完整视觉验收；OPPO/OEM/100-180课堂/真实模型/逐图receipt/fullMVP仍NOT-VERIFIED。旧FAIL/签名安装/runnerpull分账，45/32/13/111及新增历史保留。本条版本v0.37 |
 
 | 2026-10-30 | 记录移动同步半开窗口、诊断导出、设备组件与 GitHub Release 交付回执 | v0.38：API tests #537 head`83b6e319`→merge`9631437d`@11:56:46Z，exact CI41048454669 required/Gate SUCCESS；masterCI41051709488 SUCCESS/Gate/release，Release`api-v26.10.1019`@12:26:48Z→`9631437d`，4 assets尺寸/SHA已核。Android product`dd90be25`+final test commit`5c4d8985`(parent dd90)，PR55 READY→merge`2968eea4`@12:19:41Z，exact CI41052159717 required/Gate SUCCESS；masterCI41054503798 SUCCESS/Gate/release，Release`android-v26.10.1140`@12:31:56Z，tag解析`2968eea4`即master head，3 assets尺寸/SHA已核。fullApp2023/Core69 0fail，window7/7/sync193、export focused133（与full重叠不求和），QA native Android emulator6/6(4 sync9.496s+2 export1.583s)；lineage append-only更正无精确runtimehead，源码blob/APK/log同源，首轮harness4 sync FAIL保留。日志只bounds，coreEntries仍全量DAO；旧APK升级/跨版本batchID/完整WorkManager/StatusUI/auth退避/极大DB/原flash/OEM/长课堂/production NOT-VERIFIED。#505/#525/#533 OPEN，#533 partial。45/32/13/111/history保留。GitHub Release不等于production。 |
-| 2026-10-30 | 完成 v0.39 Web ASR 入口交付、Issue 收口与 #516 双通道排期 | Web PR540于14:29:51Z普通merge为`0e6d9f4adcf283138d68405d9ca65b04b7c51793`；exactCI41069510853 Gate/Web/Docker SUCCESS；masterCI41072022034 SUCCESS/Gate/release；Release`api-v26.10.1023`@14:38:55Z target merge、4 asset尺寸/SHA已核、pim-web-version26.10.1023/git`0e6d9f4`；管理员入口与普通用户权限隔离经preview/合成API浏览器QA6/6验证，非live-backend/production。固定顺序为Web交付收口→#533 core稳定快照/空间守护与设备验收→#539语义保持修复→#539显式processing/退避契约及Android消费者闭环→#516阶段1；阶段1完成后阶段2云端多模态与阶段3 Windows模型管理并行。#533 OPEN，fullApp2027/0fail但只读复审发现分页并发cleanup漏行/空间预算退步，补修复测中。#539 OPEN，5/5为旧快照，day_overflow派生flag残留、较早late事件漏读及同设备并发边界补修中；5006rows回扫为隔离合成PG已复现事实但非现网唯一根因。#516产品仍PLANNED/NOT IMPLEMENTED/NOT-VERIFIED。API#525用户CLOSED/COMPLETED及4731入库仅为用户reported。两项用户决定待答。45/32/32/13/186保护基线保持。本条版本 v0.39 |
+| 2026-10-30 | 完成 v0.39 Web ASR 入口交付、Issue 收口与 #516 双通道排期 | Web PR540于14:29:51Z普通merge为`0e6d9f4adcf283138d68405d9ca65b04b7c51793`；exactCI41069510853 Gate/Web/Docker SUCCESS；masterCI41072022034 SUCCESS/Gate/release；Release`api-v26.10.1023`@14:38:55Z target merge、4 asset尺寸/SHA已核、pim-web-version26.10.1023/git`0e6d9f4`；管理员入口与普通用户权限隔离经preview/合成API浏览器QA6/6验证，非live-backend/production。执行按优先级/波次而非全串行：Web交付收口后，第一稳定性波次由#533 core安全修/受控设备QA与#539 semantic fix并行推进（无跨仓前置）；第二稳定性波次为#539显式processing/退避契约及Android消费者闭环；随后进入#516阶段1。#516内部阶段1→阶段2/3→阶段4→阶段5依赖不变；阶段1完成后阶段2云端多模态与阶段3 Windows模型管理可并行。物理OPPO/production未验收保留NOT-VERIFIED，不设为阻塞所有独立笔记规划的全局硬门。#533 OPEN，fullApp2027/0fail但只读复审发现分页并发cleanup漏行/空间预算退步，补修复测中。#539 OPEN，5/5为旧快照，day_overflow派生flag残留、较早late事件漏读及同设备并发边界补修中；5006rows回扫为隔离合成PG已复现事实但非现网唯一根因。#516产品仍PLANNED/NOT IMPLEMENTED/NOT-VERIFIED。API#525用户CLOSED/COMPLETED及4731入库仅为用户reported。两项用户决定待答。45/32/32/13/186保护基线保持。本条版本 v0.39 |

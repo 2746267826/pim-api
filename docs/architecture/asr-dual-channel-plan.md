@@ -134,9 +134,9 @@ Issue 记录的候选边界为 wav/mp3/flac/m4a/ogg、URL 音频不超过 100 MB
 - 重跑仍须经过目标校验、资源检查和音频未送达防护；“强制重跑”不等于绕过安全检查或自动产生付费调用。
 - 空文本、明显循环重复、`finish_reason=length` 截断要标红并提示“建议重跑”。自动检测的结论与用户手动重跑原因分开记录，不能自动吞掉异常或伪报成功。
 
-## 8. 五阶段实施顺序
+## 8. #516 五阶段实施顺序与真实依赖
 
-阶段编号只是依赖顺序，不是日历承诺。前一阶段未完成不能用后一阶段局部证据抵销。
+阶段编号用于表达本表列出的真实前置，不是日历承诺。后续阶段局部证据不能替代尚未满足的本阶段前置或验收缺口。
 
 | 阶段 | 独立交付 | 前置依赖 | 最小验收 | 当前状态 |
 | --- | --- | --- | --- | --- |
@@ -146,7 +146,7 @@ Issue 记录的候选边界为 wav/mp3/flac/m4a/ogg、URL 音频不超过 100 MB
 | 4. 拉取、资源退避、本地执行与清退 | Windows 主动 claim、资源检查、退避/自动上限、手动触发、本地推理子进程、完成/失败/取消/退出/崩溃清退 | 阶段 1、3；两项用户 decision；目标硬件/运行时；待确认的 owner/节点范围 | 受控 Windows + Test API 覆盖 AC3–7；资源原因可见；显存/内存回基线且无残留进程；无真实硬件证据不得写 PASS | `PLANNED / NOT IMPLEMENTED` |
 | 5. 重跑、异常展示与 AC1–19 全链验收 | 笔记页强制云端、跨通道重跑、不可变历史、结果/失败/退避展示、异常标红、全矩阵回执 | 阶段 2、4、Web 配置入口；阶段 1 路由/租约；AI-04 既有版本保护模式 | 三通道重跑与旧结果回读、原音频/元数据不变、异常 UI、AC1–19 逐项证据；真实硬件/付费效果缺失时保持 `NOT-VERIFIED` | `PLANNED / NOT IMPLEMENTED` |
 
-阶段 1 完成后，阶段 2 云端多模态与阶段 3 Windows 模型管理可并行推进。阶段 4 必须先具备阶段 3 的真实模型生命周期，阶段 5 必须等待云端与本地两条路径都可审计。
+阶段 1 完成后，阶段 2 云端多模态与阶段 3 Windows 模型管理可并行推进。阶段 4 必须先具备阶段 3 的真实模型生命周期，阶段 5 必须等待阶段 2、阶段 4 以及路由/租约都可审计。该内部依赖不把等待物理 OPPO 或 production 验收写成阻塞所有 #516 规划与独立工作的全局硬门；尚未取得的证据继续标 `NOT-VERIFIED`。
 
 ## 9. AC1–19 阶段映射
 
@@ -192,7 +192,7 @@ AC 中的“本地/云端”是通道语义；不能用服务端合成 provider�
 - 由唯一 OpenAPI 导出再生成 Windows/Web 类型；不手写猜测 endpoint 或字段。
 - Web ASR 配置入口已 GitHub Release 交付；production 与 live-backend E2E 仍需独立证据，不重复实现，也不把 Release 写成生产部署。
 
-## 11. 依赖、阻塞与旁路问题
+## 11. 稳定性波次、并行边界与依赖阻塞
 
 ```text
 #505 fresh protection baseline
@@ -209,8 +209,17 @@ AC 中的“本地/云端”是通道语义；不能用服务端合成 provider�
 
 Pending decisions: automatic paid cloud fallback? node cross-account scope?
 Engineering: Windows model/runtime/hardware/threshold selection
-Dependency: Web delivery closeout -> #533 -> #539 semantic fix
-            -> #539 processing/backoff + Android consumer -> Phase 1
+Priority/wave, not a fully serial hard dependency:
+Web delivery closeout
+  -> Stability wave 1 (parallel): #533 core safety/device QA
+                                  + #539 semantic-preserving fix
+  -> Stability wave 2: #539 processing/backoff + Android consumer
+  -> Phase 1
+
+True dependencies are only those stated in each phase. Cross-repo #533 and
+#539 do not gate one another. A later wave may start when its own stated
+prerequisites are met; physical OPPO or production evidence gaps do not block
+all independent note planning.
 ```
 
 旁路 issue 状态只用于当前状态整合，不是 #516 已完成前置：
@@ -220,13 +229,14 @@ Dependency: Web delivery closeout -> #533 -> #539 semantic fix
 - API #539 仍 `OPEN`，body 于 `2026-10-30T13:11:30Z` 增加小队列最后 5 条、1 ms window、200 `failedCount` + 空 `itemResults`、15 s 重试、处理 2–30 分钟、pending 15 分钟租约等报告。性能与 ID 保持测试当前 `5/5 green`，但正常 in-flight 协议尚未修改，用户线上尾批未验证；既有 2 PASS / 1 FAIL 与 5006 rows 回扫观察不足以认定现网根因。
 - Web ASR 配置入口 [PR #540](https://github.com/2746267826/pim-api/pull/540) 已普通 merge 为 `0e6d9f4adcf283138d68405d9ca65b04b7c51793`。exact CI `41069510853` Gate/Web/Docker SUCCESS；master CI `41072022034` SUCCESS/Gate/release，Release `api-v26.10.1023` target merge、4 assets 尺寸/SHA 已核，`pim-web-version` 为 26.10.1023/git`0e6d9f4`。管理员入口与普通用户权限隔离经冻结 preview/合成 API desktop/mobile QA 6/6，未改变权限模型；不是 live-backend E2E 或 production。
 
-当前执行顺序是依赖排期，不是日历承诺：
+当前执行按优先级/稳定性波次组织，不是一条全串行链，也不作日历承诺：
 
 1. Web ASR 配置入口已完成 GitHub Release 交付收口；production 仍另证。
-2. #533 取得 core 稳定快照、空间守护与设备受控验收。
-3. #539 完成语义保持修复，继续保留性能/ID 不变量。
-4. #539 明确 processing 状态与退避契约，并与 Android 消费者形成成套闭环；该协议增强尚未实现。
-5. 进入 #516 阶段 1 路由、节点与 claim/lease 契约骨架。
+2. 第一稳定性波次：#533 core 安全修/受控设备 QA 与 #539 semantic fix 并行；二者无跨仓前置，可独立推进和验收。
+3. 第二稳定性波次：#539 processing/退避契约与 Android 消费者成套闭环；该协议增强尚未实现。
+4. 随后进入 #516 阶段 1 路由、节点与 claim/lease 契约骨架。
+
+这里的“波次”是优先级而非全串行硬门；独立工作满足自身前置后即可推进。物理 OPPO 或 production 未验收只让对应证据保持 `NOT-VERIFIED`，不阻塞所有独立笔记规划。
 
 ## 12. 验收口径与禁止表述
 
