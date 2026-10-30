@@ -7,6 +7,7 @@ using Pim.Infrastructure.Data;
 using Pim.Module.Mobile.DTOs;
 using Pim.Module.Mobile.Entities;
 using Pim.Module.Mobile.Services;
+using Pim.UnitTests.Harness.RealDb;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -16,8 +17,13 @@ namespace Pim.UnitTests.Mobile;
 [Trait("DataSource", "RealDb")]
 public sealed class MobileUsageIngestIssue539RealDbTests
 {
-    private const string ExpectedDatabase = "pim_mobile539_synthetic";
-    private const int ExpectedPort = 55441;
+    private const string TempDatabasePrefix = "mobile539_ingest";
+    private const string LocalDatabase = "pim_mobile539_synthetic";
+    private const int LocalPort = 55441;
+    private const string LocalUser = "a2746";
+    private const string CiDatabase = "pim_ci";
+    private const int CiPort = 5432;
+    private const string CiPostgresUser = "pim_ci";
     private const string DeviceId = "synthetic-issue-539";
     private const int HistoricalEventCount = 5_000;
     private static readonly DateTimeOffset Now = DateTimeOffset.Parse(
@@ -34,12 +40,43 @@ public sealed class MobileUsageIngestIssue539RealDbTests
     }
 
     [SkippableFact]
+    public async Task Fixture_CreatesOnlyItsOwnTemporaryDatabase()
+    {
+        await using var fixture = await CreateFixtureAsync();
+        var source = new NpgsqlConnectionStringBuilder(ResolveBaseConnectionString());
+        var isolated = new NpgsqlConnectionStringBuilder(fixture.ConnectionString);
+
+        Assert.Equal(source.Host, isolated.Host);
+        Assert.Equal(source.Port, isolated.Port);
+        Assert.NotEqual(source.Database, isolated.Database);
+        Assert.StartsWith($"{TempDatabasePrefix}_", isolated.Database, StringComparison.Ordinal);
+        Assert.Matches("^[a-f0-9]{32}$", isolated.Database[(TempDatabasePrefix.Length + 1)..]);
+
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT current_database(), count(*) FROM information_schema.tables "
+            + "WHERE table_schema = 'public' AND table_name = 'mobile_usage_events'",
+            connection);
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(isolated.Database, reader.GetString(0));
+        Assert.Equal(1L, reader.GetInt64(1));
+
+        _output.WriteLine(
+            "ISOLATED_FIXTURE database={0} host={1} port={2}",
+            isolated.Database,
+            isolated.Host,
+            isolated.Port);
+    }
+
+    [SkippableFact]
     public async Task OneMillisecondTail_WithCrossDayOpenSession_DoesNotRescanHistoryOrReplaceSessionId()
     {
-        var connectionString = SyntheticConnectionString();
+        await using var fixture = await CreateFixtureAsync();
+        var connectionString = fixture.ConnectionString;
         var observer = new EventQueryObserver();
         await using var db = CreateDbContext(connectionString, observer);
-        await ResetSchemaAsync(db);
 
         var tailStart = Now.AddHours(-1);
         var sessionStart = tailStart.AddHours(-20);
@@ -80,9 +117,9 @@ public sealed class MobileUsageIngestIssue539RealDbTests
     [SkippableFact]
     public async Task BoundaryEvent_InsideOpenSession_IsNotSwallowedByIncrementalTailPath()
     {
-        var connectionString = SyntheticConnectionString();
+        await using var fixture = await CreateFixtureAsync();
+        var connectionString = fixture.ConnectionString;
         await using var db = CreateDbContext(connectionString, new EventQueryObserver());
-        await ResetSchemaAsync(db);
 
         var boundary = Now.AddHours(-1);
         var seededSessionId = await SeedCrossDayOpenSessionAsync(db, boundary.AddHours(-20), boundary);
@@ -113,10 +150,10 @@ public sealed class MobileUsageIngestIssue539RealDbTests
     [SkippableFact]
     public async Task MaterializationLockWait_IsCanceledByAttemptDeadline_AndSchedulesBoundedRetry()
     {
-        var connectionString = SyntheticConnectionString();
+        await using var fixture = await CreateFixtureAsync();
+        var connectionString = fixture.ConnectionString;
         var observer = new EventQueryObserver();
         await using var db = CreateDbContext(connectionString, observer);
-        await ResetSchemaAsync(db);
 
         var tailStart = Now.AddHours(-1);
         await SeedCrossDayOpenSessionAsync(db, tailStart.AddHours(-4), tailStart);
@@ -157,9 +194,9 @@ public sealed class MobileUsageIngestIssue539RealDbTests
     [SkippableFact]
     public async Task ActiveLease_OnRealPipeline_IsStillReportedAsFailedWithoutInFlightDiscriminator()
     {
-        var connectionString = SyntheticConnectionString();
+        await using var fixture = await CreateFixtureAsync();
+        var connectionString = fixture.ConnectionString;
         await using var db = CreateDbContext(connectionString, new EventQueryObserver());
-        await ResetSchemaAsync(db);
 
         var request = TailRequest(Now.AddHours(-1)) with { ClientBatchId = "batch-issue-539-in-flight" };
         var leaseId = Guid.NewGuid();
@@ -199,9 +236,9 @@ public sealed class MobileUsageIngestIssue539RealDbTests
     [SkippableFact]
     public async Task LateEvent_InsidePriorWindow_RecomputesSessionsWithoutReplacingStableSessionId()
     {
-        var connectionString = SyntheticConnectionString();
+        await using var fixture = await CreateFixtureAsync();
+        var connectionString = fixture.ConnectionString;
         await using var db = CreateDbContext(connectionString, new EventQueryObserver());
-        await ResetSchemaAsync(db);
 
         var start = Now.AddHours(-2);
         var firstRequest = new MobileUsageEventsUploadRequest(
@@ -264,9 +301,9 @@ public sealed class MobileUsageIngestIssue539RealDbTests
     [SkippableFact]
     public async Task LateEvent_BeforeEarliestOverlappingSession_IsReconciledFromRequestWindow()
     {
-        var connectionString = SyntheticConnectionString();
+        await using var fixture = await CreateFixtureAsync();
+        var connectionString = fixture.ConnectionString;
         await using var db = CreateDbContext(connectionString, new EventQueryObserver());
-        await ResetSchemaAsync(db);
 
         var start = Now.AddHours(-2);
         var initialRequest = new MobileUsageEventsUploadRequest(
@@ -321,9 +358,9 @@ public sealed class MobileUsageIngestIssue539RealDbTests
     [SkippableFact]
     public async Task CorrectedDayOverflowSession_ClearsDerivedFlagAndIsIncludedInMaterialization()
     {
-        var connectionString = SyntheticConnectionString();
+        await using var fixture = await CreateFixtureAsync();
+        var connectionString = fixture.ConnectionString;
         await using var db = CreateDbContext(connectionString, new EventQueryObserver());
-        await ResetSchemaAsync(db);
 
         var start = Now.AddHours(-2);
         var sessionId = await SeedDayOverflowSessionAsync(db, start, start.AddHours(7));
@@ -363,9 +400,9 @@ public sealed class MobileUsageIngestIssue539RealDbTests
     [SkippableFact]
     public async Task ConcurrentBatches_ForSameDevice_SerializeBeforeSessionReconcile()
     {
-        var connectionString = SyntheticConnectionString();
+        await using var fixture = await CreateFixtureAsync();
+        var connectionString = fixture.ConnectionString;
         await using var dbA = CreateDbContext(connectionString, new EventQueryObserver());
-        await ResetSchemaAsync(dbA);
         await using var dbB = CreateDbContext(connectionString, new EventQueryObserver());
 
         var start = Now.AddHours(-2);
@@ -598,17 +635,55 @@ public sealed class MobileUsageIngestIssue539RealDbTests
             timeProvider);
     }
 
-    private static string SyntheticConnectionString()
+    private static async Task<TempMigrationDatabase> CreateFixtureAsync()
     {
-        var value = Environment.GetEnvironmentVariable("PIM_TEST_CONN");
-        Skip.If(string.IsNullOrWhiteSpace(value), "PIM_TEST_CONN is not set.");
+        var baseConnectionString = ResolveBaseConnectionString();
+        var fixture = await TempMigrationDatabase.CreateAsync(TempDatabasePrefix);
+        try
+        {
+            await fixture.MigrateAsync();
+        }
+        catch
+        {
+            await fixture.DisposeAsync();
+            throw;
+        }
+
+        var source = new NpgsqlConnectionStringBuilder(baseConnectionString);
+        var isolated = new NpgsqlConnectionStringBuilder(fixture.ConnectionString);
+        if (!string.Equals(source.Host, isolated.Host, StringComparison.OrdinalIgnoreCase)
+            || source.Port != isolated.Port
+            || !isolated.Database.StartsWith($"{TempDatabasePrefix}_", StringComparison.Ordinal))
+        {
+            await fixture.DisposeAsync();
+            throw new InvalidOperationException(
+                "Issue 539 fixture did not create a database on the configured PostgreSQL server.");
+        }
+
+        return fixture;
+    }
+
+    private static string ResolveBaseConnectionString()
+    {
+        var value = RealDbTestConnection.Require();
         var builder = new NpgsqlConnectionStringBuilder(value);
         var loopback = string.Equals(builder.Host, "127.0.0.1", StringComparison.Ordinal)
             || string.Equals(builder.Host, "localhost", StringComparison.OrdinalIgnoreCase);
-        if (!loopback || builder.Port != ExpectedPort || builder.Database != ExpectedDatabase)
+        var localOwned = loopback && builder.Port == LocalPort
+            && string.Equals(builder.Database, LocalDatabase, StringComparison.Ordinal)
+            && string.Equals(builder.Username, LocalUser, StringComparison.Ordinal);
+        var ciEphemeral = loopback && builder.Port == CiPort
+            && string.Equals(builder.Database, CiDatabase, StringComparison.Ordinal)
+            && string.Equals(builder.Username, CiPostgresUser, StringComparison.Ordinal)
+            && string.Equals(
+                Environment.GetEnvironmentVariable("GITHUB_ACTIONS"),
+                "true",
+                StringComparison.OrdinalIgnoreCase);
+        if (!localOwned && !ciEphemeral)
         {
             throw new InvalidOperationException(
-                $"Issue 539 synthetic tests require loopback:{ExpectedPort}/{ExpectedDatabase}.");
+                $"Issue 539 requires local owned {LocalPort}/{LocalDatabase}, or the GitHub Actions "
+                + $"ephemeral {CiPort}/{CiDatabase} as {CiPostgresUser} (GITHUB_ACTIONS=true).");
         }
 
         return builder.ConnectionString;
@@ -622,13 +697,6 @@ public sealed class MobileUsageIngestIssue539RealDbTests
             .AddInterceptors(observer)
             .Options;
         return new PimDbContext(options);
-    }
-
-    private static async Task ResetSchemaAsync(PimDbContext db)
-    {
-        await db.Database.ExecuteSqlRawAsync(
-            "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;");
-        await db.Database.EnsureCreatedAsync();
     }
 
     private static string Collapse(string value)
