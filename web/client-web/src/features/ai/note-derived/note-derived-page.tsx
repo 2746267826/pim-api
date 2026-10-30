@@ -99,10 +99,10 @@ export function NoteDerivedPage() {
     return () => window.removeEventListener('pim:api-base-changed', update)
   }, [])
   const ownerId = user?.id ?? ''
-  return <Workspace key={`${ownerId}/${serverBinding}`} ownerId={ownerId} serverBinding={serverBinding} />
+  return <Workspace key={`${ownerId}/${serverBinding}`} ownerId={ownerId} serverBinding={serverBinding} role={user?.role} />
 }
 
-function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding: string }) {
+function Workspace({ ownerId, serverBinding, role }: { ownerId: string; serverBinding: string; role?: string }) {
   const qc = useQueryClient()
   const [sourcePage, setSourcePage] = useState(0)
   const [sourceVersionId, setSourceVersionId] = useState('')
@@ -141,7 +141,8 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
     <PageHeader title="笔记处理" subtitle="固定材料版本，复用已完成 ASR，分别生成完整记录与独立分析" actions={<Button variant="secondary" size="sm" onClick={refresh}><RefreshCw className="size-4" aria-hidden />刷新</Button>} />
     <div className="flex items-start gap-3 rounded-ctl border border-info-border bg-info-soft px-4 py-3 text-sm text-text-2">
       <ShieldCheck className="mt-0.5 size-4 shrink-0 text-info" aria-hidden />
-      <p>页面不会因为上传或打开而自动调用模型。创建前必须核对固定材料、实际模型地址与同意范围；所有提交意图会先保存在本机。</p>
+      <div className="space-y-1"><p>页面不会因为上传或打开而自动调用模型。创建前必须核对固定材料、实际模型地址与同意范围；所有提交意图会先保存在本机。</p>
+        <p>{role === 'admin' ? '管理员可在“设置 → AI 与 ASR”的“ASR 配置”维护全局模型与凭据；此处仍按固定材料和明确同意发起。' : '普通账号只消费管理员已启用的共享目标，不显示或读取全局模型设置与凭据。'}</p></div>
     </div>
 
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,.65fr)]">
@@ -167,7 +168,7 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
               </>}
         </Card>
 
-        {source && <StartTaskCard key={source.versionId} ownerId={ownerId} serverBinding={serverBinding} source={source}
+        {source && <StartTaskCard key={source.versionId} ownerId={ownerId} serverBinding={serverBinding} role={role} source={source}
           destinations={destinations.data?.items ?? []} destinationsError={destinations.isError ? errorText(destinations.error) : ''}
           asrTasks={asrTasks.data ?? []} asrLoading={asrTasks.isPending} limits={limits.data}
           onCreated={(task) => {
@@ -210,9 +211,10 @@ function Workspace({ ownerId, serverBinding }: { ownerId: string; serverBinding:
   </div>
 }
 
-function StartTaskCard({ ownerId, serverBinding, source, destinations, destinationsError, asrTasks, asrLoading, limits, onCreated }: {
+function StartTaskCard({ ownerId, serverBinding, role, source, destinations, destinationsError, asrTasks, asrLoading, limits, onCreated }: {
   ownerId: string
   serverBinding: string
+  role?: string
   source: NoteDerivedSource
   destinations: NoteDerivedDestination[]
   destinationsError: string
@@ -300,6 +302,8 @@ function StartTaskCard({ ownerId, serverBinding, source, destinations, destinati
         options={[{ value: '', label: asrLoading ? '正在读取 ASR 任务' : completedAsr.length ? '请选择已成功的 ASR 任务' : '没有已完整成功的 ASR 任务' }, ...completedAsr.map((task) => ({ value: task.taskId, label: `${time(task.createdAt)} · ${task.completedSegments}/${task.totalSegments} 片` }))]}
         onValueChange={(value) => { setAsrTaskId(value); setConsentedTo('') }} disabled={busy || Boolean(stored.pending)} /></div>}
     </div>
+    {!destinations.length && <p role="status" className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-3">暂无可用的共享生成目标。{role === 'admin' ? '请先在“设置 → AI 与 ASR”启用安全目标。' : '普通账号不能查看或配置模型凭据，请联系管理员启用共享目标。'}</p>}
+    {needsAsr && !asrLoading && completedAsr.length === 0 && <p role="status" className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-3">{role === 'admin' ? '该版本还没有完整成功的 ASR。请先在“设置 → AI 与 ASR”完成配置与 ASR 任务后再生成。' : '该版本还没有完整成功的 ASR。请使用客户端完成录音转写；共享 ASR 目标由管理员预先启用。'}</p>}
     {!needsAsr && <p className="rounded-ctl bg-surface p-3 text-xs leading-5 text-text-3">该版本为零录音材料，不需要绑定 ASR 任务；正文、照片和手写图仍会由服务端完整核对。</p>}
     {destination && <div className="space-y-1 rounded-ctl border border-border p-3 text-xs leading-5 text-text-2"><p>{destination.model} · {destination.endpoint}</p><p className="break-all font-mono">{destination.endpoint}</p><p>能力：{destination.capabilities.join(' / ') || '由服务端判定'}</p></div>}
     <label className="flex items-start gap-2 rounded-ctl border border-border p-3 text-xs leading-5 text-text-2">

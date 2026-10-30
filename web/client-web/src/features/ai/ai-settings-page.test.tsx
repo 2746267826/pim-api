@@ -3,13 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter, useLocation } from 'react-router'
 import { AiSettingsPage } from './ai-settings-page'
-import type { CallDetail, Model, ModelSettings } from './api'
+import type { AsrPreset, CallDetail, Model, ModelSettings } from './api'
 
 const fixture = vi.hoisted(() => ({
   user: { id: '11111111-1111-4111-8111-111111111111', role: 'admin' },
   api: { models: vi.fn(), settings: vi.fn(), saveModel: vi.fn(), removeModel: vi.fn(), saveSettings: vi.fn(),
-    call: vi.fn(), lookup: vi.fn(), history: vi.fn(), detail: vi.fn(), usage: vi.fn(), legacy: vi.fn() },
+    call: vi.fn(), lookup: vi.fn(), history: vi.fn(), detail: vi.fn(), usage: vi.fn(), legacy: vi.fn(), asrPresets: vi.fn() },
 }))
 vi.mock('./api', () => ({ aiApi: fixture.api }))
 vi.mock('@/features/auth/auth-context', () => ({ useAuth: () => ({ user: fixture.user }) }))
@@ -17,13 +18,22 @@ vi.mock('@/lib/notify', () => ({ notifySuccess: vi.fn(), notifyError: vi.fn() })
 const id = '22222222-2222-4222-8222-222222222222'
 const revision = '33333333-3333-4333-8333-333333333333'
 const logId = '44444444-4444-4444-8444-444444444444'
+const asrId = '77777777-7777-4777-8777-777777777777'
+const preset: AsrPreset = { id: 'mimo-asr', version: '1', name: 'MiMo 语音识别', defaultBaseUrl: 'https://synthetic-asr.invalid/v1/',
+  operationPath: 'chat/completions', defaultModel: 'mimo-v2.5-asr', models: ['mimo-v2.5-asr'], formats: ['wav', 'mp3'],
+  languages: ['auto', 'zh', 'en'], maxAudioBytes: 4 * 1024 * 1024, streaming: false }
 let models: Model[]
 let settings: ModelSettings
 let client: QueryClient
 
-function open() {
+function LocationProbe() {
+  const location = useLocation()
+  return <output data-testid="location">{location.pathname + location.search}</output>
+}
+
+function open(path = '/settings/ai') {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: 0 } } })
-  return render(<QueryClientProvider client={client}><AiSettingsPage /></QueryClientProvider>)
+  return render(<MemoryRouter initialEntries={[path]}><QueryClientProvider client={client}><AiSettingsPage /><LocationProbe /></QueryClientProvider></MemoryRouter>)
 }
 
 beforeEach(() => {
@@ -42,6 +52,7 @@ beforeEach(() => {
     delete value.apiKey; delete value.expectedRevision
     models = existing ? models.map((m) => m.id === existing ? value : m) : [...models, value]; return value
   })
+  fixture.api.asrPresets.mockResolvedValue([preset])
   fixture.api.call.mockResolvedValue({ logId, status: 'Succeeded', responseText: '完整回复\n没有裁剪', errorMessage: null, replayed: false })
   fixture.api.lookup.mockResolvedValue({ logId, status: 'Cancelled', responseText: null, errorMessage: '用户取消', replayed: true })
   fixture.api.history.mockResolvedValue({ items: [], totalCount: 0, page: 1, pageSize: 20, totalPages: 0 })
@@ -151,5 +162,53 @@ describe('AI文字调用完整页面', () => {
     fixture.user.role = 'user'; open()
     expect(screen.getByText('需要管理员权限')).toBeTruthy()
     expect(fixture.api.models).not.toHaveBeenCalled(); expect(fixture.api.history).not.toHaveBeenCalled()
+  })
+
+  it('ASR query tab shows configuration state and keeps the selected tab in the URL', async () => {
+    models = [...models, { id: asrId, revision, name: '课堂语音模型', baseUrl: preset.defaultBaseUrl, model: preset.defaultModel, enabled: true,
+      capabilities: ['Transcription'], hasApiKey: true, timeoutSeconds: 60, maxOutputTokens: 1024, asrPresetId: preset.id,
+      createdAt: '2026-10-27T00:00:00Z', updatedAt: '2026-10-27T00:00:00Z' }]
+    settings = { ...settings, transcriptionModelId: asrId }
+    open('/settings/ai?tab=asr')
+
+    expect(await screen.findByRole('heading', { name: 'ASR 转写配置' })).toBeTruthy()
+    expect(screen.getByText('已配置')).toBeTruthy()
+    expect(screen.getByText(/MiMo 语音识别 v1/)).toBeTruthy()
+    expect(screen.getByText(/密钥只保存在服务端，保存后不再回显/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: '添加 ASR 配置' })).toBeTruthy()
+    expect(fixture.api.asrPresets).toHaveBeenCalledOnce()
+    const enabled = screen.getByRole('switch', { name: '启用 AI / ASR 全局直连' })
+    expect((enabled as HTMLButtonElement).getAttribute('aria-checked')).toBe('true')
+    await userEvent.click(enabled)
+    await waitFor(() => expect(fixture.api.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ enabled: false })))
+    expect(await screen.findByText('待完成')).toBeTruthy()
+
+    await userEvent.click(screen.getByText('统计', { exact: true }))
+    expect(screen.getByTestId('location').textContent).toBe('/settings/ai?tab=usage')
+  })
+
+  it('marks ASR readiness as undetermined while presets load or fail', async () => {
+    models = [...models, { id: asrId, revision, name: '课堂语音模型', baseUrl: preset.defaultBaseUrl, model: preset.defaultModel, enabled: true,
+      capabilities: ['Transcription'], hasApiKey: true, timeoutSeconds: 60, maxOutputTokens: 1024, asrPresetId: preset.id,
+      createdAt: '2026-10-27T00:00:00Z', updatedAt: '2026-10-27T00:00:00Z' }]
+    settings = { ...settings, transcriptionModelId: asrId }
+    fixture.api.asrPresets.mockReturnValue(new Promise(() => undefined))
+    const pending = open('/settings/ai?tab=asr')
+    expect(await screen.findByText('待判定')).toBeTruthy()
+    expect(screen.queryByText('待完成')).toBeNull()
+    pending.unmount()
+
+    fixture.api.asrPresets.mockRejectedValue(new Error('预设不可用'))
+    open('/settings/ai?tab=asr')
+    expect(await screen.findByText('待判定')).toBeTruthy()
+    expect(screen.getByText(/ASR 接入预设加载失败，暂时无法判断/)).toBeTruthy()
+    expect(screen.queryByText('待完成')).toBeNull()
+  })
+
+  it('legacy AI settings URL remains compatible and defaults to model settings', async () => {
+    open()
+    expect(await screen.findByRole('button', { name: '编辑 文字主模型' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'ASR 转写配置' })).toBeNull()
+    expect(fixture.api.asrPresets).not.toHaveBeenCalled()
   })
 })

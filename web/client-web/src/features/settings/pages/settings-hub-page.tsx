@@ -84,7 +84,7 @@ const SECTIONS: SettingSection[] = [
   {
     label: '智能与自动化',
     cards: [
-      { to: '/settings/ai', title: 'AI 网关', description: '状态、用量与请求日志', icon: Bot, adminOnly: true },
+      { to: '/settings/ai?tab=asr', title: 'AI 与 ASR', description: 'ASR 转写、模型与调用记录', icon: Bot, adminOnly: true },
       { to: '/settings/mcp', title: 'MCP 连接', description: '客户端、令牌与工具权限', icon: Plug },
     ],
   },
