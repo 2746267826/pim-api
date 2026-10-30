@@ -45,6 +45,7 @@ describe('ASR预设和调用', () => {
     const another = { ...preset, id: 'test-only-asr', name: '测试新增厂商', defaultBaseUrl: 'http://test.invalid/api/', operationPath: 'transcribe', defaultModel: 'test-asr', models: ['test-asr'] }
     api.asrPresets.mockResolvedValue([preset, another]); const save = vi.fn().mockResolvedValue({})
     render(wrap(<ModelEditor model={null} initialAsr save={save} close={() => undefined} />))
+    expect(screen.getByRole('heading', { name: '添加 ASR 配置' })).toBeTruthy()
     await waitFor(() => expect((screen.getByRole('combobox', { name: 'ASR接入预设' }) as HTMLButtonElement).disabled).toBe(false))
     await userEvent.click(screen.getByRole('combobox', { name: 'ASR接入预设' })); await userEvent.click(await screen.findByRole('option', { name: '测试新增厂商 · v1' }))
     expect((screen.getByLabelText('API 根地址') as HTMLInputElement).value).toBe(another.defaultBaseUrl)
@@ -53,6 +54,7 @@ describe('ASR预设和调用', () => {
     await userEvent.type(screen.getByLabelText('API Key'), 'synthetic-ui-asr-key'); await userEvent.click(screen.getByRole('button', { name: '保存模型' }))
     await waitFor(() => expect(save).toHaveBeenCalledOnce())
     expect(save.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ asrPresetId: another.id, baseUrl: another.defaultBaseUrl, model: 'test-asr', capabilities: ['Transcription'] }))
+    expect(localStorage.length).toBe(0)
   })
 
   it('单音频载荷、语言、预设版本和具体目标均绑定并要求确认，只发送一次', async () => {

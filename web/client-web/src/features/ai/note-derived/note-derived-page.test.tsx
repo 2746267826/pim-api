@@ -7,7 +7,7 @@ import { NAV_GROUPS } from '@/app/nav'
 import { NoteDerivedPage } from './note-derived-page'
 import type { NoteDerivedArtifact, NoteDerivedTask, NoteDerivedVersion } from './api'
 
-const auth = vi.hoisted(() => ({ user: { id: '11111111-1111-4111-8111-111111111111' } }))
+const auth = vi.hoisted(() => ({ user: { id: '11111111-1111-4111-8111-111111111111', role: 'user' } }))
 const derived = vi.hoisted(() => ({
   sources: vi.fn(), destinations: vi.fn(), limits: vi.fn(), tasks: vi.fn(), task: vi.fn(), steps: vi.fn(),
   start: vi.fn(), stop: vi.fn(), retry: vi.fn(), artifacts: vi.fn(), artifact: vi.fn(), version: vi.fn(), saveManual: vi.fn(), select: vi.fn(),
@@ -75,7 +75,7 @@ async function chooseDestination() {
 }
 
 beforeEach(() => {
-  localStorage.clear(); vi.resetAllMocks(); auth.user.id = owner
+  localStorage.clear(); vi.resetAllMocks(); auth.user.id = owner; auth.user.role = 'user'
   Object.defineProperties(HTMLElement.prototype, {
     hasPointerCapture: { configurable: true, value: () => false }, setPointerCapture: { configurable: true, value: () => undefined },
     releasePointerCapture: { configurable: true, value: () => undefined }, scrollIntoView: { configurable: true, value: () => undefined },
@@ -103,6 +103,16 @@ it('loads ordinary sources including zero recordings and never calls admin model
   expect(derived.destinations).toHaveBeenCalled()
   expect(assistant.noteAsrTasks).not.toHaveBeenCalled()
   expect(screen.queryByText('模型设置')).toBeNull()
+  expect(screen.getByText(/普通账号只消费管理员已启用的共享目标/)).toBeTruthy()
+})
+
+it('explains an empty shared destination catalogue without exposing admin configuration to ordinary users', async () => {
+  derived.destinations.mockResolvedValue({ total: 0, items: [] })
+  page(); await chooseSource()
+
+  expect(await screen.findByText(/暂无可用的共享生成目标/)).toBeTruthy()
+  expect(screen.getByText(/普通账号不能查看或配置模型凭据/)).toBeTruthy()
+  expect(screen.queryByRole('link', { name: /ASR 配置/ })).toBeNull()
 })
 
 it('requires exact destination consent and creates with a persisted UUID intent', async () => {

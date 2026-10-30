@@ -32,7 +32,8 @@ export function ModelEditor({ model, save, close, initialAsr = false }: { model:
 
   return <Dialog open onOpenChange={(open) => { if (!open && !saving) close() }}>
     <DialogContent showClose={!saving}>
-      <DialogHeader title={model ? '编辑模型' : '添加模型'} description="OpenAI 兼容接口 · 凭据仅保存于服务端" />
+      <DialogHeader title={model ? (asr ? '编辑 ASR 配置' : '编辑模型') : (asr ? '添加 ASR 配置' : '添加模型')}
+        description={asr ? '语音转写接入预设 · 凭据仅保存于服务端' : 'OpenAI 兼容接口 · 凭据仅保存于服务端'} />
       <form className="flex min-h-0 flex-col" onSubmit={(event) => {
         event.preventDefault()
         if (!caps.length) { notifyError('请选择至少一种模型能力'); return }

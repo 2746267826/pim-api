@@ -83,4 +83,17 @@ describe('REQ-14 设置中心「账号安全」卡', () => {
     expect(sectionOf('用户管理')).toBe('组织')
     expect(screen.getByText('账号安全')).toBeTruthy()
   })
+
+  it('管理员可从设置中心直达 ASR 配置，普通用户不显示该入口', () => {
+    authState.user = { role: 'admin' }
+    const admin = render(<SettingsHubPage />)
+    const link = screen.getByText('AI 与 ASR').closest('a')
+    expect(link?.getAttribute('href')).toBe('/settings/ai?tab=asr')
+    expect(screen.getByText('ASR 转写、模型与调用记录')).toBeTruthy()
+    admin.unmount()
+
+    authState.user = { role: 'user' }
+    render(<SettingsHubPage />)
+    expect(screen.queryByText('AI 与 ASR')).toBeNull()
+  })
 })

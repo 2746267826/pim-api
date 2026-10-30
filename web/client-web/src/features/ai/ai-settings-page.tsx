@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, RefreshCw } from 'lucide-react'
+import { useSearchParams } from 'react-router'
 import { useAuth } from '@/features/auth/auth-context'
 import { notifyError, notifySuccess } from '@/lib/notify'
 import { formatTime } from '@/lib/datetime'
 import { Button, Card, Chip, Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, EmptyState, Input, Label, PageHeader, Segmented, Select, Skeleton, StatusBadge, Switch, Textarea } from '@/components/ui'
-import { aiApi, type CallRequest, type CallResult, type Model, type ModelSettings, type SaveSettings } from './api'
+import { aiApi, type AsrPreset, type CallRequest, type CallResult, type Model, type ModelSettings, type SaveSettings } from './api'
 import { createAiRequestId } from './request-id'
 import { capabilities, capabilityNames, ModelEditor } from './model-editor'
 import { CallImages, VisionCall } from './vision-call'
@@ -13,6 +14,11 @@ import { AsrCall, CallAudio } from './asr-call'
 import { NoteAsrTasks } from './note-asr-tasks'
 
 const states = { Succeeded: '成功', Failed: '失败', Blocked: '未执行', TimedOut: '超时', FailedValidation: '结构不符', Running: '进行中', Cancelled: '已取消', Incomplete: '未完整/未确认' }
+const pageTabs = ['models', 'asr', 'history', 'usage'] as const
+type PageTab = typeof pageTabs[number]
+function pageTab(value: string | null): PageTab {
+  return pageTabs.includes(value as PageTab) ? value as PageTab : 'models'
+}
 function State({ value }: { value: string }) {
   return <StatusBadge dot={false} tone={value === 'Succeeded' ? 'ok' : value === 'Running' ? 'info' : ['Blocked', 'Cancelled', 'Incomplete'].includes(value) ? 'warn' : 'crit'}>{states[value as keyof typeof states] ?? value}</StatusBadge>
 }
@@ -27,7 +33,13 @@ export function AiSettingsPage() {
 function Workspace({ userId }: { userId: string }) {
   const qc = useQueryClient()
   const prefix = ['ai', userId]
-  const [tab, setTab] = useState<'models' | 'history' | 'usage'>('models')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = pageTab(searchParams.get('tab'))
+  const setTab = (nextTab: PageTab) => {
+    const next = new URLSearchParams(searchParams)
+    next.set('tab', nextTab)
+    setSearchParams(next, { replace: true })
+  }
   const [callMode, setCallMode] = useState<'text' | 'vision' | 'asr' | 'note-asr'>('text')
   const [noteAsrOpened, setNoteAsrOpened] = useState(false)
   const [asrOpened, setAsrOpened] = useState(false)
@@ -38,6 +50,7 @@ function Workspace({ userId }: { userId: string }) {
   const [detailId, setDetailId] = useState<string | null>(null)
   const models = useQuery({ queryKey: [...prefix, 'models'], queryFn: ({ signal }) => aiApi.models(signal) })
   const settings = useQuery({ queryKey: [...prefix, 'settings'], queryFn: ({ signal }) => aiApi.settings(signal) })
+  const presets = useQuery({ queryKey: ['ai-asr-presets'], queryFn: ({ signal }) => aiApi.asrPresets(signal), enabled: tab === 'asr' })
   const refresh = () => qc.invalidateQueries({ queryKey: prefix })
   useEffect(() => () => {
     void qc.cancelQueries({ queryKey: ['ai', userId] }).then(() => qc.removeQueries({ queryKey: ['ai', userId] }))
@@ -54,8 +67,12 @@ function Workspace({ userId }: { userId: string }) {
     finally { setBusy(false) }
   }
   return <div className="space-y-5">
-    <PageHeader title="AI 设置" subtitle="模型设置 · 实际调用记录 · 统计" actions={<Button variant="secondary" size="sm" onClick={() => void refresh()}><RefreshCw className="size-4" aria-hidden />刷新</Button>} />
-    <Segmented value={tab} onValueChange={setTab} options={[{ value: 'models', label: '模型设置' }, { value: 'history', label: '调用记录' }, { value: 'usage', label: '统计' }]} />
+    <PageHeader title="AI 设置" subtitle="模型与 ASR 配置 · 实际调用记录 · 统计" actions={<Button variant="secondary" size="sm" onClick={() => void refresh()}><RefreshCw className="size-4" aria-hidden />刷新</Button>} />
+    <Segmented value={tab} onValueChange={setTab} options={[{ value: 'models', label: '模型设置' }, { value: 'asr', label: 'ASR 配置' }, { value: 'history', label: '调用记录' }, { value: 'usage', label: '统计' }]} />
+    {tab === 'asr' && ((models.isError || settings.isError) ? <Card className="p-5"><EmptyState title="ASR 配置加载失败" description={errorText(models.error ?? settings.error)} action={<Button onClick={() => void refresh()}>重试</Button>} /></Card>
+      : !models.data || !settings.data ? <Skeleton className="h-48" /> : <AsrSettings models={models.data} settings={settings.data} presets={presets.data ?? []}
+        presetsLoading={presets.isLoading} presetsError={presets.isError} retryPresets={() => void presets.refetch()} busy={busy}
+        patchSettings={patchSettings} edit={setEditing} create={() => { setCreatingAsr(true); setEditing(null) }} />)}
     <div hidden={tab !== 'models'} className="space-y-4">
       {(models.isError || settings.isError) && <p role="alert" className="text-sm text-text-2">设置刷新失败，请刷新核对；已开始的调用使用原配置。</p>}
       {(models.isError || settings.isError) && (!models.data || !settings.data) ? <Card className="p-5"><EmptyState title="模型设置加载失败" description={errorText(models.error ?? settings.error)} action={<Button onClick={() => void refresh()}>重试</Button>} /></Card>
@@ -103,6 +120,69 @@ function Workspace({ userId }: { userId: string }) {
       }}>删除配置</Button></DialogFooter>
     </DialogContent></Dialog>
     {detailId && <Detail id={detailId} prefix={prefix} close={() => setDetailId(null)} />}
+  </div>
+}
+
+function AsrSettings({ models, settings, presets, presetsLoading, presetsError, retryPresets, busy, patchSettings, edit, create }: {
+  models: Model[]
+  settings: ModelSettings
+  presets: AsrPreset[]
+  presetsLoading: boolean
+  presetsError: boolean
+  retryPresets: () => void
+  busy: boolean
+  patchSettings: (patch: Partial<SaveSettings>) => Promise<void>
+  edit: (model: Model) => void
+  create: () => void
+}) {
+  const asrModels = models.filter((model) => model.capabilities.includes('Transcription'))
+  const defaultModel = models.find((model) => model.id === settings.transcriptionModelId)
+  const defaultPreset = presets.find((preset) => preset.id === defaultModel?.asrPresetId)
+  const configured = Boolean(settings.enabled && defaultModel?.enabled && defaultModel.hasApiKey && defaultPreset)
+  const undetermined = presetsLoading || presetsError
+  const status = undetermined ? '待判定' : configured ? '已配置' : asrModels.length ? '待完成' : '未配置'
+  const tone = undetermined ? 'info' : configured ? 'ok' : asrModels.length ? 'warn' : 'neutral'
+  return <div className="space-y-4">
+    <Card className="space-y-4 p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div><h2 className="text-sm font-semibold text-text-1">ASR 转写配置</h2>
+          <p className="mt-1 max-w-[640px] text-xs leading-5 text-text-3">ASR 使用受信任接入预设。模型、地址与凭据作为管理员全局配置保存，普通用户只选择已启用的共享目标。</p></div>
+        <Button variant="primary" size="sm" onClick={create}><Plus className="size-4" aria-hidden />添加 ASR 配置</Button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge tone={tone} dot={false}>{status}</StatusBadge>
+        <Chip>管理员全局配置</Chip>
+        <span className="text-xs text-text-3">{settings.enabled ? 'SDK 直连已启用' : 'SDK 直连已停用'} · {asrModels.length} 个 ASR 配置</span>
+      </div>
+      {presetsError && <p role="alert" className="text-sm text-text-2">ASR 接入预设加载失败，暂时无法判断默认配置是否完整。<Button size="sm" variant="ghost" onClick={retryPresets}>重试</Button></p>}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-ctl border border-border p-3">
+        <div><Label htmlFor="ai-asr-enabled">启用 AI / ASR 全局直连</Label>
+          <p className="mt-1 text-xs leading-5 text-text-3">同时影响文字、视觉和语音转写；保存配置或手动选择模型不会自动发起模型调用。</p></div>
+        <Switch id="ai-asr-enabled" checked={settings.enabled} disabled={busy} onCheckedChange={(enabled) => void patchSettings({ enabled })} />
+      </div>
+      <div className="max-w-md"><Label htmlFor="ai-default-asr-settings">默认语音转写模型</Label>
+        <Select id="ai-default-asr-settings" ariaLabel="默认语音转写模型" value={settings.transcriptionModelId ?? ''} disabled={busy}
+          options={[{ value: '', label: '未选择' }, ...asrModels.map((model) => ({ value: model.id, label: model.name + (model.enabled ? '' : '（已停用）') }))]}
+          onValueChange={(value) => void patchSettings({ transcriptionModelId: value || null })} /></div>
+      <p className="text-xs leading-5 text-text-3">默认模型需启用、保存凭据并绑定可用预设，才会被普通用户的笔记处理消费。密钥只保存在服务端，保存后不再回显；本页不会把密钥写入 URL、本地存储或日志。</p>
+    </Card>
+    <Card className="space-y-3 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-text-1">已添加的 ASR 配置（{asrModels.length}）</h2>
+        <Button size="sm" variant="ghost" onClick={retryPresets}>刷新预设</Button></div>
+      {presetsLoading ? <Skeleton className="h-24" /> : !asrModels.length
+        ? <EmptyState title="还没有 ASR 配置" description="添加语音转写模型，选择接入预设并保存独立凭据后，普通用户才能在笔记处理中选择共享目标。" />
+        : <div className="grid gap-3 lg:grid-cols-2">{asrModels.map((model) => {
+          const preset = presets.find((item) => item.id === model.asrPresetId)
+          return <div key={model.id} className="min-w-0 space-y-2 rounded-ctl border border-border p-4">
+            <div className="flex flex-wrap items-center gap-2"><span className="font-medium text-text-1">{model.name}</span>
+              <StatusBadge tone={model.enabled ? 'ok' : 'neutral'} dot={false}>{model.enabled ? '已启用' : '已停用'}</StatusBadge>
+              <StatusBadge tone={model.hasApiKey ? 'ok' : 'warn'} dot={false}>{model.hasApiKey ? '凭据已保存' : '凭据未设置'}</StatusBadge></div>
+            <p className="break-all text-xs text-text-2">{model.model} · {preset ? `${preset.name} v${preset.version}` : `预设 ${model.asrPresetId ?? '未绑定'}`}</p>
+            <p className="break-all text-xs text-text-3">{model.baseUrl}</p>
+            <div className="flex justify-end"><Button size="sm" variant="ghost" onClick={() => edit(model)} aria-label={`编辑 ASR ${model.name}`}>编辑</Button></div>
+          </div>
+        })}</div>}
+    </Card>
   </div>
 }
 
