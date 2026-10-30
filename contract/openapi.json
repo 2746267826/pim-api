@@ -14747,6 +14747,925 @@
         ],
         "type": "object"
       },
+      "NoteDerivedArtifactDto": {
+        "additionalProperties": false,
+        "properties": {
+          "artifactId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "headVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NoteDerivedArtifactKind"
+          },
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedVersionSummaryDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "artifactId",
+          "kind",
+          "noteId",
+          "revision",
+          "versions"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedArtifactDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteDerivedArtifactDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedArtifactDtoIReadOnlyListApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedArtifactDto"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedArtifactKind": {
+        "enum": [
+          "CompleteRecord",
+          "IndependentAnalysis"
+        ],
+        "type": "string"
+      },
+      "NoteDerivedArtifactRefDto": {
+        "additionalProperties": false,
+        "properties": {
+          "artifactId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "headVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NoteDerivedArtifactKind"
+          }
+        },
+        "required": [
+          "artifactId",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedAttemptDto": {
+        "additionalProperties": false,
+        "properties": {
+          "errorCode": {
+            "nullable": true,
+            "type": "string"
+          },
+          "errorMessage": {
+            "nullable": true,
+            "type": "string"
+          },
+          "logId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "requestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "requestId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedCoverageDto": {
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "completedInkPreviews": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "completedPhotos": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "completedTranscriptSegments": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "completedVisionBatches": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "inkPreviews": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedIssueDto"
+            },
+            "type": "array"
+          },
+          "photos": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "textBlocks": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "transcriptSegments": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "visionBatches": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "complete",
+          "completedInkPreviews",
+          "completedPhotos",
+          "completedTranscriptSegments",
+          "completedVisionBatches",
+          "inkPreviews",
+          "issues",
+          "photos",
+          "textBlocks",
+          "transcriptSegments",
+          "visionBatches"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedDestinationDto": {
+        "additionalProperties": false,
+        "properties": {
+          "backgroundProcessingAvailable": {
+            "type": "boolean"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "modelId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "modelRevision": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "backgroundProcessingAvailable",
+          "capabilities",
+          "displayName",
+          "endpoint",
+          "model",
+          "modelId",
+          "modelRevision"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedDestinationsDto": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedDestinationDto"
+            },
+            "type": "array"
+          },
+          "total": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedDestinationsDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteDerivedDestinationsDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedGenerationConsent": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "type": "boolean"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "modelId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "modelRevision": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "confirmed",
+          "endpoint",
+          "modelId",
+          "modelRevision"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedIssueDto": {
+        "additionalProperties": false,
+        "properties": {
+          "blockId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "sourcePath": {
+            "nullable": true,
+            "type": "string"
+          },
+          "stepKey": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedLimitsDto": {
+        "additionalProperties": false,
+        "properties": {
+          "maxDerivedContentCharacters": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "maxEvidenceCharsPerStep": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "maxEvidenceSteps": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "maxImageBytes": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "maxImages": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "maxImagesPerVisionCall": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "maxSynthesisInputChars": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "maxVisionCallBytes": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "maxVisionCalls": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "maxDerivedContentCharacters",
+          "maxEvidenceCharsPerStep",
+          "maxEvidenceSteps",
+          "maxImageBytes",
+          "maxImages",
+          "maxImagesPerVisionCall",
+          "maxSynthesisInputChars",
+          "maxVisionCallBytes",
+          "maxVisionCalls"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedLimitsDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteDerivedLimitsDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedMutationDto": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/NoteDerivedArtifactDto"
+          },
+          "hasConflict": {
+            "type": "boolean"
+          },
+          "isHead": {
+            "type": "boolean"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact",
+          "hasConflict",
+          "isHead",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedMutationDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteDerivedMutationDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedStepDto": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedAttemptDto"
+            },
+            "type": "array"
+          },
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NoteDerivedStepKind"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempts",
+          "key",
+          "kind",
+          "status"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedStepKind": {
+        "enum": [
+          "ImageEvidence",
+          "RecordSynthesis",
+          "AnalysisSynthesis"
+        ],
+        "type": "string"
+      },
+      "NoteDerivedStepsDto": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedStepDto"
+            },
+            "type": "array"
+          },
+          "offset": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "total": {
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "offset",
+          "total"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedStepsDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteDerivedStepsDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedTaskDto": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedArtifactRefDto"
+            },
+            "type": "array"
+          },
+          "asrRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "asrTaskId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "backgroundProcessingAvailable": {
+            "type": "boolean"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/NoteDerivedCoverageDto"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "destination": {
+            "$ref": "#/components/schemas/NoteDerivedGenerationConsent"
+          },
+          "inputSha256": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedIssueDto"
+            },
+            "type": "array"
+          },
+          "manifestSha256": {
+            "type": "string"
+          },
+          "noteId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "planVersion": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sourceVersionId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedStepDto"
+            },
+            "type": "array"
+          },
+          "stopRequested": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifacts",
+          "coverage",
+          "createdAt",
+          "destination",
+          "inputSha256",
+          "issues",
+          "manifestSha256",
+          "noteId",
+          "phase",
+          "planVersion",
+          "revision",
+          "sourceVersionId",
+          "steps",
+          "stopRequested",
+          "taskId",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedTaskDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteDerivedTaskDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedTaskDtoIReadOnlyListApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/NoteDerivedTaskDto"
+            },
+            "nullable": true,
+            "type": "array"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedVersionAuthor": {
+        "enum": [
+          "Model",
+          "User"
+        ],
+        "type": "string"
+      },
+      "NoteDerivedVersionDto": {
+        "additionalProperties": false,
+        "properties": {
+          "aiCallLogId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "artifactId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "author": {
+            "$ref": "#/components/schemas/NoteDerivedVersionAuthor"
+          },
+          "contentMarkdown": {
+            "type": "string"
+          },
+          "contentSha256": {
+            "type": "string"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/NoteDerivedCoverageDto"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "generationTaskId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "hasConflict": {
+            "type": "boolean"
+          },
+          "inputSha256": {
+            "type": "string"
+          },
+          "isHead": {
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NoteDerivedArtifactKind"
+          },
+          "manifestSha256": {
+            "type": "string"
+          },
+          "modelEndpoint": {
+            "nullable": true,
+            "type": "string"
+          },
+          "modelProfileId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "modelRevision": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "observedHeadVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "parentVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "planVersion": {
+            "type": "string"
+          },
+          "promptVersion": {
+            "type": "string"
+          },
+          "sourceCompleteRecordVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "sourceVersionId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifactId",
+          "author",
+          "contentMarkdown",
+          "contentSha256",
+          "createdAt",
+          "hasConflict",
+          "inputSha256",
+          "isHead",
+          "kind",
+          "manifestSha256",
+          "planVersion",
+          "promptVersion",
+          "sourceVersionId",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedVersionDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteDerivedVersionDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteDerivedVersionSummaryDto": {
+        "additionalProperties": false,
+        "properties": {
+          "author": {
+            "$ref": "#/components/schemas/NoteDerivedVersionAuthor"
+          },
+          "contentSha256": {
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "generationTaskId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "hasConflict": {
+            "type": "boolean"
+          },
+          "isHead": {
+            "type": "boolean"
+          },
+          "parentVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "sourceCompleteRecordVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "sourceVersionId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "author",
+          "contentSha256",
+          "createdAt",
+          "hasConflict",
+          "isHead",
+          "sourceVersionId",
+          "versionId"
+        ],
+        "type": "object"
+      },
       "NoteMaterialUploadDto": {
         "additionalProperties": false,
         "properties": {
@@ -18287,6 +19206,44 @@
         ],
         "type": "object"
       },
+      "RetryNoteDerivedTaskRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledgePossibleDuplicateCharge": {
+            "type": "boolean"
+          },
+          "consent": {
+            "$ref": "#/components/schemas/NoteDerivedGenerationConsent"
+          },
+          "expectedRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expectedUserId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "retryId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "stepKeys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "acknowledgePossibleDuplicateCharge",
+          "consent",
+          "expectedRevision",
+          "expectedUserId",
+          "retryId",
+          "stepKeys"
+        ],
+        "type": "object"
+      },
       "S2ThreeStateDistribution": {
         "additionalProperties": false,
         "properties": {
@@ -18585,6 +19542,35 @@
         ],
         "type": "object"
       },
+      "SaveNoteDerivedManualRevisionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "contentMarkdown": {
+            "maxLength": 1000000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "expectedHeadRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expectedHeadVersionId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "revisionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contentMarkdown",
+          "expectedHeadRevision",
+          "revisionId"
+        ],
+        "type": "object"
+      },
       "ScheduleRequest": {
         "additionalProperties": false,
         "properties": {
@@ -18773,6 +19759,24 @@
           "code",
           "message",
           "timestamp"
+        ],
+        "type": "object"
+      },
+      "SelectNoteDerivedVersionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedHeadRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expectedHeadRevision",
+          "versionId"
         ],
         "type": "object"
       },
@@ -19174,6 +20178,38 @@
             "type": "string"
           },
           "language": {
+            "type": "string"
+          },
+          "taskId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "versionId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "consent",
+          "expectedUserId",
+          "taskId",
+          "versionId"
+        ],
+        "type": "object"
+      },
+      "StartNoteDerivedTaskRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "asrTaskId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "consent": {
+            "$ref": "#/components/schemas/NoteDerivedGenerationConsent"
+          },
+          "expectedUserId": {
+            "format": "uuid",
             "type": "string"
           },
           "taskId": {
@@ -36918,6 +37954,689 @@
         ],
         "tags": [
           "Native note ASR"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-artifacts": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "noteId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedArtifactDtoIReadOnlyListApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-artifacts/{artifactId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedArtifactDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-artifacts/{artifactId}/manual-revisions": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveNoteDerivedManualRevisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedMutationDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-artifacts/{artifactId}/select": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectNoteDerivedVersionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedArtifactDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-artifacts/{artifactId}/versions/{versionId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifactId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "versionId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedVersionDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-tasks": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "noteId",
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedTaskDtoIReadOnlyListApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      },
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartNoteDerivedTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedTaskDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-tasks/destinations": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedDestinationsDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-tasks/limits": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedLimitsDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-tasks/sources": {
+      "get": {
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 20,
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteAsrSourcesDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-tasks/{taskId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedTaskDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-tasks/{taskId}/retry": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetryNoteDerivedTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedTaskDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-tasks/{taskId}/steps": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 10,
+              "format": "int32",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedStepsDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
+        ]
+      }
+    },
+    "/api/v1/native-notes/derived-tasks/{taskId}/stop": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "taskId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDerivedTaskDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note derived artifacts"
         ]
       }
     },
