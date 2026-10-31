@@ -5,9 +5,10 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NoteAsrReprocessPanel } from './note-asr-reprocess-panel'
 import type { NoteAsrTask } from './api'
+import { noteAsrReprocessIntentScope } from './note-asr-reprocess-intent'
 
 const api = vi.hoisted(() => ({
-  asrRouteConfig: vi.fn(), models: vi.fn(), asrPresets: vi.fn(),
+  asrRouteConfig: vi.fn(), noteAsrDestinations: vi.fn(), models: vi.fn(), asrPresets: vi.fn(),
   asrReprocessHistory: vi.fn(), asrRoutingAttempts: vi.fn(),
   asrReprocess: vi.fn(), asrRoutingAttemptStop: vi.fn(),
 }))
@@ -21,6 +22,7 @@ beforeAll(() => {
 afterEach(cleanup)
 
 const userId = '11111111-1111-4111-8111-111111111111'
+const serverBinding = 'https://synthetic.invalid'
 const task: NoteAsrTask = {
   taskId: '22222222-2222-4222-8222-222222222222',
   revision: '33333333-3333-4333-8333-333333333333',
@@ -54,6 +56,12 @@ const preset = {
   formats: ['wav', 'mp3', 'flac', 'm4a', 'ogg'], languages: ['auto', 'zh', 'en'],
   maxAudioBytes: 50 * 1024 * 1024, streaming: false,
 }
+const destination = {
+  backgroundProcessingAvailable: true, displayName: 'MiMo Flash 多模态目标',
+  endpoint: model.baseUrl + preset.operationPath, languages: preset.languages,
+  model: model.model, modelId: model.id, modelRevision: model.revision,
+  presetId: preset.id, presetVersion: preset.version,
+}
 const attempt = {
   attemptId: '77777777-7777-4777-8777-777777777777', ownerId: userId, taskId: task.taskId,
   noteId: task.noteId, versionId: task.versionId, inputSha256: 'sha', route: 'cloud-multimodal',
@@ -76,10 +84,11 @@ const history = {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks()
   vi.clearAllMocks()
+  localStorage.clear()
   api.asrRouteConfig.mockResolvedValue(config)
-  api.models.mockResolvedValue([model])
-  api.asrPresets.mockResolvedValue([preset])
+  api.noteAsrDestinations.mockResolvedValue({ total: 1, items: [destination] })
   api.asrReprocessHistory.mockResolvedValue(history)
   api.asrRoutingAttempts.mockResolvedValue([attempt])
   api.asrRoutingAttemptStop.mockResolvedValue({ ...attempt, stopRequested: true, state: 'Unknown' })
@@ -88,7 +97,7 @@ beforeEach(() => {
 
 function page() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  return render(<QueryClientProvider client={qc}><NoteAsrReprocessPanel task={task} userId={userId} /></QueryClientProvider>)
+  return render(<QueryClientProvider client={qc}><NoteAsrReprocessPanel task={task} userId={userId} serverBinding={serverBinding} /></QueryClientProvider>)
 }
 
 describe('NoteAsrReprocessPanel', () => {
@@ -102,7 +111,7 @@ describe('NoteAsrReprocessPanel', () => {
 
   it('强制云端重跑需原因与显式确认，发送真实云路由和当前配置版本', async () => {
     page()
-    await screen.findByText(/MiMo 多模态 v1/)
+    await screen.findAllByText(/MiMo Flash 多模态目标/)
     expect(api.asrReprocess).not.toHaveBeenCalled()
     await userEvent.type(screen.getByLabelText('原因说明'), '已核对原音频和目标')
     await userEvent.click(screen.getByRole('checkbox', { name: '确认云端强制重处理并可能产生费用' }))
@@ -118,17 +127,71 @@ describe('NoteAsrReprocessPanel', () => {
         expectedConsentVersion: config.consentVersion, executionMode: 'realtime',
         confirmed: true, batchScopeConfirmed: false,
       },
-      consent: { modelId: model.id, modelRevision: model.revision, presetId: preset.id, presetVersion: preset.version, confirmed: true },
+      consent: {
+        modelId: model.id, modelRevision: model.revision, endpoint: destination.endpoint,
+        presetId: preset.id, presetVersion: preset.version, confirmed: true,
+      },
     })
     expect(body.clientTaskId).toMatch(/^[0-9a-f-]{36}$/)
-    expect(await screen.findByText(/已创建新的云端重处理任务/)).toBeTruthy()
+    expect(api.models).not.toHaveBeenCalled()
+    expect(api.asrPresets).not.toHaveBeenCalled()
+    expect(await screen.findByText(/已按原标识提交重处理/)).toBeTruthy()
   })
 
-  it('没有可用云端目标时不提供重处理调用', async () => {
-    api.asrRouteConfig.mockResolvedValue({ ...config, cloudModelId: null, cloudConfigured: false })
+  it('shows an invalid last cloud target without guessing another cloud model', async () => {
+    api.noteAsrDestinations.mockResolvedValue({ total: 0, items: [] })
     page()
-    expect(await screen.findByText('没有可用的云端目标')).toBeTruthy()
+    expect(await screen.findByText('上次云端目标不可用')).toBeTruthy()
     expect((screen.getByRole('button', { name: '确认创建云端重处理任务' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(api.asrReprocess).not.toHaveBeenCalled()
+  })
+
+  it('allows an explicit local rerun without cloud credentials or consent', async () => {
+    const localTask: NoteAsrTask = { ...task, route: 'local', executionMode: 'realtime' }
+    api.noteAsrDestinations.mockResolvedValue({ total: 0, items: [] })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={qc}><NoteAsrReprocessPanel task={localTask} userId={userId} serverBinding={serverBinding} /></QueryClientProvider>)
+    expect(await screen.findByText('本机重处理')).toBeTruthy()
+    await userEvent.type(screen.getByLabelText('原因说明'), '本机重新核对')
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认创建本机重处理任务' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认创建本机重处理任务' }))
+    await waitFor(() => expect(api.asrReprocess).toHaveBeenCalledOnce())
+    const body = api.asrReprocess.mock.calls[0]?.[1]
+    expect(body).toMatchObject({ route: { route: 'local' }, reason: { text: '本机重新核对' } })
+    expect(body.consent).toBeUndefined()
+  })
+
+  it('freezes a failed reprocess request and re-saves the same client task id', async () => {
+    api.asrReprocess.mockRejectedValueOnce(new Error('response lost'))
+    page()
+    await screen.findAllByText(/MiMo Flash 多模态目标/)
+    await userEvent.type(screen.getByLabelText('原因说明'), '核对后重跑')
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认云端强制重处理并可能产生费用' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认创建云端重处理任务' }))
+    const first = api.asrReprocess.mock.calls[0]?.[1]
+    expect((await screen.findAllByText(/已冻结原提交标识/)).length).toBeGreaterThan(0)
+    expect((screen.getByLabelText('原因说明') as HTMLTextAreaElement).disabled).toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: '按原标识保存' }))
+    await waitFor(() => expect(api.asrReprocess).toHaveBeenCalledTimes(2))
+    expect(api.asrReprocess.mock.calls[1]?.[1]).toEqual(first)
+  })
+
+  it('blocks a corrupt stored reprocess intent instead of replacing it', async () => {
+    localStorage.setItem(noteAsrReprocessIntentScope(userId, serverBinding, task.taskId), '{broken')
+    page()
+    expect(await screen.findByText(/重处理提交意图无法读取/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '确认创建云端重处理任务' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(api.asrReprocess).not.toHaveBeenCalled()
+  })
+
+  it('does not POST when the frozen reprocess intent cannot be persisted', async () => {
+    page()
+    await screen.findAllByText(/MiMo Flash 多模态目标/)
+    await userEvent.type(screen.getByLabelText('原因说明'), '保存失败不发送')
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认云端强制重处理并可能产生费用' }))
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+    await userEvent.click(screen.getByRole('button', { name: '确认创建云端重处理任务' }))
+    expect(await screen.findByText(/本机无法保存冻结的提交标识/)).toBeTruthy()
     expect(api.asrReprocess).not.toHaveBeenCalled()
   })
 

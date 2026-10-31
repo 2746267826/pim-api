@@ -1,9 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { Button, Card, Checkbox, InlineAlert, Label, Select, Skeleton, StatusBadge, Textarea } from '@/components/ui'
-import { aiApi, type NoteAsrAttemptDetail, type NoteAsrTask } from './api'
+import { aiApi, type NoteAsrAttemptDetail, type NoteAsrReprocessRequest, type NoteAsrTask } from './api'
 import { createAiRequestId } from './request-id'
-import { actualCloudRoute } from './route-config-adapter'
+import { actualCloudRoute, isActualCloudRoute } from './route-config-adapter'
+import {
+  clearNoteAsrReprocessIntent,
+  loadNoteAsrReprocessIntent,
+  saveNoteAsrReprocessIntent,
+  type NoteAsrReprocessIntentState,
+} from './note-asr-reprocess-intent'
 
 const dateTime = (value: string) => new Date(value).toLocaleString()
 const phaseLabel: Record<string, string> = {
@@ -12,76 +18,149 @@ const phaseLabel: Record<string, string> = {
 }
 const label = (value: string) => phaseLabel[value.toLowerCase()] ?? value
 
-export function NoteAsrReprocessPanel({ task, userId, onCreated }: {
+export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }: {
   task: NoteAsrTask
   userId: string
+  serverBinding: string
   onCreated?: (taskId: string) => void
 }) {
   const qc = useQueryClient()
   const [offset, setOffset] = useState(0)
+  const [targetId, setTargetId] = useState('last')
   const [kind, setKind] = useState<'manual' | 'quality'>('manual')
   const [reason, setReason] = useState('')
   const [confirmed, setConfirmed] = useState(false)
+  const [intentState, setIntentState] = useState<NoteAsrReprocessIntentState>(() =>
+    loadNoteAsrReprocessIntent(userId, serverBinding, task.taskId))
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [actionError, setActionError] = useState('')
-  const config = useQuery({ queryKey: ['ai', userId, 'asr-route-config'], queryFn: ({ signal }) => aiApi.asrRouteConfig(signal) })
-  const models = useQuery({ queryKey: ['ai', userId, 'models'], queryFn: ({ signal }) => aiApi.models(signal) })
-  const presets = useQuery({ queryKey: ['ai-asr-presets'], queryFn: ({ signal }) => aiApi.asrPresets(signal) })
+  const config = useQuery({ queryKey: ['ai', userId, serverBinding, 'asr-route-config'], queryFn: ({ signal }) => aiApi.asrRouteConfig(signal) })
+  // Public per-account destinations; ordinary owners never read admin model keys.
+  const destinations = useQuery({
+    queryKey: ['ai', userId, serverBinding, 'note-asr-destinations'],
+    queryFn: ({ signal }) => aiApi.noteAsrDestinations(signal),
+  })
   const history = useQuery({
-    queryKey: ['ai', userId, 'reprocess-history', task.taskId, offset],
+    queryKey: ['ai', userId, serverBinding, 'reprocess-history', task.taskId, offset],
     queryFn: ({ signal }) => aiApi.asrReprocessHistory(task.taskId, userId, offset, 10, signal),
   })
   const attempts = useQuery({
-    queryKey: ['ai', userId, 'asr-attempts', task.taskId],
+    queryKey: ['ai', userId, serverBinding, 'asr-attempts', task.taskId],
     queryFn: ({ signal }) => aiApi.asrRoutingAttempts(task.taskId, signal),
   })
 
-  const cloudModel = models.data?.find((model) => model.id === config.data?.cloudModelId && model.enabled)
-  const preset = presets.data?.find((value) => value.id === cloudModel?.asrPresetId)
-  const targetReady = Boolean(config.data && cloudModel && preset && cloudModel.hasApiKey)
-  const canSubmit = Boolean(targetReady && reason.trim() && confirmed && !busy)
+  const lastDestination = destinations.data?.items.find((item) => item.modelId === task.destination.modelId) ?? null
+  const intent = intentState.kind === 'ready' ? intentState.value : null
+  const blockedIntent = intentState.kind === 'blocked' ? intentState.message : ''
+  const selectedDestination = targetId === 'local'
+    ? null
+    : targetId === 'last'
+      ? lastDestination
+      : destinations.data?.items.find((item) => item.modelId === targetId) ?? null
+  const selectedRoute = targetId === 'local' || (targetId === 'last' && task.route === 'local')
+    ? 'local'
+    : selectedDestination ? actualCloudRoute(selectedDestination.presetId) : ''
+  const lastCloudInvalid = targetId === 'last' && isActualCloudRoute(task.route ?? '') && !lastDestination
+  const targetReady = Boolean(config.data && selectedRoute)
+  const canSubmit = Boolean(targetReady && reason.trim() && confirmed && !busy && !intent && !blockedIntent)
 
-  async function rerun() {
-    if (!canSubmit || !config.data || !cloudModel || !preset) return
+  useEffect(() => {
+    setIntentState(loadNoteAsrReprocessIntent(userId, serverBinding, task.taskId))
+    setTargetId('last')
+    setKind('manual')
+    setReason('')
+    setConfirmed(false)
+    setNotice('')
+    setActionError('')
+  }, [userId, serverBinding, task.taskId])
+
+  function createIntent(): NoteAsrReprocessRequest | null {
+    if (!config.data || !selectedRoute) return null
+    const common = {
+      clientTaskId: createAiRequestId(),
+      expectedUserId: userId,
+      expectedRevision: task.revision,
+      reason: { kind, text: reason.trim() },
+      route: {
+        route: selectedRoute,
+        expectedConfigRevision: config.data.revision,
+        expectedConsentVersion: config.data.consentVersion,
+        executionMode: 'realtime',
+        confirmed: true,
+        batchScopeConfirmed: false,
+      },
+    }
+    return selectedRoute === 'local' || !selectedDestination
+      ? common
+      : {
+        ...common,
+        consent: {
+          modelId: selectedDestination.modelId,
+          modelRevision: selectedDestination.modelRevision,
+          endpoint: selectedDestination.endpoint,
+          presetId: selectedDestination.presetId,
+          presetVersion: selectedDestination.presetVersion,
+          confirmed: true,
+        },
+      }
+  }
+
+  async function submit(body: NoteAsrReprocessRequest) {
     setBusy(true)
     setNotice('')
     setActionError('')
     try {
-      const result = await aiApi.asrReprocess(task.taskId, {
-        clientTaskId: createAiRequestId(),
-        expectedUserId: userId,
-        expectedRevision: task.revision,
-        reason: { kind, text: reason.trim() },
-        route: {
-          route: actualCloudRoute(cloudModel.asrPresetId),
-          expectedConfigRevision: config.data.revision,
-          expectedConsentVersion: config.data.consentVersion,
-          executionMode: 'realtime',
-          confirmed: true,
-          batchScopeConfirmed: false,
-        },
-        consent: {
-          modelId: cloudModel.id,
-          modelRevision: cloudModel.revision,
-          endpoint: cloudModel.baseUrl + preset.operationPath,
-          presetId: preset.id,
-          presetVersion: preset.version,
-          confirmed: true,
-        },
-      })
-      setNotice(`已创建新的云端重处理任务；原任务与历史结果保持不变。新任务：${result.task.taskId}`)
+      const result = await aiApi.asrReprocess(task.taskId, body)
+      clearNoteAsrReprocessIntent(userId, serverBinding, task.taskId, body.clientTaskId)
+      setIntentState({ kind: 'none' })
+      setNotice(`已按原标识提交重处理；原任务与历史结果保持不变。新任务：${result.task.taskId}`)
       setConfirmed(false)
       setReason('')
       onCreated?.(result.task.taskId)
-      await qc.invalidateQueries({ queryKey: ['ai', userId, 'reprocess-history', task.taskId] })
-      await qc.invalidateQueries({ queryKey: ['ai', userId, 'note-asr'] })
+      await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'reprocess-history', task.taskId] })
+      await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'note-asr'] })
     } catch (error) {
-      setActionError(`${error instanceof Error ? error.message : '重处理失败'}。原任务与旧结果仍保留；页面不会自动重试或重复计费。`)
+      setActionError(`${error instanceof Error ? error.message : '重处理未确认'}。已冻结原提交标识，不会分配新任务、自动重试或重复计费。`)
     } finally {
       setBusy(false)
     }
   }
+
+  async function rerun() {
+    if (!canSubmit) return
+    const body = createIntent()
+    if (!body) return
+    const storageError = saveNoteAsrReprocessIntent(userId, serverBinding, task.taskId, body)
+    if (storageError) {
+      setActionError(storageError)
+      return
+    }
+    setIntentState({ kind: 'ready', value: body })
+    await submit(body)
+  }
+
+  async function reconcileHistory() {
+    if (!intent || busy) return
+    setActionError('')
+    setNotice('')
+    await history.refetch()
+    setNotice('已刷新不可变历史。请核对是否已有新任务；若没有，可按同一标识保存，不会分配新任务。')
+  }
+
+  const options = [
+    {
+      value: 'last',
+      label: lastDestination
+        ? `沿上次：${lastDestination.displayName}`
+        : task.route === 'local' ? '沿上次：本机转写' : '沿上次：原云端目标（当前不可用）',
+    },
+    { value: 'local', label: '本机转写（不发送云端）' },
+    ...(destinations.data?.items ?? []).map((item) => ({
+      value: item.modelId,
+      label: `${actualCloudRoute(item.presetId) === 'cloud-multimodal' ? '云端多模态' : '云端ASR'} · ${item.displayName}`,
+    })),
+  ]
 
   return <div className="min-w-0 space-y-3">
     <Card className="min-w-0 space-y-3 p-4 sm:p-5">
@@ -89,37 +168,65 @@ export function NoteAsrReprocessPanel({ task, userId, onCreated }: {
         <h3 className="text-sm font-semibold text-text-1">执行尝试与停止</h3>
         <p className="mt-1 break-words text-xs text-text-3">停止只阻止后续分片继续发送；已发送或结果未知的分片不会自动重发或假定成功。</p>
       </div>
-      <Attempts taskId={task.taskId} userId={userId} attempts={attempts} />
+      <Attempts taskId={task.taskId} userId={userId} serverBinding={serverBinding} attempts={attempts} />
     </Card>
 
     <Card className="min-w-0 space-y-3 p-4 sm:p-5">
       <div>
-        <h3 className="text-sm font-semibold text-text-1">云端强制重处理（显式确认）</h3>
-        <p className="mt-1 break-words text-xs text-text-3">整份音频会重新发送到当前默认云端模型，可能产生新费用；新的执行以追加任务保留，不覆盖原任务、分片成功结果或历史。</p>
+        <h3 className="text-sm font-semibold text-text-1">重处理（显式确认）</h3>
+        <p className="mt-1 break-words text-xs text-text-3">默认沿用上次执行位置。整份音频会重新发送，云端可能产生新费用；本机执行不发送云端。新执行以追加任务保留，不覆盖原任务、成功分片或历史。</p>
       </div>
-      {config.isError || models.isError || presets.isError
-        ? <InlineAlert tone="crit" title="云端目标读取失败">无法核对当前云端模型、预设与配置版本；不会自动改用其他目标。</InlineAlert>
-        : !config.data || models.isPending || presets.isPending ? <Skeleton className="h-20" />
-          : !targetReady ? <InlineAlert tone="warn" title="没有可用的云端目标">请先在 ASR 配置中保存已启用、带凭据的云端模型与预设；本机模式不会自动切换云端。</InlineAlert>
-            : <div className="space-y-2 rounded-ctl border border-border p-3 text-xs text-text-2">
-              <p className="break-words">目标：{cloudModel!.name} · {cloudModel!.model} · {preset!.name} v{preset!.version}</p>
-              <p className="break-all font-mono text-text-3">{cloudModel!.baseUrl + preset!.operationPath}</p>
-              <p>当前配置版本：{config.data.consentVersion}。执行模式：实时逐片；Batch 不在此强制重跑入口自动启用。</p>
+      {config.isError || destinations.isError
+        ? <InlineAlert tone="crit" title="执行目标读取失败">无法核对当前路由与共享目标；不会自动改用其他目标。</InlineAlert>
+        : !config.data || destinations.isPending ? <Skeleton className="h-20" />
+          : <>
+            <div className="max-w-md"><Label htmlFor="note-asr-reprocess-target">执行位置</Label>
+              <Select id="note-asr-reprocess-target" ariaLabel="执行位置" value={targetId} options={options}
+                disabled={busy || Boolean(intent) || Boolean(blockedIntent)}
+                onValueChange={(value) => { setTargetId(value); setConfirmed(false); setNotice(''); setActionError('') }} /></div>
+            {lastCloudInvalid && <InlineAlert tone="warn" title="上次云端目标不可用">
+              原目标不在当前共享目录中。请明确选择其他目标；页面不会自动猜测或改用其他云端模型。
+            </InlineAlert>}
+            {!targetReady && !lastCloudInvalid && <InlineAlert tone="warn" title="没有可用执行位置">
+              当前没有匹配的共享目标；本机转写仍可从“执行位置”明确选择，不会因缺少云密钥自动受阻止。
+            </InlineAlert>}
+            {selectedRoute === 'local' && <InlineAlert tone="info" title="本机重处理">
+              任务在本机队列执行，不发送云端、不需要云端凭据；本机离线时保持排队。
+            </InlineAlert>}
+            {selectedRoute !== 'local' && selectedDestination && <div className="space-y-2 rounded-ctl border border-border p-3 text-xs text-text-2">
+              <p className="break-words">目标：{selectedDestination.displayName} · {selectedDestination.model}</p>
+              <p className="break-all font-mono text-text-3">{selectedDestination.endpoint}</p>
+              <p>路由 {selectedRoute} · 预设 {selectedDestination.presetId} v{selectedDestination.presetVersion}。当前配置版本：{config.data.consentVersion}。</p>
             </div>}
+          </>}
       <div className="max-w-sm"><Label htmlFor="note-asr-reprocess-kind">重处理原因</Label>
-        <Select id="note-asr-reprocess-kind" ariaLabel="重处理原因" value={kind} disabled={busy}
+        <Select id="note-asr-reprocess-kind" ariaLabel="重处理原因" value={kind} disabled={busy || Boolean(intent) || Boolean(blockedIntent)}
           options={[{ value: 'manual', label: '人工要求' }, { value: 'quality', label: '结果质量需要重做' }]}
-          onValueChange={(value) => setKind(value as 'manual' | 'quality')} /></div>
+          onValueChange={(value) => { setKind(value as 'manual' | 'quality'); setConfirmed(false) }} /></div>
       <div><Label htmlFor="note-asr-reprocess-reason">原因说明</Label>
-        <Textarea id="note-asr-reprocess-reason" value={reason} maxLength={200} disabled={busy}
-          placeholder="例如：已核对原音频和旧结果，需要改用当前云端模型重新生成"
+        <Textarea id="note-asr-reprocess-reason" value={reason} maxLength={200} disabled={busy || Boolean(intent) || Boolean(blockedIntent)}
+          placeholder="例如：已核对原音频和旧结果，需要改用当前目标重新生成"
           onChange={(event) => { setReason(event.target.value); setConfirmed(false) }} /></div>
-      <label className="flex items-start gap-2 text-xs text-text-2">
-        <Checkbox ariaLabel="确认云端强制重处理并可能产生费用" checked={confirmed} disabled={busy || !targetReady}
-          onCheckedChange={setConfirmed} />
-        <span>确认将整份音频重新发送至上述云端目标，理解长等待与可能的新费用；旧任务和旧结果继续保留。</span>
-      </label>
-      <Button loading={busy} disabled={!canSubmit} onClick={() => void rerun()}>确认创建云端重处理任务</Button>
+      {blockedIntent && <InlineAlert tone="crit" title="原重处理状态无法确认">{blockedIntent}</InlineAlert>}
+      {intent ? <div className="space-y-2 rounded-ctl border border-warn-border bg-warn-soft p-3 text-xs text-text-2">
+        <p className="break-all">已冻结原提交标识：<span className="font-mono">{intent.clientTaskId}</span>。目标、原因与路由不可在核对前更改。</p>
+        <p>原提交：{intent.route.route} · {intent.reason.kind} · {intent.reason.text}</p>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" loading={busy} onClick={() => void reconcileHistory()}>核对重处理历史</Button>
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => void submit(intent)}>按原标识保存</Button>
+        </div>
+      </div> : <>
+        <label className="flex items-start gap-2 text-xs text-text-2">
+          <Checkbox ariaLabel={selectedRoute === 'local' ? '确认创建本机重处理任务' : '确认云端强制重处理并可能产生费用'}
+            checked={confirmed} disabled={busy || !targetReady || Boolean(blockedIntent)} onCheckedChange={setConfirmed} />
+          <span>{selectedRoute === 'local'
+            ? '确认按当前本机配置创建重处理任务；本机不可用时只排队，不会自动切换云端。'
+            : '确认将整份音频重新发送至上述云端目标，理解长等待与可能的新费用；旧任务和旧结果继续保留。'}</span>
+        </label>
+        <Button loading={busy} disabled={!canSubmit} onClick={() => void rerun()}>
+          {selectedRoute === 'local' ? '确认创建本机重处理任务' : '确认创建云端重处理任务'}
+        </Button>
+      </>}
       {notice && <InlineAlert tone="ok">{notice}</InlineAlert>}
       {actionError && <InlineAlert tone="crit" title="重处理未确认">{actionError}</InlineAlert>}
     </Card>
@@ -149,9 +256,10 @@ export function NoteAsrReprocessPanel({ task, userId, onCreated }: {
   </div>
 }
 
-function Attempts({ taskId, userId, attempts }: {
+function Attempts({ taskId, userId, serverBinding, attempts }: {
   taskId: string
   userId: string
+  serverBinding: string
   attempts: UseQueryResult<NoteAsrAttemptDetail[]>
 }) {
   const qc = useQueryClient()
@@ -188,7 +296,7 @@ function Attempts({ taskId, userId, attempts }: {
                   setBusy(true); setError('')
                   void aiApi.asrRoutingAttemptStop(attempt.attemptId)
                     .then(async () => {
-                      await qc.invalidateQueries({ queryKey: ['ai', userId, 'asr-attempts', taskId] })
+                      await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-attempts', taskId] })
                       setStopId(null); setConfirmed(false)
                     })
                     .catch((failure: unknown) => setError(failure instanceof Error ? failure.message : '停止失败'))

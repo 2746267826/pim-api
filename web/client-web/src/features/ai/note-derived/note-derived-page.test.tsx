@@ -6,13 +6,18 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NAV_GROUPS } from '@/app/nav'
 import { NoteDerivedPage } from './note-derived-page'
 import type { NoteDerivedArtifact, NoteDerivedTask, NoteDerivedVersion } from './api'
+import type { NoteAsrTask } from '../api'
 
 const auth = vi.hoisted(() => ({ user: { id: '11111111-1111-4111-8111-111111111111', role: 'user' } }))
 const derived = vi.hoisted(() => ({
   sources: vi.fn(), destinations: vi.fn(), limits: vi.fn(), tasks: vi.fn(), task: vi.fn(), steps: vi.fn(),
   start: vi.fn(), stop: vi.fn(), retry: vi.fn(), artifacts: vi.fn(), artifact: vi.fn(), version: vi.fn(), saveManual: vi.fn(), select: vi.fn(),
 }))
-const assistant = vi.hoisted(() => ({ noteAsrTasks: vi.fn() }))
+const assistant = vi.hoisted(() => ({
+  noteAsrTasks: vi.fn(), noteAsrDestinations: vi.fn(), asrRouteConfig: vi.fn(), asrRoutingNodes: vi.fn(),
+  noteAsrStart: vi.fn(), noteAsrTask: vi.fn(), noteAsrSegments: vi.fn(), asrReprocessHistory: vi.fn(),
+  asrRoutingAttempts: vi.fn(), asrRoutingAttemptStop: vi.fn(), models: vi.fn(), asrPresets: vi.fn(),
+}))
 vi.mock('@/features/auth/auth-context', () => ({ useAuth: () => auth }))
 vi.mock('./api', () => ({ noteDerivedApi: derived }))
 vi.mock('../api', () => ({ aiApi: assistant }))
@@ -29,6 +34,17 @@ const destinationRevision = '88888888-8888-4888-8888-888888888888'
 const destination = {
   modelId: destinationId, modelRevision: destinationRevision, displayName: '合成共享目标', model: 'synthetic-vision-text',
   endpoint: 'https://synthetic.invalid/v1/', capabilities: ['Text', 'Vision'], backgroundProcessingAvailable: true,
+}
+const asrTask: NoteAsrTask = {
+  taskId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', revision: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+  noteId, versionId: sourceVersionId, inputSha256: 'a'.repeat(64), manifestSha256: 'b'.repeat(64),
+  phase: 'Failed', language: 'zh', destination: {
+    modelId: destinationId, modelRevision: destinationRevision, endpoint: destination.endpoint,
+    presetId: 'synthetic-asr', presetVersion: 'v1', confirmed: true,
+  },
+  createdAt: '2026-10-29T00:00:00Z', updatedAt: '2026-10-29T00:00:00Z', totalSegments: 1,
+  completedSegments: 0, failedSegments: 1, totalSamples: 16000, completedSamples: 0, sampleRate: 16000,
+  stopRequested: false, backgroundProcessingAvailable: true, route: 'cloud-asr',
 }
 const source = {
   noteId, versionId: sourceVersionId, title: '零录音材料', createdAt: '2026-10-29T00:00:00Z', isCurrent: true,
@@ -89,6 +105,16 @@ beforeEach(() => {
   derived.saveManual.mockResolvedValue({ artifact, versionId, hasConflict: true })
   derived.select.mockResolvedValue({ ...artifact, headVersionId: versionId })
   assistant.noteAsrTasks.mockResolvedValue([])
+  assistant.noteAsrDestinations.mockResolvedValue({ total: 0, items: [] })
+  assistant.asrRouteConfig.mockResolvedValue({
+    cloudConfigured: false, cloudModelId: null, consentVersion: 'consent-1', defaultRoute: 'local',
+    localModelId: null, localModelRevision: null, revision: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', updatedAt: '2026-10-29T00:00:00Z',
+  })
+  assistant.asrRoutingNodes.mockResolvedValue([])
+  assistant.noteAsrTask.mockResolvedValue(asrTask)
+  assistant.noteAsrSegments.mockResolvedValue({ total: 0, offset: 0, items: [] })
+  assistant.asrReprocessHistory.mockResolvedValue({ parentTaskId: asrTask.taskId, total: 0, offset: 0, limit: 10, items: [] })
+  assistant.asrRoutingAttempts.mockResolvedValue([])
 })
 afterEach(() => { cleanup(); client.clear() })
 
@@ -113,6 +139,32 @@ it('explains an empty shared destination catalogue without exposing admin config
   expect(await screen.findByText(/暂无可用的共享生成目标/)).toBeTruthy()
   expect(screen.getByText(/普通账号不能查看或配置模型凭据/)).toBeTruthy()
   expect(screen.queryByRole('link', { name: /ASR 配置/ })).toBeNull()
+})
+
+it('shows the ordinary-user ASR start entry on native notes without admin model queries', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  page()
+  await chooseSource()
+  expect(await screen.findByText('启动录音转写')).toBeTruthy()
+  expect(await screen.findByText('当前默认为本机')).toBeTruthy()
+  await waitFor(() => expect(assistant.noteAsrDestinations).toHaveBeenCalledOnce())
+  expect(assistant.asrRouteConfig).toHaveBeenCalled()
+  expect(assistant.models).not.toHaveBeenCalled()
+  expect(assistant.asrPresets).not.toHaveBeenCalled()
+})
+
+it('shows ordinary-owner ASR task detail, retry and immutable history without admin settings', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockResolvedValue([asrTask])
+  page()
+  await chooseSource()
+  expect(await screen.findByText('本版本录音转写任务')).toBeTruthy()
+  await userEvent.click(await screen.findByRole('button', { name: /synthetic-asr|synthetic\.invalid/ }))
+  expect(await screen.findByText('逐片进度与恢复')).toBeTruthy()
+  expect(await screen.findByText('重处理（显式确认）')).toBeTruthy()
+  expect(await screen.findByText('重处理历史（不可变）')).toBeTruthy()
+  expect(assistant.models).not.toHaveBeenCalled()
+  expect(assistant.asrPresets).not.toHaveBeenCalled()
 })
 
 it('requires exact destination consent and creates with a persisted UUID intent', async () => {
