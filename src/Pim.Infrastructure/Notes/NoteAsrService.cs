@@ -286,8 +286,14 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var evidence = await CurrentEvidenceAsync(owner, state, ct);
         if (evidence.Count > 0)
         {
+            var observedAttempt = state.AttemptId;
+            var observedVersion = state.Request.VersionId;
+            var observedInput = state.InputSha256;
             state = await tasks.UpdateAsync(owner, id, current =>
             {
+                if (current.AttemptId != observedAttempt ||
+                    current.Request.VersionId != observedVersion ||
+                    current.InputSha256 != observedInput) return;
                 foreach (var (segmentIndex, proof) in evidence)
                 {
                     if (segmentIndex < 0 || segmentIndex >= current.Steps.Count) continue;
@@ -297,6 +303,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                 }
             }, ct);
         }
+        state = await routing.RepairAcknowledgedTaskAsync(owner, state, ct);
         var waiting = state.Steps.Where(x => x.Current.Status is "Unknown" or "Running").ToArray();
         if (waiting.Length == 0) return state;
         await AiCallRecovery.RecoverExpiredAsync(db, ct);
