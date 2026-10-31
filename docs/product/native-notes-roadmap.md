@@ -1,10 +1,21 @@
 ﻿# PIM 原生客户端与笔记路线图
 
-版本：v0.41 两项 #516 产品决策确认同步。更新日期：2026-10-31。v0.40 记录 Web/Android/API 发布收口、稳定性补修与 #516 排期；v0.40 及更早正文保持原样。
+版本：v0.42 新增 #516 MiMo Batch 云端异步 provider 需求与排期。更新日期：2026-10-31。v0.41 记录两项 #516 产品决策确认；v0.41 及更早正文保持原样。
 
 本文位于 `pim-api/docs/product/native-notes-roadmap.md`，作为跨仓持续维护的唯一总路线图。Android、Windows 与 Web 按批次引用同一份需求，不复制另一套台账；首版范围和视觉规范分别通过文内链接细化。更新状态时标明平台、证据和仍未交付部分，不以聊天记录代替仓内记录。
 
 总跟踪：[pim-api#505](https://github.com/2746267826/pim-api/issues/505)。主题切片 [pim-android#31](https://github.com/2746267826/pim-android/issues/31) 已合并；录音切片：[pim-android#33](https://github.com/2746267826/pim-android/issues/33)；混合文档与基础手写：[pim-android#35](https://github.com/2746267826/pim-android/issues/35)；完整材料版本：[pim-android#37](https://github.com/2746267826/pim-android/issues/37)。总跟踪不能随主题切片或安卓首版完成而提前关闭。
+
+<a id="v042-current"></a>
+
+### v0.42 当前状态：新增 MiMo Batch 云端异步 provider 需求与排期（2026-10-31）
+
+用户要求为 #516 再增加一种 provider：“MiMo 批量推理”。自 v0.42 起确认把 MiMo Batch 作为云端 `cloud-multimodal` 下的独立 provider 与异步 execution mode 选项；不新增对外 route 枚举，旧三路由规划是历史计划语义，不表示其已进入 OpenAPI enum 或已实现。本节只追加需求与排期，不实现 provider，不产生真实付费请求，#516 仍为 `PLANNED / NOT IMPLEMENTED`。
+
+- 排期增量：Phase 1 契约纳入 execution mode、provider handle 与按 item 对账；Phase 2 增加独立 MiMo Batch 垂直切片，依赖 Phase 1 与官方音频 Batch 能力确认，合成 HTTP/JSONL 确定性先行，真实付费调用另有授权；Phase 3/4 无新增依赖；Phase 5 覆盖 Batch history、partial、cancel 与 errors。五阶段与 AC1–19 原编号不变。
+- 策略继承：v0.41 两项确认继续有效——local 不可用仅用户手动切 cloud，禁止自动付费 fallback；Windows 仅当前账号。批次选择是用户/管理员的显式云批量授权，管理员默认不追溯既有 attempt，也不因 local offline 自动切 Batch；不改默认成本授权。
+- 关键待核：Batch 音频端到端证据、per-file `expire_at` 与 batch `expires_at` 的实际语义、Batch 状态全集/大小写、region 与 base URL/凭据组合、单行与文件行数上限、音频 URL 有效期。未知状态保留 raw，不得当成功或触发重交；未知项只阻塞依赖该能力的 runtime 验收，不全局阻塞 Phase 1。
+- 全部产品 runtime 仍 `NOT-VERIFIED`；完整设计、冲突记录与排期见[双通道方案 v0.42 当前覆盖](../architecture/asr-dual-channel-plan.md#v042-latest-status)。原 v0.41 及更早正文、单条 v0.42 history row 与历史保护保持原样。
 
 <a id="v041-current"></a>
 
@@ -958,3 +969,4 @@ Windows 记录、Web 编辑、TASK-01 和 MIG-01 至 MIG-13 继续保留原阶�
 | 2026-10-30 | 完成 v0.39 Web ASR 入口交付、Issue 收口与 #516 双通道排期 | Web PR540于14:29:51Z普通merge为`0e6d9f4adcf283138d68405d9ca65b04b7c51793`；exactCI41069510853 Gate/Web/Docker SUCCESS；masterCI41072022034 SUCCESS/Gate/release；Release`api-v26.10.1023`@14:38:55Z target merge、4 asset尺寸/SHA已核、pim-web-version26.10.1023/git`0e6d9f4`；管理员入口与普通用户权限隔离经preview/合成API浏览器QA6/6验证，非live-backend/production。执行按优先级/波次而非全串行：Web交付收口后，第一稳定性波次由#533 core安全修/受控设备QA与#539 semantic fix并行推进（无跨仓前置）；第二稳定性波次为#539显式processing/退避契约及Android消费者闭环；随后进入#516阶段1。#516内部阶段1→阶段2/3→阶段4→阶段5依赖不变；阶段1完成后阶段2云端多模态与阶段3 Windows模型管理可并行。物理OPPO/production未验收保留NOT-VERIFIED，不设为阻塞所有独立笔记规划的全局硬门。#533 OPEN，fullApp2027/0fail但只读复审发现分页并发cleanup漏行/空间预算退步，补修复测中。#539 OPEN，5/5为旧快照，day_overflow派生flag残留、较早late事件漏读及同设备并发边界补修中；5006rows回扫为隔离合成PG已复现事实但非现网唯一根因。#516产品仍PLANNED/NOT IMPLEMENTED/NOT-VERIFIED。API#525用户CLOSED/COMPLETED及4731入库仅为用户reported。两项用户决定待答。45/32/32/13/186保护基线保持。本条版本 v0.39 |
 | 2026-10-31 | 记录 v0.40 当前交付、#539 修复 merge 与 #516 排期状态 | Web Release `api-v26.10.1023` verified/not production。Android PR #56 merge `998015d5b466c2d621c01beb3760c286a351037f`、Release `android-v26.10.1142`，fullApp `2034 / 0 fail`、focused `84 PASS` 为受控结果；#533 仍 `OPEN`，物理/OEM `NOT-VERIFIED`。API #539 仍 `OPEN`；PR #542 head `933a892b` 普通 merge 为 `f0ecf4501a81b6e8c105ca14cc1def844408d762`（2026-10-30T17:19:56Z），exact PR CI `41090756654` 整体 SUCCESS/Gate/API/Web/Docker。`api-v26.10.1031` published 17:55:13Z、非 draft/prerelease，target/tag `f0ecf450`；exact master CI `41097882594` 全部适用 job/Gate/release SUCCESS，4 assets 已上传，metadata SHA 不等于本地整包 byte hash，Release 不代表 production。新 processing 协议仍 WIP，尚在补齐契约、HTTP 证据与兼容；Android 旧 `202` 客户端测试已本地 commit `2d64024c41940560c53ff608623fc168d4bd2b73`（clean/no push），core `5` + app `8` PASS，新 consumer/not-before 未实现。`#525` 保持用户关闭；`#516` 五阶段/AC1–19 全计划、两项 decision pending、产品未实现。45/32/32/13/186 保护保持一致。本条版本 v0.40 |
 | 2026-10-31 | 用户确认 #516 两项产品决策，v0.41 同步当前约束 | 本地 ASR 节点不可用时继续排队，只有用户主动手动切云端，禁止自动付费 fallback；手动切换沿用显式用户授权、不可变 route 与 attempt，queued 不得随默认配置漂移自动转云。Windows 节点仅处理当前登录账号任务，禁止跨账号或共享节点。两项自 v0.41 起为 confirmed，v0.40 及更早 pending 作为历史保留；模型/revision、运行时、硬件与阈值仍是工程前置。`#516` 保持 `PLANNED / NOT IMPLEMENTED`，五阶段依赖、AC1–19、45/32/32/13 与既有历史保护不变；阶段 1 最小负向验收仍 `NOT-VERIFIED`。本条版本 v0.41 |
+| 2026-10-31 | v0.42 为 #516 追加 MiMo Batch 云端异步 provider 需求与排期 | MiMo Batch 是 `cloud-multimodal` 下独立 provider/异步 execution mode，不新增对外 route 枚举；保持 local 与 cloud 两类执行位置及既有 local/cloud-asr/cloud-multimodal 逻辑路由计划，旧三路由规划不表示新增 provider 已进入 OpenAPI enum 或已实现。每次 attempt 固定 owner、材料版本、segment、provider handle、region、所选模型、window、consent 与 `custom_id` 映射；管理员默认不追溯改写既有 attempt。已确认“local 离线仅手动切 cloud、Windows 仅当前账号”不变，不因节点离线自动转 Batch，也不改默认成本授权。候选模型只取 Batch 支持集与 audio capability 集交集；本轮范围仅 `/v1/chat/completions`，音频 Batch 端到端仍未实证。阶段 2 增加依赖阶段 1 与官方音频 Batch 能力确认的独立垂直切片；阶段 3/4 无新增依赖；阶段 5 覆盖 Batch history/partial/cancel/errors。五阶段、AC1–19 原编号及全部历史保护不变，产品 runtime 全为 `NOT-VERIFIED`，仍 `NOT IMPLEMENTED`。本条版本 v0.42 |

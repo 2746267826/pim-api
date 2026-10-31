@@ -1,6 +1,47 @@
 # ASR 双通道增量方案（#516 排期）
 
-状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED；两项产品决策 CONFIRMED**。更新日期：2026-10-31。本文把 #516 的已提出需求整理为依赖明确、顺序合理的增量计划，不是工期承诺或功能完成报告；v0.41 已确认决策覆盖见下方最新说明。
+状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED；两项产品决策 CONFIRMED；MiMo Batch 仅需求/排期追加，NOT IMPLEMENTED / NOT-VERIFIED**。更新日期：2026-10-31。本文把 #516 的已提出需求整理为依赖明确、顺序合理的增量计划，不是工期承诺或功能完成报告；v0.42 MiMo Batch 增量与 v0.41 已确认决策覆盖见下方最新说明。
+
+<a id="v042-latest-status"></a>
+
+## v0.42 最新状态覆盖：MiMo Batch provider 需求与排期追加（2026-10-31）
+
+用户本轮要求为 #516 增加一种 provider：“MiMo 批量推理”。本节只追加需求与排期设计，不实现 provider，不产生真实付费请求；下方 v0.41、v0.40 及更早正文保持历史快照，不因本节改写。文中引用的 MiMo Batch 行为来自官方文档 [Batch API](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/text-generation/batch-api)，属于上游产品说明，不是本仓已验证能力；除官方文档明示字段外，本节不替供应商臆造行为。
+
+### 路由与 provider 归属
+
+- 继续保留 `local` 与 `cloud` 两类执行位置，以及既有 `local` / `cloud-asr` / `cloud-multimodal` 逻辑路由计划；MiMo Batch 归入 `cloud-multimodal` 下的独立 provider 与异步 execution mode 选择。未来实际 DTO 字段名与取值仍须由唯一 OpenAPI 导出后才定，本节不预写 endpoint、enum 值或字段名；旧三路由规划是历史计划语义，不表示新增 provider 已进入既有 OpenAPI enum 或已实现。
+- 已确认产品决策继续有效：local 不可用时继续排队且只有用户手动切云端，Windows 节点只处理当前账号。不因 local 离线、超时或默认配置漂移而自动转 Batch；选择 Batch 是用户/管理员的显式云批量选择，不是自动 fallback。
+
+### 上游 Batch 语义（以官方文档为准）
+
+- 输入为 multipart 上传的 JSONL 文件，上传接口为 `POST /v1/files`（`purpose=batch`）。Batch 创建用 `POST /v1/batches`，`input_file_id`、`endpoint` 与 `name` 必填，`completion_window` 按官方文档传示例值（如 `24h`）；本文不定义产品实作字段名，也不假设其他 window 值可用。
+- 官方文档声明 Batch 支持的模型包括 `mimo-v2.6-pro` 与 `mimo-v2.6-flash`（小写）。#516 云端多模态模型兼容集是“Batch 支持集”与“官方 audio-understanding 能力集”的交集，并要求显式音频 capability；不是“所有 chat 模型”。候选只列上述两模型；官方 [audio-understanding 文档](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/multimodal-understanding/audio-understanding) 另列其他模型时，不在 Batch 支持集内的不作为 Batch 候选。没有官方 Batch 音频端到端样例或本仓实证前，不写 Batch 音频已支持，也不写模型名完全未知。
+- Batch 输入是请求 JSONL，每行含 `custom_id`、`method`、`url`、`body`；文件内 `custom_id` 唯一、单文件一个接入点、官方默认单文件上限 128 MB，`body` 参数与底层模型 API 一致。上传 JSONL 不等于把原音频 multipart 直接传给 `/v1/files`：音频以底层模型 API 允许的方式引用（如 `input_audio` 的公网 URL 或 `data:MIME;base64`）；嵌入 base64 会占用 JSONL 预算，外部 URL 的访问权限与 TTL 必须覆盖异步执行等待窗口并满足显式授权，不额外强制留存 30 天；base64 与 file 预算在提交前预检，禁止为 Batch 随意公开音频。
+- 结果通过输出/错误 JSONL 按 `custom_id` 关联，不按行序；查询单个 Batch 用 `GET /v1/batches/{id}`，下载结果用 `GET /v1/files/{id}/content`。`POST /v1/batches/{id}/cancel` 是异步取消，取消后保留已完成部分且可能计费；DELETE 仅删除终态 Batch 记录，不是 cancel，且不证明删除音频或输入文件。Batch 内没有任务级重试/续跑，失败项需经显式授权新建 Batch 重试，成功项不随之重发且正常计费。输入/输出默认约 30 天留存仅是默认说明，不保证可等待 30 天；per-file 的 `expire_at` 与 batch 的 `expires_at` 必须分别持久化、分别保守管理并提前取回，不得混用。远端已过期且从未取回才标不可取回；本地已持久化结果继续可读。远端留存/删除语义仍待证。官方文档还说明 Batch 非流式、闲时调度、不承诺实时 SLA；文档未给出本节用到的超时、限流或 URL 有效期数值，本文不猜值。
+
+### 本仓设计边界
+
+- attempt 快照固定 owner、材料版本、segment 计划、attempt、provider handle、credential 配置 id/revision（不存明文密钥或签名 URL）、region/base URL、所选模型、completion window、consent 与 immutable route；管理员修改默认选择不追溯改写既有 attempt。批次级选择允许用户对整批范围一次性显式授权，不要求每个 segment/子项各点一次确认；授权范围进入快照。
+- 输入/输出 JSONL 采用流式有界读写，具体行数与大小阈值属实现期受控决策，本文不猜值；server 持久化 input file、batch、output、error 文件 ID 与 per-item 进度，轮询使用可配置退避并在重启后核对状态。
+- create 请求超时或结果未知（UNKNOWN）时必须持久化 UNKNOWN 与已有核对标识；只有存在可核对 batch id 时才允许 query 核对，没有 id 时交用户/平台侧核对，不自动重试或重复收费。不臆造供应商 Idempotency-Key、list API 或未证字段。乱序、部分成功、缺失、重复、unknown `custom_id`、非 200、行内 error、空结果必须分类呈现；已知状态可规范化大小写并保留 raw，真正未识别的状态才标 UNKNOWN，UNKNOWN 不得当成功，不得据此触发重新提交；Batch 状态 `completed` 不判所有 item 成功，不覆盖人工 head、原音频或既有版本。
+- 仅对明确失败且未成功项，经显式授权创建新 attempt 重试；不把已成功项或整批无差别重发。cancel 进行中不当终态、不提前清退；进入 cancelled 终态后仍取回已完成部分结果。到期前持久化结果与证据；选择云批量前必须明确音频离机、长等待与现金计费同意，不改默认成本授权。
+- UX 计划：管理员配置批量 provider 的 region/base URL/凭据/模型/window 默认值；用户在任务/批次范围显式选择云批量并看到已提交/等待、进度、取消入口、部分失败与结果过期/取回状态。以上均为计划，仍 `NOT IMPLEMENTED / NOT-VERIFIED`。
+
+### 五阶段与 AC 排期增量
+
+- 五阶段与 AC1–19 原编号、原验收文案与依赖保留，不重编号。Phase 1 在契约计划中纳入 execution mode、provider handle 与按 item 对账；Phase 2 增加独立 MiMo Batch 垂直切片，前置为 Phase 1 与官方音频 Batch 能力确认；合成 HTTP/JSONL 确定性先验收，真实付费调用另行授权；Phase 3/4 相对原计划无新增依赖；Phase 5 覆盖 Batch history、partial、cancel 与 errors 展示。
+
+- 已确认的产品决策、45/32/32/13 与至少 203 条历史保护事实、完整 v0.41 及更早 marker-to-EOF 字节不被本节改动；本节不新增稳定 requirement/MIG/TASK 编号。
+
+### 文档冲突与待核边界
+- completion window：任务完成窗口资料存在 1–14 天表述，而 API 表固定示例为 `24h`；示例 `24h` 不表示真实 1–14 天 range 已验证，接入须以实际响应/字段说明为准。
+- 文件保留：文件保留默认约 30 天，但单文件 `expire_at` 示例可仅约 4400 秒；按每个 file 的实际 `expire_at` 保守提前取回，不能与 batch `expires_at` 混用。
+- 状态集合：资料出现“9 状态”与表格 6 项且大小写混用；本文不固化状态清单，已知状态可规范化大小写并保留 raw，真正未识别值才标 UNKNOWN，且不可当成功或触发重交。
+- `name` 字段：创建字段说明称必填，但官方 Python 示例未设置；实现以字段说明与实测响应为准，不照抄缺字段示例。
+- region：资料表明 region 从控制台选择，请求中未明确独立 region 字段；接入前须确认独立 region/base URL/凭据配置组合，不猜字段。
+- 音频 Batch：官方实时 audio-understanding 能力与 Batch 模型支持集有交集，但无直接 Batch 音频样例或本仓实证；不得由实时音频支持推出 Batch 音频已支持。
+- URL 有效期、单行/文件行数上限未证，不猜值；mock 契约可先推进，未知项只阻塞依赖该能力的 runtime 验收，不全局阻塞 Phase 1。
 
 <a id="v041-latest-status"></a>
 
