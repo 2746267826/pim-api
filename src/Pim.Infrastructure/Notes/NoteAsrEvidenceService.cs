@@ -98,7 +98,8 @@ public sealed class NoteAsrEvidenceService(PimDbContext db, NoteAsrTaskStore tas
             return ExactOrConflict(exact, providerHandle, resultSha, coverageJson);
         }
 
-        var ownsTransaction = db.Database.IsRelational() && db.Database.CurrentTransaction is null;
+        var relational = db.Database.IsRelational();
+        var ownsTransaction = relational && db.Database.CurrentTransaction is null;
         NoteAsrEvidenceWriteResult written;
         if (ownsTransaction)
         {
@@ -136,7 +137,7 @@ public sealed class NoteAsrEvidenceService(PimDbContext db, NoteAsrTaskStore tas
                 return new NoteAsrEvidenceWriteResult(evidence.Id, false);
             });
         }
-        else
+        else if (relational)
         {
             // Routing already owns a retrying execution strategy/transaction. Never open a nested
             // retry unit here; a savepoint keeps a unique-race recoverable inside that transaction.
@@ -158,6 +159,27 @@ public sealed class NoteAsrEvidenceService(PimDbContext db, NoteAsrTaskStore tas
                 db.Entry(evidence).State = EntityState.Detached;
                 exact = await ExactEvidenceAsync();
                 if (exact is null) throw;
+                written = ExactOrConflict(exact, providerHandle, resultSha, coverageJson);
+            }
+        }
+        else
+        {
+            // InMemory and other nonrelational test providers do not support SQL savepoints or
+            // ExecuteUpdate. Preserve the original single-context semantics without transaction APIs.
+            var evidence = NewEvidence();
+            db.NoteAsrSegmentEvidence.Add(evidence);
+            try
+            {
+                await db.SaveChangesAsync(ct);
+                if (updateAttemptCounters) await SyncAttemptCounterCoreAsync(owner, attempt, ct);
+                written = new(evidence.Id, false);
+            }
+            catch (DbUpdateException error) when (IsUniqueViolation(error))
+            {
+                db.ChangeTracker.Clear();
+                exact = await ExactEvidenceAsync();
+                if (exact is null) throw;
+                if (updateAttemptCounters) await SyncAttemptCounterCoreAsync(owner, attempt, ct);
                 written = ExactOrConflict(exact, providerHandle, resultSha, coverageJson);
             }
         }
@@ -268,6 +290,16 @@ public sealed class NoteAsrEvidenceService(PimDbContext db, NoteAsrTaskStore tas
         var count = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
                 x.AttemptId == attempt.Id && x.FencingToken == attempt.FencingToken)
             .Select(x => x.SegmentIndex).Distinct().CountAsync(ct);
+        if (!db.Database.IsRelational())
+        {
+            var tracked = await db.NoteAsrAttempts.SingleOrDefaultAsync(x => x.Id == attempt.Id &&
+                x.OwnerId == owner && x.FencingToken == attempt.FencingToken && x.State != "Succeeded", ct);
+            if (tracked is null) return;
+            tracked.CompletedSegments = count;
+            tracked.UpdatedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(ct);
+            return;
+        }
         await db.NoteAsrAttempts.Where(x => x.Id == attempt.Id && x.OwnerId == owner &&
                 x.FencingToken == attempt.FencingToken && x.State != "Succeeded")
             .ExecuteUpdateAsync(setters => setters

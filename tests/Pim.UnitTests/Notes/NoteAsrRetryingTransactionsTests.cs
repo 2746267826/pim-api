@@ -140,6 +140,42 @@ public sealed class NoteAsrRetryingTransactionsTests
         CleanupStorage(seed.Owner);
     }
 
+    [Fact]
+    public async Task Evidence_write_supports_nonrelational_provider_without_sql_transaction_apis()
+    {
+        var owner = Guid.NewGuid();
+        var options = new DbContextOptionsBuilder<PimDbContext>()
+            .UseInMemoryDatabase("asr-evidence-nonrelational-" + owner.ToString("N"))
+            .Options;
+        try
+        {
+            await using var db = new PimDbContext(options, new FixedUser(owner));
+            var seed = await SeedInMemoryAsync(db, owner);
+            var tasks = Tasks(owner);
+            var service = new NoteAsrEvidenceService(db, tasks, new FixedUser(owner));
+
+            var first = await service.WriteAsync(seed.Owner, seed.AttemptId, 0, "batch",
+                "in-memory-handle", "in-memory transcript", null, true, CancellationToken.None);
+            var replay = await service.WriteAsync(seed.Owner, seed.AttemptId, 0, "batch",
+                "in-memory-handle", "in-memory transcript", null, true, CancellationToken.None);
+
+            Assert.False(first.Duplicate);
+            Assert.True(replay.Duplicate);
+            Assert.Equal(first.EvidenceId, replay.EvidenceId);
+            Assert.Equal(1, await db.NoteAsrSegmentEvidence.CountAsync(x =>
+                x.OwnerId == owner && x.AttemptId == seed.AttemptId));
+            var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == seed.AttemptId);
+            Assert.Equal(1, attempt.CompletedSegments);
+            var state = await tasks.ReadAsync(owner, seed.TaskId, CancellationToken.None);
+            Assert.Equal("Succeeded", state.Steps[0].Current.Status);
+            Assert.Equal(first.EvidenceId, state.Steps[0].Current.EvidenceId);
+        }
+        finally
+        {
+            CleanupStorage(owner);
+        }
+    }
+
     private static NoteAsrBatchService Service(PimDbContext db, Guid owner, SyntheticBatchFactory factory) =>
         new(db, new FixedUser(owner), Tasks(owner), Materials(owner),
             new NoteAsrEvidenceService(db, Tasks(owner), new FixedUser(owner)),
@@ -235,6 +271,50 @@ public sealed class NoteAsrRetryingTransactionsTests
             attempt.ConfigRevision = state.RouteConfigRevision;
             await db.SaveChangesAsync();
         }
+        return new Seed(owner, profileId, taskId, attemptId, material.Version.Upload.VersionId,
+            "mimo-v2.6-pro", prompt.Text, state.Steps);
+    }
+
+    private static async Task<Seed> SeedInMemoryAsync(PimDbContext db, Guid owner)
+    {
+        var material = await SeedMaterialAsync(owner);
+        var taskId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var profileRevision = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+        var promptTemplate = AiAsrPromptTemplate.Normalize();
+        var prompt = promptTemplate.Snapshot("zh");
+        db.NoteAsrAttempts.Add(new NoteAsrAttemptEntity
+        {
+            Id = attemptId, OwnerId = owner, TaskId = taskId, NoteId = material.Version.Upload.NoteId,
+            VersionId = material.Version.Upload.VersionId,
+            InputSha256 = NoteMaterialManifestValidator.Hash(material.Version.InputJson),
+            Route = NoteAsrRoute.CloudMultimodal, State = "Queued", ConfigRevision = Guid.NewGuid(),
+            ConsentVersion = "consent-1", ModelId = profileId, ModelRevision = profileRevision,
+            PresetId = MimoMultimodalPreset.PresetId, PresetVersion = "1", Model = "mimo-v2.6-pro",
+            Endpoint = "https://api.example.invalid/v1/chat/completions", ExecutionMode = "batch",
+            PromptTemplate = promptTemplate.Text, PromptTemplateSha256 = promptTemplate.Sha256,
+            PromptTemplateRevision = promptTemplate.Revision, PromptRendered = prompt.Text,
+            PromptSha256 = prompt.Sha256, PromptRevision = prompt.Revision,
+            FencingToken = 7, ExpectedSegments = 2, Language = "zh"
+        });
+        await db.SaveChangesAsync();
+
+        var consent = new AiAsrDestinationConsent(profileId, profileRevision,
+            "https://api.example.invalid/v1/chat/completions", MimoMultimodalPreset.PresetId, "1", true);
+        var route = new NoteAsrRouteConsent(NoteAsrRoute.CloudMultimodal, Guid.NewGuid(),
+            "consent-1", true, NoteAsrExecutionMode.Batch, true);
+        var request = new StartNoteAsrRequest(taskId, owner, material.Version.Upload.VersionId,
+            consent, "zh", route);
+        var tasks = Tasks(owner);
+        var state = await tasks.CreateAsync(owner, request, material.Version,
+            NoteAsrPlan.Build(material.Version, NoteAsrPlan.SamplesPerCall), route, "batch",
+            NoteAsrPlan.SamplesPerCall, CancellationToken.None);
+        await tasks.UpdateAsync(owner, taskId, current =>
+        {
+            current.AttemptId = attemptId;
+            current.ExecutionMode = "batch";
+        }, CancellationToken.None);
         return new Seed(owner, profileId, taskId, attemptId, material.Version.Upload.VersionId,
             "mimo-v2.6-pro", prompt.Text, state.Steps);
     }
