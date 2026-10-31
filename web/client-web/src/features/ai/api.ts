@@ -29,6 +29,12 @@ export type NoteAsrBatchJob = components['schemas']['NoteAsrBatchJobDto']
 export type NoteAsrReprocessHistory = components['schemas']['NoteAsrReprocessHistoryDto']
 export type NoteAsrReprocessRequest = components['schemas']['ReprocessNoteAsrRequest']
 export type NoteAsrReprocessResult = components['schemas']['NoteAsrReprocessResultDto']
+export type NoteAsrBatchFromTaskRequest = components['schemas']['StartNoteAsrBatchFromTaskRequest']
+export type NoteAsrBatchRetryFailedRequest = components['schemas']['RetryFailedNoteAsrBatchRequest']
+export type NoteAsrBatchTarget = components['schemas']['NoteAsrBatchTarget']
+export type NoteAsrBatchSubmission = components['schemas']['NoteAsrBatchSubmissionResultDto']
+export type NoteAsrReprocessReason = components['schemas']['NoteAsrReprocessReason']
+export type NoteAsrReprocessRoute = components['schemas']['NoteAsrReprocessRoute']
 export type CallItem = components['schemas']['AiRequestLogListItemDto']
 export type CallDetail = components['schemas']['AiRequestLogDetailDto']
 export type Usage = components['schemas']['AiUsageSummaryDto']
@@ -65,6 +71,10 @@ export const aiApi = {
     apiGet<NoteAsrBatchJob>(`/api/v1/native-notes/asr-routing/batches/${encodeURIComponent(batchJobId)}`, { signal }),
   asrBatchPoll: (batchJobId: string) => apiPost<NoteAsrBatchJob>(`/api/v1/native-notes/asr-routing/batches/${encodeURIComponent(batchJobId)}/poll`, {}),
   asrBatchCancel: (batchJobId: string) => apiPost<NoteAsrBatchJob>(`/api/v1/native-notes/asr-routing/batches/${encodeURIComponent(batchJobId)}/cancel`, {}),
+  asrBatchFromTask: (sourceTaskId: string, body: NoteAsrBatchFromTaskRequest) =>
+    apiPost<NoteAsrBatchSubmission>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(sourceTaskId)}/batch-from-task`, body),
+  asrBatchRetryFailed: (sourceJobId: string, body: NoteAsrBatchRetryFailedRequest) =>
+    apiPost<NoteAsrBatchSubmission>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(sourceJobId)}/batch-retry-failed`, body),
   asrPresets: (signal?: AbortSignal) => apiGet<AsrPreset[]>('/api/v1/ai/asr-presets', { signal }),
   asrCall: (body: AsrRequest, signal: AbortSignal) => apiPost<CallResult>('/api/v1/ai/asr-calls', body, { signal }),
   asrLookup: (id: string) => apiGet<CallResult>(`/api/v1/ai/asr-calls/${encodeURIComponent(id)}`),

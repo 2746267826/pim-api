@@ -87,7 +87,7 @@ export function BatchMonitorPanel({
     <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-text-1">MiMo Batch 长任务</h2>
-        <p className="mt-1 break-words text-xs text-text-3">批量音频能力尚未获得真实付费验收，界面保持 NOT-VERIFIED。没有供应商任务标识时只做人工核对，禁止自动重建。</p>
+        <p className="mt-1 break-words text-xs text-text-3">Batch 预览；音频上游尚未验收，需管理员显式启用。没有供应商任务标识时只做人工核对，禁止自动重建或自动重发。</p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         {jobs.length > boundedPageSize && <span className="text-xs text-text-3">第 {currentPage} / {totalPages} 页</span>}
@@ -123,7 +123,9 @@ export function BatchMonitorPanel({
         {job.errorLabel && <p className="mt-2 break-words text-xs text-warn">{job.errorLabel}</p>}
         <div className="mt-3 flex flex-wrap gap-2">
           {job.providerRequestId && onPoll && <Button size="sm" loading={busyId === job.id} disabled={disabled || readOnly} onClick={() => void poll(job)}>立即查询状态</Button>}
-          {onCancel && job.status !== 'cancelled' && job.status !== 'completed' && job.status !== 'failed' && job.status !== 'expired' &&
+          {onCancel && job.status !== 'cancelled' && job.status !== 'completed' && job.status !== 'partial' &&
+            job.status !== 'failed' && job.status !== 'expired' &&
+            (job.status !== 'unknown' || Boolean(job.providerRequestId)) &&
             <Button size="sm" variant="danger-soft" disabled={disabled || readOnly || busyId != null} onClick={() => {
               setCancelId(job.id)
               setCancelConfirmed(false)
