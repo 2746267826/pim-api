@@ -27,7 +27,8 @@ public sealed class MimoAsrPreset(IAiProfileChatClientFactory clients) : IAiAsrP
         if (!Descriptor.Models.Contains(model, StringComparer.Ordinal))
             throw new DomainException(40001, "MiMo ASR预设只允许其已声明的语音识别模型");
     }
-    public string AuditRequest(byte[] sdkBody, AiModelConnection connection, AiAsrInput audio, Guid audioId, string language)
+    public string AuditRequest(byte[] sdkBody, AiModelConnection connection, AiAsrInput audio, Guid audioId,
+        string language, AiAsrPromptSnapshot? prompt = null)
     {
         var root = JsonNode.Parse(sdkBody)!; var messages = root["messages"]!.AsArray();
         if (root["model"]?.GetValue<string>() != connection.Model || messages.Count != 1 || messages[0]?["role"]?.GetValue<string>() != "user") throw Mismatch();
@@ -42,7 +43,8 @@ public sealed class MimoAsrPreset(IAiProfileChatClientFactory clients) : IAiAsrP
         return root.ToJsonString();
     }
     private static InvalidDataException Mismatch() => new("SDK音频、模型或语言与固定请求不一致，本次未发送");
-    public async Task<AiAsrProviderResult> TranscribeAsync(AiModelConnection connection, AiAsrInput audio, string language, CancellationToken ct)
+    public async Task<AiAsrProviderResult> TranscribeAsync(AiModelConnection connection, AiAsrInput audio,
+        string language, CancellationToken ct, AiAsrPromptSnapshot? prompt = null)
     {
         ValidateModel(connection.Model);
         if (!Descriptor.Formats.Contains(audio.Format) || !Descriptor.Languages.Contains(language) || audio.Bytes.Length > Descriptor.MaxAudioBytes)

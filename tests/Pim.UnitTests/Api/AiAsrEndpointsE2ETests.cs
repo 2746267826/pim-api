@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Pim.Core.Ai;
 using Pim.Core.Common;
+using Pim.Infrastructure.Ai.Asr;
 using Pim.Infrastructure.Data;
 using Pim.Module.Files.Entities;
 using Pim.Module.Files.Providers.Local;
@@ -49,14 +50,14 @@ public sealed class AiAsrEndpointsE2ETests(AiAsrEndpointFixture host) : IClassFi
         var owner=await AuthRegistrationTestHost.SeedAndLoginAsync(host.Factory,"asr-owner-"+Guid.NewGuid().ToString("N"),"admin");
         using var client=AuthRegistrationTestHost.Authed(host.Factory,owner.AccessToken);
         var catalogue=await Data<AiAsrPresetDto[]>(await client.GetAsync("/api/v1/ai/asr-presets"));
-        Assert.Single(catalogue); Assert.Equal("mimo-asr",catalogue[0].Id);
+        var legacyPreset=Assert.Single(catalogue.Where(x=>x.Id=="mimo-asr"));
         var model=await Data<AiModelDto>(await client.PostAsJsonAsync("/api/v1/ai/models",new SaveAiModelRequest("ASR配置"+Guid.NewGuid(),
-            provider.Urls.Single()+"/v1/chat/completions","mimo-v2.5-asr",true,[AiModelCapability.Transcription],30,123,"synthetic-asr-http-key",AsrPresetId:catalogue[0].Id)));
+            provider.Urls.Single()+"/v1/chat/completions","mimo-v2.5-asr",true,[AiModelCapability.Transcription],30,123,"synthetic-asr-http-key",AsrPresetId:legacyPreset.Id)));
         Assert.EndsWith("/v1/",model.BaseUrl); Assert.Equal("mimo-asr",model.AsrPresetId);
         var runtime=await Data<AiModelSettingsDto>(await client.GetAsync("/api/v1/ai/model-settings"));
         await Data<AiModelSettingsDto>(await client.PutAsJsonAsync("/api/v1/ai/model-settings",new SaveAiModelSettingsRequest(runtime.Revision,true,null,null,model.Id)));
         var request=new AiAsrCallRequest(Guid.NewGuid(),owner.UserId,new("语音.wav","wav",Convert.ToBase64String(AiAsrPresetTests.Wave())),
-            new(model.Id,model.Revision,model.BaseUrl+catalogue[0].OperationPath,catalogue[0].Id,catalogue[0].Version,true),"zh");
+            new(model.Id,model.Revision,model.BaseUrl+legacyPreset.OperationPath,legacyPreset.Id,legacyPreset.Version,true),"zh");
         var result=await Data<AiTextCallResultDto>(await client.PostAsJsonAsync("/api/v1/ai/asr-calls",request));
         Assert.Equal(AiRequestStatus.Succeeded,result.Status); Assert.Equal("本机HTTP转写结果",result.ResponseText); Assert.Equal(1,calls);
         var detail=await Data<AiRequestLogDetailDto>(await client.GetAsync($"/api/v1/ai/requests/{result.LogId}"));
@@ -82,6 +83,60 @@ public sealed class AiAsrEndpointsE2ETests(AiAsrEndpointFixture host) : IClassFi
     }
 
     [Fact]
+    public async Task Mimo_50MiB_contract_accepts_real_http_body_above_legacy_7MiB_and_saved_audio_reads_back()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 80L * 1024 * 1024);
+        await using var provider = builder.Build();
+        provider.MapPost("/v1/chat/completions", async (Microsoft.AspNetCore.Http.HttpRequest incoming) =>
+        {
+            using var json = await JsonDocument.ParseAsync(incoming.Body);
+            var root = json.RootElement;
+            Assert.Equal("mimo-v2.6-flash", root.GetProperty("model").GetString());
+            var content = root.GetProperty("messages")[0].GetProperty("content");
+            Assert.StartsWith("data:audio/wav;base64,",
+                content[0].GetProperty("input_audio").GetProperty("data").GetString());
+            Assert.Contains("language=zh", content[1].GetProperty("text").GetString());
+            return Microsoft.AspNetCore.Http.Results.Json(new
+            {
+                choices = new[] { new { finish_reason = "stop",
+                    message = new { role = "assistant", content = "large synthetic transcript" } } },
+                usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15,
+                    prompt_tokens_details = new { audio_tokens = 5 } }
+            });
+        });
+        await provider.StartAsync();
+        var owner = await AuthRegistrationTestHost.SeedAndLoginAsync(host.Factory,
+            "asr-large-" + Guid.NewGuid().ToString("N"), "admin");
+        using var client = AuthRegistrationTestHost.Authed(host.Factory, owner.AccessToken);
+        var presets = await Data<AiAsrPresetDto[]>(await client.GetAsync("/api/v1/ai/asr-presets"));
+        var mimo = Assert.Single(presets.Where(x => x.Id == "mimo-multimodal"));
+        var model = await Data<AiModelDto>(await client.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest("MiMo-large-" + Guid.NewGuid(), provider.Urls.Single() + "/v1/",
+                "mimo-v2.6-flash", true, [AiModelCapability.Transcription], 60, 123,
+                "synthetic-mimo-large-key", AsrPresetId: mimo.Id)));
+        var runtime = await Data<AiModelSettingsDto>(await client.GetAsync("/api/v1/ai/model-settings"));
+        await Data<AiModelSettingsDto>(await client.PutAsJsonAsync("/api/v1/ai/model-settings",
+            new SaveAiModelSettingsRequest(runtime.Revision, true, null, null, model.Id)));
+        var audio = BuildWave(9 * 1024 * 1024);
+        var request = new AiAsrCallRequest(Guid.NewGuid(), owner.UserId,
+            new AiAsrAudioRequest("large.wav", "wav", Convert.ToBase64String(audio)),
+            new AiAsrDestinationConsent(model.Id, model.Revision,
+                AiAsrPresetRegistry.OperationEndpoint(model.BaseUrl, mimo), mimo.Id, mimo.Version, true), "zh");
+
+        var result = await Data<AiTextCallResultDto>(
+            await client.PostAsJsonAsync("/api/v1/ai/asr-calls", request));
+
+        Assert.True(result.Status == AiRequestStatus.Succeeded,
+            $"Large MiMo call failed: {result.ErrorMessage}");
+        var bytes = await client.GetAsync($"/api/v1/ai/requests/{result.LogId}/audio/content");
+        Assert.Equal(HttpStatusCode.OK, bytes.StatusCode);
+        Assert.Equal(audio, await bytes.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
     public async Task AsrAndOriginalAudioRoutesRequireAdministrator()
     {
         using var anonymous=host.Factory.CreateClient(); Assert.Equal(HttpStatusCode.Unauthorized,(await anonymous.GetAsync("/api/v1/ai/asr-presets")).StatusCode);
@@ -93,4 +148,24 @@ public sealed class AiAsrEndpointsE2ETests(AiAsrEndpointFixture host) : IClassFi
     }
     private static async Task<T> Data<T>(HttpResponseMessage response)
     { Assert.Equal(HttpStatusCode.OK,response.StatusCode); return (await response.Content.ReadFromJsonAsync<ApiResponse<T>>())!.Data!; }
+
+    private static byte[] BuildWave(int dataBytes)
+    {
+        dataBytes -= dataBytes % 2;
+        var bytes = new byte[44 + dataBytes];
+        "RIFF"u8.CopyTo(bytes);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(4), (uint)(bytes.Length - 8));
+        "WAVEfmt "u8.CopyTo(bytes.AsSpan(8));
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(16), 16);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(20), 1);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(22), 1);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(24), 16_000);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(28), 32_000);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(32), 2);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(34), 16);
+        "data"u8.CopyTo(bytes.AsSpan(36));
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(40), (uint)dataBytes);
+        for (var i = 44; i < bytes.Length; i++) bytes[i] = (byte)(i % 251);
+        return bytes;
+    }
 }

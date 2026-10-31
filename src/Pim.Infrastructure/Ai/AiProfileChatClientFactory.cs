@@ -41,10 +41,17 @@ public sealed class AiTextWireCapture : IDisposable
     public bool ProviderAttempted { get; private set; }
     private IReadOnlyList<AiVisionAuditImage>? _images;
     private Func<byte[], string>? _requestAudit;
-    public int MaxRequestBytes => _requestAudit is not null ? 8 * 1024 * 1024 : _images is null ? 2 * 1024 * 1024 : 12 * 1024 * 1024;
+    private long _requestLimitBytes = 8 * 1024 * 1024;
+    public long MaxRequestBytes => _requestAudit is not null ? _requestLimitBytes
+        : _images is null ? 2 * 1024 * 1024 : 12 * 1024 * 1024;
     public AiTextWireCapture(IReadOnlyList<AiVisionAuditImage>? images = null) { _images = images; Slot.Value = this; }
     public void SetImages(IReadOnlyList<AiVisionAuditImage> images) => _images = images;
-    public void SetAsrAudit(Func<byte[], string> audit) => _requestAudit = audit;
+    public void SetAsrAudit(Func<byte[], string> audit, long maxRequestBytes = 8L * 1024 * 1024)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxRequestBytes);
+        _requestAudit = audit;
+        _requestLimitBytes = maxRequestBytes;
+    }
     public void Request(byte[] bytes)
     {
         if (_requestAudit is not null)
@@ -134,7 +141,7 @@ public sealed class AiTextResponseLimitHandler : DelegatingHandler
         catch { response.Dispose(); throw; }
     }
 
-    private static async Task<byte[]> ReadAsync(HttpContent content, int max, CancellationToken ct)
+    private static async Task<byte[]> ReadAsync(HttpContent content, long max, CancellationToken ct)
     {
         if (content.Headers.ContentLength > max) throw new InvalidDataException("AI请求或响应超过大小上限");
         await using var stream = await content.ReadAsStreamAsync(ct);

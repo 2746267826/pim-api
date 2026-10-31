@@ -338,7 +338,8 @@ public sealed class NoteDerivedService(
             List<NoteAsrStep> expectedSteps;
             try
             {
-                expectedSteps = NoteAsrPlan.Build(version);
+                expectedSteps = NoteAsrPlan.Build(version,
+                    asr.SamplesPerCall > 0 ? asr.SamplesPerCall : NoteAsrPlan.SamplesPerCall);
             }
             catch (DomainException error)
             {
@@ -375,6 +376,12 @@ public sealed class NoteDerivedService(
                     x.SourceObjectId == asrTaskId.Value.ToString() &&
                     x.ClientRequestId.HasValue && requestIds.Contains(x.ClientRequestId.Value))
                 .ToDictionaryAsync(x => x.ClientRequestId!.Value, ct);
+            var proofAttempt = asr.AttemptId is { } attemptId
+                ? await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct)
+                : null;
+            var evidenceBySegment = proofAttempt is null
+                ? []
+                : await NoteAsrAcceptedEvidence.LoadAsync(db, owner, proofAttempt, asr, ct);
             var logIds = logs.Values.Select(x => x.Id).ToArray();
             var audioRows = await db.AiCallAudio.AsNoTracking()
                 .Where(x => logIds.Contains(x.LogId))
@@ -383,6 +390,23 @@ public sealed class NoteDerivedService(
             foreach (var step in actualSteps)
             {
                 var attempt = step.Current;
+                if (evidenceBySegment.TryGetValue(step.Index, out var proof))
+                {
+                    if (proof.RecordingId != step.RecordingId || proof.RecordingSegment != step.RecordingSegment ||
+                        proof.ChunkIndex != step.ChunkIndex || proof.SourceFileIndex != step.FileIndex ||
+                        proof.SourceSha256 != step.Sha256 || proof.SourceOffsetSamples != step.SourceOffset ||
+                        proof.Samples != step.Samples || string.IsNullOrWhiteSpace(proof.ResultText))
+                    {
+                        issues.Add(new("asr_evidence_mismatch",
+                            "本地/Batch 成功证据与固定分片身份、来源或覆盖范围不一致",
+                            step.Path, StepKey: $"asr:{step.Index:D5}"));
+                        continue;
+                    }
+                    transcripts.Add(new(transcripts.Count, step.Index, step.RecordingId, step.RecordingSegment,
+                        step.ChunkIndex, step.FileIndex, step.Path, step.Sha256, step.SourceOffset, step.Samples,
+                        proof.ResultText, null, proof.Id, proof.ReceiptKind, proof.ProviderHandle));
+                    continue;
+                }
                 if (attempt.Status != "Succeeded" || attempt.LogId is null)
                 {
                     issues.Add(new("asr_segment_incomplete", "ASR 分片尚未成功完整",

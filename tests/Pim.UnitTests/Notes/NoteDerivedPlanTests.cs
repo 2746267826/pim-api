@@ -88,7 +88,7 @@ public sealed class NoteDerivedPlanTests
 
         Assert.NotEqual(record, analysis);
         Assert.Contains("Full transcript text", record, StringComparison.Ordinal);
-        Assert.Contains(transcripts[0].LogId.ToString("D"), record, StringComparison.Ordinal);
+        Assert.Contains(transcripts[0].LogId!.Value.ToString("D"), record, StringComparison.Ordinal);
         Assert.Contains(transcripts[0].SourceSha256, record, StringComparison.Ordinal);
         Assert.Contains("完整记录整理器", record, StringComparison.Ordinal);
         Assert.Contains("独立分析器", analysis, StringComparison.Ordinal);

@@ -12,6 +12,9 @@ import { capabilities, capabilityNames, ModelEditor } from './model-editor'
 import { CallImages, VisionCall } from './vision-call'
 import { AsrCall, CallAudio } from './asr-call'
 import { NoteAsrTasks } from './note-asr-tasks'
+import { isMimoPro } from './asr-model-guidance'
+import { AsrResultInsights } from './asr-result-insights'
+import { NoteAsrRoutingView } from './note-asr-routing-view'
 
 const states = { Succeeded: '成功', Failed: '失败', Blocked: '未执行', TimedOut: '超时', FailedValidation: '结构不符', Running: '进行中', Cancelled: '已取消', Incomplete: '未完整/未确认' }
 const pageTabs = ['models', 'asr', 'history', 'usage'] as const
@@ -70,7 +73,7 @@ function Workspace({ userId }: { userId: string }) {
     <PageHeader title="AI 设置" subtitle="模型与 ASR 配置 · 实际调用记录 · 统计" actions={<Button variant="secondary" size="sm" onClick={() => void refresh()}><RefreshCw className="size-4" aria-hidden />刷新</Button>} />
     <Segmented value={tab} onValueChange={setTab} options={[{ value: 'models', label: '模型设置' }, { value: 'asr', label: 'ASR 配置' }, { value: 'history', label: '调用记录' }, { value: 'usage', label: '统计' }]} />
     {tab === 'asr' && ((models.isError || settings.isError) ? <Card className="p-5"><EmptyState title="ASR 配置加载失败" description={errorText(models.error ?? settings.error)} action={<Button onClick={() => void refresh()}>重试</Button>} /></Card>
-      : !models.data || !settings.data ? <Skeleton className="h-48" /> : <AsrSettings models={models.data} settings={settings.data} presets={presets.data ?? []}
+      : !models.data || !settings.data ? <Skeleton className="h-48" /> : <AsrSettings userId={userId} models={models.data} settings={settings.data} presets={presets.data ?? []}
         presetsLoading={presets.isLoading} presetsError={presets.isError} retryPresets={() => void presets.refetch()} busy={busy}
         patchSettings={patchSettings} edit={setEditing} create={() => { setCreatingAsr(true); setEditing(null) }} />)}
     <div hidden={tab !== 'models'} className="space-y-4">
@@ -123,7 +126,8 @@ function Workspace({ userId }: { userId: string }) {
   </div>
 }
 
-function AsrSettings({ models, settings, presets, presetsLoading, presetsError, retryPresets, busy, patchSettings, edit, create }: {
+function AsrSettings({ userId, models, settings, presets, presetsLoading, presetsError, retryPresets, busy, patchSettings, edit, create }: {
+  userId: string
   models: Model[]
   settings: ModelSettings
   presets: AsrPreset[]
@@ -176,13 +180,15 @@ function AsrSettings({ models, settings, presets, presetsLoading, presetsError, 
           return <div key={model.id} className="min-w-0 space-y-2 rounded-ctl border border-border p-4">
             <div className="flex flex-wrap items-center gap-2"><span className="font-medium text-text-1">{model.name}</span>
               <StatusBadge tone={model.enabled ? 'ok' : 'neutral'} dot={false}>{model.enabled ? '已启用' : '已停用'}</StatusBadge>
-              <StatusBadge tone={model.hasApiKey ? 'ok' : 'warn'} dot={false}>{model.hasApiKey ? '凭据已保存' : '凭据未设置'}</StatusBadge></div>
+              <StatusBadge tone={model.hasApiKey ? 'ok' : 'warn'} dot={false}>{model.hasApiKey ? '凭据已保存' : '凭据未设置'}</StatusBadge>
+              {isMimoPro(model.model) && <StatusBadge tone="warn" dot={false}>Pro 不推荐长音频</StatusBadge>}</div>
             <p className="break-all text-xs text-text-2">{model.model} · {preset ? `${preset.name} v${preset.version}` : `预设 ${model.asrPresetId ?? '未绑定'}`}</p>
             <p className="break-all text-xs text-text-3">{model.baseUrl}</p>
             <div className="flex justify-end"><Button size="sm" variant="ghost" onClick={() => edit(model)} aria-label={`编辑 ASR ${model.name}`}>编辑</Button></div>
           </div>
         })}</div>}
     </Card>
+    <NoteAsrRoutingView userId={userId} />
   </div>
 }
 
@@ -266,7 +272,7 @@ function Detail({ id, prefix, close }: { id: string; prefix: string[]; close: ()
       <div><Label htmlFor="ai-record-messages">实际请求消息／上下文</Label><Textarea id="ai-record-messages" className="font-mono text-xs" readOnly rows={8} value={pretty(row.requestMessagesJson)} /></div>
       <div><Label htmlFor="ai-record-reply">实际回复</Label><Textarea id="ai-record-reply" readOnly rows={8} value={row.responseText ?? '未收到普通文本回复；可查看下方SDK/错误快照。'} /></div>
       {row.purpose === 'ai.vision-call' && <><p className="text-xs text-text-3">SDK消息中的图片按指纹引用到下方材料，正文和回复按原内容保留；未执行或准备失败的记录不代表图片已发送。</p><CallImages logId={id} owner={row.userId} viewer={prefix[1]!} running={row.status === 'Running'} /></>}
-      {row.purpose === 'ai.asr-call' && <><AsrInfo metadata={row.metadataJson} /><CallAudio key={`${id}/${row.status === 'Running'}`} logId={id} owner={row.userId} viewer={prefix[1]!} running={row.status === 'Running'} /></>}
+      {row.purpose === 'ai.asr-call' && <><AsrInfo metadata={row.metadataJson} /><AsrResultInsights rawJson={row.responseRawJson} metadataJson={row.metadataJson} /><CallAudio key={`${id}/${row.status === 'Running'}`} logId={id} owner={row.userId} viewer={prefix[1]!} running={row.status === 'Running'} /></>}
       <details className="text-xs text-text-3"><summary className="cursor-pointer">配置与 SDK／错误结果快照</summary><div className="mt-3 space-y-2"><p className="break-all">{row.modelEndpoint ?? '旧链路未记录地址'} · 模型 {row.model}</p><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{pretty(row.requestPayloadJson)}</pre><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{pretty(row.responseRawJson)}</pre><p>请求标识：{row.clientRequestId ?? '旧记录未提供'}</p></div></details>
     </>}</DialogBody><DialogFooter><Button variant="secondary" onClick={close}>关闭</Button></DialogFooter>
   </DialogContent></Dialog>

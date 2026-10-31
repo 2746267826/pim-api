@@ -19,11 +19,18 @@ public static class AiModelEndpoints
             .Produces<ApiResponse<IReadOnlyList<AiAsrPresetDto>>>(200).Produces(401).Produces(403);
         group.MapPost("/asr-calls", async (AiAsrCallRequest request, [FromServices] AiAsrCallService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiTextCallResultDto>.Ok(await service.CallAsync(request, ct))))
-            .WithMetadata(new RequestSizeLimitAttribute(7 * 1024 * 1024))
+            .WithMetadata(new RequestSizeLimitAttribute(AiAsrMaterialService.MaxMimoRequestJsonBytes))
             .Produces<ApiResponse<AiTextCallResultDto>>(200).Produces(400).Produces(401).Produces(403).Produces(409).Produces(413).Produces(503);
+        group.MapPost("/asr-url-calls", async (AiAsrUrlCallRequest request, [FromServices] AiAsrCallService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiAsrUrlCallResultDto>.Ok(await service.CallUrlAsync(request, ct))))
+            .WithMetadata(new RequestSizeLimitAttribute(32 * 1024))
+            .Produces<ApiResponse<AiAsrUrlCallResultDto>>(200).Produces(400).Produces(401).Produces(403).Produces(409).Produces(413).Produces(503);
         group.MapGet("/asr-calls/{clientRequestId:guid}", async (Guid clientRequestId, [FromServices] AiAsrCallService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiTextCallResultDto>.Ok(await service.GetAsync(clientRequestId, ct))))
             .Produces<ApiResponse<AiTextCallResultDto>>(200).Produces(401).Produces(403).Produces(404);
+        group.MapGet("/asr-url-calls/{clientRequestId:guid}", async (Guid clientRequestId, [FromServices] AiAsrCallService service, CancellationToken ct) =>
+            Results.Ok(ApiResponse<AiAsrUrlCallResultDto>.Ok(await service.GetUrlAsync(clientRequestId, ct))))
+            .Produces<ApiResponse<AiAsrUrlCallResultDto>>(200).Produces(401).Produces(403).Produces(404);
         group.MapGet("/requests/{logId:guid}/audio", async (Guid logId, [FromServices] AiAsrMaterialService audio, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiCallAudioDto?>.Ok(await audio.DescribeAsync(logId, ct))))
             .Produces<ApiResponse<AiCallAudioDto>>(200).Produces(401).Produces(403).Produces(404);

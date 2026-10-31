@@ -70,6 +70,13 @@ public class PimDbContext : DbContext
     public DbSet<AiCallAudioEntity> AiCallAudio => Set<AiCallAudioEntity>();
     public DbSet<AiModelProfileEntity> AiModelProfiles => Set<AiModelProfileEntity>();
     public DbSet<AiModelRuntimeEntity> AiModelRuntime => Set<AiModelRuntimeEntity>();
+    public DbSet<NoteAsrRouteConfigEntity> NoteAsrRouteConfigs => Set<NoteAsrRouteConfigEntity>();
+    public DbSet<NoteAsrNodeEntity> NoteAsrNodes => Set<NoteAsrNodeEntity>();
+    public DbSet<NoteAsrAttemptEntity> NoteAsrAttempts => Set<NoteAsrAttemptEntity>();
+    public DbSet<NoteAsrLeaseEntity> NoteAsrLeases => Set<NoteAsrLeaseEntity>();
+    public DbSet<NoteAsrAckReceiptEntity> NoteAsrAckReceipts => Set<NoteAsrAckReceiptEntity>();
+    public DbSet<NoteAsrSegmentEvidenceEntity> NoteAsrSegmentEvidence => Set<NoteAsrSegmentEvidenceEntity>();
+    public DbSet<NoteAsrBatchJobEntity> NoteAsrBatchJobs => Set<NoteAsrBatchJobEntity>();
 
     public override int SaveChanges()
     {
@@ -234,6 +241,52 @@ public class PimDbContext : DbContext
             e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.TextModelId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.VisionModelId).OnDelete(DeleteBehavior.Restrict);
             e.HasOne<AiModelProfileEntity>().WithMany().HasForeignKey(a => a.TranscriptionModelId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<NoteAsrRouteConfigEntity>(e => e.Property(x => x.Revision).IsConcurrencyToken());
+        modelBuilder.Entity<NoteAsrNodeEntity>(e =>
+        {
+            e.HasIndex(x => new { x.OwnerId, x.NodeId }).IsUnique();
+            e.HasIndex(x => new { x.OwnerId, x.LastHeartbeatAt });
+        });
+        modelBuilder.Entity<NoteAsrAttemptEntity>(e =>
+        {
+            e.HasIndex(x => new { x.OwnerId, x.TaskId }).IsUnique();
+            e.HasIndex(x => new { x.OwnerId, x.State, x.CreatedAt });
+            e.Property(x => x.FencingToken).IsConcurrencyToken();
+        });
+        modelBuilder.Entity<NoteAsrLeaseEntity>(e =>
+        {
+            e.HasIndex(x => new { x.OwnerId, x.Status, x.ExpiresAt });
+            e.HasIndex(x => new { x.OwnerId, x.AttemptId, x.FencingToken });
+            // A relational database, not application locking, is the single-winner authority.
+            e.HasIndex(x => x.AttemptId).IsUnique().HasFilter("\"status\" = 'Active'");
+            e.HasIndex(x => new { x.OwnerId, x.NodeId }).IsUnique().HasFilter("\"status\" = 'Active'");
+            e.HasOne<NoteAsrAttemptEntity>().WithMany().HasForeignKey(x => x.AttemptId).OnDelete(DeleteBehavior.Cascade);
+        });
+        modelBuilder.Entity<NoteAsrAckReceiptEntity>(e =>
+        {
+            e.HasIndex(x => new { x.OwnerId, x.AttemptId, x.FencingToken });
+            e.HasIndex(x => new { x.OwnerId, x.Kind, x.ProviderHandle });
+            e.HasIndex(x => new { x.OwnerId, x.ProviderHandle }).IsUnique().HasFilter("\"kind\" = 'claim'");
+            e.HasIndex(x => new { x.AttemptId, x.FencingToken, x.Kind }).IsUnique()
+                .HasFilter("\"kind\" IN ('complete', 'fail')");
+            e.HasIndex(x => new { x.AttemptId, x.FencingToken, x.SegmentIndex }).IsUnique()
+                .HasFilter("\"kind\" = 'segment'");
+        });
+        modelBuilder.Entity<NoteAsrSegmentEvidenceEntity>(e =>
+        {
+            e.HasIndex(x => new { x.OwnerId, x.TaskId, x.VersionId });
+            e.HasIndex(x => new { x.OwnerId, x.AttemptId, x.FencingToken, x.SegmentIndex, x.ReceiptKind })
+                .IsUnique();
+            e.HasOne<NoteAsrAttemptEntity>().WithMany().HasForeignKey(x => x.AttemptId).OnDelete(DeleteBehavior.Cascade);
+        });
+        modelBuilder.Entity<NoteAsrBatchJobEntity>(e =>
+        {
+            e.Property(x => x.Revision).IsConcurrencyToken();
+            e.HasIndex(x => new { x.OwnerId, x.TaskId }).IsUnique();
+            e.HasIndex(x => new { x.OwnerId, x.Status, x.UpdatedAt });
+            e.HasIndex(x => x.BatchId).IsUnique().HasFilter("\"batch_id\" IS NOT NULL");
         });
 
         Assembly[] moduleAssemblies;
