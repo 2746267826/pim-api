@@ -1,5 +1,7 @@
 ﻿# PIM 原生客户端与笔记路线图
 
+版本：v0.45 记录 2026-11-01 默认 retry 受控全链闭环、实际契约一致性与剩余发布边界。下方 v0.44 版本行及更早正文作为历史快照保留。
+
 版本：v0.44 记录 2026-11-01 跨日交付事实、#549 Draft/CI 未完成、默认数据库重试策略下真实 Kestrel 500 阻断与 #516 五阶段收口边界。下方 v0.43 版本行及更早正文作为历史快照保留。
 
 版本：v0.43 记录 API/Android 202 处理协议交付、#533 集成状态与 #516 分 Phase 证据。更新日期：2026-10-31。下方 v0.42 版本行及更早正文作为历史快照保留。
@@ -9,6 +11,50 @@
 本文位于 `pim-api/docs/product/native-notes-roadmap.md`，作为跨仓持续维护的唯一总路线图。Android、Windows 与 Web 按批次引用同一份需求，不复制另一套台账；首版范围和视觉规范分别通过文内链接细化。更新状态时标明平台、证据和仍未交付部分，不以聊天记录代替仓内记录。
 
 总跟踪：[pim-api#505](https://github.com/2746267826/pim-api/issues/505)。主题切片 [pim-android#31](https://github.com/2746267826/pim-android/issues/31) 已合并；录音切片：[pim-android#33](https://github.com/2746267826/pim-android/issues/33)；混合文档与基础手写：[pim-android#35](https://github.com/2746267826/pim-android/issues/35)；完整材料版本：[pim-android#37](https://github.com/2746267826/pim-android/issues/37)。总跟踪不能随主题切片或安卓首版完成而提前关闭。
+
+<a id="v045-current"></a>
+
+### v0.45 当前状态：默认 retry 全链闭环，发布仍未完成（2026-11-01）
+
+本节只追加当前覆盖。v0.44 及更早正文、既有 history 字节、45 个稳定 requirement ID、32 项 capability、32 行差距、13 个 MIG、AC1–19 原编号与五阶段原编号均原样保留；不新增稳定编号，不把开发分支、受控 smoke 或 GitHub Release 写成产品验收。
+
+证据快照：`2026-11-01 Asia/Shanghai`。
+
+**集成与聚焦验证**
+
+- 集成树 clean HEAD 为 `5015842a0cb1b31e09d4a9f9e1b219c41f0430bb`，已普通并入 Einstein `696` 切片；验证树以普通 merge commit `72ba555818bb8724ee1dd272eb525f84a2b7c540` 引入该集成。两处都不是 API 最终 master，不能替代 #549 的最终 CI/merge。
+- 验证树 build 为 0 errors / 97 warnings；真实 PostgreSQL migration fresh 与从 `20261027110728` 升级为 `2/2`，SnapshotSync `7/7`，Guarded DDL `5/5`，OpenAPI/DTO shape `34/34`。四组测试分别记账，原始日志在 `scratch/finish-all-20261031/integration-validation-5015842/`。
+- OpenAPI 公共形状与已核 v4 逐字一致：`1,202,774` bytes、SHA-256 `e5c555e2864e182f98242b0bbe50b156f755e9ea18dd5c57724518edd6bd8d76`、351 paths、705 schemas；本轮未手改 contract/generated，也未占用父侧 integration writer slot。
+
+**默认 retry 受控全链**
+
+- `scratch/finish-all-20261031/kestrel-crossrepo-smoke-20261031/runs/20261101-005701/` 为实际 Kestrel + isolated PostgreSQL + Windows typed client 的受控 smoke。测试树为 `72ba5558`，Windows 为 `00832f9b`。
+- route config 通过真实鉴权 HTTP `PUT`/`GET` 写入并回读，不再用 SQL seed；数据库复用受控 `127.0.0.1:55445` cluster，临时业务库按 owned 名称创建并在 finally 删除。
+- Windows `ApiClient` / `LocalAsrApiTransport` 完成 register → claim → bounded binary content → ACK；ASR task 收敛 `Succeeded`，收到 WAV 的 bytes/SHA 与 364-byte 合成 fixture 完全一致。
+- 显式执行 `NoteDerivedJob.RunAsync`，数据库仍使用生产等价 `EnableRetryOnFailure(3)`；deterministic loopback provider 完成 vision、complete-record、analysis 三次调用。Derived task 收敛 `Succeeded` 且 coverage complete，实际生成 `CompleteRecord` 与 `IndependentAnalysis` 各一个 version，HEAD 保持 null，source/generation/AI call 绑定均可回读。
+- 该 smoke 没有 retry-off、SQL seed、TestServer 或 MockHttpHandler 冒充；但 Hangfire 调度、真实模型、真实音频、硬件资源回落、OEM/device 与 production 仍 `NOT-VERIFIED`。
+
+**#516 五阶段当前边界**
+
+| 原始阶段 | 2026-11-01 v0.45 当前证据与边界 |
+| --- | --- |
+| 阶段 1：路由、节点与 claim/lease | `DEV SLICE PASS / RELEASE PENDING`。默认 retry 下真实 HTTP route config、typed claim/binary/ACK 已受控闭环；尚未等价为最终 API master、生产部署或完整负向矩阵。 |
+| 阶段 2：云端多模态与 Batch | `SOURCE IMPLEMENTED / EXTERNAL NOT-VERIFIED`。mock/关系型路径继续保留；真实 Batch 音频、现金计费、8–10 分钟完整转写与质量未验。 |
+| 阶段 3：Windows 模型板块与节点登记 | `TYPED TRANSPORT PASS / MODEL LIFECYCLE NOT-VERIFIED`。本轮只证明 Windows typed transport 接线；真实模型安装、卸载、硬件与 OEM 未验。 |
+| 阶段 4：拉取、退避、本地执行与清退 | `CONTROLLED CHAIN PASS / REAL EXECUTION NOT-VERIFIED`。合成 runtime/provider 完成拉取、二进制读取、执行回执与清退路径；真实模型、VRAM/内存回基线仍不得写 AC3–7 PASS。 |
+| 阶段 5：重跑、异常与全链验收 | `DERIVED ARTIFACT SLICE PASS / UI + AC NOT-VERIFIED`。显式 Derived job 已生成两个实际 artifact/version；三通道页面、真实全文质量、不可变历史 UI、崩溃恢复与 AC1–19 全矩阵仍未闭合。 |
+
+**发布与 issue 边界**
+
+- #533 与 #539 继续保持 `OPEN`；本轮没有新增 OPPO/OEM、真实服务端 202、真实课堂或 production 证据。
+- API 尚待真正 merge 到 master 的 immutable SHA；Android 官方契约刷新、PR、exact-head CI、Release 与资产哈希核验均待该 SHA，不能提前执行或写成完成。
+
+**English parity**
+
+- Integration `5015842a` was merged into validation head `72ba5558`; controlled validation passed build, PostgreSQL migration `2/2`, snapshot `7/7`, guarded DDL `5/5`, and OpenAPI shape `34/34`.
+- A real Kestrel plus isolated PostgreSQL smoke under the default `EnableRetryOnFailure(3)` completed authenticated route config, Windows typed register/claim/binary/ACK, ASR convergence, explicit Derived job execution, and two actual artifacts. No SQL seed, retry-off, TestServer, mock handler, paid model, or real audio was used.
+- The actual Swagger normalized exactly to the v4 contract (`1,202,774` bytes, `e5c555e2...d8d76`, 351 paths, 705 schemas). This is focused development evidence, not API master/merge/release, Hangfire, real-model, hardware, OEM/device, AC1-19, or production acceptance.
+
 
 <a id="v044-current"></a>
 
@@ -1065,3 +1111,4 @@ Windows 记录、Web 编辑、TASK-01 和 MIG-01 至 MIG-13 继续保留原阶�
 | 2026-10-31 | v0.42 为 #516 追加 MiMo Batch 云端异步 provider 需求与排期 | MiMo Batch 是 `cloud-multimodal` 下独立 provider/异步 execution mode，不新增对外 route 枚举；保持 local 与 cloud 两类执行位置及既有 local/cloud-asr/cloud-multimodal 逻辑路由计划，旧三路由规划不表示新增 provider 已进入 OpenAPI enum 或已实现。每次 attempt 固定 owner、材料版本、segment、provider handle、region、所选模型、window、consent 与 `custom_id` 映射；管理员默认不追溯改写既有 attempt。已确认“local 离线仅手动切 cloud、Windows 仅当前账号”不变，不因节点离线自动转 Batch，也不改默认成本授权。候选模型只取 Batch 支持集与 audio capability 集交集；本轮范围仅 `/v1/chat/completions`，音频 Batch 端到端仍未实证。阶段 2 增加依赖阶段 1 与官方音频 Batch 能力确认的独立垂直切片；阶段 3/4 无新增依赖；阶段 5 覆盖 Batch history/partial/cancel/errors。五阶段、AC1–19 原编号及全部历史保护不变，产品 runtime 全为 `NOT-VERIFIED`，仍 `NOT IMPLEMENTED`。本条版本 v0.42 |
 | 2026-10-31 | v0.43 记录 API/Android 202 交付、#533 集成与 #516 分 Phase 状态 | API #546 head`da9ddf08` exact CI`41183407442` 与 merge`07a7d947` 后 master CI`41185634130` 均 SUCCESS；Release`api-v26.10.1040` target`07a7d947`，ledger`89ddfd74...dea6`。Android #57 head`1bdd5f2`，app2062/core72 均0fail，official contract`07a7d947`，exact CI`41187937904` SUCCESS/Gate，PR已普通merge为`e9224448`；真机/OEM/真实202 E2E NOT-VERIFIED。#533 source`8c474bf` 已集成`91c9b64` 并随 #57 合并，117 tests零fail/error/skip，但OPPO/OEM/production未验且issue保持OPEN。#516改为逐Phase：provider`e135df8` mock78/78；Web79 tests/build/lint与wrapper修；Hume helper`eada9a8c`21/21但Job未接；Batch22/22 syntheticPG安全slice为既有证据，真实CAS/failed-only/background poll在做；Windows .NET旧232/59只是历史，最新R18 WIP未跑且R19契约阻塞；API输入预算/stop/migration/contract仍WIP。两项confirmed策略与MiMo Batch scope不变；45/32/32/13、至少203历史、AC1–19、五阶段原编号保留，203仅旧validator计数参照且本轮未重跑。本条版本 v0.43 |
 | 2026-11-01 | v0.44 记录跨日发布、#549 Draft/CI、真实 Kestrel retry 阻断与 #516 五阶段边界 | API `api-v26.10.1040`/`1044` 与 Android `android-v26.10.1145` 已发布；`1044` tag 精确指向 `33a2c42f8b1c0e571d38aec76897b009e515647d`，属 #539 test-only 增量，不证明根因/设备/production。#549 仍 Draft，head`7de773fe1dc6a456091de3bcad7f3b8e1e7b9b63`，CI`41216451907` 未完成；`69fd1293` 的 migration/DDL 14/14、真实 PG Reprocess 9/9、shape 33/33 合计56/56 仅 focused 开发证据。#533/#539 外部验收未关。#516 按五阶段混合：Phase1 默认生产等价 `EnableRetryOnFailure(3)` 下真实 Kestrel route-config/claim 均 HTTP 500（correlation `08d4ff116c3358bc8e57b4e5ef5e2864` / `edd73c52661a29d48934d8e970ca8508`），stop/retry、URL、Windows DI/final wire WIP；retry-off/SQL seed/TestServer/mock 不写 PASS。真实模型/硬件、Batch 音频/计费/质量、Derived 全文、OEM/device、AC1–19 与 production 仍 NOT-VERIFIED。保留45/32/32/13、AC1–19与既有 history 字节。本条版本 v0.44 |
+| 2026-11-01 | v0.45 记录默认 retry 受控全链、契约一致性与剩余发布门槛 | 集成 `5015842a` 已并入验证 head `72ba5558`；build 0 errors/97 warnings，真实 PG migration `2/2`、snapshot `7/7`、guarded DDL `5/5`、OpenAPI shape `34/34`。实际 Kestrel + isolated PG + Windows typed transport 在默认 `EnableRetryOnFailure(3)` 下完成真实 PUT/GET route config、register/claim/binary/ACK、ASR `Succeeded`、显式 `NoteDerivedJob.RunAsync` 与两个实际 artifact/version；未用 SQL seed/retry-off/TestServer/MockHttpHandler。Swagger 经实际 jq 规范化与 v4 逐字一致：1,202,774 bytes、SHA`e5c555e2...d8d76`、351 paths/705 schemas。API 尚未取得真实 master merge SHA，Android refresh/PR/Gate/Release 待该 SHA；#533/#539 OPEN。Hangfire、真实模型/硬件/音频、OEM/device、UI、AC1–19 与 production 仍 NOT-VERIFIED。保留 45/32/32/13、AC1–19 与既有 history 字节。本条版本 v0.45 |

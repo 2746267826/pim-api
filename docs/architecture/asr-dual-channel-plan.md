@@ -1,10 +1,57 @@
 # ASR 双通道增量方案（#516 排期）
 
+状态（v0.45 当前覆盖）：截至 2026-11-01，集成验证树已在实际 Kestrel、隔离 PostgreSQL、默认 `EnableRetryOnFailure(3)` 与 Windows typed transport 下完成 route config → register/claim → binary content → ACK → ASR `Succeeded` → 显式 Derived job → 两个 artifact 的受控闭环；实际 Swagger 与 v4 契约逐字一致。该证据不替代 API 最终 master、Hangfire、真实模型/硬件、OEM/device、AC1–19 或 production。下方 v0.44 状态行及更早正文为历史快照。
+
 状态（v0.44 当前覆盖）：截至 2026-11-01，API `1040/1044` 与 Android `1145` 已发布，但 #549 仍为 Draft 且 CI 未完成；#533/#539 保持 OPEN；#516 继续按五个原始阶段记录混合状态；默认生产等价 `EnableRetryOnFailure(3)` 下真实 Kestrel route-config/claim 均复现 HTTP 500，是 claim/ACK 全链验收的当前发布阻断。下方 v0.43 状态行及更早正文为历史快照。
 
 状态（v0.43 当前覆盖）：#516 是逐 Phase 混合状态，不再用单一整体状态概括；#539 API 202 协议与 Android consumer 已交付到 exact CI，但设备/真实 E2E 与 production 仍 NOT-VERIFIED；#533 代码已集成但 issue 保持 OPEN。下方 v0.42 状态行及更早正文为历史快照。更新日期：2026-10-31。
 
 状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED；两项产品决策 CONFIRMED；MiMo Batch 仅需求/排期追加，NOT IMPLEMENTED / NOT-VERIFIED**。更新日期：2026-10-31。本文把 #516 的已提出需求整理为依赖明确、顺序合理的增量计划，不是工期承诺或功能完成报告；v0.42 MiMo Batch 增量与 v0.41 已确认决策覆盖见下方最新说明。
+
+<a id="v045-latest-status"></a>
+
+## v0.45 最新状态覆盖：默认 retry 受控全链与实际契约一致性（2026-11-01）
+
+本节只追加当前覆盖，不改写下方的 v0.44、v0.43、v0.42、v0.41 及更早正文。45 个稳定 requirement ID、32 项 capability、32 行差距、13 个 MIG、AC1–19 原编号、五阶段原编号与既有 history 字节保持原样；本轮不新增稳定编号。
+
+### 集成与契约
+
+- 集成来源 HEAD 为 `5015842a0cb1b31e09d4a9f9e1b219c41f0430bb`；验证树普通 merge 到 `72ba555818bb8724ee1dd272eb525f84a2b7c540`。它们仍是开发集成/验证提交，不是 API master。
+- build 0 errors / 97 warnings；真实 PostgreSQL fresh 与 published-history upgrade migration `2/2`、SnapshotSync `7/7`、Guarded DDL `5/5`、OpenAPI shape `34/34`。原始日志位于 `scratch/finish-all-20261031/integration-validation-5015842/`。
+- 由实际 Test Swagger 经 `jq -b -S .` 规范化的结果与 v4 完全相同：`1,202,774` bytes、SHA-256 `e5c555e2864e182f98242b0bbe50b156f755e9ea18dd5c57724518edd6bd8d76`、351 paths、705 schemas。没有手写 contract 或 generated。
+
+### 真实 HTTP 受控闭环
+
+smoke 根目录：`scratch/finish-all-20261031/kestrel-crossrepo-smoke-20261031/runs/20261101-005701/`。
+
+1. 真实鉴权 `PUT /api/v1/native-notes/asr-routing/config` 创建 revision，随后 `GET` 回读 default route、local model/revision 与 consent version；没有 SQL seed。
+2. Windows `ApiClient` / `LocalAsrApiTransport` 通过真实 HTTP 完成 node register、claim、bounded audio content 下载与 segment/terminal ACK。
+3. 服务端 ASR task 收敛 `Succeeded`；收到的合成 WAV 为 364 bytes，SHA-256 `018d309ff89390f56021d7d71cf34bd1da55158a680da7587c7a8be7820c7cdb`，与上传 fixture 一致。
+4. `NoteDerivedJob.RunAsync` 以默认 `EnableRetryOnFailure(3)` 显式执行；deterministic loopback provider 完成 vision、record synthesis、analysis synthesis 三次调用，Derived task `Succeeded`、coverage complete。
+5. `CompleteRecord` 与 `IndependentAnalysis` 各生成一个不可变 candidate version；HEAD 保持 null，generation task、source version、AI call log、model profile/revision/endpoint 均可回读。`IndependentAnalysis.sourceCompleteRecordVersionId` 精确绑定本次 CompleteRecord version。
+
+该闭环未关闭 retry，未以 SQL seed、TestServer、MockHttpHandler 或预置 artifact 冒充。它仍显式调用 job，未执行 Hangfire 调度；provider/runtime/WAV 均为受控合成件，不是付费模型、真实音频质量、VRAM 回落、OEM、device 或 production 证据。
+
+### 五阶段状态
+
+| 原始阶段 | 2026-11-01 v0.45 当前状态 |
+| --- | --- |
+| 1 路由/节点/claim/lease | `DEV SLICE PASS / RELEASE PENDING`。默认 retry 下 route config、typed claim、bounded content 与 ACK 已受控通过；最终 master/稳定负向矩阵未完成。 |
+| 2 云端多模态/Batch | `SOURCE IMPLEMENTED / EXTERNAL NOT-VERIFIED`。mock/关系型证据保留；上游 Batch 音频、现金计费、质量未验。 |
+| 3 Windows 模型管理 | `TYPED TRANSPORT PASS / MODEL LIFECYCLE NOT-VERIFIED`。transport 接线已证；真实模型目录安装/卸载、硬件与真实 runtime 未验。 |
+| 4 拉取/执行/退避/清退 | `CONTROLLED CHAIN PASS / REAL EXECUTION NOT-VERIFIED`。合成 runtime 的拉取、回执和清退路径已走通；真实模型资源回落与残留进程证据仍缺。 |
+| 5 重跑/UI/AC1–19 | `DERIVED ARTIFACT SLICE PASS / UI + AC NOT-VERIFIED`。实际 Derived artifact 已生成；三通道 UI、真实全文质量、不可变历史、恢复与全矩阵仍未闭合。 |
+
+### 下一步门槛
+
+1. API 分支取得父侧允许的普通 merge/真实 master immutable SHA，并完成 exact-head CI 与发布回执。
+2. 以该 master SHA 重跑最终契约 freshness、Android 官方刷新、普通 PR/CI/merge/Release；在此之前 #533/#539 保持 OPEN。
+3. 后续独立证据再覆盖 Hangfire 调度、真实模型/硬件资源、真实音频质量、OEM/device、三通道 UI 与 AC1–19；本轮受控全链不得替代。
+
+### English parity
+
+The controlled proof at validation head `72ba5558` used real Kestrel, an isolated PostgreSQL database, the default `EnableRetryOnFailure(3)`, and the Windows typed transport to complete authenticated route config, register/claim/binary content/ACK, ASR convergence, explicit Derived-job execution, and two actual artifact versions with immutable source and AI-call bindings. Actual Swagger normalized byte-for-byte to the v4 contract (`1,202,774` bytes; 351 paths; 705 schemas). This is not API master, Hangfire, real-model, real-audio, hardware, OEM/device, AC1-19, or production acceptance.
+
 
 <a id="v044-latest-status"></a>
 
