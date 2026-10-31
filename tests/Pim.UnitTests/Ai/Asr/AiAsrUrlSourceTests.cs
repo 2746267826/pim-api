@@ -147,6 +147,105 @@ public sealed class AiAsrUrlSourceTests
     }
 
     [Fact]
+    public async Task Provider_echo_in_finish_reason_and_request_name_never_reach_durable_audit()
+    {
+        var sourceUrl = "https://audio.example.test/private/finish.wav?sig=FR&opaque=Z9";
+        var handler = new CountingHandler((_, _) => Task.FromResult(JsonResponse(new
+        {
+            choices = new[]
+            {
+                new { message = new { content = "safe transcript" }, finish_reason = sourceUrl }
+            },
+            usage = new { prompt_tokens_details = new { audio_tokens = 3 } }
+        })));
+        var fixture = await FixtureAsync("https://api.synthetic.invalid/v1/");
+        var (preset, registry) = Registry(() => new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        });
+        var fetcher = new StaticFetcher(Download(sourceUrl, BuildWave(8_000)));
+        var baseRequest = Request(fixture, preset.Descriptor);
+        var request = baseRequest with { Audio = baseRequest.Audio with { Name = sourceUrl } };
+        var service = Service(fixture, registry, fetcher);
+
+        var result = await service.CallUrlAsync(request, CancellationToken.None);
+
+        Assert.Equal(AiRequestStatus.Incomplete, result.Status);
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(1, fetcher.Calls);
+        fixture.Db.ChangeTracker.Clear();
+        var row = await fixture.Db.AiRequestLogs.AsNoTracking().SingleAsync();
+        Assert.Equal("incomplete", row.FinishReason);
+        Assert.Equal("incomplete_output", row.ErrorCode);
+        var durable = string.Join("\n", row.RequestMessagesJson, row.RequestPayloadJson,
+            row.ResponseRawJson, row.ResponseText, row.ErrorMessage, row.MetadataJson, row.FinishReason);
+        foreach (var sensitive in new[]
+                 {
+                     sourceUrl, "/private/finish.wav", "finish.wav", "sig=FR", "opaque=Z9",
+                     "FR", "Z9", Uri.EscapeDataString(sourceUrl)
+                 })
+            Assert.DoesNotContain(sensitive, durable, StringComparison.Ordinal);
+        using var responseAudit = JsonDocument.Parse(row.ResponseRawJson);
+        Assert.Equal("incomplete",
+            responseAudit.RootElement.GetProperty("finishReason").GetString());
+        var storedAudio = await fixture.Db.AiCallAudio.AsNoTracking()
+            .SingleAsync(x => x.LogId == row.Id);
+        Assert.Equal("remote-audio.wav", storedAudio.Name);
+        Assert.Equal("wav", storedAudio.Format);
+        Assert.DoesNotContain(sourceUrl, request.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(sourceUrl, request.Audio.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Invalid_url_audio_fields_fail_before_placeholder_or_fetch()
+    {
+        var sourceUrl = "https://audio.example.test/private/invalid.wav?sig=IV";
+        var fixture = await FixtureAsync("https://api.synthetic.invalid/v1/");
+        var (preset, registry) = Registry(() => new HttpClient(JsonHandler(new
+        {
+            choices = new[] { new { message = new { content = "unused" }, finish_reason = "stop" } },
+            usage = new { prompt_tokens_details = new { audio_tokens = 1 } }
+        })));
+        var fetcher = new StaticFetcher(Download(sourceUrl, BuildWave(8_000)));
+        var service = Service(fixture, registry, fetcher);
+        var valid = Request(fixture, preset.Descriptor);
+        var invalid = new[]
+        {
+            valid with { Audio = valid.Audio with { Name = "bad\nname" } },
+            valid with { Audio = valid.Audio with { Format = "exe" } },
+            valid with { Audio = valid.Audio with { ExpectedSha256 = "not-a-sha256" } }
+        };
+
+        foreach (var request in invalid)
+        {
+            var error = await Assert.ThrowsAsync<DomainException>(() =>
+                service.CallUrlAsync(request, CancellationToken.None));
+            Assert.Equal(40001, error.ErrorCode);
+        }
+
+        Assert.Equal(0, fetcher.Calls);
+        Assert.Equal(0, await fixture.Db.AiRequestLogs.CountAsync());
+    }
+
+    [Fact]
+    public void Url_audio_tostring_does_not_emit_untrusted_fields()
+    {
+        var sourceUrl = "https://audio.example.test/private/name.wav?sig=TS&opaque=Q1";
+        var audio = new AiAsrUrlAudioRequest(sourceUrl, sourceUrl, sourceUrl, sourceUrl, true, true);
+
+        var text = audio.ToString();
+
+        foreach (var sensitive in new[]
+                 {
+                     sourceUrl, "/private/name.wav", "name.wav", "sig=TS", "opaque=Q1", "TS", "Q1"
+                 })
+            Assert.DoesNotContain(sensitive, text, StringComparison.Ordinal);
+        Assert.Contains("[redacted]", text, StringComparison.Ordinal);
+        Assert.Contains("[invalid]", text, StringComparison.Ordinal);
+        Assert.Contains("[not-printed]", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Caller_cancellation_propagates_and_same_id_replay_does_not_fetch_again()
     {
         var fixture = await FixtureAsync("https://api.synthetic.invalid/v1/");

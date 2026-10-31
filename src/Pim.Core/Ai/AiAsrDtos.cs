@@ -39,8 +39,20 @@ public sealed record AiAsrCallRequest(Guid ClientRequestId, Guid ExpectedUserId,
 public sealed record AiAsrUrlAudioRequest(string Name, string Format, string Url, string? ExpectedSha256,
     bool SourceConfirmed, bool ProviderFetchConfirmed)
 {
+    public static bool IsSha256(string? value)
+    {
+        if (value is not { Length: 64 }) return false;
+        foreach (var character in value)
+            if (!Uri.IsHexDigit(character)) return false;
+        return true;
+    }
+
     public override string ToString() =>
-        $"AiAsrUrlAudioRequest {{ Name = {Name}, Format = {Format}, Url = [redacted], ExpectedSha256 = {ExpectedSha256} }}";
+        $"AiAsrUrlAudioRequest {{ Name = [redacted], Format = {SafeFormat(Format)}, Url = [redacted], " +
+        $"ExpectedSha256 = {(IsSha256(ExpectedSha256) ? ExpectedSha256 : "[not-printed]")} }}";
+
+    private static string SafeFormat(string? value) =>
+        value is "wav" or "mp3" or "flac" or "m4a" or "ogg" ? value : "[invalid]";
 }
 
 public sealed record AiAsrUrlCallRequest(Guid ClientRequestId, Guid ExpectedUserId, AiAsrUrlAudioRequest Audio,

@@ -48,6 +48,11 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             !sourceUrl.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
             sourceUrl.UserInfo.Length != 0 || sourceUrl.Fragment.Length != 0)
             throw new DomainException(40001, "URL音频只允许不超过8192字符的公开HTTPS地址");
+        var requestedName = request.Audio.Name;
+        if (requestedName is null || string.IsNullOrWhiteSpace(requestedName) ||
+            requestedName.Length > 200 || requestedName.Any(char.IsControl))
+            throw new DomainException(40001, "URL音频名称无效");
+        var expectedSha256 = NormalizeExpectedSha256(request.Audio.ExpectedSha256);
 
         var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
         var modelId = request.ModelId ?? runtime?.TranscriptionModelId;
@@ -74,6 +79,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         if (request.Audio.Format is null ||
             !description.Formats.Contains(request.Audio.Format, StringComparer.Ordinal))
             throw new DomainException(40001, "URL音频格式不符合所选ASR预设");
+        var safeName = "remote-audio." + request.Audio.Format;
         var expectedPrompt = AiAsrPromptTemplate.Normalize(profile.AsrPrompt).Snapshot(request.Language);
         var prompt = request.Prompt ?? expectedPrompt;
         if (prompt.Text != expectedPrompt.Text || prompt.Language != expectedPrompt.Language ||
@@ -93,10 +99,10 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             request.Consent,
             prompt.Revision,
             promptSha256 = prompt.Sha256,
-            name = request.Audio.Name,
+            name = safeName,
             format = request.Audio.Format,
             sourceHash,
-            expectedSha256 = request.Audio.ExpectedSha256,
+            expectedSha256,
             sourceConfirmed = request.Audio.SourceConfirmed,
             providerFetchConfirmed = request.Audio.ProviderFetchConfirmed
         }, Json));
@@ -160,7 +166,7 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             new
             {
                 kind = "public-url-audio-preflight-pending",
-                request.Audio.Name,
+                name = safeName,
                 request.Audio.Format,
                 sourceReadConfirmed = request.Audio.SourceConfirmed,
                 providerFetchConfirmed = request.Audio.ProviderFetchConfirmed
@@ -213,8 +219,8 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
         try
         {
             var download = await fetcher.FetchAsync(sourceUrl,
-                new RemoteAudioExpectation(request.Audio.Format, request.Audio.ExpectedSha256), linked.Token);
-            var fetched = AiAsrMaterialService.AcceptRemote(request.Audio.Name, request.Audio.Format,
+                new RemoteAudioExpectation(request.Audio.Format, expectedSha256), linked.Token);
+            var fetched = AiAsrMaterialService.AcceptRemote(safeName, request.Audio.Format,
                 sourceUrl, download, description.Formats);
             audio = fetched;
             storedAudio = AiAsrMaterialService.Describe(row.Id, fetched);
@@ -244,12 +250,12 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             row.ResponseText = SanitizeRemoteText(Safe(response.Text, key, out var redacted),
                 audio, out var textUrlRedacted);
             row.ContentRedacted = redacted || textUrlRedacted;
-            row.FinishReason = response.FinishReason;
+            row.FinishReason = SafeUrlFinishReason(response.FinishReason);
             row.PromptTokens = Count(response.InputTokens);
             row.CompletionTokens = Count(response.OutputTokens);
             row.TotalTokens = Count(response.TotalTokens);
             reportedSeconds = response.ReportedSeconds;
-            if (response.FinishReason == "stop" && response.HasTranscript)
+            if (row.FinishReason == "stop" && response.HasTranscript)
                 row.Status = "succeeded";
             else
             {
@@ -743,6 +749,23 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             .OrderByDescending(value => value.Length)
             .ToArray();
     }
+    private static string? NormalizeExpectedSha256(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var normalized = value.Trim().ToLowerInvariant();
+        if (!AiAsrUrlAudioRequest.IsSha256(normalized))
+            throw new DomainException(40001, "URL音频期望SHA-256必须是64位十六进制");
+        return normalized;
+    }
+    private static string SafeUrlFinishReason(string? value) => value switch
+    {
+        "stop" => "stop",
+        MimoMultimodalResponseParser.EmptyFinishReason => MimoMultimodalResponseParser.EmptyFinishReason,
+        MimoMultimodalResponseParser.RepetitionFinishReason => MimoMultimodalResponseParser.RepetitionFinishReason,
+        MimoMultimodalResponseParser.TruncationFinishReason => MimoMultimodalResponseParser.TruncationFinishReason,
+        MimoMultimodalResponseParser.MissingFinishReason => MimoMultimodalResponseParser.MissingFinishReason,
+        _ => "incomplete"
+    };
     private async Task<AiTextCallResultDto> FinishAsync(AiRequestLogEntity row)
     {
         row.FinishedAt = DateTimeOffset.UtcNow; row.DurationMs = (long)(row.FinishedAt.Value - row.StartedAt).TotalMilliseconds;
