@@ -1183,6 +1183,149 @@
         ],
         "type": "object"
       },
+      "AiAsrUrlAudioRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedSha256": {
+            "nullable": true,
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "providerFetchConfirmed": {
+            "type": "boolean"
+          },
+          "sourceConfirmed": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "name",
+          "providerFetchConfirmed",
+          "sourceConfirmed",
+          "url"
+        ],
+        "type": "object"
+      },
+      "AiAsrUrlCallRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "audio": {
+            "$ref": "#/components/schemas/AiAsrUrlAudioRequest"
+          },
+          "clientRequestId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "consent": {
+            "$ref": "#/components/schemas/AiAsrDestinationConsent"
+          },
+          "expectedUserId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "modelId": {
+            "format": "uuid",
+            "nullable": true,
+            "type": "string"
+          },
+          "prompt": {
+            "$ref": "#/components/schemas/AiAsrPromptSnapshot"
+          }
+        },
+        "required": [
+          "audio",
+          "clientRequestId",
+          "consent",
+          "expectedUserId"
+        ],
+        "type": "object"
+      },
+      "AiAsrUrlCallResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "errorMessage": {
+            "nullable": true,
+            "type": "string"
+          },
+          "logId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "preflightSha256": {
+            "nullable": true,
+            "type": "string"
+          },
+          "preflightVerified": {
+            "type": "boolean"
+          },
+          "providerFetchVerified": {
+            "type": "boolean"
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "responseText": {
+            "nullable": true,
+            "type": "string"
+          },
+          "sourceOrigin": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AiRequestStatus"
+          },
+          "warning": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "logId",
+          "preflightVerified",
+          "providerFetchVerified",
+          "replayed",
+          "status",
+          "warning"
+        ],
+        "type": "object"
+      },
+      "AiAsrUrlCallResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AiAsrUrlCallResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
       "AiCallAudioDto": {
         "additionalProperties": false,
         "properties": {
@@ -24553,6 +24696,102 @@
           },
           "403": {
             "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/ai/asr-url-calls": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiAsrUrlCallRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiAsrUrlCallResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
+          },
+          "503": {
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Pim.Api"
+        ]
+      }
+    },
+    "/api/v1/ai/asr-url-calls/{clientRequestId}": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "clientRequestId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiAsrUrlCallResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
           }
         },
         "security": [
