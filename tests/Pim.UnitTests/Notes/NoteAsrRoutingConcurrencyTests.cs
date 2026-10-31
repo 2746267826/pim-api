@@ -849,6 +849,53 @@ public sealed class NoteAsrRoutingConcurrencyTests
         await CleanupAsync(owner);
     }
 
+    [SkippableFact]
+    public async Task Poisoned_first_attempt_is_quarantined_without_lease_and_does_not_starve_the_queue()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var poisonedId = await SeedAsync(owner, nodeId, Guid.NewGuid());
+        Guid compatibleId;
+        Guid compatibleTaskId;
+        await using (var db = NewDb(owner))
+        {
+            var poisoned = await db.NoteAsrAttempts.SingleAsync(x => x.Id == poisonedId);
+            // The poisoned attempt has no matching task snapshot on disk and must be quarantined
+            // inside the claim transaction before the compatible attempt is considered.
+            File.Delete(Path.Combine(StorageRoot, "asr-tasks", owner.ToString("D"),
+                poisoned.TaskId.ToString("D") + ".json"));
+            compatibleId = Guid.NewGuid();
+            compatibleTaskId = Guid.NewGuid();
+            db.NoteAsrAttempts.Add(new NoteAsrAttemptEntity
+            {
+                Id = compatibleId, OwnerId = owner, TaskId = compatibleTaskId, NoteId = poisoned.NoteId,
+                VersionId = poisoned.VersionId, InputSha256 = poisoned.InputSha256, Route = NoteAsrRoute.Local,
+                State = "Queued", Language = "zh", ExpectedSegments = poisoned.ExpectedSegments,
+                LocalModelId = "local-model", LocalModelRevision = "r1", ConfigRevision = poisoned.ConfigRevision,
+                ConsentVersion = poisoned.ConsentVersion, CreatedAt = poisoned.CreatedAt.AddSeconds(1)
+            });
+            await db.SaveChangesAsync();
+            await WriteTaskStateAsync(owner, compatibleTaskId, poisoned.VersionId, poisoned.NoteId,
+                poisoned.InputSha256);
+        }
+
+        NoteAsrClaimDto claim;
+        await using (var db = NewDb(owner))
+            claim = await NewService(db, owner).ClaimAsync(
+                new ClaimNoteAsrTaskRequest(nodeId, "poison-claim"), CancellationToken.None);
+        Assert.Equal("claimed", claim.Status);
+        Assert.Equal(compatibleId, claim.Lease!.AttemptId);
+        await using var check = NewDb(owner);
+        var poisonedRow = await check.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == poisonedId);
+        Assert.Equal("Failed", poisonedRow.State);
+        Assert.Equal("task_binding_missing", poisonedRow.LastErrorCode);
+        Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.AttemptId == poisonedId));
+        Assert.Equal(0, await check.NoteAsrAckReceipts.CountAsync(x => x.OwnerId == owner &&
+            x.AttemptId == poisonedId));
+        await CleanupAsync(owner);
+    }
+
     private static async Task<Exception?> Capture(Func<Task<NoteAsrRouteConfigDto>> task)
     {
         try { await task(); return null; }
