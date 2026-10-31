@@ -238,7 +238,7 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
       setBatchIntentState({ kind: 'none' })
       setConfirmed(false)
       setBatchConfirmed(false)
-      setNotice(`Batch 开发契约已按同一任务标识提交，进入可长达 ${result.job.completionWindow} 的闲时等待；按成功请求消耗现金，失败项不会自动重跑。`)
+      setNotice(`Batch 预览已按同一任务标识提交，进入可长达 ${result.job.completionWindow} 的闲时等待；音频上游尚未验收，需管理员显式启用，按成功请求消耗现金。`)
       onCreated?.(result.task)
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'note-asr'] })
     } catch (failure) {
@@ -306,13 +306,31 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
     setError('')
     setNotice('')
     try {
-      const task = await aiApi.noteAsrTaskOrNull(batchIntent.taskId)
+      const [task, jobs] = await Promise.all([
+        aiApi.noteAsrTaskOrNull(batchIntent.taskId),
+        aiApi.asrBatchJobs(),
+      ])
       if (!task) {
         setNotice('服务端尚未找到该准备任务。保留原标识；再次提交只会核对同一标识，不会分配新任务。')
         return
       }
-      if (batchIntent.phase === 'prepare') {
-        const submitted: NoteAsrBatchInitialIntent = {
+      const existingJob = jobs.find((job) =>
+        job.taskId === batchIntent.taskId && Boolean(task.attemptId) && job.attemptId === task.attemptId)
+      if (existingJob) {
+        clearNoteAsrBatchInitialIntent(userId, serverBinding, versionId, batchIntent.taskId)
+        setBatchIntentState({ kind: 'none' })
+        setConfirmed(false)
+        setBatchConfirmed(false)
+        setNotice(existingJob.batchId
+          ? `已确认同一任务/执行快照下的 Batch 记录，供应商任务标识：${existingJob.batchId}；没有重新创建或重发。`
+          : '已确认同一任务/执行快照下的 Batch/UNKNOWN 记录，但没有供应商任务标识；保留人工核对，禁止自动重建或重发。')
+        onCreated?.(task)
+        await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-batch-jobs'] })
+        await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'note-asr'] })
+        return
+      }
+      const refreshed = batchIntent.phase === 'prepare'
+        ? {
           kind: 'initial',
           phase: 'submit',
           taskId: batchIntent.taskId,
@@ -328,17 +346,18 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
             target: batchIntent.target,
             reason: batchIntent.reason,
           },
-        }
-        const storageError = saveNoteAsrBatchInitialIntent(userId, serverBinding, versionId, submitted)
-        if (storageError) {
-          setError(storageError)
-          return
-        }
-        setBatchIntentState({ kind: 'ready', value: submitted })
-        setNotice('已找到同一准备任务并补齐冻结版本；没有自动提交 Batch。确认后可继续使用同一标识提交。')
-      } else {
-        setNotice('已找到同一准备任务；没有自动重复提交 Batch。')
+        } satisfies NoteAsrBatchInitialIntent
+        : {
+          ...batchIntent,
+          request: { ...batchIntent.request, expectedSourceRevision: task.revision },
+        } satisfies NoteAsrBatchInitialIntent
+      const storageError = saveNoteAsrBatchInitialIntent(userId, serverBinding, versionId, refreshed)
+      if (storageError) {
+        setError(storageError)
+        return
       }
+      setBatchIntentState({ kind: 'ready', value: refreshed })
+      setNotice('未发现同一 task/attempt 的 Batch 记录；已用同一任务标识刷新当前 revision。没有自动提交，请显式确认后重试。')
       onCreated?.(task)
     } catch (failure) {
       setError(`${failure instanceof Error ? failure.message : '核对失败'}。保留原任务标识，请刷新后重试。`)
@@ -376,7 +395,7 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
     {supportsBatch && <div className="max-w-sm"><Label htmlFor="note-asr-start-execution-mode">执行方式</Label>
       <Select id="note-asr-start-execution-mode" ariaLabel="执行方式" value={executionMode}
         disabled={busy || Boolean(intent) || Boolean(batchIntent) || Boolean(blockedIntent)}
-        options={[{ value: 'realtime', label: '实时云端转写' }, { value: 'batch', label: 'MiMo Batch 闲时批量（开发预览）' }]}
+        options={[{ value: 'realtime', label: '实时云端转写' }, { value: 'batch', label: 'MiMo Batch 闲时批量（预览）' }]}
         onValueChange={(value) => {
           setExecutionMode(value as 'realtime' | 'batch')
           setConfirmed(false)
@@ -445,7 +464,7 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
       </Button>
     </>}
     {effectiveRoute === 'cloud' && savedDestination && !intent && !batchIntent && <StatusBadge size="xs" dot={false} tone="warn">云端出域 · 可能计费</StatusBadge>}
-    {batchReady && !intent && !batchIntent && <StatusBadge size="xs" dot={false} tone="warn">Batch 开发预览 · NOT-VERIFIED</StatusBadge>}
+    {batchReady && !intent && !batchIntent && <StatusBadge size="xs" dot={false} tone="warn">Batch 预览 · 音频上游未验收</StatusBadge>}
     {effectiveRoute === 'local' && !intent && !batchIntent && <StatusBadge size="xs" dot={false} tone={localConfigured ? 'ok' : 'warn'}>{localConfigured ? '本机队列' : '未配置本机模型'}</StatusBadge>}
     {notice && <InlineAlert tone="ok">{notice}</InlineAlert>}
     {error && <InlineAlert tone="crit" title={batchConflict ? 'Batch 能力未开放或状态冲突' : '任务创建未确认'}>{error}</InlineAlert>}

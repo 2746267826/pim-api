@@ -16,6 +16,7 @@ vi.mock('./api', () => ({ aiApi: api }))
 
 const userId = '11111111-1111-4111-8111-111111111111'
 const serverBinding = 'https://synthetic.invalid'
+const modelRevision = '66666666-6666-4666-8666-666666666666'
 const task: NoteAsrTask = {
   taskId: '22222222-2222-4222-8222-222222222222',
   revision: '33333333-3333-4333-8333-333333333333',
@@ -23,7 +24,7 @@ const task: NoteAsrTask = {
   versionId: '55555555-5555-4555-8555-555555555555',
   inputSha256: 'sha', manifestSha256: 'manifest', phase: 'NeedsAttention', language: 'zh',
   destination: {
-    modelId: '66666666-6666-4666-8666-666666666666', modelRevision: 'model-rev',
+    modelId: '66666666-6666-4666-8666-666666666666', modelRevision,
     endpoint: 'https://asr.example.test/v1/chat/completions', presetId: 'mimo-multimodal',
     presetVersion: '1', confirmed: true,
   },
@@ -93,10 +94,10 @@ beforeEach(() => {
   api.noteAsrTaskOrNull.mockResolvedValue(null)
 })
 
-function page(binding = serverBinding) {
+function page(taskValue = task, binding = serverBinding) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
   return render(<QueryClientProvider client={client}>
-    <NoteAsrOwnerBatches task={task} userId={userId} serverBinding={binding} />
+    <NoteAsrOwnerBatches task={taskValue} userId={userId} serverBinding={binding} />
   </QueryClientProvider>)
 }
 
@@ -173,6 +174,48 @@ describe('NoteAsrOwnerBatches', () => {
     expect(screen.queryByText('失败项 Batch 重试')).toBeNull()
     expect(api.asrBatchPoll).not.toHaveBeenCalled()
     expect(api.asrBatchCancel).not.toHaveBeenCalled()
+    expect(api.asrBatchRetryFailed).not.toHaveBeenCalled()
+  })
+
+  it('blocks a shallow corrupt failed intent without any POST', async () => {
+    localStorage.setItem(noteAsrBatchFailedIntentScope(userId, serverBinding, job.id), JSON.stringify({
+      kind: 'failed',
+      expectedUserId: userId,
+      sourceTaskId: task.taskId,
+      request: {
+        clientTaskId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        sourceJobId: job.id,
+        expectedUserId: userId,
+        route: { route: 'cloud-multimodal' },
+        target: { modelId: destination.modelId },
+      },
+    }))
+    page()
+    expect(await screen.findByText(/失败项 Batch 提交意图无法读取/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '创建失败项 Batch 子任务' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(api.asrBatchRetryFailed).not.toHaveBeenCalled()
+  })
+
+  it('does not reset reason or confirmation when the jobs query refetches', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    render(<QueryClientProvider client={client}>
+      <NoteAsrOwnerBatches task={task} userId={userId} serverBinding={serverBinding} />
+    </QueryClientProvider>)
+    await screen.findByText('失败项 Batch 重试')
+    await userEvent.type(screen.getByLabelText('原因说明'), '轮询中保留')
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认只重试Batch失败分片并产生现金费用' }))
+    api.asrBatchJobs.mockResolvedValue([{ ...job }])
+    await client.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'asr-batch-jobs'] })
+    await waitFor(() => expect(api.asrBatchJobs.mock.calls.length).toBeGreaterThan(1))
+    expect((screen.getByLabelText('原因说明') as HTMLTextAreaElement).value).toBe('轮询中保留')
+    expect((screen.getByRole('checkbox', { name: '确认只重试Batch失败分片并产生现金费用' }) as HTMLButtonElement).getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('never guesses a failed-retry target by model name', async () => {
+    page({ ...task, destination: null })
+    expect(await screen.findByText('原 Batch 目标当前不可用')).toBeTruthy()
+    expect((screen.getByRole('button', { name: '创建失败项 Batch 子任务' }) as HTMLButtonElement).disabled).toBe(true)
+    await userEvent.type(screen.getByLabelText('原因说明'), '不按名称猜目标')
     expect(api.asrBatchRetryFailed).not.toHaveBeenCalled()
   })
 })

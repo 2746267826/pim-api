@@ -133,14 +133,18 @@ function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated }: {
     queryKey: ['ai', userId, serverBinding, 'note-asr-destinations'],
     queryFn: ({ signal }) => aiApi.noteAsrDestinations(signal),
   })
-  const destination = destinations.data?.items.find((value) =>
-    value.modelId === task.destination?.modelId ||
-    (!task.destination && value.model === job?.model)) ?? null
+  const destination = task.destination
+    ? destinations.data?.items.find((value) =>
+        value.modelId === task.destination?.modelId &&
+        value.modelRevision === task.destination.modelRevision &&
+        value.presetId === task.destination.presetId) ?? null
+    : null
   const canConfirm = Boolean(job && destination && config.data && reason.trim() && !busy && !intent && !blockedIntent)
   const canSubmit = Boolean(job && destination && config.data && reason.trim() && confirmed && !busy &&
     !intent && !blockedIntent)
 
   useEffect(() => {
+    if (jobs.some((value) => value.id === jobId)) return
     const next = jobs[0]?.id ?? ''
     setJobId(next)
     setIntentState(next ? loadNoteAsrBatchFailedIntent(userId, serverBinding, next) : { kind: 'none' })
@@ -149,7 +153,7 @@ function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated }: {
     setConfirmed(false)
     setNotice('')
     setError('')
-  }, [jobs, serverBinding, userId])
+  }, [jobId, jobs, serverBinding, userId])
 
   function selectJob(next: string) {
     setJobId(next)
@@ -264,7 +268,7 @@ function BatchFailedRetry({ task, jobs, userId, serverBinding, onCreated }: {
             }))}
             onValueChange={selectJob} /></div>
         {!destination && <InlineAlert tone="warn" title="原 Batch 目标当前不可用">
-          必须在当前共享目录中精确匹配原模型修订；不会猜测或改用其他付费目标。
+          原任务没有可核验的目标，或当前共享目录缺少完全相同的 modelId、revision 与多模态预设；不会按模型名称猜测或改用其他付费目标。
         </InlineAlert>}
         {destination && config.data && <div className="rounded-ctl border border-border p-3 text-xs leading-5 text-text-2">
           <p className="break-words">{destination.displayName} · {destination.model}</p>

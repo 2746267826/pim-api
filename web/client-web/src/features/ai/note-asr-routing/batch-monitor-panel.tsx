@@ -87,7 +87,7 @@ export function BatchMonitorPanel({
     <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-text-1">MiMo Batch 长任务</h2>
-        <p className="mt-1 break-words text-xs text-text-3">当前为开发契约预览，不是已发布用户能力；批量音频尚未获得真实付费验收，界面保持 NOT-VERIFIED。没有供应商任务标识时只做人工核对，禁止自动重建。</p>
+        <p className="mt-1 break-words text-xs text-text-3">Batch 预览；音频上游尚未验收，需管理员显式启用。没有供应商任务标识时只做人工核对，禁止自动重建或自动重发。</p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         {jobs.length > boundedPageSize && <span className="text-xs text-text-3">第 {currentPage} / {totalPages} 页</span>}

@@ -9,7 +9,7 @@ import { noteAsrBatchInitialIntentScope } from './note-asr-batch-intent'
 
 const ai = vi.hoisted(() => ({
   noteAsrDestinations: vi.fn(), asrRouteConfig: vi.fn(), noteAsrStart: vi.fn(), noteAsrTaskOrNull: vi.fn(),
-  asrBatchFromTask: vi.fn(), models: vi.fn(), asrPresets: vi.fn(),
+  asrBatchFromTask: vi.fn(), asrBatchJobs: vi.fn(), models: vi.fn(), asrPresets: vi.fn(),
 }))
 vi.mock('./api', () => ({ aiApi: ai }))
 
@@ -74,6 +74,7 @@ beforeEach(() => {
   ai.asrRouteConfig.mockResolvedValue(config)
   ai.noteAsrStart.mockResolvedValue(task)
   ai.noteAsrTaskOrNull.mockResolvedValue(null)
+  ai.asrBatchJobs.mockResolvedValue([])
   ai.asrBatchFromTask.mockResolvedValue({
     job: { id: 'job-1', completionWindow: '24h', status: 'Validating' },
     task,
@@ -251,6 +252,63 @@ describe('NoteAsrStartPanel', () => {
     expect(localStorage.getItem(noteAsrBatchInitialIntentScope(owner, serverBinding, versionId))).toContain('"phase":"submit"')
   })
 
+  it('reconciles a lost Batch response by task and attempt instead of replaying a stale revision', async () => {
+    ai.noteAsrDestinations.mockResolvedValue({ total: 1, items: [batchDestination] })
+    ai.asrRouteConfig.mockResolvedValue({ ...config, defaultRoute: 'cloud-multimodal' })
+    ai.noteAsrStart.mockImplementationOnce((body: { taskId: string }) => Promise.resolve({
+      ...task, taskId: body.taskId, revision: '77777777-7777-4777-8777-777777777777',
+    }))
+    ai.asrBatchFromTask.mockRejectedValueOnce(new Error('response lost'))
+    renderPanel()
+    await screen.findByText(/合成 MiMo Batch/)
+    await userEvent.click(screen.getByRole('combobox', { name: '执行方式' }))
+    await userEvent.click(await screen.findByRole('option', { name: /MiMo Batch/ }))
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认创建录音转写任务' }))
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认Batch整批范围与现金计费' }))
+    await userEvent.click(screen.getByRole('button', { name: '准备并提交 MiMo Batch' }))
+    const taskId = ai.noteAsrStart.mock.calls[0]?.[0].taskId as string
+    const oldRevision = (ai.asrBatchFromTask.mock.calls[0]?.[1] as { expectedSourceRevision: string }).expectedSourceRevision
+    const currentRevision = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    ai.noteAsrTaskOrNull.mockResolvedValue({
+      ...task, taskId, attemptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', revision: currentRevision,
+    })
+    await userEvent.click(screen.getByRole('button', { name: '核对原 Batch 任务' }))
+    expect(await screen.findByText(/已用同一任务标识刷新当前 revision/)).toBeTruthy()
+    expect(ai.asrBatchFromTask).toHaveBeenCalledOnce()
+    const stored = localStorage.getItem(noteAsrBatchInitialIntentScope(owner, serverBinding, versionId))
+    expect(stored).toContain(currentRevision)
+    expect(stored).not.toContain(oldRevision)
+    await userEvent.click(screen.getByRole('button', { name: '按原标识重新提交 Batch' }))
+    await waitFor(() => expect(ai.asrBatchFromTask).toHaveBeenCalledTimes(2))
+    const retried = ai.asrBatchFromTask.mock.calls[1]?.[1] as { clientTaskId: string; expectedSourceRevision: string }
+    expect(retried.clientTaskId).toBe(taskId)
+    expect(retried.expectedSourceRevision).toBe(currentRevision)
+  })
+
+  it('finds an existing Batch/UNKNOWN record by task and attempt and clears the frozen intent safely', async () => {
+    ai.noteAsrDestinations.mockResolvedValue({ total: 1, items: [batchDestination] })
+    ai.asrRouteConfig.mockResolvedValue({ ...config, defaultRoute: 'cloud-multimodal' })
+    ai.noteAsrStart.mockImplementationOnce((body: { taskId: string }) => Promise.resolve({
+      ...task, taskId: body.taskId, revision: '77777777-7777-4777-8777-777777777777',
+    }))
+    ai.asrBatchFromTask.mockRejectedValueOnce(new Error('response lost'))
+    renderPanel()
+    await screen.findByText(/合成 MiMo Batch/)
+    await userEvent.click(screen.getByRole('combobox', { name: '执行方式' }))
+    await userEvent.click(await screen.findByRole('option', { name: /MiMo Batch/ }))
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认创建录音转写任务' }))
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认Batch整批范围与现金计费' }))
+    await userEvent.click(screen.getByRole('button', { name: '准备并提交 MiMo Batch' }))
+    const taskId = ai.noteAsrStart.mock.calls[0]?.[0].taskId as string
+    const attemptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    ai.noteAsrTaskOrNull.mockResolvedValue({ ...task, taskId, attemptId, revision: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })
+    ai.asrBatchJobs.mockResolvedValue([{ taskId, attemptId, batchId: 'batch_existing' }])
+    await userEvent.click(screen.getByRole('button', { name: '核对原 Batch 任务' }))
+    expect(await screen.findByText(/供应商任务标识：batch_existing/)).toBeTruthy()
+    expect(ai.asrBatchFromTask).toHaveBeenCalledOnce()
+    expect(localStorage.getItem(noteAsrBatchInitialIntentScope(owner, serverBinding, versionId))).toBeNull()
+  })
+
   it('does not submit Batch until both execution and batch-scope consent are explicit', async () => {
     ai.noteAsrDestinations.mockResolvedValue({ total: 1, items: [batchDestination] })
     ai.asrRouteConfig.mockResolvedValue({ ...config, defaultRoute: 'cloud-multimodal' })
@@ -295,6 +353,21 @@ describe('NoteAsrStartPanel', () => {
     const stored = localStorage.getItem(noteAsrBatchInitialIntentScope(owner, serverBinding, versionId))
     expect(stored).toContain(taskId)
     expect(stored).toContain('"phase":"prepare"')
+  })
+
+  it('blocks a shallow corrupt initial intent without rendering or POSTing', async () => {
+    localStorage.setItem(noteAsrBatchInitialIntentScope(owner, serverBinding, versionId), JSON.stringify({
+      kind: 'initial',
+      phase: 'prepare',
+      taskId: '77777777-7777-4777-8777-777777777777',
+      expectedUserId: owner,
+      versionId,
+    }))
+    renderPanel()
+    expect(await screen.findByText(/Batch 提交意图无法读取或与当前账号、材料不匹配/)).toBeTruthy()
+    expect((screen.getByRole('button', { name: '确认创建云端任务' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(ai.noteAsrStart).not.toHaveBeenCalled()
+    expect(ai.asrBatchFromTask).not.toHaveBeenCalled()
   })
 
   it('blocks the entry when a stored intent cannot be parsed', async () => {
