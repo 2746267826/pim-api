@@ -125,6 +125,14 @@ describe('NoteAsrOwnerBatches', () => {
     expect(screen.getByText('运行中')).toBeTruthy()
   })
 
+  it.each(['InProgress', 'IN_PROGRESS'])('recognizes %s as running instead of UNKNOWN', async (status) => {
+    api.asrBatchJobs.mockResolvedValue([{ ...job, status, outputImported: false, failedItems: 0 }])
+    page()
+    expect(await screen.findByText('运行中')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '请求取消' })).toBeTruthy()
+    expect(screen.queryByText('UNKNOWN 待人工核对')).toBeNull()
+  })
+
   it('freezes failed-only retry and reuses the exact body after a lost response', async () => {
     api.asrBatchRetryFailed.mockRejectedValueOnce(new Error('response lost'))
     page()
