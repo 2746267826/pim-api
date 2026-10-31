@@ -51,7 +51,9 @@ public sealed class NoteAsrTests : IAsyncLifetime
             var call = Interlocked.Increment(ref _calls);
             using var doc = await JsonDocument.ParseAsync(request.Body);
             var audio = doc.RootElement.GetProperty("messages")[0].GetProperty("content")[0].GetProperty("input_audio");
-            var bytes = Convert.FromBase64String(audio.GetProperty("data").GetString()!);
+            var raw = audio.GetProperty("data").GetString()!;
+            var comma = raw.Contains(',') ? raw[(raw.IndexOf(',') + 1)..] : raw;
+            var bytes = Convert.FromBase64String(comma);
             lock (_received) _received.Add(bytes);
             Assert.InRange(bytes.Length, 46, 1_920_044);
             Assert.Equal(bytes.Length - 44, (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(40)));
@@ -594,15 +596,43 @@ public sealed class NoteAsrTests : IAsyncLifetime
             Assert.Contains("本地合成转写", x.Transcript);
         });
         using (var scope = _factory.Services.CreateScope())
+        {
             Assert.Equal(0, await scope.ServiceProvider.GetRequiredService<PimDbContext>()
                 .AiRequestLogs.CountAsync(x => x.UserId == _owner && x.SourceObjectId == started.TaskId.ToString()));
+            var db = scope.ServiceProvider.GetRequiredService<PimDbContext>();
+            var proofAttempt = await db.NoteAsrAttempts.AsNoTracking()
+                .SingleAsync(x => x.Id == started.AttemptId);
+            var proofState = await scope.ServiceProvider.GetRequiredService<NoteAsrTaskStore>()
+                .ReadAsync(_owner, started.TaskId, default);
+            Assert.Single(await NoteAsrAcceptedEvidence.LoadAsync(db, _owner, proofAttempt, proofState, default));
+            var originalAttemptId = proofState.AttemptId;
+            var originalInputSha = proofState.InputSha256;
+            var originalSteps = proofState.Steps;
+            try
+            {
+                proofState.AttemptId = Guid.NewGuid();
+                Assert.Empty(await NoteAsrAcceptedEvidence.LoadAsync(db, _owner, proofAttempt, proofState, default));
+                proofState.AttemptId = originalAttemptId;
+                proofState.InputSha256 = new string('0', 64);
+                Assert.Empty(await NoteAsrAcceptedEvidence.LoadAsync(db, _owner, proofAttempt, proofState, default));
+                proofState.InputSha256 = originalInputSha;
+                proofState.Steps = [];
+                Assert.Empty(await NoteAsrAcceptedEvidence.LoadAsync(db, _owner, proofAttempt, proofState, default));
+            }
+            finally
+            {
+                proofState.AttemptId = originalAttemptId;
+                proofState.InputSha256 = originalInputSha;
+                proofState.Steps = originalSteps;
+            }
+        }
 
         var text = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models", new SaveAiModelRequest(
             "派生文本", _provider.Urls.Single() + "/v1/", "mimo-v2.6-flash", true,
-            [AiModelCapability.Text], 30, 1024, "synthetic-derived-key")));
+            [AiModelCapability.Text, AiModelCapability.Vision], 30, 1024, "synthetic-derived-key")));
         var runtime = await Data<AiModelSettingsDto>(await _client.GetAsync("/api/v1/ai/model-settings"));
         _ = await Data<AiModelSettingsDto>(await _client.PutAsJsonAsync("/api/v1/ai/model-settings",
-            new SaveAiModelSettingsRequest(runtime.Revision, true, text.Id, null, _model.Id)));
+            new SaveAiModelSettingsRequest(runtime.Revision, true, text.Id, text.Id, _model.Id)));
         var derived = await Data<NoteDerivedTaskDto>(await _client.PostAsJsonAsync(
             "/api/v1/native-notes/derived-tasks", new StartNoteDerivedTaskRequest(Guid.NewGuid(), _owner,
                 fixture.Request.VersionId, started.TaskId,

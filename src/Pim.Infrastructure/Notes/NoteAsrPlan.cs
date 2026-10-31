@@ -55,6 +55,9 @@ internal sealed class NoteAsrState
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public bool StopRequested { get; set; }
     public Dictionary<Guid, string> Retries { get; set; } = [];
+    // The intent freezes the exact pre-mutation attempt epoch. Recovery can clear an old stop,
+    // but can never erase a stop that landed after this intent was committed to the task file.
+    public Dictionary<Guid, NoteAsrRetryIntent> RetryIntents { get; set; } = [];
     public List<NoteAsrStep> Steps { get; set; } = [];
     // Null is the legacy dedicated cloud-ASR pipeline. New tasks persist the resolved route before an attempt exists.
     public string? Route { get; set; }
@@ -66,6 +69,21 @@ internal sealed class NoteAsrState
     public string? ReprocessReason { get; set; }
     public bool CompletionAcknowledged { get; set; }
     public int SamplesPerCall { get; set; }
+}
+
+internal sealed class NoteAsrRetryIntent
+{
+    public string Fingerprint { get; set; } = "";
+    public Guid AttemptId { get; set; }
+    public Guid TaskId { get; set; }
+    public Guid VersionId { get; set; }
+    public string InputSha256 { get; set; } = "";
+    public string Route { get; set; } = "";
+    public string AttemptState { get; set; } = "";
+    public bool AttemptStopRequested { get; set; }
+    public long FencingToken { get; set; }
+    public DateTimeOffset AttemptUpdatedAt { get; set; }
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 
 internal sealed class NoteAsrStep

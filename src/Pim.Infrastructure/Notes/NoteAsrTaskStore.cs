@@ -70,6 +70,20 @@ public sealed class NoteAsrTaskStore(IOptions<NoteMaterialUploadOptions> options
         state.Revision = Guid.NewGuid(); state.UpdatedAt = DateTimeOffset.UtcNow;
         await SaveAsync(state, ct); return state;
     }
+    internal async Task<NoteAsrState> ReadLockedAsync(Guid owner, Guid id, CancellationToken ct)
+    {
+        return await WithLockAsync(owner, token => ReadAsync(owner, id, token), ct);
+    }
+    /// <summary>
+    /// Holds the same owner-scoped checkpoint lock across a file read and the caller's durable
+    /// compare-and-swap. This prevents a stop committed in the file from racing a retry/claim CAS.
+    /// </summary>
+    internal async Task<T> WithLockAsync<T>(Guid owner, Func<CancellationToken, Task<T>> action,
+        CancellationToken ct)
+    {
+        await using var lease = await LockAsync(owner, ct);
+        return await action(ct);
+    }
     internal IEnumerable<(Guid Owner, Guid Id)> Enumerate(Guid? owner = null)
     {
         if (!Directory.Exists(Root)) yield break;

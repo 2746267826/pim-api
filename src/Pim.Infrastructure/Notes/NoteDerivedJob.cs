@@ -530,16 +530,13 @@ public sealed class NoteDerivedJob(
         var receipts = await db.AiRequestLogs.AsNoTracking()
             .Where(x => x.UserId == state.Owner && logIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, ct);
-        var evidenceIds = state.Plan.Input.Transcripts.Where(x => x.EvidenceId.HasValue)
-            .Select(x => x.EvidenceId!.Value).ToArray();
-        var evidence = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == state.Owner &&
-                evidenceIds.Contains(x.Id) && x.TaskId == state.Request.AsrTaskId.Value &&
-                x.VersionId == state.Request.VersionId)
-            .ToDictionaryAsync(x => x.Id, ct);
-        var currentFence = asr.AttemptId is { } currentAttemptId
-            ? await db.NoteAsrAttempts.AsNoTracking().Where(x => x.Id == currentAttemptId && x.OwnerId == state.Owner)
-                .Select(x => (long?)x.FencingToken).SingleOrDefaultAsync(ct)
+        var proofAttempt = asr.AttemptId is { } currentAttemptId
+            ? await db.NoteAsrAttempts.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == currentAttemptId && x.OwnerId == state.Owner, ct)
             : null;
+        var acceptedEvidence = proofAttempt is null
+            ? []
+            : await NoteAsrAcceptedEvidence.LoadAsync(db, state.Owner, proofAttempt, asr, ct);
         foreach (var transcript in state.Plan.Input.Transcripts.OrderBy(x => x.Ordinal))
         {
             if (!bySegment.TryGetValue(transcript.AsrSegmentIndex, out var slice) ||
@@ -558,9 +555,8 @@ public sealed class NoteDerivedJob(
             }
             if (transcript.EvidenceId is { } evidenceId)
             {
-                if (!evidence.TryGetValue(evidenceId, out var proof) ||
-                    proof.AttemptId != asr.AttemptId || proof.SegmentIndex != transcript.AsrSegmentIndex ||
-                    proof.FencingToken != currentFence ||
+                if (!acceptedEvidence.TryGetValue(transcript.AsrSegmentIndex, out var proof) ||
+                    proof.Id != evidenceId || proof.AttemptId != asr.AttemptId ||
                     proof.RecordingId != transcript.RecordingId ||
                     proof.RecordingSegment != transcript.RecordingSegment ||
                     proof.ChunkIndex != transcript.ChunkIndex ||
@@ -577,7 +573,7 @@ public sealed class NoteDerivedJob(
                         stepKey: $"asr:{transcript.Ordinal + 1:D5}"));
                     continue;
                 }
-                completed.Add(evidenceId);
+                completed.Add(proof.Id);
                 continue;
             }
             if (transcript.LogId is not { } logId || slice.Current.LogId != logId ||
