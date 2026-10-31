@@ -6,8 +6,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AsrCall, CallAudio } from './asr-call'
 import { ModelEditor } from './model-editor'
 import type { AsrPreset, Model, ModelSettings } from './api'
+import { ApiError } from '@/api/client'
 
-const api = vi.hoisted(() => ({ asrPresets: vi.fn(), asrCall: vi.fn(), asrLookup: vi.fn(), detail: vi.fn(), audio: vi.fn(), audioContent: vi.fn() }))
+const api = vi.hoisted(() => ({ asrPresets: vi.fn(), asrCall: vi.fn(), asrUrlCall: vi.fn(), asrUrlLookup: vi.fn(), asrLookup: vi.fn(), detail: vi.fn(), audio: vi.fn(), audioContent: vi.fn() }))
 vi.mock('./api', () => ({ aiApi: api }))
 vi.mock('@/lib/notify', () => ({ notifyError: vi.fn() }))
 const owner = '11111111-1111-4111-8111-111111111111', logId = '22222222-2222-4222-8222-222222222222'
@@ -36,10 +37,39 @@ beforeEach(() => {
   settings = { revision: model.revision, enabled: true, textModelId: null, visionModelId: null, transcriptionModelId: model.id }
   qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
   api.asrPresets.mockResolvedValue([preset]); api.asrCall.mockResolvedValue({ logId, status: 'Succeeded', responseText: '完整转写', replayed: false, errorMessage: null })
+  api.asrUrlCall.mockResolvedValue({ logId, status: 'Succeeded', responseText: 'URL转写结果', replayed: false, errorMessage: null,
+    sourceOrigin: 'https://audio.example.test', preflightSha256: 'f'.repeat(64), preflightVerified: true,
+    providerFetchVerified: false, warning: '本地预检不证明服务商读取相同字节。' })
+  api.asrUrlLookup.mockResolvedValue({ logId, status: 'Succeeded', responseText: 'URL转写结果', replayed: true, errorMessage: null,
+    sourceOrigin: 'https://audio.example.test', preflightSha256: 'f'.repeat(64), preflightVerified: true,
+    providerFetchVerified: false, warning: '本地预检不证明服务商读取相同字节。' })
   api.asrLookup.mockResolvedValue({ logId, status: 'Cancelled', responseText: null, replayed: true, errorMessage: '已取消' })
   api.detail.mockResolvedValue({ responseRawJson: '{}' })
 })
 afterEach(() => { cleanup(); qc.clear() })
+
+function useMultimodalPreset() {
+  preset = { ...preset, id: 'mimo-multimodal', name: 'MiMo 多模态', formats: ['wav', 'mp3', 'flac', 'm4a', 'ogg'], maxAudioBytes: 50 * 1024 * 1024 }
+  model = { ...model, asrPresetId: preset.id }
+  api.asrPresets.mockResolvedValue([preset])
+}
+
+async function chooseUrlMode() {
+  await screen.findByText(/预设：MiMo/)
+  await userEvent.click(screen.getByRole('combobox', { name: '音频来源' }))
+  await userEvent.click(await screen.findByRole('option', { name: '公开 HTTPS URL' }))
+}
+
+async function enterUrl(value = 'https://audio.example.test/课堂录音.wav?token=synthetic') {
+  await chooseUrlMode()
+  await userEvent.type(screen.getByLabelText('公开HTTPS音频地址'), value)
+}
+
+async function confirmUrl() {
+  await userEvent.click(screen.getByRole('checkbox', { name: '确认PIM服务器读取公开HTTPS音频' }))
+  await userEvent.click(screen.getByRole('checkbox', { name: '确认ASR服务将再次读取该URL且内容可能不同' }))
+  await userEvent.click(screen.getByRole('checkbox', { name: '确认本次URL转写目标与可能费用' }))
+}
 
 describe('ASR预设和调用', () => {
   it('预设自动填入默认配置且以独立凭据保存，页面无需识别厂商名称', async () => {
@@ -112,6 +142,114 @@ describe('ASR预设和调用', () => {
     expect(await screen.findByRole('option', { name: 'mimo-v2.6-flash（推荐，长音频默认）' })).toBeTruthy()
     await userEvent.click(screen.getByRole('option', { name: 'mimo-v2.6-pro（Pro，不推荐长音频）' }))
     expect(screen.getByText(/MiMo Pro 不推荐用于长音频/)).toBeTruthy()
+  })
+
+  it('旧ASR预设不提供公开URL来源', async () => {
+    render(wrap(page())); await screen.findByText(/预设：MiMo/)
+    await userEvent.click(screen.getByRole('combobox', { name: '音频来源' }))
+    expect(screen.queryByRole('option', { name: '公开 HTTPS URL' })).toBeNull()
+    expect(screen.getByRole('option', { name: '本机文件' })).toBeTruthy()
+  })
+
+  it('仅多模态预设显示URL模式，非法HTTPS地址零调用', async () => {
+    useMultimodalPreset(); render(wrap(page())); await enterUrl('http://audio.example.test/file.wav')
+    await screen.findByText('只允许HTTPS地址')
+    expect((screen.getByRole('button', { name: '确认发送URL并转写' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(api.asrUrlCall).not.toHaveBeenCalled()
+    expect(document.querySelector('audio')).toBeNull()
+  })
+
+  it('URL模式需三项确认，修改地址撤销确认并按typed body只提交一次', async () => {
+    useMultimodalPreset(); render(wrap(page()))
+    await enterUrl()
+    const send = () => screen.getByRole('button', { name: '确认发送URL并转写' }) as HTMLButtonElement
+    expect(send().disabled).toBe(true)
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认PIM服务器读取公开HTTPS音频' }))
+    expect(send().disabled).toBe(true)
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认ASR服务将再次读取该URL且内容可能不同' }))
+    expect(send().disabled).toBe(true)
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认本次URL转写目标与可能费用' }))
+    expect(send().disabled).toBe(false)
+    await userEvent.click(screen.getByRole('combobox', { name: '识别语言' })); await userEvent.click(screen.getByRole('option', { name: '中文' }))
+    expect(send().disabled).toBe(true)
+    expect((screen.getByRole('checkbox', { name: '确认PIM服务器读取公开HTTPS音频' }) as HTMLInputElement).checked).toBe(false)
+    await confirmUrl()
+    const urlInput = screen.getByLabelText('公开HTTPS音频地址')
+    await userEvent.clear(urlInput)
+    await userEvent.type(urlInput, 'https://audio.example.test/changed.wav?token=changed')
+    expect((screen.getByRole('checkbox', { name: '确认PIM服务器读取公开HTTPS音频' }) as HTMLInputElement).checked).toBe(false)
+    await confirmUrl(); await userEvent.click(send())
+    await screen.findByLabelText('实际URL ASR转写')
+    expect(api.asrUrlCall).toHaveBeenCalledOnce()
+    const body = api.asrUrlCall.mock.calls[0]?.[0]
+    expect(body).toEqual(expect.objectContaining({
+      expectedUserId: owner,
+      language: 'zh',
+      audio: { name: 'changed.wav', format: 'wav', url: 'https://audio.example.test/changed.wav?token=changed', sourceConfirmed: true, providerFetchConfirmed: true },
+      consent: { modelId: model.id, modelRevision: model.revision, endpoint: model.baseUrl + preset.operationPath, presetId: preset.id, presetVersion: preset.version, confirmed: true },
+    }))
+    expect(body.clientRequestId).toEqual(expect.any(String))
+    expect(screen.queryByDisplayValue(/token=changed/)).toBeNull()
+    expect(localStorage.length).toBe(0)
+  })
+
+  it('URL响应丢失后先核对，404后才允许同ID显式重发', async () => {
+    useMultimodalPreset(); api.asrUrlCall.mockRejectedValueOnce(new Error('response lost'))
+    render(wrap(page())); await enterUrl(); await confirmUrl()
+    await userEvent.click(screen.getByRole('button', { name: '确认发送URL并转写' }))
+    await screen.findByText(/response lost/)
+    const firstBody = api.asrUrlCall.mock.calls[0]?.[0]
+    expect(screen.queryByRole('button', { name: '按原标识重发URL' })).toBeNull()
+    api.asrUrlLookup.mockRejectedValueOnce(new ApiError('not found', 404, 404))
+    await userEvent.click(screen.getByRole('button', { name: '核对URL ASR状态' }))
+    await screen.findByText(/服务端尚未找到该URL请求标识/)
+    expect(api.asrUrlCall).toHaveBeenCalledOnce()
+    await userEvent.click(screen.getByRole('button', { name: '按原标识重发URL' }))
+    await screen.findByLabelText('实际URL ASR转写')
+    expect(api.asrUrlCall).toHaveBeenCalledTimes(2)
+    expect(api.asrUrlCall.mock.calls[1]?.[0]).toEqual(firstBody)
+  })
+
+  it('URL核对找到已有记录时不重发', async () => {
+    useMultimodalPreset(); api.asrUrlCall.mockRejectedValueOnce(new Error('response lost'))
+    render(wrap(page())); await enterUrl(); await confirmUrl()
+    await userEvent.click(screen.getByRole('button', { name: '确认发送URL并转写' }))
+    await screen.findByText(/response lost/)
+    await userEvent.click(screen.getByRole('button', { name: '核对URL ASR状态' }))
+    await screen.findByLabelText('实际URL ASR转写')
+    expect(api.asrUrlLookup).toHaveBeenCalledWith(api.asrUrlCall.mock.calls[0]?.[0].clientRequestId)
+    expect(api.asrUrlCall).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: '按原标识重发URL' })).toBeNull()
+  })
+
+  it('URL提交失败时脱敏完整地址与查询值并保留冻结意图', async () => {
+    useMultimodalPreset()
+    const source = 'https://audio.example.test/file.wav?token=synthetic-secret&sig=private'
+    api.asrUrlCall.mockRejectedValueOnce(new Error(`读取失败：${source}；查询 ${new URL(source).search}`))
+    render(wrap(page())); await enterUrl(source); await confirmUrl()
+    await userEvent.click(screen.getByRole('button', { name: '确认发送URL并转写' }))
+    await screen.findByText(/读取失败：\[已脱敏源URL\]/)
+    expect(screen.getByText(/已冻结公开URL调用/)).toBeTruthy()
+    expect(document.body.textContent).not.toContain(source)
+    expect(document.body.textContent).not.toContain('token=synthetic-secret')
+    expect(localStorage.length).toBe(0)
+    expect(api.asrUrlCall).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: '按原标识重发URL' })).toBeNull()
+  })
+
+  it('URL预检通过但Provider未确认时仍显示风险，非成功状态不自动重试', async () => {
+    useMultimodalPreset()
+    api.asrUrlCall.mockResolvedValue({ logId, status: 'TimedOut', responseText: null, replayed: false,
+      errorMessage: 'URL ASR上游超时，结果UNKNOWN，未自动重试', sourceOrigin: 'https://audio.example.test',
+      preflightSha256: 'f'.repeat(64), preflightVerified: true, providerFetchVerified: false,
+      warning: '本地预检不证明服务商读取相同字节。' })
+    render(wrap(page())); await enterUrl(); await confirmUrl()
+    await userEvent.click(screen.getByRole('button', { name: '确认发送URL并转写' }))
+    await screen.findByText(/状态 TimedOut 未确认为成功/)
+    expect(screen.getByText(/Provider再次读取：未核验/)).toBeTruthy()
+    expect(screen.getByText(/本地预检不证明服务商读取相同字节/)).toBeTruthy()
+    expect(api.asrUrlCall).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: '按原标识重发URL' })).toBeNull()
   })
 
   it('ASR调用完成后读取现有详情快照，显示红色audio_tokens缺失而不伪报成功', async () => {
