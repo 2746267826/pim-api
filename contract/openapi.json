@@ -16024,7 +16024,13 @@
             "type": "string"
           },
           "destination": {
-            "$ref": "#/components/schemas/AiAsrDestinationConsent"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AiAsrDestinationConsent"
+              }
+            ],
+            "nullable": true,
+            "type": "object"
           },
           "executionMode": {
             "nullable": true,
@@ -16097,7 +16103,6 @@
           "completedSamples",
           "completedSegments",
           "createdAt",
-          "destination",
           "failedSegments",
           "inputSha256",
           "language",
@@ -20558,7 +20563,13 @@
             "type": "string"
           },
           "consent": {
-            "$ref": "#/components/schemas/AiAsrDestinationConsent"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AiAsrDestinationConsent"
+              }
+            ],
+            "nullable": true,
+            "type": "object"
           },
           "expectedRevision": {
             "format": "uuid",
@@ -20687,7 +20698,13 @@
             "type": "boolean"
           },
           "consent": {
-            "$ref": "#/components/schemas/AiAsrDestinationConsent"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AiAsrDestinationConsent"
+              }
+            ],
+            "nullable": true,
+            "type": "object"
           },
           "expectedRevision": {
             "format": "uuid",
@@ -20711,7 +20728,6 @@
         },
         "required": [
           "acknowledgePossibleDuplicateCharge",
-          "consent",
           "expectedRevision",
           "expectedUserId",
           "retryId",
@@ -21732,7 +21748,13 @@
         "additionalProperties": false,
         "properties": {
           "consent": {
-            "$ref": "#/components/schemas/AiAsrDestinationConsent"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AiAsrDestinationConsent"
+              }
+            ],
+            "nullable": true,
+            "type": "object"
           },
           "expectedUserId": {
             "format": "uuid",
@@ -21763,7 +21785,6 @@
           }
         },
         "required": [
-          "consent",
           "expectedUserId",
           "taskId",
           "versionId"
