@@ -1456,6 +1456,17 @@ public sealed class NoteAsrBatchPersistenceTests
         Assert.Equal(NoteAsrPlan.SampleRate * 60 * 10, sourceState.SamplesPerCall);
         Assert.All(sourceState.Steps, step => Assert.Equal(NoteAsrPlan.SamplesPerCall, step.Samples));
 
+        // A distinct full reprocess is only valid from a finished source, so close this synthetic
+        // source before submitting the child.
+        await Tasks(owner).UpdateAsync(owner, source.TaskId, current =>
+        {
+            foreach (var step in current.Steps) step.Current.Status = "Succeeded";
+            current.CompletionAcknowledged = true;
+        }, CancellationToken.None);
+        var terminal = NoteAsrTaskStore.Describe(await Tasks(owner)
+            .ReadAsync(owner, source.TaskId, CancellationToken.None));
+        Assert.Equal("Succeeded", terminal.Phase);
+
         var factory = new SyntheticFactory((request, _) => Task.FromResult(
             request.Method == HttpMethod.Post && request.Path == "/v1/files"
                 ? UploadOk()
@@ -1467,7 +1478,7 @@ public sealed class NoteAsrBatchPersistenceTests
         {
             var service = NewService(serviceDb, owner, factory, noteAsr: RealNoteAsr(serviceDb, owner));
             var result = await service.StartFromTaskAsync(new StartNoteAsrBatchFromTaskRequest(
-                Guid.NewGuid(), source.TaskId, source.Revision, owner,
+                Guid.NewGuid(), source.TaskId, terminal.Revision, owner,
                 new NoteAsrReprocessRoute(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
                     routeConfig.ConsentVersion, NoteAsrExecutionMode.Batch, true, true),
                 new NoteAsrBatchTarget(profile.Id, profile.Revision, "consent-real", true, true),
@@ -1480,6 +1491,57 @@ public sealed class NoteAsrBatchPersistenceTests
         }
         Assert.Equal(1, factory.UploadCalls);
         Assert.Equal(1, factory.CreateCalls);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Distinct_full_child_is_rejected_for_queued_or_running_source()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var (owner, material, profile) = await SeedRealBatchOwnerAsync(NoteAsrPlan.SampleRate, "clone-guard");
+        var (source, routeConfig) = await StartViaRealServiceAsync(owner, material, Guid.NewGuid(), profile);
+        Assert.Equal("Queued", source.Phase);
+        var factory = new SyntheticFactory((_, _) => throw new InvalidOperationException("must not send"));
+        var request = new StartNoteAsrBatchFromTaskRequest(Guid.NewGuid(), source.TaskId, source.Revision,
+            owner, new NoteAsrReprocessRoute(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                routeConfig.ConsentVersion, NoteAsrExecutionMode.Batch, true, true),
+            new NoteAsrBatchTarget(profile.Id, profile.Revision, "consent-guard", true, true),
+            new NoteAsrReprocessReason(NoteAsrReprocessReasonKind.Manual, "queued clone"));
+
+        await using (var db = NewDb(owner))
+        {
+            var service = NewService(db, owner, factory, noteAsr: RealNoteAsr(db, owner));
+            var queued = await Assert.ThrowsAsync<DomainException>(() =>
+                service.StartFromTaskAsync(request, CancellationToken.None));
+            Assert.Equal(40901, queued.ErrorCode);
+        }
+        Assert.Empty(factory.Requests);
+        await using (var db = NewDb(owner))
+        {
+            Assert.Equal(0, await db.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+            Assert.Equal(1, await db.NoteAsrAttempts.CountAsync(x => x.OwnerId == owner));
+            Assert.Equal(1, Tasks(owner).Enumerate(owner).Count());
+        }
+
+        // A running source is equally ineligible once the child id is new.
+        await Tasks(owner).UpdateAsync(owner, source.TaskId, current =>
+            current.Steps[0].Current.Status = "Running", CancellationToken.None);
+        await using (var db = NewDb(owner))
+        {
+            var revision = (await Tasks(owner).ReadAsync(owner, source.TaskId, CancellationToken.None)).Revision;
+            var service = NewService(db, owner, factory, noteAsr: RealNoteAsr(db, owner));
+            var running = await Assert.ThrowsAsync<DomainException>(() => service.StartFromTaskAsync(
+                request with { ClientTaskId = Guid.NewGuid(), ExpectedSourceRevision = revision },
+                CancellationToken.None));
+            Assert.Equal(40901, running.ErrorCode);
+        }
+        Assert.Empty(factory.Requests);
+        await using (var db = NewDb(owner))
+        {
+            Assert.Equal(0, await db.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+            Assert.Equal(1, await db.NoteAsrAttempts.CountAsync(x => x.OwnerId == owner));
+            Assert.Equal(1, Tasks(owner).Enumerate(owner).Count());
+        }
         await CleanupAsync(owner);
     }
 

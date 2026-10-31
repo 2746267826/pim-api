@@ -144,6 +144,15 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
                 request.Target.CompletionWindow, "initial", request.SourceTaskId,
                 Enumerable.Range(0, prepared.State.Steps.Count).ToArray(), request.Reason, ct);
         }
+        if (!await ChildTaskExistsAsync(owner, request.ClientTaskId, ct))
+        {
+            // A distinct full reprocess may only copy a finished source. Running or queued work must
+            // never be duplicated into a second paid submission. An existing child replay is exempt.
+            var sourceView = NoteAsrTaskStore.Describe(source);
+            if (sourceView.Phase is not ("Succeeded" or "NeedsAttention" or "Stopped"))
+                throw new DomainException(40901,
+                    "只能从已完成、失败或已停止的源任务创建新的 Batch 子任务；排队或运行中的任务不能复制");
+        }
         var child = await EnsureChildTaskAsync(owner, source, request.ClientTaskId, request.Route, request.Target,
             request.Reason, preservePlan: false, ct);
         // The attempt freezes the route-config consent revision. The provider destination reference is
@@ -203,6 +212,19 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
     }
 
     private sealed record PreparedChild(NoteAsrState State, NoteAsrAttemptEntity Attempt);
+
+    private async Task<bool> ChildTaskExistsAsync(Guid owner, Guid clientTaskId, CancellationToken ct)
+    {
+        try
+        {
+            await tasks.ReadAsync(owner, clientTaskId, ct);
+            return true;
+        }
+        catch (DomainException error) when (error.ErrorCode == 40401)
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// Accepts only a task that the trusted ASR pipeline already froze as a queued batch attempt.
