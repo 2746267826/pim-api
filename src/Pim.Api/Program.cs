@@ -98,6 +98,8 @@ builder.Services.AddSwaggerGen(c =>
     // R19: segment content returns binary audio plus immutable routing identity headers;
     // Swashbuckle cannot infer custom response headers, so the contract is documented here.
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.NoteAsrSegmentContentOperationFilter>();
+    // issue #539：202 处理响应携带 Retry-After 头，minimal API 的 Produces 表达不了响应头。
+    c.OperationFilter<Pim.Api.Infrastructure.OpenApi.MobileProcessingResponseOperationFilter>();
     c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.SecuritySchemesDocumentFilter>();
 });
 

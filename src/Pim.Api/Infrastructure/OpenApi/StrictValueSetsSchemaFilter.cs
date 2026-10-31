@@ -36,6 +36,10 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
         ["CreateTaskRequest.Status"] = TaskStatuses.All,
         ["UpdateTaskRequest.Status"] = TaskStatuses.All,
         ["BatchTaskUpdateRequest.Status"] = TaskStatuses.All,
+
+        // MobileUsageIngestService emits these exact wire values for 202 responses only.
+        // Both are declared optional on MobileUsageIngestResult; terminal replays omit them.
+        ["MobileUsageIngestResult.ProcessingState"] = ["in-flight", "retry-scheduled"],
     };
 
     /// <summary>
@@ -62,6 +66,19 @@ public sealed class StrictValueSetsSchemaFilter : ISchemaFilter
             + "正在计时的段按查询时刻计入，planned（尚未执行）不计；逐段四舍五入取秒。"
             + "注意它是「实际花在任务上的时间」，包含任务被取消/删除前已经发生的那段，"
             + "**不代表任务成功完成**（是否完成看 TaskStatus）。",
+
+        ["MobileUsageIngestResult.LeaseUntilUtc"] =
+            "Present only when processingState=in-flight. It is the upper bound of the active "
+            + "processing lease, not an expected completion time or a polling deadline.",
+
+        ["MobileUsageIngestResult.RetryAfterSeconds"] =
+            "Earliest-retry hint in seconds (minimum 1), equal to the 202 Retry-After header. "
+            + "It is a not-before hint, not an exact retry time. For in-flight, the hint is "
+            + "ceil(leaseUntilUtc-now); it is not a request to poll until lease expiry.",
+
+        ["MobileUsageIngestResult.RetryAtUtc"] =
+            "Present only when processingState=retry-scheduled. The server has scheduled a later retry; "
+            + "retryAfterSeconds is an earliest-retry hint, not an exact retry time.",
     };
 
     public void Apply(OpenApiSchema schema, SchemaFilterContext context)

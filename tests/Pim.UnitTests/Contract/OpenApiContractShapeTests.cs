@@ -381,4 +381,50 @@ public sealed class OpenApiContractShapeTests
 
         return array.OfType<OpenApiString>().Select(value => value.Value).ToList();
     }
+
+    // ===== issue #539：mobile usage/events 处理响应协议 =====
+
+    private const string MobileUsageEventsPath = "/api/v1/mobile/usage/events";
+    private static readonly string[] ProcessingProtocolFields =
+        ["processingState", "retryAfterSeconds", "leaseUntilUtc", "retryAtUtc"];
+
+    [Fact]
+    public void MobileUsageIngestResultDeclaresExactlyTheFourOptionalProcessingFields()
+    {
+        var schema = Schema("MobileUsageIngestResult");
+        foreach (var field in ProcessingProtocolFields)
+        {
+            Assert.True(schema.Properties.ContainsKey(field), $"{field} 必须在契约里");
+            Assert.DoesNotContain(field, RequiredOf(schema));
+            Assert.True(
+                schema.Properties[field].Nullable == true,
+                $"{field} 必须 optional/nullable（旧客户端持久化 JSON 不能因 required 退化）");
+        }
+        // 终态 200 里绝不出现这些字段；契约侧保持它们非 required 即可表达。
+        Assert.Equal(4, schema.Properties.Keys.Count(ProcessingProtocolFields.Contains));
+    }
+
+    [Fact]
+    public void MobileProcessingStateIsConstrainedToTheTwoWireValues()
+    {
+        var state = Schema("MobileUsageIngestResult").Properties["processingState"];
+        Assert.Equal("string", state.Type);
+        var values = state.Enum?.OfType<OpenApiString>().Select(value => value.Value).ToList();
+        Assert.Equal(["in-flight", "retry-scheduled"], values);
+    }
+
+    [Fact]
+    public void MobileUsageEventsUploadDeclares202WithMatchingRetryAfterHeader()
+    {
+        var operation = Document.Paths[MobileUsageEventsPath].Operations[OperationType.Post];
+        Assert.True(operation.Responses.ContainsKey("200"), "终态回放仍是 200");
+        Assert.True(operation.Responses.ContainsKey("202"), "处理响应必须是 202");
+
+        var accepted = operation.Responses["202"];
+        Assert.True(
+            accepted.Headers.TryGetValue("Retry-After", out var retryAfter),
+            "202 必须声明 Retry-After 头");
+        Assert.Equal("integer", retryAfter!.Schema.Type);
+        Assert.Equal(1m, retryAfter.Schema.Minimum!.Value);
+    }
 }

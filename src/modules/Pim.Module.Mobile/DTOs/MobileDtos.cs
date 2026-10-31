@@ -1,5 +1,7 @@
 using Pim.Core.Operations;
 
+using System.Text.Json.Serialization;
+
 namespace Pim.Module.Mobile.DTOs;
 
 public sealed record MobileDeviceRegisterRequest(
@@ -159,13 +161,30 @@ public sealed record MobileIngestItemResult(
     string Code,
     string Message);
 
+/// <summary>
+/// A 202 processing response is intentionally also a fully-formed legacy "not acknowledged"
+/// envelope: <see cref="FailedCount"/> is the request item count and <see cref="ItemResults"/>
+/// stays empty. Only the four optional fields below describe the server-side processing phase.
+/// </summary>
 public sealed record MobileUsageIngestResult(
     string BatchId,
     int AcceptedCount,
     int SkippedCount,
     int RejectedCount,
     int FailedCount,
-    IReadOnlyList<MobileIngestItemResult> ItemResults)
+    IReadOnlyList<MobileIngestItemResult> ItemResults,
+
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ProcessingState = null,
+
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? RetryAfterSeconds = null,
+
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DateTimeOffset? LeaseUntilUtc = null,
+
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DateTimeOffset? RetryAtUtc = null)
 {
     public MobileUsageIngestResult(
         string batchId,
