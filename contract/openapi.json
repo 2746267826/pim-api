@@ -14902,6 +14902,89 @@
         ],
         "type": "object"
       },
+      "NoteAsrBatchSubmissionResultDto": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/NoteAsrBatchJobDto"
+          },
+          "retryScope": {
+            "type": "string"
+          },
+          "sourceTaskId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "task": {
+            "$ref": "#/components/schemas/NoteAsrTaskDto"
+          }
+        },
+        "required": [
+          "job",
+          "retryScope",
+          "sourceTaskId",
+          "task"
+        ],
+        "type": "object"
+      },
+      "NoteAsrBatchSubmissionResultDtoApiResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NoteAsrBatchSubmissionResultDto"
+          },
+          "message": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "NoteAsrBatchTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "batchScopeConfirmed": {
+            "type": "boolean"
+          },
+          "completionWindow": {
+            "type": "string"
+          },
+          "confirmed": {
+            "type": "boolean"
+          },
+          "consentRef": {
+            "type": "string"
+          },
+          "modelId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "modelRevision": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "batchScopeConfirmed",
+          "confirmed",
+          "consentRef",
+          "modelId",
+          "modelRevision"
+        ],
+        "type": "object"
+      },
       "NoteAsrClaimDto": {
         "additionalProperties": false,
         "properties": {
@@ -20691,6 +20774,41 @@
         ],
         "type": "object"
       },
+      "RetryFailedNoteAsrBatchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "clientTaskId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expectedUserId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/NoteAsrReprocessReason"
+          },
+          "route": {
+            "$ref": "#/components/schemas/NoteAsrReprocessRoute"
+          },
+          "sourceJobId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/NoteAsrBatchTarget"
+          }
+        },
+        "required": [
+          "clientTaskId",
+          "expectedUserId",
+          "reason",
+          "route",
+          "sourceJobId",
+          "target"
+        ],
+        "type": "object"
+      },
       "RetryNoteAsrRequest": {
         "additionalProperties": false,
         "properties": {
@@ -21741,6 +21859,46 @@
           "file",
           "modelId",
           "taskId"
+        ],
+        "type": "object"
+      },
+      "StartNoteAsrBatchFromTaskRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "clientTaskId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expectedSourceRevision": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expectedUserId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/NoteAsrReprocessReason"
+          },
+          "route": {
+            "$ref": "#/components/schemas/NoteAsrReprocessRoute"
+          },
+          "sourceTaskId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/NoteAsrBatchTarget"
+          }
+        },
+        "required": [
+          "clientTaskId",
+          "expectedSourceRevision",
+          "expectedUserId",
+          "reason",
+          "route",
+          "sourceTaskId",
+          "target"
         ],
         "type": "object"
       },
@@ -40442,6 +40600,132 @@
           },
           "403": {
             "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note ASR"
+        ]
+      }
+    },
+    "/api/v1/native-notes/asr-tasks/{sourceJobId}/batch-retry-failed": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sourceJobId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetryFailedNoteAsrBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteAsrBatchSubmissionResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "tags": [
+          "Native note ASR"
+        ]
+      }
+    },
+    "/api/v1/native-notes/asr-tasks/{sourceTaskId}/batch-from-task": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sourceTaskId",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartNoteAsrBatchFromTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteAsrBatchSubmissionResultDtoApiResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Conflict"
+          },
+          "413": {
+            "description": "Content Too Large"
           }
         },
         "security": [
