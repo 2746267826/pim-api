@@ -192,7 +192,7 @@ public sealed class MobileUsageIngestIssue539RealDbTests
     }
 
     [SkippableFact]
-    public async Task ActiveLease_OnRealPipeline_IsStillReportedAsFailedWithoutInFlightDiscriminator()
+    public async Task ActiveLease_OnRealPipeline_IsReportedAsInFlightAndLeavesPendingRowUnchanged()
     {
         await using var fixture = await CreateFixtureAsync();
         var connectionString = fixture.ConnectionString;
@@ -218,19 +218,38 @@ public sealed class MobileUsageIngestIssue539RealDbTests
             CreatedAt = Now.AddMinutes(-1)
         });
         await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var before = await db.Set<MobileSyncBatchEntity>()
+            .AsNoTracking()
+            .SingleAsync(row => row.BatchId == request.BatchId);
 
         var result = await CreateIngest(db, Now, TimeSpan.FromSeconds(5))
             .IngestAsync(request, CancellationToken.None);
 
+        db.ChangeTracker.Clear();
+        var after = await db.Set<MobileSyncBatchEntity>()
+            .AsNoTracking()
+            .SingleAsync(row => row.BatchId == request.BatchId);
+
         _output.WriteLine(
-            "IN_FLIGHT_RESULT accepted={0} skipped={1} rejected={2} failed={3} items={4}",
+            "IN_FLIGHT_RESULT accepted={0} skipped={1} rejected={2} failed={3} items={4} state={5} retryAfterSeconds={6}",
             result.AcceptedCount,
             result.SkippedCount,
             result.RejectedCount,
             result.FailedCount,
-            result.ItemResults.Count);
+            result.ItemResults.Count,
+            result.ProcessingState,
+            result.RetryAfterSeconds);
+        Assert.Equal("in-flight", result.ProcessingState);
+        Assert.Equal(600, result.RetryAfterSeconds);
+        Assert.Equal(Now.AddMinutes(10), result.LeaseUntilUtc);
+        Assert.Null(result.RetryAtUtc);
         Assert.Equal(5, result.FailedCount);
         Assert.Empty(result.ItemResults);
+        Assert.Equal(before.Status, after.Status);
+        Assert.Equal(before.ErrorJson, after.ErrorJson);
+        Assert.Equal(before.FailedCount, after.FailedCount);
+        Assert.Equal(before.CompletedAtUtc, after.CompletedAtUtc);
     }
 
     [SkippableFact]

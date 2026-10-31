@@ -14026,9 +14026,35 @@
             },
             "type": "array"
           },
+          "leaseUntilUtc": {
+            "description": "Present only when processingState=in-flight. It is the upper bound of the active processing lease, not an expected completion time or a polling deadline.",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "processingState": {
+            "enum": [
+              "in-flight",
+              "retry-scheduled"
+            ],
+            "nullable": true,
+            "type": "string"
+          },
           "rejectedCount": {
             "format": "int32",
             "type": "integer"
+          },
+          "retryAfterSeconds": {
+            "description": "Earliest-retry hint in seconds (minimum 1), equal to the 202 Retry-After header. It is a not-before hint, not an exact retry time. For in-flight, the hint is ceil(leaseUntilUtc-now); it is not a request to poll until lease expiry.",
+            "format": "int32",
+            "nullable": true,
+            "type": "integer"
+          },
+          "retryAtUtc": {
+            "description": "Present only when processingState=retry-scheduled. The server has scheduled a later retry; retryAfterSeconds is an earliest-retry hint, not an exact retry time.",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
           },
           "skippedCount": {
             "format": "int32",
@@ -37543,6 +37569,26 @@
               }
             },
             "description": "OK"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileUsageIngestResultApiResponse"
+                }
+              }
+            },
+            "description": "Accepted",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the earliest retry (not-before hint), matching the retryAfterSeconds field of the 202 envelope. Minimum 1.",
+                "schema": {
+                  "format": "int32",
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              }
+            }
           },
           "400": {
             "content": {

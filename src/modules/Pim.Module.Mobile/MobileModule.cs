@@ -1,4 +1,5 @@
 using Pim.Infrastructure.Operations;
+using System.Globalization;
 using System.Reflection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -154,11 +155,24 @@ public sealed class MobileModule : IModule
         .Produces<ApiResponse<string>>(500);
 
         group.MapPost("/usage/events", async (
+            HttpContext httpContext,
             [FromBody] MobileUsageEventsUploadRequest request,
             [FromServices] MobileUsageIngestService service,
             CancellationToken ct) =>
-            Results.Ok(ApiResponse<MobileUsageIngestResult>.Ok(await service.IngestAsync(request, ct))))
+        {
+            var result = await service.IngestAsync(request, ct);
+            if (result.ProcessingState is null)
+                return Results.Ok(ApiResponse<MobileUsageIngestResult>.Ok(result));
+
+            httpContext.Response.Headers.RetryAfter =
+                result.RetryAfterSeconds!.Value.ToString(CultureInfo.InvariantCulture);
+            return Results.Json(
+                ApiResponse<MobileUsageIngestResult>.Ok(result),
+                statusCode: StatusCodes.Status202Accepted);
+        })
         .Produces<ApiResponse<MobileUsageIngestResult>>(200)
+        .Produces<ApiResponse<MobileUsageIngestResult>>(202)
+        .WithMetadata(new MobileUsageProcessingResponseAttribute())
         .Produces(401)
         .Produces<ApiResponse<string>>(400)
         .Produces<ApiResponse<string>>(500);
