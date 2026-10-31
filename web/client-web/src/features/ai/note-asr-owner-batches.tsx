@@ -15,10 +15,10 @@ import { createAiRequestId } from './request-id'
 const dateTime = (value: string | null | undefined) => value ? new Date(value).toLocaleString() : '未知'
 
 function batchStatus(job: NoteAsrBatchJob): BatchStatusView {
-  switch (job.status.toUpperCase()) {
+  switch (job.status.trim().toUpperCase().replaceAll('_', '')) {
     case 'VALIDATING': return 'validating'
     case 'CREATED': case 'QUEUED': return 'waiting'
-    case 'IN_PROGRESS': case 'RUNNING': return 'running'
+    case 'INPROGRESS': case 'RUNNING': case 'FINALIZING': return 'running'
     case 'COMPLETED':
       return job.outputImported && !job.lastErrorCode && !((job.failedItems ?? 0) > 0)
         ? 'completed' : 'partial'
