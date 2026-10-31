@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Pim.Core.Ai;
@@ -148,8 +149,10 @@ public sealed class NoteAsrBatchPersistenceTests
     public async Task Cross_owner_task_consent_and_state_bindings_are_rejected_before_network()
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
-        var seed = await SeedAsync();
+        // Seed order matters: SeedAsync prunes rows owned by anyone else, so the owner under
+        // test must be seeded last or its attempt/task rows would be removed.
         var other = await SeedAsync();
+        var seed = await SeedAsync();
         var factory = new SyntheticFactory((_, _) => throw new InvalidOperationException("must not send"));
 
         await using (var db = NewDb(other.Owner))
@@ -180,6 +183,54 @@ public sealed class NoteAsrBatchPersistenceTests
         Assert.Empty(factory.Requests);
         await CleanupAsync(seed.Owner);
         await CleanupAsync(other.Owner);
+    }
+
+    [SkippableFact]
+    public async Task Disabled_capability_gate_blocks_every_submission_entry_before_any_mutation()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var routeConfig = await AddRouteConfigAsync(seed.Owner, seed.ProfileId, "route-consent-1");
+        var factory = new SyntheticFactory((_, _) => throw new InvalidOperationException("must not send"));
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var service = NewService(db, seed.Owner, factory, allowBatch: false);
+            await using var stream = new MemoryStream(JsonlBytes(seed, "seg-0", "seg-1"), writable: false);
+            var multipart = await Assert.ThrowsAsync<DomainException>(() => service.StartAsync(
+                new StartNoteAsrBatchRequest(seed.TaskId, seed.AttemptId, seed.ProfileId, "consent-1",
+                    true), stream, stream.Length, "input.jsonl", CancellationToken.None));
+            Assert.Equal(40901, multipart.ErrorCode);
+
+            var sourceRevision = (await Tasks(seed.Owner)
+                .ReadAsync(seed.Owner, seed.TaskId, CancellationToken.None)).Revision;
+            var fromTask = await Assert.ThrowsAsync<DomainException>(() => service.StartFromTaskAsync(
+                new StartNoteAsrBatchFromTaskRequest(Guid.NewGuid(), seed.TaskId, sourceRevision, seed.Owner,
+                    new NoteAsrReprocessRoute(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                        routeConfig.ConsentVersion, NoteAsrExecutionMode.Batch, true, true),
+                    new NoteAsrBatchTarget(seed.ProfileId, seed.ProfileRevision, "consent-1", true, true),
+                    new NoteAsrReprocessReason(NoteAsrReprocessReasonKind.Manual, "gate closed")),
+                CancellationToken.None));
+            Assert.Equal(40901, fromTask.ErrorCode);
+
+            var retry = await Assert.ThrowsAsync<DomainException>(() => service.RetryFailedItemsAsync(
+                new RetryFailedNoteAsrBatchRequest(Guid.NewGuid(), Guid.NewGuid(), seed.Owner,
+                    new NoteAsrReprocessRoute(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                        routeConfig.ConsentVersion, NoteAsrExecutionMode.Batch, true, true),
+                    new NoteAsrBatchTarget(seed.ProfileId, seed.ProfileRevision, "consent-1", true, true),
+                    new NoteAsrReprocessReason(NoteAsrReprocessReasonKind.Quality, "gate closed")),
+                CancellationToken.None));
+            Assert.Equal(40901, retry.ErrorCode);
+        }
+
+        Assert.Empty(factory.Requests);
+        await using (var db = NewDb(seed.Owner))
+        {
+            Assert.Equal(0, await db.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == seed.Owner));
+            Assert.Equal(1, await db.NoteAsrAttempts.CountAsync(x => x.OwnerId == seed.Owner));
+            Assert.Equal(1, Tasks(seed.Owner).Enumerate(seed.Owner).Count());
+        }
+        await CleanupAsync(seed.Owner);
     }
 
     [SkippableFact]
@@ -930,7 +981,8 @@ public sealed class NoteAsrBatchPersistenceTests
             var old = DateTimeOffset.UtcNow.AddHours(-2);
             var stale = new NoteAsrBatchJobEntity
             {
-                OwnerId = seed.Owner, TaskId = Guid.NewGuid(), Status = "Creating",
+                OwnerId = seed.Owner, TaskId = Guid.NewGuid(), AttemptId = Guid.NewGuid(),
+                Status = "Creating",
                 Model = "mimo-v2.6-pro", BaseUrl = Origin.AbsoluteUri,
                 ProfileRevision = seed.ProfileRevision, CredentialSecret = "synthetic-key",
                 ConsentRef = "consent-1", TotalItems = seed.ExpectedSegments,
@@ -1353,6 +1405,423 @@ public sealed class NoteAsrBatchPersistenceTests
         await CleanupAsync(seed.Owner);
     }
 
+    [SkippableFact]
+    public async Task Real_start_from_task_generates_a_full_batch_for_long_audio()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        await CleanupAsync(owner);
+        // Two one-minute chunks: more than one minute of real audio, while each slice stays within
+        // the material store's per-read boundary. The plan is still the 10-minute multimodal plan.
+        var (material, _) = await SeedMaterialAsync(owner, NoteAsrPlan.SampleRate * 60);
+        await using var db = NewDb(owner);
+        await db.Database.EnsureCreatedAsync();
+        await db.NoteAsrBatchJobs.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
+        await db.NoteAsrSegmentEvidence.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
+        await db.NoteAsrAttempts.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
+        var suffix = owner.ToString("N")[..8];
+        var now = DateTimeOffset.UtcNow;
+        await db.Users.AddAsync(new UserEntity
+        {
+            Id = owner, Username = "real-" + suffix, Email = suffix + "@example.invalid",
+            PasswordHash = "synthetic", IsActive = true
+        });
+        var profile = new AiModelProfileEntity
+        {
+            Id = Guid.NewGuid(), Revision = Guid.NewGuid(), Name = "Batch Real " + suffix,
+            NormalizedName = "batch-real-" + suffix, BaseUrl = "https://api.example.invalid/v1/",
+            Model = "mimo-v2.6-pro", Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
+            AsrPresetId = MimoMultimodalPreset.PresetId, AsrBatchBaseUrl = Origin.AbsoluteUri,
+            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now
+        };
+        await db.AiModelProfiles.AddAsync(profile);
+        var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
+        if (runtime is null)
+            await db.AiModelRuntime.AddAsync(new AiModelRuntimeEntity
+            {
+                Id = AiModelRuntimeEntity.SingletonId, Revision = Guid.NewGuid(), Enabled = true,
+                TranscriptionModelId = profile.Id
+            });
+        else
+        {
+            runtime.Enabled = true;
+            runtime.TranscriptionModelId = profile.Id;
+            runtime.Revision = Guid.NewGuid();
+        }
+        await db.SaveChangesAsync();
+
+        var (source, routeConfig) = await StartViaRealServiceAsync(owner, material, Guid.NewGuid(), profile);
+        Assert.True(source.TotalSegments > 1, "the 90s source must produce more than one multimodal slice");
+        var sourceState = await Tasks(owner).ReadAsync(owner, source.TaskId, CancellationToken.None);
+        Assert.Equal(NoteAsrPlan.SampleRate * 60 * 10, sourceState.SamplesPerCall);
+        Assert.All(sourceState.Steps, step => Assert.Equal(NoteAsrPlan.SamplesPerCall, step.Samples));
+
+        var factory = new SyntheticFactory((request, _) => Task.FromResult(
+            request.Method == HttpMethod.Post && request.Path == "/v1/files"
+                ? UploadOk()
+                : request.Method == HttpMethod.Post && request.Path == "/v1/batches"
+                    ? BatchOk("batch-real", total: source.TotalSegments)
+                    : throw new InvalidOperationException("unexpected " + request.Path)));
+        var consent = Consent(profile);
+        await using (var serviceDb = NewDb(owner))
+        {
+            var service = NewService(serviceDb, owner, factory, noteAsr: RealNoteAsr(serviceDb, owner));
+            var result = await service.StartFromTaskAsync(new StartNoteAsrBatchFromTaskRequest(
+                Guid.NewGuid(), source.TaskId, source.Revision, owner,
+                new NoteAsrReprocessRoute(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                    routeConfig.ConsentVersion, NoteAsrExecutionMode.Batch, true, true),
+                new NoteAsrBatchTarget(profile.Id, profile.Revision, "consent-real", true, true),
+                new NoteAsrReprocessReason(NoteAsrReprocessReasonKind.Manual, "synthetic full batch")),
+                CancellationToken.None);
+            Assert.Equal(source.TaskId, result.SourceTaskId);
+            Assert.Equal(source.TotalSegments, result.Job.TotalItems);
+            Assert.Equal(source.TotalSegments, result.Task.TotalSegments);
+            Assert.NotEqual(source.TaskId, result.Task.TaskId);
+        }
+        Assert.Equal(1, factory.UploadCalls);
+        Assert.Equal(1, factory.CreateCalls);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Initial_batch_submission_uses_the_prepared_task_without_cloning_or_recreating()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var (material, _) = await SeedMaterialAsync(owner, NoteAsrPlan.SampleRate * 60);
+        await using var seedDb = NewDb(owner);
+        await seedDb.Database.EnsureCreatedAsync();
+        await seedDb.NoteAsrBatchJobs.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
+        await seedDb.NoteAsrSegmentEvidence.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
+        await seedDb.NoteAsrAttempts.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
+        var suffix = owner.ToString("N")[..8];
+        var now = DateTimeOffset.UtcNow;
+        await seedDb.Users.AddAsync(new UserEntity
+        {
+            Id = owner, Username = "initial-" + suffix, Email = suffix + "@example.invalid",
+            PasswordHash = "synthetic", IsActive = true
+        });
+        var profile = new AiModelProfileEntity
+        {
+            Id = Guid.NewGuid(), Revision = Guid.NewGuid(), Name = "Batch Initial " + suffix,
+            NormalizedName = "batch-initial-" + suffix, BaseUrl = "https://api.example.invalid/v1/",
+            Model = "mimo-v2.6-pro", Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
+            AsrPresetId = MimoMultimodalPreset.PresetId, AsrBatchBaseUrl = Origin.AbsoluteUri,
+            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now
+        };
+        await seedDb.AiModelProfiles.AddAsync(profile);
+        var runtime = await seedDb.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
+        if (runtime is null)
+            await seedDb.AiModelRuntime.AddAsync(new AiModelRuntimeEntity
+            {
+                Id = AiModelRuntimeEntity.SingletonId, Revision = Guid.NewGuid(), Enabled = true,
+                TranscriptionModelId = profile.Id
+            });
+        else
+        {
+            runtime.Enabled = true;
+            runtime.TranscriptionModelId = profile.Id;
+            runtime.Revision = Guid.NewGuid();
+        }
+        await seedDb.SaveChangesAsync();
+
+        var (source, routeConfig) = await StartViaRealServiceAsync(owner, material, Guid.NewGuid(), profile);
+        Assert.Equal("Queued", source.Phase);
+        Assert.Equal(NoteAsrExecutionMode.Batch, source.ExecutionMode);
+        Assert.Equal("Queued", await seedDb.NoteAsrAttempts.Where(x => x.OwnerId == owner)
+            .Select(x => x.State).SingleAsync());
+
+        var factory = new SyntheticFactory((request, _) => Task.FromResult(
+            request.Method == HttpMethod.Post && request.Path == "/v1/files"
+                ? UploadOk()
+                : request.Method == HttpMethod.Post && request.Path == "/v1/batches"
+                    ? BatchOk("batch-initial", total: source.TotalSegments)
+                    : throw new InvalidOperationException("unexpected " + request.Path)));
+        var request0 = new StartNoteAsrBatchFromTaskRequest(source.TaskId, source.TaskId, source.Revision,
+            owner, new NoteAsrReprocessRoute(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                routeConfig.ConsentVersion, NoteAsrExecutionMode.Batch, true, true),
+            new NoteAsrBatchTarget(profile.Id, profile.Revision, "consent-initial", true, true),
+            new NoteAsrReprocessReason(NoteAsrReprocessReasonKind.Manual, "initial trusted batch"));
+
+        Guid jobId;
+        await using (var probe = NewDb(owner))
+        {
+            var stateValue = await probe.NoteAsrAttempts.Where(x => x.OwnerId == owner)
+                .Select(x => x.State).SingleAsync();
+            Assert.Equal("Queued", stateValue);
+        }
+        await using (var db = NewDb(owner))
+        {
+            var service = NewService(db, owner, factory, noteAsr: RealNoteAsr(db, owner));
+            var result = await service.StartFromTaskAsync(request0, CancellationToken.None);
+            Assert.Equal(source.TaskId, result.Task.TaskId);
+            Assert.Equal(source.TaskId, result.SourceTaskId);
+            Assert.Equal(source.TotalSegments, result.Job.TotalItems);
+            jobId = result.Job.Id;
+        }
+        Assert.Equal(1, factory.UploadCalls);
+        Assert.Equal(1, factory.CreateCalls);
+        await using (var db = NewDb(owner))
+        {
+            Assert.Equal(1, await db.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+            Assert.Equal(1, await db.NoteAsrAttempts.CountAsync(x => x.OwnerId == owner));
+            Assert.Equal(1, Tasks(owner).Enumerate(owner).Count());
+        }
+
+        await using (var db = NewDb(owner))
+        {
+            var revision = (await Tasks(owner).ReadAsync(owner, source.TaskId, CancellationToken.None)).Revision;
+            var service = NewService(db, owner, factory, noteAsr: RealNoteAsr(db, owner));
+            var replay = await service.StartFromTaskAsync(request0 with { ExpectedSourceRevision = revision },
+                CancellationToken.None);
+            Assert.Equal(jobId, replay.Job.Id);
+            Assert.Equal(source.TaskId, replay.Task.TaskId);
+        }
+        Assert.Equal(1, factory.UploadCalls);
+        Assert.Equal(1, factory.CreateCalls);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Initial_batch_replay_and_unfrozen_target_disagreement_never_resubmit()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var (owner, material, profile) = await SeedRealBatchOwnerAsync(NoteAsrPlan.SampleRate * 60, "replay");
+        var (source, routeConfig) = await StartViaRealServiceAsync(owner, material, Guid.NewGuid(), profile);
+        var factory = new SyntheticFactory((request, _) => Task.FromResult(
+            request.Method == HttpMethod.Post && request.Path == "/v1/files"
+                ? UploadOk()
+                : request.Method == HttpMethod.Post && request.Path == "/v1/batches"
+                    ? BatchOk("batch-replay", total: source.TotalSegments)
+                    : throw new InvalidOperationException("unexpected " + request.Path)));
+        var target = new NoteAsrBatchTarget(profile.Id, profile.Revision, "consent-replay", true, true);
+        StartNoteAsrBatchFromTaskRequest Build(NoteAsrBatchTarget value, Guid configRevision, Guid revision) =>
+            new(source.TaskId, source.TaskId, revision, owner,
+                new NoteAsrReprocessRoute(NoteAsrRoute.CloudMultimodal, configRevision,
+                    routeConfig.ConsentVersion, NoteAsrExecutionMode.Batch, true, true), value,
+                new NoteAsrReprocessReason(NoteAsrReprocessReasonKind.Manual, "replay scope"));
+
+        await using (var db = NewDb(owner))
+        {
+            var service = NewService(db, owner, factory, noteAsr: RealNoteAsr(db, owner));
+            var modelMismatch = await Assert.ThrowsAsync<DomainException>(() => service.StartFromTaskAsync(
+                Build(target with { ModelRevision = Guid.NewGuid() }, routeConfig.Revision, source.Revision),
+                CancellationToken.None));
+            Assert.Equal(40901, modelMismatch.ErrorCode);
+            var routeMismatch = await Assert.ThrowsAsync<DomainException>(() => service.StartFromTaskAsync(
+                Build(target, Guid.NewGuid(), source.Revision), CancellationToken.None));
+            Assert.Equal(40901, routeMismatch.ErrorCode);
+            var consentMismatch = await Assert.ThrowsAsync<DomainException>(() => service.StartFromTaskAsync(
+                Build(target with { ModelId = Guid.NewGuid() }, routeConfig.Revision, source.Revision),
+                CancellationToken.None));
+            Assert.Equal(40901, consentMismatch.ErrorCode);
+        }
+        Assert.Empty(factory.Requests);
+        await using (var db = NewDb(owner))
+        {
+            Assert.Equal(0, await db.NoteAsrBatchJobs.CountAsync(x => x.OwnerId == owner));
+            var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.OwnerId == owner);
+            Assert.Equal("Queued", attempt.State);
+            Assert.Equal(profile.Revision, attempt.ModelRevision);
+            Assert.Equal(profile.Id, attempt.ModelId);
+            Assert.Equal(routeConfig.Revision, attempt.ConfigRevision);
+        }
+
+        Guid jobId;
+        await using (var db = NewDb(owner))
+        {
+            var service = NewService(db, owner, factory, noteAsr: RealNoteAsr(db, owner));
+            jobId = (await service.StartFromTaskAsync(
+                Build(target, routeConfig.Revision, source.Revision), CancellationToken.None)).Job.Id;
+        }
+        Assert.Equal(1, factory.UploadCalls);
+        Assert.Equal(1, factory.CreateCalls);
+
+        // Configuration drift and a terminal attempt must not turn an identity replay into a resubmit.
+        await AddRouteConfigAsync(owner, profile.Id, "route-consent-drifted");
+        await using (var db = NewDb(owner))
+        {
+            await db.NoteAsrAttempts.Where(x => x.OwnerId == owner)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.State, "Succeeded"));
+        }
+        await using (var db = NewDb(owner))
+        {
+            var revision = (await Tasks(owner).ReadAsync(owner, source.TaskId, CancellationToken.None)).Revision;
+            var service = NewService(db, owner, factory, noteAsr: RealNoteAsr(db, owner));
+            var replay = await service.StartFromTaskAsync(
+                Build(target, routeConfig.Revision, revision), CancellationToken.None);
+            Assert.Equal(jobId, replay.Job.Id);
+            Assert.Equal(source.TaskId, replay.Task.TaskId);
+        }
+        Assert.Equal(1, factory.UploadCalls);
+        Assert.Equal(1, factory.CreateCalls);
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Retry_failed_items_creates_a_failed_only_child_and_completes_after_inheritance()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var seed = await SeedAsync();
+        var routeConfig = await AddRouteConfigAsync(seed.Owner, seed.ProfileId, "route-consent-1");
+        var parentPolls = 0;
+        var firstChildPolls = 0;
+        var secondChildPolls = 0;
+        var creates = 0;
+        var factory = new SyntheticFactory((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post && request.Path == "/v1/files")
+                return Task.FromResult(UploadOk());
+            if (request.Method == HttpMethod.Post && request.Path == "/v1/batches")
+            {
+                return Task.FromResult(Interlocked.Increment(ref creates) switch
+                {
+                    1 => BatchOk("batch-parent-1", total: 2),
+                    2 => BatchOk("batch-child-1", total: 1),
+                    _ => BatchOk("batch-child-2", total: 1)
+                });
+            }
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/batches/batch-parent-1")
+                return Task.FromResult(Interlocked.Increment(ref parentPolls) == 1
+                    ? BatchOk("batch-parent-1", "in_progress", total: 2, completed: 0, failed: 0)
+                    : BatchOk("batch-parent-1", "completed", "file-out", "file-err", 2, 1, 1));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/batches/batch-child-1")
+                return Task.FromResult(Interlocked.Increment(ref firstChildPolls) == 1
+                    ? BatchOk("batch-child-1", "completed", null, "file-child-1-err", 1, 0, 1)
+                    : BatchOk("batch-child-1", "completed", null, "file-child-1-err", 1, 0, 1));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/batches/batch-child-2")
+                return Task.FromResult(Interlocked.Increment(ref secondChildPolls) is 1 or 2
+                    ? BatchOk("batch-child-2", "completed", "file-child-2-out", null, 1, 1, 0)
+                    : BatchOk("batch-child-2", "completed", "file-child-2-out", null, 1, 1, 0));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/files/file-out/content")
+                return Task.FromResult(FileContent(SuccessJsonl("seg-0")));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/files/file-err/content")
+                return Task.FromResult(FileContent(ErrorJsonl()));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/files/file-child-1-err/content")
+                return Task.FromResult(FileContent(ErrorJsonl()));
+            if (request.Method == HttpMethod.Get && request.Path == "/v1/files/file-child-2-out/content")
+                return Task.FromResult(FileContent(SuccessJsonl("seg-1")));
+            throw new InvalidOperationException("unexpected synthetic request " + request.Path);
+        });
+        Guid firstChildTaskId;
+        await using (var db = NewDb(seed.Owner))
+        {
+            var service = NewService(db, seed.Owner, factory, noteAsr: RealNoteAsr(db, seed.Owner));
+            var parent = await StartAsync(service, seed);
+            await service.PollAsync(parent.Id, CancellationToken.None);
+            await service.PollAsync(parent.Id, CancellationToken.None);
+            await service.PollAsync(parent.Id, CancellationToken.None);
+        }
+        await using (var db = NewDb(seed.Owner))
+        {
+            var parent = await db.NoteAsrBatchJobs.AsNoTracking().SingleAsync(x => x.OwnerId == seed.Owner);
+            Assert.Equal("Completed", parent.Status);
+            Assert.Equal(1, parent.FailedItems);
+            var service = NewService(db, seed.Owner, factory, noteAsr: RealNoteAsr(db, seed.Owner));
+            var result = await service.RetryFailedItemsAsync(new RetryFailedNoteAsrBatchRequest(
+                Guid.NewGuid(), parent.Id, seed.Owner,
+                new NoteAsrReprocessRoute(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                    routeConfig.ConsentVersion, NoteAsrExecutionMode.Batch, true, true),
+                new NoteAsrBatchTarget(seed.ProfileId, seed.ProfileRevision, "consent-1", true, true),
+                new NoteAsrReprocessReason(NoteAsrReprocessReasonKind.Quality, "retry failed slice v2")),
+                CancellationToken.None);
+            firstChildTaskId = result.Task.TaskId;
+            Assert.Equal(seed.TaskId, result.SourceTaskId);
+            Assert.NotEqual(seed.TaskId, firstChildTaskId);
+            Assert.Equal(1, result.Job.TotalItems);
+            var firstJob = await db.NoteAsrBatchJobs.AsNoTracking().SingleAsync(x => x.Id == result.Job.Id);
+            Assert.Equal(new[] { "seg-1" }, JsonSerializer.Deserialize<string[]>(firstJob.ExpectedCustomIdsJson) ?? []);
+            var child = await Tasks(seed.Owner).ReadAsync(seed.Owner, firstChildTaskId, CancellationToken.None);
+            Assert.Equal(seed.TaskId, child.ParentTaskId);
+            Assert.Equal("Succeeded", child.Steps[0].Current.Status);
+            Assert.Equal("Queued", child.Steps[1].Current.Status);
+            var attempts = await db.NoteAsrAttempts.AsNoTracking()
+                .Where(x => x.OwnerId == seed.Owner && x.TaskId == firstChildTaskId).ToListAsync();
+            Assert.Single(attempts);
+            Assert.NotEqual(seed.AttemptId, attempts[0].Id);
+        }
+        Assert.Equal(2, factory.UploadCalls);
+        Assert.Equal(2, factory.CreateCalls);
+
+        await using (var db = NewDb(seed.Owner))
+        {
+            var service = NewService(db, seed.Owner, factory, noteAsr: RealNoteAsr(db, seed.Owner));
+            var childJob = await db.NoteAsrBatchJobs.AsNoTracking()
+                .SingleAsync(x => x.OwnerId == seed.Owner && x.TaskId == firstChildTaskId);
+            await service.PollAsync(childJob.Id, CancellationToken.None);
+            await service.PollAsync(childJob.Id, CancellationToken.None);
+            await service.PollAsync(childJob.Id, CancellationToken.None);
+        }
+        await using (var db = NewDb(seed.Owner))
+        {
+            var childJob = await db.NoteAsrBatchJobs.AsNoTracking()
+                .SingleAsync(x => x.OwnerId == seed.Owner && x.TaskId == firstChildTaskId);
+            Assert.Equal("Completed", childJob.Status);
+            Assert.Equal(1, childJob.FailedItems);
+            var partialState = await Tasks(seed.Owner).ReadAsync(seed.Owner, firstChildTaskId, CancellationToken.None);
+            var partial = NoteAsrTaskStore.Describe(partialState);
+            Assert.NotEqual("Succeeded", partial.Phase);
+            Assert.Equal("Succeeded", partialState.Steps[0].Current.Status);
+            Assert.NotEqual("Succeeded", partialState.Steps[1].Current.Status);
+        }
+
+        Guid secondChildTaskId;
+        await using (var db = NewDb(seed.Owner))
+        {
+            var service = NewService(db, seed.Owner, factory, noteAsr: RealNoteAsr(db, seed.Owner));
+            var partialJob = await db.NoteAsrBatchJobs.AsNoTracking()
+                .SingleAsync(x => x.OwnerId == seed.Owner && x.TaskId == firstChildTaskId);
+            var result = await service.RetryFailedItemsAsync(new RetryFailedNoteAsrBatchRequest(
+                Guid.NewGuid(), partialJob.Id, seed.Owner,
+                    new NoteAsrReprocessRoute(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                        routeConfig.ConsentVersion, NoteAsrExecutionMode.Batch, true, true),
+                    new NoteAsrBatchTarget(seed.ProfileId, seed.ProfileRevision, "consent-1", true, true),
+                    new NoteAsrReprocessReason(NoteAsrReprocessReasonKind.Quality, "retry failed slice v3")),
+                CancellationToken.None);
+            secondChildTaskId = result.Task.TaskId;
+            Assert.Equal(firstChildTaskId, result.SourceTaskId);
+            Assert.Equal(1, result.Job.TotalItems);
+            var secondJob = await db.NoteAsrBatchJobs.AsNoTracking().SingleAsync(x => x.Id == result.Job.Id);
+            Assert.Equal(new[] { "seg-1" }, JsonSerializer.Deserialize<string[]>(secondJob.ExpectedCustomIdsJson) ?? []);
+        }
+        Assert.Equal(3, factory.UploadCalls);
+        Assert.Equal(3, factory.CreateCalls);
+        await using (var db = NewDb(seed.Owner))
+        {
+            var service = NewService(db, seed.Owner, factory, noteAsr: RealNoteAsr(db, seed.Owner));
+            var secondJob = await db.NoteAsrBatchJobs.AsNoTracking()
+                .SingleAsync(x => x.OwnerId == seed.Owner && x.TaskId == secondChildTaskId);
+            await service.PollAsync(secondJob.Id, CancellationToken.None);
+            await service.PollAsync(secondJob.Id, CancellationToken.None);
+            await service.PollAsync(secondJob.Id, CancellationToken.None);
+        }
+        await using (var db = NewDb(seed.Owner))
+        {
+            var secondJob = await db.NoteAsrBatchJobs.AsNoTracking()
+                .SingleAsync(x => x.OwnerId == seed.Owner && x.TaskId == secondChildTaskId);
+            Assert.Equal("Completed", secondJob.Status);
+            Assert.Equal(0, secondJob.FailedItems);
+            var childState = await Tasks(seed.Owner).ReadAsync(seed.Owner, secondChildTaskId, CancellationToken.None);
+            var child = NoteAsrTaskStore.Describe(childState);
+            Assert.Equal("Succeeded", child.Phase);
+            Assert.True(childState.CompletionAcknowledged);
+            Assert.All(childState.Steps, step => Assert.Equal("Succeeded", step.Current.Status));
+            var service = NewService(db, seed.Owner, factory, noteAsr: RealNoteAsr(db, seed.Owner));
+            var replay = await Assert.ThrowsAsync<DomainException>(() => service.RetryFailedItemsAsync(
+                new RetryFailedNoteAsrBatchRequest(Guid.NewGuid(), secondJob.Id, seed.Owner,
+                    new NoteAsrReprocessRoute(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                        routeConfig.ConsentVersion, NoteAsrExecutionMode.Batch, true, true),
+                    new NoteAsrBatchTarget(seed.ProfileId, seed.ProfileRevision, "consent-1", true, true),
+                    new NoteAsrReprocessReason(NoteAsrReprocessReasonKind.Quality, "should not resend")),
+                CancellationToken.None));
+            Assert.Equal(40901, replay.ErrorCode);
+        }
+        Assert.Equal(3, factory.UploadCalls);
+        Assert.Equal(3, factory.CreateCalls);
+        await CleanupAsync(seed.Owner);
+    }
+
     private static NoteAsrBatchJobEntity NewBatchJobRow(Guid owner, string? batchId, string status,
         string? statusRaw, DateTimeOffset updatedAt) => new()
     {
@@ -1365,6 +1834,100 @@ public sealed class NoteAsrBatchPersistenceTests
     private static NoteAsrBatchPollJob NewPollJob(NoteAsrBatchService service, PimDbContext db,
         NoteAsrBatchPollOptions settings) =>
         new(service, db, Options.Create(settings), NullLogger<NoteAsrBatchPollJob>.Instance);
+
+    private static AiAsrDestinationConsent Consent(AiModelProfileEntity profile) =>
+        new(profile.Id, profile.Revision, "https://api.example.invalid/v1/chat/completions",
+            MimoMultimodalPreset.PresetId, "1", true);
+
+    private static async Task<NoteAsrRouteConfigDto> AddRouteConfigAsync(Guid owner, Guid profileId,
+        string consentVersion)
+    {
+        await using var db = NewDb(owner);
+        var routing = new NoteAsrRoutingService(db, new FixedUser(owner), Materials(owner),
+            new AiAsrPresetRegistry([new MimoMultimodalPreset(_ => new HttpClient())]), Tasks(owner),
+            new NoteAsrEvidenceService(db, Tasks(owner), new FixedUser(owner)), new PassthroughSecrets(),
+            Options.Create(new NoteAsrRoutingOptions()));
+        var current = await db.NoteAsrRouteConfigs.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.OwnerId == owner);
+        return await routing.UpdateConfigAsync(new UpdateNoteAsrRouteConfigRequest(current?.Revision ?? Guid.Empty,
+            NoteAsrRoute.CloudMultimodal, null, null, profileId, consentVersion), CancellationToken.None);
+    }
+
+    private static NoteAsrService RealNoteAsr(PimDbContext db, Guid owner)
+    {
+        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot(owner) });
+        var materials = new NoteMaterialUploadStore(options);
+        var tasks = new NoteAsrTaskStore(options);
+        var user = new FixedUser(owner);
+        var presets = new AiAsrPresetRegistry([new MimoMultimodalPreset(_ => new HttpClient())]);
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["DisableHangfire"] = "true"
+        }).Build();
+        var routing = new NoteAsrRoutingService(db, user, materials, presets, tasks,
+            new NoteAsrEvidenceService(db, tasks, user), new PassthroughSecrets(),
+            Options.Create(new NoteAsrRoutingOptions()));
+        return new NoteAsrService(tasks, materials, db, user, presets, configuration,
+            new PassthroughSecrets(), routing);
+    }
+
+    private static async Task<(Guid Owner, NoteMaterialVersionDto Version, AiModelProfileEntity Profile)>
+        SeedRealBatchOwnerAsync(int samplesPerChunk, string tag)
+    {
+        var owner = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var (material, _) = await SeedMaterialAsync(owner, samplesPerChunk);
+        await using var db = NewDb(owner);
+        await db.Database.EnsureCreatedAsync();
+        await db.NoteAsrBatchJobs.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
+        await db.NoteAsrSegmentEvidence.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
+        await db.NoteAsrAttempts.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
+        var suffix = owner.ToString("N")[..8];
+        var now = DateTimeOffset.UtcNow;
+        await db.Users.AddAsync(new UserEntity
+        {
+            Id = owner, Username = tag + "-" + suffix, Email = suffix + "@example.invalid",
+            PasswordHash = "synthetic", IsActive = true
+        });
+        var profile = new AiModelProfileEntity
+        {
+            Id = Guid.NewGuid(), Revision = Guid.NewGuid(), Name = "Batch " + tag + " " + suffix,
+            NormalizedName = "batch-" + tag + "-" + suffix, BaseUrl = "https://api.example.invalid/v1/",
+            Model = "mimo-v2.6-pro", Enabled = true, Capabilities = AiModelCapabilityFlags.Transcription,
+            AsrPresetId = MimoMultimodalPreset.PresetId, AsrBatchBaseUrl = Origin.AbsoluteUri,
+            ApiKeySecret = "synthetic-key", CreatedAt = now, UpdatedAt = now
+        };
+        await db.AiModelProfiles.AddAsync(profile);
+        var runtime = await db.AiModelRuntime.SingleOrDefaultAsync(x => x.Id == AiModelRuntimeEntity.SingletonId);
+        if (runtime is null)
+            await db.AiModelRuntime.AddAsync(new AiModelRuntimeEntity
+            {
+                Id = AiModelRuntimeEntity.SingletonId, Revision = Guid.NewGuid(), Enabled = true,
+                TranscriptionModelId = profile.Id
+            });
+        else
+        {
+            runtime.Enabled = true;
+            runtime.TranscriptionModelId = profile.Id;
+            runtime.Revision = Guid.NewGuid();
+        }
+        await db.SaveChangesAsync();
+        return (owner, material, profile);
+    }
+
+    private static async Task<(NoteAsrTaskDto Task, NoteAsrRouteConfigDto Route)> StartViaRealServiceAsync(Guid owner,
+        NoteMaterialVersionDto version, Guid taskId,
+        AiModelProfileEntity profile)
+    {
+        await using var db = NewDb(owner);
+        var service = RealNoteAsr(db, owner);
+        var routeConfig = await AddRouteConfigAsync(owner, profile.Id, "route-real-consent");
+        var consent = Consent(profile);
+        var route = new NoteAsrRouteConsent(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+            routeConfig.ConsentVersion, true, NoteAsrExecutionMode.Batch, true);
+        return (await service.StartAsync(new StartNoteAsrRequest(taskId, owner,
+            version.Upload.VersionId, consent, "zh", route), CancellationToken.None), routeConfig);
+    }
 
     private sealed record Seeded(Guid Owner, Guid ProfileId, Guid ProfileRevision, Guid TaskId,
         Guid AttemptId, Guid VersionId, int ExpectedSegments, string PromptRendered,
@@ -1412,6 +1975,11 @@ public sealed class NoteAsrBatchPersistenceTests
         var material = await SeedMaterialAsync(owner);
         await using var db = NewDb(owner);
         await db.Database.EnsureCreatedAsync();
+        // The synthetic PG database is shared by this serial collection only. Remove rows left by
+        // earlier failed runs so global background scans and unique provider ids stay deterministic.
+        await db.NoteAsrBatchJobs.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
+        await db.NoteAsrSegmentEvidence.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
+        await db.NoteAsrAttempts.Where(x => x.OwnerId != owner).ExecuteDeleteAsync();
         var now = DateTimeOffset.UtcNow;
         var suffix = owner.ToString("N")[..8];
         await db.Users.AddAsync(new UserEntity
@@ -1674,16 +2242,17 @@ public sealed class NoteAsrBatchPersistenceTests
 
     private static NoteAsrBatchService NewService(PimDbContext db, Guid owner,
         IMimoBatchClientFactory factory, IMimoBatchHandleSink? sink = null,
-        INoteAsrEvidenceSink? evidence = null) =>
+        INoteAsrEvidenceSink? evidence = null, NoteAsrService? noteAsr = null,
+        AiAsrPresetRegistry? presets = null, bool allowBatch = true) =>
         new(db, new FixedUser(owner), Tasks(owner), Materials(owner),
             evidence ?? new NoteAsrEvidenceService(db, Tasks(owner), new FixedUser(owner)),
             sink ?? new EfMimoBatchHandleSink(db), factory,
             new PassthroughSecrets(),
             Options.Create(new NoteAsrBatchOptions
             {
-                AllowUnverifiedAudioBatch = true,
+                AllowUnverifiedAudioBatch = allowBatch,
                 MaxJsonlBytes = checked((int)MimoBatchDefaults.MaxJsonlBytes)
-            }));
+            }), noteAsr, presets ?? new AiAsrPresetRegistry([new MimoMultimodalPreset(_ => new HttpClient())]));
 
     private static async Task CleanupAsync(Guid owner)
     {

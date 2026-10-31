@@ -30,11 +30,76 @@ internal static class NoteAsrBatchJsonlReader
 
     internal static string CustomId(int segmentIndex) => $"seg-{segmentIndex}";
 
-    internal static async Task<NoteAsrBatchJsonl> ReadAsync(Stream source, long declaredLength,
-        Guid owner, Guid versionId, IReadOnlyList<NoteAsrStep> steps, string language, string expectedModel,
-        string expectedPrompt, NoteMaterialUploadStore materials, int maxBytes, CancellationToken ct)
+    /// <summary>A submission id is only acceptable when it names one real segment of the frozen plan.</summary>
+    private static bool IsCanonicalIdForPlan(string id, IReadOnlyList<NoteAsrStep> steps)
     {
-        if (steps.Count is < 1 or > 5_000 || maxBytes <= 0 || string.IsNullOrWhiteSpace(expectedModel) ||
+        var index = SegmentIndex(id);
+        return index >= 0 && index < steps.Count && steps[index].Index == index;
+    }
+
+    /// <summary>
+    /// Builds the exact provider JSONL from the server's trusted plan and immutable material. The
+    /// caller supplies only a bounded subset of original segment ids; it never supplies audio.
+    /// </summary>
+    internal static async Task<NoteAsrBatchJsonl> GenerateFromPlanAsync(Guid owner,
+        Guid versionId, IReadOnlyList<NoteAsrStep> steps, int maxSamplesPerCall, string language,
+        string model, string prompt, NoteMaterialUploadStore materials, int maxBytes, string[] expectedIds,
+        int[] indexes, CancellationToken ct)
+    {
+        if (steps.Count < 1 || indexes.Length < 1 || expectedIds.Length != steps.Count)
+            throw new DomainException(40001, "Batch 服务端生成范围无效");
+        var allowed = indexes.ToHashSet();
+        if (allowed.Count != indexes.Length || allowed.Any(x => x < 0 || x >= steps.Count))
+            throw new DomainException(40001, "Batch 服务端生成范围必须是不重复的原分片索引");
+        var selected = steps.Where(x => allowed.Contains(x.Index)).ToArray();
+        if (selected.Length != allowed.Count)
+            throw new DomainException(40901, "Batch 服务端生成范围与固定分片不一致");
+        var path = Path.Combine(Path.GetTempPath(), $"pim-batch-{Guid.NewGuid():N}.jsonl");
+        var spool = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 81920,
+            FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.DeleteOnClose);
+        long total = 0;
+        try
+        {
+            using (var writer = new StreamWriter(spool, StrictUtf8, 81920, leaveOpen: true) { NewLine = "\n" })
+            {
+                foreach (var step in selected)
+                {
+                    if (step.Samples <= 0 || step.Samples > maxSamplesPerCall)
+                        throw new DomainException(40901, "Batch 固定分片超出可信单片预算");
+                    var audio = await materials.ReadAudioSliceAsync(owner, versionId, step.FileIndex,
+                        step.SourceOffset, step.Samples, ct);
+                    if (audio.Length < 45 || audio.Length > MimoAudioFormats.MaxDecodedBytes)
+                        throw new DomainException(41301, "Batch 服务端音频分片超过50MiB");
+                    var body = CanonicalLine(expectedIds[step.Index], audio, model, prompt);
+                    await writer.WriteAsync(body.AsMemory(), ct);
+                    await writer.WriteAsync('\n');
+                    total = checked(total + StrictUtf8.GetByteCount(body) + 1);
+                    if (total > maxBytes) throw new DomainException(41301, "Batch 服务端生成输入超过总预算，已拒绝且不会自动拆批或发起付费请求");
+                }
+                await writer.FlushAsync(ct);
+            }
+            total = spool.Length;
+            if (total > maxBytes) throw new DomainException(41301, "Batch 服务端生成输入超过总预算，已拒绝且不会自动拆批或发起付费请求");
+            spool.Position = 0;
+            return new(spool, total, selected.Select(x => expectedIds[x.Index]).ToArray());
+        }
+        catch
+        {
+            await spool.DisposeAsync();
+            throw;
+        }
+    }
+
+    internal static async Task<NoteAsrBatchJsonl> ReadAsync(Stream source, long declaredLength,
+        Guid owner, Guid versionId, IReadOnlyList<NoteAsrStep> steps, int maxSamplesPerCall, string language, string expectedModel,
+        string expectedPrompt, NoteMaterialUploadStore materials, int maxBytes, string[] expectedIds,
+        CancellationToken ct)
+    {
+        if (steps.Count is < 1 or > 5_000 || maxBytes <= 0 || maxSamplesPerCall <= 0 ||
+            expectedIds.Length is < 1 || expectedIds.Length > steps.Count ||
+            expectedIds.Distinct(StringComparer.Ordinal).Count() != expectedIds.Length ||
+            expectedIds.Any(id => !IsCanonicalIdForPlan(id, steps)) ||
+            string.IsNullOrWhiteSpace(expectedModel) ||
             !Languages.Contains(language) || string.IsNullOrWhiteSpace(expectedPrompt) ||
             expectedPrompt.Length > MaxPromptChars)
             throw new DomainException(40001, "Batch 输入预算、模型或分片数量无效");
@@ -42,7 +107,7 @@ internal static class NoteAsrBatchJsonlReader
             throw new DomainException(41301, "Batch 输入必须非空且不超过配置与供应商共同上限");
         for (var index = 0; index < steps.Count; index++)
         {
-            if (steps[index].Index != index || steps[index].Samples is <= 0 or > NoteAsrPlan.SamplesPerCall)
+            if (steps[index].Index != index || steps[index].Samples <= 0 || steps[index].Samples > maxSamplesPerCall)
                 throw new DomainException(40901, "Batch 固定分片计划不连续，拒绝上传");
         }
 
@@ -67,7 +132,7 @@ internal static class NoteAsrBatchJsonlReader
             await spool.FlushAsync(ct);
             spool.Position = 0;
 
-            var expected = Enumerable.Range(0, steps.Count).Select(CustomId)
+            var expected = expectedIds
                 .ToHashSet(StringComparer.Ordinal);
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var ids = new List<string>(steps.Count);
@@ -99,7 +164,7 @@ internal static class NoteAsrBatchJsonlReader
                     throw InvalidLine(lineNumber);
                 }
 
-                if (!expected.Contains(parsed.CustomId))
+                if (!expected.Any(x => x == parsed.CustomId))
                     throw new DomainException(40301, "Batch custom_id 不能超出当前账号的 attempt 分片范围");
                 if (!seen.Add(parsed.CustomId))
                     throw new DomainException(40001, "Batch JSONL 的 custom_id 必须唯一");
@@ -118,9 +183,8 @@ internal static class NoteAsrBatchJsonlReader
                 ids.Add(parsed.CustomId);
             }
 
-            var missing = expected.Except(seen, StringComparer.Ordinal).Take(5).ToArray();
-            if (missing.Length > 0)
-                throw new DomainException(40901, $"Batch 输入缺少当前 attempt 分片：{string.Join(",", missing)}");
+            if (ids.Count == 0 || !ids.ToHashSet(StringComparer.Ordinal).SetEquals(expected))
+                throw new DomainException(40901, "Batch 输入未完整覆盖本次可信提交范围");
 
             spool.Position = 0;
             return new NoteAsrBatchJsonl(spool, total, ids.ToArray());
@@ -152,6 +216,36 @@ internal static class NoteAsrBatchJsonlReader
         parsed = new ParsedLine(customId, dataUrl, format);
         return true;
     }
+
+    /// <summary>One canonical provider request shared by server generation and the upload validator.</summary>
+    private static string CanonicalLine(string customId, byte[] audio, string model, string prompt) =>
+        JsonSerializer.Serialize(new
+        {
+            custom_id = customId,
+            method = "POST",
+            url = MimoBatchDefaults.ChatCompletionsEndpoint,
+            body = CanonicalBody(audio, model, prompt)
+        });
+
+    private static object CanonicalBody(byte[] audio, string model, string prompt) => new
+    {
+        model,
+        messages = new object[]
+        {
+            new
+            {
+                role = "user",
+                content = new object[]
+                {
+                    new { type = "input_audio",
+                        input_audio = new { data = MimoAudioFormats.DataUrl("wav", audio), format = "wav" } },
+                    new { type = "text", text = prompt }
+                }
+            }
+        },
+        max_completion_tokens = MaxCompletionTokens,
+        stream = false
+    };
 
     private static bool TryParseBody(JsonElement body, string expectedModel, string expectedPrompt,
         out string dataUrl, out string format)
