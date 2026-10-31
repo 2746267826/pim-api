@@ -1,10 +1,38 @@
 ﻿# PIM 原生客户端与笔记路线图
 
-版本：v0.39 Web ASR 入口交付、Issue 收口状态与双通道排期。更新日期：2026-10-30。v0.38 交付快照：Android PR #55 与 API tests PR #537 已普通 merge；master CI、GitHub Release 与资产已核验，受控组件证据保留，完整系统/物理验收仍开放；本文同时保留 v0.37 及更早历史。
+版本：v0.40 Web/Android/API 发布收口、稳定性补修与 #516 排期。更新日期：2026-10-31。v0.39 完成 Web ASR 入口、Issue 收口与双通道设计排期；v0.39 及更早正文保持原样。
 
 本文位于 `pim-api/docs/product/native-notes-roadmap.md`，作为跨仓持续维护的唯一总路线图。Android、Windows 与 Web 按批次引用同一份需求，不复制另一套台账；首版范围和视觉规范分别通过文内链接细化。更新状态时标明平台、证据和仍未交付部分，不以聊天记录代替仓内记录。
 
 总跟踪：[pim-api#505](https://github.com/2746267826/pim-api/issues/505)。主题切片 [pim-android#31](https://github.com/2746267826/pim-android/issues/31) 已合并；录音切片：[pim-android#33](https://github.com/2746267826/pim-android/issues/33)；混合文档与基础手写：[pim-android#35](https://github.com/2746267826/pim-android/issues/35)；完整材料版本：[pim-android#37](https://github.com/2746267826/pim-android/issues/37)。总跟踪不能随主题切片或安卓首版完成而提前关闭。
+
+<a id="v040-current"></a>
+
+### v0.40 当前状态：Web/Android/API 发布收口、稳定性补修与 #516 排期
+
+状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED**。更新日期：2026-10-31。本节只覆盖当前交付状态和排期，不改写下方 v0.39 及更早历史，也不把计划、受控测试或 GitHub Release 写成产品实现、物理设备或 production PASS。
+
+| 对象 | 当前实际 | 证据边界 |
+| --- | --- | --- |
+| Web ASR 入口 | Release `api-v26.10.1023` 已核验，配置入口与权限隔离已交付 | GitHub Release 与冻结 preview/合成 API QA 不等于 production、live-backend E2E 或完整 WEB-01 |
+| Android 与 [#533](https://github.com/2746267826/pim-api/issues/533) | [PR #56](https://github.com/2746267826/pim-android/pull/56) 已普通 merge 为 `998015d5b466c2d621c01beb3760c286a351037f`；[android-v26.10.1142](https://github.com/2746267826/pim-android/releases/tag/android-v26.10.1142) 已发布；fullApp `2034 / 0 fail`、focused `84 PASS` 为受控测试结果；#533 仍 `OPEN` | 物理 OPPO/OEM、真实导出事故复验与 production 仍 `NOT-VERIFIED`；GitHub Release 不等于设备验收 |
+| [#539](https://github.com/2746267826/pim-api/issues/539) 与 [PR #542](https://github.com/2746267826/pim-api/pull/542) | #539 仍 `OPEN`；PR #542 已由 head `933a892b` 普通 merge 为 `f0ecf4501a81b6e8c105ca14cc1def844408d762`（2026-10-30T17:19:56Z）；exact PR CI `41090756654` 整体 SUCCESS/Gate/API/Web/Docker | 新的 processing/退避协议尚在补齐契约、HTTP 证据与兼容，未完成交付；Android 旧 `202` 客户端测试已本地 commit `2d64024c41940560c53ff608623fc168d4bd2b73`（clean/no push），core `5` + app `8` 真 HTTP/Room focused 与父解析 PASS；新 consumer/not-before 未实现 |
+| API Release | [api-v26.10.1031](https://github.com/2746267826/pim-api/releases/tag/api-v26.10.1031) 于 `2026-10-30T17:55:13Z` published，非 draft/prerelease，target/tag 为 `f0ecf450`；exact master CI `41097882594` 全部适用 job/Gate/release SUCCESS；4 assets 已上传：server `136175696` B（`a14b6ea3…95d39`）、API `17897085` B（`244758f6…6ae8`）、MCP `31365` B（`86c7f128…a0`）、web version `120` B（`27380d9c9a6cd73cc04f93489de35f6305ab768f8b33f626def55a33dec6d504`） | 资产 SHA 为 GitHub metadata 校验，不是本地大包 byte hash；GitHub Release 不等于 production 部署 |
+| [#525](https://github.com/2746267826/pim-api/issues/525) | `CLOSED / COMPLETED`，保持用户关闭状态 | 用户 reported 的 4731 入库与不再 500 是生产观测，不是本代理独立 production PASS；不重开、不改写旧 OPEN 历史 |
+| [#516](https://github.com/2746267826/pim-api/issues/516) | `OPEN`；五个阶段与 AC1–19 全部仍是计划；两项用户 decision 未答 | #516 产品、Windows 本地 ASR 与完整 MVP 仍未完成交付；本轮只做文档状态与排期，不塞入整套本地 ASR |
+
+当前执行按优先级/稳定性波次组织，不作日历承诺：
+
+1. Web 入口与同步/导出稳定性先收口；Web Release `1023` 已交付，production 另证。
+2. 第一稳定性波次中 #533 的 core 稳定 spool 快照/空间守护已随 `1142` 交付；仅实机/OEM 导出复验与 issue 总验收 `OPEN`。#539 semantic-preserving 修复已随 PR #542 普通 merge，master CI 与设备边界另证；两者无跨仓前置。
+3. 第二稳定性波次推进 #539 显式 processing/退避契约与 Android 消费者成套闭环；该协议增强仍未交付。
+4. 随后进入 #516 阶段 1：路由、节点与 claim/lease 契约骨架。
+
+波次只表示默认优先级，不是全串行硬门。真实依赖以[#516 五阶段与 AC 映射](../architecture/asr-dual-channel-plan.md#9-ac119-阶段映射)为准：阶段 1 完成后，阶段 2 云端多模态与阶段 3 Windows 模型管理可并行；阶段 4 依赖阶段 1、3；阶段 5 依赖阶段 2、4 及路由/租约可审计。
+
+待用户决定仍为两项，未改成已批准：本地不可用时是否自动切云端（付费），以及 Windows 节点是否可处理其他账号音频。安全默认候选仍是继续排队仅手动切云端、节点仅当前账号；未答复前不预设通过。OPPO/production 证据缺口只保持 `NOT-VERIFIED`，不作为无限期阻塞所有独立笔记规划的硬门。
+
+v0.40 只追加当前状态覆盖；v0.39 及更早正文、45 个稳定 requirement ID、32 项 capability、32 行差距、13 个 MIG 和 186 条保护事实全部原样保留。
 
 <a id="v039-current"></a>
 
@@ -913,3 +941,4 @@ Windows 记录、Web 编辑、TASK-01 和 MIG-01 至 MIG-13 继续保留原阶�
 
 | 2026-10-30 | 记录移动同步半开窗口、诊断导出、设备组件与 GitHub Release 交付回执 | v0.38：API tests #537 head`83b6e319`→merge`9631437d`@11:56:46Z，exact CI41048454669 required/Gate SUCCESS；masterCI41051709488 SUCCESS/Gate/release，Release`api-v26.10.1019`@12:26:48Z→`9631437d`，4 assets尺寸/SHA已核。Android product`dd90be25`+final test commit`5c4d8985`(parent dd90)，PR55 READY→merge`2968eea4`@12:19:41Z，exact CI41052159717 required/Gate SUCCESS；masterCI41054503798 SUCCESS/Gate/release，Release`android-v26.10.1140`@12:31:56Z，tag解析`2968eea4`即master head，3 assets尺寸/SHA已核。fullApp2023/Core69 0fail，window7/7/sync193、export focused133（与full重叠不求和），QA native Android emulator6/6(4 sync9.496s+2 export1.583s)；lineage append-only更正无精确runtimehead，源码blob/APK/log同源，首轮harness4 sync FAIL保留。日志只bounds，coreEntries仍全量DAO；旧APK升级/跨版本batchID/完整WorkManager/StatusUI/auth退避/极大DB/原flash/OEM/长课堂/production NOT-VERIFIED。#505/#525/#533 OPEN，#533 partial。45/32/13/111/history保留。GitHub Release不等于production。 |
 | 2026-10-30 | 完成 v0.39 Web ASR 入口交付、Issue 收口与 #516 双通道排期 | Web PR540于14:29:51Z普通merge为`0e6d9f4adcf283138d68405d9ca65b04b7c51793`；exactCI41069510853 Gate/Web/Docker SUCCESS；masterCI41072022034 SUCCESS/Gate/release；Release`api-v26.10.1023`@14:38:55Z target merge、4 asset尺寸/SHA已核、pim-web-version26.10.1023/git`0e6d9f4`；管理员入口与普通用户权限隔离经preview/合成API浏览器QA6/6验证，非live-backend/production。执行按优先级/波次而非全串行：Web交付收口后，第一稳定性波次由#533 core安全修/受控设备QA与#539 semantic fix并行推进（无跨仓前置）；第二稳定性波次为#539显式processing/退避契约及Android消费者闭环；随后进入#516阶段1。#516内部阶段1→阶段2/3→阶段4→阶段5依赖不变；阶段1完成后阶段2云端多模态与阶段3 Windows模型管理可并行。物理OPPO/production未验收保留NOT-VERIFIED，不设为阻塞所有独立笔记规划的全局硬门。#533 OPEN，fullApp2027/0fail但只读复审发现分页并发cleanup漏行/空间预算退步，补修复测中。#539 OPEN，5/5为旧快照，day_overflow派生flag残留、较早late事件漏读及同设备并发边界补修中；5006rows回扫为隔离合成PG已复现事实但非现网唯一根因。#516产品仍PLANNED/NOT IMPLEMENTED/NOT-VERIFIED。API#525用户CLOSED/COMPLETED及4731入库仅为用户reported。两项用户决定待答。45/32/32/13/186保护基线保持。本条版本 v0.39 |
+| 2026-10-31 | 记录 v0.40 当前交付、#539 修复 merge 与 #516 排期状态 | Web Release `api-v26.10.1023` verified/not production。Android PR #56 merge `998015d5b466c2d621c01beb3760c286a351037f`、Release `android-v26.10.1142`，fullApp `2034 / 0 fail`、focused `84 PASS` 为受控结果；#533 仍 `OPEN`，物理/OEM `NOT-VERIFIED`。API #539 仍 `OPEN`；PR #542 head `933a892b` 普通 merge 为 `f0ecf4501a81b6e8c105ca14cc1def844408d762`（2026-10-30T17:19:56Z），exact PR CI `41090756654` 整体 SUCCESS/Gate/API/Web/Docker。`api-v26.10.1031` published 17:55:13Z、非 draft/prerelease，target/tag `f0ecf450`；exact master CI `41097882594` 全部适用 job/Gate/release SUCCESS，4 assets 已上传，metadata SHA 不等于本地整包 byte hash，Release 不代表 production。新 processing 协议仍 WIP，尚在补齐契约、HTTP 证据与兼容；Android 旧 `202` 客户端测试已本地 commit `2d64024c41940560c53ff608623fc168d4bd2b73`（clean/no push），core `5` + app `8` PASS，新 consumer/not-before 未实现。`#525` 保持用户关闭；`#516` 五阶段/AC1–19 全计划、两项 decision pending、产品未实现。45/32/32/13/186 保护保持一致。本条版本 v0.40 |
