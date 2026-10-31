@@ -446,6 +446,7 @@ app.MapTodayEndpoints();
 app.MapAiEndpoints();
 app.MapNoteMaterialEndpoints();
 app.MapNoteAsrEndpoints();
+app.MapNoteAsrBatchSubmissionEndpoints();
 app.MapNoteAsrReprocessEndpoints();
 app.MapNoteAsrRoutingEndpoints();
 app.MapNoteDerivedEndpoints();
