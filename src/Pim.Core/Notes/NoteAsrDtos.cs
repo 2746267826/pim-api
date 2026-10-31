@@ -3,15 +3,15 @@ using Pim.Core.Ai;
 namespace Pim.Core.Notes;
 
 public sealed record StartNoteAsrRequest(Guid TaskId, Guid ExpectedUserId, Guid VersionId,
-    AiAsrDestinationConsent Consent, string Language = "auto", NoteAsrRouteConsent? Route = null,
+    AiAsrDestinationConsent? Consent, string Language = "auto", NoteAsrRouteConsent? Route = null,
     Guid? ParentTaskId = null, string? ReprocessReason = null);
 
 public sealed record RetryNoteAsrRequest(Guid RetryId, Guid ExpectedUserId, Guid ExpectedRevision,
-    IReadOnlyList<int> SegmentIndexes, AiAsrDestinationConsent Consent, bool AcknowledgePossibleDuplicateCharge);
+    IReadOnlyList<int> SegmentIndexes, AiAsrDestinationConsent? Consent, bool AcknowledgePossibleDuplicateCharge);
 
 public sealed record NoteAsrTaskDto(Guid TaskId, Guid Revision, Guid NoteId, Guid VersionId,
     string InputSha256, string ManifestSha256, string Phase, string Language,
-    AiAsrDestinationConsent Destination, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
+    AiAsrDestinationConsent? Destination, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
     int TotalSegments, int CompletedSegments, int FailedSegments, long TotalSamples, long CompletedSamples,
     int SampleRate, bool StopRequested, bool BackgroundProcessingAvailable = false,
     string? Route = null, Guid? AttemptId = null, Guid RouteConfigRevision = default,
