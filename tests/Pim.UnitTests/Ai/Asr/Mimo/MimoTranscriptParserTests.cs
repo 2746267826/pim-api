@@ -31,9 +31,10 @@ public sealed class MimoTranscriptParserTests
     {
         var parsed = MimoTranscriptParser.Parse("普通转写文本，没有分段。");
         Assert.False(parsed.FormatDetected);
-        Assert.False(parsed.TimestampFallback);
+        Assert.True(parsed.TimestampFallback);
         Assert.Empty(parsed.Segments);
         Assert.Equal("普通转写文本，没有分段。", parsed.Text);
+        Assert.NotEmpty(parsed.Issues);
     }
 
     [Fact]
@@ -43,5 +44,24 @@ public sealed class MimoTranscriptParserTests
         Assert.True(parsed.TimestampFallback);
         Assert.Single(parsed.Segments);
         Assert.NotEmpty(parsed.Issues);
+    }
+
+    [Fact]
+    public void NestedOverlapAndGap_UseUnionCoverageAndMaximumEnd()
+    {
+        var parsed = MimoTranscriptParser.Parse(
+            "0-10 | A: long\n1-2 | B: nested\n11-12 | C: after gap");
+        Assert.True(parsed.HasOverlaps);
+        Assert.True(parsed.HasGaps);
+        Assert.Equal(11, parsed.CoverageSeconds);
+    }
+
+    [Fact]
+    public void PartiallyOverlappingSegments_AreNotDoubleCounted()
+    {
+        var parsed = MimoTranscriptParser.Parse("0-5 | A: first\n3-8 | B: second\n8-10 | C: third");
+        Assert.True(parsed.HasOverlaps);
+        Assert.False(parsed.HasGaps);
+        Assert.Equal(10, parsed.CoverageSeconds);
     }
 }

@@ -36,11 +36,16 @@ public sealed class MimoMultimodalPresetTests
         Assert.Equal("Bearer synthetic-key", request.Authorization);
         using var body = JsonDocument.Parse(request.Body);
         Assert.Equal("mimo-v2.6-pro", body.RootElement.GetProperty("model").GetString());
+        Assert.Equal(MimoMultimodalPreset.MaxCompletionTokens,
+            body.RootElement.GetProperty("max_completion_tokens").GetInt32());
         Assert.False(body.RootElement.GetProperty("stream").GetBoolean());
         var parts = body.RootElement.GetProperty("messages")[0].GetProperty("content");
         Assert.Equal("input_audio", parts[0].GetProperty("type").GetString());
         Assert.StartsWith("data:audio/wav;base64,", parts[0].GetProperty("input_audio").GetProperty("data").GetString());
-        Assert.Contains("language=zh", parts[1].GetProperty("text").GetString());
+        var instruction = parts[1].GetProperty("text").GetString();
+        Assert.Contains("逐字转写", instruction);
+        Assert.Contains("不要分析、解释或总结", instruction);
+        Assert.Contains("language=zh", instruction);
     }
 
     [Fact]
@@ -146,6 +151,43 @@ public sealed class MimoMultimodalPresetTests
         var (preset, _) = Create((_, _) => throw new InvalidOperationException("no request"));
         Assert.Equal("https://api.xiaomimimo.com/v1/",
             preset.NormalizeEndpoint("https://api.xiaomimimo.com/v1/chat/completions/"));
+    }
+
+    [Fact]
+    public void Descriptor_DefaultsToFlashAndDocumentsAllFiveFormatsAndBudget()
+    {
+        var (preset, _) = Create((_, _) => throw new InvalidOperationException("no request"));
+        Assert.Equal(MimoMultimodalPreset.FlashModel, preset.Descriptor.DefaultModel);
+        Assert.Equal([MimoMultimodalPreset.FlashModel, MimoMultimodalPreset.ProModel],
+            preset.Descriptor.Models);
+        Assert.Equal(["wav", "mp3", "flac", "m4a", "ogg"], preset.Descriptor.Formats);
+        Assert.Equal(50 * 1024 * 1024, preset.Descriptor.MaxAudioBytes);
+        Assert.True(MimoMultimodalPreset.IsRecommendedForLongAudio(MimoMultimodalPreset.FlashModel));
+        Assert.False(MimoMultimodalPreset.IsRecommendedForLongAudio(MimoMultimodalPreset.ProModel));
+    }
+
+    [Fact]
+    public void Formats_MapToDocumentedMimeTypes()
+    {
+        Assert.Equal("audio/wav", MimoAudioFormats.MimeType("wav"));
+        Assert.Equal("audio/mpeg", MimoAudioFormats.MimeType("mp3"));
+        Assert.Equal("audio/flac", MimoAudioFormats.MimeType("flac"));
+        Assert.Equal("audio/mp4", MimoAudioFormats.MimeType("m4a"));
+        Assert.Equal("audio/ogg", MimoAudioFormats.MimeType("ogg"));
+        Assert.StartsWith("data:audio/flac;base64,",
+            MimoAudioFormats.DataUrl("flac", [1, 2, 3]));
+    }
+
+    [Fact]
+    public async Task Transcribe_RejectsAudioAboveDecodedBudgetWithoutSending()
+    {
+        var (preset, handler) = Create((_, _) => throw new InvalidOperationException("should not send"));
+        var audio = new AiAsrInput("fixture.wav", "wav",
+            new byte[MimoAudioFormats.MaxDecodedBytes + 1], "sha256-fixture");
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            preset.TranscribeAsync(Connection, audio, "zh", default));
+        Assert.Equal(40001, error.ErrorCode);
+        Assert.Empty(handler.Requests);
     }
 
     private static (MimoMultimodalPreset Preset, StubHandler Handler) Create(

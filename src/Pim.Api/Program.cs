@@ -95,6 +95,9 @@ builder.Services.AddSwaggerGen(c =>
     // 契约批次3（issue #417）：import-ics 的 handler 自己读表单，这里只补 requestBody 文档，
     // 不用 .Accepts（那会改变端点匹配、把 handler 的 400 分支变成死代码）。
     c.OperationFilter<Pim.Api.Infrastructure.OpenApi.IcsImportRequestBodyOperationFilter>();
+    // R19: segment content returns binary audio plus immutable routing identity headers;
+    // Swashbuckle cannot infer custom response headers, so the contract is documented here.
+    c.OperationFilter<Pim.Api.Infrastructure.OpenApi.NoteAsrSegmentContentOperationFilter>();
     c.DocumentFilter<Pim.Api.Infrastructure.OpenApi.SecuritySchemesDocumentFilter>();
 });
 
@@ -104,6 +107,12 @@ builder.Services.AddHostedService<Pim.Infrastructure.Metrics.MetricsRefreshServi
 
 // Infrastructure
 builder.Services.AddPimInfrastructure(builder.Configuration);
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
+{
+    // Raised only as a parser ceiling. Every endpoint keeps its own finite RequestSizeLimit,
+    // so text, vision and legacy ASR body budgets are not widened by this setting.
+    options.MultipartBodyLengthLimit = 132L * 1024 * 1024;
+});
 builder.Services.AddPimAuth();
 builder.Services.AddOptions<Pim.Infrastructure.Notes.NoteMaterialUploadOptions>()
     .Bind(builder.Configuration.GetSection("NativeNotes"))
@@ -113,6 +122,17 @@ builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteMaterialUploadStore>(
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteAsrTaskStore>();
 builder.Services.AddSingleton<Pim.Infrastructure.Notes.NoteDerivedStore>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrService>();
+builder.Services.Configure<Pim.Infrastructure.Notes.NoteAsrRoutingOptions>(builder.Configuration.GetSection("NativeNotes:Routing"));
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrRoutingService>();
+builder.Services.AddScoped<Pim.Infrastructure.Notes.INoteAsrEvidenceSink, Pim.Infrastructure.Notes.NoteAsrEvidenceService>();
+builder.Services.Configure<Pim.Core.Notes.NoteAsrBatchOptions>(builder.Configuration.GetSection("NativeNotes:Batch"));
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrBatchService>();
+builder.Services.Configure<Pim.Infrastructure.Notes.NoteAsrBatchPollOptions>(
+    builder.Configuration.GetSection("NativeNotes:BatchPoll"));
+builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrBatchPollJob>();
+builder.Services.AddScoped<Pim.Infrastructure.Ai.Asr.Mimo.IMimoBatchHandleSink, Pim.Infrastructure.Ai.Asr.Mimo.EfMimoBatchHandleSink>();
+builder.Services.AddSingleton<Pim.Infrastructure.Ai.Asr.Mimo.IMimoBatchClientFactory,
+    Pim.Infrastructure.Ai.Asr.Mimo.MimoBatchClientFactory>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedService>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteAsrJob>();
 builder.Services.AddScoped<Pim.Infrastructure.Notes.NoteDerivedJob>();
@@ -420,6 +440,7 @@ app.MapTodayEndpoints();
 app.MapAiEndpoints();
 app.MapNoteMaterialEndpoints();
 app.MapNoteAsrEndpoints();
+app.MapNoteAsrRoutingEndpoints();
 app.MapNoteDerivedEndpoints();
 app.MapClientShell();
 app.MapTileEndpoints();
@@ -455,6 +476,8 @@ else
 
         RecurringJob.AddOrUpdate<Pim.Infrastructure.Notes.NoteAsrDispatchJob>(
             "native-note-asr-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
+        RecurringJob.AddOrUpdate<Pim.Infrastructure.Notes.NoteAsrBatchPollJob>(
+            "native-note-asr-batch-poll", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
         RecurringJob.AddOrUpdate<Pim.Infrastructure.Notes.NoteDerivedDispatchJob>(
             "native-note-derived-dispatch", job => job.RunAsync(CancellationToken.None), Cron.Minutely);
 

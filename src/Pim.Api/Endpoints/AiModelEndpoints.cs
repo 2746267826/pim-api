@@ -19,7 +19,7 @@ public static class AiModelEndpoints
             .Produces<ApiResponse<IReadOnlyList<AiAsrPresetDto>>>(200).Produces(401).Produces(403);
         group.MapPost("/asr-calls", async (AiAsrCallRequest request, [FromServices] AiAsrCallService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiTextCallResultDto>.Ok(await service.CallAsync(request, ct))))
-            .WithMetadata(new RequestSizeLimitAttribute(7 * 1024 * 1024))
+            .WithMetadata(new RequestSizeLimitAttribute(AiAsrMaterialService.MaxMimoRequestJsonBytes))
             .Produces<ApiResponse<AiTextCallResultDto>>(200).Produces(400).Produces(401).Produces(403).Produces(409).Produces(413).Produces(503);
         group.MapGet("/asr-calls/{clientRequestId:guid}", async (Guid clientRequestId, [FromServices] AiAsrCallService service, CancellationToken ct) =>
             Results.Ok(ApiResponse<AiTextCallResultDto>.Ok(await service.GetAsync(clientRequestId, ct))))

@@ -99,7 +99,7 @@ public sealed class NoteDerivedCoverageTests
 
         var complete = NoteDerivedCoverage.Reconcile(snapshot,
             plan.Steps.ToDictionary(x => x.Key, StringComparer.Ordinal), states, [],
-            new HashSet<Guid> { transcripts[0].LogId }, []);
+            new HashSet<Guid> { transcripts[0].LogId!.Value }, []);
         Assert.Equal(1, complete.CompletedTranscriptSegments);
         Assert.True(complete.Complete);
     }

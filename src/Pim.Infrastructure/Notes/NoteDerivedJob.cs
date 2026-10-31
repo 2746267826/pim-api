@@ -526,22 +526,62 @@ public sealed class NoteDerivedJob(
             issues.Add(Issue("asr_source_mismatch", "ASR 任务不属于同一 owner、材料版本或固定摘要"));
 
         var bySegment = asr.Steps.ToDictionary(x => x.Index);
-        var logIds = state.Plan.Input.Transcripts.Select(x => x.LogId).ToArray();
+        var logIds = state.Plan.Input.Transcripts.Where(x => x.LogId.HasValue).Select(x => x.LogId!.Value).ToArray();
         var receipts = await db.AiRequestLogs.AsNoTracking()
             .Where(x => x.UserId == state.Owner && logIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, ct);
+        var evidenceIds = state.Plan.Input.Transcripts.Where(x => x.EvidenceId.HasValue)
+            .Select(x => x.EvidenceId!.Value).ToArray();
+        var evidence = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == state.Owner &&
+                evidenceIds.Contains(x.Id) && x.TaskId == state.Request.AsrTaskId.Value &&
+                x.VersionId == state.Request.VersionId)
+            .ToDictionaryAsync(x => x.Id, ct);
+        var currentFence = asr.AttemptId is { } currentAttemptId
+            ? await db.NoteAsrAttempts.AsNoTracking().Where(x => x.Id == currentAttemptId && x.OwnerId == state.Owner)
+                .Select(x => (long?)x.FencingToken).SingleOrDefaultAsync(ct)
+            : null;
         foreach (var transcript in state.Plan.Input.Transcripts.OrderBy(x => x.Ordinal))
         {
             if (!bySegment.TryGetValue(transcript.AsrSegmentIndex, out var slice) ||
-                slice.Current.Status != "Succeeded" || slice.Current.LogId != transcript.LogId ||
                 slice.RecordingId != transcript.RecordingId ||
                 slice.RecordingSegment != transcript.RecordingSegment ||
                 slice.ChunkIndex != transcript.ChunkIndex ||
                 slice.FileIndex != transcript.SourceFileIndex || slice.Path != transcript.SourcePath ||
                 slice.Sha256 != transcript.SourceSha256 ||
                 slice.SourceOffset != transcript.SourceOffsetSamples ||
-                slice.Samples != transcript.Samples ||
-                !receipts.TryGetValue(transcript.LogId, out var receipt) ||
+                slice.Samples != transcript.Samples)
+            {
+                issues.Add(Issue("asr_receipt_mismatch",
+                    "ASR 片段 owner、版本、来源、摘要或覆盖范围不一致",
+                    stepKey: $"asr:{transcript.Ordinal + 1:D5}"));
+                continue;
+            }
+            if (transcript.EvidenceId is { } evidenceId)
+            {
+                if (!evidence.TryGetValue(evidenceId, out var proof) ||
+                    proof.AttemptId != asr.AttemptId || proof.SegmentIndex != transcript.AsrSegmentIndex ||
+                    proof.FencingToken != currentFence ||
+                    proof.RecordingId != transcript.RecordingId ||
+                    proof.RecordingSegment != transcript.RecordingSegment ||
+                    proof.ChunkIndex != transcript.ChunkIndex ||
+                    proof.SourceFileIndex != transcript.SourceFileIndex ||
+                    proof.SourceSha256 != transcript.SourceSha256 ||
+                    proof.SourceOffsetSamples != transcript.SourceOffsetSamples ||
+                    proof.Samples != transcript.Samples ||
+                    !string.Equals(proof.ResultText, transcript.Text, StringComparison.Ordinal) ||
+                    !string.Equals(proof.ProviderHandle, transcript.ProviderHandle, StringComparison.Ordinal) ||
+                    !string.Equals(proof.ReceiptKind, transcript.ReceiptKind, StringComparison.Ordinal))
+                {
+                    issues.Add(Issue("asr_evidence_mismatch",
+                        "本地/Batch 分片证据 owner、attempt、来源、覆盖或结果不一致",
+                        stepKey: $"asr:{transcript.Ordinal + 1:D5}"));
+                    continue;
+                }
+                completed.Add(evidenceId);
+                continue;
+            }
+            if (transcript.LogId is not { } logId || slice.Current.LogId != logId ||
+                !receipts.TryGetValue(logId, out var receipt) ||
                 receipt.ClientRequestId != slice.Current.RequestId ||
                 receipt.Purpose != "ai.asr-call" ||
                 receipt.SourceObjectType != "native-note-asr-task" ||
@@ -554,11 +594,12 @@ public sealed class NoteDerivedJob(
                     stepKey: $"asr:{transcript.Ordinal + 1:D5}"));
                 continue;
             }
-            completed.Add(transcript.LogId);
+            completed.Add(logId);
         }
         var successful = asr.Steps.Where(x => x.Current.Status == "Succeeded").ToArray();
         if (successful.Length != state.Plan.Input.Transcripts.Count ||
-            successful.Any(step => state.Plan.Input.Transcripts.All(x => x.LogId != step.Current.LogId)))
+            successful.Any(step => state.Plan.Input.Transcripts.All(x =>
+                x.LogId != step.Current.LogId && x.EvidenceId != step.Current.EvidenceId)))
             issues.Add(Issue("asr_success_omitted", "ASR 中存在未纳入固定快照的成功片段"));
         return new(completed, issues);
     }

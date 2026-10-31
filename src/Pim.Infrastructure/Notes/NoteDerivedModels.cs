@@ -36,7 +36,10 @@ internal sealed record NoteDerivedTranscriptInput(
     long SourceOffsetSamples,
     long Samples,
     string Text,
-    Guid LogId);
+    Guid? LogId,
+    Guid? EvidenceId = null,
+    string? ReceiptKind = null,
+    string? ProviderHandle = null);
 
 internal sealed record NoteDerivedImageInput(
     int Ordinal,

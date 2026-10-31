@@ -21,10 +21,14 @@ public sealed class MimoBatchClient
         _options = options ?? (http.BaseAddress is { } baseAddress
             ? MimoBatchClientOptions.Default(baseAddress)
             : throw new ArgumentException("HttpClient.BaseAddress is required", nameof(http)));
-        ValidateBaseAddress(_http.BaseAddress ?? _options.BaseAddress);
+        ValidateBaseAddress(_options.BaseAddress);
         if (_http.BaseAddress is null) _http.BaseAddress = _options.BaseAddress;
-        else if (!SameOrigin(_http.BaseAddress, _options.BaseAddress))
-            throw new ArgumentException("options BaseAddress must match HttpClient.BaseAddress", nameof(options));
+        else
+        {
+            ValidateBaseAddress(_http.BaseAddress);
+            if (!SameOrigin(_http.BaseAddress, _options.BaseAddress))
+                throw new ArgumentException("options BaseAddress must match HttpClient.BaseAddress", nameof(options));
+        }
         _apiRoot = new UriBuilder(_http.BaseAddress!) { Path = "/", Query = "", Fragment = "" }.Uri;
         if (_options.MaxJsonlBytes <= 0 || _options.MaxResponseBytes <= 0 || _options.CreateTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(options), "Batch budgets and timeout must be positive");
@@ -34,8 +38,8 @@ public sealed class MimoBatchClient
     public static HttpClient CreateHttpClient(HttpMessageHandler handler, Uri baseAddress)
     {
         ValidateBaseAddress(baseAddress);
-        if (handler is HttpClientHandler clientHandler) clientHandler.AllowAutoRedirect = false;
-        if (handler is SocketsHttpHandler socketsHandler) socketsHandler.AllowAutoRedirect = false;
+        if (!DisableRedirects(handler))
+            throw new MimoBatchException(42211, "Batch HttpClient handler不支持关闭自动重定向，拒绝创建客户端");
         return new HttpClient(handler, disposeHandler: true)
         {
             BaseAddress = baseAddress,
@@ -75,6 +79,7 @@ public sealed class MimoBatchClient
     public async Task<MimoBatchCreateOutcome> CreateBatchAsync(string inputFileId, string endpoint, string name,
         string? completionWindow = null, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(inputFileId) || inputFileId.Length > 200 || inputFileId.Any(char.IsControl))
             throw new MimoBatchException(42205, "Batch input_file_id无效，未创建任务");
         if (!string.Equals(endpoint, MimoBatchDefaults.ChatCompletionsEndpoint, StringComparison.Ordinal))
@@ -98,15 +103,30 @@ public sealed class MimoBatchClient
         };
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(_options.CreateTimeout);
+        var sendStarted = false;
         try
         {
+            sendStarted = true;
             using var response = await SendAsync(request, timeout.Token);
             if ((int)response.StatusCode is >= 500 or 408)
                 return new MimoBatchCreateOutcome.Unknown("create_upstream_unavailable");
             EnsureSuccess(response, "创建Batch任务");
-            using var document = JsonDocument.Parse(await ReadBoundedAsync(response, timeout.Token),
-                new JsonDocumentOptions { MaxDepth = 64 });
-            return new MimoBatchCreateOutcome.Known(ParseBatch(document.RootElement));
+            try
+            {
+                using var document = JsonDocument.Parse(await ReadBoundedAsync(response, timeout.Token),
+                    new JsonDocumentOptions { MaxDepth = 64 });
+                return new MimoBatchCreateOutcome.Known(ParseBatch(document.RootElement));
+            }
+            catch (Exception error) when (error is JsonException or MimoBatchException or InvalidOperationException or FormatException)
+            {
+                // The request may already have created a batch; without a verified id this is UNKNOWN.
+                return new MimoBatchCreateOutcome.Unknown("create_response_unverified");
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested && sendStarted)
+        {
+            // The caller cancelled after the request could have reached the provider; hand off UNKNOWN.
+            return new MimoBatchCreateOutcome.Unknown("create_cancelled_unverified");
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -116,6 +136,24 @@ public sealed class MimoBatchClient
         {
             return new MimoBatchCreateOutcome.Unknown("create_transport_unknown");
         }
+    }
+
+    /// <summary>
+    /// Audio Batch is not upstream-verified. Callers must explicitly enable the capability
+    /// config before submitting a batch that contains audio.
+    /// </summary>
+    public void EnsureAudioBatchAllowed(bool containsAudio)
+    {
+        if (containsAudio && !_options.AudioBatchEnabled)
+            throw new MimoBatchException(42212, "MiMo Batch音频能力尚未验证，拒绝提交音频批次");
+    }
+
+    /// <summary>Gated overload for audio-containing batches; keeps the original signature compatible.</summary>
+    public Task<MimoBatchCreateOutcome> CreateBatchAsync(string inputFileId, string endpoint, string name,
+        string? completionWindow, bool containsAudio, CancellationToken ct)
+    {
+        EnsureAudioBatchAllowed(containsAudio);
+        return CreateBatchAsync(inputFileId, endpoint, name, completionWindow, ct);
     }
 
     public async Task<MimoBatchRef> GetBatchAsync(string batchId, CancellationToken ct)
@@ -217,7 +255,9 @@ public sealed class MimoBatchClient
             failed = Int(counts, "failed");
         }
         return new MimoBatchRef(id, statusRaw, MimoBatchStatus.Normalize(statusRaw),
-            UnixSeconds(root, "expires_at"), total, completed, failed);
+            UnixSeconds(root, "expires_at"), total, completed, failed,
+            OptionalString(root, "input_file_id"), OptionalString(root, "output_file_id"),
+            OptionalString(root, "error_file_id"));
     }
 
     private static string RequiredString(JsonElement root, string name) =>
@@ -225,6 +265,10 @@ public sealed class MimoBatchClient
         !string.IsNullOrWhiteSpace(value.GetString())
             ? value.GetString()!
             : throw new MimoBatchException(50205, $"Batch响应缺少{name}");
+
+    private static string? OptionalString(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String &&
+        !string.IsNullOrWhiteSpace(value.GetString()) ? value.GetString() : null;
 
     private static int? Int(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number &&
@@ -265,6 +309,26 @@ public sealed class MimoBatchClient
         return string.Equals(configured.Scheme, absoluteRequest.Scheme, StringComparison.OrdinalIgnoreCase) &&
                string.Equals(configured.Host, absoluteRequest.Host, StringComparison.OrdinalIgnoreCase) &&
                configured.Port == absoluteRequest.Port;
+    }
+
+    private static bool DisableRedirects(HttpMessageHandler? handler) => handler switch
+    {
+        HttpClientHandler clientHandler => Set(clientHandler),
+        SocketsHttpHandler socketsHandler => Set(socketsHandler),
+        DelegatingHandler delegating => DisableRedirects(delegating.InnerHandler),
+        _ => false
+    };
+
+    private static bool Set(HttpClientHandler handler)
+    {
+        handler.AllowAutoRedirect = false;
+        return true;
+    }
+
+    private static bool Set(SocketsHttpHandler handler)
+    {
+        handler.AllowAutoRedirect = false;
+        return true;
     }
 
     /// <summary>Second line of defense when a non-seekable caller stream lies about its declared length.</summary>

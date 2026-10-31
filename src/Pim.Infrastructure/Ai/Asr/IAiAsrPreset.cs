@@ -4,7 +4,15 @@ namespace Pim.Infrastructure.Ai.Asr;
 
 public sealed record AiAsrInput(string Name, string Format, byte[] Bytes, string Sha256)
 {
-    public string ContentType => Format == "wav" ? "audio/wav" : "audio/mpeg";
+    public string ContentType => Format switch
+    {
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "ogg" => "audio/ogg",
+        _ => "application/octet-stream"
+    };
     public override string ToString() => $"AiAsrInput {{ Name = {Name}, Format = {Format}, Bytes = {Bytes.Length} }}";
 }
 
@@ -17,6 +25,8 @@ public interface IAiAsrPreset
     AiAsrPresetDto Descriptor { get; }
     string NormalizeEndpoint(string value);
     void ValidateModel(string model);
-    string AuditRequest(byte[] sdkBody, AiModelConnection connection, AiAsrInput audio, Guid audioId, string language);
-    Task<AiAsrProviderResult> TranscribeAsync(AiModelConnection connection, AiAsrInput audio, string language, CancellationToken ct);
+    string AuditRequest(byte[] sdkBody, AiModelConnection connection, AiAsrInput audio, Guid audioId,
+        string language, AiAsrPromptSnapshot? prompt = null);
+    Task<AiAsrProviderResult> TranscribeAsync(AiModelConnection connection, AiAsrInput audio,
+        string language, CancellationToken ct, AiAsrPromptSnapshot? prompt = null);
 }

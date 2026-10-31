@@ -160,6 +160,23 @@ public sealed class MimoMultimodalResponseParserTests
     }
 
     [Fact]
+    public void PlainTextContentWithoutSegmentFormat_IsAccepted()
+    {
+        var result = MimoMultimodalResponseParser.Parse(Json(new
+        {
+            choices = new[] { new { message = new { content = "普通转写文本" }, finish_reason = "stop" } },
+            usage = new { prompt_tokens_details = new { audio_tokens = 2 } }
+        }), Wave());
+        Assert.True(result.HasTranscript);
+        Assert.Equal("普通转写文本", result.Text);
+        using var raw = JsonDocument.Parse(result.RawJson);
+        Assert.False(raw.RootElement.GetProperty("flags").GetProperty("formatDetected").GetBoolean());
+        Assert.True(raw.RootElement.GetProperty("flags").GetProperty("timestampFallback").GetBoolean());
+        Assert.Equal(0, raw.RootElement.GetProperty("transcript").GetProperty("segments").GetArrayLength());
+        Assert.NotEqual(0, raw.RootElement.GetProperty("transcript").GetProperty("issues").GetArrayLength());
+    }
+
+    [Fact]
     public void SegmentFormat_IsMappedIntoRawJson()
     {
         const string text = "0-1.5 | 说话人A: 你好\n1.5-3 | 说话人B: 世界";

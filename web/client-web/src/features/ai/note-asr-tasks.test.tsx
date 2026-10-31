@@ -73,3 +73,25 @@ it('offers only failed or queued segments for explicit recovery and preserves su
   await waitFor(() => expect(api.noteAsrRetry).toHaveBeenCalledOnce())
   expect(api.noteAsrRetry.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ expectedUserId: owner, expectedRevision: task.revision, segmentIndexes: [1], consent: task.destination, acknowledgePossibleDuplicateCharge: true }))
 })
+
+it('shows immutable history for the chosen version and opens old results without sending', async () => {
+  api.noteAsrTasks.mockResolvedValue([task])
+  page(); await choose()
+  await screen.findByText(/该版本已有 1 个转写任务/)
+  await userEvent.click(screen.getByRole('button', { name: /历史任务/ }))
+  await screen.findByLabelText('第1片转写')
+  expect(api.noteAsrStart).not.toHaveBeenCalled()
+})
+
+it('rerun for a version with history needs explicit consent and creates a new task without touching history', async () => {
+  api.noteAsrTasks.mockResolvedValue([task])
+  page(); await choose()
+  await screen.findByText(/再次开始会新建任务/)
+  expect((screen.getByRole('button', { name: '开始后台转写' }) as HTMLButtonElement).disabled).toBe(true)
+  await userEvent.click(screen.getByRole('checkbox', { name: '确认将该固定版本的全部录音发送至上述模型' }))
+  await userEvent.click(screen.getByRole('button', { name: '开始后台转写' }))
+  await waitFor(() => expect(api.noteAsrStart).toHaveBeenCalledOnce())
+  expect(api.noteAsrStart.mock.calls[0]?.[0].versionId).toBe(version)
+  expect(api.noteAsrStart.mock.calls[0]?.[0].consent).toEqual(task.destination)
+  await screen.findByText(/该版本已有 1 个转写任务/)
+})

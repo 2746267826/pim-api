@@ -75,6 +75,52 @@ public sealed class OpenApiContractShapeTests
         Assert.Empty(offenders);
     }
 
+    [Fact]
+    public void NoteAsrBatchMimeContractExportsEveryTypedMultipartField()
+    {
+        var operation = Document.Paths["/api/v1/native-notes/asr-routing/batches"].Operations[OperationType.Post];
+        Assert.NotNull(operation.RequestBody);
+        Assert.True(operation.RequestBody!.Content.TryGetValue("multipart/form-data", out var content));
+        var schema = Resolve(content!.Schema);
+        foreach (var property in new[]
+                 {
+                     "taskId", "attemptId", "modelId", "consentRef", "batchScopeConfirmed",
+                     "completionWindow", "file"
+                 })
+            Assert.True(schema.Properties.ContainsKey(property), $"Batch multipart 缺字段：{property}");
+        Assert.Equal("string", Resolve(schema.Properties["file"]).Type);
+        Assert.Equal("binary", Resolve(schema.Properties["file"]).Format);
+    }
+
+    [Fact]
+    public void NoteAsrSegmentContentUsesHeadersAndDocumentsImmutableIdentityMetadata()
+    {
+        var operation = Document.Paths[
+            "/api/v1/native-notes/asr-routing/leases/{leaseId}/segments/{segmentIndex}/content"]
+            .Operations[OperationType.Get];
+        var leaseToken = Assert.Single(operation.Parameters.Where(x => x.Name == "X-Pim-Lease-Token"));
+        Assert.Equal(ParameterLocation.Header, leaseToken.In);
+        Assert.True(leaseToken.Required);
+        var fencingToken = Assert.Single(operation.Parameters.Where(x => x.Name == "X-Pim-Fencing-Token"));
+        Assert.Equal(ParameterLocation.Header, fencingToken.In);
+        Assert.True(fencingToken.Required);
+        Assert.DoesNotContain(operation.Parameters,
+            x => x.In == ParameterLocation.Query && x.Name is "leaseToken" or "fencingToken");
+
+        var response = operation.Responses["200"];
+        Assert.True(response.Content.TryGetValue("audio/wav", out var audio));
+        Assert.Equal("string", audio!.Schema.Type);
+        Assert.Equal("binary", audio.Schema.Format);
+        foreach (var name in new[]
+                 {
+                     "X-Content-SHA256", "X-Pim-Source-SHA256", "X-Pim-Owner-Id", "X-Pim-Node-Id",
+                     "X-Pim-Lease-Id", "X-Pim-Attempt-Id", "X-Pim-Version-Id", "X-Pim-Fencing-Token",
+                     "X-Pim-Segment-Index", "X-Pim-Source-File-Index", "X-Pim-Source-Offset-Samples",
+                     "X-Pim-Samples"
+                 })
+            Assert.True(response.Headers.ContainsKey(name), $"segment response header 未导出：{name}");
+    }
+
     [Theory]
     // issue #417 逐条点名的 6 处（服务端都是 C# record 里的只读计算属性）
     [InlineData("MobileDeviceDto", "apiLevel")]

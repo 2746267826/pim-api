@@ -205,6 +205,21 @@ describe('AI文字调用完整页面', () => {
     expect(screen.queryByText('待完成')).toBeNull()
   })
 
+  it('marks MiMo Pro ASR configuration as not recommended for long audio', async () => {
+    const proPreset = { ...preset, id: 'mimo-multimodal', name: 'MiMo 多模态', defaultModel: 'mimo-v2.6-flash',
+      models: ['mimo-v2.6-flash', 'mimo-v2.6-pro'], formats: ['wav', 'mp3', 'flac', 'm4a', 'ogg'],
+      maxAudioBytes: 50 * 1024 * 1024 }
+    fixture.api.asrPresets.mockResolvedValue([proPreset])
+    models = [...models, { id: asrId, revision, name: '长课堂 Pro 配置', baseUrl: proPreset.defaultBaseUrl, model: 'mimo-v2.6-pro', enabled: true,
+      capabilities: ['Transcription'], hasApiKey: true, timeoutSeconds: 600, maxOutputTokens: 8192, asrPresetId: proPreset.id,
+      createdAt: '2026-10-27T00:00:00Z', updatedAt: '2026-10-27T00:00:00Z' }]
+    settings = { ...settings, transcriptionModelId: asrId }
+    open('/settings/ai?tab=asr')
+
+    expect(await screen.findByText('Pro 不推荐长音频')).toBeTruthy()
+    expect(screen.getByText(/MiMo 多模态 v1/)).toBeTruthy()
+  })
+
   it('legacy AI settings URL remains compatible and defaults to model settings', async () => {
     open()
     expect(await screen.findByRole('button', { name: '编辑 文字主模型' })).toBeTruthy()

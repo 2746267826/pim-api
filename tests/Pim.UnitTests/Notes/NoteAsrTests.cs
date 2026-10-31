@@ -37,6 +37,7 @@ public sealed class NoteAsrTests : IAsyncLifetime
     private int _calls;
     private int _failCall;
     private bool _block;
+    private bool _truncateFirst;
     private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly List<byte[]> _received = [];
@@ -56,9 +57,14 @@ public sealed class NoteAsrTests : IAsyncLifetime
             Assert.Equal(bytes.Length - 44, (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(40)));
             _started.TrySetResult(); if (_block) await _release.Task;
             if (call == _failCall) return Results.StatusCode(503);
+            var truncated = _truncateFirst && call == 1;
             return Results.Json(new { id = "synthetic-note-asr-" + call, @object = "chat.completion", created = 1780000000, model = "mimo-v2.5-asr",
-                choices = new[] { new { index = 0, finish_reason = "stop", message = new { role = "assistant", content = "合成分片转写 " + call } } },
-                usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15 } });
+                choices = new[] { new { index = 0, finish_reason = truncated ? "length" : "stop",
+                    message = new { role = "assistant", content = truncated
+                        ? "0-1 | A: 丢弃的截断尾段"
+                        : _truncateFirst ? $"0-1 | A: 合成分片转写 {call}" : "合成分片转写 " + call } } },
+                usage = new { prompt_tokens = 10, completion_tokens = 5, total_tokens = 15,
+                    prompt_tokens_details = new { audio_tokens = 10 } } });
         });
         await _provider.StartAsync();
         _factory = AuthRegistrationTestHost.Create(AuthRegistrationTestHost.NewDbName("durable-asr"))
@@ -450,6 +456,168 @@ public sealed class NoteAsrTests : IAsyncLifetime
         }
         await Run(task.TaskId); Assert.Equal(0, _calls); Assert.True((await Get(task.TaskId)).StopRequested);
         Assert.Equal("Blocked", (await Segments(task.TaskId)).Items[0].Status);
+    }
+
+    [Fact]
+    public async Task LegacyQueuedTaskKeepsCloudAsrSemanticsAfterLocalBecomesDefault()
+    {
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(); await Upload(fixture);
+        var task = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, Start(fixture)));
+        Assert.Null(task.Route);
+        await ConfigureLocalRoute();
+
+        await Run(task.TaskId);
+
+        Assert.Equal(1, _calls);
+        Assert.Equal("Succeeded", (await Get(task.TaskId)).Phase);
+    }
+
+    [Fact]
+    public async Task TruncatedRoutedCloudSegmentAutomaticallySplitsAndPublishesOrderedEvidence()
+    {
+        _truncateFirst = true;
+        var multimodal = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest("多模态截断恢复", _provider.Urls.Single() + "/v1/",
+                "mimo-v2.6-flash", true, [AiModelCapability.Transcription], 30, 1024,
+                "synthetic-multimodal-key", AsrPresetId: "mimo-multimodal")));
+        var current = await Data<NoteAsrRouteConfigDto>(await _client.GetAsync(
+            "/api/v1/native-notes/asr-routing/config"));
+        var routeConfig = await Data<NoteAsrRouteConfigDto>(await _client.PutAsJsonAsync(
+            "/api/v1/native-notes/asr-routing/config", new UpdateNoteAsrRouteConfigRequest(
+                current.Revision, NoteAsrRoute.CloudMultimodal, null, null, multimodal.Id, "batch-v1")));
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(16_000 * 60);
+        await Upload(fixture);
+        var consent = new AiAsrDestinationConsent(multimodal.Id, multimodal.Revision,
+            multimodal.BaseUrl + "chat/completions", "mimo-multimodal", "1", true);
+        var start = new StartNoteAsrRequest(Guid.NewGuid(), _owner, fixture.Request.VersionId, consent, "zh",
+            new NoteAsrRouteConsent(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                routeConfig.ConsentVersion, true, NoteAsrExecutionMode.Realtime));
+
+        var task = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, start));
+        Assert.Equal(NoteAsrExecutionMode.Realtime, task.ExecutionMode);
+        await Run(task.TaskId);
+
+        Assert.Equal(3, _calls);
+        Assert.Equal("Succeeded", (await Get(task.TaskId)).Phase);
+        var segment = Assert.Single((await Segments(task.TaskId)).Items);
+        Assert.Equal("Succeeded", segment.Status);
+        Assert.Equal("adaptive", segment.ReceiptKind);
+        Assert.Contains("合成分片转写", segment.Transcript);
+        Assert.DoesNotContain("丢弃的截断尾段", segment.Transcript);
+        Assert.Contains("30-31 | A: 合成分片转写", segment.Transcript);
+        Assert.Equal(3, segment.Attempts.Count);
+        Assert.Equal(3, segment.Attempts.Select(x => x.LogId).Distinct().Count(x => x.HasValue));
+        await Run(task.TaskId);
+        Assert.Equal(3, _calls);
+        using var scope = _factory.Services.CreateScope();
+        var attempt = await scope.ServiceProvider.GetRequiredService<PimDbContext>()
+            .NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == task.AttemptId);
+        Assert.Equal(1, attempt.CompletedSegments);
+        Assert.Equal("Succeeded", attempt.State);
+    }
+
+    [Fact]
+    public async Task BatchExecutionModeIsFrozenOnAttemptAndNeverDispatchedToSynchronousJob()
+    {
+        var multimodal = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models",
+            new SaveAiModelRequest("Batch冻结", _provider.Urls.Single() + "/v1/",
+                "mimo-v2.6-flash", true, [AiModelCapability.Transcription], 30, 1024,
+                "synthetic-batch-key", AsrPresetId: "mimo-multimodal")));
+        var current = await Data<NoteAsrRouteConfigDto>(await _client.GetAsync(
+            "/api/v1/native-notes/asr-routing/config"));
+        var routeConfig = await Data<NoteAsrRouteConfigDto>(await _client.PutAsJsonAsync(
+            "/api/v1/native-notes/asr-routing/config", new UpdateNoteAsrRouteConfigRequest(
+                current.Revision, NoteAsrRoute.CloudMultimodal, null, null, multimodal.Id, "batch-v1")));
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(16_000 * 60);
+        await Upload(fixture);
+        var consent = new AiAsrDestinationConsent(multimodal.Id, multimodal.Revision,
+            multimodal.BaseUrl + "chat/completions", "mimo-multimodal", "1", true);
+        var start = new StartNoteAsrRequest(Guid.NewGuid(), _owner, fixture.Request.VersionId, consent, "zh",
+            new NoteAsrRouteConsent(NoteAsrRoute.CloudMultimodal, routeConfig.Revision,
+                routeConfig.ConsentVersion, true, NoteAsrExecutionMode.Batch, true));
+
+        var task = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, start));
+        Assert.Equal(NoteAsrExecutionMode.Batch, task.ExecutionMode);
+        await Run(task.TaskId);
+
+        Assert.Equal(0, _calls);
+        Assert.Equal("Queued", (await Get(task.TaskId)).Phase);
+        using var scope = _factory.Services.CreateScope();
+        var attempt = await scope.ServiceProvider.GetRequiredService<PimDbContext>()
+            .NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == task.AttemptId);
+        Assert.Equal(NoteAsrExecutionMode.Batch, attempt.ExecutionMode);
+        Assert.Equal("Queued", attempt.State);
+    }
+
+    [Fact]
+    public async Task LocalRouteWithNoNodeStaysQueuedWithoutProviderCallAndAckFeedsSegmentsAndDerivedPlan()
+    {
+        await ConfigureLocalRoute();
+        var fixture = NoteMaterialUploadStoreTests.Fixture.Create(); await Upload(fixture);
+        var started = await Data<NoteAsrTaskDto>(await _client.PostAsJsonAsync(Route, Start(fixture)));
+        Assert.Equal(NoteAsrRoute.Local, started.Route);
+        Assert.NotNull(started.AttemptId);
+        await Run(started.TaskId);
+        Assert.Equal(0, _calls);
+        Assert.Equal("Queued", (await Get(started.TaskId)).Phase);
+
+        var nodeId = Guid.NewGuid();
+        _ = await Data<NoteAsrNodeDto>(await _client.PostAsJsonAsync(
+            "/api/v1/native-notes/asr-routing/nodes/register", new RegisterNoteAsrNodeRequest(
+                nodeId, "synthetic-local-node", true, "local-model", "r1", true, ["transcription"])));
+        var claim = await Data<NoteAsrClaimDto>(await _client.PostAsJsonAsync(
+            "/api/v1/native-notes/asr-routing/leases/claim",
+            new ClaimNoteAsrTaskRequest(nodeId, "local-evidence-claim")));
+        Assert.Equal("claimed", claim.Status);
+        var execution = claim.Execution!;
+        for (var index = 0; index < execution.Segments.Count; index++)
+        {
+            _ = await Data<NoteAsrAckDto>(await _client.PostAsJsonAsync(
+                $"/api/v1/native-notes/asr-routing/leases/{execution.AttemptId}/ack",
+                new NoteAsrAckRequest(claim.LeaseId!.Value, claim.Lease!.LeaseToken,
+                    claim.Lease.FencingToken, "segment", "Succeeded", index, $"local-{index}",
+                    null, null, $"本地合成转写 {index}", $"[{{\"segment\":{index},\"complete\":true}}]")));
+        }
+        _ = await Data<NoteAsrAckDto>(await _client.PostAsJsonAsync(
+            $"/api/v1/native-notes/asr-routing/leases/{execution.AttemptId}/ack",
+            new NoteAsrAckRequest(claim.LeaseId.Value, claim.Lease.LeaseToken,
+                claim.Lease.FencingToken, "complete", "Succeeded", 0, "local-complete", null, null)));
+
+        var completed = await Get(started.TaskId);
+        Assert.Equal("Succeeded", completed.Phase);
+        var segments = await Segments(started.TaskId);
+        Assert.All(segments.Items, x =>
+        {
+            Assert.Equal("Succeeded", x.Status);
+            Assert.NotNull(x.EvidenceId);
+            Assert.Equal("local", x.ReceiptKind);
+            Assert.Contains("本地合成转写", x.Transcript);
+        });
+        using (var scope = _factory.Services.CreateScope())
+            Assert.Equal(0, await scope.ServiceProvider.GetRequiredService<PimDbContext>()
+                .AiRequestLogs.CountAsync(x => x.UserId == _owner && x.SourceObjectId == started.TaskId.ToString()));
+
+        var text = await Data<AiModelDto>(await _client.PostAsJsonAsync("/api/v1/ai/models", new SaveAiModelRequest(
+            "派生文本", _provider.Urls.Single() + "/v1/", "mimo-v2.6-flash", true,
+            [AiModelCapability.Text], 30, 1024, "synthetic-derived-key")));
+        var runtime = await Data<AiModelSettingsDto>(await _client.GetAsync("/api/v1/ai/model-settings"));
+        _ = await Data<AiModelSettingsDto>(await _client.PutAsJsonAsync("/api/v1/ai/model-settings",
+            new SaveAiModelSettingsRequest(runtime.Revision, true, text.Id, null, _model.Id)));
+        var derived = await Data<NoteDerivedTaskDto>(await _client.PostAsJsonAsync(
+            "/api/v1/native-notes/derived-tasks", new StartNoteDerivedTaskRequest(Guid.NewGuid(), _owner,
+                fixture.Request.VersionId, started.TaskId,
+                new NoteDerivedGenerationConsent(text.Id, text.Revision, text.BaseUrl, true))));
+        Assert.Equal(segments.Total, derived.Coverage.CompletedTranscriptSegments);
+        Assert.DoesNotContain(derived.Coverage.Issues, x => x.Code.StartsWith("asr_", StringComparison.Ordinal));
+    }
+
+    private async Task ConfigureLocalRoute()
+    {
+        var current = await Data<NoteAsrRouteConfigDto>(await _client.GetAsync(
+            "/api/v1/native-notes/asr-routing/config"));
+        _ = await Data<NoteAsrRouteConfigDto>(await _client.PutAsJsonAsync(
+            "/api/v1/native-notes/asr-routing/config", new UpdateNoteAsrRouteConfigRequest(
+                current.Revision, NoteAsrRoute.Local, "local-model", "r1", null, "local-v1")));
     }
 
     private sealed class RecordedJobs : Hangfire.IBackgroundJobClient

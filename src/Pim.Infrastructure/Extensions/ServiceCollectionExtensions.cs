@@ -51,6 +51,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAiChatClientFactory, AiChatClientFactory>();
         services.AddScoped<AiModelSettingsService>();
         services.AddSingleton<IAiAsrPreset, MimoAsrPreset>();
+        services.AddSingleton<IAiAsrPreset>(sp => new Pim.Infrastructure.Ai.Asr.Mimo.MimoMultimodalPreset(
+            _ => sp.GetRequiredService<IHttpClientFactory>().CreateClient(AiProfileChatClientFactory.ClientName)));
         services.AddSingleton<AiAsrPresetRegistry>();
         services.AddScoped<AiTextCallService>();
         services.AddScoped<AiVisionMaterialService>();

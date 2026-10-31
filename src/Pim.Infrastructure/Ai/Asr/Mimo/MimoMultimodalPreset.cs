@@ -15,13 +15,19 @@ namespace Pim.Infrastructure.Ai.Asr.Mimo;
 public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> invoker) : IAiAsrPreset
 {
     public const string PresetId = "mimo-multimodal";
+    public const string FlashModel = "mimo-v2.6-flash";
+    public const string ProModel = "mimo-v2.6-pro";
+    public const int MaxCompletionTokens = 8192;
     private const int MaxResponseBytes = 4 * 1024 * 1024;
-
     public AiAsrPresetDto Descriptor { get; } = new(PresetId, "1", "MiMo 多模态",
-        "https://api.xiaomimimo.com/v1/", "chat/completions", "mimo-v2.6-pro",
-        Array.AsReadOnly(new[] { "mimo-v2.6-pro", "mimo-v2.6-flash" }),
-        Array.AsReadOnly(new[] { "wav", "mp3" }),
-        Array.AsReadOnly(new[] { "auto", "zh", "en" }), 4 * 1024 * 1024, false);
+        "https://api.xiaomimimo.com/v1/", "chat/completions", FlashModel,
+        Array.AsReadOnly(new[] { FlashModel, ProModel }),
+        MimoAudioFormats.Supported,
+        Array.AsReadOnly(new[] { "auto", "zh", "en" }), MimoAudioFormats.MaxDecodedBytes, false);
+
+    /// <summary>Flash is the product default; Pro is available but not recommended for long audio.</summary>
+    public static bool IsRecommendedForLongAudio(string model) =>
+        string.Equals(model, FlashModel, StringComparison.Ordinal);
 
     public string NormalizeEndpoint(string value)
     {
@@ -40,7 +46,7 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
     }
 
     public string AuditRequest(byte[] sdkBody, AiModelConnection connection, AiAsrInput audio, Guid audioId,
-        string language)
+        string language, AiAsrPromptSnapshot? prompt = null)
     {
         var root = JsonNode.Parse(sdkBody)!;
         var messages = root["messages"]?.AsArray();
@@ -53,21 +59,19 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
         if (audioPart is null || textPart is null) throw Mismatch();
         var input = audioPart["input_audio"]!;
         var data = input["data"]?.GetValue<string>();
-        var expected = Convert.ToBase64String(audio.Bytes);
-        var isDataUrl = data == $"data:{audio.ContentType};base64,{expected}" ||
-                        audio.Format == "mp3" && data == $"data:audio/mp3;base64,{expected}";
-        if (data != expected && !isDataUrl) throw Mismatch();
+        if (!MimoAudioFormats.MatchesDataUrl(audio.Format, data, audio.Bytes)) throw Mismatch();
         if (input["format"] is not null && input["format"]!.GetValue<string>() != audio.Format) throw Mismatch();
         if (textPart["text"] is not JsonValue textValue ||
             !textValue.TryGetValue<string>(out var text) ||
-            !text.Contains($"language={language}", StringComparison.Ordinal))
+            prompt is not null && text != prompt.Text ||
+            prompt is null && !text.Contains($"language={language}", StringComparison.Ordinal))
             throw Mismatch();
         input["data"] = $"pim-ai-audio:{audioId:D}";
         return root.ToJsonString();
     }
 
     public async Task<AiAsrProviderResult> TranscribeAsync(AiModelConnection connection, AiAsrInput audio,
-        string language, CancellationToken ct)
+        string language, CancellationToken ct, AiAsrPromptSnapshot? prompt = null)
     {
         ValidateModel(connection.Model);
         if (!Descriptor.Formats.Contains(audio.Format) || !Descriptor.Languages.Contains(language) ||
@@ -75,7 +79,7 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
             throw new DomainException(40001, "音频格式、语言或大小不符合MiMo多模态预设");
 
         var endpoint = new Uri(new Uri(connection.Endpoint), Descriptor.OperationPath).AbsoluteUri;
-        var payload = BuildRequest(connection.Model, audio, language);
+        var payload = BuildRequest(connection.Model, audio, prompt ?? AiAsrPromptTemplate.Normalize().Snapshot(language));
         using var ownedHandler = new SocketsHttpHandler { AllowAutoRedirect = false };
         using var http = invoker(ownedHandler);
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
@@ -106,12 +110,13 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
         }
     }
 
-    private static string BuildRequest(string model, AiAsrInput audio, string language)
+    private static string BuildRequest(string model, AiAsrInput audio, AiAsrPromptSnapshot prompt)
     {
-        var data = $"data:{audio.ContentType};base64,{Convert.ToBase64String(audio.Bytes)}";
+        var data = MimoAudioFormats.DataUrl(audio.Format, audio.Bytes);
         return JsonSerializer.Serialize(new
         {
             model,
+            max_completion_tokens = MaxCompletionTokens,
             messages = new[]
             {
                 new
@@ -120,7 +125,7 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
                     content = new object[]
                     {
                         new { type = "input_audio", input_audio = new { data, format = audio.Format } },
-                        new { type = "text", text = $"请转写这段音频，输出格式：起始秒-结束秒 | 说话人: 文本。language={language}。" }
+                        new { type = "text", text = prompt.Text }
                     }
                 }
             },
@@ -148,4 +153,31 @@ public sealed class MimoMultimodalPreset(Func<HttpMessageHandler?, HttpClient> i
 
     private static InvalidDataException Mismatch() =>
         new("SDK音频、模型或语言与固定请求不一致，本次未发送");
+}
+
+public static class MimoAudioFormats
+{
+    public const int MaxDecodedBytes = 50 * 1024 * 1024;
+    public static readonly IReadOnlyList<string> Supported =
+        Array.AsReadOnly(new[] { "wav", "mp3", "flac", "m4a", "ogg" });
+
+    public static string MimeType(string format) => format switch
+    {
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "ogg" => "audio/ogg",
+        _ => throw new DomainException(40001, "不支持的MiMo音频格式")
+    };
+
+    public static string DataUrl(string format, byte[] bytes) =>
+        $"data:{MimeType(format)};base64,{Convert.ToBase64String(bytes)}";
+
+    public static bool MatchesDataUrl(string format, string? data, byte[] bytes)
+    {
+        var base64 = Convert.ToBase64String(bytes);
+        return data == base64 || data == DataUrl(format, bytes) ||
+               format == "mp3" && data == $"data:audio/mp3;base64,{base64}";
+    }
 }

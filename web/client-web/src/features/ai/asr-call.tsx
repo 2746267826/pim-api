@@ -4,6 +4,8 @@ import { Button, Card, EmptyState, Label, Select, Skeleton } from '@/components/
 import { aiApi, type AsrPreset, type AsrRequest, type CallResult, type Model, type ModelSettings } from './api'
 import { createAiRequestId } from './request-id'
 import { readMediaFile } from './media-file'
+import { asrAudioLimitLabel, isMimoPro } from './asr-model-guidance'
+import { AsrResultInsights } from './asr-result-insights'
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : '请求失败'
 const languageNames: Record<string, string> = { auto: '自动识别', zh: '中文', en: '英语' }
@@ -33,6 +35,7 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
   const current = models.find((m) => m.id === (selected || settings.transcriptionModelId))
   const currentPreset = presets.data?.find((p) => p.id === current?.asrPresetId)
   const target = submitted?.model ?? current, preset = submitted?.preset ?? currentPreset
+  const detail = useQuery({ queryKey: ['ai', userId, 'asr-result-detail', result?.logId], queryFn: ({ signal }) => aiApi.detail(result!.logId, signal), enabled: Boolean(result?.logId) })
   const endpoint = operation(target, preset)
   const approvalKey = target && preset ? `${target.id}/${target.revision}/${preset.id}/${preset.version}/${endpoint}/${selection}/${language}` : ''
   const ready = settings.enabled && current?.enabled && current.capabilities.includes('Transcription') && currentPreset
@@ -64,7 +67,8 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
       options={[{ value: '', label: '使用默认ASR模型' }, ...models.filter((m) => m.enabled && m.asrPresetId && m.capabilities.includes('Transcription')).map((m) => ({ value: m.id, label: m.name }))]}
       onValueChange={(value) => { setSelected(value); setConsentedTo(''); setFile(null); setLanguage('auto') }} /></div>
     {!ready && <p role="status" className="text-sm text-text-3">请启用SDK直连并选择带有接入预设的独立ASR模型；旧能力声明不能直接转写。</p>}
-    {preset && <div className="text-xs text-text-3"><p>预设：{preset.name} · v{preset.version}</p><p>格式：{preset.formats.join(' / ')} · 单音频最多 {(preset.maxAudioBytes / 1024 / 1024).toFixed(0)} MiB</p></div>}
+    {preset && <div className="text-xs text-text-3"><p>预设：{preset.name} · v{preset.version}</p><p>格式：{preset.formats.join(' / ')} · {asrAudioLimitLabel(preset.maxAudioBytes)}（解码后大小）</p></div>}
+    {target && isMimoPro(target.model) && <p role="alert" className="rounded-ctl border border-warn-border bg-warn-soft px-3 py-2 text-xs leading-5 text-warn">Pro 模型不推荐用于长音频。课堂录音、8–10 分钟以上材料请切换到 Flash；本提示不代表服务商承诺固定时长上限。</p>}
     <div><Label htmlFor="ai-asr-file">本次音频</Label><input ref={input} id="ai-asr-file" type="file" className="sr-only" accept={preset?.formats.map((value) => `.${value}`).join(',')} disabled={locked || !ready}
       onChange={(event) => { const next = event.target.files?.[0] ?? null; event.target.value = ''; chooseFile(next) }} />
       <div className="mt-1"><Button variant="secondary" disabled={locked || !ready} onClick={() => input.current?.click()}>选择音频</Button></div>
@@ -86,6 +90,8 @@ export function AsrCall({ userId, models, settings, changed, showDetail, renderS
       {result.errorMessage && <p role="alert" className="text-sm text-text-2">{result.errorMessage}</p>}
       {result.responseText !== null && <pre aria-label="实际ASR转写" className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-sm text-text-1">{result.responseText || '本次返回空转写，请试听原音频核对。'}</pre>}
       {result.replayed && <p className="text-xs text-text-3">返回已有记录，本次没有重新发送音频。</p>}
+      <AsrResultInsights rawJson={detail.data?.responseRawJson} presetId={preset?.id ?? target?.asrPresetId}
+        loading={detail.isLoading} loadError={detail.isError ? errorText(detail.error) : null} />
     </div>}
   </Card>
 }

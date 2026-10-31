@@ -55,18 +55,32 @@ public static class MimoTranscriptParser
             segments.Add(new(start, end, match.Groups["speaker"].Value.Trim(), match.Groups["text"].Value.Trim()));
         }
 
-        if (segments.Count == 0 && invalid == 0) return MimoTranscriptParseResult.Empty(text);
+        if (segments.Count == 0 && invalid == 0)
+        {
+            return new(text, [], false, true, false, false, null,
+                ["plain text fallback: timestamp segments unavailable"]);
+        }
 
-        var ordered = segments.OrderBy(x => x.StartSeconds).ToArray();
+        var ordered = segments.OrderBy(x => x.StartSeconds).ThenBy(x => x.EndSeconds).ToArray();
         var gaps = false;
         var overlaps = false;
+        var coverage = 0d;
+        var maxEnd = 0d;
+        if (ordered.Length > 0)
+        {
+            maxEnd = ordered[0].EndSeconds;
+            coverage = maxEnd - ordered[0].StartSeconds;
+        }
         for (var i = 1; i < ordered.Length; i++)
         {
-            if (ordered[i].StartSeconds > ordered[i - 1].EndSeconds + 0.05) gaps = true;
-            if (ordered[i].StartSeconds < ordered[i - 1].EndSeconds) overlaps = true;
+            var segment = ordered[i];
+            if (segment.StartSeconds > maxEnd + 0.05) gaps = true;
+            if (segment.StartSeconds < maxEnd) overlaps = true;
+            coverage += Math.Max(0, segment.EndSeconds - Math.Max(segment.StartSeconds, maxEnd));
+            maxEnd = Math.Max(maxEnd, segment.EndSeconds);
         }
-        var coverage = ordered.Length > 0 ? Math.Round(ordered[^1].EndSeconds - ordered[0].StartSeconds, 3) : (double?)null;
-        return new(text, ordered, ordered.Length > 0, invalid > 0, gaps, overlaps, coverage, issues);
+        return new(text, ordered, ordered.Length > 0, invalid > 0, gaps, overlaps,
+            ordered.Length > 0 ? Math.Round(coverage, 3) : null, issues);
     }
 
     private static bool LooksTimestampLike(string line)

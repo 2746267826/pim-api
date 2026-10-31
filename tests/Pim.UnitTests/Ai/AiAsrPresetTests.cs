@@ -198,8 +198,11 @@ public sealed class AiAsrPresetTests : IDisposable
         public AiAsrPresetDto Descriptor { get; } = new("test-asr", "1", "Test-only strategy", "http://test.invalid/", "transcribe", "test", ["test"], ["wav"], ["auto"], 1000, false);
         public string NormalizeEndpoint(string endpoint) => endpoint;
         public void ValidateModel(string model) { }
-        public string AuditRequest(byte[] body, AiModelConnection connection, AiAsrInput audio, Guid id, string language) => "{}";
-        public Task<AiAsrProviderResult> TranscribeAsync(AiModelConnection connection, AiAsrInput audio, string language, CancellationToken ct) => throw new NotSupportedException("Test registration only");
+        public string AuditRequest(byte[] body, AiModelConnection connection, AiAsrInput audio, Guid id,
+            string language, AiAsrPromptSnapshot? prompt = null) => "{}";
+        public Task<AiAsrProviderResult> TranscribeAsync(AiModelConnection connection, AiAsrInput audio,
+            string language, CancellationToken ct, AiAsrPromptSnapshot? prompt = null) =>
+            throw new NotSupportedException("Test registration only");
     }
     private sealed class Owner : ICurrentUserService
     { public Guid? UserId { get; set; } = Guid.NewGuid(); public string? Username => "synthetic-owner"; public string? Role => "admin"; }

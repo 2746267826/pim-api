@@ -142,6 +142,17 @@ public sealed class MimoBatchResultParserTests
     }
 
     [Fact]
+    public void OutputAndErrorFilesShareOneTotalCharBudget()
+    {
+        var output = Success("a", "ok");
+        var error = Success("b", "failed");
+        var limit = output.Length + error.Length - 5;
+        var exception = Assert.Throws<MimoBatchException>(() => MimoBatchResultParser.Reconcile(["a"], output, error,
+            new MimoBatchParseLimits(MaxLineChars: 4096, MaxLines: 100, MaxTotalChars: limit)));
+        Assert.Equal(42202, exception.ErrorCode);
+    }
+
+    [Fact]
     public void StreamOverload_ReadsWithoutMaterializingWholeFile()
     {
         var bytes = Encoding.UTF8.GetBytes(Success("a", "streamed"));

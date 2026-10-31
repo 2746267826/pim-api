@@ -20,7 +20,7 @@ namespace Pim.Module.Files.Services;
 public sealed class FileAttachmentStore(
     PimDbContext db,
     FileProviderSessionFactory sessions,
-    ILogger<FileAttachmentStore>? logger = null) : IFileAttachmentStore
+    ILogger<FileAttachmentStore>? logger = null) : IFileAttachmentStore, IBoundedFileAttachmentStore
 {
     /// <summary>附件在网盘中的根目录（与用户文件树区分开）。</summary>
     public const string AttachmentRoot = "/PIM";
@@ -31,8 +31,20 @@ public sealed class FileAttachmentStore(
         Stream content,
         string contentType,
         long sizeBytes,
+        CancellationToken ct = default) =>
+        await StoreAsync(userId, objectKey, content, contentType, sizeBytes,
+            FileContentService.MaxSaveBytes, ct);
+
+    public async Task<FileAttachmentRef> StoreAsync(
+        Guid userId,
+        string objectKey,
+        Stream content,
+        string contentType,
+        long sizeBytes,
+        long maxBytes,
         CancellationToken ct = default)
     {
+        if (maxBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxBytes));
         var provider = await LoadDefaultProviderAsync(userId, ct);
         var session = await sessions.OpenAsync(provider, ct);
 
@@ -42,11 +54,11 @@ public sealed class FileAttachmentStore(
         int read;
         while ((read = await content.ReadAsync(chunk, ct)) > 0)
         {
-            if (buffer.Length + read > FileContentService.MaxSaveBytes)
+            if (buffer.Length + read > maxBytes)
             {
                 throw new DomainException(
                     5331,
-                    $"附件超过 {FileContentService.MaxSaveBytes / 1024 / 1024}MB，请使用网盘客户端");
+                    $"附件超过 {maxBytes / 1024 / 1024}MB，请使用网盘客户端");
             }
 
             buffer.Write(chunk, 0, read);
@@ -70,15 +82,23 @@ public sealed class FileAttachmentStore(
     public async Task<Stream> OpenReadAsync(
         Guid userId,
         FileAttachmentRef reference,
+        CancellationToken ct = default) =>
+        await OpenReadAsync(userId, reference, FileContentService.MaxSaveBytes, ct);
+
+    public async Task<Stream> OpenReadAsync(
+        Guid userId,
+        FileAttachmentRef reference,
+        long maxBytes,
         CancellationToken ct = default)
     {
+        if (maxBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxBytes));
         foreach (var provider in await CandidateProvidersAsync(userId, reference, ct))
         {
             var session = await sessions.OpenAsync(provider, ct);
             try
             {
                 var downloaded = await session.Content.DownloadSmallAsync(
-                    reference.ObjectKey, FileContentService.MaxSaveBytes, ct);
+                    reference.ObjectKey, maxBytes, ct);
                 if (downloaded is not null)
                 {
                     return new MemoryStream(downloaded.Bytes);

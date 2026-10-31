@@ -110,6 +110,100 @@ public sealed class MimoBatchClientTests
     }
 
     [Fact]
+    public async Task CreateMalformedSuccess_ReturnsUnknownWithoutRetry()
+    {
+        var (client, handler) = Create((_, _) => Task.FromResult(Json(HttpStatusCode.OK, new { })));
+        var outcome = await client.CreateBatchAsync("file-1", "/v1/chat/completions", "malformed");
+        var unknown = Assert.IsType<MimoBatchCreateOutcome.Unknown>(outcome);
+        Assert.Equal("create_response_unverified", unknown.Reason);
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task CreateNonJsonSuccess_ReturnsUnknownWithoutRetry()
+    {
+        var (client, handler) = Create((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{not-json", Encoding.UTF8, "application/json")
+        }));
+        var outcome = await client.CreateBatchAsync("file-1", "/v1/chat/completions", "malformed-json");
+        var unknown = Assert.IsType<MimoBatchCreateOutcome.Unknown>(outcome);
+        Assert.Equal("create_response_unverified", unknown.Reason);
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task CreateOversizedSuccess_ReturnsUnknownWithoutRetry()
+    {
+        var (client, handler) = Create((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(new string('x', 100), Encoding.UTF8, "application/json")
+        }), maxResponseBytes: 16);
+        var outcome = await client.CreateBatchAsync("file-1", "/v1/chat/completions", "oversized");
+        var unknown = Assert.IsType<MimoBatchCreateOutcome.Unknown>(outcome);
+        Assert.Equal("create_response_unverified", unknown.Reason);
+        Assert.Single(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.RequestTimeout)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task CreateUpstreamTransientStatus_ReturnsUnknownWithoutRetry(HttpStatusCode status)
+    {
+        var (client, handler) = Create((_, _) => Task.FromResult(new HttpResponseMessage(status)));
+        var outcome = await client.CreateBatchAsync("file-1", "/v1/chat/completions", "transient");
+        var unknown = Assert.IsType<MimoBatchCreateOutcome.Unknown>(outcome);
+        Assert.Equal("create_upstream_unavailable", unknown.Reason);
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task CreateCallerCancellationAfterSend_ReturnsUnknownWithoutRetry()
+    {
+        var (client, handler) = Create(async (_, ct) =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5), ct);
+            return Json(HttpStatusCode.OK, BatchJson("late", "validating", null));
+        });
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+        var outcome = await client.CreateBatchAsync("file-1", "/v1/chat/completions", "cancelled",
+            ct: cancellation.Token);
+        var unknown = Assert.IsType<MimoBatchCreateOutcome.Unknown>(outcome);
+        Assert.Equal("create_cancelled_unverified", unknown.Reason);
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task CreateCallerCancellationBeforeSend_PropagatesWithoutRequest()
+    {
+        var (client, handler) = Create((_, _) => throw new InvalidOperationException("should not send"));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            client.CreateBatchAsync("file-1", "/v1/chat/completions", "cancelled", ct: cancellation.Token));
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task AudioBatchGate_DeniesByDefault_AndAllowsOnlyExplicitConfig()
+    {
+        var (client, handler) = Create((_, _) => Task.FromResult(Json(HttpStatusCode.OK,
+            BatchJson("batch_1", "validating", null))));
+        var error = Assert.Throws<MimoBatchException>(() => client.EnsureAudioBatchAllowed(true));
+        Assert.Equal(42212, error.ErrorCode);
+        client.EnsureAudioBatchAllowed(false);
+        Assert.Empty(handler.Requests);
+
+        var (enabled, enabledHandler) = Create((_, _) => Task.FromResult(Json(HttpStatusCode.OK,
+            BatchJson("batch_2", "validating", null))), audioBatchEnabled: true);
+        var outcome = await enabled.CreateBatchAsync("file-1", "/v1/chat/completions", "audio", "24h",
+            containsAudio: true, ct: default);
+        Assert.IsType<MimoBatchCreateOutcome.Known>(outcome);
+        Assert.Single(enabledHandler.Requests);
+    }
+
+    [Fact]
     public async Task Get_NormalizesKnownCaseAndPreservesRawStatus()
     {
         var (client, _) = Create((_, _) => Task.FromResult(Json(HttpStatusCode.OK,
@@ -121,6 +215,17 @@ public sealed class MimoBatchClientTests
         Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1711488800), batch.ExpiresAt);
         Assert.Equal(2, batch.Total);
         Assert.Equal(1, batch.Completed);
+    }
+
+    [Fact]
+    public async Task Get_MapsFileHandlesFromTheSameBoundedResponse()
+    {
+        var (client, _) = Create((_, _) => Task.FromResult(Json(HttpStatusCode.OK,
+            BatchJson("batch_1", "completed", 1711488800L, "file-in", "file-out", "file-err"))));
+        var batch = await client.GetBatchAsync("batch_1", default);
+        Assert.Equal("file-in", batch.InputFileId);
+        Assert.Equal("file-out", batch.OutputFileId);
+        Assert.Equal("file-err", batch.ErrorFileId);
     }
 
     [Fact]
@@ -211,6 +316,23 @@ public sealed class MimoBatchClientTests
     }
 
     [Fact]
+    public void Factory_DisablesAutoRedirectThroughDelegatingHandler()
+    {
+        var inner = new HttpClientHandler();
+        using var http = MimoBatchClient.CreateHttpClient(new PassThroughHandler(inner),
+            new Uri("https://batch.invalid/"));
+        Assert.False(inner.AllowAutoRedirect);
+    }
+
+    [Fact]
+    public void Factory_RejectsUnknownHandler()
+    {
+        var handler = new StubHandler((_, _) => throw new InvalidOperationException("unused"));
+        Assert.Throws<MimoBatchException>(() =>
+            MimoBatchClient.CreateHttpClient(handler, new Uri("https://batch.invalid/")));
+    }
+
+    [Fact]
     public void NonLoopbackHttpOrigin_IsRejected()
     {
         var handler = new StubHandler((_, _) => throw new InvalidOperationException("unused"));
@@ -218,9 +340,19 @@ public sealed class MimoBatchClientTests
         Assert.Throws<MimoBatchException>(() => new MimoBatchClient(http));
     }
 
+    [Fact]
+    public void OptionsBaseAddress_IsValidatedIndependently()
+    {
+        var handler = new StubHandler((_, _) => throw new InvalidOperationException("unused"));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://batch.invalid/") };
+        var options = new MimoBatchClientOptions(new Uri("http://batch.invalid/"), TimeSpan.FromSeconds(5));
+        Assert.Throws<MimoBatchException>(() => new MimoBatchClient(http, options));
+    }
+
     private static (MimoBatchClient Client, StubHandler Handler) Create(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder,
-        TimeSpan? createTimeout = null, long maxResponseBytes = 64L * 1024 * 1024)
+        TimeSpan? createTimeout = null, long maxResponseBytes = 64L * 1024 * 1024,
+        bool audioBatchEnabled = false)
     {
         var handler = new StubHandler(responder);
         var http = new HttpClient(handler)
@@ -230,7 +362,8 @@ public sealed class MimoBatchClientTests
         };
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "synthetic-key");
         return (new MimoBatchClient(http, new MimoBatchClientOptions(http.BaseAddress!,
-            createTimeout ?? TimeSpan.FromSeconds(5), maxResponseBytes)), handler);
+            createTimeout ?? TimeSpan.FromSeconds(5), maxResponseBytes,
+            AudioBatchEnabled: audioBatchEnabled)), handler);
     }
 
     private static HttpResponseMessage Json(HttpStatusCode status, object body) =>
@@ -239,10 +372,12 @@ public sealed class MimoBatchClientTests
             Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
         };
 
-    private static object BatchJson(string id, string status, long? expiresAt) => new
+    private static object BatchJson(string id, string status, long? expiresAt,
+        string? inputFileId = null, string? outputFileId = null, string? errorFileId = null) => new
     {
         id, status, expires_at = expiresAt,
-        request_counts = new { total = 2, completed = 1, failed = 0 }
+        request_counts = new { total = 2, completed = 1, failed = 0 },
+        input_file_id = inputFileId, output_file_id = outputFileId, error_file_id = errorFileId
     };
 
     private sealed class StubHandler(
@@ -258,4 +393,6 @@ public sealed class MimoBatchClientTests
             return await responder(request, cancellationToken);
         }
     }
+
+    private sealed class PassThroughHandler(HttpMessageHandler inner) : DelegatingHandler(inner);
 }

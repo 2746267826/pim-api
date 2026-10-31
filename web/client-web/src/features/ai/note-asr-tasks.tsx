@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Card, EmptyState, Label, Select, Skeleton, StatusBadge } from '@/components/ui'
 import { formatTime } from '@/lib/datetime'
@@ -26,6 +26,7 @@ export function NoteAsrTasks({ userId, models, settings, showDetail }: { userId:
   const preset = presets.data?.find((p) => p.id === model?.asrPresetId)
   const endpoint = model && preset ? model.baseUrl + preset.operationPath : ''
   const source = sources.data?.items.find((s) => s.versionId === versionId)
+  const versionTasks = useMemo(() => versionId ? (tasks.data ?? []).filter((task) => task.versionId === versionId) : [], [tasks.data, versionId])
   const approvalKey = [versionId, model?.id, model?.revision, preset?.id, preset?.version, endpoint, language].join('/')
   const ready = settings.enabled && model?.enabled && preset && source && source.totalSamples > 0
   async function start() {
@@ -53,6 +54,13 @@ export function NoteAsrTasks({ userId, models, settings, showDetail }: { userId:
             options={sources.data.items.map((s) => ({ value: s.versionId, label: `${s.title || '未命名笔记'} · ${formatTime(s.createdAt)}${s.isCurrent ? ' · 当前版' : ' · 历史版'}${s.hasConflict ? ' · 冲突保全' : ''}` }))}
             onValueChange={(value) => { setVersionId(value); setApproved('') }} />
             {source && <p className="text-xs text-text-3">{source.recordings} 次录音 · 有效录音 {time(source.totalSamples, source.sampleRate)} · 暂停不计时。全部原录音保留。</p>}</>}
+      {versionId && versionTasks.length > 0 && <div className="space-y-2 rounded-ctl border border-border p-3">
+        <p className="text-xs font-medium text-text-2">该版本已有 {versionTasks.length} 个转写任务，历史任务与结果保留。</p>
+        {versionTasks.map((task) => <button key={task.taskId} type="button"
+          className="flex w-full flex-wrap items-center justify-between gap-2 rounded-ctl bg-surface px-3 py-2 text-left text-xs" onClick={() => setSelected(task.taskId)}>
+          <span>历史任务 {formatTime(task.createdAt)} · {task.completedSegments}/{task.totalSegments} 片</span><State value={task.phase} /></button>)}
+        <p className="text-xs text-text-3">再次开始会新建任务并可能产生服务商费用；不会覆盖或修改历史结果。</p>
+      </div>}
       {sources.data && sources.data.total > 20 && <div className="flex gap-2"><Button size="sm" disabled={sourcePage === 0 || busy || !!intent} onClick={() => { setSourcePage((p) => p - 20); setVersionId('') }}>上一页材料</Button>
         <Button size="sm" disabled={sourcePage + 20 >= sources.data.total || busy || !!intent} onClick={() => { setSourcePage((p) => p + 20); setVersionId('') }}>下一页材料</Button></div>}
       <div><Label htmlFor="note-asr-model">长录音ASR模型</Label><Select id="note-asr-model" ariaLabel="长录音ASR模型" value={modelId} disabled={busy || !!intent}

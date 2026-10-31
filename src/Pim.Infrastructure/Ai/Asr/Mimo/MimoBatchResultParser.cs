@@ -42,11 +42,12 @@ public static class MimoBatchResultParser
         var order = new List<string>();
         var malformed = 0;
         var lineCount = 0;
+        var budget = new CharBudget(limits.MaxTotalChars);
 
         void Read(TextReader? reader)
         {
             if (reader is null) return;
-            var lines = new BoundedLineReader(reader, limits);
+            var lines = new BoundedLineReader(reader, limits, budget);
             while (true)
             {
                 var line = lines.ReadLine(out var overflow);
@@ -188,12 +189,22 @@ public static class MimoBatchResultParser
         bool AsrValidated, string? AsrErrorCode);
 
     /// <summary>Reads one line at a time with hard char caps, without splitting/allocating the whole file.</summary>
-    private sealed class BoundedLineReader(TextReader reader, MimoBatchParseLimits limits)
+    private sealed class CharBudget(long max)
+    {
+        private long _used;
+
+        public void Consume()
+        {
+            if (++_used > max)
+                throw new MimoBatchException(42202, "Batch结果JSONL超过总字符预算，未解析");
+        }
+    }
+
+    private sealed class BoundedLineReader(TextReader reader, MimoBatchParseLimits limits, CharBudget budget)
     {
         private readonly char[] _buffer = new char[4096];
         private int _position;
         private int _length;
-        private long _totalChars;
 
         public string? ReadLine(out bool overflow)
         {
@@ -210,8 +221,7 @@ public static class MimoBatchResultParser
                 }
                 var ch = _buffer[_position++];
                 sawAny = true;
-                if (++_totalChars > limits.MaxTotalChars)
-                    throw new MimoBatchException(42202, "Batch结果JSONL超过总字符预算，未解析");
+                budget.Consume();
                 if (ch == '\n') return builder.ToString();
                 if (ch == '\r') continue;
                 if (builder.Length < limits.MaxLineChars) builder.Append(ch);

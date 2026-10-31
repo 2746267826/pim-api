@@ -51,7 +51,8 @@ public sealed record MimoFileRef(string FileId, DateTimeOffset? ExpireAt);
 
 /// <summary>Batch handle keeps raw status for audit and a normalized kind for branching.</summary>
 public sealed record MimoBatchRef(string BatchId, string StatusRaw, MimoBatchStatusKind Status,
-    DateTimeOffset? ExpiresAt, int? Total, int? Completed, int? Failed)
+    DateTimeOffset? ExpiresAt, int? Total, int? Completed, int? Failed,
+    string? InputFileId = null, string? OutputFileId = null, string? ErrorFileId = null)
 {
     public bool IsTerminal => MimoBatchStatus.IsTerminal(Status);
 }
@@ -92,11 +93,12 @@ public abstract record MimoBatchCreateOutcome
 
 /// <summary>Immutable intent snapshot supplied by the routing layer when a handle is persisted.</summary>
 public sealed record MimoBatchIntent(Guid Owner, string MaterialVersion, string Segment, int Attempt,
-    string ProviderHandle, string CredentialConfigId, int CredentialConfigRevision, string BaseUrl,
+    string ProviderHandle, string CredentialConfigId, string CredentialConfigRevision, string BaseUrl,
     string Model, string CompletionWindow, string ConsentRef);
 
 public sealed record MimoBatchClientOptions(Uri BaseAddress, TimeSpan CreateTimeout,
-    long MaxResponseBytes = 64L * 1024 * 1024, long MaxJsonlBytes = MimoBatchDefaults.MaxJsonlBytes)
+    long MaxResponseBytes = 64L * 1024 * 1024, long MaxJsonlBytes = MimoBatchDefaults.MaxJsonlBytes,
+    bool AudioBatchEnabled = false)
 {
     public static MimoBatchClientOptions Default(Uri baseAddress) =>
         new(baseAddress, TimeSpan.FromSeconds(60));

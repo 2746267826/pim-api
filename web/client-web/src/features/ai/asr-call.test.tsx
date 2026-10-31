@@ -7,7 +7,7 @@ import { AsrCall, CallAudio } from './asr-call'
 import { ModelEditor } from './model-editor'
 import type { AsrPreset, Model, ModelSettings } from './api'
 
-const api = vi.hoisted(() => ({ asrPresets: vi.fn(), asrCall: vi.fn(), asrLookup: vi.fn(), audio: vi.fn(), audioContent: vi.fn() }))
+const api = vi.hoisted(() => ({ asrPresets: vi.fn(), asrCall: vi.fn(), asrLookup: vi.fn(), detail: vi.fn(), audio: vi.fn(), audioContent: vi.fn() }))
 vi.mock('./api', () => ({ aiApi: api }))
 vi.mock('@/lib/notify', () => ({ notifyError: vi.fn() }))
 const owner = '11111111-1111-4111-8111-111111111111', logId = '22222222-2222-4222-8222-222222222222'
@@ -37,6 +37,7 @@ beforeEach(() => {
   qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
   api.asrPresets.mockResolvedValue([preset]); api.asrCall.mockResolvedValue({ logId, status: 'Succeeded', responseText: '完整转写', replayed: false, errorMessage: null })
   api.asrLookup.mockResolvedValue({ logId, status: 'Cancelled', responseText: null, replayed: true, errorMessage: '已取消' })
+  api.detail.mockResolvedValue({ responseRawJson: '{}' })
 })
 afterEach(() => { cleanup(); qc.clear() })
 
@@ -94,6 +95,38 @@ describe('ASR预设和调用', () => {
     await screen.findByText(/音频格式或大小不符合/); expect(api.asrCall).not.toHaveBeenCalled()
     cleanup(); model = { ...model, asrPresetId: null }; render(wrap(page()))
     await screen.findByText(/旧能力声明不能直接转写/); expect((screen.getByRole('button', { name: '选择音频' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('MiMo多模态展示五格式/50MiB，Flash推荐且Pro明确不推荐长音频', async () => {
+    preset = { ...preset, id: 'mimo-multimodal', name: 'MiMo 多模态', defaultModel: 'mimo-v2.6-flash',
+      models: ['mimo-v2.6-flash', 'mimo-v2.6-pro'], formats: ['wav', 'mp3', 'flac', 'm4a', 'ogg'],
+      maxAudioBytes: 50 * 1024 * 1024 }
+    api.asrPresets.mockResolvedValue([preset])
+    const save = vi.fn().mockResolvedValue({})
+    render(wrap(<ModelEditor model={null} initialAsr save={save} close={() => undefined} />))
+    await waitFor(() => expect((screen.getByRole('combobox', { name: 'ASR接入预设' }) as HTMLButtonElement).disabled).toBe(false))
+    await userEvent.click(screen.getByRole('combobox', { name: 'ASR接入预设' }))
+    await userEvent.click(await screen.findByRole('option', { name: 'MiMo 多模态 · v1' }))
+    expect(screen.getByText(/wav \/ mp3 \/ flac \/ m4a \/ ogg · 单音频最多 50 MiB/)).toBeTruthy()
+    await userEvent.click(screen.getByRole('combobox', { name: '模型标识' }))
+    expect(await screen.findByRole('option', { name: 'mimo-v2.6-flash（推荐，长音频默认）' })).toBeTruthy()
+    await userEvent.click(screen.getByRole('option', { name: 'mimo-v2.6-pro（Pro，不推荐长音频）' }))
+    expect(screen.getByText(/MiMo Pro 不推荐用于长音频/)).toBeTruthy()
+  })
+
+  it('ASR调用完成后读取现有详情快照，显示红色audio_tokens缺失而不伪报成功', async () => {
+    api.detail.mockResolvedValue({ responseRawJson: JSON.stringify({
+      recordFormat: 'mimo-multimodal-v1', finishReason: 'stop', contentSource: 'content',
+      flags: { empty: false, repetition: false, truncation: false, timestampFallback: true },
+      transcript: { text: '没有可信时间轴的逐字文本', segments: [], issues: [] },
+      upstream: { choices: [{ message: { content: '没有可信时间轴的逐字文本' }, finish_reason: 'stop' }], usage: { audio_tokens: 100 } },
+    }) })
+    render(wrap(page())); await chooseAudio(); await userEvent.click(screen.getByRole('checkbox'))
+    await userEvent.click(screen.getByRole('button', { name: '开始转写并记录' }))
+    expect(await screen.findByText('音频处理未确认')).toBeTruthy()
+    expect(screen.getByText(/usage\.audio_tokens=100/)).toBeTruthy()
+    expect(screen.getByText(/时间戳为回退状态/)).toBeTruthy()
+    expect(api.detail).toHaveBeenCalledWith(logId, expect.any(AbortSignal))
   })
 
   it('原音频只为发起账号读取并在关闭时释放URL', async () => {

@@ -21,7 +21,8 @@ public sealed class NoteAsrTaskStore(IOptions<NoteMaterialUploadOptions> options
         return Path.Combine(Folder(owner), id.ToString("D") + ".json");
     }
     internal async Task<NoteAsrState> CreateAsync(Guid owner, StartNoteAsrRequest request,
-        NoteMaterialVersionDto version, List<NoteAsrStep> steps, CancellationToken ct)
+        NoteMaterialVersionDto version, List<NoteAsrStep> steps, NoteAsrRouteConsent? route,
+        string? executionMode, int samplesPerCall, CancellationToken ct)
     {
         await using var lease = await LockAsync(owner, ct);
         var hash = NoteMaterialManifestValidator.Hash(JsonSerializer.Serialize(request, Json));
@@ -43,9 +44,16 @@ public sealed class NoteAsrTaskStore(IOptions<NoteMaterialUploadOptions> options
         if (active >= 10) throw new DomainException(41301, "本账号待处理转写任务已达10个，请等待或停止部分任务");
         var state = new NoteAsrState { Owner = owner, Request = request, Fingerprint = hash,
             NoteId = version.Upload.NoteId, InputSha256 = NoteMaterialManifestValidator.Hash(version.InputJson),
-            ManifestSha256 = NoteMaterialManifestValidator.Hash(version.ManifestJson), Steps = steps };
+            ManifestSha256 = NoteMaterialManifestValidator.Hash(version.ManifestJson), Steps = steps,
+            Route = route?.Route, RouteConfigRevision = route?.ConfigRevision ?? Guid.Empty,
+            RouteConsentVersion = route?.ConsentVersion ?? "", ExecutionMode = executionMode,
+            ParentTaskId = request.ParentTaskId, ReprocessReason = request.ReprocessReason,
+            SamplesPerCall = samplesPerCall };
         await SaveAsync(state, ct); return state;
     }
+    internal Task<NoteAsrState> CreateAsync(Guid owner, StartNoteAsrRequest request,
+        NoteMaterialVersionDto version, List<NoteAsrStep> steps, CancellationToken ct) =>
+        CreateAsync(owner, request, version, steps, null, null, NoteAsrPlan.SamplesPerCall, ct);
     internal async Task<NoteAsrState> ReadAsync(Guid owner, Guid id, CancellationToken ct)
     {
         var path = FilePath(owner, id);
@@ -77,17 +85,27 @@ public sealed class NoteAsrTaskStore(IOptions<NoteMaterialUploadOptions> options
         try { return new(FilePath(owner, id) + ".running", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
         catch (IOException) { return null; }
     }
-    internal static bool Active(NoteAsrState state) => state.Steps.Any(x => x.Current.Status == "Running" || !state.StopRequested && x.Current.Status == "Queued");
+    internal static bool CloudPipeline(NoteAsrState state) =>
+        state.ExecutionMode != NoteAsrExecutionMode.Batch &&
+        state.Route is null or NoteAsrRoute.CloudAsr or NoteAsrRoute.CloudMultimodal;
+    internal static bool Active(NoteAsrState state) => CloudPipeline(state) &&
+        (state.Route is null || state.AttemptId is not null) &&
+        state.Steps.Any(x => x.Current.Status == "Running" || !state.StopRequested && x.Current.Status == "Queued");
     internal static NoteAsrTaskDto Describe(NoteAsrState state)
     {
         var done = state.Steps.Where(x => x.Current.Status == "Succeeded").ToArray();
         var failed = state.Steps.Count(x => x.Current.Status is not ("Queued" or "Running" or "Succeeded"));
-        var phase = done.Length == state.Steps.Count ? "Succeeded" : state.StopRequested ? "Stopped"
+        var complete = done.Length == state.Steps.Count &&
+            (state.Route is null || state.CompletionAcknowledged);
+        var phase = complete ? "Succeeded" : state.StopRequested ? "Stopped"
             : state.Steps.Any(x => x.Current.Status == "Running") ? "Running"
             : state.Steps.Any(x => x.Current.Status == "Queued") ? "Queued" : "NeedsAttention";
         return new(state.Request.TaskId, state.Revision, state.NoteId, state.Request.VersionId, state.InputSha256,
             state.ManifestSha256, phase, state.Request.Language, state.Request.Consent, state.CreatedAt, state.UpdatedAt,
-            state.Steps.Count, done.Length, failed, state.Steps.Sum(x => x.Samples), done.Sum(x => x.Samples), NoteAsrPlan.SampleRate, state.StopRequested);
+            state.Steps.Count, done.Length, failed, state.Steps.Sum(x => x.Samples), done.Sum(x => x.Samples),
+            NoteAsrPlan.SampleRate, state.StopRequested, Route: state.Route, AttemptId: state.AttemptId,
+            RouteConfigRevision: state.RouteConfigRevision, RouteConsentVersion: state.RouteConsentVersion,
+            ExecutionMode: state.ExecutionMode);
     }
     private async Task SaveAsync(NoteAsrState state, CancellationToken ct)
     {

@@ -37,3 +37,25 @@ public interface IFileAttachmentStore
     /// <summary>删除附件（进网盘回收站）；远端已删除时不报错。</summary>
     Task DeleteAsync(Guid userId, FileAttachmentRef reference, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Optional bounded adapter for callers with an explicit, preset-scoped payload budget.
+/// The default attachment methods remain the 4 MiB-compatible contract.
+/// </summary>
+public interface IBoundedFileAttachmentStore
+{
+    Task<FileAttachmentRef> StoreAsync(
+        Guid userId,
+        string objectKey,
+        Stream content,
+        string contentType,
+        long sizeBytes,
+        long maxBytes,
+        CancellationToken ct = default);
+
+    Task<Stream> OpenReadAsync(
+        Guid userId,
+        FileAttachmentRef reference,
+        long maxBytes,
+        CancellationToken ct = default);
+}

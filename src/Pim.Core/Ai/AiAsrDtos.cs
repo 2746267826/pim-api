@@ -12,8 +12,22 @@ public sealed record AiAsrAudioRequest(string Name, string Format, string Base64
 public sealed record AiAsrDestinationConsent(Guid ModelId, Guid ModelRevision, string Endpoint,
     string PresetId, string PresetVersion, bool Confirmed);
 
+/// <summary>Immutable rendered ASR prompt revision shared by synchronous and Batch calls.</summary>
+public sealed record AiAsrPromptSnapshot(
+    string Text,
+    string Language,
+    string Sha256,
+    string Revision,
+    string TemplateSha256,
+    string TemplateRevision)
+{
+    public override string ToString() =>
+        $"AiAsrPromptSnapshot {{ Language = {Language}, Revision = {Revision}, Chars = {Text.Length} }}";
+}
+
 public sealed record AiAsrCallRequest(Guid ClientRequestId, Guid ExpectedUserId, AiAsrAudioRequest Audio,
-    AiAsrDestinationConsent Consent, string Language = "auto", Guid? ModelId = null)
+    AiAsrDestinationConsent Consent, string Language = "auto", Guid? ModelId = null,
+    AiAsrPromptSnapshot? Prompt = null)
 {
     public override string ToString() => $"AiAsrCallRequest {{ ClientRequestId = {ClientRequestId}, ModelId = {ModelId}, Data = [audio] }}";
 }

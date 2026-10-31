@@ -1,6 +1,7 @@
 using System.ClientModel;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Pim.Core.Ai;
 using Pim.Core.Exceptions;
@@ -30,12 +31,6 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             throw new DomainException(40301, "发起账号已停用，ASR未发送");
         if (request.ClientRequestId == Guid.Empty || request.Consent?.Confirmed != true)
             throw new DomainException(40001, "请核对本次音频、ASR预设、模型和目标地址，并明确同意发送");
-        var audio = AiAsrMaterialService.Decode(request.Audio);
-        var fingerprint = Hash(JsonSerializer.Serialize(new { kind = "asr", request.ModelId, request.Language, request.Consent,
-            audio.Name, audio.Format, audio.Sha256, size = audio.Bytes.Length }, Json));
-        await AiCallRecovery.RecoverExpiredAsync(db, ct);
-        var old = await FindAsync(owner, request.ClientRequestId, ct);
-        if (old is not null) return Replay(old, fingerprint);
         var runtime = await db.AiModelRuntime.AsNoTracking().SingleOrDefaultAsync(ct);
         var modelId = request.ModelId ?? runtime?.TranscriptionModelId;
         var profile = modelId is { } id ? await db.AiModelProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct) : null;
@@ -48,11 +43,25 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             request.Consent.PresetId != description.Id || request.Consent.PresetVersion != description.Version ||
             request.Consent.Endpoint != operation)
             throw new DomainException(40901, "ASR预设、模型或目标地址已变化，音频未发送，请刷新并重新核对");
-        if (request.Language is null || !description.Languages.Contains(request.Language) ||
-            !description.Formats.Contains(audio.Format) || audio.Bytes.Length > description.MaxAudioBytes)
-            throw new DomainException(40001, "语言、音频格式或大小不符合所选ASR预设");
+        if (request.Language is null || !description.Languages.Contains(request.Language))
+            throw new DomainException(40001, "语言不符合所选ASR预设");
+        var expectedPrompt = AiAsrPromptTemplate.Normalize(profile.AsrPrompt).Snapshot(request.Language);
+        var prompt = request.Prompt ?? expectedPrompt;
+        if (prompt.Text != expectedPrompt.Text || prompt.Language != expectedPrompt.Language ||
+            prompt.Sha256 != expectedPrompt.Sha256 || prompt.Revision != expectedPrompt.Revision ||
+            prompt.TemplateSha256 != expectedPrompt.TemplateSha256 ||
+            prompt.TemplateRevision != expectedPrompt.TemplateRevision)
+            throw new DomainException(40901, "ASR提示词修订已变化，音频未发送，请刷新后重新核对");
+        var audio = AiAsrMaterialService.Decode(request.Audio, description.Formats, description.MaxAudioBytes);
+        var fingerprint = Hash(JsonSerializer.Serialize(new { kind = "asr", request.ModelId, request.Language, request.Consent,
+            prompt.Revision, promptSha256 = prompt.Sha256, audio.Name, audio.Format, audio.Sha256,
+            size = audio.Bytes.Length }, Json));
+        await AiCallRecovery.RecoverExpiredAsync(db, ct);
+        var old = await FindAsync(owner, request.ClientRequestId, ct);
+        if (old is not null) return Replay(old, fingerprint);
         string? key = null; string? configurationError = null;
-        if (runtime?.Enabled != true || !profile.Enabled || profile.Capabilities != 4)
+        if (runtime?.Enabled != true || !profile.Enabled ||
+            (profile.Capabilities & AiModelCapabilityFlags.Transcription) == 0)
             configurationError = "SDK未启用，或该配置不是已启用的独立ASR模型";
         else
         {
@@ -81,7 +90,9 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             row.RequestMessagesJson = JsonSerializer.Serialize(new[] { new { kind = "audio-input", reference = $"pim-ai-audio:{storedAudio.Id:D}",
                 audio.Format, audio.Sha256, sizeBytes = audio.Bytes.Length, language = request.Language } }, Json);
             row.RequestPayloadJson = JsonSerializer.Serialize(new { recordFormat = "sdk-asr-v1", presetId = description.Id, presetVersion = description.Version,
-                model = profile.Model, endpoint = operation, language = request.Language, stream = false }, Json);
+                model = profile.Model, endpoint = operation, language = request.Language,
+                promptRevision = prompt.Revision, promptSha256 = prompt.Sha256,
+                promptTemplateRevision = prompt.TemplateRevision, stream = false }, Json);
             row.MetadataJson = Metadata(false, configurationError is null ? null : false, false, false, null, false);
             db.AiRequestLogs.Add(row); db.AiCallAudio.Add(storedAudio);
             try
@@ -100,15 +111,21 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
             gateEntered = true;
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(profile.TimeoutSeconds));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, ct);
-            using var wire = new AiTextWireCapture(); var prepared = false; double? reportedSeconds = null;
+            using var wire = new AiTextWireCapture();
+            var prepared = false;
+            double? reportedSeconds = null;
+            string? parsedResponse = null;
             try
             {
                 await materials.StoreForOwnerAsync(owner, storedAudio, audio, linked.Token); prepared = true;
                 var connection = new AiModelConnection(endpoint, profile.Model, key!, profile.TimeoutSeconds);
-                wire.SetAsrAudit(bytes => preset.AuditRequest(bytes, connection, audio, storedAudio.Id, request.Language));
-                var response = await preset.TranscribeAsync(connection, audio, request.Language, linked.Token);
+                wire.SetAsrAudit(bytes => preset.AuditRequest(bytes, connection, audio, storedAudio.Id,
+                        request.Language, prompt),
+                    RequestBudgetBytes(description.MaxAudioBytes));
+                var response = await preset.TranscribeAsync(connection, audio, request.Language, linked.Token, prompt);
                 row.ResponseText = Safe(response.Text, key, out var redacted);
-                row.ResponseRawJson = SafeJson(ValidJson(response.RawJson), key, out var rawRedacted);
+                parsedResponse = SafeJson(ValidJson(response.RawJson), key, out var rawRedacted);
+                row.ResponseRawJson = parsedResponse;
                 row.ContentRedacted = redacted || rawRedacted; row.FinishReason = response.FinishReason;
                 row.PromptTokens = Count(response.InputTokens); row.CompletionTokens = Count(response.OutputTokens); row.TotalTokens = Count(response.TotalTokens);
                 reportedSeconds = response.ReportedSeconds;
@@ -120,9 +137,20 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                 row.ErrorMessage = prepared ? "ASR已取消或超时，上游结果未确认，请先核对记录" : "音频保存已取消或超时，本次未发送模型"; }
             catch (ClientResultException error)
             { row.Status = "failed"; row.ErrorCode = "upstream_http_" + error.Status; row.ErrorMessage = "ASR服务返回HTTP " + error.Status + "，本次未自动重试"; }
-            catch (Exception)
-            { row.Status = "failed"; row.ErrorCode = prepared ? "provider_error" : "audio_prepare_failed";
-                row.ErrorMessage = prepared ? "ASR连接或响应异常，请核对记录；本次未自动重试" : "音频未能保存，本次未发送模型，请检查文件来源"; }
+            catch (DomainException error)
+            {
+                row.Status = "failed";
+                row.ErrorCode = prepared ? $"provider_{error.ErrorCode}" : "audio_prepare_failed";
+                row.ErrorMessage = prepared ? Clip(error.Message, 2000) : "音频未能保存，本次未发送模型，请检查文件来源";
+            }
+            catch (Exception error)
+            {
+                row.Status = "failed";
+                row.ErrorCode = prepared ? "provider_error" : "audio_prepare_failed";
+                row.ErrorMessage = prepared
+                    ? Clip("ASR连接或响应异常，请核对记录；本次未自动重试：" + error.Message, 2000)
+                    : "音频未能保存，本次未发送模型，请检查文件来源";
+            }
             finally
             {
                 try
@@ -134,8 +162,16 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
                         if (json.RootElement.TryGetProperty("messages", out var messages)) row.RequestMessagesJson = SafeJson(messages.GetRawText(), key, out messageRedacted);
                         row.ContentRedacted = row.ContentRedacted == true || redacted || messageRedacted;
                     }
-                    if (wire.ResponseBody is { } received)
-                    { row.ResponseRawJson = SafeJson(ValidJson(received), key, out var redacted); row.ContentRedacted = row.ContentRedacted == true || redacted; }
+                    if (wire.ResponseBody is { } received || parsedResponse is not null)
+                    {
+                        string? wireJson = null;
+                        if (wire.ResponseBody is { } responseBody)
+                        {
+                            wireJson = SafeJson(ValidJson(responseBody), key, out var responseRedacted);
+                            row.ContentRedacted = row.ContentRedacted == true || responseRedacted;
+                        }
+                        row.ResponseRawJson = ComposeResponseAudit(parsedResponse, wireJson);
+                    }
                     if (wire.RequestRejected) { row.Status = "failed"; row.ErrorCode = "asr_request_mismatch"; row.ErrorMessage = "SDK请求与固定音频/模型/语言不一致，本次未发送"; }
                     if (wire.ResponseTooLarge) { row.Status = "failed"; row.ErrorCode = "response_too_large"; row.ErrorMessage = "ASR响应超过4MiB，未保存为完整结果"; }
                     row.MetadataJson = Metadata(storedAudio.ObjectKey is not null, wire.ProviderAttempted, wire.RequestBody is not null,
@@ -149,10 +185,45 @@ public sealed class AiAsrCallService(PimDbContext db, ISecretProtector secrets, 
 
         string Metadata(bool audioStored, bool? attempted, bool requestCaptured, bool responseComplete, double? seconds, bool tooLarge) => JsonSerializer.Serialize(new {
             recordFormat = "sdk-asr-v1", asrPresetId = description.Id, asrPresetVersion = description.Version, language = request.Language,
+            promptRevision = prompt.Revision, promptSha256 = prompt.Sha256,
+            promptTemplateRevision = prompt.TemplateRevision, promptTemplateSha256 = prompt.TemplateSha256,
             audioEncoding = "sha256-reference", audioStored, providerAttempted = attempted,
             requestBodyCaptured = requestCaptured, responseBodyComplete = responseComplete, reportedAudioSeconds = seconds,
             responseTooLarge = tooLarge, transportRetries = 0, destinationConsent = request.Consent }, Json);
     }
+
+    private static long RequestBudgetBytes(int maxDecodedBytes) =>
+        checked(4L * ((maxDecodedBytes + 2L) / 3L) + 1024L * 1024);
+
+    private static string ComposeResponseAudit(string? parsedJson, string? wireJson)
+    {
+        JsonNode? parsed = null;
+        JsonNode? wire = null;
+        try { parsed = parsedJson is null ? null : JsonNode.Parse(parsedJson); }
+        catch (JsonException) { parsed = JsonValue.Create(parsedJson); }
+        try { wire = wireJson is null ? null : JsonNode.Parse(wireJson); }
+        catch (JsonException) { wire = JsonValue.Create(wireJson); }
+        var same = parsed is not null && wire is not null && JsonNode.DeepEquals(parsed, wire);
+        var upstreamIncluded = parsed is JsonObject obj && obj.ContainsKey("upstream");
+        var sources = new JsonObject
+        {
+            ["parsed"] = parsedJson is null ? "none" : "preset-parser",
+            ["raw"] = wireJson is null ? "none"
+                : same ? "same-as-parsed"
+                : upstreamIncluded ? "parsed.upstream"
+                : "http-wire"
+        };
+        return JsonSerializer.Serialize(new
+        {
+            recordFormat = "asr-call-response-v1",
+            parsed,
+            raw = same || upstreamIncluded ? null : wire,
+            sources
+        }, Json);
+    }
+
+    private static string Clip(string value, int max) =>
+        value.Length <= max ? value : value[..max];
     public async Task<AiTextCallResultDto> GetAsync(Guid requestId, CancellationToken ct)
     {
         var owner = currentUser.UserId ?? throw new DomainException(1002, "请先登录"); await AiCallRecovery.RecoverExpiredAsync(db, ct);
