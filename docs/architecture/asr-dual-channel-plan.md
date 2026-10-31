@@ -1,8 +1,25 @@
 # ASR 双通道增量方案（#516 排期）
 
-状态：**Web ASR 入口 GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 产品未实现**。更新日期：2026-10-30。本文把 [API #516](https://github.com/2746267826/pim-api/issues/516) 的已提出需求整理为依赖明确、顺序合理、可独立验收的增量计划，不是工期承诺或功能完成报告。当前没有对应的 #516 产品源码、API 契约或 Windows 实现，也没有 #516 的 PR、merge、CI、Release 或 production 验收结论。
+状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED**。更新日期：2026-10-31。本文把 #516 的已提出需求整理为依赖明确、顺序合理的增量计划，不是工期承诺或功能完成报告；v0.40 旁路状态见下方最新覆盖说明。
 
 唯一需求、45 个稳定 requirement ID、32 项 capability/差距台账、13 个既有业务迁移 MIG 与全部历史事实继续由[原生客户端与笔记路线图](../product/native-notes-roadmap.md)维护。本文不新增或修改稳定编号，不复制第二套 backlog。`#516` 是既有 ASR 能力的扩展依赖来源，不是新编号。
+
+<a id="v040-latest-status"></a>
+
+## v0.40 最新状态覆盖（2026-10-31）
+
+本节只覆盖旁路的交付和 issue 快照，不改变下方 #516 五阶段、AC1–19、依赖和用户 decision 口径。
+
+- Web ASR 入口已随 `api-v26.10.1023` 发布并核验；冻结 preview/合成 API QA 不等于 production 或 live-backend E2E。
+- Android PR #56 已 merge 为 `998015d5b466c2d621c01beb3760c286a351037f`，`android-v26.10.1142` 已发布；fullApp `2034 / 0 fail`、focused `84 PASS` 为受控测试结果，物理设备/OEM 仍 `NOT-VERIFIED`。
+- API #533（Android诊断导出）仍 `OPEN`；core 稳定 spool 快照/空间守护已随 `1142` 交付，实机/OEM 导出复验与 issue 总验收仍待完成。
+- API #539 仍 `OPEN`；PR #542 已由 head `933a892b` 普通 merge 为 `f0ecf4501a81b6e8c105ca14cc1def844408d762`（2026-10-30T17:19:56Z），exact PR CI `41090756654` 整体 SUCCESS/Gate/API/Web/Docker。
+- `api-v26.10.1031` 已 published（`17:55:13Z`，非 draft/prerelease，target/tag `f0ecf450`）；exact master CI `41097882594` 全部适用 job/Gate/release SUCCESS，4 assets 已上传；metadata SHA 不是本地整包 byte hash，Release 不代表 production。
+- 新的 processing/退避协议尚在补齐契约、HTTP 证据与兼容，未完成交付；不得写成协议 PASS。Android 旧 `202` 客户端测试已本地 commit `2d64024c`（clean/no push），core `5` + app `8` PASS；consumer/not-before 未实现。
+- 执行顺序仍是 Web 收口后，第一稳定性波次中 #533 与 #539 并行，再做 processing/退避协议与 Android 消费者闭环，最后进入 #516 阶段 1。
+- #525 保持用户关闭；#516 仍五阶段、AC1–19 全计划和两项 decision pending，产品未实现。
+
+下文 v0.39 时的 `2027 / 0 fail`、`5/5 green` 和“作者修复中”文字只保留为当时旁路快照，不再是本页最新证据；本次不删除或重写这些历史段落。
 
 ## 1. 鲜读范围与事实校正
 
