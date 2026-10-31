@@ -1,10 +1,25 @@
 ﻿# PIM 原生客户端与笔记路线图
 
-版本：v0.40 Web/Android/API 发布收口、稳定性补修与 #516 排期。更新日期：2026-10-31。v0.39 完成 Web ASR 入口、Issue 收口与双通道设计排期；v0.39 及更早正文保持原样。
+版本：v0.41 两项 #516 产品决策确认同步。更新日期：2026-10-31。v0.40 记录 Web/Android/API 发布收口、稳定性补修与 #516 排期；v0.40 及更早正文保持原样。
 
 本文位于 `pim-api/docs/product/native-notes-roadmap.md`，作为跨仓持续维护的唯一总路线图。Android、Windows 与 Web 按批次引用同一份需求，不复制另一套台账；首版范围和视觉规范分别通过文内链接细化。更新状态时标明平台、证据和仍未交付部分，不以聊天记录代替仓内记录。
 
 总跟踪：[pim-api#505](https://github.com/2746267826/pim-api/issues/505)。主题切片 [pim-android#31](https://github.com/2746267826/pim-android/issues/31) 已合并；录音切片：[pim-android#33](https://github.com/2746267826/pim-android/issues/33)；混合文档与基础手写：[pim-android#35](https://github.com/2746267826/pim-android/issues/35)；完整材料版本：[pim-android#37](https://github.com/2746267826/pim-android/issues/37)。总跟踪不能随主题切片或安卓首版完成而提前关闭。
+
+<a id="v041-current"></a>
+
+### v0.41 当前状态：两项 #516 产品决策已确认（2026-10-31）
+
+用户已明确回复“确认”，以下两项自本轮起为 `CONFIRMED PRODUCT DECISION`，取代 v0.40 及更早快照中的 pending 状态；旧快照仍按历史保留。
+
+1. **本地 ASR 节点不可用：继续排队，仅用户手动切云端。** 不得因节点离线、超时、默认配置或 queued 任务漂移而自动转为付费云调用。手动切换必须沿用已有的显式用户授权、不可变 route 与 attempt 快照。
+2. **Windows 节点只处理当前登录账号的任务。** 禁止跨账号处理、共享节点或扩大音频所有者范围。
+
+已确认决策只解除上述两项产品决定，不解除工程前置：目标模型/revision、运行时、硬件能力、资源阈值、退避参数与兼容矩阵仍需在实现前选定并受控验证。当前优先级不变：先完成 #539 processing/退避契约与 Android `not-before` 消费者成套闭环，再进入 #516 阶段 1；独立稳定性工作可并行。
+
+`#516` 仍为 `PLANNED / NOT IMPLEMENTED`。五阶段真实依赖、AC1–19、工程前置和非目标不变；本次不实现协议或产品，也不把路径/租约契约、Windows 本地 ASR 或 MVP 写成已完成。
+
+阶段 1 最小负向验收仍为 `NOT-VERIFIED`：本地节点不可用时不得产生自动云调用；错误 owner 或跨账号 claim 必须被拒绝；route 配置变化不得使排队任务静默转云。确认产品决策不等于实现或测试通过，后续须以受控负向证据验收。
 
 <a id="v040-current"></a>
 
@@ -942,3 +957,4 @@ Windows 记录、Web 编辑、TASK-01 和 MIG-01 至 MIG-13 继续保留原阶�
 | 2026-10-30 | 记录移动同步半开窗口、诊断导出、设备组件与 GitHub Release 交付回执 | v0.38：API tests #537 head`83b6e319`→merge`9631437d`@11:56:46Z，exact CI41048454669 required/Gate SUCCESS；masterCI41051709488 SUCCESS/Gate/release，Release`api-v26.10.1019`@12:26:48Z→`9631437d`，4 assets尺寸/SHA已核。Android product`dd90be25`+final test commit`5c4d8985`(parent dd90)，PR55 READY→merge`2968eea4`@12:19:41Z，exact CI41052159717 required/Gate SUCCESS；masterCI41054503798 SUCCESS/Gate/release，Release`android-v26.10.1140`@12:31:56Z，tag解析`2968eea4`即master head，3 assets尺寸/SHA已核。fullApp2023/Core69 0fail，window7/7/sync193、export focused133（与full重叠不求和），QA native Android emulator6/6(4 sync9.496s+2 export1.583s)；lineage append-only更正无精确runtimehead，源码blob/APK/log同源，首轮harness4 sync FAIL保留。日志只bounds，coreEntries仍全量DAO；旧APK升级/跨版本batchID/完整WorkManager/StatusUI/auth退避/极大DB/原flash/OEM/长课堂/production NOT-VERIFIED。#505/#525/#533 OPEN，#533 partial。45/32/13/111/history保留。GitHub Release不等于production。 |
 | 2026-10-30 | 完成 v0.39 Web ASR 入口交付、Issue 收口与 #516 双通道排期 | Web PR540于14:29:51Z普通merge为`0e6d9f4adcf283138d68405d9ca65b04b7c51793`；exactCI41069510853 Gate/Web/Docker SUCCESS；masterCI41072022034 SUCCESS/Gate/release；Release`api-v26.10.1023`@14:38:55Z target merge、4 asset尺寸/SHA已核、pim-web-version26.10.1023/git`0e6d9f4`；管理员入口与普通用户权限隔离经preview/合成API浏览器QA6/6验证，非live-backend/production。执行按优先级/波次而非全串行：Web交付收口后，第一稳定性波次由#533 core安全修/受控设备QA与#539 semantic fix并行推进（无跨仓前置）；第二稳定性波次为#539显式processing/退避契约及Android消费者闭环；随后进入#516阶段1。#516内部阶段1→阶段2/3→阶段4→阶段5依赖不变；阶段1完成后阶段2云端多模态与阶段3 Windows模型管理可并行。物理OPPO/production未验收保留NOT-VERIFIED，不设为阻塞所有独立笔记规划的全局硬门。#533 OPEN，fullApp2027/0fail但只读复审发现分页并发cleanup漏行/空间预算退步，补修复测中。#539 OPEN，5/5为旧快照，day_overflow派生flag残留、较早late事件漏读及同设备并发边界补修中；5006rows回扫为隔离合成PG已复现事实但非现网唯一根因。#516产品仍PLANNED/NOT IMPLEMENTED/NOT-VERIFIED。API#525用户CLOSED/COMPLETED及4731入库仅为用户reported。两项用户决定待答。45/32/32/13/186保护基线保持。本条版本 v0.39 |
 | 2026-10-31 | 记录 v0.40 当前交付、#539 修复 merge 与 #516 排期状态 | Web Release `api-v26.10.1023` verified/not production。Android PR #56 merge `998015d5b466c2d621c01beb3760c286a351037f`、Release `android-v26.10.1142`，fullApp `2034 / 0 fail`、focused `84 PASS` 为受控结果；#533 仍 `OPEN`，物理/OEM `NOT-VERIFIED`。API #539 仍 `OPEN`；PR #542 head `933a892b` 普通 merge 为 `f0ecf4501a81b6e8c105ca14cc1def844408d762`（2026-10-30T17:19:56Z），exact PR CI `41090756654` 整体 SUCCESS/Gate/API/Web/Docker。`api-v26.10.1031` published 17:55:13Z、非 draft/prerelease，target/tag `f0ecf450`；exact master CI `41097882594` 全部适用 job/Gate/release SUCCESS，4 assets 已上传，metadata SHA 不等于本地整包 byte hash，Release 不代表 production。新 processing 协议仍 WIP，尚在补齐契约、HTTP 证据与兼容；Android 旧 `202` 客户端测试已本地 commit `2d64024c41940560c53ff608623fc168d4bd2b73`（clean/no push），core `5` + app `8` PASS，新 consumer/not-before 未实现。`#525` 保持用户关闭；`#516` 五阶段/AC1–19 全计划、两项 decision pending、产品未实现。45/32/32/13/186 保护保持一致。本条版本 v0.40 |
+| 2026-10-31 | 用户确认 #516 两项产品决策，v0.41 同步当前约束 | 本地 ASR 节点不可用时继续排队，只有用户主动手动切云端，禁止自动付费 fallback；手动切换沿用显式用户授权、不可变 route 与 attempt，queued 不得随默认配置漂移自动转云。Windows 节点仅处理当前登录账号任务，禁止跨账号或共享节点。两项自 v0.41 起为 confirmed，v0.40 及更早 pending 作为历史保留；模型/revision、运行时、硬件与阈值仍是工程前置。`#516` 保持 `PLANNED / NOT IMPLEMENTED`，五阶段依赖、AC1–19、45/32/32/13 与既有历史保护不变；阶段 1 最小负向验收仍 `NOT-VERIFIED`。本条版本 v0.41 |

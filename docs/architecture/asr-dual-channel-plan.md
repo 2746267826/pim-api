@@ -1,6 +1,16 @@
 # ASR 双通道增量方案（#516 排期）
 
-状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED**。更新日期：2026-10-31。本文把 #516 的已提出需求整理为依赖明确、顺序合理的增量计划，不是工期承诺或功能完成报告；v0.40 旁路状态见下方最新覆盖说明。
+状态：**WEB/ANDROID/API GITHUB RELEASE VERIFIED / NOT PRODUCTION-VERIFIED；#516 PLANNED / NOT IMPLEMENTED；两项产品决策 CONFIRMED**。更新日期：2026-10-31。本文把 #516 的已提出需求整理为依赖明确、顺序合理的增量计划，不是工期承诺或功能完成报告；v0.41 已确认决策覆盖见下方最新说明。
+
+<a id="v041-latest-status"></a>
+
+## v0.41 最新状态覆盖（2026-10-31）
+
+用户已明确回复“确认”：本地 ASR 节点不可用时继续排队，只有用户主动手动切云端，禁止自动付费 fallback；手动切换沿用已有显式授权、不可变 route 与 attempt，queued 任务不得随默认配置漂移自动转云。Windows 节点仅处理当前登录账号任务，禁止跨账号或共享节点。
+
+下方 v0.40 快照日期为 **2026-10-31**；原 v0.39 及更早正文中的 §4.1 决策、§4.3 节点范围、Phase 4 表内“两项用户 decision”、AC2/§10 以及 English 摘要中的 pending 文本，均为 **2026-10-30 历史快照**。上述历史由本节 confirmed 约束优先解释，不得再作为当前工程阻碍。已确认只解除两项产品决定；模型/revision、运行时、硬件、资源阈值与验收参数仍是工程前置。当前波次仍为先完成 #539 processing/退避与 Android `not-before` 成套闭环，再 #516 阶段 1。
+
+阶段 1 最小负向验收仍为 `NOT-VERIFIED`：local unavailable 不产生自动云调用；错误 owner 或跨账号 claim 被拒绝；route 配置变化不使 queued 静默转云。产品决策确认不等于实现或测试通过。
 
 唯一需求、45 个稳定 requirement ID、32 项 capability/差距台账、13 个既有业务迁移 MIG 与全部历史事实继续由[原生客户端与笔记路线图](../product/native-notes-roadmap.md)维护。本文不新增或修改稳定编号，不复制第二套 backlog。`#516` 是既有 ASR 能力的扩展依赖来源，不是新编号。
 
