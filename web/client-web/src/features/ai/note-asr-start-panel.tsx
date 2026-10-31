@@ -205,7 +205,9 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
           : '确认将当前版本录音发送至上述云端目标，理解可能的新费用与长等待'}</span>
       </label>
       <Button variant="primary" loading={busy} disabled={!canSubmit} onClick={() => void start()}>
-        {cloudInvalid ? '云端目标失效' : effectiveRoute === 'local' ? '创建本机排队任务' : '确认创建云端任务'}
+        {effectiveRoute === 'cloud' && cloudInvalid
+          ? '云端目标失效'
+          : effectiveRoute === 'local' ? '创建本机排队任务' : '确认创建云端任务'}
       </Button>
     </>}
     {effectiveRoute === 'cloud' && savedDestination && !intent && <StatusBadge size="xs" dot={false} tone="warn">云端出域 · 可能计费</StatusBadge>}

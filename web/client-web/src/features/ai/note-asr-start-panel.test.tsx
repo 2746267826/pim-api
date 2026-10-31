@@ -124,6 +124,22 @@ describe('NoteAsrStartPanel', () => {
     expect(ai.asrPresets).not.toHaveBeenCalled()
   })
 
+  it('keeps local submit usable when an old cloud profile is invalid', async () => {
+    ai.noteAsrDestinations.mockResolvedValue({ total: 0, items: [] })
+    ai.asrRouteConfig.mockResolvedValue({
+      ...config, defaultRoute: 'local', cloudConfigured: true, cloudModelId: '77777777-7777-4777-8777-777777777777',
+      localModelId: '99999999-9999-4999-8999-999999999999',
+      localModelRevision: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    })
+    renderPanel()
+    await screen.findByText('本机执行')
+    expect(screen.getByRole('button', { name: '创建本机排队任务' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '云端目标失效' })).toBeNull()
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认创建录音转写任务' }))
+    await userEvent.click(screen.getByRole('button', { name: '创建本机排队任务' }))
+    await waitFor(() => expect(ai.noteAsrStart).toHaveBeenCalledOnce())
+  })
+
   it('keeps one frozen task id after a lost response and re-saves it without a new task', async () => {
     ai.noteAsrStart.mockRejectedValueOnce(new Error('network response lost'))
     const first = renderPanel()
