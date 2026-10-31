@@ -13,7 +13,7 @@
 ### #539 与 Android consumer
 
 - API PR #546 exact head `da9ddf08ac8363bd84d4d12e7c09eaa7738e0acc` 的 CI `41183407442` SUCCESS；普通 merge `07a7d947aef217c5cbfea2439ffa1793649bd472` 后 master CI `41185634130` 全适用 job SUCCESS；Release `api-v26.10.1040` 的 target/tag 为该 merge，ledger SHA-256 `89ddfd74abf8e2663b09eeef9a8841098828333ebee008b1b3ae6052612ddea6`。
-- Android PR #57 head `1bdd5f25361d606fb2dd8c468139b626140a10da` 使用官方 `pim-api@07a7d947` contract；本地 app 2062、core 72 tests 均 0 fail/error/skip，exact CI `41187937904` SUCCESS/Gate，PR 仍 OPEN。JVM/CI 通过不等于 OPPO/OEM、真实服务端 202 或 production 验收；AC13 等长处理/质量闭环仍需独立证据。
+- Android PR #57 head `1bdd5f25361d606fb2dd8c468139b626140a10da` 使用官方 `pim-api@07a7d947` contract；本地 app 2062、core 72 tests 均 0 fail/error/skip，exact CI `41187937904` SUCCESS/Gate，PR 已于 `2026-10-31T09:30:24Z` 普通 merge 为 `e92244480fccefb490a45e0fde2f5fb36a3aad05`。JVM/CI 与 merge 均不等于 OPPO/OEM、真实服务端 202 或 production 验收；AC13 等长处理/质量闭环仍需独立证据。
 
 ### #533 证据边界
 
