@@ -74,6 +74,7 @@ public sealed class NoteAsrReprocessTests : IAsyncLifetime
         Assert.Equal(source.ManifestSha256, result.Task.ManifestSha256);
         Assert.Equal(source.TotalSegments, result.Task.TotalSegments);
         Assert.Equal(NoteAsrRoute.Local, result.Task.Route);
+        Assert.Null(result.Task.Destination);
         Assert.NotNull(result.Task.AttemptId);
         Assert.NotEqual(source.AttemptId, result.Task.AttemptId);
         Assert.Equal("Queued", result.Task.Phase);
@@ -81,9 +82,37 @@ public sealed class NoteAsrReprocessTests : IAsyncLifetime
         var child = await services.Tasks.ReadAsync(_owner, result.Task.TaskId, default);
         Assert.Equal(source.TaskId, child.ParentTaskId);
         Assert.Equal("manual: operator requested full rerun", child.ReprocessReason);
+        Assert.Null(child.Request.Consent);
         Assert.All(child.Steps, step => Assert.Equal("Queued", step.Current.Status));
         Assert.Equal(source.AttemptId, (await services.Tasks.ReadAsync(_owner, source.TaskId, default)).AttemptId);
         Assert.Equal(before, await File.ReadAllBytesAsync(TaskPath(source.TaskId)));
+    }
+
+    [Fact]
+    public async Task LocalReprocessDoesNotInheritSourceCloudConsentAndRejectsANewOne()
+    {
+        var (_, source) = await CreateSourceAsync(SourceOutcome.Completed);
+        var sourceState = await ReadSourceAsync(source.TaskId);
+        Assert.NotNull(sourceState.Request.Consent);
+
+        using var scope = _factory.Services.CreateScope();
+        var services = NewServices(scope.ServiceProvider, _owner);
+        var local = Request(Guid.NewGuid(), source.Revision, "quality", "local only");
+        var result = await services.Reprocess.ReprocessAsync(source.TaskId, local, default);
+
+        Assert.Equal(NoteAsrRoute.Local, result.Task.Route);
+        Assert.Null(result.Task.Destination);
+        var child = await services.Tasks.ReadAsync(_owner, result.Task.TaskId, default);
+        Assert.Null(child.Request.Consent);
+
+        var withConsent = Request(Guid.NewGuid(), source.Revision, "manual", "wrong consent") with
+        {
+            Consent = Destination
+        };
+        var error = await Assert.ThrowsAsync<DomainException>(() =>
+            services.Reprocess.ReprocessAsync(source.TaskId, withConsent, default));
+        Assert.Equal(40001, error.ErrorCode);
+        Assert.Equal(2, services.Tasks.Enumerate(_owner).Count());
     }
 
     [Fact]
@@ -263,6 +292,13 @@ public sealed class NoteAsrReprocessTests : IAsyncLifetime
             }
         }, default);
         return (fixture, NoteAsrTaskStore.Describe(source));
+    }
+
+    private async Task<NoteAsrState> ReadSourceAsync(Guid taskId)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var tasks = scope.ServiceProvider.GetRequiredService<NoteAsrTaskStore>();
+        return await tasks.ReadAsync(_owner, taskId, default);
     }
 
     private ReprocessNoteAsrRequest Request(Guid clientTaskId, Guid sourceRevision,
