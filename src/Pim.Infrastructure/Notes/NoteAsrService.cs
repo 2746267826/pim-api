@@ -128,6 +128,20 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (before.Route != NoteAsrRoute.Local)
             await ValidateDestinationAsync(request.Consent, before.Request.Language, ct);
         _ = await materials.GetAsync(owner, before.Request.VersionId, ct);
+        // Validate every retry precondition before any mutation: a rejected request must leave both
+        // the task file and the routing attempt exactly as it found them.
+        if (before.Route == NoteAsrRoute.Local)
+        {
+            if (before.AttemptId is not { } attemptId) throw new DomainException(40901, "本机任务缺少执行快照");
+            var attempt = await db.NoteAsrAttempts.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct)
+                ?? throw new DomainException(40901, "本机任务缺少执行快照");
+            var hasActiveLease = await db.NoteAsrLeases.AsNoTracking().AnyAsync(l =>
+                l.OwnerId == owner && l.AttemptId == attemptId && l.Status == "Active", ct);
+            if (attempt.Route != NoteAsrRoute.Local || hasActiveLease ||
+                attempt.State is not ("Failed" or "Unknown" or "Queued"))
+                throw new DomainException(40901, "本机执行快照未处于可人工恢复状态，原记录保留");
+        }
         var updated = await tasks.UpdateAsync(owner, id, state =>
         {
             if (state.Retries.TryGetValue(request.RetryId, out var existing))
@@ -144,6 +158,8 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                 if (state.Steps[index].Current.Status != "Queued") state.Steps[index].Attempts.Add(new());
             state.Retries.Add(request.RetryId, fingerprint); state.StopRequested = false;
         }, ct);
+        // The task file is committed first; only then requeue the durable attempt. A crash between
+        // the two leaves Queued work that claim reconciles and the retry is replayable idempotently.
         if (before.Route == NoteAsrRoute.Local) await RequireLocalRetryAttemptAsync(owner, updated, ct);
         return Describe(updated);
     }
@@ -209,7 +225,7 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
                 executionMode, NoteAsrPlan.SamplesPerCall);
         }
 
-        if (!request.Consent.Confirmed || request.Route is { Confirmed: false })
+        if (request.Consent is not { Confirmed: true } || request.Route is { Confirmed: false })
             throw new DomainException(40001, "请明确确认云端音频外发、长等待与可能计费");
         if (request.Consent.ModelId == Guid.Empty)
             throw new DomainException(40901, "云端目标未选择，请刷新后重新确认");
@@ -292,10 +308,16 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var evidence = await CurrentEvidenceAsync(owner, state, ct);
         if (evidence.Count > 0)
         {
+            // Only compare accepted proofs; a step with no proof at all is simply not yet transcribed,
+            // and must not force a Revision rotation on every GET.
+            var unrelated = evidence.Any(x => x.Key >= 0 && x.Key < state.Steps.Count &&
+                (state.Steps[x.Key].Current.EvidenceId != x.Value.Id ||
+                 state.Steps[x.Key].Current.Status != "Succeeded" ||
+                 state.Steps[x.Key].Current.ErrorMessage is not null));
             var observedAttempt = state.AttemptId;
             var observedVersion = state.Request.VersionId;
             var observedInput = state.InputSha256;
-            state = await tasks.UpdateAsync(owner, id, current =>
+            if (unrelated) state = await tasks.UpdateAsync(owner, id, current =>
             {
                 if (current.AttemptId != observedAttempt ||
                     current.Request.VersionId != observedVersion ||
@@ -336,12 +358,17 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         var fence = await db.NoteAsrAttempts.AsNoTracking()
             .Where(x => x.Id == attemptId && x.OwnerId == owner).Select(x => (long?)x.FencingToken).SingleOrDefaultAsync(ct);
         if (fence is null) return [];
+        // Attempt-scoped evidence: a re-lease after a partial failure must not hide older fence proof.
         var rows = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
-                x.AttemptId == attemptId && x.FencingToken == fence.Value &&
+                x.AttemptId == attemptId && x.FencingToken <= fence.Value &&
                 x.TaskId == state.Request.TaskId && x.VersionId == state.Request.VersionId)
             .OrderBy(x => x.CreatedAt).ToListAsync(ct);
-        return rows.GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last());
+        var steps = state.Steps.ToDictionary(x => x.Index);
+        return rows.Where(x => steps.TryGetValue(x.SegmentIndex, out var step) &&
+                NoteAsrRoutingService.EvidenceMatchesStep(x, step))
+            .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last());
     }
+
     private async Task<AiAsrPresetDto> ValidateDestinationAsync(AiAsrDestinationConsent? consent, string language, CancellationToken ct)
     {
         if (consent?.Confirmed != true) throw new DomainException(40001, "请明确同意将全部录音分片发送至所示ASR目标");

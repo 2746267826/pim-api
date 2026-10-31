@@ -241,7 +241,15 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             throw new DomainException(40901, "attempt 固定材料与任务快照不一致，不能下发执行");
         if (state.Steps.Count != attempt.ExpectedSegments)
             throw new DomainException(40901, "attempt 分片覆盖与任务快照不一致，不能下发执行");
-        var segments = state.Steps.Select(x => new NoteAsrSegmentInputDto(x.Index, x.RecordingId,
+        // Re-leasing the same attempt must not redo segments that already have durable success
+        // evidence from an earlier fence; that history stays authoritative for coverage.
+        var provenRows = await db.NoteAsrSegmentEvidence.AsNoTracking()
+            .Where(x => x.OwnerId == owner && x.AttemptId == attempt.Id &&
+                x.TaskId == attempt.TaskId && x.VersionId == attempt.VersionId).ToListAsync(ct);
+        var proven = provenRows.Where(x => x.SegmentIndex >= 0 && x.SegmentIndex < state.Steps.Count &&
+                EvidenceMatchesStep(x, state.Steps[x.SegmentIndex]))
+            .Select(x => x.SegmentIndex).Distinct().ToList();
+        var segments = state.Steps.Where(x => !proven.Contains(x.Index)).Select(x => new NoteAsrSegmentInputDto(x.Index, x.RecordingId,
             x.RecordingSegment, x.ChunkIndex, x.FileIndex, x.Sha256, x.SourceOffset, x.Samples,
             $"/api/v1/native-notes/asr-routing/leases/{lease.Id:D}/segments/{x.Index}/content")).ToArray();
         var execution = new NoteAsrExecutionDto(attempt.Id, owner, attempt.TaskId, attempt.VersionId, attempt.NoteId,
@@ -288,27 +296,65 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
         var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x => x.Id == attemptId &&
             x.OwnerId == owner && x.TaskId == state.Request.TaskId, ct);
         if (attempt is null) return state;
+        // Attempt-scoped, not fence-scoped: after a partial failure a new lease only carries the
+        // missing segments, and the older fence's durable proof must keep its transcript visible.
         var receipts = await db.NoteAsrAckReceipts.AsNoTracking().Where(x => x.OwnerId == owner &&
-                x.AttemptId == attemptId && x.FencingToken == attempt.FencingToken)
+                x.AttemptId == attemptId)
             .OrderBy(x => x.ReceivedAt).ToListAsync(ct);
         if (receipts.Count == 0) return state;
-        var terminal = receipts.LastOrDefault(x => x.Kind is "complete" or "fail");
+        // A terminal from an older fence belongs to the previous lease attempt: after an explicit
+        // retry it must not keep the task StopRequested. Only the current fence can end this attempt.
+        var currentFence = receipts.Where(x => x.FencingToken == attempt.FencingToken).ToArray();
+        var terminal = currentFence.LastOrDefault(x => x.Kind is "complete" or "fail");
         var segments = receipts.Where(x => x.Kind == "segment")
-            .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last());
+            .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key,
+                x => x.OrderByDescending(r => r.ReceivedAt).ToArray());
         var proof = (await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
-                x.AttemptId == attemptId && x.FencingToken == attempt.FencingToken &&
-                x.TaskId == state.Request.TaskId && x.VersionId == state.Request.VersionId)
+                x.AttemptId == attemptId && x.TaskId == attempt.TaskId && x.VersionId == attempt.VersionId)
             .OrderBy(x => x.CreatedAt).ToListAsync(ct))
             .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last());
-        var successful = segments.Where(x => IsAcceptedSuccess(attempt, x.Key, x.Value,
-                proof.TryGetValue(x.Key, out var row) ? row : null))
-            .Select(x => x.Key).ToHashSet();
+        // A segment is success only when a durable evidence row and the success receipt that produced
+        // it agree on the same fence, handle, text and attempt/task/version identity.
+        var acceptedByIndex = new Dictionary<int, (NoteAsrAckReceiptEntity Receipt, NoteAsrSegmentEvidenceEntity Row)>();
+        foreach (var (index, claims) in segments)
+            foreach (var claim in claims)
+                if (IsAcceptedSuccess(attempt, index, claim, proof.TryGetValue(index, out var row) ? row : null))
+                {
+                    acceptedByIndex[index] = (claim, proof[index]);
+                    break;
+                }
+        var successful = acceptedByIndex.Keys.ToHashSet();
         var complete = terminal is { Kind: "complete", Result: "Succeeded" } &&
             attempt.State == "Succeeded" && successful.Count == attempt.ExpectedSegments &&
             Enumerable.Range(0, attempt.ExpectedSegments).All(successful.Contains);
         var stopped = terminal?.Kind == "fail" || attempt.State is "Failed" or "Unknown";
-        if (state.Steps.All(x => x.Current.Status is "Succeeded" or "Failed") &&
-            state.CompletionAcknowledged == complete && state.StopRequested == (stopped && !complete)) return state;
+        var projected = new Dictionary<int, (string Status, string? Error, Guid? EvidenceId)>();
+        var durable = (await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
+                x.AttemptId == attemptId && x.TaskId == attempt.TaskId && x.VersionId == attempt.VersionId)
+            .OrderBy(x => x.CreatedAt).ToListAsync(ct))
+            .Where(x => x.SegmentIndex >= 0 && x.SegmentIndex < state.Steps.Count &&
+                EvidenceMatchesStep(x, state.Steps[x.SegmentIndex]))
+            .Select(x => x.SegmentIndex).ToHashSet();
+        foreach (var (index, claims) in segments)
+        {
+            if (acceptedByIndex.TryGetValue(index, out var accepted))
+                projected[index] = ("Succeeded", null, accepted.Row.Id);
+            else if (durable.Contains(index))
+                continue; // another channel (adaptive/batch) owns a valid proof; never downgrade it
+            else
+            {
+                var latest = claims[0];
+                projected[index] = (latest.Result == "Succeeded" ? "Unknown" : latest.Result,
+                    latest.ErrorMessage, null);
+            }
+        }
+        // A no-op GET must not rotate Revision; that would invalidate a revision the user just read.
+        var unchanged = projected.All(x => x.Key < state.Steps.Count &&
+                state.Steps[x.Key].Current.Status == x.Value.Status &&
+                state.Steps[x.Key].Current.ErrorMessage == x.Value.Error &&
+                state.Steps[x.Key].Current.EvidenceId == x.Value.EvidenceId) &&
+            state.CompletionAcknowledged == complete && state.StopRequested == (stopped && !complete);
+        if (unchanged) return state;
         var observedVersion = state.Request.VersionId;
         var observedInput = state.InputSha256;
         var observedSteps = state.Steps.Select(x => (x.Index, x.FileIndex, x.Sha256, x.SourceOffset, x.Samples))
@@ -320,33 +366,37 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
                 current.InputSha256 != observedInput ||
                 !current.Steps.Select(x => (x.Index, x.FileIndex, x.Sha256, x.SourceOffset, x.Samples))
                     .SequenceEqual(observedSteps)) return;
-            foreach (var (index, receipt) in segments)
+            foreach (var (index, value) in projected)
             {
                 if (index < 0 || index >= current.Steps.Count) continue;
+                if (current.Steps[index].Current.Status == "Succeeded" && value.Status != "Succeeded") continue;
                 var step = current.Steps[index].Current;
-                // ACK text is a claim until its exact attempt/fence evidence exists. Never mark Succeeded
-                // from a receipt alone; a non-success terminal remains visible and is never overwritten.
-                var accepted = proof.TryGetValue(index, out var row) &&
-                    IsAcceptedSuccess(attempt, index, receipt, row);
-                step.Status = receipt.Result == "Succeeded" && !accepted ? "Unknown" : receipt.Result;
-                step.ErrorMessage = receipt.ErrorMessage;
-                if (accepted)
-                {
-                    step.ErrorMessage = null;
-                    step.EvidenceId = proof[index].Id;
-                }
+                // ACK text is a claim until exact attempt evidence exists; a proven segment is terminal.
+                step.Status = value.Status;
+                step.ErrorMessage = value.Error;
+                if (value.EvidenceId is { } evidenceId) step.EvidenceId = evidenceId;
             }
             current.StopRequested = stopped && !complete;
             current.CompletionAcknowledged = complete;
         }, ct);
     }
 
+    internal static bool EvidenceMatchesStep(NoteAsrSegmentEvidenceEntity proof, NoteAsrStep step) =>
+        proof.SegmentIndex == step.Index && proof.RecordingId == step.RecordingId &&
+        proof.RecordingSegment == step.RecordingSegment && proof.ChunkIndex == step.ChunkIndex &&
+        proof.SourceFileIndex == step.FileIndex && proof.SourceSha256 == step.Sha256 &&
+        proof.SourceOffsetSamples == step.SourceOffset && proof.Samples == step.Samples &&
+        proof.ProviderHandle.Length > 0 && proof.ResultText.Length > 0 &&
+        proof.ResultSha256 == Convert.ToHexString(SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(proof.ResultText))).ToLowerInvariant();
+
     private static bool IsAcceptedSuccess(NoteAsrAttemptEntity attempt, int index,
         NoteAsrAckReceiptEntity receipt, NoteAsrSegmentEvidenceEntity? row) =>
         receipt.Result == "Succeeded" && receipt.SegmentIndex == index &&
         row is not null && row.OwnerId == attempt.OwnerId && row.AttemptId == attempt.Id &&
         row.TaskId == attempt.TaskId && row.VersionId == attempt.VersionId &&
-        row.FencingToken == attempt.FencingToken && row.SegmentIndex == index &&
+        row.FencingToken == receipt.FencingToken && row.SegmentIndex == index && row.ResultText.Length > 0 &&
+        row.ResultText == receipt.ResultText &&
         row.ReceiptKind == "local" && row.ProviderHandle == receipt.ProviderHandle?.Trim() &&
         row.ResultText.Length > 0 &&
         row.ResultSha256 == Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
@@ -442,14 +492,29 @@ public sealed class NoteAsrRoutingService(PimDbContext db, ICurrentUserService u
             throw new DomainException(40901, "租约已失效或过期，回执不能覆盖新结果");
         if (request.Kind == "complete")
         {
-            var succeeded = await db.NoteAsrAckReceipts.AsNoTracking().Where(x => x.OwnerId == owner &&
-                x.AttemptId == attemptId && x.FencingToken == request.FencingToken && x.Kind == "segment" &&
-                x.Result == "Succeeded" && x.ResultText != null && x.ProviderHandle != null)
-                .Select(x => x.SegmentIndex).Distinct().ToListAsync(ct);
+            // Coverage is attempt-scoped, not fence-scoped: a re-lease after a partial failure must
+            // keep earlier proven segments instead of silently re-running or dropping them.
+            var plan = await legacyTasks.ReadAsync(owner, attempt.TaskId, ct);
+            if (plan.Request.VersionId != attempt.VersionId || plan.InputSha256 != attempt.InputSha256 ||
+                plan.Steps.Count != attempt.ExpectedSegments)
+                throw new DomainException(40901, "固定材料与执行快照不一致，不能完成");
+            var rows = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
+                x.AttemptId == attemptId && x.TaskId == attempt.TaskId && x.VersionId == attempt.VersionId &&
+                x.SegmentIndex >= 0 && x.SegmentIndex < attempt.ExpectedSegments).ToListAsync(ct);
+            var succeeded = rows.Where(x => EvidenceMatchesStep(x, plan.Steps[x.SegmentIndex]))
+                .Select(x => x.SegmentIndex).Distinct().ToList();
             var missing = Enumerable.Range(0, attempt.ExpectedSegments).Except(succeeded).Take(5).ToArray();
             if (missing.Length > 0)
                 throw new DomainException(40901, $"尚缺分片 {string.Join(",", missing)} 的成功结果，不能完成；已有结果保留");
         }
+        // Success evidence from an earlier fence is final for that segment; a newer lease only
+        // carries the still-missing work and must never overwrite that history.
+        if (request.Kind == "segment" && request.Result == "Succeeded" &&
+            await db.NoteAsrSegmentEvidence.AsNoTracking().AnyAsync(x => x.OwnerId == owner &&
+                x.AttemptId == attemptId && x.SegmentIndex == request.SegmentIndex &&
+                x.TaskId == attempt.TaskId && x.VersionId == attempt.VersionId &&
+                x.FencingToken != request.FencingToken && x.ProviderHandle != "" && x.ResultText != "", ct))
+            throw new DomainException(40901, "该分片已有更早 fence 的成功证据，旧结果保留，不再重复接收");
         var receipt = new NoteAsrAckReceiptEntity { OwnerId = owner, AttemptId = attemptId,
             LeaseId = lease.Id, FencingToken = request.FencingToken, Kind = request.Kind, Result = request.Result,
             SegmentIndex = request.SegmentIndex, ProviderHandle = request.ProviderHandle,
