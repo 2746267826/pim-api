@@ -10,10 +10,12 @@
 
 本节只覆盖当前执行状态，不改写下方 v0.42、v0.41 及更早正文。45/32/32/13、AC1–19、五阶段原编号和至少 203 条历史事实保持；203 仅为既有 validator 的计数参照，本轮没有重跑旧 helper。
 
+证据快照：`2026-10-31 17:33 CST`。Android master/Release 核验仍在进行（Laplace 负责）；本覆盖中的 Android PR/CI/merge 证据不是最新 final，不能把 WIP 证据当成发布结论。
+
 ### #539 与 Android consumer
 
 - API PR #546 exact head `da9ddf08ac8363bd84d4d12e7c09eaa7738e0acc` 的 CI `41183407442` SUCCESS；普通 merge `07a7d947aef217c5cbfea2439ffa1793649bd472` 后 master CI `41185634130` 全适用 job SUCCESS；Release `api-v26.10.1040` 的 target/tag 为该 merge，ledger SHA-256 `89ddfd74abf8e2663b09eeef9a8841098828333ebee008b1b3ae6052612ddea6`。
-- Android PR #57 head `1bdd5f25361d606fb2dd8c468139b626140a10da` 使用官方 `pim-api@07a7d947` contract；本地 app 2062、core 72 tests 均 0 fail/error/skip，exact CI `41187937904` SUCCESS/Gate，PR 已于 `2026-10-31T09:30:24Z` 普通 merge 为 `e92244480fccefb490a45e0fde2f5fb36a3aad05`。JVM/CI 与 merge 均不等于 OPPO/OEM、真实服务端 202 或 production 验收；AC13 等长处理/质量闭环仍需独立证据。
+- Android PR #57 head `1bdd5f25361d606fb2dd8c468139b626140a10da` 使用官方 `pim-api@07a7d947` contract；本地 app 2062、core 72 tests 均 0 fail/error/skip，exact CI `41187937904` SUCCESS/Gate，PR 已于 `2026-10-31T09:30:24Z` 普通 merge 为 `e92244480fccefb490a45e0fde2f5fb36a3aad05`。JVM/CI 与 merge 均不等于 OPPO/OEM、真实服务端 202 或 production 验收。
 
 ### #533 证据边界
 
@@ -24,10 +26,10 @@
 | 原始阶段 | 当前状态 |
 | --- | --- |
 | 阶段 1 路由/节点/claim/lease | `INTEGRATION WIP`。真实切片 digest、typed Batch multipart Swagger、可执行 renew/stop、ACK projection 自愈、ASR endpoint 50 MiB 预算与 material >4 MiB 回读、Batch endpoint 128 MiB admission 仍在修；最终 migration/Test OpenAPI/generated 未冻结。 |
-| 阶段 2 云端多模态/Batch | `SOURCE IMPLEMENTED + INTEGRATION WIP`。Provider `3898240f`/`e135df8b` 的 mock 78/78；Web 79 tests、build、lint 通过并修正真实 audit wrapper；Hume adaptive helper `eada9a8c` 21/21，但尚未接 Job/TaskStore。Batch safety slice 既有 22/22 synthetic PG；真实 CAS、failed-only retry 与 durable background poll 尚待执行/集成。真实音频 Batch、付费与质量 NOT-VERIFIED。 |
+| 阶段 2 云端多模态/Batch | `SOURCE IMPLEMENTED + INTEGRATION WIP`。Provider `3898240f`/`e135df8b` 的 mock 78/78；Web 79 tests、build、lint 通过并修正真实 audit wrapper；Hume adaptive helper `eada9a8c` 21/21，但尚未接 Job/TaskStore。Batch safety slice 既有 22/22 synthetic PG；真实 CAS、failed-only retry 与 durable background poll 尚待执行/集成。真实音频 Batch、付费与质量 NOT-VERIFIED；AC13 等长处理/质量闭环属于本阶段独立验收，不属于 #539/Android 202 consumer 验收。 |
 | 阶段 3 Windows 模型管理 | `SOURCE IMPLEMENTED + INTEGRATION WIP`。Windows 是 .NET/native，不是 JVM。`c41dae1` 之前的 full 232/232 与 app 59/59 是历史，不冒充最新 R18 WIP；R18 当前负向测试未跑，R19 需消费唯一导出的路由/Batch contract。真实模型/硬件 NOT-VERIFIED。 |
 | 阶段 4 拉取/执行/退避/清退 | `SOURCE PARTIAL`。受控进程、资源门、账号/来源绑定和清退 helper 已存在；尚无真实模型执行与资源回落闭环，AC3–7 不得写 PASS。 |
-| 阶段 5 重跑/UI/AC1–19 | `NOT STARTED / NOT-VERIFIED`。重跑原因、不可变历史、三通道结果、退出/崩溃恢复与全链 AC 回执均未闭合。 |
+| 阶段 5 重跑/UI/AC1–19 | `SOURCE PARTIAL / INTEGRATION WIP`。Hume 纯展示来源 `fa8d072c` 为 4 suites / 15 tests PASS，provider 树全量 369 tests 及 build/lint PASS；但尚未接到实际 generated contract，79 是 shared 树旧契约，不能与 369 混算或当作生成链路已接线。重跑原因、不可变历史、三通道结果、退出/崩溃恢复与全链 AC 回执仍 NOT-VERIFIED。 |
 
 ### 保留约束
 

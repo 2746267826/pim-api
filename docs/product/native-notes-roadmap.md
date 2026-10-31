@@ -14,6 +14,8 @@
 
 本节只追加 v0.43 当前覆盖。v0.42 及更早正文、v0.42 history row、45 个稳定 requirement ID、32 项 capability、32 行差距、13 个 MIG、至少 203 条历史事实、AC1–19 与五阶段原编号均原样保留。这里的 203 只是既有 validator 的历史计数参照；本轮没有重跑该 helper，也不把历史计数冒充本轮产品执行。
 
+证据快照：`2026-10-31 17:33 CST`。Android master/Release 核验仍在进行（Laplace 负责）；本覆盖中的 Android PR/CI/merge 证据不是最新 final，不能把 WIP 证据当成发布结论。
+
 **已交付且可核**
 
 - API #539：PR [#546](https://github.com/2746267826/pim-api/pull/546) 的 exact head `da9ddf08ac8363bd84d4d12e7c09eaa7738e0acc` 通过 CI `41183407442`，普通 merge 为 `07a7d947aef217c5cbfea2439ffa1793649bd472`；merge-triggered master CI `41185634130` 全适用 job SUCCESS。Release `api-v26.10.1040` target/tag 指向 `07a7d947`，version ledger SHA-256 为 `89ddfd74abf8e2663b09eeef9a8841098828333ebee008b1b3ae6052612ddea6`。GitHub Release 不等于 production。
@@ -32,10 +34,10 @@ v0.43 不再用单一“整体已完成”或“整体未实现”概括 #516。
 | 原始阶段 | v0.43 当前证据与边界 |
 | --- | --- |
 | 阶段 1：路由、节点与 claim/lease 契约 | API routing/claim/lease 源码与集成仍在 WIP；实际切片 digest、typed Batch multipart Swagger、renew/stopRequested、ACK projection 恢复性、请求大小与 material 回读预算仍待修复/验收。最终 migration、Test OpenAPI 与 Web generated contract 尚未冻结，不能写完成。 |
-| 阶段 2：云端多模态与 Batch | Provider 本地 commits `3898240f`、`e135df8b`，mock 覆盖 78/78；Web 现有契约 8 files / 79 tests、build、lint 通过，真实 `asr-call-response-v1.parsed` wrapper 已修正。Hume 纯 helper `eada9a8c` 为 21/21，但 Job/TaskStore/durable children 尚未接入。Batch 五文件安全 slice 的 22/22 synthetic PG 是既有证据；真实 optimistic CAS、failed-only retry 与 R14 background poll 仍在做/待执行。真实 MiMo Batch、音频能力、付费与结果质量均 NOT-VERIFIED。 |
+| 阶段 2：云端多模态与 Batch | Provider 本地 commits `3898240f`、`e135df8b`，mock 覆盖 78/78；Web 现有契约 8 files / 79 tests、build、lint 通过，真实 `asr-call-response-v1.parsed` wrapper 已修正。Hume 纯 helper `eada9a8c` 为 21/21，但 Job/TaskStore/durable children 尚未接入。Batch 五文件安全 slice 的 22/22 synthetic PG 是既有证据；真实 optimistic CAS、failed-only retry 与 R14 background poll 仍在做/待执行。真实 MiMo Batch、音频能力、付费与结果质量均 NOT-VERIFIED；AC13 等长处理/质量闭环属于本阶段独立验收，不属于 #539/Android 202 consumer 验收。 |
 | 阶段 3：Windows 模型板块与节点登记 | Windows 为 .NET 客户端/测试，不是 JVM。`b473982`、`066b336`、`c41dae1` 源码存在；旧 full `Pim.Client.Tests` 232/232、app 59/59 只能作为历史基线，不冒充最新 R18 WIP 已执行。当前 R18 新增负向测试尚未跑，R19 仍被唯一导出的 routing/Batch contract 阻塞。真实模型、硬件与安装/卸载验收 NOT-VERIFIED。 |
 | 阶段 4：拉取、资源退避、本地执行与清退 | controlled process/job、资源门、账号 origin 绑定与清退 helper 为源码/WIP；尚未完成真实 claim → 模型执行 → segment/terminal ACK → 资源回落闭环，不能写 AC3–7 PASS。 |
-| 阶段 5：重跑、异常展示与 AC1–19 全链 | 无完整重跑原因/不可变历史/三通道 UI/结果回读/全矩阵回执；AC1–19 保持原编号和 NOT-VERIFIED 边界。 |
+| 阶段 5：重跑、异常展示与 AC1–19 全链 | `SOURCE PARTIAL / INTEGRATION WIP`。Hume 纯展示来源 `fa8d072c` 为 4 suites / 15 tests PASS，provider 树全量 369 tests 及 build/lint PASS；尚未接到实际 generated contract，79 是 shared 树旧契约，不能与 369 混算或当作生成链路已接线。完整重跑原因/不可变历史/三通道 UI/结果回读/全矩阵回执仍 NOT-VERIFIED；AC1–19 保持原编号和 NOT-VERIFIED 边界。 |
 
 - 两项已确认产品策略继续有效：local 不可用时保持排队，只有用户手动切 cloud，禁止自动付费 fallback；Windows 节点只处理当前登录账号。MiMo Batch 仍只是 `cloud-multimodal` 下的独立 provider/async mode scope，不新增对外 route 枚举、不自动追溯既有 attempt，也不因 local 离线自动转 Batch。
 - 当前优先级仍是先收口 #539 processing/退避与 Android not-before，再推进 #516 阶段 1；阶段间依赖与 AC1–19 不重排。#516 保持 OPEN，任何单个 source/test 绿都不能写成整体交付。
