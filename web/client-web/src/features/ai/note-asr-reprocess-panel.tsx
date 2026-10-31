@@ -50,7 +50,7 @@ export function NoteAsrReprocessPanel({ task, userId, serverBinding, onCreated }
     queryFn: ({ signal }) => aiApi.asrRoutingAttempts(task.taskId, signal),
   })
 
-  const lastDestination = destinations.data?.items.find((item) => item.modelId === task.destination.modelId) ?? null
+  const lastDestination = destinations.data?.items.find((item) => item.modelId === task.destination?.modelId) ?? null
   const intent = intentState.kind === 'ready' ? intentState.value : null
   const blockedIntent = intentState.kind === 'blocked' ? intentState.message : ''
   const selectedDestination = targetId === 'local'

@@ -94,12 +94,34 @@ describe('NoteAsrStartPanel', () => {
     expect(localStorage.getItem(noteAsrStartIntentScope(owner, serverBinding, versionId))).toBeNull()
   })
 
-  it('does not switch to cloud when the saved default is local', async () => {
+  it('does not switch to cloud when the saved default is local without a local model', async () => {
     ai.asrRouteConfig.mockResolvedValue({ ...config, defaultRoute: 'local' })
     renderPanel()
-    expect(await screen.findByText('当前默认为本机')).toBeTruthy()
+    expect(await screen.findByText('没有本机模型')).toBeTruthy()
     expect(ai.noteAsrStart).not.toHaveBeenCalled()
     expect(ai.models).not.toHaveBeenCalled()
+  })
+
+  it('creates a local queue task with nullable consent and no cloud credentials', async () => {
+    ai.noteAsrDestinations.mockResolvedValue({ total: 0, items: [] })
+    ai.asrRouteConfig.mockResolvedValue({
+      ...config, defaultRoute: 'local', cloudConfigured: false, cloudModelId: null,
+      localModelId: '99999999-9999-4999-8999-999999999999',
+      localModelRevision: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    })
+    renderPanel()
+    expect(await screen.findByText('本机执行')).toBeTruthy()
+    await userEvent.click(screen.getByRole('checkbox', { name: '确认创建录音转写任务' }))
+    await userEvent.click(screen.getByRole('button', { name: '创建本机排队任务' }))
+    await waitFor(() => expect(ai.noteAsrStart).toHaveBeenCalledOnce())
+    expect(ai.noteAsrStart.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      expectedUserId: owner,
+      versionId,
+      consent: null,
+      route: expect.objectContaining({ route: 'local', configRevision: config.revision }),
+    }))
+    expect(ai.models).not.toHaveBeenCalled()
+    expect(ai.asrPresets).not.toHaveBeenCalled()
   })
 
   it('keeps one frozen task id after a lost response and re-saves it without a new task', async () => {

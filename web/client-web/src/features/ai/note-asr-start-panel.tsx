@@ -14,9 +14,8 @@ import { actualCloudRoute, isActualCloudRoute } from './route-config-adapter'
 const languageNames: Record<string, string> = { auto: '自动识别', zh: '中文', en: '英语' }
 
 /**
- * Ordinary-user cloud start entry. It consumes only the public destination
+ * Ordinary-user ASR start entry. It consumes only the public destination
  * catalog and per-account routing config; it never reads admin model settings.
- * Local start joins once the nullable consent contract is exported.
  */
 export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated }: {
   userId: string
@@ -25,7 +24,7 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
   onCreated?: (task: NoteAsrTask) => void
 }) {
   const qc = useQueryClient()
-  const [route, setRoute] = useState<'default' | 'cloud'>('default')
+  const [route, setRoute] = useState<'default' | 'local' | 'cloud'>('default')
   const [language, setLanguage] = useState('auto')
   const [confirmed, setConfirmed] = useState(false)
   const [intentState, setIntentState] = useState<NoteAsrStartIntentState>(() => loadNoteAsrStartIntent(userId, serverBinding, versionId))
@@ -43,9 +42,10 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
   const savedDestination = destinations.data?.items.find((item) => item.modelId === config.data?.cloudModelId) ?? null
   const selectedDestination = savedDestination
   const effectiveRoute = route === 'default'
-    ? config.data && isActualCloudRoute(config.data.defaultRoute) ? 'cloud' : 'default-local'
-    : 'cloud'
-  const targetReady = effectiveRoute === 'cloud' && Boolean(config.data && savedDestination)
+    ? config.data && isActualCloudRoute(config.data.defaultRoute) ? 'cloud' : 'local'
+    : route
+  const localConfigured = Boolean(config.data?.localModelId)
+  const targetReady = effectiveRoute === 'cloud' ? Boolean(config.data && savedDestination) : localConfigured
   const intent = intentState.kind === 'ready' ? intentState.value : null
   const blockedIntent = intentState.kind === 'blocked' ? intentState.message : ''
   const canSubmit = Boolean(targetReady && confirmed && !busy && !intent && !blockedIntent)
@@ -63,8 +63,20 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
   }, [userId, serverBinding, versionId])
 
   function freezeIntent() {
-    if (!config.data || !selectedDestination) return null
-    const destination = selectedDestination
+    if (!config.data) return null
+    const destination = effectiveRoute === 'cloud' ? selectedDestination : null
+    if (effectiveRoute === 'cloud' && !destination) return null
+    const routeConsent = {
+      route: destination ? actualCloudRoute(destination.presetId) : 'local',
+      configRevision: config.data.revision,
+      consentVersion: config.data.consentVersion,
+      executionMode: 'realtime',
+      batchScopeConfirmed: false,
+      confirmed: true,
+    }
+    if (!destination) {
+      return { taskId: createAiRequestId(), expectedUserId: userId, versionId, language, consent: null, route: routeConsent } satisfies NoteAsrStart
+    }
     return {
       taskId: createAiRequestId(),
       expectedUserId: userId,
@@ -78,14 +90,7 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
         presetVersion: destination.presetVersion,
         confirmed: true,
       },
-      route: {
-        route: actualCloudRoute(destination.presetId),
-        configRevision: config.data.revision,
-        consentVersion: config.data.consentVersion,
-        executionMode: 'realtime',
-        batchScopeConfirmed: false,
-        confirmed: true,
-      },
+      route: routeConsent,
     } satisfies NoteAsrStart
   }
 
@@ -98,7 +103,9 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
       clearNoteAsrStartIntent(userId, serverBinding, versionId, body.taskId)
       setIntentState({ kind: 'none' })
       setConfirmed(false)
-      setNotice('已创建新的云端转写任务，可能产生服务商费用；任务与旧历史分别保留。')
+      setNotice(body.consent
+        ? '已创建新的云端转写任务，可能产生服务商费用；任务与旧历史分别保留。'
+        : '已保存本机排队转写任务；本机不可用时保持排队，不会自动改用云端，也不产生云端费用。')
       onCreated?.(task)
       await qc.invalidateQueries({ queryKey: ['ai', userId, serverBinding, 'note-asr'] })
     } catch (failure) {
@@ -152,19 +159,24 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
   return <Card className="min-w-0 space-y-3 p-4 sm:p-5">
     <div>
       <h3 className="text-sm font-semibold text-text-1">启动录音转写</h3>
-      <p className="mt-1 break-words text-xs text-text-3">只为当前固定材料版本创建新任务。云端执行必须单独确认出域与费用；本机录音转写使用客户端完成。旧任务和结果不会覆盖。</p>
+      <p className="mt-1 break-words text-xs text-text-3">只为当前固定材料版本创建新任务。本机不可用时保持排队且不会自动改用云端；云端执行必须单独确认出域与费用。旧任务和结果不会覆盖。</p>
     </div>
     <div><Label htmlFor="note-asr-start-route">执行位置</Label>
       <Select id="note-asr-start-route" ariaLabel="执行位置" value={route} disabled={busy || Boolean(intent) || Boolean(blockedIntent)}
         options={[
-          { value: 'default', label: effectiveRoute === 'cloud' ? '按当前默认路由（云端）' : '按当前默认路由（本机，使用客户端）' },
+          { value: 'default', label: effectiveRoute === 'cloud' ? '按当前默认路由（云端）' : '按当前默认路由（本机）' },
+          { value: 'local', label: '本机转写' },
           { value: 'cloud', label: '云端转写' },
         ]}
-        onValueChange={(value) => { setRoute(value as 'default' | 'cloud'); setConfirmed(false); setNotice(''); setError('') }} />
+        onValueChange={(value) => { setRoute(value as 'default' | 'local' | 'cloud'); setConfirmed(false); setNotice(''); setError('') }} />
     </div>
-    {effectiveRoute === 'default-local' && <InlineAlert tone="info" title="当前默认为本机">
-      本机录音转写在客户端完成，本页不会自动改用云端或产生费用。需要云端时请明确选择。
-    </InlineAlert>}
+    {effectiveRoute === 'local' && (localConfigured
+      ? <InlineAlert tone="info" title="本机执行">
+        任务保存后在本机队列执行，不发送云端、不需要云端凭据；本机离线时保持排队，不会自动切换云端。
+      </InlineAlert>
+      : <InlineAlert tone="warn" title="没有本机模型">
+        当前账号尚未保存本机 ASR 模型；请选择云端目标，或由本机客户端注册模型后重新开始。
+      </InlineAlert>)}
     {effectiveRoute === 'cloud' && (savedDestination
       ? <div className="space-y-2 rounded-ctl border border-border p-3 text-xs text-text-2">
         <p className="break-words">目标：{savedDestination.displayName} · {savedDestination.model}</p>
@@ -188,13 +200,16 @@ export function NoteAsrStartPanel({ userId, serverBinding, versionId, onCreated 
       <label className="flex items-start gap-2 text-xs text-text-2">
         <Checkbox ariaLabel="确认创建录音转写任务" checked={confirmed} disabled={!targetReady || busy || Boolean(blockedIntent)}
           onCheckedChange={setConfirmed} />
-        <span>确认将当前版本录音发送至上述云端目标，理解可能的新费用与长等待</span>
+        <span>{effectiveRoute === 'local'
+          ? '确认按当前本机配置创建转写任务；本机不可用时只排队，不会自动切换到云端'
+          : '确认将当前版本录音发送至上述云端目标，理解可能的新费用与长等待'}</span>
       </label>
       <Button variant="primary" loading={busy} disabled={!canSubmit} onClick={() => void start()}>
-        {cloudInvalid ? '云端目标失效' : '确认创建云端任务'}
+        {cloudInvalid ? '云端目标失效' : effectiveRoute === 'local' ? '创建本机排队任务' : '确认创建云端任务'}
       </Button>
     </>}
     {effectiveRoute === 'cloud' && savedDestination && !intent && <StatusBadge size="xs" dot={false} tone="warn">云端出域 · 可能计费</StatusBadge>}
+    {effectiveRoute === 'local' && !intent && <StatusBadge size="xs" dot={false} tone={localConfigured ? 'ok' : 'warn'}>{localConfigured ? '本机队列' : '未配置本机模型'}</StatusBadge>}
     {notice && <InlineAlert tone="ok">{notice}</InlineAlert>}
     {error && <InlineAlert tone="crit" title="任务创建未确认">{error}</InlineAlert>}
   </Card>

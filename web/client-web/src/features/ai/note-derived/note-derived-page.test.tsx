@@ -46,6 +46,13 @@ const asrTask: NoteAsrTask = {
   completedSegments: 0, failedSegments: 1, totalSamples: 16000, completedSamples: 0, sampleRate: 16000,
   stopRequested: false, backgroundProcessingAvailable: true, route: 'cloud-asr',
 }
+const localAsrTask: NoteAsrTask = {
+  ...asrTask,
+  taskId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+  phase: 'Queued',
+  route: 'local',
+  destination: null,
+}
 const source = {
   noteId, versionId: sourceVersionId, title: '零录音材料', createdAt: '2026-10-29T00:00:00Z', isCurrent: true,
   hasConflict: false, recordings: 0, totalSamples: 0, sampleRate: 16000,
@@ -146,7 +153,7 @@ it('shows the ordinary-user ASR start entry on native notes without admin model 
   page()
   await chooseSource()
   expect(await screen.findByText('启动录音转写')).toBeTruthy()
-  expect(await screen.findByText('当前默认为本机')).toBeTruthy()
+  expect(await screen.findByText('没有本机模型')).toBeTruthy()
   await waitFor(() => expect(assistant.noteAsrDestinations).toHaveBeenCalledOnce())
   expect(assistant.asrRouteConfig).toHaveBeenCalled()
   expect(assistant.models).not.toHaveBeenCalled()
@@ -165,6 +172,19 @@ it('shows ordinary-owner ASR task detail, retry and immutable history without ad
   expect(await screen.findByText('重处理历史（不可变）')).toBeTruthy()
   expect(assistant.models).not.toHaveBeenCalled()
   expect(assistant.asrPresets).not.toHaveBeenCalled()
+})
+
+it('renders a nullable local task without touching destination fields or admin settings', async () => {
+  derived.sources.mockResolvedValue({ total: 1, offset: 0, items: [{ ...source, recordings: 1, totalSamples: 16000 }] })
+  assistant.noteAsrTasks.mockResolvedValue([localAsrTask])
+  assistant.noteAsrTask.mockResolvedValue(localAsrTask)
+  page()
+  await chooseSource()
+  expect(await screen.findByText('本机执行 · 未发送云端')).toBeTruthy()
+  await userEvent.click(await screen.findByRole('button', { name: /本机执行/ }))
+  expect(await screen.findByText('逐片进度与恢复')).toBeTruthy()
+  expect(screen.getByText(/本任务发送目标：本机执行/)).toBeTruthy()
+  expect(assistant.models).not.toHaveBeenCalled()
 })
 
 it('requires exact destination consent and creates with a persisted UUID intent', async () => {
