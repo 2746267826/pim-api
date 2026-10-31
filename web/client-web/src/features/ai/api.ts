@@ -19,6 +19,14 @@ export type NoteAsrStart = components['schemas']['StartNoteAsrRequest']
 export type NoteAsrRetry = components['schemas']['RetryNoteAsrRequest']
 export type NoteAsrSegments = components['schemas']['NoteAsrSegmentsDto']
 export type NoteAsrSources = components['schemas']['NoteAsrSourcesDto']
+export type NoteAsrRouteConfig = components['schemas']['NoteAsrRouteConfigDto']
+export type NoteAsrRouteConfigSave = components['schemas']['UpdateNoteAsrRouteConfigRequest']
+export type NoteAsrAttemptDetail = components['schemas']['NoteAsrAttemptDetailDto']
+export type NoteAsrNode = components['schemas']['NoteAsrNodeDto']
+export type NoteAsrBatchJob = components['schemas']['NoteAsrBatchJobDto']
+export type NoteAsrReprocessHistory = components['schemas']['NoteAsrReprocessHistoryDto']
+export type NoteAsrReprocessRequest = components['schemas']['ReprocessNoteAsrRequest']
+export type NoteAsrReprocessResult = components['schemas']['NoteAsrReprocessResultDto']
 export type CallItem = components['schemas']['AiRequestLogListItemDto']
 export type CallDetail = components['schemas']['AiRequestLogDetailDto']
 export type Usage = components['schemas']['AiUsageSummaryDto']
@@ -31,6 +39,21 @@ export const aiApi = {
   noteAsrSegments: (id: string, offset: number, signal?: AbortSignal) => apiGet<NoteAsrSegments>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(id)}/segments?offset=${offset}&limit=10`, { signal }),
   noteAsrStop: (id: string) => apiPost<NoteAsrTask>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(id)}/stop`, {}),
   noteAsrRetry: (id: string, body: NoteAsrRetry) => apiPost<NoteAsrTask>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(id)}/retry`, body),
+  asrReprocessHistory: (sourceTaskId: string, offset = 0, limit = 20, signal?: AbortSignal) =>
+    apiGet<NoteAsrReprocessHistory>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(sourceTaskId)}/reprocess-history?offset=${offset}&limit=${limit}`, { signal }),
+  asrReprocess: (sourceTaskId: string, body: NoteAsrReprocessRequest) =>
+    apiPost<NoteAsrReprocessResult>(`/api/v1/native-notes/asr-tasks/${encodeURIComponent(sourceTaskId)}/reprocess`, body),
+  asrRouteConfig: (signal?: AbortSignal) => apiGet<NoteAsrRouteConfig>('/api/v1/native-notes/asr-routing/config', { signal }),
+  asrRouteConfigSave: (body: NoteAsrRouteConfigSave) => apiPut<NoteAsrRouteConfig>('/api/v1/native-notes/asr-routing/config', body),
+  asrRoutingAttempts: (taskId?: string, signal?: AbortSignal) =>
+    apiGet<NoteAsrAttemptDetail[]>(`/api/v1/native-notes/asr-routing/attempts${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ''}`, { signal }),
+  asrRoutingAttemptStop: (attemptId: string) => apiPost<NoteAsrAttemptDetail>(`/api/v1/native-notes/asr-routing/attempts/${encodeURIComponent(attemptId)}/stop`, {}),
+  asrRoutingNodes: (signal?: AbortSignal) => apiGet<NoteAsrNode[]>('/api/v1/native-notes/asr-routing/nodes', { signal }),
+  asrBatchJobs: (signal?: AbortSignal) => apiGet<NoteAsrBatchJob[]>('/api/v1/native-notes/asr-routing/batches', { signal }),
+  asrBatchJob: (batchJobId: string, signal?: AbortSignal) =>
+    apiGet<NoteAsrBatchJob>(`/api/v1/native-notes/asr-routing/batches/${encodeURIComponent(batchJobId)}`, { signal }),
+  asrBatchPoll: (batchJobId: string) => apiPost<NoteAsrBatchJob>(`/api/v1/native-notes/asr-routing/batches/${encodeURIComponent(batchJobId)}/poll`, {}),
+  asrBatchCancel: (batchJobId: string) => apiPost<NoteAsrBatchJob>(`/api/v1/native-notes/asr-routing/batches/${encodeURIComponent(batchJobId)}/cancel`, {}),
   asrPresets: (signal?: AbortSignal) => apiGet<AsrPreset[]>('/api/v1/ai/asr-presets', { signal }),
   asrCall: (body: AsrRequest, signal: AbortSignal) => apiPost<CallResult>('/api/v1/ai/asr-calls', body, { signal }),
   asrLookup: (id: string) => apiGet<CallResult>(`/api/v1/ai/asr-calls/${encodeURIComponent(id)}`),

@@ -14,6 +14,7 @@ import { AsrCall, CallAudio } from './asr-call'
 import { NoteAsrTasks } from './note-asr-tasks'
 import { isMimoPro } from './asr-model-guidance'
 import { AsrResultInsights } from './asr-result-insights'
+import { NoteAsrRoutingView } from './note-asr-routing-view'
 
 const states = { Succeeded: '成功', Failed: '失败', Blocked: '未执行', TimedOut: '超时', FailedValidation: '结构不符', Running: '进行中', Cancelled: '已取消', Incomplete: '未完整/未确认' }
 const pageTabs = ['models', 'asr', 'history', 'usage'] as const
@@ -72,7 +73,7 @@ function Workspace({ userId }: { userId: string }) {
     <PageHeader title="AI 设置" subtitle="模型与 ASR 配置 · 实际调用记录 · 统计" actions={<Button variant="secondary" size="sm" onClick={() => void refresh()}><RefreshCw className="size-4" aria-hidden />刷新</Button>} />
     <Segmented value={tab} onValueChange={setTab} options={[{ value: 'models', label: '模型设置' }, { value: 'asr', label: 'ASR 配置' }, { value: 'history', label: '调用记录' }, { value: 'usage', label: '统计' }]} />
     {tab === 'asr' && ((models.isError || settings.isError) ? <Card className="p-5"><EmptyState title="ASR 配置加载失败" description={errorText(models.error ?? settings.error)} action={<Button onClick={() => void refresh()}>重试</Button>} /></Card>
-      : !models.data || !settings.data ? <Skeleton className="h-48" /> : <AsrSettings models={models.data} settings={settings.data} presets={presets.data ?? []}
+      : !models.data || !settings.data ? <Skeleton className="h-48" /> : <AsrSettings userId={userId} models={models.data} settings={settings.data} presets={presets.data ?? []}
         presetsLoading={presets.isLoading} presetsError={presets.isError} retryPresets={() => void presets.refetch()} busy={busy}
         patchSettings={patchSettings} edit={setEditing} create={() => { setCreatingAsr(true); setEditing(null) }} />)}
     <div hidden={tab !== 'models'} className="space-y-4">
@@ -125,7 +126,8 @@ function Workspace({ userId }: { userId: string }) {
   </div>
 }
 
-function AsrSettings({ models, settings, presets, presetsLoading, presetsError, retryPresets, busy, patchSettings, edit, create }: {
+function AsrSettings({ userId, models, settings, presets, presetsLoading, presetsError, retryPresets, busy, patchSettings, edit, create }: {
+  userId: string
   models: Model[]
   settings: ModelSettings
   presets: AsrPreset[]
@@ -186,6 +188,7 @@ function AsrSettings({ models, settings, presets, presetsLoading, presetsError, 
           </div>
         })}</div>}
     </Card>
+    <NoteAsrRoutingView userId={userId} />
   </div>
 }
 
