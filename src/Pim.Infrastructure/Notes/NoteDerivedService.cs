@@ -376,17 +376,12 @@ public sealed class NoteDerivedService(
                     x.SourceObjectId == asrTaskId.Value.ToString() &&
                     x.ClientRequestId.HasValue && requestIds.Contains(x.ClientRequestId.Value))
                 .ToDictionaryAsync(x => x.ClientRequestId!.Value, ct);
-            var attemptFence = asr.AttemptId is { } attemptId
-                ? await db.NoteAsrAttempts.AsNoTracking().Where(x => x.Id == attemptId && x.OwnerId == owner)
-                    .Select(x => (long?)x.FencingToken).SingleOrDefaultAsync(ct)
+            var proofAttempt = asr.AttemptId is { } attemptId
+                ? await db.NoteAsrAttempts.AsNoTracking().SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct)
                 : null;
-            var evidenceBySegment = asr.AttemptId is { } proofAttempt && attemptFence is { } fence
-                ? (await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
-                        x.AttemptId == proofAttempt && x.FencingToken == fence &&
-                        x.TaskId == asr.Request.TaskId && x.VersionId == asr.Request.VersionId)
-                    .OrderBy(x => x.CreatedAt).ToListAsync(ct))
-                    .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last())
-                : [];
+            var evidenceBySegment = proofAttempt is null
+                ? []
+                : await NoteAsrAcceptedEvidence.LoadAsync(db, owner, proofAttempt, asr, ct);
             var logIds = logs.Values.Select(x => x.Id).ToArray();
             var audioRows = await db.AiCallAudio.AsNoTracking()
                 .Where(x => logIds.Contains(x.LogId))

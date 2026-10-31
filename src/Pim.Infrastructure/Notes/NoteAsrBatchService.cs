@@ -755,6 +755,10 @@ public sealed class NoteAsrBatchService(PimDbContext db, ICurrentUserService use
         }
         await evidence.FinalizeBatchForPersistedOwnerAsync(job.OwnerId, attemptId,
             MimoBatchStatus.Normalize(job.StatusRaw) == MimoBatchStatusKind.Completed, ct);
+        // Evidence writes own their retry transaction and clear this shared context. Reattach the
+        // persisted job before recording import completion so the poll cannot return a stale row.
+        if (db.Entry(job).State == EntityState.Detached)
+            db.Attach(job);
         job.ResultJson = JsonSerializer.Serialize(reconciliation);
         job.OutputImportedAt = DateTimeOffset.UtcNow;
         job.LastErrorCode = reconciliation.HasFailures ? "partial_or_failed_items" : null;

@@ -59,7 +59,8 @@ internal static class NoteDerivedCoverage
         var completedPhotos = completedImages.Count(image => image.Kind == "Photo");
         var completedInk = completedImages.Count(image => image.Kind == "InkPreview");
         var completedTranscripts = input.Transcripts.Count(x =>
-            x.LogId is { } logId && completedTranscriptLogIds.Contains(logId));
+            x.LogId is { } logId && completedTranscriptLogIds.Contains(logId) ||
+            x.EvidenceId is { } evidenceId && completedTranscriptLogIds.Contains(evidenceId));
         var completedBatches = completedBatchKeys.Count;
 
         var cleanIssues = DistinctIssues(issues);

@@ -26,6 +26,57 @@ public sealed class NoteAsrRoutingConcurrencyTests
     private static string? ConnectionString => Environment.GetEnvironmentVariable("PIM_ASR516_PG");
 
     [SkippableFact]
+    public async Task Local_evidence_without_matching_receipt_never_counts_as_success()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeA = Guid.NewGuid();
+        var attemptId = await SeedAsync(owner, nodeA, Guid.NewGuid());
+        await using var db = NewDb(owner);
+        var attempt = await db.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == attemptId);
+        var state = await new NoteAsrTaskStore(Options.Create(new NoteMaterialUploadOptions
+        {
+            StorageRoot = StorageRoot
+        })).ReadAsync(owner, attempt.TaskId, CancellationToken.None);
+        // A forged local row that has no matching success receipt must not hide work or complete.
+        db.NoteAsrSegmentEvidence.Add(new NoteAsrSegmentEvidenceEntity
+        {
+            OwnerId = owner, AttemptId = attemptId, TaskId = attempt.TaskId, VersionId = attempt.VersionId,
+            Route = NoteAsrRoute.Local, FencingToken = 1, SegmentIndex = 0,
+            RecordingId = state.Steps[0].RecordingId, RecordingSegment = state.Steps[0].RecordingSegment,
+            ChunkIndex = state.Steps[0].ChunkIndex, SourceFileIndex = state.Steps[0].FileIndex,
+            SourceSha256 = state.Steps[0].Sha256, SourceOffsetSamples = state.Steps[0].SourceOffset,
+            Samples = state.Steps[0].Samples, ReceiptKind = "local",
+            ProviderHandle = "forged-handle", ResultText = "伪造结果",
+            ResultSha256 = NoteDerivedFixture.Digest(System.Text.Encoding.UTF8.GetBytes("伪造结果"))
+        });
+        await db.SaveChangesAsync();
+        await using (var claimDb = NewDb(owner))
+        {
+            var claim = await NewService(claimDb, owner).ClaimAsync(new ClaimNoteAsrTaskRequest(nodeA, "forged-claim"),
+                CancellationToken.None);
+            Assert.Equal("claimed", claim.Status);
+            Assert.Equal(new[] { 0, 1, 2 }, claim.Execution!.Segments.Select(x => x.Index).ToArray());
+            var error = await Assert.ThrowsAsync<DomainException>(() => NewService(claimDb, owner).AcknowledgeAsync(
+                attemptId, new NoteAsrAckRequest(claim.Lease!.LeaseId, claim.Lease.LeaseToken,
+                    claim.Lease.FencingToken, "complete", "Succeeded", 0, null, null, null),
+                CancellationToken.None));
+            Assert.Equal(40901, error.ErrorCode);
+        }
+        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+        await using (var viewDb = NewDb(owner))
+        {
+            var service = NewNoteService(viewDb, owner, new NoteMaterialUploadStore(options),
+                new NoteAsrTaskStore(options));
+            var segments = await service.SegmentsAsync(attempt.TaskId, 0, 20, CancellationToken.None);
+            Assert.NotEqual("Succeeded", segments.Items[0].Status);
+            Assert.Equal("Queued", segments.Items[0].Status);
+            Assert.Null(segments.Items[0].Transcript);
+        }
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
     public async Task Local_partial_retry_reissues_only_missing_segments_and_keeps_cross_fence_proof()
     {
         Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
@@ -616,6 +667,40 @@ public sealed class NoteAsrRoutingConcurrencyTests
         Assert.Equal("Leased", (await check.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == newAttemptId)).State);
         Assert.Equal("Active", await check.NoteAsrLeases.Where(x => x.AttemptId == newAttemptId)
             .Select(x => x.Status).SingleAsync());
+        await CleanupAsync(owner);
+    }
+
+    [SkippableFact]
+    public async Task Default_npgsql_retry_strategy_supports_config_claim_renew_and_ack()
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        var attemptId = await SeedAsync(owner, nodeId, Guid.NewGuid());
+        await using var db = NewDb(owner, retryOnFailure: true);
+        var service = NewService(db, owner);
+
+        var config = await service.UpdateConfigAsync(new UpdateNoteAsrRouteConfigRequest(
+            Guid.Empty, NoteAsrRoute.Local, "local-model", "r1", null, "consent-retry"),
+            CancellationToken.None);
+        Assert.NotEqual(Guid.Empty, config.Revision);
+        var claim = await service.ClaimAsync(
+            new ClaimNoteAsrTaskRequest(nodeId, "retry-strategy-smoke"), CancellationToken.None);
+        Assert.Equal("claimed", claim.Status);
+        Assert.Equal(attemptId, claim.Lease!.AttemptId);
+        var renewed = await service.RenewLeaseAsync(claim.LeaseId!.Value,
+            new NoteAsrLeaseHeartbeatRequest(claim.LeaseId.Value, claim.Lease.LeaseToken,
+                claim.Lease.FencingToken), CancellationToken.None);
+        Assert.Equal(claim.Lease.FencingToken, renewed.FencingToken);
+        var ack = await service.AcknowledgeAsync(attemptId, SegmentAck(claim, 1, "Succeeded"),
+            CancellationToken.None);
+        Assert.Equal("accepted", ack.Status);
+
+        await using var check = NewDb(owner);
+        Assert.Equal(1, await check.NoteAsrSegmentEvidence.CountAsync(x =>
+            x.OwnerId == owner && x.AttemptId == attemptId && x.SegmentIndex == 1));
+        Assert.Equal(1, await check.NoteAsrAttempts.Where(x => x.Id == attemptId)
+            .Select(x => x.CompletedSegments).SingleAsync());
         await CleanupAsync(owner);
     }
 
@@ -1274,6 +1359,108 @@ public sealed class NoteAsrRoutingConcurrencyTests
         await CleanupAsync(owner);
     }
 
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task File_committed_retry_replay_converges_only_when_no_new_stop_is_durable(bool stopLanded)
+    {
+        Skip.If(string.IsNullOrWhiteSpace(ConnectionString), "PIM_ASR516_PG is not configured");
+        var owner = Guid.NewGuid();
+        var nodeId = Guid.NewGuid();
+        await CleanupAsync(owner);
+        var options = Options.Create(new NoteMaterialUploadOptions { StorageRoot = StorageRoot });
+        var materials = new NoteMaterialUploadStore(options);
+        var tasks = new NoteAsrTaskStore(options);
+        var material = NoteDerivedFixture.CreateMaterial(audioSamples: 1_000);
+        await NoteDerivedFixture.UploadAsync(materials, owner, material);
+        var taskId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+        var retryId = Guid.NewGuid();
+        var inputSha = NoteMaterialManifestValidator.Hash(material.Request.InputJson);
+        var attemptUpdatedAt = DateTimeOffset.UtcNow.AddSeconds(-5);
+        await using (var db = NewDb(owner))
+        {
+            await db.Database.EnsureCreatedAsync();
+            await db.Users.AddAsync(NewUser(owner));
+            db.NoteAsrNodes.Add(Node(owner, nodeId, "node-a", DateTimeOffset.UtcNow));
+            db.NoteAsrAttempts.Add(new NoteAsrAttemptEntity
+            {
+                Id = attemptId, OwnerId = owner, TaskId = taskId, NoteId = material.NoteId,
+                VersionId = material.Request.VersionId, InputSha256 = inputSha,
+                Route = NoteAsrRoute.Local, State = "Failed",
+                StopRequested = stopLanded, Language = "zh", ExpectedSegments = 3,
+                LocalModelId = "local-model", LocalModelRevision = "r1",
+                ConfigRevision = Guid.NewGuid(), ConsentVersion = "consent-local",
+                CreatedAt = attemptUpdatedAt.AddMinutes(-1), UpdatedAt = attemptUpdatedAt
+            });
+            await db.SaveChangesAsync();
+        }
+        var state = new NoteAsrState
+        {
+            Owner = owner,
+            Request = new StartNoteAsrRequest(taskId, owner, material.Request.VersionId, null, "zh"),
+            Fingerprint = new string('e', 64), NoteId = material.NoteId, InputSha256 = inputSha,
+            ManifestSha256 = NoteMaterialManifestValidator.Hash(material.Request.ManifestJson),
+            AttemptId = attemptId, Route = NoteAsrRoute.Local,
+            RouteConfigRevision = Guid.NewGuid(), RouteConsentVersion = "consent-local",
+            StopRequested = stopLanded,
+            Steps = Enumerable.Range(0, 3).Select(i => new NoteAsrStep
+            {
+                Index = i, RecordingId = material.RecordingId, RecordingSegment = 1, ChunkIndex = i,
+                FileIndex = 5, Path = $"recordings/{material.RecordingId:D}/s0001-c{i:D6}.wav",
+                Sha256 = NoteDerivedFixture.Digest(material.Content[5]), SourceOffset = 0,
+                RecordingOffset = i, TimelineOffset = i, Samples = 1_000, Attempts = [new()]
+            }).ToList()
+        };
+        var retry = new RetryNoteAsrRequest(retryId, owner, state.Revision, [1, 2], null, false);
+        var fingerprint = NoteMaterialManifestValidator.Hash(JsonSerializer.Serialize(
+            retry, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        state.Retries[retryId] = fingerprint;
+        state.RetryIntents[retryId] = new NoteAsrRetryIntent
+        {
+            Fingerprint = fingerprint, AttemptId = attemptId, TaskId = taskId,
+            VersionId = material.Request.VersionId, InputSha256 = inputSha,
+            Route = NoteAsrRoute.Local, AttemptState = "Failed",
+            AttemptStopRequested = stopLanded, FencingToken = 0,
+            AttemptUpdatedAt = attemptUpdatedAt
+        };
+        await WriteTaskStateAsync(state);
+
+        await using (var db = NewDb(owner))
+        {
+            var service = NewNoteService(db, owner, materials, tasks);
+            var replay = await service.RetryAsync(taskId, retry, CancellationToken.None);
+            Assert.Equal(stopLanded, replay.StopRequested);
+        }
+        await using (var db = NewDb(owner))
+        {
+            var claimed = await NewService(db, owner).ClaimAsync(
+                new ClaimNoteAsrTaskRequest(nodeId, "retry-after-file-commit"), CancellationToken.None);
+            Assert.Equal(stopLanded ? "empty" : "claimed", claimed.Status);
+        }
+        await using (var check = NewDb(owner))
+        {
+            var row = await check.NoteAsrAttempts.AsNoTracking().SingleAsync(x => x.Id == attemptId);
+            var after = await tasks.ReadAsync(owner, taskId, CancellationToken.None);
+            if (stopLanded)
+            {
+                Assert.True(after.StopRequested);
+                Assert.True(row.StopRequested);
+                Assert.Equal("Failed", row.State);
+                Assert.Equal(0, await check.NoteAsrLeases.CountAsync(x => x.AttemptId == attemptId));
+            }
+            else
+            {
+                Assert.False(after.StopRequested);
+                Assert.False(row.StopRequested);
+                Assert.Equal("Leased", row.State);
+                Assert.Equal(1, await check.NoteAsrLeases.CountAsync(x =>
+                    x.AttemptId == attemptId && x.Status == "Active"));
+            }
+        }
+        await CleanupAsync(owner);
+    }
+
     private static async Task<Exception?> Capture(Func<Task<NoteAsrRouteConfigDto>> task)
     {
         try { await task(); return null; }
@@ -1396,8 +1583,9 @@ public sealed class NoteAsrRoutingConcurrencyTests
         ModelRevision = "r1", ModelVerified = true, CapabilitiesJson = "[]", LastHeartbeatAt = now
     };
 
-    private static PimDbContext NewDb(Guid owner) => new(
-        new DbContextOptionsBuilder<PimDbContext>().UseNpgsql(ConnectionString!).Options,
+    private static PimDbContext NewDb(Guid owner, bool retryOnFailure = false) => new(
+        new DbContextOptionsBuilder<PimDbContext>().UseNpgsql(ConnectionString!,
+            npgsql => { if (retryOnFailure) npgsql.EnableRetryOnFailure(3); }).Options,
         new FixedUser(owner));
 
     private static NoteAsrRoutingService NewService(PimDbContext db, Guid owner,

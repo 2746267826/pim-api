@@ -103,4 +103,3 @@ public sealed record AiAsrPromptTemplate(string Text, string Sha256, string Revi
 
     private static string RevisionFor(string sha256) => $"asr-prompt-v1:{sha256[..16]}";
 }
-

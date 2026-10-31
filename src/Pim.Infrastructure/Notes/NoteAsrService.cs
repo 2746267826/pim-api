@@ -121,7 +121,16 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         if (before.Retries.TryGetValue(request.RetryId, out var previous))
         {
             if (previous != fingerprint) throw new DomainException(40901, "恢复标识已绑定另一组分片，原恢复记录保留");
-            return Describe(before);
+            // A replay after a file-committed/DB-failed retry must converge the durable attempt instead
+            // of reporting success while the queue still holds a Failed/Unknown row.
+            if (before.AttemptId is not null)
+            {
+                if (!before.RetryIntents.TryGetValue(request.RetryId, out var intent) ||
+                    intent.Fingerprint != fingerprint)
+                    throw new DomainException(40901, "恢复意图缺少原执行快照，请刷新后重新确认");
+                if (!before.StopRequested) await ConvergeRetryAttemptAsync(owner, before.Request.TaskId, intent, ct);
+            }
+            return Describe(await tasks.ReadAsync(owner, id, ct));
         }
         // Null-vs-null means the local replay matches its task; cloud replays must re-confirm the exact consent.
         if (!Equals(request.Consent, before.Request.Consent)) throw new DomainException(40901, "重试目标与固定任务不一致，请新建任务");
@@ -130,18 +139,28 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         _ = await materials.GetAsync(owner, before.Request.VersionId, ct);
         // Validate every retry precondition before any mutation: a rejected request must leave both
         // the task file and the routing attempt exactly as it found them.
-        if (before.Route == NoteAsrRoute.Local)
+        NoteAsrAttemptEntity? retryAttempt = null;
+        if (before.AttemptId is { } attemptId)
         {
-            if (before.AttemptId is not { } attemptId) throw new DomainException(40901, "本机任务缺少执行快照");
-            var attempt = await db.NoteAsrAttempts.AsNoTracking()
+            retryAttempt = await db.NoteAsrAttempts.AsNoTracking()
                 .SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct)
-                ?? throw new DomainException(40901, "本机任务缺少执行快照");
+                ?? throw new DomainException(40901, "任务缺少执行快照");
             var hasActiveLease = await db.NoteAsrLeases.AsNoTracking().AnyAsync(l =>
                 l.OwnerId == owner && l.AttemptId == attemptId && l.Status == "Active", ct);
-            if (attempt.Route != NoteAsrRoute.Local || hasActiveLease ||
-                attempt.State is not ("Failed" or "Unknown" or "Queued"))
-                throw new DomainException(40901, "本机执行快照未处于可人工恢复状态，原记录保留");
+            if (retryAttempt.Route != before.Route || retryAttempt.TaskId != id ||
+                retryAttempt.VersionId != before.Request.VersionId ||
+                retryAttempt.InputSha256 != before.InputSha256 ||
+                hasActiveLease || retryAttempt.State is not ("Failed" or "Unknown" or "Queued"))
+                throw new DomainException(40901, "执行快照未处于可人工恢复状态，原记录保留");
         }
+        var retryIntent = retryAttempt is null ? null : new NoteAsrRetryIntent
+        {
+            Fingerprint = fingerprint, AttemptId = retryAttempt.Id, TaskId = retryAttempt.TaskId,
+            VersionId = retryAttempt.VersionId, InputSha256 = retryAttempt.InputSha256,
+            Route = retryAttempt.Route, AttemptState = retryAttempt.State,
+            AttemptStopRequested = retryAttempt.StopRequested, FencingToken = retryAttempt.FencingToken,
+            AttemptUpdatedAt = retryAttempt.UpdatedAt
+        };
         var updated = await tasks.UpdateAsync(owner, id, state =>
         {
             if (state.Retries.TryGetValue(request.RetryId, out var existing))
@@ -157,29 +176,82 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
             foreach (var index in request.SegmentIndexes)
                 if (state.Steps[index].Current.Status != "Queued") state.Steps[index].Attempts.Add(new());
             state.Retries.Add(request.RetryId, fingerprint); state.StopRequested = false;
+            if (retryIntent is not null) state.RetryIntents[request.RetryId] = retryIntent;
         }, ct);
-        // The task file is committed first; only then requeue the durable attempt. A crash between
-        // the two leaves Queued work that claim reconciles and the retry is replayable idempotently.
-        if (before.Route == NoteAsrRoute.Local) await RequireLocalRetryAttemptAsync(owner, updated, ct);
+        // The task file is committed first; only then requeue the durable attempt against the exact
+        // pre-intent attempt epoch. A crash between the two is replayable without clearing a new stop.
+        if (retryIntent is not null) await RequireRetryAttemptAsync(owner, updated, retryIntent, ct);
         return Describe(updated);
     }
 
-    private async Task RequireLocalRetryAttemptAsync(Guid owner, NoteAsrState state, CancellationToken ct)
+    private async Task RequireRetryAttemptAsync(Guid owner, NoteAsrState state, NoteAsrRetryIntent intent,
+        CancellationToken ct)
     {
-        if (state.AttemptId is not { } attemptId)
-            throw new DomainException(40901, "本机任务缺少执行快照");
-        var now = DateTimeOffset.UtcNow;
-        var changed = await db.NoteAsrAttempts
-            .Where(x => x.Id == attemptId && x.OwnerId == owner && x.Route == NoteAsrRoute.Local &&
-                (x.State == "Failed" || x.State == "Unknown" || x.State == "Queued") &&
-                !db.NoteAsrLeases.Any(l => l.OwnerId == owner && l.AttemptId == attemptId && l.Status == "Active"))
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(x => x.State, "Queued")
-                .SetProperty(x => x.StopRequested, false)
-                .SetProperty(x => x.LastErrorCode, (string?)null)
-                .SetProperty(x => x.LastErrorMessage, (string?)null)
-                .SetProperty(x => x.UpdatedAt, now), ct);
-        if (changed == 0) throw new DomainException(40901, "本机执行快照未处于可人工恢复状态，原记录保留");
+        if (state.AttemptId != intent.AttemptId)
+            throw new DomainException(40901, "任务执行快照已变化，原记录保留");
+        // A retry that raced a real user stop must not silently clear that stop.
+        if (state.StopRequested) throw new DomainException(40901, "任务已停止，未恢复本机执行快照");
+        await ConvergeRetryAttemptAsync(owner, state.Request.TaskId, intent, ct);
+    }
+
+    /// <summary>
+    /// Converges the durable attempt only while the task file still carries this exact retry intent
+    /// and the attempt row still has the pre-intent epoch. A later stop changes both the file flag and
+    /// the row's UpdatedAt/StopRequested state, so it can never be erased by replay.
+    /// </summary>
+    private async Task ConvergeRetryAttemptAsync(Guid owner, Guid taskId, NoteAsrRetryIntent intent,
+        CancellationToken ct)
+    {
+        await tasks.WithLockAsync(owner, async lockedCt =>
+        {
+            var lockedState = await tasks.ReadAsync(owner, taskId, lockedCt);
+            if (lockedState.StopRequested ||
+                lockedState.AttemptId != intent.AttemptId ||
+                !lockedState.RetryIntents.Values.Any(x => x.Fingerprint == intent.Fingerprint &&
+                    x.AttemptId == intent.AttemptId && x.AttemptUpdatedAt == intent.AttemptUpdatedAt &&
+                    x.FencingToken == intent.FencingToken))
+                throw new DomainException(40901, "任务已停止或恢复意图已变化，未改变执行快照");
+            var attempt = await db.NoteAsrAttempts.AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == intent.AttemptId && x.OwnerId == owner, lockedCt)
+                ?? throw new DomainException(40901, "任务缺少执行快照");
+            if (attempt.TaskId != intent.TaskId || attempt.VersionId != intent.VersionId ||
+                attempt.InputSha256 != intent.InputSha256 || attempt.Route != intent.Route ||
+                attempt.FencingToken != intent.FencingToken)
+                throw new DomainException(40901, "任务执行快照身份已变化，原记录保留");
+            if (await db.NoteAsrLeases.AsNoTracking().AnyAsync(l =>
+                    l.OwnerId == owner && l.AttemptId == attempt.Id && l.Status == "Active", lockedCt))
+                throw new DomainException(40901, "任务仍有活动租约，不能恢复");
+            if (attempt.State == "Queued" && !attempt.StopRequested) return true;
+            if (!db.Database.IsRelational())
+            {
+                var tracked = await db.NoteAsrAttempts.SingleAsync(x =>
+                    x.Id == intent.AttemptId && x.OwnerId == owner, lockedCt);
+                if (tracked.State != intent.AttemptState || tracked.StopRequested != intent.AttemptStopRequested ||
+                    tracked.FencingToken != intent.FencingToken || tracked.UpdatedAt != intent.AttemptUpdatedAt)
+                    throw new DomainException(40901, "执行快照已变化，未覆盖新的停止或执行状态");
+                tracked.State = "Queued"; tracked.StopRequested = false;
+                tracked.LastErrorCode = null; tracked.LastErrorMessage = null;
+                tracked.UpdatedAt = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(lockedCt);
+                return true;
+            }
+            var changed = await db.NoteAsrAttempts
+                .Where(x => x.Id == intent.AttemptId && x.OwnerId == owner && x.TaskId == intent.TaskId &&
+                    x.VersionId == intent.VersionId && x.InputSha256 == intent.InputSha256 &&
+                    x.Route == intent.Route && x.State == intent.AttemptState &&
+                    x.StopRequested == intent.AttemptStopRequested && x.FencingToken == intent.FencingToken &&
+                    x.UpdatedAt == intent.AttemptUpdatedAt &&
+                    !db.NoteAsrLeases.Any(l => l.OwnerId == owner && l.AttemptId == intent.AttemptId && l.Status == "Active"))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.State, "Queued")
+                    .SetProperty(x => x.StopRequested, false)
+                    .SetProperty(x => x.LastErrorCode, (string?)null)
+                    .SetProperty(x => x.LastErrorMessage, (string?)null)
+                    .SetProperty(x => x.UpdatedAt, DateTimeOffset.UtcNow), lockedCt);
+            if (changed == 0)
+                throw new DomainException(40901, "执行快照已变化；新的停止或执行状态优先，未覆盖");
+            return true;
+        }, ct);
     }
 
     /// <summary>
@@ -355,18 +427,11 @@ public sealed class NoteAsrService(NoteAsrTaskStore tasks, NoteMaterialUploadSto
         NoteAsrState state, CancellationToken ct)
     {
         if (state.AttemptId is not { } attemptId) return [];
-        var fence = await db.NoteAsrAttempts.AsNoTracking()
-            .Where(x => x.Id == attemptId && x.OwnerId == owner).Select(x => (long?)x.FencingToken).SingleOrDefaultAsync(ct);
-        if (fence is null) return [];
-        // Attempt-scoped evidence: a re-lease after a partial failure must not hide older fence proof.
-        var rows = await db.NoteAsrSegmentEvidence.AsNoTracking().Where(x => x.OwnerId == owner &&
-                x.AttemptId == attemptId && x.FencingToken <= fence.Value &&
-                x.TaskId == state.Request.TaskId && x.VersionId == state.Request.VersionId)
-            .OrderBy(x => x.CreatedAt).ToListAsync(ct);
-        var steps = state.Steps.ToDictionary(x => x.Index);
-        return rows.Where(x => steps.TryGetValue(x.SegmentIndex, out var step) &&
-                NoteAsrRoutingService.EvidenceMatchesStep(x, step))
-            .GroupBy(x => x.SegmentIndex).ToDictionary(x => x.Key, x => x.Last());
+        var attempt = await db.NoteAsrAttempts.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == attemptId && x.OwnerId == owner, ct);
+        if (attempt is null) return [];
+        // One route-aware acceptance rule shared with claim, complete and repair.
+        return await routing.AcceptedEvidenceAsync(owner, attempt, state, ct);
     }
 
     private async Task<AiAsrPresetDto> ValidateDestinationAsync(AiAsrDestinationConsent? consent, string language, CancellationToken ct)
