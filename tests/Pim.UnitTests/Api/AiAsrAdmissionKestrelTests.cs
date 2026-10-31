@@ -317,6 +317,8 @@ public sealed class AiAsrAdmissionKestrelHost : IAsyncLifetime
 
     public void Log(string source, string line)
     {
+        // Skipped fixtures have no owned log path and must not touch the caller's working directory.
+        if (!OptedIn) return;
         lock (_logLock)
         {
             try { File.AppendAllText(_logPath, $"{DateTime.UtcNow:O} [{source}] {line}{Environment.NewLine}"); }
