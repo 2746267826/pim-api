@@ -69,15 +69,18 @@ public sealed class NoteAsrReprocessService(
         if (!NoteAsrExecutionMode.Known(executionMode))
             throw new DomainException(40001, "重处理执行方式无效");
 
-        var consent = NoteAsrRoute.IsCloud(route) ? request.Consent : request.Consent ?? source.Request.Consent;
-        if (NoteAsrRoute.IsCloud(route) && consent?.Confirmed != true)
+        var cloud = NoteAsrRoute.IsCloud(route);
+        if (!cloud && request.Consent is not null)
+            throw new DomainException(40001, "本机重处理不涉及云端外发，不需要云端确认");
+        var consent = cloud ? request.Consent : null;
+        if (cloud && consent?.Confirmed != true)
             throw new DomainException(40001, "云端重处理必须重新确认目标与音频外发");
 
         var start = new StartNoteAsrRequest(
             request.ClientTaskId,
             owner,
             source.Request.VersionId,
-            consent ?? source.Request.Consent,
+            consent,
             source.Request.Language,
             new NoteAsrRouteConsent(
                 route,
@@ -170,8 +173,15 @@ public sealed class NoteAsrReprocessService(
         if (!request.Route.Confirmed || route.Confirmed != request.Route.Confirmed ||
             route.BatchScopeConfirmed != request.Route.BatchScopeConfirmed)
             throw new DomainException(40901, "路由确认范围与已冻结任务不一致，原任务保留");
-        if (request.Consent is not null && request.Consent != existing.Request.Consent)
-            throw new DomainException(40901, "客户端任务标识已绑定另一目标同意，原任务保留");
+        if (NoteAsrRoute.IsCloud(route.Route))
+        {
+            if (request.Consent is null || request.Consent != existing.Request.Consent)
+                throw new DomainException(40901, "客户端任务标识已绑定另一目标同意，原任务保留");
+        }
+        else if (request.Consent is not null)
+        {
+            throw new DomainException(40001, "本机重处理不涉及云端外发，不需要云端确认");
+        }
     }
 
     private static string NormalizeReason(NoteAsrReprocessReason? reason)
